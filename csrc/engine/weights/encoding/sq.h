@@ -3,6 +3,7 @@
 #include "engine/weights/encoding/encoded.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,10 @@ namespace tyloi {
 
 // FP8 SQ: one packed blob with per-row quantization and symbol offsets.
 class Fp8SqTensor final : public EncodedTensor {
+    std::shared_ptr<EncodedTensor> cloned() const override {
+        return std::make_shared<Fp8SqTensor>(*this);
+    }
+
 public:
     std::string dtype;
     DenseTensor blob;
@@ -41,6 +46,10 @@ protected:
 
 // MXFP4 SQ: packed 4-bit payload plus per-row quantization and auxiliary codes.
 class Mxfp4SqTensor final : public EncodedTensor {
+    std::shared_ptr<EncodedTensor> cloned() const override {
+        return std::make_shared<Mxfp4SqTensor>(*this);
+    }
+
 public:
     DenseTensor blob;
     DenseTensor row_q;

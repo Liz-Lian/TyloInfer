@@ -112,15 +112,15 @@ struct Loader {
     QuantLinear build_embedding(const std::string& name, bool independent_output) const;
     Experts build_experts(const std::string& name, bool cacheable = false, int layer = -1,
                     const std::string& role = {}) const;
-    std::shared_ptr<const tyloi::weights::Weights> weight(const std::string& name,
+    std::shared_ptr<const QuantLinear> weight(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr) const;
-    std::shared_ptr<const tyloi::weights::Weights> group(const std::vector<std::string>& names, size_t prefix = 0,
+    std::shared_ptr<const QuantLinearGroup> group(const std::vector<std::string>& names, size_t prefix = 0,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr, bool preserve_boundaries = false) const;
-    std::shared_ptr<const tyloi::weights::Weights> gate_up(const std::vector<std::string>& names,
-        const tyloi::weights::Weights& down, size_t prefix = 2, bool preserve_boundaries = false) const;
-    std::shared_ptr<const tyloi::weights::Weights> embedding(const std::string& name, bool independent_output) const;
-    std::shared_ptr<const tyloi::weights::Weights> experts(const std::string& name, bool cacheable = false,
+    std::shared_ptr<const QuantLinearGroup> gate_up(const std::vector<std::string>& names,
+        const QuantLinear& down, size_t prefix = 2, bool preserve_boundaries = false) const;
+    std::shared_ptr<const QuantLinear> embedding(const std::string& name, bool independent_output) const;
+    std::shared_ptr<const tyloi::cuda::Experts> experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
     Linear linear(const std::string& name) const;
     DenseTensor dense(const std::string& name) const;

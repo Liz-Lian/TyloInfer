@@ -5,8 +5,8 @@
 
 namespace mfq {
 
-MlxAffineBinding mlx_affine_binding(const Safetensors& source,
-    const nlohmann::json& quantization, const TensorMetadata& values) {
+MlxAffineBinding mlx_affine_binding(const tyloi::Safetensors& source,
+    const nlohmann::json& quantization, const tyloi::TensorMetadata& values) {
     if (!quantization.is_object() || values.dtype != "U32" || !values.shape ||
         values.shape->empty() || values.name.size() < 7 || values.name.substr(values.name.size() - 7) != ".weight")
         throw std::invalid_argument("MLX affine weight has no valid quantization configuration: " + values.name);

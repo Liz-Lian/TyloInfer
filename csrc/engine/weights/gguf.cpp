@@ -25,7 +25,7 @@ std::vector<std::byte> read_record(const Record& record) {
 
 } // namespace
 
-Record prepare(const DenseTensor& tensor, std::string name,
+Record prepare(const ShardTensorInfo& tensor, std::string name,
                std::vector<std::int64_t> shape) {
     Record record;
     record.file = tensor.file;
@@ -52,7 +52,7 @@ Record prepare(const DenseTensor& tensor, std::string name,
     return record;
 }
 
-void normalize(Record& record, const DenseTensor& tensor, bool decay_log) {
+void normalize(Record& record, const ShardTensorInfo& tensor, bool decay_log) {
     const auto type = static_cast<ggml_type>(tensor.type);
     if (type != GGML_TYPE_F32 && type != GGML_TYPE_F16 && type != GGML_TYPE_BF16)
         throw std::runtime_error("GGUF normalization requires floating-point tensors: " + record.tensor.name);

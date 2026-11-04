@@ -77,9 +77,9 @@ void load_layer(Attention &a, Layer &b, Loader &ops, const Config &c, int layer,
     b.gemma_expert_scale = ops.router_parameter(mlp + "router.expert_scale");
     b.gemma_top_k = static_cast<int>(c.num_experts_per_tok);
     require_model(
-        ops.expert_shape(b.gemma_moe_gate_up) ==
+        ops.expert_shape(*b.gemma_moe_gate_up) ==
                 std::array<int64_t, 3>{c.num_experts, 2 * c.moe_intermediate_size, c.hidden_size} &&
-            ops.expert_shape(b.gemma_moe_down) ==
+            ops.expert_shape(*b.gemma_moe_down) ==
                 std::array<int64_t, 3>{c.num_experts, c.hidden_size, c.moe_intermediate_size} &&
             ops.shape(b.gemma_router) == std::vector<int64_t>{c.num_experts, c.hidden_size} &&
             ops.elements(b.gemma_router_norm_scale) == c.hidden_size &&

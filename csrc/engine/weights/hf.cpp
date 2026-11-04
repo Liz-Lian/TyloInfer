@@ -108,7 +108,7 @@ Record prepare(
     record.metadata.shape = values.shape;
     const auto item_size = dense_item_size(values.dtype);
     if (values.dtype == "U32") {
-        const auto binding = mlx_affine_binding(files, quantization, values);
+        const auto binding = mfq::mlx_affine_binding(files, quantization, values);
         const auto& layout = binding.layout;
         record.metadata.dtype = "MLX-AFFINE";
         record.metadata.shape = layout.shape;

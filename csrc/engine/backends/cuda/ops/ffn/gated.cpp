@@ -19,9 +19,13 @@ GatedResidual::Projection GatedResidual::projection(
         const Options& options, Part part) {
     using Projection = GatedResidual::Projection;
     const tyloi::cuda::AllocationScope weight_memory;
-    TYLOINFER_RUNTIME_CHECK(weight->is_dense() || weight->is_nint() || weight->is_tq(),
+    const auto* payload = &weight->payload();
+    TYLOINFER_RUNTIME_CHECK(
+        dynamic_cast<const DenseTensor*>(payload) != nullptr ||
+            dynamic_cast<const tyloi::NintTensor*>(payload) != nullptr ||
+            dynamic_cast<const tyloi::encoding::TqTensor*>(payload) != nullptr,
         "unsupported floating residual projection");
-    if(weight->is_tq()) {
+    if (dynamic_cast<const tyloi::encoding::TqTensor*>(payload) != nullptr) {
         Projection::Forward forward=[weight,project,&profiler](const DenseTensor& input) {
             // TQ reconstructs FP16 weights. A BF16/F32 activation therefore
             // promotes residual projection math to FP32, as the dense path.
@@ -32,12 +36,13 @@ GatedResidual::Projection GatedResidual::projection(
         };
         return {std::move(forward),{},{},std::move(weight),{}};
     }
-    if(weight->is_dense()) {
-        auto right=weight->dense.transpose(-1,-2);
+    {
+        const auto& dense = payload_as<::tyloi::DenseTensor>(weight->payload());
+        auto right=dense.transpose(-1,-2);
         auto promoted=options.prepared_dense?right.to(::tyloi::kFloat32):DenseTensor{};
         const bool prepare_injection=options.dense_injection &&
-            weight->dense.scalar_type()==::tyloi::kBFloat16 && weight->dense.is_contiguous() &&
-            weight->dense.dim()==2 && weight->dense.size(0)>0 && weight->dense.size(0)<=4;
+            dense.scalar_type()==::tyloi::kBFloat16 && dense.is_contiguous() &&
+            dense.dim()==2 && dense.size(0)>0 && dense.size(0)<=4;
         auto prepared_right=prepare_injection?(promoted.defined()?promoted:right.to(::tyloi::kFloat32)):DenseTensor{};
         const auto vector_setting=tyloi::cuda::runtime_options::gr_dense_vector();
         if(prepare_injection && (!vector_setting || *vector_setting) &&
@@ -52,22 +57,22 @@ GatedResidual::Projection GatedResidual::projection(
         };
         Projection::Activation activated;
         Projection::Mix mixed;
-        if(weight->dense.scalar_type()==::tyloi::kBFloat16 && weight->dense.is_contiguous() &&
+        if(dense.scalar_type()==::tyloi::kBFloat16 && dense.is_contiguous() &&
                 part==Part::final_down)
             activated=[weight,forward](const DenseTensor& input,int64_t streams,bool injection) {
                 const auto option=tyloi::cuda::runtime_options::gr_dense_bf16_direct();
                 if(!injection && (!option || *option))
-                    if(auto output=try_gr_bf16_down_cuda(input,weight->dense,streams);output.defined())return output;
+                    if(auto output=try_gr_bf16_down_cuda(input,payload_as<::tyloi::DenseTensor>(weight->payload()),streams);output.defined())return output;
                 auto projected=forward(input);
                 return injection?mfq_qwen4_exp::gated_residual_injection(projected,streams):
                     mfq_qwen4_exp::gated_residual_bottleneck(projected,streams);
             };
-        if(weight->dense.scalar_type()==::tyloi::kBFloat16 && weight->dense.is_contiguous() &&
+        if(dense.scalar_type()==::tyloi::kBFloat16 && dense.is_contiguous() &&
                 part==Part::final_up)
             mixed=[weight,forward](const DenseTensor& input,const DenseTensor& normalized,int64_t streams) {
                 const auto option=tyloi::cuda::runtime_options::gr_dense_bf16_direct();
                 if(!option || *option)
-                    if(auto output=try_gr_bf16_up_mix_cuda(input,normalized,weight->dense,streams);output.defined())return output;
+                    if(auto output=try_gr_bf16_up_mix_cuda(input,normalized,payload_as<::tyloi::DenseTensor>(weight->payload()),streams);output.defined())return output;
                 return mfq_qwen4_exp::gated_residual_mix(forward(input),normalized,streams);
             };
         return {std::move(forward),std::move(mixed),std::move(activated),std::move(weight),std::move(prepared_right)};
@@ -76,34 +81,34 @@ GatedResidual::Projection GatedResidual::projection(
 
     Projection::Forward forward=[weight,&profiler,&options](const DenseTensor& input) {
         auto output = profiler.measure("nint.float_projection", [&] {
-            return nint_float_projection_cuda(weight->nint, input,true,options.native_input,
+            return nint_float_projection_cuda(payload_as<tyloi::NintTensor>(weight->payload()), input,true,options.native_input,
                 options.fixed_group);
         });
         // Match Metal's promotion of NINT's logical F16 weight dtype.
         return input.scalar_type() == ::tyloi::kFloat16 ? output.to(::tyloi::kFloat16) : output;
     };
     Projection::Mix mixed;
-    if(weight->is_nint())mixed=[weight,&profiler,&options](const DenseTensor& input,
+    if(dynamic_cast<const tyloi::NintTensor*>(&weight->payload()) != nullptr)mixed=[weight,&profiler,&options](const DenseTensor& input,
         const DenseTensor& normalized,int64_t streams) {
         return profiler.measure("nint.float_projection_mix",[&] {
-            return nint_float_projection_mix_cuda(weight->nint,input,normalized,streams,options.native_input,
+            return nint_float_projection_mix_cuda(payload_as<tyloi::NintTensor>(weight->payload()),input,normalized,streams,options.native_input,
                 options.fixed_group,options.compact_mix);
         });
     };
     Projection::Activation activated;
-    if(weight->is_nint())activated=[weight,&profiler,&options](const DenseTensor& input,
+    if(dynamic_cast<const tyloi::NintTensor*>(&weight->payload()) != nullptr)activated=[weight,&profiler,&options](const DenseTensor& input,
         int64_t streams,bool injection) {
         return profiler.measure("nint.float_projection_activation",[&] {
-            return nint_float_projection_activation_cuda(weight->nint,input,streams,injection,true,
+            return nint_float_projection_activation_cuda(payload_as<tyloi::NintTensor>(weight->payload()),input,streams,injection,true,
                 options.native_input,options.fixed_group);
         });
     };
     DenseTensor group_coefficients;
     const auto group_option=tyloi::cuda::runtime_options::gr_up_group_coefficients();
-    if(group_option && *group_option!='0' && weight->nint.aligned_q8 && !weight->nint.q8_zero &&
-            weight->nint.gs==48 && weight->nint.out==10240 && weight->nint.neuron_len==320)
-        group_coefficients=*group_option=='2'?prepare_gr_up_packed_metadata(weight->nint):
-            prepare_gr_up_group_coefficients(weight->nint);
+    if(group_option && *group_option!='0' && payload_as<tyloi::NintTensor>(weight->payload()).aligned_q8 && !payload_as<tyloi::NintTensor>(weight->payload()).q8_zero &&
+            payload_as<tyloi::NintTensor>(weight->payload()).gs==48 && payload_as<tyloi::NintTensor>(weight->payload()).out==10240 && payload_as<tyloi::NintTensor>(weight->payload()).neuron_len==320)
+        group_coefficients=*group_option=='2'?prepare_gr_up_packed_metadata(payload_as<tyloi::NintTensor>(weight->payload())):
+            prepare_gr_up_group_coefficients(payload_as<tyloi::NintTensor>(weight->payload()));
     return {std::move(forward),std::move(mixed),std::move(activated),std::move(weight),DenseTensor{},std::move(group_coefficients)};
 
 #else
@@ -154,17 +159,25 @@ GatedResidual::Result GatedResidual::bounded_pre(const DenseTensor& input,int64_
 bool GatedResidual::can_fuse(const DenseTensor& input)const {
     if(!options_)return false;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+    const auto* down_nint = down.weight
+        ? dynamic_cast<const tyloi::NintTensor*>(&down.weight->payload()) : nullptr;
+    const auto* up_nint = up.weight
+        ? dynamic_cast<const tyloi::NintTensor*>(&up.weight->payload()) : nullptr;
     if(!options_->two_stage || !options_->fused_projections ||
-        !options_->native_input || !down.weight || !up.weight || !injection.weight ||
-        !down.weight->is_nint() || !up.weight->is_nint() || streams<1 || streams>4 ||
+        !options_->native_input || down_nint == nullptr || up_nint == nullptr ||
+        streams<1 || streams>4 ||
         input.dim()<1 || input.size(-1)!=hidden*streams || input.numel()<hidden*streams ||
         input.numel()/(hidden*streams)>32 || !input.is_cuda() || !input.is_contiguous() ||
         (input.scalar_type()!=::tyloi::kFloat16 && input.scalar_type()!=::tyloi::kFloat32) ||
         !norm.is_contiguous() || norm.scalar_type()!=::tyloi::kFloat32)return false;
-    if(!injection.weight->is_nint() && !(options_->dense_injection &&
-        injection.weight->is_dense() && injection.weight->dense.is_contiguous() &&
-        injection.weight->dense.scalar_type()==::tyloi::kBFloat16))return false;
-    const auto& w=up.weight->nint;
+    const auto* injection_nint = injection.weight
+        ? dynamic_cast<const tyloi::NintTensor*>(&injection.weight->payload()) : nullptr;
+    const auto* injection_dense = injection.weight
+        ? dynamic_cast<const DenseTensor*>(&injection.weight->payload()) : nullptr;
+    if(injection_nint == nullptr && !(options_->dense_injection && injection_dense &&
+        injection_dense->is_contiguous() &&
+        injection_dense->scalar_type()==::tyloi::kBFloat16))return false;
+    const auto& w=*up_nint;
     const auto rows=input.numel()/(hidden*streams);
     const auto continuous=tyloi::cuda::runtime_options::gr_continuous_two_stage();
     if(rows>8 && (!*cache_serial_ || (continuous && !*continuous)))
@@ -190,10 +203,14 @@ bool GatedResidual::can_fuse(const DenseTensor& input)const {
 GatedResidual::Result GatedResidual::fused(const DenseTensor& input,const DenseTensor& residual,const DenseTensor& gate,bool after,
     const GatedResidualMarker& marker)const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    const auto& projection=*injection.weight;
-    auto result=gated_residual_two_stage_cuda(input,residual,gate,norm,down.weight->nint,up.weight->nint,
-        projection.is_nint()?&projection.nint:nullptr,streams,eps,after,
-        projection.is_dense()?projection.dense:DenseTensor{},injection.prepared_right,marker,up.up_group_coefficients);
+    const auto& injection_payload = injection.weight->payload();
+    const auto* injection_nint = dynamic_cast<const tyloi::NintTensor*>(&injection_payload);
+    const auto* injection_dense = dynamic_cast<const DenseTensor*>(&injection_payload);
+    auto result=gated_residual_two_stage_cuda(input,residual,gate,norm,
+        payload_as<tyloi::NintTensor>(down.weight->payload()),
+        payload_as<tyloi::NintTensor>(up.weight->payload()),
+        injection_nint,streams,eps,after,
+        injection_dense ? *injection_dense : DenseTensor{},injection.prepared_right,marker,up.up_group_coefficients);
     return {std::move(result[0]),std::move(result[1]),std::move(result[2])};
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");

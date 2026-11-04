@@ -460,6 +460,11 @@ public:
     // Backing buffers that exist, derived from buffers().
     std::vector<std::shared_ptr<TensorStorage>> backings() const;
 
+    // A copy of this representation with every buffer resident on `device`,
+    // keeping the encoding. Weight preparation uses this; a published weight
+    // is never rewritten in place.
+    virtual std::shared_ptr<const Tensor> relocated(Device device) const = 0;
+
     ScalarType dtype() const noexcept { return scalar_type(); }
     int get_device() const noexcept { return device().index; }
     bool is_cpu() const noexcept { return defined() && device().is_cpu(); }
@@ -502,6 +507,7 @@ public:
     bool is_contiguous() const noexcept override { return defined() && view_.is_contiguous(); }
     bool is_encoded() const noexcept override { return false; }
     std::vector<const DenseTensor*> buffers() const override { return {this}; }
+    std::shared_ptr<const Tensor> relocated(Device device) const override;
     const std::shared_ptr<TensorStorage>& storage() const noexcept { return storage_; }
     std::size_t byte_offset() const noexcept { return byte_offset_; }
     void record_stream(std::uintptr_t stream) const override {

@@ -7,7 +7,7 @@
 namespace tyloi::cuda {
 
 struct BiasWeight {
-    QuantLinear weight;
+    QuantLinearRef weight;
     ::tyloi::DenseTensor bias;
 };
 

@@ -46,6 +46,11 @@
 #include <stdexcept>
 
 namespace {
+// The shared-expert fast paths need the NINT payload, if the weight has one.
+const tyloi::NintTensor* nint_payload(const QuantLinearRef& weight) {
+    return weight ? dynamic_cast<const tyloi::NintTensor*>(&weight->payload()) : nullptr;
+}
+
 inline void host_store_fence() {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     _mm_sfence();
@@ -1644,8 +1649,10 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 cohort.active.family==MixedMoeFamily::Nvq || cohort.active.family==MixedMoeFamily::Mxfp4);
         if(shared_) {
             cell.two_stage=cell.two_stage && bool(shared_weights_.gate);
-            for(const auto& weight:shared_weights_.projections)
-                cell.two_stage=cell.two_stage && weight && weight->is_nint() && !weight->tensor_parallel() && !weight->nint.q8_zero;
+            for(const auto& weight:shared_weights_.projections) {
+                const auto* nint=nint_payload(weight);
+                cell.two_stage=cell.two_stage && nint && !weight->tensor_parallel() && !nint->q8_zero;
+            }
         }
         const auto reuse=tyloi::cuda::runtime_options::moe_plan_reuse();
         cell.reuse_plan=cell.two_stage && (!reuse || *reuse!=0);
@@ -1691,7 +1698,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             }
             std::array<const tyloi::NintTensor*,3> shared{};
             if(shared_) {
-                for(int p=0;p<3;++p)shared[p]=&shared_weights_.projections[p]->nint;
+                for(int p=0;p<3;++p)shared[p]=nint_payload(shared_weights_.projections[p]);
                 cell.shared_gate=shared_weights_.gate(project,cell.input).contiguous();
             }
             cell.fused=std::make_unique<tyloi::cuda::MoeBatch>(std::array<const MixedMoeRuntime*,3>{&cell.fused_projections[0],
@@ -1701,10 +1708,11 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             const auto* nint_gate=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
             const auto* reuse_gate=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_REUSE");
             const auto fused_gate=tyloi::cuda::runtime_options::shared_gate_fused();
-            if(cell.tokens<=6 && shared_weights_.scalar_gate && shared_weights_.scalar_gate->is_nint() &&
+            const auto* gate=nint_payload(shared_weights_.scalar_gate);
+            if(cell.tokens<=6 && gate &&
                     !shared_weights_.scalar_gate->tensor_parallel() && (!fused_gate || *fused_gate) &&
                     (!nint_gate || nint_gate[0]!='0') && (!reuse_gate || reuse_gate[0]!='0')) {
-                const auto& w=shared_weights_.scalar_gate->nint;
+                const auto& w=*gate;
                 if(w.out==1 && w.aligned_q8 && !w.q8_zero && w.gs==48 && w.ng<=64 && w.neuron_len==width_)
                     std::tie(cell.shared_gate_quantized,cell.shared_gate_scales)=cell.fused->reserve_input_quantization(int(w.ng),int(w.gs));
             }
@@ -2043,8 +2051,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             std::array<std::vector<std::vector<int64_t>>,3> sizes;
             for(int p=0;p<3;++p)for(const auto& cohort:sources_[p]->cohorts_)sizes[p].push_back(cohort.bytes_per_expert);
             cell.fused->enable_cached_dispatch(cached_expert_fields_->d<tyloi::cuda::MfeCachedExpert>(),sizes,cell.flags.d<uint32_t>()+4);
-            if(cell.shared_gate_quantized.defined() && shared_weights_.scalar_gate)
-                cell.fused->try_fuse_prepare_shared_gate(shared_weights_.scalar_gate->nint,cell.shared_gate);
+            if(const auto* gate=nint_payload(shared_weights_.scalar_gate); cell.shared_gate_quantized.defined() && gate)
+                cell.fused->try_fuse_prepare_shared_gate(*gate,cell.shared_gate);
         }
         if(!cache_->pipeline_pool_context_) {
             cache_->pipeline_pool_context_=tyloi::cuda::default_context(cell.input.get_device());
@@ -2212,10 +2220,10 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 // warmup result before allocating the new gate in that pool.
                 cell.fused->bind_shared_gate({});
                 ::tyloi::DenseTensor gate;
-                if(prepared_early && cell.shared_gate_quantized.defined()) {
-                    if(auto value=try_nint_shared_gate_sigmoid_cuda(input,shared_weights_.scalar_gate->nint,
-                            cell.shared_gate_quantized,cell.shared_gate_scales))gate=*value;
-                }
+                if(prepared_early && cell.shared_gate_quantized.defined())
+                    if(const auto* gate_nint=nint_payload(shared_weights_.scalar_gate))
+                        if(auto value=try_nint_shared_gate_sigmoid_cuda(input,*gate_nint,
+                                cell.shared_gate_quantized,cell.shared_gate_scales))gate=*value;
                 if(!cell.shared_gate_trace_reported) {
                     cell.shared_gate_trace_reported=true;
                     const auto trace=tyloi::cuda::runtime_options::trace_mfe_dispatch_requested();
@@ -4722,8 +4730,10 @@ std::shared_ptr<MoeFfnPipeline> tyloi::cuda::Pipelines::make(
     if(gate_up.size()==1 && (gate_up[0]->cached_source->layer_id()>=0 || down[0]->neuron_len%2))return {};
     if(gate_up.size()==1) {
         for(const auto& w:{gate_up[0],down[0]})if(!w->cached_source->two_stage_compatible())return {};
-        if(shared)for(const auto& w:shared_weights.projections)
-            if(!w || !w->is_nint() || w->tensor_parallel() || w->nint.q8_zero)return {};
+        if(shared)for(const auto& w:shared_weights.projections) {
+            const auto* nint=nint_payload(w);
+            if(!nint || w->tensor_parallel() || nint->q8_zero)return {};
+        }
     }
     if(!gate_up[0]->cached_source->pipeline_enabled())return {};
     auto runtime=std::make_shared<MoeFfnPipeline>(profiler_,mmq_,kernels_,options_,std::array<std::shared_ptr<MoeCachedSource>,3>{

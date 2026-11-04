@@ -52,7 +52,7 @@ class RadioEncoder {
             weights.native("vision.position_embedding.weight");
         result.cls_register_token =
             weights.native("vision.cls_register_token.weight");
-        if (!result.patch_projection.is_dense()) {
+        if (dynamic_cast<const ::tyloi::DenseTensor*>(result.patch_projection.weight.get()) == nullptr) {
             throw std::runtime_error(
                 "Nemotron-H RADIO patch projection must stay dense: the tower is exported "
                 "in BF16");
@@ -102,16 +102,17 @@ class RadioEncoder {
         const auto dtype = layer_dtype();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto cast_patches = tyloi::ops::cast(patches, dtype);
-        if (patch_projection.dense.dim() != 2) throw std::invalid_argument("linear weight must be a matrix");
+        const auto& dense = *dynamic_cast<const ::tyloi::DenseTensor*>(patch_projection.weight.get());
+        if (dense.dim() != 2) throw std::invalid_argument("linear weight must be a matrix");
         auto hidden = tyloi::ops::contiguous(tyloi::ops::cast(tyloi::ops::matmul(
-            cast_patches, tyloi::ops::transpose(patch_projection.dense, 0, 1)), dtype));
+            cast_patches, tyloi::ops::transpose(dense, 0, 1)), dtype));
         hidden = tyloi::ops::add(hidden, tyloi::ops::cast(interpolated_positions(rows, columns), dtype));
         auto prefix = tyloi::ops::contiguous(tyloi::ops::expand(tyloi::ops::unsqueeze(
             tyloi::ops::cast(cls_register_token, dtype), 0), {1, config.summary_tokens(), config.hidden_size}));
         hidden = tyloi::ops::contiguous(tyloi::ops::cat({prefix, tyloi::ops::unsqueeze(hidden, 0)}, 1));
 #else
         auto hidden =
-            mfq_linear(patches.to(dtype), patch_projection.dense, std::nullopt)
+            mfq_linear(patches.to(dtype), *dynamic_cast<const ::tyloi::DenseTensor*>(patch_projection.weight.get()), std::nullopt)
                 .to(dtype)
                 .contiguous();
         hidden = hidden + interpolated_positions(rows, columns).to(dtype);
@@ -183,16 +184,16 @@ class RadioEncoder {
                                          tyloi::ops::cast(bias, dtype), layer_norm_eps), dtype));
             };
             auto normalized = norm(input, norm1_weight, norm1_bias);
-            auto q = split_heads(tyloi::ops::linear(normalized, query.weight, query.bias));
-            auto k = split_heads(tyloi::ops::linear(normalized, key.weight, key.bias));
-            auto v = split_heads(tyloi::ops::linear(normalized, value.weight, value.bias));
+            auto q = split_heads(tyloi::ops::linear(normalized, *query.weight, query.bias));
+            auto k = split_heads(tyloi::ops::linear(normalized, *key.weight, key.bias));
+            auto v = split_heads(tyloi::ops::linear(normalized, *value.weight, value.bias));
             auto attended = tyloi::ops::attention(std::move(q), std::move(k), std::move(v), mask, scale);
             auto branch = tyloi::ops::linear(tyloi::ops::reshape(tyloi::ops::transpose(attended, 1, 2),
-                {batch, tokens, heads * head_dim}), output.weight, output.bias);
+                {batch, tokens, heads * head_dim}), *output.weight, output.bias);
             input = tyloi::ops::contiguous(tyloi::ops::add(input, tyloi::ops::cast(branch, input.scalar_type())));
             normalized = norm(input, norm2_weight, norm2_bias);
             branch = tyloi::ops::linear(tyloi::ops::gelu(
-                tyloi::ops::linear(normalized, fc1.weight, fc1.bias)), fc2.weight, fc2.bias);
+                tyloi::ops::linear(normalized, *fc1.weight, fc1.bias)), *fc2.weight, fc2.bias);
 #else
             auto normalized = vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
             auto q = split_heads(tyloi::cuda::biased(projector, query, normalized));
@@ -215,7 +216,7 @@ class RadioEncoder {
     };
 
     static std::array<BiasWeight, 3> split_fused_qkv(const BiasWeight &fused, int64_t width) {
-        if (width <= 0 || fused.weight.out() != 3 * width) {
+        if (width <= 0 || fused.weight->out() != 3 * width) {
             throw std::runtime_error("fused vision qkv projection is not [3*w, hidden]");
         }
         return {bias_rows(fused, 0, width), bias_rows(fused, width, width),
@@ -242,12 +243,12 @@ class RadioEncoder {
         block.head_dim = config.head_dim();
         block.layer_norm_eps = config.layer_norm_eps;
         const bool geometry_ok =
-            block.output.weight.out() == config.hidden_size &&
-            block.output.weight.neuron_len() == config.hidden_size &&
-            block.fc1.weight.out() == config.intermediate_size &&
-            block.fc1.weight.neuron_len() == config.hidden_size &&
-            block.fc2.weight.out() == config.hidden_size &&
-            block.fc2.weight.neuron_len() == config.intermediate_size;
+            block.output.weight->out() == config.hidden_size &&
+            block.output.weight->neuron_len() == config.hidden_size &&
+            block.fc1.weight->out() == config.intermediate_size &&
+            block.fc1.weight->neuron_len() == config.hidden_size &&
+            block.fc2.weight->out() == config.hidden_size &&
+            block.fc2.weight->neuron_len() == config.intermediate_size;
         if (!geometry_ok) {
             throw std::runtime_error("Nemotron-H RADIO block " + std::to_string(index) +
                                      " geometry disagrees with its config");
@@ -332,10 +333,10 @@ class RadioProjector {
         if (result.norm_weight.numel() != config.hidden_size ||
             result.norm_bias.numel() != config.hidden_size ||
             result.mlp_norm.numel() != config.shuffle_width() ||
-            result.up.weight.neuron_len() != config.shuffle_width() ||
-            result.up.weight.out() != config.projector_intermediate_size ||
-            result.down.weight.neuron_len() != config.projector_intermediate_size ||
-            result.down.weight.out() != config.text_hidden_size) {
+            result.up.weight->neuron_len() != config.shuffle_width() ||
+            result.up.weight->out() != config.projector_intermediate_size ||
+            result.down.weight->neuron_len() != config.projector_intermediate_size ||
+            result.down.weight->out() != config.text_hidden_size) {
             throw std::runtime_error(
                 "Nemotron-H RADIO projector geometry disagrees with its config");
         }
@@ -394,9 +395,9 @@ class RadioProjector {
             tyloi::ops::reshape(tyloi::ops::cast(hidden, ::tyloi::kFloat32), {-1, config.shuffle_width()}),
             tyloi::ops::cast(mlp_norm, ::tyloi::kFloat32), config.projector_norm_eps, 0.0),
             hidden.sizes()), dtype);
-        auto projected = tyloi::ops::relu_squared(tyloi::ops::linear(normalized, up.weight, up.bias));
+        auto projected = tyloi::ops::relu_squared(tyloi::ops::linear(normalized, *up.weight, up.bias));
         return tyloi::ops::contiguous(tyloi::ops::reshape(
-            tyloi::ops::linear(std::move(projected), down.weight, down.bias),
+            tyloi::ops::linear(std::move(projected), *down.weight, down.bias),
             {patches / (stride * stride), config.text_hidden_size}));
 #else
         auto normalized = qwen_rms_norm(hidden.to(::tyloi::kFloat32).reshape(

@@ -1,6 +1,7 @@
 #include "engine/models/common/vision/grid_encoder.h"
 
 #include "engine/backends/cuda/executor/options.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/weights/loader.h"
 
 #include <algorithm>
@@ -79,14 +80,14 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
                 grid_vision_canonical_name(GridVisionTensorRole::block_mlp_down_weight, index),
                 grid_vision_canonical_name(GridVisionTensorRole::block_mlp_down_bias, index)),
         };
-        if (block.attention.qkv.weight.neuron_len() != hidden ||
-            block.attention.qkv.weight.out() != 3 * hidden ||
-            block.attention.output.weight.neuron_len() != hidden ||
-            block.attention.output.weight.out() != hidden ||
-            block.mlp_up.weight.neuron_len() != hidden ||
-            block.mlp_up.weight.out() != config.intermediate_size ||
-            block.mlp_down.weight.neuron_len() != config.intermediate_size ||
-            block.mlp_down.weight.out() != hidden) {
+        if (block.attention.qkv.weight->neuron_len() != hidden ||
+            block.attention.qkv.weight->out() != 3 * hidden ||
+            block.attention.output.weight->neuron_len() != hidden ||
+            block.attention.output.weight->out() != hidden ||
+            block.mlp_up.weight->neuron_len() != hidden ||
+            block.mlp_up.weight->out() != config.intermediate_size ||
+            block.mlp_down.weight->neuron_len() != config.intermediate_size ||
+            block.mlp_down.weight->out() != hidden) {
             throw std::runtime_error("grid-ViT transformer block geometry mismatch");
         }
         blocks.push_back(std::move(block));
@@ -255,9 +256,9 @@ CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
     auto merger_down = placed.affine(
         grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_down_weight),
         grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_down_bias));
-    if (merger_up.weight.neuron_len() != unit * vision.hidden_size ||
-        merger_down.weight.neuron_len() != merger_up.weight.out() ||
-        merger_down.weight.out() != vision.out_hidden_size) {
+    if (merger_up.weight->neuron_len() != unit * vision.hidden_size ||
+        merger_down.weight->neuron_len() != merger_up.weight->out() ||
+        merger_down.weight->out() != vision.out_hidden_size) {
         throw std::runtime_error("grid-Vision merger geometry mismatch");
     }
     return CudaGridVisionPromptComponent(

@@ -65,22 +65,28 @@ inline QuantLinear map_dense_embedding(const ::tyloi::DenseTensor& cpu,int devic
         (cpu.scalar_type()==::tyloi::kFloat16 || cpu.scalar_type()==::tyloi::kBFloat16 || cpu.scalar_type()==::tyloi::kFloat32),
         "mapped embedding requires a rank-2 floating table");
     QuantLinear result;
-    result.kind=QuantLinearKind::Dense;
     result.tensor_parallel_axis=TensorParallelAxis::Mirrored;
     result.logical_out=cpu.size(0);result.logical_neuron_len=cpu.size(1);
-    result.dense=map_embedding_storage(cpu,device,device_read_control);
+    result.weight=std::make_shared<::tyloi::DenseTensor>(map_embedding_storage(cpu,device,device_read_control));
     return result;
 }
 
 inline QuantLinear map_nint_embedding(QuantLinear result,int device,bool device_read_control=false) {
-    TYLOINFER_RUNTIME_CHECK(result.is_nint() && !result.tensor_parallel() && result.nint.q_packed.is_cpu(),
+    TYLOINFER_RUNTIME_CHECK(
+        dynamic_cast<const tyloi::NintTensor*>(result.weight.get()) != nullptr &&
+            !result.tensor_parallel(),
         "mapped NINT embedding requires an unsharded CPU table");
-    auto& w=result.nint;
+    auto mapped=std::make_shared<tyloi::NintTensor>(
+        static_cast<const tyloi::NintTensor&>(*result.weight));
+    auto* w=mapped.get();
+    TYLOINFER_RUNTIME_CHECK(w->q_packed.is_cpu(),
+        "mapped NINT embedding requires an unsharded CPU table");
     // Only selected vocabulary rows cross PCIe. Keep small row descriptors on
     // the GPU so their dependent loads do not add host round trips.
-    for(auto* field:{&w.q_packed,&w.sub_scale,&w.sub_min,&w.q8_zero_scale})
+    for (auto* field : {&w->q_packed, &w->sub_scale, &w->sub_min, &w->q8_zero_scale})
         if(field->defined())*field=map_embedding_storage(*field,device,device_read_control);
-    for(auto* field:{&w.row_q_bits,&w.row_q_bit_offsets,&w.neuron_scale,&w.neuron_min})
+    for (auto* field : {&w->row_q_bits, &w->row_q_bit_offsets, &w->neuron_scale, &w->neuron_min})
         if(field->defined())*field=field->to(::tyloi::Device(::tyloi::kCUDA,device));
+    result.weight=std::move(mapped);
     return result;
 }

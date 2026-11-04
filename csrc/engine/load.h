@@ -61,7 +61,7 @@ struct CudaLoadConfig {
     bool moe_residency_projection_heat = true;
     std::optional<double> moe_ram_pcie_fraction;
     bool yarn_context_extension = false;
-    ops::YarnScaling yarn;
+    tyloi::ops::YarnScaling yarn;
     std::unordered_set<int> dsv4_cpu_offload_layers;
     int64_t dsv4_cpu_offload_host_bytes = 0;
     int n_gpu_layers = -1;

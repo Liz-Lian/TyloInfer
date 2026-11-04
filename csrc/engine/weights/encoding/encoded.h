@@ -3,6 +3,7 @@
 #include "engine/tensor.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace tyloi {
@@ -34,7 +35,20 @@ public:
             if (buffer && buffer->defined()) buffer->record_stream(stream);
     }
 
+    std::shared_ptr<const Tensor> relocated(Device target) const override {
+        auto moved = cloned();
+        // The copy belongs to the preparation step, so its buffers may move.
+        for (const auto* buffer : moved->buffers()) {
+            auto& writable = const_cast<DenseTensor&>(*buffer);
+            if (writable.defined() && writable.device() != target) writable = writable.to(target);
+        }
+        return moved;
+    }
+
 protected:
+    // A copy of the concrete representation, before its buffers move.
+    virtual std::shared_ptr<EncodedTensor> cloned() const = 0;
+
     // Payload buffer: it carries the device and the stored code domain.
     virtual const DenseTensor& primary() const = 0;
     virtual std::int64_t logical_rows() const = 0;

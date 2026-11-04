@@ -243,7 +243,7 @@ struct MiniCPMO45Resampler {
             throw std::runtime_error("MiniCPM-o MFQ is missing the exact Resampler position asset; "
                                      "repack it with the current runtime assets tool");
         }
-        auto position_blob = read_asset(weights.source, MINICPMO45_RESAMPLER_POS_EMBED_ASSET);
+        auto position_blob = tyloi::read_asset(weights.source, MINICPMO45_RESAMPLER_POS_EMBED_ASSET);
         constexpr size_t position_header_bytes = 20;
         constexpr size_t position_value_bytes =
             static_cast<size_t>(70) * 70 * 4096 * sizeof(uint16_t);

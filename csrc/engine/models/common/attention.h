@@ -51,7 +51,7 @@ struct FullAttention {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     tyloi::ops::RopeTable attention_rope;
     tyloi::DenseTensor attn_norm, q_norm, k_norm, v_norm;
-    std::shared_ptr<const tyloi::weights::Weights> qkv;
+    std::shared_ptr<const QuantLinearGroup> qkv;
 #else
     RopeCache attention_rope;
     ::tyloi::DenseTensor attn_norm, q_norm, k_norm, v_norm;
@@ -60,10 +60,10 @@ struct FullAttention {
     bool attention_output_gate = false;
     bool split_q_kv_projections = false;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::shared_ptr<const tyloi::weights::Weights> q_projection;
-    std::shared_ptr<const tyloi::weights::Weights> k_projection;
-    std::shared_ptr<const tyloi::weights::Weights> v_projection;
-    std::shared_ptr<const tyloi::weights::Weights> o;
+    std::shared_ptr<const QuantLinear> q_projection;
+    std::shared_ptr<const QuantLinear> k_projection;
+    std::shared_ptr<const QuantLinear> v_projection;
+    std::shared_ptr<const QuantLinear> o;
 #else
     QuantLinear q_projection;
     QuantLinear k_projection;

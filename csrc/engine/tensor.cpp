@@ -36,6 +36,13 @@ std::vector<std::shared_ptr<TensorStorage>> Tensor::backings() const {
     return result;
 }
 
+
+std::shared_ptr<const Tensor> DenseTensor::relocated(Device target) const {
+    return defined() && device() != target
+        ? std::make_shared<DenseTensor>(to(target))
+        : std::make_shared<DenseTensor>(*this);
+}
+
 std::size_t backing_bytes(std::span<const DenseTensor* const> buffers) {
     std::size_t total = 0;
     std::unordered_set<const void*> seen;

@@ -23,7 +23,7 @@ std::shared_ptr<const ModelSource> open_model_source(
     }
 
     const auto filename=path.filename().u8string();
-    const std::string fixture_suffix=".tq-fixture.json";
+    const std::u8string fixture_suffix=u8".tq-fixture.json";
     if(filename.size()>=fixture_suffix.size() &&
        filename.compare(filename.size()-fixture_suffix.size(),fixture_suffix.size(),fixture_suffix)==0)
         return open_tq_fixture_source(path);

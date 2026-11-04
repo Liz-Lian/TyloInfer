@@ -5,7 +5,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class RouteStats {
 public:
@@ -16,15 +16,15 @@ public:
     bool enabled() const { return !path_.empty(); }
     bool energy() const { return enabled() && energy_; }
     void clear() { layers_.clear(); }
-    void record(int layer, const mfq_tensor_backend::Tensor& ids,
-                const mfq_tensor_backend::Tensor& weights,
-                const mfq_tensor_backend::Tensor& output, int experts);
+    void record(int layer, const ::tyloi::DenseTensor& ids,
+                const ::tyloi::DenseTensor& weights,
+                const ::tyloi::DenseTensor& output, int experts);
     void write() const;
 
 private:
     struct Layer {
-        mfq_tensor_backend::Tensor counts, weight_sum, weight_sq_sum;
-        mfq_tensor_backend::Tensor output_energy, weighted_output_energy;
+        ::tyloi::DenseTensor counts, weight_sum, weight_sq_sum;
+        ::tyloi::DenseTensor output_energy, weighted_output_energy;
     };
     std::string path_;
     bool energy_;

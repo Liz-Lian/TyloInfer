@@ -539,9 +539,9 @@ void run_dspark_self_check() {
                             .dtype(::tyloi::kFloat32);
     const auto projection = [&](int rows, int columns) {
         QuantLinear weight;
-        weight.kind = QuantLinearKind::Dense;
-        weight.dense = (::tyloi::cuda::randn({rows, columns}, options) / std::sqrt(double(columns)))
-                           .to(::tyloi::kFloat16).contiguous();
+        weight.weight = std::make_shared<::tyloi::DenseTensor>(
+            (::tyloi::cuda::randn({rows, columns}, options) / std::sqrt(double(columns)))
+                .to(::tyloi::kFloat16).contiguous());
         return weight;
     };
     predictor.main_projection = projection(32, 64);

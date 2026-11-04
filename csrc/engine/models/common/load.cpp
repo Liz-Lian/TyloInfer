@@ -20,9 +20,9 @@ void load_important_neuron_branch(const tyloi::cuda::weight_loader::Loader& weig
     const std::string down_high = down_name + ".in_high";
     const std::string gate_high = gate_name + ".in_high";
     const std::string up_high = up_name + ".in_high";
-    const bool has_down = has_tensor(weights.source, down_high);
-    const bool has_gate = has_tensor(weights.source, gate_high);
-    const bool has_up = has_tensor(weights.source, up_high);
+    const bool has_down = tyloi::has_tensor(weights.source, down_high);
+    const bool has_gate = tyloi::has_tensor(weights.source, gate_high);
+    const bool has_up = tyloi::has_tensor(weights.source, up_high);
     if (!has_down && !has_gate && !has_up) {
         return;
     }
@@ -57,9 +57,9 @@ void load_important_neuron_branch(const tyloi::cuda::weight_loader::Loader& weig
 QuantLinear TransformerWeightLoader::linear(const std::string& name) const {
     return weights.projection(name);
 }
-bool TransformerWeightLoader::has(const std::string& name) const { return has_tensor(weights.source, name); }
+bool TransformerWeightLoader::has(const std::string& name) const { return tyloi::has_tensor(weights.source, name); }
 ::tyloi::DenseTensor TransformerWeightLoader::router_parameter(const std::string& name) const {
-    if(keep_quantized_router && name.ends_with("router.weight") && require_tensor(weights.source,name).dtype=="TQ") {
+    if(keep_quantized_router && name.ends_with("router.weight") && tyloi::require_tensor(weights.source,name).dtype=="TQ") {
         router_projection=std::make_shared<QuantLinear>(linear(name));
         return {};
     }
@@ -76,8 +76,8 @@ QuantLinearGroup TransformerWeightLoader::gate_up(const std::vector<std::string>
 void TransformerWeightLoader::qkv(tyloi::cuda::FullAttention& block, const std::vector<std::string>& names) const {
     const bool mirror_kv = block.attention_output_gate &&
         tyloi::cuda::env_flag("TYLOINFER_TP_MIRROR_QWEN35_ATTENTION_KV", true) &&
-        is_quant_dtype(require_tensor(weights.source, names[1]).dtype) &&
-        is_quant_dtype(require_tensor(weights.source, names[2]).dtype);
+        is_quant_dtype(tyloi::require_tensor(weights.source, names[1]).dtype) &&
+        is_quant_dtype(tyloi::require_tensor(weights.source, names[2]).dtype);
     if (mirror_kv) {
         block.split_q_kv_projections = true;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -112,7 +112,7 @@ void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermed
 void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                                      const std::string& name, int layer) const {
     using Role = tyloi::models::ExpertProjection;
-    const auto& record = require_tensor(weights.source, name);
+    const auto& record = tyloi::require_tensor(weights.source, name);
     if(record.dtype=="TQ") {
         if(projection==Role::gate_up)
             throw std::invalid_argument("TQ MoE stores separate Gate, Up and Down tensors: "+name);

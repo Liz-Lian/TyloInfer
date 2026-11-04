@@ -9,8 +9,8 @@
 namespace tyloi::models {
 
 struct Mlp {
-    std::shared_ptr<const weights::Weights> gate_up;
-    std::shared_ptr<const weights::Weights> down;
+    std::shared_ptr<const QuantLinearGroup> gate_up;
+    std::shared_ptr<const QuantLinear> down;
     ops::MlpActivation activation = ops::MlpActivation::silu_gated;
     double swiglu_limit = 0.0;
 

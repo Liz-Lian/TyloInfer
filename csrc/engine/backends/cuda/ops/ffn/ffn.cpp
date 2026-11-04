@@ -804,14 +804,14 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
 
-tyloi::DenseTensor mlp(tyloi::DenseTensor input, const tyloi::weights::Weights& gate_up,
-                const tyloi::weights::Weights& down, tyloi::ops::MlpActivation activation,
+tyloi::DenseTensor mlp(tyloi::DenseTensor input, const ::QuantLinearGroup& gate_up,
+                const ::QuantLinear& down, tyloi::ops::MlpActivation activation,
                 double swiglu_limit) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
     auto& executor = Executor::current();
     const auto project = executor.projector(Executor::current_ffn());
-    const Mlp weights{as_quant_linear_group(gate_up), as_quant_linear(down), activation,
+    const Mlp weights{gate_up, down, activation,
                       activation == tyloi::ops::MlpActivation::gelu_gated, swiglu_limit};
     weights.check(DenseTensor(input), project.primary_device());
     auto x = half(DenseTensor(input), executor.profiler());
@@ -837,11 +837,10 @@ tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor 
     return moe_weighted_reduce_cuda(DenseTensor(pairs), DenseTensor(weights));
 }
 tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
-    const tyloi::weights::Weights& gate_bank, const tyloi::weights::Weights& down_bank, bool trace) {
+    const Experts& gate_bank, const Experts& down_bank, bool trace) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    const auto* gate = dynamic_cast<const Experts*>(&gate_bank);
-    const auto* down = dynamic_cast<const Experts*>(&down_bank);
-    if (!gate || !down) throw std::invalid_argument("unsupported expert weight representation");
+    const auto* gate = &gate_bank;
+    const auto* down = &down_bank;
     MfqCudaGuard guard(input.device().index);
     auto& executor = Executor::current();
     const auto project = executor.projector(Executor::current_ffn());

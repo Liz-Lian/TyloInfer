@@ -3,12 +3,17 @@
 #include "engine/weights/encoding/encoded.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace tyloi {
 
 // NINT: integer codes with per-row bit widths and sub-group/neuron scales.
 class NintTensor final : public EncodedTensor {
+    std::shared_ptr<EncodedTensor> cloned() const override {
+        return std::make_shared<NintTensor>(*this);
+    }
+
 public:
     DenseTensor q_packed;
     DenseTensor row_q_bits;

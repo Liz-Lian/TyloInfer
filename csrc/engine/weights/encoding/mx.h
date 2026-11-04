@@ -30,10 +30,16 @@ protected:
 class Mxfp4Tensor final : public MxTensor {
 public:
     using MxTensor::MxTensor;
+    std::shared_ptr<EncodedTensor> cloned() const override {
+        return std::make_shared<Mxfp4Tensor>(*this);
+    }
 };
 class Mxfp8Tensor final : public MxTensor {
 public:
     using MxTensor::MxTensor;
+    std::shared_ptr<EncodedTensor> cloned() const override {
+        return std::make_shared<Mxfp8Tensor>(*this);
+    }
 };
 
 } // namespace tyloi

@@ -42,8 +42,11 @@ struct RmsNorm {
     double epsilon = 1e-6;
 
     template <class Visitor>
-    void visit_tensors(Visitor visit) {
+    void visit_tensors(Visitor visit) const {
         visit(weight);
+    }
+    void to_device(::tyloi::Device device) {
+        if (weight.defined()) weight = weight.to(device);
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -75,9 +78,13 @@ struct LayerNorm {
     double epsilon = 1e-6;
 
     template <class Visitor>
-    void visit_tensors(Visitor visit) {
+    void visit_tensors(Visitor visit) const {
         visit(weight);
         visit(bias);
+    }
+    void to_device(::tyloi::Device device) {
+        if (weight.defined()) weight = weight.to(device);
+        if (bias.defined()) bias = bias.to(device);
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

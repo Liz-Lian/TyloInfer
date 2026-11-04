@@ -234,7 +234,7 @@ HfSource::HfSource(std::filesystem::path root, std::string source_prefix)
         const auto* values = impl_->files.find(source_name);
         if (values == nullptr || values->dtype == "F8_E8M0") continue;
         const auto dense_shape = values->shape
-            ? mlx_hf_tensor_shape(canonical, *values->shape)
+            ? mfq::mlx_hf_tensor_shape(canonical, *values->shape)
             : std::vector<std::int64_t>{};
         auto record = hf::prepare(
             impl_->files, *values, canonical, dense_shape,

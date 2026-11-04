@@ -119,13 +119,13 @@ bool expert_parallel(const Ffn& ffn);
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
-tyloi::DenseTensor mlp(tyloi::DenseTensor input, const tyloi::weights::Weights& gate_up,
-                const tyloi::weights::Weights& down, tyloi::ops::MlpActivation activation,
+tyloi::DenseTensor mlp(tyloi::DenseTensor input, const ::QuantLinearGroup& gate_up,
+                const ::QuantLinear& down, tyloi::ops::MlpActivation activation,
                 double swiglu_limit);
 tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count, const tyloi::ops::MoeRouting& routing);
 tyloi::DenseTensor expert_scale(tyloi::DenseTensor weights, tyloi::DenseTensor ids, const tyloi::DenseTensor& scales);
 tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor weights);
 tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
-    const tyloi::weights::Weights& gate_up, const tyloi::weights::Weights& down, bool trace);
+    const tyloi::cuda::Experts& gate_up, const tyloi::cuda::Experts& down, bool trace);
 }
 #endif

@@ -51,8 +51,8 @@ struct LayerLoader : TransformerWeightLoader {
                             ? std::optional<TensorParallelAxis>(TensorParallelAxis::Mirrored)
                             : std::nullopt;
                     attention.ab_nint_proj = make_quant_group(
-                        {weights.projection(names.alpha, scalar_axis),
-                         weights.projection(names.beta, scalar_axis)},
+                        {std::make_shared<QuantLinear>(weights.projection(names.alpha, scalar_axis)),
+                         std::make_shared<QuantLinear>(weights.projection(names.beta, scalar_axis))},
                         weights.options.grouped,
                         weights.placement.cpu);
                 } else {

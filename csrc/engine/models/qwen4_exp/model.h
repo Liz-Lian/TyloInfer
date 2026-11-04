@@ -413,9 +413,9 @@ class Gdn {
                     std::vector<DenseTensor> qkv;
                     if(fused_preparation_) {
                         auto alpha=projections.empty()
-                            ?project_weight(project,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
+                            ?project_weight(project,*w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
                         auto beta=projections.empty()
-                            ?project_weight(project,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
+                            ?project_weight(project,*w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
                         if(alpha.scalar_type()!=beta.scalar_type() ||
                             (alpha.scalar_type()!=::tyloi::kFloat16 && alpha.scalar_type()!=::tyloi::kFloat32)) {
                             alpha=alpha.to(::tyloi::kFloat32);beta=beta.to(::tyloi::kFloat32);
@@ -449,9 +449,9 @@ class Gdn {
             [&] {
                 if(prepared_gates[0].defined())return prepared_gates;
                 auto alpha=projections.empty()
-                    ?project_weight(project,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
+                    ?project_weight(project,*w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
                 auto raw_beta=projections.empty()
-                    ?project_weight(project,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
+                    ?project_weight(project,*w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
                 if ((fused_decode_ && t == 1) || prefill_fused) {
                     auto gates = linear_gate_beta_cuda(
                         alpha.to(::tyloi::kFloat32).reshape({b, t, nv_}),
@@ -513,7 +513,7 @@ class Gdn {
                 const auto stride_setting=tyloi::cuda::runtime_options::gdn_strided_projections();
                 const bool strided=!stride_setting || *stride_setting;
                 auto projected_gate=projections.empty()
-                    ?project_weight(project,w_->input_projection.weights[w_->qkv_count],x)
+                    ?project_weight(project,*w_->input_projection.weights[w_->qkv_count],x)
                     :strided?projections[1]:projections[1].contiguous();
                 if(fused_decode_ && fused_output_ && attended.is_contiguous() &&
                     attended.scalar_type()==::tyloi::kFloat32 && (projected_gate.is_contiguous() ||
@@ -998,9 +998,9 @@ class Qsa {
             projected=projector.run(w_->input_projection,x);
         else
             projected={project_query(projector,x),
-                projector.run(w_->input_projection.weights[1],x),
-                projector.run(w_->input_projection.weights[2],x),
-                projector.run(w_->input_projection.weights[3],x)};
+                projector.run(*w_->input_projection.weights[1],x),
+                projector.run(*w_->input_projection.weights[2],x),
+                projector.run(*w_->input_projection.weights[3],x)};
         if(grouped && w_->has_gate) {
             TYLOINFER_RUNTIME_CHECK(projected.size()==5,"QSA input projection count mismatch");
             const auto b=x.size(0),t=x.size(1);
@@ -1015,10 +1015,10 @@ class Qsa {
         return projector.run(w_->output,x);
     }
     DenseTensor project_query(const tyloi::cuda::Projector& projector,const DenseTensor& x) const {
-        auto query=projector.run(w_->input_projection.weights[0],x);
+        auto query=projector.run(*w_->input_projection.weights[0],x);
         if(!w_->has_gate)return query;
         const auto b=x.size(0),t=x.size(1);
-        auto gate=projector.run(w_->input_projection.weights[4],x);
+        auto gate=projector.run(*w_->input_projection.weights[4],x);
         return ::tyloi::cuda::cat({query.reshape({b,t,c_.heads,c_.width}),
             gate.reshape({b,t,c_.heads,c_.width})},-1).reshape({b,t,2*c_.heads*c_.width});
     }
@@ -1398,13 +1398,13 @@ class Qsa {
                                       w_->query_norm.to(::tyloi::kFloat32) + 1, c_.eps)
                                  .permute({0, 2, 1, 3});
                 auto key =
-                    rms_norm(projector.run(w_->input_projection.weights[1],hidden).reshape({b, t, c_.kv_heads, c_.width}),
+                    rms_norm(projector.run(*w_->input_projection.weights[1],hidden).reshape({b, t, c_.kv_heads, c_.width}),
                              w_->key_norm.to(::tyloi::kFloat32) + 1, c_.eps)
                         .permute({0, 2, 1, 3});
-                auto value = projector.run(w_->input_projection.weights[2],hidden).reshape({b, t, c_.kv_heads, c_.width});
+                auto value = projector.run(*w_->input_projection.weights[2],hidden).reshape({b, t, c_.kv_heads, c_.width});
                 query = rotary_->forward(query, current_positions);
                 key = rotary_->forward(key, current_positions).permute({0, 2, 1, 3});
-                auto iqk = projector.run(w_->input_projection.weights[3],hidden);
+                auto iqk = projector.run(*w_->input_projection.weights[3],hidden);
                 auto iq = rms_norm(iqk.narrow(-1, 0, c_.index_heads * c_.index_width)
                                        .reshape({b, t, c_.index_heads, c_.index_width}),
                                    w_->index_query_norm.to(::tyloi::kFloat32) + 1, c_.eps)
@@ -1702,14 +1702,14 @@ class Qsa {
     }
     Projection project_history(const tyloi::cuda::Projector& projector,const DenseTensor& hidden,const DenseTensor& positions) {
         const auto b=hidden.size(0),t=hidden.size(1);
-        auto source=projector.run(w_->input_projection.weights[1],hidden).reshape({b,t,c_.kv_heads,c_.width});
+        auto source=projector.run(*w_->input_projection.weights[1],hidden).reshape({b,t,c_.kv_heads,c_.width});
         DenseTensor key;
         if(fused_projection_ && rotary_->fused() &&
                 (source.scalar_type()==::tyloi::kFloat16 || source.scalar_type()==::tyloi::kFloat32))
             key=rotary_->forward_normalized_grouped({source},{w_->key_norm},positions,c_.eps,1)[0].permute({0,2,1,3});
         else key=rotary_->forward(project_norm(source,w_->key_norm).permute({0,2,1,3}),positions).permute({0,2,1,3});
-        auto value=projector.run(w_->input_projection.weights[2],hidden).reshape({b,t,c_.kv_heads,c_.width});
-        auto raw=projector.run(w_->input_projection.weights[3],hidden).narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
+        auto value=projector.run(*w_->input_projection.weights[2],hidden).reshape({b,t,c_.kv_heads,c_.width});
+        auto raw=projector.run(*w_->input_projection.weights[3],hidden).narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
         return {{},{},std::move(key),std::move(value),{},std::move(raw)};
     }
     Projection project(const tyloi::cuda::Projector& projector,const DenseTensor& hidden,const DenseTensor& positions,
@@ -1721,9 +1721,9 @@ class Qsa {
             if(grouped_projection_ && w_->input_projection.grouped())
                 projections=project_inputs(projector,hidden);
             else projections={project_query(projector,hidden),
-                projector.run(w_->input_projection.weights[1],hidden),
-                projector.run(w_->input_projection.weights[2],hidden),
-                projector.run(w_->input_projection.weights[3],hidden)};
+                projector.run(*w_->input_projection.weights[1],hidden),
+                projector.run(*w_->input_projection.weights[2],hidden),
+                projector.run(*w_->input_projection.weights[3],hidden)};
         }
         TYLOINFER_RUNTIME_CHECK(projections.empty() || projections.size()==4,"QSA input projection count mismatch");
         auto pair=projections[0].reshape({b,t,c_.heads,2*c_.width});

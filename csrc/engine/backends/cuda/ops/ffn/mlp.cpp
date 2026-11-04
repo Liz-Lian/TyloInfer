@@ -88,10 +88,10 @@ void Mlp::check(const DenseTensor& input, int primary) const {
     }
     auto device = input.device();
     if (!gate_up.layers.empty()) {
-        const auto& first = gate_up.layers.front();
+        const auto& first = *gate_up.layers.front();
         if (first.tensor_parallel()) device = ::tyloi::Device(::tyloi::kCUDA, primary);
         for (const auto& layer : gate_up.layers) {
-            const auto local_device = layer.tensor_parallel()
+            const auto local_device = layer->tensor_parallel()
                 ? ::tyloi::Device(::tyloi::kCUDA, primary) : input.device();
             if (local_device != device)
                 throw std::invalid_argument("MLP gate and up devices do not match");
@@ -106,8 +106,8 @@ bool Mlp::parallel() const {
         down.tensor_parallel_axis != TensorParallelAxis::Input) {
         return false;
     }
-    const auto &gate = gate_up.layers[0];
-    const auto &up = gate_up.layers[1];
+    const auto &gate = *gate_up.layers[0];
+    const auto &up = *gate_up.layers[1];
     if (!gate.tensor_parallel() || !up.tensor_parallel() ||
         gate.tensor_parallel_axis != TensorParallelAxis::Output ||
         up.tensor_parallel_axis != TensorParallelAxis::Output ||
@@ -140,8 +140,8 @@ bool Mlp::parallel() const {
     std::vector<::tyloi::DenseTensor> partials(shard_count);
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
         const size_t index = parallel_index(peer_first, launch_position, shard_count);
-        const auto &gate_shard = gate_up.layers[0].tensor_parallel_shards[index];
-        const auto &up_shard = gate_up.layers[1].tensor_parallel_shards[index];
+        const auto &gate_shard = gate_up.layers[0]->tensor_parallel_shards[index];
+        const auto &up_shard = gate_up.layers[1]->tensor_parallel_shards[index];
         const auto &down_shard = down.tensor_parallel_shards[index];
         MfqCudaGuard guard(gate_shard.device);
         auto local_x = collectives.copy(flat, gate_shard.device);
@@ -187,16 +187,20 @@ bool Mlp::parallel() const {
                                 [&]() { return project.run(down, hidden); });
     }
     const double limit = geglu ? 0.0 : swiglu_limit;
+    const auto* gate0 = dynamic_cast<const tyloi::NvqTensor*>(&gate_up.layers[0]->payload());
+    const auto* gate1 = gate_up.layers.size() == 2
+        ? dynamic_cast<const tyloi::NvqTensor*>(&gate_up.layers[1]->payload()) : nullptr;
+    const auto* down_nvq = dynamic_cast<const tyloi::NvqTensor*>(&down.payload());
     if (!geglu && !(limit > 0.0) && tyloi::mfq_compat_enabled && options.nvq_fusion &&
         xh.numel() / xh.size(-1) == 1 && gate_up.nvq_prefix2 && gate_up.layers.size() == 2 &&
-        gate_up.layers[0].is_nvq() && gate_up.layers[1].is_nvq() && down.is_nvq() &&
+        gate0 != nullptr && gate1 != nullptr && down_nvq != nullptr &&
         gate_up.outs.size() == 2 && gate_up.outs[0] == gate_up.outs[1] &&
-        gate_up.outs[0] == down.nvq.neuron_len &&
-        (down.nvq.gs == 24 || down.nvq.gs == 28 || down.nvq.gs == 32)) {
+        gate_up.outs[0] == down_nvq->neuron_len &&
+        (down_nvq->gs == 24 || down_nvq->gs == 28 || down_nvq->gs == 32)) {
         auto shape = xh.sizes().vec();
-        shape.back() = down.nvq.out;
-        return nvq_ffn_swiglu_down(profiler, gate_up.layers[0].nvq, gate_up.layers[1].nvq,
-                                   down.nvq, xh.reshape({-1, xh.size(-1)}))
+        shape.back() = down_nvq->out;
+        return nvq_ffn_swiglu_down(profiler, *gate0, *gate1,
+                                   *down_nvq, xh.reshape({-1, xh.size(-1)}))
             .reshape(shape);
     }
     std::optional<DenseTensor> fused_hidden;
@@ -216,7 +220,9 @@ bool Mlp::parallel() const {
     auto parts = profiler.measure("ffn.gate_up", [&] { return project.run(gate_up, xh); });
     if (parts.size() != 2)
         throw std::runtime_error("gated MLP requires gate and up projections");
-    if (!geglu && !(limit > 0.0) && !down.is_dense() && !down.is_mxfp8())
+    if (!geglu && !(limit > 0.0) &&
+        dynamic_cast<const ::tyloi::DenseTensor*>(&down.payload()) == nullptr &&
+        dynamic_cast<const tyloi::Mxfp8Tensor*>(&down.payload()) == nullptr)
         return profiler.measure("ffn.down", [&] {
             return project.gated(down, parts[1], parts[0], InputGateMode::Silu);
         });
@@ -278,6 +284,16 @@ bool Mlp::parallel() const {
 #endif
 }
 
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+namespace {
+// The fused NVQ FFN path needs all three weights as NVQ, unsharded.
+const tyloi::NvqTensor* nvq_of(const QuantLinear& linear) {
+    return linear.tensor_parallel() ? nullptr
+                                    : dynamic_cast<const tyloi::NvqTensor*>(&linear.payload());
+}
+}  // namespace
+#endif
+
 bool Mlp::can_fuse(const DenseTensor& x, const DenseTensor& residual) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (activation != ActivationKind::silu_gated || geglu || swiglu_limit > 0.0 ||
@@ -286,14 +302,20 @@ bool Mlp::can_fuse(const DenseTensor& x, const DenseTensor& residual) const {
         residual.scalar_type() != ::tyloi::kFloat16 || !x.is_contiguous() ||
         !residual.is_contiguous() || x.dim() < 1 || residual.dim() < 1 ||
         x.numel() / x.size(-1) != 1 || residual.numel() / residual.size(-1) != 1 ||
-        gate_up.layers.size() != 2 || !gate_up.nvq_prefix2 || !gate_up.layers[0].is_nvq() ||
-        !gate_up.layers[1].is_nvq() || !down.is_nvq() || gate_up.layers[0].tensor_parallel() ||
-        gate_up.layers[1].tensor_parallel() || down.tensor_parallel() || gate_up.outs.size() != 2 ||
-        gate_up.outs[0] != gate_up.outs[1] || gate_up.outs[0] != down.nvq.neuron_len ||
-        x.size(-1) != gate_up.layers[0].nvq.neuron_len || residual.size(-1) != down.nvq.out) {
+        gate_up.layers.size() != 2 || !gate_up.nvq_prefix2 ||
+        gate_up.layers[0]->tensor_parallel() || gate_up.layers[1]->tensor_parallel() ||
+        down.tensor_parallel() || gate_up.outs.size() != 2 ||
+        gate_up.outs[0] != gate_up.outs[1]) {
         return false;
     }
-    return nvq_fused_residual_format(down.nvq.kernel_format);
+    const auto* gate0 = nvq_of(*gate_up.layers[0]);
+    const auto* gate1 = nvq_of(*gate_up.layers[1]);
+    const auto* down_nvq = nvq_of(down);
+    if (gate0 == nullptr || gate1 == nullptr || down_nvq == nullptr ||
+        gate_up.outs[0] != down_nvq->neuron_len ||
+        x.size(-1) != gate0->neuron_len || residual.size(-1) != down_nvq->out)
+        return false;
+    return nvq_fused_residual_format(down_nvq->kernel_format);
 #else
     return false;
 #endif
@@ -304,9 +326,12 @@ DenseTensor Mlp::fused(CudaProfiler& profiler, DenseTensor x, DenseTensor residu
     TYLOINFER_RUNTIME_CHECK(can_fuse(x, residual),
                       "FFN fused residual requires a compatible single-token NVQ FFN");
     auto shape = x.sizes().vec();
-    shape.back() = down.nvq.out;
+    const auto& gate0 = payload_as<tyloi::NvqTensor>(gate_up.layers[0]->payload());
+    const auto& gate1 = payload_as<tyloi::NvqTensor>(gate_up.layers[1]->payload());
+    const auto& down_nvq = payload_as<tyloi::NvqTensor>(down.payload());
+    shape.back() = down_nvq.out;
     auto output =
-        nvq_ffn_swiglu_down(profiler, gate_up.layers[0].nvq, gate_up.layers[1].nvq, down.nvq,
+        nvq_ffn_swiglu_down(profiler, gate0, gate1, down_nvq,
                             x.reshape({1, x.size(-1)}), residual.reshape({1, residual.size(-1)}));
     return output.reshape(shape);
 #else

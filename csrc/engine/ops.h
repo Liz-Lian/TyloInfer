@@ -15,6 +15,12 @@
 #include <utility>
 #include <vector>
 
+// Prepared projection weights. A QuantLinear is one projection weight; a
+// QuantLinearGroup is an ordered set projected in one call.
+struct QuantLinear;
+struct QuantLinearGroup;
+namespace tyloi::cuda { struct Experts; }
+
 namespace tyloi::ops {
 
 // In the native CUDA runtime, computation requires CUDA unless stated below.
@@ -114,16 +120,16 @@ auto measure(const char* name, Fn&& operation) -> decltype(operation()) {
 DenseTensor softcap(DenseTensor input, double cap);
 DenseTensor scale(DenseTensor input, double factor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
-DenseTensor embedding(DenseTensor ids, const weights::Weights& weight);
-DenseTensor project(DenseTensor input, const weights::Weights& weight);
+DenseTensor embedding(DenseTensor ids, const ::QuantLinear& weight);
+DenseTensor project(DenseTensor input, const ::QuantLinear& weight);
 // linear uses dense weight dtype for dense projection and bias; otherwise it adds
 // bias in the projection result dtype. It restores input dtype and makes contiguous.
 // affine adds bias in the projection result dtype without restoring input dtype.
-DenseTensor linear(DenseTensor input, const weights::Weights& weight, const DenseTensor& bias);
-DenseTensor affine(DenseTensor input, const weights::Weights& weight, const DenseTensor& bias);
-std::vector<DenseTensor> project_group(DenseTensor input, const weights::Weights& group);
+DenseTensor linear(DenseTensor input, const ::QuantLinear& weight, const DenseTensor& bias);
+DenseTensor affine(DenseTensor input, const ::QuantLinear& weight, const DenseTensor& bias);
+std::vector<DenseTensor> project_group(DenseTensor input, const ::QuantLinearGroup& group);
 // Computes project(input * sigmoid(gate)).
-DenseTensor sigmoid_project(DenseTensor input, DenseTensor gate, const weights::Weights& weight);
+DenseTensor sigmoid_project(DenseTensor input, DenseTensor gate, const ::QuantLinear& weight);
 // Copy, cast, views and allocation support CPU as well as CUDA, subject to dtype support.
 // Numeric reductions, elementwise ops and in-place writers require CUDA unless stated.
 DenseTensor mean(DenseTensor input, std::int64_t dim, bool keepdim = false);
@@ -212,7 +218,7 @@ DenseTensor add(DenseTensor input, std::int64_t offset);
 enum class MlpActivation { silu_gated, gelu_gated, relu_squared };
 
 // Prepared weights determine supported host and sharded MLP paths.
-DenseTensor mlp(DenseTensor input, const weights::Weights& gate_up, const weights::Weights& down,
+DenseTensor mlp(DenseTensor input, const ::QuantLinearGroup& gate_up, const ::QuantLinear& down,
            MlpActivation activation, double swiglu_limit);
 
 enum class RouterActivation { softmax, sigmoid, sqrt_softplus };
@@ -230,8 +236,9 @@ DenseTensor expert_scale(DenseTensor weights, DenseTensor ids, const DenseTensor
 DenseTensor weighted_reduce(DenseTensor pairs, DenseTensor weights);
 // Traced intermediates are F32 snapshots taken before subsequent projections.
 struct RoutedGeglu { DenseTensor pairs, gate_up, hidden; };
-RoutedGeglu routed_geglu(DenseTensor input, DenseTensor ids, const weights::Weights& gate_up,
-                         const weights::Weights& down, bool trace);
+RoutedGeglu routed_geglu(DenseTensor input, DenseTensor ids,
+                         const tyloi::cuda::Experts& gate_up, const tyloi::cuda::Experts& down,
+                         bool trace);
 
 struct YarnScaling {
     double factor=1, beta_fast=32, beta_slow=1;

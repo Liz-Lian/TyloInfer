@@ -311,8 +311,8 @@ __global__ void scalar_comparison_kernel(
 DenseTensor unary_cuda(
     const DenseTensor& source,
     int operation,
-    double first = 0.0,
-    double second = 0.0) {
+    double first,
+    double second) {
     source.require_dense();
     if (!source.is_cuda()) {
         throw std::invalid_argument("native unary CUDA op requires a CUDA tensor");

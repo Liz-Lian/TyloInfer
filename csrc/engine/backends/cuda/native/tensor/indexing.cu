@@ -410,7 +410,7 @@ DenseTensor repeat_cuda(const DenseTensor& source, std::span<const std::int64_t>
         throw std::invalid_argument("repeat geometry is invalid");
     }
     auto aligned = source;
-    while (aligned.dim() < static_cast<std::int64_t>(repeats.size())) aligned = unsqueeze(aligned, 0);
+    while (aligned.dim() < static_cast<std::int64_t>(repeats.size())) aligned = tyloi::cuda::unsqueeze(aligned, 0);
     auto shape = aligned.sizes().vec();
     for (std::size_t index = 0; index < repeats.size(); ++index) {
         if (repeats[index] < 0) throw std::invalid_argument("repeat count cannot be negative");
@@ -567,7 +567,7 @@ void masked_fill_cuda(DenseTensor& destination, const DenseTensor& mask_source, 
 DenseTensor masked_select_cuda(const DenseTensor& source_value, const DenseTensor& mask_value) {
     source_value.require_dense(); mask_value.require_dense();
     auto source = contiguous(source_value);
-    auto mask = contiguous(expand(cast(mask_value, kBool, source.device()), source.sizes()));
+    auto mask = contiguous(tyloi::cuda::expand(cast(mask_value, kBool, source.device()), source.sizes()));
     auto mask_host = contiguous(copy(mask, Device{kCPU, 0}));
     const auto* flags = mask_host.data_ptr<bool>();
     std::int64_t selected = 0;

@@ -5,12 +5,12 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
-tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const weights::Weights& weight);
-tyloi::DenseTensor project(tyloi::DenseTensor input, const weights::Weights& weight);
-tyloi::DenseTensor linear(tyloi::DenseTensor input, const weights::Weights& weight, const tyloi::DenseTensor& bias);
-tyloi::DenseTensor affine(tyloi::DenseTensor input, const weights::Weights& weight, const tyloi::DenseTensor& bias);
-std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input, const weights::Weights& group);
-tyloi::DenseTensor sigmoid_project(tyloi::DenseTensor input, tyloi::DenseTensor gate, const weights::Weights& weight);
+tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const ::QuantLinear& weight);
+tyloi::DenseTensor project(tyloi::DenseTensor input, const ::QuantLinear& weight);
+tyloi::DenseTensor linear(tyloi::DenseTensor input, const ::QuantLinear& weight, const tyloi::DenseTensor& bias);
+tyloi::DenseTensor affine(tyloi::DenseTensor input, const ::QuantLinear& weight, const tyloi::DenseTensor& bias);
+std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input, const ::QuantLinearGroup& group);
+tyloi::DenseTensor sigmoid_project(tyloi::DenseTensor input, tyloi::DenseTensor gate, const ::QuantLinear& weight);
 }
 #endif
 
@@ -22,7 +22,7 @@ class Branches;
 struct Experts;
 
 struct Projections {
-    std::vector<QuantLinear> weights;
+    std::vector<QuantLinearRef> weights;
     QuantLinearGroup group;
     std::vector<size_t> indices;
     size_t prefix = 1;

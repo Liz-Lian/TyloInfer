@@ -545,11 +545,11 @@ tyloi::cuda::Experts cpu_mixed_moe_metadata(
 
 tyloi::mfe::Data load_mfe_cpu(
         const tyloi::source::Source & mfq, const std::string & name) {
-    const auto& dtype = require_tensor(mfq, name).dtype;
+    const auto& dtype = tyloi::require_tensor(mfq, name).dtype;
     if (dtype == "NINT") {
         tyloi::mfe::Pool pool;
         pool.dtype = "NINT";
-        pool.payload = read_tensor(mfq, name);
+        pool.payload = tyloi::read_tensor(mfq, name);
         pool.weight = tyloi::nint::unpack(pool.payload);
         const auto& shape = pool.weight.shape;
         TYLOINFER_RUNTIME_CHECK(pool.weight.axis == 0 && shape.size() == 3 &&
@@ -570,7 +570,7 @@ tyloi::mfe::Data load_mfe_cpu(
     if (dtype != "MFE") {
         throw std::runtime_error("expert tensor must use MFE: " + name);
     }
-    return tyloi::mfe::unpack(read_tensor(mfq, name));
+    return tyloi::mfe::unpack(tyloi::read_tensor(mfq, name));
 }
 
 ::tyloi::DenseTensor mfe_dense_reference(
@@ -581,7 +581,7 @@ tyloi::mfe::Data load_mfe_cpu(
         int tokens,
         int routes,
         bool routed_input) {
-    auto cpu = tyloi::mfe::unpack(read_tensor(source, name));
+    auto cpu = tyloi::mfe::unpack(tyloi::read_tensor(source, name));
     auto reference = ::tyloi::cuda::empty(
         {tokens * routes, cpu.out_per_expert},
         input.options().dtype(::tyloi::kFloat16));
@@ -678,7 +678,7 @@ tyloi::mfe::Data load_mfe_cpu(
 ::tyloi::DenseTensor materialize_mfe_dense(
         const tyloi::source::Source& source,
         const std::string& name) {
-    auto cpu = tyloi::mfe::unpack(read_tensor(source, name));
+    auto cpu = tyloi::mfe::unpack(tyloi::read_tensor(source, name));
     auto dense = ::tyloi::cuda::empty(
         {cpu.n_experts, cpu.out_per_expert, cpu.neuron_len},
         ::tyloi::TensorOptions()

@@ -3,6 +3,7 @@
 #include "engine/weights/encoding/encoded.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace tyloi {
@@ -12,6 +13,10 @@ inline constexpr int64_t kNvq3JscLGroupExecKernelFormat = 17;
 
 // NVQ: vector-quantized indices plus auxiliary codes and a codebook.
 class NvqTensor final : public EncodedTensor {
+    std::shared_ptr<EncodedTensor> cloned() const override {
+        return std::make_shared<NvqTensor>(*this);
+    }
+
 public:
     DenseTensor indices_packed;
     DenseTensor aux_packed;

@@ -54,7 +54,7 @@ Names hf_names(
     names.reserve(stored_names.size());
     std::unordered_map<std::string, std::string> normalized_to_source;
     for (const auto& stored : stored_names) {
-        auto normalized = mlx_hf_tensor_name(stored);
+        auto normalized = mfq::mlx_hf_tensor_name(stored);
         if (!normalized_to_source.emplace(normalized, stored).second)
             throw std::invalid_argument("duplicate normalized HF tensor: " + normalized);
         names.push_back(std::move(normalized));

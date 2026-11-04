@@ -26,7 +26,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     const auto &token_constraint = request.token_constraint;
     using DenseTensor = typename Ops::DenseTensor;
     auto &state = ops.state;
-    const auto &metadata = ops.metadata;
+    const auto &metadata = ops.info;
     auto &mtp = ops.mtp;
     auto &mtp_state = ops.mtp_state;
     const auto *prepared = ops.prepared;
@@ -62,13 +62,13 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         static_cast<int64_t>(prompt.size()) +
         (transformed_prompt ? prepared->decode_position_delta : 0);
     require_execution(
-        next_logical_position >= 0 && next_logical_position <= metadata.max_position_embeddings,
+        next_logical_position >= 0 && next_logical_position <= metadata.max_context,
         "prepared MTP decode position is outside context capacity");
     const int64_t occupied_context =
         std::max<int64_t>(static_cast<int64_t>(prompt.size()), next_logical_position);
     const auto generation_plan = tyloi::engine::plan_generation(prompt,
         metadata.vocab_size,
-        metadata.max_position_embeddings,
+        metadata.max_context,
         sampling.max_tokens,
         0,
         occupied_context);
@@ -365,7 +365,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         int64_t predictor_history_position = mtp.cache_position();
         auto bounded_depth = [&](int desired) {
             const auto context_depth =
-                std::max<int64_t>(0, metadata.max_position_embeddings - state.cache_pos - 1);
+                std::max<int64_t>(0, metadata.max_context - state.cache_pos - 1);
             const auto output_depth =
                 std::max<int64_t>(0, static_cast<int64_t>(limit - generated - 1));
             return static_cast<int>(
@@ -588,7 +588,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     ops.ids_for(std::move(verify_ids)), &verified_raw, draft_count > 0 ? 1 : 0);
             }
             auto targets =
-                ops.reshape(ops.logits_for(verified), {draft_count + 1, metadata.vocab_size});
+                ops.reshape(ops.logits_for(verified), {std::int64_t(draft_count) + 1, metadata.vocab_size});
             const auto verify_finished=Clock::now();
 
             ++mtp_state.stats.cycles;
@@ -616,7 +616,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                             ops.sample_normal(ops.slice(targets, 0, row, 1), row_counts));
                         if (row < draft_count && penalties) {
                             ops.add_counts(
-                                row_counts, ops.ids_for({draft.tokens[static_cast<size_t>(row)]}));
+                                row_counts, ops.ids_for({std::int64_t(draft.tokens[static_cast<size_t>(row)])}));
                         }
                     }
                 }
@@ -634,7 +634,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                             ops.slice(targets, 0, row, 1), row_counts, sampling));
                         if (row < draft_count) {
                             ops.add_counts(
-                                row_counts, ops.ids_for({draft.tokens[static_cast<size_t>(row)]}));
+                                row_counts, ops.ids_for({std::int64_t(draft.tokens[static_cast<size_t>(row)])}));
                         }
                     }
                 }
@@ -655,7 +655,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                         ops.probabilities(ops.slice(targets, 0, row, 1), row_counts, sampling));
                     if (row < draft_count && penalties) {
                         ops.add_counts(
-                            row_counts, ops.ids_for({draft.tokens[static_cast<size_t>(row)]}));
+                            row_counts, ops.ids_for({std::int64_t(draft.tokens[static_cast<size_t>(row)])}));
                     }
                 }
                 std::vector<double> acceptance_uniforms(static_cast<size_t>(draft_count));

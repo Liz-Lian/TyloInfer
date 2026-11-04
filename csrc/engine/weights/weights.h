@@ -9,7 +9,8 @@
 
 namespace tyloi::weights {
 
-enum class Layout { matrix, group, experts };
+// Where a weight's compute devices live. A weight record states this itself;
+// there is no shared weight base class.
 struct Shape { std::int64_t rows, cols; };
 struct Placement {
     // Fixed compute devices and an additional type selected by each operation call.
@@ -18,15 +19,5 @@ struct Placement {
     std::optional<DeviceType> caller;
 };
 
-class Weights {
-public:
-    virtual ~Weights() = default;
-    virtual Layout layout() const = 0;
-    virtual DeviceType backend() const = 0;
-    virtual std::size_t size() const = 0;
-    virtual Shape shape(std::size_t index = 0) const = 0;
-    // Groups use logical indices; each legal expert index reports the whole bank.
-    virtual Placement placement(std::size_t index = 0) const = 0;
-};
 
 } // namespace tyloi::weights

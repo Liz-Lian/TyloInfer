@@ -127,7 +127,7 @@ static NintLinearGroup make_linear_group(const std::vector<tyloi::NintTensor> & 
 #endif
 
 QuantLinearGroup make_quant_group(
-        std::vector<QuantLinear> layers,
+        std::vector<QuantLinearRef> layers,
         bool group_nint,
         bool cpu_layer,
         bool preserve_projection_boundaries) {
@@ -142,24 +142,27 @@ QuantLinearGroup make_quant_group(
     std::vector<tyloi::NintTensor> nint_weights;
     nint_weights.reserve(layers.size());
     for (const auto & layer : layers) {
-        result.outs.push_back(layer.out());
-        result.cols.push_back(layer.neuron_len());
-        result.placements.push_back(layer.placement());
-        all_nint = all_nint && (tyloi::mfq_compat_enabled && layer.is_nint());
-        if ((tyloi::mfq_compat_enabled && layer.is_nint()) && !layer.tensor_parallel()) {
-            nint_weights.push_back(layer.nint);
-        }
+        result.outs.push_back(layer->out());
+        result.cols.push_back(layer->neuron_len());
+        result.placements.push_back(layer->placement());
+        const auto* nint = layer->tensor_parallel()
+            ? nullptr : dynamic_cast<const tyloi::NintTensor*>(layer->weight.get());
+        all_nint = all_nint && tyloi::mfq_compat_enabled && nint != nullptr;
+        if (nint != nullptr) nint_weights.push_back(*nint);
     }
     const bool any_tensor_parallel = std::any_of(
         layers.begin(), layers.end(),
-        [](const QuantLinear & layer) {
-            return layer.tensor_parallel();
+        [](const QuantLinearRef & layer) {
+            return layer->tensor_parallel();
         });
-    const bool all_tq = std::all_of(layers.begin(),layers.end(),
-        [](const QuantLinear& layer){return layer.is_tq() && layer.tq.is_cuda();});
+    const bool all_tq = std::all_of(layers.begin(),layers.end(),[](const QuantLinearRef& layer) {
+        const auto* tq=dynamic_cast<const ::tyloi::encoding::TqTensor*>(layer->weight.get());
+        return tq!=nullptr && tq->is_cuda();
+    });
     if(all_tq && !any_tensor_parallel) {
         std::vector<::tyloi::encoding::TqTensor> weights;weights.reserve(layers.size());
-        for(const auto& layer:layers)weights.push_back(layer.tq);
+        for(const auto& layer:layers)
+            weights.push_back(static_cast<const ::tyloi::encoding::TqTensor&>(*layer->weight));
         result.tq=TqProjectionGroup(std::move(weights));
     }
     if (tyloi::mfq_compat_enabled && all_nint && !preserve_projection_boundaries &&
@@ -173,8 +176,9 @@ QuantLinearGroup make_quant_group(
         result.layers = std::move(layers);
         result.nvq_prefix2 = !cpu_layer && result.layers.size() >= 2 &&
             !any_tensor_parallel &&
-            (tyloi::mfq_compat_enabled && result.layers[0].is_nvq()) && (tyloi::mfq_compat_enabled && result.layers[1].is_nvq()) &&
-            nvq_pair_compatible(result.layers[0].nvq, result.layers[1].nvq);
+            tyloi::mfq_compat_enabled &&
+            nvq_pair_compatible(payload_as<tyloi::NvqTensor>(*result.layers[0]->weight),
+                                payload_as<tyloi::NvqTensor>(*result.layers[1]->weight));
     }
     return result;
 }
@@ -182,7 +186,7 @@ QuantLinearGroup make_quant_group(
 namespace tyloi::cuda {
 
 Projections make_projections(
-        std::vector<QuantLinear> weights,
+        std::vector<QuantLinearRef> weights,
         bool group_nint,
         bool cpu_layer,
         size_t prefix) {
@@ -195,18 +199,20 @@ Projections make_projections(
         "invalid grouped projection prefix");
     if (cpu_layer) return result;
 
-    std::vector<QuantLinear> tq_weights;
+    std::vector<QuantLinearRef> tq_weights;
     std::vector<size_t> tq_indices;
+    const auto tq_of = [](const QuantLinearRef& weight) {
+        return dynamic_cast<const ::tyloi::encoding::TqTensor*>(weight->weight.get());
+    };
     for (size_t i = 0; i < result.weights.size(); ++i) {
         const auto & weight = result.weights[i];
-        if (!weight.is_tq() || weight.tensor_parallel() ||
-                !weight.tq.is_cuda()) {
+        const auto * tq = tq_of(weight);
+        if (tq == nullptr || weight->tensor_parallel() || !tq->is_cuda()) {
             continue;
         }
         if (!tq_weights.empty() &&
-                (weight.neuron_len() != tq_weights.front().neuron_len() ||
-                 weight.tq.device() !=
-                     tq_weights.front().tq.device())) {
+                (weight->neuron_len() != tq_weights.front()->neuron_len() ||
+                 tq->device() != tq_of(tq_weights.front())->device())) {
             return result;
         }
         tq_weights.push_back(weight);
@@ -231,11 +237,11 @@ Projections make_projections(
     if (!group_nint) return result;
     for (size_t i = 0; i < result.weights.size(); ++i) {
         const auto & weight = result.weights[i];
-        if (!weight.is_nint() || weight.tensor_parallel() ||
-                !weight.nint.q_packed.is_cuda()) {
+        const auto* nint = dynamic_cast<const tyloi::NintTensor*>(weight->weight.get());
+        if (nint == nullptr || weight->tensor_parallel() || !nint->q_packed.is_cuda()) {
             return result;
         }
-        if (i > 0 && weight.neuron_len() != result.weights.front().neuron_len()) {
+        if (i > 0 && weight->neuron_len() != result.weights.front()->neuron_len()) {
             return result;
         }
     }
@@ -245,7 +251,7 @@ Projections make_projections(
     if (!group.nint_grouped) return result;
     result.group = std::move(group);
 
-    std::vector<QuantLinear> aliases;
+    std::vector<QuantLinearRef> aliases;
     aliases.reserve(result.weights.size());
     size_t matrix_index = 0;
     int64_t row = 0;
@@ -254,14 +260,17 @@ Projections make_projections(
         const auto & matrix = result.group.nint.split_w.empty()
             ? result.group.nint.w
             : result.group.nint.split_w.at(matrix_index);
+        const auto* original_nint =
+            dynamic_cast<const tyloi::NintTensor*>(original->weight.get());
         TYLOINFER_RUNTIME_CHECK(
-            row + original.out() <= matrix.out &&
-                original.nint.ng == matrix.ng &&
-                original.nint.gs == matrix.gs &&
-                original.nint.q8_zero == matrix.q8_zero,
+            original_nint != nullptr &&
+                row + original->out() <= matrix.out &&
+                original_nint->ng == matrix.ng &&
+                original_nint->gs == matrix.gs &&
+                original_nint->q8_zero == matrix.q8_zero,
             "grouped projection storage geometry mismatch");
-        auto alias = original;
-        auto & view = alias.nint;
+        auto alias = std::make_shared<QuantLinear>(*original);
+        auto view = *original_nint;
         view.q_packed = matrix.q_packed;
         if (view.q8_zero) {
             view.q_packed = matrix.q_packed.narrow(0, row, view.out);
@@ -275,11 +284,12 @@ Projections make_projections(
             view.neuron_scale = matrix.neuron_scale.narrow(0, row, view.out);
             view.neuron_min = matrix.neuron_min.narrow(0, row, view.out);
             view.aligned_q8 =
-                original.nint.aligned_q8 && (packed_bytes % 4 == 0);
+                original_nint->aligned_q8 && (packed_bytes % 4 == 0);
         }
+        alias->weight = std::make_shared<tyloi::NintTensor>(std::move(view));
         aliases.push_back(std::move(alias));
-        row += original.out();
-        packed_bytes += original.nint.q_packed.numel();
+        row += original->out();
+        packed_bytes += original_nint->q_packed.numel();
         if (row == matrix.out) {
             ++matrix_index;
             row = 0;
@@ -336,56 +346,40 @@ static ::tyloi::DenseTensor dequant_quant_linear_f32(
         tyloi::cuda::Collectives& collectives, int primary,
         const QuantLinear& linear) {
     if (!linear.tensor_parallel()) {
-        if (linear.is_tq()) {
+        if (dynamic_cast<const ::tyloi::encoding::TqTensor*>(linear.weight.get()) != nullptr)
             return quant_linear_reference_weight(linear).to(::tyloi::kFloat32).contiguous();
-        }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        if ((tyloi::mfq_compat_enabled && linear.is_nint())) {
-            return dequant_nint_dense_f32(linear.nint);
-        }
+        if (const auto* nint = dynamic_cast<const tyloi::NintTensor*>(linear.weight.get());
+            nint != nullptr && tyloi::mfq_compat_enabled)
+            return dequant_nint_dense_f32(*nint);
 #endif
-        if ((tyloi::mfq_compat_enabled && linear.is_nvq())) {
-            return nvq_dequant(linear.nvq)
-                .to(::tyloi::kFloat32).contiguous();
-        }
-        if (linear.is_mxfp8()) {
-            return mxfp8_dequant_cuda(
-                linear.mxfp8.values,
-                linear.mxfp8.scales)
-                .to(::tyloi::kFloat32).contiguous();
-        }
-        if (linear.is_mxfp4()) {
-            return mxfp4_dequant_cuda(
-                linear.mxfp4.values,
-                linear.mxfp4.scales)
-                .to(::tyloi::kFloat32).contiguous();
-        }
+        if (const auto* nvq = dynamic_cast<const tyloi::NvqTensor*>(linear.weight.get());
+            nvq != nullptr && tyloi::mfq_compat_enabled)
+            return nvq_dequant(*nvq).to(::tyloi::kFloat32).contiguous();
+        if (const auto* mx8 = dynamic_cast<const tyloi::Mxfp8Tensor*>(linear.weight.get());
+            mx8 != nullptr)
+            return mxfp8_dequant_cuda(mx8->values, mx8->scales).to(::tyloi::kFloat32).contiguous();
+        if (const auto* mx4 = dynamic_cast<const tyloi::Mxfp4Tensor*>(linear.weight.get());
+            mx4 != nullptr)
+            return mxfp4_dequant_cuda(mx4->values, mx4->scales).to(::tyloi::kFloat32).contiguous();
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        if ((tyloi::mfq_compat_enabled && linear.is_mxfp4_sq())) {
-            const auto & weight = linear.mxfp4_sq;
-            if (!weight.blob.is_cuda()) return dequant_mxfp4_sq_cpu(weight);
+        if (const auto* sq4 = dynamic_cast<const tyloi::Mxfp4SqTensor*>(linear.weight.get());
+            sq4 != nullptr && tyloi::mfq_compat_enabled) {
+            if (!sq4->blob.is_cuda()) return dequant_mxfp4_sq_cpu(*sq4);
             return mxfp4_sq_dequant_cuda(
-                weight.blob,
-                weight.row_q,
-                weight.row_symbol_byte_offsets,
-                weight.row_auxiliary,
-                weight.bits,
-                weight.out,
-                weight.neuron_len,
-                weight.matrix_scale_base,
-                weight.q_sum,
-                weight.sq4_rows,
-                true).contiguous();
+                sq4->blob, sq4->row_q, sq4->row_symbol_byte_offsets, sq4->row_auxiliary,
+                sq4->bits, sq4->out, sq4->neuron_len, sq4->matrix_scale_base,
+                sq4->q_sum, sq4->sq4_rows, true).contiguous();
         }
+        if (const auto* sq8 = dynamic_cast<const tyloi::Fp8SqTensor*>(linear.weight.get());
+            sq8 != nullptr && tyloi::mfq_compat_enabled)
+            return dequant_fp8_sq(*sq8, true).contiguous();
 #endif
-        if ((tyloi::mfq_compat_enabled && linear.is_fp8_sq())) {
-            return dequant_fp8_sq(linear.fp8_sq, true).contiguous();
-        }
-        if (linear.is_dense()) {
-            return linear.dense.to(::tyloi::kFloat32).contiguous();
-        }
+        if (const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(linear.weight.get());
+            dense != nullptr)
+            return dense->to(::tyloi::kFloat32).contiguous();
         throw std::runtime_error(
-            "unsupported linear kind for FP32 reconstruction");
+            "unsupported linear weight for FP32 reconstruction");
     }
     if (linear.tensor_parallel_axis != TensorParallelAxis::Output &&
         linear.tensor_parallel_axis != TensorParallelAxis::Input) {
@@ -397,40 +391,36 @@ static ::tyloi::DenseTensor dequant_quant_linear_f32(
     for (const auto & shard : linear.tensor_parallel_shards) {
         MfqCudaGuard shard_guard(shard.device);
         ::tyloi::DenseTensor part;
-        if (shard.kind == QuantLinearKind::Tq) {
+        const auto& payload = *shard.weight;
+        if (dynamic_cast<const ::tyloi::encoding::TqTensor*>(&payload) != nullptr) {
             QuantLinear local;
-            local.kind=QuantLinearKind::Tq;local.tq=shard.tq;
-            part=quant_linear_reference_weight(local).to(::tyloi::kFloat32).contiguous();
+            local.weight = shard.weight;
+            part = quant_linear_reference_weight(local).to(::tyloi::kFloat32).contiguous();
         } else
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        if ((tyloi::mfq_compat_enabled && shard.kind == QuantLinearKind::Nint)) {
-            part = dequant_nint_dense_f32(shard.nint);
-        } else if ((tyloi::mfq_compat_enabled && shard.kind == QuantLinearKind::Nvq)) {
-            part = nvq_dequant(shard.nvq)
-                .to(::tyloi::kFloat32).contiguous();
+        if (const auto* nint = dynamic_cast<const tyloi::NintTensor*>(&payload);
+            nint != nullptr && tyloi::mfq_compat_enabled) {
+            part = dequant_nint_dense_f32(*nint);
+        } else if (const auto* nvq = dynamic_cast<const tyloi::NvqTensor*>(&payload);
+            nvq != nullptr && tyloi::mfq_compat_enabled) {
+            part = nvq_dequant(*nvq).to(::tyloi::kFloat32).contiguous();
         } else
 #endif
-        if (shard.kind == QuantLinearKind::Mxfp8) {
-            part = mxfp8_dequant_cuda(
-                shard.mxfp8.values,
-                shard.mxfp8.scales)
-                .to(::tyloi::kFloat32).contiguous();
-        } else if (shard.kind == QuantLinearKind::Mxfp4) {
-            part = mxfp4_dequant_cuda(
-                shard.mxfp4.values, shard.mxfp4.scales)
-                .to(::tyloi::kFloat32).contiguous();
-        } else if ((tyloi::mfq_compat_enabled && shard.kind == QuantLinearKind::Mxfp4Sq) ||
-                (tyloi::mfq_compat_enabled && shard.kind == QuantLinearKind::Fp8Sq)) {
+        if (const auto* mx8 = dynamic_cast<const tyloi::Mxfp8Tensor*>(&payload); mx8 != nullptr) {
+            part = mxfp8_dequant_cuda(mx8->values, mx8->scales).to(::tyloi::kFloat32).contiguous();
+        } else if (const auto* mx4 = dynamic_cast<const tyloi::Mxfp4Tensor*>(&payload); mx4 != nullptr) {
+            part = mxfp4_dequant_cuda(mx4->values, mx4->scales).to(::tyloi::kFloat32).contiguous();
+        } else if (dynamic_cast<const tyloi::Mxfp4SqTensor*>(&payload) != nullptr ||
+                dynamic_cast<const tyloi::Fp8SqTensor*>(&payload) != nullptr) {
             QuantLinear local;
-            local.kind = shard.kind;
-            local.mxfp4_sq = shard.mxfp4_sq;
-            local.fp8_sq = shard.fp8_sq;
+            local.weight = shard.weight;
             part = dequant_quant_linear_f32(collectives, primary, local);
-        } else if (shard.kind == QuantLinearKind::Dense) {
-            part = shard.dense.to(::tyloi::kFloat32).contiguous();
+        } else if (const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&payload);
+            dense != nullptr) {
+            part = dense->to(::tyloi::kFloat32).contiguous();
         } else {
             throw std::runtime_error(
-                "unsupported tensor-parallel shard kind for reconstruction");
+                "unsupported tensor-parallel shard representation for reconstruction");
         }
         parts.push_back(
             collectives.copy(part, primary)
@@ -474,7 +464,7 @@ DenseLinearGroup make_fp32_quant_group(
         parts.reserve(group.layers.size());
         for (const auto & linear : group.layers) {
             parts.push_back(dequant_quant_linear_f32(
-                collectives, primary, linear));
+                collectives, primary, *linear));
         }
         dense.w = ::tyloi::cuda::cat(parts, 0).contiguous();
     }

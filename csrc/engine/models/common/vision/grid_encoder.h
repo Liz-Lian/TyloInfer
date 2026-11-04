@@ -68,12 +68,12 @@ class CudaGridVisionEncoder {
             const std::vector<std::int32_t>& segment_lengths) const {
             const std::int64_t tokens = input.size(0);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto projected = tyloi::ops::reshape(tyloi::ops::affine(input, qkv.weight, qkv.bias), {tokens, 3, heads, head_dim});
+            auto projected = tyloi::ops::reshape(tyloi::ops::affine(input, *qkv.weight, qkv.bias), {tokens, 3, heads, head_dim});
             auto query = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 0), positions, theta);
             auto key = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 1), positions, theta);
             auto value = tyloi::ops::select(projected, 1, 2);
             auto attended = tyloi::ops::segmented_attention(query, key, value, segment_lengths);
-            return tyloi::ops::affine(tyloi::ops::reshape(attended, {tokens, hidden}), output.weight, output.bias);
+            return tyloi::ops::affine(tyloi::ops::reshape(attended, {tokens, hidden}), *output.weight, output.bias);
 #else
             auto projected = tyloi::cuda::affine(projector, qkv, input).reshape({tokens, 3, heads, head_dim});
             auto query = vision::apply_axial_rope(projected.select(1, 0), positions, theta);
@@ -92,13 +92,22 @@ class CudaGridVisionEncoder {
         BiasWeight mlp_up, mlp_down;
 
         template <class Visitor>
-        void visit_tensors(Visitor visit) {
+        void visit_tensors(Visitor visit) const {
             fields::tensors(norm1, visit);
             fields::tensors(norm2, visit);
             fields::tensors(attention.qkv, visit);
             fields::tensors(attention.output, visit);
             fields::tensors(mlp_up, visit);
             fields::tensors(mlp_down, visit);
+        }
+
+        void to_device(::tyloi::Device device) {
+            norm1.to_device(device);
+            norm2.to_device(device);
+            fields::to_device(attention.qkv, device);
+            fields::to_device(attention.output, device);
+            fields::to_device(mlp_up, device);
+            fields::to_device(mlp_down, device);
         }
 
         DenseTensor operator()(
@@ -118,8 +127,8 @@ class CudaGridVisionEncoder {
                 [&](DenseTensor x) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                     return tyloi::ops::affine(tyloi::ops::gelu(
-                        tyloi::ops::affine(std::move(x), mlp_up.weight, mlp_up.bias), true),
-                        mlp_down.weight, mlp_down.bias);
+                        tyloi::ops::affine(std::move(x), *mlp_up.weight, mlp_up.bias), true),
+                        *mlp_down.weight, mlp_down.bias);
 #else
                     return tyloi::cuda::affine(projector, mlp_down, ::tyloi::cuda::gelu(
                         tyloi::cuda::affine(projector, mlp_up, std::move(x)), "tanh"));
@@ -239,9 +248,9 @@ class CudaGridVisionPromptComponent {
 #endif
                     },
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    [&](DenseTensor value) { return tyloi::ops::affine(std::move(value), up.weight, up.bias); },
+                    [&](DenseTensor value) { return tyloi::ops::affine(std::move(value), *up.weight, up.bias); },
                     [](DenseTensor value) { return tyloi::ops::gelu(std::move(value)); },
-                    [&](DenseTensor value) { return tyloi::ops::affine(std::move(value), down.weight, down.bias); });
+                    [&](DenseTensor value) { return tyloi::ops::affine(std::move(value), *down.weight, down.bias); });
 #else
                     [&](DenseTensor value) { return tyloi::cuda::affine(projector, up, std::move(value)); },
                     [](DenseTensor value) { return ::tyloi::cuda::gelu(value, "none"); },

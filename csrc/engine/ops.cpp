@@ -35,31 +35,6 @@ void compatible(const DenseTensor& left, const DenseTensor& right) {
     if (left.device() != right.device())
         throw std::invalid_argument("tensor devices do not match");
 }
-void check_weight(const weights::Weights& value, weights::Layout layout) {
-    if (value.backend() != DeviceType::cuda || value.layout() != layout)
-        throw std::invalid_argument("weight backend or layout does not match operation");
-    if (value.size() == 0 || (layout == weights::Layout::matrix && value.size() != 1))
-        throw std::invalid_argument("weight has invalid size");
-    const auto count = layout == weights::Layout::group ? value.size() : 1;
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto placement = value.placement(i);
-        if (layout != weights::Layout::experts) {
-            const auto shape = value.shape(i);
-            if (shape.rows <= 0 || shape.cols <= 0)
-                throw std::invalid_argument("weight has invalid shape");
-        }
-        if (placement.devices.empty() && !placement.caller)
-            throw std::invalid_argument("weight has no execution placement");
-        for (const auto& place : placement.devices) {
-            if ((!place.is_cpu() && !place.is_cuda()) || place.index < 0 ||
-                (place.is_cpu() && place.index != 0))
-                throw std::invalid_argument("invalid weight execution device");
-        }
-        if (placement.caller && *placement.caller != DeviceType::cpu &&
-            *placement.caller != DeviceType::cuda)
-            throw std::invalid_argument("invalid caller-selected weight device type");
-    }
-}
 void require_cuda(const DenseTensor& value) {
     if (!value.device().is_cuda()) throw std::invalid_argument("operation requires a CUDA tensor");
 }
@@ -238,10 +213,9 @@ DenseTensor weighted_reduce(DenseTensor pairs, DenseTensor weights) {
     require_cuda(pairs);
     return cuda::ops::weighted_reduce(std::move(pairs), std::move(weights));
 }
-RoutedGeglu routed_geglu(DenseTensor value, DenseTensor ids, const weights::Weights& gate_up,
-                         const weights::Weights& down, bool trace) {
-    check_weight(gate_up, weights::Layout::experts);
-    check_weight(down, weights::Layout::experts);
+RoutedGeglu routed_geglu(DenseTensor value, DenseTensor ids,
+                         const tyloi::cuda::Experts& gate_up, const tyloi::cuda::Experts& down,
+                         bool trace) {
     compatible(value, ids);
     if (gate_up.size() == 0 || down.size() == 0 || value.dim() != 2 || ids.dim() != 2 || value.size(0) != ids.size(0) ||
         gate_up.size() != down.size() || gate_up.shape().cols != value.size(-1) ||
@@ -327,42 +301,34 @@ DenseTensor scale(DenseTensor value, double factor) {
     require_cuda(value);
     return cuda::ops::scale(std::move(value), factor);
 }
-DenseTensor embedding(DenseTensor ids, const weights::Weights& weight) {
-    check_weight(weight, weights::Layout::matrix);
+DenseTensor embedding(DenseTensor ids, const ::QuantLinear& weight) {
     input(ids);
     return cuda::ops::embedding(std::move(ids), weight);
 }
-DenseTensor project(DenseTensor value, const weights::Weights& weight) {
-    check_weight(weight, weights::Layout::matrix);
+DenseTensor project(DenseTensor value, const ::QuantLinear& weight) {
     input(value);
     return cuda::ops::project(std::move(value), weight);
 }
-DenseTensor linear(DenseTensor value, const weights::Weights& weight, const DenseTensor& bias) {
-    check_weight(weight, weights::Layout::matrix);
+DenseTensor linear(DenseTensor value, const ::QuantLinear& weight, const DenseTensor& bias) {
     input(value);
     if (bias.defined()) input(bias);
     return cuda::ops::linear(std::move(value), weight, bias);
 }
-DenseTensor affine(DenseTensor value, const weights::Weights& weight, const DenseTensor& bias) {
-    check_weight(weight, weights::Layout::matrix);
+DenseTensor affine(DenseTensor value, const ::QuantLinear& weight, const DenseTensor& bias) {
     input(value);
     if (bias.defined()) input(bias);
     return cuda::ops::affine(std::move(value), weight, bias);
 }
-DenseTensor mlp(DenseTensor value, const weights::Weights& gate_up, const weights::Weights& down,
+DenseTensor mlp(DenseTensor value, const ::QuantLinearGroup& gate_up, const ::QuantLinear& down,
            MlpActivation activation, double swiglu_limit) {
-    check_weight(gate_up, weights::Layout::group);
-    check_weight(down, weights::Layout::matrix);
     input(value);
     return cuda::ops::mlp(std::move(value), gate_up, down, activation, swiglu_limit);
 }
-std::vector<DenseTensor> project_group(DenseTensor value, const weights::Weights& group) {
-    check_weight(group, weights::Layout::group);
+std::vector<DenseTensor> project_group(DenseTensor value, const ::QuantLinearGroup& group) {
     input(value);
     return cuda::ops::project_group(std::move(value), group);
 }
-DenseTensor sigmoid_project(DenseTensor value, DenseTensor gate, const weights::Weights& weight) {
-    check_weight(weight, weights::Layout::matrix);
+DenseTensor sigmoid_project(DenseTensor value, DenseTensor gate, const ::QuantLinear& weight) {
     compatible(value, gate);
     return cuda::ops::sigmoid_project(std::move(value), std::move(gate), weight);
 }

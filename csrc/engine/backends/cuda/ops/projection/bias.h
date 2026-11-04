@@ -12,15 +12,17 @@ inline ::tyloi::DenseTensor biased(
         const Projector& projector, const QuantLinear& weight,
         const ::tyloi::DenseTensor& bias,
         ::tyloi::DenseTensor input) {
-    if (weight.is_dense() && !weight.tensor_parallel()) {
+    const auto* dense = weight.tensor_parallel()
+        ? nullptr : dynamic_cast<const ::tyloi::DenseTensor*>(&weight.payload());
+    if (dense != nullptr) {
         check_projection(weight, input);
         const auto output_dtype = input.scalar_type();
-        const auto dense_dtype = weight.dense.scalar_type();
+        const auto dense_dtype = dense->scalar_type();
         std::optional<::tyloi::DenseTensor> dense_bias = std::nullopt;
         if (bias.defined()) {
             dense_bias = bias.to(dense_dtype);
         }
-        return mfq_linear(input.to(dense_dtype), weight.dense, dense_bias)
+        return mfq_linear(input.to(dense_dtype), *dense, dense_bias)
             .to(output_dtype)
             .contiguous();
     }
@@ -39,16 +41,15 @@ inline ::tyloi::DenseTensor biased(
 inline ::tyloi::DenseTensor biased(
         const Projector& projector, const BiasWeight& value,
         ::tyloi::DenseTensor input) {
-    return biased(projector, value.weight, value.bias, std::move(input));
+    return biased(projector, *value.weight, value.bias, std::move(input));
 }
 
 inline ::tyloi::DenseTensor affine(
         const Projector& projector, const BiasWeight& value,
         ::tyloi::DenseTensor input) {
-    const auto& weight = value.weight;
     const auto& bias = value.bias;
 
-    auto output = projector.run(weight, std::move(input));
+    auto output = projector.run(*value.weight, std::move(input));
     return bias.defined()
         ? output + bias.to(output.scalar_type())
         : output;

@@ -2,6 +2,7 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/full_block.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/backends/cuda/executor/options.h"

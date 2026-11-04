@@ -45,7 +45,7 @@ auto merge(DenseTensor patches, int64_t patch_count, const GridVisionConfig &con
     require_model(unit > 0 && patch_count > 0 && patch_count % unit == 0,
                   "grid-Vision patch count is not divisible by merge unit");
     auto grouped = pack(norm(std::move(patches)), patch_count / unit, unit * config.hidden_size);
-    return mlp(std::move(grouped), up, gelu, down);
+    return down(gelu(up(std::move(grouped))));
 }
 
 template <class DenseTensor> struct Prepared {

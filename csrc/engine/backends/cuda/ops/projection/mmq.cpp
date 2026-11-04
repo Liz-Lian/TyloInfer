@@ -62,17 +62,19 @@ void KlMmqState::reset() noexcept {
         ::tyloi::DenseTensor x,
         ::tyloi::DenseTensor gate,
         InputGateMode mode) {
+    const auto* nint = weight.tensor_parallel()
+        ? nullptr : dynamic_cast<const tyloi::NintTensor*>(&weight.payload());
     TYLOINFER_RUNTIME_CHECK(
-        !weight.tensor_parallel() && (tyloi::mfq_compat_enabled && weight.is_nint()),
+        nint != nullptr && tyloi::mfq_compat_enabled,
         "FP32-output KLD down projection requires a local NINT tensor");
     TYLOINFER_RUNTIME_CHECK(
         mmq.mode == KlMmqMode::Fp16,
         "FP32-output NINT MMQ is restricted to the FP16 KLD path");
     auto shape = x.sizes().vec();
     auto y = nint_matmul_input_mul_f32(
-        profiler, weight.nint, x.reshape({-1, x.size(-1)}),
+        profiler, *nint, x.reshape({-1, x.size(-1)}),
         gate.reshape({-1, gate.size(-1)}), static_cast<int>(mode));
-    if (weight.nint.q8_zero) ++mmq.dense_calls;
+    if (nint->q8_zero) ++mmq.dense_calls;
     shape.back() = y.size(-1);
     return y.reshape(shape);
 }

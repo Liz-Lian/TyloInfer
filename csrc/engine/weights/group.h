@@ -5,7 +5,7 @@
 namespace tyloi::cuda {
 
 Projections make_projections(
-    std::vector<QuantLinear> weights,
+    std::vector<QuantLinearRef> weights,
     bool group_nint,
     bool cpu_layer,
     size_t prefix = 1);
@@ -18,7 +18,7 @@ DenseLinearGroup make_fp32_quant_group(
     QuantLinearGroup group);
 
 QuantLinearGroup make_quant_group(
-    std::vector<QuantLinear> layers,
+    std::vector<QuantLinearRef> layers,
     bool group_nint,
     bool cpu_layer,
     bool preserve_projection_boundaries = false);

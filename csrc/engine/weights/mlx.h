@@ -12,7 +12,7 @@ struct MlxAffineBinding {
     std::string scales, biases;
 };
 
-MlxAffineBinding mlx_affine_binding(const Safetensors& source,
-    const nlohmann::json& quantization, const TensorMetadata& values);
+MlxAffineBinding mlx_affine_binding(const tyloi::Safetensors& source,
+    const nlohmann::json& quantization, const tyloi::TensorMetadata& values);
 
 } // namespace mfq

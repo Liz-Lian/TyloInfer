@@ -37,7 +37,7 @@ struct Layer {
     tyloi::models::Mlp ffn;
     tyloi::DenseTensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
     tyloi::DenseTensor layer_scale;
-    std::shared_ptr<const tyloi::weights::Weights> gemma_moe_gate_up, gemma_moe_down;
+    std::shared_ptr<const tyloi::cuda::Experts> gemma_moe_gate_up, gemma_moe_down;
     tyloi::DenseTensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #else
     DenseTensor ffn_norm;
@@ -83,7 +83,7 @@ struct Model
     CudaModelPlan plan;
     Config config;
     double embed_scale = 1.0;
-    std::shared_ptr<const tyloi::weights::Weights> embed, lm_head;
+    std::shared_ptr<const QuantLinear> embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     tyloi::DenseTensor output_norm;
 #else

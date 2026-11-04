@@ -308,17 +308,17 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                       options.shared_input &&
                       qkv_proj.layers.size() == 2) {
                     QuantLinearProjectionRefs projections = {
-                        &qkv_proj.layers[0],
-                        &qkv_proj.layers[1],
+                        qkv_proj.layers[0].get(),
+                        qkv_proj.layers[1].get(),
                         &z_proj,
                     };
                     const bool shared_tp_ab =
                         ab_nint_proj.layers.size() == 2 &&
-                        ab_nint_proj.layers[0].tensor_parallel() &&
-                        ab_nint_proj.layers[1].tensor_parallel();
+                        ab_nint_proj.layers[0]->tensor_parallel() &&
+                        ab_nint_proj.layers[1]->tensor_parallel();
                     if (shared_tp_ab) {
-                      projections.push_back(&ab_nint_proj.layers[0]);
-                      projections.push_back(&ab_nint_proj.layers[1]);
+                      projections.push_back(ab_nint_proj.layers[0].get());
+                      projections.push_back(ab_nint_proj.layers[1].get());
                     }
                     if (tensor_parallel_output_projections_compatible(
                             projections)) {

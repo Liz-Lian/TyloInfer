@@ -50,7 +50,7 @@ static std::vector<std::uint8_t> read_weight(
         bool drop_file_cache,
         const tyloi::source::Source& source,
         std::string_view name) {
-    auto result = read_tensor(source, name);
+    auto result = tyloi::read_tensor(source, name);
     if (drop_file_cache) source.drop_file_cache();
     return result;
 }
@@ -60,7 +60,7 @@ static std::vector<std::uint8_t> read_weight(
     const tyloi::cuda::AllocationScope weight_memory;
     const bool cpu_layer = placement.cpu;
     MfqCudaGuard guard(placement.device);
-    const auto & rec = require_tensor(mfq, name);
+    const auto & rec = tyloi::require_tensor(mfq, name);
     if(rec.dtype=="TQ") {
         // This entry is for parameters explicitly consumed as dense tensors
         // (norm/function tables), not ordinary quantized projections.
@@ -194,7 +194,7 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
     const auto& mfq = source;
     const tyloi::cuda::AllocationScope weight_memory;
     const bool cpu_layer = placement.cpu;
-    const auto & dtype = require_tensor(mfq, name).dtype;
+    const auto & dtype = tyloi::require_tensor(mfq, name).dtype;
     QuantLinear result;
     const TensorParallelAxis axis =
         axis_override.value_or(
@@ -231,7 +231,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
     };
     result.tensor_parallel_axis = axis;
     if(dtype=="TQ") {
-        result.kind=QuantLinearKind::Tq;
         const auto shape=tyloi::tq_projection_shape(mfq,name);
         result.logical_out=shape[0];result.logical_neuron_len=shape[1];
         if(placement.tensor.enabled() && axis!=TensorParallelAxis::Mirrored) {
@@ -243,22 +242,20 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
             const auto extent=axis==TensorParallelAxis::Output?shape[0]:(shape[1]+255)/256;
             for(const auto& slice:select_slices(extent,axis==TensorParallelAxis::Output?128:1)) {
                 QuantLinearShard shard;
-                shard.device=slice.device;shard.kind=QuantLinearKind::Tq;
-                shard.output_begin=axis==TensorParallelAxis::Output?slice.begin:0;
+                shard.device=slice.device;                shard.output_begin=axis==TensorParallelAxis::Output?slice.begin:0;
                 shard.output_end=axis==TensorParallelAxis::Output?slice.end:shape[0];
                 shard.input_begin=axis==TensorParallelAxis::Input?slice.begin*256:0;
                 shard.input_end=axis==TensorParallelAxis::Input?std::min(slice.end*256,shape[1]):shape[1];
                 const auto image=axis==TensorParallelAxis::Output
                     ?rows.slice_rows(slice.begin,slice.end):rows.slice_columns(slice.begin*256,slice.end*256);
-                shard.tq=to_device_tq(image,shard.input_end-shard.input_begin,slice.device);
+                shard.weight = std::make_shared<tyloi::encoding::TqTensor>(to_device_tq(image,shard.input_end-shard.input_begin,slice.device));
                 result.tensor_parallel_shards.push_back(std::move(shard));
             }
-        } else result.tq=load_tq_weight(mfq,name,placement.device,!cpu_layer);
+        } else result.weight = std::make_shared<tyloi::encoding::TqTensor>(load_tq_weight(mfq,name,placement.device,!cpu_layer));
         return result;
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (is_nint_linear_dtype(dtype)) {
-        result.kind = QuantLinearKind::Nint;
         const auto blob = read_weight(placement.drop_cache, mfq, name);
         if (dtype == "NINT8-0") {
             const auto cpu = tyloi::nint8::unpack(blob);
@@ -284,7 +281,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                             cpu, slice.begin, slice.end);
                     QuantLinearShard shard;
                     shard.device = slice.device;
-                    shard.kind = QuantLinearKind::Nint;
                     shard.output_begin =
                         axis == TensorParallelAxis::Output
                         ? slice.begin : 0;
@@ -300,15 +296,15 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                             slice.end * 32,
                             cpu.neuron_len)
                         : cpu.neuron_len;
-                    shard.nint = to_device_nint8_zero(
-                        shard_cpu, true, slice.device);
+                    shard.weight = std::make_shared<tyloi::NintTensor>(to_device_nint8_zero(
+                        shard_cpu, true, slice.device));
                     result.tensor_parallel_shards.push_back(
                         std::move(shard));
                 }
             } else {
-                result.nint = to_device_nint8_zero(
+                result.weight = std::make_shared<tyloi::NintTensor>(to_device_nint8_zero(
                     cpu, !cpu_layer,
-                    cpu_layer ? -1 : placement.device);
+                    cpu_layer ? -1 : placement.device));
             }
         } else {
             const auto cpu = tyloi::nint::unpack(blob);
@@ -334,7 +330,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                             cpu, slice.begin, slice.end);
                     QuantLinearShard shard;
                     shard.device = slice.device;
-                    shard.kind = QuantLinearKind::Nint;
                     shard.output_begin =
                         axis == TensorParallelAxis::Output
                         ? slice.begin : 0;
@@ -350,19 +345,18 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                             slice.end * cpu.gs,
                             cpu.neuron_len)
                         : cpu.neuron_len;
-                    shard.nint = to_device_nint(
-                        shard_cpu, true, slice.device);
+                    shard.weight = std::make_shared<tyloi::NintTensor>(to_device_nint(
+                        shard_cpu, true, slice.device));
                     result.tensor_parallel_shards.push_back(
                         std::move(shard));
                 }
             } else {
-                result.nint = to_device_nint(
+                result.weight = std::make_shared<tyloi::NintTensor>(to_device_nint(
                     cpu, !cpu_layer,
-                    cpu_layer ? -1 : placement.device);
+                    cpu_layer ? -1 : placement.device));
             }
         }
     } else if (is_nvq_linear_dtype(dtype)) {
-        result.kind = QuantLinearKind::Nvq;
         const auto cpu = tyloi::nvq::unpack(
             read_weight(placement.drop_cache, mfq, name), dtype);
         result.logical_out = cpu.out;
@@ -383,7 +377,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                     cpu, axis, slice.begin, slice.end);
                 QuantLinearShard shard;
                 shard.device = slice.device;
-                shard.kind = QuantLinearKind::Nvq;
                 shard.output_begin =
                     axis == TensorParallelAxis::Output
                     ? slice.begin : 0;
@@ -399,19 +392,18 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                         slice.end * cpu.gs,
                         cpu.neuron_len)
                     : cpu.neuron_len;
-                shard.nvq = to_device_nvq(
-                    shard_cpu, true, false, false, slice.device);
+                shard.weight = std::make_shared<tyloi::NvqTensor>(to_device_nvq(
+                    shard_cpu, true, false, false, slice.device));
                 result.tensor_parallel_shards.push_back(
                     std::move(shard));
             }
         } else {
-            result.nvq = to_device_nvq(
+            result.weight = std::make_shared<tyloi::NvqTensor>(to_device_nvq(
                 cpu, !cpu_layer, options.quant.nvq2,
                 options.quant.nvq_groups,
-                cpu_layer ? -1 : placement.device);
+                cpu_layer ? -1 : placement.device));
         }
     } else if (dtype == "MXFP4-SQ") {
-        result.kind = QuantLinearKind::Mxfp4Sq;
         const auto payload = read_weight(placement.drop_cache, mfq, name);
         const auto layout = tyloi::sq::parse(payload.data(), payload.size());
         result.logical_out = layout.outputs;
@@ -423,7 +415,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                     output_axis ? layout.outputs : layout.width,
                     output_axis ? 128 : 32)) {
                 QuantLinearShard shard;
-                shard.kind = result.kind;
                 shard.device = slice.device;
                 shard.output_begin = output_axis ? slice.begin : 0;
                 shard.output_end = output_axis ? slice.end : layout.outputs;
@@ -432,19 +423,18 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                 std::vector<int64_t> rows(
                     shard.output_end - shard.output_begin);
                 std::iota(rows.begin(), rows.end(), shard.output_begin);
-                shard.mxfp4_sq = to_device_mxfp4_sq(
+                shard.weight = std::make_shared<tyloi::Mxfp4SqTensor>(to_device_mxfp4_sq(
                     tyloi::sq::select_rows(
                         payload, rows, shard.input_begin, shard.input_end),
-                    true, slice.device);
+                    true, slice.device));
                 result.tensor_parallel_shards.push_back(std::move(shard));
             }
         } else {
-            result.mxfp4_sq = to_device_mxfp4_sq(
+            result.weight = std::make_shared<tyloi::Mxfp4SqTensor>(to_device_mxfp4_sq(
                 payload, !cpu_layer,
-                cpu_layer ? -1 : placement.device);
+                cpu_layer ? -1 : placement.device));
         }
     } else if (tyloi::fp8sq::is_dtype(dtype)) {
-        result.kind = QuantLinearKind::Fp8Sq;
         const auto payload = read_weight(placement.drop_cache, mfq, name);
         const auto layout = tyloi::fp8sq::parse(
             dtype, payload.data(), payload.size());
@@ -458,29 +448,27 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
             for (const auto& slice : select_slices(
                     output_axis ? layout.outputs : layout.width, alignment)) {
                 QuantLinearShard shard;
-                shard.kind = result.kind;
                 shard.device = slice.device;
                 shard.output_begin = output_axis ? slice.begin : 0;
                 shard.output_end = output_axis ? slice.end : layout.outputs;
                 shard.input_begin = output_axis ? 0 : slice.begin;
                 shard.input_end = output_axis ? layout.width : slice.end;
-                shard.fp8_sq = to_device_fp8_sq(
+                shard.weight = std::make_shared<tyloi::Fp8SqTensor>(to_device_fp8_sq(
                     dtype, tyloi::fp8sq::slice(
                         dtype, payload,
                         shard.output_begin, shard.output_end,
                         shard.input_begin, shard.input_end),
-                    true, slice.device);
+                    true, slice.device));
                 result.tensor_parallel_shards.push_back(std::move(shard));
             }
         } else {
-            result.fp8_sq = to_device_fp8_sq(
+            result.weight = std::make_shared<tyloi::Fp8SqTensor>(to_device_fp8_sq(
                 dtype, payload, !cpu_layer,
-                cpu_layer ? -1 : placement.device);
+                cpu_layer ? -1 : placement.device));
         }
     } else
 #endif
     if (dtype == "MXFP4") {
-        result.kind = QuantLinearKind::Mxfp4;
         const auto cpu = tyloi::mxfp4::unpack(
             read_weight(placement.drop_cache, mfq, name));
         result.logical_out = cpu.out;
@@ -496,7 +484,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                     cpu, axis, slice.begin, slice.end);
                 QuantLinearShard shard;
                 shard.device = slice.device;
-                shard.kind = QuantLinearKind::Mxfp4;
                 shard.output_begin = axis == TensorParallelAxis::Output
                     ? slice.begin : 0;
                 shard.output_end = axis == TensorParallelAxis::Output
@@ -505,17 +492,16 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                     ? slice.begin : 0;
                 shard.input_end = axis == TensorParallelAxis::Input
                     ? slice.end : cpu.neuron_len;
-                shard.mxfp4 = to_device_mxfp4(
-                    shard_cpu, true, slice.device);
+                shard.weight = std::make_shared<tyloi::Mxfp4Tensor>(to_device_mxfp4(
+                    shard_cpu, true, slice.device));
                 result.tensor_parallel_shards.push_back(std::move(shard));
             }
         } else {
-            result.mxfp4 = to_device_mxfp4(
+            result.weight = std::make_shared<tyloi::Mxfp4Tensor>(to_device_mxfp4(
                 cpu, !cpu_layer,
-                cpu_layer ? -1 : placement.device);
+                cpu_layer ? -1 : placement.device));
         }
     } else if (dtype == "MXFP8") {
-        result.kind = QuantLinearKind::Mxfp8;
         const auto cpu = tyloi::mxfp8::unpack(
             read_weight(placement.drop_cache, mfq, name));
         result.logical_out = cpu.out;
@@ -529,7 +515,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                     cpu, axis, slice.begin, slice.end);
                 QuantLinearShard shard;
                 shard.device = slice.device;
-                shard.kind = QuantLinearKind::Mxfp8;
                 shard.output_begin = axis == TensorParallelAxis::Output
                     ? slice.begin : 0;
                 shard.output_end = axis == TensorParallelAxis::Output
@@ -538,19 +523,18 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                     ? slice.begin : 0;
                 shard.input_end = axis == TensorParallelAxis::Input
                     ? slice.end : cpu.neuron_len;
-                shard.mxfp8 = to_device_mxfp8(
-                    shard_cpu, true, slice.device);
+                shard.weight = std::make_shared<tyloi::Mxfp8Tensor>(to_device_mxfp8(
+                    shard_cpu, true, slice.device));
                 result.tensor_parallel_shards.push_back(
                     std::move(shard));
             }
         } else if (cpu_layer) {
-            result.mxfp8 = to_device_mxfp8(cpu, false);
+            result.weight = std::make_shared<tyloi::Mxfp8Tensor>(to_device_mxfp8(cpu, false));
         } else {
-            result.mxfp8 = to_device_mxfp8(
-                cpu, true, placement.device);
+            result.weight = std::make_shared<tyloi::Mxfp8Tensor>(to_device_mxfp8(
+                cpu, true, placement.device));
         }
     } else if (dtype == "BF16" || dtype == "F16" || dtype == "F32") {
-        result.kind = QuantLinearKind::Dense;
         auto cpu = host(name);
         TYLOINFER_RUNTIME_CHECK(cpu.dim() == 2, "dense linear tensor must be rank 2: ", name);
         result.logical_out = cpu.size(0);
@@ -569,7 +553,6 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
             for (const auto & slice : select_slices(extent, 128)) {
                 QuantLinearShard shard;
                 shard.device = slice.device;
-                shard.kind = QuantLinearKind::Dense;
                 shard.output_begin = axis == TensorParallelAxis::Output
                     ? slice.begin : 0;
                 shard.output_end = axis == TensorParallelAxis::Output
@@ -581,19 +564,19 @@ QuantLinear tyloi::cuda::weight_loader::Loader::projection(const std::string & n
                 const int64_t dimension =
                     axis == TensorParallelAxis::Output ? 0 : 1;
                 MfqCudaGuard guard(slice.device);
-                shard.dense = cpu.narrow(
+                shard.weight = std::make_shared<::tyloi::DenseTensor>(cpu.narrow(
                         dimension, slice.begin,
                         slice.end - slice.begin)
                     .to(::tyloi::Device(::tyloi::kCUDA, slice.device))
-                    .contiguous();
+                    .contiguous());
                 result.tensor_parallel_shards.push_back(
                     std::move(shard));
             }
         } else if (cpu_layer) {
-            result.dense = cpu.contiguous();
+            result.weight = std::make_shared<::tyloi::DenseTensor>(cpu.contiguous());
         } else {
             MfqCudaGuard guard(placement.device);
-            result.dense = cpu.to(::tyloi::kCUDA).contiguous();
+            result.weight = std::make_shared<::tyloi::DenseTensor>(cpu.to(::tyloi::kCUDA).contiguous());
         }
     } else {
         throw std::runtime_error(
@@ -616,16 +599,15 @@ QuantLinearGroup tyloi::cuda::weight_loader::Loader::build_group(const std::vect
         slices_override,
     bool preserve_projection_boundaries) const {
     const auto& mfq = source;
-    std::vector<QuantLinear> layers;
+    std::vector<QuantLinearRef> layers;
     layers.reserve(names.size());
     for (const auto & name : names) {
-        layers.push_back(
-            projection(name,
-                slices_override != nullptr
-                    ? std::optional<TensorParallelAxis>(
-                        TensorParallelAxis::Output)
-                    : std::nullopt,
-                slices_override));
+        layers.push_back(std::make_shared<QuantLinear>(projection(name,
+            slices_override != nullptr
+                ? std::optional<TensorParallelAxis>(
+                    TensorParallelAxis::Output)
+                : std::nullopt,
+            slices_override)));
     }
     if (required_compatible_prefix > layers.size()) {
         throw std::runtime_error("invalid required quantized-group prefix length");
@@ -689,7 +671,7 @@ std::shared_ptr<tyloi::NintRows> load_nint_row_table(
         const tyloi::source::Source& source, const std::string& name, bool prefer_mapping) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-    const auto& metadata = require_tensor(source, name);
+    const auto& metadata = tyloi::require_tensor(source, name);
     TYLOINFER_RUNTIME_CHECK(metadata.dtype == "NINT", "NINT row table requires packed NINT");
     TYLOINFER_RUNTIME_CHECK(metadata.nbytes <= std::numeric_limits<std::size_t>::max(),
         "NINT row table size overflow");
@@ -736,7 +718,7 @@ tyloi::cuda::Experts tyloi::cuda::weight_loader::Loader::build_experts(const std
     if (cache && cacheable &&
             !placement.experts.enabled() &&
             options.ranges) {
-        const auto & record = require_tensor(mfq, name);
+        const auto & record = tyloi::require_tensor(mfq, name);
         tyloi::source::Source::TensorReader reader;
         tyloi::source::Source::TensorBatchReader batch_reader;
         try {
@@ -862,22 +844,22 @@ std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
 }
 
 namespace tyloi::cuda::weight_loader {
-std::shared_ptr<const tyloi::weights::Weights> Loader::weight(const std::string& name,
+std::shared_ptr<const QuantLinear> Loader::weight(const std::string& name,
     std::optional<TensorParallelAxis> axis, const std::vector<tyloi::TensorParallelSlice>* slices) const {
     return std::make_shared<QuantLinear>(projection(name, axis, slices));
 }
-std::shared_ptr<const tyloi::weights::Weights> Loader::group(const std::vector<std::string>& names,
+std::shared_ptr<const QuantLinearGroup> Loader::group(const std::vector<std::string>& names,
     size_t prefix, const std::vector<tyloi::TensorParallelSlice>* slices, bool preserve_boundaries) const {
     return std::make_shared<QuantLinearGroup>(build_group(names, prefix, slices, preserve_boundaries));
 }
-std::shared_ptr<const tyloi::weights::Weights> Loader::gate_up(const std::vector<std::string>& names,
-    const tyloi::weights::Weights& down, size_t prefix, bool preserve_boundaries) const {
-    return std::make_shared<QuantLinearGroup>(build_gate_up(names, as_quant_linear(down), prefix, preserve_boundaries));
+std::shared_ptr<const QuantLinearGroup> Loader::gate_up(const std::vector<std::string>& names,
+    const QuantLinear& down, size_t prefix, bool preserve_boundaries) const {
+    return std::make_shared<QuantLinearGroup>(build_gate_up(names, down, prefix, preserve_boundaries));
 }
-std::shared_ptr<const tyloi::weights::Weights> Loader::embedding(const std::string& name, bool independent_output) const {
+std::shared_ptr<const QuantLinear> Loader::embedding(const std::string& name, bool independent_output) const {
     return std::make_shared<QuantLinear>(build_embedding(name, independent_output));
 }
-std::shared_ptr<const tyloi::weights::Weights> Loader::experts(const std::string& name, bool cacheable,
+std::shared_ptr<const tyloi::cuda::Experts> Loader::experts(const std::string& name, bool cacheable,
     int layer, const std::string& role) const {
     return std::make_shared<Experts>(build_experts(name, cacheable, layer, role));
 }
@@ -888,7 +870,7 @@ Linear Loader::linear(const std::string& name) const {
 DenseTensor Loader::dense(const std::string& name) const {
     const auto& file = source;
     const tyloi::cuda::AllocationScope weight_memory;
-    const auto& dtype=require_tensor(file, name).dtype;
+    const auto& dtype=tyloi::require_tensor(file, name).dtype;
     const bool dense_storage = dtype=="F32" || dtype=="F16" || dtype=="BF16";
     const bool quantized_storage = tyloi::mfq_compat_enabled &&
         (dtype=="NINT" || dtype=="NINT8-0" || dtype=="MFE");
@@ -902,7 +884,7 @@ DenseTensor Loader::dense(const std::string& name) const {
 Routed Loader::routed(const std::string& name, int layer,
     int64_t experts, int64_t output, int64_t input, const std::string& role) const {
     const auto& file = source;
-    const auto& dtype=require_tensor(file, name).dtype;
+    const auto& dtype=tyloi::require_tensor(file, name).dtype;
     if(dtype=="TQ") {
         auto weight=load_tq_routed_weight(cache,tq,file,name,experts,output,input);
         Routed result=[weight](const Projector&,const DenseTensor& source,const DenseTensor& ids) {
@@ -949,7 +931,7 @@ Routed Loader::routed_gate_up(const std::string& mlp_prefix,
     const auto& file = source;
     const auto base=mlp_prefix+".experts";
     const auto gate_name=base+".gate.weight",up_name=base+".up.weight";
-    const bool has_gate=has_tensor(file, gate_name),has_up=has_tensor(file, up_name);
+    const bool has_gate=tyloi::has_tensor(file, gate_name),has_up=tyloi::has_tensor(file, up_name);
     TYLOINFER_RUNTIME_CHECK(has_gate==has_up,"incomplete routed Gate/Up pair under ",base);
     if (!has_gate) return routed(base+".gate_up.weight",layer,experts,2*width,input,role);
     auto gate=routed(gate_name,layer,experts,width,input,"gate");
@@ -971,7 +953,7 @@ Routed Loader::routed_gate_up(const std::string& mlp_prefix,
 } // namespace tyloi::cuda::weight_loader
 
 ::tyloi::DenseTensor tyloi::cuda::weight_loader::Loader::host(const std::string &name) const {
-    const auto &record = require_tensor(source, name);
+    const auto &record = tyloi::require_tensor(source, name);
     ::tyloi::ScalarType dtype;
     size_t item_size;
     if (record.dtype == "BF16") { dtype = ::tyloi::kBFloat16; item_size = 2; }
@@ -981,7 +963,7 @@ Routed Loader::routed_gate_up(const std::string& mlp_prefix,
     else if (record.dtype == "I32") { dtype = ::tyloi::kInt32; item_size = 4; }
     else throw std::runtime_error("unsupported dense dtype: " + record.dtype + " tensor " + name);
 
-    auto blob = read_tensor(source, name);
+    auto blob = tyloi::read_tensor(source, name);
     if (placement.drop_cache) source.drop_file_cache();
     tyloi::dense::Layout layout;
     try {
@@ -1004,7 +986,7 @@ QuantLinear tyloi::cuda::weight_loader::Loader::build_embedding(const std::strin
     const bool mapped_control=mapped && mapped[0]=='2';
     const bool use_mapped=mapped ? mapped[0]=='1' || mapped_control :
         options.mapped_embedding;
-    const auto& dtype=require_tensor(source,name).dtype;
+    const auto& dtype=tyloi::require_tensor(source,name).dtype;
     const bool nint=tyloi::mfq_compat_enabled && dtype=="NINT";
     if(use_mapped && independent_output &&
             !placement.tensor.enabled() && !placement.cpu &&
@@ -1039,18 +1021,21 @@ QuantLinear tyloi::cuda::weight_loader::Loader::build_embedding(const std::strin
 namespace tyloi::cuda {
 
 BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count) {
-    const auto& weight = value.weight;
+    const auto& weight = *value.weight;
     const auto& bias = value.bias;
 
-    if (!weight.is_dense()) {
+    const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(weight.weight.get());
+    if (dense == nullptr) {
         throw std::runtime_error("fused vision projection must stay dense to be split");
     }
-    if (begin < 0 || count <= 0 || begin + count > weight.dense.size(0)) {
+    if (begin < 0 || count <= 0 || begin + count > dense->size(0)) {
         throw std::runtime_error("fused vision projection row range is invalid");
     }
+    auto part = std::make_shared<QuantLinear>(weight);
+    part->weight = std::make_shared<::tyloi::DenseTensor>(
+        dense->narrow(0, begin, count).contiguous());
     BiasWeight result;
-    result.weight = weight;
-    result.weight.dense = weight.dense.narrow(0, begin, count).contiguous();
+    result.weight = std::move(part);
     if (bias.defined()) {
         result.bias = bias.narrow(0, begin, count).contiguous();
     }
@@ -1064,17 +1049,17 @@ namespace tyloi::cuda::weight_loader {
 BiasWeight Loader::biased(const std::string& weight_name,
                           const std::string& bias_name) const {
     BiasWeight result;
-    result.weight = projection(weight_name);
+    result.weight = std::make_shared<QuantLinear>(projection(weight_name));
     if (!bias_name.empty() && has(bias_name)) result.bias = tensor(bias_name);
     return result;
 }
 
 BiasWeight Loader::affine(const std::string& weight_name,
                           const std::string& bias_name) const {
-    BiasWeight result{projection(weight_name), {}};
+    BiasWeight result{std::make_shared<QuantLinear>(projection(weight_name)), {}};
     if (has(bias_name)) {
         result.bias = tensor(bias_name);
-        if (result.bias.dim() != 1 || result.bias.size(0) != result.weight.out()) {
+        if (result.bias.dim() != 1 || result.bias.size(0) != result.weight->out()) {
             throw std::runtime_error("vision affine bias shape mismatch: " + bias_name);
         }
     }

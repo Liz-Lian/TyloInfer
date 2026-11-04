@@ -19,6 +19,7 @@
 #include "predictor.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/group.h"
+#include "engine/weights/encoding/tq.h"
 #include "engine/weights/tq/source.h"
 #include "engine/weights/tq/rows.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
@@ -28,6 +29,7 @@
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "diagnostics/router_lookahead.h"
+using mfq::cuda::RouterLookaheadInputs;
 #include <fstream>
 #include <iostream>
 #include <atomic>
@@ -158,20 +160,20 @@ DenseTensor Gdn::project_weight(const tyloi::cuda::Projector& projector,const Qu
 }
 
 DenseTensor Gdn::project_qkv(const tyloi::cuda::Projector& projector,const DenseTensor& source) const {
-    if(w_->qkv_count==1)return project_weight(projector,w_->input_projection.weights[0],source);
+    if(w_->qkv_count==1)return project_weight(projector,*w_->input_projection.weights[0],source);
     return qwen_gdn_project_rows(source,[&](const DenseTensor& input) {
-        return ::tyloi::cuda::cat({projector.run(w_->input_projection.weights[0],input),
-            projector.run(w_->input_projection.weights[1],input),
-            projector.run(w_->input_projection.weights[2],input)},-1);
+        return ::tyloi::cuda::cat({projector.run(*w_->input_projection.weights[0],input),
+            projector.run(*w_->input_projection.weights[1],input),
+            projector.run(*w_->input_projection.weights[2],input)},-1);
     });
 }
 
 std::vector<DenseTensor> Gdn::project_inputs(const tyloi::cuda::Projector& projector,const DenseTensor& source) const {
     if(!(grouped_projection_ && w_->input_projection.grouped()))
         return {project_qkv(projector,source),
-            project_weight(projector,w_->input_projection.weights[w_->qkv_count],source),
-            project_weight(projector,w_->input_projection.weights[w_->qkv_count+1],source),
-            project_weight(projector,w_->input_projection.weights[w_->qkv_count+2],source)};
+            project_weight(projector,*w_->input_projection.weights[w_->qkv_count],source),
+            project_weight(projector,*w_->input_projection.weights[w_->qkv_count+1],source),
+            project_weight(projector,*w_->input_projection.weights[w_->qkv_count+2],source)};
     auto* window=tyloi::cuda::DecodeWindow::recording();
     if(window)window->mark_current("gdn_input_begin");
     const auto rows=qwen_gdn_prefill_projection_rows;
@@ -235,9 +237,11 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
     TYLOINFER_RUNTIME_CHECK(shared_g && shared_u && shared_d && shared_gate_weight,
         "Qwen shared expert requires projection weights");
     std::shared_ptr<QuantLinearGroup> shared_tq;
-    if(shared_g->is_tq() && shared_u->is_tq() &&
-       shared_g->tq.image.is_cuda() && shared_u->tq.image.is_cuda())
-        shared_tq=std::make_shared<QuantLinearGroup>(make_quant_group({*shared_g,*shared_u},false,false));
+    const auto shared_g_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(&shared_g->payload());
+    const auto shared_u_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(&shared_u->payload());
+    if(shared_g_tq && shared_u_tq &&
+       shared_g_tq->image().device().is_cuda() && shared_u_tq->image().device().is_cuda())
+        shared_tq=std::make_shared<QuantLinearGroup>(make_quant_group({shared_g,shared_u},false,false));
     auto shared_raw=[shared_g,shared_u,shared_d,shared_gate_weight,shared_tq](const tyloi::cuda::Projector& project,const DenseTensor& source) {
         if(shared_tq) {
             auto output=project.run(*shared_d,project.swiglu(*shared_tq,source));
@@ -256,7 +260,8 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
     const std::array<std::shared_ptr<const QuantLinear>,3> shared_projections{shared_g,shared_u,shared_d};
     const bool shared_row_parallel=std::all_of(shared_projections.begin(),shared_projections.end(),
         [](const auto& weight) {
-            return weight->is_nint() && !weight->tensor_parallel() && !weight->nint.q8_zero;
+            const auto* nint=dynamic_cast<const tyloi::NintTensor*>(&weight->payload());
+            return nint && !weight->tensor_parallel() && !nint->q8_zero;
         });
     auto shared=[shared_raw,shared_projections,shared_gate_weight,shared_row_parallel](const tyloi::cuda::Projector& project,const DenseTensor& source) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -304,12 +309,14 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
     shared_weights.gate=[shared_gate_weight](const tyloi::cuda::Projector& project,const DenseTensor& input) {
         const auto option=tyloi::cuda::runtime_options::shared_gate_fused();
         const auto* nint_option=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
+        const auto* gate_nint=dynamic_cast<const tyloi::NintTensor*>(&shared_gate_weight->payload());
+        const auto* gate_dense=dynamic_cast<const tyloi::DenseTensor*>(&shared_gate_weight->payload());
         if((!option || *option) && (!nint_option || nint_option[0]!='0') &&
-                shared_gate_weight->is_nint() && !shared_gate_weight->tensor_parallel())
-            if(auto output=try_nint_shared_gate_sigmoid_cuda(input,shared_gate_weight->nint))return *output;
-        if((!option || *option) && shared_gate_weight->is_dense() &&
+                gate_nint && !shared_gate_weight->tensor_parallel())
+            if(auto output=try_nint_shared_gate_sigmoid_cuda(input,*gate_nint))return *output;
+        if((!option || *option) && gate_dense &&
             !shared_gate_weight->tensor_parallel())
-            if(auto output=try_shared_gate_sigmoid_cuda(input,shared_gate_weight->dense))return *output;
+            if(auto output=try_shared_gate_sigmoid_cuda(input,*gate_dense))return *output;
         return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,input));
     };
     std::shared_ptr<TqMoeBanks> tq;
@@ -439,11 +446,11 @@ struct BlockLoader : weight_loader::Loader {
         TYLOINFER_RUNTIME_CHECK(!independent || !has(p + ".qkv.weight"), "ambiguous Qwen4 GDN input projections");
         GdnWeights w;
         if(independent)for(const auto* name:{"query","key","value"})
-            w.input_projection.weights.push_back(projection(p+"."+name+".weight"));
-        else w.input_projection.weights.push_back(projection(p+".qkv.weight"));
-        w.input_projection.weights.push_back(projection(p+".gate.weight"));
-        w.input_projection.weights.push_back(projection(p+".alpha.weight"));
-        w.input_projection.weights.push_back(projection(p+".beta.weight"));
+            w.input_projection.weights.push_back(weight(p+"."+name+".weight"));
+        else w.input_projection.weights.push_back(weight(p+".qkv.weight"));
+        w.input_projection.weights.push_back(weight(p+".gate.weight"));
+        w.input_projection.weights.push_back(weight(p+".alpha.weight"));
+        w.input_projection.weights.push_back(weight(p+".beta.weight"));
         w.qkv_count=independent?3:1;
         w.output=projection(p+".output.weight");
         w.conv=dense(p+".conv.weight");w.dt_bias=dense(p+".dt_bias");w.a_log=dense(p+".a");w.norm=dense(p+".norm.weight");
@@ -452,13 +459,13 @@ struct BlockLoader : weight_loader::Loader {
     auto qsa_weights(const std::string &p) const {
         QsaWeights w;
         for(const auto* name:{"query","key","value"})
-            w.input_projection.weights.push_back(projection(p+"."+name+".weight"));
-        w.input_projection.weights.push_back(projection(p+".indexer.query_key.weight"));
+            w.input_projection.weights.push_back(weight(p+"."+name+".weight"));
+        w.input_projection.weights.push_back(weight(p+".indexer.query_key.weight"));
         w.output=projection(p+".output.weight");
         w.query_norm=dense(p+".query_norm.weight");w.key_norm=dense(p+".key_norm.weight");
         w.index_query_norm=dense(p+".indexer.query_norm.weight");w.index_key_norm=dense(p+".indexer.key_norm.weight");
         if(has(p+".gate.weight")) {
-            w.input_projection.weights.push_back(projection(p+".gate.weight"));
+            w.input_projection.weights.push_back(weight(p+".gate.weight"));
             w.has_gate=true;
         }
         return w;

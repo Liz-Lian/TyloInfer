@@ -15,7 +15,7 @@ struct MoeRoutePlan;
 
 namespace tyloi::cuda {
 
-struct Experts : weights::Weights {
+struct Experts {
     struct Shard {
         int device = 0;
         int64_t expert_begin = 0;
@@ -36,14 +36,10 @@ struct Experts : weights::Weights {
     std::vector<MoeActivationGeometry> activation_geometries;
     int activation_workspace_domain = 0;
 
-    weights::Layout layout() const override { return weights::Layout::experts; }
-    DeviceType backend() const override { return DeviceType::cuda; }
-    std::size_t size() const override { return static_cast<std::size_t>(n_experts); }
-    weights::Shape shape(std::size_t index = 0) const override {
-        if (index >= size()) throw std::out_of_range("expert index out of range");
-        return {out_per_expert, neuron_len};
-    }
-    weights::Placement placement(std::size_t index = 0) const override;
+    std::size_t size() const { return static_cast<std::size_t>(n_experts); }
+    // One expert's output width and input width.
+    weights::Shape shape() const { return {out_per_expert, neuron_len}; }
+    weights::Placement placement(std::size_t index = 0) const;
 
     bool expert_parallel() const { return !expert_parallel_shards.empty(); }
     bool supports_projection_glu_epilogue() const {
