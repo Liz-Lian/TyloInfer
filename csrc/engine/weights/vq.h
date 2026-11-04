@@ -6,6 +6,7 @@
 #include "backend.h"
 
 #include <cstdint>
+#include <vector>
 
 struct NepqWeight {
     ::tyloi::DenseTensor indices_packed;
@@ -30,4 +31,17 @@ struct NepqWeight {
     ::tyloi::DenseTensor residual_codebook;
     ::tyloi::DenseTensor residual_first;
     ::tyloi::DenseTensor residual_second;
+
+    // Every buffer an NEPQ pool keeps alive. It stays a plain aggregate: the
+    // expert pool is not a projection weight, but byte accounting and residency
+    // checks still need the whole list.
+    std::vector<const ::tyloi::DenseTensor*> buffers() const {
+        return {&indices_packed, &aux_packed, &state_packed, &neuron_scale, &table_pool,
+            &grouped_table_pool, &bank_ids, &rotation_signs, &residual_codebook,
+            &residual_first, &residual_second};
+    }
 };
+
+inline std::vector<const ::tyloi::DenseTensor*> nepq_buffers(const NepqWeight& weight) {
+    return weight.buffers();
+}

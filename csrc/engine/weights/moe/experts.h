@@ -42,6 +42,15 @@ struct Experts {
     weights::Placement placement(std::size_t index = 0) const;
 
     bool expert_parallel() const { return !expert_parallel_shards.empty(); }
+    // Owned expert buffers, for byte accounting. `resident` and `cached_source`
+    // are caches of the same storage, so they stay out of the traversal.
+    template <class Visitor>
+    void visit_tensors(Visitor visit) const {
+        if (pools)
+            for (const auto& pool : *pools) pool.visit_tensors(visit);
+        for (const auto& shard : expert_parallel_shards)
+            if (shard.weight) shard.weight->visit_tensors(visit);
+    }
     bool supports_projection_glu_epilogue() const {
         if (!expert_parallel()) {
             return unified_nint_projection || (pools && !pools->empty());

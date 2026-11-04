@@ -21,29 +21,24 @@ weights::Placement Experts::placement(std::size_t index) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (cached_source) return cached_source->placement();
 #endif
-    const auto add_payload = [&](const ::tyloi::DenseTensor& payload) {
-        if (!payload.defined() || !payload.is_cuda())
-            throw std::invalid_argument("expert weight is not prepared for CUDA execution");
-        const Device device{DeviceType::cuda, payload.get_device()};
-        if (std::find(result.devices.begin(), result.devices.end(), device) == result.devices.end())
-            result.devices.push_back(device);
+    // Every buffer the pool requires, not one representative per format.
+    const auto add_payload = [&](const ::tyloi::Tensor& weight) {
+        for (const auto* buffer : weight.buffers()) {
+            if (!buffer || !buffer->defined()) continue;
+            if (!buffer->is_cuda())
+                throw std::invalid_argument("expert weight is not prepared for CUDA execution");
+            const Device device{DeviceType::cuda, buffer->get_device()};
+            if (std::find(result.devices.begin(), result.devices.end(), device) == result.devices.end())
+                result.devices.push_back(device);
+        }
     };
     if (pools) {
-        for (const auto& pool : *pools) add_payload(pool.weight.q_packed);
+        for (const auto& pool : *pools) add_payload(pool.weight);
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (resident) {
-        for (const auto& pool : resident->pools) {
-            switch (pool.family) {
-                case MixedMoeFamily::Nint: add_payload(pool.nint.q_packed); break;
-                case MixedMoeFamily::Nint8Zero: add_payload(pool.q8_zero.q_packed); break;
-                case MixedMoeFamily::Mxfp4: add_payload(pool.mxfp4.values); break;
-                case MixedMoeFamily::Mxfp4Sq: add_payload(pool.mxfp4_sq.blob); break;
-                case MixedMoeFamily::Fp8Sq: add_payload(pool.fp8_sq.blob); break;
-                case MixedMoeFamily::Nvq: add_payload(pool.nvq.indices_packed); break;
-                case MixedMoeFamily::Nepq: add_payload(pool.nepq.indices_packed); break;
-            }
-        }
+        for (const auto& pool : resident->pools)
+            if (const auto* weight = pool.payload()) add_payload(*weight);
     }
 #endif
     if (result.devices.empty() && !result.caller)

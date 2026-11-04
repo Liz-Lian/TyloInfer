@@ -85,70 +85,23 @@ static int64_t tensor_storage_bytes(const ::tyloi::DenseTensor & value) {
         : 0;
 }
 
+// Physical bytes of every backing an expert runtime keeps alive. Aliased
+// buffers are counted once, the same rule the projection weights use.
 int64_t mixed_moe_storage_bytes(const MixedMoeRuntime & runtime) {
-    int64_t bytes = 0;
-    if(runtime.nint_dispatch) {
-        const auto& d=*runtime.nint_dispatch;
-        for(const auto& t:{d.map_ptrs,d.pool_params,d.initial_expert_pool,d.initial_expert_local})bytes+=tensor_storage_bytes(t);
+    std::vector<const ::tyloi::DenseTensor*> buffers;
+    if (runtime.nint_dispatch) {
+        const auto& d = *runtime.nint_dispatch;
+        buffers.insert(buffers.end(), {&d.map_ptrs, &d.pool_params,
+            &d.initial_expert_pool, &d.initial_expert_local});
     }
     if (runtime.nvq_dispatch) {
-        bytes += tensor_storage_bytes(runtime.nvq_dispatch->weight_ptrs);
-        bytes += tensor_storage_bytes(runtime.nvq_dispatch->weight_sizes);
-        bytes += tensor_storage_bytes(runtime.nvq_dispatch->pool_params);
-        bytes += tensor_storage_bytes(runtime.nvq_dispatch->initial_expert_pool);
-        bytes += tensor_storage_bytes(runtime.nvq_dispatch->initial_expert_local);
+        const auto& d = *runtime.nvq_dispatch;
+        buffers.insert(buffers.end(), {&d.weight_ptrs, &d.weight_sizes, &d.pool_params,
+            &d.initial_expert_pool, &d.initial_expert_local});
     }
-    for (const auto & pool : runtime.pools) {
-        bytes += tensor_storage_bytes(pool.expert_local);
-        if (pool.family == MixedMoeFamily::Nint) {
-            bytes += tensor_storage_bytes(pool.nint.q_packed);
-            bytes += tensor_storage_bytes(pool.nint.row_q_bits);
-            bytes += tensor_storage_bytes(pool.nint.row_q_bit_offsets);
-            bytes += tensor_storage_bytes(pool.nint.sub_scale);
-            bytes += tensor_storage_bytes(pool.nint.sub_min);
-            bytes += tensor_storage_bytes(pool.nint.neuron_scale);
-            bytes += tensor_storage_bytes(pool.nint.neuron_min);
-        } else if (pool.family == MixedMoeFamily::Nint8Zero) {
-            bytes += tensor_storage_bytes(pool.q8_zero.q_packed);
-            bytes += tensor_storage_bytes(pool.q8_zero.q8_zero_scale);
-        } else if (pool.family == MixedMoeFamily::Mxfp4) {
-            bytes += tensor_storage_bytes(pool.mxfp4.values);
-            bytes += tensor_storage_bytes(pool.mxfp4.scales);
-        } else if (pool.family == MixedMoeFamily::Mxfp4Sq) {
-            bytes += tensor_storage_bytes(pool.mxfp4_sq.blob);
-            bytes += tensor_storage_bytes(pool.mxfp4_sq.row_q);
-            bytes += tensor_storage_bytes(
-                pool.mxfp4_sq.row_symbol_byte_offsets);
-            bytes += tensor_storage_bytes(pool.mxfp4_sq.row_auxiliary);
-        } else if (pool.family == MixedMoeFamily::Fp8Sq) {
-            bytes += tensor_storage_bytes(pool.fp8_sq.blob);
-            bytes += tensor_storage_bytes(pool.fp8_sq.row_q);
-            bytes += tensor_storage_bytes(
-                pool.fp8_sq.row_symbol_byte_offsets);
-        } else if (pool.family == MixedMoeFamily::Nvq) {
-            bytes += tensor_storage_bytes(pool.nvq.indices_packed);
-            bytes += tensor_storage_bytes(pool.nvq.aux_packed);
-            bytes += tensor_storage_bytes(pool.nvq.sub_scale_packed);
-            bytes += tensor_storage_bytes(pool.nvq.neuron_scale);
-            bytes += tensor_storage_bytes(pool.nvq.codebook);
-            bytes += tensor_storage_bytes(pool.nvq.integer_codebook);
-            if(pool.nvq.decode_records.defined() && pool.nvq.decode_records.data_ptr()!=pool.nvq.indices_packed.data_ptr())
-                bytes += tensor_storage_bytes(pool.nvq.decode_records);
-        } else {
-            bytes += tensor_storage_bytes(pool.nepq.indices_packed);
-            bytes += tensor_storage_bytes(pool.nepq.aux_packed);
-            bytes += tensor_storage_bytes(pool.nepq.state_packed);
-            bytes += tensor_storage_bytes(pool.nepq.neuron_scale);
-            bytes += tensor_storage_bytes(pool.nepq.table_pool);
-            bytes += tensor_storage_bytes(pool.nepq.grouped_table_pool);
-            bytes += tensor_storage_bytes(pool.nepq.bank_ids);
-            bytes += tensor_storage_bytes(pool.nepq.rotation_signs);
-            bytes += tensor_storage_bytes(pool.nepq.residual_codebook);
-            bytes += tensor_storage_bytes(pool.nepq.residual_first);
-            bytes += tensor_storage_bytes(pool.nepq.residual_second);
-        }
-    }
-    return bytes;
+    for (const auto & pool : runtime.pools)
+        pool.visit_tensors([&](const ::tyloi::DenseTensor& tensor) { buffers.push_back(&tensor); });
+    return static_cast<int64_t>(::tyloi::backing_bytes(buffers));
 }
 
 std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
