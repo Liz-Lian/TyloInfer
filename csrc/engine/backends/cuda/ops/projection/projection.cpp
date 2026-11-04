@@ -112,7 +112,7 @@ tyloi::Tensor tyloi::cuda::ops::sigmoid_project(tyloi::Tensor input, tyloi::Tens
         }
         return profiler.measure("tq.tensor_parallel", [&] {
             const auto resources=tq.get(shard.device);
-            return shard.tq.forward(&resources->blas(),std::move(x));
+            return tyloi::cuda::tq::project(shard.tq,&resources->blas(),std::move(x));
         });
     }
     if ((tyloi::mfq_compat_enabled && shard.kind == QuantLinearKind::Mxfp4Sq) ||
@@ -196,7 +196,7 @@ using ::tyloi::indexing::Slice;
     if (output_a.is_tq()) {
         auto low_rank = measure("dsv4.output_a", [&] {
             const auto resources = tq_.get(grouped.get_device());
-            return output_a.tq.forward_groupwise(&resources->blas(), grouped, groups);
+            return tyloi::cuda::tq::groupwise(output_a.tq,&resources->blas(), grouped, groups);
         });
         return measure("dsv4.output_b", [&] {
             return run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
@@ -423,7 +423,7 @@ Projector::grouped(
     check_projection(weight, x);
     if(weight.is_tq() && !weight.tensor_parallel())return profiler_.measure("tq.linear",[&] {
         const auto resources=tq_.get(x.get_device());
-        return weight.tq.forward(&resources->blas(),std::move(x));
+        return tyloi::cuda::tq::project(weight.tq,&resources->blas(),std::move(x));
     });
     if (weight.tensor_parallel() || (tyloi::mfq_compat_enabled && weight.is_nint()) || (tyloi::mfq_compat_enabled && weight.is_nvq())) {
         auto shape = x.sizes().vec();

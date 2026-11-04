@@ -33,7 +33,7 @@ bool tq_graph_supports_tokens(std::int64_t tokens)noexcept {
 
 namespace {
 
-struct TqGraphLease {std::array<std::vector<TqWeight>,3> weights;void clear(){for(auto& w:weights)w.clear();}};
+struct TqGraphLease {std::array<std::vector<::tyloi::Tensor>,3> weights;void clear(){for(auto& w:weights)w.clear();}};
 const char tq_graph_lease_identity=0;
 struct TqMoeGraphStage {
     std::array<std::shared_ptr<TqRoutedWeight>,3> banks;
@@ -456,14 +456,14 @@ struct TqMoeGraphStage {
         for(std::size_t begin=0;begin<prefill_groups;begin+=image_batch) {
             const auto count=std::min(image_batch,prefill_groups-begin);
             const auto banks=phase("tq.moe.weights",[&] {
-                return std::array<std::vector<TqWeight>,3>{
+                return std::array<std::vector<::tyloi::Tensor>,3>{
                     gate->cache->get(gate->source_id,unique.data()+begin,count,source.get_device()),
                     up->cache->get(up->source_id,unique.data()+begin,count,source.get_device()),
                     down->cache->get(down->source_id,unique.data()+begin,count,source.get_device())};
             });
             for(std::size_t i=0;i<count;++i) {
                 const auto index=begin+i;
-                const TrellisPrefillMoeJob job{banks[0][i].view,banks[1][i].view,banks[2][i].view,
+                const TrellisPrefillMoeJob job{tyloi::cuda::tq::view(banks[0][i]),tyloi::cuda::tq::view(banks[1][i]),tyloi::cuda::tq::view(banks[2][i]),
                     static_cast<int64_t>(first),static_cast<int>(slots[index].size())};
                 std::memcpy(host_bytes+index*sizeof(job),&job,sizeof(job));first+=slots[index].size();
             }
@@ -527,7 +527,7 @@ struct TqMoeGraphStage {
             const auto count=std::min<std::size_t>(std::min<std::size_t>(65535,unique.size()-begin),
                 std::max<std::uint64_t>(1,(free/2)/per_expert));
             const auto banks=phase("tq.moe.weights",[&] {
-                return std::array<std::vector<TqWeight>,3>{
+                return std::array<std::vector<::tyloi::Tensor>,3>{
                     gate->cache->get(gate->source_id,unique.data()+begin,count,source.get_device()),
                     up->cache->get(up->source_id,unique.data()+begin,count,source.get_device()),
                     down->cache->get(down->source_id,unique.data()+begin,count,source.get_device())};

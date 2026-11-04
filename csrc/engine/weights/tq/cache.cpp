@@ -215,7 +215,7 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
 }
 
 ::tyloi::Tensor TqCache::views(std::uint64_t source,
-        const std::int64_t* ids,const std::vector<TqWeight>& weights,int device) {
+        const std::int64_t* ids,const std::vector<::tyloi::Tensor>& weights,int device) {
     const MfqCudaGuard device_guard(device);
     std::lock_guard<std::mutex> guard(mutex_);
     if (!source || source > sources_.size()) throw std::out_of_range("unknown TQ source");
@@ -241,9 +241,10 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
     // images; the caller's selected weights retain their normal lifetime.
     bool changed=false;
     for(std::size_t i=0;i<weights.size();++i) {
-        const auto image=reinterpret_cast<std::uintptr_t>(weights[i].image.data_ptr());
+        const auto image=reinterpret_cast<std::uintptr_t>(::tyloi::encoding::tq_image(weights[i]).data_ptr());
         if(found->images[ids[i]]==image)continue;
-        std::memcpy(found->bytes.data()+ids[i]*sizeof(TrellisProjectionView),&weights[i].view,sizeof(TrellisProjectionView));
+        const auto view=tyloi::cuda::tq::view(weights[i]);
+        std::memcpy(found->bytes.data()+ids[i]*sizeof(TrellisProjectionView),&view,sizeof(view));
         found->images[ids[i]]=image;changed=true;
     }
     // One small DMA for changed metadata, no per-expert transfers and no
@@ -253,7 +254,7 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
     return found->views;
 }
 
-std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,std::size_t count,int device) {
+std::vector<::tyloi::Tensor> TqCache::get(std::uint64_t source,const std::int64_t* ids,std::size_t count,int device) {
     const MfqCudaGuard device_guard(device);
     std::lock_guard<std::mutex> guard(mutex_);
     if (!source || source > sources_.size()) throw std::out_of_range("unknown TQ source");
@@ -264,7 +265,7 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
         if (!ids || ids[i] < 0 || std::uint64_t(ids[i]) >= table.rows() / out)
             throw std::out_of_range("TQ routed expert ID is out of bounds");
     const auto resources=tq_->get(device);
-    std::vector<TqWeight> result;result.reserve(count);
+    std::vector<::tyloi::Tensor> result;result.reserve(count);
     const auto stream=mfq_get_current_cuda_stream(device);
     std::shared_ptr<tyloi::cuda::Event> uploaded;
     for(auto it=host_transfers_.begin();it!=host_transfers_.end();)
@@ -282,7 +283,7 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
             const auto event=resident->uploaded->get();
             if(waited.insert(event).second)TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(stream.stream(),event,0));
             resources->retain(stream);
-            mfq_cuda_record_stream(resident->weight.image,stream);
+            mfq_cuda_record_stream(resident->weight,stream);
         }
         ++gpu_hits_;result.push_back(resident->weight);
         if((calls_&4095)==0)report();
@@ -313,7 +314,7 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
     const auto needed=image->bytes.size();
     device_.reserve(needed);
     auto storage=::tyloi::cuda::empty({static_cast<std::int64_t>(needed)},::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA,device)).dtype(::tyloi::kUInt8));
-    auto weight=tq_view(std::move(storage),image->layout,table.width());
+    auto weight=tq_view(storage,image->layout,table.width());
     if(image->registered) {
         if(!uploaded)uploaded=std::make_shared<tyloi::cuda::Event>(cudaEventDisableTiming);
         if(transfer==host_transfers_.end()) {
@@ -323,11 +324,11 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
         // by asynchronous DMA. One event retains the whole call's images.
         transfer->images.push_back(image);
         const auto started=std::chrono::steady_clock::now();
-        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(weight.image.data_ptr(),image->bytes.data(),image->bytes.size(),
+        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(storage.data_ptr(),image->bytes.data(),image->bytes.size(),
             cudaMemcpyHostToDevice,stream.stream()));
         transfer_bytes_+=image->bytes.size();direct_transfer_bytes_+=image->bytes.size();
         upload_submit_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
-    }else upload(weight.image,image->bytes);
+    }else upload(storage,image->bytes);
     if(!device_.limit() || needed<=*device_.limit()) {
         if(!uploaded)uploaded=std::make_shared<tyloi::cuda::Event>(cudaEventDisableTiming);
         device_.put(device_key,DeviceEntry{weight,uploaded,stream.stream(),image->source_bytes},needed);

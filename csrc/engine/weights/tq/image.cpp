@@ -3,14 +3,27 @@
 
 #include <climits>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <utility>
+
+namespace {
+std::pair<std::size_t, std::size_t> image_offsets(const tyloi::TqLayout& layout) {
+    const auto limit = std::numeric_limits<std::size_t>::max();
+    if (layout.packed > limit - 3) throw std::overflow_error("TQ image offset overflow");
+    const auto words = (layout.packed + 3) & ~std::size_t(3);
+    if (layout.packed_bytes > limit - words || words + layout.packed_bytes > limit - 32)
+        throw std::overflow_error("TQ image size overflow");
+    return {words, words + layout.packed_bytes};
+}
+}
 
 std::vector<std::uint8_t> tq_image(
         const std::vector<std::uint8_t>& blob, const tyloi::TqLayout& layout) {
     // Keep the packed words aligned in the single image consumed by CUDA.
-    const auto words_offset = (layout.packed + 3) & ~std::size_t(3);
-    const auto relative_offset = words_offset + layout.packed_bytes;
+    const auto [words_offset, relative_offset] = image_offsets(layout);
+    if (layout.packed > blob.size() || layout.packed_bytes > blob.size() - layout.packed)
+        throw std::invalid_argument("TQ image source is too short");
     std::vector<std::uint8_t> image(relative_offset + 32);
     std::memcpy(image.data(), blob.data(), layout.packed);
     std::memcpy(image.data() + words_offset,
@@ -22,45 +35,28 @@ std::vector<std::uint8_t> tq_image(
     return image;
 }
 
-TqWeight tq_view(::tyloi::Tensor image,
+::tyloi::Tensor tq_view(::tyloi::Tensor image,
                  const tyloi::TqLayout& layout, std::int64_t columns) {
     if (columns < 1 || columns > layout.width || layout.rows > INT_MAX ||
         layout.width > INT_MAX) {
         throw std::invalid_argument("invalid TQ CUDA logical shape");
     }
-    const auto words_offset = (layout.packed + 3) & ~std::size_t(3);
-    const auto relative_offset = words_offset + layout.packed_bytes;
-    TqWeight result;
-    result.image = std::move(image);
-    auto* data = result.image.data_ptr<std::uint8_t>();
+    const auto [words_offset, relative_offset] = image_offsets(layout);
     int gslog = 0;
     for (auto gs = layout.gs; gs > 1; gs >>= 1) ++gslog;
-    result.view = {
-        reinterpret_cast<const std::uint32_t*>(data + words_offset),
-        reinterpret_cast<const std::uint64_t*>(data + 64),
-        data + layout.scales, data + relative_offset, nullptr,
-        static_cast<int>(layout.rows), static_cast<int>(layout.width),
-        static_cast<int>(columns), gslog, int(layout.columns)};
-    result.out = layout.rows;
-    result.neuron_len = columns;
-    return result;
+    return ::tyloi::encoding::tq_tensor(image, layout.rows, columns,
+        {words_offset, layout.packed_bytes, layout.scales, layout.scale_bytes,
+         relative_offset, relative_offset + 32, layout.width, gslog, layout.columns});
 }
 
-TqWeight promote_tq(const TqWeight& weight,
+::tyloi::Tensor promote_tq(const ::tyloi::Tensor& weight,
                    const ::tyloi::Device& device) {
-    TqWeight result=weight;
-    result.image=weight.image.to(device,false,false).contiguous();
-    const auto old=reinterpret_cast<std::uintptr_t>(weight.image.data_ptr());
-    const auto target=reinterpret_cast<std::uintptr_t>(result.image.data_ptr());
-    auto address=[&](const void* p){return p?target+(reinterpret_cast<std::uintptr_t>(p)-old):std::uintptr_t(0);};
-    result.view.words=reinterpret_cast<const std::uint32_t*>(address(weight.view.words));
-    result.view.descriptors=reinterpret_cast<const std::uint64_t*>(address(weight.view.descriptors));
-    result.view.scales=reinterpret_cast<const void*>(address(weight.view.scales));
-    result.view.relative=reinterpret_cast<const void*>(address(weight.view.relative));
-    return result;
+    auto image = ::tyloi::encoding::tq_image(weight).to(device,false,false).contiguous();
+    return ::tyloi::encoding::tq_tensor(image, weight.size(0), weight.size(1),
+                                        ::tyloi::encoding::tq_layout(weight));
 }
 
-TqWeight to_device_tq(const std::vector<std::uint8_t>& blob,
+::tyloi::Tensor to_device_tq(const std::vector<std::uint8_t>& blob,
                       std::int64_t columns, int device, bool cuda) {
     const tyloi::TqLayout layout(blob.data(), blob.size());
     const auto image = tq_image(blob, layout);

@@ -15,8 +15,8 @@
 namespace tq_ops {
 
 IndexedJobs make_indexed_jobs(
-        std::span<const TqWeight> gate, std::span<const TqWeight> up,
-        std::span<const TqWeight> down,
+        std::span<const ::tyloi::Tensor> gate, std::span<const ::tyloi::Tensor> up,
+        std::span<const ::tyloi::Tensor> down,
         const std::vector<std::vector<std::int64_t>>& slots,
         std::size_t begin, std::int64_t routes, std::int64_t input,
         std::int64_t hidden, std::int64_t output, bool wide) {
@@ -28,8 +28,8 @@ IndexedJobs make_indexed_jobs(
         const auto complete = wide ? rows.size() / 8 * 8 : 0;
         for (std::size_t start = 0; start < complete; start += 8) {
             TrellisIndexedWidePairJob job{};
-            job.weight = gate[i].view;
-            job.second = up[i].view;
+            job.weight = tyloi::cuda::tq::view(gate[i]);
+            job.second = tyloi::cuda::tq::view(up[i]);
             job.count = 8;
             for (int t = 0; t < 8; ++t) {
                 const auto slot = rows[start + t];
@@ -43,9 +43,9 @@ IndexedJobs make_indexed_jobs(
         for (std::size_t start = complete; start < rows.size(); --chunks) {
             const auto tile = (rows.size() - start + chunks - 1) / chunks;
             TrellisIndexedProjectionJob gu{}, dn{};
-            gu.weight = gate[i].view;
-            gu.second = up[i].view;
-            dn.weight = down[i].view;
+            gu.weight = tyloi::cuda::tq::view(gate[i]);
+            gu.second = tyloi::cuda::tq::view(up[i]);
+            dn.weight = tyloi::cuda::tq::view(down[i]);
             gu.count = dn.count = int(tile);
             for (int t = 0; t < gu.count; ++t) {
                 const auto slot = rows[start + t];
@@ -63,7 +63,7 @@ IndexedJobs make_indexed_jobs(
             for (std::size_t start = 0; start < rows.size(); --down_chunks) {
                 const auto tile = (rows.size() - start + down_chunks - 1) / down_chunks;
                 TrellisIndexedWideProjectionJob job{};
-                job.weight = down[i].view;
+                job.weight = tyloi::cuda::tq::view(down[i]);
                 job.count = int(tile);
                 for (int t = 0; t < job.count; ++t) {
                     const auto slot = rows[start + t];
@@ -87,8 +87,9 @@ IndexedJobs make_indexed_jobs(
             std::move(wide_tiles), std::move(wide_gate_up)};
 }
 
-void routed_projection(const std::vector<TqWeight>& weights,
+void routed_projection(const std::vector<::tyloi::Tensor>& weights,
         ::tyloi::Tensor source, ::tyloi::Tensor output) {
+    source.require_dense(); output.require_dense();
     if (source.dim() != 2 && source.dim() != 3)
         throw std::invalid_argument("invalid prepared TQ routed activation geometry");
     if (output.dim() != 3)
@@ -100,12 +101,12 @@ void routed_projection(const std::vector<TqWeight>& weights,
     if (source.dim() == 3 && source.size(1) != routes)
         throw std::invalid_argument("TQ routed source and output route counts differ");
     source = source.contiguous();
-    const auto out = weights.front().out;
+    const auto out = weights.front().size(0);
     if (output.size(2) != out || !output.is_cuda() || output.device() != source.device())
         throw std::invalid_argument("invalid prepared TQ routed output tensor");
     std::vector<TrellisProjectionView> views;
     views.reserve(weights.size());
-    for (const auto& weight : weights) views.push_back(weight.view);
+    for (const auto& weight : weights) views.push_back(tyloi::cuda::tq::view(weight));
     const auto bytes = static_cast<std::int64_t>(views.size() * sizeof(views[0]));
     const auto metadata = ::tyloi::cuda::from_blob(
         views.data(), {bytes}, ::tyloi::TensorOptions().dtype(::tyloi::kUInt8))
@@ -114,23 +115,24 @@ void routed_projection(const std::vector<TqWeight>& weights,
     const auto element = source.element_size();
     for (std::int64_t token = 0; token < tokens; ++token) {
         const auto input_offset = token * (source.dim() == 3 ? routes : 1) *
-            weights.front().neuron_len * element;
+            weights.front().size(1) * element;
         const auto output_offset = token * routes * out * element;
         tq_detail::status(mfq_tq_gemv_batch(
             data + token * routes,
             static_cast<const std::uint8_t*>(source.data_ptr()) + input_offset,
             static_cast<std::uint8_t*>(output.data_ptr()) + output_offset,
             static_cast<int>(routes), static_cast<int>(out),
-            source.dim() == 3 ? static_cast<int>(weights.front().neuron_len) : 0,
+            source.dim() == 3 ? static_cast<int>(weights.front().size(1)) : 0,
             static_cast<int>(out), tq_detail::dtype(source.scalar_type()),
             0, 0, mfq_current_cuda_stream()));
     }
 }
 
-void run_long_expert(const TqWeight& gate, const TqWeight& up,
-        const TqWeight& down, const std::vector<std::int64_t>& slots,
+void run_long_expert(const ::tyloi::Tensor& gate, const ::tyloi::Tensor& up,
+        const ::tyloi::Tensor& down, const std::vector<std::int64_t>& slots,
         std::int64_t routes, const ::tyloi::Tensor& source, ::tyloi::Tensor output,
         tyloi::cuda::BlasResources* blas, float limit) {
+    source.require_dense(); output.require_dense();
     std::vector<std::int64_t> token_ids;
     token_ids.reserve(slots.size());
     for (const auto slot : slots) token_ids.push_back(slot / routes);
@@ -143,8 +145,8 @@ void run_long_expert(const TqWeight& gate, const TqWeight& up,
     const auto gathered = source.index_select(0, token_index);
     ::tyloi::Tensor activated;
     if (limit > 0) {
-        const auto gv = gate.forward(blas, gathered);
-        const auto uv = up.forward(blas, gathered);
+        const auto gv = tyloi::cuda::tq::project(gate, blas, gathered);
+        const auto uv = tyloi::cuda::tq::project(up, blas, gathered);
         if (tq_detail::dtype(source.scalar_type()) == 0)
             activated = clipped_silu_mul_cuda(gv, uv, limit);
         else
@@ -154,14 +156,15 @@ void run_long_expert(const TqWeight& gate, const TqWeight& up,
     } else {
         activated = TqProjectionGroup({gate, up}).swiglu(blas, gathered);
     }
-    output.index_copy_(0, slot_index, down.forward(blas, std::move(activated)));
+    output.index_copy_(0, slot_index, tyloi::cuda::tq::project(down, blas, std::move(activated)));
 }
 
-void run_indexed(std::span<const TqWeight> gate,
-        std::span<const TqWeight> up, std::span<const TqWeight> down,
+void run_indexed(std::span<const ::tyloi::Tensor> gate,
+        std::span<const ::tyloi::Tensor> up, std::span<const ::tyloi::Tensor> down,
         const std::vector<std::vector<std::int64_t>>& slots, std::size_t begin,
         std::int64_t routes, const ::tyloi::Tensor& source, ::tyloi::Tensor activated,
         ::tyloi::Tensor pairs, float limit, bool wide) {
+    source.require_dense(); activated.require_dense(); pairs.require_dense();
     const auto input = source.size(-1);
     const auto hidden = activated.size(-1);
     const auto output = pairs.size(-1);

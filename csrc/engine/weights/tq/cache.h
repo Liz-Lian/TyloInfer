@@ -24,10 +24,10 @@ public:
     ~TqCache();
 
     std::uint64_t add(std::shared_ptr<const tyloi::TqTable>, std::int64_t rows);
-    std::vector<TqWeight> get(std::uint64_t source, const std::int64_t* ids,
+    std::vector<::tyloi::Tensor> get(std::uint64_t source, const std::int64_t* ids,
                               std::size_t count, int device);
     ::tyloi::Tensor views(std::uint64_t source, const std::int64_t* ids,
-                                      const std::vector<TqWeight>& weights, int device);
+                                      const std::vector<::tyloi::Tensor>& weights, int device);
     std::size_t budget();
     void resize(std::size_t bytes);
     std::size_t reserve(std::size_t bytes);
@@ -52,7 +52,7 @@ private:
         }
     };
     struct DeviceEntry {
-        TqWeight weight;
+        ::tyloi::Tensor weight;
         std::shared_ptr<tyloi::cuda::Event> uploaded;
         cudaStream_t producer = nullptr;
         std::size_t source_bytes = 0;

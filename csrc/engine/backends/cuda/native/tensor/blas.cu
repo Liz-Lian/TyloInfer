@@ -222,6 +222,7 @@ void submit_parallel_rows(int device,std::int64_t begin,std::int64_t rows,
 }
 
 Tensor matmul(const Tensor& left_source, const Tensor& right_source) {
+    left_source.require_dense(); right_source.require_dense();
     if (!left_source.defined() || !right_source.defined() ||
         !left_source.is_cuda() || !right_source.is_cuda()) {
         throw std::invalid_argument("native matmul requires CUDA tensors");
@@ -465,6 +466,7 @@ Tensor matmul(const Tensor& left_source, const Tensor& right_source) {
 }
 
 Tensor bmm(const Tensor& left, const Tensor& right) {
+    left.require_dense(); right.require_dense();
     if (left.dim() != 3 || right.dim() != 3 || left.size(0) != right.size(0)) {
         throw std::invalid_argument("bmm requires equally batched rank-three tensors");
     }
@@ -472,6 +474,7 @@ Tensor bmm(const Tensor& left, const Tensor& right) {
 }
 
 Tensor baddbmm(const Tensor& input, const Tensor& left, const Tensor& right) {
+    input.require_dense(); left.require_dense(); right.require_dense();
     return input + bmm(left, right);
 }
 
@@ -479,6 +482,7 @@ Tensor linear(
     const Tensor& input,
     const Tensor& weight,
     const std::optional<Tensor>& bias) {
+    input.require_dense(); weight.require_dense(); if (bias) bias->require_dense();
     if (weight.dim() != 2) throw std::invalid_argument("linear weight must be a matrix");
     auto output = matmul(input, weight.transpose(0, 1));
     if (bias.has_value() && bias->defined()) output = output + *bias;
@@ -494,6 +498,8 @@ Tensor scaled_dot_product_attention(
     bool causal,
     const std::optional<double>& scale,
     bool enable_grouped_query_attention) {
+    query_source.require_dense(); key_source.require_dense(); value_source.require_dense();
+    if (mask) mask->require_dense();
     if (dropout != 0.0) {
         throw std::invalid_argument("native inference attention does not support dropout");
     }

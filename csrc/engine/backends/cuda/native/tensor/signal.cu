@@ -240,6 +240,7 @@ Tensor conv1d(
     std::span<const std::int64_t> padding,
     std::span<const std::int64_t> dilation,
     std::int64_t groups) {
+    input_source.require_dense(); weight_source.require_dense(); bias_source.require_dense();
     if (input_source.dim() != 3 || weight_source.dim() != 3 || groups <= 0 ||
         stride.size() != 1 || padding.size() != 1 || dilation.size() != 1) {
         throw std::invalid_argument("conv1d geometry is invalid");
@@ -280,6 +281,7 @@ Tensor conv2d(
     std::span<const std::int64_t> padding,
     std::span<const std::int64_t> dilation,
     std::int64_t groups) {
+    input_source.require_dense(); weight_source.require_dense(); bias_source.require_dense();
     if (input_source.dim() != 4 || weight_source.dim() != 4 || groups <= 0 ||
         stride.size() != 2 || padding.size() != 2 || dilation.size() != 2) {
         throw std::invalid_argument("conv2d geometry is invalid");
@@ -323,6 +325,7 @@ Tensor avg_pool1d(
     std::span<const std::int64_t> kernel,
     std::span<const std::int64_t> stride,
     std::span<const std::int64_t> padding) {
+    input_source.require_dense();
     if (input_source.dim() != 3 || kernel.size() != 1 || stride.size() != 1 ||
         (!padding.empty() && padding.size() != 1)) {
         throw std::invalid_argument("avg_pool1d geometry is invalid");
@@ -346,6 +349,7 @@ Tensor avg_pool1d(
 }
 
 Tensor cumsum(const Tensor& input_source, std::int64_t dimension) {
+    input_source.require_dense();
     auto input = input_source.contiguous();
     const auto selected = normalize_dimension(dimension, input.dim());
     std::int64_t outer = 1;
@@ -371,6 +375,7 @@ Tensor multinomial(
     const Tensor& probabilities_source,
     std::int64_t samples,
     bool replacement) {
+    probabilities_source.require_dense();
     if (samples != 1 || replacement) {
         throw std::invalid_argument(
             "native inference multinomial currently supports one sample without replacement");

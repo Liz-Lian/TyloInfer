@@ -25,6 +25,7 @@ void device(Device value) {
 }
 void input(const Tensor& value) {
     if (!value.defined()) throw std::invalid_argument("undefined tensor");
+    value.require_dense();
     device(value.device());
 }
 void compatible(const Tensor& left, const Tensor& right) {
@@ -60,6 +61,10 @@ void check_weight(const weights::Weights& value, weights::Layout layout) {
 }
 void require_cuda(const Tensor& value) {
     if (!value.device().is_cuda()) throw std::invalid_argument("operation requires a CUDA tensor");
+}
+bool encoded(std::initializer_list<const Tensor*> values) {
+    for (const auto* value : values) if (value->is_encoded()) return true;
+    return false;
 }
 }
 
@@ -109,6 +114,8 @@ Tensor attention(Tensor query, Tensor key, Tensor value,
 Tensor rope(Tensor value, Tensor positions, const RopeTable& table, bool bf16, bool grid) {
     compatible(value, table.cos);
     compatible(value, table.sin);
+    table.sections.require_dense(); table.empty_sections.require_dense();
+    table.interleaved_order.require_dense(); table.interleaved_inverse.require_dense();
     input(positions);
     if (value.dim() == 0 || table.rotary_dim <= 0 || table.rotary_dim % 2 != 0 ||
         table.rotary_dim > value.size(-1))
@@ -119,11 +126,23 @@ Tensor rope(Tensor value, Tensor positions, const RopeTable& table, bool bf16, b
 std::optional<Tensor> norm_rope_kv(const AttentionInput& request, const state::KvView& kv,
     const RopeTable& table, const Tensor& q_norm, const Tensor& k_norm, double eps, double offset) {
     if (!request.query.is_cuda()) return std::nullopt;
+    if (encoded({&request.query, &request.key, &request.value, &request.positions, &request.write_positions,
+                 &table.cos, &table.sin, &table.sections, &table.empty_sections, &table.interleaved_order,
+                 &table.interleaved_inverse, &q_norm, &k_norm, &kv.visible_key, &kv.visible_value,
+                 &kv.physical_key, &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table}) ||
+        (request.sequence_lengths && request.sequence_lengths->is_encoded()) ||
+        (request.attention_mask && request.attention_mask->is_encoded())) return std::nullopt;
     return cuda::ops::norm_rope_kv(request, kv, table, q_norm, k_norm, eps, offset);
 }
 std::optional<Tensor> rope_kv(const AttentionInput& request, const state::KvView& kv,
                                const RopeTable& table) {
     if (!request.query.is_cuda()) return std::nullopt;
+    if (encoded({&request.query, &request.key, &request.value, &request.positions, &request.write_positions,
+                 &table.cos, &table.sin, &table.sections, &table.empty_sections, &table.interleaved_order,
+                 &table.interleaved_inverse, &kv.visible_key, &kv.visible_value, &kv.physical_key,
+                 &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table}) ||
+        (request.sequence_lengths && request.sequence_lengths->is_encoded()) ||
+        (request.attention_mask && request.attention_mask->is_encoded())) return std::nullopt;
     return cuda::ops::rope_kv(request, kv, table);
 }
 
@@ -172,6 +191,8 @@ std::optional<ResidualNorms> residual_norms(Tensor residual, Tensor attention, c
                                             const Tensor& dense_weight, const Tensor& router_weight,
                                             const Tensor& expert_weight, double eps) {
     if (!residual.is_cuda()) return std::nullopt;
+    if (encoded({&residual, &attention, &attention_weight, &dense_weight, &router_weight, &expert_weight}))
+        return std::nullopt;
     return cuda::ops::residual_norms(std::move(residual), std::move(attention), attention_weight,
                                      dense_weight, router_weight, expert_weight, eps);
 }

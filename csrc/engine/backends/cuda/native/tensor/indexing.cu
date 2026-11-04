@@ -325,6 +325,7 @@ Tensor index_select_cuda(
     const Tensor& source,
     std::int64_t dimension,
     const Tensor& indices_source) {
+    source.require_dense(); indices_source.require_dense();
     if (!source.is_cuda() || indices_source.dim() != 1) {
         throw std::invalid_argument("index_select expects CUDA source and one-dimensional indices");
     }
@@ -379,6 +380,7 @@ Tensor gather_cuda(
     const Tensor& source,
     std::int64_t dimension,
     const Tensor& indices_source) {
+    source.require_dense(); indices_source.require_dense();
     if (!source.is_cuda() || source.dim() != indices_source.dim()) {
         throw std::invalid_argument("gather requires matching CUDA tensor ranks");
     }
@@ -403,6 +405,7 @@ Tensor gather_cuda(
 }
 
 Tensor repeat_cuda(const Tensor& source, std::span<const std::int64_t> repeats) {
+    source.require_dense();
     if (!source.is_cuda() || repeats.size() < static_cast<std::size_t>(source.dim())) {
         throw std::invalid_argument("repeat geometry is invalid");
     }
@@ -429,6 +432,7 @@ Tensor repeat_interleave_cuda(
     const Tensor& source,
     std::int64_t repeats,
     std::int64_t dimension) {
+    source.require_dense();
     if (!source.is_cuda() || repeats < 0) {
         throw std::invalid_argument("repeat_interleave geometry is invalid");
     }
@@ -454,6 +458,7 @@ void scatter_cuda(
     const Tensor& index_source,
     const Tensor& source_value,
     bool add) {
+    destination.require_dense(); index_source.require_dense(); source_value.require_dense();
     if (!destination.is_cuda() || destination.scalar_type() != source_value.scalar_type() ||
         index_source.sizes() != source_value.sizes()) {
         throw std::invalid_argument("scatter tensor geometry or dtype mismatch");
@@ -489,6 +494,7 @@ void index_copy_cuda(
     std::int64_t dimension,
     const Tensor& index_source,
     const Tensor& source_value) {
+    destination.require_dense(); index_source.require_dense(); source_value.require_dense();
     if (!destination.is_cuda() || destination.scalar_type() != source_value.scalar_type()) {
         throw std::invalid_argument("index_copy tensor geometry or dtype mismatch");
     }
@@ -517,6 +523,7 @@ void index_fill_cuda(
     std::int64_t dimension,
     const Tensor& index_source,
     double value) {
+    destination.require_dense(); index_source.require_dense();
     if (!destination.is_cuda()) throw std::invalid_argument("index_fill requires CUDA tensor");
     auto index = contiguous(copy(index_source, destination.device()));
     const auto selected = normalize_dimension(dimension, destination.dim());
@@ -543,6 +550,7 @@ void index_fill_cuda(
 }
 
 void masked_fill_cuda(Tensor& destination, const Tensor& mask_source, double value) {
+    destination.require_dense(); mask_source.require_dense();
     if (!destination.is_cuda()) throw std::invalid_argument("masked_fill requires CUDA tensor");
     auto mask = cast(mask_source, kBool, destination.device());
     const auto aligned = align_for_broadcast(mask, destination.sizes());
@@ -557,6 +565,7 @@ void masked_fill_cuda(Tensor& destination, const Tensor& mask_source, double val
 }
 
 Tensor masked_select_cuda(const Tensor& source_value, const Tensor& mask_value) {
+    source_value.require_dense(); mask_value.require_dense();
     auto source = contiguous(source_value);
     auto mask = contiguous(expand(cast(mask_value, kBool, source.device()), source.sizes()));
     auto mask_host = contiguous(copy(mask, Device{kCPU, 0}));

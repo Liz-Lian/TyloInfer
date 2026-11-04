@@ -156,9 +156,9 @@ QuantLinearGroup make_quant_group(
             return layer.tensor_parallel();
         });
     const bool all_tq = std::all_of(layers.begin(),layers.end(),
-        [](const QuantLinear& layer){return layer.is_tq() && layer.tq.image.is_cuda();});
+        [](const QuantLinear& layer){return layer.is_tq() && layer.tq.is_cuda();});
     if(all_tq && !any_tensor_parallel) {
-        std::vector<TqWeight> weights;weights.reserve(layers.size());
+        std::vector<::tyloi::Tensor> weights;weights.reserve(layers.size());
         for(const auto& layer:layers)weights.push_back(layer.tq);
         result.tq=TqProjectionGroup(std::move(weights));
     }
@@ -200,13 +200,13 @@ Projections make_projections(
     for (size_t i = 0; i < result.weights.size(); ++i) {
         const auto & weight = result.weights[i];
         if (!weight.is_tq() || weight.tensor_parallel() ||
-                !weight.tq.image.is_cuda()) {
+                !weight.tq.is_cuda()) {
             continue;
         }
         if (!tq_weights.empty() &&
                 (weight.neuron_len() != tq_weights.front().neuron_len() ||
-                 weight.tq.image.device() !=
-                     tq_weights.front().tq.image.device())) {
+                 weight.tq.device() !=
+                     tq_weights.front().tq.device())) {
             return result;
         }
         tq_weights.push_back(weight);

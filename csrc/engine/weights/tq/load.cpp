@@ -10,14 +10,14 @@
 #include <stdexcept>
 #include <utility>
 
-TqWeight load_tq_weight(const tyloi::source::Source& source,
+::tyloi::Tensor load_tq_weight(const tyloi::source::Source& source,
                          const std::string& name, int device, bool cuda) {
     const auto shape = tyloi::tq_projection_shape(source, name);
     const auto bytes = source.read(name);
     std::vector<std::uint8_t> blob(bytes.size());
     std::memcpy(blob.data(), bytes.data(), bytes.size());
     auto result = to_device_tq(blob, shape[1], device, cuda);
-    if (result.out != shape[0]) {
+    if (result.size(0) != shape[0]) {
         throw std::invalid_argument("TQ projection output shape differs: " + name);
     }
     return result;

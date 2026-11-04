@@ -57,6 +57,7 @@ void manual_seed(std::int64_t seed) {
 
 Tensor cat(std::span<const Tensor> tensors, std::int64_t dimension) {
     if (tensors.empty()) throw std::invalid_argument("cat requires at least one tensor");
+    for (const auto& tensor : tensors) tensor.require_dense();
     const auto selected = normalize_dimension(dimension, tensors.front().dim());
     auto shape = tensors.front().sizes().vec();
     shape[selected] = 0;
@@ -97,6 +98,7 @@ Tensor cat(const std::vector<Tensor>& tensors, std::int64_t dimension) {
 
 Tensor stack(std::span<const Tensor> tensors, std::int64_t dimension) {
     if (tensors.empty()) throw std::invalid_argument("stack requires at least one tensor");
+    for (const auto& tensor : tensors) tensor.require_dense();
     auto selected = dimension;
     if (selected < 0) selected += tensors.front().dim() + 1;
     if (selected < 0 || selected > tensors.front().dim()) {
@@ -217,6 +219,7 @@ Tensor where(
     const Tensor& condition_source,
     const Tensor& yes_source,
     const Tensor& no_source) {
+    condition_source.require_dense(); yes_source.require_dense(); no_source.require_dense();
     auto shape = broadcast_shape(yes_source, no_source);
     // The condition can introduce token or batch axes absent from both
     // alternatives. Expanding is a view; no candidate data is materialized.
@@ -241,10 +244,12 @@ Tensor where(
 }
 
 Tensor where(const Tensor& condition, const Tensor& yes, double no) {
+    condition.require_dense(); yes.require_dense();
     return where(condition, yes, full_like(yes, no));
 }
 
 Tensor where(const Tensor& condition, double yes, const Tensor& no) {
+    condition.require_dense(); no.require_dense();
     return where(condition, full_like(no, yes), no);
 }
 

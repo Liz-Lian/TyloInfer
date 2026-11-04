@@ -41,45 +41,48 @@ void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device
     throw std::invalid_argument("projection weight and input devices do not match");
 }
 
-void check_fields(std::initializer_list<const ::tyloi::Tensor*> fields, ::tyloi::Device device) {
+void check_fields(std::initializer_list<const ::tyloi::Tensor*> fields, ::tyloi::Device device, bool check_device = true) {
     for (const auto* field : fields) {
-        if (!field->defined() || field->numel() == 0) continue;
+        field->require_dense();
+        if (!check_device || !field->defined() || field->numel() == 0) continue;
         if (field->device() != device)
             throw std::invalid_argument("projection weight fields and input devices do not match");
     }
 }
 
-void check_nint_fields(const NintWeight& w, ::tyloi::Device device) {
+void check_nint_fields(const NintWeight& w, ::tyloi::Device device, bool check_device = true) {
     check_fields({&w.q_packed, &w.row_q_bits, &w.row_q_bit_offsets, &w.sub_scale,
-                  &w.sub_min, &w.neuron_scale, &w.neuron_min}, device);
+                  &w.sub_min, &w.neuron_scale, &w.neuron_min}, device, check_device);
 }
 
-void check_fields(const NintWeight& w, ::tyloi::Device device) {
-    if (w.q8_zero) check_fields({&w.q_packed, &w.q8_zero_scale}, device);
-    else check_nint_fields(w, device);
+void check_fields(const NintWeight& w, ::tyloi::Device device, bool check_device = true) {
+    if (w.q8_zero) check_fields({&w.q_packed, &w.q8_zero_scale}, device, check_device);
+    else check_nint_fields(w, device, check_device);
 }
 
-void check_fields(const NvqWeight& w, ::tyloi::Device device) {
+void check_fields(const NvqWeight& w, ::tyloi::Device device, bool check_device = true) {
     check_fields({&w.indices_packed, &w.aux_packed, &w.sub_scale_packed,
-                  &w.neuron_scale, &w.codebook}, device);
+                  &w.neuron_scale, &w.codebook}, device, check_device);
 }
 
-void check_fields(const Mxfp4Weight& w, ::tyloi::Device device) {
-    check_fields({&w.values, &w.scales}, device);
+void check_fields(const Mxfp4Weight& w, ::tyloi::Device device, bool check_device = true) {
+    check_fields({&w.values, &w.scales}, device, check_device);
 }
 
-void check_fields(const Mxfp8Weight& w, ::tyloi::Device device) {
-    check_fields({&w.values, &w.scales}, device);
+void check_fields(const Mxfp8Weight& w, ::tyloi::Device device, bool check_device = true) {
+    check_fields({&w.values, &w.scales}, device, check_device);
 }
 
-void check_fields(const Mxfp4SqWeight& w, ::tyloi::Device device) {
+void check_fields(const Mxfp4SqWeight& w, ::tyloi::Device device, bool check_device = true) {
+    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets, &w.row_auxiliary}, device, false);
     if (!w.blob.is_cuda()) return;
-    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets, &w.row_auxiliary}, device);
+    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets, &w.row_auxiliary}, device, check_device);
 }
 
-void check_fields(const Fp8SqWeight& w, ::tyloi::Device device) {
+void check_fields(const Fp8SqWeight& w, ::tyloi::Device device, bool check_device = true) {
+    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets}, device, false);
     if (!w.blob.is_cuda() || (w.dtype != "MXFP8-SQ" && w.dtype != "FP8-128SQ")) return;
-    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets}, device);
+    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets}, device, check_device);
 }
 
 const ::tyloi::Tensor& shard_payload(const QuantLinearShard& shard) {
@@ -91,7 +94,7 @@ const ::tyloi::Tensor& shard_payload(const QuantLinearShard& shard) {
     case QuantLinearKind::Fp8Sq: return shard.fp8_sq.blob;
     case QuantLinearKind::Mxfp8: return shard.mxfp8.values;
     case QuantLinearKind::Dense: return shard.dense;
-    case QuantLinearKind::Tq: return shard.tq.image;
+    case QuantLinearKind::Tq: return shard.tq;
     }
     throw std::invalid_argument("unsupported projection weight");
 }
@@ -105,7 +108,7 @@ int64_t shard_width(const QuantLinearShard& shard) {
     case QuantLinearKind::Fp8Sq: return shard.fp8_sq.neuron_len;
     case QuantLinearKind::Mxfp8: return shard.mxfp8.neuron_len;
     case QuantLinearKind::Dense: return shard.dense.size(1);
-    case QuantLinearKind::Tq: return shard.tq.neuron_len;
+    case QuantLinearKind::Tq: return shard.tq.size(1);
     }
     throw std::invalid_argument("unsupported projection weight");
 }
@@ -156,13 +159,15 @@ void check_projection_device(const QuantLinear& weight, ::tyloi::Device device) 
         case QuantLinearKind::Mxfp4Sq: check_fields(shard.mxfp4_sq, local); break;
         case QuantLinearKind::Fp8Sq: check_fields(shard.fp8_sq, local); break;
         case QuantLinearKind::Mxfp8: check_fields(shard.mxfp8, local); break;
-        case QuantLinearKind::Dense:
+        case QuantLinearKind::Dense: shard.dense.require_dense(); break;
         case QuantLinearKind::Tq: break;
         }
     }
 }
 
 void check_projection(const QuantLinear& weight, const ::tyloi::Tensor& input) {
+    input.require_dense();
+    if (weight.is_dense()) weight.dense.require_dense();
     if (!input.defined() || input.dim() < 1)
         throw std::invalid_argument("projection input must have a last dimension");
     check_projection_device(weight, input.device());
@@ -170,6 +175,7 @@ void check_projection(const QuantLinear& weight, const ::tyloi::Tensor& input) {
 }
 
 void check_projection(const QuantLinearGroup& group, const ::tyloi::Tensor& input) {
+    input.require_dense();
     if (!input.defined() || input.dim() < 1)
         throw std::invalid_argument("projection input must have a last dimension");
     if (group.outs.empty() || group.cols.size() != group.outs.size() ||
@@ -201,36 +207,37 @@ void check_projection(const QuantLinearGroup& group, const ::tyloi::Tensor& inpu
 }
 
 void check_device(const ::tyloi::Tensor& weight, const ::tyloi::Tensor& input) {
+    weight.require_dense(); input.require_dense();
     if (input.is_cuda() && weight.defined() && weight.numel() != 0 && weight.device() != input.device())
         throw std::invalid_argument("projection weight and input devices do not match");
 }
 
 void check_device(const NintWeight& weight, const ::tyloi::Tensor& input) {
-    if (input.is_cuda()) check_fields(weight, input.device());
+    check_fields(weight, input.device(), input.is_cuda());
 }
 
 void check_nint(const NintWeight& weight, const ::tyloi::Tensor& input) {
-    if (input.is_cuda()) check_nint_fields(weight, input.device());
+    check_nint_fields(weight, input.device(), input.is_cuda());
 }
 
 void check_device(const NvqWeight& weight, const ::tyloi::Tensor& input) {
-    if (input.is_cuda()) check_fields(weight, input.device());
+    check_fields(weight, input.device(), input.is_cuda());
 }
 
 void check_device(const Mxfp4Weight& weight, const ::tyloi::Tensor& input) {
-    if (input.is_cuda()) check_fields(weight, input.device());
+    check_fields(weight, input.device(), input.is_cuda());
 }
 
 void check_device(const Mxfp8Weight& weight, const ::tyloi::Tensor& input) {
-    if (input.is_cuda()) check_fields(weight, input.device());
+    check_fields(weight, input.device(), input.is_cuda());
 }
 
 void check_device(const Mxfp4SqWeight& weight, const ::tyloi::Tensor& input) {
-    if (input.is_cuda()) check_fields(weight, input.device());
+    check_fields(weight, input.device(), input.is_cuda());
 }
 
 void check_device(const Fp8SqWeight& weight, const ::tyloi::Tensor& input) {
-    if (input.is_cuda()) check_fields(weight, input.device());
+    check_fields(weight, input.device(), input.is_cuda());
 }
 
 void check_device(const QuantLinear& weight, const ::tyloi::Tensor& input) {
@@ -271,7 +278,7 @@ void check_device(const QuantLinear& weight, const ::tyloi::Tensor& input) {
         return embedding.dense.index_select(
             0, token_ids.reshape({-1})).reshape(output_shape);
     }
-    if (embedding.is_tq()) return embedding.tq.embedding(token_ids);
+    if (embedding.is_tq()) return tyloi::cuda::tq::embedding(embedding.tq, token_ids);
     if ((tyloi::mfq_compat_enabled && embedding.is_nvq())) {
         check_device(embedding.nvq, token_ids);
         return nvq_embedding(embedding.nvq, token_ids);
@@ -352,9 +359,9 @@ bool tensor_parallel_output_projections_compatible(
         const QuantLinear& linear) {
     TYLOINFER_RUNTIME_CHECK(!linear.tensor_parallel(),"linear reference requires local weights");
     if (linear.is_tq()) {
-        const auto ids=::tyloi::cuda::arange(linear.tq.out,
-            linear.tq.image.options().dtype(::tyloi::kInt64));
-        return linear.tq.embedding(ids);
+        const auto ids=::tyloi::cuda::arange(linear.tq.size(0),
+            linear.tq.options().dtype(::tyloi::kInt64));
+        return tyloi::cuda::tq::embedding(linear.tq, ids);
     }
     if ((tyloi::mfq_compat_enabled && linear.is_nint())) {
         const auto& weight = linear.nint;
@@ -426,7 +433,7 @@ tyloi::weights::Placement QuantLinear::placement(std::size_t index) const {
         return result;
     }
     const ::tyloi::Tensor* payload = nullptr;
-    if (is_tq()) payload = &tq.image;
+    if (is_tq()) payload = &tq;
     else if (is_nint()) payload = &nint.q_packed;
     else if (is_nvq()) payload = &nvq.indices_packed;
     else if (is_mxfp4()) payload = &mxfp4.values;
@@ -445,7 +452,7 @@ tyloi::weights::Placement QuantLinear::placement(std::size_t index) const {
 
 int64_t QuantLinear::out() const {
     if (tensor_parallel()) return logical_out;
-    if(is_tq())return tq.out;
+    if(is_tq())return tq.size(0);
     if ((tyloi::mfq_compat_enabled && is_nint())) return nint.out;
     if ((tyloi::mfq_compat_enabled && is_nvq())) return nvq.out;
     if (is_mxfp4()) return mxfp4.out;
@@ -457,7 +464,7 @@ int64_t QuantLinear::out() const {
 
 int64_t QuantLinear::neuron_len() const {
     if (tensor_parallel()) return logical_neuron_len;
-    if(is_tq())return tq.neuron_len;
+    if(is_tq())return tq.size(1);
     if ((tyloi::mfq_compat_enabled && is_nint())) return nint.neuron_len;
     if ((tyloi::mfq_compat_enabled && is_nvq())) return nvq.neuron_len;
     if (is_mxfp4()) return mxfp4.neuron_len;

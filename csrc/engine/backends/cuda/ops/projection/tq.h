@@ -8,17 +8,15 @@
 
 namespace tyloi::cuda { class BlasResources; }
 
-struct TqWeight {
-    ::tyloi::Tensor image;
-    TrellisProjectionView view{};
-    std::int64_t out=0,neuron_len=0;
-    ::tyloi::Tensor forward(tyloi::cuda::BlasResources*,::tyloi::Tensor)const;
-    ::tyloi::Tensor forward_groupwise(tyloi::cuda::BlasResources*,::tyloi::Tensor,std::int64_t groups)const;
-    ::tyloi::Tensor embedding(::tyloi::Tensor)const;
-};
+namespace tyloi::cuda::tq {
+TrellisProjectionView view(const Tensor& weight);
+Tensor project(const Tensor& weight, BlasResources*, Tensor input);
+Tensor groupwise(const Tensor& weight, BlasResources*, Tensor input, std::int64_t groups);
+Tensor embedding(const Tensor& weight, Tensor ids);
+}
 // Device row plan only; compressed weights retain their original storage.
 class TqProjectionGroup {
-    std::vector<TqWeight> weights_;
+    std::vector<::tyloi::Tensor> weights_;
     std::vector<TrellisProjectionJob> host_plan_;
     ::tyloi::Tensor plan_;
     std::int64_t input_=0,output_=0;
@@ -27,7 +25,7 @@ class TqProjectionGroup {
     int blocks_=0;
 public:
     TqProjectionGroup()=default;
-    explicit TqProjectionGroup(std::vector<TqWeight>);
+    explicit TqProjectionGroup(std::vector<::tyloi::Tensor>);
     void join_prefix(std::size_t count);
     bool defined()const noexcept{return !weights_.empty();}
     std::vector<::tyloi::Tensor> forward(tyloi::cuda::BlasResources*,::tyloi::Tensor)const;

@@ -14,6 +14,16 @@
 #include <string>
 #include <utility>
 
+TrellisProjectionView tyloi::cuda::tq::view(const Tensor& weight) {
+    const auto& layout = encoding::tq_layout(weight);
+    const auto image = encoding::tq_image(weight);
+    const auto* data = image.data_ptr<std::uint8_t>();
+    return {reinterpret_cast<const std::uint32_t*>(data + layout.words),
+        reinterpret_cast<const std::uint64_t*>(data + 64), data + layout.scales,
+        data + layout.relative, nullptr, static_cast<int>(weight.size(0)),
+        static_cast<int>(layout.stored_columns), static_cast<int>(weight.size(1)),
+        layout.gslog, int(layout.columns)};
+}
 
 namespace {
 bool short_q8(::tyloi::ScalarType type,int64_t tokens) {
@@ -21,45 +31,45 @@ bool short_q8(::tyloi::ScalarType type,int64_t tokens) {
         (type==::tyloi::kFloat32 || type==::tyloi::kFloat16);
 }
 
-void project_tokens(const TqWeight& weight,tyloi::cuda::BlasResources* gemm,
+void project_tokens(const TrellisProjectionView& view,tyloi::cuda::BlasResources* gemm,
         const void* input,void* output,int tokens,
         int type,void* workspace=nullptr,std::uint64_t workspace_bytes=0) {
     if(workspace && (type==0 || type==2) && tokens<=4) {
-        tq_detail::status(mfq_tq_q8_tokens(weight.view,input,output,tokens,1,type,workspace,workspace_bytes,mfq_current_cuda_stream()));
+        tq_detail::status(mfq_tq_q8_tokens(view,input,output,tokens,1,type,workspace,workspace_bytes,mfq_current_cuda_stream()));
     }else if(workspace && tokens>=(type==0?32:128)) {
         if(!gemm)throw std::logic_error("TQ GEMM resource lease is missing");
-        if(type==0)tq_detail::status(mfq_tq_gemm(weight.view,input,output,tokens,workspace,workspace_bytes,
+        if(type==0)tq_detail::status(mfq_tq_gemm(view,input,output,tokens,workspace,workspace_bytes,
             gemm->get(),mfq_current_cuda_stream()));
-        else tq_detail::status(mfq_tq_float_gemm(weight.view,input,output,tokens,1,type,workspace,workspace_bytes,
+        else tq_detail::status(mfq_tq_float_gemm(view,input,output,tokens,1,type,workspace,workspace_bytes,
             gemm->get(),mfq_current_cuda_stream()));
-    }else tq_detail::status(mfq_tq_gemv_tokens(weight.view,input,output,tokens,type,mfq_current_cuda_stream()));
+    }else tq_detail::status(mfq_tq_gemv_tokens(view,input,output,tokens,type,mfq_current_cuda_stream()));
 }
 
-::tyloi::Tensor projection_workspace(const TqWeight& weight,int tokens,::tyloi::ScalarType type,int groups=1) {
+::tyloi::Tensor projection_workspace(const ::tyloi::Tensor& weight,int tokens,::tyloi::ScalarType type,int groups=1) {
     // A single-token projection fitting one output tile cannot amortize a
     // separate Q8 preparation launch. The direct TQ kernel also cooperates
     // across warps on these narrow contractions, instead of serializing K
     // within one warp. Parallel projection groups still share Q8 preparation.
-    if(tokens==1 && weight.out<=TRELLIS_GROUP_ROWS)return {};
+    if(tokens==1 && weight.size(0)<=TRELLIS_GROUP_ROWS)return {};
     if(short_q8(type,tokens) && groups<=65535) {
-        const auto columns=(std::uint64_t(weight.neuron_len)+511)/512*512;
+        const auto columns=(std::uint64_t(weight.size(1))+511)/512*512;
         const auto bytes=std::uint64_t(groups)*tokens*columns*3/2;
-        return ::tyloi::cuda::empty({static_cast<std::int64_t>(bytes)},weight.image.options().dtype(::tyloi::kUInt8));
+        return ::tyloi::cuda::empty({static_cast<std::int64_t>(bytes)},weight.options().dtype(::tyloi::kUInt8));
     }
     if(tokens<tq_detail::gemm_min_tokens(type))return {};
     // Bound temporary decode storage independently of the matrix size and
     // prompt length; experts retain only their compressed images in caches.
     auto bytes=std::max<std::uint64_t>(std::uint64_t(8)<<20,
         type==::tyloi::kFloat16?
-            std::uint64_t(weight.neuron_len)*2+15+(weight.view.bias?std::uint64_t(tokens)*4:0):
-            std::uint64_t(weight.neuron_len)*8+36);
+            std::uint64_t(weight.size(1))*2+15:
+            std::uint64_t(weight.size(1))*8+36);
     if(type==::tyloi::kFloat16 && tokens>=256) {
         // A larger row tile amortizes decode/GEMM submissions and avoids
         // narrow GEMMs on long prefill. This remains temporary storage, bounded
         // by useful matrix rows, 64 MiB, and 1/16 of currently free VRAM.
-        const auto row_bytes=std::uint64_t(weight.neuron_len)*2+(weight.view.bias?std::uint64_t(tokens)*4:0);
+        const auto row_bytes=std::uint64_t(weight.size(1))*2;
         const auto wanted=std::min<std::uint64_t>(std::uint64_t(64)<<20,
-            std::min<std::uint64_t>(weight.out/groups,65535)*row_bytes+15);
+            std::min<std::uint64_t>(weight.size(0)/groups,65535)*row_bytes+15);
         if(wanted>bytes) {
             std::size_t available=0,total=0;TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&available,&total));
             bytes=std::max<std::uint64_t>(bytes,std::min<std::uint64_t>(wanted,available/16));
@@ -67,96 +77,115 @@ void project_tokens(const TqWeight& weight,tyloi::cuda::BlasResources* gemm,
     }
     if(bytes>(std::uint64_t(8)<<20) && tyloi::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE"))
         std::fprintf(stderr,"tq_projection_workspace tokens=%d K=%lld N=%lld groups=%d bytes=%llu\n",
-            tokens,static_cast<long long>(weight.neuron_len),static_cast<long long>(weight.out),groups,
+            tokens,static_cast<long long>(weight.size(1)),static_cast<long long>(weight.size(0)),groups,
             static_cast<unsigned long long>(bytes));
-    return ::tyloi::cuda::empty({static_cast<std::int64_t>(bytes)},weight.image.options().dtype(::tyloi::kUInt8));
+    return ::tyloi::cuda::empty({static_cast<std::int64_t>(bytes)},weight.options().dtype(::tyloi::kUInt8));
 }
 }
 
-::tyloi::Tensor TqWeight::forward(tyloi::cuda::BlasResources* blas,::tyloi::Tensor input)const {
-    if(!image.is_cuda() && input.is_cuda())return promote_tq(*this,input.device()).forward(blas,std::move(input));
-    if(input.size(-1)!=neuron_len || !input.is_cuda() || input.get_device()!=image.get_device())
+::tyloi::Tensor tyloi::cuda::tq::project(const Tensor& weight, BlasResources* blas,Tensor input) {
+    input.require_dense();
+    if(!weight.is_cuda() && input.is_cuda()) {
+        const auto promoted=promote_tq(weight,input.device());
+        return project(promoted,blas,std::move(input));
+    }
+    const auto out=weight.size(0),neuron_len=weight.size(1);
+    if(input.size(-1)!=neuron_len || !input.is_cuda() || input.get_device()!=weight.get_device())
         throw std::invalid_argument("TQ projection input shape or device differs");
-    const MfqCudaGuard guard(image.get_device());
+    const auto kernel_view=view(weight);
+    const MfqCudaGuard guard(weight.get_device());
     const auto source=input.contiguous();auto shape=input.sizes().vec();shape.back()=out;
     auto result=::tyloi::cuda::empty(shape,input.options());
     const auto tokens=source.numel()/neuron_len;
     const auto element=source.element_size();
-    const auto workspace=projection_workspace(*this,static_cast<int>(std::min<std::int64_t>(tokens,65535)),source.scalar_type());
+    const auto workspace=projection_workspace(weight,static_cast<int>(std::min<std::int64_t>(tokens,65535)),source.scalar_type());
     auto* gemm = tokens >= tq_detail::gemm_min_tokens(source.scalar_type()) ? blas : nullptr;
     for(std::int64_t start=0;start<tokens;start+=65535) {
         const int count=static_cast<int>(std::min<std::int64_t>(65535,tokens-start));
-        project_tokens(*this,gemm,static_cast<const std::uint8_t*>(source.data_ptr())+start*neuron_len*element,
+        project_tokens(kernel_view,gemm,static_cast<const std::uint8_t*>(source.data_ptr())+start*neuron_len*element,
             static_cast<std::uint8_t*>(result.data_ptr())+start*out*element,count,tq_detail::dtype(input.scalar_type()),
             workspace.defined()?workspace.data_ptr():nullptr,workspace.defined()?workspace.nbytes():0);
     }
     return result;
 }
-::tyloi::Tensor TqWeight::forward_groupwise(tyloi::cuda::BlasResources* blas,::tyloi::Tensor input,std::int64_t groups)const {
-    if(!image.is_cuda())return promote_tq(*this,input.device()).forward_groupwise(blas,std::move(input),groups);
-    if(!input.is_cuda() || input.get_device()!=image.get_device() || groups<1 || groups>INT_MAX ||
+::tyloi::Tensor tyloi::cuda::tq::groupwise(const Tensor& weight, BlasResources* blas,Tensor input,std::int64_t groups) {
+    input.require_dense();
+    if(!input.is_cuda())throw std::invalid_argument("TQ grouped input must match the weight's group rows and width");
+    if(!weight.is_cuda()) {
+        const auto promoted=promote_tq(weight,input.device());
+        return groupwise(promoted,blas,std::move(input),groups);
+    }
+    const auto out=weight.size(0),neuron_len=weight.size(1);
+    if(input.get_device()!=weight.get_device() || groups<1 || groups>INT_MAX ||
        out%groups || input.dim()<2 || input.size(-1)!=neuron_len || input.size(-2)!=groups ||
        neuron_len>INT_MAX/groups)
         throw std::invalid_argument("TQ grouped input must match the weight's group rows and width");
-    const MfqCudaGuard guard(image.get_device());
+    const auto kernel_view=view(weight);
+    const MfqCudaGuard guard(weight.get_device());
     const auto source=input.contiguous();
     const auto tokens=source.numel()/(groups*neuron_len);
     const auto element=source.element_size();
     auto shape=input.sizes().vec();shape.pop_back();shape.back()=out;
     auto result=::tyloi::cuda::empty(shape,input.options());
-    const auto workspace=projection_workspace(*this,static_cast<int>(std::min<std::int64_t>(tokens,65535)),source.scalar_type(),static_cast<int>(groups));
+    const auto workspace=projection_workspace(weight,static_cast<int>(std::min<std::int64_t>(tokens,65535)),source.scalar_type(),static_cast<int>(groups));
     auto* gemm = tokens >= tq_detail::gemm_min_tokens(source.scalar_type()) ? blas : nullptr;
     for(std::int64_t start=0;start<tokens;start+=65535) {
         const int count=static_cast<int>(std::min<std::int64_t>(65535,tokens-start));
         const auto* x=static_cast<const uint8_t*>(source.data_ptr())+start*groups*neuron_len*element;
         auto* y=static_cast<uint8_t*>(result.data_ptr())+start*out*element;
         if(workspace.defined() && short_q8(source.scalar_type(),count)) {
-            tq_detail::status(mfq_tq_q8_tokens(view,x,y,count,static_cast<int>(groups),tq_detail::dtype(source.scalar_type()),workspace.data_ptr(),
+            tq_detail::status(mfq_tq_q8_tokens(kernel_view,x,y,count,static_cast<int>(groups),tq_detail::dtype(source.scalar_type()),workspace.data_ptr(),
                 workspace.nbytes(),mfq_current_cuda_stream()));
         }else if(workspace.defined() && count>=tq_detail::gemm_min_tokens(source.scalar_type())) {
             if(!gemm)throw std::logic_error("TQ grouped GEMM resource lease is missing");
-            if(source.scalar_type()==::tyloi::kFloat16)tq_detail::status(mfq_tq_grouped_gemm(view,x,y,count,static_cast<int>(groups),workspace.data_ptr(),
+            if(source.scalar_type()==::tyloi::kFloat16)tq_detail::status(mfq_tq_grouped_gemm(kernel_view,x,y,count,static_cast<int>(groups),workspace.data_ptr(),
                 workspace.nbytes(),gemm->get(),mfq_current_cuda_stream()));
-            else tq_detail::status(mfq_tq_float_gemm(view,x,y,count,static_cast<int>(groups),tq_detail::dtype(source.scalar_type()),workspace.data_ptr(),
+            else tq_detail::status(mfq_tq_float_gemm(kernel_view,x,y,count,static_cast<int>(groups),tq_detail::dtype(source.scalar_type()),workspace.data_ptr(),
                 workspace.nbytes(),gemm->get(),mfq_current_cuda_stream()));
         }
-        else tq_detail::status(mfq_tq_grouped_tokens(view,x,y,count,static_cast<int>(groups),tq_detail::dtype(source.scalar_type()),mfq_current_cuda_stream()));
+        else tq_detail::status(mfq_tq_grouped_tokens(kernel_view,x,y,count,static_cast<int>(groups),tq_detail::dtype(source.scalar_type()),mfq_current_cuda_stream()));
     }
     return result;
 }
 
-::tyloi::Tensor TqWeight::embedding(::tyloi::Tensor ids)const {
-    if(!image.is_cuda())return promote_tq(*this,ids.is_cuda()?ids.device(): ::tyloi::Device(::tyloi::kCUDA,mfq_current_cuda_device())).embedding(std::move(ids));
-    const MfqCudaGuard guard(image.get_device());
-    auto source=ids.to(image.device()).to(::tyloi::kInt64).contiguous();
+::tyloi::Tensor tyloi::cuda::tq::embedding(const Tensor& weight, Tensor ids) {
+    ids.require_dense();
+    if(!weight.is_cuda()) {
+        const auto promoted=promote_tq(weight,ids.is_cuda()?ids.device(): ::tyloi::Device(::tyloi::kCUDA,mfq_current_cuda_device()));
+        return embedding(promoted,std::move(ids));
+    }
+    const auto neuron_len=weight.size(1);
+    const auto kernel_view=view(weight);
+    const MfqCudaGuard guard(weight.get_device());
+    auto source=ids.to(weight.device()).to(::tyloi::kInt64).contiguous();
     auto shape=ids.sizes().vec();shape.push_back(neuron_len);
-    auto result=::tyloi::cuda::empty(shape,image.options().dtype(::tyloi::kFloat16));
+    auto result=::tyloi::cuda::empty(shape,weight.options().dtype(::tyloi::kFloat16));
     for(std::int64_t start=0;start<source.numel();start+=65535) {
         const int count=static_cast<int>(std::min<std::int64_t>(65535,source.numel()-start));
-        tq_detail::status(mfq_tq_embedding(view,source.data_ptr<std::int64_t>()+start,count,
+        tq_detail::status(mfq_tq_embedding(kernel_view,source.data_ptr<std::int64_t>()+start,count,
             static_cast<std::uint8_t*>(result.data_ptr())+start*neuron_len*2,0,mfq_current_cuda_stream()));
     }
     return result;
 }
 
-TqProjectionGroup::TqProjectionGroup(std::vector<TqWeight> weights):weights_(std::move(weights)) {
+TqProjectionGroup::TqProjectionGroup(std::vector<::tyloi::Tensor> weights):weights_(std::move(weights)) {
     if(weights_.empty())throw std::invalid_argument("empty TQ projection group");
-    input_=weights_[0].neuron_len;
+    input_=weights_[0].size(1);
     if(input_<1 || input_>INT_MAX)throw std::invalid_argument("invalid TQ group input width");
-    const auto device=weights_[0].image.device();
+    const auto device=weights_[0].device();
     std::vector<TrellisProjectionJob> jobs;jobs.reserve(weights_.size());
     std::int64_t blocks=0;
     for(const auto& weight:weights_) {
-        if(weight.out<1 || weight.out!=weight.view.rows || weight.view.input_columns!=input_ ||
-           !weight.image.is_cuda() || weight.image.device()!=device || weight.neuron_len!=input_)
+        if(weight.size(0)<1 || !weight.is_encoded() ||
+           !weight.is_cuda() || weight.device()!=device || weight.size(1)!=input_)
             throw std::invalid_argument("TQ group input widths and CUDA devices must match");
-        blocks+=(weight.out+TRELLIS_GROUP_ROWS-1)/TRELLIS_GROUP_ROWS;
-        if(blocks>INT_MAX || output_>INT_MAX-weight.out)
+        blocks+=(weight.size(0)+TRELLIS_GROUP_ROWS-1)/TRELLIS_GROUP_ROWS;
+        if(blocks>INT_MAX || output_>INT_MAX-weight.size(0))
             throw std::overflow_error("TQ projection group exceeds CUDA index range");
-        jobs.push_back({weight.view,output_,static_cast<int>(blocks)});
-        output_+=weight.out;
+        jobs.push_back({tyloi::cuda::tq::view(weight),output_,static_cast<int>(blocks)});
+        output_+=weight.size(0);
     }
-    const MfqCudaGuard guard(weights_[0].image.get_device());
+    const MfqCudaGuard guard(weights_[0].get_device());
     blocks_=static_cast<int>(blocks);
     const auto bytes=static_cast<std::int64_t>(jobs.size()*sizeof(TrellisProjectionJob));
     plan_=::tyloi::cuda::from_blob(jobs.data(),{bytes},::tyloi::TensorOptions().dtype(::tyloi::kUInt8))
@@ -167,10 +196,11 @@ TqProjectionGroup::TqProjectionGroup(std::vector<TqWeight> weights):weights_(std
 void TqProjectionGroup::join_prefix(std::size_t count) {
     if(count<1 || count>weights_.size())throw std::invalid_argument("invalid TQ joined prefix");
     joined_prefix_=count;joined_rows_=0;
-    for(std::size_t i=0;i<count;++i)joined_rows_+=weights_[i].out;
+    for(std::size_t i=0;i<count;++i)joined_rows_+=weights_[i].size(0);
 }
 
 std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResources* blas,::tyloi::Tensor input)const {
+    input.require_dense();
     if(!defined() || !input.is_cuda() || input.device()!=plan_.device() || input.size(-1)!=input_)
         throw std::invalid_argument("TQ group input shape or device differs");
     const MfqCudaGuard guard(input.get_device());
@@ -186,7 +216,7 @@ std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResourc
     };
     if(tokens>=tq_detail::gemm_min_tokens(source.scalar_type())) {
         std::vector<::tyloi::Tensor> result;result.reserve(weights_.size());
-        for(const auto& weight:weights_)result.push_back(weight.forward(blas,source));
+        for(const auto& weight:weights_)result.push_back(tyloi::cuda::tq::project(weight,blas,source));
         return join(std::move(result));
     }
     if(tokens>1 || short_q8(source.scalar_type(),tokens)) {
@@ -213,7 +243,7 @@ std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResourc
         for(std::size_t i=0;i<weights_.size();) {
             const auto count=q8 && i==0?joined_prefix_:1;
             std::int64_t rows=0;
-            for(std::size_t j=0;j<count;++j)rows+=weights_[i+j].out;
+            for(std::size_t j=0;j<count;++j)rows+=weights_[i+j].size(0);
             auto shape=input.sizes().vec();shape.back()=rows;
             result.push_back(output.narrow(0,offset*tokens,rows*tokens).reshape(shape));offset+=rows;i+=count;
         }
@@ -235,30 +265,31 @@ std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResourc
     for(std::size_t i=0;i<weights_.size();) {
         const auto count=i==0?joined_prefix_:1;
         std::int64_t rows=0;
-        for(std::size_t j=0;j<count;++j)rows+=weights_[i+j].out;
+        for(std::size_t j=0;j<count;++j)rows+=weights_[i+j].size(0);
         result.push_back(output.narrow(-1,offset,rows));offset+=rows;i+=count;
     }
     return result;
 }
 
 ::tyloi::Tensor TqProjectionGroup::swiglu(tyloi::cuda::BlasResources* blas,::tyloi::Tensor input)const {
-    if(weights_.size()!=2 || weights_[0].out!=weights_[1].out || !input.is_cuda() ||
+    input.require_dense();
+    if(weights_.size()!=2 || weights_[0].size(0)!=weights_[1].size(0) || !input.is_cuda() ||
        input.device()!=plan_.device() || input.size(-1)!=input_)
         throw std::invalid_argument("TQ SwiGLU group requires two matching projections");
     const MfqCudaGuard guard(input.get_device());
     const auto source=input.contiguous();
     if(source.numel()/input_>=tq_detail::gemm_min_tokens(source.scalar_type())) {
-        const auto gate=weights_[0].forward(blas,source),up=weights_[1].forward(blas,source);
+        const auto gate=tyloi::cuda::tq::project(weights_[0],blas,source),up=tyloi::cuda::tq::project(weights_[1],blas,source);
         return silu_mul_cuda(gate,up);
     }
-    const auto rows=weights_[0].out;
+    const auto rows=weights_[0].size(0);
     auto shape=input.sizes().vec();shape.back()=rows;
     auto output=::tyloi::cuda::empty(shape,input.options());
     const auto tokens=source.numel()/input_;
     const auto element=source.element_size();
     for(std::int64_t start=0;start<tokens;start+=65535) {
         const int count=static_cast<int>(std::min<std::int64_t>(65535,tokens-start));
-        tq_detail::status(mfq_tq_swiglu_tokens(weights_[0].view,weights_[1].view,
+        tq_detail::status(mfq_tq_swiglu_tokens(tyloi::cuda::tq::view(weights_[0]),tyloi::cuda::tq::view(weights_[1]),
             static_cast<const std::uint8_t*>(source.data_ptr())+start*input_*element,
             static_cast<std::uint8_t*>(output.data_ptr())+start*rows*element,
             count,tq_detail::dtype(input.scalar_type()),mfq_current_cuda_stream()));

@@ -409,6 +409,7 @@ Tensor empty_pinned(std::span<const std::int64_t> shape, const TensorOptions& op
 }
 
 void copy_cuda(Tensor& destination, const Tensor& source) {
+    destination.require_dense(); source.require_dense();
     if (destination.numel() != source.numel()) {
         throw std::invalid_argument("native tensor copy changes element count");
     }
@@ -485,12 +486,14 @@ void copy_cuda(Tensor& destination, const Tensor& source) {
 }
 
 Tensor copy_or_convert_cuda(const Tensor& source, const TensorOptions& options) {
+    source.require_dense();
     auto destination = empty(source.sizes(), options);
     copy_cuda(destination, source);
     return destination;
 }
 
 void fill_cuda(Tensor& destination, double value) {
+    destination.require_dense();
     if (!destination.is_cuda()) {
         throw std::invalid_argument("fill_cuda requires a CUDA tensor");
     }
@@ -531,6 +534,7 @@ void fill_cuda(Tensor& destination, double value) {
 }
 
 Tensor make_contiguous_cuda(const Tensor& source) {
+    source.require_dense();
     if (!source.is_cuda()) {
         throw std::invalid_argument("make_contiguous_cuda requires a CUDA tensor");
     }
@@ -540,6 +544,7 @@ Tensor make_contiguous_cuda(const Tensor& source) {
 }
 
 Tensor mean_cuda(const Tensor& source, std::int64_t dimension, bool keep_dimension) {
+    source.require_dense();
     if (!source.is_cuda() || !source.is_contiguous() ||
         source.scalar_type() != ScalarType::float32 || source.dim() == 0) {
         throw std::invalid_argument(

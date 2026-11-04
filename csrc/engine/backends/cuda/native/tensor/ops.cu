@@ -313,6 +313,7 @@ Tensor unary_cuda(
     int operation,
     double first = 0.0,
     double second = 0.0) {
+    source.require_dense();
     if (!source.is_cuda()) {
         throw std::invalid_argument("native unary CUDA op requires a CUDA tensor");
     }
@@ -347,6 +348,7 @@ Tensor unary_cuda(
 }
 
 Tensor binary_cuda(const Tensor& left_source, const Tensor& right_source, int operation) {
+    left_source.require_dense(); right_source.require_dense();
     if (!left_source.is_cuda() || !right_source.is_cuda()) {
         throw std::invalid_argument("native binary CUDA op requires CUDA tensors");
     }
@@ -391,6 +393,7 @@ Tensor scalar_binary_cuda(
     double right,
     int operation,
     bool scalar_first) {
+    left.require_dense();
     if (!left.is_cuda()) {
         throw std::invalid_argument("native scalar CUDA op requires a CUDA tensor");
     }

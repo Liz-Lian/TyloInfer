@@ -11,7 +11,7 @@
 namespace tyloi::cuda { struct RoutedCache; }
 class TqExec;
 
-TqWeight load_tq_weight(
+::tyloi::Tensor load_tq_weight(
     const tyloi::source::Source&, const std::string&, int device, bool cuda = true);
 
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(

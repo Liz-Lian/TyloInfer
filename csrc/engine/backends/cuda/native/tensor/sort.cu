@@ -275,6 +275,7 @@ __global__ void initialize_sort_indices_kernel(
 }  // namespace
 
 Tensor einsum(const std::string& equation, std::span<const Tensor> operands) {
+    for (const auto& operand : operands) operand.require_dense();
     if (equation != "bmhd,bkd->bmhk" || operands.size() != 2) {
         throw std::invalid_argument("native einsum equation is unsupported");
     }
@@ -295,6 +296,7 @@ Tensor einsum(const std::string& equation, std::span<const Tensor> operands) {
 }
 
 Tensor logsumexp(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
+    input.require_dense();
     auto working = input.scalar_type() == kFloat64
         ? input
         : input.to(kFloat32);
@@ -305,6 +307,7 @@ Tensor logsumexp(const Tensor& input, std::int64_t dimension, bool keep_dimensio
 }
 
 Tensor softmax(const Tensor& input, std::int64_t dimension) {
+    input.require_dense();
     const auto selected = normalize_dimension(dimension, input.dim());
     const auto columns = input.size(-1);
     const auto rows = columns == 0 ? 0 : input.numel() / columns;
@@ -392,6 +395,7 @@ Tensor softmax(const Tensor& input, std::int64_t dimension) {
 }
 
 Tensor log_softmax(const Tensor& input, std::int64_t dimension) {
+    input.require_dense();
     const auto selected = normalize_dimension(dimension, input.dim());
     const auto columns = input.size(-1);
     const auto rows = columns == 0 ? 0 : input.numel() / columns;
@@ -432,11 +436,13 @@ Tensor log_softmax(const Tensor& input, std::int64_t dimension) {
 }
 
 Tensor dot(const Tensor& left, const Tensor& right) {
+    left.require_dense(); right.require_dense();
     if (left.numel() != right.numel()) throw std::invalid_argument("dot size mismatch");
     return (left.reshape({-1}) * right.reshape({-1})).sum();
 }
 
 bool equal(const Tensor& left, const Tensor& right) {
+    left.require_dense(); right.require_dense();
     if (left.sizes() != right.sizes() || left.scalar_type() != right.scalar_type()) {
         return false;
     }
@@ -457,6 +463,7 @@ std::tuple<Tensor, Tensor> sort(
     const Tensor& input_source,
     std::int64_t dimension,
     bool descending) {
+    input_source.require_dense();
     const auto selected = normalize_dimension(dimension, input_source.dim());
     if (selected != static_cast<std::size_t>(input_source.dim() - 1)) {
         throw std::invalid_argument("native sort currently requires the last dimension");
@@ -522,6 +529,7 @@ std::tuple<Tensor, Tensor> topk(
     std::int64_t dimension,
     bool largest,
     bool) {
+    input.require_dense();
     const auto selected = normalize_dimension(dimension, input.dim());
     if (count < 0 || count > input.size(selected)) {
         throw std::invalid_argument("topk count is out of range");
@@ -588,6 +596,7 @@ Tensor layer_norm(
     const Tensor& weight,
     const Tensor& bias,
     double epsilon) {
+    input.require_dense(); weight.require_dense(); bias.require_dense();
     if (normalized_shape.size() != 1 || normalized_shape.front() != input.size(-1)) {
         throw std::invalid_argument("native layer_norm currently supports the final dimension");
     }
@@ -604,6 +613,7 @@ Tensor constant_pad_nd(
     const Tensor& input,
     std::span<const std::int64_t> padding,
     double value) {
+    input.require_dense();
     if (padding.size() % 2 != 0 || padding.size() / 2 > static_cast<std::size_t>(input.dim())) {
         throw std::invalid_argument("constant_pad_nd padding rank is invalid");
     }

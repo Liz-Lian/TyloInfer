@@ -22,29 +22,29 @@ struct IndexedJobs {
 };
 
 IndexedJobs make_indexed_jobs(
-    std::span<const TqWeight> gate,
-    std::span<const TqWeight> up,
-    std::span<const TqWeight> down,
+    std::span<const ::tyloi::Tensor> gate,
+    std::span<const ::tyloi::Tensor> up,
+    std::span<const ::tyloi::Tensor> down,
     const std::vector<std::vector<std::int64_t>>& slots,
     std::size_t begin, std::int64_t routes, std::int64_t input,
     std::int64_t hidden, std::int64_t output, bool wide = false);
 
 void routed_projection(
-    const std::vector<TqWeight>& weights,
+    const std::vector<::tyloi::Tensor>& weights,
     ::tyloi::Tensor source,
     ::tyloi::Tensor output);
 
 void run_long_expert(
-    const TqWeight& gate, const TqWeight& up, const TqWeight& down,
+    const ::tyloi::Tensor& gate, const ::tyloi::Tensor& up, const ::tyloi::Tensor& down,
     const std::vector<std::int64_t>& slots, std::int64_t routes,
     const ::tyloi::Tensor& source,
     ::tyloi::Tensor output,
     tyloi::cuda::BlasResources* blas, float limit);
 
 void run_indexed(
-    std::span<const TqWeight> gate,
-    std::span<const TqWeight> up,
-    std::span<const TqWeight> down,
+    std::span<const ::tyloi::Tensor> gate,
+    std::span<const ::tyloi::Tensor> up,
+    std::span<const ::tyloi::Tensor> down,
     const std::vector<std::vector<std::int64_t>>& slots,
     std::size_t begin, std::int64_t routes,
     const ::tyloi::Tensor& source,

@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include "engine/weights/encoding/tq.h"
+
 namespace tyloi {
 
 enum class ScalarType : std::uint8_t {
@@ -427,6 +429,12 @@ private:
 }  // namespace indexing
 
 class TensorIndex;
+class Tensor;
+namespace encoding {
+Tensor tq_tensor(const Tensor& image, std::int64_t rows, std::int64_t columns, Tq layout);
+const Tq& tq_layout(const Tensor& tensor);
+Tensor tq_image(const Tensor& tensor);
+}
 
 class Tensor {
 public:
@@ -445,25 +453,30 @@ public:
     bool defined() const noexcept { return storage_ != nullptr; }
     std::int64_t dim() const noexcept { return defined() ? view_.rank : 0; }
     std::int64_t numel() const { return defined() ? view_.numel() : 0; }
-    std::size_t nbytes() const { return defined() ? view_.nbytes() : 0; }
+    std::size_t nbytes() const { return defined() ? (encoded_ ? tq_.bytes : view_.nbytes()) : 0; }
     std::int64_t size(std::int64_t dimension) const { return view_.size(dimension); }
-    std::int64_t stride(std::int64_t dimension) const { return view_.stride(dimension); }
+    std::int64_t stride(std::int64_t dimension) const { require_dense(); return view_.stride(dimension); }
     ScalarType scalar_type() const noexcept { return view_.scalar_type; }
     ScalarType dtype() const noexcept { return scalar_type(); }
     const Device& device() const noexcept { return view_.device; }
     int get_device() const noexcept { return device().index; }
     bool is_cpu() const noexcept { return defined() && device().is_cpu(); }
     bool is_cuda() const noexcept { return defined() && device().is_cuda(); }
-    bool is_contiguous() const noexcept { return defined() && view_.is_contiguous(); }
+    bool is_contiguous() const noexcept { return defined() && !encoded_ && view_.is_contiguous(); }
+    bool is_encoded() const noexcept { return defined() && encoded_; }
+    void require_dense() const {
+        if (is_encoded()) throw std::invalid_argument("operation requires a dense tensor");
+    }
     std::size_t element_size() const noexcept { return scalar_size(scalar_type()); }
 
     IntArrayRef sizes() const {
         return IntArrayRef(std::span<const std::int64_t>(view_.sizes).first(view_.rank));
     }
 
-    const TensorView& view_descriptor() const noexcept { return view_; }
+    const TensorView& view_descriptor() const { require_dense(); return view_; }
     std::size_t byte_offset() const noexcept { return byte_offset_; }
     Tensor alias(TensorView view, std::size_t byte_offset) const {
+        require_dense();
         return Tensor(storage_, view, byte_offset);
     }
     void record_stream(std::uintptr_t stream) const {
@@ -471,11 +484,12 @@ public:
     }
 
     template <typename T>
-    T* data_ptr() const noexcept {
+    T* data_ptr() const {
+        require_dense();
         return static_cast<T*>(view_.data);
     }
 
-    void* data_ptr() const noexcept { return view_.data; }
+    void* data_ptr() const { require_dense(); return view_.data; }
 
     TensorOptions options() const noexcept {
         return TensorOptions{}.dtype(scalar_type()).device(device()).pinned_memory(
@@ -613,6 +627,9 @@ public:
     }
 
 private:
+    friend Tensor encoding::tq_tensor(const Tensor&, std::int64_t, std::int64_t, encoding::Tq);
+    friend const encoding::Tq& encoding::tq_layout(const Tensor&);
+    friend Tensor encoding::tq_image(const Tensor&);
     template <typename T>
     static T scalar_cast(const void* pointer, ScalarType type) {
         switch (type) {
@@ -678,11 +695,54 @@ private:
         throw std::invalid_argument("unknown tensor scalar type");
     }
 
-protected:
     std::shared_ptr<TensorStorage> storage_;
     TensorView view_{};
     std::size_t byte_offset_ = 0;
+    bool encoded_ = false;
+    encoding::Tq tq_{};
 };
+
+namespace encoding {
+inline Tensor tq_tensor(const Tensor& image, std::int64_t rows, std::int64_t columns, Tq layout) {
+    if (!image.defined() || image.is_encoded() || image.scalar_type() != kUInt8 ||
+        image.dim() != 1 || !image.is_contiguous() || rows < 1 || columns < 1 ||
+        layout.stored_columns < columns || layout.stored_columns > INT32_MAX || rows > INT32_MAX ||
+        layout.bytes > static_cast<std::size_t>(image.numel()) ||
+        image.byte_offset_ > image.storage_->bytes ||
+        layout.bytes > image.storage_->bytes - image.byte_offset_ ||
+        layout.bytes < 64 || static_cast<std::size_t>(rows) > (layout.bytes - 64) / 8 ||
+        layout.scales < 64 + static_cast<std::size_t>(rows) * 8 ||
+        layout.scales > layout.bytes || layout.scales_bytes > layout.bytes - layout.scales ||
+        layout.words > layout.bytes || layout.words_bytes > layout.bytes - layout.words ||
+        layout.words < layout.scales + layout.scales_bytes ||
+        layout.relative != layout.words + layout.words_bytes ||
+        layout.relative > layout.bytes || layout.bytes - layout.relative != 32 ||
+        layout.gslog < 0 || layout.gslog > 31)
+        throw std::invalid_argument("invalid TQ tensor image or geometry");
+    const auto base = reinterpret_cast<std::uintptr_t>(image.data_ptr());
+    if (!base || base > std::numeric_limits<std::uintptr_t>::max() - layout.bytes ||
+        (base + 64) % 8 || (base + layout.words) % 4)
+        throw std::invalid_argument("unaligned TQ tensor image");
+    Tensor result;
+    result.storage_ = image.storage_;
+    result.byte_offset_ = image.byte_offset_;
+    result.view_ = make_contiguous_view(nullptr, std::array<std::int64_t, 2>{rows, columns}, kFloat16, image.device());
+    result.encoded_ = true;
+    result.tq_ = layout;
+    return result;
+}
+
+inline const Tq& tq_layout(const Tensor& tensor) {
+    if (!tensor.defined() || !tensor.encoded_) throw std::invalid_argument("tensor is not TQ encoded");
+    return tensor.tq_;
+}
+
+inline Tensor tq_image(const Tensor& tensor) {
+    const auto& layout = tq_layout(tensor);
+    const std::array<std::int64_t, 1> shape{static_cast<std::int64_t>(layout.bytes)};
+    return Tensor(tensor.storage_, make_contiguous_view(nullptr, shape, kUInt8, tensor.device()), tensor.byte_offset_);
+}
+} // namespace encoding
 
 class TensorIndex final {
 public:

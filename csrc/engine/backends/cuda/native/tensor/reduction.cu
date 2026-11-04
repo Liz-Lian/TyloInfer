@@ -254,6 +254,7 @@ Tensor reduce_cuda(
     std::int64_t dimension,
     bool keep_dimension,
     int operation) {
+    source.require_dense();
     if (!source.is_cuda() || source.dim() == 0) {
         throw std::invalid_argument("native reduction requires a ranked CUDA tensor");
     }

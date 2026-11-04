@@ -88,7 +88,7 @@ struct QuantLinearShard {
     Fp8SqWeight fp8_sq;
     Mxfp8Weight mxfp8;
     ::tyloi::Tensor dense;
-    TqWeight tq;
+    ::tyloi::Tensor tq;
 };
 
 struct QuantLinear : tyloi::weights::Weights {
@@ -100,7 +100,7 @@ struct QuantLinear : tyloi::weights::Weights {
     Fp8SqWeight fp8_sq;
     Mxfp8Weight mxfp8;
     ::tyloi::Tensor dense;
-    TqWeight tq;
+    ::tyloi::Tensor tq;
     TensorParallelAxis tensor_parallel_axis =
         TensorParallelAxis::Mirrored;
     std::vector<QuantLinearShard> tensor_parallel_shards;

@@ -376,6 +376,7 @@ Tensor squeeze(const Tensor& source, std::int64_t dimension) {
 }
 
 Tensor squeeze(const Tensor& source) {
+    source.require_dense();
     if (!source.defined()) {
         throw std::invalid_argument("cannot squeeze an undefined tensor");
     }
@@ -473,6 +474,9 @@ Tensor slice(const Tensor& source,
 }
 
 Tensor index(const Tensor& source, std::initializer_list<TensorIndex> indices) {
+    source.require_dense();
+    for (const auto& index : indices)
+        if (index.kind() == TensorIndex::Kind::tensor) index.tensor().require_dense();
     Tensor result = source;
     std::int64_t dimension = 0;
     for (const auto& index : indices) {
@@ -550,6 +554,7 @@ Tensor unfold(const Tensor& source,
 std::vector<Tensor> split_with_sizes(const Tensor& source,
     std::span<const std::int64_t> sections,
     std::int64_t dimension) {
+    source.require_dense();
     std::vector<Tensor> result;
     result.reserve(sections.size());
     std::int64_t offset = 0;
@@ -564,6 +569,7 @@ std::vector<Tensor> split_with_sizes(const Tensor& source,
 }
 
 std::vector<Tensor> chunk(const Tensor& source, std::int64_t chunks, std::int64_t dimension) {
+    source.require_dense();
     if (chunks <= 0) throw std::invalid_argument("chunk count must be positive");
     const auto extent = source.size(dimension);
     const auto width = (extent + chunks - 1) / chunks;
@@ -684,12 +690,14 @@ Tensor Tensor::logical_not() const { return cuda::unary_cuda(*this, 8); }
 bool Tensor::equal(const Tensor& other) const { return tyloi::cuda::equal(*this, other); }
 Tensor Tensor::masked_select(const Tensor& mask) const { return cuda::masked_select_cuda(*this, mask); }
 Tensor Tensor::tril(std::int64_t diagonal) const {
+    require_dense();
     if (dim() < 2) throw std::invalid_argument("tril requires at least two dimensions");
     auto rows = cuda::arange(size(-2), TensorOptions{}.dtype(kInt64).device(device())).unsqueeze(-1);
     auto columns = cuda::arange(size(-1), TensorOptions{}.dtype(kInt64).device(device())).unsqueeze(0);
     return cuda::where(columns <= rows + diagonal, *this, 0.0);
 }
 Tensor Tensor::masked_fill(const Tensor& mask, double value) const {
+    mask.require_dense();
     auto result = clone();
     result.masked_fill_(mask, value);
     return result;
@@ -725,6 +733,7 @@ Tensor& Tensor::zero_() {
 }
 
 Tensor& Tensor::fill_(double value) {
+    require_dense();
     if (!defined()) {
         throw std::invalid_argument("fill_ requires a defined tensor");
     }
@@ -807,6 +816,7 @@ Tensor& Tensor::index_fill_(
 
 Tensor& Tensor::index_put_(
     std::initializer_list<TensorIndex> indices, const Tensor& value) {
+    value.require_dense();
     {
         auto destination = index(indices);
         cuda::copy_into(destination, value);
@@ -825,6 +835,7 @@ Tensor& Tensor::index_put_(
 namespace tyloi::cuda {
 
 Tensor contiguous(const Tensor& input) {
+    input.require_dense();
     if (!input.defined()) return {};
     if (input.is_contiguous()) return input;
     if (input.is_cuda()) return make_contiguous_cuda(input);
@@ -834,6 +845,7 @@ Tensor contiguous(const Tensor& input) {
 }
 
 Tensor clone(const Tensor& input) {
+    input.require_dense();
     if (!input.defined()) return {};
     auto result = empty(input.sizes(), input.options());
     copy_into(result, input);
@@ -843,6 +855,7 @@ Tensor clone(const Tensor& input) {
 Tensor cast(const Tensor& input, ScalarType type) {
     auto target = input.options().dtype(type);
     if (type == input.scalar_type()) return input;
+    input.require_dense();
     if (input.is_cpu()) {
         auto result = empty(input.sizes(), target);
         copy_contiguous_cpu(result, input);
@@ -858,10 +871,12 @@ Tensor cast(const Tensor& input, ScalarType type, Device target) {
 Tensor copy(const Tensor& input, Device target_device) {
     auto target = input.options().device(target_device);
     if (target_device == input.device()) return input;
+    input.require_dense();
     return copy_or_convert_cuda(input, target);
 }
 
 void copy_into(Tensor& destination, const Tensor& source) {
+    destination.require_dense(); source.require_dense();
     if (!destination.defined() || !source.defined()) {
         throw std::invalid_argument("copy_ requires defined tensors");
     }
@@ -884,6 +899,7 @@ Tensor empty(std::initializer_list<std::int64_t> shape, const TensorOptions& opt
 }
 
 Tensor empty_like(const Tensor& source, const TensorOptions* options) {
+    source.require_dense();
     if (options == nullptr) return empty(source.sizes(), source.options());
     auto merged = source.options();
     if (options->has_dtype()) merged.dtype(options->scalar_type());
@@ -903,6 +919,7 @@ Tensor zeros(std::initializer_list<std::int64_t> shape, const TensorOptions& opt
 }
 
 Tensor zeros_like(const Tensor& source) {
+    source.require_dense();
     return zeros(source.sizes(), source.options());
 }
 
@@ -928,10 +945,12 @@ Tensor full(
 }
 
 Tensor full_like(const Tensor& source, double value) {
+    source.require_dense();
     return full(source.sizes(), value, source.options());
 }
 
 Tensor ones_like(const Tensor& source) {
+    source.require_dense();
     return ones(source.sizes(), source.options());
 }
 

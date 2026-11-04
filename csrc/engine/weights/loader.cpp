@@ -65,9 +65,9 @@ static std::vector<std::uint8_t> read_weight(
         // This entry is for parameters explicitly consumed as dense tensors
         // (norm/function tables), not ordinary quantized projections.
         const auto weight=load_tq_weight(mfq,name,placement.device);
-        auto ids=::tyloi::cuda::arange(weight.out,::tyloi::TensorOptions()
-            .device(weight.image.device()).dtype(::tyloi::kInt64));
-        auto value=weight.embedding(ids).to(::tyloi::kFloat32).contiguous();
+        auto ids=::tyloi::cuda::arange(weight.size(0),::tyloi::TensorOptions()
+            .device(weight.device()).dtype(::tyloi::kInt64));
+        auto value=tyloi::cuda::tq::embedding(weight,ids).to(::tyloi::kFloat32).contiguous();
         return cpu_layer?value.cpu().contiguous():value;
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
