@@ -26,7 +26,7 @@ tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& 
     return result;
 }
 
-std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
+std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
                                     std::int64_t layer,
                                     const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows) {
     TYLOINFER_RUNTIME_CHECK(shared, "missing DeepSeek-V4.1 CUDA state");
@@ -195,7 +195,7 @@ tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm& model,const
         return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
     };
     for(const auto& item:model.blocks) {
-        const auto& state=dynamic_cast<const deepseek_v41_runtime::Block&>(*item).state;
+        const auto& state=item->state;
         incoming+=session_tensor_bytes(state.local_kv)+session_tensor_bytes(state.partial_kv)+
             session_tensor_bytes(state.partial_score)+prefix_bytes(state.compressed_kv,state.compressed_length)+
             prefix_bytes(state.index_k,state.compressed_length);
@@ -232,7 +232,7 @@ bool DeepseekV41Model::adapter_prefetch_token_rows(DeepseekV41CausalLm& model,
     return true;
 }
 
-std::unique_ptr<Block> DeepseekV41Model::adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights,
+std::unique_ptr<deepseek_v41_runtime::Block> DeepseekV41Model::adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights,
                                                             int layer, int,
                                                             const std::string &type) {
     TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");

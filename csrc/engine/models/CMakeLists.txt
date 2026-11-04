@@ -1,6 +1,5 @@
 set(TYLOINFER_CUDA_MODEL_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/common/causal_model_ops.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/full_block.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/vision/axial_patch_encoder.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/vision/grid_encoder.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v4/ops.cpp
@@ -10,9 +9,13 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/prefill.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/dspark.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/vision.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/attention.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/ops.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/glm5_next/ops.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/gemma4/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/gemma4/forward.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/gemma4/load.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/gemma4/model.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/gemma4/state.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/glm_dsa/ops.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/ops.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/nemotron_h/ops.cpp

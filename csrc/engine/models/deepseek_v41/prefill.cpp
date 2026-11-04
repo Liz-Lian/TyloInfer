@@ -111,7 +111,7 @@ DenseTensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, DenseTensor 
         // Decoder global KV comes from the encoder boundary for every prompt token.
         // Decoder attention and FFNs run only over the bounded local replay below.
         for (int64_t layer = split; layer < model.num_hidden_layers(); ++layer) {
-            auto& block = dynamic_cast<deepseek_v41_runtime::Block&>(*model.blocks.at(layer));
+            auto& block = *model.blocks.at(layer);
             if (!block.kv_source()) continue;
             auto source = deepseek_v41_hc_input_cuda(hidden, model.shared->previous_pre,
                                                      block.attention_norm, config.rms_eps);
@@ -148,7 +148,7 @@ DenseTensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, DenseTensor 
     for (int64_t layer = split; layer < model.num_hidden_layers(); ++layer) {
         if (cancelled()) return {};
         if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=decoder layer="<<layer<<" tokens="<<replay_tokens<<'\n';
-        auto& block = dynamic_cast<deepseek_v41_runtime::Block&>(*model.blocks.at(layer));
+        auto& block = *model.blocks.at(layer);
         block.state.position = replay_begin;
         block.replay_local_window = truncated_local;
         tail_hidden = apply_layer(ops,layer,std::move(tail_hidden));

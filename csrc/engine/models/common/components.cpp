@@ -2,7 +2,6 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/full_block.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/backends/cuda/executor/options.h"
@@ -54,7 +53,6 @@ template <class Model> struct ModelLoader {
         auto block = model.adapter_load_block(placed, layer, device, type);
         block->cuda_device = device;
         block->cpu_offloaded = cpu_offloaded;
-        if (auto* full = dynamic_cast<FullBlock*>(block.get())) full->preallocate_kv();
         return block;
     }
 };

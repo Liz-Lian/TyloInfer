@@ -8,7 +8,8 @@
 
 namespace tyloi::models {
 
-template <class Model, class Guard> void reset_model(Model &model, int64_t batch, Guard guard) {
+template <class Model> void reset_model(Model &model, int64_t batch) {
+    const auto guard = [](const auto &block) { return Model::block_scope(block); };
     model.cache_pos = model.decode_position_delta = 0;
     model.adapter_reset(batch);
     model.speculative_start = -1;
@@ -20,8 +21,9 @@ template <class Model, class Guard> void reset_model(Model &model, int64_t batch
     }
 }
 
-template <class Model, class Guard>
-void begin_speculative_suffix(Model &model, int64_t tokens, Guard guard) {
+template <class Model>
+void begin_speculative_suffix(Model &model, int64_t tokens) {
+    const auto guard = [](const auto &block) { return Model::block_scope(block); };
     require_model(model.supports_suffix_speculation() && model.speculative_start < 0 &&
                       tokens > 0 && model.cache_pos + tokens <= model.max_position_embeddings(),
                   "invalid speculative suffix");
@@ -32,7 +34,8 @@ void begin_speculative_suffix(Model &model, int64_t tokens, Guard guard) {
     try {
         for (auto &block : model.blocks) {
             auto scope = guard(block);
-            block->begin_speculative(tokens);
+            if constexpr (requires { block->begin_speculative(tokens); })
+                block->begin_speculative(tokens);
             ++begun;
         }
     } catch (...) {
@@ -53,16 +56,19 @@ void begin_speculative_suffix(Model &model, int64_t tokens, Guard guard) {
     }
 }
 
-template <class Model, class Guard>
-void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard) {
+template <class Model>
+void finish_speculative(Model &model, bool commit, int64_t accepted) {
+    const auto guard = [](const auto &block) { return Model::block_scope(block); };
     require_model(model.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
     const auto keep = model.speculative_start + model.speculative_confirmed + accepted;
     for (auto &block : model.blocks) {
         auto scope = guard(block);
-        if (commit)
-            block->commit_speculative();
-        else
-            block->rollback_speculative(keep);
+        if constexpr (requires { block->commit_speculative(); }) {
+            if (commit)
+                block->commit_speculative();
+            else
+                block->rollback_speculative(keep);
+        }
     }
     if (commit)
         model.adapter_commit_speculative();

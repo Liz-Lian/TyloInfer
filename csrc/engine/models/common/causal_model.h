@@ -159,7 +159,7 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
         return this->embed_tokens(this->device_ids(std::move(ids)));
     }
     void reset(int64_t batch) {
-        reset_model(model(), batch, [](const auto &block) { return Backend::block_scope(block); });
+        reset_model(model(), batch);
     }
     DenseTensor hidden_forward(DenseTensor ids, std::optional<DenseTensor> positions = {},
                           std::optional<DenseTensor> lengths = {}, std::vector<DenseTensor> *trace = nullptr,
@@ -251,16 +251,13 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
         return model().adapter_supports_suffix_speculation() && speculative_blocks();
     }
     void begin_speculative_suffix(int64_t draft_tokens) {
-        models::begin_speculative_suffix(
-            model(), draft_tokens, [](const auto &block) { return Backend::block_scope(block); });
+        models::begin_speculative_suffix(model(), draft_tokens);
     }
     void commit_speculative() {
-        finish_speculative(model(), true, 0,
-                           [](const auto &block) { return Backend::block_scope(block); });
+        models::finish_speculative(model(), true, 0);
     }
     void rollback_speculative(int64_t accepted_suffix = 0) {
-        finish_speculative(model(), false, accepted_suffix,
-                           [](const auto &block) { return Backend::block_scope(block); });
+        models::finish_speculative(model(), false, accepted_suffix);
     }
     DenseTensor hidden_forward_speculative_suffix(DenseTensor ids, DenseTensor *raw_hidden = nullptr) {
         require_model(speculative_start >= 0 && speculative_confirmed == 0 &&

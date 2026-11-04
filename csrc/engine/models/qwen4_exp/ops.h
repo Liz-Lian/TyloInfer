@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/common/causal_model_ops.h"
-#include "engine/models/common/block.h"
+#include "engine/models/qwen4_exp/block.h"
 #include "engine/models/common/session/size.h"
 #include "engine/models/qwen4_exp/causal_lm.h"
 #include "engine/models/qwen4_exp/config.h"
@@ -113,7 +113,7 @@ struct Qwen4Model : CausalResources {
     // Bounded request lookahead, independent of the configured context ceiling.
     int64_t decode_reserve_until=0;
     bool speculative_prefix_retention=false;
-    std::vector<qwen4_exp::Qwen4Block*> loaded_blocks;
+    std::vector<std::unique_ptr<qwen4_exp::Qwen4Block>> blocks;
     std::function<void(std::size_t)> reserve_kv_workspace;
     template<class Model> std::optional<::tyloi::DenseTensor>
     adapter_graph_logits(Model& model,::tyloi::DenseTensor ids,int kind) {
@@ -131,8 +131,9 @@ struct Qwen4Model : CausalResources {
     void adapter_validate_load_options() const;
     void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
                                   ::tyloi::DenseTensor &output_norm);
-    std::unique_ptr<Block> adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
-                                              const std::string &type);
+    std::unique_ptr<qwen4_exp::Qwen4Block> adapter_load_block(
+        const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
+        const std::string &type);
 
     void adapter_reset(int64_t batch);
     void adapter_begin_forward(bool capture_raw_hidden);

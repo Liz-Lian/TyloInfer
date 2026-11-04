@@ -1,6 +1,7 @@
 #pragma once
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/rope/tail.h"
 #include "engine/weights/moe/expert_cache.h"
@@ -346,7 +347,11 @@ struct MhcResult {
     DenseTensor combination;
 };
 
-struct Block final : ::Block {
+struct Block final {
+    // Placement, as the layer loop sets it for CPU-offloaded blocks.
+    int cuda_device = 0;
+    bool cpu_offloaded = false;
+
     CommonConfig config;
     std::int64_t layer = -1;
     std::int64_t ratio = 0;
@@ -400,7 +405,7 @@ struct Block final : ::Block {
 
     bool index_source() const noexcept { return config.is_index_source(layer); }
 
-    void reset(std::int64_t batch) override {
+    void reset(std::int64_t batch) {
         const auto half = ::tyloi::TensorOptions()
                               .device(::tyloi::kCUDA)
                               .dtype(::tyloi::kFloat16);
@@ -440,9 +445,9 @@ struct Block final : ::Block {
             shared->reset_session(batch);
     }
 
-    bool supports_speculation() const noexcept override { return true; }
+    bool supports_speculation() const noexcept { return true; }
 
-    void begin_speculative(std::int64_t draft_tokens) override {
+    void begin_speculative(std::int64_t draft_tokens) {
         TYLOINFER_RUNTIME_CHECK(!speculative_pending && draft_tokens > 0 &&
                               draft_tokens <= config.sliding_window && state.local_kv.defined(),
                           "invalid DeepSeek-V4.1 speculative checkpoint");
@@ -463,7 +468,7 @@ struct Block final : ::Block {
         speculative_pending = true;
     }
 
-    void commit_speculative() override {
+    void commit_speculative() {
         speculative_pending = false;
         speculative_local_slots = DenseTensor();
         speculative_slot_ids = DenseTensor();
@@ -474,7 +479,7 @@ struct Block final : ::Block {
         speculative_position = -1;
     }
 
-    void rollback_speculative(std::int64_t position) override {
+    void rollback_speculative(std::int64_t position) {
         TYLOINFER_RUNTIME_CHECK(speculative_pending && position >= speculative_position &&
                               position <= state.position &&
                               speculative_local_slots.defined() && speculative_slot_ids.defined(),
@@ -510,7 +515,9 @@ struct Block final : ::Block {
         commit_speculative();
     }
 
-    void set_token_ids(const DenseTensor &ids) override { current_ids = ids; }
+    void set_token_ids(const DenseTensor &ids) { current_ids = ids; }
+    // No dense warmup state: the recurrent cache lives in AttentionState.
+    std::vector<DenseTensor*> graph_warmup_state() { return {}; }
 
     MhcResult collapse(CudaProfiler &profiler, const DenseTensor &residual, const DenseTensor &previous_pre,
                        const DenseTensor &function, const DenseTensor &scale, const DenseTensor &base,
@@ -813,20 +820,24 @@ struct Block final : ::Block {
     }
 
     DenseTensor forward_context(CudaExecutionContext& execution,DenseTensor hidden,
-            const ::Block::Context& context,const RopeCache& rope) override {
+            const BlockContext& context,const RopeCache& rope) {
         if(context.confirmed_prefix>0) {
             // A joint pass writes pending and draft rows. Protect their whole
             // physical window; rollback retains the confirmed prefix as well.
             begin_speculative(hidden.size(1));
             if(layer==0)shared->begin_speculative();
         }
-        return ::Block::forward_context(execution,std::move(hidden),context,rope);
+        TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
+                              "block does not support speculative verification");
+        return forward(execution, std::move(hidden), context.positions, context.cache_position,
+                       context.sequence_lengths, rope, context.cache_positions,
+                       context.attention_mask);
     }
 
     DenseTensor forward(CudaExecutionContext &execution, DenseTensor hidden, DenseTensor positions,
                    std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
                    const RopeCache &, const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt,
-                   const MfqOptional<DenseTensor> &attention_mask = mfq_nullopt) override {
+                   const MfqOptional<DenseTensor> &attention_mask = mfq_nullopt) {
         auto &profiler = execution.executor().profiler();
         TYLOINFER_RUNTIME_CHECK(current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
@@ -916,7 +927,7 @@ tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& 
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 
-std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
+std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
                                     std::int64_t layer, const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows);
 void validate_load_options(const CudaExecutionContext &execution);
 std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &source,
@@ -961,8 +972,10 @@ struct DeepseekV41Model : CausalResources {
     void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
                                   ::tyloi::DenseTensor &output_norm);
     void adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights);
-    std::unique_ptr<Block> adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
-                                              const std::string &type);
+    std::unique_ptr<deepseek_v41_runtime::Block> adapter_load_block(
+        const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
+        const std::string &type);
+    std::vector<std::unique_ptr<deepseek_v41_runtime::Block>> blocks;
 
     void adapter_begin_forward(bool capture_raw_hidden);
     bool adapter_supports_prepared_prompt() const noexcept {return true;}

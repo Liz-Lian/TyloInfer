@@ -1,8 +1,9 @@
 #pragma once
 
 #include "engine/models/common/capabilities.h"
+#include "engine/models/common/causal_forward.h"
 #include "engine/backends/cuda/native/scope.h"
-#include "engine/models/common/block.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/models/common/causal_model.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 
@@ -20,6 +21,28 @@ namespace tyloi::cuda::weight_loader { struct Loader; }
 
 enum class TextSessionStateKind : int;
 struct TextSessionState;
+
+struct CudaExecutionContext;
+
+namespace tyloi::cuda {
+
+// What the layer loop hands each block: the family-local geometry of one
+// forward step. Blocks are plain structs now; this bag belongs to the loop.
+struct BlockContext {
+    ::tyloi::DenseTensor token_ids;
+    ::tyloi::DenseTensor host_token_ids;
+    ::tyloi::DenseTensor positions;
+    ::tyloi::DenseTensor full_positions;
+    std::int64_t cache_position = 0;
+    std::int64_t confirmed_prefix = 0;
+    std::int64_t planned_kv_length = 0;
+    std::int64_t decode_attention_parts = 0;
+    MfqOptional<::tyloi::DenseTensor> sequence_lengths = mfq_nullopt;
+    MfqOptional<::tyloi::DenseTensor> cache_positions = mfq_nullopt;
+    MfqOptional<::tyloi::DenseTensor> attention_mask = mfq_nullopt;
+};
+
+} // namespace tyloi::cuda
 
 namespace tyloi::models::qwen4_exp {
 template <class Backend> struct CausalLm;
@@ -115,12 +138,11 @@ template <typename Model> struct CudaCausalOps : Model {
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
     QuantLinear embed;
-    std::vector<std::unique_ptr<Block>> blocks;
     ::tyloi::DenseTensor output_norm;
     QuantLinear lm_head;
     std::vector<DenseTensor*> graph_state() {
         std::vector<DenseTensor*> warmup_states;
-        for (const auto& block : blocks) {
+        for (const auto& block : static_cast<Model&>(*this).blocks) {
             for (auto* state : block->graph_warmup_state()) {
                 warmup_states.push_back(state);
             }
@@ -134,7 +156,8 @@ template <typename Model> struct CudaCausalOps : Model {
     auto execution_scope() const {
         return CudaScope(this->execution->config.layer_placement.primary_device(), this->execution->executor().contexts());
     }
-    static auto block_scope(const std::unique_ptr<Block> &block) {
+    template <class TypedBlock>
+    static auto block_scope(const std::unique_ptr<TypedBlock> &block) {
         return MfqCudaGuard(block->cuda_device);
     }
     static bool defined(const DenseTensor &value) { return value.defined(); }
@@ -170,7 +193,9 @@ template <typename Model> struct CudaCausalOps : Model {
                                             .dtype(::tyloi::kInt64)
                                             .device(::tyloi::kCUDA));
     }
-    static DenseTensor last_hidden(DenseTensor hidden) { return hidden.index({Slice(), -1, Slice()}); }
+    static DenseTensor last_hidden(DenseTensor hidden) {
+        return hidden.index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()});
+    }
     static DenseTensor softcap(DenseTensor logits, double cap) {
         return ::tyloi::cuda::tanh(logits / cap) * cap;
     }
@@ -220,7 +245,9 @@ template <typename Model> struct CudaCausalOps : Model {
         DenseTensor prepare_hidden(int64_t B, int64_t T) {
             if(model.execution->config.moe_pipeline) {
                 cpu_ids=ids.to(::tyloi::kCPU,::tyloi::kInt64).contiguous();
-                for(const auto& block:model.blocks)block->prefetch_token_ids(cpu_ids);
+                for(const auto& block:model.blocks)
+                    if constexpr (requires { block->prefetch_token_ids(cpu_ids); })
+                        block->prefetch_token_ids(cpu_ids);
             }
             if (model.execution->config.dense_cpu_layer_count > 0) {
                 cpu_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
@@ -243,7 +270,8 @@ template <typename Model> struct CudaCausalOps : Model {
                     .contiguous(),
                 B, T);
         }
-        DenseTensor layer(std::unique_ptr<Block> &b, DenseTensor x) {
+        template <class TypedBlock>
+        DenseTensor layer(std::unique_ptr<TypedBlock> &b, DenseTensor x) {
             MfqCudaGuard block_guard(b->cuda_device);
             auto local_ids =
                 b->cpu_offloaded
@@ -280,13 +308,14 @@ template <typename Model> struct CudaCausalOps : Model {
             x = b->cpu_offloaded
                     ? x.to(::tyloi::kCPU).contiguous()
                     : model.execution->executor().collectives().copy(x, b->cuda_device);
-            b->set_token_ids(local_ids);
+            if constexpr (requires { b->set_token_ids(local_ids); })
+                b->set_token_ids(local_ids);
             const RopeCache &active_rope =
                 b->cpu_offloaded
                     ? model.cpu_rope
                     : (model.device_ropes.empty() ? model.rope
                                                   : model.device_ropes.at(b->cuda_device));
-            Block::Context context;
+            BlockContext context;
             context.token_ids = local_ids;
             context.host_token_ids=cpu_ids;
             context.positions = local_pos;
@@ -325,6 +354,10 @@ template <typename Model> struct CudaCausalOps : Model {
 };
 
 using Qwen4CausalLm = tyloi::models::qwen4_exp::CausalLm<CudaCausalOps<Qwen4Model>>;
+}
+// namespace tyloi::cuda
+
+namespace tyloi::cuda {
 using DeepseekV41CausalLm = tyloi::models::deepseek_v41::CausalLm<CudaCausalOps<DeepseekV41Model>>;
 
 } // namespace tyloi::cuda
