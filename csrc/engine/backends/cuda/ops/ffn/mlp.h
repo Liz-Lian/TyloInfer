@@ -37,6 +37,7 @@ struct Mlp {
         bool silu_fusion = true;
     };
 
+    void check(const mfq_tensor_backend::Tensor& input, int primary) const;
     bool parallel() const;
     mfq_tensor_backend::Tensor sharded(
         CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq, Collectives& collectives,

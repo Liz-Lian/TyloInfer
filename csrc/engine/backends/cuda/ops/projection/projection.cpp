@@ -244,6 +244,7 @@ Projector::grouped(
     TYLOINFER_RUNTIME_CHECK(
         tensor_parallel_output_projections_compatible(projections),
         "tensor-parallel output projections are incompatible");
+    for (const auto* projection : projections) check_projection(*projection, x);
     auto output_shape = x.sizes().vec();
     auto flat = x.reshape({-1, x.size(-1)});
     const size_t shard_count =
@@ -419,11 +420,11 @@ mfq_tensor_backend::Tensor Projector::sharded(
 mfq_tensor_backend::Tensor Projector::run(
         const QuantLinear& weight,
         mfq_tensor_backend::Tensor x) const {
+    check_projection(weight, x);
     if(weight.is_tq() && !weight.tensor_parallel())return profiler_.measure("tq.linear",[&] {
         const auto resources=tq_.get(x.get_device());
         return weight.tq.forward(&resources->blas(),std::move(x));
     });
-    check_device(weight, x);
     if (weight.tensor_parallel() || (mfq::mfq_compat_enabled && weight.is_nint()) || (mfq::mfq_compat_enabled && weight.is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -450,6 +451,7 @@ mfq_tensor_backend::Tensor Projector::run(
 std::vector<mfq_tensor_backend::Tensor> Projector::run(
         const Projections& projections,
         mfq_tensor_backend::Tensor x) const {
+    for (const auto& weight : projections.weights) check_projection(weight, x);
     const auto join = [&projections](std::vector<mfq_tensor_backend::Tensor> outputs) {
         if (projections.prefix <= 1 || outputs.empty()) return outputs;
         std::vector<mfq_tensor_backend::Tensor> prefix(
@@ -538,8 +540,15 @@ mfq_tensor_backend::Tensor Projector::gated(
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor gate,
         InputGateMode mode) const {
-    if (mode == InputGateMode::Sigmoid || mode == InputGateMode::Silu)
-        check_device(weight, x);
+    if (!x.defined() || x.dim() < 1)
+        throw std::invalid_argument("projection input must have a last dimension");
+    check_projection_device(weight, x.device());
+    auto width = x.size(-1);
+    if ((!weight.tensor_parallel() || weight.tensor_parallel_axis == TensorParallelAxis::Output) &&
+        !weight.is_nint() && !weight.is_nvq() &&
+        gate.defined() && gate.dim() > 0 && width == 1)
+        width = gate.size(-1);
+    check_projection_width(weight, width);
     if (weight.tensor_parallel() || (mfq::mfq_compat_enabled && weight.is_nint()) || (mfq::mfq_compat_enabled && weight.is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -582,6 +591,7 @@ mfq_tensor_backend::Tensor Projector::gated(
 std::vector<mfq_tensor_backend::Tensor> Projector::run(
         const QuantLinearGroup& group,
         mfq_tensor_backend::Tensor x) const {
+    check_projection(group, x);
     if(group.tq.defined())return profiler_.measure("tq.parallel",[&] {
         const auto resources=tq_.get(x.get_device());
         return group.tq.forward(&resources->blas(),std::move(x));
@@ -674,6 +684,7 @@ std::vector<mfq_tensor_backend::Tensor> Projector::run(
 mfq_tensor_backend::Tensor Projector::swiglu(
         const QuantLinearGroup& group,
         mfq_tensor_backend::Tensor x) const {
+    check_projection(group, x);
     if(group.tq.defined() && group.outs.size()==2 && group.outs[0]==group.outs[1])
         return profiler_.measure("tq.swiglu",[&] {
             const auto resources=tq_.get(x.get_device());
@@ -704,6 +715,7 @@ mfq_tensor_backend::Tensor Projector::swiglu(
 mfq_tensor_backend::Tensor Projector::geglu(
         const QuantLinearGroup& group,
         mfq_tensor_backend::Tensor x) const {
+    check_projection(group, x);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (mmq_.mode == KlMmqMode::Default &&
             group.nint_grouped && group.nint.split_w.empty() &&

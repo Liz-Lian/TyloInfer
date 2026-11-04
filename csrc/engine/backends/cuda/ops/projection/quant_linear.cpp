@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -25,52 +26,211 @@ const QuantLinearGroup& as_quant_linear_group(const mfq::weights::Weights& group
     return *result;
 }
 
+namespace {
+void check_width(int64_t width, int64_t expected, bool padded) {
+    if (width <= 0 || expected <= 0 || (padded ? width > expected : width != expected))
+        throw std::invalid_argument("projection input width does not match weight");
+}
+
+void check_placement(const mfq::weights::Placement& placement, mfq_tensor_backend::Device device) {
+    if (placement.caller && *placement.caller == (device.is_cuda() ? mfq::DeviceType::cuda : mfq::DeviceType::cpu))
+        return;
+    for (const auto& place : placement.devices)
+        if (device == (place.is_cuda() ? mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, place.index)
+                                      : mfq_tensor_backend::Device(mfq_tensor_backend::kCPU))) return;
+    throw std::invalid_argument("projection weight and input devices do not match");
+}
+
+void check_fields(std::initializer_list<const mfq_tensor_backend::Tensor*> fields, mfq_tensor_backend::Device device) {
+    for (const auto* field : fields) {
+        if (!field->defined() || field->numel() == 0) continue;
+        if (field->device() != device)
+            throw std::invalid_argument("projection weight fields and input devices do not match");
+    }
+}
+
+void check_nint_fields(const NintWeight& w, mfq_tensor_backend::Device device) {
+    check_fields({&w.q_packed, &w.row_q_bits, &w.row_q_bit_offsets, &w.sub_scale,
+                  &w.sub_min, &w.neuron_scale, &w.neuron_min}, device);
+}
+
+void check_fields(const NintWeight& w, mfq_tensor_backend::Device device) {
+    if (w.q8_zero) check_fields({&w.q_packed, &w.q8_zero_scale}, device);
+    else check_nint_fields(w, device);
+}
+
+void check_fields(const NvqWeight& w, mfq_tensor_backend::Device device) {
+    check_fields({&w.indices_packed, &w.aux_packed, &w.sub_scale_packed,
+                  &w.neuron_scale, &w.codebook}, device);
+}
+
+void check_fields(const Mxfp4Weight& w, mfq_tensor_backend::Device device) {
+    check_fields({&w.values, &w.scales}, device);
+}
+
+void check_fields(const Mxfp8Weight& w, mfq_tensor_backend::Device device) {
+    check_fields({&w.values, &w.scales}, device);
+}
+
+void check_fields(const Mxfp4SqWeight& w, mfq_tensor_backend::Device device) {
+    if (!w.blob.is_cuda()) return;
+    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets, &w.row_auxiliary}, device);
+}
+
+void check_fields(const Fp8SqWeight& w, mfq_tensor_backend::Device device) {
+    if (!w.blob.is_cuda() || (w.dtype != "MXFP8-SQ" && w.dtype != "FP8-128SQ")) return;
+    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets}, device);
+}
+
+const mfq_tensor_backend::Tensor& shard_payload(const QuantLinearShard& shard) {
+    switch (shard.kind) {
+    case QuantLinearKind::Nint: return shard.nint.q_packed;
+    case QuantLinearKind::Nvq: return shard.nvq.indices_packed;
+    case QuantLinearKind::Mxfp4: return shard.mxfp4.values;
+    case QuantLinearKind::Mxfp4Sq: return shard.mxfp4_sq.weight.blob;
+    case QuantLinearKind::Fp8Sq: return shard.fp8_sq.weight.blob;
+    case QuantLinearKind::Mxfp8: return shard.mxfp8.values;
+    case QuantLinearKind::Dense: return shard.dense;
+    case QuantLinearKind::Tq: return shard.tq.image;
+    }
+    throw std::invalid_argument("unsupported projection weight");
+}
+
+int64_t shard_width(const QuantLinearShard& shard) {
+    switch (shard.kind) {
+    case QuantLinearKind::Nint: return shard.nint.neuron_len;
+    case QuantLinearKind::Nvq: return shard.nvq.neuron_len;
+    case QuantLinearKind::Mxfp4: return shard.mxfp4.neuron_len;
+    case QuantLinearKind::Mxfp4Sq: return shard.mxfp4_sq.weight.neuron_len;
+    case QuantLinearKind::Fp8Sq: return shard.fp8_sq.weight.neuron_len;
+    case QuantLinearKind::Mxfp8: return shard.mxfp8.neuron_len;
+    case QuantLinearKind::Dense: return shard.dense.size(1);
+    case QuantLinearKind::Tq: return shard.tq.neuron_len;
+    }
+    throw std::invalid_argument("unsupported projection weight");
+}
+}
+
+void check_projection_width(const QuantLinear& weight, int64_t width) {
+    if (!weight.tensor_parallel()) {
+        check_width(width, weight.neuron_len(), weight.is_nint() || weight.is_nvq());
+        return;
+    }
+    if (weight.tensor_parallel_axis == TensorParallelAxis::Input) {
+        check_width(width, weight.neuron_len(), false);
+        for (const auto& shard : weight.tensor_parallel_shards) {
+            if (shard.input_begin < 0 || shard.input_end <= shard.input_begin || shard.input_end > width)
+                throw std::invalid_argument("projection input does not cover tensor-parallel shard");
+            check_width(shard.input_end - shard.input_begin, shard_width(shard),
+                        shard.kind == QuantLinearKind::Nint || shard.kind == QuantLinearKind::Nvq);
+        }
+    } else if (weight.tensor_parallel_axis == TensorParallelAxis::Output) {
+        for (const auto& shard : weight.tensor_parallel_shards)
+            check_width(width, shard_width(shard),
+                        shard.kind == QuantLinearKind::Nint || shard.kind == QuantLinearKind::Nvq);
+    } else {
+        throw std::invalid_argument("tensor-parallel linear has an invalid axis");
+    }
+}
+
+void check_projection_device(const QuantLinear& weight, mfq_tensor_backend::Device device) {
+    if (!weight.tensor_parallel()) {
+        check_placement(weight.placement(), device);
+        if (weight.is_nint()) check_fields(weight.nint, device);
+        else if (weight.is_nvq()) check_fields(weight.nvq, device);
+        else if (weight.is_mxfp4()) check_fields(weight.mxfp4.weight, device);
+        else if (weight.is_mxfp8()) check_fields(weight.mxfp8.weight, device);
+        else if (weight.is_mxfp4_sq()) check_fields(weight.mxfp4_sq.weight, device);
+        else if (weight.is_fp8_sq()) check_fields(weight.fp8_sq.weight, device);
+        return;
+    }
+    for (const auto& shard : weight.tensor_parallel_shards) {
+        const auto& payload = shard_payload(shard);
+        if (!payload.defined() || !payload.is_cuda() || payload.get_device() != shard.device)
+            throw std::invalid_argument("tensor-parallel weight is not prepared on its device");
+        const mfq_tensor_backend::Device local(mfq_tensor_backend::kCUDA, shard.device);
+        switch (shard.kind) {
+        case QuantLinearKind::Nint: check_fields(shard.nint, local); break;
+        case QuantLinearKind::Nvq: check_fields(shard.nvq, local); break;
+        case QuantLinearKind::Mxfp4: check_fields(shard.mxfp4, local); break;
+        case QuantLinearKind::Mxfp4Sq: check_fields(shard.mxfp4_sq.weight, local); break;
+        case QuantLinearKind::Fp8Sq: check_fields(shard.fp8_sq.weight, local); break;
+        case QuantLinearKind::Mxfp8: check_fields(shard.mxfp8, local); break;
+        case QuantLinearKind::Dense:
+        case QuantLinearKind::Tq: break;
+        }
+    }
+}
+
+void check_projection(const QuantLinear& weight, const mfq_tensor_backend::Tensor& input) {
+    if (!input.defined() || input.dim() < 1)
+        throw std::invalid_argument("projection input must have a last dimension");
+    check_projection_device(weight, input.device());
+    check_projection_width(weight, input.size(-1));
+}
+
+void check_projection(const QuantLinearGroup& group, const mfq_tensor_backend::Tensor& input) {
+    if (!input.defined() || input.dim() < 1)
+        throw std::invalid_argument("projection input must have a last dimension");
+    if (group.outs.empty() || group.cols.size() != group.outs.size() ||
+        group.placements.size() != group.outs.size())
+        throw std::invalid_argument("projection group is not prepared");
+    for (const auto out : group.outs)
+        if (out <= 0) throw std::invalid_argument("invalid projection group output width");
+    if (!group.layers.empty()) {
+        if (group.layers.size() != group.outs.size())
+            throw std::invalid_argument("projection group has invalid layers");
+        for (const auto& layer : group.layers) check_projection(layer, input);
+        return;
+    }
+    if (!group.nint_grouped || !input.is_cuda())
+        throw std::invalid_argument("projection group is not prepared for input");
+    for (size_t i = 0; i < group.outs.size(); ++i) {
+        check_width(input.size(-1), group.cols[i], true);
+        check_placement(group.placements[i], input.device());
+    }
+    const auto check_nint_weight = [&](const NintWeight& weight) {
+        if (!weight.q_packed.defined())
+            throw std::invalid_argument("projection weight is not prepared");
+        check_width(input.size(-1), weight.neuron_len, true);
+        check_device(weight, input);
+    };
+    if (group.nint.split_w.empty()) check_nint_weight(group.nint.w);
+    for (const auto& weight : group.nint.projection_w) check_nint_weight(weight);
+    for (const auto& weight : group.nint.split_w) check_nint_weight(weight);
+}
+
 void check_device(const mfq_tensor_backend::Tensor& weight, const mfq_tensor_backend::Tensor& input) {
     if (input.is_cuda() && weight.defined() && weight.numel() != 0 && weight.device() != input.device())
         throw std::invalid_argument("projection weight and input devices do not match");
 }
 
 void check_device(const NintWeight& weight, const mfq_tensor_backend::Tensor& input) {
-    if (weight.q8_zero) {
-        check_device(weight.q_packed, input);
-        check_device(weight.q8_zero_scale, input);
-    } else {
-        check_nint(weight, input);
-    }
+    if (input.is_cuda()) check_fields(weight, input.device());
 }
 
 void check_nint(const NintWeight& weight, const mfq_tensor_backend::Tensor& input) {
-    for (const auto* field : {&weight.q_packed, &weight.row_q_bits, &weight.row_q_bit_offsets,
-            &weight.sub_scale, &weight.sub_min, &weight.neuron_scale, &weight.neuron_min})
-        check_device(*field, input);
+    if (input.is_cuda()) check_nint_fields(weight, input.device());
 }
 
 void check_device(const NvqWeight& weight, const mfq_tensor_backend::Tensor& input) {
-    for (const auto* field : {&weight.indices_packed, &weight.aux_packed, &weight.sub_scale_packed,
-            &weight.neuron_scale, &weight.codebook})
-        check_device(*field, input);
+    if (input.is_cuda()) check_fields(weight, input.device());
 }
 
 void check_device(const Mxfp4Weight& weight, const mfq_tensor_backend::Tensor& input) {
-    check_device(weight.values, input);
-    check_device(weight.scales, input);
+    if (input.is_cuda()) check_fields(weight, input.device());
 }
 
 void check_device(const Mxfp8Weight& weight, const mfq_tensor_backend::Tensor& input) {
-    check_device(weight.values, input);
-    check_device(weight.scales, input);
+    if (input.is_cuda()) check_fields(weight, input.device());
 }
 
 void check_device(const Mxfp4SqWeight& weight, const mfq_tensor_backend::Tensor& input) {
-    if (!weight.blob.is_cuda()) return;
-    for (const auto* field : {&weight.blob, &weight.row_q, &weight.row_symbol_byte_offsets, &weight.row_auxiliary})
-        check_device(*field, input);
+    if (input.is_cuda()) check_fields(weight, input.device());
 }
 
 void check_device(const Fp8SqWeight& weight, const mfq_tensor_backend::Tensor& input) {
-    if (!weight.blob.is_cuda() || (weight.dtype != "MXFP8-SQ" && weight.dtype != "FP8-128SQ")) return;
-    for (const auto* field : {&weight.blob, &weight.row_q, &weight.row_symbol_byte_offsets})
-        check_device(*field, input);
+    if (input.is_cuda()) check_fields(weight, input.device());
 }
 
 void check_device(const QuantLinear& weight, const mfq_tensor_backend::Tensor& input) {

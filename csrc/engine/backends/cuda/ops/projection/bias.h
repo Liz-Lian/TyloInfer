@@ -12,8 +12,9 @@ inline mfq_tensor_backend::Tensor biased(
         const Projector& projector, const QuantLinear& weight,
         const mfq_tensor_backend::Tensor& bias,
         mfq_tensor_backend::Tensor input) {
-    const auto output_dtype = input.scalar_type();
-    if (weight.is_dense()) {
+    if (weight.is_dense() && !weight.tensor_parallel()) {
+        check_projection(weight, input);
+        const auto output_dtype = input.scalar_type();
         const auto dense_dtype = weight.dense.scalar_type();
         std::optional<mfq_tensor_backend::Tensor> dense_bias = std::nullopt;
         if (bias.defined()) {
@@ -24,6 +25,7 @@ inline mfq_tensor_backend::Tensor biased(
             .contiguous();
     }
     auto output = projector.run(weight, input);
+    const auto output_dtype = input.scalar_type();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::optional<MfqCudaGuard> guard;
     if (output.is_cuda()) guard.emplace(output.device().index);

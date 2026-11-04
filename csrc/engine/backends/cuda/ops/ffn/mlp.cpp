@@ -75,6 +75,33 @@ Tensor expert_activation(ActivationKind activation, Tensor gate, Tensor up, doub
     return (up * mfq_tensor_backend::silu(gate)).contiguous();
 }
 
+void Mlp::check(const Tensor& input, int primary) const {
+    check_projection(gate_up, input);
+    const bool relu = activation == ActivationKind::relu_squared;
+    if (gate_up.outs.size() != (relu ? 1u : 2u))
+        throw std::invalid_argument("MLP has an invalid number of projections");
+    auto width = gate_up.outs[0];
+    if (!relu) {
+        const auto up = gate_up.outs[1];
+        if (width != up && (geglu || (width != 1 && up != 1)))
+            throw std::invalid_argument("MLP gate and up widths do not match");
+        width = std::max(width, up);
+    }
+    auto device = input.device();
+    if (!gate_up.layers.empty()) {
+        const auto& first = gate_up.layers.front();
+        if (first.tensor_parallel()) device = mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, primary);
+        for (const auto& layer : gate_up.layers) {
+            const auto local_device = layer.tensor_parallel()
+                ? mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, primary) : input.device();
+            if (local_device != device)
+                throw std::invalid_argument("MLP gate and up devices do not match");
+        }
+    }
+    check_projection_device(down, device);
+    check_projection_width(down, width);
+}
+
 bool Mlp::parallel() const {
     if (gate_up.layers.size() != 2 || !down.tensor_parallel() ||
         down.tensor_parallel_axis != TensorParallelAxis::Input) {

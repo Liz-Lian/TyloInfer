@@ -134,6 +134,10 @@ struct QuantLinear : mfq::weights::Weights {
 
 const QuantLinear& as_quant_linear(const mfq::weights::Weights& weight);
 
+void check_projection_width(const QuantLinear& weight, int64_t width);
+void check_projection_device(const QuantLinear& weight, mfq_tensor_backend::Device device);
+void check_projection(const QuantLinear& weight, const mfq_tensor_backend::Tensor& input);
+
 void check_device(const mfq_tensor_backend::Tensor& weight, const mfq_tensor_backend::Tensor& input);
 void check_device(const NintWeight& weight, const mfq_tensor_backend::Tensor& input);
 void check_nint(const NintWeight& weight, const mfq_tensor_backend::Tensor& input);
@@ -177,6 +181,7 @@ struct QuantLinearGroup : mfq::weights::Weights {
 };
 
 const QuantLinearGroup& as_quant_linear_group(const mfq::weights::Weights& group);
+void check_projection(const QuantLinearGroup& group, const mfq_tensor_backend::Tensor& input);
 
 struct DenseLinearGroup {
     mfq_tensor_backend::Tensor w;

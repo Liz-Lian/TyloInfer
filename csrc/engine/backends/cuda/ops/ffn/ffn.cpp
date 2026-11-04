@@ -846,6 +846,7 @@ mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::Weights& gate_up,
     const auto project = executor.projector(Executor::current_ffn());
     const Mlp weights{as_quant_linear_group(gate_up), as_quant_linear(down), activation,
                       activation == mfq::ops::MlpActivation::gelu_gated, swiglu_limit};
+    weights.check(Tensor(input), project.primary_device());
     auto x = half(Tensor(input), executor.profiler());
     return weights.parallel() ? sharded(weights, x, executor, project)
                               : local(weights, x, executor, project);

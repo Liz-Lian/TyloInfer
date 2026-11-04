@@ -41,6 +41,11 @@ void check_weight(const weights::Weights& value, weights::Layout layout) {
     const auto count = layout == weights::Layout::group ? value.size() : 1;
     for (std::size_t i = 0; i < count; ++i) {
         const auto placement = value.placement(i);
+        if (layout != weights::Layout::experts) {
+            const auto shape = value.shape(i);
+            if (shape.rows <= 0 || shape.cols <= 0)
+                throw std::invalid_argument("weight has invalid shape");
+        }
         if (placement.devices.empty() && !placement.caller)
             throw std::invalid_argument("weight has no execution placement");
         for (const auto& place : placement.devices) {
