@@ -17,12 +17,13 @@
 #include <variant>
 
 namespace tyloi::models { class CausalModel; class State; }
-namespace tyloi::engine { class Engine; }
+namespace tyloi::engine { class Engine; struct EngineParts; }
 namespace tyloi::cuda {
 struct CudaEngineOptions;
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions);
 void reload_cuda_engine(engine::Engine&, CudaEngineOptions);
-namespace internal { void assemble_engine(engine::Engine&, CudaEngineOptions); }
+// Assembles everything an Engine needs without touching the Engine itself.
+namespace internal { engine::EngineParts build_engine_parts(CudaEngineOptions); }
 }
 
 namespace tyloi::engine {
@@ -118,12 +119,21 @@ protected:
 private:
     friend class Scheduler;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    friend struct EngineParts;
+    // Builds the parts only; it never touches an Engine.
+    friend EngineParts tyloi::cuda::internal::build_engine_parts(tyloi::cuda::CudaEngineOptions);
     friend std::unique_ptr<Engine> tyloi::cuda::load_cuda_engine(tyloi::cuda::CudaEngineOptions);
     friend void tyloi::cuda::reload_cuda_engine(Engine&, tyloi::cuda::CudaEngineOptions);
-    friend void tyloi::cuda::internal::assemble_engine(Engine&, tyloi::cuda::CudaEngineOptions);
     template <class Ops, class State>
     friend tyloi::StepSequence<EventData> generate_prepared(Ops&, State&, InferenceRequest&, InferenceOutput&,
         const RequestId&, bool);
+    // The model and executor enter through the constructor; nothing writes
+    // Engine fields from outside.
+    explicit Engine(EngineParts&& parts);
+    // Device-side wiring that needs this Engine: caches, budget, reservations.
+    void install();
+    void rebuild(EngineParts&& parts);
+
     using Prepared = models::Prepared;
     tyloi::StepSequence<Prepared> prepare(InferenceRequest&, models::State&);
     std::pair<tyloi::StepResult<Prepared>, double> advance_preparation(tyloi::StepSequence<Prepared>&);

@@ -19,6 +19,7 @@ namespace tyloi::engine {
 
 // Engine private storage keeps device-specific types out of engine.h.
 struct Engine::Impl {
+    cuda::CudaEngineOptions options_;
     cuda::CudaLoadConfig load_;
     cuda::CudaRuntimeConfig runtime_;
     std::shared_ptr<const ModelSource> source_;
@@ -38,6 +39,13 @@ struct Engine::Impl {
     std::unique_ptr<TextProcessor> text_;
     EngineInfo info_;
     bool ready_ = false;
+};
+
+// Everything the CUDA loader assembles before an Engine exists.
+struct EngineParts {
+    std::shared_ptr<models::CausalModel> model;
+    std::unique_ptr<tyloi::Executor> executor;
+    std::unique_ptr<Engine::Impl> impl;
 };
 
 } // namespace tyloi::engine

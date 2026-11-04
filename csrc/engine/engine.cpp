@@ -16,6 +16,15 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/executor/decode_graph.h"
+#include "engine/budget.h"
+#include "engine/models/common/model_config.h"
+#include "engine/models/common/session/cache.h"
+#include "engine/requests/processor.h"
+#include "engine/state/kv_offload.h"
+#include "engine/weights/memory.h"
+#include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/workspace.h"
 #include <stdexcept>
 #include <type_traits>
 #endif
@@ -23,6 +32,74 @@
 namespace tyloi::engine {
 
 Engine::Engine() = default;
+Engine::Engine(EngineParts&& parts)
+    : model_(std::move(parts.model)), executor_(std::move(parts.executor)), impl_(std::move(parts.impl)) {}
+
+// Wiring that needs this Engine: caches, budget, expert space, reservations.
+void Engine::install() {
+    auto& impl = *impl_;
+    auto& installed_root = static_cast<cuda::Executor&>(*executor_);
+    try {
+        auto scope = installed_root.enter(impl.load_.layer_placement.primary_device());
+        cuda::WeightMemoryLoadScope memory_load(*impl.ledger_);
+        impl.model_info_ = model_->info();
+        impl.graph_.emplace(impl.model_info_.max_context);
+        impl.cache_.emplace(impl.runtime_.session_cache, impl.runtime_.prefix_cache,
+            cuda::internal::make_cuda_paged_prefix_cache(*impl.source_, impl.model_info_.max_context,
+                impl.idle_state_->supports_paged_text_session_state(), impl.runtime_.prefix_cache),
+            impl.idle_state_->supports_text_session_state(), impl.idle_state_->supports_text_session_state() ? 0 : 1,
+            cuda::internal::cuda_has_separate_memory());
+        impl.budget_.emplace(*impl.ledger_, *impl.weights_, *impl.cache_, impl.load_.layer_placement.primary_device());
+        if (impl.offload_) impl.offload_->set_ram_reservation([this](std::size_t bytes) { impl_->cache_->reserve_ram(bytes); impl_->weights_->reserve(bytes); });
+        if (impl.runtime_.continuous_batch.max_sequences)
+            throw std::invalid_argument("continuous batching is unavailable for this model");
+        if (impl.weights_->moe) {
+            auto loan = impl.kv_ ? impl.kv_->expert_loan() : nullptr;
+            if (!loan && moe_expert_cache_ssd_experts(impl.weights_->moe)) {
+                loan = std::make_shared<cuda::KvExpertLoan>();
+                set_moe_kv_expert_loan(impl.weights_->moe, loan);
+            }
+            if (loan) impl.expert_space_.emplace(*impl.weights_, impl.load_.layer_placement.primary_device(), std::move(loan));
+            impl.restore_ = [this] { restore_graph_expert_space(); };
+            set_moe_workspace_reservation(impl.weights_->moe,
+                [this](std::size_t bytes) { impl_->budget_->reclaim(bytes, impl_->expert_space_ ? &*impl_->expert_space_ : nullptr); },
+                [this](std::size_t bytes) { impl_->cache_->reserve_ram(bytes); impl_->weights_->reserve(bytes); });
+        }
+        if (const auto bytes = cuda::runtime_options::resident_budget_bytes()) {
+            engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
+            set_budget(command);
+        }
+        restore_graph_expert_space();
+        impl.info_ = {};
+        impl.info_.max_requests = std::max<std::size_t>(1, impl.runtime_.continuous_batch.max_sequences);
+        impl.info_.max_context = impl.model_info_.max_context;
+        impl.info_.vocab_size = static_cast<std::int32_t>(impl.model_info_.vocab_size);
+        impl.info_.model_type = impl.model_info_.model_type;
+        impl.info_.capabilities = model_->capabilities();
+        const auto& caps = impl.info_.capabilities;
+        impl.info_.duplex = caps.full_duplex;
+        impl.info_.multimodal = caps.image_input || caps.video_input || caps.audio_input || caps.audio_output || caps.full_duplex;
+        impl.info_.reload = true;
+        impl.text_ = engine::TextProcessor::load(*impl.source_, impl.options_.tokenizer_model, impl.info_.vocab_size, impl.info_.model_type);
+        if (impl.text_) impl.info_.chat = impl.text_->chat_template_capabilities();
+        impl.info_.stop_token_ids = models::stop_token_ids(models::config_json(*impl.source_, impl.options_.config_path), impl.info_.vocab_size);
+        impl.ready_ = true;
+    } catch (...) {
+        const auto failure = std::current_exception();
+        try { unload_model(); }
+        catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
+        std::rethrow_exception(failure);
+    }
+}
+
+void Engine::rebuild(EngineParts&& parts) {
+    unload_model();
+    model_ = std::move(parts.model);
+    executor_ = std::move(parts.executor);
+    impl_ = std::move(parts.impl);
+    install();
+}
 Engine::~Engine() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (scheduler_ || executor_) {
