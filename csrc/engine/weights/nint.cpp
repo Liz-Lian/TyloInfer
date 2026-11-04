@@ -15,12 +15,12 @@ using namespace tyloi::cuda::quant_format;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 struct NintCacheState {
     using Key=std::array<uintptr_t,11>;
-    std::map<Key,::tyloi::Tensor> decoded;
+    std::map<Key,::tyloi::DenseTensor> decoded;
     NintCacheState* previous=nullptr;
 };
 namespace {
 thread_local NintCacheState* current_cache=nullptr;
-NintCacheState::Key cache_key(const NintWeight& w) {
+NintCacheState::Key cache_key(const tyloi::NintTensor& w) {
     return {reinterpret_cast<uintptr_t>(w.q_packed.data_ptr()),
         reinterpret_cast<uintptr_t>(w.row_q_bits.data_ptr()),
         reinterpret_cast<uintptr_t>(w.row_q_bit_offsets.data_ptr()),
@@ -46,9 +46,9 @@ void NintCache::clear() {
 bool NintCache::active() noexcept {
     return current_cache!=nullptr;
 }
-::tyloi::Tensor NintCache::get(
-        const NintWeight& w,
-        const std::function<::tyloi::Tensor()>& decode) {
+::tyloi::DenseTensor NintCache::get(
+        const tyloi::NintTensor& w,
+        const std::function<::tyloi::DenseTensor()>& decode) {
     if(!current_cache)return decode();
     const auto key=cache_key(w);
     const auto found=current_cache->decoded.find(key);
@@ -352,11 +352,11 @@ tyloi::nint8::Data slice_nint8_zero_cpu_input_groups(
     }
     return result;
 }
-NintWeight to_device_nint(
+tyloi::NintTensor to_device_nint(
         const tyloi::nint::Data & c, bool cuda, int device) {
     if (c.bits < 1 || c.bits > 8) throw std::runtime_error("unsupported NINT bits");
     require_canonical_nint_cpu(c);
-    NintWeight w;
+    tyloi::NintTensor w;
     w.out = c.out;
     w.ng = c.ng;
     w.gs = c.gs;
@@ -399,7 +399,7 @@ NintWeight to_device_nint(
 }
 
 
-NintWeight to_device_mfe_nint(
+tyloi::NintTensor to_device_mfe_nint(
         const tyloi::nint::Data & source,
         int local_experts,
         int out_per_expert,
@@ -454,7 +454,7 @@ NintWeight to_device_mfe_nint(
             destination_bit += row_bits;
         }
     }
-    NintWeight result = to_device_nint(source, false);
+    tyloi::NintTensor result = to_device_nint(source, false);
     result.aligned_q8 = false;
     result.q_expert_stride = static_cast<int64_t>(stride);
     result.q_packed = cpu_u8_tensor(
@@ -476,9 +476,9 @@ NintWeight to_device_mfe_nint(
     return result;
 }
 
-NintWeight to_device_nint8_zero(
+tyloi::NintTensor to_device_nint8_zero(
         const tyloi::nint8::Data & c, bool cuda, int device) {
-    NintWeight w;
+    tyloi::NintTensor w;
     w.out = c.out;
     w.ng = c.ng;
     w.gs = 32;
@@ -555,7 +555,7 @@ tyloi::nint8::Data select_nint8_zero_cpu_rows(
     return result;
 }
 
-::tyloi::Tensor dequant_nint8_zero_cpu(const tyloi::nint8::Data & source) {
+::tyloi::DenseTensor dequant_nint8_zero_cpu(const tyloi::nint8::Data & source) {
     TYLOINFER_RUNTIME_CHECK(source.shape.size() == 2,
         "CPU NINT8-0 dense tensor must be rank 2");
     const auto quantized_tensor = cpu_u8_tensor(

@@ -24,20 +24,20 @@ bool mfe_ffn_compact_transferred_fused(const MfeFfnBatch&,cudaStream_t,const int
 
 namespace {
 using View=tyloi::cuda::MfePackedProjection;
-template<class T>::tyloi::Tensor upload(const std::vector<T>& values,::tyloi::Device device) {
+template<class T>::tyloi::DenseTensor upload(const std::vector<T>& values,::tyloi::Device device) {
     auto host=::tyloi::cuda::empty({int64_t(values.size()*sizeof(T))},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8));
     std::memcpy(host.data_ptr(),values.data(),values.size()*sizeof(T));return host.to(device);
 }
-View nint_view(const NintWeight& w,int rows,int experts,std::vector<::tyloi::Tensor>& owners) {
+View nint_view(const tyloi::NintTensor& w,int rows,int experts,std::vector<::tyloi::DenseTensor>& owners) {
     View result;result.family=1;result.output_rows=rows;result.local_experts=experts;
     result.input_width=int(w.neuron_len);result.groups=int(w.ng);result.group_size=int(w.gs);
     result.q_expert_stride=int(w.q_expert_stride);
-    const std::array<::tyloi::Tensor,7> fields={w.q_packed,w.row_q_bits,w.row_q_bit_offsets,w.sub_scale,w.sub_min,w.neuron_scale,w.neuron_min};
+    const std::array<::tyloi::DenseTensor,7> fields={w.q_packed,w.row_q_bits,w.row_q_bit_offsets,w.sub_scale,w.sub_min,w.neuron_scale,w.neuron_min};
     for(int i=0;i<7;++i){result.fields[i]=fields[i].data_ptr();owners.push_back(fields[i]);}
     result.sizes[0]=w.q_packed.numel()*w.q_packed.element_size();
     return result;
 }
-View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::Tensor>& owners) {
+View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::DenseTensor>& owners) {
     View result;
     if(pool.family==MixedMoeFamily::Nint)result=nint_view(pool.nint,rows,pool.local_experts,owners);
     else if(pool.family==MixedMoeFamily::Nvq) {
@@ -60,7 +60,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::Tensor>& o
                 result.format,result.nvq_bank_map);
         }
         result.nvec=(result.input_width+(d4?3:7))/(d4?4:8);result.nsign=(result.input_width+7)/8;
-        const std::array<::tyloi::Tensor,5> fields={w.indices_packed,w.aux_packed,w.sub_scale_packed,w.neuron_scale,w.codebook};
+        const std::array<::tyloi::DenseTensor,5> fields={w.indices_packed,w.aux_packed,w.sub_scale_packed,w.neuron_scale,w.codebook};
         for(int i=0;i<5;++i){result.fields[i]=fields[i].data_ptr();owners.push_back(fields[i]);}
         for(int i=0;i<3;++i)result.sizes[i]=fields[i].numel()*fields[i].element_size();
         if(w.integer_codebook.defined()) {
@@ -74,7 +74,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::Tensor>& o
         const auto& w=pool.mxfp4;
         result.family=3;result.output_rows=rows;result.local_experts=pool.local_experts;
         result.input_width=int(w.neuron_len);result.group_size=32;result.groups=result.input_width/32;
-        const std::array<::tyloi::Tensor,2> fields{w.values,w.scales};
+        const std::array<::tyloi::DenseTensor,2> fields{w.values,w.scales};
         for(int i=0;i<2;++i) {
             result.fields[i]=fields[i].data_ptr();result.sizes[i]=fields[i].nbytes();owners.push_back(fields[i]);
         }
@@ -89,8 +89,8 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::Tensor>& o
 namespace tyloi::cuda {
 
 MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
-        const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,const ::tyloi::Tensor& weights,const ::tyloi::Tensor& sigmoid,
-        const std::array<const NintWeight*,3>& shared,const ::tyloi::Tensor& shared_gate,
+        const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,const ::tyloi::DenseTensor& weights,const ::tyloi::DenseTensor& sigmoid,
+        const std::array<const tyloi::NintTensor*,3>& shared,const ::tyloi::DenseTensor& shared_gate,
         int output_columns,int intermediate_columns,const std::array<std::vector<int32_t>,3>* cohort_by_expert,bool output_pairs,
         bool combined_gate_up,int token_group_capacity_hint,double swiglu_limit,
         bool ungated_experts,bool ungated_shared)
@@ -198,7 +198,7 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         if(!shared[shared_input_projection] || !shared[1] || !shared[2] ||
             !shared_gate.defined() || shared_gate.numel()!=batch_.tokens)
             throw std::invalid_argument("two-stage MFE shared projection incomplete");
-        shared_short_encoding_=std::all_of(shared.begin(),shared.end(),[](const NintWeight* w) {
+        shared_short_encoding_=std::all_of(shared.begin(),shared.end(),[](const tyloi::NintTensor* w) {
             return !w || w->gs==24 || w->gs==28 || w->gs==32;
         });
         batch_.shared_intermediate=int(shared[1]->out);
@@ -209,7 +209,7 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         for(int p=0;p<3;++p) {
             // An ungated shared expert has no gate; reuse Up's descriptor so the
             // packed layout stays three slots while the kernel reads one bank.
-            const NintWeight& source=*shared[p?p:(ungated_shared?1:0)];
+            const tyloi::NintTensor& source=*shared[p?p:(ungated_shared?1:0)];
             auto d=nint_view(source,int(source.out),1,owners_);d.expert_local=nullptr;
             const auto small_whole=tyloi::cuda::runtime_options::mfe_shared_small_whole();
             const bool small_down=p==2 && d.group_size==24 && d.groups<=32 &&
@@ -383,14 +383,14 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         }
     }
 }
-void MoeBatch::cpu_results(const ::tyloi::Tensor& kinds,const ::tyloi::Tensor& pairs,const uint32_t* ready) {
+void MoeBatch::cpu_results(const ::tyloi::DenseTensor& kinds,const ::tyloi::DenseTensor& pairs,const uint32_t* ready) {
     if(!kinds.is_cuda() || !pairs.is_cuda() || kinds.get_device()!=input_.get_device() ||
         pairs.get_device()!=input_.get_device() || kinds.numel()!=batch_.experts || kinds.scalar_type()!=::tyloi::kInt32 || !kinds.is_contiguous() ||
         pairs.dim()!=3 || pairs.size(0)!=batch_.tokens || pairs.size(1)!=batch_.routes || pairs.size(2)!=batch_.output_width ||
         pairs.scalar_type()!=::tyloi::kFloat16 || !pairs.is_contiguous())throw std::invalid_argument("two-stage MFE CPU result contract mismatch");
     kinds_=kinds;cpu_=pairs;batch_.kinds=kinds.data_ptr<int32_t>();batch_.cpu_pairs=reinterpret_cast<const __half*>(pairs.data_ptr());batch_.cpu_ready=ready;
 }
-void MoeBatch::bind_window_inputs(const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,const ::tyloi::Tensor& weights) {
+void MoeBatch::bind_window_inputs(const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,const ::tyloi::DenseTensor& weights) {
     if(!tyloi::cuda::DecodeWindow::recording() ||
         input.sizes()!=input_.sizes() || ids.sizes()!=ids_.sizes() || weights.sizes()!=weights_.sizes() ||
         !input.is_cuda() || !ids.is_cuda() || !weights.is_cuda() ||
@@ -408,7 +408,7 @@ void MoeBatch::use_staged_inputs() {
     batch_.input=reinterpret_cast<const __half*>(input_.data_ptr());
     batch_.ids=ids_.data_ptr<int32_t>();batch_.route_weights=weights_.data_ptr<float>();
 }
-void MoeBatch::bind_shared_gate(const ::tyloi::Tensor& gate) {
+void MoeBatch::bind_shared_gate(const ::tyloi::DenseTensor& gate) {
     if(!gate.defined()) {
         bound_shared_gate_={};batch_.shared_gate=shared_gate_.defined()?shared_gate_.data_ptr():nullptr;
         return;
@@ -575,7 +575,7 @@ void MoeBatch::enable_cached_dispatch(const tyloi::cuda::MfeCachedExpert* mapped
     if(batch_.tokens==1 && batch_.routes<=32)
         cached_transfer_routes_=::tyloi::cuda::empty({batch_.routes+2},input_.options().dtype(::tyloi::kInt32));
 }
-bool MoeBatch::try_fuse_prepare_shared_gate(const NintWeight& w,const ::tyloi::Tensor& output) {
+bool MoeBatch::try_fuse_prepare_shared_gate(const tyloi::NintTensor& w,const ::tyloi::DenseTensor& output) {
     if(!cached_dispatch_.mapped || !batch_.shared || batch_.tokens<1 || batch_.tokens>6 ||
         !w.aligned_q8 || w.q8_zero || w.out!=1 || w.gs!=48 || w.ng<1 || w.ng>64 ||
         w.neuron_len!=batch_.input_width || w.neuron_len>w.ng*48 || !output.is_cuda() ||
@@ -636,7 +636,7 @@ void MoeBatch::prepare(int32_t* published_ids,uint32_t* ready){
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     }
 }
-std::pair<::tyloi::Tensor,::tyloi::Tensor> MoeBatch::reserve_input_quantization(int groups,int group_size) {
+std::pair<::tyloi::DenseTensor,::tyloi::DenseTensor> MoeBatch::reserve_input_quantization(int groups,int group_size) {
     const MfqCudaGuard guard(input_.device());
     if(group_size<4 || group_size>64 || groups!=(batch_.input_width+group_size-1)/group_size)
         throw std::invalid_argument("MFE additional input quantization geometry is invalid");
@@ -685,7 +685,7 @@ void MoeBatch::start_shared(bool early){
             if(capture!=cudaStreamCaptureStatusNone)return;
             std::array<View,3> views;
             std::copy_n(host_views_.end()-3,3,views.begin());
-            std::map<std::pair<int,int>,std::pair<::tyloi::Tensor,::tyloi::Tensor>> inputs;
+            std::map<std::pair<int,int>,std::pair<::tyloi::DenseTensor,::tyloi::DenseTensor>> inputs;
             std::vector<tyloi::cuda::MfeInputQuantization> quantizers;
             for(int p=0;p<2;++p) {
                 auto& d=views[p];const auto key=std::make_pair(d.groups,d.group_size);

@@ -31,7 +31,7 @@ cudaDataType_t cuda_data_type(ScalarType type) {
     }
 }
 
-std::vector<std::int64_t> matmul_batch_shape(const Tensor& left, const Tensor& right) {
+std::vector<std::int64_t> matmul_batch_shape(const DenseTensor& left, const DenseTensor& right) {
     const auto left_rank = static_cast<std::size_t>(left.dim() - 2);
     const auto right_rank = static_cast<std::size_t>(right.dim() - 2);
     const auto rank = std::max(left_rank, right_rank);
@@ -64,7 +64,7 @@ std::vector<std::int64_t> batch_coordinates(
 }
 
 std::int64_t matmul_batch_offset(
-    const Tensor& tensor,
+    const DenseTensor& tensor,
     std::span<const std::int64_t> output_shape,
     std::span<const std::int64_t> coordinates) {
     const auto input_rank = static_cast<std::size_t>(tensor.dim() - 2);
@@ -100,14 +100,14 @@ __global__ void scale_causal_bf16_kernel(
     }
 }
 
-bool matrix_layout_supported(const Tensor& tensor) {
+bool matrix_layout_supported(const DenseTensor& tensor) {
     return (tensor.stride(-1) == 1 &&
             (tensor.size(-2) <= 1 || tensor.stride(-2) >= tensor.size(-1))) ||
         (tensor.stride(-2) == 1 &&
             (tensor.size(-1) <= 1 || tensor.stride(-1) >= tensor.size(-2)));
 }
 
-int matrix_leading_dimension(const Tensor& tensor, bool row_major) {
+int matrix_leading_dimension(const DenseTensor& tensor, bool row_major) {
     const auto minimum = std::max<std::int64_t>(1, tensor.size(row_major ? -1 : -2));
     const auto leading = tensor.size(row_major ? -2 : -1) <= 1
         ? minimum : tensor.stride(row_major ? -2 : -1);
@@ -120,7 +120,7 @@ int matrix_leading_dimension(const Tensor& tensor, bool row_major) {
 // Flatten only batches whose addresses form an arithmetic progression. Mixed
 // broadcasting (e.g. [B,1] by [1,H]) keeps the general per-batch path.
 std::optional<std::int64_t> regular_batch_stride(
-    const Tensor& tensor, const std::vector<std::int64_t>& batch_shape) {
+    const DenseTensor& tensor, const std::vector<std::int64_t>& batch_shape) {
     std::optional<std::int64_t> step;
     std::int64_t extent = 1;
     const auto padding = static_cast<std::int64_t>(batch_shape.size()) - tensor.dim() + 2;
@@ -221,7 +221,7 @@ void submit_parallel_rows(int device,std::int64_t begin,std::int64_t rows,
     }
 }
 
-Tensor matmul(const Tensor& left_source, const Tensor& right_source) {
+DenseTensor matmul(const DenseTensor& left_source, const DenseTensor& right_source) {
     left_source.require_dense(); right_source.require_dense();
     if (!left_source.defined() || !right_source.defined() ||
         !left_source.is_cuda() || !right_source.is_cuda()) {
@@ -465,7 +465,7 @@ Tensor matmul(const Tensor& left_source, const Tensor& right_source) {
     return output;
 }
 
-Tensor bmm(const Tensor& left, const Tensor& right) {
+DenseTensor bmm(const DenseTensor& left, const DenseTensor& right) {
     left.require_dense(); right.require_dense();
     if (left.dim() != 3 || right.dim() != 3 || left.size(0) != right.size(0)) {
         throw std::invalid_argument("bmm requires equally batched rank-three tensors");
@@ -473,15 +473,15 @@ Tensor bmm(const Tensor& left, const Tensor& right) {
     return matmul(left, right);
 }
 
-Tensor baddbmm(const Tensor& input, const Tensor& left, const Tensor& right) {
+DenseTensor baddbmm(const DenseTensor& input, const DenseTensor& left, const DenseTensor& right) {
     input.require_dense(); left.require_dense(); right.require_dense();
     return input + bmm(left, right);
 }
 
-Tensor linear(
-    const Tensor& input,
-    const Tensor& weight,
-    const std::optional<Tensor>& bias) {
+DenseTensor linear(
+    const DenseTensor& input,
+    const DenseTensor& weight,
+    const std::optional<DenseTensor>& bias) {
     input.require_dense(); weight.require_dense(); if (bias) bias->require_dense();
     if (weight.dim() != 2) throw std::invalid_argument("linear weight must be a matrix");
     auto output = matmul(input, weight.transpose(0, 1));
@@ -489,11 +489,11 @@ Tensor linear(
     return output;
 }
 
-Tensor scaled_dot_product_attention(
-    const Tensor& query_source,
-    const Tensor& key_source,
-    const Tensor& value_source,
-    const std::optional<Tensor>& mask,
+DenseTensor scaled_dot_product_attention(
+    const DenseTensor& query_source,
+    const DenseTensor& key_source,
+    const DenseTensor& value_source,
+    const std::optional<DenseTensor>& mask,
     double dropout,
     bool causal,
     const std::optional<double>& scale,
@@ -522,7 +522,7 @@ Tensor scaled_dot_product_attention(
         auto output = empty(shape, query_source.options());
         for (std::int64_t begin = 0; begin < query_source.size(-2); begin += 128) {
             const auto length = std::min<std::int64_t>(128, query_source.size(-2) - begin);
-            std::optional<Tensor> local_mask = mask;
+            std::optional<DenseTensor> local_mask = mask;
             if (causal) {
                 const auto indices = TensorOptions{}.dtype(kInt64).device(query_source.device());
                 local_mask = arange(key_source.size(-2), indices).unsqueeze(0) <=

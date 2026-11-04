@@ -37,8 +37,8 @@ void State::reset(int64_t next_batch) {
     }
 }
 
-std::vector<Tensor> State::storage() const {
-    std::vector<Tensor> result;
+std::vector<DenseTensor> State::storage() const {
+    std::vector<DenseTensor> result;
     for (const auto& cache : layers) {
         if (cache.k.defined()) result.push_back(cache.k);
         if (cache.v.defined()) result.push_back(cache.v);

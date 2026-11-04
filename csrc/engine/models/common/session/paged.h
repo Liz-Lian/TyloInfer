@@ -32,7 +32,7 @@ public:
     }
 
     void raw(const void* data, size_t size);
-    void tensor(const ::tyloi::Tensor& source);
+    void tensor(const ::tyloi::DenseTensor& source);
     CudaPagedPayload finish() &&;
 
 private:
@@ -60,7 +60,7 @@ public:
     }
 
     void raw(void* destination, size_t size, const char* name);
-    std::pair<::tyloi::Tensor, int> tensor();
+    std::pair<::tyloi::DenseTensor, int> tensor();
     void expect_end() const;
 
 private:

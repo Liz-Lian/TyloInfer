@@ -14,11 +14,11 @@ struct Mfe {
     bool partial_experts;
     const std::shared_ptr<const std::vector<MfePoolWeight>>& pools;
 
-    ::tyloi::Tensor forward(
-        MfeScratch& scratch, ::tyloi::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::DenseTensor forward(
+        MfeScratch& scratch, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
         bool prequantized = false, int epilogue = 0) const;
-    ::tyloi::Tensor clamped(
-        MfeScratch& scratch, ::tyloi::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::DenseTensor clamped(
+        MfeScratch& scratch, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
         double limit) const;
 };
 

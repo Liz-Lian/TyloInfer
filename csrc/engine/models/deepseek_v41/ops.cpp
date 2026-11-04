@@ -114,8 +114,8 @@ std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::L
         config.rope_scaling.factor, config.rope_scaling.beta_fast, config.rope_scaling.beta_slow);
 
     const auto function_width = config.hc_mult * config.hidden;
-    const auto valid_mhc = [&](const Tensor &function, const Tensor &scale, const Tensor &base,
-                               const Tensor &norm) {
+    const auto valid_mhc = [&](const DenseTensor &function, const DenseTensor &scale, const DenseTensor &base,
+                               const DenseTensor &norm) {
         return function.dim() == 2 && function.size(0) == 24 &&
                function.size(1) == function_width && scale.numel() == 3 && base.numel() == 24 &&
                norm.numel() == config.hidden;
@@ -177,7 +177,7 @@ std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &sour
     return state;
 }
 
-Tensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Tensor &hidden,
+DenseTensor finalize_hidden(const std::shared_ptr<SharedState> &state, const DenseTensor &hidden,
                        CudaProfiler &profiler) {
     TYLOINFER_RUNTIME_CHECK(state, "DeepSeek-V4.1 final state is unavailable");
     return profiler.measure("model.deepseek_v41.final_collapse", [&]() {
@@ -213,7 +213,7 @@ void DeepseekV41Model::adapter_validate_load_options() const {
 }
 
 void DeepseekV41Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
-                                                ::tyloi::Tensor &output_norm) {
+                                                ::tyloi::DenseTensor &output_norm) {
     CausalResources::adapter_load_final_state(weights, output_norm);
 }
 
@@ -222,7 +222,7 @@ void DeepseekV41Model::adapter_prepare_blocks(const tyloi::cuda::weight_loader::
 }
 
 bool DeepseekV41Model::adapter_prefetch_token_rows(DeepseekV41CausalLm& model,
-        const ::tyloi::Tensor& ids) {
+        const ::tyloi::DenseTensor& ids) {
     if(!shared || shared->batch!=1 || !shared->engram_hash || shared->engram_prefetch.empty())return false;
     if(!ids.is_cpu() || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<=0 ||
             ids.size(1)>std::numeric_limits<int>::max() || ids.scalar_type()!=::tyloi::kInt64 ||
@@ -245,14 +245,14 @@ void DeepseekV41Model::adapter_begin_forward(bool capture_raw_hidden) {
     shared->begin_forward(capture_raw_hidden, shared->config.dspark_target_layer_ids.size());
 }
 
-::tyloi::Tensor DeepseekV41Model::collapse_hidden(::tyloi::Tensor hidden,
+::tyloi::DenseTensor DeepseekV41Model::collapse_hidden(::tyloi::DenseTensor hidden,
                                                              int64_t batch, int64_t tokens) const {
     return deepseek_v41_runtime::finalize_hidden(shared, hidden, execution->executor().profiler());
 }
 
-::tyloi::Tensor
-DeepseekV41Model::normalize_hidden(::tyloi::Tensor hidden,
-                                   const ::tyloi::Tensor &output_norm, int64_t batch,
+::tyloi::DenseTensor
+DeepseekV41Model::normalize_hidden(::tyloi::DenseTensor hidden,
+                                   const ::tyloi::DenseTensor &output_norm, int64_t batch,
                                    int64_t tokens) const {
     return execution->executor().profiler().measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, metadata.hidden_size})
@@ -262,9 +262,9 @@ DeepseekV41Model::normalize_hidden(::tyloi::Tensor hidden,
     });
 }
 
-::tyloi::Tensor
-DeepseekV41Model::adapter_raw_hidden(const ::tyloi::Tensor &,
-                                     const ::tyloi::Tensor &) const {
+::tyloi::DenseTensor
+DeepseekV41Model::adapter_raw_hidden(const ::tyloi::DenseTensor &,
+                                     const ::tyloi::DenseTensor &) const {
     return shared->dspark_target_hidden();
 }
 

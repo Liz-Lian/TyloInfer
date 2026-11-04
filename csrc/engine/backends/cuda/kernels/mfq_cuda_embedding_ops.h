@@ -4,22 +4,22 @@
 
 #include <cstdint>
 
-::tyloi::Tensor embedding_lookup_cuda(
-    ::tyloi::Tensor weight, ::tyloi::Tensor token_ids);
-::tyloi::Tensor nint_embedding_cuda(
-    ::tyloi::Tensor q_packed, ::tyloi::Tensor row_q_bits,
-    ::tyloi::Tensor row_q_bit_offsets,
-    ::tyloi::Tensor sub_scale, ::tyloi::Tensor sub_min,
-    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor neuron_min,
-    ::tyloi::Tensor token_ids, int64_t neuron_len, int64_t gs);
-::tyloi::Tensor nint8_zero_embedding_lookup_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor scale, ::tyloi::Tensor token_ids,
+::tyloi::DenseTensor embedding_lookup_cuda(
+    ::tyloi::DenseTensor weight, ::tyloi::DenseTensor token_ids);
+::tyloi::DenseTensor nint_embedding_cuda(
+    ::tyloi::DenseTensor q_packed, ::tyloi::DenseTensor row_q_bits,
+    ::tyloi::DenseTensor row_q_bit_offsets,
+    ::tyloi::DenseTensor sub_scale, ::tyloi::DenseTensor sub_min,
+    ::tyloi::DenseTensor neuron_scale, ::tyloi::DenseTensor neuron_min,
+    ::tyloi::DenseTensor token_ids, int64_t neuron_len, int64_t gs);
+::tyloi::DenseTensor nint8_zero_embedding_lookup_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor scale, ::tyloi::DenseTensor token_ids,
     int64_t neuron_len);
-::tyloi::Tensor mxfp8_embedding_lookup_cuda(
-    ::tyloi::Tensor values, ::tyloi::Tensor scales, ::tyloi::Tensor token_ids);
-::tyloi::Tensor mxfp4_embedding_lookup_cuda(
-    ::tyloi::Tensor values, ::tyloi::Tensor scales, ::tyloi::Tensor token_ids);
-::tyloi::Tensor nvq_embedding_lookup_cuda(
-    ::tyloi::Tensor indices, ::tyloi::Tensor aux, ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor codebook, ::tyloi::Tensor token_ids,
+::tyloi::DenseTensor mxfp8_embedding_lookup_cuda(
+    ::tyloi::DenseTensor values, ::tyloi::DenseTensor scales, ::tyloi::DenseTensor token_ids);
+::tyloi::DenseTensor mxfp4_embedding_lookup_cuda(
+    ::tyloi::DenseTensor values, ::tyloi::DenseTensor scales, ::tyloi::DenseTensor token_ids);
+::tyloi::DenseTensor nvq_embedding_lookup_cuda(
+    ::tyloi::DenseTensor indices, ::tyloi::DenseTensor aux, ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale, ::tyloi::DenseTensor codebook, ::tyloi::DenseTensor token_ids,
     int64_t neuron_len, int64_t gs, int64_t sub_bits, int64_t format, int64_t sign_mode);

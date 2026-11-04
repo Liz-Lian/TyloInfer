@@ -3,10 +3,11 @@
 #include "engine/weights/bias.h"
 
 #include <cstddef>
+#include <vector>
 
 namespace tyloi::cuda::fields {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 template <class Visitor>
 void tensors(QuantLinear& weight, Visitor visit) {
@@ -63,16 +64,15 @@ void tensors(Weights& weights, Visitor visit) {
 template <class Weights>
 Weights to_cuda(Weights weights) {
     tensors(weights,
-        [](Tensor& tensor) { tensor = tensor.to(::tyloi::kCUDA); });
+        [](DenseTensor& tensor) { tensor = tensor.to(::tyloi::kCUDA); });
     return weights;
 }
 
 template <class Weights>
 std::size_t bytes(Weights weights) {
-    std::size_t bytes = 0;
-    tensors(weights,
-        [&](Tensor& tensor) { bytes += tensor.nbytes(); });
-    return bytes;
+    std::vector<const DenseTensor*> buffers;
+    tensors(weights, [&](DenseTensor& tensor) { buffers.push_back(&tensor); });
+    return ::tyloi::backing_bytes(buffers);
 }
 
 } // namespace tyloi::cuda::fields

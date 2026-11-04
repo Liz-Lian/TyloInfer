@@ -203,10 +203,10 @@ __global__ void mxfp8_packed_small_m_kernel(
     }
 }
 
-int mxfp8_column_shift(const ::tyloi::Tensor& values,const ::tyloi::Tensor& scales) {
+int mxfp8_column_shift(const ::tyloi::DenseTensor& values,const ::tyloi::DenseTensor& scales) {
     return values.size(1)/scales.size(1)==128?7:5;
 }
-int mxfp8_row_shift(const ::tyloi::Tensor& values,const ::tyloi::Tensor& scales) {
+int mxfp8_row_shift(const ::tyloi::DenseTensor& values,const ::tyloi::DenseTensor& scales) {
     return scales.size(0)==values.size(0)?0:mxfp8_column_shift(values,scales);
 }
 
@@ -219,10 +219,10 @@ void record_mxfp8_packed_dispatch(int rows,int width,int outputs,int tile,int pa
 
 template <int TILE_M, typename Output>
 void launch_mxfp8_small_m(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales,
-        const ::tyloi::Tensor & x,
-        ::tyloi::Tensor & y,
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales,
+        const ::tyloi::DenseTensor & x,
+        ::tyloi::DenseTensor & y,
         int groups,
         int outputs_per_group,
         cudaStream_t stream) {
@@ -411,8 +411,8 @@ __global__ void __launch_bounds__(mxfp8_prefill_threads) mxfp8_matmul_kernel(
 }
 
 void validate_mxfp8(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales) {
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales) {
     TYLOINFER_RUNTIME_CHECK(values.is_cuda() && scales.is_cuda(),
                 "MXFP8 values and scales must be CUDA tensors");
     TYLOINFER_RUNTIME_CHECK(values.scalar_type() == ::tyloi::kUInt8 &&
@@ -435,9 +435,9 @@ void validate_mxfp8(
 
 } // namespace
 
-::tyloi::Tensor mxfp8_dequant_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales) {
+::tyloi::DenseTensor mxfp8_dequant_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales) {
     validate_mxfp8(values, scales);
     auto dense = ::tyloi::cuda::empty(
         values.sizes(), values.options().dtype(::tyloi::kFloat16));
@@ -454,10 +454,10 @@ void validate_mxfp8(
     return dense;
 }
 
-::tyloi::Tensor mxfp8_embedding_lookup_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor token_ids) {
+::tyloi::DenseTensor mxfp8_embedding_lookup_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor token_ids) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(token_ids.is_cuda() && token_ids.is_contiguous() &&
                     token_ids.scalar_type() == ::tyloi::kInt64 &&
@@ -486,10 +486,10 @@ void validate_mxfp8(
     return output;
 }
 
-::tyloi::Tensor mxfp8_small_m_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor x) {
+::tyloi::DenseTensor mxfp8_small_m_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor x) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 2,
@@ -518,10 +518,10 @@ void validate_mxfp8(
     return y;
 }
 
-::tyloi::Tensor mxfp8_matmul_f16_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor input) {
+::tyloi::DenseTensor mxfp8_matmul_f16_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor input) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
                     input.is_contiguous() && input.dim() == 2 &&
@@ -541,10 +541,10 @@ void validate_mxfp8(
     return result;
 }
 
-::tyloi::Tensor mxfp8_small_m_f32_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor x) {
+::tyloi::DenseTensor mxfp8_small_m_f32_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor x) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 2 &&
@@ -573,10 +573,10 @@ void validate_mxfp8(
     return y;
 }
 
-::tyloi::Tensor mxfp8_gemm_f32_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor x) {
+::tyloi::DenseTensor mxfp8_gemm_f32_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor x) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 2 &&
@@ -596,9 +596,9 @@ void validate_mxfp8(
 
 namespace {
 template <typename Output>
-::tyloi::Tensor mxfp8_groupwise_gemm(
-        ::tyloi::Tensor values,::tyloi::Tensor scales,
-        ::tyloi::Tensor input,int64_t groups) {
+::tyloi::DenseTensor mxfp8_groupwise_gemm(
+        ::tyloi::DenseTensor values,::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor input,int64_t groups) {
     validate_mxfp8(values,scales);
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type()==::tyloi::kFloat16 &&
         input.is_contiguous() && input.dim()==3 && groups>0 && input.size(1)==groups &&
@@ -626,21 +626,21 @@ template <typename Output>
 }
 }
 
-::tyloi::Tensor mxfp8_groupwise_gemm_f16_cuda(
-        ::tyloi::Tensor values,::tyloi::Tensor scales,
-        ::tyloi::Tensor input,int64_t groups) {
+::tyloi::DenseTensor mxfp8_groupwise_gemm_f16_cuda(
+        ::tyloi::DenseTensor values,::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor input,int64_t groups) {
     return mxfp8_groupwise_gemm<__half>(values,scales,input,groups);
 }
-::tyloi::Tensor mxfp8_groupwise_gemm_f32_cuda(
-        ::tyloi::Tensor values,::tyloi::Tensor scales,
-        ::tyloi::Tensor input,int64_t groups) {
+::tyloi::DenseTensor mxfp8_groupwise_gemm_f32_cuda(
+        ::tyloi::DenseTensor values,::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor input,int64_t groups) {
     return mxfp8_groupwise_gemm<float>(values,scales,input,groups);
 }
 
-::tyloi::Tensor mxfp8_groupwise_small_m_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor x,
+::tyloi::DenseTensor mxfp8_groupwise_small_m_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor x,
         int64_t groups) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
@@ -674,10 +674,10 @@ template <typename Output>
     return y;
 }
 
-::tyloi::Tensor mxfp8_groupwise_small_m_f32_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor x,
+::tyloi::DenseTensor mxfp8_groupwise_small_m_f32_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor x,
         int64_t groups) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
@@ -824,8 +824,8 @@ __global__ void __launch_bounds__(256) mxfp4_matmul_f16_kernel(
 }
 
 void validate_mxfp4_dense(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales) {
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales) {
     TYLOINFER_RUNTIME_CHECK(values.is_cuda() && scales.is_cuda(),
                 "MXFP4 values and scales must be CUDA tensors");
     TYLOINFER_RUNTIME_CHECK(values.scalar_type() == ::tyloi::kUInt8 &&
@@ -1020,12 +1020,12 @@ __global__ void __launch_bounds__(128) mxfp4_moe_grouped_tensor_kernel(
 }
 
 void validate_mxfp4_moe(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales,
-        const ::tyloi::Tensor & input,
-        const ::tyloi::Tensor & ids,
-        const ::tyloi::Tensor & expert_local,
-        const ::tyloi::Tensor & output,
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales,
+        const ::tyloi::DenseTensor & input,
+        const ::tyloi::DenseTensor & ids,
+        const ::tyloi::DenseTensor & expert_local,
+        const ::tyloi::DenseTensor & output,
         int64_t global_experts,
         int64_t pool_experts,
         int64_t out_per_expert,
@@ -1062,9 +1062,9 @@ void validate_mxfp4_moe(
 
 } // namespace
 
-::tyloi::Tensor mxfp4_dequant_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales) {
+::tyloi::DenseTensor mxfp4_dequant_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales) {
     validate_mxfp4_dense(values, scales);
     const int outputs = static_cast<int>(values.size(0));
     const int width = static_cast<int>(values.size(1) * 2);
@@ -1083,10 +1083,10 @@ void validate_mxfp4_moe(
     return dense;
 }
 
-::tyloi::Tensor mxfp4_embedding_lookup_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor token_ids) {
+::tyloi::DenseTensor mxfp4_embedding_lookup_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor token_ids) {
     validate_mxfp4_dense(values, scales);
     TYLOINFER_RUNTIME_CHECK(token_ids.is_cuda() && token_ids.is_contiguous() &&
                     token_ids.scalar_type() == ::tyloi::kInt64 &&
@@ -1115,10 +1115,10 @@ void validate_mxfp4_moe(
     return output;
 }
 
-::tyloi::Tensor mxfp4_matmul_f16_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor input) {
+::tyloi::DenseTensor mxfp4_matmul_f16_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor input) {
     validate_mxfp4_dense(values, scales);
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
                     input.is_contiguous() && input.dim() == 2 &&
@@ -1149,21 +1149,21 @@ void validate_mxfp4_moe(
     return result;
 }
 
-::tyloi::Tensor mxfp4_moe_grouped_matmul_pool_f16_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor ids,
-        ::tyloi::Tensor expert_local,
+::tyloi::DenseTensor mxfp4_moe_grouped_matmul_pool_f16_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor ids,
+        ::tyloi::DenseTensor expert_local,
         int64_t global_experts,
         int64_t pool_experts,
         int64_t out_per_expert,
         int64_t neuron_len,
-        ::tyloi::Tensor output,
-        ::tyloi::Tensor ids_dst,
-        ::tyloi::Tensor expert_bounds,
-        ::tyloi::Tensor tile_bounds,
-        ::tyloi::Tensor tile_experts) {
+        ::tyloi::DenseTensor output,
+        ::tyloi::DenseTensor ids_dst,
+        ::tyloi::DenseTensor expert_bounds,
+        ::tyloi::DenseTensor tile_bounds,
+        ::tyloi::DenseTensor tile_experts) {
     validate_mxfp4_moe(
         values, scales, input, ids, expert_local, output,
         global_experts, pool_experts, out_per_expert, neuron_len);
@@ -1332,10 +1332,10 @@ __global__ void __launch_bounds__(256) mxfp8_backward_mma_kernel(
 
 template <int Rows, int Columns>
 void launch_mxfp8_backward_mma(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         int rows,
         int outputs,
         int width,
@@ -1415,17 +1415,17 @@ __global__ void __launch_bounds__(32) mxfp4_backward_vec4_partial_kernel(
 
 template <int Rows>
 void launch_mxfp4_backward_vec4_small_m(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         int rows,
         int outputs,
         int width,
         cudaStream_t stream) {
     constexpr int kOutputTile = 32;
     const int output_groups = (outputs + kOutputTile - 1) / kOutputTile;
-    ::tyloi::Tensor partials = ::tyloi::cuda::empty(
+    ::tyloi::DenseTensor partials = ::tyloi::cuda::empty(
         {output_groups, rows, width},
         values.options().dtype(::tyloi::kFloat32));
     const dim3 partial_grid(
@@ -1558,10 +1558,10 @@ mxfp8_backward_block_reduce_kernel(
 
 template <int Rows>
 void launch_mxfp8_backward_block_reduce(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         int rows,
         int outputs,
         int width,
@@ -1590,16 +1590,16 @@ void launch_mxfp8_backward_block_reduce(
 
 template <int Rows>
 void launch_mxfp8_backward_scalar_small_m(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         int rows,
         int outputs,
         int width,
         cudaStream_t stream) {
     const int output_groups = (outputs + 127) / 128;
-    ::tyloi::Tensor partials = ::tyloi::cuda::empty(
+    ::tyloi::DenseTensor partials = ::tyloi::cuda::empty(
         {output_groups, rows, width},
         values.options().dtype(::tyloi::kFloat32));
     const dim3 partial_grid(
@@ -1684,16 +1684,16 @@ __global__ void __launch_bounds__(32) mxfp8_backward_vec4_partial_kernel(
 
 template <int Rows>
 void launch_mxfp8_backward_vec4_small_m(
-        const ::tyloi::Tensor & values,
-        const ::tyloi::Tensor & scales,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & values,
+        const ::tyloi::DenseTensor & scales,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         int rows,
         int outputs,
         int width,
         cudaStream_t stream) {
     const int output_groups = (outputs + 31) / 32;
-    ::tyloi::Tensor partials = ::tyloi::cuda::empty(
+    ::tyloi::DenseTensor partials = ::tyloi::cuda::empty(
         {output_groups, rows, width},
         values.options().dtype(::tyloi::kFloat32));
     const dim3 partial_grid(
@@ -1715,10 +1715,10 @@ void launch_mxfp8_backward_vec4_small_m(
 #endif
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-::tyloi::Tensor mx_backward_input_cuda(
-        ::tyloi::Tensor values,
-        ::tyloi::Tensor scales,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor mx_backward_input_cuda(
+        ::tyloi::DenseTensor values,
+        ::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor output_gradient,
         bool mxfp4) {
     if (mxfp4) {
         validate_mxfp4_dense(values, scales);

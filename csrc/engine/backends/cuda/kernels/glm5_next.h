@@ -6,23 +6,23 @@
 #include <vector>
 
 namespace mfq_glm5_next {
-using ::tyloi::Tensor;
+using ::tyloi::DenseTensor;
 
-std::vector<Tensor> mhc_pre(
-    const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+std::vector<DenseTensor> mhc_pre(
+    const DenseTensor&, const DenseTensor&, const DenseTensor&, const DenseTensor&,
     int64_t sinkhorn_iterations, double hc_eps, double rms_eps);
-Tensor mhc_post(const Tensor&, const Tensor&, const Tensor&, const Tensor&);
-Tensor kda_forget_gate(
-    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+DenseTensor mhc_post(const DenseTensor&, const DenseTensor&, const DenseTensor&, const DenseTensor&);
+DenseTensor kda_forget_gate(
+    const DenseTensor&, const DenseTensor&, const DenseTensor&, const DenseTensor&, const DenseTensor&,
     int64_t num_heads, int64_t head_dim, double lower_bound);
-Tensor kpool_scores(const Tensor&, const Tensor&, const Tensor&);
-Tensor kpool_states(
-    const Tensor&, const Tensor&, const Tensor&, int64_t pool);
-Tensor dense_mla_attention(
-    const Tensor&, const Tensor&, int64_t offset,
+DenseTensor kpool_scores(const DenseTensor&, const DenseTensor&, const DenseTensor&);
+DenseTensor kpool_states(
+    const DenseTensor&, const DenseTensor&, const DenseTensor&, int64_t pool);
+DenseTensor dense_mla_attention(
+    const DenseTensor&, const DenseTensor&, int64_t offset,
     std::optional<double> scale = std::nullopt);
-Tensor sparse_mla_attention(
-    const Tensor&, const Tensor&, const Tensor& indices,
+DenseTensor sparse_mla_attention(
+    const DenseTensor&, const DenseTensor&, const DenseTensor& indices,
     std::optional<double> scale = std::nullopt);
 
 } // namespace mfq_glm5_next

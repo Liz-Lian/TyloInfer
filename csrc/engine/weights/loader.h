@@ -35,25 +35,25 @@ std::shared_ptr<tyloi::NintRows> load_nint_row_table(
     const tyloi::source::Source& source, const std::string& name, bool prefer_mapping=false);
 std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
     const tyloi::source::Source& source, const std::string& name);
-::tyloi::Tensor mfe_dense_reference(
+::tyloi::DenseTensor mfe_dense_reference(
     const tyloi::source::Source& source, const std::string& name,
-    ::tyloi::Tensor input, const std::vector<std::int32_t>& expert_ids,
+    ::tyloi::DenseTensor input, const std::vector<std::int32_t>& expert_ids,
     int tokens, int routes, bool routed_input);
-::tyloi::Tensor materialize_mfe_dense(
+::tyloi::DenseTensor materialize_mfe_dense(
     const tyloi::source::Source& source, const std::string& name);
 
 namespace tyloi::cuda::weight_loader {
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using Linear = std::shared_ptr<const QuantLinear>;
 struct Routed {
-    using Function=std::function<Tensor(const Projector&,const Tensor&,const Tensor&)>;
+    using Function=std::function<DenseTensor(const Projector&,const DenseTensor&,const DenseTensor&)>;
     Function function;
     std::vector<std::shared_ptr<tyloi::cuda::Experts>> projections;
     std::vector<std::shared_ptr<TqRoutedWeight>> tq_projections;
     Routed()=default;
     template<class Callable, std::enable_if_t<!std::is_same_v<std::decay_t<Callable>,Routed>,int> =0>
     Routed(Callable&& call):function(std::forward<Callable>(call)) {}
-    Tensor operator()(const Projector& project,const Tensor& input,const Tensor& ids)const {
+    DenseTensor operator()(const Projector& project,const DenseTensor& input,const DenseTensor& ids)const {
         return function(project,input,ids);
     }
     explicit operator bool()const{return bool(function);}
@@ -61,7 +61,7 @@ struct Routed {
 
 // The source and cache owner outlive all loading, including streamed media layers.
 struct Loader {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     struct Options {
         MoeLoadOptions quant;
         bool grouped = true;
@@ -95,10 +95,10 @@ struct Loader {
     bool has(const std::string& name) const { return has_tensor(source, name); }
     bool has_prefix(const std::string& prefix) const { return has_tensor_prefix(source, prefix); }
     // Dense parameters promote half precision to F32; native/host preserve stored dtype.
-    Tensor tensor(const std::string& name) const;
-    Tensor native(const std::string& name) const;
-    Tensor host(const std::string& name) const;
-    Tensor norm(const std::string& name, std::int64_t width) const;
+    DenseTensor tensor(const std::string& name) const;
+    DenseTensor native(const std::string& name) const;
+    DenseTensor host(const std::string& name) const;
+    DenseTensor norm(const std::string& name, std::int64_t width) const;
     BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
     BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
     QuantLinear projection(const std::string& name,
@@ -123,13 +123,13 @@ struct Loader {
     std::shared_ptr<const tyloi::weights::Weights> experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
     Linear linear(const std::string& name) const;
-    Tensor dense(const std::string& name) const;
+    DenseTensor dense(const std::string& name) const;
     Routed routed(const std::string& name, int layer, int64_t experts, int64_t output,
                   int64_t input, const std::string& role = {}) const;
     Routed routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
                          int64_t input, const std::string& role = {}) const;
-    static Tensor fp32(const Tensor& value) { return value.to(::tyloi::kFloat32).contiguous(); }
-    static auto shape(const Tensor& value) { return value.sizes().vec(); }
-    static int64_t elements(const Tensor& value) { return value.numel(); }
+    static DenseTensor fp32(const DenseTensor& value) { return value.to(::tyloi::kFloat32).contiguous(); }
+    static auto shape(const DenseTensor& value) { return value.sizes().vec(); }
+    static int64_t elements(const DenseTensor& value) { return value.numel(); }
 };
 } // namespace tyloi::cuda::weight_loader

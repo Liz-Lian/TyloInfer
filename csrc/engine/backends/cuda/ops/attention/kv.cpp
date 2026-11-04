@@ -14,23 +14,23 @@ using ::tyloi::indexing::Slice;
 namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::pair<tyloi::Tensor, tyloi::Tensor> ops::append_kv(
-        tyloi::state::KvView cache, tyloi::Tensor key, tyloi::Tensor value,
-        tyloi::Tensor positions, int64_t start_pos, bool contiguous_prefill_prefix) {
-    ::tyloi::Tensor kk(key), vv(value), pos(positions);
+std::pair<tyloi::DenseTensor, tyloi::DenseTensor> ops::append_kv(
+        tyloi::state::KvView cache, tyloi::DenseTensor key, tyloi::DenseTensor value,
+        tyloi::DenseTensor positions, int64_t start_pos, bool contiguous_prefill_prefix) {
+    ::tyloi::DenseTensor kk(key), vv(value), pos(positions);
     const auto end_pos = start_pos + kk.size(2);
     const bool aten_write = Executor::current().attention_options().write_aten;
     std::optional<MfqCudaGuard> guard;
     if (key.is_cuda()) guard.emplace(key.device().index);
-    ::tyloi::Tensor k(cache.physical_key), v(cache.physical_value);
-    const ::tyloi::Tensor k_chunk_ptrs(cache.key_chunk_ptrs);
-    const ::tyloi::Tensor v_chunk_ptrs(cache.value_chunk_ptrs);
-    const ::tyloi::Tensor page_table(cache.page_table);
+    ::tyloi::DenseTensor k(cache.physical_key), v(cache.physical_value);
+    const ::tyloi::DenseTensor k_chunk_ptrs(cache.key_chunk_ptrs);
+    const ::tyloi::DenseTensor v_chunk_ptrs(cache.value_chunk_ptrs);
+    const ::tyloi::DenseTensor page_table(cache.page_table);
 #else
-std::pair<::tyloi::Tensor, ::tyloi::Tensor> append_kv(
+std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
         AttentionKvView cache, bool aten_write,
-        ::tyloi::Tensor kk, ::tyloi::Tensor vv,
-        ::tyloi::Tensor pos, int64_t start_pos, int64_t end_pos,
+        ::tyloi::DenseTensor kk, ::tyloi::DenseTensor vv,
+        ::tyloi::DenseTensor pos, int64_t start_pos, int64_t end_pos,
         bool contiguous_prefill_prefix) {
     auto& k = cache.physical_key;
     auto& v = cache.physical_value;

@@ -94,19 +94,19 @@ public:
     ContextSet& contexts() noexcept { return contexts_; }
     const ContextSet& contexts() const noexcept { return contexts_; }
 
-    ::tyloi::Tensor run(std::span<const Task> tasks, Inputs inputs,
+    ::tyloi::DenseTensor run(std::span<const Task> tasks, Inputs inputs,
                                    const Mode& mode);
-    std::vector<::tyloi::Tensor> storage() const;
+    std::vector<::tyloi::DenseTensor> storage() const;
     Projector projector(const Ffn::Mode& mode);
     Projector projector(const Ffn::Mode& mode, int primary);
-    ::tyloi::Tensor full_ffn(
-        const Ffn& ffn, const ::tyloi::Tensor& ffn_norm,
-        const FullAttention& attention, ::tyloi::Tensor residual,
-        ::tyloi::Tensor output, const Ffn::Mode& mode, Trace* trace = nullptr);
-    ::tyloi::Tensor linear_ffn(
-        const Ffn& ffn, const ::tyloi::Tensor& ffn_norm,
-        const LinearAttention& attention, ::tyloi::Tensor residual,
-        ::tyloi::Tensor output, const Ffn::Mode& mode);
+    ::tyloi::DenseTensor full_ffn(
+        const Ffn& ffn, const ::tyloi::DenseTensor& ffn_norm,
+        const FullAttention& attention, ::tyloi::DenseTensor residual,
+        ::tyloi::DenseTensor output, const Ffn::Mode& mode, Trace* trace = nullptr);
+    ::tyloi::DenseTensor linear_ffn(
+        const Ffn& ffn, const ::tyloi::DenseTensor& ffn_norm,
+        const LinearAttention& attention, ::tyloi::DenseTensor residual,
+        ::tyloi::DenseTensor output, const Ffn::Mode& mode);
     CudaProfiler& profiler() noexcept { return profiler_; }
     KlMmqState& mmq() noexcept { return mmq_; }
     const KlMmqState& mmq() const noexcept { return mmq_; }

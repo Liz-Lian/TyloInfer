@@ -20,7 +20,7 @@ __global__ void decode_gr_blas_workspace_kernel(const uint8_t* packed,const uint
  #pragma unroll
  for(int i=0;i<4;++i)if(column+i<width)output[int64_t(row)*width+column+i]=values[i];
 }
-::tyloi::Tensor decode_gr_blas_workspace(const NintWeight& w) {
+::tyloi::DenseTensor decode_gr_blas_workspace(const tyloi::NintTensor& w) {
  auto dense=::tyloi::cuda::empty({w.out,w.neuron_len},w.q_packed.options().dtype(::tyloi::kFloat32));
  const auto launch=[&](auto a,auto z) {
   constexpr bool aligned=decltype(a)::value,zero=decltype(z)::value;
@@ -35,7 +35,7 @@ __global__ void decode_gr_blas_workspace_kernel(const uint8_t* packed,const uint
  else launch(std::false_type{},std::false_type{});
  TYLOINFER_CUDA_CHECK(cudaGetLastError());return dense;
 }
-::tyloi::Tensor gr_prefill_blas_fp32(const NintWeight& w,const ::tyloi::Tensor& input) {
+::tyloi::DenseTensor gr_prefill_blas_fp32(const tyloi::NintTensor& w,const ::tyloi::DenseTensor& input) {
  const MfqCudaGuard guard(input.device());
  auto decoded=decode_gr_blas_workspace(w);
  const auto rows=input.numel()/w.neuron_len;
@@ -45,7 +45,7 @@ __global__ void decode_gr_blas_workspace_kernel(const uint8_t* packed,const uint
  // retaining a full-sequence FP32 input alongside the residual and norm.
  const auto tile=input.scalar_type()==::tyloi::kFloat32?rows:
   std::max<int64_t>(1,std::min<int64_t>(8192,(int64_t(320)<<20)/(int64_t(sizeof(float))*w.neuron_len)));
- ::tyloi::Tensor output;
+ ::tyloi::DenseTensor output;
  if(rows<=tile)output=::tyloi::cuda::matmul(x.to(::tyloi::kFloat32),right);
  else {
   output=::tyloi::cuda::empty({rows,w.out},input.options().dtype(::tyloi::kFloat32));
@@ -84,7 +84,7 @@ __global__ void gr_blas_mix_into(const float* projection,const Value* normalized
  }
 }
 }
-bool gr_prefill_blas_selected(const NintWeight& w,const ::tyloi::Tensor& input) {
+bool gr_prefill_blas_selected(const tyloi::NintTensor& w,const ::tyloi::DenseTensor& input) {
  // Decode/MTP windows keep their existing kernels. Bound decoded weight
  // workspace independently of sequence length for other model geometries.
  return gr_blas_mode() && input.is_cuda() && input.is_contiguous() && input.dim()>0 &&
@@ -92,8 +92,8 @@ bool gr_prefill_blas_selected(const NintWeight& w,const ::tyloi::Tensor& input) 
   input.size(-1)>0 && input.numel()/input.size(-1)>=128 &&
   w.out>0 && w.neuron_len>0 && w.out<=(int64_t(64)<<20)/sizeof(float)/w.neuron_len;
 }
-::tyloi::Tensor gr_prefill_blas_mix(const NintWeight& w,const ::tyloi::Tensor& input,
- const ::tyloi::Tensor& normalized,int64_t streams) {
+::tyloi::DenseTensor gr_prefill_blas_mix(const tyloi::NintTensor& w,const ::tyloi::DenseTensor& input,
+ const ::tyloi::DenseTensor& normalized,int64_t streams) {
  const MfqCudaGuard guard(input.device());
  const auto rows=input.numel()/w.neuron_len,hidden=w.out/streams;
  auto dense=decode_gr_blas_workspace(w);auto right=dense.transpose(0,1);

@@ -3,13 +3,13 @@
 #include "engine/weights/sq.h"
 #include "engine/backends/cuda/kernels/fp8_sq.h"
 
-::tyloi::Tensor sq_matmul_cpu(
-    const Fp8SqWeight& weight,
-    ::tyloi::Tensor input);
+::tyloi::DenseTensor sq_matmul_cpu(
+    const tyloi::Fp8SqTensor& weight,
+    ::tyloi::DenseTensor input);
 
 namespace tyloi::cuda {
-::tyloi::Tensor sq_matmul(const Fp8SqWeight& weight, ::tyloi::Tensor x);
+::tyloi::DenseTensor sq_matmul(const tyloi::Fp8SqTensor& weight, ::tyloi::DenseTensor x);
 }
 
-::tyloi::Tensor dequant_fp8_sq(
-    const Fp8SqWeight& weight, bool fp32);
+::tyloi::DenseTensor dequant_fp8_sq(
+    const tyloi::Fp8SqTensor& weight, bool fp32);

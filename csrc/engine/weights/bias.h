@@ -8,7 +8,7 @@ namespace tyloi::cuda {
 
 struct BiasWeight {
     QuantLinear weight;
-    ::tyloi::Tensor bias;
+    ::tyloi::DenseTensor bias;
 };
 
 BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count);

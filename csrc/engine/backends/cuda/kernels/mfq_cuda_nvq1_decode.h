@@ -8,9 +8,9 @@ struct Nvq1DecodeView {
 };
 namespace tyloi::cuda {
 bool try_nvq_decode(Nvq1DecodeView weight,
-    ::tyloi::Tensor records,::tyloi::Tensor integer_book,
-    ::tyloi::Tensor input,::tyloi::Tensor ids,
-    ::tyloi::Tensor expert_local,::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale,::tyloi::Tensor output,
+    ::tyloi::DenseTensor records,::tyloi::DenseTensor integer_book,
+    ::tyloi::DenseTensor input,::tyloi::DenseTensor ids,
+    ::tyloi::DenseTensor expert_local,::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale,::tyloi::DenseTensor output,
     int experts,int output_rows,bool input_quantized);
 }

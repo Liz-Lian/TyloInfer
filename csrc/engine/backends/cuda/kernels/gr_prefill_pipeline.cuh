@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/kernels/async_copy.cuh"
 
 namespace {
-bool gr_prefill_pipeline_supported(const ::tyloi::Tensor& input) {
+bool gr_prefill_pipeline_supported(const ::tyloi::DenseTensor& input) {
     thread_local std::map<int,std::pair<int,int>> capabilities;
     auto found=capabilities.find(input.get_device());
     if(found==capabilities.end()) {
@@ -136,8 +136,8 @@ __global__ __launch_bounds__(BM*TileN/(RN*RM),1) void gr_prefill_pipeline_kernel
     }
 }
 template<bool Mix,class Input,class Value,bool Aligned,bool Zero>
-void launch_gr_prefill_pipeline(const NintWeight& weight,const ::tyloi::Tensor& input,
-        const ::tyloi::Tensor& normalized,::tyloi::Tensor& output) {
+void launch_gr_prefill_pipeline(const tyloi::NintTensor& weight,const ::tyloi::DenseTensor& input,
+        const ::tyloi::DenseTensor& normalized,::tyloi::DenseTensor& output) {
     using Output=std::conditional_t<!Mix || std::is_same<Input,float>::value || std::is_same_v<Value,float>,float,__half>;
     const auto rows=input.numel()/weight.neuron_len;
     const auto launch=[&](auto rn_tag,auto rm_tag,auto bm_tag,auto bn_tag,auto bk_tag,auto packed_tag) {

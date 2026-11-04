@@ -61,13 +61,13 @@ struct MoeCacheFieldLayout {
     int64_t element_size = 0;
 };
 
-static int64_t tensor_nbytes(const ::tyloi::Tensor & value) {
+static int64_t tensor_nbytes(const ::tyloi::DenseTensor & value) {
     return value.defined()
         ? value.numel() * static_cast<int64_t>(value.element_size())
         : 0;
 }
 
-static std::vector<::tyloi::Tensor> moe_cache_fields(
+static std::vector<::tyloi::DenseTensor> moe_cache_fields(
         const MixedMoePool & pool) {
     if (pool.family == MixedMoeFamily::Nint) {
         return {
@@ -97,7 +97,7 @@ static std::vector<::tyloi::Tensor> moe_cache_fields(
             pool.nvq.neuron_scale,
         };
     }
-    std::vector<::tyloi::Tensor> fields{
+    std::vector<::tyloi::DenseTensor> fields{
         pool.nepq.indices_packed,
         pool.nepq.aux_packed,
         pool.nepq.state_packed,
@@ -115,21 +115,21 @@ static std::vector<::tyloi::Tensor> moe_cache_fields(
 // residency transaction revisits these fields several times; copying Tensors
 // into a new vector each time adds allocation and shared-owner traffic.
 struct MoeCacheFieldRefs {
-    using Tensor=::tyloi::Tensor;
-    std::array<const Tensor*,7> fields{};
+    using DenseTensor=::tyloi::DenseTensor;
+    std::array<const DenseTensor*,7> fields{};
     std::size_t count=0;
-    MoeCacheFieldRefs(std::initializer_list<const Tensor*> values):count(values.size()) {
+    MoeCacheFieldRefs(std::initializer_list<const DenseTensor*> values):count(values.size()) {
         std::copy(values.begin(),values.end(),fields.begin());
     }
     struct Iterator {
-        const Tensor* const* at;
-        const Tensor& operator*() const{return **at;}
+        const DenseTensor* const* at;
+        const DenseTensor& operator*() const{return **at;}
         Iterator& operator++(){++at;return *this;}
         bool operator!=(const Iterator& other)const{return at!=other.at;}
     };
     Iterator begin()const{return {fields.data()};}
     Iterator end()const{return {fields.data()+count};}
-    const Tensor& operator[](std::size_t index)const{return *fields[index];}
+    const DenseTensor& operator[](std::size_t index)const{return *fields[index];}
     std::size_t size()const{return count;}
 };
 static MoeCacheFieldRefs moe_cache_field_refs(const MixedMoePool& pool) {
@@ -144,9 +144,9 @@ static MoeCacheFieldRefs moe_cache_field_refs(const MixedMoePool& pool) {
     return {&pool.nepq.indices_packed,&pool.nepq.aux_packed,&pool.nepq.state_packed,&pool.nepq.neuron_scale,&pool.nepq.bank_ids};
 }
 
-static ::tyloi::Tensor moe_owned_host_view(
-        const std::shared_ptr<::tyloi::Tensor>& arena,std::size_t offset,
-        const ::tyloi::Tensor& field) {
+static ::tyloi::DenseTensor moe_owned_host_view(
+        const std::shared_ptr<::tyloi::DenseTensor>& arena,std::size_t offset,
+        const ::tyloi::DenseTensor& field) {
     const auto count=static_cast<std::size_t>(tensor_nbytes(field));
     if(!arena || !arena->is_cpu() || offset>static_cast<std::size_t>(arena->numel()) ||
         count>static_cast<std::size_t>(arena->numel())-offset)
@@ -155,7 +155,7 @@ static ::tyloi::Tensor moe_owned_host_view(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto storage=std::make_shared<::tyloi::TensorStorage>();
     storage->owner=arena;storage->base=ptr;storage->bytes=count;storage->device=field.device();
-    return ::tyloi::Tensor(storage,::tyloi::make_contiguous_view(ptr,field.sizes(),field.scalar_type(),field.device()));
+    return ::tyloi::DenseTensor(storage,::tyloi::make_contiguous_view(ptr,field.sizes(),field.scalar_type(),field.device()));
 #else
     return ::tyloi::cuda::from_blob(ptr,field.sizes(),[arena](void*){},field.options());
 #endif
@@ -317,10 +317,10 @@ struct MoeGpuArena {
     int registered_experts = 0;
     int slots = 0;
     std::vector<MoeCacheFieldLayout> layouts;
-    std::vector<::tyloi::Tensor> fields;
+    std::vector<::tyloi::DenseTensor> fields;
     // Decode descriptors can address heterogeneous experts in one byte arena.
     // The slot book belongs to the arena, so formats compete for the same slots.
-    ::tyloi::Tensor packed;
+    ::tyloi::DenseTensor packed;
     std::unique_ptr<tyloi::MoeCacheSlotBook> book;
     uint8_t* field_pointer(int slot, std::size_t field,
                           const std::vector<int64_t>& bytes) const {
@@ -343,14 +343,14 @@ inline bool moe_packed_transfer_stages_enabled() {
 }
 
 struct MoePinnedStage {
-    ::tyloi::Tensor host;
-    ::tyloi::Tensor device;
+    ::tyloi::DenseTensor host;
+    ::tyloi::DenseTensor device;
     cudaEvent_t done = nullptr;
     bool pending = false;
 };
 
 struct MoePendingRangeRead {
-    ::tyloi::Tensor host;
+    ::tyloi::DenseTensor host;
     std::vector<MoeCacheTransfer> transfers;
     std::vector<std::pair<tyloi::MoeCacheSlotBook *, int>> held_slots;
     std::vector<MoeCacheNewLease> new_leases;

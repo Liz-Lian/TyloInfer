@@ -71,7 +71,7 @@ public:
     }
 
     template<class Fn>
-    bool run(std::size_t count, Fn&& fn, std::vector<::tyloi::Tensor>& outputs) {
+    bool run(std::size_t count, Fn&& fn, std::vector<::tyloi::DenseTensor>& outputs) {
         if (count < 2) return false;
         const auto parent = mfq_get_current_cuda_stream();
         auto& sets = devices_[parent.device_index()];

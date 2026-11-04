@@ -371,9 +371,9 @@ __global__ void nepq_sparse_residual_backward_transpose_kernel(
 #endif
 
 void validate_residual(
-    const ::tyloi::Tensor & dictionary,
-    const ::tyloi::Tensor & first,
-    const ::tyloi::Tensor & second,
+    const ::tyloi::DenseTensor & dictionary,
+    const ::tyloi::DenseTensor & first,
+    const ::tyloi::DenseTensor & second,
     int64_t width,
     int64_t position_bits,
     int64_t block_vectors) {
@@ -406,14 +406,14 @@ void validate_residual(
 }  // namespace
 
 
-::tyloi::Tensor nepq_sparse_residual_matmul_cuda(
-    ::tyloi::Tensor dictionary,
-    ::tyloi::Tensor first,
-    ::tyloi::Tensor second,
-    ::tyloi::Tensor input,
+::tyloi::DenseTensor nepq_sparse_residual_matmul_cuda(
+    ::tyloi::DenseTensor dictionary,
+    ::tyloi::DenseTensor first,
+    ::tyloi::DenseTensor second,
+    ::tyloi::DenseTensor input,
     int64_t position_bits,
     int64_t block_vectors,
-    ::tyloi::Tensor output) {
+    ::tyloi::DenseTensor output) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
         input.is_contiguous() && input.dim() == 2,
@@ -453,13 +453,13 @@ void validate_residual(
 }
 
 
-::tyloi::Tensor nepq_sparse_residual_dequant_cuda(
-    ::tyloi::Tensor dictionary,
-    ::tyloi::Tensor first,
-    ::tyloi::Tensor second,
+::tyloi::DenseTensor nepq_sparse_residual_dequant_cuda(
+    ::tyloi::DenseTensor dictionary,
+    ::tyloi::DenseTensor first,
+    ::tyloi::DenseTensor second,
     int64_t position_bits,
     int64_t block_vectors,
-    ::tyloi::Tensor weight) {
+    ::tyloi::DenseTensor weight) {
     TYLOINFER_RUNTIME_CHECK(
         weight.is_cuda() && weight.scalar_type() == ::tyloi::kFloat16 &&
         weight.is_contiguous() && weight.dim() == 2 &&
@@ -493,17 +493,17 @@ void validate_residual(
 }
 
 
-::tyloi::Tensor nepq_sparse_residual_grouped_cuda(
-    ::tyloi::Tensor dictionary,
-    ::tyloi::Tensor first,
-    ::tyloi::Tensor second,
-    ::tyloi::Tensor input,
-    ::tyloi::Tensor route_ids,
-    ::tyloi::Tensor expert_local,
+::tyloi::DenseTensor nepq_sparse_residual_grouped_cuda(
+    ::tyloi::DenseTensor dictionary,
+    ::tyloi::DenseTensor first,
+    ::tyloi::DenseTensor second,
+    ::tyloi::DenseTensor input,
+    ::tyloi::DenseTensor route_ids,
+    ::tyloi::DenseTensor expert_local,
     int64_t out_per_expert,
     int64_t position_bits,
     int64_t block_vectors,
-    ::tyloi::Tensor output) {
+    ::tyloi::DenseTensor output) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
         input.is_contiguous() && (input.dim() == 2 || input.dim() == 3),
@@ -571,14 +571,14 @@ void validate_residual(
 
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-::tyloi::Tensor nepq_sparse_residual_backward_input_cuda(
-    ::tyloi::Tensor dictionary,
-    ::tyloi::Tensor first,
-    ::tyloi::Tensor second,
-    ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor nepq_sparse_residual_backward_input_cuda(
+    ::tyloi::DenseTensor dictionary,
+    ::tyloi::DenseTensor first,
+    ::tyloi::DenseTensor second,
+    ::tyloi::DenseTensor output_gradient,
     int64_t position_bits,
     int64_t block_vectors,
-    ::tyloi::Tensor input_gradient) {
+    ::tyloi::DenseTensor input_gradient) {
     TYLOINFER_RUNTIME_CHECK(
         output_gradient.is_cuda() &&
         output_gradient.scalar_type() == ::tyloi::kFloat16 &&
@@ -626,15 +626,15 @@ void validate_residual(
 }
 
 
-::tyloi::Tensor nepq_sparse_residual_backward_transpose_cuda(
-    ::tyloi::Tensor dictionary,
-    ::tyloi::Tensor transpose_offsets,
-    ::tyloi::Tensor transpose_rows,
-    ::tyloi::Tensor transpose_dictionary,
-    ::tyloi::Tensor output_gradient,
-    ::tyloi::Tensor rotation_signs,
+::tyloi::DenseTensor nepq_sparse_residual_backward_transpose_cuda(
+    ::tyloi::DenseTensor dictionary,
+    ::tyloi::DenseTensor transpose_offsets,
+    ::tyloi::DenseTensor transpose_rows,
+    ::tyloi::DenseTensor transpose_dictionary,
+    ::tyloi::DenseTensor output_gradient,
+    ::tyloi::DenseTensor rotation_signs,
     bool fuse_rotation,
-    ::tyloi::Tensor input_gradient) {
+    ::tyloi::DenseTensor input_gradient) {
     TYLOINFER_RUNTIME_CHECK(
         dictionary.is_cuda() &&
         dictionary.scalar_type() == ::tyloi::kFloat16 &&

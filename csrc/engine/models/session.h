@@ -27,7 +27,7 @@ struct MtpSessionState {
         std::vector<KvSnapshot>,
         tyloi::models::qwen4_exp::MtpSnapshot,
         tyloi::models::deepseek_v41::MtpSnapshot> payload = std::vector<KvSnapshot>{};
-    ::tyloi::Tensor last_target_hidden;
+    ::tyloi::DenseTensor last_target_hidden;
     int64_t cache_pos = 0;
     size_t bytes = 0;
 };

@@ -6,10 +6,10 @@
 
 namespace tyloi::cuda {
 namespace {
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using HashBatch = tyloi::models::deepseek_v41::EngramHashBatch;
 
-Tensor append_tail(const Tensor& previous, const Tensor& current, int64_t window) {
+DenseTensor append_tail(const DenseTensor& previous, const DenseTensor& current, int64_t window) {
     if (current.size(1) >= window)
         return current.narrow(1, current.size(1) - window, window).clone();
     auto combined = previous.defined() ? ::tyloi::cuda::cat({previous, current}, 1) : current;
@@ -51,8 +51,8 @@ std::int64_t prefill_span(const DeepseekV41CausalLm&, std::size_t tokens,
     return logical_chunk;
 }
 
-Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
-                                   int64_t compute_chunk, const std::function<bool()>& stopped, Tensor* raw_hidden) {
+DenseTensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, DenseTensor ids,
+                                   int64_t compute_chunk, const std::function<bool()>& stopped, DenseTensor* raw_hidden) {
     auto scope = model.execution_scope();
     ids = model.device_ids(std::move(ids));
     const auto batch = ids.size(0), tokens = ids.size(1);
@@ -71,7 +71,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
     compute_chunk = std::min<int64_t>(compute_chunk, 8192);
     std::optional<MoePrefillLayerPriority> priority;
     if(tokens > config.sliding_window)priority.emplace(model.execution->weights.moe,0,static_cast<int>(split));
-    Tensor tail_hidden, tail_pre, tail_ids;
+    DenseTensor tail_hidden, tail_pre, tail_ids;
     HashBatch tail_hashes;
     const auto cancelled = [&] {
         if (!stopped || !stopped()) return false;
@@ -79,7 +79,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
         return true;
     };
     const auto* profile_layer=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_DSV41_LAYER");
-    const auto apply_layer=[&](auto& ops,int64_t layer,Tensor hidden) {
+    const auto apply_layer=[&](auto& ops,int64_t layer,DenseTensor hidden) {
         auto& profiler=model.execution->executor().profiler();
         const bool selected=profile_layer && layer==std::atoi(profile_layer);
         const bool previous=profiler.enabled;

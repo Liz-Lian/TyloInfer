@@ -12,13 +12,13 @@ namespace tyloi::cuda::qwen35 {
 struct Predictor {
     struct Layer {
         FullAttention attention;
-        ::tyloi::Tensor ffn_norm;
+        ::tyloi::DenseTensor ffn_norm;
         Ffn ffn;
     };
 
     tyloi::models::qwen35::Config config;
     QuantLinear fusion;
-    ::tyloi::Tensor hidden_norm, embedding_norm, output_norm;
+    ::tyloi::DenseTensor hidden_norm, embedding_norm, output_norm;
     std::vector<Layer> layers;
 
     std::vector<Task> tasks() const;

@@ -263,8 +263,8 @@ __global__ void fill_kernel<__nv_bfloat16>(
 
 template <typename Destination, typename Source>
 void launch_convert(
-    Tensor& destination,
-    const Tensor& source,
+    DenseTensor& destination,
+    const DenseTensor& source,
     cudaStream_t stream) {
     if (source.numel() == 0) {
         return;
@@ -341,8 +341,8 @@ void launch_convert(
 
 template <typename Destination>
 void dispatch_source(
-    Tensor& destination,
-    const Tensor& source,
+    DenseTensor& destination,
+    const DenseTensor& source,
     cudaStream_t stream) {
     switch (source.scalar_type()) {
         case ScalarType::boolean: launch_convert<Destination, bool>(destination, source, stream); break;
@@ -360,7 +360,7 @@ void dispatch_source(
     }
 }
 
-void dispatch_convert(Tensor& destination, const Tensor& source, cudaStream_t stream) {
+void dispatch_convert(DenseTensor& destination, const DenseTensor& source, cudaStream_t stream) {
     switch (destination.scalar_type()) {
         case ScalarType::boolean: dispatch_source<bool>(destination, source, stream); break;
         case ScalarType::uint8: dispatch_source<std::uint8_t>(destination, source, stream); break;
@@ -377,7 +377,7 @@ void dispatch_convert(Tensor& destination, const Tensor& source, cudaStream_t st
     }
 }
 
-cudaMemcpyKind copy_kind(const Tensor& destination, const Tensor& source) {
+cudaMemcpyKind copy_kind(const DenseTensor& destination, const DenseTensor& source) {
     if (destination.is_cuda() && source.is_cuda()) return cudaMemcpyDeviceToDevice;
     if (destination.is_cuda() && source.is_cpu()) return cudaMemcpyHostToDevice;
     if (destination.is_cpu() && source.is_cuda()) return cudaMemcpyDeviceToHost;
@@ -386,7 +386,7 @@ cudaMemcpyKind copy_kind(const Tensor& destination, const Tensor& source) {
 
 }  // namespace
 
-Tensor empty_cuda(std::span<const std::int64_t> shape, const TensorOptions& options) {
+DenseTensor empty_cuda(std::span<const std::int64_t> shape, const TensorOptions& options) {
     if (!options.target_device().is_cuda()) {
         throw std::invalid_argument("empty_cuda requires a CUDA device");
     }
@@ -394,10 +394,10 @@ Tensor empty_cuda(std::span<const std::int64_t> shape, const TensorOptions& opti
         reinterpret_cast<void*>(1), shape, options.scalar_type(), options.target_device());
     auto storage = allocate_cuda_storage(descriptor.nbytes(), options.target_device());
     descriptor.data = storage->base;
-    return Tensor(std::move(storage), descriptor);
+    return DenseTensor(std::move(storage), descriptor);
 }
 
-Tensor empty_pinned(std::span<const std::int64_t> shape, const TensorOptions& options) {
+DenseTensor empty_pinned(std::span<const std::int64_t> shape, const TensorOptions& options) {
     if (!options.target_device().is_cpu()) {
         throw std::invalid_argument("empty_pinned requires a CPU device");
     }
@@ -405,10 +405,10 @@ Tensor empty_pinned(std::span<const std::int64_t> shape, const TensorOptions& op
         reinterpret_cast<void*>(1), shape, options.scalar_type(), options.target_device());
     auto storage = allocate_pinned_storage(descriptor.nbytes());
     descriptor.data = storage->base;
-    return Tensor(std::move(storage), descriptor);
+    return DenseTensor(std::move(storage), descriptor);
 }
 
-void copy_cuda(Tensor& destination, const Tensor& source) {
+void copy_cuda(DenseTensor& destination, const DenseTensor& source) {
     destination.require_dense(); source.require_dense();
     if (destination.numel() != source.numel()) {
         throw std::invalid_argument("native tensor copy changes element count");
@@ -425,7 +425,7 @@ void copy_cuda(Tensor& destination, const Tensor& source) {
         destination.device().index != source.device().index) {
         const int source_device = source.device().index;
         const int destination_device = destination.device().index;
-        Tensor staged_source;
+        DenseTensor staged_source;
         StreamHandle source_stream;
         {
             DeviceGuard source_guard(source_device);
@@ -437,8 +437,8 @@ void copy_cuda(Tensor& destination, const Tensor& source) {
             }
             source_stream = current_stream(source_device);
         }
-        Tensor staged_destination;
-        Tensor* peer_destination = &destination;
+        DenseTensor staged_destination;
+        DenseTensor* peer_destination = &destination;
         if (!destination.is_contiguous()) {
             staged_destination = empty(
                 destination.sizes(), destination.options());
@@ -485,14 +485,14 @@ void copy_cuda(Tensor& destination, const Tensor& source) {
     dispatch_convert(destination, source, stream.stream());
 }
 
-Tensor copy_or_convert_cuda(const Tensor& source, const TensorOptions& options) {
+DenseTensor copy_or_convert_cuda(const DenseTensor& source, const TensorOptions& options) {
     source.require_dense();
     auto destination = empty(source.sizes(), options);
     copy_cuda(destination, source);
     return destination;
 }
 
-void fill_cuda(Tensor& destination, double value) {
+void fill_cuda(DenseTensor& destination, double value) {
     destination.require_dense();
     if (!destination.is_cuda()) {
         throw std::invalid_argument("fill_cuda requires a CUDA tensor");
@@ -533,7 +533,7 @@ void fill_cuda(Tensor& destination, double value) {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
 }
 
-Tensor make_contiguous_cuda(const Tensor& source) {
+DenseTensor make_contiguous_cuda(const DenseTensor& source) {
     source.require_dense();
     if (!source.is_cuda()) {
         throw std::invalid_argument("make_contiguous_cuda requires a CUDA tensor");
@@ -543,7 +543,7 @@ Tensor make_contiguous_cuda(const Tensor& source) {
     return destination;
 }
 
-Tensor mean_cuda(const Tensor& source, std::int64_t dimension, bool keep_dimension) {
+DenseTensor mean_cuda(const DenseTensor& source, std::int64_t dimension, bool keep_dimension) {
     source.require_dense();
     if (!source.is_cuda() || !source.is_contiguous() ||
         source.scalar_type() != ScalarType::float32 || source.dim() == 0) {

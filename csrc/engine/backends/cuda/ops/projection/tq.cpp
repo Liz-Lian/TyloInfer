@@ -14,9 +14,9 @@
 #include <string>
 #include <utility>
 
-TrellisProjectionView tyloi::cuda::tq::view(const Tensor& weight) {
-    const auto& layout = encoding::tq_layout(weight);
-    const auto image = encoding::tq_image(weight);
+TrellisProjectionView tyloi::cuda::tq::view(const ::tyloi::encoding::TqTensor& weight) {
+    const auto& layout = weight.layout();
+    const auto image = weight.image();
     const auto* data = image.data_ptr<std::uint8_t>();
     return {reinterpret_cast<const std::uint32_t*>(data + layout.words),
         reinterpret_cast<const std::uint64_t*>(data + 64), data + layout.scales,
@@ -45,7 +45,7 @@ void project_tokens(const TrellisProjectionView& view,tyloi::cuda::BlasResources
     }else tq_detail::status(mfq_tq_gemv_tokens(view,input,output,tokens,type,mfq_current_cuda_stream()));
 }
 
-::tyloi::Tensor projection_workspace(const ::tyloi::Tensor& weight,int tokens,::tyloi::ScalarType type,int groups=1) {
+::tyloi::DenseTensor projection_workspace(const ::tyloi::encoding::TqTensor& weight,int tokens,::tyloi::ScalarType type,int groups=1) {
     // A single-token projection fitting one output tile cannot amortize a
     // separate Q8 preparation launch. The direct TQ kernel also cooperates
     // across warps on these narrow contractions, instead of serializing K
@@ -83,7 +83,7 @@ void project_tokens(const TrellisProjectionView& view,tyloi::cuda::BlasResources
 }
 }
 
-::tyloi::Tensor tyloi::cuda::tq::project(const Tensor& weight, BlasResources* blas,Tensor input) {
+::tyloi::DenseTensor tyloi::cuda::tq::project(const ::tyloi::encoding::TqTensor& weight, BlasResources* blas,DenseTensor input) {
     input.require_dense();
     if(!weight.is_cuda() && input.is_cuda()) {
         const auto promoted=promote_tq(weight,input.device());
@@ -108,7 +108,7 @@ void project_tokens(const TrellisProjectionView& view,tyloi::cuda::BlasResources
     }
     return result;
 }
-::tyloi::Tensor tyloi::cuda::tq::groupwise(const Tensor& weight, BlasResources* blas,Tensor input,std::int64_t groups) {
+::tyloi::DenseTensor tyloi::cuda::tq::groupwise(const ::tyloi::encoding::TqTensor& weight, BlasResources* blas,DenseTensor input,std::int64_t groups) {
     input.require_dense();
     if(!input.is_cuda())throw std::invalid_argument("TQ grouped input must match the weight's group rows and width");
     if(!weight.is_cuda()) {
@@ -148,7 +148,7 @@ void project_tokens(const TrellisProjectionView& view,tyloi::cuda::BlasResources
     return result;
 }
 
-::tyloi::Tensor tyloi::cuda::tq::embedding(const Tensor& weight, Tensor ids) {
+::tyloi::DenseTensor tyloi::cuda::tq::embedding(const ::tyloi::encoding::TqTensor& weight, DenseTensor ids) {
     ids.require_dense();
     if(!weight.is_cuda()) {
         const auto promoted=promote_tq(weight,ids.is_cuda()?ids.device(): ::tyloi::Device(::tyloi::kCUDA,mfq_current_cuda_device()));
@@ -168,7 +168,7 @@ void project_tokens(const TrellisProjectionView& view,tyloi::cuda::BlasResources
     return result;
 }
 
-TqProjectionGroup::TqProjectionGroup(std::vector<::tyloi::Tensor> weights):weights_(std::move(weights)) {
+TqProjectionGroup::TqProjectionGroup(std::vector<::tyloi::encoding::TqTensor> weights):weights_(std::move(weights)) {
     if(weights_.empty())throw std::invalid_argument("empty TQ projection group");
     input_=weights_[0].size(1);
     if(input_<1 || input_>INT_MAX)throw std::invalid_argument("invalid TQ group input width");
@@ -176,7 +176,7 @@ TqProjectionGroup::TqProjectionGroup(std::vector<::tyloi::Tensor> weights):weigh
     std::vector<TrellisProjectionJob> jobs;jobs.reserve(weights_.size());
     std::int64_t blocks=0;
     for(const auto& weight:weights_) {
-        if(weight.size(0)<1 || !weight.is_encoded() ||
+        if(weight.size(0)<1 ||
            !weight.is_cuda() || weight.device()!=device || weight.size(1)!=input_)
             throw std::invalid_argument("TQ group input widths and CUDA devices must match");
         blocks+=(weight.size(0)+TRELLIS_GROUP_ROWS-1)/TRELLIS_GROUP_ROWS;
@@ -199,23 +199,23 @@ void TqProjectionGroup::join_prefix(std::size_t count) {
     for(std::size_t i=0;i<count;++i)joined_rows_+=weights_[i].size(0);
 }
 
-std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResources* blas,::tyloi::Tensor input)const {
+std::vector<::tyloi::DenseTensor> TqProjectionGroup::forward(tyloi::cuda::BlasResources* blas,::tyloi::DenseTensor input)const {
     input.require_dense();
     if(!defined() || !input.is_cuda() || input.device()!=plan_.device() || input.size(-1)!=input_)
         throw std::invalid_argument("TQ group input shape or device differs");
     const MfqCudaGuard guard(input.get_device());
     const auto source=input.contiguous();
     const auto tokens=source.numel()/input_;
-    const auto join=[&](std::vector<::tyloi::Tensor> values) {
+    const auto join=[&](std::vector<::tyloi::DenseTensor> values) {
         if(joined_prefix_>1) {
-            auto combined=::tyloi::cuda::cat(std::vector<::tyloi::Tensor>(values.begin(),values.begin()+joined_prefix_),-1);
+            auto combined=::tyloi::cuda::cat(std::vector<::tyloi::DenseTensor>(values.begin(),values.begin()+joined_prefix_),-1);
             values.erase(values.begin(),values.begin()+joined_prefix_);
             values.insert(values.begin(),std::move(combined));
         }
         return values;
     };
     if(tokens>=tq_detail::gemm_min_tokens(source.scalar_type())) {
-        std::vector<::tyloi::Tensor> result;result.reserve(weights_.size());
+        std::vector<::tyloi::DenseTensor> result;result.reserve(weights_.size());
         for(const auto& weight:weights_)result.push_back(tyloi::cuda::tq::project(weight,blas,source));
         return join(std::move(result));
     }
@@ -238,7 +238,7 @@ std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResourc
                 static_cast<int>(joined_rows_),mfq_current_cuda_stream()));
         }else tq_detail::status(mfq_tq_parallel_tokens(jobs,static_cast<int>(weights_.size()),blocks_,source.data_ptr(),output.data_ptr(),
             static_cast<int>(tokens),static_cast<int>(input_),tq_detail::dtype(source.scalar_type()),mfq_current_cuda_stream()));
-        std::vector<::tyloi::Tensor> result;result.reserve(weights_.size());
+        std::vector<::tyloi::DenseTensor> result;result.reserve(weights_.size());
         std::int64_t offset=0;
         for(std::size_t i=0;i<weights_.size();) {
             const auto count=q8 && i==0?joined_prefix_:1;
@@ -260,7 +260,7 @@ std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResourc
             static_cast<std::uint8_t*>(output.data_ptr())+start*output_*element,
             count,static_cast<int>(input_),static_cast<int>(output_),tq_detail::dtype(input.scalar_type()),mfq_current_cuda_stream()));
     }
-    std::vector<::tyloi::Tensor> result;result.reserve(weights_.size());
+    std::vector<::tyloi::DenseTensor> result;result.reserve(weights_.size());
     std::int64_t offset=0;
     for(std::size_t i=0;i<weights_.size();) {
         const auto count=i==0?joined_prefix_:1;
@@ -271,7 +271,7 @@ std::vector<::tyloi::Tensor> TqProjectionGroup::forward(tyloi::cuda::BlasResourc
     return result;
 }
 
-::tyloi::Tensor TqProjectionGroup::swiglu(tyloi::cuda::BlasResources* blas,::tyloi::Tensor input)const {
+::tyloi::DenseTensor TqProjectionGroup::swiglu(tyloi::cuda::BlasResources* blas,::tyloi::DenseTensor input)const {
     input.require_dense();
     if(weights_.size()!=2 || weights_[0].size(0)!=weights_[1].size(0) || !input.is_cuda() ||
        input.device()!=plan_.device() || input.size(-1)!=input_)

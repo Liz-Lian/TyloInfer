@@ -6,11 +6,11 @@
 #include <vector>
 
 namespace tyloi::cuda::glm_dsa {
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 struct Model;
 
-struct LayerState { Tensor kv_cache, index_cache; };
-struct Selection { Tensor topk_indices; int64_t dense_prefix_rows = 0; };
+struct LayerState { DenseTensor kv_cache, index_cache; };
+struct Selection { DenseTensor topk_indices; int64_t dense_prefix_rows = 0; };
 
 class State {
 public:
@@ -24,8 +24,8 @@ public:
     void advance(int64_t tokens) noexcept { cache_pos += tokens; }
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate() {}
-    std::vector<Tensor> storage() const;
-    std::vector<Tensor*> graph_state() { return {}; }
+    std::vector<DenseTensor> storage() const;
+    std::vector<DenseTensor*> graph_state() { return {}; }
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
     bool supports_paged_text_session_state() const { return false; }

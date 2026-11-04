@@ -51,14 +51,14 @@ void load_important_neuron_branch(const tyloi::cuda::weight_loader::Loader& weig
     f.important_neurons = std::move(high);
 }
 
-::tyloi::Tensor TransformerWeightLoader::dense(const std::string& name) const {
+::tyloi::DenseTensor TransformerWeightLoader::dense(const std::string& name) const {
     return weights.tensor(name);
 }
 QuantLinear TransformerWeightLoader::linear(const std::string& name) const {
     return weights.projection(name);
 }
 bool TransformerWeightLoader::has(const std::string& name) const { return has_tensor(weights.source, name); }
-::tyloi::Tensor TransformerWeightLoader::router_parameter(const std::string& name) const {
+::tyloi::DenseTensor TransformerWeightLoader::router_parameter(const std::string& name) const {
     if(keep_quantized_router && name.ends_with("router.weight") && require_tensor(weights.source,name).dtype=="TQ") {
         router_projection=std::make_shared<QuantLinear>(linear(name));
         return {};

@@ -8,7 +8,7 @@
 namespace tyloi::cuda::minicpmo45 {
 
 namespace {
-Tensor token_ids(Collectives& copies, int device, Tensor ids) {
+DenseTensor token_ids(Collectives& copies, int device, DenseTensor ids) {
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 1 || ids.dim() == 2,
         "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
@@ -17,15 +17,15 @@ Tensor token_ids(Collectives& copies, int device, Tensor ids) {
 }
 }
 
-Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
-             Tensor ids, const Executor::Mode& mode) {
+DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
+             DenseTensor ids, const Executor::Mode& mode) {
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs input;
     input.values = {token_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), mode);
 }
 
-Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t batch, int64_t tokens) {
+DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
     const Task task{task::Norm{0, 0, model.output_norm, model.metadata.rms_norm_eps, 1.0},
                     -1, {}, "model.output_norm"};
     Inputs input;
@@ -33,7 +33,7 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t 
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), {});
 }
 
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
+DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
     const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
     Inputs input;
@@ -41,9 +41,9 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), mode);
 }
 
-Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
+DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
-    auto ids = token_ids(copies, mode.primary, Tensor(std::move(input.ids)));
+    auto ids = token_ids(copies, mode.primary, DenseTensor(std::move(input.ids)));
     const auto batch = ids.size(0), tokens = ids.size(1);
     TYLOINFER_RUNTIME_CHECK(input.confirmed == 0, "MiniCPM TTS has no speculative predictor");
     TYLOINFER_RUNTIME_CHECK(state.layers.size() == model.layers.size(), "MiniCPM TTS layer state mismatch");
@@ -51,19 +51,19 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         "MiniCPM TTS history exceeds context capacity");
     if (state.cache_pos == 0) state.reset(batch);
     TYLOINFER_RUNTIME_CHECK(state.batch == batch, "MiniCPM TTS cache batch does not match inputs");
-    auto hidden = input.embeddings ? Tensor(std::move(*input.embeddings))
+    auto hidden = input.embeddings ? DenseTensor(std::move(*input.embeddings))
                                   : embed(model, executor, copies, mode.primary, ids, mode);
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(0) == batch && hidden.size(1) == tokens &&
         hidden.size(2) == model.metadata.hidden_size, "inputs_embeds must match [batch,tokens,hidden_size]");
     auto physical = input.cache_positions
-        ? copies.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(DenseTensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + tokens,
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::Device(::tyloi::kCUDA, mode.primary)));
     TYLOINFER_RUNTIME_CHECK((physical.dim() == 1 && physical.numel() == tokens) ||
         (physical.dim() == 2 && physical.size(0) == batch && physical.size(1) == tokens),
         "cache_positions must have shape [tokens] or [batch,tokens]");
     auto positions = input.positions
-        ? copies.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(DenseTensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
     TYLOINFER_RUNTIME_CHECK((positions.dim() == 1 && positions.numel() == tokens) ||
         (positions.dim() == 2 && positions.size(0) == batch && positions.size(1) == tokens),
@@ -71,7 +71,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (input.lengths) {
         TYLOINFER_RUNTIME_CHECK(input.lengths->dim() == 1 && input.lengths->size(0) == batch,
             "sequence lengths must have shape [batch]");
-        input.lengths = copies.copy(Tensor(*input.lengths).to(::tyloi::kInt64), mode.primary).contiguous();
+        input.lengths = copies.copy(DenseTensor(*input.lengths).to(::tyloi::kInt64), mode.primary).contiguous();
     } else if (state.cache_pos > 0 && tokens == 1) {
         input.lengths = ::tyloi::cuda::full({batch}, state.cache_pos + 1, physical.options());
     }
@@ -88,12 +88,12 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         const auto& layer = model.layers[index];
         const auto& attention = layer.attention;
         MfqCudaGuard guard(layer.device);
-        const auto local = [&](Tensor value) {
+        const auto local = [&](DenseTensor value) {
             return layer.cpu ? value.to(::tyloi::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
         };
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, {}, {}, state.cache_pos, input.kv_length, input.attention_parts};
-        if (input.lengths) step.sequence_lengths = local(Tensor(*input.lengths));
+        if (input.lengths) step.sequence_lengths = local(DenseTensor(*input.lengths));
         if (input.cache_positions) step.cache_positions = local(physical);
         auto& cache = state.layers[index];
         if (!cache.defined()) {

@@ -77,12 +77,12 @@ public:
     void* data() const {return state_->storage.data();}
     std::size_t bytes() const {return state_->storage.size();}
     std::size_t used_bytes() const {std::lock_guard lock(state_->mutex);return state_->used;}
-    ::tyloi::Tensor tensor() const {
+    ::tyloi::DenseTensor tensor() const {
         auto storage=std::make_shared<::tyloi::TensorStorage>();
         const auto device=::tyloi::Device{::tyloi::DeviceType::cpu,0};
         storage->owner=state_;storage->base=data();storage->bytes=bytes();storage->device=device;storage->pinned=true;
         const std::array<std::int64_t,1> shape{std::int64_t(bytes())};
-        return ::tyloi::Tensor(storage,::tyloi::make_contiguous_view(data(),shape,::tyloi::ScalarType::uint8,device));
+        return ::tyloi::DenseTensor(storage,::tyloi::make_contiguous_view(data(),shape,::tyloi::ScalarType::uint8,device));
     }
 private:
     std::shared_ptr<State> state_;

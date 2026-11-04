@@ -30,7 +30,7 @@
 namespace tyloi::cuda::internal {
 namespace generation_detail {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using ::tyloi::indexing::Slice;
 
 template <typename Model, typename State>
@@ -51,17 +51,17 @@ constexpr bool has_forward =
 template <typename Model>
 constexpr bool has_logits =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    requires(Model& model, Tensor hidden) {
+    requires(Model& model, DenseTensor hidden) {
         static_cast<const tyloi::models::CausalModel&>(model).logits(std::move(hidden), true);
     } ||
 #endif
     requires(
-    Model& model, tyloi::cuda::Executor& executor, Tensor hidden) {
+    Model& model, tyloi::cuda::Executor& executor, DenseTensor hidden) {
     logits(model, executor, std::move(hidden), true);
 };
 
 template <typename Model, typename State>
-Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
+DenseTensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
               Collectives& collectives, const Executor::Mode& mode, tyloi::cuda::Input input) {
     static_assert(has_forward<Model, State>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -69,7 +69,7 @@ Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
                                std::move(input), state, forward_options(mode)); }) {
         const tyloi::models::CausalModel& causal = model;
         auto scope = Executor::current().enter(mode.ffn);
-        return Tensor(causal.forward(std::move(input), state, forward_options(mode)));
+        return DenseTensor(causal.forward(std::move(input), state, forward_options(mode)));
     } else
 #endif
     {
@@ -81,15 +81,15 @@ Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
 }
 
 template <typename Model>
-Tensor project(Model& model, tyloi::cuda::Executor* executor,
-               const Executor::Mode& mode, Tensor value, bool capped) {
+DenseTensor project(Model& model, tyloi::cuda::Executor* executor,
+               const Executor::Mode& mode, DenseTensor value, bool capped) {
     static_assert(has_logits<Model>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).logits(
                                std::move(value), capped); }) {
         const tyloi::models::CausalModel& causal = model;
         auto scope = Executor::current().enter(mode.ffn);
-        return Tensor(causal.logits(std::move(value), capped));
+        return DenseTensor(causal.logits(std::move(value), capped));
     } else
 #endif
     {
@@ -100,8 +100,8 @@ Tensor project(Model& model, tyloi::cuda::Executor* executor,
 }
 
 template <typename Model, typename State>
-Tensor last_logits(Model& model, State& state, tyloi::cuda::Executor* executor,
-                   Collectives& collectives, const Executor::Mode& mode, Tensor ids, bool capped) {
+DenseTensor last_logits(Model& model, State& state, tyloi::cuda::Executor* executor,
+                   Collectives& collectives, const Executor::Mode& mode, DenseTensor ids, bool capped) {
     auto value = hidden(model, state, executor, collectives, mode,
                         tyloi::cuda::Input{std::move(ids)});
     return project(model, executor, mode,
@@ -112,9 +112,9 @@ Tensor last_logits(Model& model, State& state, tyloi::cuda::Executor* executor,
 }
 
 template <typename Model, typename State>
-Tensor sample_token(Model &model, State& state, tyloi::cuda::Executor* executor,
-    Collectives& collectives, const Executor::Mode& mode, CudaProfiler& profiler, Tensor ids,
-    tyloi::cuda::Sampler &sampler, ::tyloi::Tensor counts,
+DenseTensor sample_token(Model &model, State& state, tyloi::cuda::Executor* executor,
+    Collectives& collectives, const Executor::Mode& mode, CudaProfiler& profiler, DenseTensor ids,
+    tyloi::cuda::Sampler &sampler, ::tyloi::DenseTensor counts,
     const MfqTokenConstraintPtr &token_constraint) {
     const auto run = [&]() {
         if (sampler.greedy() && !sampler.has_penalties() && !token_constraint) {
@@ -167,13 +167,13 @@ template <typename Model, typename State> struct CudaGenerationOps {
     const tyloi::models::Info &info;
     DecodeGraphCache &graph;
     const MfqTokenConstraintPtr &constraint;
-    ::tyloi::Tensor pending, counts;
-    ::tyloi::Tensor known_token_host;
+    ::tyloi::DenseTensor pending, counts;
+    ::tyloi::DenseTensor known_token_host;
     tyloi::cuda::Sampler sampler;
     bool has_penalties;
     const PreparedPrompt *prepared;
     const CudaDecodeGraphConfig graph_config;
-    ::tyloi::Tensor full_ids;
+    ::tyloi::DenseTensor full_ids;
     std::int32_t generation_limit = 0;
     bool graph_active = false;
     bool graph_prepared = false;
@@ -210,7 +210,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     }
 
     double prefill(const tyloi::engine::PrefillChunk &chunk) {
-        using Tensor = ::tyloi::Tensor;
+        using DenseTensor = ::tyloi::DenseTensor;
         PrefillCudaTimer timer;
         bool prefill_finished=false;
         const auto finish_prefill=[&] {
@@ -233,19 +233,19 @@ template <typename Model, typename State> struct CudaGenerationOps {
             if constexpr (has_forward<Model, State>) {
                 tyloi::cuda::Input input;
                 input.ids = ids;
-                input.embeddings = Tensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
+                input.embeddings = DenseTensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
                                         .contiguous();
                 if (prepared->positions.defined())
-                    input.positions = Tensor(prepared->positions).narrow(-1, chunk.offset, chunk.count)
+                    input.positions = DenseTensor(prepared->positions).narrow(-1, chunk.offset, chunk.count)
                                            .contiguous();
                 input.advance = true;
                 hidden = ::tyloi::cuda::internal::generation_detail::hidden(
                     model, state, executor, collectives, mode, std::move(input));
             } else {
                 hidden = model.hidden_forward_inputs(ids,
-                    Tensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count).contiguous(),
-                    prepared->positions.defined()?MfqOptional<Tensor>(
-                        Tensor(prepared->positions).narrow(-1,chunk.offset,chunk.count).contiguous()):mfq_nullopt,
+                    DenseTensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count).contiguous(),
+                    prepared->positions.defined()?MfqOptional<DenseTensor>(
+                        DenseTensor(prepared->positions).narrow(-1,chunk.offset,chunk.count).contiguous()):mfq_nullopt,
                     mfq_nullopt,
                     nullptr,
                     mfq_nullopt,
@@ -263,7 +263,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 hidden = ::tyloi::cuda::internal::generation_detail::hidden(
                     model, state, executor, collectives, mode, tyloi::cuda::Input{std::move(ids)});
             } else {
-                MfqOptional<Tensor> length = mfq_nullopt;
+                MfqOptional<DenseTensor> length = mfq_nullopt;
                 if (model.adapter_uses_decode_sequence_length() && chunk.offset > 0 && chunk.count == 1)
                     length = ::tyloi::cuda::full({1}, chunk.offset + 1, full_ids.options());
                 hidden = model.hidden_forward(ids, mfq_nullopt, length);
@@ -309,7 +309,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                generation_limit <= graph.generated_capacity;
     }
     void prepare_graph() {
-        using Tensor = ::tyloi::Tensor;
+        using DenseTensor = ::tyloi::DenseTensor;
         graph.ensure_compute_streams(collectives);
         MfqCudaGuard graph_device_guard(graph.stream.device_index());
         auto graph_stream_guards = activate_cuda_graph_compute_streams(graph.compute_streams);
@@ -372,7 +372,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
             }
         };
         const auto current_graph_storage = [&]() {
-            std::vector<Tensor> result;
+            std::vector<DenseTensor> result;
             const auto append = [&result](const auto& tensor) {
                 if (tensor.defined()) result.emplace_back(tensor);
             };

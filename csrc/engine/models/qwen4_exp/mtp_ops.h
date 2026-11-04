@@ -51,15 +51,15 @@ template<class Ops> void mtp_initialize(Qwen4CausalLm&, Ops& ops) {
         predictor->compact_graph_sampling=ops.captured_compact_requested();
 }
 
-template<class Ops, class Tensor, class Finish>
-std::optional<Tensor> mtp_target_forward(Qwen4CausalLm& model, Ops& ops, Tensor& ids, Tensor* raw,
+template<class Ops, class DenseTensor, class Finish>
+std::optional<DenseTensor> mtp_target_forward(Qwen4CausalLm& model, Ops& ops, DenseTensor& ids, DenseTensor* raw,
                                          int64_t confirmed, std::uint64_t transfer_before, const Finish& finish_profile) {
     if(!ops.transformed_prompt) {
         bool initialized=false;
         const auto host_ids = ops.known_ids_device.defined() &&
             ids.data_ptr() == ops.known_ids_device.data_ptr() && ids.sizes() == ops.known_ids_device.sizes()
-            ? ops.known_ids_host : Tensor{};
-        Tensor logits;
+            ? ops.known_ids_host : DenseTensor{};
+        DenseTensor logits;
         if(auto hidden=qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&ops.projected_target_greedy,ops.captured_compact_requested())) {
             ops.target_transfer_bytes=moe_expert_streamed_bytes(ops.weights.moe)-transfer_before;
             ops.target_maintenance=ops.target_maintenance || initialized;
@@ -72,14 +72,14 @@ std::optional<Tensor> mtp_target_forward(Qwen4CausalLm& model, Ops& ops, Tensor&
     return std::nullopt;
 }
 
-template<class Ops, class Chunk, class Tensor, class Timer, class Finish>
+template<class Ops, class Chunk, class DenseTensor, class Timer, class Finish>
 std::optional<typename Ops::PrefillResult> mtp_prefill(Qwen4CausalLm& model, Ops& ops, const Chunk& chunk,
-                                                      Tensor& ids, Tensor& raw, Timer& timer, const Finish& finish_prefill) {
+                                                      DenseTensor& ids, DenseTensor& raw, Timer& timer, const Finish& finish_prefill) {
     if(!ops.transformed_prompt && model.reuse_decode_graphs && model.graph_registry && chunk.count<=128) {
-        std::vector<Tensor> hidden_rows,raw_rows;
+        std::vector<DenseTensor> hidden_rows,raw_rows;
         for(int64_t offset=0;offset<chunk.count;) {
             const auto rows=ops.state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
-            Tensor part;
+            DenseTensor part;
             hidden_rows.push_back(ops.target_forward(ids.narrow(1,offset,rows),&part,rows>1?1:0).clone());
             raw_rows.push_back(std::move(part));
             if(rows>1)ops.state.commit_speculative();
@@ -100,8 +100,8 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(Qwen4CausalLm& model, Ops
     return std::nullopt;
 }
 
-template<class Ops, class Tensor>
-std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor& hidden, Tensor& ids, Tensor& positions) {
+template<class Ops, class DenseTensor>
+std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions) {
     auto& mtp=ops.mtp;
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
     auto& target_maintenance=ops.target_maintenance;
@@ -112,7 +112,7 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
         const auto prefix=ids.size(1)-1;
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
         static thread_local std::array<bool,129> checked{};
-        Tensor expected_hidden,expected_chain;
+        DenseTensor expected_hidden,expected_chain;
         const auto check_start=mtp.cache_position();
         if(!checked[ids.size(1)]) {
           const auto start=mtp.cache_position();
@@ -127,7 +127,7 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
         const auto* chain_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_HISTORY_CHAIN");
         if(prefix>1 && (!chain_option || chain_option[0]!='0')) {
           ops.predictor_history_step(hidden.narrow(1,0,prefix),ids.narrow(1,0,prefix),
-              positions.defined()?positions.narrow(-1,0,prefix):Tensor{},true);
+              positions.defined()?positions.narrow(-1,0,prefix):DenseTensor{},true);
           static bool reported=false;
           if(!reported) {
             reported=true;std::cerr<<"runtime_mtp_history_chain enabled=1 rows="<<prefix
@@ -135,14 +135,14 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
           }
         } else for(int64_t row=0;row<prefix;++row)
             ops.predictor_history_step(hidden.narrow(1,row,1),ids.narrow(1,row,1),
-                positions.defined()?positions.narrow(-1,row,1):Tensor{});
+                positions.defined()?positions.narrow(-1,row,1):DenseTensor{});
         auto result=ops.predictor_step(hidden.narrow(1,prefix,1),ids.narrow(1,prefix,1),
-            positions.defined()?positions.narrow(-1,prefix,1):Tensor{});
+            positions.defined()?positions.narrow(-1,prefix,1):DenseTensor{});
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
         if(expected_hidden.defined()) {
           const auto difference=[&](const MtpStep& reference) {
             double maximum=0;bool close=true;
-            for(const auto& pair:std::array<std::pair<Tensor,Tensor>,2>{{
+            for(const auto& pair:std::array<std::pair<DenseTensor,DenseTensor>,2>{{
                     {result.sample_hidden,reference.sample_hidden},{result.chain_hidden,reference.chain_hidden}}}) {
               const auto actual=pair.first.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
               const auto expected=pair.second.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
@@ -162,7 +162,7 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
             MtpStep scalar;
             for(int64_t row=0;row<ids.size(1);++row)
               scalar=mtp.step_positioned(hidden.narrow(1,row,1),ids.narrow(1,row,1),
-                  positions.defined()?positions.narrow(-1,row,1):Tensor{});
+                  positions.defined()?positions.narrow(-1,row,1):DenseTensor{});
             const auto [error,close]=difference(scalar);scalar_error=error;
             std::fprintf(stderr,"runtime_mtp_history_tail_scalar_check rows=%lld batch_max_error=%.8f scalar_max_error=%.8f close=%d\n",
                 static_cast<long long>(ids.size(1)),batch_error,scalar_error,int(close));
@@ -179,7 +179,7 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
         MtpStep last;
         for(int64_t offset=0;offset<ids.size(1);offset+=4) {
           const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
-          auto part_positions=positions.defined()?positions.narrow(-1,offset,rows):Tensor{};
+          auto part_positions=positions.defined()?positions.narrow(-1,offset,rows):DenseTensor{};
           if(offset+rows<ids.size(1))
             ops.predictor_history_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),part_positions);
           else last=ops.predictor_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),part_positions);
@@ -195,14 +195,14 @@ void mtp_predictor_compact(Qwen4CausalLm&, Ops& ops, MtpStep& result) {
         ops.projected_predictor_compact=predictor->graph_compact_topk();
 }
 
-template<class Ops, class Tensor>
-bool mtp_predictor_history_step(Qwen4CausalLm& model, Ops& ops, Tensor& hidden, Tensor& ids, Tensor& positions, bool scalar_chain) {
+template<class Ops, class DenseTensor>
+bool mtp_predictor_history_step(Qwen4CausalLm& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions, bool scalar_chain) {
     if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp);
         predictor && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
         for(int64_t offset=0;offset<ids.size(1);offset+=4) {
             const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
             predictor->history_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),
-                positions.defined()?positions.narrow(-1,offset,rows):Tensor{},scalar_chain);
+                positions.defined()?positions.narrow(-1,offset,rows):DenseTensor{},scalar_chain);
         }
         ops.target_maintenance=ops.mtp.take_graph_initialization() || ops.target_maintenance;
         return true;
@@ -223,14 +223,14 @@ double mtp_begin_predictor_prefill(Qwen4CausalLm& model, Ops& ops, int64_t pairs
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
 
-template<class Ops, class Tensor>
-void mtp_predictor_prefill_begin(Qwen4CausalLm& model, Ops& ops, Tensor& ids) {
+template<class Ops, class DenseTensor>
+void mtp_predictor_prefill_begin(Qwen4CausalLm& model, Ops& ops, DenseTensor& ids) {
     if(!ops.cache_only_prompt_history() && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128)
         ops.end_predictor_prefill();
 }
 
-template<class Ops, class Tensor, class Timer>
-void mtp_predictor_prefill(Qwen4CausalLm& model, Ops& ops, Tensor& hidden, Tensor& ids, Tensor& positions,
+template<class Ops, class DenseTensor, class Timer>
+void mtp_predictor_prefill(Qwen4CausalLm& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions,
                            Timer& timer, bool& prefill_finished) {
     if(ops.cache_only_prompt_history()) {
         auto& predictor=static_cast<qwen4_exp::Predictor&>(ops.mtp);
@@ -248,7 +248,7 @@ void mtp_predictor_prefill(Qwen4CausalLm& model, Ops& ops, Tensor& hidden, Tenso
         for(int64_t offset=0;offset<ids.size(1);offset+=4) {
             const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
             ops.predictor_history_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),
-                positions.defined()?positions.narrow(-1,offset,rows):Tensor{});
+                positions.defined()?positions.narrow(-1,offset,rows):DenseTensor{});
         }
     } else (void)ops.predictor_step(std::move(hidden),std::move(ids),std::move(positions));
 }

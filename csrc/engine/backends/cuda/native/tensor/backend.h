@@ -361,26 +361,26 @@ using MfqOptional = std::optional<Value>;
 inline constexpr std::nullopt_t mfq_nullopt = std::nullopt;
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-inline ::tyloi::Tensor mfq_linear(
-    const ::tyloi::Tensor& input,
-    const ::tyloi::Tensor& weight,
-    const std::optional<::tyloi::Tensor>& bias = std::nullopt) {
+inline ::tyloi::DenseTensor mfq_linear(
+    const ::tyloi::DenseTensor& input,
+    const ::tyloi::DenseTensor& weight,
+    const std::optional<::tyloi::DenseTensor>& bias = std::nullopt) {
     return ::tyloi::cuda::linear(input, weight, bias);
 }
 
-inline ::tyloi::Tensor mfq_linear(
-    const ::tyloi::Tensor& input,
-    const ::tyloi::Tensor& weight,
-    const ::tyloi::Tensor& bias) {
+inline ::tyloi::DenseTensor mfq_linear(
+    const ::tyloi::DenseTensor& input,
+    const ::tyloi::DenseTensor& weight,
+    const ::tyloi::DenseTensor& bias) {
     return mfq_linear(
-        input, weight, std::optional<::tyloi::Tensor>(bias));
+        input, weight, std::optional<::tyloi::DenseTensor>(bias));
 }
 
-inline ::tyloi::Tensor mfq_scaled_dot_product_attention(
-    const ::tyloi::Tensor& query,
-    const ::tyloi::Tensor& key,
-    const ::tyloi::Tensor& value,
-    const std::optional<::tyloi::Tensor>& mask,
+inline ::tyloi::DenseTensor mfq_scaled_dot_product_attention(
+    const ::tyloi::DenseTensor& query,
+    const ::tyloi::DenseTensor& key,
+    const ::tyloi::DenseTensor& value,
+    const std::optional<::tyloi::DenseTensor>& mask,
     double dropout,
     bool causal,
     const std::optional<double>& scale,

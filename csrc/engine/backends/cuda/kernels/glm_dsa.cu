@@ -261,9 +261,9 @@ __global__ void glm_indexer_scores_kernel(
 
 } // namespace
 
-::tyloi::Tensor glm_interleaved_rope_cuda(
-    ::tyloi::Tensor x, ::tyloi::Tensor positions,
-    ::tyloi::Tensor cos, ::tyloi::Tensor sin, int64_t rotary_dim)
+::tyloi::DenseTensor glm_interleaved_rope_cuda(
+    ::tyloi::DenseTensor x, ::tyloi::DenseTensor positions,
+    ::tyloi::DenseTensor cos, ::tyloi::DenseTensor sin, int64_t rotary_dim)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 4,
                 "glm_interleaved_rope: x must be contiguous CUDA [B,H,T,D]");
@@ -305,9 +305,9 @@ __global__ void glm_indexer_scores_kernel(
     return out;
 }
 
-::tyloi::Tensor dsv4_tail_rope_cuda(
-    ::tyloi::Tensor x,::tyloi::Tensor positions,
-    ::tyloi::Tensor cosine,::tyloi::Tensor sine,int64_t rotary_dim) {
+::tyloi::DenseTensor dsv4_tail_rope_cuda(
+    ::tyloi::DenseTensor x,::tyloi::DenseTensor positions,
+    ::tyloi::DenseTensor cosine,::tyloi::DenseTensor sine,int64_t rotary_dim) {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.dim()==4 && x.stride(3)==1 && x.numel()>0 &&
         (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32) &&
         positions.device()==x.device() && positions.scalar_type()==::tyloi::kInt64 && positions.is_contiguous() &&
@@ -332,8 +332,8 @@ __global__ void glm_indexer_scores_kernel(
     return output;
 }
 
-::tyloi::Tensor glm_dsa_indexer_layer_norm_cuda(
-    ::tyloi::Tensor x, ::tyloi::Tensor weight, ::tyloi::Tensor bias, double eps)
+::tyloi::DenseTensor glm_dsa_indexer_layer_norm_cuda(
+    ::tyloi::DenseTensor x, ::tyloi::DenseTensor weight, ::tyloi::DenseTensor bias, double eps)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat16 &&
                 weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32 &&
@@ -358,8 +358,8 @@ __global__ void glm_indexer_scores_kernel(
     return out;
 }
 
-::tyloi::Tensor glm_dsa_cache_write_cuda(
-    ::tyloi::Tensor cache, ::tyloi::Tensor values, ::tyloi::Tensor positions)
+::tyloi::DenseTensor glm_dsa_cache_write_cuda(
+    ::tyloi::DenseTensor cache, ::tyloi::DenseTensor values, ::tyloi::DenseTensor positions)
 {
     TYLOINFER_RUNTIME_CHECK(cache.is_cuda() && cache.is_contiguous() && cache.scalar_type() == ::tyloi::kFloat16 &&
                 values.is_cuda() && values.is_contiguous() && values.scalar_type() == ::tyloi::kFloat16 &&
@@ -383,8 +383,8 @@ __global__ void glm_indexer_scores_kernel(
     return cache;
 }
 
-::tyloi::Tensor glm_dsa_indexer_scores_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor weights,
+::tyloi::DenseTensor glm_dsa_indexer_scores_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor weights,
     int64_t query_offset, int64_t logical_k)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat16 &&
@@ -418,9 +418,9 @@ __global__ void glm_indexer_scores_kernel(
     return out;
 }
 
-::tyloi::Tensor glm_dsa_indexer_scores_decode_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor weights,
-    ::tyloi::Tensor seq_len, int64_t planned_k)
+::tyloi::DenseTensor glm_dsa_indexer_scores_decode_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor weights,
+    ::tyloi::DenseTensor seq_len, int64_t planned_k)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat16 &&
                 k.is_cuda() && k.is_contiguous() && k.scalar_type() == ::tyloi::kFloat16 &&
@@ -452,9 +452,9 @@ __global__ void glm_indexer_scores_kernel(
     return out;
 }
 
-::tyloi::Tensor attention_glm_mla_sparse_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor kv, ::tyloi::Tensor indices,
-    ::tyloi::Tensor meta, double scale)
+::tyloi::DenseTensor attention_glm_mla_sparse_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor kv, ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor meta, double scale)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32 &&
                 kv.is_cuda() && kv.is_contiguous() && kv.scalar_type() == ::tyloi::kFloat16 &&
@@ -471,6 +471,6 @@ __global__ void glm_indexer_scores_kernel(
     return mfq_sparse_attn_mma::launch<
         kMlaDq, kMlaDv, 1, kMlaHeadsPerTile, true>(
         q, cache, cache, indices,
-        ::tyloi::Tensor{}, ::tyloi::Tensor{},
+        ::tyloi::DenseTensor{}, ::tyloi::DenseTensor{},
         meta, scale, "glm_sparse_mla");
 }

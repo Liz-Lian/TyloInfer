@@ -63,7 +63,7 @@ using tyloi::cuda::mtp_begin_predictor_prefill;
 using tyloi::cuda::mtp_predictor_prefill_begin;
 using tyloi::cuda::mtp_predictor_prefill;
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 template <typename Model, typename State>
 constexpr bool has_forward =
@@ -87,7 +87,7 @@ constexpr bool has_replay = requires(
 };
 
 template <typename Model, typename State>
-Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
+DenseTensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
               tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
               tyloi::cuda::Input input) {
   static_assert(has_forward<Model, State>);
@@ -96,7 +96,7 @@ Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
                              std::move(input), state, tyloi::cuda::forward_options(mode)); }) {
     const tyloi::models::CausalModel& causal = model;
     auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
-    return Tensor(causal.forward(std::move(input), state, tyloi::cuda::forward_options(mode)));
+    return DenseTensor(causal.forward(std::move(input), state, tyloi::cuda::forward_options(mode)));
   } else
 #endif
   {
@@ -115,7 +115,7 @@ void replay_target(Model& model, State& state, tyloi::cuda::Executor* executor,
 }
 
 template <class Model, class State> struct CudaMtpOps {
-  using Tensor = ::tyloi::Tensor;
+  using DenseTensor = ::tyloi::DenseTensor;
   Model &model;
   State &state;
   tyloi::cuda::Executor* executor;
@@ -138,12 +138,12 @@ template <class Model, class State> struct CudaMtpOps {
       ::tyloi::TensorOptions()
           .device(::tyloi::kCUDA)
           .dtype(::tyloi::kInt64);
-  Tensor input_ids, counts;
-  Tensor known_ids_host, known_ids_device;
-  Tensor early_ple_ids_host;
-  Tensor projected_target_hidden, projected_target_logits;
-  Tensor projected_predictor_hidden, projected_predictor_logits;
-  Tensor projected_target_compact,projected_predictor_compact;
+  DenseTensor input_ids, counts;
+  DenseTensor known_ids_host, known_ids_device;
+  DenseTensor early_ple_ids_host;
+  DenseTensor projected_target_hidden, projected_target_logits;
+  DenseTensor projected_predictor_hidden, projected_predictor_logits;
+  DenseTensor projected_target_compact,projected_predictor_compact;
   int graph_sampling_reuses=0;
   int32_t projected_predictor_greedy=-1;
   std::vector<int32_t> projected_target_greedy;
@@ -326,25 +326,25 @@ template <class Model, class State> struct CudaMtpOps {
     const auto& parameters=sampler_->params();
     return !sampler_->greedy() && !penalties && parameters.top_k>0 && parameters.top_k<=64;
   }
-  static void add_counts(Tensor counts, const Tensor &ids) {
+  static void add_counts(DenseTensor counts, const DenseTensor &ids) {
     sample_token_counts_add_cuda(counts, ids);
   }
-  static bool defined(const Tensor &value) { return value.defined(); }
-  static int64_t size(const Tensor &value, int axis) {
+  static bool defined(const DenseTensor &value) { return value.defined(); }
+  static int64_t size(const DenseTensor &value, int axis) {
     return value.size(axis);
   }
-  static int rank(const Tensor &value) { return value.dim(); }
-  static Tensor clone(const Tensor &value) {
+  static int rank(const DenseTensor &value) { return value.dim(); }
+  static DenseTensor clone(const DenseTensor &value) {
     return value.is_cuda()?value.clone():value.to(::tyloi::kCUDA);
   }
-  static Tensor slice(const Tensor &value, int axis, int64_t offset,
+  static DenseTensor slice(const DenseTensor &value, int axis, int64_t offset,
                       int64_t length) {
     return value.narrow(axis, offset, length).contiguous();
   }
-  static Tensor reshape(Tensor value, std::initializer_list<int64_t> shape) {
+  static DenseTensor reshape(DenseTensor value, std::initializer_list<int64_t> shape) {
     return value.reshape(shape);
   }
-  static Tensor concatenate(const std::vector<Tensor> &values, int axis) {
+  static DenseTensor concatenate(const std::vector<DenseTensor> &values, int axis) {
     if(std::any_of(values.begin(),values.end(),[](const auto& value){return !value.is_cuda();})) {
       auto host=values;
       for(auto& value:host)value=value.to(::tyloi::kCPU);
@@ -352,7 +352,7 @@ template <class Model, class State> struct CudaMtpOps {
     }
     return ::tyloi::cuda::cat(values, axis).contiguous();
   }
-  Tensor target_forward(Tensor ids, Tensor *raw = nullptr,
+  DenseTensor target_forward(DenseTensor ids, DenseTensor *raw = nullptr,
                         int64_t confirmed = 0) {
     projected_target_hidden = {}; projected_target_logits = {};
     projected_target_compact={};
@@ -367,7 +367,7 @@ template <class Model, class State> struct CudaMtpOps {
     };
     if(auto result=mtp_target_forward(model,*this,ids,raw,confirmed,transfer_before,finish_profile))
       return std::move(*result);
-    Tensor hidden;
+    DenseTensor hidden;
     if constexpr (has_forward<Model, State>) {
       tyloi::cuda::Input input;
       input.ids = std::move(ids);
@@ -382,12 +382,12 @@ template <class Model, class State> struct CudaMtpOps {
     finish_profile();
     return hidden;
   }
-  Tensor target_suffix(Tensor ids, Tensor *raw) {
+  DenseTensor target_suffix(DenseTensor ids, DenseTensor *raw) {
     if constexpr (requires(Model& value) { value.supports_suffix_speculation(); }) {
       TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation(),
                               "model does not support speculative suffix forwarding");
     }
-    if constexpr (requires(Model& value, Tensor value_ids, Tensor* value_raw) {
+    if constexpr (requires(Model& value, DenseTensor value_ids, DenseTensor* value_raw) {
                     value.hidden_forward_speculative_suffix(std::move(value_ids), value_raw);
                   }) {
       projected_target_hidden = {}; projected_target_logits = {};
@@ -407,10 +407,10 @@ template <class Model, class State> struct CudaMtpOps {
     }
   }
   struct PrefillResult {
-    Tensor hidden, raw;
+    DenseTensor hidden, raw;
     double elapsed;
   };
-  double blockwise_prompt_context(Tensor hidden,int64_t position,bool seed) {
+  double blockwise_prompt_context(DenseTensor hidden,int64_t position,bool seed) {
     PrefillCudaTimer timer;
     if(seed)mtp.seed_target_context(std::move(hidden),position);
     else {
@@ -428,7 +428,7 @@ template <class Model, class State> struct CudaMtpOps {
       TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
       prefill_finished=true;
     };
-    Tensor raw;
+    DenseTensor raw;
     auto ids = input_ids.narrow(1, chunk.offset, chunk.count).contiguous();
     tyloi::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
     if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
@@ -436,12 +436,12 @@ template <class Model, class State> struct CudaMtpOps {
     tyloi::cuda::WeightLoan workspace(weights.moe);
     const bool host_history=host_prompt_history(chunk.count);
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
-    Tensor hidden;
+    DenseTensor hidden;
     if (transformed_prompt) {
-      auto embeddings = Tensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
+      auto embeddings = DenseTensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
                             .contiguous();
       auto positions = prepared->positions.defined()
-                           ? MfqOptional<Tensor>(Tensor(prepared->positions).narrow(
+                           ? MfqOptional<DenseTensor>(DenseTensor(prepared->positions).narrow(
                                  -1, chunk.offset, chunk.count).contiguous())
                            : mfq_nullopt;
       if constexpr (has_forward<Model, State>) {
@@ -470,13 +470,13 @@ template <class Model, class State> struct CudaMtpOps {
     }
     return {std::move(hidden), std::move(raw), timer.elapsed_ms()};
   }
-  Tensor ids_for(std::vector<int64_t> tokens) {
+  DenseTensor ids_for(std::vector<int64_t> tokens) {
     known_ids_host = ::tyloi::cuda::tensor(tokens, options.device(::tyloi::kCPU))
         .reshape({1, -1}).contiguous();
     known_ids_device = known_ids_host.to(::tyloi::kCUDA);
     return known_ids_device;
   }
-  Tensor decode_positions(int64_t cache_start, int64_t tokens) {
+  DenseTensor decode_positions(int64_t cache_start, int64_t tokens) {
     TYLOINFER_RUNTIME_CHECK(tokens > 0, "CUDA MTP position span must be positive");
     const int64_t logical_start =
         cache_start +
@@ -490,7 +490,7 @@ template <class Model, class State> struct CudaMtpOps {
                ? result.reshape({1, tokens}).expand({3, tokens}).contiguous()
                : result;
   }
-  MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
+  MtpStep predictor_step(DenseTensor hidden, DenseTensor ids, DenseTensor positions) {
     if(auto result=mtp_predictor_step(model,*this,hidden,ids,positions))
       return std::move(*result);
     auto result=positions.defined()
@@ -504,10 +504,10 @@ template <class Model, class State> struct CudaMtpOps {
     mtp_predictor_compact(model,*this,result);
     projected_predictor_greedy = result.greedy_token;
     projected_predictor_hidden = result.sample_logits.defined()
-        ? result.sample_hidden.narrow(1, result.sample_hidden.size(1)-1, 1).contiguous() : Tensor{};
+        ? result.sample_hidden.narrow(1, result.sample_hidden.size(1)-1, 1).contiguous() : DenseTensor{};
     return result;
   }
-  void predictor_history_step(Tensor hidden, Tensor ids, Tensor positions,bool scalar_chain=false) {
+  void predictor_history_step(DenseTensor hidden, DenseTensor ids, DenseTensor positions,bool scalar_chain=false) {
     if(mtp_predictor_history_step(model,*this,hidden,ids,positions,scalar_chain))return;
     (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
   }
@@ -528,7 +528,7 @@ template <class Model, class State> struct CudaMtpOps {
     // Returning the expert loan is TTFT maintenance, not prompt computation.
     return 0;
   }
-  double predictor_prefill(Tensor hidden, Tensor ids, Tensor positions) {
+  double predictor_prefill(DenseTensor hidden, DenseTensor ids, DenseTensor positions) {
     mtp_predictor_prefill_begin(model,*this,ids);
     PrefillCudaTimer timer;
     bool prefill_finished=false;
@@ -538,7 +538,7 @@ template <class Model, class State> struct CudaMtpOps {
       TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
     return timer.elapsed_ms();
   }
-  int32_t sample_normal(Tensor logits, Tensor token_counts) {
+  int32_t sample_normal(DenseTensor logits, DenseTensor token_counts) {
     if(sampler().greedy() && !penalties) {
       if(projected_predictor_greedy>=0 && projected_predictor_logits.defined() &&
           logits.data_ptr()==projected_predictor_logits.data_ptr() && logits.numel()==projected_predictor_logits.numel())
@@ -553,7 +553,7 @@ template <class Model, class State> struct CudaMtpOps {
         tyloi::engine::sample_logits(sampler(), std::move(logits), token_counts)
             .template item<int64_t>());
   }
-  std::vector<int32_t> greedy_tokens(Tensor logits) {
+  std::vector<int32_t> greedy_tokens(DenseTensor logits) {
     TYLOINFER_RUNTIME_CHECK(!penalties && sampler().greedy() && logits.dim() == 2,
                       "batched greedy MTP sampling geometry is invalid");
     if(!projected_target_greedy.empty() && projected_target_logits.defined() &&
@@ -563,7 +563,7 @@ template <class Model, class State> struct CudaMtpOps {
     const auto* tokens = host.template data_ptr<int64_t>();
     return std::vector<int32_t>(tokens, tokens + host.numel());
   }
-  int32_t sample_constrained(Tensor logits, Tensor token_counts,
+  int32_t sample_constrained(DenseTensor logits, DenseTensor token_counts,
                              const MfqTokenConstraintPtr &constraint) {
     if(!constraint && sampler().greedy() && !penalties) return sample_normal(logits,token_counts);
     if (penalties)
@@ -575,7 +575,7 @@ template <class Model, class State> struct CudaMtpOps {
                                  sampler_constraint)
             .template item<int64_t>());
   }
-  std::vector<float> probabilities(Tensor logits, Tensor token_counts,
+  std::vector<float> probabilities(DenseTensor logits, DenseTensor token_counts,
                                    const MfqSamplingParams &parameters) {
     logits = logits.contiguous().reshape({1, -1});
     if (penalties) {
@@ -586,8 +586,8 @@ template <class Model, class State> struct CudaMtpOps {
     }
     return tyloi::cuda::SamplingOps::probabilities(std::move(logits), parameters);
   }
-  Tensor captured_compact(const Tensor& logits,const MfqSamplingParams& parameters) {
-    for(const auto& pair:std::array<std::pair<Tensor,Tensor>,2>{{
+  DenseTensor captured_compact(const DenseTensor& logits,const MfqSamplingParams& parameters) {
+    for(const auto& pair:std::array<std::pair<DenseTensor,DenseTensor>,2>{{
         {projected_predictor_logits,projected_predictor_compact},{projected_target_logits,projected_target_compact}}})
       if(pair.first.defined() && pair.second.defined() && pair.first.data_ptr()==logits.data_ptr() &&
           pair.first.numel()==logits.numel() && pair.second.size(0)==logits.size(0)) {
@@ -613,7 +613,7 @@ template <class Model, class State> struct CudaMtpOps {
     return {};
   }
   tyloi::engine::mtp::CompactDistribution
-  compact_probabilities(Tensor logits, Tensor token_counts,
+  compact_probabilities(DenseTensor logits, DenseTensor token_counts,
                         const MfqSamplingParams &parameters) {
     TYLOINFER_RUNTIME_CHECK(parameters.top_k > 0 && parameters.top_k <= 64 &&
                           parameters.temperature > 0.0,
@@ -630,7 +630,7 @@ template <class Model, class State> struct CudaMtpOps {
     return tyloi::cuda::SamplingOps::compact_probabilities(std::move(logits), parameters);
   }
   std::vector<tyloi::engine::mtp::CompactDistribution>
-  compact_probability_rows(Tensor logits, const MfqSamplingParams &parameters) {
+  compact_probability_rows(DenseTensor logits, const MfqSamplingParams &parameters) {
     TYLOINFER_RUNTIME_CHECK(!penalties && logits.dim() == 2 && parameters.top_k > 0 &&
                           parameters.top_k <= 64 &&
                           parameters.temperature > 0.0,
@@ -639,14 +639,14 @@ template <class Model, class State> struct CudaMtpOps {
     if(auto host=captured_compact(logits,parameters);host.defined())return tyloi::cuda::SamplingOps::compact_rows_from_host(host,parameters);
     return tyloi::cuda::SamplingOps::compact_probability_rows(std::move(logits), parameters);
   }
-  Tensor logits_for(Tensor normalized) {
-    const auto matches = [&](const Tensor& hidden) {
+  DenseTensor logits_for(DenseTensor normalized) {
+    const auto matches = [&](const DenseTensor& hidden) {
         return hidden.defined() && hidden.data_ptr()==normalized.data_ptr() && hidden.sizes()==normalized.sizes();
     };
     if(matches(projected_predictor_hidden)) return projected_predictor_logits;
     if(matches(projected_target_hidden)) return projected_target_logits;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if constexpr (requires(Model& value, Tensor value_hidden) {
+    if constexpr (requires(Model& value, DenseTensor value_hidden) {
                     static_cast<const tyloi::models::CausalModel&>(value).logits(std::move(value_hidden), true);
                   }) {
       auto input = (mtp.preserve_output_dtype()
@@ -655,10 +655,10 @@ template <class Model, class State> struct CudaMtpOps {
                        .contiguous();
       const tyloi::models::CausalModel& causal = model;
       auto scope = tyloi::cuda::Executor::current().enter(tyloi::cuda::Ffn::Mode{});
-      return Tensor(causal.logits(std::move(input), true));
+      return DenseTensor(causal.logits(std::move(input), true));
     } else
 #endif
-    if constexpr (requires(Model& value, tyloi::cuda::Executor& value_executor, Tensor value_hidden) {
+    if constexpr (requires(Model& value, tyloi::cuda::Executor& value_executor, DenseTensor value_hidden) {
                     logits(value, value_executor, std::move(value_hidden), true);
                   }) {
       TYLOINFER_RUNTIME_CHECK(executor != nullptr,

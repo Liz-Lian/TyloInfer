@@ -6,10 +6,10 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
-tyloi::Tensor tyloi::cuda::ops::rms_norm(tyloi::Tensor input, const tyloi::Tensor& weight,
+tyloi::DenseTensor tyloi::cuda::ops::rms_norm(tyloi::DenseTensor input, const tyloi::DenseTensor& weight,
                                      double eps, double offset, tyloi::ScalarType output_type) {
     MfqCudaGuard guard(input.device().index);
-    ::tyloi::Tensor value(input);
+    ::tyloi::DenseTensor value(input);
     auto flat = value.reshape({-1, value.size(-1)});
     if (output_type == tyloi::ScalarType::bfloat16)
         return qwen_rms_norm_bf16(value.is_cuda() && Executor::current().attention_options().fused_norm,
@@ -23,9 +23,9 @@ tyloi::Tensor tyloi::cuda::ops::rms_norm(tyloi::Tensor input, const tyloi::Tenso
         normalized = normalized.to(::tyloi::kFloat16).contiguous();
     return normalized.reshape(value.sizes());
 }
-std::array<tyloi::Tensor, 3> tyloi::cuda::ops::qkv_norm(std::array<tyloi::Tensor, 3> values,
-    std::array<tyloi::Tensor, 3> weights, double eps, double offset, tyloi::ScalarType output_type) {
-    using T = ::tyloi::Tensor;
+std::array<tyloi::DenseTensor, 3> tyloi::cuda::ops::qkv_norm(std::array<tyloi::DenseTensor, 3> values,
+    std::array<tyloi::DenseTensor, 3> weights, double eps, double offset, tyloi::ScalarType output_type) {
+    using T = ::tyloi::DenseTensor;
     T q(values[0]), k(values[1]), v(values[2]);
     T qw(weights[0]), kw(weights[1]), vw(weights[2]);
     const bool bf16 = output_type == tyloi::ScalarType::bfloat16;
@@ -68,11 +68,11 @@ std::array<tyloi::Tensor, 3> tyloi::cuda::ops::qkv_norm(std::array<tyloi::Tensor
     return {q, k, v};
 }
 std::optional<tyloi::ops::ResidualNorms> tyloi::cuda::ops::residual_norms(
-    tyloi::Tensor residual, tyloi::Tensor attention, const tyloi::Tensor& attention_weight,
-    const tyloi::Tensor& dense_weight, const tyloi::Tensor& router_weight,
-    const tyloi::Tensor& expert_weight, double eps) {
+    tyloi::DenseTensor residual, tyloi::DenseTensor attention, const tyloi::DenseTensor& attention_weight,
+    const tyloi::DenseTensor& dense_weight, const tyloi::DenseTensor& router_weight,
+    const tyloi::DenseTensor& expert_weight, double eps) {
     if (!Executor::current().mode().gemma4_fused_norms) return std::nullopt;
-    for (const tyloi::Tensor* value : std::initializer_list<const tyloi::Tensor*>{
+    for (const tyloi::DenseTensor* value : std::initializer_list<const tyloi::DenseTensor*>{
              &attention, &attention_weight, &dense_weight, &router_weight, &expert_weight}) {
         if (!residual.defined()) throw std::invalid_argument("undefined tensor");
         if (!residual.device().is_cpu() && !residual.device().is_cuda())
@@ -83,7 +83,7 @@ std::optional<tyloi::ops::ResidualNorms> tyloi::cuda::ops::residual_norms(
         if (residual.device() != value->device()) throw std::invalid_argument("tensor devices do not match");
     }
     MfqCudaGuard guard(residual.device().index);
-    using T = ::tyloi::Tensor;
+    using T = ::tyloi::DenseTensor;
     auto values = tyloi::ops::measure("gemma.attn_residual_pre_norms", residual.device(), [&] {
         auto flat_residual = T(residual).reshape({-1, residual.size(-1)});
         auto flat_attention = T(attention).reshape(flat_residual.sizes());
@@ -93,19 +93,19 @@ std::optional<tyloi::ops::ResidualNorms> tyloi::cuda::ops::residual_norms(
     });
     return tyloi::ops::ResidualNorms{values.at(0), values.at(1), values.at(2), values.at(3)};
 }
-tyloi::Tensor tyloi::cuda::ops::merge_norms(
-    tyloi::Tensor dense, tyloi::Tensor experts, tyloi::Tensor residual,
-    const tyloi::Tensor& dense_weight, const tyloi::Tensor& expert_weight,
-    const tyloi::Tensor& output_weight, const tyloi::Tensor& scale, double eps) {
+tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
+    tyloi::DenseTensor dense, tyloi::DenseTensor experts, tyloi::DenseTensor residual,
+    const tyloi::DenseTensor& dense_weight, const tyloi::DenseTensor& expert_weight,
+    const tyloi::DenseTensor& output_weight, const tyloi::DenseTensor& scale, double eps) {
     MfqCudaGuard guard(dense.device().index);
-    using T = ::tyloi::Tensor;
+    using T = ::tyloi::DenseTensor;
     return gemma4_ffn_merge_f16_cuda(T(dense), T(experts), T(residual), T(dense_weight),
                                     T(expert_weight), T(output_weight), T(scale), eps);
 }
 #endif
 
-::tyloi::Tensor qwen_rms_norm(::tyloi::Tensor x,
-                                         ::tyloi::Tensor weight, double eps,
+::tyloi::DenseTensor qwen_rms_norm(::tyloi::DenseTensor x,
+                                         ::tyloi::DenseTensor weight, double eps,
                                          double weight_offset) {
     if (!x.is_cuda()) {
         auto xf = x.contiguous().to(::tyloi::kFloat32);
@@ -118,9 +118,9 @@ tyloi::Tensor tyloi::cuda::ops::merge_norms(
     return rms_norm_offset_cuda(x, weight, eps, weight_offset);
 }
 
-::tyloi::Tensor qwen_rms_norm_bf16(bool fused,
-                                              ::tyloi::Tensor x,
-                                              ::tyloi::Tensor weight, double eps,
+::tyloi::DenseTensor qwen_rms_norm_bf16(bool fused,
+                                              ::tyloi::DenseTensor x,
+                                              ::tyloi::DenseTensor weight, double eps,
                                               double weight_offset) {
     auto input = x.contiguous().to(::tyloi::kBFloat16);
     if (input.is_cuda() && fused) {

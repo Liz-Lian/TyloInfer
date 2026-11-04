@@ -34,45 +34,45 @@ struct CausalResources {
     tyloi::models::CausalLmMetadata metadata;
     CudaExecutionContext *execution = nullptr;
     std::function<void()> restore_decode_workspace;
-    template<class Model> std::optional<::tyloi::Tensor>
-    adapter_graph_logits(Model&,::tyloi::Tensor,int) {return {};}
+    template<class Model> std::optional<::tyloi::DenseTensor>
+    adapter_graph_logits(Model&,::tyloi::DenseTensor,int) {return {};}
 
     void adapter_validate_load_options() const;
     bool adapter_uses_common_rope() const noexcept;
     void adapter_configure_rope(RopeCache &rope, ::tyloi::Device device) const;
     void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
-                                  ::tyloi::Tensor &output_norm);
+                                  ::tyloi::DenseTensor &output_norm);
     void adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights);
     bool adapter_supports_dense_cpu_offload() const noexcept;
 
-    ::tyloi::Tensor adapter_embed(::tyloi::Tensor output) const;
+    ::tyloi::DenseTensor adapter_embed(::tyloi::DenseTensor output) const;
     void adapter_reset(int64_t batch);
     bool adapter_requires_batch_reset(int64_t batch) const noexcept;
 
-    ::tyloi::Tensor adapter_prepare_hidden(::tyloi::Tensor hidden,
+    ::tyloi::DenseTensor adapter_prepare_hidden(::tyloi::DenseTensor hidden,
                                                       int64_t batch, int64_t tokens) const;
     void adapter_begin_forward(bool capture_raw_hidden);
 
-    ::tyloi::Tensor
-    adapter_block_positions(const ::tyloi::Tensor &full_positions,
-                            const ::tyloi::Tensor &local_positions, int device) const;
+    ::tyloi::DenseTensor
+    adapter_block_positions(const ::tyloi::DenseTensor &full_positions,
+                            const ::tyloi::DenseTensor &local_positions, int device) const;
 
-    void adapter_finish_forward(const ::tyloi::Tensor &full_positions, int64_t batch,
+    void adapter_finish_forward(const ::tyloi::DenseTensor &full_positions, int64_t batch,
                                 int64_t tokens);
 
-    ::tyloi::Tensor
-    adapter_finalize_hidden(::tyloi::Tensor hidden,
-                            const ::tyloi::Tensor &output_norm, int64_t batch,
+    ::tyloi::DenseTensor
+    adapter_finalize_hidden(::tyloi::DenseTensor hidden,
+                            const ::tyloi::DenseTensor &output_norm, int64_t batch,
                             int64_t tokens) const;
-    ::tyloi::Tensor
-    adapter_raw_hidden(const ::tyloi::Tensor &hidden,
-                       const ::tyloi::Tensor &finalized) const;
-    ::tyloi::Tensor adapter_logits(const QuantLinear &lm_head,
-                                              ::tyloi::Tensor hidden) const;
-    ::tyloi::Tensor adapter_last_logits(const QuantLinear &lm_head,
-                                                   ::tyloi::Tensor hidden) const;
-    ::tyloi::Tensor adapter_next_token(const QuantLinear &lm_head,
-                                                  ::tyloi::Tensor hidden) const;
+    ::tyloi::DenseTensor
+    adapter_raw_hidden(const ::tyloi::DenseTensor &hidden,
+                       const ::tyloi::DenseTensor &finalized) const;
+    ::tyloi::DenseTensor adapter_logits(const QuantLinear &lm_head,
+                                              ::tyloi::DenseTensor hidden) const;
+    ::tyloi::DenseTensor adapter_last_logits(const QuantLinear &lm_head,
+                                                   ::tyloi::DenseTensor hidden) const;
+    ::tyloi::DenseTensor adapter_next_token(const QuantLinear &lm_head,
+                                                  ::tyloi::DenseTensor hidden) const;
 
     bool adapter_supports_prepared_prompt() const noexcept;
 
@@ -102,7 +102,7 @@ struct CudaForwardPlan {
 };
 
 template <typename Model> struct CudaCausalOps : Model {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     using ForwardPlan = CudaForwardPlan;
     using CausalModel = CausalLm<Model>;
     using SessionState = TextSessionState;
@@ -116,10 +116,10 @@ template <typename Model> struct CudaCausalOps : Model {
     std::unordered_map<int, RopeCache> device_ropes;
     QuantLinear embed;
     std::vector<std::unique_ptr<Block>> blocks;
-    ::tyloi::Tensor output_norm;
+    ::tyloi::DenseTensor output_norm;
     QuantLinear lm_head;
-    std::vector<Tensor*> graph_state() {
-        std::vector<Tensor*> warmup_states;
+    std::vector<DenseTensor*> graph_state() {
+        std::vector<DenseTensor*> warmup_states;
         for (const auto& block : blocks) {
             for (auto* state : block->graph_warmup_state()) {
                 warmup_states.push_back(state);
@@ -127,7 +127,7 @@ template <typename Model> struct CudaCausalOps : Model {
         }
         return warmup_states;
     }
-    std::optional<Tensor> graph_logits(CausalModel& model,Tensor ids,int kind) {
+    std::optional<DenseTensor> graph_logits(CausalModel& model,DenseTensor ids,int kind) {
         return static_cast<Model&>(model).adapter_graph_logits(model,std::move(ids),kind);
     }
 
@@ -137,11 +137,11 @@ template <typename Model> struct CudaCausalOps : Model {
     static auto block_scope(const std::unique_ptr<Block> &block) {
         return MfqCudaGuard(block->cuda_device);
     }
-    static bool defined(const Tensor &value) { return value.defined(); }
-    static Tensor position_axes(Tensor value, int64_t start, int64_t count) {
+    static bool defined(const DenseTensor &value) { return value.defined(); }
+    static DenseTensor position_axes(DenseTensor value, int64_t start, int64_t count) {
         return value.narrow(0, start, count);
     }
-    static Tensor concat_positions(Tensor first, Tensor second) {
+    static DenseTensor concat_positions(DenseTensor first, DenseTensor second) {
         // Generated text advances all semantic axes equally after an image.
         if (first.dim() > 1 && second.dim() == 1) {
             auto shape = first.sizes().vec();
@@ -152,72 +152,72 @@ template <typename Model> struct CudaCausalOps : Model {
         }
         return ::tyloi::cuda::cat({first, second}, -1);
     }
-    static int64_t rank(const Tensor &value) { return value.dim(); }
-    static int64_t size(const Tensor &value, int axis) { return value.size(axis); }
-    static Tensor batch_ids(Tensor ids) { return ids.unsqueeze(0); }
-    Tensor device_ids(Tensor ids) const {
+    static int64_t rank(const DenseTensor &value) { return value.dim(); }
+    static int64_t size(const DenseTensor &value, int axis) { return value.size(axis); }
+    static DenseTensor batch_ids(DenseTensor ids) { return ids.unsqueeze(0); }
+    DenseTensor device_ids(DenseTensor ids) const {
         return this->execution->executor().collectives().copy(ids.to(::tyloi::kInt64), this->execution->config.layer_placement.primary_device())
             .contiguous();
     }
-    Tensor embed_tokens(Tensor ids) const {
+    DenseTensor embed_tokens(DenseTensor ids) const {
         return this->execution->executor().profiler().measure(
             "model.embed", [&] { return this->adapter_embed(quant_embedding_lookup(embed, ids)); });
     }
-    Tensor sequence_lengths(int64_t batch, int64_t end) const {
+    DenseTensor sequence_lengths(int64_t batch, int64_t end) const {
         auto scope = execution_scope();
         return ::tyloi::cuda::full({batch}, end,
                                         ::tyloi::TensorOptions()
                                             .dtype(::tyloi::kInt64)
                                             .device(::tyloi::kCUDA));
     }
-    static Tensor last_hidden(Tensor hidden) { return hidden.index({Slice(), -1, Slice()}); }
-    static Tensor softcap(Tensor logits, double cap) {
+    static DenseTensor last_hidden(DenseTensor hidden) { return hidden.index({Slice(), -1, Slice()}); }
+    static DenseTensor softcap(DenseTensor logits, double cap) {
         return ::tyloi::cuda::tanh(logits / cap) * cap;
     }
-    Tensor scale_hidden(Tensor hidden, double scale) const {
+    DenseTensor scale_hidden(DenseTensor hidden, double scale) const {
         return this->execution->executor().profiler().measure("model.embed_scale",
                                                  [&] { return hidden * scale; });
     }
-    static Tensor repeat_hidden(Tensor hidden, int64_t streams) {
+    static DenseTensor repeat_hidden(DenseTensor hidden, int64_t streams) {
         return hidden.to(::tyloi::kFloat16).repeat({1, 1, streams});
     }
-    static Tensor expand_hidden(Tensor hidden, int64_t batch, int64_t tokens, int64_t streams) {
+    static DenseTensor expand_hidden(DenseTensor hidden, int64_t batch, int64_t tokens, int64_t streams) {
         const auto width = hidden.size(-1);
         return hidden.to(::tyloi::kFloat16)
             .unsqueeze(2)
             .expand({batch, tokens, streams, width})
             .contiguous();
     }
-    struct ForwardOps : tyloi::models::CausalForwardInputs<Tensor, ForwardPlan> {
-        using Inputs = tyloi::models::CausalForwardInputs<Tensor, ForwardPlan>;
+    struct ForwardOps : tyloi::models::CausalForwardInputs<DenseTensor, ForwardPlan> {
+        using Inputs = tyloi::models::CausalForwardInputs<DenseTensor, ForwardPlan>;
         CausalModel &model;
         ForwardOps(CausalModel &model, Inputs input)
             : Inputs(std::move(input)), model(model),
               primary(model.execution->config.layer_placement.primary_device()) {}
         int primary;
-        Tensor pos, full_positions, cache_positions, cpu_ids, cpu_pos, cpu_cache_positions;
-        MfqOptional<Tensor> effective_attention_mask, cpu_attention_mask, cpu_seq_len;
+        DenseTensor pos, full_positions, cache_positions, cpu_ids, cpu_pos, cpu_cache_positions;
+        MfqOptional<DenseTensor> effective_attention_mask, cpu_attention_mask, cpu_seq_len;
 
-        static int64_t size(const Tensor &value, int axis) { return value.size(axis); }
-        static int64_t rank(const Tensor &value) { return value.dim(); }
-        static int64_t elements(const Tensor &value) { return value.numel(); }
+        static int64_t size(const DenseTensor &value, int axis) { return value.size(axis); }
+        static int64_t rank(const DenseTensor &value) { return value.dim(); }
+        static int64_t elements(const DenseTensor &value) { return value.numel(); }
 
-        Tensor device_ids(Tensor value) {
+        DenseTensor device_ids(DenseTensor value) {
             return model.execution->executor().collectives().copy(value.to(::tyloi::kInt64), primary)
                 .contiguous();
         }
         void prepare_inputs() { ids = device_ids(ids); }
         bool has_mrope() const { return model.rope.sections.numel() > 0; }
-        Tensor position_range(int64_t start, int64_t tokens) {
+        DenseTensor position_range(int64_t start, int64_t tokens) {
             return ::tyloi::cuda::arange(start, start + tokens,
                                               ::tyloi::TensorOptions()
                                                   .device(::tyloi::kCUDA)
                                                   .dtype(::tyloi::kInt64));
         }
-        static Tensor offset_positions(Tensor positions, int64_t delta) {
+        static DenseTensor offset_positions(DenseTensor positions, int64_t delta) {
             return positions + delta;
         }
-        Tensor prepare_hidden(int64_t B, int64_t T) {
+        DenseTensor prepare_hidden(int64_t B, int64_t T) {
             if(model.execution->config.moe_pipeline) {
                 cpu_ids=ids.to(::tyloi::kCPU,::tyloi::kInt64).contiguous();
                 for(const auto& block:model.blocks)block->prefetch_token_ids(cpu_ids);
@@ -243,7 +243,7 @@ template <typename Model> struct CudaCausalOps : Model {
                     .contiguous(),
                 B, T);
         }
-        Tensor layer(std::unique_ptr<Block> &b, Tensor x) {
+        DenseTensor layer(std::unique_ptr<Block> &b, DenseTensor x) {
             MfqCudaGuard block_guard(b->cuda_device);
             auto local_ids =
                 b->cpu_offloaded
@@ -253,7 +253,7 @@ template <typename Model> struct CudaCausalOps : Model {
                 b->cpu_offloaded
                     ? cpu_pos
                     : model.execution->executor().collectives().copy(pos, b->cuda_device);
-            MfqOptional<::tyloi::Tensor> local_cache_positions = mfq_nullopt;
+            MfqOptional<::tyloi::DenseTensor> local_cache_positions = mfq_nullopt;
             // Grid-MRoPE semantic coordinates never double as physical KV
             // slots, during either prepared prefill or delta-adjusted decode.
             if (model.adapter_pass_cache_positions(model.rope.sections.numel() > 0,
@@ -263,14 +263,14 @@ template <typename Model> struct CudaCausalOps : Model {
                         ? cpu_cache_positions
                         : model.execution->executor().collectives().copy(cache_positions, b->cuda_device);
             }
-            MfqOptional<::tyloi::Tensor> local_seq_len = mfq_nullopt;
+            MfqOptional<::tyloi::DenseTensor> local_seq_len = mfq_nullopt;
             if (seq_len.has_value()) {
                 local_seq_len =
                     b->cpu_offloaded
                         ? cpu_seq_len.value()
                         : model.execution->executor().collectives().copy(seq_len.value(), b->cuda_device);
             }
-            MfqOptional<::tyloi::Tensor> local_attention_mask = mfq_nullopt;
+            MfqOptional<::tyloi::DenseTensor> local_attention_mask = mfq_nullopt;
             if (effective_attention_mask.has_value()) {
                 local_attention_mask =
                     b->cpu_offloaded
@@ -304,14 +304,14 @@ template <typename Model> struct CudaCausalOps : Model {
             x = b->forward_context(*model.execution, std::move(x), context, active_rope);
             return x;
         }
-        void trace(const Tensor &x) {
+        void trace(const DenseTensor &x) {
             if (block_trace)
                 block_trace->push_back(
                     model.execution->executor().collectives().copy(x, primary)
                         .to(::tyloi::kFloat32)
                         .clone());
         }
-        Tensor finish(Tensor x, int64_t B, int64_t T) {
+        DenseTensor finish(DenseTensor x, int64_t B, int64_t T) {
             x = model.execution->executor().collectives().copy(x, primary);
             auto finalized = model.finalize_hidden(x, B, T);
             if (raw_hidden)

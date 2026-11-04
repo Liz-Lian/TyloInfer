@@ -22,11 +22,11 @@ Header header(CudaPagedReader& reader) {
         throw CudaSessionStateError("invalid DeepSeek-V4.1 prefix header");
     return result;
 }
-void optional(CudaPagedWriter& writer,const ::tyloi::Tensor& value) {
+void optional(CudaPagedWriter& writer,const ::tyloi::DenseTensor& value) {
     writer.scalar<uint32_t>(value.defined()?1:0);
     if(value.defined())writer.tensor(value);
 }
-::tyloi::Tensor optional(CudaPagedReader& reader,int expected_device) {
+::tyloi::DenseTensor optional(CudaPagedReader& reader,int expected_device) {
     const auto present=reader.scalar<uint32_t>("tensor presence");
     if(present>1)throw CudaSessionStateError("invalid DeepSeek-V4.1 tensor presence");
     if(!present)return {};
@@ -34,7 +34,7 @@ void optional(CudaPagedWriter& writer,const ::tyloi::Tensor& value) {
     if(device!=expected_device)throw CudaSessionStateError("inconsistent DeepSeek-V4.1 prefix device");
     return value;
 }
-bool shape(const ::tyloi::Tensor& value,int64_t rows,int64_t width,::tyloi::ScalarType dtype) {
+bool shape(const ::tyloi::DenseTensor& value,int64_t rows,int64_t width,::tyloi::ScalarType dtype) {
     return value.defined() && value.dim()==3 && value.size(0)==1 &&
         value.size(1)==rows && value.size(2)==width && value.scalar_type()==dtype;
 }
@@ -71,14 +71,14 @@ CudaPagedPayload encode_block(
             throw std::runtime_error("inconsistent DeepSeek-V4.1 compression checkpoint");
         writer.scalar<int64_t>(ratio);writer.scalar<int64_t>(kv_width);writer.scalar<int64_t>(index_width);
         writer.scalar<int32_t>(layer.local_kv.get_device());
-        const auto range=[&](const ::tyloi::Tensor& value) {
+        const auto range=[&](const ::tyloi::DenseTensor& value) {
             return ratio && end/ratio>start/ratio
-                ?value.narrow(1,int64_t(start)/ratio,int64_t(end/ratio-start/ratio)): ::tyloi::Tensor{};
+                ?value.narrow(1,int64_t(start)/ratio,int64_t(end/ratio-start/ratio)): ::tyloi::DenseTensor{};
         };
         optional(writer,range(layer.compressed_kv));optional(writer,range(layer.index_k));
-        optional(writer,exact?layer.local_kv: ::tyloi::Tensor{});
-        optional(writer,exact?layer.partial_kv: ::tyloi::Tensor{});
-        optional(writer,exact?layer.partial_score: ::tyloi::Tensor{});
+        optional(writer,exact?layer.local_kv: ::tyloi::DenseTensor{});
+        optional(writer,exact?layer.partial_kv: ::tyloi::DenseTensor{});
+        optional(writer,exact?layer.partial_score: ::tyloi::DenseTensor{});
     }
     if(exact) {
         const auto& context=snapshot->engram->context;
@@ -116,10 +116,10 @@ TextSessionState decode_session(
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
     std::vector<Layout> layouts;
     std::vector<tyloi::models::deepseek_v41::BlockSnapshot> layers;
-    std::vector<std::array<std::vector<::tyloi::Tensor>,2>> fragments;
+    std::vector<std::array<std::vector<::tyloi::DenseTensor>,2>> fragments;
     auto hash=std::make_shared<tyloi::models::deepseek_v41::EngramHashSnapshot>();
     hash->batch=1;hash->position=state.cache_pos;
-    std::vector<std::pair<::tyloi::Tensor,int>> predictor;
+    std::vector<std::pair<::tyloi::DenseTensor,int>> predictor;
     for(size_t i=0;i<payloads.size();++i) {
         if(!payloads[i])throw CudaSessionStateError("null DeepSeek-V4.1 prefix block");
         CudaPagedReader reader(*payloads[i]);const auto h=header(reader);
@@ -183,7 +183,7 @@ TextSessionState decode_session(
         layer.local_kv=layer.local_kv.to(device);
         if(layout.ratio) {
             layer.compressed_length=state.cache_pos/layout.ratio;layer.partial_length=state.cache_pos%layout.ratio;
-            std::array<::tyloi::Tensor*,2> destination{&layer.compressed_kv,&layer.index_k};
+            std::array<::tyloi::DenseTensor*,2> destination{&layer.compressed_kv,&layer.index_k};
             for(size_t field=0;field<2;++field) {
                 const auto width=field?layout.index_width:layout.kv_width;
                 auto& parts=fragments[j][field];

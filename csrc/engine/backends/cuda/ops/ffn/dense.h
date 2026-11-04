@@ -21,17 +21,17 @@ struct Dense {
 
     Mlp mlp;
     std::optional<Mlp> important;
-    ::tyloi::Tensor norm;
+    ::tyloi::DenseTensor norm;
     double eps, offset;
     bool bf16 = false;
     bool trace = false;
     bool linear = false;
 
-    ::tyloi::Tensor forward(
+    ::tyloi::DenseTensor forward(
         const Projector& project, CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
         Branches& branches, Collectives& collectives, const Projector::Options& parallel,
-        const Options& options, bool serial, ::tyloi::Tensor residual,
-        ::tyloi::Tensor input, Trace* trace_output = nullptr) const;
+        const Options& options, bool serial, ::tyloi::DenseTensor residual,
+        ::tyloi::DenseTensor input, Trace* trace_output = nullptr) const;
 };
 
 } // namespace tyloi::cuda

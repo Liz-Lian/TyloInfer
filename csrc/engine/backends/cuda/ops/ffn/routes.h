@@ -14,7 +14,7 @@ class Collectives;
 
 struct MoeRoutePlan;
 
-MoeRoutePlan build_moe_route_plan(::tyloi::Tensor ids, int n_experts);
+MoeRoutePlan build_moe_route_plan(::tyloi::DenseTensor ids, int n_experts);
 
 const MoeRoutePlan& moe_route_to_device(
     tyloi::cuda::Collectives& collectives,
@@ -22,23 +22,23 @@ const MoeRoutePlan& moe_route_to_device(
     int device);
 int select_nint_prefill_route_tile(
     const MoeRoutePlan& route, int tokens, int routes, int experts);
-const ::tyloi::Tensor& nint_route_tile_bounds(
+const ::tyloi::DenseTensor& nint_route_tile_bounds(
     const MoeRoutePlan& route, int tile_m);
-const ::tyloi::Tensor& nint_route_tile_experts(
+const ::tyloi::DenseTensor& nint_route_tile_experts(
     const MoeRoutePlan& route, int tile_m);
 
 struct MoeRoutePlan {
-    ::tyloi::Tensor ids;
-    ::tyloi::Tensor ids_dst;
-    ::tyloi::Tensor expert_bounds;
-    ::tyloi::Tensor tile_bounds;
-    ::tyloi::Tensor tile_experts;
-    ::tyloi::Tensor mma_tile_bounds;
-    ::tyloi::Tensor mma_tile_experts;
-    ::tyloi::Tensor wide_tile_bounds;
-    ::tyloi::Tensor wide_tile_experts;
-    ::tyloi::Tensor counts;
-    ::tyloi::Tensor cursors;
+    ::tyloi::DenseTensor ids;
+    ::tyloi::DenseTensor ids_dst;
+    ::tyloi::DenseTensor expert_bounds;
+    ::tyloi::DenseTensor tile_bounds;
+    ::tyloi::DenseTensor tile_experts;
+    ::tyloi::DenseTensor mma_tile_bounds;
+    ::tyloi::DenseTensor mma_tile_experts;
+    ::tyloi::DenseTensor wide_tile_bounds;
+    ::tyloi::DenseTensor wide_tile_experts;
+    ::tyloi::DenseTensor counts;
+    ::tyloi::DenseTensor cursors;
     int n_experts = 0;
     int mma_tile_m = 8;
     int wide_tile_m = 8;

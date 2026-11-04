@@ -63,11 +63,11 @@ bool expert_parallel(const Ffn& f) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-void Ffn::prefetch(const Tensor& x, const Mode& mode, bool enabled,
-        MfqOptional<Tensor> input_ids) const {
+void Ffn::prefetch(const DenseTensor& x, const Mode& mode, bool enabled,
+        MfqOptional<DenseTensor> input_ids) const {
 #else
-void Ffn::prefetch(const Tensor& x, Executor& executor, const Mode& mode, bool enabled,
-        MfqOptional<Tensor> input_ids) const {
+void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, bool enabled,
+        MfqOptional<DenseTensor> input_ids) const {
 #endif
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -78,7 +78,7 @@ void Ffn::prefetch(const Tensor& x, Executor& executor, const Mode& mode, bool e
     auto pipeline=f.moe_pipeline.lock();
     if(!enabled || !pipeline ||
             x.dim()<2 || x.numel()/x.size(-1)>32)return;
-    ::tyloi::Tensor ids;
+    ::tyloi::DenseTensor ids;
     // Cover each row's leading candidates without reading low-confidence
     // tails just because the leading experts are already cached.
     constexpr int64_t candidates_per_row=4;
@@ -92,7 +92,7 @@ void Ffn::prefetch(const Tensor& x, Executor& executor, const Mode& mode, bool e
             ::tyloi::cuda::matmul(row,f.moe_router.transpose(0,1)).contiguous();
         ids=moe_topk_cuda(logits,std::min({int64_t(f.moe_top_k),logits.size(-1),candidates_per_row}),f.moe_use_sigmoid,
             f.moe_use_sqrt_softplus,f.moe_normalize,f.moe_delayed_softmax,
-            f.moe_router_bias.defined()?MfqOptional<::tyloi::Tensor>(f.moe_router_bias):mfq_nullopt,
+            f.moe_router_bias.defined()?MfqOptional<::tyloi::DenseTensor>(f.moe_router_bias):mfq_nullopt,
             1e-20,f.moe_router_scale).at(0).to(::tyloi::kInt32).contiguous();
     }
     // Visit each row's highest-ranked candidate before lower ranks, so one
@@ -115,12 +115,12 @@ Mlp dense(const Ffn& f) {
 
 namespace {
 
-Tensor half(Tensor x, CudaProfiler& profiler) {
+DenseTensor half(DenseTensor x, CudaProfiler& profiler) {
     if (x.scalar_type() == ::tyloi::kFloat16) return x;
     return profiler.measure("ffn.input_cast", [&] { return x.to(::tyloi::kFloat16); });
 }
 
-Tensor sharded(const Mlp& mlp, Tensor x, Executor& executor, const Projector& project) {
+DenseTensor sharded(const Mlp& mlp, DenseTensor x, Executor& executor, const Projector& project) {
     auto& profiler = executor.profiler();
     const auto& projection = executor.options().projection;
     return profiler.measure("ffn.tensor_parallel", [&] {
@@ -130,7 +130,7 @@ Tensor sharded(const Mlp& mlp, Tensor x, Executor& executor, const Projector& pr
     });
 }
 
-Tensor local(const Mlp& mlp, Tensor x, Executor& executor, const Projector& project) {
+DenseTensor local(const Mlp& mlp, DenseTensor x, Executor& executor, const Projector& project) {
     const auto& options = executor.options();
     const Mlp::Options mlp_options{options.projection.nvq_fusion,
                                    options.dense.mlp.gelu_fusion,
@@ -144,9 +144,9 @@ bool dense_linear_defined(const QuantLinear& linear) {
 
 } // namespace
 
-Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
+DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& mode_,
                             const Projector& project_, const MoeRoutePlan& route,
-                            Tensor route_weights) const {
+                            DenseTensor route_weights) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto& f = *this;
     auto& stats = executor.routes_;
@@ -154,8 +154,8 @@ Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
     const auto& projection_ = executor.options_.projection;
     const auto& options_ = executor.options_.ffn;
     const size_t shard_count = f.moe_gate_up.expert_parallel_shards.size();
-    std::vector<::tyloi::Tensor> routed_partials(shard_count);
-    std::vector<::tyloi::Tensor> down_partials;
+    std::vector<::tyloi::DenseTensor> routed_partials(shard_count);
+    std::vector<::tyloi::DenseTensor> down_partials;
     const bool collect_output_energy = stats.energy();
     if (collect_output_energy) {
         down_partials.resize(shard_count);
@@ -172,9 +172,9 @@ Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
         auto local_weights = collectives_.copy(route_weights, gate_shard.device);
         const auto &local_route =
             moe_route_to_device(collectives_, route, gate_shard.device);
-        using Tensor = ::tyloi::Tensor;
-        Tensor gate_up_pair;
-        Tensor down_pair;
+        using DenseTensor = ::tyloi::DenseTensor;
+        DenseTensor gate_up_pair;
+        DenseTensor down_pair;
         const double limit = f.swiglu_limit;
         if (limit <= 0.0 && !mode_.materialized &&
             gate_shard.weight->supports_projection_glu_epilogue()) {
@@ -183,7 +183,7 @@ Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
         } else {
             gate_up_pair = project_.run(*gate_shard.weight, local_x, local_route);
             const auto width = gate_up_pair.size(-1) / 2;
-            auto parts = std::array<Tensor, 2>{gate_up_pair.narrow(-1, 0, width),
+            auto parts = std::array<DenseTensor, 2>{gate_up_pair.narrow(-1, 0, width),
                                                gate_up_pair.narrow(-1, width, width)};
             const bool allow_fusion =
                 !mode_.materialized && options_.swiglu_fusion &&
@@ -194,7 +194,7 @@ Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
             } else if (allow_fusion && down_shard.weight->supports_clamped_swiglu()) {
                 down_pair = project_.clamped(*down_shard.weight, gate_up_pair, local_route, limit);
             } else {
-                Tensor hidden;
+                DenseTensor hidden;
                 if (limit <= 0.0) {
                     hidden = moe_swiglu_split_cuda(gate_up_pair);
                 } else {
@@ -211,7 +211,7 @@ Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
         routed_partials[index] = moe_weighted_reduce_cuda(down_pair, local_weights);
     }
     if (stats.enabled()) {
-        ::tyloi::Tensor complete_down;
+        ::tyloi::DenseTensor complete_down;
         if (collect_output_energy) {
             complete_down = collectives_.sum(std::move(down_partials), project_.primary_device(),
             projection_.reduce_to_primary, projection_.fp16_reduce);
@@ -226,10 +226,10 @@ Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
 #endif
 }
 
-Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
-                         const Projector& project_, MfqOptional<Tensor> input_ids,
+DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mode_,
+                         const Projector& project_, MfqOptional<DenseTensor> input_ids,
                          bool allow_important_neurons,
-                         MfqOptional<Tensor> router_bias) const {
+                         MfqOptional<DenseTensor> router_bias) const {
     const auto& f = *this;
     auto &profiler = executor.profiler_;
     auto& stats = executor.routes_;
@@ -255,7 +255,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                 }
                 return branch.forward_impl(xh, executor, mode_, project_, input_ids, false, mfq_nullopt);
         };
-        std::vector<Tensor> outputs;
+        std::vector<DenseTensor> outputs;
         const bool ran_parallel = !use_f32_down &&
                        tyloi::cuda::decode_branches(
                        projection_.parallel, mode_.serial, rows) &&
@@ -291,7 +291,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
             // each routed FFN row independently, so cache admission is
             // bounded by one token's top-k experts.
             auto flat = xh.reshape({rows, xh.size(-1)}).contiguous();
-            std::vector<::tyloi::Tensor> outputs;
+            std::vector<::tyloi::DenseTensor> outputs;
             outputs.reserve(static_cast<size_t>(rows));
             for (int64_t row = 0; row < rows; ++row) {
                 auto row_input = flat.narrow(0, row, 1).contiguous();
@@ -317,9 +317,9 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
         auto xf = xh.reshape({-1, xh.size(-1)}).contiguous();
         auto xf32 = profiler.measure("moe.input_f32",
                                      [&]() { return xf.to(::tyloi::kFloat32); });
-        using Tensor = ::tyloi::Tensor;
+        using DenseTensor = ::tyloi::DenseTensor;
         MoeRoutePlan route;
-        Tensor shared_gate_logits;
+        DenseTensor shared_gate_logits;
         bool projection_bundle_prefetched = false;
         const bool sharded_experts = expert_parallel(f);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -330,7 +330,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
         const bool use_pipeline=false;
 #endif
         struct ExpertOutput {
-            Tensor values;
+            DenseTensor values;
             bool reduced;
         };
         // Start the tiny route readback before the shared expert.  The
@@ -370,7 +370,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                 });
             return shared_gate_logits;
         };
-        std::vector<::tyloi::Tensor> selected;
+        std::vector<::tyloi::DenseTensor> selected;
         {
             auto router_logits = profiler.measure("moe.router", [&]() {
                 return f.moe_router_projection?project_.run(*f.moe_router_projection, xf32):
@@ -389,7 +389,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                                    .contiguous();
                     auto weights = moe_sqrtsoftplus_weights_cuda(router_logits.contiguous(),
                                                                  ids, 1e-20, f.moe_router_scale);
-                    return std::vector<::tyloi::Tensor>{ids, weights};
+                    return std::vector<::tyloi::DenseTensor>{ids, weights};
                 });
             } else {
                 selected = profiler.measure("moe.topk", [&]() {
@@ -397,7 +397,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                         router_logits.contiguous(), f.moe_top_k, f.moe_use_sigmoid,
                         f.moe_use_sqrt_softplus, f.moe_normalize, f.moe_delayed_softmax,
                         router_bias.has_value()?router_bias:f.moe_router_bias.defined()
-                            ? MfqOptional<::tyloi::Tensor>(f.moe_router_bias)
+                            ? MfqOptional<::tyloi::DenseTensor>(f.moe_router_bias)
                             : mfq_nullopt,
                         1e-20, f.moe_router_scale);
                 });
@@ -417,7 +417,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                 });
             }
         }
-        Tensor shared_half;
+        DenseTensor shared_half;
         {
             if (tyloi::mfq_compat_enabled && !sharded_experts && !use_pipeline && !tq_routed) {
                 if (f.moe_split_gate_up) {
@@ -479,7 +479,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                 routed_input = profiler.measure("moe.latent_down", [&] {
                     return project_.run(f.moe_latent_in, xf);
                 });
-            const auto finish_latent = [&](Tensor reduced) {
+            const auto finish_latent = [&](DenseTensor reduced) {
                 if (latent_routed)
                     return profiler.measure("moe.latent_up", [&] {
                         return project_.run(f.moe_latent_out, reduced);
@@ -498,7 +498,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                 } else {
                     TYLOINFER_RUNTIME_CHECK(f.moe_tq->slices.empty(),
                         "TQ expert parallelism currently requires SiLU-gated experts");
-                    Tensor gate,up;
+                    DenseTensor gate,up;
                     if(f.moe_ungated_experts) {
                         TYLOINFER_RUNTIME_CHECK(!f.moe_tq->gate,"ungated TQ experts cannot carry a Gate tensor");
                     }else {
@@ -529,7 +529,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                     return dense_routed_projection(f.moe_dense_up, expert_input,
                                                    selected.at(0));
                 });
-                Tensor gate;
+                DenseTensor gate;
                 if (!f.moe_ungated_experts) {
                     TYLOINFER_RUNTIME_CHECK(f.moe_dense_gate.defined(),
                                       "gated dense routed MoE requires a Gate bank");
@@ -630,8 +630,8 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                 const tyloi::cuda::Experts *active_gate_up = &f.moe_gate_up;
                 const tyloi::cuda::Experts *active_gate = &f.moe_gate;
                 const tyloi::cuda::Experts *active_up = &f.moe_up;
-                ::tyloi::Tensor gate_up_pair;
-                ::tyloi::Tensor projected_hidden;
+                ::tyloi::DenseTensor gate_up_pair;
+                ::tyloi::DenseTensor projected_hidden;
                 if (f.moe_split_gate_up) {
                     if (f.cpu_moe_gate) {
                         staged_gate.emplace(profiler.measure("moe.cpu_offload_gate_h2d", [&]() {
@@ -700,7 +700,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
                     }));
                     active_down = &staged_down.value();
                 }
-                Tensor down_pair;
+                DenseTensor down_pair;
                 if (projected_hidden.defined()) {
                     down_pair = profiler.measure("moe.down", [&] {
                         return project_.run(*active_down, projected_hidden, route);
@@ -778,13 +778,13 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Tensor Ffn::forward(Tensor x, const Mode& mode, MfqOptional<Tensor> input_ids,
-                    MfqOptional<Tensor> router_bias) const {
+DenseTensor Ffn::forward(DenseTensor x, const Mode& mode, MfqOptional<DenseTensor> input_ids,
+                    MfqOptional<DenseTensor> router_bias) const {
     auto& executor = Executor::current();
 #else
-Tensor Ffn::forward(Tensor x, Executor& executor, const Mode& mode,
-                    MfqOptional<Tensor> input_ids,
-                    MfqOptional<Tensor> router_bias) const {
+DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
+                    MfqOptional<DenseTensor> input_ids,
+                    MfqOptional<DenseTensor> router_bias) const {
 #endif
     const auto& f = *this;
     if (router_bias.has_value()) {
@@ -804,7 +804,7 @@ Tensor Ffn::forward(Tensor x, Executor& executor, const Mode& mode,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
 
-tyloi::Tensor mlp(tyloi::Tensor input, const tyloi::weights::Weights& gate_up,
+tyloi::DenseTensor mlp(tyloi::DenseTensor input, const tyloi::weights::Weights& gate_up,
                 const tyloi::weights::Weights& down, tyloi::ops::MlpActivation activation,
                 double swiglu_limit) {
     std::optional<MfqCudaGuard> guard;
@@ -813,30 +813,30 @@ tyloi::Tensor mlp(tyloi::Tensor input, const tyloi::weights::Weights& gate_up,
     const auto project = executor.projector(Executor::current_ffn());
     const Mlp weights{as_quant_linear_group(gate_up), as_quant_linear(down), activation,
                       activation == tyloi::ops::MlpActivation::gelu_gated, swiglu_limit};
-    weights.check(Tensor(input), project.primary_device());
-    auto x = half(Tensor(input), executor.profiler());
+    weights.check(DenseTensor(input), project.primary_device());
+    auto x = half(DenseTensor(input), executor.profiler());
     return weights.parallel() ? sharded(weights, x, executor, project)
                               : local(weights, x, executor, project);
 }
 
-tyloi::ops::SelectedExperts topk(tyloi::Tensor logits, std::int64_t count,
+tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count,
                                const tyloi::ops::MoeRouting& routing) {
     MfqCudaGuard guard(logits.device().index);
-    auto result = moe_topk_cuda(Tensor(logits).contiguous(), count,
+    auto result = moe_topk_cuda(DenseTensor(logits).contiguous(), count,
         routing.activation == tyloi::ops::RouterActivation::sigmoid,
         routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
         routing.normalize, routing.delayed_softmax, mfq_nullopt, 1e-20, routing.scale);
     return {result.at(0), result.at(1)};
 }
-tyloi::Tensor expert_scale(tyloi::Tensor weights, tyloi::Tensor ids, const tyloi::Tensor& scales) {
+tyloi::DenseTensor expert_scale(tyloi::DenseTensor weights, tyloi::DenseTensor ids, const tyloi::DenseTensor& scales) {
     MfqCudaGuard guard(weights.device().index);
-    return moe_apply_expert_scale_cuda(Tensor(weights), Tensor(ids), Tensor(scales));
+    return moe_apply_expert_scale_cuda(DenseTensor(weights), DenseTensor(ids), DenseTensor(scales));
 }
-tyloi::Tensor weighted_reduce(tyloi::Tensor pairs, tyloi::Tensor weights) {
+tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor weights) {
     MfqCudaGuard guard(pairs.device().index);
-    return moe_weighted_reduce_cuda(Tensor(pairs), Tensor(weights));
+    return moe_weighted_reduce_cuda(DenseTensor(pairs), DenseTensor(weights));
 }
-tyloi::ops::RoutedGeglu routed_geglu(tyloi::Tensor input, tyloi::Tensor ids,
+tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
     const tyloi::weights::Weights& gate_bank, const tyloi::weights::Weights& down_bank, bool trace) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto* gate = dynamic_cast<const Experts*>(&gate_bank);
@@ -847,14 +847,14 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::Tensor input, tyloi::Tensor ids,
     const auto project = executor.projector(Executor::current_ffn());
     auto& profiler = executor.profiler();
     auto route = profiler.measure("gemma.route_map", [&] {
-        return build_moe_route_plan(Tensor(ids), gate->n_experts);
+        return build_moe_route_plan(DenseTensor(ids), gate->n_experts);
     });
     const bool prefetched = prefetch_cached_moe_projection_bundle(*gate, *down, route);
     auto prefetch_down = [&] { if (!prefetched) prefetch_experts(*down, route); };
     tyloi::ops::RoutedGeglu result;
     if (!trace && gate->supports_projection_glu_epilogue()) {
         auto hidden = profiler.measure("gemma.moe_gate_up_geglu", [&] {
-            return project.glu(*gate, Tensor(input), route, true);
+            return project.glu(*gate, DenseTensor(input), route, true);
         });
         prefetch_down();
         result.pairs = profiler.measure("gemma.moe_down", [&] {
@@ -863,7 +863,7 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::Tensor input, tyloi::Tensor ids,
         return result;
     }
     auto packed = profiler.measure("gemma.moe_gate_up", [&] {
-        return project.run(*gate, Tensor(input), route);
+        return project.run(*gate, DenseTensor(input), route);
     });
     prefetch_down();
     if (trace) result.gate_up = packed.to(::tyloi::kFloat32).contiguous().clone();

@@ -7,9 +7,9 @@
 namespace tyloi::cuda {
 
 
-std::array<Tensor, 2> full_norm(
-    CudaProfiler& profiler, const Tensor& ffn_norm, double eps, double offset,
-    bool bf16, bool fused_norm, bool fp32, Tensor residual, Tensor output) {
+std::array<DenseTensor, 2> full_norm(
+    CudaProfiler& profiler, const DenseTensor& ffn_norm, double eps, double offset,
+    bool bf16, bool fused_norm, bool fp32, DenseTensor residual, DenseTensor output) {
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     auto pair = profiler.measure("full.attn_residual_ffn_norm", [&] {
         auto rr = residual.reshape({-1, H});
@@ -24,7 +24,7 @@ std::array<Tensor, 2> full_norm(
                                                    eps, offset)
                               : qwen_rms_norm(summed.to(::tyloi::kFloat32),
                                               ffn_norm, eps, offset);
-            return std::vector<::tyloi::Tensor>{summed, normalized};
+            return std::vector<::tyloi::DenseTensor>{summed, normalized};
         }
         if (oo2.scalar_type() != rr.scalar_type()) {
             oo2 = oo2.to(rr.scalar_type()).contiguous();
@@ -50,16 +50,16 @@ std::array<Tensor, 2> full_norm(
                                       eps, offset)
                             .to(::tyloi::kBFloat16)
                             .contiguous();
-            return std::vector<::tyloi::Tensor>{sum, norm};
+            return std::vector<::tyloi::DenseTensor>{sum, norm};
         }
         return acc_rms_norm_cuda(rr, oo2, ffn_norm, eps, offset);
     });
     return {pair[0].reshape({B, T, H}), pair[1].reshape({B, T, H})};
 }
 
-std::array<Tensor, 2> linear_norm(
-    CudaProfiler& profiler, const Tensor& ffn_norm, double eps, double offset,
-    bool fp32, Tensor residual, Tensor output) {
+std::array<DenseTensor, 2> linear_norm(
+    CudaProfiler& profiler, const DenseTensor& ffn_norm, double eps, double offset,
+    bool fp32, DenseTensor residual, DenseTensor output) {
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     if (!residual.is_cuda()) {
         auto sum = (residual.to(::tyloi::kFloat32) +
@@ -95,8 +95,8 @@ std::array<Tensor, 2> linear_norm(
     return {pair[0].reshape({B, T, H}), pair[1].reshape({B, T, H})};
 }
 
-Tensor full_add(CudaProfiler& profiler, bool fp32, bool bf16_acc,
-                Tensor residual, Tensor ff) {
+DenseTensor full_add(CudaProfiler& profiler, bool fp32, bool bf16_acc,
+                DenseTensor residual, DenseTensor ff) {
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     return profiler.measure("full.ffn_residual", [&] {
         auto rr = residual.reshape({-1, H});
@@ -125,7 +125,7 @@ Tensor full_add(CudaProfiler& profiler, bool fp32, bool bf16_acc,
     });
 }
 
-Tensor linear_add(CudaProfiler& profiler, bool fp32, Tensor residual, Tensor ff) {
+DenseTensor linear_add(CudaProfiler& profiler, bool fp32, DenseTensor residual, DenseTensor ff) {
     if (!residual.is_cuda()) {
         return (residual.to(::tyloi::kFloat32) + ff.to(::tyloi::kFloat32))
             .to(residual.scalar_type()).contiguous();

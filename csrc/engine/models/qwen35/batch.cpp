@@ -11,7 +11,7 @@
 
 namespace tyloi::cuda::qwen35 {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 Batch::~Batch() {
     if (state_)
@@ -397,7 +397,7 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
     }
 }
 
-Tensor Batch::logits_from_last_hidden(Tensor hidden, const Executor::Mode& mode) {
+DenseTensor Batch::logits_from_last_hidden(DenseTensor hidden, const Executor::Mode& mode) {
     auto last = hidden.index({::tyloi::indexing::Slice(), -1,
                               ::tyloi::indexing::Slice()})
                     .to(::tyloi::kFloat16)
@@ -425,7 +425,7 @@ BatchState Batch::capture_recurrent_slots(const std::vector<std::int32_t> &slots
         if (!linear)
             continue;
         MfqCudaGuard guard(weights_->layers[index].device);
-        std::vector<Tensor> conv, recurrent;
+        std::vector<DenseTensor> conv, recurrent;
         for (auto slot : slots) {
             conv.push_back(linear->mixer.view().convolution.narrow(0, slot, 1));
             recurrent.push_back(linear->mixer.view().recurrent.narrow(0, slot, 1));

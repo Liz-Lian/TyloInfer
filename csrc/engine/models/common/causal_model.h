@@ -9,34 +9,34 @@
 namespace tyloi::models {
 // Backends may supply a model-window graph. Others retain their existing
 // entry points without a CUDA dependency in common model policy.
-template<class Backend,class Model,class Tensor>
-auto backend_graph_logits(Backend& backend,Model& model,Tensor ids,int kind,int)
+template<class Backend,class Model,class DenseTensor>
+auto backend_graph_logits(Backend& backend,Model& model,DenseTensor ids,int kind,int)
     -> decltype(backend.graph_logits(model,std::move(ids),kind)) {
     return backend.graph_logits(model,std::move(ids),kind);
 }
-template<class Backend,class Model,class Tensor>
-std::optional<Tensor> backend_graph_logits(Backend&,Model&,Tensor,int,long) {return {};}
+template<class Backend,class Model,class DenseTensor>
+std::optional<DenseTensor> backend_graph_logits(Backend&,Model&,DenseTensor,int,long) {return {};}
 
-template <class Tensor, class Plan> struct CausalForwardInputs {
-    Tensor ids, input_embeddings;
-    std::optional<Tensor> pos_override, seq_len, attention_mask, cache_positions_override;
-    std::vector<Tensor> *block_trace = nullptr;
-    Tensor *raw_hidden = nullptr;
+template <class DenseTensor, class Plan> struct CausalForwardInputs {
+    DenseTensor ids, input_embeddings;
+    std::optional<DenseTensor> pos_override, seq_len, attention_mask, cache_positions_override;
+    std::vector<DenseTensor> *block_trace = nullptr;
+    DenseTensor *raw_hidden = nullptr;
     bool advance_cache_with_position_ids = false;
     int64_t confirmed_prefix = 0;
     Plan plan{};
 };
 
-template <class Tensor> struct CausalPositions {
-    Tensor positions, full_positions;
+template <class DenseTensor> struct CausalPositions {
+    DenseTensor positions, full_positions;
 };
 
 // Backend owns tensors, weights, physical state and numerical operations.
 // This class owns the causal model entry points and their logical transitions.
 template <class Backend, class Derived> struct CausalModelBase : Backend, CausalState {
-    using Tensor = typename Backend::Tensor;
+    using DenseTensor = typename Backend::DenseTensor;
     using ForwardPlan = typename Backend::ForwardPlan;
-    using Inputs = CausalForwardInputs<Tensor, ForwardPlan>;
+    using Inputs = CausalForwardInputs<DenseTensor, ForwardPlan>;
     using SessionState = typename Backend::SessionState;
     using SessionStateKind = typename Backend::SessionStateKind;
     using SessionCodec = typename Backend::SessionCodec;
@@ -76,16 +76,16 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
         }
     }
 
-    CausalPositions<Tensor> adapter_prepare_positions(Tensor positions, int64_t, int64_t) const {
+    CausalPositions<DenseTensor> adapter_prepare_positions(DenseTensor positions, int64_t, int64_t) const {
         return {positions, positions};
     }
-    std::optional<Tensor> adapter_attention_mask(std::optional<Tensor> mask, int64_t,
+    std::optional<DenseTensor> adapter_attention_mask(std::optional<DenseTensor> mask, int64_t,
                                                  int64_t) const {
         return mask;
     }
     void adapter_validate_forward(int64_t, int64_t, int64_t, bool, bool, bool) const {}
     bool adapter_allows_speculative_position_override() const noexcept { return false; }
-    void adapter_validate_positions(const Tensor &positions, int64_t batch, int64_t tokens,
+    void adapter_validate_positions(const DenseTensor &positions, int64_t batch, int64_t tokens,
                                     bool) const {
         require_model((Backend::rank(positions) == 1 && Backend::size(positions, 0) == tokens) ||
                           (Backend::rank(positions) == 2 && Backend::size(positions, 0) == batch &&
@@ -154,16 +154,16 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
         return this->metadata.layer_types.at(static_cast<std::size_t>(layer));
     }
 
-    Tensor embed_forward(Tensor ids) const {
+    DenseTensor embed_forward(DenseTensor ids) const {
         auto scope = this->execution_scope();
         return this->embed_tokens(this->device_ids(std::move(ids)));
     }
     void reset(int64_t batch) {
         reset_model(model(), batch, [](const auto &block) { return Backend::block_scope(block); });
     }
-    Tensor hidden_forward(Tensor ids, std::optional<Tensor> positions = {},
-                          std::optional<Tensor> lengths = {}, std::vector<Tensor> *trace = nullptr,
-                          std::optional<Tensor> cache_positions = {}, Tensor *raw_hidden = nullptr,
+    DenseTensor hidden_forward(DenseTensor ids, std::optional<DenseTensor> positions = {},
+                          std::optional<DenseTensor> lengths = {}, std::vector<DenseTensor> *trace = nullptr,
+                          std::optional<DenseTensor> cache_positions = {}, DenseTensor *raw_hidden = nullptr,
                           int64_t confirmed_prefix = 0, ForwardPlan plan = {}) {
         auto scope = this->execution_scope();
         ids = normalize_ids(std::move(ids));
@@ -172,12 +172,12 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
                                      {}, false, cache_positions, raw_hidden, confirmed_prefix,
                                      plan);
     }
-    Tensor
-    hidden_forward_inputs(Tensor ids, Tensor embeddings, std::optional<Tensor> positions = {},
-                          std::optional<Tensor> lengths = {}, std::vector<Tensor> *trace = nullptr,
-                          std::optional<Tensor> attention_mask = {},
+    DenseTensor
+    hidden_forward_inputs(DenseTensor ids, DenseTensor embeddings, std::optional<DenseTensor> positions = {},
+                          std::optional<DenseTensor> lengths = {}, std::vector<DenseTensor> *trace = nullptr,
+                          std::optional<DenseTensor> attention_mask = {},
                           bool advance_cache_with_position_ids = false,
-                          std::optional<Tensor> cache_positions = {}, Tensor *raw_hidden = nullptr,
+                          std::optional<DenseTensor> cache_positions = {}, DenseTensor *raw_hidden = nullptr,
                           int64_t confirmed_prefix = 0, ForwardPlan plan = {}) {
         auto scope = this->execution_scope();
         Inputs input{normalize_ids(std::move(ids)),
@@ -194,53 +194,53 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
         auto ops = this->forward_ops(model(), std::move(input));
         return causal_forward(ops);
     }
-    Tensor finalize_hidden(Tensor hidden, int64_t batch, int64_t tokens) {
+    DenseTensor finalize_hidden(DenseTensor hidden, int64_t batch, int64_t tokens) {
         return model().adapter_finalize_hidden(std::move(hidden), this->output_norm, batch, tokens);
     }
-    Tensor apply_final_logit_softcap(Tensor logits) const {
+    DenseTensor apply_final_logit_softcap(DenseTensor logits) const {
         const auto cap = final_logit_softcapping();
         return cap > 0.0 ? this->softcap(std::move(logits), cap) : std::move(logits);
     }
-    Tensor logits_from_hidden(Tensor hidden) {
+    DenseTensor logits_from_hidden(DenseTensor hidden) {
         return apply_final_logit_softcap(model().adapter_logits(this->lm_head, std::move(hidden)));
     }
-    Tensor forward(Tensor ids) {
+    DenseTensor forward(DenseTensor ids) {
         if(auto graph=backend_graph_logits(static_cast<Backend&>(*this),model(),ids,0,0))return *graph;
         return logits_from_hidden(hidden_forward(std::move(ids)));
     }
-    Tensor forward_inputs(Tensor ids, Tensor embeddings, std::optional<Tensor> positions = {},
-                          std::optional<Tensor> lengths = {}) {
+    DenseTensor forward_inputs(DenseTensor ids, DenseTensor embeddings, std::optional<DenseTensor> positions = {},
+                          std::optional<DenseTensor> lengths = {}) {
         return logits_from_hidden(
             hidden_forward_inputs(std::move(ids), std::move(embeddings), positions, lengths));
     }
-    Tensor last_logits(Tensor ids) {
+    DenseTensor last_logits(DenseTensor ids) {
         if(auto graph=backend_graph_logits(static_cast<Backend&>(*this),model(),ids,1,0))return *graph;
         const auto lengths = decode_lengths(ids);
         auto hidden = hidden_forward(std::move(ids), {}, lengths);
         return apply_final_logit_softcap(
             model().adapter_last_logits(this->lm_head, this->last_hidden(std::move(hidden))));
     }
-    Tensor next_token(Tensor ids) {
+    DenseTensor next_token(DenseTensor ids) {
         if(auto graph=backend_graph_logits(static_cast<Backend&>(*this),model(),ids,2,0))return *graph;
         const auto lengths = decode_lengths(ids);
         return next_token_from_hidden(hidden_forward(std::move(ids), {}, lengths));
     }
-    Tensor next_token_from_hidden(Tensor hidden) {
+    DenseTensor next_token_from_hidden(DenseTensor hidden) {
         return model().adapter_next_token(this->lm_head, this->last_hidden(std::move(hidden)));
     }
-    Tensor hidden_forward_static(Tensor ids, Tensor positions, Tensor lengths,
+    DenseTensor hidden_forward_static(DenseTensor ids, DenseTensor positions, DenseTensor lengths,
                                  ForwardPlan plan = {}) {
         // Static execution must write KV by the dynamic position tensor too.
         return hidden_forward(std::move(ids), positions, lengths, nullptr, positions, nullptr, 0,
                               plan);
     }
-    Tensor last_logits_static(Tensor ids, Tensor positions, Tensor lengths, ForwardPlan plan = {}) {
+    DenseTensor last_logits_static(DenseTensor ids, DenseTensor positions, DenseTensor lengths, ForwardPlan plan = {}) {
         auto hidden =
             hidden_forward_static(std::move(ids), std::move(positions), std::move(lengths), plan);
         return apply_final_logit_softcap(
             model().adapter_last_logits(this->lm_head, this->last_hidden(std::move(hidden))));
     }
-    Tensor next_token_static(Tensor ids, Tensor positions, Tensor lengths, ForwardPlan plan = {}) {
+    DenseTensor next_token_static(DenseTensor ids, DenseTensor positions, DenseTensor lengths, ForwardPlan plan = {}) {
         return next_token_from_hidden(
             hidden_forward_static(std::move(ids), std::move(positions), std::move(lengths), plan));
     }
@@ -262,7 +262,7 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
         finish_speculative(model(), false, accepted_suffix,
                            [](const auto &block) { return Backend::block_scope(block); });
     }
-    Tensor hidden_forward_speculative_suffix(Tensor ids, Tensor *raw_hidden = nullptr) {
+    DenseTensor hidden_forward_speculative_suffix(DenseTensor ids, DenseTensor *raw_hidden = nullptr) {
         require_model(speculative_start >= 0 && speculative_confirmed == 0 &&
                           !speculative_suffix_forward,
                       "speculative suffix is not active");
@@ -294,7 +294,7 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
   private:
     Derived &model() { return static_cast<Derived &>(*this); }
     const Derived &model() const { return static_cast<const Derived &>(*this); }
-    Tensor normalize_ids(Tensor ids) const {
+    DenseTensor normalize_ids(DenseTensor ids) const {
         const auto rank = this->rank(ids);
         require_model(rank == 1 || rank == 2,
                       "token IDs must have shape [tokens] or [batch,tokens]");
@@ -304,7 +304,7 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
                       "token IDs must not be empty");
         return this->device_ids(std::move(ids));
     }
-    std::optional<Tensor> decode_lengths(const Tensor &ids) const {
+    std::optional<DenseTensor> decode_lengths(const DenseTensor &ids) const {
         const auto rank = this->rank(ids);
         require_model(rank == 1 || rank == 2,
                       "token IDs must have shape [tokens] or [batch,tokens]");

@@ -119,12 +119,12 @@ __global__ void kv_cache_write_rows_kernel(
         k, v, k_cache, v_cache, src, dst, D, lane);
 }
 
-std::vector<::tyloi::Tensor> kv_cache_write_cuda(
-    ::tyloi::Tensor k_cache,
-    ::tyloi::Tensor v_cache,
-    ::tyloi::Tensor k,
-    ::tyloi::Tensor v,
-    ::tyloi::Tensor positions)
+std::vector<::tyloi::DenseTensor> kv_cache_write_cuda(
+    ::tyloi::DenseTensor k_cache,
+    ::tyloi::DenseTensor v_cache,
+    ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor positions)
 {
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous(), "kv_cache_write: k_cache must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(v_cache.is_cuda() && v_cache.is_contiguous(), "kv_cache_write: v_cache must be cuda contiguous");
@@ -240,11 +240,11 @@ __global__ void kv_cache_write_ring_kernel(
     }
 }
 
-std::vector<::tyloi::Tensor> kv_cache_write_ring_cuda(
-    ::tyloi::Tensor k_cache,
-    ::tyloi::Tensor v_cache,
-    ::tyloi::Tensor k,
-    ::tyloi::Tensor v,
+std::vector<::tyloi::DenseTensor> kv_cache_write_ring_cuda(
+    ::tyloi::DenseTensor k_cache,
+    ::tyloi::DenseTensor v_cache,
+    ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor v,
     int64_t position_start)
 {
     TYLOINFER_RUNTIME_CHECK(position_start >= 0, "kv_cache_write_ring: position_start must be nonnegative");
@@ -321,12 +321,12 @@ __global__ void kv_cache_write_ring_positions_kernel(
     }
 }
 
-std::vector<::tyloi::Tensor> kv_cache_write_ring_positions_cuda(
-    ::tyloi::Tensor k_cache,
-    ::tyloi::Tensor v_cache,
-    ::tyloi::Tensor k,
-    ::tyloi::Tensor v,
-    ::tyloi::Tensor positions)
+std::vector<::tyloi::DenseTensor> kv_cache_write_ring_positions_cuda(
+    ::tyloi::DenseTensor k_cache,
+    ::tyloi::DenseTensor v_cache,
+    ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor positions)
 {
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous() &&
                 v_cache.is_cuda() && v_cache.is_contiguous(),

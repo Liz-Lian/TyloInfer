@@ -11,7 +11,7 @@ namespace tyloi::models::deepseek_v41 {
 struct EngramHashSnapshot;
 
 struct BlockSnapshot {
-    ::tyloi::Tensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
+    ::tyloi::DenseTensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
     int64_t compressed_length = 0, partial_length = 0;
 
     template <class Visit>
@@ -35,7 +35,7 @@ struct Snapshot {
 };
 
 struct MtpSnapshot {
-    std::vector<::tyloi::Tensor> rings;
+    std::vector<::tyloi::DenseTensor> rings;
 
     template <class Visit>
     void tensors(const Visit& visit) const {

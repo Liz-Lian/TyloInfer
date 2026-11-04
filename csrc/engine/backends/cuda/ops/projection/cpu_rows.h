@@ -22,6 +22,6 @@ struct CpuProjectionRows {
         else scalar_rows(input,batch,input_stride,output,output_stride,begin,end);
     }
 };
-CpuProjectionRows make_cpu_projection_rows(const NintWeight&);
-CpuProjectionRows make_cpu_projection_rows(const NvqWeight&);
-CpuProjectionRows make_cpu_projection_rows(const Mxfp4Weight&);
+CpuProjectionRows make_cpu_projection_rows(const tyloi::NintTensor&);
+CpuProjectionRows make_cpu_projection_rows(const tyloi::NvqTensor&);
+CpuProjectionRows make_cpu_projection_rows(const tyloi::Mxfp4Tensor&);

@@ -5,10 +5,10 @@
 #include <cmath>
 
 namespace mfq_glm5_next {
-using ::tyloi::Tensor;
+using ::tyloi::DenseTensor;
 
-std::vector<Tensor> mhc_pre(const Tensor& input, const Tensor& function,
-    const Tensor& base, const Tensor& scale, int64_t iterations, double hc_eps, double rms_eps) {
+std::vector<DenseTensor> mhc_pre(const DenseTensor& input, const DenseTensor& function,
+    const DenseTensor& base, const DenseTensor& scale, int64_t iterations, double hc_eps, double rms_eps) {
     mfq_selected_attention::values({&input, &function, &base, &scale});
     TYLOINFER_RUNTIME_CHECK(input.dim() == 4 && input.size(2) > 0 && input.size(3) > 0,
         "GLM mHC requires [B,T,C,H] input");
@@ -39,8 +39,8 @@ std::vector<Tensor> mhc_pre(const Tensor& input, const Tensor& function,
     return {post, combination, collapsed};
 }
 
-Tensor mhc_post(const Tensor& branch, const Tensor& residual,
-                const Tensor& post, const Tensor& combination) {
+DenseTensor mhc_post(const DenseTensor& branch, const DenseTensor& residual,
+                const DenseTensor& post, const DenseTensor& combination) {
     mfq_selected_attention::values({&branch, &residual, &post, &combination});
     TYLOINFER_RUNTIME_CHECK(residual.dim() == 4 && branch.dim() == 3 &&
         branch.size(0) == residual.size(0) && branch.size(1) == residual.size(1) &&
@@ -55,8 +55,8 @@ Tensor mhc_post(const Tensor& branch, const Tensor& residual,
     return post.to(residual.scalar_type()).unsqueeze(-1) * branch.unsqueeze(-2) + mixed;
 }
 
-Tensor kda_forget_gate(const Tensor& input, const Tensor& fa, const Tensor& fb,
-    const Tensor& bias, const Tensor& a_log, int64_t heads, int64_t width, double lower_bound) {
+DenseTensor kda_forget_gate(const DenseTensor& input, const DenseTensor& fa, const DenseTensor& fb,
+    const DenseTensor& bias, const DenseTensor& a_log, int64_t heads, int64_t width, double lower_bound) {
     mfq_selected_attention::values({&input, &fa, &fb, &bias, &a_log});
     TYLOINFER_RUNTIME_CHECK(input.dim() >= 1 && heads > 0 && width > 0 && fa.dim() == 2 &&
         fa.size(0) == width && fa.size(1) == input.size(-1) && fb.dim() == 2 &&
@@ -77,7 +77,7 @@ Tensor kda_forget_gate(const Tensor& input, const Tensor& fa, const Tensor& fb,
     return lower_bound * ::tyloi::cuda::sigmoid(rate * gate);
 }
 
-Tensor kpool_scores(const Tensor& query, const Tensor& pooled, const Tensor& weights) {
+DenseTensor kpool_scores(const DenseTensor& query, const DenseTensor& pooled, const DenseTensor& weights) {
     mfq_selected_attention::values({&query, &pooled, &weights});
     TYLOINFER_RUNTIME_CHECK(query.dim() == 4 && weights.dim() == 3 &&
         weights.size(0) == query.size(0) && weights.size(1) == query.size(1) &&
@@ -89,8 +89,8 @@ Tensor kpool_scores(const Tensor& query, const Tensor& pooled, const Tensor& wei
     return (scores * head_weights.unsqueeze(-1)).sum(-2);
 }
 
-Tensor kpool_states(const Tensor& keys, const Tensor& gates,
-                    const Tensor& ape, int64_t pool) {
+DenseTensor kpool_states(const DenseTensor& keys, const DenseTensor& gates,
+                    const DenseTensor& ape, int64_t pool) {
     mfq_selected_attention::values({&keys, &gates, &ape});
     TYLOINFER_RUNTIME_CHECK(keys.dim() == 3 && gates.sizes() == keys.sizes() && pool > 0 &&
         ape.dim() == 2 && ape.size(0) == pool && ape.size(1) == keys.size(2),
@@ -106,7 +106,7 @@ Tensor kpool_states(const Tensor& keys, const Tensor& gates,
     return (probabilities.to(keys.scalar_type()) * grouped_keys).sum(-2);
 }
 
-Tensor dense_mla_attention(const Tensor& query, const Tensor& cache,
+DenseTensor dense_mla_attention(const DenseTensor& query, const DenseTensor& cache,
                            int64_t offset, std::optional<double> scale) {
     mfq_selected_attention::values({&query, &cache});
     TYLOINFER_RUNTIME_CHECK(query.dim() == 4 && cache.dim() == 3,
@@ -116,8 +116,8 @@ Tensor dense_mla_attention(const Tensor& query, const Tensor& cache,
         scale.value_or(1.0 / std::sqrt(double(query.size(3)))));
 }
 
-Tensor sparse_mla_attention(const Tensor& query, const Tensor& cache,
-    const Tensor& indices, std::optional<double> scale) {
+DenseTensor sparse_mla_attention(const DenseTensor& query, const DenseTensor& cache,
+    const DenseTensor& indices, std::optional<double> scale) {
     mfq_selected_attention::values({&query, &cache});
     TYLOINFER_RUNTIME_CHECK(query.dim() == 4 && cache.dim() == 3,
         "GLM MLA requires [B,H,T,D] query and [B,K,D] cache");

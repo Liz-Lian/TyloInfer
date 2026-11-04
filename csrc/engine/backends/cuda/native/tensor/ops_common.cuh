@@ -49,7 +49,7 @@ inline ScalarType promote(ScalarType left, ScalarType right) {
 }
 
 inline TensorView align_for_broadcast(
-    const Tensor& input,
+    const DenseTensor& input,
     std::span<const std::int64_t> output_shape) {
     if (input.dim() > static_cast<std::int64_t>(output_shape.size())) {
         throw std::invalid_argument("broadcast rank mismatch");
@@ -79,7 +79,7 @@ inline TensorView align_for_broadcast(
     return result;
 }
 
-inline std::vector<std::int64_t> broadcast_shape(const Tensor& left, const Tensor& right) {
+inline std::vector<std::int64_t> broadcast_shape(const DenseTensor& left, const DenseTensor& right) {
     const auto rank = static_cast<std::size_t>(std::max(left.dim(), right.dim()));
     if (rank > kMaximumTensorRank) throw std::invalid_argument("broadcast rank exceeds ABI");
     std::vector<std::int64_t> result(rank, 1);
@@ -96,7 +96,7 @@ inline std::vector<std::int64_t> broadcast_shape(const Tensor& left, const Tenso
     return result;
 }
 
-inline bool same_shape(const Tensor& left, const Tensor& right) {
+inline bool same_shape(const DenseTensor& left, const DenseTensor& right) {
     if (left.dim() != right.dim()) {
         return false;
     }

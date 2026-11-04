@@ -15,9 +15,9 @@ struct KvQuantization {
 };
 
 struct KvView {
-    Tensor visible_key, visible_value;
-    Tensor physical_key, physical_value;
-    Tensor key_chunk_ptrs, value_chunk_ptrs, page_table;
+    DenseTensor visible_key, visible_value;
+    DenseTensor physical_key, physical_value;
+    DenseTensor key_chunk_ptrs, value_chunk_ptrs, page_table;
     KvQuantization quantization;
     std::int64_t page_size = 0;
     std::int64_t pages_per_chunk = 0;

@@ -13,7 +13,7 @@ struct MlaScratch {
     std::map<int64_t, MoeRoutePlan> head_routes;
     MoeRoutePlan transient_head_route;
     int64_t transient_head_route_key = -1;
-    ::tyloi::Tensor dense_mask, decode_mask, kv_max, attention_meta, hadamard_signs;
+    ::tyloi::DenseTensor dense_mask, decode_mask, kv_max, attention_meta, hadamard_signs;
 
     const MoeRoutePlan& head_route(int64_t rows, int heads);
     void ensure_meta();
@@ -24,8 +24,8 @@ struct MlaScratch {
 
 struct AttentionScratch {
     static constexpr std::int64_t kMaxParts = 16;
-    ::tyloi::Tensor partial_o, partial_m, partial_l;
-    ::tyloi::Tensor mask, kv_max, meta;
+    ::tyloi::DenseTensor partial_o, partial_m, partial_l;
+    ::tyloi::DenseTensor mask, kv_max, meta;
 
     void split(std::int64_t rows, std::int64_t parts, std::int64_t width,
                ::tyloi::Device device) {

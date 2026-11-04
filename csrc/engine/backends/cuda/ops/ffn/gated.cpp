@@ -22,7 +22,7 @@ GatedResidual::Projection GatedResidual::projection(
     TYLOINFER_RUNTIME_CHECK(weight->is_dense() || weight->is_nint() || weight->is_tq(),
         "unsupported floating residual projection");
     if(weight->is_tq()) {
-        Projection::Forward forward=[weight,project,&profiler](const Tensor& input) {
+        Projection::Forward forward=[weight,project,&profiler](const DenseTensor& input) {
             // TQ reconstructs FP16 weights. A BF16/F32 activation therefore
             // promotes residual projection math to FP32, as the dense path.
             return profiler.measure("tq.residual",[&] {
@@ -34,17 +34,17 @@ GatedResidual::Projection GatedResidual::projection(
     }
     if(weight->is_dense()) {
         auto right=weight->dense.transpose(-1,-2);
-        auto promoted=options.prepared_dense?right.to(::tyloi::kFloat32):Tensor{};
+        auto promoted=options.prepared_dense?right.to(::tyloi::kFloat32):DenseTensor{};
         const bool prepare_injection=options.dense_injection &&
             weight->dense.scalar_type()==::tyloi::kBFloat16 && weight->dense.is_contiguous() &&
             weight->dense.dim()==2 && weight->dense.size(0)>0 && weight->dense.size(0)<=4;
-        auto prepared_right=prepare_injection?(promoted.defined()?promoted:right.to(::tyloi::kFloat32)):Tensor{};
+        auto prepared_right=prepare_injection?(promoted.defined()?promoted:right.to(::tyloi::kFloat32)):DenseTensor{};
         const auto vector_setting=tyloi::cuda::runtime_options::gr_dense_vector();
         if(prepare_injection && (!vector_setting || *vector_setting) &&
                 !promoted.defined() && right.size(0)%4==0)
             prepared_right=prepare_gr_dense_vector_right(prepared_right);
         Projection::Forward forward=[right=std::move(right),promoted=std::move(promoted),
-                &options](const Tensor& input) {
+                &options](const DenseTensor& input) {
             const auto dtype=input.scalar_type()==right.scalar_type()?input.scalar_type(): ::tyloi::kFloat32;
             if(options.prepared_dense && promoted.defined() && dtype==::tyloi::kFloat32)
                 return ::tyloi::cuda::matmul(input.to(::tyloi::kFloat32),promoted);
@@ -54,7 +54,7 @@ GatedResidual::Projection GatedResidual::projection(
         Projection::Mix mixed;
         if(weight->dense.scalar_type()==::tyloi::kBFloat16 && weight->dense.is_contiguous() &&
                 part==Part::final_down)
-            activated=[weight,forward](const Tensor& input,int64_t streams,bool injection) {
+            activated=[weight,forward](const DenseTensor& input,int64_t streams,bool injection) {
                 const auto option=tyloi::cuda::runtime_options::gr_dense_bf16_direct();
                 if(!injection && (!option || *option))
                     if(auto output=try_gr_bf16_down_cuda(input,weight->dense,streams);output.defined())return output;
@@ -64,7 +64,7 @@ GatedResidual::Projection GatedResidual::projection(
             };
         if(weight->dense.scalar_type()==::tyloi::kBFloat16 && weight->dense.is_contiguous() &&
                 part==Part::final_up)
-            mixed=[weight,forward](const Tensor& input,const Tensor& normalized,int64_t streams) {
+            mixed=[weight,forward](const DenseTensor& input,const DenseTensor& normalized,int64_t streams) {
                 const auto option=tyloi::cuda::runtime_options::gr_dense_bf16_direct();
                 if(!option || *option)
                     if(auto output=try_gr_bf16_up_mix_cuda(input,normalized,weight->dense,streams);output.defined())return output;
@@ -74,7 +74,7 @@ GatedResidual::Projection GatedResidual::projection(
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-    Projection::Forward forward=[weight,&profiler,&options](const Tensor& input) {
+    Projection::Forward forward=[weight,&profiler,&options](const DenseTensor& input) {
         auto output = profiler.measure("nint.float_projection", [&] {
             return nint_float_projection_cuda(weight->nint, input,true,options.native_input,
                 options.fixed_group);
@@ -83,35 +83,35 @@ GatedResidual::Projection GatedResidual::projection(
         return input.scalar_type() == ::tyloi::kFloat16 ? output.to(::tyloi::kFloat16) : output;
     };
     Projection::Mix mixed;
-    if(weight->is_nint())mixed=[weight,&profiler,&options](const Tensor& input,
-        const Tensor& normalized,int64_t streams) {
+    if(weight->is_nint())mixed=[weight,&profiler,&options](const DenseTensor& input,
+        const DenseTensor& normalized,int64_t streams) {
         return profiler.measure("nint.float_projection_mix",[&] {
             return nint_float_projection_mix_cuda(weight->nint,input,normalized,streams,options.native_input,
                 options.fixed_group,options.compact_mix);
         });
     };
     Projection::Activation activated;
-    if(weight->is_nint())activated=[weight,&profiler,&options](const Tensor& input,
+    if(weight->is_nint())activated=[weight,&profiler,&options](const DenseTensor& input,
         int64_t streams,bool injection) {
         return profiler.measure("nint.float_projection_activation",[&] {
             return nint_float_projection_activation_cuda(weight->nint,input,streams,injection,true,
                 options.native_input,options.fixed_group);
         });
     };
-    Tensor group_coefficients;
+    DenseTensor group_coefficients;
     const auto group_option=tyloi::cuda::runtime_options::gr_up_group_coefficients();
     if(group_option && *group_option!='0' && weight->nint.aligned_q8 && !weight->nint.q8_zero &&
             weight->nint.gs==48 && weight->nint.out==10240 && weight->nint.neuron_len==320)
         group_coefficients=*group_option=='2'?prepare_gr_up_packed_metadata(weight->nint):
             prepare_gr_up_group_coefficients(weight->nint);
-    return {std::move(forward),std::move(mixed),std::move(activated),std::move(weight),Tensor{},std::move(group_coefficients)};
+    return {std::move(forward),std::move(mixed),std::move(activated),std::move(weight),DenseTensor{},std::move(group_coefficients)};
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
 
-int64_t GatedResidual::prefill_work_chunk(const Tensor& input)const {
+int64_t GatedResidual::prefill_work_chunk(const DenseTensor& input)const {
     if(input.dim()!=3 || input.size(0)!=1)return 0;
     const auto option=tyloi::cuda::runtime_options::gr_prefill_work_chunk();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -125,7 +125,7 @@ int64_t GatedResidual::prefill_work_chunk(const Tensor& input)const {
     return chunk>=256 && input.size(1)>chunk?chunk:0;
 }
 template<class Project>
-GatedResidual::Result GatedResidual::bounded_pre(const Tensor& input,int64_t chunk,bool reuse_input,Project project)const {
+GatedResidual::Result GatedResidual::bounded_pre(const DenseTensor& input,int64_t chunk,bool reuse_input,Project project)const {
     const auto tokens=input.size(1);
     Result output;
     if(reuse_input)output.residual=input;
@@ -136,7 +136,7 @@ GatedResidual::Result GatedResidual::bounded_pre(const Tensor& input,int64_t chu
         // remainder selects different projection arithmetic.
         if(tail>0 && tail<128)count-=128-tail;
         auto part=project(begin,count);
-        const auto append=[&](Tensor& destination,const Tensor& source) {
+        const auto append=[&](DenseTensor& destination,const DenseTensor& source) {
             if(!source.defined())return;
             if(!destination.defined()) {
                 auto shape=source.sizes().vec();shape[1]=tokens;
@@ -151,7 +151,7 @@ GatedResidual::Result GatedResidual::bounded_pre(const Tensor& input,int64_t chu
     }
     return output;
 }
-bool GatedResidual::can_fuse(const Tensor& input)const {
+bool GatedResidual::can_fuse(const DenseTensor& input)const {
     if(!options_)return false;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if(!options_->two_stage || !options_->fused_projections ||
@@ -187,19 +187,19 @@ bool GatedResidual::can_fuse(const Tensor& input)const {
     return false;
 #endif
 }
-GatedResidual::Result GatedResidual::fused(const Tensor& input,const Tensor& residual,const Tensor& gate,bool after,
+GatedResidual::Result GatedResidual::fused(const DenseTensor& input,const DenseTensor& residual,const DenseTensor& gate,bool after,
     const GatedResidualMarker& marker)const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto& projection=*injection.weight;
     auto result=gated_residual_two_stage_cuda(input,residual,gate,norm,down.weight->nint,up.weight->nint,
         projection.is_nint()?&projection.nint:nullptr,streams,eps,after,
-        projection.is_dense()?projection.dense:Tensor{},injection.prepared_right,marker,up.up_group_coefficients);
+        projection.is_dense()?projection.dense:DenseTensor{},injection.prepared_right,marker,up.up_group_coefficients);
     return {std::move(result[0]),std::move(result[1]),std::move(result[2])};
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-GatedResidual::Result GatedResidual::pre(const Tensor &input,
+GatedResidual::Result GatedResidual::pre(const DenseTensor &input,
     const GatedResidualMarker& marker) const {
     if(const auto chunk=prefill_work_chunk(input))
         return bounded_pre(input,chunk,true,[&](int64_t begin,int64_t count) {
@@ -208,11 +208,11 @@ GatedResidual::Result GatedResidual::pre(const Tensor &input,
     if(can_fuse(input))return fused({},input,{},false,marker);
     return prepare(input,{},marker);
 }
-Tensor GatedResidual::post(const Tensor& input,const Tensor& residual,const Tensor& gate) const {
+DenseTensor GatedResidual::post(const DenseTensor& input,const DenseTensor& residual,const DenseTensor& gate) const {
     return mfq_qwen4_exp::gated_residual_post(input,residual,gate,streams);
 }
-GatedResidual::Result GatedResidual::pre_after(const Tensor& input,
-    const Tensor& residual,const Tensor& gate,const GatedResidualMarker& marker) const {
+GatedResidual::Result GatedResidual::pre_after(const DenseTensor& input,
+    const DenseTensor& residual,const DenseTensor& gate,const GatedResidualMarker& marker) const {
     if(const auto chunk=prefill_work_chunk(residual))
         return bounded_pre(residual,chunk,false,[&](int64_t begin,int64_t count) {
             return pre_after(input.narrow(1,begin,count),residual.narrow(1,begin,count),
@@ -233,7 +233,7 @@ GatedResidual::Result GatedResidual::pre_after(const Tensor& input,
 }
 
 GatedResidual::Result GatedResidual::prepare(
-        const Tensor& input, const Tensor& prepared_norm, const GatedResidualMarker& marker) const {
+        const DenseTensor& input, const DenseTensor& prepared_norm, const GatedResidualMarker& marker) const {
     TYLOINFER_RUNTIME_CHECK(input.dim() >= 1 && hidden > 0 && streams > 0 &&
         input.size(-1) / streams == hidden && input.size(-1) % streams == 0 && options_ && down && up,
         "gated-residual projection input dimensions disagree");
@@ -260,7 +260,7 @@ GatedResidual::Result GatedResidual::prepare(
         return mfq_qwen4_exp::gated_residual_mix(mixing,normalized,streams);
     }();
     if(marker)marker("up_mix");
-    ::tyloi::Tensor gate;
+    ::tyloi::DenseTensor gate;
     if (injection.forward) {
         if(epilogue && injection.activated) {
             gate=injection.activated(normalized,streams,true);

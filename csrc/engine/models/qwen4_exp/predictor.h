@@ -16,17 +16,17 @@ struct Qwen4Block;
 struct Qwen4MtpGraph;
 
 struct Predictor final : MtpModule {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::models::qwen4_exp::Config config;
     QuantLinear embedding, output;
     double softcap = 0;
     int primary = 0;
-    Tensor embedding_norm, hidden_norm;
+    DenseTensor embedding_norm, hidden_norm;
     Linear embedding_fusion, hidden_fusion;
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<Qwen4Block>> layers;
-    std::vector<Tensor> positions;
+    std::vector<DenseTensor> positions;
     std::vector<int64_t> lengths;
     CudaExecutionContext *execution = nullptr;
     int64_t batch = 0;
@@ -36,7 +36,7 @@ struct Predictor final : MtpModule {
     uint64_t graph_replays = 0;
     bool graph_initialized = false;
     bool compact_graph_sampling = true;
-    Tensor graph_compact_topk() const;
+    DenseTensor graph_compact_topk() const;
     bool take_graph_initialization() noexcept override { return std::exchange(graph_initialized,false); }
     uint64_t graph_replay_count() const noexcept override { return graph_replays; }
 
@@ -51,22 +51,22 @@ struct Predictor final : MtpModule {
                                                       QuantLinear embedding, QuantLinear output,
                                                       double softcap);
 
-    Tensor embed(Tensor ids) const;
-    Tensor logits(Tensor hidden) const;
+    DenseTensor embed(DenseTensor ids) const;
+    DenseTensor logits(DenseTensor hidden) const;
 
     void reset(int64_t next_batch = 1) override;
 
-    std::pair<Tensor, Tensor> evaluate(const Tensor &hidden,
-                                       const Tensor &ids, int64_t depth = 0, bool cache = true,
-                                       const Tensor &supplied_positions = {},
-                                       const Tensor &supplied_embeddings = {},
+    std::pair<DenseTensor, DenseTensor> evaluate(const DenseTensor &hidden,
+                                       const DenseTensor &ids, int64_t depth = 0, bool cache = true,
+                                       const DenseTensor &supplied_positions = {},
+                                       const DenseTensor &supplied_embeddings = {},
                                        bool history_only = false);
 
-    Tensor forward(Tensor hidden, Tensor ids) override;
+    DenseTensor forward(DenseTensor hidden, DenseTensor ids) override;
 
-    MtpStep step(Tensor hidden, Tensor ids) override;
-    MtpStep step_positioned(Tensor hidden, Tensor ids, Tensor positions) override;
-    void history_step(Tensor hidden, Tensor ids, Tensor positions = {},
+    MtpStep step(DenseTensor hidden, DenseTensor ids) override;
+    MtpStep step_positioned(DenseTensor hidden, DenseTensor ids, DenseTensor positions) override;
+    void history_step(DenseTensor hidden, DenseTensor ids, DenseTensor positions = {},
                       bool scalar_chain = false);
 
     int64_t cache_position() const noexcept override;
@@ -81,7 +81,7 @@ struct Predictor final : MtpModule {
     std::unique_ptr<tyloi::engine::mtp::DepthPolicy> depth_policy(
         int maximum_depth, tyloi::engine::mtp::PolicyState& state) const override;
     bool supports_session_state() const noexcept override;
-    MtpSessionState capture_session_state(int64_t,const Tensor&) const override;
+    MtpSessionState capture_session_state(int64_t,const DenseTensor&) const override;
     void restore_session_state(const MtpSessionState&) override;
 };
 

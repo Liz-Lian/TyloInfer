@@ -73,7 +73,7 @@ class Batch {
     void finish_decode(std::int64_t cache_position);
     void recover(const std::vector<RequestState *> &requests);
 
-    ::tyloi::Tensor logits_from_last_hidden(::tyloi::Tensor hidden,
+    ::tyloi::DenseTensor logits_from_last_hidden(::tyloi::DenseTensor hidden,
                                                       const Executor::Mode&);
     std::vector<const void *> decode_state_addresses();
     BatchState capture_recurrent_slots(const std::vector<std::int32_t> &slots) const;

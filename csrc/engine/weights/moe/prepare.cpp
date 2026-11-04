@@ -72,9 +72,9 @@ std::vector<MoeActivationGeometry> moe_activation_geometry(
 }
 
 static void upload_mixed_dispatch_metadata(
-        std::initializer_list<std::pair<::tyloi::Tensor*,::tyloi::Tensor>> tables,
+        std::initializer_list<std::pair<::tyloi::DenseTensor*,::tyloi::DenseTensor>> tables,
         ::tyloi::Device device,bool asynchronous,
-        ::tyloi::Tensor& device_owner,::tyloi::Tensor& host_owner) {
+        ::tyloi::DenseTensor& device_owner,::tyloi::DenseTensor& host_owner) {
     std::size_t bytes=0;
     for(const auto& [target,source]:tables) {
         bytes=(bytes+15)&~std::size_t(15);
@@ -116,7 +116,7 @@ static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
             w.ng!=(runtime.neuron_len+w.gs-1)/w.gs ||
             w.q_packed.numel()%pool.local_experts || w.q_packed.numel()/pool.local_experts>INT_MAX)return;
         if(dispatch->pools.empty())device=w.q_packed.device();
-        const auto field_ok=[&](const ::tyloi::Tensor& field,auto dtype,int64_t count) {
+        const auto field_ok=[&](const ::tyloi::DenseTensor& field,auto dtype,int64_t count) {
             return field.defined() && field.is_cuda() && field.device()==device && field.is_contiguous() &&
                 field.scalar_type()==dtype && field.numel()>=count;
         };
@@ -145,7 +145,7 @@ void prepare_moe(
         const std::vector<std::vector<int32_t>>* expert_local_host) {
     if(expert_local_host && expert_local_host->size()!=runtime.pools.size())
         throw std::invalid_argument("mixed NVQ host-map pool count mismatch");
-    std::unordered_map<const void*,::tyloi::Tensor> integer_books;
+    std::unordered_map<const void*,::tyloi::DenseTensor> integer_books;
     for(auto& pool:runtime.pools)if(pool.family==MixedMoeFamily::Nvq) {
         auto& w=pool.nvq;
         prepare_nvq_decode_records(w);
@@ -252,7 +252,7 @@ void prepare_moe(
         pool_params.push_back(static_cast<int32_t>(weight.sign_mode));
         pool_params.push_back(format);
 
-        ::tyloi::Tensor local_host;
+        ::tyloi::DenseTensor local_host;
         const int32_t* local=nullptr;
         if(expert_local_host) {
             const auto& host=expert_local_host->at(pool_index);

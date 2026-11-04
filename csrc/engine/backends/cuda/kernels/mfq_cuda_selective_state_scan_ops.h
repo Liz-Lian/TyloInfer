@@ -13,15 +13,15 @@
 // dt[B,H] is the raw (pre-softplus) time step, dt_bias[H]/a_log[H]/D[H] are f32
 // parameters and B/C[B,G,N] are the grouped projections (head h uses group
 // h / (H/G)). dt_limit_lo/dt_limit_hi clamp softplus(dt + dt_bias).
-::tyloi::Tensor selective_state_scan_decode_cuda(
-    ::tyloi::Tensor state,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor dt,
-    ::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log,
-    ::tyloi::Tensor b,
-    ::tyloi::Tensor c,
-    ::tyloi::Tensor d,
+::tyloi::DenseTensor selective_state_scan_decode_cuda(
+    ::tyloi::DenseTensor state,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor dt,
+    ::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log,
+    ::tyloi::DenseTensor b,
+    ::tyloi::DenseTensor c,
+    ::tyloi::DenseTensor d,
     double dt_limit_lo,
     double dt_limit_hi);
 
@@ -29,14 +29,14 @@
 // B/C[B,T,G,N] and an optional initial_state[B,H,P,N]. Returns
 // {y[B,T,H,P], final_state[B,H,P,N]}, both f32; the result equals T decode
 // calls up to floating point rounding.
-std::vector<::tyloi::Tensor> selective_state_scan_prefill_cuda(
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor dt,
-    ::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log,
-    ::tyloi::Tensor b,
-    ::tyloi::Tensor c,
-    ::tyloi::Tensor d,
-    ::tyloi::Tensor initial_state,
+std::vector<::tyloi::DenseTensor> selective_state_scan_prefill_cuda(
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor dt,
+    ::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log,
+    ::tyloi::DenseTensor b,
+    ::tyloi::DenseTensor c,
+    ::tyloi::DenseTensor d,
+    ::tyloi::DenseTensor initial_state,
     double dt_limit_lo,
     double dt_limit_hi);

@@ -7,25 +7,25 @@
 #include <cstdint>
 #include <vector>
 
-::tyloi::Tensor mxfp8_groupwise_matmul(
+::tyloi::DenseTensor mxfp8_groupwise_matmul(
     CudaProfiler& profiler,
-    const Mxfp8Weight& weight,
-    ::tyloi::Tensor input,
+    const tyloi::Mxfp8Tensor& weight,
+    ::tyloi::DenseTensor input,
     std::int64_t groups);
-::tyloi::Tensor mxfp8_groupwise_matmul_f32(
+::tyloi::DenseTensor mxfp8_groupwise_matmul_f32(
     CudaProfiler& profiler,
-    const Mxfp8Weight& weight,
-    ::tyloi::Tensor input,
+    const tyloi::Mxfp8Tensor& weight,
+    ::tyloi::DenseTensor input,
     std::int64_t groups);
-::tyloi::Tensor mxfp8_matmul(
+::tyloi::DenseTensor mxfp8_matmul(
     CudaProfiler& profiler,
-    const Mxfp8Weight& weight,
-    ::tyloi::Tensor input);
-::tyloi::Tensor mxfp8_matmul_f32(
+    const tyloi::Mxfp8Tensor& weight,
+    ::tyloi::DenseTensor input);
+::tyloi::DenseTensor mxfp8_matmul_f32(
     CudaProfiler& profiler,
-    const Mxfp8Weight& weight,
-    ::tyloi::Tensor input);
-::tyloi::Tensor mxfp4_matmul(
-    const Mxfp4Weight& weight, ::tyloi::Tensor input);
+    const tyloi::Mxfp8Tensor& weight,
+    ::tyloi::DenseTensor input);
+::tyloi::DenseTensor mxfp4_matmul(
+    const tyloi::Mxfp4Tensor& weight, ::tyloi::DenseTensor input);
 
-::tyloi::Tensor mxfp8_cpu_reference(const Mxfp8Weight& weight);
+::tyloi::DenseTensor mxfp8_cpu_reference(const tyloi::Mxfp8Tensor& weight);

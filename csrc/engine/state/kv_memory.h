@@ -26,7 +26,7 @@ KvMemoryOptions kv_memory_options();
 
 struct KvMemoryAllocation {
     struct Virtual;
-    ::tyloi::Tensor keys, values, index, pooled;
+    ::tyloi::DenseTensor keys, values, index, pooled;
     std::shared_ptr<KvOffloadStore> offload;
     std::shared_ptr<Virtual> virtual_keys, virtual_values;
     int64_t maximum = 0, heads = 0, key_width = 0, value_width = 0, index_width = 0, pool = 0, selected_columns = 0;

@@ -21,7 +21,7 @@ struct Model {
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     QuantLinear embed, lm_head;
-    Tensor output_norm;
+    DenseTensor output_norm;
     RopeCache rope, cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
     std::vector<Layer> layers;

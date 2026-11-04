@@ -48,9 +48,9 @@ KVCache::KVCache(
 }
 
 KVCache KVCache::paged_view(
-        ::tyloi::Tensor key_chunks,
-        ::tyloi::Tensor value_chunks,
-        ::tyloi::Tensor pages,
+        ::tyloi::DenseTensor key_chunks,
+        ::tyloi::DenseTensor value_chunks,
+        ::tyloi::DenseTensor pages,
         int64_t batch, int64_t heads, int64_t head_dim,
         int64_t tokens_per_page, int64_t chunk_pages,
         ::tyloi::ScalarType dtype) {

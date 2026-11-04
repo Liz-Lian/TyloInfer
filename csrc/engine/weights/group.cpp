@@ -11,10 +11,10 @@
 #include <vector>
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-static NintWeight cat_weights(const std::vector<NintWeight> & ws) {
+static tyloi::NintTensor cat_weights(const std::vector<tyloi::NintTensor> & ws) {
     if (ws.empty()) throw std::runtime_error("empty NINT group");
     const auto & a = ws[0];
-    std::vector<::tyloi::Tensor> qp, rqb, rqoff, q8s, ss, sm, ns, nm;
+    std::vector<::tyloi::DenseTensor> qp, rqb, rqoff, q8s, ss, sm, ns, nm;
     int64_t out = 0;
     int64_t q_bit_base = 0;
     bool aligned_q8 = !a.q8_zero;
@@ -43,7 +43,7 @@ static NintWeight cat_weights(const std::vector<NintWeight> & ws) {
         nm.push_back(w.neuron_min);
         out += w.out;
     }
-    NintWeight g;
+    tyloi::NintTensor g;
     g.out = out;
     g.ng = a.ng;
     g.gs = a.gs;
@@ -70,7 +70,7 @@ static NintWeight cat_weights(const std::vector<NintWeight> & ws) {
     return g;
 }
 
-static NintLinearGroup make_linear_group(const std::vector<NintWeight> & ws) {
+static NintLinearGroup make_linear_group(const std::vector<tyloi::NintTensor> & ws) {
     NintLinearGroup g;
     for (const auto & w : ws) g.outs.push_back(w.out);
     bool same = !ws.empty();
@@ -88,7 +88,7 @@ static NintLinearGroup make_linear_group(const std::vector<NintWeight> & ws) {
             g.projection_w.reserve(ws.size());
             int64_t offset = 0;
             for (const auto & source : ws) {
-                NintWeight projection = g.w;
+                tyloi::NintTensor projection = g.w;
                 projection.out = source.out;
                 projection.shape = source.shape;
                 projection.q_packed =
@@ -102,7 +102,7 @@ static NintLinearGroup make_linear_group(const std::vector<NintWeight> & ws) {
                         "Q8 projection views do not cover grouped output");
         }
     } else {
-        std::vector<NintWeight> cur;
+        std::vector<tyloi::NintTensor> cur;
         std::vector<int64_t> cur_outs;
         auto flush = [&]() {
             if (cur.empty()) return;
@@ -139,7 +139,7 @@ QuantLinearGroup make_quant_group(
     result.cols.reserve(layers.size());
     result.placements.reserve(layers.size());
     bool all_nint = true;
-    std::vector<NintWeight> nint_weights;
+    std::vector<tyloi::NintTensor> nint_weights;
     nint_weights.reserve(layers.size());
     for (const auto & layer : layers) {
         result.outs.push_back(layer.out());
@@ -158,7 +158,7 @@ QuantLinearGroup make_quant_group(
     const bool all_tq = std::all_of(layers.begin(),layers.end(),
         [](const QuantLinear& layer){return layer.is_tq() && layer.tq.is_cuda();});
     if(all_tq && !any_tensor_parallel) {
-        std::vector<::tyloi::Tensor> weights;weights.reserve(layers.size());
+        std::vector<::tyloi::encoding::TqTensor> weights;weights.reserve(layers.size());
         for(const auto& layer:layers)weights.push_back(layer.tq);
         result.tq=TqProjectionGroup(std::move(weights));
     }
@@ -315,10 +315,10 @@ Projections make_projections(
 
 } // namespace tyloi::cuda
 
-DenseLinearGroup make_dense_group(const std::vector<::tyloi::Tensor> & ws) {
+DenseLinearGroup make_dense_group(const std::vector<::tyloi::DenseTensor> & ws) {
     if (ws.empty()) throw std::runtime_error("empty dense group");
     DenseLinearGroup g;
-    std::vector<::tyloi::Tensor> parts;
+    std::vector<::tyloi::DenseTensor> parts;
     parts.reserve(ws.size());
     for (const auto & w : ws) {
         if (w.dim() != 2) throw std::runtime_error("dense linear group expects 2D weights");
@@ -332,7 +332,7 @@ DenseLinearGroup make_dense_group(const std::vector<::tyloi::Tensor> & ws) {
     return g;
 }
 
-static ::tyloi::Tensor dequant_quant_linear_f32(
+static ::tyloi::DenseTensor dequant_quant_linear_f32(
         tyloi::cuda::Collectives& collectives, int primary,
         const QuantLinear& linear) {
     if (!linear.tensor_parallel()) {
@@ -392,11 +392,11 @@ static ::tyloi::Tensor dequant_quant_linear_f32(
         throw std::runtime_error(
             "cannot reconstruct a mirrored tensor-parallel linear");
     }
-    std::vector<::tyloi::Tensor> parts;
+    std::vector<::tyloi::DenseTensor> parts;
     parts.reserve(linear.tensor_parallel_shards.size());
     for (const auto & shard : linear.tensor_parallel_shards) {
         MfqCudaGuard shard_guard(shard.device);
-        ::tyloi::Tensor part;
+        ::tyloi::DenseTensor part;
         if (shard.kind == QuantLinearKind::Tq) {
             QuantLinear local;
             local.kind=QuantLinearKind::Tq;local.tq=shard.tq;
@@ -460,7 +460,7 @@ DenseLinearGroup make_fp32_quant_group(
         if (group.nint.split_w.empty()) {
             dense.w = dequant_nint_dense_f32(group.nint.w);
         } else {
-            std::vector<::tyloi::Tensor> parts;
+            std::vector<::tyloi::DenseTensor> parts;
             parts.reserve(group.nint.split_w.size());
             for (const auto & weight : group.nint.split_w) {
                 parts.push_back(dequant_nint_dense_f32(weight));
@@ -470,7 +470,7 @@ DenseLinearGroup make_fp32_quant_group(
     } else
 #endif
     {
-        std::vector<::tyloi::Tensor> parts;
+        std::vector<::tyloi::DenseTensor> parts;
         parts.reserve(group.layers.size());
         for (const auto & linear : group.layers) {
             parts.push_back(dequant_quant_linear_f32(

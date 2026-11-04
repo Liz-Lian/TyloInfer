@@ -5,9 +5,9 @@
 #include <cstdint>
 #include <vector>
 
-::tyloi::Tensor silu_mul_cuda(::tyloi::Tensor gate, ::tyloi::Tensor up);
-::tyloi::Tensor gelu_mul_cuda(::tyloi::Tensor gate, ::tyloi::Tensor up);
-::tyloi::Tensor clipped_silu_mul_cuda(::tyloi::Tensor gate,
-    ::tyloi::Tensor up,double limit);
+::tyloi::DenseTensor silu_mul_cuda(::tyloi::DenseTensor gate, ::tyloi::DenseTensor up);
+::tyloi::DenseTensor gelu_mul_cuda(::tyloi::DenseTensor gate, ::tyloi::DenseTensor up);
+::tyloi::DenseTensor clipped_silu_mul_cuda(::tyloi::DenseTensor gate,
+    ::tyloi::DenseTensor up,double limit);
 // relu(x)^2 for f32/f16/bf16 input; the output keeps the input dtype.
-::tyloi::Tensor relu_squared_cuda(::tyloi::Tensor input);
+::tyloi::DenseTensor relu_squared_cuda(::tyloi::DenseTensor input);

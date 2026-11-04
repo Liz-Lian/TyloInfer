@@ -14,7 +14,7 @@ namespace tyloi::cuda {
 inline std::atomic<std::uint64_t> mapped_embedding_host_bytes{0};
 }
 #endif
-inline ::tyloi::Tensor map_embedding_storage(const ::tyloi::Tensor& cpu,int device,
+inline ::tyloi::DenseTensor map_embedding_storage(const ::tyloi::DenseTensor& cpu,int device,
         bool device_read_control=false) {
     TYLOINFER_RUNTIME_CHECK(cpu.is_cpu() && cpu.is_contiguous(),
         "mapped embedding requires contiguous CPU storage");
@@ -22,7 +22,7 @@ inline ::tyloi::Tensor map_embedding_storage(const ::tyloi::Tensor& cpu,int devi
     TYLOINFER_RUNTIME_CHECK(bytes>0,"mapped embedding table is empty");
     struct Owner {
         tyloi::cuda::HostBuffer host;
-        ::tyloi::Tensor device_copy;
+        ::tyloi::DenseTensor device_copy;
         std::size_t bytes;
         explicit Owner(std::size_t count):host(count,true),bytes(count) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -53,13 +53,13 @@ inline ::tyloi::Tensor map_embedding_storage(const ::tyloi::Tensor& cpu,int devi
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto storage=std::make_shared<::tyloi::TensorStorage>();
     storage->owner=std::move(owner);storage->base=alias;storage->bytes=bytes;storage->device=gpu_device;
-    return ::tyloi::Tensor(storage,::tyloi::make_contiguous_view(alias,cpu.sizes(),cpu.scalar_type(),gpu_device));
+    return ::tyloi::DenseTensor(storage,::tyloi::make_contiguous_view(alias,cpu.sizes(),cpu.scalar_type(),gpu_device));
 #else
     return ::tyloi::cuda::from_blob(alias,cpu.sizes(),[owner](void*){},cpu.options().device(gpu_device));
 #endif
 }
 
-inline QuantLinear map_dense_embedding(const ::tyloi::Tensor& cpu,int device,
+inline QuantLinear map_dense_embedding(const ::tyloi::DenseTensor& cpu,int device,
         bool device_read_control=false) {
     TYLOINFER_RUNTIME_CHECK(cpu.dim()==2 &&
         (cpu.scalar_type()==::tyloi::kFloat16 || cpu.scalar_type()==::tyloi::kBFloat16 || cpu.scalar_type()==::tyloi::kFloat32),

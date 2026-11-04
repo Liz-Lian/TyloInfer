@@ -10,8 +10,8 @@
 
 namespace tyloi::models::grid_vision {
 
-template <class Tensor, class Project, class Split, class Rope, class Attend, class Output>
-auto attention(Tensor hidden, Project project, Split split, Rope rope, Attend attend,
+template <class DenseTensor, class Project, class Split, class Rope, class Attend, class Output>
+auto attention(DenseTensor hidden, Project project, Split split, Rope rope, Attend attend,
                Output output) {
     auto qkv = split(project(std::move(hidden)));
     auto query = rope(std::move(qkv[0]));
@@ -19,8 +19,8 @@ auto attention(Tensor hidden, Project project, Split split, Rope rope, Attend at
     return output(attend(std::move(query), std::move(key), std::move(qkv[2])));
 }
 
-template <class Tensor, class Layers, class Patch, class Position, class Add, class Layer>
-tyloi::StepSequence<Tensor> encode(Tensor pixels, const GridVisionConfig &config, std::vector<GridShape> grids,
+template <class DenseTensor, class Layers, class Patch, class Position, class Add, class Layer>
+tyloi::StepSequence<DenseTensor> encode(DenseTensor pixels, const GridVisionConfig &config, std::vector<GridShape> grids,
             Layers &layers, Patch patch, Position position, Add add, Layer layer) {
     const auto layout =
         make_grid_vision_layout(grids, static_cast<int32_t>(config.spatial_merge_size));
@@ -38,8 +38,8 @@ tyloi::StepSequence<Tensor> encode(Tensor pixels, const GridVisionConfig &config
     co_yield std::move(hidden);
 }
 
-template <class Tensor, class Norm, class Pack, class Up, class Gelu, class Down>
-auto merge(Tensor patches, int64_t patch_count, const GridVisionConfig &config, Norm norm,
+template <class DenseTensor, class Norm, class Pack, class Up, class Gelu, class Down>
+auto merge(DenseTensor patches, int64_t patch_count, const GridVisionConfig &config, Norm norm,
            Pack pack, Up up, Gelu gelu, Down down) {
     const auto unit = config.spatial_merge_size * config.spatial_merge_size;
     require_model(unit > 0 && patch_count > 0 && patch_count % unit == 0,
@@ -48,13 +48,13 @@ auto merge(Tensor patches, int64_t patch_count, const GridVisionConfig &config, 
     return mlp(std::move(grouped), up, gelu, down);
 }
 
-template <class Tensor> struct Prepared {
-    Tensor embeddings, positions;
+template <class DenseTensor> struct Prepared {
+    DenseTensor embeddings, positions;
     int decode_delta = 0;
 };
 
-template <class Tensor, class Embed, class Scatter, class Positions>
-auto prepare(const std::vector<int64_t> &ids, Tensor merged, int64_t merged_count,
+template <class DenseTensor, class Embed, class Scatter, class Positions>
+auto prepare(const std::vector<int64_t> &ids, DenseTensor merged, int64_t merged_count,
              int64_t image_token, int64_t video_token, const GridVisionConfig &config,
              const std::vector<GridShape> &grids, Embed embed, Scatter scatter,
              Positions positions) {
@@ -72,7 +72,7 @@ auto prepare(const std::vector<int64_t> &ids, Tensor merged, int64_t merged_coun
     scatter(embeddings, merged, placeholders);
     auto semantic = build_grid_mrope_positions(
         ids, image_token, video_token, static_cast<int32_t>(config.spatial_merge_size), grids, {});
-    return Prepared<Tensor>{std::move(embeddings), positions(semantic), semantic.decode_delta};
+    return Prepared<DenseTensor>{std::move(embeddings), positions(semantic), semantic.decode_delta};
 }
 
 } // namespace tyloi::models::grid_vision

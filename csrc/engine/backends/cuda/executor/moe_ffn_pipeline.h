@@ -20,9 +20,9 @@ struct MoeFfnOptions {
     std::optional<bool> transfer_phases;
 };
 
-using MoeFfnShared=std::function<::tyloi::Tensor(const tyloi::cuda::Projector&,const ::tyloi::Tensor&)>;
+using MoeFfnShared=std::function<::tyloi::DenseTensor(const tyloi::cuda::Projector&,const ::tyloi::DenseTensor&)>;
 using MoeFfnDispatchObserver=std::function<void(const tyloi::MoeDispatchPlan&)>;
-using MoeFfnPrefetch=std::function<tyloi::cuda::DecodeWindow::Task(const ::tyloi::Tensor&)>;
+using MoeFfnPrefetch=std::function<tyloi::cuda::DecodeWindow::Task(const ::tyloi::DenseTensor&)>;
 class MoeFfnPipeline;
 struct QuantLinear;
 struct MoeFfnSharedWeights {
@@ -63,11 +63,11 @@ private:
 
 } // namespace tyloi::cuda
 
-::tyloi::Tensor run_moe_ffn_pipeline(
+::tyloi::DenseTensor run_moe_ffn_pipeline(
     std::shared_ptr<MoeFfnPipeline> pipeline,const tyloi::cuda::Projector& project,
-    const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,
-    const ::tyloi::Tensor& weights,bool batch_serial=false,int tile=0,int tiles=1);
+    const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,
+    const ::tyloi::DenseTensor& weights,bool batch_serial=false,int tile=0,int tiles=1);
 tyloi::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
-    std::shared_ptr<MoeFfnPipeline> pipeline,const ::tyloi::Tensor& ids);
+    std::shared_ptr<MoeFfnPipeline> pipeline,const ::tyloi::DenseTensor& ids);
 void activate_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);
 void drain_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);

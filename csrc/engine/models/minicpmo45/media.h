@@ -30,24 +30,24 @@ inline std::vector<MediaBound> media_bounds(std::span<const int64_t> values) {
     return result;
 }
 
-template <class Tensor> struct MultimodalInputs {
-    Tensor ids, pixels, patch_mask, target_sizes, audio_features, audio_lengths;
+template <class DenseTensor> struct MultimodalInputs {
+    DenseTensor ids, pixels, patch_mask, target_sizes, audio_features, audio_lengths;
     std::vector<MediaBound> images, audios;
 };
-template <class Tensor> struct MultimodalResult {
-    Tensor vision_states, image_embeddings, audio_embeddings, input_embeddings;
+template <class DenseTensor> struct MultimodalResult {
+    DenseTensor vision_states, image_embeddings, audio_embeddings, input_embeddings;
 };
 
 // The model owns modality order, resampling, and replacement geometry. Device
 // copies and the actual slice/scatter operations are supplied by the backend.
 template <class Ops>
-tyloi::StepSequence<MultimodalResult<typename Ops::Tensor>>
-encode(Ops &ops, MultimodalInputs<typename Ops::Tensor> &input) {
+tyloi::StepSequence<MultimodalResult<typename Ops::DenseTensor>>
+encode(Ops &ops, MultimodalInputs<typename Ops::DenseTensor> &input) {
     if (ops.rank(input.ids) == 1)
         input.ids = ops.batch_ids(std::move(input.ids));
     require_model(ops.rank(input.ids) == 2, "MiniCPM-o input_ids must have shape [batch,tokens]");
     input.ids = ops.device_ids(std::move(input.ids));
-    MultimodalResult<typename Ops::Tensor> result;
+    MultimodalResult<typename Ops::DenseTensor> result;
     result.input_embeddings = ops.embed(input.ids);
     co_yield tyloi::StepState::advanced;
     auto check_bound = [&](const MediaBound &bound, const auto &encoded, int64_t length) {
@@ -112,8 +112,8 @@ struct TtsSampling {
 // scales first and keeps at least minimum_keep tokens. These orders differ
 // from the text sampler and must not be interchanged.
 template <class Ops>
-auto sample_tts(Ops &ops, typename Ops::Tensor logits, const TtsSampling &config,
-                std::span<const typename Ops::Tensor> history, int64_t step, bool evaluator) {
+auto sample_tts(Ops &ops, typename Ops::DenseTensor logits, const TtsSampling &config,
+                std::span<const typename Ops::DenseTensor> history, int64_t step, bool evaluator) {
     if (evaluator)
         logits = ops.temperature(std::move(logits), config.temperature);
     if (!history.empty() && config.repetition_penalty != 1.0)
@@ -171,9 +171,9 @@ inline int64_t pooled_audio_length(int64_t frames) {
 }
 inline constexpr int64_t audio_chunk_frames = 50;
 
-template <class Tensor, class Query, class Key, class Value, class Cache, class Attend,
+template <class DenseTensor, class Query, class Key, class Value, class Cache, class Attend,
           class Output>
-auto encoder_attention(Tensor hidden, bool cached, Query query, Key key, Value value, Cache cache,
+auto encoder_attention(DenseTensor hidden, bool cached, Query query, Key key, Value value, Cache cache,
                        Attend attend, Output output) {
     auto q = query(hidden);
     auto k = key(hidden);
@@ -183,9 +183,9 @@ auto encoder_attention(Tensor hidden, bool cached, Query query, Key key, Value v
     return output(attend(std::move(q), std::move(k), std::move(v)));
 }
 
-template <class Tensor, class Layers, class Conv1, class Gelu, class Conv2, class Prepare,
+template <class DenseTensor, class Layers, class Conv1, class Gelu, class Conv2, class Prepare,
           class Layer, class Normalize, class Project1, class Relu, class Project2, class Pool>
-tyloi::StepSequence<Tensor> audio_encoder(Tensor features, Layers &layers, Conv1 conv1, Gelu gelu, Conv2 conv2,
+tyloi::StepSequence<DenseTensor> audio_encoder(DenseTensor features, Layers &layers, Conv1 conv1, Gelu gelu, Conv2 conv2,
                    Prepare prepare, Layer layer, Normalize normalize, Project1 project1, Relu relu,
                    Project2 project2, Pool pool) {
     auto hidden = gelu(conv1(std::move(features)));
@@ -200,8 +200,8 @@ tyloi::StepSequence<Tensor> audio_encoder(Tensor features, Layers &layers, Conv1
     co_yield pool(project2(relu(project1(normalize(std::move(hidden))))));
 }
 
-template <class Tensor, class Layers, class Patch, class Prepare, class Layer, class Normalize>
-tyloi::StepSequence<Tensor> vision_encoder(Tensor pixels, Layers &layers, Patch patch, Prepare prepare, Layer layer,
+template <class DenseTensor, class Layers, class Patch, class Prepare, class Layer, class Normalize>
+tyloi::StepSequence<DenseTensor> vision_encoder(DenseTensor pixels, Layers &layers, Patch patch, Prepare prepare, Layer layer,
                     Normalize normalize) {
     auto hidden = prepare(patch(std::move(pixels)));
     co_yield tyloi::StepState::advanced;
@@ -225,9 +225,9 @@ auto resample(ProjectKv project_kv, NormKv norm_kv, NormQ norm_q, Query query, K
 
 // Text-conditioned TTS has its own embedding and output head, but the decoder
 // traversal and logical position transitions are the same on every backend.
-template <class Tensor, class Layers, class Reset, class Prepare, class Positions, class Layer,
+template <class DenseTensor, class Layers, class Reset, class Prepare, class Positions, class Layer,
           class Normalize>
-auto tts_forward(Tensor embeddings, int64_t batch, int64_t tokens, int64_t capacity,
+auto tts_forward(DenseTensor embeddings, int64_t batch, int64_t tokens, int64_t capacity,
                  int64_t &cache_position, Layers &layers, Reset reset, Prepare prepare,
                  Positions positions, Layer layer, Normalize normalize) {
     require_model(batch > 0 && tokens > 0 && cache_position >= 0 && cache_position <= capacity &&

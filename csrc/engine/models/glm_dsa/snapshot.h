@@ -7,8 +7,8 @@
 namespace tyloi::models::glm_dsa {
 
 struct BlockSnapshot {
-    ::tyloi::Tensor kv_cache;
-    ::tyloi::Tensor index_cache;
+    ::tyloi::DenseTensor kv_cache;
+    ::tyloi::DenseTensor index_cache;
     int64_t kv_capacity = 0;
     int64_t index_capacity = 0;
     bool full_indexer = false;

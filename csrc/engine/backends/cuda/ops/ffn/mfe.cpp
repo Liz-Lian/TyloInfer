@@ -9,7 +9,7 @@
 namespace tyloi::cuda {
 
 
-MoeActivationWorkspace MfeScratch::get(const std::shared_ptr<const Pools>& pools, Tensor x,
+MoeActivationWorkspace MfeScratch::get(const std::shared_ptr<const Pools>& pools, DenseTensor x,
                                        int input_rows, int groups, int gs, bool stable) {
     std::lock_guard lock(mutex);
     for (auto it = values.begin(); it != values.end();) {
@@ -40,7 +40,7 @@ MoeActivationWorkspace MfeScratch::get(const std::shared_ptr<const Pools>& pools
             it->second.xscale.narrow(0, 0, input_rows)};
 }
 
-Tensor Mfe::forward(MfeScratch& scratch, Tensor x, const MoeRoutePlan& route,
+DenseTensor Mfe::forward(MfeScratch& scratch, DenseTensor x, const MoeRoutePlan& route,
                     bool input_prequantized, int epilogue_mode) const {
     if (epilogue_mode < 0 || epilogue_mode > 2 ||
         (epilogue_mode != 0 && out_per_expert % 2 != 0))
@@ -72,7 +72,7 @@ Tensor Mfe::forward(MfeScratch& scratch, Tensor x, const MoeRoutePlan& route,
     const bool stable = input_rows <= 2048;
     if (pools) for (const auto & pool : *pools) {
         check_device(pool.expert_local, x);
-        check_nint(pool.weight, x);
+        check_device(pool.weight, x);
         int groups = (int)pool.weight.ng;
         int gs = (int)pool.weight.gs;
         MoeActivationKey key{input_rows, groups, gs, x.get_device()};
@@ -100,7 +100,7 @@ Tensor Mfe::forward(MfeScratch& scratch, Tensor x, const MoeRoutePlan& route,
     return output;
 }
 
-Tensor Mfe::clamped(MfeScratch& scratch, Tensor gate_up, const MoeRoutePlan& route, double limit) const {
+DenseTensor Mfe::clamped(MfeScratch& scratch, DenseTensor gate_up, const MoeRoutePlan& route, double limit) const {
     if (!pools || pools->empty() || !gate_up.is_cuda() ||
             !gate_up.is_contiguous() ||
             gate_up.scalar_type() != ::tyloi::kFloat16 ||

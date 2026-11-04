@@ -18,8 +18,8 @@ struct KlMmqState {
     int64_t fallback_calls = 0;
     int64_t kv_cache_capacity = 0;
 
-    ::tyloi::Tensor prepare_activation(
-        ::tyloi::Tensor input);
+    ::tyloi::DenseTensor prepare_activation(
+        ::tyloi::DenseTensor input);
     void reset() noexcept;
 };
 

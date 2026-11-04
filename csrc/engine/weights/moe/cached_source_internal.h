@@ -10,7 +10,7 @@ struct MoeCachedCohort {
     int index = -1;
     const MixedMoePool * cpu = nullptr;
     MoeGpuArena * arena = nullptr;
-    std::vector<::tyloi::Tensor> cpu_fields;
+    std::vector<::tyloi::DenseTensor> cpu_fields;
     std::vector<const uint8_t *> mapped_fields;
     std::vector<int64_t> bytes_per_expert;
     std::vector<int32_t> expert_to_local;
@@ -411,15 +411,15 @@ public:
         return !range_store_ && !quant_source_ && route.ids.size(0) > 8;
     }
 
-    void require_cache_device(const ::tyloi::Tensor& input) const {
+    void require_cache_device(const ::tyloi::DenseTensor& input) const {
         if(input.is_cuda() && input.device()!=cache_->device())
             throw std::runtime_error("cached MoE input device differs from cache owner");
     }
 
-    ::tyloi::Tensor forward(
+    ::tyloi::DenseTensor forward(
             MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
-            ::tyloi::Tensor x,
+            ::tyloi::DenseTensor x,
             const MoeRoutePlan & route) {
         if (auto mixed = forward_hybrid_decode(scratch, options, mmq, x, route); mixed.defined()) return mixed;
         if (use_full_projection(route)) {
@@ -443,10 +443,10 @@ public:
         return output;
     }
 
-    ::tyloi::Tensor forward_prequantized(
+    ::tyloi::DenseTensor forward_prequantized(
             MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
-            ::tyloi::Tensor x,
+            ::tyloi::DenseTensor x,
             const MoeRoutePlan & route) {
         if (cache_->complete_residency()) {
             if (x.scalar_type()!=::tyloi::kFloat16)
@@ -483,10 +483,10 @@ public:
             *this, route_experts(route), true);
     }
 
-    ::tyloi::Tensor forward_glu_output(
+    ::tyloi::DenseTensor forward_glu_output(
             MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
-            ::tyloi::Tensor x,
+            ::tyloi::DenseTensor x,
             const MoeRoutePlan & route,
             bool gelu) {
         if (cache_->complete_residency()) {
@@ -517,10 +517,10 @@ public:
         return output;
     }
 
-    ::tyloi::Tensor forward_glu(
+    ::tyloi::DenseTensor forward_glu(
             MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
-            ::tyloi::Tensor gate_up,
+            ::tyloi::DenseTensor gate_up,
             const MoeRoutePlan & route,
             bool gelu) {
         auto activation = gelu
@@ -529,10 +529,10 @@ public:
         return forward(scratch, options, mmq, heterogeneous, activation, route);
     }
 
-    ::tyloi::Tensor forward_clamped_swiglu(
+    ::tyloi::DenseTensor forward_clamped_swiglu(
             MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
-            ::tyloi::Tensor gate_up,
+            ::tyloi::DenseTensor gate_up,
             const MoeRoutePlan & route,
             double limit) {
         if (quant_source_) {
@@ -629,8 +629,8 @@ private:
         return stage_cpu_mixed_moe(runtime, heterogeneous);
     }
 
-    ::tyloi::Tensor forward_hybrid_decode(MoeScratch& scratch, const MoeOptions& options, KlMmqState& mmq,
-            const ::tyloi::Tensor& x, const MoeRoutePlan& route) {
+    ::tyloi::DenseTensor forward_hybrid_decode(MoeScratch& scratch, const MoeOptions& options, KlMmqState& mmq,
+            const ::tyloi::DenseTensor& x, const MoeRoutePlan& route) {
         // This adapter preserves decode's one-token kernel dispatch. Prefill
         // keeps its grouped GPU execution until a multi-token adapter is ready.
         if ((!cache_->complete_residency() && (!cache_->options_.hybrid_cpu)) || !quant_source_ ||
@@ -675,7 +675,7 @@ private:
         MoeRoutePlan cpu_route;
         cpu_route.ids = ::tyloi::cuda::tensor(cpu_ids).reshape({1, static_cast<std::int64_t>(cpu_ids.size())});
         cpu_route.n_experts = cpu_->n_experts;
-        ::tyloi::Tensor gpu_y, gpu_index;
+        ::tyloi::DenseTensor gpu_y, gpu_index;
         if (!gpu_ids.empty()) {
             require_cache_device(x);
             const MfqCudaGuard guard(cache_->device());
@@ -696,8 +696,8 @@ private:
         return result;
     }
 
-    ::tyloi::Tensor forward_resident_batch(MoeScratch& scratch, const MoeOptions& options, KlMmqState& mmq,
-            const ::tyloi::Tensor& x,const MoeRoutePlan& route) {
+    ::tyloi::DenseTensor forward_resident_batch(MoeScratch& scratch, const MoeOptions& options, KlMmqState& mmq,
+            const ::tyloi::DenseTensor& x,const MoeRoutePlan& route) {
         const auto tokens=route.ids.size(0),routes=route.ids.size(1);
         if ((x.dim()!=2 && x.dim()!=3) || x.size(0)!=tokens || x.size(-1)!=cpu_->neuron_len ||
             (x.dim()==3 && x.size(1)!=routes)) throw std::runtime_error("resident batch input shape mismatch");
@@ -725,7 +725,7 @@ private:
             std::memcpy(static_cast<std::byte*>(cpu_x.data_ptr())+row*row_bytes,
                 static_cast<const std::byte*>(host_x.data_ptr())+from*row_bytes,row_bytes);
         }
-        ::tyloi::Tensor gpu_y;
+        ::tyloi::DenseTensor gpu_y;
         if (!gpu_ids.empty()) {
             require_cache_device(x);
             const MfqCudaGuard guard(cache_->device());

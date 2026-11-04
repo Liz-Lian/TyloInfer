@@ -11,10 +11,10 @@
 #include <utility>
 #include <vector>
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using ActivationKind = tyloi::ops::MlpActivation;
 
-Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Tensor &ids,
+DenseTensor dense_routed_projection(const DenseTensor &bank, const DenseTensor &input, const DenseTensor &ids,
                                std::size_t gather_budget_bytes) {
     TYLOINFER_RUNTIME_CHECK(bank.is_cuda() && bank.is_contiguous() && bank.dim() == 3,
                       "dense routed expert bank must be contiguous CUDA [experts,out,in]");
@@ -25,7 +25,7 @@ Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Te
                       "dense routed input shape does not match the expert bank");
     TYLOINFER_RUNTIME_CHECK(input.dim() == 2 || (input.dim() == 3 && input.size(1) == routes),
                       "dense routed activation shape does not match the route plan");
-    auto project = [&](const Tensor &chunk_ids, const Tensor &chunk_input) {
+    auto project = [&](const DenseTensor &chunk_ids, const DenseTensor &chunk_input) {
         const int64_t count = chunk_ids.size(0);
         auto selected =
             bank.index_select(0, chunk_ids.reshape({-1}).to(::tyloi::kInt64))
@@ -43,7 +43,7 @@ Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Te
     const auto chunk_rows = static_cast<int64_t>(std::max<std::size_t>(1, rows_per_chunk));
     if (rows <= chunk_rows)
         return project(ids, input);
-    std::vector<Tensor> parts;
+    std::vector<DenseTensor> parts;
     parts.reserve(static_cast<std::size_t>((rows + chunk_rows - 1) / chunk_rows));
     for (int64_t start = 0; start < rows; start += chunk_rows) {
         const auto count = std::min(chunk_rows, rows - start);
@@ -55,7 +55,7 @@ Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Te
 namespace tyloi::cuda {
 
 
-Tensor expert_activation(ActivationKind activation, Tensor gate, Tensor up, double limit) {
+DenseTensor expert_activation(ActivationKind activation, DenseTensor gate, DenseTensor up, double limit) {
     if (activation == ActivationKind::relu_squared) {
         TYLOINFER_RUNTIME_CHECK(!gate.defined(), "relu-squared experts have no gate projection");
         return relu_squared_cuda(up.contiguous());
@@ -74,7 +74,7 @@ Tensor expert_activation(ActivationKind activation, Tensor gate, Tensor up, doub
     return (up * ::tyloi::cuda::silu(gate)).contiguous();
 }
 
-void Mlp::check(const Tensor& input, int primary) const {
+void Mlp::check(const DenseTensor& input, int primary) const {
     check_projection(gate_up, input);
     const bool relu = activation == ActivationKind::relu_squared;
     if (gate_up.outs.size() != (relu ? 1u : 2u))
@@ -130,14 +130,14 @@ bool Mlp::parallel() const {
     return true;
 }
 
-::tyloi::Tensor Mlp::sharded(
+::tyloi::DenseTensor Mlp::sharded(
         CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq, Collectives& collectives,
         int primary, bool peer_first, bool reduce_to_primary, bool fp16_reduce,
-        ::tyloi::Tensor xh) const {
+        ::tyloi::DenseTensor xh) const {
     auto shape = xh.sizes().vec();
     auto flat = xh.reshape({-1, xh.size(-1)});
     const size_t shard_count = down.tensor_parallel_shards.size();
-    std::vector<::tyloi::Tensor> partials(shard_count);
+    std::vector<::tyloi::DenseTensor> partials(shard_count);
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
         const size_t index = parallel_index(peer_first, launch_position, shard_count);
         const auto &gate_shard = gate_up.layers[0].tensor_parallel_shards[index];
@@ -147,7 +147,7 @@ bool Mlp::parallel() const {
         auto local_x = collectives.copy(flat, gate_shard.device);
         auto gate_output = run_quant_linear_shard(profiler, mmq, tq, gate_shard, local_x);
         auto up_output = run_quant_linear_shard(profiler, mmq, tq, up_shard, local_x);
-        ::tyloi::Tensor hidden;
+        ::tyloi::DenseTensor hidden;
         if (geglu) {
             hidden = gelu_mul_cuda(gate_output.contiguous(), up_output.contiguous());
         } else if (swiglu_limit > 0.0) {
@@ -170,10 +170,10 @@ bool Mlp::parallel() const {
     return output.reshape(shape);
 }
 
-::tyloi::Tensor Mlp::forward(
+::tyloi::DenseTensor Mlp::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        ::tyloi::Tensor xh) const {
-    using Tensor = ::tyloi::Tensor;
+        ::tyloi::DenseTensor xh) const {
+    using DenseTensor = ::tyloi::DenseTensor;
     if (activation == ActivationKind::relu_squared) {
         TYLOINFER_RUNTIME_CHECK(!parallel(),
                           "relu-squared MLP does not support tensor parallelism");
@@ -199,7 +199,7 @@ bool Mlp::parallel() const {
                                    down.nvq, xh.reshape({-1, xh.size(-1)}))
             .reshape(shape);
     }
-    std::optional<Tensor> fused_hidden;
+    std::optional<DenseTensor> fused_hidden;
     if (limit <= 0.0 && !geglu && gate_up.tq.defined() &&
         gate_up.outs.size() == 2 && gate_up.outs[0] == gate_up.outs[1])
         fused_hidden = profiler.measure("ffn.gate_up_swiglu", [&] { return project.swiglu(gate_up, xh); });
@@ -222,7 +222,7 @@ bool Mlp::parallel() const {
         });
     auto gate = std::move(parts[0]);
     auto up = std::move(parts[1]);
-    Tensor hidden;
+    DenseTensor hidden;
     if (geglu)
         hidden = profiler.measure("ffn.geglu", [&] { return gelu_mul_cuda(gate.contiguous(), up.contiguous()); });
     else if (limit > 0.0)
@@ -238,8 +238,8 @@ bool Mlp::parallel() const {
     return profiler.measure("ffn.down", [&] { return project.run(down, hidden); });
 }
 
-::tyloi::Tensor Mlp::bf16(
-        const Projector& project, CudaProfiler& profiler, bool fused, Tensor input) const {
+::tyloi::DenseTensor Mlp::bf16(
+        const Projector& project, CudaProfiler& profiler, bool fused, DenseTensor input) const {
     auto parts = profiler.measure("full.minicpmo45_ffn_gate_up", [&] {
         return project.run(gate_up, input);
     });
@@ -261,9 +261,9 @@ bool Mlp::parallel() const {
     });
 }
 
-::tyloi::Tensor Mlp::kld(
+::tyloi::DenseTensor Mlp::kld(
         const Projector& project, CudaProfiler& profiler, KlMmqState& mmq,
-        ::tyloi::Tensor xh) const {
+        ::tyloi::DenseTensor xh) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     TYLOINFER_RUNTIME_CHECK(!parallel() &&
                           activation == ActivationKind::silu_gated && !geglu &&
@@ -278,7 +278,7 @@ bool Mlp::parallel() const {
 #endif
 }
 
-bool Mlp::can_fuse(const Tensor& x, const Tensor& residual) const {
+bool Mlp::can_fuse(const DenseTensor& x, const DenseTensor& residual) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (activation != ActivationKind::silu_gated || geglu || swiglu_limit > 0.0 ||
         parallel() || !x.is_cuda() || !residual.is_cuda() ||
@@ -299,7 +299,7 @@ bool Mlp::can_fuse(const Tensor& x, const Tensor& residual) const {
 #endif
 }
 
-Tensor Mlp::fused(CudaProfiler& profiler, Tensor x, Tensor residual) const {
+DenseTensor Mlp::fused(CudaProfiler& profiler, DenseTensor x, DenseTensor residual) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     TYLOINFER_RUNTIME_CHECK(can_fuse(x, residual),
                       "FFN fused residual requires a compatible single-token NVQ FFN");

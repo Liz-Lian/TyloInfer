@@ -70,17 +70,17 @@ std::int64_t sample_top_k_top_p(std::span<const float> logits, std::int64_t top_
 }
 
 // Ops supplies:
-//   using Tensor;
+//   using DenseTensor;
 //   using Params;
-//   Tensor sample_greedy(Tensor);
-//   Tensor sample_stochastic(Tensor, float random, const Params&);
-//   Tensor apply_penalties(Tensor, const Tensor& counts, const Params&);
-// Tensor arguments are consumed, so an Ops implementation may update them in
+//   DenseTensor sample_greedy(DenseTensor);
+//   DenseTensor sample_stochastic(DenseTensor, float random, const Params&);
+//   DenseTensor apply_penalties(DenseTensor, const DenseTensor& counts, const Params&);
+// DenseTensor arguments are consumed, so an Ops implementation may update them in
 // place. Callers that still need the original tensor must clone it first.
 template <typename Ops>
 class Sampler {
 public:
-    using Tensor = typename Ops::Tensor;
+    using DenseTensor = typename Ops::DenseTensor;
     using Params = typename Ops::Params;
 
     explicit Sampler(Params params = Params{}, Ops ops = Ops{})
@@ -128,7 +128,7 @@ public:
         return uniform(rng_);
     }
 
-    Tensor sample(Tensor logits) {
+    DenseTensor sample(DenseTensor logits) {
         if (greedy()) {
             return ops_.sample_greedy(std::move(logits));
         }
@@ -136,14 +136,14 @@ public:
             std::move(logits), next_uniform_float(), params_);
     }
 
-    Tensor sample(Tensor logits, const Tensor& counts) {
+    DenseTensor sample(DenseTensor logits, const DenseTensor& counts) {
         if (has_penalties()) {
             logits = apply_penalties(std::move(logits), counts);
         }
         return sample(std::move(logits));
     }
 
-    Tensor apply_penalties(Tensor logits, const Tensor& counts) {
+    DenseTensor apply_penalties(DenseTensor logits, const DenseTensor& counts) {
         return ops_.apply_penalties(
             std::move(logits), counts, params_);
     }
@@ -159,10 +159,10 @@ private:
 };
 
 template <typename Ops>
-typename Ops::Tensor sample_logits(
+typename Ops::DenseTensor sample_logits(
         Sampler<Ops>& sampler,
-        typename Ops::Tensor logits,
-        const typename Ops::Tensor& counts,
+        typename Ops::DenseTensor logits,
+        const typename Ops::DenseTensor& counts,
         const MfqTokenConstraintPtr& token_constraint = {}) {
     logits = logits.contiguous().view({1, -1});
     if (sampler.has_penalties()) {

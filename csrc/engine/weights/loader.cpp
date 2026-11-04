@@ -55,7 +55,7 @@ static std::vector<std::uint8_t> read_weight(
     return result;
 }
 
-::tyloi::Tensor tyloi::cuda::weight_loader::Loader::tensor(const std::string& name) const {
+::tyloi::DenseTensor tyloi::cuda::weight_loader::Loader::tensor(const std::string& name) const {
     const auto& mfq = source;
     const tyloi::cuda::AllocationScope weight_memory;
     const bool cpu_layer = placement.cpu;
@@ -885,7 +885,7 @@ Linear Loader::linear(const std::string& name) const {
     return std::make_shared<const QuantLinear>(projection(name));
 }
 
-Tensor Loader::dense(const std::string& name) const {
+DenseTensor Loader::dense(const std::string& name) const {
     const auto& file = source;
     const tyloi::cuda::AllocationScope weight_memory;
     const auto& dtype=require_tensor(file, name).dtype;
@@ -905,7 +905,7 @@ Routed Loader::routed(const std::string& name, int layer,
     const auto& dtype=require_tensor(file, name).dtype;
     if(dtype=="TQ") {
         auto weight=load_tq_routed_weight(cache,tq,file,name,experts,output,input);
-        Routed result=[weight](const Projector&,const Tensor& source,const Tensor& ids) {
+        Routed result=[weight](const Projector&,const DenseTensor& source,const DenseTensor& ids) {
             return weight->forward(source,ids);
         };
         result.tq_projections.push_back(std::move(weight));
@@ -917,7 +917,7 @@ Routed Loader::routed(const std::string& name, int layer,
         auto w=dense(name);
         TYLOINFER_RUNTIME_CHECK(w.sizes().vec()==std::vector<int64_t>({experts,output,input}),
             "dense expert tensor shape mismatch: ",name);
-        return [w,output,input](const Projector&, const Tensor& x,const Tensor& ids) {
+        return [w,output,input](const Projector&, const DenseTensor& x,const DenseTensor& ids) {
             const auto rows=ids.size(0), routes=ids.size(1);
             auto selected=w.index_select(0,ids.reshape({-1}).to(::tyloi::kInt64)).reshape({rows,routes,output,input});
             auto source=x.dim()==2 ? x.unsqueeze(1).expand({rows,routes,input}) : x;
@@ -932,7 +932,7 @@ Routed Loader::routed(const std::string& name, int layer,
     auto w=std::make_shared<tyloi::cuda::Experts>(this->build_experts(name,true,layer,role.empty() ? this->role : role));
     TYLOINFER_RUNTIME_CHECK(w->n_experts==experts && w->out_per_expert==output && w->neuron_len==input,
         "routed tensor shape mismatch: ",name);
-    Routed result=[w,experts](const Projector& project, const Tensor& x,const Tensor& ids) {
+    Routed result=[w,experts](const Projector& project, const DenseTensor& x,const DenseTensor& ids) {
         auto route=build_moe_route_plan(ids.to(::tyloi::kInt32).contiguous(),int(experts));
         return project.run(*w, x.contiguous(), route);
     };
@@ -958,7 +958,7 @@ Routed Loader::routed_gate_up(const std::string& mlp_prefix,
     projections.insert(projections.end(),up.projections.begin(),up.projections.end());
     auto tq_projections=gate.tq_projections;
     tq_projections.insert(tq_projections.end(),up.tq_projections.begin(),up.tq_projections.end());
-    Routed result=[gate=std::move(gate),up=std::move(up)](const Projector& project, const Tensor& x,const Tensor& ids) {
+    Routed result=[gate=std::move(gate),up=std::move(up)](const Projector& project, const DenseTensor& x,const DenseTensor& ids) {
         return ::tyloi::cuda::cat({gate(project,x,ids),up(project,x,ids)},-1);
     };
     result.projections=std::move(projections);
@@ -970,7 +970,7 @@ Routed Loader::routed_gate_up(const std::string& mlp_prefix,
 
 } // namespace tyloi::cuda::weight_loader
 
-::tyloi::Tensor tyloi::cuda::weight_loader::Loader::host(const std::string &name) const {
+::tyloi::DenseTensor tyloi::cuda::weight_loader::Loader::host(const std::string &name) const {
     const auto &record = require_tensor(source, name);
     ::tyloi::ScalarType dtype;
     size_t item_size;
@@ -993,7 +993,7 @@ Routed Loader::routed_gate_up(const std::string& mlp_prefix,
                          ::tyloi::TensorOptions().dtype(dtype)).clone();
 }
 
-::tyloi::Tensor tyloi::cuda::weight_loader::Loader::native(const std::string &name) const {
+::tyloi::DenseTensor tyloi::cuda::weight_loader::Loader::native(const std::string &name) const {
     const tyloi::cuda::AllocationScope weight_memory;
     MfqCudaGuard guard(placement.device);
     return host(name).to(::tyloi::kCUDA).contiguous();
@@ -1081,7 +1081,7 @@ BiasWeight Loader::affine(const std::string& weight_name,
     return result;
 }
 
-Loader::Tensor Loader::norm(const std::string& name, std::int64_t width) const {
+Loader::DenseTensor Loader::norm(const std::string& name, std::int64_t width) const {
     auto weight = tensor(name).to(::tyloi::kFloat32).contiguous();
     if (weight.dim() != 1 || weight.size(0) != width) {
         throw std::runtime_error("vision RMSNorm width mismatch: " + name);

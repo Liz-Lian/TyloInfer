@@ -33,7 +33,7 @@
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 
-using EngramTensor = ::tyloi::Tensor;
+using EngramTensor = ::tyloi::DenseTensor;
 using EngramConfig = tyloi::models::deepseek_v41::Config;
 
 namespace engram_detail {

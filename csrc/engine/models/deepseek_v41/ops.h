@@ -33,24 +33,24 @@ namespace tyloi::cuda { class Pipelines; }
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using CommonConfig = tyloi::models::deepseek_v41::Config;
 
 struct SharedState {
     CommonConfig config;
-    Tensor compressed_kv;
-    Tensor index_k;
-    Tensor topk;
-    Tensor candidate_blocks;
-    Tensor previous_pre;
-    Tensor attention_meta;
+    DenseTensor compressed_kv;
+    DenseTensor index_k;
+    DenseTensor topk;
+    DenseTensor candidate_blocks;
+    DenseTensor previous_pre;
+    DenseTensor attention_meta;
     std::unique_ptr<EngramHashState> engram_hash;
     EngramHashBatch engram_hashes;
     std::vector<Engram*> engram_prefetch;
     std::vector<const tyloi::cuda::Ffn*> router_prefetch;
-    std::vector<Tensor> dspark_target_hiddens;
+    std::vector<DenseTensor> dspark_target_hiddens;
     bool capture_dspark_targets = false;
-    Tensor image_mask, text_rows, routing_mask;
+    DenseTensor image_mask, text_rows, routing_mask;
     std::vector<int64_t> text_row_ids;
     std::int64_t compressed_length = 0;
     std::int64_t ratio = 0;
@@ -59,7 +59,7 @@ struct SharedState {
     std::int64_t tokens = 0;
     std::int64_t next_layer = 0;
 
-    void set_image_mask(Tensor mask) {
+    void set_image_mask(DenseTensor mask) {
         if(!mask.defined()) {image_mask={};text_rows={};routing_mask={};text_row_ids.clear();return;}
         TYLOINFER_RUNTIME_CHECK(mask.is_cpu() && mask.dim()==2 && mask.is_contiguous() &&
                           mask.scalar_type()==::tyloi::kUInt8,
@@ -83,7 +83,7 @@ struct SharedState {
     }
 
     void capture_dspark_target(std::int64_t layer, const CommonConfig &config,
-                               const Tensor &hidden) {
+                               const DenseTensor &hidden) {
         if (!capture_dspark_targets)
             return;
         const auto found = std::find(config.dspark_target_layer_ids.begin(),
@@ -98,11 +98,11 @@ struct SharedState {
         dspark_target_hiddens[slot] = hidden.mean(2).contiguous();
     }
 
-    Tensor dspark_target_hidden() const {
+    DenseTensor dspark_target_hidden() const {
         TYLOINFER_RUNTIME_CHECK(capture_dspark_targets && !dspark_target_hiddens.empty() &&
                               std::all_of(dspark_target_hiddens.begin(),
                                           dspark_target_hiddens.end(),
-                                          [](const Tensor &value) { return value.defined(); }),
+                                          [](const DenseTensor &value) { return value.defined(); }),
                           "DeepSeek-V4.1 DSpark target layers were not fully captured");
         return dspark_target_hiddens.size() == 1
                    ? dspark_target_hiddens.front()
@@ -125,11 +125,11 @@ struct SharedState {
     }
 
     void reset_session(std::int64_t current_batch) {
-        compressed_kv = Tensor();
-        index_k = Tensor();
-        topk = Tensor();
-        candidate_blocks = Tensor();
-        previous_pre = Tensor();
+        compressed_kv = DenseTensor();
+        index_k = DenseTensor();
+        topk = DenseTensor();
+        candidate_blocks = DenseTensor();
+        previous_pre = DenseTensor();
         engram_hashes = {};
         dspark_target_hiddens.clear();
         capture_dspark_targets = false;
@@ -147,12 +147,12 @@ struct SharedState {
 
     void enter_layer(std::int64_t layer, std::int64_t layer_count, std::int64_t current_batch,
                      std::int64_t current_tokens, std::int64_t current_position,
-                     const ::tyloi::Device &device, const Tensor &token_ids) {
+                     const ::tyloi::Device &device, const DenseTensor &token_ids) {
         if (layer == 0) {
-            compressed_kv = Tensor();
-            index_k = Tensor();
-            topk = Tensor();
-            candidate_blocks = Tensor();
+            compressed_kv = DenseTensor();
+            index_k = DenseTensor();
+            topk = DenseTensor();
+            candidate_blocks = DenseTensor();
             compressed_length = 0;
             ratio = 0;
             cache_position = current_position;
@@ -196,7 +196,7 @@ struct SharedState {
         }
     }
 
-    Tensor final_collapse(const Tensor &hidden, std::int64_t layer_count) const {
+    DenseTensor final_collapse(const DenseTensor &hidden, std::int64_t layer_count) const {
         TYLOINFER_RUNTIME_CHECK(hidden.dim() == 4 && hidden.size(2) == 4 && previous_pre.defined() &&
                               previous_pre.sizes() == hidden.sizes().slice(0, 3) &&
                               next_layer == layer_count,
@@ -210,17 +210,17 @@ struct SharedState {
 };
 
 struct AttentionState {
-    Tensor local_kv;
-    Tensor compressed_kv;
-    Tensor index_k;
-    Tensor partial_kv;
-    Tensor partial_score;
+    DenseTensor local_kv;
+    DenseTensor compressed_kv;
+    DenseTensor index_k;
+    DenseTensor partial_kv;
+    DenseTensor partial_score;
     std::int64_t position = 0;
     std::int64_t compressed_length = 0;
     std::int64_t partial_length = 0;
 };
 
-inline Tensor weighted_rms(const Tensor &input, const Tensor &weight, double epsilon) {
+inline DenseTensor weighted_rms(const DenseTensor &input, const DenseTensor &weight, double epsilon) {
     const auto shape = input.sizes().vec();
     TYLOINFER_RUNTIME_CHECK(!shape.empty() && weight.numel() == shape.back(),
                       "DeepSeek-V4.1 weighted RMS geometry mismatch");
@@ -231,7 +231,7 @@ inline Tensor weighted_rms(const Tensor &input, const Tensor &weight, double eps
         .contiguous();
 }
 
-inline Tensor rotate_token_major_tail(Tensor input, const Tensor &positions,
+inline DenseTensor rotate_token_major_tail(DenseTensor input, const DenseTensor &positions,
                                       const TailRope &rope, bool inverse = false) {
     TYLOINFER_RUNTIME_CHECK(input.dim() == 3, "DeepSeek-V4.1 RoPE input must be [B,T,D]");
     return rope.forward(input.unsqueeze(1).contiguous(), positions, inverse)
@@ -239,14 +239,14 @@ inline Tensor rotate_token_major_tail(Tensor input, const Tensor &positions,
         .contiguous();
 }
 
-inline Tensor empty_topk(std::int64_t batch, std::int64_t tokens,
+inline DenseTensor empty_topk(std::int64_t batch, std::int64_t tokens,
                          const ::tyloi::Device &device) {
     return ::tyloi::cuda::empty(
         {batch, tokens, 0},
         ::tyloi::TensorOptions().device(device).dtype(::tyloi::kInt32));
 }
 
-inline Tensor normalize_topk(Tensor selected, const Tensor &values, std::int64_t pool_length) {
+inline DenseTensor normalize_topk(DenseTensor selected, const DenseTensor &values, std::int64_t pool_length) {
     selected = selected.to(::tyloi::kInt64).contiguous();
     auto valid = (selected >= 0.0) & (selected < static_cast<double>(pool_length));
     valid = valid & ::tyloi::cuda::isneginf(values).logical_not();
@@ -257,15 +257,15 @@ inline Tensor normalize_topk(Tensor selected, const Tensor &values, std::int64_t
         .contiguous();
 }
 
-inline Tensor select_topk(const Tensor &scores, std::int64_t requested, std::int64_t pool_length,
-                          const std::optional<Tensor> &source_indices = std::nullopt) {
+inline DenseTensor select_topk(const DenseTensor &scores, std::int64_t requested, std::int64_t pool_length,
+                          const std::optional<DenseTensor> &source_indices = std::nullopt) {
     const auto width = scores.size(-1);
     const auto count = std::min(requested, width);
     if (count <= 0) {
         return empty_topk(scores.size(0), scores.size(1), scores.device());
     }
-    Tensor relative;
-    Tensor values;
+    DenseTensor relative;
+    DenseTensor values;
     if (count == width) {
         relative =
             ::tyloi::cuda::arange(width, scores.options().dtype(::tyloi::kInt64))
@@ -288,7 +288,7 @@ inline Tensor select_topk(const Tensor &scores, std::int64_t requested, std::int
     return normalize_topk(selected, values, pool_length);
 }
 
-inline Tensor candidate_blocks_from_scores(const Tensor &scores, std::int64_t ratio,
+inline DenseTensor candidate_blocks_from_scores(const DenseTensor &scores, std::int64_t ratio,
                                            std::int64_t position, std::int64_t requested_blocks,
                                            std::int64_t block_size) {
     const auto batch = scores.size(0);
@@ -296,7 +296,7 @@ inline Tensor candidate_blocks_from_scores(const Tensor &scores, std::int64_t ra
     const auto width = scores.size(2);
     const auto blocks = (width + block_size - 1) / block_size;
     const auto padded = blocks * block_size;
-    Tensor padded_scores = scores;
+    DenseTensor padded_scores = scores;
     if (padded != width) {
         padded_scores = ::tyloi::cuda::cat(
             {scores,
@@ -324,7 +324,7 @@ inline Tensor candidate_blocks_from_scores(const Tensor &scores, std::int64_t ra
         .contiguous();
 }
 
-inline Tensor candidate_positions(const Tensor &blocks, std::int64_t block_size,
+inline DenseTensor candidate_positions(const DenseTensor &blocks, std::int64_t block_size,
                                   std::int64_t pool_length) {
     const auto count = blocks.size(-1);
     auto block64 = blocks.to(::tyloi::kInt64);
@@ -340,10 +340,10 @@ inline Tensor candidate_positions(const Tensor &blocks, std::int64_t block_size,
 }
 
 struct MhcResult {
-    Tensor branch;
-    Tensor next_pre;
-    Tensor post;
-    Tensor combination;
+    DenseTensor branch;
+    DenseTensor next_pre;
+    DenseTensor post;
+    DenseTensor combination;
 };
 
 struct Block final : ::Block {
@@ -353,21 +353,21 @@ struct Block final : ::Block {
     std::int64_t max_context = 0;
     std::shared_ptr<SharedState> shared;
     AttentionState state;
-    Tensor current_ids;
+    DenseTensor current_ids;
 
-    Tensor attention_norm;
-    Tensor mlp_norm;
-    Tensor query_a_norm;
-    Tensor key_value_norm;
-    Tensor sinks;
-    Tensor attention_mhc_function;
-    Tensor attention_mhc_scale;
-    Tensor attention_mhc_base;
-    Tensor mlp_mhc_function;
-    Tensor mlp_mhc_scale;
-    Tensor mlp_mhc_base;
-    Tensor compressor_norm;
-    Tensor index_key_norm;
+    DenseTensor attention_norm;
+    DenseTensor mlp_norm;
+    DenseTensor query_a_norm;
+    DenseTensor key_value_norm;
+    DenseTensor sinks;
+    DenseTensor attention_mhc_function;
+    DenseTensor attention_mhc_scale;
+    DenseTensor attention_mhc_base;
+    DenseTensor mlp_mhc_function;
+    DenseTensor mlp_mhc_scale;
+    DenseTensor mlp_mhc_base;
+    DenseTensor compressor_norm;
+    DenseTensor index_key_norm;
 
     QuantLinear query_a;
     QuantLinear query_b;
@@ -380,15 +380,15 @@ struct Block final : ::Block {
     QuantLinear index_key;
     QuantLinear index_score;
     tyloi::cuda::Ffn mlp;
-    Tensor vision_router_bias;
+    DenseTensor vision_router_bias;
     TailRope rope;
     std::unique_ptr<Engram> engram;
-    Tensor speculative_local_slots;
-    Tensor speculative_slot_ids;
-    Tensor speculative_partial_kv;
-    Tensor speculative_partial_score;
-    Tensor speculative_projected_kv;
-    Tensor speculative_projected_score;
+    DenseTensor speculative_local_slots;
+    DenseTensor speculative_slot_ids;
+    DenseTensor speculative_partial_kv;
+    DenseTensor speculative_partial_score;
+    DenseTensor speculative_projected_kv;
+    DenseTensor speculative_projected_score;
     std::int64_t speculative_position = -1;
     std::int64_t speculative_compressed_length = 0;
     std::int64_t speculative_partial_length = 0;
@@ -406,10 +406,10 @@ struct Block final : ::Block {
                               .dtype(::tyloi::kFloat16);
         state.local_kv =
             ::tyloi::cuda::zeros({batch, config.sliding_window, config.head_dim}, half);
-        state.compressed_kv = Tensor();
-        state.index_k = Tensor();
-        state.partial_kv = Tensor();
-        state.partial_score = Tensor();
+        state.compressed_kv = DenseTensor();
+        state.index_k = DenseTensor();
+        state.partial_kv = DenseTensor();
+        state.partial_score = DenseTensor();
         if (kv_source()) {
             const auto capacity = std::max<std::int64_t>(1, max_context / ratio);
             state.compressed_kv =
@@ -426,12 +426,12 @@ struct Block final : ::Block {
         state.position = 0;
         state.compressed_length = 0;
         state.partial_length = 0;
-        speculative_local_slots = Tensor();
-        speculative_slot_ids = Tensor();
-        speculative_partial_kv = Tensor();
-        speculative_partial_score = Tensor();
-        speculative_projected_kv = Tensor();
-        speculative_projected_score = Tensor();
+        speculative_local_slots = DenseTensor();
+        speculative_slot_ids = DenseTensor();
+        speculative_partial_kv = DenseTensor();
+        speculative_partial_score = DenseTensor();
+        speculative_projected_kv = DenseTensor();
+        speculative_projected_score = DenseTensor();
         speculative_position = -1;
         speculative_pending = false;
         prefilled_global_end = -1;
@@ -465,12 +465,12 @@ struct Block final : ::Block {
 
     void commit_speculative() override {
         speculative_pending = false;
-        speculative_local_slots = Tensor();
-        speculative_slot_ids = Tensor();
-        speculative_partial_kv = Tensor();
-        speculative_partial_score = Tensor();
-        speculative_projected_kv = Tensor();
-        speculative_projected_score = Tensor();
+        speculative_local_slots = DenseTensor();
+        speculative_slot_ids = DenseTensor();
+        speculative_partial_kv = DenseTensor();
+        speculative_partial_score = DenseTensor();
+        speculative_projected_kv = DenseTensor();
+        speculative_projected_score = DenseTensor();
         speculative_position = -1;
     }
 
@@ -510,11 +510,11 @@ struct Block final : ::Block {
         commit_speculative();
     }
 
-    void set_token_ids(const Tensor &ids) override { current_ids = ids; }
+    void set_token_ids(const DenseTensor &ids) override { current_ids = ids; }
 
-    MhcResult collapse(CudaProfiler &profiler, const Tensor &residual, const Tensor &previous_pre,
-                       const Tensor &function, const Tensor &scale, const Tensor &base,
-                       const Tensor &norm, const char *profile) const {
+    MhcResult collapse(CudaProfiler &profiler, const DenseTensor &residual, const DenseTensor &previous_pre,
+                       const DenseTensor &function, const DenseTensor &scale, const DenseTensor &base,
+                       const DenseTensor &norm, const char *profile) const {
         return profiler.measure(profile, [&]() {
             if(residual.size(0)*residual.size(1)<=8) {
                 auto partials=deepseek_v41_hc_project_cuda(residual,previous_pre,function);
@@ -531,7 +531,7 @@ struct Block final : ::Block {
         });
     }
 
-    Tensor expand(CudaProfiler &profiler, const Tensor &branch, const Tensor &residual,
+    DenseTensor expand(CudaProfiler &profiler, const DenseTensor &branch, const DenseTensor &residual,
                   const MhcResult &mix, const char *profile) const {
         return profiler.measure(profile, [&]() {
             return dsv4_hc_post_cuda(branch.contiguous(), residual.contiguous(),
@@ -539,16 +539,16 @@ struct Block final : ::Block {
         });
     }
 
-    Tensor output_projection(CudaExecutionContext &execution, Tensor attention) const {
+    DenseTensor output_projection(CudaExecutionContext &execution, DenseTensor attention) const {
         return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).low_rank(attention, output_a, output_b,
                                                config.o_groups, true, false);
     }
 
-    std::optional<Tensor> update_compressed_source(CudaExecutionContext &execution,
-                                                   const Tensor &input, std::int64_t position) {
+    std::optional<DenseTensor> update_compressed_source(CudaExecutionContext &execution,
+                                                   const DenseTensor &input, std::int64_t position) {
         const auto batch = input.size(0);
         const auto tokens = input.size(1);
-        Tensor projected_kv, projected_score;
+        DenseTensor projected_kv, projected_score;
         return tyloi::models::deepseek_v41::compress(
             state, tokens, position, ratio,
             [&] {
@@ -596,9 +596,9 @@ struct Block final : ::Block {
             [](const auto &emitted) { return ::tyloi::cuda::cat(emitted, 1).contiguous(); });
     }
 
-    void publish_compressed_source(CudaExecutionContext &execution, const Tensor &input,
+    void publish_compressed_source(CudaExecutionContext &execution, const DenseTensor &input,
                                    std::int64_t position) {
-        std::optional<Tensor> latent;
+        std::optional<DenseTensor> latent;
         if (prefilled_global_end == position + input.size(1)) prefilled_global_end = -1;
         else latent = update_compressed_source(execution, input, position);
         if (latent) {
@@ -627,12 +627,12 @@ struct Block final : ::Block {
         shared->ratio = ratio;
     }
 
-    Tensor compute_topk(CudaExecutionContext &execution, const Tensor &input, const Tensor &q_rank,
-                        const Tensor &positions, std::int64_t position) {
+    DenseTensor compute_topk(CudaExecutionContext &execution, const DenseTensor &input, const DenseTensor &q_rank,
+                        const DenseTensor &positions, std::int64_t position) {
         const auto batch = input.size(0);
         const auto tokens = input.size(1);
         const auto pool_length = shared->compressed_length;
-        Tensor candidates;
+        DenseTensor candidates;
         // Restrict scoring only when the candidate budget excludes some KV.
         // An all-inclusive list adds scattered loads without reducing work.
         const bool restricted = pool_length > config.candidate_topk_blocks * config.candidate_block_size;
@@ -673,23 +673,23 @@ struct Block final : ::Block {
                     return dsv4_indexer_scores_cuda(query, keys, weights, position, ratio);
                 });
             },
-            [&](Tensor scores) {
+            [&](DenseTensor scores) {
                 if (restricted) shared->candidate_blocks = candidate_blocks_from_scores(
                     scores, ratio, position, config.candidate_topk_blocks,
                     config.candidate_block_size);
             },
-            [&](Tensor scores) {
+            [&](DenseTensor scores) {
                 if (!restricted) return select_topk(scores, config.index_topk, pool_length);
                 TYLOINFER_RUNTIME_CHECK(candidates.defined(), "DeepSeek-V4.1 candidate scores are unavailable");
                 return select_topk(scores, config.index_topk, pool_length, candidates);
             },
-            [&](Tensor scores) { return select_topk(scores, config.index_topk, pool_length); },
-            [&](Tensor topk) { shared->topk = std::move(topk); });
+            [&](DenseTensor scores) { return select_topk(scores, config.index_topk, pool_length); },
+            [&](DenseTensor topk) { shared->topk = std::move(topk); });
     }
 
-    Tensor attention_forward(CudaExecutionContext &execution, const Tensor &input,
-                             const Tensor &positions, std::int64_t position,
-                             const MfqOptional<Tensor> &sequence_lengths,
+    DenseTensor attention_forward(CudaExecutionContext &execution, const DenseTensor &input,
+                             const DenseTensor &positions, std::int64_t position,
+                             const MfqOptional<DenseTensor> &sequence_lengths,
                              bool truncated_local = false) {
         const auto batch = input.size(0);
         const auto tokens = input.size(1);
@@ -700,7 +700,7 @@ struct Block final : ::Block {
                 return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(query_a, input), query_a_norm,
                                     config.rms_eps);
             },
-            [&](Tensor q_rank) {
+            [&](DenseTensor q_rank) {
                 auto query = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(query_b, q_rank)
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
@@ -725,11 +725,11 @@ struct Block final : ::Block {
                                       shared->ratio == ratio,
                                   "DeepSeek-V4.1 CSA2 consumer ran before its source layer");
             },
-            [&](Tensor q_rank) {
+            [&](DenseTensor q_rank) {
                 return compute_topk(execution, input, q_rank, positions, position);
             },
-            [&](Tensor local) {
-                Tensor local_for_attention;
+            [&](DenseTensor local) {
+                DenseTensor local_for_attention;
                 if (tokens == 1) {
                     auto slot = ::tyloi::cuda::full(
                         {1}, position % config.sliding_window,
@@ -738,7 +738,7 @@ struct Block final : ::Block {
                     local_for_attention = state.local_kv;
                 } else {
                     const auto history = local_history;
-                    std::vector<Tensor> local_parts;
+                    std::vector<DenseTensor> local_parts;
                     if (history > 0) {
                         auto slots = ::tyloi::cuda::arange(
                                          position - history, position,
@@ -774,9 +774,9 @@ struct Block final : ::Block {
                         : local_for_attention.contiguous();
                 return cache;
             },
-            [&](Tensor topk) {
+            [&](DenseTensor topk) {
                 const auto pool_length = ratio > 0 ? shared->compressed_length : 0;
-                std::vector<Tensor> plan;
+                std::vector<DenseTensor> plan;
                 if (tokens == 1) {
                     auto lengths = sequence_lengths.has_value()
                                        ? sequence_lengths.value()
@@ -798,21 +798,21 @@ struct Block final : ::Block {
                 }
                 return plan;
             },
-            [&](Tensor query, Tensor cache, const auto &plan) {
+            [&](DenseTensor query, DenseTensor cache, const auto &plan) {
                 return attention_dsv4_sparse_cuda(
                     query, cache, plan.at(0), plan.at(1), sinks, shared->attention_meta,
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
             },
-            [&](Tensor attended) {
+            [&](DenseTensor attended) {
                 return rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
                     .transpose(1, 2)
                     .contiguous();
             },
             [&] { state.position += tokens; },
-            [&](Tensor attended) { return output_projection(execution, attended); });
+            [&](DenseTensor attended) { return output_projection(execution, attended); });
     }
 
-    Tensor forward_context(CudaExecutionContext& execution,Tensor hidden,
+    DenseTensor forward_context(CudaExecutionContext& execution,DenseTensor hidden,
             const ::Block::Context& context,const RopeCache& rope) override {
         if(context.confirmed_prefix>0) {
             // A joint pass writes pending and draft rows. Protect their whole
@@ -823,10 +823,10 @@ struct Block final : ::Block {
         return ::Block::forward_context(execution,std::move(hidden),context,rope);
     }
 
-    Tensor forward(CudaExecutionContext &execution, Tensor hidden, Tensor positions,
-                   std::int64_t cache_position, const MfqOptional<Tensor> &sequence_lengths,
-                   const RopeCache &, const MfqOptional<Tensor> &cache_positions = mfq_nullopt,
-                   const MfqOptional<Tensor> &attention_mask = mfq_nullopt) override {
+    DenseTensor forward(CudaExecutionContext &execution, DenseTensor hidden, DenseTensor positions,
+                   std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
+                   const RopeCache &, const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt,
+                   const MfqOptional<DenseTensor> &attention_mask = mfq_nullopt) override {
         auto &profiler = execution.executor().profiler();
         TYLOINFER_RUNTIME_CHECK(current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
@@ -841,14 +841,14 @@ struct Block final : ::Block {
         const bool truncated_local = std::exchange(replay_local_window, false);
         return tyloi::models::deepseek_v41::decoder_layer(
             std::move(hidden), bool(engram), shared->previous_pre,
-            [&](Tensor value) {
+            [&](DenseTensor value) {
                 return profiler.measure("deepseek_v41.engram", [&] {
                     return engram->forward(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), profiler, value, shared->engram_hashes,
                                           shared->text_rows,&shared->text_row_ids);
                 });
             },
-            [&](const Tensor &value) { shared->capture_dspark_target(layer, config, value); },
-            [&](Tensor value, const Tensor &previous_pre, int branch) {
+            [&](const DenseTensor &value) { shared->capture_dspark_target(layer, config, value); },
+            [&](DenseTensor value, const DenseTensor &previous_pre, int branch) {
                 return collapse(profiler, value, previous_pre,
                                 branch == 0 ? attention_mhc_function : mlp_mhc_function,
                                 branch == 0 ? attention_mhc_scale : mlp_mhc_scale,
@@ -857,18 +857,18 @@ struct Block final : ::Block {
                                 branch == 0 ? "deepseek_v41.mhc.attention.collapse"
                                             : "deepseek_v41.mhc.mlp.collapse");
             },
-            [&](Tensor value) {
+            [&](DenseTensor value) {
                 return profiler.measure("deepseek_v41.attention", [&] {
                     return attention_forward(execution, value, positions, cache_position,
                                              sequence_lengths, truncated_local);
                 });
             },
-            [&](Tensor value, Tensor residual, const auto &mix, int branch) {
+            [&](DenseTensor value, DenseTensor residual, const auto &mix, int branch) {
                 return expand(profiler, value, residual, mix,
                               branch == 0 ? "deepseek_v41.mhc.attention.expand"
                                           : "deepseek_v41.mhc.mlp.expand");
             },
-            [&](Tensor value) {
+            [&](DenseTensor value) {
                 return profiler.measure("deepseek_v41.mlp", [&] {
                     if(shared->image_mask.defined()) {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
@@ -921,7 +921,7 @@ std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::L
 void validate_load_options(const CudaExecutionContext &execution);
 std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &source,
                                                const CommonConfig &config);
-Tensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Tensor &hidden,
+DenseTensor finalize_hidden(const std::shared_ptr<SharedState> &state, const DenseTensor &hidden,
                        CudaProfiler &profiler);
 
 inline int run_self_check() {
@@ -952,29 +952,29 @@ tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm&,const MtpMo
 
 struct DeepseekV41Model : CausalResources {
     static constexpr bool joint_speculation_supported=true;
-    bool adapter_prefetch_token_rows(DeepseekV41CausalLm&,const ::tyloi::Tensor&);
+    bool adapter_prefetch_token_rows(DeepseekV41CausalLm&,const ::tyloi::DenseTensor&);
     template <class Backend> using CausalModel = tyloi::models::deepseek_v41::CausalLm<Backend>;
     tyloi::models::deepseek_v41::Config config;
     std::shared_ptr<deepseek_v41_runtime::SharedState> shared;
 
     void adapter_validate_load_options() const;
     void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
-                                  ::tyloi::Tensor &output_norm);
+                                  ::tyloi::DenseTensor &output_norm);
     void adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights);
     std::unique_ptr<Block> adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     void adapter_begin_forward(bool capture_raw_hidden);
     bool adapter_supports_prepared_prompt() const noexcept {return true;}
-    void adapter_set_image_mask(::tyloi::Tensor mask) {shared->set_image_mask(std::move(mask));}
-    ::tyloi::Tensor collapse_hidden(::tyloi::Tensor hidden, int64_t batch,
+    void adapter_set_image_mask(::tyloi::DenseTensor mask) {shared->set_image_mask(std::move(mask));}
+    ::tyloi::DenseTensor collapse_hidden(::tyloi::DenseTensor hidden, int64_t batch,
                                                int64_t tokens) const;
-    ::tyloi::Tensor normalize_hidden(::tyloi::Tensor hidden,
-                                                const ::tyloi::Tensor &output_norm,
+    ::tyloi::DenseTensor normalize_hidden(::tyloi::DenseTensor hidden,
+                                                const ::tyloi::DenseTensor &output_norm,
                                                 int64_t batch, int64_t tokens) const;
-    ::tyloi::Tensor
-    adapter_raw_hidden(const ::tyloi::Tensor &hidden,
-                       const ::tyloi::Tensor &finalized) const;
+    ::tyloi::DenseTensor
+    adapter_raw_hidden(const ::tyloi::DenseTensor &hidden,
+                       const ::tyloi::DenseTensor &finalized) const;
     void adapter_begin_speculative();
     void adapter_commit_speculative();
     void adapter_rollback_speculative(int64_t keep);
@@ -988,9 +988,9 @@ template <> struct CudaSessionCodec<DeepseekV41Model> {
     static void restore(Model& model,const TextSessionState& state);
 };
 
-::tyloi::Tensor deepseek_v41_prefill_hidden(
-    DeepseekV41CausalLm& model, ::tyloi::Tensor ids, std::int64_t compute_chunk,
-    const std::function<bool()>& stopped = {}, ::tyloi::Tensor* raw_hidden = nullptr);
+::tyloi::DenseTensor deepseek_v41_prefill_hidden(
+    DeepseekV41CausalLm& model, ::tyloi::DenseTensor ids, std::int64_t compute_chunk,
+    const std::function<bool()>& stopped = {}, ::tyloi::DenseTensor* raw_hidden = nullptr);
 std::int64_t prefill_span(const DeepseekV41CausalLm&, std::size_t tokens,
                           std::int64_t chunk, std::size_t, std::size_t,
                           bool transformed, bool retained);

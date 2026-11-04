@@ -16,7 +16,7 @@ void require_forward(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
+DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids) {
     require_forward(ids.dim() == 1 || ids.dim() == 2,
                     "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
@@ -25,7 +25,7 @@ Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
     return collectives.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
-std::optional<Tensor> decode_lengths(const State& state, const Tensor& ids, int primary) {
+std::optional<DenseTensor> decode_lengths(const State& state, const DenseTensor& ids, int primary) {
     if (state.cache_pos <= 0 || ids.size(1) != 1) return {};
     return ::tyloi::cuda::full(
         {ids.size(0)}, state.cache_pos + 1,
@@ -34,7 +34,7 @@ std::optional<Tensor> decode_lengths(const State& state, const Tensor& ids, int 
             .device(::tyloi::Device(::tyloi::kCUDA, primary)));
 }
 
-Tensor copy_to_layer(Collectives& collectives, Tensor value, const Layer& layer) {
+DenseTensor copy_to_layer(Collectives& collectives, DenseTensor value, const Layer& layer) {
     if (layer.cpu) return value.to(::tyloi::kCPU).contiguous();
     return collectives.copy(value, layer.device).contiguous();
 }
@@ -42,18 +42,18 @@ Tensor copy_to_layer(Collectives& collectives, Tensor value, const Layer& layer)
 AttentionStep layer_step(Collectives& collectives, const Layer& layer,
                          const AttentionStep& step) {
     AttentionStep local = step;
-    local.positions = copy_to_layer(collectives, Tensor(step.positions), layer);
+    local.positions = copy_to_layer(collectives, DenseTensor(step.positions), layer);
     if (step.sequence_lengths.has_value())
-        local.sequence_lengths = copy_to_layer(collectives, Tensor(*step.sequence_lengths), layer);
+        local.sequence_lengths = copy_to_layer(collectives, DenseTensor(*step.sequence_lengths), layer);
     if (step.cache_positions.has_value())
-        local.cache_positions = copy_to_layer(collectives, Tensor(*step.cache_positions), layer);
+        local.cache_positions = copy_to_layer(collectives, DenseTensor(*step.cache_positions), layer);
     if (step.attention_mask.has_value())
-        local.attention_mask = copy_to_layer(collectives, Tensor(*step.attention_mask), layer);
+        local.attention_mask = copy_to_layer(collectives, DenseTensor(*step.attention_mask), layer);
     return local;
 }
 
 void prepare_linear_state(const LinearAttention& attention, LinearState& state,
-                          const Tensor& input, bool transposed) {
+                          const DenseTensor& input, bool transposed) {
     if (state.mixer.defined()) return;
     const auto batch = input.size(0);
     const auto width = 2 * attention.key_heads * attention.key_dim +
@@ -73,8 +73,8 @@ void clear_linear_speculative(LinearState& state) noexcept {
 
 } // namespace
 
-Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, Tensor ids, const Executor::Mode& mode) {
+DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
+             int primary, DenseTensor ids, const Executor::Mode& mode) {
     auto normalized = normalize_ids(collectives, primary, std::move(ids));
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
@@ -83,7 +83,7 @@ Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
         .to(::tyloi::kFloat16).contiguous();
 }
 
-Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
+DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
     const Task task{task::Norm{0, 0, model.output_norm, model.metadata.rms_norm_eps,
@@ -94,14 +94,14 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
-Tensor softcap(const Model& model, Executor& executor, Tensor logits) {
+DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) {
     const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
     Inputs inputs;
     inputs.values = {std::move(logits)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
+DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
         Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
@@ -114,12 +114,12 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped
 
 namespace {
 
-Tensor forward_impl(const Model& model, State& state, Executor& executor,
-                    Collectives& collectives, const Executor::Mode& options, Tensor ids,
-                    Tensor embeddings, std::optional<Input::Tensor> positions,
-                    std::optional<Input::Tensor> lengths, Input::Trace* trace,
-                    std::optional<Input::Tensor> attention_mask, bool advance,
-                    std::optional<Input::Tensor> cache_positions, Input::Tensor* raw_hidden,
+DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
+                    Collectives& collectives, const Executor::Mode& options, DenseTensor ids,
+                    DenseTensor embeddings, std::optional<Input::DenseTensor> positions,
+                    std::optional<Input::DenseTensor> lengths, Input::Trace* trace,
+                    std::optional<Input::DenseTensor> attention_mask, bool advance,
+                    std::optional<Input::DenseTensor> cache_positions, Input::DenseTensor* raw_hidden,
                     std::int64_t confirmed, std::int64_t kv_length,
                     std::int64_t attention_parts) {
     ids = normalize_ids(collectives, options.primary, std::move(ids));
@@ -154,7 +154,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                         "attention_mask must cover [batch,cached_plus_current_tokens]");
 
     auto physical = cache_positions.has_value()
-                        ? collectives.copy(Tensor(*cache_positions).to(::tyloi::kInt64),
+                        ? collectives.copy(DenseTensor(*cache_positions).to(::tyloi::kInt64),
                                            options.primary)
                         : ::tyloi::cuda::arange(
                               state.cache_pos, state.cache_pos + T,
@@ -168,7 +168,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                          physical.size(1) == T),
                     "cache_positions must have shape [tokens] or [batch,tokens]");
     auto semantic = positions.has_value()
-                        ? collectives.copy(Tensor(*positions).to(::tyloi::kInt64),
+                        ? collectives.copy(DenseTensor(*positions).to(::tyloi::kInt64),
                                            options.primary)
                         : (state.decode_position_delta == 0
                                ? physical
@@ -181,16 +181,16 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                                 model.rope.sections.numel() > 0),
         "position_ids must have shape [tokens], [batch,tokens], or configured grid-MRoPE [3,tokens]");
     if (lengths.has_value()) {
-        lengths = collectives.copy(Tensor(*lengths).to(::tyloi::kInt64), options.primary)
+        lengths = collectives.copy(DenseTensor(*lengths).to(::tyloi::kInt64), options.primary)
                        .contiguous();
     } else {
         lengths = decode_lengths(state, ids, options.primary);
     }
 
-    std::optional<Tensor> physical_for_layers;
+    std::optional<DenseTensor> physical_for_layers;
     if (model.rope.sections.numel() > 0 || positions.has_value() || cache_positions.has_value())
         physical_for_layers = physical;
-    AttentionStep step{semantic, lengths ? MfqOptional<Tensor>(Tensor(*lengths)) : mfq_nullopt,
+    AttentionStep step{semantic, lengths ? MfqOptional<DenseTensor>(DenseTensor(*lengths)) : mfq_nullopt,
                        physical_for_layers, {}, state.cache_pos, kv_length,
                        attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), options.primary).contiguous();
@@ -226,7 +226,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
     }
     if (!positions.has_value() || advance) state.cache_pos += T;
     hidden = collectives.copy(std::move(hidden), options.primary).contiguous();
-    auto raw = raw_hidden ? hidden : Tensor{};
+    auto raw = raw_hidden ? hidden : DenseTensor{};
     auto finalized = normalize(model, executor, std::move(hidden), B, T);
     if (raw_hidden) *raw_hidden = std::move(raw);
     return finalized;
@@ -234,11 +234,11 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
 
 } // namespace
 
-Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& options, Input input) {
-    auto ids = normalize_ids(collectives, options.primary, Tensor(std::move(input.ids)));
+    auto ids = normalize_ids(collectives, options.primary, DenseTensor(std::move(input.ids)));
     auto embeddings = input.embeddings.has_value()
-                          ? Tensor(std::move(*input.embeddings))
+                          ? DenseTensor(std::move(*input.embeddings))
                           : embed(model, executor, collectives, options.primary, ids, options);
     return forward_impl(model, state, executor, collectives, options, std::move(ids),
                         std::move(embeddings), std::move(input.positions),
@@ -286,8 +286,8 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
     }
 }
 
-Tensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& state,
-                     tyloi::cuda::Executor& executor, std::size_t scratch_offset, Tensor input,
+DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& state,
+                     tyloi::cuda::Executor& executor, std::size_t scratch_offset, DenseTensor input,
                      const AttentionStep& step, std::int64_t confirmed_prefix,
                      const RopeCache& rope, const Executor::Mode& options) {
     MfqCudaGuard guard(layer.device);

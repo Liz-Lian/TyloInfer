@@ -850,7 +850,7 @@ __global__ void dsv4_decode_plan_kernel(
 
 } // namespace
 
-::tyloi::Tensor dsv4_fp4_sim_cuda(::tyloi::Tensor input) {
+::tyloi::DenseTensor dsv4_fp4_sim_cuda(::tyloi::DenseTensor input) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
             input.scalar_type() == ::tyloi::kFloat16 &&
@@ -874,16 +874,16 @@ __global__ void dsv4_decode_plan_kernel(
     return output;
 }
 
-::tyloi::Tensor dsv4_compress_cuda(
-    ::tyloi::Tensor kv,
-    ::tyloi::Tensor gate,
-    ::tyloi::Tensor ape,
-    ::tyloi::Tensor norm,
-    ::tyloi::Tensor prev_kv,
-    ::tyloi::Tensor prev_gate,
-    ::tyloi::Tensor positions,
-    ::tyloi::Tensor cos,
-    ::tyloi::Tensor sin,
+::tyloi::DenseTensor dsv4_compress_cuda(
+    ::tyloi::DenseTensor kv,
+    ::tyloi::DenseTensor gate,
+    ::tyloi::DenseTensor ape,
+    ::tyloi::DenseTensor norm,
+    ::tyloi::DenseTensor prev_kv,
+    ::tyloi::DenseTensor prev_gate,
+    ::tyloi::DenseTensor positions,
+    ::tyloi::DenseTensor cos,
+    ::tyloi::DenseTensor sin,
     int64_t ratio,
     bool overlap,
     int64_t quant_mode,
@@ -989,19 +989,19 @@ __global__ void dsv4_decode_plan_kernel(
     return out;
 }
 
-::tyloi::Tensor dsv4_decode_pool_update_cuda(
-    ::tyloi::Tensor kv_token,
-    ::tyloi::Tensor gate_token,
-    ::tyloi::Tensor ape,
-    ::tyloi::Tensor norm,
-    ::tyloi::Tensor state_kv,
-    ::tyloi::Tensor state_gate,
-    ::tyloi::Tensor prev_kv,
-    ::tyloi::Tensor prev_gate,
-    ::tyloi::Tensor pool,
-    ::tyloi::Tensor seq_len,
-    ::tyloi::Tensor cos,
-    ::tyloi::Tensor sin,
+::tyloi::DenseTensor dsv4_decode_pool_update_cuda(
+    ::tyloi::DenseTensor kv_token,
+    ::tyloi::DenseTensor gate_token,
+    ::tyloi::DenseTensor ape,
+    ::tyloi::DenseTensor norm,
+    ::tyloi::DenseTensor state_kv,
+    ::tyloi::DenseTensor state_gate,
+    ::tyloi::DenseTensor prev_kv,
+    ::tyloi::DenseTensor prev_gate,
+    ::tyloi::DenseTensor pool,
+    ::tyloi::DenseTensor seq_len,
+    ::tyloi::DenseTensor cos,
+    ::tyloi::DenseTensor sin,
     int64_t ratio,
     bool overlap,
     int64_t quant_mode,
@@ -1121,13 +1121,13 @@ __global__ void dsv4_decode_plan_kernel(
     return pool;
 }
 
-static ::tyloi::Tensor dsv4_indexer_scores_impl(
-    ::tyloi::Tensor q,
-    ::tyloi::Tensor k,
-    ::tyloi::Tensor weights,
+static ::tyloi::DenseTensor dsv4_indexer_scores_impl(
+    ::tyloi::DenseTensor q,
+    ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor weights,
     int64_t query_offset,
     int64_t ratio,
-    ::tyloi::Tensor candidates)
+    ::tyloi::DenseTensor candidates)
 {
     TYLOINFER_RUNTIME_CHECK(
         q.is_cuda() && q.is_contiguous() &&
@@ -1192,21 +1192,21 @@ static ::tyloi::Tensor dsv4_indexer_scores_impl(
     return out;
 }
 
-::tyloi::Tensor dsv4_indexer_scores_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k,
-    ::tyloi::Tensor weights, int64_t query_offset, int64_t ratio) {
+::tyloi::DenseTensor dsv4_indexer_scores_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor weights, int64_t query_offset, int64_t ratio) {
     return dsv4_indexer_scores_impl(q, k, weights, query_offset, ratio, {});
 }
 
-::tyloi::Tensor dsv4_indexer_candidate_scores_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k,
-    ::tyloi::Tensor weights, ::tyloi::Tensor candidates,
+::tyloi::DenseTensor dsv4_indexer_candidate_scores_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor weights, ::tyloi::DenseTensor candidates,
     int64_t query_offset, int64_t ratio) {
     return dsv4_indexer_scores_impl(q, k, weights, query_offset, ratio, candidates);
 }
 
 
-::tyloi::Tensor dsv4_topk512_cuda(::tyloi::Tensor scores) {
+::tyloi::DenseTensor dsv4_topk512_cuda(::tyloi::DenseTensor scores) {
     TYLOINFER_RUNTIME_CHECK(
         scores.is_cuda() && scores.is_contiguous() &&
             scores.scalar_type() == ::tyloi::kFloat16 &&
@@ -1238,8 +1238,8 @@ static ::tyloi::Tensor dsv4_indexer_scores_impl(
     return out;
 }
 
-std::vector<::tyloi::Tensor> dsv4_build_prefill_plan_cuda(
-    ::tyloi::Tensor topk,
+std::vector<::tyloi::DenseTensor> dsv4_build_prefill_plan_cuda(
+    ::tyloi::DenseTensor topk,
     int64_t query_offset,
     int64_t local_history,
     int64_t pool_len,
@@ -1282,9 +1282,9 @@ std::vector<::tyloi::Tensor> dsv4_build_prefill_plan_cuda(
     return {indices, mask};
 }
 
-std::vector<::tyloi::Tensor> dsv4_build_decode_plan_cuda(
-    ::tyloi::Tensor topk,
-    ::tyloi::Tensor seq_len,
+std::vector<::tyloi::DenseTensor> dsv4_build_decode_plan_cuda(
+    ::tyloi::DenseTensor topk,
+    ::tyloi::DenseTensor seq_len,
     int64_t pool_len,
     int64_t ratio,
     int64_t window)
@@ -1325,13 +1325,13 @@ std::vector<::tyloi::Tensor> dsv4_build_decode_plan_cuda(
     return {indices, mask};
 }
 
-::tyloi::Tensor attention_dsv4_sparse_cuda(
-    ::tyloi::Tensor q,
-    ::tyloi::Tensor kv,
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor mask,
-    ::tyloi::Tensor sinks,
-    ::tyloi::Tensor meta,
+::tyloi::DenseTensor attention_dsv4_sparse_cuda(
+    ::tyloi::DenseTensor q,
+    ::tyloi::DenseTensor kv,
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor mask,
+    ::tyloi::DenseTensor sinks,
+    ::tyloi::DenseTensor meta,
     double scale)
 {
     TYLOINFER_RUNTIME_CHECK(

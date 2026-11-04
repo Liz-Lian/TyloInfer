@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <utility>
 
-::tyloi::Tensor load_tq_weight(const tyloi::source::Source& source,
+::tyloi::encoding::TqTensor load_tq_weight(const tyloi::source::Source& source,
                          const std::string& name, int device, bool cuda) {
     const auto shape = tyloi::tq_projection_shape(source, name);
     const auto bytes = source.read(name);

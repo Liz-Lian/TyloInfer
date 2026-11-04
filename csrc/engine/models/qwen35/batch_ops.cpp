@@ -21,7 +21,7 @@
 namespace tyloi::cuda::qwen35 {
 
 using tyloi::cuda::internal::PrefillCudaTimer;
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
         const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk chunk) {
@@ -80,7 +80,7 @@ std::vector<std::pair<std::string, double>> BatchOps::metrics() const {
     };
 }
 
-void BatchOps::initialize_sampling(Request& request, const Tensor& prompt_ids) {
+void BatchOps::initialize_sampling(Request& request, const DenseTensor& prompt_ids) {
     request.sampler.emplace(request.sampling);
     if (request.sampler->has_penalties())
         request.counts = SamplingOps::token_counts(prompt_ids, vocab_size());
@@ -103,10 +103,10 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                 .contiguous();
         initialize_sampling(*request, request->prefill_ids);
     }
-    Tensor hidden;
+    DenseTensor hidden;
     std::unique_ptr<PrefillCudaTimer> final_timer;
     auto chunk_timer = std::make_unique<PrefillCudaTimer>();
-    MfqOptional<Tensor> length = mfq_nullopt;
+    MfqOptional<DenseTensor> length = mfq_nullopt;
     if (chunk.offset > 0 && chunk.count == 1)
         length =
             ::tyloi::cuda::full({1}, chunk.offset + 1, request->prefill_ids.options());
@@ -137,7 +137,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     for (const auto& timer : request->prefill_timers)
         prefill_ms += timer->elapsed_ms();
     request->prefill_timers.clear();
-    request->prefill_ids = Tensor();
+    request->prefill_ids = DenseTensor();
     return {std::move(next), token, {request->prompt.size(), prefill_ms, 0.0, prefill_ms}};
 }
 
@@ -154,7 +154,7 @@ void BatchOps::resume_decode(int64_t cache_position) {
 void BatchOps::discard_prefill(const std::shared_ptr<Request>& request) {
     state_.discard_prefill(request->cache);
     request->prefill_timers.clear();
-    request->prefill_ids = Tensor();
+    request->prefill_ids = DenseTensor();
 }
 
 void BatchOps::retire(const std::vector<std::shared_ptr<Request>>& retired,
@@ -265,9 +265,9 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     auto metadata_cuda = decode_metadata_cuda_.narrow(0, 0, values);
     metadata_cuda.copy_(metadata_host);
     auto matrix = metadata_cuda.reshape({3, batch});
-    Tensor ids = matrix.narrow(0, 0, 1).reshape({batch, 1});
-    Tensor pos = matrix.narrow(0, 1, 1).reshape({batch, 1});
-    Tensor lengths = matrix.narrow(0, 2, 1).reshape({batch});
+    DenseTensor ids = matrix.narrow(0, 0, 1).reshape({batch, 1});
+    DenseTensor pos = matrix.narrow(0, 1, 1).reshape({batch, 1});
+    DenseTensor lengths = matrix.narrow(0, 2, 1).reshape({batch});
     ++packed_metadata_batches_;
     std::vector<int32_t> paused_slots;
     for (const auto& request : state.active)
@@ -276,8 +276,8 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     // ponytail: masked slots still occupy GPU rows; restore recurrent state
     // and overwrite the uncommitted KV position when they become eligible.
     const auto paused_state = state_.capture_recurrent_slots(paused_slots);
-    Tensor logits;
-    Tensor graph_tokens;
+    DenseTensor logits;
+    DenseTensor graph_tokens;
     auto mode = mode_;
     mode.ffn.batch_serial = cached_moe_enabled_ && batch > 1;
     if (graph_decode) {
@@ -343,7 +343,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     ++decode_batches_;
     decode_tokens_ += std::count_if(state.active.begin(), state.active.end(),
                                     [](const auto& request) { return request->eligible; });
-    Tensor batched_greedy_tokens;
+    DenseTensor batched_greedy_tokens;
     if (graph_tokens.defined()) {
         batched_greedy_tokens = graph_tokens.to(::tyloi::kCPU).contiguous();
         TYLOINFER_RUNTIME_CHECK(

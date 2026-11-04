@@ -99,9 +99,9 @@ __global__ void nepq_hadamard_adjoint_kernel(
 }  // namespace
 
 
-::tyloi::Tensor nepq_hadamard_input_cuda(
-    ::tyloi::Tensor input,
-    ::tyloi::Tensor signs,
+::tyloi::DenseTensor nepq_hadamard_input_cuda(
+    ::tyloi::DenseTensor input,
+    ::tyloi::DenseTensor signs,
     int64_t block_size) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
@@ -139,9 +139,9 @@ __global__ void nepq_hadamard_adjoint_kernel(
 }
 
 
-::tyloi::Tensor nepq_hadamard_adjoint_cuda(
-    ::tyloi::Tensor input,
-    ::tyloi::Tensor signs,
+::tyloi::DenseTensor nepq_hadamard_adjoint_cuda(
+    ::tyloi::DenseTensor input,
+    ::tyloi::DenseTensor signs,
     int64_t block_size) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&

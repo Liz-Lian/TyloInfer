@@ -41,48 +41,13 @@ void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device
     throw std::invalid_argument("projection weight and input devices do not match");
 }
 
-void check_fields(std::initializer_list<const ::tyloi::Tensor*> fields, ::tyloi::Device device, bool check_device = true) {
-    for (const auto* field : fields) {
+void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true) {
+    for (const auto* field : weight.buffers()) {
         field->require_dense();
         if (!check_device || !field->defined() || field->numel() == 0) continue;
         if (field->device() != device)
             throw std::invalid_argument("projection weight fields and input devices do not match");
     }
-}
-
-void check_nint_fields(const NintWeight& w, ::tyloi::Device device, bool check_device = true) {
-    check_fields({&w.q_packed, &w.row_q_bits, &w.row_q_bit_offsets, &w.sub_scale,
-                  &w.sub_min, &w.neuron_scale, &w.neuron_min}, device, check_device);
-}
-
-void check_fields(const NintWeight& w, ::tyloi::Device device, bool check_device = true) {
-    if (w.q8_zero) check_fields({&w.q_packed, &w.q8_zero_scale}, device, check_device);
-    else check_nint_fields(w, device, check_device);
-}
-
-void check_fields(const NvqWeight& w, ::tyloi::Device device, bool check_device = true) {
-    check_fields({&w.indices_packed, &w.aux_packed, &w.sub_scale_packed,
-                  &w.neuron_scale, &w.codebook}, device, check_device);
-}
-
-void check_fields(const Mxfp4Weight& w, ::tyloi::Device device, bool check_device = true) {
-    check_fields({&w.values, &w.scales}, device, check_device);
-}
-
-void check_fields(const Mxfp8Weight& w, ::tyloi::Device device, bool check_device = true) {
-    check_fields({&w.values, &w.scales}, device, check_device);
-}
-
-void check_fields(const Mxfp4SqWeight& w, ::tyloi::Device device, bool check_device = true) {
-    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets, &w.row_auxiliary}, device, false);
-    if (!w.blob.is_cuda()) return;
-    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets, &w.row_auxiliary}, device, check_device);
-}
-
-void check_fields(const Fp8SqWeight& w, ::tyloi::Device device, bool check_device = true) {
-    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets}, device, false);
-    if (!w.blob.is_cuda() || (w.dtype != "MXFP8-SQ" && w.dtype != "FP8-128SQ")) return;
-    check_fields({&w.blob, &w.row_q, &w.row_symbol_byte_offsets}, device, check_device);
 }
 
 const ::tyloi::Tensor& shard_payload(const QuantLinearShard& shard) {
@@ -165,7 +130,7 @@ void check_projection_device(const QuantLinear& weight, ::tyloi::Device device) 
     }
 }
 
-void check_projection(const QuantLinear& weight, const ::tyloi::Tensor& input) {
+void check_projection(const QuantLinear& weight, const ::tyloi::DenseTensor& input) {
     input.require_dense();
     if (weight.is_dense()) weight.dense.require_dense();
     if (!input.defined() || input.dim() < 1)
@@ -174,7 +139,7 @@ void check_projection(const QuantLinear& weight, const ::tyloi::Tensor& input) {
     check_projection_width(weight, input.size(-1));
 }
 
-void check_projection(const QuantLinearGroup& group, const ::tyloi::Tensor& input) {
+void check_projection(const QuantLinearGroup& group, const ::tyloi::DenseTensor& input) {
     input.require_dense();
     if (!input.defined() || input.dim() < 1)
         throw std::invalid_argument("projection input must have a last dimension");
@@ -195,7 +160,7 @@ void check_projection(const QuantLinearGroup& group, const ::tyloi::Tensor& inpu
         check_width(input.size(-1), group.cols[i], true);
         check_placement(group.placements[i], input.device());
     }
-    const auto check_nint_weight = [&](const NintWeight& weight) {
+    const auto check_nint_weight = [&](const tyloi::NintTensor& weight) {
         if (!weight.q_packed.defined())
             throw std::invalid_argument("projection weight is not prepared");
         check_width(input.size(-1), weight.neuron_len, true);
@@ -206,41 +171,18 @@ void check_projection(const QuantLinearGroup& group, const ::tyloi::Tensor& inpu
     for (const auto& weight : group.nint.split_w) check_nint_weight(weight);
 }
 
-void check_device(const ::tyloi::Tensor& weight, const ::tyloi::Tensor& input) {
+void check_device(const ::tyloi::DenseTensor& weight, const ::tyloi::DenseTensor& input) {
     weight.require_dense(); input.require_dense();
     if (input.is_cuda() && weight.defined() && weight.numel() != 0 && weight.device() != input.device())
         throw std::invalid_argument("projection weight and input devices do not match");
 }
 
-void check_device(const NintWeight& weight, const ::tyloi::Tensor& input) {
+void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input) {
     check_fields(weight, input.device(), input.is_cuda());
 }
 
-void check_nint(const NintWeight& weight, const ::tyloi::Tensor& input) {
-    check_nint_fields(weight, input.device(), input.is_cuda());
-}
 
-void check_device(const NvqWeight& weight, const ::tyloi::Tensor& input) {
-    check_fields(weight, input.device(), input.is_cuda());
-}
-
-void check_device(const Mxfp4Weight& weight, const ::tyloi::Tensor& input) {
-    check_fields(weight, input.device(), input.is_cuda());
-}
-
-void check_device(const Mxfp8Weight& weight, const ::tyloi::Tensor& input) {
-    check_fields(weight, input.device(), input.is_cuda());
-}
-
-void check_device(const Mxfp4SqWeight& weight, const ::tyloi::Tensor& input) {
-    check_fields(weight, input.device(), input.is_cuda());
-}
-
-void check_device(const Fp8SqWeight& weight, const ::tyloi::Tensor& input) {
-    check_fields(weight, input.device(), input.is_cuda());
-}
-
-void check_device(const QuantLinear& weight, const ::tyloi::Tensor& input) {
+void check_device(const QuantLinear& weight, const ::tyloi::DenseTensor& input) {
     if (weight.tensor_parallel() || weight.is_tq()) return;
     if (weight.is_nint()) check_device(weight.nint, input);
     else if (weight.is_nvq()) check_device(weight.nvq, input);
@@ -254,7 +196,7 @@ void check_device(const QuantLinear& weight, const ::tyloi::Tensor& input) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "linear_dispatch.inc"
 
-::tyloi::Tensor dequant_nint_dense_f32(const NintWeight & w) {
+::tyloi::DenseTensor dequant_nint_dense_f32(const tyloi::NintTensor & w) {
     if (w.q8_zero) {
         return nint8_zero_dequant_f32_cuda(
             w.q_packed, w.q8_zero_scale, w.neuron_len).contiguous();
@@ -266,9 +208,9 @@ void check_device(const QuantLinear& weight, const ::tyloi::Tensor& input) {
 }
 #endif
 
-::tyloi::Tensor quant_embedding_lookup(
+::tyloi::DenseTensor quant_embedding_lookup(
         const QuantLinear & embedding,
-        ::tyloi::Tensor token_ids) {
+        ::tyloi::DenseTensor token_ids) {
     TYLOINFER_RUNTIME_CHECK(
         !embedding.tensor_parallel(),
         "quantized embedding does not support tensor-parallel shards");
@@ -355,12 +297,12 @@ bool tensor_parallel_output_projections_compatible(
     return true;
 }
 
-::tyloi::Tensor quant_linear_reference_weight(
+::tyloi::DenseTensor quant_linear_reference_weight(
         const QuantLinear& linear) {
     TYLOINFER_RUNTIME_CHECK(!linear.tensor_parallel(),"linear reference requires local weights");
     if (linear.is_tq()) {
         const auto ids=::tyloi::cuda::arange(linear.tq.size(0),
-            linear.tq.options().dtype(::tyloi::kInt64));
+            ::tyloi::TensorOptions{}.dtype(::tyloi::kInt64).device(linear.tq.device()));
         return tyloi::cuda::tq::embedding(linear.tq, ids);
     }
     if ((tyloi::mfq_compat_enabled && linear.is_nint())) {
@@ -404,15 +346,15 @@ bool tensor_parallel_output_projections_compatible(
     throw std::runtime_error("unsupported linear reference format");
 }
 
-::tyloi::Tensor dense_projection(
-        ::tyloi::Tensor input, const ::tyloi::Tensor& weight) {
+::tyloi::DenseTensor dense_projection(
+        ::tyloi::DenseTensor input, const ::tyloi::DenseTensor& weight) {
     input = input.to(weight.scalar_type());
     const int64_t rows = input.numel() / input.size(-1);
     if (rows > 1 && rows <= 6) {
         auto shape = input.sizes().vec();
         shape.back() = weight.size(0);
         auto flat = input.reshape({rows, input.size(-1)});
-        std::vector<::tyloi::Tensor> outputs;
+        std::vector<::tyloi::DenseTensor> outputs;
         outputs.reserve(rows);
         // A strided-batched GEMM may select different accumulation from M=1.
         // Keep short target/predictor windows on the decode projection path.
@@ -488,7 +430,7 @@ bool QuantLinearGroup::tensor_parallel_output_compatible() const {
         tensor_parallel_output_projections());
 }
 
-std::vector<::tyloi::Tensor> DenseLinearGroup::forward(::tyloi::Tensor x) const {
+std::vector<::tyloi::DenseTensor> DenseLinearGroup::forward(::tyloi::DenseTensor x) const {
     auto shape = x.sizes().vec();
     auto y = dense_projection(x.reshape({-1, x.size(-1)}), w);
     auto parts = y.split_with_sizes(outs, -1);

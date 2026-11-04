@@ -31,7 +31,7 @@ struct Model {
     RopeCache rope, cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
     QuantLinear embed, lm_head;
-    Tensor output_norm;
+    DenseTensor output_norm;
     std::vector<Layer> layers;
 };
 

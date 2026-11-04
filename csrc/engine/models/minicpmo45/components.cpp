@@ -61,10 +61,10 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
         ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
     auto input_ids = ::tyloi::cuda::tensor(prompt, cuda_i64)
         .reshape({1, -1}).contiguous();
-    ::tyloi::Tensor pixels;
-    ::tyloi::Tensor patch_mask;
-    ::tyloi::Tensor target_sizes;
-    ::tyloi::Tensor image_bounds;
+    ::tyloi::DenseTensor pixels;
+    ::tyloi::DenseTensor patch_mask;
+    ::tyloi::DenseTensor target_sizes;
+    ::tyloi::DenseTensor image_bounds;
     if (!vision.image_bounds.empty()) {
         pixels = ::tyloi::cuda::from_blob(
             const_cast<float *>(vision.pixel_values.data()),
@@ -87,9 +87,9 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
                 static_cast<int64_t>(vision.image_bounds.size() / 4), 4},
             cpu_i64).clone();
     }
-    ::tyloi::Tensor audio_features;
-    ::tyloi::Tensor audio_lengths;
-    ::tyloi::Tensor audio_bounds;
+    ::tyloi::DenseTensor audio_features;
+    ::tyloi::DenseTensor audio_lengths;
+    ::tyloi::DenseTensor audio_bounds;
     if (!vision.audio_bounds.empty()) {
         audio_features = ::tyloi::cuda::from_blob(
             const_cast<float *>(vision.audio_features.data()),
@@ -109,7 +109,7 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
     co_yield tyloi::StepState::advanced;
     auto encoding = state_->runtime.encode(input_ids, pixels, patch_mask,
         target_sizes, image_bounds, audio_features, audio_lengths, audio_bounds);
-    tyloi::models::minicpmo45::MultimodalResult<::tyloi::Tensor> result;
+    tyloi::models::minicpmo45::MultimodalResult<::tyloi::DenseTensor> result;
     while (auto step = encoding.next()) {
         if (step.value) result = std::move(*step.value);
         else co_yield step.state;
@@ -207,12 +207,12 @@ void Components::start(const MfqDuplexSessionParams& parameters) {
 
         const auto ids_tensor = [](const std::vector<int64_t> & values) {
             return values.empty()
-                ? ::tyloi::Tensor()
+                ? ::tyloi::DenseTensor()
                 : ::tyloi::cuda::tensor(
                     values,
                     ::tyloi::TensorOptions().dtype(::tyloi::kInt64));
         };
-        ::tyloi::Tensor reference_features;
+        ::tyloi::DenseTensor reference_features;
         if (!parameters.reference_audio_features.empty()) {
             reference_features = ::tyloi::cuda::tensor(
                 parameters.reference_audio_features,
@@ -249,14 +249,14 @@ MfqDuplexStepResult Components::step(const MfqDuplexStepInput& input) {
             throw std::runtime_error(
                 "MiniCPM-o duplex session is not prepared");
         }
-        ::tyloi::Tensor audio_features;
+        ::tyloi::DenseTensor audio_features;
         if (has_audio) {
             audio_features = ::tyloi::cuda::tensor(
                 input.audio_features,
                 ::tyloi::TensorOptions().dtype(::tyloi::kFloat32))
                 .reshape({1, 80, input.audio_frames});
         }
-        ::tyloi::Tensor text_ids;
+        ::tyloi::DenseTensor text_ids;
         if (has_text) {
             text_ids = ::tyloi::cuda::tensor(
                 input.text_tokens,

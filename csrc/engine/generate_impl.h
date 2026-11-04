@@ -30,7 +30,7 @@ using tyloi::engine::Generation;
 namespace generation_detail {
 
 template <class Model, class State, class Predictor> struct RequestOps {
-    using Hidden = ::tyloi::Tensor;
+    using Hidden = ::tyloi::DenseTensor;
     using Restore = TextSessionRestore;
     Model &model;
     State &state;

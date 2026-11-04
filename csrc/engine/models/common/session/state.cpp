@@ -122,8 +122,8 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
     layers.reserve(layer_count);
     for (size_t layer_index = 0; layer_index < layer_count; ++layer_index) {
         const auto &final = blocks.back().layers[layer_index];
-        std::vector<::tyloi::Tensor> keys;
-        std::vector<::tyloi::Tensor> values;
+        std::vector<::tyloi::DenseTensor> keys;
+        std::vector<::tyloi::DenseTensor> values;
         keys.reserve(blocks.size());
         values.reserve(blocks.size());
         for (const auto &block : blocks) {
@@ -156,22 +156,22 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
     return state;
 }
 
-size_t session_tensor_bytes(const ::tyloi::Tensor &tensor) {
+size_t session_tensor_bytes(const ::tyloi::DenseTensor &tensor) {
     if (!tensor.defined())
         return 0;
     return static_cast<size_t>(tensor.numel()) * tensor.element_size();
 }
 
-bool session_tensor_layout_matches(const ::tyloi::Tensor &target,
-                                   const ::tyloi::Tensor &source) {
+bool session_tensor_layout_matches(const ::tyloi::DenseTensor &target,
+                                   const ::tyloi::DenseTensor &source) {
     return target.defined() && source.defined() && target.sizes() == source.sizes() &&
            target.scalar_type() == source.scalar_type() && target.device() == source.device();
 }
 
-void restore_session_tensor(::tyloi::Tensor &target,
-                            const ::tyloi::Tensor &source) {
+void restore_session_tensor(::tyloi::DenseTensor &target,
+                            const ::tyloi::DenseTensor &source) {
     if (!source.defined()) {
-        target = ::tyloi::Tensor();
+        target = ::tyloi::DenseTensor();
         return;
     }
     if (!session_tensor_layout_matches(target, source)) {
@@ -180,8 +180,8 @@ void restore_session_tensor(::tyloi::Tensor &target,
     target.copy_(source);
 }
 
-void restore_session_prefix_tensor(::tyloi::Tensor &target,
-                                   const ::tyloi::Tensor &source, int64_t dimension,
+void restore_session_prefix_tensor(::tyloi::DenseTensor &target,
+                                   const ::tyloi::DenseTensor &source, int64_t dimension,
                                    int64_t capacity) {
     if (!source.defined() || dimension < 0 || dimension >= source.dim() || capacity <= 0 ||
         source.size(dimension) > capacity) {

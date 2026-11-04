@@ -157,11 +157,11 @@ tyloi::mxfp8::Data slice_mxfp8_cpu(
     return result;
 }
 
-Mxfp8Weight to_device_mxfp8(
+tyloi::Mxfp8Tensor to_device_mxfp8(
         const tyloi::mxfp8::Data & source,
         bool cuda,
         int device) {
-    Mxfp8Weight result;
+    tyloi::Mxfp8Tensor result;
     result.out = source.out;
     result.neuron_len = source.neuron_len;
     result.values = cpu_u8_tensor(
@@ -181,9 +181,9 @@ Mxfp8Weight to_device_mxfp8(
     return result;
 }
 
-Mxfp4Weight to_device_mxfp4(
+tyloi::Mxfp4Tensor to_device_mxfp4(
         const tyloi::mxfp4::Data & source, bool cuda, int device) {
-    Mxfp4Weight result;
+    tyloi::Mxfp4Tensor result;
     result.out = source.out;
     result.neuron_len = source.neuron_len;
     result.values = cpu_u8_tensor(
@@ -201,7 +201,7 @@ Mxfp4Weight to_device_mxfp4(
     return result;
 }
 
-::tyloi::Tensor dequant_mxfp4_cpu(const tyloi::mxfp4::Data & source) {
+::tyloi::DenseTensor dequant_mxfp4_cpu(const tyloi::mxfp4::Data & source) {
     auto dense = ::tyloi::cuda::empty(
         {source.out, source.neuron_len},
         ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat32));
@@ -231,13 +231,13 @@ Mxfp4Weight to_device_mxfp4(
 }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-Mxfp4SqWeight to_device_mxfp4_sq(
+tyloi::Mxfp4SqTensor to_device_mxfp4_sq(
         const std::vector<uint8_t> & payload,
         bool cuda,
         int device) {
     const auto layout = tyloi::sq::parse(payload.data(), payload.size());
     const auto rows = tyloi::sq::row_metadata(payload.data(), layout);
-    Mxfp4SqWeight result;
+    tyloi::Mxfp4SqTensor result;
     result.bits = layout.bits;
     result.out = layout.outputs;
     result.neuron_len = layout.width;
@@ -312,7 +312,7 @@ Mxfp4SqWeight to_device_mxfp4_sq(
     return result;
 }
 
-Fp8SqWeight to_device_fp8_sq(
+tyloi::Fp8SqTensor to_device_fp8_sq(
         std::string_view dtype,
         const std::vector<uint8_t> & payload,
         bool cuda,
@@ -320,7 +320,7 @@ Fp8SqWeight to_device_fp8_sq(
     const auto layout = tyloi::fp8sq::parse(
         dtype, payload.data(), payload.size());
     const auto rows = tyloi::fp8sq::row_metadata(payload.data(), layout);
-    Fp8SqWeight result;
+    tyloi::Fp8SqTensor result;
     result.dtype = std::string(dtype);
     result.out = layout.outputs;
     result.neuron_len = layout.width;

@@ -10,7 +10,7 @@
 
 namespace mfq_selected_attention {
 
-void values(std::initializer_list<const Tensor*> tensors) {
+void values(std::initializer_list<const DenseTensor*> tensors) {
     const auto* first = *tensors.begin();
     for (const auto* value : tensors) {
         TYLOINFER_RUNTIME_CHECK(value->defined() && value->is_cuda(),
@@ -23,14 +23,14 @@ void values(std::initializer_list<const Tensor*> tensors) {
     }
 }
 
-Tensor promoted_matmul(const Tensor& left, const Tensor& right) {
+DenseTensor promoted_matmul(const DenseTensor& left, const DenseTensor& right) {
     // MLX matmul promotes mixed floating operands, unlike ATen matmul.
     const auto dtype = left.scalar_type() == right.scalar_type()
         ? left.scalar_type() : ::tyloi::kFloat32;
     return ::tyloi::cuda::matmul(left.to(dtype), right.to(dtype));
 }
 
-Tensor dots(const Tensor& query, const Tensor& pooled) {
+DenseTensor dots(const DenseTensor& query, const DenseTensor& pooled) {
     values({&query, &pooled});
     TYLOINFER_RUNTIME_CHECK(query.dim() == 4 && pooled.dim() == 3,
         "selected-attention scores require [B,T,H,D] query and [B,P,D] keys");
@@ -43,7 +43,7 @@ Tensor dots(const Tensor& query, const Tensor& pooled) {
         pooled.to(::tyloi::kFloat32).transpose(-1, -2).unsqueeze(1)).clamp_min(0.0);
 }
 
-void attention_shapes(const Tensor& query, const Tensor& key, const Tensor& value) {
+void attention_shapes(const DenseTensor& query, const DenseTensor& key, const DenseTensor& value) {
     values({&query, &key, &value});
     TYLOINFER_RUNTIME_CHECK(query.dim() == 4 && key.dim() == 4 && value.sizes() == key.sizes(),
         "selected attention requires [B,H,T,D] query/key/value");
@@ -220,9 +220,9 @@ __global__ void sparse_attention_kernel(
     }
 }
 
-static Tensor sparse_impl(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& selected, double scale, bool v_is_k_view,
-    const Tensor& gate, bool half_output, bool fused_query = false, tyloi::cuda::HotKvView hot = {}) {
+static DenseTensor sparse_impl(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v,
+    const DenseTensor& selected, double scale, bool v_is_k_view,
+    const DenseTensor& gate, bool half_output, bool fused_query = false, tyloi::cuda::HotKvView hot = {}) {
     attention_shapes(q, k, v);
     TYLOINFER_RUNTIME_CHECK(selected.defined() && selected.is_cuda() &&
         selected.device() == q.device() && selected.dim() == 3 &&
@@ -282,14 +282,14 @@ static Tensor sparse_impl(const Tensor& q, const Tensor& k, const Tensor& v,
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
         if (use_qsa_mma) {
             if(hot.mapping)return mfq_sparse_attn_mma::launch<256,256,1,16,false,true>(
-                query,key,value,safe_indices,mask,Tensor{},Tensor{},scale,
-                "qwen4_sparse_gqa_attention_hot",gate,half_output,Tensor{},0,hot);
+                query,key,value,safe_indices,mask,DenseTensor{},DenseTensor{},scale,
+                "qwen4_sparse_gqa_attention_hot",gate,half_output,DenseTensor{},0,hot);
             return mfq_sparse_attn_mma::launch<256, 256, 1, 16, false>(
-                query, key, value, safe_indices, mask, Tensor{}, Tensor{},
+                query, key, value, safe_indices, mask, DenseTensor{}, DenseTensor{},
                 scale, "qwen4_sparse_gqa_attention", gate, half_output);
         }
         return mfq_sparse_attn_mma::launch<512, 512, 1, 16, true>(
-            query, key, key, safe_indices, mask, Tensor{}, Tensor{},
+            query, key, key, safe_indices, mask, DenseTensor{}, DenseTensor{},
             scale, "glm5_sparse_mla_attention");
     }
 
@@ -314,9 +314,9 @@ static Tensor sparse_impl(const Tensor& q, const Tensor& k, const Tensor& v,
     return output;
 }
 
-Tensor sparse(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& selected, double scale, bool v_is_k_view, tyloi::cuda::HotKvView hot) {
-    return sparse_impl(q, k, v, selected, scale, v_is_k_view, Tensor{}, false, false, hot);
+DenseTensor sparse(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v,
+    const DenseTensor& selected, double scale, bool v_is_k_view, tyloi::cuda::HotKvView hot) {
+    return sparse_impl(q, k, v, selected, scale, v_is_k_view, DenseTensor{}, false, false, hot);
 }
 
 __global__ void attention_gated_kernel(const void* attended, bool half_input,
@@ -334,15 +334,15 @@ __global__ void attention_gated_kernel(const void* attended, bool half_input,
     }
 }
 
-AttentionLayout attention_layout(const Tensor& x) {
+AttentionLayout attention_layout(const DenseTensor& x) {
     return {x.stride(0), x.stride(1), x.stride(2), x.stride(3)};
 }
 
-bool half_or_float(const Tensor& x) {
+bool half_or_float(const DenseTensor& x) {
     return x.scalar_type() == ::tyloi::kFloat16 || x.scalar_type() == ::tyloi::kFloat32;
 }
 
-Tensor gated(const Tensor& attended, const Tensor& gate, bool half_output) {
+DenseTensor gated(const DenseTensor& attended, const DenseTensor& gate, bool half_output) {
     values({&attended, &gate});
     TYLOINFER_RUNTIME_CHECK(attended.dim() == 4 && attended.sizes() == gate.sizes(),
         "attention gate requires matching [B,T,H,D] inputs");
@@ -363,8 +363,8 @@ Tensor gated(const Tensor& attended, const Tensor& gate, bool half_output) {
     return output;
 }
 
-Tensor sparse_gated(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& indices, const Tensor& gate, double scale, bool half_output, tyloi::cuda::HotKvView hot) {
+DenseTensor sparse_gated(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v,
+    const DenseTensor& indices, const DenseTensor& gate, double scale, bool half_output, tyloi::cuda::HotKvView hot) {
     attention_shapes(q, k, v);
     values({&q, &gate});
     TYLOINFER_RUNTIME_CHECK(gate.dim() == 4 && gate.size(0) == q.size(0) &&
@@ -403,7 +403,7 @@ __global__ void block_indices_to_tokens_kernel(const BlockIndex* blocks,
     }
 }
 
-Tensor block_indices_to_tokens(const Tensor& blocks, const Tensor& positions,
+DenseTensor block_indices_to_tokens(const DenseTensor& blocks, const DenseTensor& positions,
     int64_t pool, int64_t budget) {
     TYLOINFER_RUNTIME_CHECK(blocks.defined() && positions.defined() && blocks.is_cuda() &&
         positions.is_cuda() && blocks.device() == positions.device() &&
@@ -562,7 +562,7 @@ __global__ void mma_reduce_gate_kernel(const float* partial,const float2* metada
     }
 }
 
-Tensor mma_reduce_gated(const Tensor& partial,const Tensor& metadata,const Tensor& gate,
+DenseTensor mma_reduce_gated(const DenseTensor& partial,const DenseTensor& metadata,const DenseTensor& gate,
     bool half_output,int kv_heads,int total_blocks,int parts,int query_columns,int head_columns) {
     values({&partial,&metadata,&gate});
     TYLOINFER_RUNTIME_CHECK(partial.dim()==4 && partial.sizes()==gate.sizes() &&
@@ -594,8 +594,8 @@ Tensor mma_reduce_gated(const Tensor& partial,const Tensor& metadata,const Tenso
     return output;
 }
 
-Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& positions, const Tensor& gate, int64_t columns, double scale,
+DenseTensor causal_gated(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v,
+    const DenseTensor& positions, const DenseTensor& gate, int64_t columns, double scale,
     bool half_output, bool fused_mma_gate, bool fused_mma_prepare, tyloi::cuda::HotKvView hot) {
     attention_shapes(q, k, v);
     values({&q, &gate});
@@ -617,14 +617,14 @@ Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
         auto key = k.to(::tyloi::kFloat16).contiguous(), value = v.to(::tyloi::kFloat16).contiguous();
         if(hot.mapping && q.numel()) {
             auto attended=mfq_sparse_attn_mma::launch<256,256,1,16,false,true>(q,key,value,
-                Tensor{},Tensor{},Tensor{},Tensor{},scale,"causal_gqa_attention_hot",
-                fused_mma_gate?gate:Tensor{},half_output,cache_positions,columns,hot);
+                DenseTensor{},DenseTensor{},DenseTensor{},DenseTensor{},scale,"causal_gqa_attention_hot",
+                fused_mma_gate?gate:DenseTensor{},half_output,cache_positions,columns,hot);
             return fused_mma_gate?attended:gated(attended,gate,half_output);
         }
         if (fused_mma_prepare && q.numel()) {
             auto attended = mfq_sparse_attn_mma::launch<256, 256, 1, 16, false>(
-                q, key, value, Tensor{}, Tensor{}, Tensor{}, Tensor{}, scale,
-                "causal_gqa_attention_gate", fused_mma_gate ? gate : Tensor{}, half_output,
+                q, key, value, DenseTensor{}, DenseTensor{}, DenseTensor{}, DenseTensor{}, scale,
+                "causal_gqa_attention_gate", fused_mma_gate ? gate : DenseTensor{}, half_output,
                 cache_positions, columns);
             return fused_mma_gate ? attended : gated(attended, gate, half_output);
         }
@@ -645,8 +645,8 @@ Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
             columns, padded_columns, k.size(2));
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
         auto attended = mfq_sparse_attn_mma::launch<256, 256, 1, 16, false>(
-            query, key, value, indices, mask, Tensor{}, Tensor{}, scale, "qwen4_causal_gqa_attention_gate",
-            fused_mma_gate?gate:Tensor{},half_output);
+            query, key, value, indices, mask, DenseTensor{}, DenseTensor{}, scale, "qwen4_causal_gqa_attention_gate",
+            fused_mma_gate?gate:DenseTensor{},half_output);
         if(fused_mma_gate)return attended;
         return gated(attended, gate, half_output);
     }
@@ -655,7 +655,7 @@ Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
     auto output = ::tyloi::cuda::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
         q.options().dtype(half_output ? ::tyloi::kFloat16 : ::tyloi::kFloat32));
     if (!output.numel()) return output;
-    auto scratch = q.size(3) > 1024 ? ::tyloi::cuda::empty(output.sizes(), q.options().dtype(::tyloi::kFloat32)) : Tensor{};
+    auto scratch = q.size(3) > 1024 ? ::tyloi::cuda::empty(output.sizes(), q.options().dtype(::tyloi::kFloat32)) : DenseTensor{};
     const auto blocks = output.numel() / q.size(3);
     TYLOINFER_RUNTIME_CHECK(blocks <= INT_MAX, "causal attention exceeds CUDA grid size");
     const AttentionEpilogue epilogue{gate.data_ptr(), output.data_ptr(),
@@ -675,7 +675,7 @@ Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
     return output;
 }
 
-Tensor dense(const Tensor& query, const Tensor& key, const Tensor& value,
+DenseTensor dense(const DenseTensor& query, const DenseTensor& key, const DenseTensor& value,
                        int64_t offset, double scale, tyloi::cuda::HotKvView hot) {
     attention_shapes(query, key, value);
     const auto count = key.size(2);
@@ -686,8 +686,8 @@ Tensor dense(const Tensor& query, const Tensor& key, const Tensor& value,
     if(hot.mapping) {
         auto positions=::tyloi::cuda::arange(offset,offset+query.size(2),query.options().dtype(::tyloi::kInt64));
         if(query.size(3)==256)return mfq_sparse_attn_mma::launch<256,256,1,16,false,true>(
-            query,key,value,Tensor{},Tensor{},Tensor{},Tensor{},scale,"dense_gqa_attention_hot",
-            Tensor{},false,positions,offset+query.size(2),hot);
+            query,key,value,DenseTensor{},DenseTensor{},DenseTensor{},DenseTensor{},scale,"dense_gqa_attention_hot",
+            DenseTensor{},false,positions,offset+query.size(2),hot);
         auto selected=::tyloi::cuda::arange(offset+query.size(2),positions.options()).reshape({1,1,-1}).expand({1,query.size(2),offset+query.size(2)});
         selected=::tyloi::cuda::where(selected<=positions.reshape({1,-1,1}),selected,::tyloi::cuda::full_like(selected,-1));
         return sparse(query,key,value,selected,scale,false,hot);

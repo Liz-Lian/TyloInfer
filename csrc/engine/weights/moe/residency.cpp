@@ -261,7 +261,7 @@ struct MoeResidencyManager::Impl {
     uint8_t* backup_ram_device=nullptr;
     struct PrefillRoutes {int tokens=0,routes=0;};
     std::vector<PrefillRoutes> prefill_routes;
-    ::tyloi::Tensor prefill_route_device;
+    ::tyloi::DenseTensor prefill_route_device;
     std::unique_ptr<tyloi::cuda::HostBuffer> prefill_route_host;
     int prefill_route_stride=0;
     cudaEvent_t prefill_done=nullptr;
@@ -269,11 +269,11 @@ struct MoeResidencyManager::Impl {
     std::vector<Move> pending;
     std::size_t pending_complete_bundles=0;
     std::vector<Map> maps;
-    ::tyloi::Tensor upload,backup;
+    ::tyloi::DenseTensor upload,backup;
     std::unique_ptr<tyloi::cuda::HostBuffer> map_upload,map_descriptors;
     uint8_t* map_upload_device=nullptr;
     tyloi::MoeCacheMappedCopyDescriptor* map_descriptors_device=nullptr;
-    ::tyloi::Tensor device_work,copy_descriptors,device_descriptors;
+    ::tyloi::DenseTensor device_work,copy_descriptors,device_descriptors;
     int work_tokens=0;
     cudaStream_t stream=nullptr,backup_stream=nullptr;
     cudaEvent_t backup_done=nullptr;

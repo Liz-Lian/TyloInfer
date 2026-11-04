@@ -17,8 +17,6 @@
 #include <utility>
 #include <vector>
 
-#include "engine/weights/encoding/tq.h"
-
 namespace tyloi {
 
 enum class ScalarType : std::uint8_t {
@@ -430,17 +428,58 @@ private:
 
 class TensorIndex;
 class Tensor;
+class DenseTensor;
 namespace encoding {
-Tensor tq_tensor(const Tensor& image, std::int64_t rows, std::int64_t columns, Tq layout);
-const Tq& tq_layout(const Tensor& tensor);
-Tensor tq_image(const Tensor& tensor);
+struct Tq;
+class TqTensor;
 }
 
+// Abstract data interface: every representation shares the logical
+// shape/dtype metadata, layout identification, storage access and lifetime
+// contract below. Numeric entry points stay in ops; no compute virtuals.
 class Tensor {
 public:
-    Tensor() = default;
+    virtual ~Tensor() = default;
+    virtual bool defined() const noexcept = 0;
+    virtual std::int64_t dim() const noexcept = 0;
+    virtual std::int64_t numel() const = 0;
+    // Logical expansion bytes; physical bytes come from backing_nbytes().
+    virtual std::size_t nbytes() const = 0;
+    virtual std::size_t backing_nbytes() const = 0;
+    virtual std::int64_t size(std::int64_t dimension) const = 0;
+    virtual ScalarType scalar_type() const noexcept = 0;
+    virtual const Device& device() const noexcept = 0;
+    virtual bool is_contiguous() const noexcept = 0;
+    virtual bool is_encoded() const noexcept = 0;
+    // Every buffer this representation requires, in declaration order: values,
+    // scales, codebooks, packed payloads. An undefined entry means the weight
+    // is not prepared. Callers deduplicate by storage identity.
+    virtual std::vector<const DenseTensor*> buffers() const = 0;
+    virtual void record_stream(std::uintptr_t stream) const = 0;
 
-    Tensor(
+    // Backing buffers that exist, derived from buffers().
+    std::vector<std::shared_ptr<TensorStorage>> backings() const;
+
+    ScalarType dtype() const noexcept { return scalar_type(); }
+    int get_device() const noexcept { return device().index; }
+    bool is_cpu() const noexcept { return defined() && device().is_cpu(); }
+    bool is_cuda() const noexcept { return defined() && device().is_cuda(); }
+    std::size_t element_size() const noexcept { return scalar_size(scalar_type()); }
+    TensorOptions options() const noexcept {
+        const auto storages = backings();
+        return TensorOptions{}.dtype(scalar_type()).device(device()).pinned_memory(
+            !storages.empty() && storages.front()->pinned);
+    }
+    void require_dense() const {
+        if (is_encoded()) throw std::invalid_argument("operation requires a dense tensor");
+    }
+};
+
+class DenseTensor final : public Tensor {
+public:
+    DenseTensor() = default;
+
+    DenseTensor(
         std::shared_ptr<TensorStorage> storage,
         TensorView view,
         std::size_t byte_offset = 0)
@@ -450,141 +489,135 @@ public:
         }
     }
 
-    bool defined() const noexcept { return storage_ != nullptr; }
-    std::int64_t dim() const noexcept { return defined() ? view_.rank : 0; }
-    std::int64_t numel() const { return defined() ? view_.numel() : 0; }
-    std::size_t nbytes() const { return defined() ? (encoded_ ? tq_.bytes : view_.nbytes()) : 0; }
-    std::int64_t size(std::int64_t dimension) const { return view_.size(dimension); }
-    std::int64_t stride(std::int64_t dimension) const { require_dense(); return view_.stride(dimension); }
-    ScalarType scalar_type() const noexcept { return view_.scalar_type; }
-    ScalarType dtype() const noexcept { return scalar_type(); }
-    const Device& device() const noexcept { return view_.device; }
-    int get_device() const noexcept { return device().index; }
-    bool is_cpu() const noexcept { return defined() && device().is_cpu(); }
-    bool is_cuda() const noexcept { return defined() && device().is_cuda(); }
-    bool is_contiguous() const noexcept { return defined() && !encoded_ && view_.is_contiguous(); }
-    bool is_encoded() const noexcept { return defined() && encoded_; }
-    void require_dense() const {
-        if (is_encoded()) throw std::invalid_argument("operation requires a dense tensor");
+    bool defined() const noexcept override { return storage_ != nullptr; }
+    std::int64_t dim() const noexcept override { return defined() ? view_.rank : 0; }
+    std::int64_t numel() const override { return defined() ? view_.numel() : 0; }
+    std::size_t nbytes() const override { return defined() ? view_.nbytes() : 0; }
+    // Bytes of the backing this tensor keeps alive, not of the view itself.
+    std::size_t backing_nbytes() const override { return storage_ ? storage_->bytes : 0; }
+    std::int64_t size(std::int64_t dimension) const override { return view_.size(dimension); }
+    std::int64_t stride(std::int64_t dimension) const { return view_.stride(dimension); }
+    ScalarType scalar_type() const noexcept override { return view_.scalar_type; }
+    const Device& device() const noexcept override { return view_.device; }
+    bool is_contiguous() const noexcept override { return defined() && view_.is_contiguous(); }
+    bool is_encoded() const noexcept override { return false; }
+    std::vector<const DenseTensor*> buffers() const override { return {this}; }
+    const std::shared_ptr<TensorStorage>& storage() const noexcept { return storage_; }
+    std::size_t byte_offset() const noexcept { return byte_offset_; }
+    void record_stream(std::uintptr_t stream) const override {
+        if (storage_ && storage_->record_stream) storage_->record_stream(stream);
     }
-    std::size_t element_size() const noexcept { return scalar_size(scalar_type()); }
+
+    ScalarType dtype() const noexcept { return Tensor::dtype(); }
+    std::size_t element_size() const noexcept { return Tensor::element_size(); }
+    TensorOptions options() const noexcept { return Tensor::options(); }
+    void require_dense() const { Tensor::require_dense(); }
 
     IntArrayRef sizes() const {
         return IntArrayRef(std::span<const std::int64_t>(view_.sizes).first(view_.rank));
     }
 
-    const TensorView& view_descriptor() const { require_dense(); return view_; }
-    std::size_t byte_offset() const noexcept { return byte_offset_; }
-    Tensor alias(TensorView view, std::size_t byte_offset) const {
-        require_dense();
-        return Tensor(storage_, view, byte_offset);
-    }
-    void record_stream(std::uintptr_t stream) const {
-        if (storage_ && storage_->record_stream) storage_->record_stream(stream);
+    const TensorView& view_descriptor() const { return view_; }
+    DenseTensor alias(TensorView view, std::size_t byte_offset) const {
+        return DenseTensor(storage_, view, byte_offset);
     }
 
     template <typename T>
     T* data_ptr() const {
-        require_dense();
         return static_cast<T*>(view_.data);
     }
 
-    void* data_ptr() const { require_dense(); return view_.data; }
+    void* data_ptr() const { return view_.data; }
 
-    TensorOptions options() const noexcept {
-        return TensorOptions{}.dtype(scalar_type()).device(device()).pinned_memory(
-            storage_ && storage_->pinned);
-    }
-
-    Tensor reshape(std::span<const std::int64_t> shape) const;
-    Tensor reshape(std::initializer_list<std::int64_t> shape) const {
+    DenseTensor reshape(std::span<const std::int64_t> shape) const;
+    DenseTensor reshape(std::initializer_list<std::int64_t> shape) const {
         return reshape(std::span<const std::int64_t>(shape.begin(), shape.size()));
     }
-    Tensor view(std::span<const std::int64_t> shape) const { return reshape(shape); }
-    Tensor view(std::initializer_list<std::int64_t> shape) const { return reshape(shape); }
-    Tensor transpose(std::int64_t first, std::int64_t second) const;
-    Tensor permute(std::span<const std::int64_t> order) const;
-    Tensor permute(std::initializer_list<std::int64_t> order) const {
+    DenseTensor view(std::span<const std::int64_t> shape) const { return reshape(shape); }
+    DenseTensor view(std::initializer_list<std::int64_t> shape) const { return reshape(shape); }
+    DenseTensor transpose(std::int64_t first, std::int64_t second) const;
+    DenseTensor permute(std::span<const std::int64_t> order) const;
+    DenseTensor permute(std::initializer_list<std::int64_t> order) const {
         return permute(std::span<const std::int64_t>(order.begin(), order.size()));
     }
-    Tensor unsqueeze(std::int64_t dimension) const;
-    Tensor squeeze(std::int64_t dimension) const;
-    Tensor squeeze() const;
-    Tensor flatten(std::int64_t start = 0, std::int64_t end = -1) const;
-    Tensor narrow(std::int64_t dimension, std::int64_t start, std::int64_t length) const;
-    Tensor select(std::int64_t dimension, std::int64_t index) const;
-    Tensor slice(
+    DenseTensor unsqueeze(std::int64_t dimension) const;
+    DenseTensor squeeze(std::int64_t dimension) const;
+    DenseTensor squeeze() const;
+    DenseTensor flatten(std::int64_t start = 0, std::int64_t end = -1) const;
+    DenseTensor narrow(std::int64_t dimension, std::int64_t start, std::int64_t length) const;
+    DenseTensor select(std::int64_t dimension, std::int64_t index) const;
+    DenseTensor slice(
         std::int64_t dimension,
         std::int64_t start,
         std::int64_t end,
         std::int64_t step = 1) const;
-    Tensor index(std::initializer_list<TensorIndex> indices) const;
-    Tensor operator[](std::int64_t index) const { return select(0, index); }
-    Tensor index_select(std::int64_t dimension, const Tensor& indices) const;
-    Tensor gather(std::int64_t dimension, const Tensor& indices) const;
-    Tensor expand(std::span<const std::int64_t> shape) const;
-    Tensor expand(std::initializer_list<std::int64_t> shape) const {
+    DenseTensor index(std::initializer_list<TensorIndex> indices) const;
+    DenseTensor operator[](std::int64_t index) const { return select(0, index); }
+    DenseTensor index_select(std::int64_t dimension, const DenseTensor& indices) const;
+    DenseTensor gather(std::int64_t dimension, const DenseTensor& indices) const;
+    DenseTensor expand(std::span<const std::int64_t> shape) const;
+    DenseTensor expand(std::initializer_list<std::int64_t> shape) const {
         return expand(std::span<const std::int64_t>(shape.begin(), shape.size()));
     }
-    Tensor repeat(std::span<const std::int64_t> repeats) const;
-    Tensor repeat(std::initializer_list<std::int64_t> repeats) const {
+    DenseTensor repeat(std::span<const std::int64_t> repeats) const;
+    DenseTensor repeat(std::initializer_list<std::int64_t> repeats) const {
         return repeat(std::span<const std::int64_t>(repeats.begin(), repeats.size()));
     }
-    Tensor repeat_interleave(std::int64_t repeats, std::int64_t dimension) const;
-    Tensor unfold(
+    DenseTensor repeat_interleave(std::int64_t repeats, std::int64_t dimension) const;
+    DenseTensor unfold(
         std::int64_t dimension,
         std::int64_t size,
         std::int64_t step) const;
-    std::vector<Tensor> split_with_sizes(
+    std::vector<DenseTensor> split_with_sizes(
         std::span<const std::int64_t> sections,
         std::int64_t dimension = 0) const;
-    std::vector<Tensor> split_with_sizes(
+    std::vector<DenseTensor> split_with_sizes(
         std::initializer_list<std::int64_t> sections,
         std::int64_t dimension = 0) const {
         return split_with_sizes(
             std::span<const std::int64_t>(sections.begin(), sections.size()),
             dimension);
     }
-    std::vector<Tensor> chunk(std::int64_t chunks, std::int64_t dimension = 0) const;
-    Tensor mean(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor mean() const;
-    Tensor sum(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor sum() const;
-    Tensor max() const;
-    Tensor amax(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor norm() const;
-    Tensor abs() const;
-    Tensor square() const;
-    Tensor exp() const;
-    Tensor sqrt() const;
-    Tensor clamp(double minimum, double maximum) const;
-    Tensor clamp_min(double minimum) const;
-    Tensor clamp_max(double maximum) const;
-    Tensor remainder(double divisor) const;
-    Tensor argmax(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor eq(const Tensor& other) const;
-    Tensor eq(double other) const;
-    Tensor ne(const Tensor& other) const;
-    Tensor ne(double other) const;
-    Tensor all() const;
-    Tensor all(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor any(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor logical_not() const;
-    Tensor detach() const { return *this; }
-    bool equal(const Tensor& other) const;
-    Tensor masked_select(const Tensor& mask) const;
-    Tensor tril(std::int64_t diagonal = 0) const;
-    Tensor masked_fill(const Tensor& mask, double value) const;
-    Tensor& masked_fill_(const Tensor& mask, double value);
-    Tensor reshape_as(const Tensor& other) const { return reshape(other.sizes()); }
+    std::vector<DenseTensor> chunk(std::int64_t chunks, std::int64_t dimension = 0) const;
+    DenseTensor mean(std::int64_t dimension, bool keep_dimension = false) const;
+    DenseTensor mean() const;
+    DenseTensor sum(std::int64_t dimension, bool keep_dimension = false) const;
+    DenseTensor sum() const;
+    DenseTensor max() const;
+    DenseTensor amax(std::int64_t dimension, bool keep_dimension = false) const;
+    DenseTensor norm() const;
+    DenseTensor abs() const;
+    DenseTensor square() const;
+    DenseTensor exp() const;
+    DenseTensor sqrt() const;
+    DenseTensor clamp(double minimum, double maximum) const;
+    DenseTensor clamp_min(double minimum) const;
+    DenseTensor clamp_max(double maximum) const;
+    DenseTensor remainder(double divisor) const;
+    DenseTensor argmax(std::int64_t dimension, bool keep_dimension = false) const;
+    DenseTensor eq(const DenseTensor& other) const;
+    DenseTensor eq(double other) const;
+    DenseTensor ne(const DenseTensor& other) const;
+    DenseTensor ne(double other) const;
+    DenseTensor all() const;
+    DenseTensor all(std::int64_t dimension, bool keep_dimension = false) const;
+    DenseTensor any(std::int64_t dimension, bool keep_dimension = false) const;
+    DenseTensor logical_not() const;
+    DenseTensor detach() const { return *this; }
+    bool equal(const DenseTensor& other) const;
+    DenseTensor masked_select(const DenseTensor& mask) const;
+    DenseTensor tril(std::int64_t diagonal = 0) const;
+    DenseTensor masked_fill(const DenseTensor& mask, double value) const;
+    DenseTensor& masked_fill_(const DenseTensor& mask, double value);
+    DenseTensor reshape_as(const DenseTensor& other) const { return reshape(other.sizes()); }
 
-    Tensor contiguous() const;
-    Tensor clone() const;
-    Tensor to(ScalarType type) const;
-    Tensor to(Device device) const;
-    Tensor to(DeviceType device) const { return to(Device{device, 0}); }
-    Tensor to(Device device, bool, bool) const { return to(device); }
-    Tensor to(const TensorOptions& options, bool = false, bool = false) const {
+    DenseTensor contiguous() const;
+    DenseTensor clone() const;
+    DenseTensor to(ScalarType type) const;
+    DenseTensor to(Device device) const;
+    DenseTensor to(DeviceType device) const { return to(Device{device, 0}); }
+    DenseTensor to(Device device, bool, bool) const { return to(device); }
+    DenseTensor to(const TensorOptions& options, bool = false, bool = false) const {
         const auto destination = options.has_device() ? options.target_device() : device();
         const auto type = options.has_dtype() ? options.scalar_type() : scalar_type();
         auto moved = destination == device()
@@ -594,42 +627,39 @@ public:
             ? moved
             : moved.to(type);
     }
-    Tensor to(DeviceType device, ScalarType type) const {
+    DenseTensor to(DeviceType device, ScalarType type) const {
         return to(Device{device, 0}, type);
     }
-    Tensor to(Device device, ScalarType type) const {
+    DenseTensor to(Device device, ScalarType type) const {
         if (device != this->device() && type != scalar_type()) {
             return to(type).to(device);
         }
         auto moved = device == this->device() ? *this : to(device);
         return type == moved.scalar_type() ? moved : moved.to(type);
     }
-    Tensor cpu() const { return to(Device{DeviceType::cpu, 0}); }
+    DenseTensor cpu() const { return to(Device{DeviceType::cpu, 0}); }
 
-    Tensor& copy_(const Tensor& source, bool non_blocking = false);
-    Tensor& zero_();
-    Tensor& fill_(double value);
-    Tensor& add_(const Tensor& value);
-    Tensor& scatter_add_(std::int64_t dimension, const Tensor& index, const Tensor& source);
-    Tensor& scatter_(std::int64_t dimension, const Tensor& index, const Tensor& source);
-    Tensor& index_copy_(std::int64_t dimension, const Tensor& index, const Tensor& source);
-    Tensor& index_fill_(std::int64_t dimension, const Tensor& index, double value);
-    Tensor& index_put_(std::initializer_list<TensorIndex> indices, const Tensor& value);
-    Tensor& index_put_(std::initializer_list<TensorIndex> indices, double value);
+    DenseTensor& copy_(const DenseTensor& source, bool non_blocking = false);
+    DenseTensor& zero_();
+    DenseTensor& fill_(double value);
+    DenseTensor& add_(const DenseTensor& value);
+    DenseTensor& scatter_add_(std::int64_t dimension, const DenseTensor& index, const DenseTensor& source);
+    DenseTensor& scatter_(std::int64_t dimension, const DenseTensor& index, const DenseTensor& source);
+    DenseTensor& index_copy_(std::int64_t dimension, const DenseTensor& index, const DenseTensor& source);
+    DenseTensor& index_fill_(std::int64_t dimension, const DenseTensor& index, double value);
+    DenseTensor& index_put_(std::initializer_list<TensorIndex> indices, const DenseTensor& value);
+    DenseTensor& index_put_(std::initializer_list<TensorIndex> indices, double value);
 
     template <typename T>
     T item() const {
         if (!defined() || numel() != 1) {
             throw std::invalid_argument("item() requires a defined scalar tensor");
         }
-        const Tensor host = is_cpu() && is_contiguous() ? *this : cpu().contiguous();
+        const DenseTensor host = is_cpu() && is_contiguous() ? *this : cpu().contiguous();
         return scalar_cast<T>(host.data_ptr(), host.scalar_type());
     }
 
 private:
-    friend Tensor encoding::tq_tensor(const Tensor&, std::int64_t, std::int64_t, encoding::Tq);
-    friend const encoding::Tq& encoding::tq_layout(const Tensor&);
-    friend Tensor encoding::tq_image(const Tensor&);
     template <typename T>
     static T scalar_cast(const void* pointer, ScalarType type) {
         switch (type) {
@@ -698,51 +728,7 @@ private:
     std::shared_ptr<TensorStorage> storage_;
     TensorView view_{};
     std::size_t byte_offset_ = 0;
-    bool encoded_ = false;
-    encoding::Tq tq_{};
 };
-
-namespace encoding {
-inline Tensor tq_tensor(const Tensor& image, std::int64_t rows, std::int64_t columns, Tq layout) {
-    if (!image.defined() || image.is_encoded() || image.scalar_type() != kUInt8 ||
-        image.dim() != 1 || !image.is_contiguous() || rows < 1 || columns < 1 ||
-        layout.stored_columns < columns || layout.stored_columns > INT32_MAX || rows > INT32_MAX ||
-        layout.bytes > static_cast<std::size_t>(image.numel()) ||
-        image.byte_offset_ > image.storage_->bytes ||
-        layout.bytes > image.storage_->bytes - image.byte_offset_ ||
-        layout.bytes < 64 || static_cast<std::size_t>(rows) > (layout.bytes - 64) / 8 ||
-        layout.scales < 64 + static_cast<std::size_t>(rows) * 8 ||
-        layout.scales > layout.bytes || layout.scales_bytes > layout.bytes - layout.scales ||
-        layout.words > layout.bytes || layout.words_bytes > layout.bytes - layout.words ||
-        layout.words < layout.scales + layout.scales_bytes ||
-        layout.relative != layout.words + layout.words_bytes ||
-        layout.relative > layout.bytes || layout.bytes - layout.relative != 32 ||
-        layout.gslog < 0 || layout.gslog > 31)
-        throw std::invalid_argument("invalid TQ tensor image or geometry");
-    const auto base = reinterpret_cast<std::uintptr_t>(image.data_ptr());
-    if (!base || base > std::numeric_limits<std::uintptr_t>::max() - layout.bytes ||
-        (base + 64) % 8 || (base + layout.words) % 4)
-        throw std::invalid_argument("unaligned TQ tensor image");
-    Tensor result;
-    result.storage_ = image.storage_;
-    result.byte_offset_ = image.byte_offset_;
-    result.view_ = make_contiguous_view(nullptr, std::array<std::int64_t, 2>{rows, columns}, kFloat16, image.device());
-    result.encoded_ = true;
-    result.tq_ = layout;
-    return result;
-}
-
-inline const Tq& tq_layout(const Tensor& tensor) {
-    if (!tensor.defined() || !tensor.encoded_) throw std::invalid_argument("tensor is not TQ encoded");
-    return tensor.tq_;
-}
-
-inline Tensor tq_image(const Tensor& tensor) {
-    const auto& layout = tq_layout(tensor);
-    const std::array<std::int64_t, 1> shape{static_cast<std::int64_t>(layout.bytes)};
-    return Tensor(tensor.storage_, make_contiguous_view(nullptr, shape, kUInt8, tensor.device()), tensor.byte_offset_);
-}
-} // namespace encoding
 
 class TensorIndex final {
 public:
@@ -751,48 +737,70 @@ public:
     TensorIndex(std::int64_t value) : kind_(Kind::integer), integer_(value) {}
     TensorIndex(int value) : TensorIndex(static_cast<std::int64_t>(value)) {}
     TensorIndex(const indexing::Slice& value) : kind_(Kind::slice), slice_(value) {}
-    TensorIndex(const Tensor& value)
-        : kind_(Kind::tensor), tensor_(std::make_shared<Tensor>(value)) {}
+    TensorIndex(const DenseTensor& value)
+        : kind_(Kind::tensor), tensor_(std::make_shared<DenseTensor>(value)) {}
 
     Kind kind() const noexcept { return kind_; }
     std::int64_t integer() const noexcept { return integer_; }
     const indexing::Slice& slice() const noexcept { return slice_; }
-    const Tensor& tensor() const { return *tensor_; }
+    const DenseTensor& tensor() const { return *tensor_; }
 
 private:
     Kind kind_ = Kind::integer;
     std::int64_t integer_ = 0;
     indexing::Slice slice_{};
-    std::shared_ptr<Tensor> tensor_;
+    std::shared_ptr<DenseTensor> tensor_;
 };
 
-Tensor operator+(const Tensor& left, const Tensor& right);
-Tensor operator+(const Tensor& left, double right);
-Tensor operator+(double left, const Tensor& right);
-Tensor operator-(const Tensor& left, const Tensor& right);
-Tensor operator-(const Tensor& left, double right);
-Tensor operator-(double left, const Tensor& right);
-Tensor operator-(const Tensor& value);
-Tensor operator*(const Tensor& left, const Tensor& right);
-Tensor operator*(const Tensor& left, double right);
-Tensor operator*(double left, const Tensor& right);
-Tensor operator/(const Tensor& left, const Tensor& right);
-Tensor operator/(const Tensor& left, double right);
-Tensor operator/(double left, const Tensor& right);
-Tensor operator<(const Tensor& left, const Tensor& right);
-Tensor operator<(const Tensor& left, double right);
-Tensor operator<=(const Tensor& left, const Tensor& right);
-Tensor operator<=(const Tensor& left, double right);
-Tensor operator>(const Tensor& left, const Tensor& right);
-Tensor operator>(const Tensor& left, double right);
-Tensor operator>=(const Tensor& left, const Tensor& right);
-Tensor operator>=(const Tensor& left, double right);
-Tensor operator&(const Tensor& left, const Tensor& right);
-Tensor operator|(const Tensor& left, const Tensor& right);
-Tensor operator~(const Tensor& value);
-Tensor operator==(const Tensor& left, const Tensor& right);
-Tensor operator==(const Tensor& left, double right);
-Tensor operator!=(const Tensor& left, const Tensor& right);
-Tensor operator!=(const Tensor& left, double right);
+// View metadata helpers: they share the backing storage and only build a new
+// DenseTensor view. DenseTensor members and ops:: both enter through here.
+DenseTensor reshape(const DenseTensor& source, std::span<const std::int64_t> shape);
+DenseTensor transpose(const DenseTensor& source, std::int64_t first, std::int64_t second);
+DenseTensor permute(const DenseTensor& source, std::span<const std::int64_t> order);
+DenseTensor unsqueeze(const DenseTensor& source, std::int64_t dimension);
+DenseTensor squeeze(const DenseTensor& source, std::int64_t dimension);
+DenseTensor squeeze(const DenseTensor& source);
+DenseTensor flatten(const DenseTensor& source, std::int64_t start, std::int64_t end);
+DenseTensor narrow(const DenseTensor& source, std::int64_t dimension, std::int64_t start, std::int64_t length);
+DenseTensor select(const DenseTensor& source, std::int64_t dimension, std::int64_t index);
+DenseTensor slice(const DenseTensor& source, std::int64_t dimension, std::int64_t start, std::int64_t end, std::int64_t step);
+DenseTensor index(const DenseTensor& source, std::initializer_list<TensorIndex> indices);
+DenseTensor expand(const DenseTensor& source, std::span<const std::int64_t> shape);
+DenseTensor unfold(const DenseTensor& source, std::int64_t dimension, std::int64_t window, std::int64_t step);
+std::vector<DenseTensor> split_with_sizes(const DenseTensor& source, std::span<const std::int64_t> sections, std::int64_t dimension);
+std::vector<DenseTensor> chunk(const DenseTensor& source, std::int64_t chunks, std::int64_t dimension);
+
+// Physical bytes of a set of buffers, counted once per backing identity.
+// Aliased views of one storage contribute only the first one seen.
+std::size_t backing_bytes(std::span<const DenseTensor* const> buffers);
+
+DenseTensor operator+(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator+(const DenseTensor& left, double right);
+DenseTensor operator+(double left, const DenseTensor& right);
+DenseTensor operator-(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator-(const DenseTensor& left, double right);
+DenseTensor operator-(double left, const DenseTensor& right);
+DenseTensor operator-(const DenseTensor& value);
+DenseTensor operator*(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator*(const DenseTensor& left, double right);
+DenseTensor operator*(double left, const DenseTensor& right);
+DenseTensor operator/(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator/(const DenseTensor& left, double right);
+DenseTensor operator/(double left, const DenseTensor& right);
+DenseTensor operator<(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator<(const DenseTensor& left, double right);
+DenseTensor operator<=(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator<=(const DenseTensor& left, double right);
+DenseTensor operator>(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator>(const DenseTensor& left, double right);
+DenseTensor operator>=(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator>=(const DenseTensor& left, double right);
+DenseTensor operator&(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator|(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator~(const DenseTensor& value);
+DenseTensor operator==(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator==(const DenseTensor& left, double right);
+DenseTensor operator!=(const DenseTensor& left, const DenseTensor& right);
+DenseTensor operator!=(const DenseTensor& left, double right);
 
 }  // namespace tyloi

@@ -12,15 +12,15 @@ using attention_ops::Linear;
 class SparseMla;
 
 struct Mtp final : MtpModule {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     struct Layer {
-        Tensor attention_norm, ffn_norm;
+        DenseTensor attention_norm, ffn_norm;
         std::unique_ptr<SparseMla> attention;
         attention_ops::Transform ffn;
     };
 
     tyloi::models::glm5_next::Config config;
-    Tensor embedding_norm, hidden_norm, output_norm;
+    DenseTensor embedding_norm, hidden_norm, output_norm;
     Linear fusion;
     std::vector<Layer> layers;
     std::vector<MlaState> states;
@@ -39,14 +39,14 @@ struct Mtp final : MtpModule {
 
     void reset(int64_t next_batch = 1) override;
 
-    std::pair<Tensor, Tensor> evaluate(const Tensor &hidden,
-                                       const Tensor &ids, int64_t depth = 0, bool cache = true,
-                                       const Tensor &supplied_positions = {},
-                                       const Tensor &supplied_embeddings = {});
+    std::pair<DenseTensor, DenseTensor> evaluate(const DenseTensor &hidden,
+                                       const DenseTensor &ids, int64_t depth = 0, bool cache = true,
+                                       const DenseTensor &supplied_positions = {},
+                                       const DenseTensor &supplied_embeddings = {});
 
-    Tensor forward(Tensor hidden, Tensor ids) override;
+    DenseTensor forward(DenseTensor hidden, DenseTensor ids) override;
 
-    MtpStep step(Tensor hidden, Tensor ids) override;
+    MtpStep step(DenseTensor hidden, DenseTensor ids) override;
 
     int64_t cache_position() const noexcept override;
 

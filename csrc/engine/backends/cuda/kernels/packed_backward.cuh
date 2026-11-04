@@ -218,9 +218,9 @@ inline void launch_float_gemm_nn(
 }
 
 inline void launch_dense_half_weight(
-        const ::tyloi::Tensor & output_gradient,
-        const ::tyloi::Tensor & half_weight,
-        ::tyloi::Tensor & input_gradient,
+        const ::tyloi::DenseTensor & output_gradient,
+        const ::tyloi::DenseTensor & half_weight,
+        ::tyloi::DenseTensor & input_gradient,
         int rows,
         int outputs,
         int width,

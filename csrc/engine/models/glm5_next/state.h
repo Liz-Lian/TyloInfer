@@ -8,14 +8,14 @@
 
 namespace tyloi::cuda::glm5_next {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 struct Model;
 
 struct KdaState {
-    Tensor conv, recurrent, rollback_conv, rollback_recurrent;
-    void reset() { conv = Tensor(); recurrent = Tensor(); commit(); }
+    DenseTensor conv, recurrent, rollback_conv, rollback_recurrent;
+    void reset() { conv = DenseTensor(); recurrent = DenseTensor(); commit(); }
     bool pending() const { return rollback_conv.defined(); }
-    void commit() { rollback_conv = Tensor(); rollback_recurrent = Tensor(); }
+    void commit() { rollback_conv = DenseTensor(); rollback_recurrent = DenseTensor(); }
     void rollback() {
         TYLOINFER_RUNTIME_CHECK(pending(), "GLM KDA has no speculative checkpoint");
         conv = rollback_conv;
@@ -53,8 +53,8 @@ public:
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate() {}
     void commit_speculative();
-    std::vector<Tensor> storage() const { return {}; }
-    std::vector<Tensor*> graph_state() { return {}; }
+    std::vector<DenseTensor> storage() const { return {}; }
+    std::vector<DenseTensor*> graph_state() { return {}; }
     TextSessionStateKind text_session_state_kind() const { return TextSessionStateKind::Unsupported; }
     bool supports_text_session_state() const { return false; }
     bool supports_paged_text_session_state() const { return false; }

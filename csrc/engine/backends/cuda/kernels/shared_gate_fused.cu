@@ -144,9 +144,9 @@ __global__ void nint_gate_sigmoid(const __half* input,const uint8_t* packed,cons
 }
 }
 
-std::optional<::tyloi::Tensor> try_nint_shared_gate_sigmoid_cuda(
-        const ::tyloi::Tensor& input,const NintWeight& w,
-        const ::tyloi::Tensor& quantized,const ::tyloi::Tensor& scales) {
+std::optional<::tyloi::DenseTensor> try_nint_shared_gate_sigmoid_cuda(
+        const ::tyloi::DenseTensor& input,const tyloi::NintTensor& w,
+        const ::tyloi::DenseTensor& quantized,const ::tyloi::DenseTensor& scales) {
     if(!input.defined() || !input.is_cuda() || !input.is_contiguous() || input.dim()!=2 ||
             input.scalar_type()!=::tyloi::kFloat16 || input.size(0)<1 || input.size(0)>6 ||
             !w.aligned_q8 || w.q8_zero || w.out!=1 || w.gs!=48 || w.ng<1 || w.ng>64 ||
@@ -185,9 +185,9 @@ std::optional<::tyloi::Tensor> try_nint_shared_gate_sigmoid_cuda(
 
 #endif
 
-std::optional<::tyloi::Tensor> try_shared_gate_sigmoid_cuda(
-        const ::tyloi::Tensor& input,
-        const ::tyloi::Tensor& weight) {
+std::optional<::tyloi::DenseTensor> try_shared_gate_sigmoid_cuda(
+        const ::tyloi::DenseTensor& input,
+        const ::tyloi::DenseTensor& weight) {
     if(!input.defined() || !weight.defined() || !input.is_cuda() || !weight.is_cuda() ||
         input.get_device()!=weight.get_device() || !input.is_contiguous() || !weight.is_contiguous() ||
         input.scalar_type()!=::tyloi::kFloat16 || weight.scalar_type()!=::tyloi::kBFloat16 ||

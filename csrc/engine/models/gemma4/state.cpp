@@ -69,11 +69,11 @@ void State::reset(std::int64_t next_batch) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::vector<tyloi::Tensor> State::storage() const {
-    std::vector<tyloi::Tensor> result;
+std::vector<tyloi::DenseTensor> State::storage() const {
+    std::vector<tyloi::DenseTensor> result;
 #else
-std::vector<Tensor> State::storage() const {
-    std::vector<Tensor> result;
+std::vector<DenseTensor> State::storage() const {
+    std::vector<DenseTensor> result;
 #endif
     for (const auto& cache : layers) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

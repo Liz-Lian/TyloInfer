@@ -587,7 +587,7 @@ void MoeExpertCache::initialize_ssd_residency() {
     // The file tier supplies a bounded LRU, rather than an all-expert image.
     // Give its entries stable pinned intervals so demand reads go straight to
     // DMA-ready storage and reuse the existing direct-RAM decode machinery.
-    pipeline_ram_complement_=std::make_shared<::tyloi::Tensor>(::tyloi::cuda::empty(
+    pipeline_ram_complement_=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty(
         {0},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8)));
     pipeline_ram_registered_bytes_=0;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -631,7 +631,7 @@ void MoeExpertCache::initialize_ssd_residency() {
             catch(const MfqResourceExhausted&) {pinned=pinned/2/4096*4096;}
         }
         if(pinned_expert_arena_) {
-            pipeline_ram_complement_=std::make_shared<::tyloi::Tensor>(pinned_expert_arena_->tensor());
+            pipeline_ram_complement_=std::make_shared<::tyloi::DenseTensor>(pinned_expert_arena_->tensor());
             pipeline_ram_registered_bytes_=pinned_expert_arena_->bytes();
             for(const auto& source:sources_)source->quant_source_->bind_pinned_arena(pinned_expert_arena_);
         }
@@ -911,7 +911,7 @@ void MoeExpertCache::copy_ssd_experts(const std::vector<SsdExpertCopy>& requests
                 if(last-first>1) {
                     std::vector<int> experts;experts.reserve(last-first);
                     for(auto i=first;i<last;++i)experts.push_back(requests[order[i].index].expert);
-                    std::array<::tyloi::Tensor,4> fields;
+                    std::array<::tyloi::DenseTensor,4> fields;
                     for(int f=0;f<4;++f)fields[f]=initial.fields[f].nbytes()?::tyloi::cuda::from_blob(
                         initial.fields[f].data_ptr(),{initial.fields[f].numel()*int64_t(last-first)},initial.fields[f].options()):initial.fields[f];
                     if(initial.source->copy_nvq_expert_fields(experts,fields))continue;
@@ -1055,12 +1055,12 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
             created=true;
             if(reserve_ram_workspace_)reserve_ram_workspace_(image_bytes);
             reclaim_optional_host(image_bytes);
-            std::vector<::tyloi::Tensor> fields;
+            std::vector<::tyloi::DenseTensor> fields;
             for(std::size_t f=0;f<arena->fields.size();++f) {
                 const auto rows=arena->layouts[f].slot_shape[0];
                 const auto tail=arena->fields[f].narrow(0,(arena->slots-int64_t(image_slots))*rows,int64_t(image_slots)*rows);
                 auto options=tail.options().device(::tyloi::kCPU).pinned_memory(false);
-                ::tyloi::Tensor backup;
+                ::tyloi::DenseTensor backup;
                 if(tail.nbytes()<=backup_budget) {
                     try {
                         backup=::tyloi::cuda::empty(tail.sizes(),options.pinned_memory(true));
@@ -1310,7 +1310,7 @@ void MoeExpertCache::resize(std::size_t bytes) {
         throw std::runtime_error("expert budget reduction exceeds available RAM expert storage");
     // Each field remains compressed. Temporary host copies permit replacing the
     // arenas without needing both old and new GPU allocations at once.
-    struct SavedArena { MoeGpuArena* arena; int slots; std::vector<::tyloi::Tensor> fields; };
+    struct SavedArena { MoeGpuArena* arena; int slots; std::vector<::tyloi::DenseTensor> fields; };
     std::vector<SavedArena> saved;
     for(auto& [signature,arena]:arenas_)if(plan.at(signature)!=arena->slots) {
         SavedArena entry{arena.get(),arena->slots,{}};
@@ -1326,7 +1326,7 @@ void MoeExpertCache::resize(std::size_t bytes) {
                 auto pool=*source.cohorts_.at(key->cohort).cpu;
                 pool.local_experts=1;pool.expert_local={};
                 const auto retain=[&] {
-                    std::vector<::tyloi::Tensor> fields;
+                    std::vector<::tyloi::DenseTensor> fields;
                     for(std::size_t i=0;i<entry.fields.size();++i) {
                         auto rows=entry.arena->layouts[i].slot_shape[0];
                         fields.push_back(entry.fields[i].narrow(0,slot*rows,rows).clone());
@@ -1540,7 +1540,7 @@ void MoeExpertCache::preload_complete_residency() {
             }
         }
     }
-    pipeline_ram_complement_=std::make_shared<::tyloi::Tensor>(::tyloi::cuda::empty(
+    pipeline_ram_complement_=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty(
         {ram_allocated},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8)));
     host_experts_->preserve_resident_experts();
     measuring_preload_h2d_=true;
@@ -1765,7 +1765,7 @@ void MoeExpertCache::calibrate_pipeline_pcie() {
         const auto fraction=*options_.ram_fraction;
         ram_pcie_fraction_=fraction;std::cerr<<"moe_ram_pcie_override fraction="<<fraction<<std::endl;return;
     }
-    ::tyloi::Tensor target;
+    ::tyloi::DenseTensor target;
     for(const auto& [signature,arena]:arenas_)for(const auto& field:arena->fields)
         if(!target.defined() || tensor_nbytes(field)>tensor_nbytes(target))target=field;
     const auto bytes=std::min<int64_t>(256ll<<20,tensor_nbytes(target));
@@ -1911,7 +1911,7 @@ void MoeExpertCache::invalidate(
         auto pool=*cohort.cpu;
         pool.local_experts=1;
         pool.expert_local={};
-        std::vector<::tyloi::Tensor> fields;
+        std::vector<::tyloi::DenseTensor> fields;
         for (std::size_t i=0; i<arena.fields.size(); ++i) {
             const auto rows=arena.layouts[i].slot_shape[0];
             fields.push_back(arena.fields[i].narrow(0,slot*rows,rows).to(::tyloi::kCPU).contiguous());
@@ -1983,7 +1983,7 @@ void MoeExpertCache::append_source_transfers(
                 replaced_occupied = true;
                 invalidate(*lease.replaced, lease.slot);
             }
-            std::vector<::tyloi::Tensor> quant_fields;
+            std::vector<::tyloi::DenseTensor> quant_fields;
             MoeHostExpertCache::Lease quant_owner;
             if (source.quant_source_) {
                 quant_owner=source.quant_source_->acquire_expert(expert);

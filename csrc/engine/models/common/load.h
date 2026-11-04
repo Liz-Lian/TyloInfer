@@ -22,8 +22,8 @@ struct TransformerWeightLoader {
     bool keep_quantized_router = false;
 
     bool has(const std::string& name) const;
-    ::tyloi::Tensor dense(const std::string& name) const;
-    ::tyloi::Tensor router_parameter(const std::string& name) const;
+    ::tyloi::DenseTensor dense(const std::string& name) const;
+    ::tyloi::DenseTensor router_parameter(const std::string& name) const;
     QuantLinear linear(const std::string& name) const;
     QuantLinearGroup projections(const std::vector<std::string>& names) const;
     QuantLinearGroup gate_up(const std::vector<std::string>& names, const QuantLinear& down) const;
@@ -34,8 +34,8 @@ struct TransformerWeightLoader {
     void experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
     tyloi::cuda::Experts headwise(const std::string& name) const;
-    static auto shape(const ::tyloi::Tensor& value) { return value.sizes().vec(); }
-    static int64_t elements(const ::tyloi::Tensor& value) { return value.numel(); }
+    static auto shape(const ::tyloi::DenseTensor& value) { return value.sizes().vec(); }
+    static int64_t elements(const ::tyloi::DenseTensor& value) { return value.numel(); }
 };
 struct MoeWeightLoadOptions {
     int layer;

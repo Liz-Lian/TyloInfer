@@ -221,7 +221,7 @@ OutputHeadWeights load_output_head(const weight_loader::Loader& weights) {
     };
 }
 
-::tyloi::Tensor finalize_hidden(::tyloi::Tensor hidden,
+::tyloi::DenseTensor finalize_hidden(::tyloi::DenseTensor hidden,
                                            const OutputHeadWeights &output_head,
                                            const Config &config, CudaProfiler &profiler,
                                            int64_t batch, int64_t tokens) {
@@ -312,7 +312,7 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
 }
 
 namespace {
-Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
+DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids) {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
@@ -322,15 +322,15 @@ Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
 }
 } // namespace
 
-Tensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
-             Tensor ids, const Executor::Mode& mode) {
+DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
+             DenseTensor ids, const Executor::Mode& mode) {
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
-Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t batch, int64_t tokens) {
+DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
     return executor.profiler().measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, model.metadata.hidden_size})
                                  .to(::tyloi::kFloat32),
@@ -340,12 +340,12 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t 
     });
 }
 
-Tensor softcap(const Model& model, Executor&, Tensor value) {
+DenseTensor softcap(const Model& model, Executor&, DenseTensor value) {
     const double cap = model.metadata.final_logit_softcapping;
     return cap > 0.0 ? ::tyloi::cuda::tanh(value / cap) * cap : value;
 }
 
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
+DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
     Inputs inputs;
@@ -354,11 +354,11 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped
     return capped ? softcap(model, executor, std::move(value)) : value;
 }
 
-Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(collectives, mode.primary, Tensor(std::move(input.ids)));
-    auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
+    auto ids = normalize_ids(collectives, mode.primary, DenseTensor(std::move(input.ids)));
+    auto embeddings = input.embeddings.has_value() ? DenseTensor(std::move(*input.embeddings))
         : embed(model, executor, collectives, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
@@ -368,10 +368,10 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (state.cache_pos == 0) state.reset(B);
     const auto options = ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, mode.primary)).dtype(::tyloi::kInt64);
     auto physical = input.cache_positions.has_value()
-        ? collectives.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? collectives.copy(DenseTensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto semantic = input.positions.has_value()
-        ? collectives.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? collectives.copy(DenseTensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
     tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
                                    (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
@@ -386,13 +386,13 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
         input.lengths = ::tyloi::cuda::full({B}, state.cache_pos + 1, options);
-    AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
-                       input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
+    AttentionStep step{semantic, input.lengths ? MfqOptional<DenseTensor>(DenseTensor(*input.lengths)) : mfq_nullopt,
+                       input.cache_positions.has_value() ? MfqOptional<DenseTensor>(physical) : mfq_nullopt,
                        {}, state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous()
                       .to(::tyloi::kFloat16).unsqueeze(2)
                       .expand({B, T, model.metadata.hc_mult, model.metadata.hidden_size}).contiguous();
-    const auto trace = [&](const Tensor& value) {
+    const auto trace = [&](const DenseTensor& value) {
         if (input.trace) input.trace->push_back(collectives.copy(value, mode.primary).to(::tyloi::kFloat32).clone());
     };
     trace(hidden);
@@ -400,9 +400,9 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         const auto& layer = model.layers[index];
         MfqCudaGuard layer_guard(layer.device);
         auto local = step;
-        local.positions = collectives.copy(Tensor(step.positions), layer.device);
-        if (step.sequence_lengths.has_value()) local.sequence_lengths = collectives.copy(Tensor(*step.sequence_lengths), layer.device);
-        if (step.cache_positions.has_value()) local.cache_positions = collectives.copy(Tensor(*step.cache_positions), layer.device);
+        local.positions = collectives.copy(DenseTensor(step.positions), layer.device);
+        if (step.sequence_lengths.has_value()) local.sequence_lengths = collectives.copy(DenseTensor(*step.sequence_lengths), layer.device);
+        if (step.cache_positions.has_value()) local.cache_positions = collectives.copy(DenseTensor(*step.cache_positions), layer.device);
         hidden = forward_layer(layer, state.layers[index], executor,
                                collectives.copy(std::move(hidden), layer.device),
                                collectives.copy(ids, layer.device), local, mode);
@@ -421,9 +421,9 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
 bool g_dsv4_fused_hc = true;
 bool g_dsv4_compare_hc_ops = false;
 
-static std::vector<::tyloi::Tensor>
-dsv4_hc_split_sinkhorn(::tyloi::Tensor mixes, ::tyloi::Tensor scale,
-                       ::tyloi::Tensor base, int64_t hc_mult, int64_t iterations,
+static std::vector<::tyloi::DenseTensor>
+dsv4_hc_split_sinkhorn(::tyloi::DenseTensor mixes, ::tyloi::DenseTensor scale,
+                       ::tyloi::DenseTensor base, int64_t hc_mult, int64_t iterations,
                        double eps) {
     const int64_t prefix = 2 * hc_mult;
     auto pre = ::tyloi::cuda::sigmoid(mixes.slice(-1, 0, hc_mult) * scale.index({0}) +
@@ -446,8 +446,8 @@ dsv4_hc_split_sinkhorn(::tyloi::Tensor mixes, ::tyloi::Tensor scale,
 
 
 static void dsv4_report_hc_difference(int layer, const char *stage, const char *tensor_name,
-                                      const ::tyloi::Tensor &reference,
-                                      const ::tyloi::Tensor &candidate) {
+                                      const ::tyloi::DenseTensor &reference,
+                                      const ::tyloi::DenseTensor &candidate) {
     auto reference_f32 = reference.to(::tyloi::kFloat32);
     auto candidate_f32 = candidate.to(::tyloi::kFloat32);
     auto difference = candidate_f32 - reference_f32;
@@ -462,9 +462,9 @@ static void dsv4_report_hc_difference(int layer, const char *stage, const char *
 
 
 namespace tyloi::models::deepseek_v4 {
-template <class Tensor> struct Projections {
-    Tensor rank, queries, values;
-    std::vector<Tensor> compressor, indexer;
+template <class DenseTensor> struct Projections {
+    DenseTensor rank, queries, values;
+    std::vector<DenseTensor> compressor, indexer;
 };
 
 template <class Query, class Values, class Compressor, class Indexer, class Prefill, class Decode,
@@ -473,15 +473,15 @@ auto attention(int64_t tokens, int64_t position, bool lengths, int64_t ratio, Qu
                Values values, Compressor compressor, Indexer indexer, Prefill prefill,
                Decode decode, Concat concat) {
     auto q = query();
-    using Tensor = decltype(values());
-    Projections<Tensor> projected{q[0], q[1], values(), {}, {}};
+    using DenseTensor = decltype(values());
+    Projections<DenseTensor> projected{q[0], q[1], values(), {}, {}};
     if (ratio > 0)
         projected.compressor = compressor();
     if (ratio == 4)
         projected.indexer = indexer();
     if (tokens > 1 && position == 0 && !lengths)
         return prefill(projected);
-    std::vector<Tensor> output;
+    std::vector<DenseTensor> output;
     output.reserve(tokens);
     for (int64_t token = 0; token < tokens; ++token)
         output.push_back(decode(projected, token, position + token + 1));
@@ -571,8 +571,8 @@ static void restore_pool(PoolState &target, const PoolSnapshot &state) {
         restore_session_tensor(target.previous_kv, state.previous_kv);
         restore_session_tensor(target.previous_gate, state.previous_gate);
     } else {
-        target.previous_kv = ::tyloi::Tensor();
-        target.previous_gate = ::tyloi::Tensor();
+        target.previous_kv = ::tyloi::DenseTensor();
+        target.previous_gate = ::tyloi::DenseTensor();
     }
     restore_session_prefix_tensor(target.pool, state.pool, 1, state.capacity);
 }
@@ -610,7 +610,7 @@ void PoolState::reset(int64_t batch, int64_t max_positions) {
     pool = ::tyloi::cuda::zeros({batch, capacity, head_dim}, half);
 }
 
-std::vector<::tyloi::Tensor> Compressor::project(::tyloi::Tensor x, int64_t batch,
+std::vector<::tyloi::DenseTensor> Compressor::project(::tyloi::DenseTensor x, int64_t batch,
                                                 int64_t tokens) const {
     auto parts = projection.forward(x.to(::tyloi::kFloat32));
     const int64_t output_dim = overlap ? 2 * head_dim : head_dim;
@@ -626,14 +626,14 @@ std::vector<::tyloi::Tensor> Compressor::project(::tyloi::Tensor x, int64_t batc
     };
 }
 
-void Compressor::update(PoolState& state, ::tyloi::Tensor kv, ::tyloi::Tensor gate,
-            ::tyloi::Tensor length, const tyloi::cuda::TailRope &rope) const {
+void Compressor::update(PoolState& state, ::tyloi::DenseTensor kv, ::tyloi::DenseTensor gate,
+            ::tyloi::DenseTensor length, const tyloi::cuda::TailRope &rope) const {
     dsv4_decode_pool_update_cuda(kv, gate, ape, norm, state.state_kv, state.state_gate, state.previous_kv,
                                  state.previous_gate, state.pool, length, rope.cos(), rope.sin(), ratio,
                                  overlap, cache_quant_mode, 1e-6);
 }
 
-int64_t Compressor::prefill(PoolState& state, const ::tyloi::Tensor &kv, const ::tyloi::Tensor &gate,
+int64_t Compressor::prefill(PoolState& state, const ::tyloi::DenseTensor &kv, const ::tyloi::DenseTensor &gate,
                 const tyloi::cuda::TailRope &rope) const {
     if (ratio <= 0)
         return 0;
@@ -714,9 +714,9 @@ void State::reset(int64_t next_batch) {
     }
 }
 
-std::vector<Tensor> State::storage() const {
-    std::vector<Tensor> result;
-    const auto append = [&](const Tensor& tensor) { if (tensor.defined()) result.push_back(tensor); };
+std::vector<DenseTensor> State::storage() const {
+    std::vector<DenseTensor> result;
+    const auto append = [&](const DenseTensor& tensor) { if (tensor.defined()) result.push_back(tensor); };
     const auto pool = [&](const PoolState& state) {
         append(state.state_kv); append(state.state_gate); append(state.previous_kv);
         append(state.previous_gate); append(state.pool);
@@ -781,10 +781,10 @@ void State::restore_text_session_state(const TextSessionState& state) {
     batch = 1;
 }
 
-static std::vector<::tyloi::Tensor> hc_pre(const Layer& w, ::tyloi::Tensor x,
-                                               ::tyloi::Tensor function,
-                                               ::tyloi::Tensor scale,
-                                               ::tyloi::Tensor base,
+static std::vector<::tyloi::DenseTensor> hc_pre(const Layer& w, ::tyloi::DenseTensor x,
+                                               ::tyloi::DenseTensor function,
+                                               ::tyloi::DenseTensor scale,
+                                               ::tyloi::DenseTensor base,
                                                const char *stage) {
     const auto& eps = w.eps;
     const auto& hc_iterations = w.hc_iterations;
@@ -795,11 +795,11 @@ static std::vector<::tyloi::Tensor> hc_pre(const Layer& w, ::tyloi::Tensor x,
     auto flat = x.flatten(2).to(::tyloi::kFloat32);
     auto inverse_rms = ::tyloi::cuda::rsqrt(flat.square().mean(-1, true) + eps);
     auto mixes = ::tyloi::cuda::matmul(flat, function.transpose(0, 1)) * inverse_rms;
-    std::vector<::tyloi::Tensor> candidate;
+    std::vector<::tyloi::DenseTensor> candidate;
     if (g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         candidate = dsv4_hc_pre_cuda(x, mixes.contiguous(), scale, base, hc_iterations, hc_eps);
     }
-    std::vector<::tyloi::Tensor> reference;
+    std::vector<::tyloi::DenseTensor> reference;
     if (!g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         auto split = dsv4_hc_split_sinkhorn(mixes, scale, base, hc_mult, hc_iterations, hc_eps);
         auto reduced = (split.at(0).unsqueeze(-1) * flat.reshape(x.sizes()))
@@ -817,19 +817,19 @@ static std::vector<::tyloi::Tensor> hc_pre(const Layer& w, ::tyloi::Tensor x,
     return g_dsv4_fused_hc ? candidate : reference;
 }
 
-static ::tyloi::Tensor hc_post(const Layer& w, ::tyloi::Tensor x,
-                                   ::tyloi::Tensor residual,
-                                   ::tyloi::Tensor post,
-                                   ::tyloi::Tensor combination,
+static ::tyloi::DenseTensor hc_post(const Layer& w, ::tyloi::DenseTensor x,
+                                   ::tyloi::DenseTensor residual,
+                                   ::tyloi::DenseTensor post,
+                                   ::tyloi::DenseTensor combination,
                                    const char *stage) {
     const auto& layer = w.layer;
 
-    ::tyloi::Tensor candidate;
+    ::tyloi::DenseTensor candidate;
     if (g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         candidate = dsv4_hc_post_cuda(x.contiguous(), residual.contiguous(), post.contiguous(),
                                       combination.contiguous());
     }
-    ::tyloi::Tensor reference;
+    ::tyloi::DenseTensor reference;
     if (!g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         reference = (post.unsqueeze(-1) * x.unsqueeze(-2) +
                      (combination.unsqueeze(-1) *
@@ -844,18 +844,18 @@ static ::tyloi::Tensor hc_post(const Layer& w, ::tyloi::Tensor x,
     return g_dsv4_fused_hc ? candidate : reference;
 }
 
-static ::tyloi::Tensor
+static ::tyloi::DenseTensor
 attention_forward(const Layer& w, LayerState& state, Executor& executor,
-                  ::tyloi::Tensor x, const AttentionStep& step,
+                  ::tyloi::DenseTensor x, const AttentionStep& step,
                   const Executor::Mode& mode) {
     auto &profiler = executor.profiler();
     auto project = executor.projector(mode.ffn);
     auto& scratch = executor.mla_scratch(w.device);
     scratch.ensure_compressed();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    const ::tyloi::Tensor positions(step.positions);
-    const MfqOptional<::tyloi::Tensor> seq_len = step.sequence_lengths
-        ? MfqOptional<::tyloi::Tensor>(::tyloi::Tensor(*step.sequence_lengths)) : mfq_nullopt;
+    const ::tyloi::DenseTensor positions(step.positions);
+    const MfqOptional<::tyloi::DenseTensor> seq_len = step.sequence_lengths
+        ? MfqOptional<::tyloi::DenseTensor>(::tyloi::DenseTensor(*step.sequence_lengths)) : mfq_nullopt;
 #else
     const auto& positions = step.positions;
     const auto& seq_len = step.sequence_lengths;
@@ -887,7 +887,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
     auto flat =
         x.reshape({batch * tokens, hidden_size}).to(::tyloi::kFloat16).contiguous();
 
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     return tyloi::models::deepseek_v4::attention(
         tokens, cache_pos, seq_len.has_value(), compress_ratio,
         [&] {
@@ -913,7 +913,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                 return attention_rope.forward(normalized, positions, false);
             });
 
-            return std::array<Tensor, 2>{qr, queries};
+            return std::array<DenseTensor, 2>{qr, queries};
         },
         [&] {
             auto values = profiler.measure("dsv4.kv", [&]() {
@@ -1031,7 +1031,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                             return ::tyloi::cuda::zeros({batch, tokens, 1}, int_options);
                         });
                 },
-                [&](Tensor selected, int64_t visible) {
+                [&](DenseTensor selected, int64_t visible) {
                     const int64_t plan_ratio = compress_ratio > 0 ? compress_ratio : 1;
                     return profiler.measure("dsv4.attention_plan_prefill", [&]() {
                         return dsv4_build_prefill_plan_cuda(selected, 0, 0, visible, plan_ratio,
@@ -1047,7 +1047,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                    : values.contiguous();
                     });
                 },
-                [&](Tensor cache, const auto &plan) {
+                [&](DenseTensor cache, const auto &plan) {
                     return profiler.measure("dsv4.sparse_attention_prefill", [&]() {
                         return attention_dsv4_sparse_cuda(
                             queries, cache, plan.at(0), plan.at(1), sinks,
@@ -1055,7 +1055,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                             1.0 / std::sqrt(static_cast<double>(head_dim)));
                     });
                 },
-                [&](Tensor attention) {
+                [&](DenseTensor attention) {
                     return profiler.measure("dsv4.attention_inverse_rope_prefill", [&]() {
                         auto transposed = attention.transpose(1, 2).contiguous();
                         transposed =
@@ -1063,7 +1063,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                         return transposed.transpose(1, 2).contiguous();
                     });
                 },
-                [&](Tensor attention) { return project.low_rank(attention, output_a, output_b, groups, mode.groupwise_output, true); });
+                [&](DenseTensor attention) { return project.low_rank(attention, output_a, output_b, groups, mode.groupwise_output, true); });
         },
         [&](const auto &projected, int64_t token, int64_t absolute_length) {
             auto qr = projected.rank, queries = projected.queries, values = projected.values;
@@ -1073,7 +1073,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
             auto slot = ::tyloi::cuda::remainder(position, 128)
                             .to(::tyloi::kInt64)
                             .contiguous();
-            ::tyloi::Tensor length;
+            ::tyloi::DenseTensor length;
             if (tokens == 1 && seq_len.has_value()) {
                 length = seq_len.value().contiguous();
             } else {
@@ -1171,7 +1171,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                 .contiguous();
                         });
                 },
-                [&](Tensor selected, int64_t visible) {
+                [&](DenseTensor selected, int64_t visible) {
                     const int64_t plan_ratio = compress_ratio > 0 ? compress_ratio : 1;
                     return profiler.measure("dsv4.attention_plan", [&]() {
                         return dsv4_build_decode_plan_cuda(selected, length, visible,
@@ -1188,7 +1188,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                    : local_cache;
                     });
                 },
-                [&](Tensor cache, const auto &plan) {
+                [&](DenseTensor cache, const auto &plan) {
                     auto query = queries.narrow(2, token, 1).contiguous();
                     return profiler.measure("dsv4.sparse_attention", [&]() {
                         return attention_dsv4_sparse_cuda(
@@ -1197,7 +1197,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                             1.0 / std::sqrt(static_cast<double>(head_dim)));
                     });
                 },
-                [&](Tensor attention) {
+                [&](DenseTensor attention) {
                     return profiler.measure("dsv4.attention_inverse_rope", [&]() {
                         auto transposed = attention.transpose(1, 2).contiguous();
                         transposed =
@@ -1205,13 +1205,13 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                         return transposed.transpose(1, 2).contiguous();
                     });
                 },
-                [&](Tensor attention) { return project.low_rank(attention, output_a, output_b, groups, mode.groupwise_output, true); });
+                [&](DenseTensor attention) { return project.low_rank(attention, output_a, output_b, groups, mode.groupwise_output, true); });
         },
         [](const auto &outputs) { return ::tyloi::cuda::cat(outputs, 1); });
 }
 
-Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tensor x,
-                     Tensor current_ids, const AttentionStep& step, const Executor::Mode& mode) {
+DenseTensor forward_layer(const Layer& w, LayerState& state, Executor& executor, DenseTensor x,
+                     DenseTensor current_ids, const AttentionStep& step, const Executor::Mode& mode) {
     auto& profiler = executor.profiler();
     const auto& hidden_size = w.hidden_size;
     const auto& eps = w.eps;
@@ -1231,7 +1231,7 @@ Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tens
     const int64_t tokens = x.size(1);
     return tyloi::models::hyperconnection_layer(
         std::move(x),
-        [&](::tyloi::Tensor x) {
+        [&](::tyloi::DenseTensor x) {
             auto pre = profiler.measure("dsv4.hc_attn_pre", [&]() {
                 return hc_pre(w, x, hc_attn_fn, hc_attn_scale, hc_attn_base, "attn_pre");
             });
@@ -1248,14 +1248,14 @@ Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tens
         [&](const auto &mix) {
             return attention_forward(w, state, executor, mix.first, step, mode);
         },
-        [&](::tyloi::Tensor attention, ::tyloi::Tensor residual,
+        [&](::tyloi::DenseTensor attention, ::tyloi::DenseTensor residual,
             const auto &mix) {
             return profiler.measure("dsv4.hc_attn_post", [&]() {
                 return hc_post(w, attention, residual, mix.second.at(1), mix.second.at(2),
                                "attn_post");
             });
         },
-        [&](::tyloi::Tensor x, const auto &) {
+        [&](::tyloi::DenseTensor x, const auto &) {
             auto pre = profiler.measure("dsv4.hc_ffn_pre", [&]() {
                 return hc_pre(w, x, hc_ffn_fn, hc_ffn_scale, hc_ffn_base, "ffn_pre");
             });
@@ -1280,7 +1280,7 @@ Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tens
             feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
             return feed_forward;
         },
-        [&](::tyloi::Tensor feed_forward, ::tyloi::Tensor residual,
+        [&](::tyloi::DenseTensor feed_forward, ::tyloi::DenseTensor residual,
             const auto &mix) {
             return profiler.measure("dsv4.hc_ffn_post", [&]() {
                 return hc_post(w, feed_forward, residual, mix.second.at(1), mix.second.at(2),

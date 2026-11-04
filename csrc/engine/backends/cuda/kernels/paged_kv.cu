@@ -846,7 +846,7 @@ __global__ void paged_attention_decode_reduce_kernel(
 }
 
 void validate_pointer_table(
-        const ::tyloi::Tensor & pointers, const char * name) {
+        const ::tyloi::DenseTensor & pointers, const char * name) {
     TYLOINFER_RUNTIME_CHECK(pointers.is_cuda() && pointers.is_contiguous() &&
         pointers.scalar_type() == ::tyloi::kInt64 &&
         pointers.dim() == 1 && pointers.numel() > 0,
@@ -856,12 +856,12 @@ void validate_pointer_table(
 } // namespace
 
 void paged_kv_cache_write_cuda(
-    ::tyloi::Tensor k_chunk_ptrs,
-    ::tyloi::Tensor v_chunk_ptrs,
-    ::tyloi::Tensor page_table,
-    ::tyloi::Tensor k,
-    ::tyloi::Tensor v,
-    ::tyloi::Tensor positions,
+    ::tyloi::DenseTensor k_chunk_ptrs,
+    ::tyloi::DenseTensor v_chunk_ptrs,
+    ::tyloi::DenseTensor page_table,
+    ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor positions,
     int64_t page_size,
     int64_t pages_per_chunk) {
     validate_pointer_table(k_chunk_ptrs, "paged KV key chunk table");
@@ -923,11 +923,11 @@ void paged_kv_cache_write_cuda(
 }
 
 void paged_kv_cache_gather_cuda(
-    ::tyloi::Tensor k_chunk_ptrs,
-    ::tyloi::Tensor v_chunk_ptrs,
-    ::tyloi::Tensor page_table,
-    ::tyloi::Tensor k,
-    ::tyloi::Tensor v,
+    ::tyloi::DenseTensor k_chunk_ptrs,
+    ::tyloi::DenseTensor v_chunk_ptrs,
+    ::tyloi::DenseTensor page_table,
+    ::tyloi::DenseTensor k,
+    ::tyloi::DenseTensor v,
     int64_t page_size,
     int64_t pages_per_chunk) {
     validate_pointer_table(k_chunk_ptrs, "paged gather key pointers");
@@ -955,19 +955,19 @@ void paged_kv_cache_gather_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-::tyloi::Tensor attention_paged_cache_decode_cuda(
-    ::tyloi::Tensor q,
-    ::tyloi::Tensor k_chunk_ptrs,
-    ::tyloi::Tensor v_chunk_ptrs,
-    ::tyloi::Tensor page_table,
-    ::tyloi::Tensor seq_len,
+::tyloi::DenseTensor attention_paged_cache_decode_cuda(
+    ::tyloi::DenseTensor q,
+    ::tyloi::DenseTensor k_chunk_ptrs,
+    ::tyloi::DenseTensor v_chunk_ptrs,
+    ::tyloi::DenseTensor page_table,
+    ::tyloi::DenseTensor seq_len,
     double scale,
     int64_t page_size,
     int64_t pages_per_chunk,
     int64_t kv_heads,
-    ::tyloi::Tensor partial_o,
-    ::tyloi::Tensor partial_m,
-    ::tyloi::Tensor partial_l,
+    ::tyloi::DenseTensor partial_o,
+    ::tyloi::DenseTensor partial_m,
+    ::tyloi::DenseTensor partial_l,
     int64_t parts,
     bool dynamic_parts) {
     validate_pointer_table(k_chunk_ptrs, "paged attention key chunk table");

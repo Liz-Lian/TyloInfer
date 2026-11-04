@@ -8,9 +8,9 @@
 namespace tyloi::cuda {
 
 
-Tensor Executor::full_ffn(
-    const Ffn& ffn, const Tensor& ffn_norm, const FullAttention& attention,
-    Tensor residual, Tensor output, const Ffn::Mode& mode, Trace* trace_output) {
+DenseTensor Executor::full_ffn(
+    const Ffn& ffn, const DenseTensor& ffn_norm, const FullAttention& attention,
+    DenseTensor residual, DenseTensor output, const Ffn::Mode& mode, Trace* trace_output) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto scope = enter(mfq_current_cuda_device());
 #endif
@@ -31,7 +31,7 @@ Tensor Executor::full_ffn(
     }
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     auto& profiler = profiler_;
-    auto record_trace = [&](const char* name, const Tensor& value) {
+    auto record_trace = [&](const char* name, const DenseTensor& value) {
         if (attention.attention_output_gate && trace_output)
             trace_output->emplace_back(name, value.reshape({B, T, -1})
                 .to(::tyloi::kFloat32).contiguous().clone());
@@ -56,9 +56,9 @@ Tensor Executor::full_ffn(
                     std::move(residual), std::move(ff));
 }
 
-Tensor Executor::linear_ffn(
-    const Ffn& ffn, const Tensor& ffn_norm, const LinearAttention& attention,
-    Tensor residual, Tensor output, const Ffn::Mode& mode) {
+DenseTensor Executor::linear_ffn(
+    const Ffn& ffn, const DenseTensor& ffn_norm, const LinearAttention& attention,
+    DenseTensor residual, DenseTensor output, const Ffn::Mode& mode) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto scope = enter(mfq_current_cuda_device());
 #endif

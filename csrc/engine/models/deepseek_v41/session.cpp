@@ -6,9 +6,9 @@
 namespace tyloi::cuda {
 namespace {
 using NativeBlock=deepseek_v41_runtime::Block;
-using Tensor=::tyloi::Tensor;
+using DenseTensor=::tyloi::DenseTensor;
 
-bool session_tensor(const Tensor& value,int64_t tokens,int64_t width,
+bool session_tensor(const DenseTensor& value,int64_t tokens,int64_t width,
                     ::tyloi::ScalarType dtype) {
     return value.defined() && value.is_cuda() && value.dim()==3 && value.size(0)==1 &&
         value.size(1)==tokens && value.size(2)==width && value.scalar_type()==dtype;
@@ -73,8 +73,8 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
         if(block.speculative_pending || source.position!=model.cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
-        const auto copy=[&](const Tensor& value) {
-            if(!value.defined())return Tensor{};
+        const auto copy=[&](const DenseTensor& value) {
+            if(!value.defined())return DenseTensor{};
             auto result=value.clone();state.bytes+=session_tensor_bytes(result);return result;
         };
         saved.local_kv=copy(source.local_kv);

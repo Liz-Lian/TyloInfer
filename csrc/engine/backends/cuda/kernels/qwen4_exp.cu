@@ -36,8 +36,8 @@ __global__ void live_index_pool_kernel(const Value* index,const Position* positi
 }
 }
 
-std::vector<Tensor> live_index_pool(const Tensor& index,const Tensor& positions,
-        const Tensor& cache_positions,int64_t pool,int64_t maximum) {
+std::vector<DenseTensor> live_index_pool(const DenseTensor& index,const DenseTensor& positions,
+        const DenseTensor& cache_positions,int64_t pool,int64_t maximum) {
     TYLOINFER_RUNTIME_CHECK(index.is_cuda() && index.dim()==3 && index.size(0)==1 &&
         (index.scalar_type()==::tyloi::kFloat16 || index.scalar_type()==::tyloi::kFloat32) &&
         positions.device()==index.device() && cache_positions.device()==index.device() &&
@@ -78,7 +78,7 @@ __global__ void fill_decode_positions_kernel(int64_t* cache,Position* positions,
 }
 }
 
-void fill_decode_positions(const Tensor& cache,const Tensor& positions,int64_t start,int64_t delta) {
+void fill_decode_positions(const DenseTensor& cache,const DenseTensor& positions,int64_t start,int64_t delta) {
     TYLOINFER_RUNTIME_CHECK(cache.is_cuda() && positions.is_cuda() && cache.is_contiguous() &&
         positions.is_contiguous() && cache.scalar_type()==::tyloi::kInt64 && cache.numel()>0 &&
         positions.numel()%cache.numel()==0 && positions.numel()>=cache.numel(),
@@ -108,7 +108,7 @@ __global__ void gated_residual_activation_kernel(const Value* input,Value* outpu
 }
 
 template<bool Injection>
-Tensor gated_residual_activation(const Tensor& input,int64_t streams) {
+DenseTensor gated_residual_activation(const DenseTensor& input,int64_t streams) {
     mfq_selected_attention::values({&input});
     TYLOINFER_RUNTIME_CHECK(streams>0,"gated-residual stream count must be positive");
     if(input.is_contiguous() && (input.scalar_type()==::tyloi::kFloat16 || input.scalar_type()==::tyloi::kFloat32)) {
@@ -201,8 +201,8 @@ __global__ void gated_residual_post_norm_kernel(const Branch* branch,const Resid
 }
 
 template<class Branch,class Residual,class Injection>
-void launch_residual_post_norm(const Tensor& branch,const Tensor& residual,const Tensor& injection,
-    const Tensor& norm,Tensor& updated,Tensor& normalized,int hidden,int streams,double eps) {
+void launch_residual_post_norm(const DenseTensor& branch,const DenseTensor& residual,const DenseTensor& injection,
+    const DenseTensor& norm,DenseTensor& updated,DenseTensor& normalized,int hidden,int streams,double eps) {
     using Output=ResidualOutput<Branch,Residual,Injection>;
     const int threads=hidden<=32?32:hidden<=64?64:hidden<=128?128:256;
     gated_residual_post_norm_kernel<Branch,Residual,Injection><<<
@@ -212,19 +212,19 @@ void launch_residual_post_norm(const Tensor& branch,const Tensor& residual,const
 }
 }
 
-Tensor gated_residual_bottleneck(const Tensor& input,int64_t streams) {
+DenseTensor gated_residual_bottleneck(const DenseTensor& input,int64_t streams) {
     return gated_residual_activation<false>(input,streams);
 }
-Tensor gated_residual_injection(const Tensor& input,int64_t streams) {
+DenseTensor gated_residual_injection(const DenseTensor& input,int64_t streams) {
     return gated_residual_activation<true>(input,streams);
 }
 
-Tensor gated_residual_mix(const Tensor& projection,const Tensor& normalized,int64_t streams) {
+DenseTensor gated_residual_mix(const DenseTensor& projection,const DenseTensor& normalized,int64_t streams) {
     mfq_selected_attention::values({&projection,&normalized});
     TYLOINFER_RUNTIME_CHECK(projection.sizes()==normalized.sizes() && streams>0 && normalized.dim()>0 &&
         normalized.size(-1)>0 && normalized.size(-1)%streams==0,"gated-residual mix shape disagrees");
     auto shape=normalized.sizes().vec();const int hidden=int(shape.back()/streams);shape.back()=hidden;
-    const auto half_or_float=[](const Tensor& x){return x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32;};
+    const auto half_or_float=[](const DenseTensor& x){return x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32;};
     if(projection.is_contiguous() && normalized.is_contiguous() && half_or_float(projection) && half_or_float(normalized)) {
         MfqCudaGuard guard(normalized.device());
         const auto dtype=projection.scalar_type()==::tyloi::kFloat32 || normalized.scalar_type()==::tyloi::kFloat32?::tyloi::kFloat32: ::tyloi::kFloat16;
@@ -244,9 +244,9 @@ Tensor gated_residual_mix(const Tensor& projection,const Tensor& normalized,int6
     auto grouped=shape;grouped.back()=streams;grouped.push_back(hidden);
     return (::tyloi::cuda::sigmoid(projection).reshape(grouped)*normalized.reshape(grouped)).mean(-2);
 }
-using ::tyloi::Tensor;
+using ::tyloi::DenseTensor;
 
-Tensor grouped_rms_norm(const Tensor& value, const Tensor& weight,
+DenseTensor grouped_rms_norm(const DenseTensor& value, const DenseTensor& weight,
                         int64_t group, double eps) {
     mfq_selected_attention::values({&value, &weight});
     TYLOINFER_RUNTIME_CHECK(value.dim() >= 1 && group > 0 && value.size(-1) > 0 &&
@@ -264,9 +264,9 @@ Tensor grouped_rms_norm(const Tensor& value, const Tensor& weight,
         .to(value.scalar_type());
 }
 
-std::vector<Tensor> gated_residual_pre(
-    const Tensor& input, const Tensor& norm, const Tensor& down, const Tensor& up,
-    const std::optional<Tensor>& inject, int64_t hidden, int64_t streams, double eps) {
+std::vector<DenseTensor> gated_residual_pre(
+    const DenseTensor& input, const DenseTensor& norm, const DenseTensor& down, const DenseTensor& up,
+    const std::optional<DenseTensor>& inject, int64_t hidden, int64_t streams, double eps) {
     mfq_selected_attention::values({&input, &norm, &down, &up});
     TYLOINFER_RUNTIME_CHECK(input.dim() >= 1 && hidden > 0 && streams > 0 &&
         input.size(-1) / streams == hidden && input.size(-1) % streams == 0 &&
@@ -286,12 +286,12 @@ std::vector<Tensor> gated_residual_pre(
     auto mixed = gated_residual_mix(mixing,normalized,streams);
     auto injection = inject
         ? gated_residual_injection(mfq_selected_attention::promoted_matmul(normalized, inject->transpose(-1, -2)),streams)
-        : Tensor{};
+        : DenseTensor{};
     return {mixed, input, injection};
 }
 
-Tensor gated_residual_post(const Tensor& branch, const Tensor& residual,
-                           const Tensor& injection, int64_t streams) {
+DenseTensor gated_residual_post(const DenseTensor& branch, const DenseTensor& residual,
+                           const DenseTensor& injection, int64_t streams) {
     mfq_selected_attention::values({&branch, &residual, &injection});
     TYLOINFER_RUNTIME_CHECK(branch.dim() >= 1 && streams > 0 && branch.dim() == residual.dim() &&
         branch.dim() == injection.dim(), "Qwen4 residual ranks disagree");
@@ -316,8 +316,8 @@ Tensor gated_residual_post(const Tensor& branch, const Tensor& residual,
     return residual + (branch.unsqueeze(-2) * injection.unsqueeze(-1)).reshape(residual.sizes());
 }
 
-std::vector<Tensor> gated_residual_post_norm(const Tensor& branch,const Tensor& residual,
-    const Tensor& injection,const Tensor& norm,int64_t streams,double eps) {
+std::vector<DenseTensor> gated_residual_post_norm(const DenseTensor& branch,const DenseTensor& residual,
+    const DenseTensor& injection,const DenseTensor& norm,int64_t streams,double eps) {
     mfq_selected_attention::values({&branch,&residual,&injection,&norm});
     TYLOINFER_RUNTIME_CHECK(branch.dim()>=1 && streams>0 && branch.size(-1)>0 &&
         branch.dim()==residual.dim() && branch.dim()==injection.dim(),
@@ -327,7 +327,7 @@ std::vector<Tensor> gated_residual_post_norm(const Tensor& branch,const Tensor& 
         "Qwen4 residual/norm width disagrees");
     shape.back()=streams;
     TYLOINFER_RUNTIME_CHECK(injection.sizes().vec()==shape,"Qwen4 residual/norm injection shape disagrees");
-    const auto supported=[](const Tensor& x){return x.is_contiguous() &&
+    const auto supported=[](const DenseTensor& x){return x.is_contiguous() &&
         (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32);};
     if(!supported(branch) || !supported(residual) || !supported(injection)) {
         auto updated=gated_residual_post(branch,residual,injection,streams);
@@ -358,7 +358,7 @@ std::vector<Tensor> gated_residual_post_norm(const Tensor& branch,const Tensor& 
     return {updated,normalized};
 }
 
-Tensor block_scores(const Tensor& query, const Tensor& pooled) {
+DenseTensor block_scores(const DenseTensor& query, const DenseTensor& pooled) {
     mfq_selected_attention::values({&query, &pooled});
     MfqCudaGuard guard(query.device());
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_QSA_PREFILL_SCORE_GEMM");
@@ -398,7 +398,7 @@ __global__ void live_block_scores_kernel(const Query* query,const Key* keys,cons
 }
 }
 
-Tensor live_block_scores(const Tensor& query,const Tensor& pooled,const Tensor& positions,int64_t pool) {
+DenseTensor live_block_scores(const DenseTensor& query,const DenseTensor& pooled,const DenseTensor& positions,int64_t pool) {
     mfq_selected_attention::values({&query,&pooled});
     TYLOINFER_RUNTIME_CHECK(query.dim()==4 && query.size(0)==1 && pooled.dim()==3 && pooled.size(0)==1 &&
         query.size(3)==pooled.size(2) && query.size(2)>0 && query.size(3)>0 && pool>0 &&
@@ -482,7 +482,7 @@ __global__ void live_topk_blocks_kernel(const float* source,const int64_t* ids,
 }
 }
 
-Tensor live_topk_blocks(const Tensor& scores,const Tensor& positions,int64_t pool,int64_t count) {
+DenseTensor live_topk_blocks(const DenseTensor& scores,const DenseTensor& positions,int64_t pool,int64_t count) {
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_QSA_LIVE_TOPK");
     if((option && option[0]=='0') || count>1024)
         return std::get<1>(::tyloi::cuda::topk(scores,count,-1,true,false));
@@ -495,7 +495,7 @@ Tensor live_topk_blocks(const Tensor& scores,const Tensor& positions,int64_t poo
     const auto* compact_option=tyloi::cuda::env_lookup("TYLOINFER_QSA_TOPK_LIVE_TILE");
     const bool compact=!compact_option || compact_option[0]!='0';
     int columns=pools,stage=0;
-    auto keys=scores;Tensor ids;
+    auto keys=scores;DenseTensor ids;
     constexpr auto bytes=sizeof(cub::BlockRadixSort<float,256,16,int64_t>::TempStorage);
     if constexpr(bytes>49152)TYLOINFER_CUDA_CHECK(cudaFuncSetAttribute(live_topk_blocks_kernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize,int(bytes)));
@@ -512,8 +512,8 @@ Tensor live_topk_blocks(const Tensor& scores,const Tensor& positions,int64_t poo
     return ids;
 }
 
-std::vector<Tensor> ple_dilated_conv_silu(const Tensor& input,
-    const Tensor& weight, const std::optional<Tensor>& state, int64_t dilation) {
+std::vector<DenseTensor> ple_dilated_conv_silu(const DenseTensor& input,
+    const DenseTensor& weight, const std::optional<DenseTensor>& state, int64_t dilation) {
     mfq_selected_attention::values({&input, &weight});
     TYLOINFER_RUNTIME_CHECK(input.dim() == 3, "Qwen4 PLE input must have [B,T,C] shape");
     auto w = weight;
@@ -545,34 +545,34 @@ std::vector<Tensor> ple_dilated_conv_silu(const Tensor& input,
     return {output.to(input.scalar_type()), next};
 }
 
-Tensor dense_gqa_attention(const Tensor& q, const Tensor& k, const Tensor& v, int64_t offset,tyloi::cuda::HotKvView hot) {
+DenseTensor dense_gqa_attention(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v, int64_t offset,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::dense(
         q, k, v, offset, 1.0 / std::sqrt(double(q.size(3))),hot);
 }
 
-Tensor sparse_gqa_attention(const Tensor& q, const Tensor& k, const Tensor& v,
-                            const Tensor& indices,tyloi::cuda::HotKvView hot) {
+DenseTensor sparse_gqa_attention(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v,
+                            const DenseTensor& indices,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::sparse(
         q, k, v, indices, 1.0 / std::sqrt(double(q.size(3))), false,hot);
 }
 
-Tensor attention_gate(const Tensor& attended, const Tensor& gate, bool half_output) {
+DenseTensor attention_gate(const DenseTensor& attended, const DenseTensor& gate, bool half_output) {
     return mfq_selected_attention::gated(attended, gate, half_output);
 }
 
-Tensor sparse_gqa_attention_gate(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& indices, const Tensor& gate, bool half_output,tyloi::cuda::HotKvView hot) {
+DenseTensor sparse_gqa_attention_gate(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v,
+    const DenseTensor& indices, const DenseTensor& gate, bool half_output,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::sparse_gated(q, k, v, indices, gate,
         1.0 / std::sqrt(double(q.size(3))), half_output,hot);
 }
 
-Tensor qsa_selected_tokens(const Tensor& blocks, const Tensor& positions,
+DenseTensor qsa_selected_tokens(const DenseTensor& blocks, const DenseTensor& positions,
     int64_t pool, int64_t budget) {
     return mfq_selected_attention::block_indices_to_tokens(blocks, positions, pool, budget);
 }
 
-Tensor causal_gqa_attention_gate(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& positions, const Tensor& gate, int64_t columns, bool half_output,tyloi::cuda::HotKvView hot) {
+DenseTensor causal_gqa_attention_gate(const DenseTensor& q, const DenseTensor& k, const DenseTensor& v,
+    const DenseTensor& positions, const DenseTensor& gate, int64_t columns, bool half_output,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::causal_gated(q, k, v, positions, gate, columns,
         1.0 / std::sqrt(double(q.size(3))), half_output,true,true,hot);
 }

@@ -51,7 +51,7 @@ struct NintRowStage::Impl {
     uint64_t future_ns=0,pack_ns=0,copy_api_ns=0;
     std::vector<int64_t> shape;
     tyloi::cuda::HostBuffer host;
-    ::tyloi::Tensor packet,packed,descriptors,inverse,flat,shaped;
+    ::tyloi::DenseTensor packet,packed,descriptors,inverse,flat,shaped;
     Impl(uint64_t identity,int64_t n,int w,std::size_t capacity,
         std::vector<int64_t> dimensions,const ::tyloi::Device& device,bool use_mapped)
         :source(identity),rows(n),width(w),payload_bytes(capacity),host_bytes(capacity+n*32),
@@ -106,7 +106,7 @@ struct NintRowStage::Impl {
 };
 NintRowStage::NintRowStage(std::unique_ptr<Impl> impl):impl_(std::move(impl)){}
 NintRowStage::~NintRowStage()=default;
-::tyloi::Tensor NintRowStage::output() const {return impl_->shaped;}
+::tyloi::DenseTensor NintRowStage::output() const {return impl_->shaped;}
 bool NintRowStage::mapped_rows() const {return impl_->mapped;}
 void NintRowStage::decode() {
     auto& s=*impl_;nint_selected_rows_into_cuda(s.packed,s.descriptors,s.inverse,s.flat);
@@ -267,7 +267,7 @@ void NintRowPipeline::issue(const std::vector<int64_t>& ids,const std::vector<in
     const auto sequence=++s.serial;
     s.pending=s.submit(ids,sequence,issued,carried);
 }
-::tyloi::Tensor NintRowPipeline::collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
+::tyloi::DenseTensor NintRowPipeline::collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
     auto& s=*impl_;
     const auto started=s.profile?RowClock::now():RowClock::time_point{};
     issue(ids,shape);

@@ -28,7 +28,7 @@ struct TqGemmResources::RouteReadback {
     }
 };
 
-std::vector<std::int64_t> TqGemmResources::routes(const ::tyloi::Tensor& ids) {
+std::vector<std::int64_t> TqGemmResources::routes(const ::tyloi::DenseTensor& ids) {
     const auto source=ids.contiguous();
     std::vector<std::int64_t> result(source.numel());
     if(!source.numel())return result;

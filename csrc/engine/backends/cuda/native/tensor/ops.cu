@@ -308,8 +308,8 @@ __global__ void scalar_comparison_kernel(
 
 }  // namespace
 
-Tensor unary_cuda(
-    const Tensor& source,
+DenseTensor unary_cuda(
+    const DenseTensor& source,
     int operation,
     double first = 0.0,
     double second = 0.0) {
@@ -347,7 +347,7 @@ Tensor unary_cuda(
     return output;
 }
 
-Tensor binary_cuda(const Tensor& left_source, const Tensor& right_source, int operation) {
+DenseTensor binary_cuda(const DenseTensor& left_source, const DenseTensor& right_source, int operation) {
     left_source.require_dense(); right_source.require_dense();
     if (!left_source.is_cuda() || !right_source.is_cuda()) {
         throw std::invalid_argument("native binary CUDA op requires CUDA tensors");
@@ -388,8 +388,8 @@ Tensor binary_cuda(const Tensor& left_source, const Tensor& right_source, int op
     return output;
 }
 
-Tensor scalar_binary_cuda(
-    const Tensor& left,
+DenseTensor scalar_binary_cuda(
+    const DenseTensor& left,
     double right,
     int operation,
     bool scalar_first) {
@@ -434,65 +434,65 @@ Tensor scalar_binary_cuda(
 
 namespace tyloi {
 
-Tensor operator+(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 0); }
-Tensor operator+(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 0); }
-Tensor operator+(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 0, true); }
-Tensor operator-(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 1); }
-Tensor operator-(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 1); }
-Tensor operator-(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 1, true); }
-Tensor operator-(const Tensor& value) { return cuda::scalar_binary_cuda(value, -1.0, 2); }
-Tensor operator*(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 2); }
-Tensor operator*(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 2); }
-Tensor operator*(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 2, true); }
-Tensor operator/(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 3); }
-Tensor operator/(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 3); }
-Tensor operator/(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 3, true); }
-Tensor operator<(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 4); }
-Tensor operator<(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 4); }
-Tensor operator<=(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 5); }
-Tensor operator<=(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 5); }
-Tensor operator>(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 6); }
-Tensor operator>(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 6); }
-Tensor operator>=(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 7); }
-Tensor operator>=(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 7); }
-Tensor operator&(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 8); }
-Tensor operator|(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 9); }
-Tensor operator~(const Tensor& value) { return value.logical_not(); }
-Tensor operator==(const Tensor& left, const Tensor& right) { return left.eq(right); }
-Tensor operator==(const Tensor& left, double right) { return left.eq(right); }
-Tensor operator!=(const Tensor& left, const Tensor& right) { return left.ne(right); }
-Tensor operator!=(const Tensor& left, double right) { return left.ne(right); }
+DenseTensor operator+(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 0); }
+DenseTensor operator+(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 0); }
+DenseTensor operator+(double left, const DenseTensor& right) { return cuda::scalar_binary_cuda(right, left, 0, true); }
+DenseTensor operator-(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 1); }
+DenseTensor operator-(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 1); }
+DenseTensor operator-(double left, const DenseTensor& right) { return cuda::scalar_binary_cuda(right, left, 1, true); }
+DenseTensor operator-(const DenseTensor& value) { return cuda::scalar_binary_cuda(value, -1.0, 2); }
+DenseTensor operator*(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 2); }
+DenseTensor operator*(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 2); }
+DenseTensor operator*(double left, const DenseTensor& right) { return cuda::scalar_binary_cuda(right, left, 2, true); }
+DenseTensor operator/(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 3); }
+DenseTensor operator/(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 3); }
+DenseTensor operator/(double left, const DenseTensor& right) { return cuda::scalar_binary_cuda(right, left, 3, true); }
+DenseTensor operator<(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 4); }
+DenseTensor operator<(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 4); }
+DenseTensor operator<=(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 5); }
+DenseTensor operator<=(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 5); }
+DenseTensor operator>(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 6); }
+DenseTensor operator>(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 6); }
+DenseTensor operator>=(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 7); }
+DenseTensor operator>=(const DenseTensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 7); }
+DenseTensor operator&(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 8); }
+DenseTensor operator|(const DenseTensor& left, const DenseTensor& right) { return cuda::binary_cuda(left, right, 9); }
+DenseTensor operator~(const DenseTensor& value) { return value.logical_not(); }
+DenseTensor operator==(const DenseTensor& left, const DenseTensor& right) { return left.eq(right); }
+DenseTensor operator==(const DenseTensor& left, double right) { return left.eq(right); }
+DenseTensor operator!=(const DenseTensor& left, const DenseTensor& right) { return left.ne(right); }
+DenseTensor operator!=(const DenseTensor& left, double right) { return left.ne(right); }
 
 }  // namespace tyloi
 
 namespace tyloi::cuda {
 
-Tensor sin(const Tensor& input) { return unary_cuda(input, 9); }
-Tensor cos(const Tensor& input) { return unary_cuda(input, 10); }
-Tensor sigmoid(const Tensor& input) { return unary_cuda(input, 11); }
-Tensor tanh(const Tensor& input) { return unary_cuda(input, 12); }
-Tensor relu(const Tensor& input) { return unary_cuda(input, 13); }
-Tensor rsqrt(const Tensor& input) { return unary_cuda(input, 14); }
-Tensor reciprocal(const Tensor& input) { return unary_cuda(input, 15); }
-Tensor ceil(const Tensor& input) { return unary_cuda(input, 16); }
-Tensor softplus(const Tensor& input) { return unary_cuda(input, 17); }
-Tensor log(const Tensor& input) { return unary_cuda(input, 18); }
-Tensor log1p(const Tensor& input) { return unary_cuda(input, 19); }
-Tensor log2(const Tensor& input) { return unary_cuda(input, 20); }
-Tensor exp2(const Tensor& input) { return unary_cuda(input, 21); }
-Tensor silu(const Tensor& input) { return unary_cuda(input, 22); }
-Tensor gelu(const Tensor& input, const std::string& approximation) {
+DenseTensor sin(const DenseTensor& input) { return unary_cuda(input, 9); }
+DenseTensor cos(const DenseTensor& input) { return unary_cuda(input, 10); }
+DenseTensor sigmoid(const DenseTensor& input) { return unary_cuda(input, 11); }
+DenseTensor tanh(const DenseTensor& input) { return unary_cuda(input, 12); }
+DenseTensor relu(const DenseTensor& input) { return unary_cuda(input, 13); }
+DenseTensor rsqrt(const DenseTensor& input) { return unary_cuda(input, 14); }
+DenseTensor reciprocal(const DenseTensor& input) { return unary_cuda(input, 15); }
+DenseTensor ceil(const DenseTensor& input) { return unary_cuda(input, 16); }
+DenseTensor softplus(const DenseTensor& input) { return unary_cuda(input, 17); }
+DenseTensor log(const DenseTensor& input) { return unary_cuda(input, 18); }
+DenseTensor log1p(const DenseTensor& input) { return unary_cuda(input, 19); }
+DenseTensor log2(const DenseTensor& input) { return unary_cuda(input, 20); }
+DenseTensor exp2(const DenseTensor& input) { return unary_cuda(input, 21); }
+DenseTensor silu(const DenseTensor& input) { return unary_cuda(input, 22); }
+DenseTensor gelu(const DenseTensor& input, const std::string& approximation) {
     if(approximation!="none" && approximation!="tanh")throw std::invalid_argument("unknown GELU approximation");
     return unary_cuda(input,approximation=="tanh"?27:23);
 }
-Tensor exp(const Tensor& input) { return unary_cuda(input, 2); }
-Tensor sqrt(const Tensor& input) { return unary_cuda(input, 3); }
-Tensor pow(const Tensor& input, double exponent) { return unary_cuda(input, 24, exponent); }
-Tensor pow(const Tensor& input, const Tensor& exponent) { return binary_cuda(input, exponent, 12); }
-Tensor remainder(const Tensor& input, double divisor) { return unary_cuda(input, 7, divisor); }
-Tensor clamp(const Tensor& input, double minimum, double maximum) { return unary_cuda(input, 4, minimum, maximum); }
-Tensor clamp_min(const Tensor& input, double minimum) { return unary_cuda(input, 5, minimum); }
-Tensor clamp_max(const Tensor& input, double maximum) { return unary_cuda(input, 6, maximum); }
-Tensor isfinite(const Tensor& input) { return unary_cuda(input, 25); }
-Tensor isneginf(const Tensor& input) { return unary_cuda(input, 26); }
+DenseTensor exp(const DenseTensor& input) { return unary_cuda(input, 2); }
+DenseTensor sqrt(const DenseTensor& input) { return unary_cuda(input, 3); }
+DenseTensor pow(const DenseTensor& input, double exponent) { return unary_cuda(input, 24, exponent); }
+DenseTensor pow(const DenseTensor& input, const DenseTensor& exponent) { return binary_cuda(input, exponent, 12); }
+DenseTensor remainder(const DenseTensor& input, double divisor) { return unary_cuda(input, 7, divisor); }
+DenseTensor clamp(const DenseTensor& input, double minimum, double maximum) { return unary_cuda(input, 4, minimum, maximum); }
+DenseTensor clamp_min(const DenseTensor& input, double minimum) { return unary_cuda(input, 5, minimum); }
+DenseTensor clamp_max(const DenseTensor& input, double maximum) { return unary_cuda(input, 6, maximum); }
+DenseTensor isfinite(const DenseTensor& input) { return unary_cuda(input, 25); }
+DenseTensor isneginf(const DenseTensor& input) { return unary_cuda(input, 26); }
 }  // namespace tyloi::cuda

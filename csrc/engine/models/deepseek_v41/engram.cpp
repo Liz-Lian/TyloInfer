@@ -25,7 +25,7 @@ struct RowPacket {
 // CPU publication must wait for the preceding DMA to finish reading it.
 struct RowStage {
     tyloi::cuda::HostBuffer host;
-    ::tyloi::Tensor packet;
+    ::tyloi::DenseTensor packet;
     tyloi::cuda::Event uploaded;
     bool pending = false;
     RowStage(std::size_t bytes, const ::tyloi::Device& device)

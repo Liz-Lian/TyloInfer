@@ -38,7 +38,7 @@ struct Slots {
         free[offset]=bytes;
     }
 };
-::tyloi::Tensor indices(const std::vector<int64_t>& values, const ::tyloi::TensorOptions& options) {
+::tyloi::DenseTensor indices(const std::vector<int64_t>& values, const ::tyloi::TensorOptions& options) {
     auto cpu = ::tyloi::cuda::empty({static_cast<int64_t>(values.size())}, options.device(::tyloi::kCPU).dtype(::tyloi::kInt64));
     if (!values.empty()) std::memcpy(cpu.data_ptr(), values.data(), values.size() * sizeof(int64_t));
     return cpu.to(options.dtype(::tyloi::kInt64));
@@ -48,7 +48,7 @@ struct Slots {
 struct KvOffloadStore::Block {
     std::uint64_t id = 0;
     std::size_t bytes = 0;
-    ::tyloi::Tensor gpu;
+    ::tyloi::DenseTensor gpu;
     ::tyloi::TensorOptions options;
     int64_t rows = 0, width = 0;
     cache::QsaKvStore::BlockPtr cold;
@@ -128,7 +128,7 @@ struct KvOffloadStore::Impl {
         }
         return false;
     }
-    ::tyloi::Tensor allocate_gpu(const BlockPtr& block) {
+    ::tyloi::DenseTensor allocate_gpu(const BlockPtr& block) {
         auto offset=gpu_slots.take(block->bytes);
         while(offset==no_offset && evict_one())offset=gpu_slots.take(block->bytes);
         if(offset==no_offset)throw std::runtime_error("CUDA KV arena cannot hold one block");
@@ -137,9 +137,9 @@ struct KvOffloadStore::Impl {
         auto* data=static_cast<std::uint8_t*>(gpu_arena.data_ptr())+offset;
         auto storage=std::make_shared<TensorStorage>();
         storage->base=data;storage->bytes=block->bytes;storage->device=block->options.target_device();
-        storage->owner=std::make_shared<::tyloi::Tensor>(gpu_arena);
+        storage->owner=std::make_shared<::tyloi::DenseTensor>(gpu_arena);
         const std::vector<int64_t> shape{block->rows,block->width};
-        return Tensor(storage,make_contiguous_view(data,shape,block->options.scalar_type(),block->options.target_device()));
+        return DenseTensor(storage,make_contiguous_view(data,shape,block->options.scalar_type(),block->options.target_device()));
     }
     void touch(const BlockPtr& block) {
         auto found = hot.find(block->id);
@@ -187,7 +187,7 @@ struct KvOffloadStore::Impl {
     struct Hot { std::weak_ptr<Block> block; std::list<std::uint64_t>::iterator order; };
     KvOffloadConfig config;
     std::shared_ptr<cache::QsaKvStore> ram;
-    ::tyloi::Tensor gpu_arena;
+    ::tyloi::DenseTensor gpu_arena;
     std::shared_ptr<KvExpertLoan> expert_loan;
     std::size_t loan_region=0;
     std::vector<std::uint8_t> ram_arena;
@@ -233,7 +233,7 @@ std::size_t KvOffloadStore::graph_workspace_bytes() const {
 }
 const KvOffloadConfig& KvOffloadStore::config() const { return impl_->config; }
 
-KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::Tensor& rows) {
+KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows) {
     if (!rows.is_cuda() || rows.dim() != 2 || !rows.numel() || (rows.scalar_type() != ::tyloi::kFloat16 && rows.scalar_type() != ::tyloi::kInt32))
         throw std::invalid_argument("CUDA KV microblock must contain nonempty FP16 or packed GPU rows");
     const auto bytes = static_cast<std::size_t>(rows.numel()) * rows.element_size();
@@ -260,7 +260,7 @@ KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::Tensor& rows) {
     return block;
 }
 
-::tyloi::Tensor KvOffloadStore::read(const BlockPtr& block) {
+::tyloi::DenseTensor KvOffloadStore::read(const BlockPtr& block) {
     if (!block) throw std::invalid_argument("missing CUDA KV block");
     std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
     if (block->gpu.defined()) { ++impl_->hits; impl_->touch(block); return block->gpu; }
@@ -331,7 +331,7 @@ KvOffloadSequence::KvOffloadSequence(std::shared_ptr<KvOffloadStore> store, int6
         throw std::invalid_argument("invalid CUDA KV sequence geometry");
 }
 void KvOffloadSequence::reset() { blocks_.clear(); position_ = 0; }
-void KvOffloadSequence::append(const ::tyloi::Tensor& source) {
+void KvOffloadSequence::append(const ::tyloi::DenseTensor& source) {
     if (!source.is_cuda() || source.dim() != 2 || source.size(1) != width_ || source.size(0) <= 0)
         throw std::invalid_argument("invalid CUDA KV rows");
     const auto offset = position_;
@@ -362,7 +362,7 @@ void KvOffloadSequence::truncate(int64_t position) {
     if (remainder) blocks_.push_back(std::move(remainder));
     position_ = position;
 }
-::tyloi::Tensor KvOffloadSequence::gather(const std::vector<int64_t>& rows) const {
+::tyloi::DenseTensor KvOffloadSequence::gather(const std::vector<int64_t>& rows) const {
     if (rows.empty() || blocks_.empty()) throw std::invalid_argument("empty CUDA KV selection");
     std::map<int64_t, std::pair<std::vector<int64_t>, std::vector<int64_t>>> groups;
     for (std::size_t output = 0; output < rows.size(); ++output) {
@@ -438,7 +438,7 @@ void KvOffloadSequence::gather_into(const std::vector<int64_t>& rows,const KvOff
         int(std::min<std::size_t>(256,(total+4095)/4096)),256,stream);
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
 }
-::tyloi::Tensor KvOffloadSequence::range(int64_t start, int64_t count) const {
+::tyloi::DenseTensor KvOffloadSequence::range(int64_t start, int64_t count) const {
     if (start < 0 || count <= 0 || start > position_ || count > position_ - start)
         throw std::out_of_range("CUDA KV range exceeds its sequence");
     auto result = ::tyloi::cuda::empty({count, width_}, blocks_.front()->options);

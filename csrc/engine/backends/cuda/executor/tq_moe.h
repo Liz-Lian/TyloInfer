@@ -19,9 +19,9 @@ struct TqMoeBanks {
     std::shared_ptr<TqRoutedWeight> gate, up, down;
     std::vector<tyloi::TensorParallelSlice> slices;
 
-    ::tyloi::Tensor forward(
-        TqExec&, ::tyloi::Tensor input,
-        ::tyloi::Tensor ids, ::tyloi::Tensor weights,
+    ::tyloi::DenseTensor forward(
+        TqExec&, ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor ids, ::tyloi::DenseTensor weights,
         float swiglu_limit = 0, CudaProfiler* profiler = nullptr,
         std::int64_t expert_begin = 0, std::int64_t expert_end = -1) const;
 };

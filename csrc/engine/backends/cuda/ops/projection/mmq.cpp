@@ -39,8 +39,8 @@ const char * kl_mmq_mode_name(KlMmqMode mode) {
     return "invalid";
 }
 
-::tyloi::Tensor KlMmqState::prepare_activation(
-        ::tyloi::Tensor input) {
+::tyloi::DenseTensor KlMmqState::prepare_activation(
+        ::tyloi::DenseTensor input) {
     if (mode != KlMmqMode::Nint8One) return input;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto original_shape = input.sizes().vec();
@@ -57,10 +57,10 @@ void KlMmqState::reset() noexcept {
     *this = {};
 }
 
-::tyloi::Tensor nint_kld(
+::tyloi::DenseTensor nint_kld(
         CudaProfiler& profiler, KlMmqState& mmq, const QuantLinear& weight,
-        ::tyloi::Tensor x,
-        ::tyloi::Tensor gate,
+        ::tyloi::DenseTensor x,
+        ::tyloi::DenseTensor gate,
         InputGateMode mode) {
     TYLOINFER_RUNTIME_CHECK(
         !weight.tensor_parallel() && (tyloi::mfq_compat_enabled && weight.is_nint()),

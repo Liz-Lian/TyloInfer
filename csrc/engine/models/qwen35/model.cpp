@@ -7,10 +7,10 @@
 namespace tyloi::cuda::qwen35 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-tyloi::Tensor Model::embedding(tyloi::Tensor ids, int primary) const {
+tyloi::DenseTensor Model::embedding(tyloi::DenseTensor ids, int primary) const {
     if (ids.dim() != 1 && ids.dim() != 2)
         throw std::runtime_error("token IDs must have shape [tokens] or [batch,tokens]");
-    if (ids.dim() == 1) ids = Tensor(std::move(ids)).unsqueeze(0);
+    if (ids.dim() == 1) ids = DenseTensor(std::move(ids)).unsqueeze(0);
     if (ids.size(0) <= 0 || ids.size(1) <= 0)
         throw std::runtime_error("token IDs must not be empty");
     auto normalized = tyloi::ops::contiguous(tyloi::ops::copy(

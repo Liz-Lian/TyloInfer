@@ -144,10 +144,10 @@ auto position_embedding(bool cache, Embed embed, Key key, Query query, Gate gate
     }
 }
 
-template <class Tensor, class PositionEmbedding, class Add, class AttentionPre,
+template <class DenseTensor, class PositionEmbedding, class Add, class AttentionPre,
           class LinearAttention, class SparseAttention, class AttentionPost, class FfnPre,
           class Ffn, class FfnPost>
-auto decoder_layer(Tensor hidden, bool has_ple, bool linear, PositionEmbedding position_embedding,
+auto decoder_layer(DenseTensor hidden, bool has_ple, bool linear, PositionEmbedding position_embedding,
                    Add add, AttentionPre attention_pre, LinearAttention linear_attention,
                    SparseAttention sparse_attention, AttentionPost attention_post, FfnPre ffn_pre,
                    Ffn ffn, FfnPost ffn_post) {
@@ -171,9 +171,9 @@ auto decoder_layer(Tensor hidden, bool has_ple, bool linear, PositionEmbedding p
         [](const auto &) {});
 }
 
-template <class Tensor, class PositionEmbedding, class Add, class AttentionPre,
+template <class DenseTensor, class PositionEmbedding, class Add, class AttentionPre,
           class LinearAttention, class SparseAttention, class FfnPreAfter, class Ffn, class FfnPost>
-auto decoder_layer_chained(Tensor hidden, bool has_ple, bool linear,
+auto decoder_layer_chained(DenseTensor hidden, bool has_ple, bool linear,
     PositionEmbedding position_embedding, Add add, AttentionPre attention_pre,
     LinearAttention linear_attention, SparseAttention sparse_attention,
     FfnPreAfter ffn_pre_after, Ffn ffn, FfnPost ffn_post) {
@@ -189,7 +189,7 @@ auto decoder_layer_chained(Tensor hidden, bool has_ple, bool linear,
 }
 
 template <class Backend> struct CausalLm : models::CausalModelBase<Backend, CausalLm<Backend>> {
-    using Tensor = typename Backend::Tensor;
+    using DenseTensor = typename Backend::DenseTensor;
     static bool accepts_backbone(std::string_view backbone) { return backbone == "qwen4_exp"; }
     template <class Graph, class Source>
     void adapter_load_config(std::string_view payload, const Graph &graph, const Source &source) {
@@ -215,10 +215,10 @@ template <class Backend> struct CausalLm : models::CausalModelBase<Backend, Caus
         metadata.model_type = "qwen4_exp";
         metadata.layer_types = config.layer_types;
     }
-    Tensor adapter_prepare_hidden(Tensor hidden, int64_t batch, int64_t tokens) const {
+    DenseTensor adapter_prepare_hidden(DenseTensor hidden, int64_t batch, int64_t tokens) const {
         return this->repeat_hidden(std::move(hidden), this->metadata.hc_mult);
     }
-    CausalPositions<Tensor> adapter_prepare_positions(Tensor current, int64_t, int64_t) {
+    CausalPositions<DenseTensor> adapter_prepare_positions(DenseTensor current, int64_t, int64_t) {
         const auto rank = Backend::rank(current);
         if ((rank == 2 || rank == 3) && Backend::size(current, 0) == 4)
             current = this->position_axes(std::move(current), 1, 3);
@@ -227,7 +227,7 @@ template <class Backend> struct CausalLm : models::CausalModelBase<Backend, Caus
                         : current;
         return {std::move(current), std::move(full)};
     }
-    void adapter_validate_positions(const Tensor &positions, int64_t batch, int64_t tokens,
+    void adapter_validate_positions(const DenseTensor &positions, int64_t batch, int64_t tokens,
                                     bool has_mrope) const {
         const auto rank = Backend::rank(positions);
         require_model((rank == 1 || (rank == 2 && Backend::size(positions, 0) == 3) ||

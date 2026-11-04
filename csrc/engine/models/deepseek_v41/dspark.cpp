@@ -21,7 +21,7 @@
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 
-static std::pair<Tensor, Tensor>
+static std::pair<DenseTensor, DenseTensor>
 dspark_full_attention_plan(std::int64_t batch, std::int64_t queries, std::int64_t keys,
                            const ::tyloi::Device &device) {
     TYLOINFER_RUNTIME_CHECK(batch > 0 && queries > 0 && keys > 0,
@@ -55,14 +55,14 @@ struct DeepseekV41Dspark final : MtpModule {
     int primary = 0;
     CommonConfig config;
     QuantLinear main_projection;
-    Tensor main_norm;
-    Tensor output_norm;
+    DenseTensor main_norm;
+    DenseTensor output_norm;
     QuantLinear markov_embedding;
     QuantLinear markov_output;
     QuantLinear confidence_projection;
     std::vector<std::unique_ptr<Block>> stages;
-    std::vector<Tensor> rings;
-    Tensor attention_meta;
+    std::vector<DenseTensor> rings;
+    DenseTensor attention_meta;
     std::int64_t maximum_context = 0;
     std::int64_t batch = 0;
     std::int64_t position = 0;
@@ -124,8 +124,8 @@ struct DeepseekV41Dspark final : MtpModule {
         result->cuda_device = weights.placement.device;
 
         const auto function_width = config.hc_mult * config.hidden;
-        const auto valid_mhc = [&](const Tensor &function, const Tensor &scale, const Tensor &base,
-                                   const Tensor &norm) {
+        const auto valid_mhc = [&](const DenseTensor &function, const DenseTensor &scale, const DenseTensor &base,
+                                   const DenseTensor &norm) {
             return function.dim() == 2 && function.size(0) == 24 &&
                    function.size(1) == function_width && scale.numel() == 3 && base.numel() == 24 &&
                    norm.numel() == config.hidden;
@@ -238,7 +238,7 @@ struct DeepseekV41Dspark final : MtpModule {
         position = 0;
     }
 
-    Tensor forward(Tensor, Tensor) override {
+    DenseTensor forward(DenseTensor, DenseTensor) override {
         throw std::runtime_error("DeepSeek-V4.1 DSpark uses blockwise drafting");
     }
 
@@ -246,7 +246,7 @@ struct DeepseekV41Dspark final : MtpModule {
 
     bool supports_session_state() const noexcept override {return true;}
 
-    MtpSessionState capture_session_state(int64_t cache_pos,const Tensor& hidden) const override {
+    MtpSessionState capture_session_state(int64_t cache_pos,const DenseTensor& hidden) const override {
         const auto width=config.hidden*int64_t(config.dspark_target_layer_ids.size());
         TYLOINFER_RUNTIME_CHECK(batch==1 && cache_pos==position && position>0 && rings.size()==stages.size() &&
             hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)>0 && hidden.size(2)==width,
@@ -308,7 +308,7 @@ struct DeepseekV41Dspark final : MtpModule {
         return static_cast<int>(config.dspark_block_size);
     }
 
-    void seed_target_context(Tensor hidden, std::int64_t tokens) override {
+    void seed_target_context(DenseTensor hidden, std::int64_t tokens) override {
         TYLOINFER_RUNTIME_CHECK(position == 0 && hidden.dim() == 3 && hidden.size(1) > 0 &&
             tokens >= hidden.size(1) && tokens <= maximum_context &&
             hidden.size(1) >= std::min(tokens, config.sliding_window),
@@ -317,7 +317,7 @@ struct DeepseekV41Dspark final : MtpModule {
         append_target_context(std::move(hidden), position);
     }
 
-    void append_target_context(Tensor target_hidden, std::int64_t start_position) override {
+    void append_target_context(DenseTensor target_hidden, std::int64_t start_position) override {
         const auto target_width =
             config.hidden * static_cast<std::int64_t>(config.dspark_target_layer_ids.size());
         TYLOINFER_RUNTIME_CHECK(target_hidden.dim() == 3 && target_hidden.size(0) == batch &&
@@ -348,7 +348,7 @@ struct DeepseekV41Dspark final : MtpModule {
                     execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(main_projection, (floating / scale).to(::tyloi::kFloat16).contiguous()),
                     main_norm, config.rms_eps);
             },
-            [&](size_t index, const Tensor &main_x) {
+            [&](size_t index, const DenseTensor &main_x) {
                 auto key_value = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stages[index]->key_value, main_x),
                                               stages[index]->key_value_norm, config.rms_eps);
                 key_value = rotate_token_major_tail(
@@ -359,11 +359,11 @@ struct DeepseekV41Dspark final : MtpModule {
                 key_value = deepseek_v41_mxfp8_e4m3_sim_cuda(key_value.contiguous());
                 return key_value;
             },
-            [&](size_t index, Tensor key_value) { rings[index].index_copy_(1, slots, key_value); });
+            [&](size_t index, DenseTensor key_value) { rings[index].index_copy_(1, slots, key_value); });
         position=next_position;
     }
 
-    Tensor attention(const Tensor &input, Block &stage, const Tensor &ring) {
+    DenseTensor attention(const DenseTensor &input, Block &stage, const DenseTensor &ring) {
         const auto tokens = input.size(1);
         auto positions = ::tyloi::cuda::arange(position, position + tokens,
                                                     ::tyloi::TensorOptions()
@@ -390,27 +390,27 @@ struct DeepseekV41Dspark final : MtpModule {
                 current_keys = deepseek_v41_mxfp8_e4m3_sim_cuda(current_keys.contiguous());
                 return current_keys;
             },
-            [&](Tensor current_keys) {
+            [&](DenseTensor current_keys) {
                 return ::tyloi::cuda::cat({ring.narrow(1, 0, active), current_keys}, 1)
                     .contiguous();
             },
-            [&](const Tensor &keys) {
+            [&](const DenseTensor &keys) {
                 return dspark_full_attention_plan(batch, tokens, keys.size(1), input.device());
             },
-            [&](Tensor query, Tensor keys, const auto &plan) {
+            [&](DenseTensor query, DenseTensor keys, const auto &plan) {
                 return attention_dsv4_sparse_cuda(
                     query, keys, plan.first, plan.second, stage.sinks, attention_meta,
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
             },
-            [&](Tensor attended) {
+            [&](DenseTensor attended) {
                 return stage.rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
                     .transpose(1, 2)
                     .contiguous();
             },
-            [&](Tensor attended) { return stage.output_projection(*execution, attended); });
+            [&](DenseTensor attended) { return stage.output_projection(*execution, attended); });
     }
 
-    Tensor draft_block(Tensor anchor_ids, int requested) override {
+    DenseTensor draft_block(DenseTensor anchor_ids, int requested) override {
         const auto physical_width =
             std::min<std::int64_t>(config.dspark_block_size, maximum_context - position);
         TYLOINFER_RUNTIME_CHECK(
@@ -435,23 +435,23 @@ struct DeepseekV41Dspark final : MtpModule {
                 return tyloi::cuda::embed(embedding, draft_ids, execution->executor().collectives(),
                     execution->executor().profiler(), primary).to(::tyloi::kFloat16);
             },
-            [&](Tensor embedded) {
+            [&](DenseTensor embedded) {
                 return embedded.unsqueeze(2)
                     .expand({batch, physical_width, config.hc_mult, config.hidden})
                     .contiguous();
             },
-            [&](Tensor embedded) {
+            [&](DenseTensor embedded) {
                 auto previous_pre = ::tyloi::cuda::zeros(
                     {batch, physical_width, config.hc_mult},
                     embedded.options().dtype(::tyloi::kFloat32));
                 previous_pre.narrow(2, 0, 1).fill_(1.0);
                 return previous_pre;
             },
-            [&](size_t index, Tensor hidden, Tensor &previous_pre, int64_t output_rows) {
+            [&](size_t index, DenseTensor hidden, DenseTensor &previous_pre, int64_t output_rows) {
                 auto &stage = *stages[index];
                 return tyloi::models::deepseek_v41::mega_layer(
                     std::move(hidden), previous_pre,
-                    [&](Tensor value, const Tensor &pre, int branch) {
+                    [&](DenseTensor value, const DenseTensor &pre, int branch) {
                         // The last attention still sees the complete block.
                         // Its following FFN is independent for each token.
                         const auto rows = branch == 0 ? physical_width : output_rows;
@@ -464,14 +464,14 @@ struct DeepseekV41Dspark final : MtpModule {
                             branch == 0 ? "deepseek_v41.dspark.mhc.attention.collapse"
                                         : "deepseek_v41.dspark.mhc.mlp.collapse");
                     },
-                    [&](Tensor value) { return attention(value, stage, rings[index]); },
-                    [&](Tensor value, Tensor residual, const auto &mix, int branch) {
+                    [&](DenseTensor value) { return attention(value, stage, rings[index]); },
+                    [&](DenseTensor value, DenseTensor residual, const auto &mix, int branch) {
                         return stage.expand(execution->executor().profiler(), value,
                                             residual.narrow(1, 0, value.size(1)), mix,
                                             branch == 0 ? "deepseek_v41.dspark.mhc.attention.expand"
                                                         : "deepseek_v41.dspark.mhc.mlp.expand");
                     },
-                    [&](Tensor value) {
+                    [&](DenseTensor value) {
                         const auto rows = value.size(1);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         return stage.mlp.forward(value.reshape({-1, config.hidden}),
@@ -484,23 +484,23 @@ struct DeepseekV41Dspark final : MtpModule {
                             .reshape({batch, rows, config.hidden});
                     });
             },
-            [&](Tensor hidden, const Tensor &previous_pre) {
+            [&](DenseTensor hidden, const DenseTensor &previous_pre) {
                 return (previous_pre.to(::tyloi::kFloat32).unsqueeze(-1) *
                         hidden.to(::tyloi::kFloat32))
                     .sum(2)
                     .to(::tyloi::kFloat16)
                     .contiguous();
             },
-            [&](Tensor head_hidden) {
+            [&](DenseTensor head_hidden) {
                 return tyloi::cuda::logits(output, weighted_rms(head_hidden, output_norm, config.rms_eps),
                     execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)), execution->executor().profiler(), softcap)
                     .to(::tyloi::kFloat32)
                     .contiguous();
             },
-            [](Tensor logits, int64_t count) { return logits.narrow(1, 0, count); });
+            [](DenseTensor logits, int64_t count) { return logits.narrow(1, 0, count); });
     }
 
-    Tensor draft_next(Tensor logits, Tensor previous) override {
+    DenseTensor draft_next(DenseTensor logits, DenseTensor previous) override {
         auto markov = quant_embedding_lookup(markov_embedding, previous)
                           .to(::tyloi::kFloat16)
                           .contiguous();

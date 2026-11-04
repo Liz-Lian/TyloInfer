@@ -24,11 +24,11 @@ Mfe nint(const Experts& weight) {
 }
 
 template <typename Forward>
-Tensor sharded_experts(Collectives& collectives, int primary, const Projector::Options& options,
-                       const Experts& weight, Tensor input, const MoeRoutePlan& route,
+DenseTensor sharded_experts(Collectives& collectives, int primary, const Projector::Options& options,
+                       const Experts& weight, DenseTensor input, const MoeRoutePlan& route,
                        Forward&& forward) {
     const auto count = weight.expert_parallel_shards.size();
-    std::vector<Tensor> outputs(count);
+    std::vector<DenseTensor> outputs(count);
     for (size_t launch = 0; launch < count; ++launch) {
         const auto index = parallel_index(options.peer_first, launch, count);
         const auto& shard = weight.expert_parallel_shards[index];
@@ -46,14 +46,14 @@ Tensor sharded_experts(Collectives& collectives, int primary, const Projector::O
 } // namespace
 #endif
 
-Tensor Projector::run(const Experts& weight, Tensor input,
+DenseTensor Projector::run(const Experts& weight, DenseTensor input,
                       const MoeRoutePlan& route, bool prequantized, int epilogue) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (weight.expert_parallel()) {
         if (prequantized)
             throw std::runtime_error("prequantized MoE activation reuse is unavailable with expert parallelism");
         return sharded_experts(collectives_, primary_, options_, weight, input, route,
-            [&](const Experts& shard, Tensor local, const MoeRoutePlan& local_route) {
+            [&](const Experts& shard, DenseTensor local, const MoeRoutePlan& local_route) {
                 return run(shard, local, local_route, false, epilogue);
             });
     }
@@ -81,12 +81,12 @@ Tensor Projector::run(const Experts& weight, Tensor input,
 #endif
 }
 
-Tensor Projector::glu(const Experts& weight, Tensor input,
+DenseTensor Projector::glu(const Experts& weight, DenseTensor input,
                       const MoeRoutePlan& route, bool gelu) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (weight.expert_parallel())
         return sharded_experts(collectives_, primary_, options_, weight, input, route,
-            [&](const Experts& shard, Tensor local, const MoeRoutePlan& local_route) {
+            [&](const Experts& shard, DenseTensor local, const MoeRoutePlan& local_route) {
                 return glu(shard, local, local_route, gelu);
             });
     if (weight.cached_source || weight.resident) {
@@ -102,12 +102,12 @@ Tensor Projector::glu(const Experts& weight, Tensor input,
 #endif
 }
 
-Tensor Projector::gated(const Experts& weight, Tensor input,
+DenseTensor Projector::gated(const Experts& weight, DenseTensor input,
                         const MoeRoutePlan& route, bool gelu) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (weight.expert_parallel())
         return sharded_experts(collectives_, primary_, options_, weight, input, route,
-            [&](const Experts& shard, Tensor local, const MoeRoutePlan& local_route) {
+            [&](const Experts& shard, DenseTensor local, const MoeRoutePlan& local_route) {
                 return gated(shard, local, local_route, gelu);
             });
     if (weight.cached_source) {
@@ -126,12 +126,12 @@ Tensor Projector::gated(const Experts& weight, Tensor input,
 #endif
 }
 
-Tensor Projector::clamped(const Experts& weight, Tensor input,
+DenseTensor Projector::clamped(const Experts& weight, DenseTensor input,
                           const MoeRoutePlan& route, double limit) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (weight.expert_parallel())
         return sharded_experts(collectives_, primary_, options_, weight, input, route,
-            [&](const Experts& shard, Tensor local, const MoeRoutePlan& local_route) {
+            [&](const Experts& shard, DenseTensor local, const MoeRoutePlan& local_route) {
                 return clamped(shard, local, local_route, limit);
             });
     if (weight.cached_source && weight.cached_source->supports_clamped_swiglu()) {
@@ -149,14 +149,14 @@ Tensor Projector::clamped(const Experts& weight, Tensor input,
 #endif
 }
 
-Tensor Projector::run(const TqMoeBanks& banks, Tensor input, Tensor ids,
-                      Tensor weights, float limit) const {
+DenseTensor Projector::run(const TqMoeBanks& banks, DenseTensor input, DenseTensor ids,
+                      DenseTensor weights, float limit) const {
     if (banks.slices.empty())
         return banks.forward(tq_, std::move(input), std::move(ids), std::move(weights),
                              limit, &profiler_);
     if (!banks.gate)
         throw std::invalid_argument("TQ expert parallelism requires a Gate bank");
-    std::vector<Tensor> partials(banks.slices.size());
+    std::vector<DenseTensor> partials(banks.slices.size());
     for (size_t launch = 0; launch < banks.slices.size(); ++launch) {
         const auto index = parallel_index(options_.peer_first, launch, banks.slices.size());
         const auto& slice = banks.slices[index];

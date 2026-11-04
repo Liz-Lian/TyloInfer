@@ -35,7 +35,7 @@ std::vector<std::uint8_t> tq_image(
     return image;
 }
 
-::tyloi::Tensor tq_view(::tyloi::Tensor image,
+::tyloi::encoding::TqTensor tq_view(::tyloi::DenseTensor image,
                  const tyloi::TqLayout& layout, std::int64_t columns) {
     if (columns < 1 || columns > layout.width || layout.rows > INT_MAX ||
         layout.width > INT_MAX) {
@@ -49,14 +49,14 @@ std::vector<std::uint8_t> tq_image(
          relative_offset, relative_offset + 32, layout.width, gslog, layout.columns});
 }
 
-::tyloi::Tensor promote_tq(const ::tyloi::Tensor& weight,
+::tyloi::encoding::TqTensor promote_tq(const ::tyloi::encoding::TqTensor& weight,
                    const ::tyloi::Device& device) {
-    auto image = ::tyloi::encoding::tq_image(weight).to(device,false,false).contiguous();
+    auto image = weight.image().to(device,false,false).contiguous();
     return ::tyloi::encoding::tq_tensor(image, weight.size(0), weight.size(1),
-                                        ::tyloi::encoding::tq_layout(weight));
+                                        weight.layout());
 }
 
-::tyloi::Tensor to_device_tq(const std::vector<std::uint8_t>& blob,
+::tyloi::encoding::TqTensor to_device_tq(const std::vector<std::uint8_t>& blob,
                       std::int64_t columns, int device, bool cuda) {
     const tyloi::TqLayout layout(blob.data(), blob.size());
     const auto image = tq_image(blob, layout);

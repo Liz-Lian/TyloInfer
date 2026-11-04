@@ -141,10 +141,10 @@ void select(const DecodeArgs& args,cudaStream_t stream) {
     else launch<Small,false,false>(args,stream);
 }
 }
-bool tyloi::cuda::try_nvq_decode(Nvq1DecodeView w,::tyloi::Tensor records,::tyloi::Tensor integer_book,
-        ::tyloi::Tensor x,::tyloi::Tensor ids,
-        ::tyloi::Tensor local,::tyloi::Tensor qx,::tyloi::Tensor scales,
-        ::tyloi::Tensor output,int experts,int rows,bool quantized) {
+bool tyloi::cuda::try_nvq_decode(Nvq1DecodeView w,::tyloi::DenseTensor records,::tyloi::DenseTensor integer_book,
+        ::tyloi::DenseTensor x,::tyloi::DenseTensor ids,
+        ::tyloi::DenseTensor local,::tyloi::DenseTensor qx,::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor output,int experts,int rows,bool quantized) {
     const auto* group_dot=tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_GROUP_DOT");
     const auto* native=tyloi::cuda::env_lookup("TYLOINFER_NVQ1_NATIVE_DECODE");
     if((native && native[0]=='0') || (group_dot && group_dot[0]=='0') || ids.size(0)>8 ||

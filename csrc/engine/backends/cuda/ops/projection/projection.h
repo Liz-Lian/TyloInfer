@@ -5,12 +5,12 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
-tyloi::Tensor embedding(tyloi::Tensor ids, const weights::Weights& weight);
-tyloi::Tensor project(tyloi::Tensor input, const weights::Weights& weight);
-tyloi::Tensor linear(tyloi::Tensor input, const weights::Weights& weight, const tyloi::Tensor& bias);
-tyloi::Tensor affine(tyloi::Tensor input, const weights::Weights& weight, const tyloi::Tensor& bias);
-std::vector<tyloi::Tensor> project_group(tyloi::Tensor input, const weights::Weights& group);
-tyloi::Tensor sigmoid_project(tyloi::Tensor input, tyloi::Tensor gate, const weights::Weights& weight);
+tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const weights::Weights& weight);
+tyloi::DenseTensor project(tyloi::DenseTensor input, const weights::Weights& weight);
+tyloi::DenseTensor linear(tyloi::DenseTensor input, const weights::Weights& weight, const tyloi::DenseTensor& bias);
+tyloi::DenseTensor affine(tyloi::DenseTensor input, const weights::Weights& weight, const tyloi::DenseTensor& bias);
+std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input, const weights::Weights& group);
+tyloi::DenseTensor sigmoid_project(tyloi::DenseTensor input, tyloi::DenseTensor gate, const weights::Weights& weight);
 }
 #endif
 
@@ -57,38 +57,38 @@ public:
     int primary_device() const { return primary_; }
     MoeScratchCache& moe_scratch() const { return moe_scratch_; }
 
-    ::tyloi::Tensor run(const QuantLinear& weight, ::tyloi::Tensor input) const;
-    std::vector<::tyloi::Tensor> run(
-        const Projections& projections, ::tyloi::Tensor input) const;
-    std::vector<::tyloi::Tensor> run(
-        const QuantLinearGroup& group, ::tyloi::Tensor input) const;
-    ::tyloi::Tensor gated(const QuantLinear& weight, ::tyloi::Tensor input,
-                                    ::tyloi::Tensor gate, InputGateMode mode) const;
-    ::tyloi::Tensor groupwise(const QuantLinear& weight,
-                                       ::tyloi::Tensor input, int64_t groups) const;
-    ::tyloi::Tensor low_rank(::tyloi::Tensor attention,
+    ::tyloi::DenseTensor run(const QuantLinear& weight, ::tyloi::DenseTensor input) const;
+    std::vector<::tyloi::DenseTensor> run(
+        const Projections& projections, ::tyloi::DenseTensor input) const;
+    std::vector<::tyloi::DenseTensor> run(
+        const QuantLinearGroup& group, ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor gated(const QuantLinear& weight, ::tyloi::DenseTensor input,
+                                    ::tyloi::DenseTensor gate, InputGateMode mode) const;
+    ::tyloi::DenseTensor groupwise(const QuantLinear& weight,
+                                       ::tyloi::DenseTensor input, int64_t groups) const;
+    ::tyloi::DenseTensor low_rank(::tyloi::DenseTensor attention,
                                       const QuantLinear& output_a, const QuantLinear& output_b,
                                       int64_t groups, bool groupwise, bool profile) const;
-    ::tyloi::Tensor swiglu(const QuantLinearGroup& group, ::tyloi::Tensor input) const;
-    ::tyloi::Tensor geglu(const QuantLinearGroup& group, ::tyloi::Tensor input) const;
-    std::vector<::tyloi::Tensor> grouped(
-        const QuantLinearProjectionRefs& projections, ::tyloi::Tensor input) const;
+    ::tyloi::DenseTensor swiglu(const QuantLinearGroup& group, ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor geglu(const QuantLinearGroup& group, ::tyloi::DenseTensor input) const;
+    std::vector<::tyloi::DenseTensor> grouped(
+        const QuantLinearProjectionRefs& projections, ::tyloi::DenseTensor input) const;
 
-    ::tyloi::Tensor run(
-        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::DenseTensor run(
+        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
         bool prequantized = false, int epilogue = 0) const;
-    ::tyloi::Tensor glu(
-        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::DenseTensor glu(
+        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
         bool gelu) const;
-    ::tyloi::Tensor gated(
-        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::DenseTensor gated(
+        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
         bool gelu) const;
-    ::tyloi::Tensor clamped(
-        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::DenseTensor clamped(
+        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
         double limit) const;
-    ::tyloi::Tensor run(
-        const TqMoeBanks& banks, ::tyloi::Tensor input,
-        ::tyloi::Tensor ids, ::tyloi::Tensor weights,
+    ::tyloi::DenseTensor run(
+        const TqMoeBanks& banks, ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor ids, ::tyloi::DenseTensor weights,
         float swiglu_limit = 0) const;
 
 private:
@@ -104,17 +104,17 @@ private:
     const bool& serial_;
     const bool& projection_major_;
 
-    ::tyloi::Tensor sharded(const QuantLinear& weight, ::tyloi::Tensor input,
-                                      MfqOptional<::tyloi::Tensor> gate, InputGateMode mode) const;
-    std::vector<::tyloi::Tensor> run(
-        const NintLinearGroup& group, ::tyloi::Tensor input) const;
-    ::tyloi::Tensor swiglu(const NintLinearGroup& group, ::tyloi::Tensor input) const;
-    ::tyloi::Tensor geglu(const NintLinearGroup& group, ::tyloi::Tensor input) const;
+    ::tyloi::DenseTensor sharded(const QuantLinear& weight, ::tyloi::DenseTensor input,
+                                      MfqOptional<::tyloi::DenseTensor> gate, InputGateMode mode) const;
+    std::vector<::tyloi::DenseTensor> run(
+        const NintLinearGroup& group, ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor swiglu(const NintLinearGroup& group, ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor geglu(const NintLinearGroup& group, ::tyloi::DenseTensor input) const;
 };
 
-::tyloi::Tensor embed(const QuantLinear& weight, ::tyloi::Tensor ids,
+::tyloi::DenseTensor embed(const QuantLinear& weight, ::tyloi::DenseTensor ids,
     Collectives& copies, CudaProfiler& profiler, int device);
-::tyloi::Tensor logits(const QuantLinear& weight, ::tyloi::Tensor hidden,
+::tyloi::DenseTensor logits(const QuantLinear& weight, ::tyloi::DenseTensor hidden,
     const Projector& project, CudaProfiler& profiler, double softcap);
 
 } // namespace tyloi::cuda

@@ -15,10 +15,10 @@
 
 namespace {
 struct NvqScratch {
-    ::tyloi::Tensor qx;
-    ::tyloi::Tensor xscale;
+    ::tyloi::DenseTensor qx;
+    ::tyloi::DenseTensor xscale;
 };
-NvqScratch scratch(const NvqWeight& weight, int rows) {
+NvqScratch scratch(const tyloi::NvqTensor& weight, int rows) {
     const int K_pad = (int)(weight.ng * weight.gs);
     const auto options = weight.indices_packed.options();
     return {
@@ -34,7 +34,7 @@ enum class NvqMatmulPath {
     DequantGemm,
 };
 
-static NvqMatmulPath select_nvq_matmul_path(const NvqWeight & w, int M) {
+static NvqMatmulPath select_nvq_matmul_path(const tyloi::NvqTensor & w, int M) {
     // Short batches of small expert matrices use vector decode followed by
     // FP32-accumulating GEMM. The decision depends on matrix geometry.
     if (M >= 9 && M <= 16 && w.out <= 4096 && w.neuron_len <= 4096 &&
@@ -272,7 +272,7 @@ static CpuNvqDecoder cpu_nvq_decoder(int format) {
     }
 }
 
-CpuProjectionRows make_cpu_projection_rows(const NvqWeight& w) {
+CpuProjectionRows make_cpu_projection_rows(const tyloi::NvqTensor& w) {
     TYLOINFER_RUNTIME_CHECK(w.indices_packed.is_cpu() && w.gs==24 && w.sub_bits>0 && w.sub_bits<=4,
         "original-FP32 NVQ rows require canonical CPU storage");
     CpuProjectionRows p; p.width=static_cast<int>(w.neuron_len); p.outputs=static_cast<int>(w.out);
@@ -312,9 +312,9 @@ CpuProjectionRows make_cpu_projection_rows(const NvqWeight& w) {
     }
     return p;
 }
-static ::tyloi::Tensor nvq_matmul_cpu(
-        const NvqWeight & w,
-        ::tyloi::Tensor x) {
+static ::tyloi::DenseTensor nvq_matmul_cpu(
+        const tyloi::NvqTensor & w,
+        ::tyloi::DenseTensor x) {
     TYLOINFER_RUNTIME_CHECK(!x.is_cuda(), "CPU NVQ GEMV requires CPU activations");
     TYLOINFER_RUNTIME_CHECK(
         !w.indices_packed.is_cuda() && !w.sub_scale_packed.is_cuda() &&
@@ -389,10 +389,10 @@ static ::tyloi::Tensor nvq_matmul_cpu(
     });
     return result;
 }
-::tyloi::Tensor nvq_matmul(
+::tyloi::DenseTensor nvq_matmul(
         CudaProfiler& profiler,
-        const NvqWeight& w,
-        ::tyloi::Tensor x) {
+        const tyloi::NvqTensor& w,
+        ::tyloi::DenseTensor x) {
     if (!x.is_cuda()) return nvq_matmul_cpu(w, std::move(x));
     x = x.contiguous().to(::tyloi::kFloat16);
     x = pad_last(x, w.neuron_len);
@@ -430,11 +430,11 @@ static ::tyloi::Tensor nvq_matmul_cpu(
     });
 }
 
-::tyloi::Tensor nvq_matmul_input_mul(
+::tyloi::DenseTensor nvq_matmul_input_mul(
     CudaProfiler& profiler,
-    const NvqWeight & w,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor gate,
+    const tyloi::NvqTensor & w,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor gate,
     int mode) {
     TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NVQ input gate mode must be 1(sigmoid) or 2(silu)");
     if (!x.is_cuda()) {
@@ -471,11 +471,11 @@ static ::tyloi::Tensor nvq_matmul_cpu(
                 w.sub_bits, w.kernel_format, w.sign_mode, mode, ws.qx, ws.xscale);
         });
     }
-    ::tyloi::Tensor value = mode == 1 ? x * ::tyloi::cuda::sigmoid(gate) : x * ::tyloi::cuda::silu(gate);
+    ::tyloi::DenseTensor value = mode == 1 ? x * ::tyloi::cuda::sigmoid(gate) : x * ::tyloi::cuda::silu(gate);
     return nvq_matmul(profiler, w, value);
 }
 
-bool nvq_pair_compatible(const NvqWeight & first, const NvqWeight & second) {
+bool nvq_pair_compatible(const tyloi::NvqTensor & first, const tyloi::NvqTensor & second) {
     return first.format == second.format && first.kernel_format == second.kernel_format &&
            first.gs == second.gs &&
            first.neuron_len == second.neuron_len && first.ng == second.ng;
@@ -483,11 +483,11 @@ bool nvq_pair_compatible(const NvqWeight & first, const NvqWeight & second) {
 
 
 
-::tyloi::Tensor nvq_matmul_multi2(
+::tyloi::DenseTensor nvq_matmul_multi2(
     CudaProfiler& profiler,
-    const NvqWeight & first,
-    const NvqWeight & second,
-    ::tyloi::Tensor x) {
+    const tyloi::NvqTensor & first,
+    const tyloi::NvqTensor & second,
+    ::tyloi::DenseTensor x) {
     if (!nvq_pair_compatible(first, second)) {
         throw std::runtime_error("NVQ multi-projection requires compatible formats and input layouts");
     }
@@ -512,11 +512,11 @@ bool nvq_pair_compatible(const NvqWeight & first, const NvqWeight & second) {
     });
 }
 
-::tyloi::Tensor nvq_matmul_swiglu(
+::tyloi::DenseTensor nvq_matmul_swiglu(
     CudaProfiler& profiler,
-    const NvqWeight & gate,
-    const NvqWeight & up,
-    ::tyloi::Tensor x) {
+    const tyloi::NvqTensor & gate,
+    const tyloi::NvqTensor & up,
+    ::tyloi::DenseTensor x) {
     if (!nvq_pair_compatible(gate, up) || gate.out != up.out) {
         throw std::runtime_error("NVQ SwiGLU requires compatible equal-width gate/up weights");
     }
@@ -540,13 +540,13 @@ bool nvq_pair_compatible(const NvqWeight & first, const NvqWeight & second) {
     });
 }
 
-::tyloi::Tensor nvq_ffn_swiglu_down(
+::tyloi::DenseTensor nvq_ffn_swiglu_down(
     CudaProfiler& profiler,
-    const NvqWeight & gate,
-    const NvqWeight & up,
-    const NvqWeight & down,
-    ::tyloi::Tensor x,
-    MfqOptional<::tyloi::Tensor> residual) {
+    const tyloi::NvqTensor & gate,
+    const tyloi::NvqTensor & up,
+    const tyloi::NvqTensor & down,
+    ::tyloi::DenseTensor x,
+    MfqOptional<::tyloi::DenseTensor> residual) {
     if (!nvq_pair_compatible(gate, up) || gate.out != up.out || gate.out != down.neuron_len) {
         throw std::runtime_error("NVQ fused FFN weight layouts are incompatible");
     }
@@ -595,19 +595,19 @@ bool nvq_pair_compatible(const NvqWeight & first, const NvqWeight & second) {
     });
 }
 
-::tyloi::Tensor nvq_embedding(const NvqWeight & w, ::tyloi::Tensor token_ids) {
+::tyloi::DenseTensor nvq_embedding(const tyloi::NvqTensor & w, ::tyloi::DenseTensor token_ids) {
     return nvq_embedding_lookup_cuda(
         w.indices_packed, w.aux_packed, w.sub_scale_packed,
         w.neuron_scale, w.codebook, token_ids, w.neuron_len, w.gs,
         w.sub_bits, w.kernel_format, w.sign_mode);
 }
-::tyloi::Tensor nvq_dequant(const NvqWeight & w) {
+::tyloi::DenseTensor nvq_dequant(const tyloi::NvqTensor & w) {
     return nvq_dequant_cuda(
         w.indices_packed, w.aux_packed, w.sub_scale_packed,
         w.neuron_scale, w.codebook, w.neuron_len, w.gs,
         w.sub_bits, w.kernel_format, w.sign_mode);
 }
 bool nvq_fused_residual_format(std::int64_t kernel_format) {
-    return kernel_format == kNvq2JscXlGroupExecKernelFormat ||
-        kernel_format == kNvq3JscLGroupExecKernelFormat;
+    return kernel_format == tyloi::kNvq2JscXlGroupExecKernelFormat ||
+        kernel_format == tyloi::kNvq3JscLGroupExecKernelFormat;
 }

@@ -20,9 +20,9 @@ namespace tyloi::cuda::axial_patch_vision {
 
 using Config = tyloi::models::axial_patch_vision::Config;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using Tensor = tyloi::Tensor;
+using DenseTensor = tyloi::DenseTensor;
 #else
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 #endif
 
 // CUDA implementation of the backend-neutral axial patch ViT contract shared
@@ -45,21 +45,21 @@ class CudaAxialPatchVisionTower {
 
     // Patches accept [H*W,3,P,P] or [H*W,3*P*P]. The output is the
     // row-major, ceil(H/R)*ceil(W/R) aligned embedding grid.
-    Tensor encode(
+    DenseTensor encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
-        Tensor patches,
+        DenseTensor patches,
         int height,
         int width) const;
 
     // Load one block at a time and restore borrowed expert storage before
     // yielding, so image preparation can share the request scheduler.
-    tyloi::StepSequence<Tensor> encode_steps(
+    tyloi::StepSequence<DenseTensor> encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
-        Tensor patches,
+        DenseTensor patches,
         int height,
         int width) const;
 

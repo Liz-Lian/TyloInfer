@@ -1,4 +1,5 @@
 #include "engine/weights/quant.h"
+#include "engine/weights/vq.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/format.h"
 #include "engine/weights/tensor_parallel.h"
@@ -18,7 +19,7 @@
 
 using namespace tyloi::cuda::quant_format;
 
-bool prepare_nvq_dense_groups(NvqWeight& w) {
+bool prepare_nvq_dense_groups(tyloi::NvqTensor& w) {
     if(w.dense_groups)return true;
     if(!w.indices_packed.is_cpu() || w.gs!=24 || w.sub_bits!=4 ||
             w.out<=0 || w.out>std::numeric_limits<int>::max() ||
@@ -50,7 +51,7 @@ bool prepare_nvq_dense_groups(NvqWeight& w) {
     return true;
 }
 
-void prepare_nvq_integer_codebook(NvqWeight& w) {
+void prepare_nvq_integer_codebook(tyloi::NvqTensor& w) {
     const auto enabled=tyloi::cuda::runtime_options::nvq1_integer_delta();
     if(!enabled || !*enabled || w.integer_codebook.defined() ||
        (w.kernel_format!=1 && w.kernel_format!=8) || !w.codebook.is_cuda())return;
@@ -68,7 +69,7 @@ void prepare_nvq_integer_codebook(NvqWeight& w) {
     }
     w.integer_codebook=::tyloi::cuda::tensor(digits).to(w.codebook.device()).contiguous();
 }
-void prepare_nvq_decode_records(NvqWeight& w) {
+void prepare_nvq_decode_records(tyloi::NvqTensor& w) {
     const auto enabled=tyloi::cuda::runtime_options::nvq1_group_records();
     if(!enabled || !*enabled || w.decode_records.defined() ||
        (w.kernel_format!=1 && w.kernel_format!=8) || !w.indices_packed.is_cuda() || w.gs!=24 ||
@@ -77,7 +78,7 @@ void prepare_nvq_decode_records(NvqWeight& w) {
     const auto indices=w.indices_packed.to(::tyloi::kCPU).contiguous();
     const auto auxiliary=w.aux_packed.to(::tyloi::kCPU).contiguous();
     const auto states=w.sub_scale_packed.to(::tyloi::kCPU).contiguous();
-    const auto bits=[](const ::tyloi::Tensor& data,int64_t bit,int width) {
+    const auto bits=[](const ::tyloi::DenseTensor& data,int64_t bit,int width) {
         uint32_t value=0;
         for(int i=0;i<width;++i)if((bit+i)/8<data.numel())
             value|=uint32_t((data.data_ptr<uint8_t>()[(bit+i)/8]>>((bit+i)&7))&1u)<<i;
@@ -591,11 +592,11 @@ static std::vector<uint8_t> remap_extended_e8_sub_scale_states(
     return remapped;
 }
 
-NvqWeight to_device_nvq(
+tyloi::NvqTensor to_device_nvq(
         const tyloi::nvq::Data & c,
         bool cuda,
         bool nvq2, bool extended, int device) {
-    NvqWeight w;
+    tyloi::NvqTensor w;
     std::array<uint8_t, 16> e8_state_remap = {};
     std::unique_ptr<std::array<std::array<uint16_t,4096>,4>> e8_index_remap;
     std::vector<int8_t> e8_runtime_codebook;
@@ -630,8 +631,8 @@ NvqWeight to_device_nvq(
         w.aux_packed = ::tyloi::cuda::empty(
             {0}, ::tyloi::TensorOptions().dtype(::tyloi::kUInt8));
         w.kernel_format = c.format == 14
-            ? kNvq2JscXlGroupExecKernelFormat
-            : kNvq3JscLGroupExecKernelFormat;
+            ? tyloi::kNvq2JscXlGroupExecKernelFormat
+            : tyloi::kNvq3JscLGroupExecKernelFormat;
     } else if (cuda && (c.format == 2 || c.format == 5) &&
                nvq2) {
         auto metadata = repack_nvq2_exec_metadata(c);

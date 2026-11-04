@@ -37,18 +37,18 @@ Mtp::Mtp(Predictor model, QuantLinear embedding, RopeCache rope,
 
 void Mtp::reset(int64_t batch) { state_.reset(batch); }
 
-::tyloi::Tensor Mtp::forward(::tyloi::Tensor hidden, ::tyloi::Tensor next_ids) {
+::tyloi::DenseTensor Mtp::forward(::tyloi::DenseTensor hidden, ::tyloi::DenseTensor next_ids) {
     return evaluate(std::move(hidden), std::move(next_ids), {});
 }
 
-MtpStep Mtp::step_positioned(::tyloi::Tensor hidden,
-        ::tyloi::Tensor next_ids, ::tyloi::Tensor positions) {
+MtpStep Mtp::step_positioned(::tyloi::DenseTensor hidden,
+        ::tyloi::DenseTensor next_ids, ::tyloi::DenseTensor positions) {
     auto output = evaluate(std::move(hidden), std::move(next_ids), std::move(positions));
     return {output, output};
 }
 
-::tyloi::Tensor Mtp::evaluate(::tyloi::Tensor hidden,
-        ::tyloi::Tensor next_ids, ::tyloi::Tensor positions) {
+::tyloi::DenseTensor Mtp::evaluate(::tyloi::DenseTensor hidden,
+        ::tyloi::DenseTensor next_ids, ::tyloi::DenseTensor positions) {
     const auto& config = model_.config;
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && next_ids.dim() == 2 &&
         hidden.size(0) == next_ids.size(0) && hidden.size(1) == next_ids.size(1) &&
@@ -100,7 +100,7 @@ MtpStep Mtp::step_positioned(::tyloi::Tensor hidden,
 
 void Mtp::trim_cache_to(int64_t position) { state_.trim(position); }
 
-MtpSessionState Mtp::capture_session_state(int64_t position, const ::tyloi::Tensor& hidden) const {
+MtpSessionState Mtp::capture_session_state(int64_t position, const ::tyloi::DenseTensor& hidden) const {
     MfqCudaGuard guard(device_);
     return state_.capture(position, hidden);
 }

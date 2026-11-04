@@ -8,8 +8,8 @@
 namespace tyloi::models::qwen4_exp {
 
 struct BlockSnapshot {
-    ::tyloi::Tensor keys, values, index;
-    ::tyloi::Tensor convolution, recurrent, ple_convolution;
+    ::tyloi::DenseTensor keys, values, index;
+    ::tyloi::DenseTensor convolution, recurrent, ple_convolution;
     int64_t ple_batch = 0;
     std::vector<int64_t> ple_tokens;
 
@@ -26,7 +26,7 @@ struct BlockSnapshot {
 
 struct Snapshot {
     std::vector<BlockSnapshot> blocks;
-    ::tyloi::Tensor positions;
+    ::tyloi::DenseTensor positions;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
@@ -37,7 +37,7 @@ struct Snapshot {
 
 struct MtpSnapshot {
     std::vector<BlockSnapshot> blocks;
-    std::vector<::tyloi::Tensor> positions;
+    std::vector<::tyloi::DenseTensor> positions;
     std::vector<int64_t> lengths;
 
     template <class Visit>

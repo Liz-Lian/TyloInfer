@@ -71,8 +71,8 @@ public:
     std::int64_t rewind(std::int64_t accepted_suffix);
     void abort_speculative() noexcept;
 
-    std::vector<::tyloi::Tensor*> graph_state();
-    std::vector<::tyloi::Tensor> storage() const;
+    std::vector<::tyloi::DenseTensor*> graph_state();
+    std::vector<::tyloi::DenseTensor> storage() const;
 
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;

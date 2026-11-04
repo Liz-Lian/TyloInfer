@@ -395,10 +395,10 @@ __global__ void __launch_bounds__(128) sq_backward_matrix(
 #endif
 
 tyloi::sq::Layout validate(
-        const ::tyloi::Tensor& blob,
-        const ::tyloi::Tensor& row_q,
-        const ::tyloi::Tensor& row_symbol_byte_offsets,
-        const ::tyloi::Tensor& row_auxiliary,
+        const ::tyloi::DenseTensor& blob,
+        const ::tyloi::DenseTensor& row_q,
+        const ::tyloi::DenseTensor& row_symbol_byte_offsets,
+        const ::tyloi::DenseTensor& row_auxiliary,
         std::int64_t bits,
         std::int64_t outputs,
         std::int64_t width,
@@ -558,11 +558,11 @@ void dispatch_backward_matrix(
 
 } // namespace
 
-::tyloi::Tensor mxfp4_sq_dequant_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor row_auxiliary,
+::tyloi::DenseTensor mxfp4_sq_dequant_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor row_auxiliary,
         std::int64_t bits, std::int64_t outputs,
         std::int64_t width, std::int64_t base,
         std::int64_t q_sum, std::int64_t sq4_rows,
@@ -592,12 +592,12 @@ void dispatch_backward_matrix(
     return out;
 }
 
-::tyloi::Tensor mxfp4_sq_matmul_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor row_auxiliary,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor mxfp4_sq_matmul_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor row_auxiliary,
+        ::tyloi::DenseTensor input,
         std::int64_t bits, std::int64_t outputs,
         std::int64_t width, std::int64_t base,
         std::int64_t q_sum, std::int64_t sq4_rows) {
@@ -645,13 +645,13 @@ void dispatch_backward_matrix(
 }
 
 void mxfp4_sq_moe_matmul_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor row_auxiliary,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor expert_ids,
-        ::tyloi::Tensor expert_local,
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor row_auxiliary,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor expert_ids,
+        ::tyloi::DenseTensor expert_local,
         std::int64_t bits,
         std::int64_t n_experts,
         std::int64_t local_experts,
@@ -660,7 +660,7 @@ void mxfp4_sq_moe_matmul_cuda(
         std::int64_t base,
         std::int64_t q_sum,
         std::int64_t sq4_rows,
-        ::tyloi::Tensor output) {
+        ::tyloi::DenseTensor output) {
     const auto q = validate(
         blob, row_q, row_symbol_byte_offsets, row_auxiliary,
         bits, local_experts * out_per_expert, width, base,
@@ -713,12 +713,12 @@ void mxfp4_sq_moe_matmul_cuda(
 }
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-::tyloi::Tensor mxfp4_sq_backward_input_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor row_auxiliary,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor mxfp4_sq_backward_input_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor row_auxiliary,
+        ::tyloi::DenseTensor output_gradient,
         std::int64_t bits,
         std::int64_t outputs,
         std::int64_t width,

@@ -12,7 +12,7 @@ namespace tyloi::cuda::qwen35 {
 
 namespace {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 void require_state(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -24,7 +24,7 @@ bool projected(const LinearInputs& value) {
            value.tokens != 0 || value.split;
 }
 
-bool on_layer_device(const Tensor& tensor, const Layout& layer) {
+bool on_layer_device(const DenseTensor& tensor, const Layout& layer) {
     return layer.cpu ? !tensor.is_cuda()
                      : tensor.is_cuda() && tensor.get_device() == layer.device;
 }
@@ -225,8 +225,8 @@ void State::abort_speculative() noexcept {
     speculative_confirmed = 0;
 }
 
-std::vector<::tyloi::Tensor*> State::graph_state() {
-    std::vector<::tyloi::Tensor*> result;
+std::vector<::tyloi::DenseTensor*> State::graph_state() {
+    std::vector<::tyloi::DenseTensor*> result;
     for (auto& state : layers) {
         auto* linear = std::get_if<LinearState>(&state);
         if (linear == nullptr) continue;
@@ -239,9 +239,9 @@ std::vector<::tyloi::Tensor*> State::graph_state() {
     return result;
 }
 
-std::vector<::tyloi::Tensor> State::storage() const {
-    std::vector<::tyloi::Tensor> result;
-    const auto append = [&result](const ::tyloi::Tensor& tensor) {
+std::vector<::tyloi::DenseTensor> State::storage() const {
+    std::vector<::tyloi::DenseTensor> result;
+    const auto append = [&result](const ::tyloi::DenseTensor& tensor) {
         if (tensor.defined()) result.push_back(tensor);
     };
     for (const auto& state : layers) {

@@ -321,10 +321,10 @@ void dispatch_index_type(ScalarType type, Function&& function) {
 
 }  // namespace
 
-Tensor index_select_cuda(
-    const Tensor& source,
+DenseTensor index_select_cuda(
+    const DenseTensor& source,
     std::int64_t dimension,
-    const Tensor& indices_source) {
+    const DenseTensor& indices_source) {
     source.require_dense(); indices_source.require_dense();
     if (!source.is_cuda() || indices_source.dim() != 1) {
         throw std::invalid_argument("index_select expects CUDA source and one-dimensional indices");
@@ -376,10 +376,10 @@ Tensor index_select_cuda(
     return output;
 }
 
-Tensor gather_cuda(
-    const Tensor& source,
+DenseTensor gather_cuda(
+    const DenseTensor& source,
     std::int64_t dimension,
-    const Tensor& indices_source) {
+    const DenseTensor& indices_source) {
     source.require_dense(); indices_source.require_dense();
     if (!source.is_cuda() || source.dim() != indices_source.dim()) {
         throw std::invalid_argument("gather requires matching CUDA tensor ranks");
@@ -404,7 +404,7 @@ Tensor gather_cuda(
     return output;
 }
 
-Tensor repeat_cuda(const Tensor& source, std::span<const std::int64_t> repeats) {
+DenseTensor repeat_cuda(const DenseTensor& source, std::span<const std::int64_t> repeats) {
     source.require_dense();
     if (!source.is_cuda() || repeats.size() < static_cast<std::size_t>(source.dim())) {
         throw std::invalid_argument("repeat geometry is invalid");
@@ -428,8 +428,8 @@ Tensor repeat_cuda(const Tensor& source, std::span<const std::int64_t> repeats) 
     return output;
 }
 
-Tensor repeat_interleave_cuda(
-    const Tensor& source,
+DenseTensor repeat_interleave_cuda(
+    const DenseTensor& source,
     std::int64_t repeats,
     std::int64_t dimension) {
     source.require_dense();
@@ -453,10 +453,10 @@ Tensor repeat_interleave_cuda(
 }
 
 void scatter_cuda(
-    Tensor& destination,
+    DenseTensor& destination,
     std::int64_t dimension,
-    const Tensor& index_source,
-    const Tensor& source_value,
+    const DenseTensor& index_source,
+    const DenseTensor& source_value,
     bool add) {
     destination.require_dense(); index_source.require_dense(); source_value.require_dense();
     if (!destination.is_cuda() || destination.scalar_type() != source_value.scalar_type() ||
@@ -490,10 +490,10 @@ void scatter_cuda(
 }
 
 void index_copy_cuda(
-    Tensor& destination,
+    DenseTensor& destination,
     std::int64_t dimension,
-    const Tensor& index_source,
-    const Tensor& source_value) {
+    const DenseTensor& index_source,
+    const DenseTensor& source_value) {
     destination.require_dense(); index_source.require_dense(); source_value.require_dense();
     if (!destination.is_cuda() || destination.scalar_type() != source_value.scalar_type()) {
         throw std::invalid_argument("index_copy tensor geometry or dtype mismatch");
@@ -519,9 +519,9 @@ void index_copy_cuda(
 }
 
 void index_fill_cuda(
-    Tensor& destination,
+    DenseTensor& destination,
     std::int64_t dimension,
-    const Tensor& index_source,
+    const DenseTensor& index_source,
     double value) {
     destination.require_dense(); index_source.require_dense();
     if (!destination.is_cuda()) throw std::invalid_argument("index_fill requires CUDA tensor");
@@ -549,7 +549,7 @@ void index_fill_cuda(
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
 }
 
-void masked_fill_cuda(Tensor& destination, const Tensor& mask_source, double value) {
+void masked_fill_cuda(DenseTensor& destination, const DenseTensor& mask_source, double value) {
     destination.require_dense(); mask_source.require_dense();
     if (!destination.is_cuda()) throw std::invalid_argument("masked_fill requires CUDA tensor");
     auto mask = cast(mask_source, kBool, destination.device());
@@ -564,7 +564,7 @@ void masked_fill_cuda(Tensor& destination, const Tensor& mask_source, double val
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
 }
 
-Tensor masked_select_cuda(const Tensor& source_value, const Tensor& mask_value) {
+DenseTensor masked_select_cuda(const DenseTensor& source_value, const DenseTensor& mask_value) {
     source_value.require_dense(); mask_value.require_dense();
     auto source = contiguous(source_value);
     auto mask = contiguous(expand(cast(mask_value, kBool, source.device()), source.sizes()));

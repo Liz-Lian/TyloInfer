@@ -37,7 +37,7 @@ void BatchGraph::invalidate() {
     if (graph)
         graph->reset();
     graph.reset();
-    static_next = ::tyloi::Tensor();
+    static_next = ::tyloi::DenseTensor();
     state_addresses.clear();
     valid = false;
 }

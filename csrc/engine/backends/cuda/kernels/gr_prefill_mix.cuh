@@ -145,19 +145,19 @@ __global__ __launch_bounds__(512,1) void gr_prefill_mix_kernel(const Input* inpu
     }
 }
 
-bool gr_prefill_mix_selected(const NintWeight& weight,const ::tyloi::Tensor& input,
-        const ::tyloi::Tensor& normalized,int64_t streams) {
+bool gr_prefill_mix_selected(const tyloi::NintTensor& weight,const ::tyloi::DenseTensor& input,
+        const ::tyloi::DenseTensor& normalized,int64_t streams) {
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
     const auto* projection=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
     if(projection && (std::atoi(projection)==2 || std::atoi(projection)==3))return false;
     if(!option && (weight.out<weight.neuron_len || input.numel()/input.size(-1)<128))return false;
-    const auto supported=[](const ::tyloi::Tensor& t){return t.scalar_type()==::tyloi::kFloat16 || t.scalar_type()==::tyloi::kFloat32;};
+    const auto supported=[](const ::tyloi::DenseTensor& t){return t.scalar_type()==::tyloi::kFloat16 || t.scalar_type()==::tyloi::kFloat32;};
     return (!option || std::atoi(option)!=0) && streams==4 && input.is_contiguous() && normalized.is_contiguous()
         && supported(input) && supported(normalized);
 }
 
-::tyloi::Tensor gr_prefill_fused_mix(const NintWeight& weight,
-        const ::tyloi::Tensor& input,const ::tyloi::Tensor& normalized) {
+::tyloi::DenseTensor gr_prefill_fused_mix(const tyloi::NintTensor& weight,
+        const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& normalized) {
     MfqCudaGuard guard(input.device());
     const auto rows=input.numel()/weight.neuron_len,hidden=weight.out/4;
     TYLOINFER_RUNTIME_CHECK(rows<=65535*int64_t(128) && hidden<=std::numeric_limits<int>::max() &&

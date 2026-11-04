@@ -1,6 +1,6 @@
 template <typename Decode>
-static ::tyloi::Tensor sq_matmul_cpu_impl(
-        ::tyloi::Tensor input,
+static ::tyloi::DenseTensor sq_matmul_cpu_impl(
+        ::tyloi::DenseTensor input,
         int64_t outputs,
         int64_t width,
         Decode decode) {
@@ -33,9 +33,9 @@ static ::tyloi::Tensor sq_matmul_cpu_impl(
     return result.to(dtype).reshape(shape);
 }
 
-::tyloi::Tensor sq_matmul_cpu(
-        const Mxfp4SqWeight& weight,
-        ::tyloi::Tensor input) {
+::tyloi::DenseTensor sq_matmul_cpu(
+        const tyloi::Mxfp4SqTensor& weight,
+        ::tyloi::DenseTensor input) {
     TYLOINFER_RUNTIME_CHECK(!weight.blob.is_cuda(), "SQ CPU weights must be on CPU");
     const auto* blob = weight.blob.data_ptr<uint8_t>();
     const auto layout = tyloi::sq::parse(blob, weight.blob.numel());
@@ -49,9 +49,9 @@ static ::tyloi::Tensor sq_matmul_cpu_impl(
         });
 }
 
-::tyloi::Tensor sq_matmul_cpu(
-        const Fp8SqWeight& weight,
-        ::tyloi::Tensor input) {
+::tyloi::DenseTensor sq_matmul_cpu(
+        const tyloi::Fp8SqTensor& weight,
+        ::tyloi::DenseTensor input) {
     TYLOINFER_RUNTIME_CHECK(!weight.blob.is_cuda(), "SQ CPU weights must be on CPU");
     const auto* blob = weight.blob.data_ptr<uint8_t>();
     const auto layout = tyloi::fp8sq::parse(
@@ -69,12 +69,12 @@ static ::tyloi::Tensor sq_matmul_cpu_impl(
 }
 
 // Execution policy stays here; the format operators only receive a profiler.
-::tyloi::Tensor run_nint_linear(
+::tyloi::DenseTensor run_nint_linear(
         CudaProfiler& profiler,
         KlMmqState& kl_mmq,
-        const NintWeight& w,
-        ::tyloi::Tensor x,
-        MfqOptional<::tyloi::Tensor> gate,
+        const tyloi::NintTensor& w,
+        ::tyloi::DenseTensor x,
+        MfqOptional<::tyloi::DenseTensor> gate,
         InputGateMode mode) {
     if (!x.is_cuda() || !w.q8_zero || kl_mmq.mode == KlMmqMode::Default) {
         return gate.has_value()
@@ -104,12 +104,12 @@ static ::tyloi::Tensor sq_matmul_cpu_impl(
     return rows < 16 ? result.narrow(0, 0, rows).contiguous() : result;
 }
 
-::tyloi::Tensor run_nvq_linear(
+::tyloi::DenseTensor run_nvq_linear(
         CudaProfiler& profiler,
         KlMmqState& kl_mmq,
-        const NvqWeight& w,
-        ::tyloi::Tensor x,
-        MfqOptional<::tyloi::Tensor> gate,
+        const tyloi::NvqTensor& w,
+        ::tyloi::DenseTensor x,
+        MfqOptional<::tyloi::DenseTensor> gate,
         InputGateMode mode) {
     if (!x.is_cuda() || kl_mmq.mode == KlMmqMode::Default) {
         return gate.has_value()

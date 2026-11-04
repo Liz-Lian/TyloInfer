@@ -5,8 +5,8 @@
 namespace tyloi::cuda {
 
 namespace {
-::tyloi::Tensor storage(const ::tyloi::Tensor& target,
-                                   const ::tyloi::Tensor& source) {
+::tyloi::DenseTensor storage(const ::tyloi::DenseTensor& target,
+                                   const ::tyloi::DenseTensor& source) {
     if (target.defined() && target.sizes() == source.sizes() &&
         target.scalar_type() == source.scalar_type() && target.device() == source.device())
         return target;

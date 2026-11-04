@@ -29,7 +29,7 @@ public:
     void trim(int64_t position);
     std::vector<AttentionKvView> views() const;
     MtpSessionState capture(int64_t target_position,
-        const ::tyloi::Tensor& hidden) const;
+        const ::tyloi::DenseTensor& hidden) const;
     Restore prepare(const MtpSessionState& saved) const;
     void stage(Restore& restore, const MtpSessionState& saved) const;
     void publish(Restore&& restore) noexcept;

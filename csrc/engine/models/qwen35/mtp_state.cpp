@@ -60,7 +60,7 @@ std::vector<AttentionKvView> MtpState::views() const {
     return result;
 }
 
-MtpSessionState MtpState::capture(int64_t target_position, const ::tyloi::Tensor& hidden) const {
+MtpSessionState MtpState::capture(int64_t target_position, const ::tyloi::DenseTensor& hidden) const {
     const auto position = target_position - 1;
     if (position <= 0 || position > position_ || !hidden.defined() ||
         hidden.dim() != 3 || hidden.size(0) != 1 || hidden.size(1) != 1 || hidden.size(2) != hidden_)

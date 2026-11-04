@@ -23,20 +23,20 @@ struct BatchRequest : tyloi::engine::BatchRequest {
     using tyloi::engine::BatchRequest::BatchRequest;
 
     std::optional<Sampler> sampler;
-    ::tyloi::Tensor counts;
-    ::tyloi::Tensor prefill_ids;
+    ::tyloi::DenseTensor counts;
+    ::tyloi::DenseTensor prefill_ids;
     std::vector<std::unique_ptr<internal::PrefillCudaTimer>> prefill_timers;
     RequestState cache;
 };
 
 class BatchOps {
   public:
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     using Request = BatchRequest;
     using State = tyloi::engine::BatchState<Request>;
     using Sample = tyloi::cuda::BatchSample;
     struct Decoded {
-        Tensor logits, greedy_tokens;
+        DenseTensor logits, greedy_tokens;
     };
 
     // Calls run inside the owner's CUDA device/context scope.
@@ -63,7 +63,7 @@ class BatchOps {
     void recover(State&);
 
   private:
-    void initialize_sampling(Request&, const Tensor& prompt_ids);
+    void initialize_sampling(Request&, const DenseTensor& prompt_ids);
     void ensure_decode_metadata_buffers(int primary);
     void invalidate_decode_graph();
 
@@ -82,8 +82,8 @@ class BatchOps {
     int64_t packed_metadata_batches_{0};
     int64_t cuda_graph_captures_{0};
     int64_t cuda_graph_replays_{0};
-    Tensor decode_metadata_host_;
-    Tensor decode_metadata_cuda_;
+    DenseTensor decode_metadata_host_;
+    DenseTensor decode_metadata_cuda_;
     std::vector<std::unique_ptr<tyloi::cuda::BatchGraph>> decode_graphs_;
 };
 

@@ -5,23 +5,23 @@
 #include <cstdint>
 #include <vector>
 
-std::vector<::tyloi::Tensor> dsv4_hc_pre_cuda(
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor mixes,
-    ::tyloi::Tensor scale,
-    ::tyloi::Tensor base,
+std::vector<::tyloi::DenseTensor> dsv4_hc_pre_cuda(
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor mixes,
+    ::tyloi::DenseTensor scale,
+    ::tyloi::DenseTensor base,
     std::int64_t iterations,
     double eps);
 
-std::vector<::tyloi::Tensor> dsv4_hc_coefficients_cuda(
-    ::tyloi::Tensor mixes,
-    ::tyloi::Tensor scale,
-    ::tyloi::Tensor base,
+std::vector<::tyloi::DenseTensor> dsv4_hc_coefficients_cuda(
+    ::tyloi::DenseTensor mixes,
+    ::tyloi::DenseTensor scale,
+    ::tyloi::DenseTensor base,
     std::int64_t iterations,
     double eps);
 
-::tyloi::Tensor dsv4_hc_post_cuda(
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor residual,
-    ::tyloi::Tensor post,
-    ::tyloi::Tensor combination);
+::tyloi::DenseTensor dsv4_hc_post_cuda(
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor residual,
+    ::tyloi::DenseTensor post,
+    ::tyloi::DenseTensor combination);

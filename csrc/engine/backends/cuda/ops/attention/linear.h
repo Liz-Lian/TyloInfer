@@ -8,19 +8,19 @@
 namespace tyloi::cuda {
 
 struct LinearInputs {
-  ::tyloi::Tensor qk;
-  ::tyloi::Tensor value;
-  ::tyloi::Tensor qkv;
-  ::tyloi::Tensor gate;
-  ::tyloi::Tensor beta;
+  ::tyloi::DenseTensor qk;
+  ::tyloi::DenseTensor value;
+  ::tyloi::DenseTensor qkv;
+  ::tyloi::DenseTensor gate;
+  ::tyloi::DenseTensor beta;
   int64_t batch = 0;
   int64_t tokens = 0;
   bool split = false;
 };
 
 struct LinearView {
-    ::tyloi::Tensor& convolution;
-    ::tyloi::Tensor& recurrent;
+    ::tyloi::DenseTensor& convolution;
+    ::tyloi::DenseTensor& recurrent;
     bool transposed;
 };
 
@@ -35,7 +35,7 @@ struct LinearAttention {
     int64_t conv_kernel = 0;
     double rms_norm_eps = 1e-6;
     double norm_weight_offset = 1.0;
-    ::tyloi::Tensor attn_norm, conv_weight, conv_bias,
+    ::tyloi::DenseTensor attn_norm, conv_weight, conv_bias,
         dt_bias, a_log, linear_norm;
     bool split_in_proj = false;
     bool split_dense_zab = false;
@@ -51,21 +51,21 @@ struct LinearAttention {
     DenseLinearGroup ab_proj;
     DenseLinearGroup zab_proj;
     QuantLinear out_proj;
-    ::tyloi::Tensor out_proj_dense;
+    ::tyloi::DenseTensor out_proj_dense;
 
-    std::array<::tyloi::Tensor, 2> forward(
+    std::array<::tyloi::DenseTensor, 2> forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        ::tyloi::Tensor input,
+        ::tyloi::DenseTensor input,
         LinearView state, LinearInputs* captured = nullptr) const;
     void replay(LinearView state, const LinearInputs& inputs, int64_t retained_tokens) const;
 
   private:
-    std::array<::tyloi::Tensor, 2> cpu(
-        const Projector& project, ::tyloi::Tensor input,
+    std::array<::tyloi::DenseTensor, 2> cpu(
+        const Projector& project, ::tyloi::DenseTensor input,
         LinearView state) const;
-    std::array<::tyloi::Tensor, 2> cuda(
+    std::array<::tyloi::DenseTensor, 2> cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        ::tyloi::Tensor input,
+        ::tyloi::DenseTensor input,
         LinearView state, LinearInputs* captured) const;
 };
 

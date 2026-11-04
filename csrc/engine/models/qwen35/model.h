@@ -21,18 +21,18 @@
 
 namespace tyloi::cuda::qwen35 {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using Config = tyloi::models::qwen35::Config;
 
 struct Full {
     FullAttention attention;
-    Tensor ffn_norm;
+    DenseTensor ffn_norm;
     Ffn ffn;
 };
 
 struct Linear {
     LinearAttention attention;
-    Tensor ffn_norm;
+    DenseTensor ffn_norm;
     Ffn ffn;
 
     Task replay(std::int64_t tokens) const;
@@ -57,10 +57,10 @@ struct Model {
     std::unordered_map<int, RopeCache> device_ropes;
     QuantLinear embed;
     QuantLinear lm_head;
-    Tensor output_norm;
+    DenseTensor output_norm;
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    tyloi::Tensor embedding(tyloi::Tensor ids, int primary = 0) const;
+    tyloi::DenseTensor embedding(tyloi::DenseTensor ids, int primary = 0) const;
 #endif
 };
 

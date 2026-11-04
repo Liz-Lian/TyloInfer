@@ -324,9 +324,9 @@ __global__ void fp8_128_sq_mmq_kernel(
 }
 
 void validate_metadata(
-        const ::tyloi::Tensor& blob,
-        const ::tyloi::Tensor& row_q,
-        const ::tyloi::Tensor& row_symbol_byte_offsets,
+        const ::tyloi::DenseTensor& blob,
+        const ::tyloi::DenseTensor& row_q,
+        const ::tyloi::DenseTensor& row_symbol_byte_offsets,
         const Layout& layout,
         bool mxfp8) {
     TYLOINFER_RUNTIME_CHECK(
@@ -417,10 +417,10 @@ Layout make_layout(
 
 template <bool MXFP8, typename T>
 void launch_dequant(
-        const ::tyloi::Tensor& blob,
-        const ::tyloi::Tensor& row_q,
-        const ::tyloi::Tensor& row_symbol_byte_offsets,
-        ::tyloi::Tensor& output,
+        const ::tyloi::DenseTensor& blob,
+        const ::tyloi::DenseTensor& row_q,
+        const ::tyloi::DenseTensor& row_symbol_byte_offsets,
+        ::tyloi::DenseTensor& output,
         Layout layout,
         cudaStream_t stream) {
     const auto count = static_cast<std::int64_t>(layout.outputs) * layout.width;
@@ -531,10 +531,10 @@ void launch_routed(
 }
 
 template <bool MXFP8>
-::tyloi::Tensor dequant(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
+::tyloi::DenseTensor dequant(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
         Layout layout,
         bool fp32) {
     validate_metadata(blob, row_q, row_symbol_byte_offsets, layout, MXFP8);
@@ -556,9 +556,9 @@ template <bool MXFP8>
 }
 
 void launch_dense_gemm_nt(
-        const ::tyloi::Tensor& input,
-        const ::tyloi::Tensor& weight,
-        ::tyloi::Tensor& output,
+        const ::tyloi::DenseTensor& input,
+        const ::tyloi::DenseTensor& weight,
+        ::tyloi::DenseTensor& output,
         cudaStream_t stream) {
     const int rows = static_cast<int>(input.size(0));
     const int width = static_cast<int>(input.size(1));
@@ -605,11 +605,11 @@ void launch_dense_gemm_nt(
 }
 
 template <bool MXFP8>
-::tyloi::Tensor matmul(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor matmul(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor input,
         Layout layout) {
     validate_metadata(blob, row_q, row_symbol_byte_offsets, layout, MXFP8);
     TYLOINFER_RUNTIME_CHECK(
@@ -621,7 +621,7 @@ template <bool MXFP8>
          input.scalar_type() == ::tyloi::kFloat32),
         "FP8-SQ activation must be contiguous rank-2 CUDA FP16/FP32");
     const MfqCudaGuard guard(blob.device());
-    ::tyloi::Tensor output = ::tyloi::cuda::empty(
+    ::tyloi::DenseTensor output = ::tyloi::cuda::empty(
         {input.size(0), layout.outputs}, input.options());
     const int rows = static_cast<int>(input.size(0));
     if (rows == 0) return output;
@@ -659,17 +659,17 @@ template <bool MXFP8>
 
 template <bool MXFP8>
 void routed_matmul(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor expert_ids,
-        ::tyloi::Tensor expert_local,
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor expert_ids,
+        ::tyloi::DenseTensor expert_local,
         std::int64_t n_experts,
         std::int64_t local_experts,
         std::int64_t out_per_expert,
         Layout layout,
-        ::tyloi::Tensor output) {
+        ::tyloi::DenseTensor output) {
     validate_metadata(blob, row_q, row_symbol_byte_offsets, layout, MXFP8);
     TYLOINFER_RUNTIME_CHECK(
         layout.outputs == local_experts * out_per_expert &&
@@ -719,11 +719,11 @@ void routed_matmul(
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 template <bool MXFP8>
-::tyloi::Tensor backward_input(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor backward_input(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor output_gradient,
         Layout layout) {
     validate_metadata(blob, row_q, row_symbol_byte_offsets, layout, MXFP8);
     TYLOINFER_RUNTIME_CHECK(
@@ -754,10 +754,10 @@ template <bool MXFP8>
 
 } // namespace
 
-::tyloi::Tensor mxfp8_sq_dequant_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
+::tyloi::DenseTensor mxfp8_sq_dequant_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
         std::int64_t outputs, std::int64_t width,
         std::int64_t block_rows, std::int64_t block_columns,
         std::int64_t scale_rows, std::int64_t scale_columns,
@@ -772,10 +772,10 @@ template <bool MXFP8>
         fp32);
 }
 
-::tyloi::Tensor fp8_128_sq_dequant_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
+::tyloi::DenseTensor fp8_128_sq_dequant_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
         std::int64_t outputs, std::int64_t width,
         std::int64_t scale_kind,
         std::int64_t palettes_offset, std::int64_t symbols_offset,
@@ -789,11 +789,11 @@ template <bool MXFP8>
         fp32);
 }
 
-::tyloi::Tensor mxfp8_sq_matmul_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor mxfp8_sq_matmul_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor input,
         std::int64_t outputs, std::int64_t width,
         std::int64_t block_rows, std::int64_t block_columns,
         std::int64_t scale_rows, std::int64_t scale_columns,
@@ -807,11 +807,11 @@ template <bool MXFP8>
                     palettes_offset, symbols_offset, scales_offset));
 }
 
-::tyloi::Tensor fp8_128_sq_matmul_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor fp8_128_sq_matmul_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor input,
         std::int64_t outputs, std::int64_t width,
         std::int64_t scale_kind,
         std::int64_t palettes_offset, std::int64_t symbols_offset,
@@ -825,11 +825,11 @@ template <bool MXFP8>
 }
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-::tyloi::Tensor mxfp8_sq_backward_input_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor mxfp8_sq_backward_input_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor output_gradient,
         std::int64_t outputs, std::int64_t width,
         std::int64_t block_rows, std::int64_t block_columns,
         std::int64_t scale_rows, std::int64_t scale_columns,
@@ -843,11 +843,11 @@ template <bool MXFP8>
                     palettes_offset, symbols_offset, scales_offset));
 }
 
-::tyloi::Tensor fp8_128_sq_backward_input_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor fp8_128_sq_backward_input_cuda(
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor output_gradient,
         std::int64_t outputs, std::int64_t width,
         std::int64_t scale_kind,
         std::int64_t palettes_offset, std::int64_t symbols_offset,
@@ -862,19 +862,19 @@ template <bool MXFP8>
 #endif
 
 void mxfp8_sq_moe_matmul_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor expert_ids,
-        ::tyloi::Tensor expert_local,
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor expert_ids,
+        ::tyloi::DenseTensor expert_local,
         std::int64_t n_experts, std::int64_t local_experts,
         std::int64_t out_per_expert, std::int64_t width,
         std::int64_t block_rows, std::int64_t block_columns,
         std::int64_t scale_rows, std::int64_t scale_columns,
         std::int64_t palettes_offset, std::int64_t symbols_offset,
         std::int64_t scales_offset,
-        ::tyloi::Tensor output) {
+        ::tyloi::DenseTensor output) {
     routed_matmul<true>(
         std::move(blob), std::move(row_q),
         std::move(row_symbol_byte_offsets), std::move(input),
@@ -887,18 +887,18 @@ void mxfp8_sq_moe_matmul_cuda(
 }
 
 void fp8_128_sq_moe_matmul_cuda(
-        ::tyloi::Tensor blob,
-        ::tyloi::Tensor row_q,
-        ::tyloi::Tensor row_symbol_byte_offsets,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor expert_ids,
-        ::tyloi::Tensor expert_local,
+        ::tyloi::DenseTensor blob,
+        ::tyloi::DenseTensor row_q,
+        ::tyloi::DenseTensor row_symbol_byte_offsets,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor expert_ids,
+        ::tyloi::DenseTensor expert_local,
         std::int64_t n_experts, std::int64_t local_experts,
         std::int64_t out_per_expert, std::int64_t width,
         std::int64_t scale_kind,
         std::int64_t palettes_offset, std::int64_t symbols_offset,
         std::int64_t scales_offset,
-        ::tyloi::Tensor output) {
+        ::tyloi::DenseTensor output) {
     routed_matmul<false>(
         std::move(blob), std::move(row_q),
         std::move(row_symbol_byte_offsets), std::move(input),

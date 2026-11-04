@@ -193,7 +193,7 @@ __global__ void attention_flash256_f16_kernel(
     }
 }
 
-::tyloi::Tensor attention_flash256_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v, double scale)
+::tyloi::DenseTensor attention_flash256_cuda(::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v, double scale)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat16,
                 "attention_flash256: q must be contiguous CUDA fp16");
@@ -365,7 +365,7 @@ __global__ void attention_split_reduce_kernel(
     }
 }
 
-static ::tyloi::Tensor attention_impl_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
+static ::tyloi::DenseTensor attention_impl_cuda(::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
                                          double scale, bool causal, int window)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention: q must be cuda contiguous");
@@ -427,13 +427,13 @@ static ::tyloi::Tensor attention_impl_cuda(::tyloi::Tensor q, ::tyloi::Tensor k,
     return out;
 }
 
-::tyloi::Tensor attention_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
+::tyloi::DenseTensor attention_cuda(::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
                              double scale, bool causal)
 {
     return attention_impl_cuda(q, k, v, scale, causal, 0);
 }
 
-::tyloi::Tensor attention_swa_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
+::tyloi::DenseTensor attention_swa_cuda(::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
                                  double scale, int64_t window)
 {
     TYLOINFER_RUNTIME_CHECK(window > 0 && window <= INT_MAX, "attention_swa: window must be in [1, INT_MAX]");
@@ -501,9 +501,9 @@ __global__ void attention_cache_decode_kernel(
     }
 }
 
-static ::tyloi::Tensor attention_cache_decode_impl_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
-    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
+static ::tyloi::DenseTensor attention_cache_decode_impl_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache,
+    ::tyloi::DenseTensor v_cache, ::tyloi::DenseTensor seq_len,
     double scale, int maximum_cache_position)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention_cache_decode: q must be cuda contiguous");
@@ -780,10 +780,10 @@ __global__ void attention_cache_decode_split_reduce_kernel(
     }
 }
 
-static ::tyloi::Tensor attention_cache_decode_split_impl_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
-    ::tyloi::Tensor seq_len, double scale,
-    ::tyloi::Tensor partial_o, ::tyloi::Tensor partial_m, ::tyloi::Tensor partial_l,
+static ::tyloi::DenseTensor attention_cache_decode_split_impl_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache, ::tyloi::DenseTensor v_cache,
+    ::tyloi::DenseTensor seq_len, double scale,
+    ::tyloi::DenseTensor partial_o, ::tyloi::DenseTensor partial_m, ::tyloi::DenseTensor partial_l,
     int64_t parts, bool dynamic_parts)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention_cache_decode_split: q must be cuda contiguous");
@@ -862,9 +862,9 @@ static ::tyloi::Tensor attention_cache_decode_split_impl_cuda(
     return out;
 }
 
-::tyloi::Tensor attention_cache_decode_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
-    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
+::tyloi::DenseTensor attention_cache_decode_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache,
+    ::tyloi::DenseTensor v_cache, ::tyloi::DenseTensor seq_len,
     double scale)
 {
     return attention_cache_decode_impl_cuda(
@@ -872,12 +872,12 @@ static ::tyloi::Tensor attention_cache_decode_split_impl_cuda(
         std::move(seq_len), scale, -1);
 }
 
-::tyloi::Tensor attention_cache_decode_split_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
-    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
-    double scale, ::tyloi::Tensor partial_o,
-    ::tyloi::Tensor partial_m,
-    ::tyloi::Tensor partial_l, int64_t parts)
+::tyloi::DenseTensor attention_cache_decode_split_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache,
+    ::tyloi::DenseTensor v_cache, ::tyloi::DenseTensor seq_len,
+    double scale, ::tyloi::DenseTensor partial_o,
+    ::tyloi::DenseTensor partial_m,
+    ::tyloi::DenseTensor partial_l, int64_t parts)
 {
     return attention_cache_decode_split_impl_cuda(
         std::move(q), std::move(k_cache), std::move(v_cache),
@@ -885,12 +885,12 @@ static ::tyloi::Tensor attention_cache_decode_split_impl_cuda(
         std::move(partial_m), std::move(partial_l), parts, false);
 }
 
-::tyloi::Tensor attention_cache_decode_dynamic_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
-    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
-    double scale, ::tyloi::Tensor partial_o,
-    ::tyloi::Tensor partial_m,
-    ::tyloi::Tensor partial_l, int64_t max_parts)
+::tyloi::DenseTensor attention_cache_decode_dynamic_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache,
+    ::tyloi::DenseTensor v_cache, ::tyloi::DenseTensor seq_len,
+    double scale, ::tyloi::DenseTensor partial_o,
+    ::tyloi::DenseTensor partial_m,
+    ::tyloi::DenseTensor partial_l, int64_t max_parts)
 {
     return attention_cache_decode_split_impl_cuda(
         std::move(q), std::move(k_cache), std::move(v_cache),
@@ -1005,9 +1005,9 @@ __global__ void attention_cache_swa_split_part_kernel(
     }
 }
 
-static ::tyloi::Tensor attention_cache_swa_impl_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
-    ::tyloi::Tensor seq_len, double scale, int64_t window, int64_t planned_length)
+static ::tyloi::DenseTensor attention_cache_swa_impl_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache, ::tyloi::DenseTensor v_cache,
+    ::tyloi::DenseTensor seq_len, double scale, int64_t window, int64_t planned_length)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention_cache_swa: q must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous() &&
@@ -1078,17 +1078,17 @@ static ::tyloi::Tensor attention_cache_swa_impl_cuda(
     return out;
 }
 
-::tyloi::Tensor attention_cache_swa_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
-    ::tyloi::Tensor seq_len, double scale, int64_t window)
+::tyloi::DenseTensor attention_cache_swa_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache, ::tyloi::DenseTensor v_cache,
+    ::tyloi::DenseTensor seq_len, double scale, int64_t window)
 {
     return attention_cache_swa_impl_cuda(
         q, k_cache, v_cache, seq_len, scale, window, 0);
 }
 
-::tyloi::Tensor attention_cache_swa_planned_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
-    ::tyloi::Tensor seq_len, double scale, int64_t window, int64_t planned_length)
+::tyloi::DenseTensor attention_cache_swa_planned_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k_cache, ::tyloi::DenseTensor v_cache,
+    ::tyloi::DenseTensor seq_len, double scale, int64_t window, int64_t planned_length)
 {
     TYLOINFER_RUNTIME_CHECK(planned_length > 0 && planned_length <= INT_MAX,
         "attention_cache_swa_planned: planned length must be in [1, INT_MAX]");

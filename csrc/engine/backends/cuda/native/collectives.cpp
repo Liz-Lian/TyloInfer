@@ -120,7 +120,7 @@ void Collectives::configure(
         static_cast<int>(devices_.size()),
         devices_.data()));
     // Warm both directions before graph capture triggers NCCL's lazy setup.
-    std::vector<::tyloi::Tensor> p2p_warmup_buffers;
+    std::vector<::tyloi::DenseTensor> p2p_warmup_buffers;
     p2p_warmup_buffers.reserve(devices_.size());
     for (const int device : devices_) {
         MfqCudaGuard guard(device);
@@ -154,8 +154,8 @@ void Collectives::configure(
 #endif
 }
 
-::tyloi::Tensor Collectives::copy(::tyloi::Tensor value, int device,
-                                                  ::tyloi::Tensor reusable) {
+::tyloi::DenseTensor Collectives::copy(::tyloi::DenseTensor value, int device,
+                                                  ::tyloi::DenseTensor reusable) {
     if (value.is_cuda() && value.get_device() == device) {
         return ::tyloi::cuda::contiguous(value);
     }
@@ -267,8 +267,8 @@ void Collectives::configure(
         ::tyloi::cuda::copy(value, ::tyloi::Device(::tyloi::kCUDA, device)));
 }
 
-::tyloi::Tensor Collectives::sum(
-        std::vector<::tyloi::Tensor> outputs, int primary,
+::tyloi::DenseTensor Collectives::sum(
+        std::vector<::tyloi::DenseTensor> outputs, int primary,
         bool reduce_to_primary, bool allow_fp16) {
     if (outputs.empty()) {
         throw std::runtime_error(
@@ -362,7 +362,7 @@ void Collectives::configure(
         }
         TYLOINFER_NCCL_CHECK(ncclGroupEnd());
 
-        ::tyloi::Tensor result;
+        ::tyloi::DenseTensor result;
         for (size_t index = 0; index < outputs.size(); ++index) {
             MfqCudaGuard guard(runtime.devices_[index]);
             const auto communication = runtime.streams_[index];
@@ -389,7 +389,7 @@ void Collectives::configure(
     MfqCudaGuard primary_guard(primary);
     const auto output_dtype =
         outputs.front().scalar_type();
-    ::tyloi::Tensor reduced;
+    ::tyloi::DenseTensor reduced;
     for (auto & output : outputs) {
         auto partial = ::tyloi::cuda::cast(copy(output, primary), ::tyloi::kFloat32);
         if (!reduced.defined()) {

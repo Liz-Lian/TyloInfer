@@ -25,22 +25,22 @@ tyloi::mxfp4::Data slice_mxfp4_cpu(
 tyloi::mxfp8::Data slice_mxfp8_cpu(
     const tyloi::mxfp8::Data& source, TensorParallelAxis axis,
     int64_t begin, int64_t end);
-Mxfp8Weight to_device_mxfp8(
+tyloi::Mxfp8Tensor to_device_mxfp8(
     const tyloi::mxfp8::Data& source, bool cuda, int device = -1);
-Mxfp4Weight to_device_mxfp4(
+tyloi::Mxfp4Tensor to_device_mxfp4(
     const tyloi::mxfp4::Data& source, bool cuda, int device = -1);
-::tyloi::Tensor dequant_mxfp4_cpu(const tyloi::mxfp4::Data& source);
+::tyloi::DenseTensor dequant_mxfp4_cpu(const tyloi::mxfp4::Data& source);
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-bool prepare_nvq_dense_groups(NvqWeight& weight);
-void prepare_nvq_integer_codebook(NvqWeight& weight);
-void prepare_nvq_decode_records(NvqWeight& weight);
+bool prepare_nvq_dense_groups(tyloi::NvqTensor& weight);
+void prepare_nvq_integer_codebook(tyloi::NvqTensor& weight);
+void prepare_nvq_decode_records(tyloi::NvqTensor& weight);
 tyloi::nvq::Data slice_nvq_cpu(
     const tyloi::nvq::Data& source, TensorParallelAxis axis,
     int64_t begin, int64_t end);
 tyloi::nvq::Data select_nvq_cpu_rows(
     const tyloi::nvq::Data& source, const std::vector<int64_t>& rows);
-NvqWeight to_device_nvq(
+tyloi::NvqTensor to_device_nvq(
     const tyloi::nvq::Data& source, bool cuda,
     bool nvq2 = false, bool extended = false, int device = -1);
 tyloi::nepq::Data select_nepq_cpu_rows(
@@ -61,20 +61,20 @@ tyloi::nint8::Data slice_nint8_zero_cpu_input_groups(
     const tyloi::nint8::Data& source, int64_t begin, int64_t end);
 tyloi::nint8::Data select_nint8_zero_cpu_rows(
     const tyloi::nint8::Data& source, const std::vector<int64_t>& rows);
-NintWeight to_device_nint(
+tyloi::NintTensor to_device_nint(
     const tyloi::nint::Data& source, bool cuda, int device = -1);
-NintWeight to_device_mfe_nint(
+tyloi::NintTensor to_device_mfe_nint(
     const tyloi::nint::Data& source,
     int local_experts,
     int out_per_expert,
     bool cuda);
-NintWeight to_device_nint8_zero(
+tyloi::NintTensor to_device_nint8_zero(
     const tyloi::nint8::Data& source, bool cuda, int device = -1);
-::tyloi::Tensor dequant_nint8_zero_cpu(
+::tyloi::DenseTensor dequant_nint8_zero_cpu(
     const tyloi::nint8::Data& source);
-Mxfp4SqWeight to_device_mxfp4_sq(
+tyloi::Mxfp4SqTensor to_device_mxfp4_sq(
     const std::vector<uint8_t>& payload, bool cuda, int device = -1);
-Fp8SqWeight to_device_fp8_sq(
+tyloi::Fp8SqTensor to_device_fp8_sq(
     std::string_view dtype, const std::vector<uint8_t>& payload,
     bool cuda, int device = -1);
 #endif

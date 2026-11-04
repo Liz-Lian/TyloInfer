@@ -8,7 +8,7 @@ void CudaPagedWriter::raw(const void *data, size_t size) {
     bytes_.insert(bytes_.end(), begin, begin + size);
 }
 
-void CudaPagedWriter::tensor(const ::tyloi::Tensor &source) {
+void CudaPagedWriter::tensor(const ::tyloi::DenseTensor &source) {
     if (!source.defined() || !source.is_cuda() || source.dim() <= 0 || source.dim() > 8) {
         throw std::runtime_error("invalid CUDA paged cache tensor");
     }
@@ -41,7 +41,7 @@ void CudaPagedReader::raw(void *destination, size_t size, const char *name) {
     cursor_ += size;
 }
 
-std::pair<::tyloi::Tensor, int> CudaPagedReader::tensor() {
+std::pair<::tyloi::DenseTensor, int> CudaPagedReader::tensor() {
     const auto dtype_value = scalar<int32_t>("dtype");
     const auto device = scalar<int32_t>("device");
     const auto rank = scalar<uint32_t>("rank");

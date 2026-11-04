@@ -5,23 +5,23 @@
 
 // Replace the existing F32 [column, stream] buffer with an equal-size
 // [column/4, stream, item] buffer. Its rank explicitly identifies the layout.
-::tyloi::Tensor prepare_gr_dense_vector_right(
-    const ::tyloi::Tensor& right);
+::tyloi::DenseTensor prepare_gr_dense_vector_right(
+    const ::tyloi::DenseTensor& right);
 
 // Cache only the effective subgroup scale/min; packed weight bytes stay intact.
-::tyloi::Tensor prepare_gr_up_group_coefficients(const NintWeight& weight);
-::tyloi::Tensor prepare_gr_up_packed_metadata(const NintWeight& weight);
+::tyloi::DenseTensor prepare_gr_up_group_coefficients(const tyloi::NintTensor& weight);
+::tyloi::DenseTensor prepare_gr_up_packed_metadata(const tyloi::NintTensor& weight);
 
 // Fused norm, Down/injection, and Up/mix residual stages. Markers instrument
 // the same stages used by ordinary decode without replacing their arithmetic.
-std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
-    const ::tyloi::Tensor& branch,
-    const ::tyloi::Tensor& residual,
-    const ::tyloi::Tensor& prior_injection,
-    const ::tyloi::Tensor& norm,
-    const NintWeight& down,const NintWeight& up,const NintWeight* injection,
+std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
+    const ::tyloi::DenseTensor& branch,
+    const ::tyloi::DenseTensor& residual,
+    const ::tyloi::DenseTensor& prior_injection,
+    const ::tyloi::DenseTensor& norm,
+    const tyloi::NintTensor& down,const tyloi::NintTensor& up,const tyloi::NintTensor* injection,
     int64_t streams,double eps,bool after,
-    const ::tyloi::Tensor& dense_injection={},
-    const ::tyloi::Tensor& prepared_injection_right={},
+    const ::tyloi::DenseTensor& dense_injection={},
+    const ::tyloi::DenseTensor& prepared_injection_right={},
     const std::function<void(const char*)>& marker={},
-    const ::tyloi::Tensor& up_group_coefficients={});
+    const ::tyloi::DenseTensor& up_group_coefficients={});

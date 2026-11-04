@@ -13,7 +13,7 @@
 #include <vector>
 
 namespace tyloi::cuda::glm_dsa {
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using Config = tyloi::models::glm_dsa::Config;
 
 struct Layer {
@@ -21,7 +21,7 @@ struct Layer {
     int layer = -1;
     bool full_indexer = false;
     int device = 0;
-    Tensor attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
+    DenseTensor attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
     QuantLinearGroup input_proj, q_proj;
     Experts embed_q, unembed_out;
     QuantLinear o_proj;
@@ -35,7 +35,7 @@ struct Model {
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     QuantLinear embed, lm_head;
-    Tensor output_norm;
+    DenseTensor output_norm;
     RopeCache rope;
     std::unordered_map<int, RopeCache> device_ropes;
     std::vector<Layer> layers;

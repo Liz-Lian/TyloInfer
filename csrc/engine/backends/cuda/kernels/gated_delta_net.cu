@@ -320,9 +320,9 @@ __global__ void gdn_warp_column_kernel(
 
 #include "gdn_prefill_columns.inc"
 
-static std::vector<::tyloi::Tensor> gdn_cuda_impl(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor g, ::tyloi::Tensor beta, MfqOptional<::tyloi::Tensor> state,
+static std::vector<::tyloi::DenseTensor> gdn_cuda_impl(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor g, ::tyloi::DenseTensor beta, MfqOptional<::tyloi::DenseTensor> state,
     bool inplace_state, bool transposed_state=false, bool tiled_heads=false)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32,
@@ -366,7 +366,7 @@ static std::vector<::tyloi::Tensor> gdn_cuda_impl(
     const float *qd = q.data_ptr<float>(), *kd = k.data_ptr<float>(), *vd = v.data_ptr<float>();
     const float *gd = g.data_ptr<float>(), *bd = beta.data_ptr<float>();
     auto initial_state = state.has_value() && state->defined() && state->numel() > 0
-        ? state->contiguous() : ::tyloi::Tensor{};
+        ? state->contiguous() : ::tyloi::DenseTensor{};
     const float* sd = initial_state.defined() ? initial_state.data_ptr<float>() : nullptr;
     float* od = out.data_ptr<float>();
     float* sod = s_out.data_ptr<float>();
@@ -383,7 +383,7 @@ static std::vector<::tyloi::Tensor> gdn_cuda_impl(
     if (use_warp && !kda && D == 128 && (T>8 || (T>1 && short_columns)) && (columns == 2 || columns == 4)) {
         const auto* decay_option=tyloi::cuda::env_lookup("TYLOINFER_GDN_PREFILL_PREPARED_DECAY");
         const bool prepared_decay=T>=128 && (!decay_option || std::atoi(decay_option)!=0);
-        ::tyloi::Tensor decay;
+        ::tyloi::DenseTensor decay;
         if(prepared_decay) {
             decay=::tyloi::cuda::empty(g.sizes(),opts);
             gdn_prefill_prepare_decay_kernel<<<unsigned((g.numel()+255)/256),256,0,stream>>>(
@@ -417,44 +417,44 @@ static std::vector<::tyloi::Tensor> gdn_cuda_impl(
     return {out, s_out};
 }
 
-std::vector<::tyloi::Tensor> gdn_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor g, ::tyloi::Tensor beta, MfqOptional<::tyloi::Tensor> state)
+std::vector<::tyloi::DenseTensor> gdn_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor g, ::tyloi::DenseTensor beta, MfqOptional<::tyloi::DenseTensor> state)
 {
     return gdn_cuda_impl(q, k, v, g, beta, state, false, false);
 }
 
-std::vector<::tyloi::Tensor> gdn_inplace_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor g, ::tyloi::Tensor beta, ::tyloi::Tensor state)
+std::vector<::tyloi::DenseTensor> gdn_inplace_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor g, ::tyloi::DenseTensor beta, ::tyloi::DenseTensor state)
 {
     return gdn_cuda_impl(q, k, v, g, beta, state, true, false);
 }
 
-std::vector<::tyloi::Tensor> gdn_transposed_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor g, ::tyloi::Tensor beta, MfqOptional<::tyloi::Tensor> state)
+std::vector<::tyloi::DenseTensor> gdn_transposed_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor g, ::tyloi::DenseTensor beta, MfqOptional<::tyloi::DenseTensor> state)
 {
     return gdn_cuda_impl(q, k, v, g, beta, state, false, true);
 }
 
-std::vector<::tyloi::Tensor> gdn_inplace_transposed_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor g, ::tyloi::Tensor beta, ::tyloi::Tensor state)
+std::vector<::tyloi::DenseTensor> gdn_inplace_transposed_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor g, ::tyloi::DenseTensor beta, ::tyloi::DenseTensor state)
 {
     return gdn_cuda_impl(q, k, v, g, beta, state, true, true);
 }
 
-std::vector<::tyloi::Tensor> gdn_inplace_tiled_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor g, ::tyloi::Tensor beta, ::tyloi::Tensor state)
+std::vector<::tyloi::DenseTensor> gdn_inplace_tiled_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor g, ::tyloi::DenseTensor beta, ::tyloi::DenseTensor state)
 {
     return gdn_cuda_impl(q, k, v, g, beta, state, true, false, true);
 }
 
-std::vector<::tyloi::Tensor> gdn_inplace_transposed_tiled_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor g, ::tyloi::Tensor beta, ::tyloi::Tensor state)
+std::vector<::tyloi::DenseTensor> gdn_inplace_transposed_tiled_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor g, ::tyloi::DenseTensor beta, ::tyloi::DenseTensor state)
 {
     return gdn_cuda_impl(q, k, v, g, beta, state, true, true, true);
 }
@@ -746,17 +746,17 @@ __global__ void gdn_commit_independent_convolution(const float* values,
         reinterpret_cast<float*>(state_addresses[3*row])[column]=values[int64_t(row)*row_elements+column];
 }
 
-static std::vector<::tyloi::Tensor> gdn_decode_core_impl(
-    ::tyloi::Tensor qkv,::tyloi::Tensor output_gate,
-    ::tyloi::Tensor alpha,::tyloi::Tensor beta,
-    ::tyloi::Tensor convolution_state,::tyloi::Tensor recurrent_state,
-    ::tyloi::Tensor convolution_weight,::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log,::tyloi::Tensor norm_weight,
+static std::vector<::tyloi::DenseTensor> gdn_decode_core_impl(
+    ::tyloi::DenseTensor qkv,::tyloi::DenseTensor output_gate,
+    ::tyloi::DenseTensor alpha,::tyloi::DenseTensor beta,
+    ::tyloi::DenseTensor convolution_state,::tyloi::DenseTensor recurrent_state,
+    ::tyloi::DenseTensor convolution_weight,::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log,::tyloi::DenseTensor norm_weight,
     int64_t key_heads,int64_t value_heads,int64_t width,
     double convolution_eps,double norm_eps,bool silu_gate,bool output_half,
-    bool transposed_state,::tyloi::Tensor workspace,bool inplace_state,
-    ::tyloi::Tensor state_addresses,
-    ::tyloi::Tensor checkpoint_convolution={},::tyloi::Tensor checkpoint_recurrent={}) {
+    bool transposed_state,::tyloi::DenseTensor workspace,bool inplace_state,
+    ::tyloi::DenseTensor state_addresses,
+    ::tyloi::DenseTensor checkpoint_convolution={},::tyloi::DenseTensor checkpoint_recurrent={}) {
     constexpr int threads=256;
     const int tiles=[] {
         const char* value=tyloi::cuda::env_lookup("TYLOINFER_GDN_DECODE_TILES");
@@ -780,7 +780,7 @@ static std::vector<::tyloi::Tensor> gdn_decode_core_impl(
     TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && qkv.stride(2)==1 && qkv.stride(0)>=channels && qkv.scalar_type()==::tyloi::kFloat16 &&
         qkv.sizes().vec()==std::vector<int64_t>({batch,1,channels}),"GDN decode core qkv disagrees");
     const auto device=qkv.device();
-    const auto real=[&](const ::tyloi::Tensor& t){return t.is_cuda() && t.device()==device && t.is_contiguous() && t.scalar_type()==::tyloi::kFloat32;};
+    const auto real=[&](const ::tyloi::DenseTensor& t){return t.is_cuda() && t.device()==device && t.is_contiguous() && t.scalar_type()==::tyloi::kFloat32;};
     const bool independent=state_addresses.defined();
     TYLOINFER_RUNTIME_CHECK(!independent || (inplace_state && state_addresses.is_cuda() &&
         state_addresses.device()==device && state_addresses.is_contiguous() &&
@@ -893,33 +893,33 @@ static std::vector<::tyloi::Tensor> gdn_decode_core_impl(
     return {output,conv,state};
 }
 
-std::vector<::tyloi::Tensor> gdn_decode_core_cuda(
-    ::tyloi::Tensor qkv, ::tyloi::Tensor output_gate,
-    ::tyloi::Tensor alpha, ::tyloi::Tensor beta,
-    ::tyloi::Tensor convolution_state, ::tyloi::Tensor recurrent_state,
-    ::tyloi::Tensor convolution_weight, ::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log, ::tyloi::Tensor norm_weight,
+std::vector<::tyloi::DenseTensor> gdn_decode_core_cuda(
+    ::tyloi::DenseTensor qkv, ::tyloi::DenseTensor output_gate,
+    ::tyloi::DenseTensor alpha, ::tyloi::DenseTensor beta,
+    ::tyloi::DenseTensor convolution_state, ::tyloi::DenseTensor recurrent_state,
+    ::tyloi::DenseTensor convolution_weight, ::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log, ::tyloi::DenseTensor norm_weight,
     int64_t key_heads, int64_t value_heads, int64_t width,
     double convolution_eps, double norm_eps, bool silu_gate, bool output_half,
     bool transposed_state,
-    ::tyloi::Tensor workspace,bool inplace_state,
-    ::tyloi::Tensor state_addresses) {
+    ::tyloi::DenseTensor workspace,bool inplace_state,
+    ::tyloi::DenseTensor state_addresses) {
     return gdn_decode_core_impl(qkv,output_gate,alpha,beta,convolution_state,recurrent_state,convolution_weight,dt_bias,a_log,norm_weight,
         key_heads,value_heads,width,convolution_eps,norm_eps,silu_gate,output_half,transposed_state,workspace,inplace_state,state_addresses);
 }
 
-std::vector<::tyloi::Tensor> gdn_decode_core_checkpoint_cuda(
-    ::tyloi::Tensor qkv, ::tyloi::Tensor output_gate,
-    ::tyloi::Tensor alpha, ::tyloi::Tensor beta,
-    ::tyloi::Tensor convolution_state, ::tyloi::Tensor recurrent_state,
-    ::tyloi::Tensor convolution_weight, ::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log, ::tyloi::Tensor norm_weight,
+std::vector<::tyloi::DenseTensor> gdn_decode_core_checkpoint_cuda(
+    ::tyloi::DenseTensor qkv, ::tyloi::DenseTensor output_gate,
+    ::tyloi::DenseTensor alpha, ::tyloi::DenseTensor beta,
+    ::tyloi::DenseTensor convolution_state, ::tyloi::DenseTensor recurrent_state,
+    ::tyloi::DenseTensor convolution_weight, ::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log, ::tyloi::DenseTensor norm_weight,
     int64_t key_heads, int64_t value_heads, int64_t width,
     double convolution_eps, double norm_eps, bool silu_gate, bool output_half,
     bool transposed_state,
-    ::tyloi::Tensor workspace,bool inplace_state,
-    ::tyloi::Tensor checkpoint_convolution,
-    ::tyloi::Tensor checkpoint_recurrent) {
+    ::tyloi::DenseTensor workspace,bool inplace_state,
+    ::tyloi::DenseTensor checkpoint_convolution,
+    ::tyloi::DenseTensor checkpoint_recurrent) {
     return gdn_decode_core_impl(qkv,output_gate,alpha,beta,convolution_state,recurrent_state,convolution_weight,dt_bias,a_log,norm_weight,
         key_heads,value_heads,width,convolution_eps,norm_eps,silu_gate,output_half,transposed_state,workspace,inplace_state,{},checkpoint_convolution,checkpoint_recurrent);
 }

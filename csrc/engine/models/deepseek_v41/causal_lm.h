@@ -10,8 +10,8 @@ namespace tyloi::models::deepseek_v41 {
 
 // Both the target and DSpark pass the new pre-weights from attention into
 // the FFN collapse, and commit them only after the layer completes.
-template <class Tensor, class Collapse, class Attention, class Expand, class Ffn>
-auto mega_layer(Tensor hidden, Tensor &previous_pre, Collapse collapse, Attention attention,
+template <class DenseTensor, class Collapse, class Attention, class Expand, class Ffn>
+auto mega_layer(DenseTensor hidden, DenseTensor &previous_pre, Collapse collapse, Attention attention,
                 Expand expand, Ffn ffn) {
     return hyperconnection_layer(
         std::move(hidden), [&](auto value) { return collapse(std::move(value), previous_pre, 0); },
@@ -29,9 +29,9 @@ auto mega_layer(Tensor hidden, Tensor &previous_pre, Collapse collapse, Attentio
         [&](auto &mix) { previous_pre = std::move(mix.next_pre); });
 }
 
-template <class Tensor, class Engram, class Capture, class Collapse, class Attention, class Expand,
+template <class DenseTensor, class Engram, class Capture, class Collapse, class Attention, class Expand,
           class Ffn>
-auto decoder_layer(Tensor hidden, bool has_engram, Tensor &previous_pre, Engram engram,
+auto decoder_layer(DenseTensor hidden, bool has_engram, DenseTensor &previous_pre, Engram engram,
                    Capture capture, Collapse collapse, Attention attention, Expand expand,
                    Ffn ffn) {
     if (has_engram)
@@ -45,12 +45,12 @@ template <class State, class Direct, class Project, class Pool, class Save, clas
 auto compress(State &state, int64_t tokens, int64_t position, int64_t ratio, Direct direct,
               Project project, Pool pool, Save save, Write write, PartialPool partial_pool,
               Concat concat) {
-    using Tensor = decltype(direct());
+    using DenseTensor = decltype(direct());
     require_model(ratio > 0, "invalid compression ratio");
     if (ratio == 1)
-        return std::optional<Tensor>(direct());
+        return std::optional<DenseTensor>(direct());
     project();
-    std::vector<Tensor> emitted;
+    std::vector<DenseTensor> emitted;
     if (state.partial_length == 0 && position % ratio == 0) {
         const auto complete = tokens / ratio, cutoff = complete * ratio;
         if (complete > 0)
@@ -69,8 +69,8 @@ auto compress(State &state, int64_t tokens, int64_t position, int64_t ratio, Dir
         state.partial_length = (position + tokens) % ratio;
     }
     if (emitted.empty())
-        return std::optional<Tensor>{};
-    return std::optional<Tensor>(emitted.size() == 1 ? std::move(emitted.front())
+        return std::optional<DenseTensor>{};
+    return std::optional<DenseTensor>(emitted.size() == 1 ? std::move(emitted.front())
                                                      : concat(emitted));
 }
 
@@ -161,7 +161,7 @@ auto dspark_attention(int64_t context, Query query, Key key, Cache cache, Plan p
 }
 
 template <class Backend> struct CausalLm : models::CausalModelBase<Backend, CausalLm<Backend>> {
-    using Tensor = typename Backend::Tensor;
+    using DenseTensor = typename Backend::DenseTensor;
     static bool accepts_backbone(std::string_view backbone) { return backbone == "deepseek_v41"; }
     template <class Graph, class Source>
     void adapter_load_config(std::string_view payload, const Graph &graph, const Source &source) {
@@ -185,12 +185,12 @@ template <class Backend> struct CausalLm : models::CausalModelBase<Backend, Caus
         metadata.model_type = config.text_model_type;
         metadata.layer_types.assign(static_cast<std::size_t>(config.n_layers), "deepseek_v41");
     }
-    Tensor adapter_finalize_hidden(Tensor hidden, const Tensor &output_norm, int64_t batch,
+    DenseTensor adapter_finalize_hidden(DenseTensor hidden, const DenseTensor &output_norm, int64_t batch,
                                    int64_t tokens) const {
         auto collapsed = this->collapse_hidden(std::move(hidden), batch, tokens);
         return this->normalize_hidden(std::move(collapsed), output_norm, batch, tokens);
     }
-    Tensor adapter_prepare_hidden(Tensor hidden, int64_t batch, int64_t tokens) const {
+    DenseTensor adapter_prepare_hidden(DenseTensor hidden, int64_t batch, int64_t tokens) const {
         return this->expand_hidden(std::move(hidden), batch, tokens, this->metadata.hc_mult);
     }
     void adapter_set_max_position_embeddings(int64_t value) {

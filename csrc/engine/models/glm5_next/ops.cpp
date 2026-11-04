@@ -18,7 +18,7 @@ using attention_ops::Transform;
 
 static Transform headwise(weight_loader::Routed projection,int64_t heads,int64_t output) {
     return [projection=std::move(projection),heads,output](
-            const Projector& project, const Tensor& x) {
+            const Projector& project, const DenseTensor& x) {
         TYLOINFER_RUNTIME_CHECK(x.dim()==4 && x.size(2)==heads,"GLM head-wise projection shape mismatch");
         const auto b=x.size(0),t=x.size(1),rows=b*t*heads;
         auto ids=::tyloi::cuda::arange(rows,x.options().dtype(::tyloi::kInt32)).remainder(heads).reshape({rows,1});
@@ -27,8 +27,8 @@ static Transform headwise(weight_loader::Routed projection,int64_t heads,int64_t
 }
 
 static Transform dense_ffn(Linear gate, Linear up, Linear down, double limit) {
-    return [gate, up, down, limit](const Projector& project, const Tensor &x) {
-        Tensor hidden;
+    return [gate, up, down, limit](const Projector& project, const DenseTensor &x) {
+        DenseTensor hidden;
         {
             auto g = project.run(*gate, x);
             auto u = project.run(*up, x);
@@ -41,9 +41,9 @@ static Transform dense_ffn(Linear gate, Linear up, Linear down, double limit) {
 }
 
 static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed down,
-                      Linear router, Transform shared, Tensor bias, const Config &c) {
+                      Linear router, Transform shared, DenseTensor bias, const Config &c) {
     return [gate_up, down, router, shared, bias, c](const Projector& project,
-                                                    const Tensor &x) {
+                                                    const DenseTensor &x) {
         auto source = x.reshape({-1, c.hidden}).to(::tyloi::kFloat16);
         const auto routing = c.routing();
         auto selected = moe_topk_cuda(
@@ -52,9 +52,9 @@ static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed do
             routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
             routing.normalize, routing.delayed_softmax, bias, 1e-20, routing.scale);
         auto shared_output = shared(project, source);
-        Tensor routed;
+        DenseTensor routed;
         {
-            Tensor hidden;
+            DenseTensor hidden;
             {
                 auto gu = gate_up(project, source, selected[0]);
                 auto gate = ::tyloi::cuda::clamp_max(gu.narrow(-1, 0, c.moe_intermediate), c.swiglu_limit);
@@ -79,10 +79,10 @@ struct LayerLoader : weight_loader::Loader {
     using KdaWeights = glm5_next::KdaWeights;
     using MlaWeights = glm5_next::MlaWeights;
 
-    static Mhc mhc(Tensor function, Tensor base, Tensor scale) {
+    static Mhc mhc(DenseTensor function, DenseTensor base, DenseTensor scale) {
         return {std::move(function), std::move(base), std::move(scale)};
     }
-    static Tensor concat(const std::vector<Tensor> &parts) { return ::tyloi::cuda::cat(parts, 0); }
+    static DenseTensor concat(const std::vector<DenseTensor> &parts) { return ::tyloi::cuda::cat(parts, 0); }
     static auto headwise(weight_loader::Routed projection, int64_t heads, int64_t output) {
         return glm5_next::headwise(std::move(projection), heads, output);
     }
@@ -99,30 +99,30 @@ struct LayerLoader : weight_loader::Loader {
         return dense_ffn(std::move(gate), std::move(up), std::move(down), limit);
     }
     static auto moe(weight_loader::Routed gate_up, weight_loader::Routed down, Linear router,
-                    Transform shared, Tensor bias, const Config &c) {
+                    Transform shared, DenseTensor bias, const Config &c) {
         return glm_moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
                        std::move(bias), c);
     }
 };
 
-static Tensor execute(const Layer& layer, LayerState& activity, const Projector& project,
-                      const Tensor &x, int64_t position, int64_t confirmed = 0) {
+static DenseTensor execute(const Layer& layer, LayerState& activity, const Projector& project,
+                      const DenseTensor &x, int64_t position, int64_t confirmed = 0) {
     const auto& [config, attention_hc, ffn_hc, attention_norm, ffn_norm, ffn, kda, mla, device] = layer;
     if (mla)
         TYLOINFER_RUNTIME_CHECK(std::get<MlaState>(activity).position() == position,
                                "GLM MLA/model cache positions diverged");
     return tyloi::models::glm5_next::decoder_layer(
-        x, bool(kda), [&](const Tensor &hidden) { return attention_hc.pre(hidden, config); },
-        [&](Tensor branch, int role) {
+        x, bool(kda), [&](const DenseTensor &hidden) { return attention_hc.pre(hidden, config); },
+        [&](DenseTensor branch, int role) {
             return rms_norm(branch, role == 0 ? attention_norm : ffn_norm, config.eps);
         },
-        [&](Tensor branch) { return kda->forward(project, std::get<KdaState>(activity), branch, true, confirmed); },
-        [&](Tensor branch) { return mla->forward(project, std::get<MlaState>(activity), branch, true); },
-        [](Tensor branch, const Tensor &residual, const auto &mix) {
+        [&](DenseTensor branch) { return kda->forward(project, std::get<KdaState>(activity), branch, true, confirmed); },
+        [&](DenseTensor branch) { return mla->forward(project, std::get<MlaState>(activity), branch, true); },
+        [](DenseTensor branch, const DenseTensor &residual, const auto &mix) {
             return mfq_glm5_next::mhc_post(branch, residual, mix[0], mix[1]);
         },
-        [&](const Tensor &hidden) { return ffn_hc.pre(hidden, config); },
-        [&](Tensor branch) { return ffn(project, branch); });
+        [&](const DenseTensor &hidden) { return ffn_hc.pre(hidden, config); },
+        [&](DenseTensor branch) { return ffn(project, branch); });
 }
 
 Layer load_layer(const weight_loader::Loader& weights, const Config& config, int index) {
@@ -213,7 +213,7 @@ void State::restore_text_session_state(const TextSessionState&) {
     throw CudaSessionStateError("text session state is unsupported by this model");
 }
 
-static Tensor normalize_ids(Collectives& copies, int primary, Tensor ids) {
+static DenseTensor normalize_ids(Collectives& copies, int primary, DenseTensor ids) {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
@@ -221,32 +221,32 @@ static Tensor normalize_ids(Collectives& copies, int primary, Tensor ids) {
     return copies.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
-Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
-             Tensor ids, const Executor::Mode& mode) {
+DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
+             DenseTensor ids, const Executor::Mode& mode) {
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
-Tensor normalize(const Model& model, Executor&, Tensor hidden, int64_t, int64_t) {
+DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t, int64_t) {
     return rms_norm(hidden.mean(2), model.output_norm, model.metadata.rms_norm_eps);
 }
 
-Tensor softcap(const Model&, Executor&, Tensor value) { return value; }
+DenseTensor softcap(const Model&, Executor&, DenseTensor value) { return value; }
 
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
+DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
     return executor.projector(mode.ffn).run(model.lm_head, hidden);
 }
 
 bool supports_speculation(const Model& model) noexcept { return !model.layers.empty(); }
 
-Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
+DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(copies, mode.primary, Tensor(std::move(input.ids)));
-    auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
+    auto ids = normalize_ids(copies, mode.primary, DenseTensor(std::move(input.ids)));
+    auto embeddings = input.embeddings.has_value() ? DenseTensor(std::move(*input.embeddings))
         : embed(model, executor, copies, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
@@ -269,7 +269,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     auto hidden = copies.copy(std::move(embeddings), mode.primary).contiguous()
         .to(::tyloi::kFloat16).unsqueeze(2).expand({B, T, model.config.streams, model.config.hidden})
         .contiguous();
-    const auto trace = [&](const Tensor& value) {
+    const auto trace = [&](const DenseTensor& value) {
         if (input.trace) input.trace->push_back(copies.copy(value, mode.primary).to(::tyloi::kFloat32).clone());
     };
     trace(hidden);
@@ -333,10 +333,10 @@ void Mtp::reset(int64_t next_batch) {
     batch = next_batch;
 }
 
-std::pair<Tensor, Tensor> Mtp::evaluate(const Tensor &hidden,
-                                       const Tensor &ids, int64_t depth, bool cache,
-                                       const Tensor &supplied_positions,
-                                       const Tensor &supplied_embeddings) {
+std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
+                                       const DenseTensor &ids, int64_t depth, bool cache,
+                                       const DenseTensor &supplied_positions,
+                                       const DenseTensor &supplied_embeddings) {
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
                           hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
                           hidden.size(1) == ids.size(1) &&
@@ -366,40 +366,40 @@ std::pair<Tensor, Tensor> Mtp::evaluate(const Tensor &hidden,
             current = current.to(::tyloi::kInt32);
             return current;
         },
-        [&](Tensor embeds, const auto &current) {
+        [&](DenseTensor embeds, const auto &current) {
             auto mask = (current == 0).reshape({current.dim() == 1 ? 1 : b, t, 1});
             auto masked = ::tyloi::cuda::where(mask, ::tyloi::cuda::zeros_like(embeds), embeds);
             return rms_norm(masked, embedding_norm, config.eps);
         },
         [&] { return rms_norm(hidden, hidden_norm, config.eps); },
-        [&](Tensor e, Tensor streams) { return project_.run(*fusion, ::tyloi::cuda::cat({e, streams}, -1)); },
-        [&](Tensor x, int64_t layer, const auto &pos) {
+        [&](DenseTensor e, DenseTensor streams) { return project_.run(*fusion, ::tyloi::cuda::cat({e, streams}, -1)); },
+        [&](DenseTensor x, int64_t layer, const auto &pos) {
             auto &block = layers[layer];
             dtype = x.scalar_type() == ::tyloi::kFloat32 ? ::tyloi::kFloat32 : ::tyloi::kFloat16;
             return tyloi::models::pre_norm_layer(
                 std::move(x),
-                [&](const Tensor &value, int stage) {
+                [&](const DenseTensor &value, int stage) {
                     auto normalized = rms_norm(
                         value, stage == 0 ? block.attention_norm : block.ffn_norm, config.eps);
                     return stage == 0 ? normalized : normalized.to(dtype);
                 },
-                [&](Tensor value) {
+                [&](DenseTensor value) {
                     return block.attention->forward(project_, states[layer], value, cache);
                 },
-                [&](Tensor value) { return block.ffn(project_, value); },
-                [](Tensor residual, Tensor branch) {
+                [&](DenseTensor value) { return block.ffn(project_, value); },
+                [](DenseTensor residual, DenseTensor branch) {
                     return residual.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
                 });
         },
-        [&](const Tensor &multi) { return rms_norm(multi, output_norm, config.eps).to(dtype); },
+        [&](const DenseTensor &multi) { return rms_norm(multi, output_norm, config.eps).to(dtype); },
         [&](int64_t layer, const auto &pos) {});
 }
 
-Tensor Mtp::forward(Tensor hidden, Tensor ids) {
+DenseTensor Mtp::forward(DenseTensor hidden, DenseTensor ids) {
     return evaluate(hidden, ids).first;
 }
 
-MtpStep Mtp::step(Tensor hidden, Tensor ids) {
+MtpStep Mtp::step(DenseTensor hidden, DenseTensor ids) {
     auto result = evaluate(hidden, ids);
     return {std::move(result.first), std::move(result.second)};
 }

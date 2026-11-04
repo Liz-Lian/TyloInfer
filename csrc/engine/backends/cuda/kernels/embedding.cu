@@ -205,9 +205,9 @@ int launch_blocks(size_t elements) {
 }  // namespace
 
 
-::tyloi::Tensor embedding_lookup_cuda(
-        ::tyloi::Tensor weight,
-        ::tyloi::Tensor token_ids) {
+::tyloi::DenseTensor embedding_lookup_cuda(
+        ::tyloi::DenseTensor weight,
+        ::tyloi::DenseTensor token_ids) {
     TYLOINFER_RUNTIME_CHECK(
         weight.is_cuda() && weight.is_contiguous() && weight.dim() == 2,
         "embedding weight must be contiguous CUDA rank-2");
@@ -274,9 +274,9 @@ int launch_blocks(size_t elements) {
 
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-::tyloi::Tensor nint_selected_rows_cuda(
-        ::tyloi::Tensor packed,
-        ::tyloi::Tensor descriptors, int64_t width) {
+::tyloi::DenseTensor nint_selected_rows_cuda(
+        ::tyloi::DenseTensor packed,
+        ::tyloi::DenseTensor descriptors, int64_t width) {
     TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() &&
         packed.scalar_type() == ::tyloi::kUInt8 && packed.dim() == 1,
         "NINT selected payload must be CUDA uint8 rank-1");
@@ -307,8 +307,8 @@ int launch_blocks(size_t elements) {
 
 
 void nint_selected_rows_into_cuda(
-        ::tyloi::Tensor packed, ::tyloi::Tensor descriptors,
-        ::tyloi::Tensor inverse, ::tyloi::Tensor output) {
+        ::tyloi::DenseTensor packed, ::tyloi::DenseTensor descriptors,
+        ::tyloi::DenseTensor inverse, ::tyloi::DenseTensor output) {
     TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() &&
         packed.scalar_type() == ::tyloi::kUInt8 && packed.dim() == 1 && packed.numel() > 0,
         "NINT selected payload must be nonempty CUDA uint8 rank-1");
@@ -333,15 +333,15 @@ void nint_selected_rows_into_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-::tyloi::Tensor nint_embedding_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor token_ids,
+::tyloi::DenseTensor nint_embedding_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor token_ids,
         int64_t width,
         int64_t group_size) {
     TYLOINFER_RUNTIME_CHECK(
@@ -428,10 +428,10 @@ void nint_selected_rows_into_cuda(
 }
 
 
-::tyloi::Tensor nint8_zero_embedding_lookup_cuda(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
-        ::tyloi::Tensor token_ids,
+::tyloi::DenseTensor nint8_zero_embedding_lookup_cuda(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
+        ::tyloi::DenseTensor token_ids,
         int64_t width) {
     TYLOINFER_RUNTIME_CHECK(
         quantized.is_cuda() && quantized.is_contiguous() &&

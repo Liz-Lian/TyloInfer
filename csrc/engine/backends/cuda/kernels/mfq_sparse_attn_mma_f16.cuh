@@ -19,7 +19,7 @@
 
 namespace mfq_sparse_attn_mma {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 struct RuntimeInput {
     const void* positions = nullptr;
@@ -237,19 +237,19 @@ __global__ void sparse_attention_kernel(
 }
 
 template<int DKQ, int DV, int ncols1, int ncols2, bool V_is_K_view, bool use_hot = false>
-Tensor launch(
-    const Tensor& q,
-    const Tensor& k,
-    const Tensor& v,
-    const Tensor& indices,
-    const Tensor& mask,
-    const Tensor& sinks,
-    Tensor meta,
+DenseTensor launch(
+    const DenseTensor& q,
+    const DenseTensor& k,
+    const DenseTensor& v,
+    const DenseTensor& indices,
+    const DenseTensor& mask,
+    const DenseTensor& sinks,
+    DenseTensor meta,
     double scale,
     const char * name,
-    const Tensor& gate = Tensor{},
+    const DenseTensor& gate = DenseTensor{},
     bool half_output = false,
-    const Tensor& positions = Tensor{},
+    const DenseTensor& positions = DenseTensor{},
     int64_t causal_columns = 0, tyloi::cuda::HotKvView hot = {}) {
     static_assert(ncols1 == 1,
         "selected-token tiles require one index row per query tile");
@@ -406,7 +406,7 @@ Tensor launch(
         name, ": meta workspace too small, need ", required_meta,
         " float elements");
 
-    Tensor out = ::tyloi::cuda::empty({B, M, heads, DV}, q.options().dtype(::tyloi::kFloat32));
+    DenseTensor out = ::tyloi::cuda::empty({B, M, heads, DV}, q.options().dtype(::tyloi::kFloat32));
     const auto stream = mfq_current_cuda_stream();
     const RuntimeInput input{causal ? positions.data_ptr() : nullptr,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3), static_cast<int>(causal_columns),

@@ -23,7 +23,7 @@ static void trace_stage(const Model::Options& mode, int layer, const char* name,
 #else
 static void trace_stage(const Executor::Mode& mode, int layer, const char* name,
 #endif
-                        const Tensor& value) {
+                        const DenseTensor& value) {
     if (mode.trace != nullptr && layer == mode.trace_layer) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         mode.trace->emplace_back(name, tyloi::ops::clone(tyloi::ops::contiguous(
@@ -34,11 +34,11 @@ static void trace_stage(const Executor::Mode& mode, int layer, const char* name,
     }
 }
 
-static Tensor gemma_rms_norm_f16(Tensor x,
+static DenseTensor gemma_rms_norm_f16(DenseTensor x,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                                 const tyloi::Tensor& weight, double eps,
+                                 const tyloi::DenseTensor& weight, double eps,
 #else
-                                 ::tyloi::Tensor weight, double eps,
+                                 ::tyloi::DenseTensor weight, double eps,
 #endif
                                  double weight_offset) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -56,11 +56,11 @@ static Tensor gemma_rms_norm_f16(Tensor x,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-static Tensor forward_ffn(const Layer& weights, const Model::Options& mode,
+static DenseTensor forward_ffn(const Layer& weights, const Model::Options& mode,
 #else
-static Tensor forward_ffn(const Layer& weights, Executor& executor, const Executor::Mode& mode,
+static DenseTensor forward_ffn(const Layer& weights, Executor& executor, const Executor::Mode& mode,
 #endif
-                          Tensor residual, Tensor oo, int64_t B, int64_t T, int64_t H) {
+                          DenseTensor residual, DenseTensor oo, int64_t B, int64_t T, int64_t H) {
     const auto& gemma4_moe = weights.gemma4_moe;
     const auto& attn_post_norm = weights.attn_post_norm;
     const auto& ffn_norm = weights.ffn_norm;
@@ -92,7 +92,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
     };
 #endif
     trace_stage(mode, layer, "attention_output", oo);
-    Tensor prepared_residual, dense_input, router_input, moe_input;
+    DenseTensor prepared_residual, dense_input, router_input, moe_input;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     bool fused_norms = false;
     if (gemma4_moe && mode.trace == nullptr && layer_scale.defined()) {
@@ -172,7 +172,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
         }
     }
     residual = prepared_residual;
-    auto normalize = [&](Tensor value, const Tensor& weight, const char* name) {
+    auto normalize = [&](DenseTensor value, const DenseTensor& weight, const char* name) {
         return measure(name, [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             return tyloi::ops::rms_norm(value, weight, rms_norm_eps,
@@ -201,7 +201,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
             trace_stage(mode, layer, "dense_output", result);
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        Tensor moe_output;
+        DenseTensor moe_output;
         {
             tyloi::ops::SelectedExperts selected;
             {
@@ -233,7 +233,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
 #endif
             });
             trace_stage(mode, layer, "route_weights", selected.weights);
-            Tensor down_pair;
+            DenseTensor down_pair;
             {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 const bool tracing = mode.trace != nullptr && layer == mode.trace_layer;
@@ -251,7 +251,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
                 const bool projection_bundle_prefetched = prefetch_cached_moe_projection_bundle(
                     gemma_moe_gate_up, gemma_moe_down, route);
                 const bool tracing = mode.trace != nullptr && layer == mode.trace_layer;
-                Tensor packed;
+                DenseTensor packed;
                 if (!tracing && gemma_moe_gate_up.supports_projection_glu_epilogue()) {
                     auto hidden = measure("gemma.moe_gate_up_geglu", [&] {
                         return executor.projector(mode.ffn).glu(gemma_moe_gate_up, moe_input, route, true);
@@ -349,9 +349,9 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
 namespace {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Tensor normalize_ids(int primary, Tensor ids) {
+DenseTensor normalize_ids(int primary, DenseTensor ids) {
 #else
-Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
+DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids) {
 #endif
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
@@ -377,14 +377,14 @@ Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
 } // namespace
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-tyloi::Tensor Model::embedding(tyloi::Tensor ids, int primary) const {
+tyloi::DenseTensor Model::embedding(tyloi::DenseTensor ids, int primary) const {
     auto normalized = normalize_ids(primary, std::move(ids));
     return tyloi::ops::measure("model.embed", normalized.device(), [&] {
         return tyloi::ops::embedding(std::move(normalized), *embed);
     });
 #else
-Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, Tensor ids, const Executor::Mode& mode) {
+DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
+             int primary, DenseTensor ids, const Executor::Mode& mode) {
     ids = normalize_ids(collectives, primary, std::move(ids));
     const Task task{task::Embed{0, 0, as_quant_linear(*model.embed)}, -1, {}, "model.embed"};
     Inputs inputs;
@@ -394,7 +394,7 @@ Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-tyloi::Tensor Model::normalize(tyloi::Tensor hidden, std::int64_t batch, std::int64_t tokens) const {
+tyloi::DenseTensor Model::normalize(tyloi::DenseTensor hidden, std::int64_t batch, std::int64_t tokens) const {
     const auto& model = *this;
     const std::array<std::int64_t, 3> shape{batch, tokens, model.config.hidden_size};
     hidden = tyloi::ops::reshape(std::move(hidden), shape);
@@ -403,7 +403,7 @@ tyloi::Tensor Model::normalize(tyloi::Tensor hidden, std::int64_t batch, std::in
                                        model.config.rms_norm_eps, 0.0);
     });
 #else
-Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
+DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
     hidden = hidden.reshape({batch, tokens, model.config.hidden_size});
     const Task task{task::Norm{0, 0, model.output_norm, model.config.rms_norm_eps, 0.0},
@@ -415,10 +415,10 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-tyloi::Tensor Model::softcap(tyloi::Tensor logits) const {
+tyloi::DenseTensor Model::softcap(tyloi::DenseTensor logits) const {
     return tyloi::ops::softcap(std::move(logits), config.final_logit_softcapping);
 #else
-Tensor softcap(const Model& model, Executor& executor, Tensor logits) {
+DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) {
     const Task task{task::Softcap{0, 0, model.config.final_logit_softcapping}};
     Inputs inputs;
     inputs.values = {std::move(logits)};
@@ -427,7 +427,7 @@ Tensor softcap(const Model& model, Executor& executor, Tensor logits) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-tyloi::Tensor Model::logits(tyloi::Tensor hidden, bool capped) const {
+tyloi::DenseTensor Model::logits(tyloi::DenseTensor hidden, bool capped) const {
     const auto& model = *this;
     auto result = tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
         return tyloi::ops::project(std::move(hidden), *model.lm_head);
@@ -435,7 +435,7 @@ tyloi::Tensor Model::logits(tyloi::Tensor hidden, bool capped) const {
     return capped ? tyloi::ops::softcap(std::move(result), model.config.final_logit_softcapping)
                   : std::move(result);
 #else
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
+DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
         Task{task::Project{0, 0, as_quant_linear(*model.lm_head)}, -1, {}, "model.lm_head"},
@@ -448,11 +448,11 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Tensor forward_layer(const Layer& layer, tyloi::state::KvView& cache, Tensor input, const AttentionStep& step,
+DenseTensor forward_layer(const Layer& layer, tyloi::state::KvView& cache, DenseTensor input, const AttentionStep& step,
                      const Model::Options& mode) {
 #else
-Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
-                     std::size_t scratch_index, Tensor input, const AttentionStep& step,
+DenseTensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
+                     std::size_t scratch_index, DenseTensor input, const AttentionStep& step,
                      const Executor::Mode& mode) {
 #endif
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -503,12 +503,12 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     throw std::invalid_argument("model has no multimodal component");
 }
 
-tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+tyloi::DenseTensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                            const Options& mode) const {
     auto& state = dynamic_cast<State&>(state_value);
     const auto& model = *this;
 #else
-Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
 #endif
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -575,11 +575,11 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     AttentionStep step{semantic, input.lengths,
-                       input.cache_positions.has_value() ? std::optional<Tensor>(physical) : std::nullopt,
+                       input.cache_positions.has_value() ? std::optional<DenseTensor>(physical) : std::nullopt,
                        {}, state.cache_pos, input.kv_length, input.attention_parts};
 #else
-    AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
-                       input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
+    AttentionStep step{semantic, input.lengths ? MfqOptional<DenseTensor>(DenseTensor(*input.lengths)) : mfq_nullopt,
+                       input.cache_positions.has_value() ? MfqOptional<DenseTensor>(physical) : mfq_nullopt,
                        {}, state.cache_pos, input.kv_length, input.attention_parts};
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -595,7 +595,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         return hidden * model.embed_scale;
 #endif
     });
-    const auto trace = [&](const Tensor& value) {
+    const auto trace = [&](const DenseTensor& value) {
         if (input.trace) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             input.trace->push_back(tyloi::ops::clone(tyloi::ops::cast(

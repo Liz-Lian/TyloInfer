@@ -149,8 +149,8 @@ void State::reset(int64_t next_batch) {
             layers[i] = {};
         }
 }
-std::vector<Tensor> State::storage() const {
-    std::vector<Tensor> result;
+std::vector<DenseTensor> State::storage() const {
+    std::vector<DenseTensor> result;
     for (const auto& cache : layers) {
         if (cache.is_paged()) {
             if (cache.k_chunk_ptrs.defined()) result.push_back(cache.k_chunk_ptrs);
@@ -202,7 +202,7 @@ void State::restore_text_session_state(const TextSessionState& state) {
 }
 
 namespace {
-Tensor token_ids(Collectives& copies, int primary, Tensor ids) {
+DenseTensor token_ids(Collectives& copies, int primary, DenseTensor ids) {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
         "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
@@ -211,15 +211,15 @@ Tensor token_ids(Collectives& copies, int primary, Tensor ids) {
 }
 }
 
-Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
-             Tensor ids, const Executor::Mode& mode) {
+DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
+             DenseTensor ids, const Executor::Mode& mode) {
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {token_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
         .to(::tyloi::kBFloat16).contiguous();
 }
-Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t batch, int64_t tokens) {
+DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
     return executor.profiler().measure("model.output_norm", [&] {
         return qwen_rms_norm_bf16(executor.attention_options().fused_norm,
             hidden.reshape({batch * tokens, model.metadata.hidden_size}), model.output_norm,
@@ -227,7 +227,7 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t 
             .reshape({batch, tokens, model.metadata.hidden_size});
     });
 }
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
+DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
     const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
     Inputs inputs;
@@ -235,11 +235,11 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
         .to(::tyloi::kBFloat16).contiguous();
 }
-Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
+DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
     MfqCudaGuard guard(mode.primary);
-    auto ids = token_ids(copies, mode.primary, Tensor(std::move(input.ids)));
-    auto hidden = input.embeddings ? Tensor(std::move(*input.embeddings))
+    auto ids = token_ids(copies, mode.primary, DenseTensor(std::move(input.ids)));
+    auto hidden = input.embeddings ? DenseTensor(std::move(*input.embeddings))
         : embed(model, executor, copies, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(hidden.dim() == 3 && hidden.size(0) == B && hidden.size(1) == T &&
@@ -249,10 +249,10 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (state.cache_pos == 0) state.reset(B);
     const auto options = ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::Device(::tyloi::kCUDA, mode.primary));
     auto physical = input.cache_positions
-        ? copies.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(DenseTensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto positions = input.positions
-        ? copies.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(DenseTensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
     tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
         (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
@@ -261,7 +261,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         (positions.dim() == 2 && positions.size(0) == B && positions.size(1) == T),
         "position_ids must have shape [tokens] or [batch,tokens]");
     if (input.attention_mask) {
-        const auto mask = Tensor(*input.attention_mask);
+        const auto mask = DenseTensor(*input.attention_mask);
         tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B && mask.size(1) >= state.cache_pos + T,
             "attention_mask must cover [batch,cached_plus_current_tokens]");
         if ((T == 1 || state.cache_pos == 0) && mask.eq(1).all().item<bool>())
@@ -276,14 +276,14 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         const auto& layer = model.layers[i];
         const auto& attention = layer.attention;
         MfqCudaGuard layer_guard(layer.device);
-        const auto local = [&](Tensor value) {
+        const auto local = [&](DenseTensor value) {
             return layer.cpu ? value.to(::tyloi::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
         };
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, local(physical), {}, state.cache_pos,
                            input.kv_length, input.attention_parts};
-        if (input.lengths) step.sequence_lengths = local(Tensor(*input.lengths));
-        if (input.attention_mask) step.attention_mask = local(Tensor(*input.attention_mask));
+        if (input.lengths) step.sequence_lengths = local(DenseTensor(*input.lengths));
+        if (input.attention_mask) step.attention_mask = local(DenseTensor(*input.attention_mask));
         auto& cache = state.layers[i];
         const auto capacity = attention.sliding ? attention.attention_window :
             (mode.kv_capacity > 0 ? std::max(state.cache_pos + T, mode.kv_capacity)

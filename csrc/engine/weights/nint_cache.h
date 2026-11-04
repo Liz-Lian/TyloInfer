@@ -20,9 +20,9 @@ public:
     ~NintCache();
     void clear();
     static bool active() noexcept;
-    static ::tyloi::Tensor get(
-        const NintWeight& weight,
-        const std::function<::tyloi::Tensor()>& decode);
+    static ::tyloi::DenseTensor get(
+        const tyloi::NintTensor& weight,
+        const std::function<::tyloi::DenseTensor()>& decode);
 #else
     explicit NintCache(bool) {}
     void clear() {}

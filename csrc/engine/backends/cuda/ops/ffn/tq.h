@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/weights/encoding/tq.h"
 
 #include "engine/backends/cuda/ops/projection/tq.h"
 
@@ -22,33 +23,33 @@ struct IndexedJobs {
 };
 
 IndexedJobs make_indexed_jobs(
-    std::span<const ::tyloi::Tensor> gate,
-    std::span<const ::tyloi::Tensor> up,
-    std::span<const ::tyloi::Tensor> down,
+    std::span<const ::tyloi::encoding::TqTensor> gate,
+    std::span<const ::tyloi::encoding::TqTensor> up,
+    std::span<const ::tyloi::encoding::TqTensor> down,
     const std::vector<std::vector<std::int64_t>>& slots,
     std::size_t begin, std::int64_t routes, std::int64_t input,
     std::int64_t hidden, std::int64_t output, bool wide = false);
 
 void routed_projection(
-    const std::vector<::tyloi::Tensor>& weights,
-    ::tyloi::Tensor source,
-    ::tyloi::Tensor output);
+    const std::vector<::tyloi::encoding::TqTensor>& weights,
+    ::tyloi::DenseTensor source,
+    ::tyloi::DenseTensor output);
 
 void run_long_expert(
-    const ::tyloi::Tensor& gate, const ::tyloi::Tensor& up, const ::tyloi::Tensor& down,
+    const ::tyloi::encoding::TqTensor& gate, const ::tyloi::encoding::TqTensor& up, const ::tyloi::encoding::TqTensor& down,
     const std::vector<std::int64_t>& slots, std::int64_t routes,
-    const ::tyloi::Tensor& source,
-    ::tyloi::Tensor output,
+    const ::tyloi::DenseTensor& source,
+    ::tyloi::DenseTensor output,
     tyloi::cuda::BlasResources* blas, float limit);
 
 void run_indexed(
-    std::span<const ::tyloi::Tensor> gate,
-    std::span<const ::tyloi::Tensor> up,
-    std::span<const ::tyloi::Tensor> down,
+    std::span<const ::tyloi::encoding::TqTensor> gate,
+    std::span<const ::tyloi::encoding::TqTensor> up,
+    std::span<const ::tyloi::encoding::TqTensor> down,
     const std::vector<std::vector<std::int64_t>>& slots,
     std::size_t begin, std::int64_t routes,
-    const ::tyloi::Tensor& source,
-    ::tyloi::Tensor activated,
-    ::tyloi::Tensor pairs, float limit, bool wide);
+    const ::tyloi::DenseTensor& source,
+    ::tyloi::DenseTensor activated,
+    ::tyloi::DenseTensor pairs, float limit, bool wide);
 
 } // namespace tq_ops

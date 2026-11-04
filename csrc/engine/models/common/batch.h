@@ -8,7 +8,7 @@
 namespace tyloi::cuda {
 
 struct BatchSample {
-    ::tyloi::Tensor next;
+    ::tyloi::DenseTensor next;
     int64_t token = 0;
     MfqPrefillTiming timing;
 };

@@ -11,30 +11,30 @@
 
 namespace tyloi::cuda::qwen35 {
 
-Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids,
+DenseTensor embed(const Model&, Executor&, Collectives&, int primary, DenseTensor ids,
              const Executor::Mode& = {});
 
-Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
+DenseTensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
 
-Tensor normalize(const Model&, Executor&, Tensor hidden, std::int64_t batch,
+DenseTensor normalize(const Model&, Executor&, DenseTensor hidden, std::int64_t batch,
                  std::int64_t tokens);
 
-Tensor logits(const Model&, Executor&, Tensor hidden, bool capped = true,
+DenseTensor logits(const Model&, Executor&, DenseTensor hidden, bool capped = true,
               const Executor::Mode& = {});
 
-Tensor softcap(const Model&, Executor&, Tensor logits);
+DenseTensor softcap(const Model&, Executor&, DenseTensor logits);
 
 bool supports_speculation(const Model&) noexcept;
 
 void replay(const Model&, State&, Executor&, std::int64_t accepted = 0);
 
-Tensor forward_layer(
+DenseTensor forward_layer(
     Collectives& collectives,
     const Layer& layer,
     LayerState& state,
     tyloi::cuda::Executor& executor,
     std::size_t scratch_offset,
-    Tensor input,
+    DenseTensor input,
     const AttentionStep& step,
     std::int64_t confirmed_prefix,
     const RopeCache& rope,

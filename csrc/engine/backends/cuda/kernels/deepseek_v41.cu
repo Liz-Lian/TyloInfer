@@ -131,7 +131,7 @@ __global__ void mxfp4_e4m3_scale_sim_kernel(
 }
 
 void require_input(
-    const ::tyloi::Tensor& input,
+    const ::tyloi::DenseTensor& input,
     std::int64_t group,
     const char* operation) {
     TYLOINFER_RUNTIME_CHECK(
@@ -148,9 +148,9 @@ void require_input(
 
 } // namespace
 
-static std::vector<::tyloi::Tensor> hc_prepare_impl(
-    ::tyloi::Tensor residual, ::tyloi::Tensor previous_pre,
-    ::tyloi::Tensor norm, double epsilon, bool projection) {
+static std::vector<::tyloi::DenseTensor> hc_prepare_impl(
+    ::tyloi::DenseTensor residual, ::tyloi::DenseTensor previous_pre,
+    ::tyloi::DenseTensor norm, double epsilon, bool projection) {
     TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() &&
                           residual.scalar_type() == ::tyloi::kFloat16 &&
                           residual.dim() == 4 && residual.size(2) == 4 &&
@@ -167,7 +167,7 @@ static std::vector<::tyloi::Tensor> hc_prepare_impl(
     const auto rows = residual.size(0) * residual.size(1), hidden = residual.size(3);
     TYLOINFER_RUNTIME_CHECK(rows > 0 && rows <= INT_MAX,
                       "deepseek_v41_hc_prepare: row count is out of range");
-    ::tyloi::Tensor normalized;
+    ::tyloi::DenseTensor normalized;
     if (projection) normalized = ::tyloi::cuda::empty(
         {residual.size(0), residual.size(1), 4 * hidden}, previous_pre.options());
     auto branch = ::tyloi::cuda::empty(
@@ -188,20 +188,20 @@ static std::vector<::tyloi::Tensor> hc_prepare_impl(
     return {normalized, branch};
 }
 
-std::vector<::tyloi::Tensor> deepseek_v41_hc_prepare_cuda(
-    ::tyloi::Tensor residual, ::tyloi::Tensor previous_pre,
-    ::tyloi::Tensor norm, double epsilon) {
+std::vector<::tyloi::DenseTensor> deepseek_v41_hc_prepare_cuda(
+    ::tyloi::DenseTensor residual, ::tyloi::DenseTensor previous_pre,
+    ::tyloi::DenseTensor norm, double epsilon) {
     return hc_prepare_impl(residual, previous_pre, norm, epsilon, true);
 }
 
-::tyloi::Tensor deepseek_v41_hc_input_cuda(
-    ::tyloi::Tensor residual, ::tyloi::Tensor previous_pre,
-    ::tyloi::Tensor norm, double epsilon) {
+::tyloi::DenseTensor deepseek_v41_hc_input_cuda(
+    ::tyloi::DenseTensor residual, ::tyloi::DenseTensor previous_pre,
+    ::tyloi::DenseTensor norm, double epsilon) {
     return hc_prepare_impl(residual, previous_pre, norm, epsilon, false).at(1);
 }
 
-::tyloi::Tensor deepseek_v41_mxfp8_e4m3_sim_cuda(
-    ::tyloi::Tensor input) {
+::tyloi::DenseTensor deepseek_v41_mxfp8_e4m3_sim_cuda(
+    ::tyloi::DenseTensor input) {
     require_input(input, 32, "deepseek_v41_mxfp8_e4m3_sim");
     auto output = ::tyloi::cuda::empty_like(input);
     mxfp8_sim_kernel<<<
@@ -213,8 +213,8 @@ std::vector<::tyloi::Tensor> deepseek_v41_hc_prepare_cuda(
     return output;
 }
 
-::tyloi::Tensor deepseek_v41_mxfp4_e4m3_scale_sim_cuda(
-    ::tyloi::Tensor input) {
+::tyloi::DenseTensor deepseek_v41_mxfp4_e4m3_scale_sim_cuda(
+    ::tyloi::DenseTensor input) {
     require_input(input, 16, "deepseek_v41_mxfp4_e4m3_scale_sim");
     auto output = ::tyloi::cuda::empty_like(input);
     mxfp4_e4m3_scale_sim_kernel<<<
@@ -291,8 +291,8 @@ __global__ void engram_gate_add_kernel(const half* source, const Projected* proj
 }
 }
 
-::tyloi::Tensor deepseek_v41_engram_rows_cuda(
-    ::tyloi::Tensor packed, ::tyloi::Tensor inverse, int64_t width) {
+::tyloi::DenseTensor deepseek_v41_engram_rows_cuda(
+    ::tyloi::DenseTensor packed, ::tyloi::DenseTensor inverse, int64_t width) {
     TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() && packed.scalar_type() == ::tyloi::kUInt8 &&
         packed.dim() == 2 && packed.size(0) > 0 && width > 0 && width <= INT_MAX && width % 32 == 0 &&
         packed.size(1) == width + width / 32 && inverse.is_cuda() && inverse.is_contiguous() &&
@@ -308,9 +308,9 @@ __global__ void engram_gate_add_kernel(const half* source, const Projected* proj
     return output;
 }
 
-::tyloi::Tensor deepseek_v41_engram_gate_add_cuda(
-    ::tyloi::Tensor hidden, ::tyloi::Tensor projected,
-    ::tyloi::Tensor query_key_weight, double epsilon) {
+::tyloi::DenseTensor deepseek_v41_engram_gate_add_cuda(
+    ::tyloi::DenseTensor hidden, ::tyloi::DenseTensor projected,
+    ::tyloi::DenseTensor query_key_weight, double epsilon) {
     TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.is_contiguous() && hidden.scalar_type() == ::tyloi::kFloat16 &&
         hidden.dim() == 4 && hidden.size(2) > 0 && hidden.size(3) > 0 && hidden.size(3) <= INT_MAX &&
         projected.is_cuda() && projected.is_contiguous() && projected.dim() == 3 &&
@@ -378,8 +378,8 @@ __global__ void hc_project_partial_kernel(const half* residual, const float* pre
 }
 }
 
-::tyloi::Tensor deepseek_v41_hc_project_cuda(::tyloi::Tensor residual,
-    ::tyloi::Tensor previous, ::tyloi::Tensor function) {
+::tyloi::DenseTensor deepseek_v41_hc_project_cuda(::tyloi::DenseTensor residual,
+    ::tyloi::DenseTensor previous, ::tyloi::DenseTensor function) {
     TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() && residual.scalar_type()==::tyloi::kFloat16 &&
         residual.dim()==4 && residual.size(2)==4 && residual.size(3)>0 && residual.size(3)<=INT_MAX/4 &&
         previous.is_cuda() && previous.is_contiguous() && previous.scalar_type()==::tyloi::kFloat32 &&

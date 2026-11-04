@@ -8,7 +8,7 @@
 #include <utility>
 
 
-::tyloi::Tensor TqRoutedWeight::forward(::tyloi::Tensor input_value,::tyloi::Tensor ids)const {
+::tyloi::DenseTensor TqRoutedWeight::forward(::tyloi::DenseTensor input_value,::tyloi::DenseTensor ids)const {
     if(!cache || !source_id || experts<1 || out<1 || input<1 ||
        ids.dim()!=2 || ids.size(1)<1 || ids.size(1)>65535 || input_value.size(-1)!=input ||
        !input_value.is_cuda() || (input_value.dim()!=2 && input_value.dim()!=3))

@@ -3,13 +3,13 @@
 #include "engine/weights/sq.h"
 #include "engine/backends/cuda/kernels/mxfp4_sq.h"
 
-::tyloi::Tensor sq_matmul_cpu(
-    const Mxfp4SqWeight& weight,
-    ::tyloi::Tensor input);
+::tyloi::DenseTensor sq_matmul_cpu(
+    const tyloi::Mxfp4SqTensor& weight,
+    ::tyloi::DenseTensor input);
 
-::tyloi::Tensor dequant_mxfp4_sq_cpu(
-    const Mxfp4SqWeight& weight);
+::tyloi::DenseTensor dequant_mxfp4_sq_cpu(
+    const tyloi::Mxfp4SqTensor& weight);
 
 namespace tyloi::cuda {
-::tyloi::Tensor sq_matmul(const Mxfp4SqWeight& weight, ::tyloi::Tensor x);
+::tyloi::DenseTensor sq_matmul(const tyloi::Mxfp4SqTensor& weight, ::tyloi::DenseTensor x);
 }

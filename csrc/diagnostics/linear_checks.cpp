@@ -102,15 +102,15 @@ int run_linear_check(
     cudaEventDestroy(stop);
     y_test = y_test.to(mfq_tensor_backend::kFloat32);
 
-    const NintWeight * nint = linear.is_nint() ? &linear.nint : nullptr;
-    const NvqWeight * nvq = linear.is_nvq() ? &linear.nvq : nullptr;
-    const Mxfp4Weight * mxfp4 = linear.is_mxfp4()
+    const tyloi::NintTensor * nint = linear.is_nint() ? &linear.nint : nullptr;
+    const tyloi::NvqTensor * nvq = linear.is_nvq() ? &linear.nvq : nullptr;
+    const tyloi::Mxfp4Tensor * mxfp4 = linear.is_mxfp4()
         ? &linear.mxfp4.weight : nullptr;
-    const Mxfp4SqWeight * mxfp4_sq = linear.is_mxfp4_sq()
+    const tyloi::Mxfp4SqTensor * mxfp4_sq = linear.is_mxfp4_sq()
         ? &linear.mxfp4_sq.weight : nullptr;
-    const Fp8SqWeight * fp8_sq = linear.is_fp8_sq()
+    const tyloi::Fp8SqTensor * fp8_sq = linear.is_fp8_sq()
         ? &linear.fp8_sq.weight : nullptr;
-    const Mxfp8Weight * mxfp8 = linear.is_mxfp8()
+    const tyloi::Mxfp8Tensor * mxfp8 = linear.is_mxfp8()
         ? &linear.mxfp8.weight : nullptr;
     auto ww = quant_linear_reference_weight(linear);
     mfq_tensor_backend::Tensor ref_input = xh;

@@ -28,10 +28,10 @@ using namespace tyloi::cuda::quant_format;
 
 namespace {
 struct NintScratch {
-    ::tyloi::Tensor qx;
-    ::tyloi::Tensor xscale;
+    ::tyloi::DenseTensor qx;
+    ::tyloi::DenseTensor xscale;
 };
-NintScratch scratch(const NintWeight& weight, int rows) {
+NintScratch scratch(const tyloi::NintTensor& weight, int rows) {
     const int K_pad = (int)(weight.ng * weight.gs);
     const auto options = weight.q_packed.options();
     return {
@@ -39,8 +39,8 @@ NintScratch scratch(const NintWeight& weight, int rows) {
         ::tyloi::cuda::empty({rows, weight.ng}, options.dtype(::tyloi::kFloat32))};
 }
 }
-::tyloi::Tensor nint_row_embedding_lookup(
-        const tyloi::NintRows& table, const ::tyloi::Tensor& ids) {
+::tyloi::DenseTensor nint_row_embedding_lookup(
+        const tyloi::NintRows& table, const ::tyloi::DenseTensor& ids) {
     TYLOINFER_RUNTIME_CHECK(ids.is_cuda() && ids.scalar_type() == ::tyloi::kInt64,
         "NINT row IDs must be CUDA int64");
     const MfqCudaGuard guard(ids.device());
@@ -67,7 +67,7 @@ NintScratch scratch(const NintWeight& weight, int rows) {
     return nint_selected_rows_cuda(packed, descriptors, table.width()).reshape(shape);
 }
 
-::tyloi::Tensor pad_last(::tyloi::Tensor x, int64_t target) {
+::tyloi::DenseTensor pad_last(::tyloi::DenseTensor x, int64_t target) {
     if (x.size(1) == target) return x;
     if (x.size(1) > target) throw std::runtime_error("activation width exceeds neuron_len");
     return ::tyloi::cuda::constant_pad_nd(x, {0, target - x.size(1)}, 0);
@@ -200,7 +200,7 @@ void cpu_unpack_nint_group_at_bit_offset(
 }
 
 CpuQuantizedActivation cpu_quantize_activation(
-        ::tyloi::Tensor x,
+        ::tyloi::DenseTensor x,
         int64_t width,
         int64_t group_size,
         bool with_sums) {
@@ -262,7 +262,7 @@ float cpu_half_from_bytes(const int8_t * bytes, int64_t offset) {
     std::memcpy(&value, &raw, sizeof(raw));
     return static_cast<float>(value);
 }
-CpuProjectionRows make_cpu_projection_rows(const NintWeight& w) {
+CpuProjectionRows make_cpu_projection_rows(const tyloi::NintTensor& w) {
     TYLOINFER_RUNTIME_CHECK(!w.q8_zero && w.q_packed.is_cpu(),"original-FP32 rows require CPU NINTv2 storage");
     CpuProjectionRows p;
     p.width=static_cast<int>(w.neuron_len); p.outputs=static_cast<int>(w.out);
@@ -273,7 +273,7 @@ CpuProjectionRows make_cpu_projection_rows(const NintWeight& w) {
     p.nint_rows=tyloi::cpu::packed_nint_rows_kernel();
     return p;
 }
-::tyloi::Tensor nint_sharded_embedding_lookup(
+::tyloi::DenseTensor nint_sharded_embedding_lookup(
     const std::vector<std::shared_ptr<tyloi::NintRows>>& tables,const std::vector<int64_t>& ids,
     const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
     if(tables.empty() || !device.is_cuda())throw std::invalid_argument("sharded NINT embeddings require CUDA tables");
@@ -305,9 +305,9 @@ CpuProjectionRows make_cpu_projection_rows(const NintWeight& w) {
     auto descriptors=cpu_i32_tensor(words,{static_cast<int64_t>(batch.rows()),6}).to(device);
     return nint_selected_rows_cuda(packed,descriptors,width).index_select(0,::tyloi::cuda::tensor(inverse).to(device)).reshape(out_shape);
 }
-static ::tyloi::Tensor nint_matmul_cpu(
-        const NintWeight & w,
-        ::tyloi::Tensor x) {
+static ::tyloi::DenseTensor nint_matmul_cpu(
+        const tyloi::NintTensor & w,
+        ::tyloi::DenseTensor x) {
     TYLOINFER_RUNTIME_CHECK(!x.is_cuda(), "CPU NINT GEMV requires CPU activations");
     TYLOINFER_RUNTIME_CHECK(!w.q_packed.is_cuda(), "CPU NINT GEMV requires CPU-resident weights");
     if (!w.q8_zero) {
@@ -424,7 +424,7 @@ static ::tyloi::Tensor nint_matmul_cpu(
     return result;
 }
 namespace {
-bool nint_packed_decode_rows(const NintWeight& w,int64_t rows) {
+bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
     // Batched decode projects directly from packed weights. Preserve
     // prefill's GEMM path and its layer decode cache.
     return !w.q8_zero && (rows <= 8 || (rows <= 32 && w.gs>=4 && w.gs<=64 &&
@@ -433,10 +433,10 @@ bool nint_packed_decode_rows(const NintWeight& w,int64_t rows) {
          (rows>16 && tyloi::cuda::runtime_options::nint_compressed_large_batch(w.out>=65536)))));
 }
 }
-::tyloi::Tensor nint_matmul(
+::tyloi::DenseTensor nint_matmul(
         CudaProfiler& profiler,
-        const NintWeight& w,
-        ::tyloi::Tensor x) {
+        const tyloi::NintTensor& w,
+        ::tyloi::DenseTensor x) {
     if (!x.is_cuda()) return nint_matmul_cpu(w, std::move(x));
     x = x.contiguous();
     const bool packed_rows=nint_packed_decode_rows(w,x.size(0));
@@ -446,7 +446,7 @@ bool nint_packed_decode_rows(const NintWeight& w,int64_t rows) {
         // weights. Reuse compressed GEMV across up to eight activation rows.
         x=x.to(::tyloi::kFloat16);
         return profiler.measure("nint.matmul.tiled_output",[&] {
-            std::vector<::tyloi::Tensor> output;
+            std::vector<::tyloi::DenseTensor> output;
             for(int64_t row=0;row<x.size(0);row+=8)
                 output.push_back(nint_matmul(profiler,w,x.narrow(0,row,std::min<int64_t>(8,x.size(0)-row))));
             return ::tyloi::cuda::cat(output,0);
@@ -509,10 +509,10 @@ bool nint_packed_decode_rows(const NintWeight& w,int64_t rows) {
     });
 }
 
-static ::tyloi::Tensor nint_matmul_f32(
+static ::tyloi::DenseTensor nint_matmul_f32(
         CudaProfiler& profiler,
-        const NintWeight & w,
-        ::tyloi::Tensor x) {
+        const tyloi::NintTensor & w,
+        ::tyloi::DenseTensor x) {
     x = pad_last(
         x.contiguous().to(::tyloi::kFloat16),
         w.neuron_len);
@@ -531,11 +531,11 @@ static ::tyloi::Tensor nint_matmul_f32(
         });
 }
 
-::tyloi::Tensor nint_matmul_input_mul_f32(
+::tyloi::DenseTensor nint_matmul_input_mul_f32(
         CudaProfiler& profiler,
-        const NintWeight & w,
-        ::tyloi::Tensor x,
-        ::tyloi::Tensor gate,
+        const tyloi::NintTensor & w,
+        ::tyloi::DenseTensor x,
+        ::tyloi::DenseTensor gate,
         int mode) {
     TYLOINFER_RUNTIME_CHECK(
         mode == 1 || mode == 2,
@@ -556,10 +556,10 @@ static ::tyloi::Tensor nint_matmul_f32(
         profiler, w, activation.contiguous());
 }
 
-::tyloi::Tensor nint_matmul_groupwise_u8(
+::tyloi::DenseTensor nint_matmul_groupwise_u8(
         CudaProfiler& profiler,
-        const NintWeight & w,
-        ::tyloi::Tensor x,
+        const tyloi::NintTensor & w,
+        ::tyloi::DenseTensor x,
         int64_t groups) {
     TYLOINFER_RUNTIME_CHECK(
         w.bits == 8 && w.gs == 48,
@@ -589,11 +589,11 @@ static ::tyloi::Tensor nint_matmul_f32(
     });
 }
 
-::tyloi::Tensor nint_matmul_input_mul(
+::tyloi::DenseTensor nint_matmul_input_mul(
         CudaProfiler& profiler,
-        const NintWeight& w,
-        ::tyloi::Tensor x,
-        ::tyloi::Tensor gate,
+        const tyloi::NintTensor& w,
+        ::tyloi::DenseTensor x,
+        ::tyloi::DenseTensor gate,
         int mode) {
     TYLOINFER_RUNTIME_CHECK(
         mode == 1 || mode == 2,
@@ -652,20 +652,20 @@ static ::tyloi::Tensor nint_matmul_f32(
         profiler, w, x * ::tyloi::cuda::silu(gate));
 }
 
-::tyloi::Tensor nint_matmul_swiglu(
+::tyloi::DenseTensor nint_matmul_swiglu(
         CudaProfiler& profiler,
-        const NintWeight& w,
-        ::tyloi::Tensor x) {
+        const tyloi::NintTensor& w,
+        ::tyloi::DenseTensor x) {
     x = x.contiguous().to(::tyloi::kFloat16);
     x = pad_last(x, w.neuron_len);
     auto parts = nint_matmul(profiler, w, x).chunk(2, -1);
     return ::tyloi::cuda::silu(parts[0]) * parts[1];
 }
 
-::tyloi::Tensor nint_matmul_geglu(
+::tyloi::DenseTensor nint_matmul_geglu(
         CudaProfiler& profiler,
-        const NintWeight& w,
-        ::tyloi::Tensor x) {
+        const tyloi::NintTensor& w,
+        ::tyloi::DenseTensor x) {
     x = x.contiguous().to(::tyloi::kFloat16);
     x = pad_last(x, w.neuron_len);
     auto parts = nint_matmul(profiler, w, x).chunk(2, -1);

@@ -19,10 +19,10 @@ Qwen4PagedHeader read_qwen4_header(CudaPagedReader& reader) {
     if(!header.count || !header.layers || header.layers>4096)throw CudaSessionStateError("invalid Qwen4 prefix geometry");
     return header;
 }
-void write_optional(CudaPagedWriter& writer,const ::tyloi::Tensor& tensor) {
+void write_optional(CudaPagedWriter& writer,const ::tyloi::DenseTensor& tensor) {
     writer.scalar<uint32_t>(tensor.defined()?1:0);if(tensor.defined())writer.tensor(tensor);
 }
-::tyloi::Tensor read_optional(CudaPagedReader& reader) {
+::tyloi::DenseTensor read_optional(CudaPagedReader& reader) {
     if(!reader.scalar<uint32_t>("tensor presence"))return {};
     auto [tensor,device]=reader.tensor();
     return tensor.to(::tyloi::Device{::tyloi::DeviceType::cuda,device});
@@ -85,7 +85,7 @@ CudaPagedPayload encode_block(const TextSessionState& state,size_t block_size,si
     writer.scalar<uint32_t>(uint32_t(snapshot->blocks.size()));writer.scalar<uint32_t>(exact?1:0);
     for(const auto& layer:snapshot->blocks) {
         for(const auto* tensor:{&layer.keys,&layer.values,&layer.index})
-            write_optional(writer,tensor->defined()?tensor->narrow(1,int64_t(start),int64_t(count)): ::tyloi::Tensor{});
+            write_optional(writer,tensor->defined()?tensor->narrow(1,int64_t(start),int64_t(count)): ::tyloi::DenseTensor{});
         if(exact)write_recurrent(writer,layer);
     }
     if(exact) {
@@ -104,7 +104,7 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
     tyloi::models::qwen4_exp::Snapshot snapshot;
     auto& layers=snapshot.blocks;
-    std::vector<std::array<std::vector<::tyloi::Tensor>,3>> fragments;
+    std::vector<std::array<std::vector<::tyloi::DenseTensor>,3>> fragments;
     size_t position=0;
     for(size_t i=0;i<payloads.size();++i) {
         if(!payloads[i])throw CudaSessionStateError("null Qwen4 prefix payload");
@@ -137,7 +137,7 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     if(payloads.empty() || position!=tokens.size() || !snapshot.positions.defined() || snapshot.positions.size(-1)!=int64_t(position))
         throw CudaSessionStateError("Qwen4 prefix boundary mismatch");
     for(size_t i=0;i<layers.size();++i) {
-        auto& layer=layers[i];std::array<::tyloi::Tensor*,3> fields{&layer.keys,&layer.values,&layer.index};
+        auto& layer=layers[i];std::array<::tyloi::DenseTensor*,3> fields{&layer.keys,&layer.values,&layer.index};
         for(size_t j=0;j<3;++j)if(!fragments[i][j].empty()) {
             if(fragments[i][j].size()!=payloads.size())throw CudaSessionStateError("incomplete Qwen4 QSA prefix chain");
             *fields[j]=fragments[i][j].size()==1?fragments[i][j].front(): ::tyloi::cuda::cat(fragments[i][j],1);

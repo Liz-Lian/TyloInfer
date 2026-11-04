@@ -26,16 +26,16 @@ public:
     bool enabled() const noexcept { return collectives_enabled_; }
     const std::vector<Stream>& streams() const noexcept { return streams_; }
 
-    ::tyloi::Tensor copy(::tyloi::Tensor value, int device,
-                                    ::tyloi::Tensor reusable = {});
-    ::tyloi::Tensor sum(std::vector<::tyloi::Tensor> outputs,
+    ::tyloi::DenseTensor copy(::tyloi::DenseTensor value, int device,
+                                    ::tyloi::DenseTensor reusable = {});
+    ::tyloi::DenseTensor sum(std::vector<::tyloi::DenseTensor> outputs,
                                   int primary, bool reduce_to_primary, bool allow_fp16);
 
 private:
     std::vector<int> devices_;
     std::vector<Stream> streams_;
     std::vector<cudaEvent_t> ready_, completed_;
-    std::vector<::tyloi::Tensor> reduction_buffers_;
+    std::vector<::tyloi::DenseTensor> reduction_buffers_;
 #ifdef TYLOINFER_HAVE_NCCL
     std::vector<ncclComm_t> communicators_;
 #endif

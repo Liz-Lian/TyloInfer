@@ -14,7 +14,7 @@
 // Execution-owned CUDA resources for TQ.  Constructing the pool is deliberately
 // device-free; a device is touched only when its first resource is requested.
 struct TqPrefillPlan {
-    ::tyloi::Tensor host, device;
+    ::tyloi::DenseTensor host, device;
     tyloi::cuda::Event done;
     ~TqPrefillPlan() noexcept;
 };
@@ -40,7 +40,7 @@ public:
     std::shared_ptr<TqPrefillPlan> prefill_plan(std::int64_t bytes);
     void retain(const MfqCudaStream& stream);
     cublasHandle_t get();
-    std::vector<std::int64_t> routes(const ::tyloi::Tensor& ids);
+    std::vector<std::int64_t> routes(const ::tyloi::DenseTensor& ids);
     void prepare_graph();
     tyloi::cuda::BlasResources& blas() noexcept { return blas_; }
 

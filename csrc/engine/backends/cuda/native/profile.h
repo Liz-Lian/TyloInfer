@@ -16,7 +16,7 @@ namespace tyloi::cuda {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 using Trace = tyloi::ops::Trace;
 #else
-using Trace = std::vector<std::pair<std::string, ::tyloi::Tensor>>;
+using Trace = std::vector<std::pair<std::string, ::tyloi::DenseTensor>>;
 #endif
 }
 

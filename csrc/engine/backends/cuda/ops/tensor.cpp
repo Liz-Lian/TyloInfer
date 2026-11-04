@@ -13,124 +13,230 @@
 namespace tyloi::cuda::ops {
 
 template <typename Value>
-static tyloi::Tensor tensor_values(std::span<const Value> values, Device target) {
+static tyloi::DenseTensor tensor_values(std::span<const Value> values, Device target) {
     return ::tyloi::cuda::tensor(values, TensorOptions().dtype(::tyloi::cuda::scalar_type_for<Value>()).device(target));
 }
-tyloi::Tensor tensor(std::span<const float> values, Device target) { return tensor_values(values, target); }
-tyloi::Tensor tensor(std::span<const std::int32_t> values, Device target) { return tensor_values(values, target); }
-tyloi::Tensor tensor(std::span<const std::int64_t> values, Device target) { return tensor_values(values, target); }
-tyloi::Tensor tensor(std::span<const std::uint8_t> values, Device target) { return tensor_values(values, target); }
-tyloi::Tensor from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options) {
+tyloi::DenseTensor tensor(std::span<const float> values, Device target) { return tensor_values(values, target); }
+tyloi::DenseTensor tensor(std::span<const std::int32_t> values, Device target) { return tensor_values(values, target); }
+tyloi::DenseTensor tensor(std::span<const std::int64_t> values, Device target) { return tensor_values(values, target); }
+tyloi::DenseTensor tensor(std::span<const std::uint8_t> values, Device target) { return tensor_values(values, target); }
+tyloi::DenseTensor from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options) {
     return ::tyloi::cuda::from_blob(data, shape, options);
 }
-tyloi::Tensor gelu(tyloi::Tensor input, bool approximate) {
+tyloi::DenseTensor gelu(tyloi::DenseTensor input, bool approximate) {
     MfqCudaGuard guard(input.device().index);
     return ::tyloi::cuda::gelu(input, approximate ? "tanh" : "none");
 }
-tyloi::Tensor silu(tyloi::Tensor input) {
+tyloi::DenseTensor silu(tyloi::DenseTensor input) {
     MfqCudaGuard guard(input.device().index);
     return ::tyloi::cuda::silu(input);
 }
-tyloi::Tensor relu_squared(tyloi::Tensor input) {
+tyloi::DenseTensor relu_squared(tyloi::DenseTensor input) {
     MfqCudaGuard guard(input.device().index);
     return relu_squared_cuda(::tyloi::cuda::contiguous(input));
 }
-tyloi::Tensor softcap(tyloi::Tensor input, double cap) {
+tyloi::DenseTensor softcap(tyloi::DenseTensor input, double cap) {
     if (!(cap > 0.0)) return input;
     MfqCudaGuard guard(input.device().index);
     auto scaled = ::tyloi::cuda::scalar_binary_cuda(input, cap, 3);
     return ::tyloi::cuda::scalar_binary_cuda(::tyloi::cuda::tanh(scaled), cap, 2);
 }
-tyloi::Tensor scale(tyloi::Tensor input, double factor) {
+tyloi::DenseTensor scale(tyloi::DenseTensor input, double factor) {
     MfqCudaGuard guard(input.device().index);
     return ::tyloi::cuda::scalar_binary_cuda(input, factor, 2);
 }
-tyloi::Tensor copy(tyloi::Tensor input, Device target) {
+tyloi::DenseTensor copy(tyloi::DenseTensor input, Device target) {
     return target.is_cuda() ? Executor::current().collectives().copy(input, target.index)
                             : ::tyloi::cuda::copy(input, target);
 }
-void copy_into(tyloi::Tensor destination, tyloi::Tensor source) {
+void copy_into(tyloi::DenseTensor destination, tyloi::DenseTensor source) {
     std::optional<MfqCudaGuard> guard;
     if (destination.device().is_cuda()) guard.emplace(destination.device().index);
     else if (source.device().is_cuda()) guard.emplace(source.device().index);
     ::tyloi::cuda::copy_into(destination, source);
 }
-tyloi::Tensor cast(tyloi::Tensor input, ScalarType type) { return ::tyloi::cuda::cast(input, type); }
-tyloi::Tensor cast(tyloi::Tensor input, ScalarType type, Device target) { return ::tyloi::cuda::cast(input, type, target); }
-tyloi::Tensor contiguous(tyloi::Tensor input) { return ::tyloi::cuda::contiguous(input); }
-tyloi::Tensor clone(tyloi::Tensor input) { return ::tyloi::cuda::clone(input); }
-tyloi::Tensor reshape(tyloi::Tensor input, std::span<const std::int64_t> shape) {
-    return ::tyloi::cuda::reshape(input, shape);
-}
-tyloi::Tensor expand(tyloi::Tensor input, std::span<const std::int64_t> shape) {
-    return ::tyloi::cuda::expand(input, shape);
-}
-tyloi::Tensor cat(std::span<const tyloi::Tensor> inputs, std::int64_t dim) {
+tyloi::DenseTensor cast(tyloi::DenseTensor input, ScalarType type) { return ::tyloi::cuda::cast(input, type); }
+tyloi::DenseTensor cast(tyloi::DenseTensor input, ScalarType type, Device target) { return ::tyloi::cuda::cast(input, type, target); }
+tyloi::DenseTensor contiguous(tyloi::DenseTensor input) { return ::tyloi::cuda::contiguous(input); }
+tyloi::DenseTensor clone(tyloi::DenseTensor input) { return ::tyloi::cuda::clone(input); }
+tyloi::DenseTensor cat(std::span<const tyloi::DenseTensor> inputs, std::int64_t dim) {
     std::optional<MfqCudaGuard> guard;
     if (inputs.front().device().is_cuda()) guard.emplace(inputs.front().device().index);
     return ::tyloi::cuda::cat(inputs, dim);
 }
-tyloi::Tensor zeros(std::span<const std::int64_t> shape, const TensorOptions& options) {
+tyloi::DenseTensor zeros(std::span<const std::int64_t> shape, const TensorOptions& options) {
     std::optional<MfqCudaGuard> guard;
     if (options.target_device().is_cuda()) guard.emplace(options.target_device().index);
     return ::tyloi::cuda::zeros(shape, options);
 }
-tyloi::Tensor select(tyloi::Tensor input, std::int64_t dim, std::int64_t index) {
-    return ::tyloi::cuda::select(input, dim, index);
-}
-tyloi::Tensor unsqueeze(tyloi::Tensor input, std::int64_t dim) {
-    return ::tyloi::cuda::unsqueeze(input, dim);
-}
-tyloi::Tensor slice(tyloi::Tensor input, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step) {
-    return ::tyloi::cuda::slice(input, dim, start, end, step);
-}
-tyloi::Tensor index_select(tyloi::Tensor input, std::int64_t dim, tyloi::Tensor indices) {
+tyloi::DenseTensor index_select(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices) {
     MfqCudaGuard guard(input.device().index);
     return ::tyloi::cuda::index_select_cuda(input, dim, indices);
 }
-tyloi::Tensor sum(tyloi::Tensor input, std::int64_t dim, bool keepdim) {
+tyloi::DenseTensor sum(tyloi::DenseTensor input, std::int64_t dim, bool keepdim) {
     MfqCudaGuard guard(input.device().index);
     return ::tyloi::cuda::sum(input, dim, keepdim);
 }
-void index_copy(tyloi::Tensor input, std::int64_t dim, tyloi::Tensor indices, tyloi::Tensor source) {
+void index_copy(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices, tyloi::DenseTensor source) {
     MfqCudaGuard guard(input.device().index);
     ::tyloi::cuda::index_copy_cuda(input, dim, indices, source);
 }
-std::vector<tyloi::Tensor> chunk(tyloi::Tensor input, std::int64_t count, std::int64_t dim) {
-    return ::tyloi::cuda::chunk(input, count, dim);
-}
-tyloi::Tensor arange(std::int64_t first, std::int64_t last, Device device) {
+tyloi::DenseTensor arange(std::int64_t first, std::int64_t last, Device device) {
     std::optional<MfqCudaGuard> guard;
     if (device.is_cuda()) guard.emplace(device.index);
     return ::tyloi::cuda::arange(first, last, ::tyloi::TensorOptions().device(device).dtype(::tyloi::kInt64));
 }
-tyloi::Tensor full(std::span<const std::int64_t> shape, std::int64_t value, Device device) {
+tyloi::DenseTensor full(std::span<const std::int64_t> shape, std::int64_t value, Device device) {
     std::optional<MfqCudaGuard> guard;
     if (device.is_cuda()) guard.emplace(device.index);
     return ::tyloi::cuda::full(shape, value, ::tyloi::TensorOptions().device(device).dtype(::tyloi::kInt64));
 }
-tyloi::Tensor add(tyloi::Tensor input, std::int64_t offset) {
+tyloi::DenseTensor add(tyloi::DenseTensor input, std::int64_t offset) {
     MfqCudaGuard guard(input.device().index);
     return ::tyloi::cuda::scalar_binary_cuda(input, static_cast<double>(offset), 0);
 }
-tyloi::Tensor add(tyloi::Tensor left, tyloi::Tensor right) {
+tyloi::DenseTensor add(tyloi::DenseTensor left, tyloi::DenseTensor right) {
     MfqCudaGuard guard(left.device().index);
     return ::tyloi::cuda::binary_cuda(left, right, 0);
 }
-tyloi::Tensor multiply(tyloi::Tensor left, tyloi::Tensor right) {
+tyloi::DenseTensor multiply(tyloi::DenseTensor left, tyloi::DenseTensor right) {
     MfqCudaGuard guard(left.device().index);
     return ::tyloi::cuda::binary_cuda(left, right, 2);
 }
-tyloi::Tensor matmul(tyloi::Tensor left, tyloi::Tensor right) {
+tyloi::DenseTensor matmul(tyloi::DenseTensor left, tyloi::DenseTensor right) {
     MfqCudaGuard guard(left.device().index);
     return ::tyloi::cuda::matmul(left, right);
 }
-tyloi::Tensor transpose(tyloi::Tensor input, std::int64_t first, std::int64_t second) {
-    return ::tyloi::cuda::transpose(input, first, second);
-}
-tyloi::Tensor add_residual(tyloi::Tensor residual, tyloi::Tensor value) {
+tyloi::DenseTensor add_residual(tyloi::DenseTensor residual, tyloi::DenseTensor value) {
     MfqCudaGuard guard(residual.device().index);
     return acc_cuda(residual, value);
+}
+
+tyloi::DenseTensor mean(tyloi::DenseTensor input, std::int64_t dim, bool keepdim) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::mean(input, dim, keepdim);
+}
+tyloi::DenseTensor amax(tyloi::DenseTensor input, std::int64_t dim, bool keepdim) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::reduce_cuda(input, dim, keepdim, 2);
+}
+tyloi::DenseTensor argmax(tyloi::DenseTensor input, std::int64_t dim, bool keepdim) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::argmax(input, dim, keepdim);
+}
+tyloi::DenseTensor all(tyloi::DenseTensor input, std::int64_t dim, bool keepdim) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::reduce_cuda(input, dim, keepdim, 4);
+}
+tyloi::DenseTensor any(tyloi::DenseTensor input, std::int64_t dim, bool keepdim) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::reduce_cuda(input, dim, keepdim, 5);
+}
+tyloi::DenseTensor abs(tyloi::DenseTensor input) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::unary_cuda(input, 0);
+}
+tyloi::DenseTensor square(tyloi::DenseTensor input) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::unary_cuda(input, 1);
+}
+tyloi::DenseTensor exp(tyloi::DenseTensor input) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::exp(input);
+}
+tyloi::DenseTensor sqrt(tyloi::DenseTensor input) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::sqrt(input);
+}
+tyloi::DenseTensor logical_not(tyloi::DenseTensor input) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::unary_cuda(input, 8);
+}
+tyloi::DenseTensor clamp(tyloi::DenseTensor input, double minimum, double maximum) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::clamp(input, minimum, maximum);
+}
+tyloi::DenseTensor clamp_min(tyloi::DenseTensor input, double minimum) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::clamp_min(input, minimum);
+}
+tyloi::DenseTensor clamp_max(tyloi::DenseTensor input, double maximum) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::clamp_max(input, maximum);
+}
+tyloi::DenseTensor remainder(tyloi::DenseTensor input, double divisor) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::remainder(input, divisor);
+}
+tyloi::DenseTensor eq(tyloi::DenseTensor left, tyloi::DenseTensor right) {
+    MfqCudaGuard guard(left.device().index);
+    return ::tyloi::cuda::binary_cuda(left, right, 10);
+}
+tyloi::DenseTensor eq(tyloi::DenseTensor input, double other) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::scalar_binary_cuda(input, other, 10);
+}
+tyloi::DenseTensor ne(tyloi::DenseTensor left, tyloi::DenseTensor right) {
+    MfqCudaGuard guard(left.device().index);
+    return ::tyloi::cuda::binary_cuda(left, right, 11);
+}
+tyloi::DenseTensor ne(tyloi::DenseTensor input, double other) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::scalar_binary_cuda(input, other, 11);
+}
+bool equal(const tyloi::DenseTensor& left, const tyloi::DenseTensor& right) {
+    MfqCudaGuard guard(left.device().index);
+    return ::tyloi::cuda::equal(left, right);
+}
+tyloi::DenseTensor masked_select(tyloi::DenseTensor input, tyloi::DenseTensor mask) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::masked_select_cuda(input, mask);
+}
+tyloi::DenseTensor gather(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::gather_cuda(input, dim, indices);
+}
+tyloi::DenseTensor repeat(tyloi::DenseTensor input, std::span<const std::int64_t> repeats) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::repeat_cuda(input, repeats);
+}
+tyloi::DenseTensor repeat_interleave(tyloi::DenseTensor input, std::int64_t repeats, std::int64_t dim) {
+    MfqCudaGuard guard(input.device().index);
+    return ::tyloi::cuda::repeat_interleave_cuda(input, repeats, dim);
+}
+tyloi::DenseTensor tril(tyloi::DenseTensor input, std::int64_t diagonal) {
+    if (input.dim() < 2) throw std::invalid_argument("tril requires at least two dimensions");
+    MfqCudaGuard guard(input.device().index);
+    const auto options = ::tyloi::TensorOptions{}.dtype(::tyloi::kInt64).device(input.device());
+    auto rows = ::tyloi::cuda::arange(input.size(-2), options).unsqueeze(-1);
+    auto columns = ::tyloi::cuda::arange(input.size(-1), options).unsqueeze(0);
+    return ::tyloi::cuda::where(columns <= rows + diagonal, input, 0.0);
+}
+tyloi::DenseTensor masked_fill(tyloi::DenseTensor input, tyloi::DenseTensor mask, double value) {
+    MfqCudaGuard guard(input.device().index);
+    auto result = ::tyloi::cuda::clone(input);
+    ::tyloi::cuda::masked_fill_cuda(result, mask, value);
+    return result;
+}
+void masked_fill_inplace(tyloi::DenseTensor input, tyloi::DenseTensor mask, double value) {
+    MfqCudaGuard guard(input.device().index);
+    ::tyloi::cuda::masked_fill_cuda(input, mask, value);
+}
+void fill(tyloi::DenseTensor input, double value) {
+    MfqCudaGuard guard(input.device().index);
+    ::tyloi::cuda::fill_cuda(input, value);
+}
+void scatter_add(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices, tyloi::DenseTensor source) {
+    MfqCudaGuard guard(input.device().index);
+    ::tyloi::cuda::scatter_cuda(input, dim, indices, source, true);
+}
+void scatter(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices, tyloi::DenseTensor source) {
+    MfqCudaGuard guard(input.device().index);
+    ::tyloi::cuda::scatter_cuda(input, dim, indices, source, false);
+}
+void index_fill(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices, double value) {
+    MfqCudaGuard guard(input.device().index);
+    ::tyloi::cuda::index_fill_cuda(input, dim, indices, value);
 }
 
 } // namespace tyloi::cuda::ops

@@ -27,8 +27,8 @@ enum class PredictorNorm { embedding, hidden, output };
 // stateless. `next_ids` are the tokens after each hidden state, so the
 // predictor history is one row shorter than the target prompt.
 template <class Ops>
-auto mtp_predictor(Ops &ops, typename Ops::Tensor hidden, typename Ops::Tensor ids,
-                   typename Ops::Tensor positions, int64_t depth, bool cache) {
+auto mtp_predictor(Ops &ops, typename Ops::DenseTensor hidden, typename Ops::DenseTensor ids,
+                   typename Ops::DenseTensor positions, int64_t depth, bool cache) {
     auto &model = ops.model;
     const auto &config = model.config;
     require_model(
@@ -45,20 +45,20 @@ auto mtp_predictor(Ops &ops, typename Ops::Tensor hidden, typename Ops::Tensor i
         [&](tyloi::models::PredictorCursor cursor) {
             return ops.positions(std::move(positions), cursor.start, tokens);
         },
-        [&](typename Ops::Tensor embeds, const typename Ops::Tensor &) {
+        [&](typename Ops::DenseTensor embeds, const typename Ops::DenseTensor &) {
             return ops.normalize(std::move(embeds), PredictorNorm::embedding);
         },
         [&] { return ops.normalize(hidden, PredictorNorm::hidden); },
-        [&](typename Ops::Tensor e, typename Ops::Tensor h) {
+        [&](typename Ops::DenseTensor e, typename Ops::DenseTensor h) {
             return ops.fuse(std::move(e), std::move(h));
         },
-        [&](typename Ops::Tensor x, int64_t stage, const typename Ops::Tensor &pos) {
+        [&](typename Ops::DenseTensor x, int64_t stage, const typename Ops::DenseTensor &pos) {
             return ops.mixer_blocks(std::move(x), stage, pos);
         },
-        [&](const typename Ops::Tensor &x) {
+        [&](const typename Ops::DenseTensor &x) {
             return ops.normalize(x, PredictorNorm::output);
         },
-        [&](int64_t, const typename Ops::Tensor &) {});
+        [&](int64_t, const typename Ops::DenseTensor &) {});
 }
 
 } // namespace tyloi::models::nemotron_h

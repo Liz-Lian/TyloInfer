@@ -12,16 +12,16 @@ inline constexpr std::size_t kDenseRoutedGatherBudgetBytes = std::size_t(512) <<
 // `input` is [tokens,in] or [tokens,routes,in]; `ids` is [tokens,routes]. The
 // bank keeps its source precision. Each route gathers its whole expert matrix,
 // so tokens run in chunks whose gathered matrices fit `gather_budget_bytes`.
-::tyloi::Tensor dense_routed_projection(
-    const ::tyloi::Tensor &bank, const ::tyloi::Tensor &input,
-    const ::tyloi::Tensor &ids,
+::tyloi::DenseTensor dense_routed_projection(
+    const ::tyloi::DenseTensor &bank, const ::tyloi::DenseTensor &input,
+    const ::tyloi::DenseTensor &ids,
     std::size_t gather_budget_bytes = kDenseRoutedGatherBudgetBytes);
 
 namespace tyloi::cuda {
 
-::tyloi::Tensor expert_activation(
-    tyloi::ops::MlpActivation activation, ::tyloi::Tensor gate,
-    ::tyloi::Tensor up, double limit);
+::tyloi::DenseTensor expert_activation(
+    tyloi::ops::MlpActivation activation, ::tyloi::DenseTensor gate,
+    ::tyloi::DenseTensor up, double limit);
 
 // Read-only projection view; routing, cache leases and branch scheduling stay with the caller.
 struct Mlp {
@@ -37,26 +37,26 @@ struct Mlp {
         bool silu_fusion = true;
     };
 
-    void check(const ::tyloi::Tensor& input, int primary) const;
+    void check(const ::tyloi::DenseTensor& input, int primary) const;
     bool parallel() const;
-    ::tyloi::Tensor sharded(
+    ::tyloi::DenseTensor sharded(
         CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq, Collectives& collectives,
         int primary, bool peer_first, bool reduce_to_primary, bool fp16_reduce,
-        ::tyloi::Tensor input) const;
-    ::tyloi::Tensor forward(
+        ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        ::tyloi::Tensor input) const;
-    ::tyloi::Tensor bf16(
+        ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor bf16(
         const Projector& project, CudaProfiler& profiler, bool fused,
-        ::tyloi::Tensor input) const;
-    ::tyloi::Tensor kld(
+        ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor kld(
         const Projector& project, CudaProfiler& profiler, KlMmqState& mmq,
-        ::tyloi::Tensor input) const;
-    bool can_fuse(const ::tyloi::Tensor& input,
-                  const ::tyloi::Tensor& residual) const;
-    ::tyloi::Tensor fused(
-        CudaProfiler& profiler, ::tyloi::Tensor input,
-        ::tyloi::Tensor residual) const;
+        ::tyloi::DenseTensor input) const;
+    bool can_fuse(const ::tyloi::DenseTensor& input,
+                  const ::tyloi::DenseTensor& residual) const;
+    ::tyloi::DenseTensor fused(
+        CudaProfiler& profiler, ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor residual) const;
 };
 
 } // namespace tyloi::cuda

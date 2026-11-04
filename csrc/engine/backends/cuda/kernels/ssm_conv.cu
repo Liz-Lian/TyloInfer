@@ -46,7 +46,7 @@ __global__ void ssm_conv_silu_kernel(
     }
 }
 
-::tyloi::Tensor ssm_conv_silu_cuda(::tyloi::Tensor conv_input, ::tyloi::Tensor weight, ::tyloi::Tensor bias, int64_t n_tokens)
+::tyloi::DenseTensor ssm_conv_silu_cuda(::tyloi::DenseTensor conv_input, ::tyloi::DenseTensor weight, ::tyloi::DenseTensor bias, int64_t n_tokens)
 {
     TYLOINFER_RUNTIME_CHECK(conv_input.is_cuda() && conv_input.is_contiguous() && conv_input.scalar_type() == ::tyloi::kFloat32,
                 "ssm_conv_silu: conv_input must be cuda contiguous f32");
@@ -123,7 +123,7 @@ __global__ void ssm_conv_silu_decode_kernel(
     state[state_base + (size_t)(K - 2) * (size_t)C] = x_cur;
 }
 
-::tyloi::Tensor ssm_conv_silu_decode_cuda(::tyloi::Tensor state, ::tyloi::Tensor x, ::tyloi::Tensor weight, ::tyloi::Tensor bias)
+::tyloi::DenseTensor ssm_conv_silu_decode_cuda(::tyloi::DenseTensor state, ::tyloi::DenseTensor x, ::tyloi::DenseTensor weight, ::tyloi::DenseTensor bias)
 {
     TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type() == ::tyloi::kFloat32,
                 "ssm_conv_silu_decode: state must be cuda contiguous f32");
@@ -331,16 +331,16 @@ __global__ void ssm_conv_qkv_gate_decode_kernel(float* state,const __half* qk,co
     }
 }
 
-std::vector<::tyloi::Tensor> linear_conv_qkv_gate_decode_cuda(
-    ::tyloi::Tensor state,::tyloi::Tensor qk,::tyloi::Tensor v,
-    ::tyloi::Tensor weight,::tyloi::Tensor alpha,::tyloi::Tensor beta,
-    ::tyloi::Tensor dt_bias,::tyloi::Tensor a_log,
+std::vector<::tyloi::DenseTensor> linear_conv_qkv_gate_decode_cuda(
+    ::tyloi::DenseTensor state,::tyloi::DenseTensor qk,::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor weight,::tyloi::DenseTensor alpha,::tyloi::DenseTensor beta,
+    ::tyloi::DenseTensor dt_bias,::tyloi::DenseTensor a_log,
     int64_t nk,int64_t nv,int64_t dk,int64_t dv,double eps) {
     TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type()==::tyloi::kFloat32 &&
         state.dim()==3 && state.size(1)>0 && nk>0 && nv>0 && nv%nk==0 && dk>0 && dk<=256 && dv>0,
         "GDN combined decode state/geometry disagrees");
     const int B=int(state.size(0)),K=int(state.size(1))+1,C=int(2*nk*dk+nv*dv);
-    const auto same_device=[&](const ::tyloi::Tensor& x){return x.is_cuda() && x.device()==state.device();};
+    const auto same_device=[&](const ::tyloi::DenseTensor& x){return x.is_cuda() && x.device()==state.device();};
     TYLOINFER_RUNTIME_CHECK(same_device(qk) && same_device(v) && qk.is_contiguous() && v.is_contiguous() &&
         qk.scalar_type()==::tyloi::kFloat16 && v.scalar_type()==::tyloi::kFloat16 &&
         qk.sizes().vec()==std::vector<int64_t>({B,1,2*nk*dk}) &&
@@ -375,12 +375,12 @@ std::vector<::tyloi::Tensor> linear_conv_qkv_gate_decode_cuda(
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return {q,k,output,decay,beta_out};
 }
 
-std::vector<::tyloi::Tensor> linear_conv_qkv_decode_cuda(
-    ::tyloi::Tensor state,
-    ::tyloi::Tensor qk,
-    ::tyloi::Tensor v,
-    ::tyloi::Tensor weight,
-    ::tyloi::Tensor bias,
+std::vector<::tyloi::DenseTensor> linear_conv_qkv_decode_cuda(
+    ::tyloi::DenseTensor state,
+    ::tyloi::DenseTensor qk,
+    ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor weight,
+    ::tyloi::DenseTensor bias,
     int64_t nk,
     int64_t nv,
     int64_t dk,
@@ -579,12 +579,12 @@ __global__ void linear_conv_state_prefill_kernel(
     }
 }
 
-std::vector<::tyloi::Tensor> linear_conv_qkv_prefill_cuda(
-    ::tyloi::Tensor state,
-    ::tyloi::Tensor qk,
-    ::tyloi::Tensor v,
-    ::tyloi::Tensor weight,
-    ::tyloi::Tensor bias,
+std::vector<::tyloi::DenseTensor> linear_conv_qkv_prefill_cuda(
+    ::tyloi::DenseTensor state,
+    ::tyloi::DenseTensor qk,
+    ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor weight,
+    ::tyloi::DenseTensor bias,
     int64_t nk,
     int64_t nv,
     int64_t dk,
@@ -649,11 +649,11 @@ std::vector<::tyloi::Tensor> linear_conv_qkv_prefill_cuda(
 
 // Short verification windows keep the projected Q/K/V together. Their V
 // convolution also prepares the recurrent gates, with the original FP order.
-std::vector<::tyloi::Tensor> linear_conv_qkv_gate_short_cuda(
-    ::tyloi::Tensor state,::tyloi::Tensor qkv,
-    ::tyloi::Tensor weight,::tyloi::Tensor alpha,
-    ::tyloi::Tensor beta,::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps)
+std::vector<::tyloi::DenseTensor> linear_conv_qkv_gate_short_cuda(
+    ::tyloi::DenseTensor state,::tyloi::DenseTensor qkv,
+    ::tyloi::DenseTensor weight,::tyloi::DenseTensor alpha,
+    ::tyloi::DenseTensor beta,::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log,int64_t nk,int64_t nv,int64_t width,double eps)
 {
     TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && qkv.scalar_type()==::tyloi::kFloat16 &&
         qkv.dim()==3 && qkv.size(1)>=2 && qkv.size(1)<=8 && nk>0 && nv>0 && nv%nk==0 &&

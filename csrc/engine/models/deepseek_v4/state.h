@@ -5,17 +5,17 @@
 #include <vector>
 
 namespace tyloi::cuda::deepseek_v4 {
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 struct Model;
 
 struct PoolState {
     int64_t ratio = 0, head_dim = 0, cache_quant_mode = 0, capacity = 0;
     bool overlap = false;
-    Tensor state_kv, state_gate, previous_kv, previous_gate, pool;
+    DenseTensor state_kv, state_gate, previous_kv, previous_gate, pool;
     void reset(int64_t batch, int64_t max_positions);
 };
 
-struct LayerState { Tensor local_cache; PoolState compressor, indexer_compressor; };
+struct LayerState { DenseTensor local_cache; PoolState compressor, indexer_compressor; };
 
 class State {
 public:
@@ -29,8 +29,8 @@ public:
     void advance(int64_t tokens) noexcept { cache_pos += tokens; }
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate() {}
-    std::vector<Tensor> storage() const;
-    std::vector<Tensor*> graph_state() { return {}; }
+    std::vector<DenseTensor> storage() const;
+    std::vector<DenseTensor*> graph_state() { return {}; }
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
     bool supports_paged_text_session_state() const { return false; }

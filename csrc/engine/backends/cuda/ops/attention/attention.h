@@ -22,13 +22,13 @@ using AttentionInput = tyloi::ops::AttentionInput;
 using AttentionResult = tyloi::ops::AttentionResult;
 #else
 struct AttentionKvView {
-    ::tyloi::Tensor visible_key;
-    ::tyloi::Tensor visible_value;
-    ::tyloi::Tensor physical_key;
-    ::tyloi::Tensor physical_value;
-    ::tyloi::Tensor key_chunk_ptrs;
-    ::tyloi::Tensor value_chunk_ptrs;
-    ::tyloi::Tensor page_table;
+    ::tyloi::DenseTensor visible_key;
+    ::tyloi::DenseTensor visible_value;
+    ::tyloi::DenseTensor physical_key;
+    ::tyloi::DenseTensor physical_value;
+    ::tyloi::DenseTensor key_chunk_ptrs;
+    ::tyloi::DenseTensor value_chunk_ptrs;
+    ::tyloi::DenseTensor page_table;
     KvQuantization quantization;
     std::int64_t page_size = 0;
     std::int64_t pages_per_chunk = 0;
@@ -43,13 +43,13 @@ struct AttentionKvView {
 };
 
 struct AttentionInput {
-    ::tyloi::Tensor query;
-    ::tyloi::Tensor key;
-    ::tyloi::Tensor value;
-    ::tyloi::Tensor positions;
-    ::tyloi::Tensor write_positions;
-    MfqOptional<::tyloi::Tensor> sequence_lengths = mfq_nullopt;
-    MfqOptional<::tyloi::Tensor> attention_mask = mfq_nullopt;
+    ::tyloi::DenseTensor query;
+    ::tyloi::DenseTensor key;
+    ::tyloi::DenseTensor value;
+    ::tyloi::DenseTensor positions;
+    ::tyloi::DenseTensor write_positions;
+    MfqOptional<::tyloi::DenseTensor> sequence_lengths = mfq_nullopt;
+    MfqOptional<::tyloi::DenseTensor> attention_mask = mfq_nullopt;
     std::int64_t cache_position = 0;
     std::int64_t planned_kv_length = 0;
     std::int64_t decode_attention_parts = 0;
@@ -57,9 +57,9 @@ struct AttentionInput {
 #endif
 
 inline QuantizedKvPages quantized_pages(const AttentionKvView& kv) {
-    using Tensor = ::tyloi::Tensor;
-    return kv.paged() ? QuantizedKvPages{Tensor(kv.key_chunk_ptrs), Tensor(kv.value_chunk_ptrs),
-                                        Tensor(kv.page_table), static_cast<int>(kv.page_size),
+    using DenseTensor = ::tyloi::DenseTensor;
+    return kv.paged() ? QuantizedKvPages{DenseTensor(kv.key_chunk_ptrs), DenseTensor(kv.value_chunk_ptrs),
+                                        DenseTensor(kv.page_table), static_cast<int>(kv.page_size),
                                         static_cast<int>(kv.pages_per_chunk), static_cast<int>(kv.heads)}
                       : QuantizedKvPages{};
 }
@@ -93,7 +93,7 @@ struct AttentionConfig {
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 struct AttentionResult {
-    ::tyloi::Tensor value;
+    ::tyloi::DenseTensor value;
     bool token_major = false;
 };
 
@@ -106,9 +106,9 @@ AttentionResult dispatch_attention(const AttentionInput& request,
 namespace ops {
 tyloi::ops::AttentionResult attention(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
                                     const tyloi::ops::AttentionConfig&);
-std::optional<tyloi::Tensor> norm_rope_kv(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
-    const tyloi::ops::RopeTable&, const tyloi::Tensor&, const tyloi::Tensor&, double, double);
-std::optional<tyloi::Tensor> rope_kv(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
+std::optional<tyloi::DenseTensor> norm_rope_kv(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
+    const tyloi::ops::RopeTable&, const tyloi::DenseTensor&, const tyloi::DenseTensor&, double, double);
+std::optional<tyloi::DenseTensor> rope_kv(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
                                    const tyloi::ops::RopeTable&);
 }
 #endif

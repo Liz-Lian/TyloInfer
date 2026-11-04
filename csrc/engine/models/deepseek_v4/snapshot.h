@@ -13,11 +13,11 @@ struct PoolSnapshot {
     int64_t cache_quant_mode = 0;
     int64_t capacity = 0;
     bool overlap = false;
-    ::tyloi::Tensor state_kv;
-    ::tyloi::Tensor state_gate;
-    ::tyloi::Tensor previous_kv;
-    ::tyloi::Tensor previous_gate;
-    ::tyloi::Tensor pool;
+    ::tyloi::DenseTensor state_kv;
+    ::tyloi::DenseTensor state_gate;
+    ::tyloi::DenseTensor previous_kv;
+    ::tyloi::DenseTensor previous_gate;
+    ::tyloi::DenseTensor pool;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
@@ -30,7 +30,7 @@ struct PoolSnapshot {
 };
 
 struct BlockSnapshot {
-    ::tyloi::Tensor local_cache;
+    ::tyloi::DenseTensor local_cache;
     PoolSnapshot compressor;
     PoolSnapshot indexer_compressor;
 

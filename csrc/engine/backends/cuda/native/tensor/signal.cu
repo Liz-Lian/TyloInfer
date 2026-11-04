@@ -232,10 +232,10 @@ __global__ void multinomial_one_kernel(
 
 }  // namespace
 
-Tensor conv1d(
-    const Tensor& input_source,
-    const Tensor& weight_source,
-    const Tensor& bias_source,
+DenseTensor conv1d(
+    const DenseTensor& input_source,
+    const DenseTensor& weight_source,
+    const DenseTensor& bias_source,
     std::span<const std::int64_t> stride,
     std::span<const std::int64_t> padding,
     std::span<const std::int64_t> dilation,
@@ -249,7 +249,7 @@ Tensor conv1d(
     auto weight = weight_source.to(input.device(), input.scalar_type()).contiguous();
     auto bias = bias_source.defined()
         ? bias_source.to(input.device(), input.scalar_type()).contiguous()
-        : Tensor{};
+        : DenseTensor{};
     if (!floating(input.scalar_type()) || input.size(1) % groups != 0 ||
         weight.size(0) % groups != 0 || weight.size(1) != input.size(1) / groups) {
         throw std::invalid_argument("conv1d channel geometry is invalid");
@@ -273,10 +273,10 @@ Tensor conv1d(
     return output;
 }
 
-Tensor conv2d(
-    const Tensor& input_source,
-    const Tensor& weight_source,
-    const Tensor& bias_source,
+DenseTensor conv2d(
+    const DenseTensor& input_source,
+    const DenseTensor& weight_source,
+    const DenseTensor& bias_source,
     std::span<const std::int64_t> stride,
     std::span<const std::int64_t> padding,
     std::span<const std::int64_t> dilation,
@@ -290,7 +290,7 @@ Tensor conv2d(
     auto weight = weight_source.to(input.device(), input.scalar_type()).contiguous();
     auto bias = bias_source.defined()
         ? bias_source.to(input.device(), input.scalar_type()).contiguous()
-        : Tensor{};
+        : DenseTensor{};
     if (!floating(input.scalar_type()) || input.size(1) % groups != 0 ||
         weight.size(0) % groups != 0 || weight.size(1) != input.size(1) / groups) {
         throw std::invalid_argument("conv2d channel geometry is invalid");
@@ -320,8 +320,8 @@ Tensor conv2d(
     return output;
 }
 
-Tensor avg_pool1d(
-    const Tensor& input_source,
+DenseTensor avg_pool1d(
+    const DenseTensor& input_source,
     std::span<const std::int64_t> kernel,
     std::span<const std::int64_t> stride,
     std::span<const std::int64_t> padding) {
@@ -348,7 +348,7 @@ Tensor avg_pool1d(
     return output;
 }
 
-Tensor cumsum(const Tensor& input_source, std::int64_t dimension) {
+DenseTensor cumsum(const DenseTensor& input_source, std::int64_t dimension) {
     input_source.require_dense();
     auto input = input_source.contiguous();
     const auto selected = normalize_dimension(dimension, input.dim());
@@ -371,8 +371,8 @@ Tensor cumsum(const Tensor& input_source, std::int64_t dimension) {
     return output;
 }
 
-Tensor multinomial(
-    const Tensor& probabilities_source,
+DenseTensor multinomial(
+    const DenseTensor& probabilities_source,
     std::int64_t samples,
     bool replacement) {
     probabilities_source.require_dense();

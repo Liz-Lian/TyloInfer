@@ -27,11 +27,11 @@ public:
     virtual std::unique_ptr<State> make_state() const = 0;
     virtual tyloi::StepSequence<Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, State& state) const = 0;
-    virtual Tensor embedding(Tensor ids, int primary = 0) const = 0;
-    virtual Tensor normalize(Tensor hidden, std::int64_t batch, std::int64_t tokens) const = 0;
-    virtual Tensor softcap(Tensor logits) const = 0;
-    virtual Tensor logits(Tensor hidden, bool capped = true) const = 0;
-    virtual Tensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
+    virtual DenseTensor embedding(DenseTensor ids, int primary = 0) const = 0;
+    virtual DenseTensor normalize(DenseTensor hidden, std::int64_t batch, std::int64_t tokens) const = 0;
+    virtual DenseTensor softcap(DenseTensor logits) const = 0;
+    virtual DenseTensor logits(DenseTensor hidden, bool capped = true) const = 0;
+    virtual DenseTensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
 };
 
 } // namespace tyloi::models

@@ -74,9 +74,9 @@ void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard
     model.speculative_confirmed = 0;
 }
 
-template <class Tensor> struct CausalGeometry {
-    Tensor cache_positions, positions, full_positions;
-    std::optional<Tensor> effective_attention_mask;
+template <class DenseTensor> struct CausalGeometry {
+    DenseTensor cache_positions, positions, full_positions;
+    std::optional<DenseTensor> effective_attention_mask;
 };
 
 // Position and mask math is shared; policy supplies the family's typed geometry hooks.
@@ -84,8 +84,8 @@ template <class Policy, class Ops>
 auto prepare_causal_geometry(Policy &policy, const CausalState &state, Ops &ops, int64_t batch,
                              int64_t tokens)
     -> CausalGeometry<std::decay_t<decltype(ops.ids)>> {
-    using Tensor = std::decay_t<decltype(ops.ids)>;
-    CausalGeometry<Tensor> geometry{
+    using DenseTensor = std::decay_t<decltype(ops.ids)>;
+    CausalGeometry<DenseTensor> geometry{
         ops.cache_positions_override
             ? ops.device_ids(*ops.cache_positions_override)
             : ops.position_range(state.cache_pos, tokens),

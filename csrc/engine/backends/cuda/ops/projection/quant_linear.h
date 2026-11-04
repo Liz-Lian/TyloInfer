@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/ops/projection/vq.h"
 #include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/encoding/format_features.h"
+#include "engine/weights/encoding/tq.h"
 #include "engine/weights/weights.h"
 
 #include "mmq.h"
@@ -29,35 +30,35 @@ struct QuantLinear;
 struct QuantLinearGroup;
 struct DenseLinearGroup;
 
-::tyloi::Tensor dense_projection(
-    ::tyloi::Tensor input, const ::tyloi::Tensor& weight);
+::tyloi::DenseTensor dense_projection(
+    ::tyloi::DenseTensor input, const ::tyloi::DenseTensor& weight);
 
 class TqExec;
 namespace tyloi::cuda { class Collectives; }
 
-::tyloi::Tensor run_nint_linear(
+::tyloi::DenseTensor run_nint_linear(
     CudaProfiler& profiler, KlMmqState& kl_mmq,
-    const NintWeight& weight, ::tyloi::Tensor input,
-    MfqOptional<::tyloi::Tensor> gate = mfq_nullopt, InputGateMode mode = InputGateMode::None);
-::tyloi::Tensor run_nvq_linear(
+    const tyloi::NintTensor& weight, ::tyloi::DenseTensor input,
+    MfqOptional<::tyloi::DenseTensor> gate = mfq_nullopt, InputGateMode mode = InputGateMode::None);
+::tyloi::DenseTensor run_nvq_linear(
     CudaProfiler& profiler, KlMmqState& kl_mmq,
-    const NvqWeight& weight, ::tyloi::Tensor input,
-    MfqOptional<::tyloi::Tensor> gate = mfq_nullopt, InputGateMode mode = InputGateMode::None);
+    const tyloi::NvqTensor& weight, ::tyloi::DenseTensor input,
+    MfqOptional<::tyloi::DenseTensor> gate = mfq_nullopt, InputGateMode mode = InputGateMode::None);
 
-::tyloi::Tensor run_quant_linear_shard(
+::tyloi::DenseTensor run_quant_linear_shard(
     CudaProfiler& profiler,
     KlMmqState& kl_mmq,
     TqExec& tq,
     const struct QuantLinearShard& shard,
-    ::tyloi::Tensor input,
-    MfqOptional<::tyloi::Tensor> gate = mfq_nullopt,
+    ::tyloi::DenseTensor input,
+    MfqOptional<::tyloi::DenseTensor> gate = mfq_nullopt,
     InputGateMode gate_mode = InputGateMode::None);
 
 
 struct NintLinearGroup {
-    NintWeight w;
-    std::vector<NintWeight> projection_w;
-    std::vector<NintWeight> split_w;
+    tyloi::NintTensor w;
+    std::vector<tyloi::NintTensor> projection_w;
+    std::vector<tyloi::NintTensor> split_w;
     std::vector<std::vector<int64_t>> split_outs;
     std::vector<int64_t> outs;
 };
@@ -81,26 +82,26 @@ struct QuantLinearShard {
     int64_t output_begin = 0;
     int64_t output_end = 0;
     QuantLinearKind kind = QuantLinearKind::Nint;
-    NintWeight nint;
-    NvqWeight nvq;
-    Mxfp4Weight mxfp4;
-    Mxfp4SqWeight mxfp4_sq;
-    Fp8SqWeight fp8_sq;
-    Mxfp8Weight mxfp8;
-    ::tyloi::Tensor dense;
-    ::tyloi::Tensor tq;
+    tyloi::NintTensor nint;
+    tyloi::NvqTensor nvq;
+    tyloi::Mxfp4Tensor mxfp4;
+    tyloi::Mxfp4SqTensor mxfp4_sq;
+    tyloi::Fp8SqTensor fp8_sq;
+    tyloi::Mxfp8Tensor mxfp8;
+    ::tyloi::DenseTensor dense;
+    tyloi::encoding::TqTensor tq;
 };
 
 struct QuantLinear : tyloi::weights::Weights {
     QuantLinearKind kind = QuantLinearKind::Nint;
-    NintWeight nint;
-    NvqWeight nvq;
-    Mxfp4Weight mxfp4;
-    Mxfp4SqWeight mxfp4_sq;
-    Fp8SqWeight fp8_sq;
-    Mxfp8Weight mxfp8;
-    ::tyloi::Tensor dense;
-    ::tyloi::Tensor tq;
+    tyloi::NintTensor nint;
+    tyloi::NvqTensor nvq;
+    tyloi::Mxfp4Tensor mxfp4;
+    tyloi::Mxfp4SqTensor mxfp4_sq;
+    tyloi::Fp8SqTensor fp8_sq;
+    tyloi::Mxfp8Tensor mxfp8;
+    ::tyloi::DenseTensor dense;
+    tyloi::encoding::TqTensor tq;
     TensorParallelAxis tensor_parallel_axis =
         TensorParallelAxis::Mirrored;
     std::vector<QuantLinearShard> tensor_parallel_shards;
@@ -136,17 +137,10 @@ const QuantLinear& as_quant_linear(const tyloi::weights::Weights& weight);
 
 void check_projection_width(const QuantLinear& weight, int64_t width);
 void check_projection_device(const QuantLinear& weight, ::tyloi::Device device);
-void check_projection(const QuantLinear& weight, const ::tyloi::Tensor& input);
+void check_projection(const QuantLinear& weight, const ::tyloi::DenseTensor& input);
 
-void check_device(const ::tyloi::Tensor& weight, const ::tyloi::Tensor& input);
-void check_device(const NintWeight& weight, const ::tyloi::Tensor& input);
-void check_nint(const NintWeight& weight, const ::tyloi::Tensor& input);
-void check_device(const NvqWeight& weight, const ::tyloi::Tensor& input);
-void check_device(const Mxfp4Weight& weight, const ::tyloi::Tensor& input);
-void check_device(const Mxfp8Weight& weight, const ::tyloi::Tensor& input);
-void check_device(const Mxfp4SqWeight& weight, const ::tyloi::Tensor& input);
-void check_device(const Fp8SqWeight& weight, const ::tyloi::Tensor& input);
-void check_device(const QuantLinear& weight, const ::tyloi::Tensor& input);
+void check_device(const ::tyloi::DenseTensor& weight, const ::tyloi::DenseTensor& input);
+void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input);
 
 using QuantLinearProjectionRefs =
     std::vector<const QuantLinear*>;
@@ -181,39 +175,39 @@ struct QuantLinearGroup : tyloi::weights::Weights {
 };
 
 const QuantLinearGroup& as_quant_linear_group(const tyloi::weights::Weights& group);
-void check_projection(const QuantLinearGroup& group, const ::tyloi::Tensor& input);
+void check_projection(const QuantLinearGroup& group, const ::tyloi::DenseTensor& input);
 
 struct DenseLinearGroup {
-    ::tyloi::Tensor w;
+    ::tyloi::DenseTensor w;
     std::vector<int64_t> outs;
 
-    std::vector<::tyloi::Tensor> forward(::tyloi::Tensor x) const;
+    std::vector<::tyloi::DenseTensor> forward(::tyloi::DenseTensor x) const;
 };
 
-::tyloi::Tensor nint_kld(
+::tyloi::DenseTensor nint_kld(
     CudaProfiler& profiler, KlMmqState& mmq, const QuantLinear& weight,
-    ::tyloi::Tensor input, ::tyloi::Tensor gate, InputGateMode mode);
+    ::tyloi::DenseTensor input, ::tyloi::DenseTensor gate, InputGateMode mode);
 
-::tyloi::Tensor quant_embedding_lookup(
-    const QuantLinear& weight, ::tyloi::Tensor token_ids);
+::tyloi::DenseTensor quant_embedding_lookup(
+    const QuantLinear& weight, ::tyloi::DenseTensor token_ids);
 
-::tyloi::Tensor nvq_ffn_swiglu_down(
+::tyloi::DenseTensor nvq_ffn_swiglu_down(
     CudaProfiler& profiler,
-    const NvqWeight& gate,
-    const NvqWeight& up,
-    const NvqWeight& down,
-    ::tyloi::Tensor input,
-    MfqOptional<::tyloi::Tensor> residual = mfq_nullopt);
+    const tyloi::NvqTensor& gate,
+    const tyloi::NvqTensor& up,
+    const tyloi::NvqTensor& down,
+    ::tyloi::DenseTensor input,
+    MfqOptional<::tyloi::DenseTensor> residual = mfq_nullopt);
 
 bool nvq_fused_residual_format(std::int64_t kernel_format);
 
-::tyloi::Tensor nint_matmul_groupwise_u8(
+::tyloi::DenseTensor nint_matmul_groupwise_u8(
     CudaProfiler& profiler,
-    const NintWeight& weight,
-    ::tyloi::Tensor input,
+    const tyloi::NintTensor& weight,
+    ::tyloi::DenseTensor input,
     std::int64_t groups);
 
-::tyloi::Tensor dequant_nint_dense_f32(const NintWeight& weight);
+::tyloi::DenseTensor dequant_nint_dense_f32(const tyloi::NintTensor& weight);
 
-::tyloi::Tensor quant_linear_reference_weight(
+::tyloi::DenseTensor quant_linear_reference_weight(
     const QuantLinear& linear);

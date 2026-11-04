@@ -207,16 +207,16 @@ __global__ void selective_state_scan_prefill_kernel(
 namespace {
 
 
-bool selective_scan_supported(const ::tyloi::Tensor& tensor) {
+bool selective_scan_supported(const ::tyloi::DenseTensor& tensor) {
     return tensor.scalar_type() == ::tyloi::kFloat32 ||
         tensor.scalar_type() == ::tyloi::kFloat16 ||
         tensor.scalar_type() == ::tyloi::kBFloat16;
 }
 
 void selective_scan_check_parameters(
-    const char* name, const ::tyloi::Tensor& dt_bias, const ::tyloi::Tensor& a_log,
-    const ::tyloi::Tensor& d, int64_t heads) {
-    for (const ::tyloi::Tensor* parameter : {&dt_bias, &a_log, &d}) {
+    const char* name, const ::tyloi::DenseTensor& dt_bias, const ::tyloi::DenseTensor& a_log,
+    const ::tyloi::DenseTensor& d, int64_t heads) {
+    for (const ::tyloi::DenseTensor* parameter : {&dt_bias, &a_log, &d}) {
         TYLOINFER_RUNTIME_CHECK(parameter->is_cuda() && parameter->is_contiguous() &&
             parameter->scalar_type() == ::tyloi::kFloat32 && parameter->dim() == 1 &&
             parameter->numel() == heads,
@@ -226,15 +226,15 @@ void selective_scan_check_parameters(
 
 }  // namespace
 
-::tyloi::Tensor selective_state_scan_decode_cuda(
-    ::tyloi::Tensor state,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor dt,
-    ::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log,
-    ::tyloi::Tensor b,
-    ::tyloi::Tensor c,
-    ::tyloi::Tensor d,
+::tyloi::DenseTensor selective_state_scan_decode_cuda(
+    ::tyloi::DenseTensor state,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor dt,
+    ::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log,
+    ::tyloi::DenseTensor b,
+    ::tyloi::DenseTensor c,
+    ::tyloi::DenseTensor d,
     double dt_limit_lo,
     double dt_limit_hi)
 {
@@ -266,7 +266,7 @@ void selective_scan_check_parameters(
         dt.scalar_type() == x.scalar_type() && b.scalar_type() == x.scalar_type() &&
         c.scalar_type() == x.scalar_type(),
         name, ": x/dt/B/C must share one of f32, f16 or bf16");
-    for (const ::tyloi::Tensor* tensor : {&x, &dt, &b, &c}) {
+    for (const ::tyloi::DenseTensor* tensor : {&x, &dt, &b, &c}) {
         TYLOINFER_RUNTIME_CHECK(tensor->device() == state.device(),
             name, ": every input must live on the state device");
     }
@@ -305,15 +305,15 @@ void selective_scan_check_parameters(
     return output;
 }
 
-std::vector<::tyloi::Tensor> selective_state_scan_prefill_cuda(
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor dt,
-    ::tyloi::Tensor dt_bias,
-    ::tyloi::Tensor a_log,
-    ::tyloi::Tensor b,
-    ::tyloi::Tensor c,
-    ::tyloi::Tensor d,
-    ::tyloi::Tensor initial_state,
+std::vector<::tyloi::DenseTensor> selective_state_scan_prefill_cuda(
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor dt,
+    ::tyloi::DenseTensor dt_bias,
+    ::tyloi::DenseTensor a_log,
+    ::tyloi::DenseTensor b,
+    ::tyloi::DenseTensor c,
+    ::tyloi::DenseTensor d,
+    ::tyloi::DenseTensor initial_state,
     double dt_limit_lo,
     double dt_limit_hi)
 {

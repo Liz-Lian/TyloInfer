@@ -424,7 +424,7 @@ __global__ void l2_norm_kernel(const float* __restrict__ x, float* __restrict__ 
     }
 }
 
-::tyloi::Tensor rms_norm_cuda(::tyloi::Tensor x, ::tyloi::Tensor weight, double eps)
+::tyloi::DenseTensor rms_norm_cuda(::tyloi::DenseTensor x, ::tyloi::DenseTensor weight, double eps)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "rms_norm: x must be cuda contiguous f32");
@@ -438,7 +438,7 @@ __global__ void l2_norm_kernel(const float* __restrict__ x, float* __restrict__ 
     return out;
 }
 
-::tyloi::Tensor rms_norm_offset_cuda(::tyloi::Tensor x, ::tyloi::Tensor weight, double eps, double weight_offset)
+::tyloi::DenseTensor rms_norm_offset_cuda(::tyloi::DenseTensor x, ::tyloi::DenseTensor weight, double eps, double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "rms_norm_offset: x must be cuda contiguous f32");
@@ -452,7 +452,7 @@ __global__ void l2_norm_kernel(const float* __restrict__ x, float* __restrict__ 
     return out;
 }
 
-::tyloi::Tensor rms_norm_f16_cuda(::tyloi::Tensor x, ::tyloi::Tensor weight, double eps,
+::tyloi::DenseTensor rms_norm_f16_cuda(::tyloi::DenseTensor x, ::tyloi::DenseTensor weight, double eps,
                                 double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat16,
@@ -488,8 +488,8 @@ __global__ void l2_norm_kernel(const float* __restrict__ x, float* __restrict__ 
     return out;
 }
 
-::tyloi::Tensor gdn_rms_norm_gate_cuda(::tyloi::Tensor attended,
-    ::tyloi::Tensor gate,::tyloi::Tensor weight,double eps,
+::tyloi::DenseTensor gdn_rms_norm_gate_cuda(::tyloi::DenseTensor attended,
+    ::tyloi::DenseTensor gate,::tyloi::DenseTensor weight,double eps,
     bool silu_gate,bool output_half) {
     TYLOINFER_RUNTIME_CHECK(attended.is_cuda() && attended.is_contiguous() && attended.dim()==4 &&
         attended.scalar_type()==::tyloi::kFloat32 && attended.size(0)>0 && attended.size(1)>0 &&
@@ -618,9 +618,9 @@ __global__ void grouped_gated_rms_norm_kernel(
     }
 }
 
-::tyloi::Tensor grouped_gated_rms_norm_cuda(
-    ::tyloi::Tensor x, ::tyloi::Tensor gate,
-    ::tyloi::Tensor weight, int64_t group_size, double eps)
+::tyloi::DenseTensor grouped_gated_rms_norm_cuda(
+    ::tyloi::DenseTensor x, ::tyloi::DenseTensor gate,
+    ::tyloi::DenseTensor weight, int64_t group_size, double eps)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() > 0 &&
         gate.is_cuda() && gate.is_contiguous() && gate.device() == x.device() &&
@@ -665,8 +665,8 @@ __global__ void grouped_gated_rms_norm_kernel(
     return output;
 }
 
-::tyloi::Tensor grouped_rms_norm_cuda(::tyloi::Tensor x,
-    ::tyloi::Tensor weight, int64_t group, double eps, double weight_offset)
+::tyloi::DenseTensor grouped_rms_norm_cuda(::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor weight, int64_t group, double eps, double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() > 0 && group > 0 &&
         x.size(-1) > 0 && x.size(-1) % group == 0 &&
@@ -695,8 +695,8 @@ __global__ void grouped_gated_rms_norm_kernel(
     return output;
 }
 
-::tyloi::Tensor qwen_rms_norm_bf16_cuda(
-    ::tyloi::Tensor input, ::tyloi::Tensor weight, double eps,
+::tyloi::DenseTensor qwen_rms_norm_bf16_cuda(
+    ::tyloi::DenseTensor input, ::tyloi::DenseTensor weight, double eps,
     double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() &&
@@ -720,9 +720,9 @@ __global__ void grouped_gated_rms_norm_kernel(
     return output;
 }
 
-std::vector<::tyloi::Tensor> qwen_rms_norm_pair_bf16_cuda(
-    ::tyloi::Tensor first, ::tyloi::Tensor second,
-    ::tyloi::Tensor first_weight, ::tyloi::Tensor second_weight,
+std::vector<::tyloi::DenseTensor> qwen_rms_norm_pair_bf16_cuda(
+    ::tyloi::DenseTensor first, ::tyloi::DenseTensor second,
+    ::tyloi::DenseTensor first_weight, ::tyloi::DenseTensor second_weight,
     double eps, double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(first.is_cuda() && first.is_contiguous() &&
@@ -767,12 +767,12 @@ std::vector<::tyloi::Tensor> qwen_rms_norm_pair_bf16_cuda(
     return {first_output, second_output};
 }
 
-::tyloi::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
-    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
-    ::tyloi::Tensor q_weight, ::tyloi::Tensor k_weight,
-    ::tyloi::Tensor rope_pos, ::tyloi::Tensor write_pos,
-    ::tyloi::Tensor cos, ::tyloi::Tensor sin,
-    ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+::tyloi::DenseTensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
+    ::tyloi::DenseTensor q, ::tyloi::DenseTensor k, ::tyloi::DenseTensor v,
+    ::tyloi::DenseTensor q_weight, ::tyloi::DenseTensor k_weight,
+    ::tyloi::DenseTensor rope_pos, ::tyloi::DenseTensor write_pos,
+    ::tyloi::DenseTensor cos, ::tyloi::DenseTensor sin,
+    ::tyloi::DenseTensor k_cache, ::tyloi::DenseTensor v_cache,
     double eps, double weight_offset)
 {
     const auto bf16 = ::tyloi::kBFloat16;
@@ -831,11 +831,11 @@ std::vector<::tyloi::Tensor> qwen_rms_norm_pair_bf16_cuda(
     return q_out;
 }
 
-std::vector<::tyloi::Tensor> rms_norm_pair_f16_f32_offset_cuda(
-    ::tyloi::Tensor first,
-    ::tyloi::Tensor second,
-    ::tyloi::Tensor first_weight,
-    ::tyloi::Tensor second_weight,
+std::vector<::tyloi::DenseTensor> rms_norm_pair_f16_f32_offset_cuda(
+    ::tyloi::DenseTensor first,
+    ::tyloi::DenseTensor second,
+    ::tyloi::DenseTensor first_weight,
+    ::tyloi::DenseTensor second_weight,
     double eps,
     double weight_offset)
 {
@@ -875,7 +875,7 @@ std::vector<::tyloi::Tensor> rms_norm_pair_f16_f32_offset_cuda(
     return {first_out, second_out};
 }
 
-::tyloi::Tensor l2_norm_cuda(::tyloi::Tensor x, double eps)
+::tyloi::DenseTensor l2_norm_cuda(::tyloi::DenseTensor x, double eps)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "l2_norm: x must be cuda contiguous f32");

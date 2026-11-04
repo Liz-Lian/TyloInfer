@@ -311,8 +311,8 @@ int projection_resident_blocks(int device) {
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 namespace {
-::tyloi::Tensor float_projection_impl(
-        const NintWeight& weight, const ::tyloi::Tensor& input,bool parallel_groups,bool native_input,
+::tyloi::DenseTensor float_projection_impl(
+        const tyloi::NintTensor& weight, const ::tyloi::DenseTensor& input,bool parallel_groups,bool native_input,
         bool fixed_groups,int activation,int64_t streams) {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && weight.q_packed.is_cuda() &&
         input.device() == weight.q_packed.device() && input.dim() >= 1 &&
@@ -338,7 +338,7 @@ namespace {
     const auto launch=[&](auto input_tag,auto aligned_tag,auto group_tag) {
         using Input=decltype(input_tag);constexpr bool aligned=decltype(aligned_tag)::value;
         constexpr int group=decltype(group_tag)::value;
-        const auto invoke=[&](auto output_tag,auto activation_tag,const ::tyloi::Tensor& target) {
+        const auto invoke=[&](auto output_tag,auto activation_tag,const ::tyloi::DenseTensor& target) {
         using Output=decltype(output_tag);constexpr int action=decltype(activation_tag)::value;
         affine_projection<Input,aligned,group,Output,action><<<dim3(unsigned((weight.out + 3) / 4), unsigned(rows),unsigned(splits)), 128, 0,
         mfq_current_cuda_stream()>>>(x.data_ptr<Input>(), weight.q_packed.data_ptr<uint8_t>(),
@@ -399,8 +399,8 @@ namespace {
 
 #endif
 
-::tyloi::Tensor try_gr_bf16_down_cuda(const ::tyloi::Tensor& input,
-        const ::tyloi::Tensor& weight,int64_t streams) {
+::tyloi::DenseTensor try_gr_bf16_down_cuda(const ::tyloi::DenseTensor& input,
+        const ::tyloi::DenseTensor& weight,int64_t streams) {
     if(streams!=4 || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
             input.size(-1)!=10240 || input.numel()/10240<1 || input.numel()/10240>6 ||
             (input.scalar_type()!=::tyloi::kFloat16 && input.scalar_type()!=::tyloi::kFloat32) ||
@@ -432,8 +432,8 @@ namespace {
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
 }
 
-::tyloi::Tensor try_gr_bf16_up_mix_cuda(const ::tyloi::Tensor& input,
-        const ::tyloi::Tensor& normalized,const ::tyloi::Tensor& weight,int64_t streams) {
+::tyloi::DenseTensor try_gr_bf16_up_mix_cuda(const ::tyloi::DenseTensor& input,
+        const ::tyloi::DenseTensor& normalized,const ::tyloi::DenseTensor& weight,int64_t streams) {
     if(streams!=4 || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
             input.size(-1)!=320 || input.numel()/320<1 || input.numel()/320>6 ||
             input.scalar_type()!=::tyloi::kFloat32 || !normalized.is_cuda() || !normalized.is_contiguous() ||
@@ -470,8 +470,8 @@ namespace {
 }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-::tyloi::Tensor nint_float_projection_cuda(const NintWeight& weight,
-        const ::tyloi::Tensor& input,bool parallel_groups,bool native_input,bool fixed_groups) {
+::tyloi::DenseTensor nint_float_projection_cuda(const tyloi::NintTensor& weight,
+        const ::tyloi::DenseTensor& input,bool parallel_groups,bool native_input,bool fixed_groups) {
     if(gr_prefill_selected(input))return gr_prefill_matmul(weight,input);
     return float_projection_impl(weight,input,parallel_groups,native_input,fixed_groups,0,1);
 }
@@ -480,8 +480,8 @@ int nint_float_projection_resident_blocks(int device) {
     return projection_resident_blocks(device);
 }
 
-::tyloi::Tensor nint_float_projection_activation_cuda(const NintWeight& weight,
-        const ::tyloi::Tensor& input,int64_t streams,bool injection,
+::tyloi::DenseTensor nint_float_projection_activation_cuda(const tyloi::NintTensor& weight,
+        const ::tyloi::DenseTensor& input,int64_t streams,bool injection,
         bool parallel_groups,bool native_input,bool fixed_groups) {
     TYLOINFER_RUNTIME_CHECK(streams>0,"packed residual activation requires positive stream count");
     if(gr_prefill_selected(input)) {
@@ -493,8 +493,8 @@ int nint_float_projection_resident_blocks(int device) {
     return float_projection_impl(weight,input,parallel_groups,native_input,fixed_groups,injection?2:1,streams);
 }
 
-::tyloi::Tensor nint_float_projection_mix_cuda(const NintWeight& weight,
-        const ::tyloi::Tensor& input,const ::tyloi::Tensor& normalized,
+::tyloi::DenseTensor nint_float_projection_mix_cuda(const tyloi::NintTensor& weight,
+        const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& normalized,
         int64_t streams,bool native_input,bool fixed_groups,bool compact) {
     TYLOINFER_RUNTIME_CHECK(input.dim()>0 && streams>0 && weight.out>0 && weight.out%streams==0 &&
         normalized.dim()==input.dim(),"packed residual mixing dimensions disagree");
@@ -517,7 +517,7 @@ int nint_float_projection_resident_blocks(int device) {
     MfqCudaGuard guard(input.device());
     // Retain the original group partition whenever the ordinary projection splits.
     const bool unsplit=weight.ng==1 || !rows || ordinary_blocks>=projection_resident_blocks(input.get_device());
-    const auto half_or_float=[](const ::tyloi::Tensor& value) {
+    const auto half_or_float=[](const ::tyloi::DenseTensor& value) {
         return value.scalar_type()==::tyloi::kFloat16 || value.scalar_type()==::tyloi::kFloat32;
     };
     if(!unsplit || streams>32 || !input.is_contiguous() || !normalized.is_contiguous() ||
@@ -593,7 +593,7 @@ int nint_float_projection_resident_blocks(int device) {
 
 #endif
 
-::tyloi::Tensor prepare_gr_dense_vector_right(const ::tyloi::Tensor& right) {
+::tyloi::DenseTensor prepare_gr_dense_vector_right(const ::tyloi::DenseTensor& right) {
     TYLOINFER_RUNTIME_CHECK(right.is_cuda() && right.dim()==2 && right.scalar_type()==::tyloi::kFloat32 &&
         right.size(0)>0 && right.size(0)%4==0 && right.size(1)>0 && right.size(1)<=4,
         "vector residual injection requires F32 [4*k, 1..4] weights");

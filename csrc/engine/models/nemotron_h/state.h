@@ -14,7 +14,7 @@ struct Model;
 
 struct MambaState {
     Recurrent mixer;
-    ::tyloi::Tensor speculative_xbc, speculative_dt;
+    ::tyloi::DenseTensor speculative_xbc, speculative_dt;
 };
 
 using LayerState = std::variant<std::monostate, MambaState, KVCache>;
@@ -33,8 +33,8 @@ public:
     void set_position_delta(std::int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate();
     void commit_speculative();
-    std::vector<::tyloi::Tensor> storage() const;
-    std::vector<::tyloi::Tensor*> graph_state();
+    std::vector<::tyloi::DenseTensor> storage() const;
+    std::vector<::tyloi::DenseTensor*> graph_state();
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
     bool supports_paged_text_session_state() const;

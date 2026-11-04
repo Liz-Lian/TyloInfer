@@ -70,16 +70,16 @@ tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data & cpu) {
     return result;
 }
 
-::tyloi::Tensor copy_cpu_weight_to_cuda(
-        const ::tyloi::Tensor & source) {
+::tyloi::DenseTensor copy_cpu_weight_to_cuda(
+        const ::tyloi::DenseTensor & source) {
     return source.defined()
         ? source.to(::tyloi::Device(
             ::tyloi::kCUDA,
             mfq_current_cuda_device())).contiguous()
-        : ::tyloi::Tensor();
+        : ::tyloi::DenseTensor();
 }
 
-static int64_t tensor_storage_bytes(const ::tyloi::Tensor & value) {
+static int64_t tensor_storage_bytes(const ::tyloi::DenseTensor & value) {
     return value.defined()
         ? value.numel() * (int64_t)value.element_size()
         : 0;
@@ -406,8 +406,8 @@ tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
 
 
 
-static NintWeight copy_cpu_nint_to_cuda(const NintWeight & source) {
-    NintWeight result = source;
+static tyloi::NintTensor copy_cpu_nint_to_cuda(const tyloi::NintTensor & source) {
+    tyloi::NintTensor result = source;
     result.q_packed = copy_cpu_weight_to_cuda(source.q_packed);
     result.row_q_bits = copy_cpu_weight_to_cuda(source.row_q_bits);
     result.row_q_bit_offsets =
@@ -422,8 +422,8 @@ static NintWeight copy_cpu_nint_to_cuda(const NintWeight & source) {
     return result;
 }
 
-static NvqWeight copy_cpu_nvq_to_cuda(const NvqWeight & source) {
-    NvqWeight result = source;
+static tyloi::NvqTensor copy_cpu_nvq_to_cuda(const tyloi::NvqTensor & source) {
+    tyloi::NvqTensor result = source;
     result.indices_packed =
         copy_cpu_weight_to_cuda(source.indices_packed);
     result.aux_packed = copy_cpu_weight_to_cuda(source.aux_packed);
@@ -438,16 +438,16 @@ static NvqWeight copy_cpu_nvq_to_cuda(const NvqWeight & source) {
     return result;
 }
 
-static Mxfp4Weight copy_cpu_mxfp4_to_cuda(const Mxfp4Weight & source) {
-    Mxfp4Weight result = source;
+static tyloi::Mxfp4Tensor copy_cpu_mxfp4_to_cuda(const tyloi::Mxfp4Tensor & source) {
+    tyloi::Mxfp4Tensor result = source;
     result.values = copy_cpu_weight_to_cuda(source.values);
     result.scales = copy_cpu_weight_to_cuda(source.scales);
     return result;
 }
 
-static Mxfp4SqWeight copy_cpu_mxfp4_sq_to_cuda(
-        const Mxfp4SqWeight & source) {
-    Mxfp4SqWeight result = source;
+static tyloi::Mxfp4SqTensor copy_cpu_mxfp4_sq_to_cuda(
+        const tyloi::Mxfp4SqTensor & source) {
+    tyloi::Mxfp4SqTensor result = source;
     result.blob = copy_cpu_weight_to_cuda(source.blob);
     result.row_q = copy_cpu_weight_to_cuda(source.row_q);
     result.row_symbol_byte_offsets =
@@ -457,9 +457,9 @@ static Mxfp4SqWeight copy_cpu_mxfp4_sq_to_cuda(
     return result;
 }
 
-static Fp8SqWeight copy_cpu_fp8_sq_to_cuda(
-        const Fp8SqWeight & source) {
-    Fp8SqWeight result = source;
+static tyloi::Fp8SqTensor copy_cpu_fp8_sq_to_cuda(
+        const tyloi::Fp8SqTensor & source) {
+    tyloi::Fp8SqTensor result = source;
     result.blob = copy_cpu_weight_to_cuda(source.blob);
     result.row_q = copy_cpu_weight_to_cuda(source.row_q);
     result.row_symbol_byte_offsets =
@@ -573,10 +573,10 @@ tyloi::mfe::Data load_mfe_cpu(
     return tyloi::mfe::unpack(read_tensor(mfq, name));
 }
 
-::tyloi::Tensor mfe_dense_reference(
+::tyloi::DenseTensor mfe_dense_reference(
         const tyloi::source::Source& source,
         const std::string& name,
-        ::tyloi::Tensor input,
+        ::tyloi::DenseTensor input,
         const std::vector<std::int32_t>& expert_ids,
         int tokens,
         int routes,
@@ -586,9 +586,9 @@ tyloi::mfe::Data load_mfe_cpu(
         {tokens * routes, cpu.out_per_expert},
         input.options().dtype(::tyloi::kFloat16));
     for (const auto& pool : cpu.pools) {
-        ::tyloi::Tensor dense_flat;
+        ::tyloi::DenseTensor dense_flat;
         int rotation_block = 0;
-        ::tyloi::Tensor rotation_signs;
+        ::tyloi::DenseTensor rotation_signs;
         if (pool.dtype == "NINT8-0") {
             auto packed = to_device_nint8_zero(pool.q8_zero, true);
             dense_flat = nint8_zero_dequant_cuda(
@@ -675,7 +675,7 @@ tyloi::mfe::Data load_mfe_cpu(
     return reference;
 }
 
-::tyloi::Tensor materialize_mfe_dense(
+::tyloi::DenseTensor materialize_mfe_dense(
         const tyloi::source::Source& source,
         const std::string& name) {
     auto cpu = tyloi::mfe::unpack(read_tensor(source, name));
@@ -685,7 +685,7 @@ tyloi::mfe::Data load_mfe_cpu(
             .device(::tyloi::kCUDA)
             .dtype(::tyloi::kFloat16));
     for (const auto& pool : cpu.pools) {
-        ::tyloi::Tensor local_flat;
+        ::tyloi::DenseTensor local_flat;
         if (pool.dtype == "NINT8-0") {
             auto packed = to_device_nint8_zero(pool.q8_zero, true);
             local_flat = nint8_zero_dequant_cuda(

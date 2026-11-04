@@ -6,25 +6,25 @@
 #include <initializer_list>
 
 namespace mfq_selected_attention {
-using ::tyloi::Tensor;
+using ::tyloi::DenseTensor;
 
-void values(std::initializer_list<const Tensor*> tensors);
-Tensor promoted_matmul(const Tensor& left, const Tensor& right);
-Tensor dots(const Tensor& query, const Tensor& keys);
-Tensor dense(const Tensor& query, const Tensor& key, const Tensor& value,
+void values(std::initializer_list<const DenseTensor*> tensors);
+DenseTensor promoted_matmul(const DenseTensor& left, const DenseTensor& right);
+DenseTensor dots(const DenseTensor& query, const DenseTensor& keys);
+DenseTensor dense(const DenseTensor& query, const DenseTensor& key, const DenseTensor& value,
     int64_t offset, double scale, tyloi::cuda::HotKvView hot = {});
-Tensor sparse(const Tensor& query, const Tensor& key, const Tensor& value,
-    const Tensor& indices, double scale, bool key_is_cache, tyloi::cuda::HotKvView hot = {});
-Tensor sparse_gated(const Tensor& query, const Tensor& key, const Tensor& value,
-    const Tensor& indices, const Tensor& gate, double scale, bool half_output, tyloi::cuda::HotKvView hot = {});
-Tensor block_indices_to_tokens(const Tensor& blocks, const Tensor& positions,
+DenseTensor sparse(const DenseTensor& query, const DenseTensor& key, const DenseTensor& value,
+    const DenseTensor& indices, double scale, bool key_is_cache, tyloi::cuda::HotKvView hot = {});
+DenseTensor sparse_gated(const DenseTensor& query, const DenseTensor& key, const DenseTensor& value,
+    const DenseTensor& indices, const DenseTensor& gate, double scale, bool half_output, tyloi::cuda::HotKvView hot = {});
+DenseTensor block_indices_to_tokens(const DenseTensor& blocks, const DenseTensor& positions,
     int64_t pool, int64_t budget);
-Tensor gated(const Tensor& attended, const Tensor& gate, bool half_output);
-Tensor causal_gated(const Tensor& query, const Tensor& key, const Tensor& value,
-    const Tensor& positions, const Tensor& gate, int64_t columns, double scale,
+DenseTensor gated(const DenseTensor& attended, const DenseTensor& gate, bool half_output);
+DenseTensor causal_gated(const DenseTensor& query, const DenseTensor& key, const DenseTensor& value,
+    const DenseTensor& positions, const DenseTensor& gate, int64_t columns, double scale,
     bool half_output, bool fused_mma_gate = true, bool fused_mma_prepare = true, tyloi::cuda::HotKvView hot = {});
-Tensor mma_reduce_gated(const Tensor& partial_output, const Tensor& metadata,
-    const Tensor& gate, bool half_output, int kv_heads, int total_blocks,
+DenseTensor mma_reduce_gated(const DenseTensor& partial_output, const DenseTensor& metadata,
+    const DenseTensor& gate, bool half_output, int kv_heads, int total_blocks,
     int blocks_per_tile, int query_columns, int head_columns);
 
 } // namespace mfq_selected_attention

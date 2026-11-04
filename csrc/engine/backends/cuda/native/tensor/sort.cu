@@ -274,7 +274,7 @@ __global__ void initialize_sort_indices_kernel(
 
 }  // namespace
 
-Tensor einsum(const std::string& equation, std::span<const Tensor> operands) {
+DenseTensor einsum(const std::string& equation, std::span<const DenseTensor> operands) {
     for (const auto& operand : operands) operand.require_dense();
     if (equation != "bmhd,bkd->bmhk" || operands.size() != 2) {
         throw std::invalid_argument("native einsum equation is unsupported");
@@ -295,7 +295,7 @@ Tensor einsum(const std::string& equation, std::span<const Tensor> operands) {
         .reshape({batch, rows, heads, keys});
 }
 
-Tensor logsumexp(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
+DenseTensor logsumexp(const DenseTensor& input, std::int64_t dimension, bool keep_dimension) {
     input.require_dense();
     auto working = input.scalar_type() == kFloat64
         ? input
@@ -306,7 +306,7 @@ Tensor logsumexp(const Tensor& input, std::int64_t dimension, bool keep_dimensio
     return result;
 }
 
-Tensor softmax(const Tensor& input, std::int64_t dimension) {
+DenseTensor softmax(const DenseTensor& input, std::int64_t dimension) {
     input.require_dense();
     const auto selected = normalize_dimension(dimension, input.dim());
     const auto columns = input.size(-1);
@@ -394,7 +394,7 @@ Tensor softmax(const Tensor& input, std::int64_t dimension) {
     return result.to(input.scalar_type());
 }
 
-Tensor log_softmax(const Tensor& input, std::int64_t dimension) {
+DenseTensor log_softmax(const DenseTensor& input, std::int64_t dimension) {
     input.require_dense();
     const auto selected = normalize_dimension(dimension, input.dim());
     const auto columns = input.size(-1);
@@ -435,13 +435,13 @@ Tensor log_softmax(const Tensor& input, std::int64_t dimension) {
     return result.to(input.scalar_type());
 }
 
-Tensor dot(const Tensor& left, const Tensor& right) {
+DenseTensor dot(const DenseTensor& left, const DenseTensor& right) {
     left.require_dense(); right.require_dense();
     if (left.numel() != right.numel()) throw std::invalid_argument("dot size mismatch");
     return (left.reshape({-1}) * right.reshape({-1})).sum();
 }
 
-bool equal(const Tensor& left, const Tensor& right) {
+bool equal(const DenseTensor& left, const DenseTensor& right) {
     left.require_dense(); right.require_dense();
     if (left.sizes() != right.sizes() || left.scalar_type() != right.scalar_type()) {
         return false;
@@ -450,8 +450,8 @@ bool equal(const Tensor& left, const Tensor& right) {
     return !left.ne(right).reshape({-1}).any(0).item<bool>();
 }
 
-std::tuple<Tensor, Tensor> max(
-    const Tensor& input,
+std::tuple<DenseTensor, DenseTensor> max(
+    const DenseTensor& input,
     std::int64_t dimension,
     bool keep_dimension) {
     return {
@@ -459,8 +459,8 @@ std::tuple<Tensor, Tensor> max(
         input.argmax(dimension, keep_dimension)};
 }
 
-std::tuple<Tensor, Tensor> sort(
-    const Tensor& input_source,
+std::tuple<DenseTensor, DenseTensor> sort(
+    const DenseTensor& input_source,
     std::int64_t dimension,
     bool descending) {
     input_source.require_dense();
@@ -523,8 +523,8 @@ std::tuple<Tensor, Tensor> sort(
     return {output_keys.to(input_source.scalar_type()), output_indices};
 }
 
-std::tuple<Tensor, Tensor> topk(
-    const Tensor& input,
+std::tuple<DenseTensor, DenseTensor> topk(
+    const DenseTensor& input,
     std::int64_t count,
     std::int64_t dimension,
     bool largest,
@@ -545,7 +545,7 @@ std::tuple<Tensor, Tensor> topk(
          input.scalar_type() == kBFloat16)) {
         DeviceGuard guard(input.get_device());
         auto keys = input.to(kFloat32).contiguous();
-        Tensor indices;
+        DenseTensor indices;
         const auto rows = input.numel() / input.size(-1);
         auto columns = input.size(-1);
         const auto stream = current_stream(input.get_device()).stream();
@@ -590,11 +590,11 @@ std::tuple<Tensor, Tensor> topk(
         indices.narrow(dimension, 0, count).contiguous()};
 }
 
-Tensor layer_norm(
-    const Tensor& input,
+DenseTensor layer_norm(
+    const DenseTensor& input,
     std::span<const std::int64_t> normalized_shape,
-    const Tensor& weight,
-    const Tensor& bias,
+    const DenseTensor& weight,
+    const DenseTensor& bias,
     double epsilon) {
     input.require_dense(); weight.require_dense(); bias.require_dense();
     if (normalized_shape.size() != 1 || normalized_shape.front() != input.size(-1)) {
@@ -609,8 +609,8 @@ Tensor layer_norm(
     return result.to(input.scalar_type());
 }
 
-Tensor constant_pad_nd(
-    const Tensor& input,
+DenseTensor constant_pad_nd(
+    const DenseTensor& input,
     std::span<const std::int64_t> padding,
     double value) {
     input.require_dense();

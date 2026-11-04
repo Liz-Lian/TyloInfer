@@ -12,10 +12,10 @@
 
 namespace tyloi::cuda {
 
-inline ::tyloi::Tensor vision_non_causal_attention(
-        ::tyloi::Tensor query, ::tyloi::Tensor key,
-        ::tyloi::Tensor value,
-        MfqOptional<::tyloi::Tensor> additive_mask, double scale) {
+inline ::tyloi::DenseTensor vision_non_causal_attention(
+        ::tyloi::DenseTensor query, ::tyloi::DenseTensor key,
+        ::tyloi::DenseTensor value,
+        MfqOptional<::tyloi::DenseTensor> additive_mask, double scale) {
     auto scores = ::tyloi::cuda::matmul(query, key.transpose(-2, -1)) * scale;
     if (additive_mask.has_value()) {
         scores = scores + additive_mask.value().to(scores.scalar_type());
@@ -29,10 +29,10 @@ inline ::tyloi::Tensor vision_non_causal_attention(
 
 namespace tyloi::cuda::vision {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
-inline Tensor apply_axial_rope(
-    const Tensor& input,
+inline DenseTensor apply_axial_rope(
+    const DenseTensor& input,
     const std::vector<std::int32_t>& positions,
     double theta) {
     if (input.dim() != 3 || input.size(0) <= 0 ||
@@ -84,19 +84,19 @@ inline Tensor apply_axial_rope(
         .contiguous();
 }
 
-inline Tensor segmented_attention(
-    const Tensor& query,
-    const Tensor& key,
-    const Tensor& value,
+inline DenseTensor segmented_attention(
+    const DenseTensor& query,
+    const DenseTensor& key,
+    const DenseTensor& value,
     const std::vector<std::int32_t>& lengths) {
-    std::vector<Tensor> outputs;
+    std::vector<DenseTensor> outputs;
     outputs.reserve(lengths.size());
     std::int64_t offset = 0;
     for (const std::int32_t length : lengths) {
         if (length <= 0 || offset + length > query.size(0)) {
             throw std::runtime_error("vision attention segment is invalid");
         }
-        const auto segment = [offset, length](const Tensor& input) {
+        const auto segment = [offset, length](const DenseTensor& input) {
             return input.narrow(0, offset, length)
                 .transpose(0, 1)
                 .unsqueeze(0)
@@ -125,16 +125,16 @@ inline Tensor segmented_attention(
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
-inline tyloi::Tensor attention(tyloi::Tensor query, tyloi::Tensor key, tyloi::Tensor value,
-                             const std::optional<tyloi::Tensor>& mask, double scale) {
+inline tyloi::DenseTensor attention(tyloi::DenseTensor query, tyloi::DenseTensor key, tyloi::DenseTensor value,
+                             const std::optional<tyloi::DenseTensor>& mask, double scale) {
     MfqCudaGuard guard(query.device().index);
     return vision_non_causal_attention(query, key, value, mask, scale);
 }
-inline tyloi::Tensor axial_rope(tyloi::Tensor input, const std::vector<std::int32_t>& positions, double theta) {
+inline tyloi::DenseTensor axial_rope(tyloi::DenseTensor input, const std::vector<std::int32_t>& positions, double theta) {
     MfqCudaGuard guard(input.device().index);
     return vision::apply_axial_rope(input, positions, theta);
 }
-inline tyloi::Tensor segmented_attention(tyloi::Tensor query, tyloi::Tensor key, tyloi::Tensor value,
+inline tyloi::DenseTensor segmented_attention(tyloi::DenseTensor query, tyloi::DenseTensor key, tyloi::DenseTensor value,
                                        const std::vector<std::int32_t>& lengths) {
     MfqCudaGuard guard(query.device().index);
     return vision::segmented_attention(query, key,

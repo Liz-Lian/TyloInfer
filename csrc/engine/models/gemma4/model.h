@@ -22,9 +22,9 @@
 namespace tyloi::cuda::gemma4 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using Tensor = tyloi::Tensor;
+using DenseTensor = tyloi::DenseTensor;
 #else
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 #endif
 using Config = tyloi::models::gemma4::Config;
 
@@ -33,19 +33,19 @@ class State;
 struct Layer {
     FullAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    tyloi::Tensor ffn_norm;
+    tyloi::DenseTensor ffn_norm;
     tyloi::models::Mlp ffn;
-    tyloi::Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
-    tyloi::Tensor layer_scale;
+    tyloi::DenseTensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
+    tyloi::DenseTensor layer_scale;
     std::shared_ptr<const tyloi::weights::Weights> gemma_moe_gate_up, gemma_moe_down;
-    tyloi::Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
+    tyloi::DenseTensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #else
-    Tensor ffn_norm;
+    DenseTensor ffn_norm;
     Ffn ffn;
-    Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
-    Tensor layer_scale;
+    DenseTensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
+    DenseTensor layer_scale;
     Experts gemma_moe_gate_up, gemma_moe_down;
-    Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
+    DenseTensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #endif
     bool gemma4_moe = false;
     int gemma_top_k = 0;
@@ -71,11 +71,11 @@ struct Model
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
-    tyloi::Tensor embedding(tyloi::Tensor ids, int primary = 0) const override;
-    tyloi::Tensor normalize(tyloi::Tensor hidden, std::int64_t batch, std::int64_t tokens) const override;
-    tyloi::Tensor softcap(tyloi::Tensor logits) const override;
-    tyloi::Tensor logits(tyloi::Tensor hidden, bool capped = true) const override;
-    tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
+    tyloi::DenseTensor embedding(tyloi::DenseTensor ids, int primary = 0) const override;
+    tyloi::DenseTensor normalize(tyloi::DenseTensor hidden, std::int64_t batch, std::int64_t tokens) const override;
+    tyloi::DenseTensor softcap(tyloi::DenseTensor logits) const override;
+    tyloi::DenseTensor logits(tyloi::DenseTensor hidden, bool capped = true) const override;
+    tyloi::DenseTensor forward(tyloi::models::Input input, tyloi::models::State& state,
                         const Options& options = {}) const override;
 #endif
     std::shared_ptr<const tyloi::ModelSource> source;
@@ -85,9 +85,9 @@ struct Model
     double embed_scale = 1.0;
     std::shared_ptr<const tyloi::weights::Weights> embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    tyloi::Tensor output_norm;
+    tyloi::DenseTensor output_norm;
 #else
-    Tensor output_norm;
+    DenseTensor output_norm;
 #endif
     std::vector<Layer> layers;
 };

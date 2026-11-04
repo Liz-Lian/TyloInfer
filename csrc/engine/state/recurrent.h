@@ -9,7 +9,7 @@ namespace tyloi::cuda {
 class Recurrent {
 public:
     struct State {
-        ::tyloi::Tensor convolution, recurrent;
+        ::tyloi::DenseTensor convolution, recurrent;
         bool transposed = true;
 
         bool defined() const noexcept {

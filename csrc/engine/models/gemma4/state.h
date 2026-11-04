@@ -33,16 +33,16 @@ public:
     std::int64_t position() const noexcept override { return cache_pos; }
     void advance(std::int64_t tokens) noexcept override { cache_pos += tokens; }
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
-    std::vector<tyloi::Tensor> storage() const override;
-    std::vector<tyloi::Tensor*> graph_state() override { return {}; }
+    std::vector<tyloi::DenseTensor> storage() const override;
+    std::vector<tyloi::DenseTensor*> graph_state() override { return {}; }
 #else
     void preallocate();
     void reset(std::int64_t batch);
     std::int64_t position() const noexcept { return cache_pos; }
     void advance(std::int64_t tokens) noexcept { cache_pos += tokens; }
     void set_position_delta(std::int64_t delta) noexcept { decode_position_delta = delta; }
-    std::vector<::tyloi::Tensor> storage() const;
-    std::vector<::tyloi::Tensor*> graph_state() { return {}; }
+    std::vector<::tyloi::DenseTensor> storage() const;
+    std::vector<::tyloi::DenseTensor*> graph_state() { return {}; }
 #endif
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

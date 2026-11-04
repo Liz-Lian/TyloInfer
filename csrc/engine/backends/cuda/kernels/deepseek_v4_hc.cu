@@ -265,11 +265,11 @@ __global__ void dsv4_hc_post_kernel(
 
 } // namespace
 
-std::vector<::tyloi::Tensor> dsv4_hc_pre_cuda(
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor mixes,
-    ::tyloi::Tensor scale,
-    ::tyloi::Tensor base,
+std::vector<::tyloi::DenseTensor> dsv4_hc_pre_cuda(
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor mixes,
+    ::tyloi::DenseTensor scale,
+    ::tyloi::DenseTensor base,
     int64_t iterations,
     double eps)
 {
@@ -328,10 +328,10 @@ std::vector<::tyloi::Tensor> dsv4_hc_pre_cuda(
     return {reduced, post, combination};
 }
 
-std::vector<::tyloi::Tensor> dsv4_hc_coefficients_cuda(
-    ::tyloi::Tensor mixes,
-    ::tyloi::Tensor scale,
-    ::tyloi::Tensor base,
+std::vector<::tyloi::DenseTensor> dsv4_hc_coefficients_cuda(
+    ::tyloi::DenseTensor mixes,
+    ::tyloi::DenseTensor scale,
+    ::tyloi::DenseTensor base,
     int64_t iterations,
     double eps) {
     TYLOINFER_RUNTIME_CHECK(mixes.is_cuda() && mixes.is_contiguous() &&
@@ -361,11 +361,11 @@ std::vector<::tyloi::Tensor> dsv4_hc_coefficients_cuda(
     return {pre, post, combination};
 }
 
-::tyloi::Tensor dsv4_hc_post_cuda(
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor residual,
-    ::tyloi::Tensor post,
-    ::tyloi::Tensor combination)
+::tyloi::DenseTensor dsv4_hc_post_cuda(
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor residual,
+    ::tyloi::DenseTensor post,
+    ::tyloi::DenseTensor combination)
 {
     TYLOINFER_RUNTIME_CHECK(
         x.is_cuda() && x.is_contiguous() &&
@@ -420,10 +420,10 @@ std::vector<::tyloi::Tensor> dsv4_hc_coefficients_cuda(
     return output;
 }
 
-std::vector<::tyloi::Tensor> deepseek_v41_hc_finalize_cuda(
-    ::tyloi::Tensor residual, ::tyloi::Tensor previous,
-    ::tyloi::Tensor norm, ::tyloi::Tensor partials,
-    ::tyloi::Tensor scale, ::tyloi::Tensor base,
+std::vector<::tyloi::DenseTensor> deepseek_v41_hc_finalize_cuda(
+    ::tyloi::DenseTensor residual, ::tyloi::DenseTensor previous,
+    ::tyloi::DenseTensor norm, ::tyloi::DenseTensor partials,
+    ::tyloi::DenseTensor scale, ::tyloi::DenseTensor base,
     int64_t iterations, double rms_epsilon, double hc_epsilon) {
     TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() && residual.scalar_type()==::tyloi::kFloat16 &&
         residual.dim()==4 && residual.size(2)==4 && residual.size(3)>0 && residual.size(3)<=INT_MAX/4,

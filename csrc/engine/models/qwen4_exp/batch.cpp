@@ -21,7 +21,7 @@
 namespace tyloi::cuda::qwen4_exp {
 
 using tyloi::cuda::internal::PrefillCudaTimer;
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 namespace {
 
@@ -148,7 +148,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
                             "Flash-Next batch prefill position mismatch");
 }
 
-BatchOps::Sample BatchOps::finish_prefill(const std::shared_ptr<Request>& request, Tensor next) {
+BatchOps::Sample BatchOps::finish_prefill(const std::shared_ptr<Request>& request, DenseTensor next) {
     if (!next.defined())
         return {};
     const auto token = next.item<int64_t>();
@@ -174,7 +174,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                 .front();
         const auto finished =
             chunk.offset + chunk.count == static_cast<int64_t>(request->prompt.size());
-        Tensor next;
+        DenseTensor next;
         if (finished)
             next = tyloi::engine::sample_logits(
                 *request->sampler,
@@ -241,7 +241,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
                 return;
             }
             std::vector<Qwen4BatchRequestState*> caches;
-            std::vector<Tensor> chunks;
+            std::vector<DenseTensor> chunks;
             int64_t tokens = 0;
             for (const auto row : rows) {
                 const auto& [request, chunk] = items[row];
@@ -252,7 +252,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
             }
             PrefillCudaTimer timer;
             auto hidden = qwen4_batch_prefill(model_, caches, chunks);
-            std::vector<Tensor> last;
+            std::vector<DenseTensor> last;
             std::vector<std::size_t> finished;
             for (std::size_t i = 0; i < rows.size(); ++i) {
                 const auto& [request, chunk] = items[rows[i]];
@@ -261,7 +261,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
                     finished.push_back(rows[i]);
                 }
             }
-            std::vector<Tensor> next(items.size());
+            std::vector<DenseTensor> next(items.size());
             if (!last.empty()) {
                 auto logits = model_.logits_from_hidden(::tyloi::cuda::cat(last, 0))
                                   .reshape({int64_t(last.size()), -1});
@@ -355,7 +355,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                                           !request->sampler->has_penalties() &&
                                           !request->token_constraint);
                               });
-    std::optional<Tensor> captured;
+    std::optional<DenseTensor> captured;
     try {
         if (graph_)
             captured = graph_->run(caches, ids, host_ids, greedy);
@@ -372,7 +372,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     }
     auto logits = captured ? std::move(*captured)
                            : qwen4_batch_decode(model_, caches, std::move(ids), host_ids);
-    Tensor greedy_tokens;
+    DenseTensor greedy_tokens;
     if (greedy) {
         greedy_tokens = captured ? logits.to(::tyloi::kCPU).contiguous()
                                  : sample_greedy_cuda(logits.contiguous())

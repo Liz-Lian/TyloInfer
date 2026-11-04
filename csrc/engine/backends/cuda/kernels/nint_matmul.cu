@@ -1881,8 +1881,8 @@ __global__ void __launch_bounds__(128) nint8_zero_matmul_kernel(
 
 
 void validate_nint8_zero(
-        const ::tyloi::Tensor & quantized,
-        const ::tyloi::Tensor & scale) {
+        const ::tyloi::DenseTensor & quantized,
+        const ::tyloi::DenseTensor & scale) {
     TYLOINFER_RUNTIME_CHECK(
         quantized.is_cuda() && quantized.is_contiguous() &&
         quantized.scalar_type() == ::tyloi::kUInt8 &&
@@ -1900,9 +1900,9 @@ void validate_nint8_zero(
 }
 
 
-::tyloi::Tensor cublas_gemm_nt_f32_output(
-        const ::tyloi::Tensor & input,
-        const ::tyloi::Tensor & weight) {
+::tyloi::DenseTensor cublas_gemm_nt_f32_output(
+        const ::tyloi::DenseTensor & input,
+        const ::tyloi::DenseTensor & weight) {
     const int rows = static_cast<int>(input.size(0));
     const int width = static_cast<int>(input.size(1));
     const int outputs = static_cast<int>(weight.size(0));
@@ -1940,7 +1940,7 @@ void validate_nint8_zero(
 }  // namespace
 
 NintInputQuantizationScope::NintInputQuantizationScope(
-        ::tyloi::Tensor source,const std::vector<int>& sizes):input(std::move(source)) {
+        ::tyloi::DenseTensor source,const std::vector<int>& sizes):input(std::move(source)) {
     if(sizes.empty())return;
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.dim()==2 &&
         input.size(0)>=1 && input.size(0)<=6 && input.size(1)>0 && input.size(1)<=INT_MAX-64 &&
@@ -1985,9 +1985,9 @@ bool nint_late_scale_enabled(int64_t input_width,int bits,int /*device*/) {
 }
 
 static void nint_moe_grouped_matmul_dispatch_cuda(
-        ::tyloi::Tensor pointers,::tyloi::Tensor params,
-        ::tyloi::Tensor expert_pool,::tyloi::Tensor expert_local,
-        ::tyloi::Tensor ids,::tyloi::Tensor output,
+        ::tyloi::DenseTensor pointers,::tyloi::DenseTensor params,
+        ::tyloi::DenseTensor expert_pool,::tyloi::DenseTensor expert_local,
+        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
         int64_t input_width,bool routed_input,int group_hint,int bits_hint) {
     TYLOINFER_RUNTIME_CHECK(pointers.is_cuda() && pointers.is_contiguous() && pointers.scalar_type()==::tyloi::kInt64 &&
         pointers.dim()==2 && pointers.size(1)==9 && pointers.size(0)>0 &&
@@ -2064,26 +2064,26 @@ static void nint_moe_grouped_matmul_dispatch_cuda(
 }
 
 void nint_moe_grouped_matmul_hetero_cuda(
-        ::tyloi::Tensor pointers,::tyloi::Tensor params,
-        ::tyloi::Tensor expert_pool,::tyloi::Tensor expert_local,
-        ::tyloi::Tensor ids,::tyloi::Tensor output,
+        ::tyloi::DenseTensor pointers,::tyloi::DenseTensor params,
+        ::tyloi::DenseTensor expert_pool,::tyloi::DenseTensor expert_local,
+        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
         int64_t input_width,bool routed_input) {
     nint_moe_grouped_matmul_dispatch_cuda(pointers,params,expert_pool,expert_local,
         ids,output,input_width,routed_input,0,0);
 }
 
 void nint_moe_grouped_matmul_hinted_cuda(
-        ::tyloi::Tensor pointers,::tyloi::Tensor params,
-        ::tyloi::Tensor expert_pool,::tyloi::Tensor expert_local,
-        ::tyloi::Tensor ids,::tyloi::Tensor output,
+        ::tyloi::DenseTensor pointers,::tyloi::DenseTensor params,
+        ::tyloi::DenseTensor expert_pool,::tyloi::DenseTensor expert_local,
+        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
         int64_t input_width,bool routed_input,int group_hint,int bits_hint) {
     nint_moe_grouped_matmul_dispatch_cuda(pointers,params,expert_pool,expert_local,
         ids,output,input_width,routed_input,group_hint,bits_hint);
 }
 
 bool tyloi::cuda::try_nint_decode(
-        NintSingleRouteWeight weight,::tyloi::Tensor row_metadata,::tyloi::Tensor expert_local,
-        ::tyloi::Tensor ids,::tyloi::Tensor output,
+        NintSingleRouteWeight weight,::tyloi::DenseTensor row_metadata,::tyloi::DenseTensor expert_local,
+        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
         bool routed_input,int bits_hint,bool metadata_ready) {
     const char* setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_DIRECT_POOL");
     const char* grouped=tyloi::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
@@ -2138,24 +2138,24 @@ bool tyloi::cuda::try_nint_decode(
 
 
 void launch_nint_matmul_routed_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor route_ids,
-        ::tyloi::Tensor expert_local,
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor route_ids,
+        ::tyloi::DenseTensor expert_local,
         bool route_map_ready,
-        ::tyloi::Tensor ids_dst,
-        ::tyloi::Tensor expert_bounds,
-        ::tyloi::Tensor tile_bounds,
-        ::tyloi::Tensor tile_experts,
-        ::tyloi::Tensor output,
+        ::tyloi::DenseTensor ids_dst,
+        ::tyloi::DenseTensor expert_bounds,
+        ::tyloi::DenseTensor tile_bounds,
+        ::tyloi::DenseTensor tile_experts,
+        ::tyloi::DenseTensor output,
         int tokens,
         int routes,
         int experts,
@@ -2295,8 +2295,8 @@ void launch_nint_matmul_routed_cuda(
 }
 
 
-std::vector<::tyloi::Tensor> nint8_one_quantize_reconstruct_cuda(
-        ::tyloi::Tensor input) {
+std::vector<::tyloi::DenseTensor> nint8_one_quantize_reconstruct_cuda(
+        ::tyloi::DenseTensor input) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
         input.scalar_type() == ::tyloi::kFloat16 &&
@@ -2327,9 +2327,9 @@ std::vector<::tyloi::Tensor> nint8_one_quantize_reconstruct_cuda(
 }
 
 
-::tyloi::Tensor nint_cublas_gemm_nt_f16acc_cuda(
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor weight) {
+::tyloi::DenseTensor nint_cublas_gemm_nt_f16acc_cuda(
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor weight) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
         input.scalar_type() == ::tyloi::kFloat16 &&
@@ -2375,9 +2375,9 @@ std::vector<::tyloi::Tensor> nint8_one_quantize_reconstruct_cuda(
 }
 
 
-::tyloi::Tensor nint_cublas_gemm_nt_f32acc_cuda(
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor weight) {
+::tyloi::DenseTensor nint_cublas_gemm_nt_f32acc_cuda(
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor weight) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
         input.scalar_type() == ::tyloi::kFloat16 &&
@@ -2424,14 +2424,14 @@ std::vector<::tyloi::Tensor> nint8_one_quantize_reconstruct_cuda(
 
 
 template <typename Output>
-static ::tyloi::Tensor nint_decode_impl(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
+static ::tyloi::DenseTensor nint_decode_impl(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
         int64_t width,
         int64_t group_size) {
     TYLOINFER_RUNTIME_CHECK(
@@ -2535,14 +2535,14 @@ static ::tyloi::Tensor nint_decode_impl(
 }
 
 
-::tyloi::Tensor nint_decode_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
+::tyloi::DenseTensor nint_decode_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
         int64_t width,
         int64_t group_size) {
     return nint_decode_impl<__half>(
@@ -2553,14 +2553,14 @@ static ::tyloi::Tensor nint_decode_impl(
 }
 
 
-::tyloi::Tensor nint_decode_f32_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
+::tyloi::DenseTensor nint_decode_f32_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
         int64_t width,
         int64_t group_size) {
     return nint_decode_impl<float>(
@@ -2571,20 +2571,20 @@ static ::tyloi::Tensor nint_decode_impl(
 }
 
 
-static ::tyloi::Tensor nint_matmul_ws_impl(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor input,
-        const ::tyloi::Tensor * gate,
+static ::tyloi::DenseTensor nint_matmul_ws_impl(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor input,
+        const ::tyloi::DenseTensor * gate,
         int64_t activation_mode,
         int64_t group_size,
-        ::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale,
+        ::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale,
         bool aligned_q8 = false,int uniform_bits = 0) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
@@ -2732,10 +2732,10 @@ static ::tyloi::Tensor nint_matmul_ws_impl(
         }
     }
     if(prepared){quantized_input=prepared->codes;input_scale=prepared->scale;}
-    ::tyloi::Tensor interleaved_activation;
+    ::tyloi::DenseTensor interleaved_activation;
     if(interleaved)interleaved_activation=prepared?prepared->interleaved: ::tyloi::cuda::empty(
         {groups,7,interleaved_columns,4},input.options().dtype(::tyloi::kInt8));
-    ::tyloi::Tensor activation_sums;
+    ::tyloi::DenseTensor activation_sums;
     if(cached_sums)activation_sums=prepared?prepared->sum: ::tyloi::cuda::empty(
         {activation_rows,groups},input.options().dtype(::tyloi::kInt32));
     const auto quantize = [&](auto cached_sum) {
@@ -3054,30 +3054,30 @@ static ::tyloi::Tensor nint_matmul_ws_impl(
 }
 
 
-::tyloi::Tensor nint_matmul_fixed_bits_ws_cuda(
-        ::tyloi::Tensor bitstream,::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,::tyloi::Tensor input,
-        int64_t group_size,::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale,int uniform_bits) {
+::tyloi::DenseTensor nint_matmul_fixed_bits_ws_cuda(
+        ::tyloi::DenseTensor bitstream,::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,::tyloi::DenseTensor input,
+        int64_t group_size,::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale,int uniform_bits) {
     return nint_matmul_ws_impl(bitstream,row_q_bits,row_q_bit_offsets,subgroup_scale,
         subgroup_minimum,neuron_scale,neuron_minimum,input,nullptr,0,group_size,
         quantized_input,input_scale,false,uniform_bits);
 }
 
-::tyloi::Tensor nint_matmul_ws_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor nint_matmul_ws_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor input,
         int64_t group_size,
-        ::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale) {
+        ::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale) {
     return nint_matmul_ws_impl(
         bitstream, row_q_bits, row_q_bit_offsets,
         subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
@@ -3085,18 +3085,18 @@ static ::tyloi::Tensor nint_matmul_ws_impl(
 }
 
 
-::tyloi::Tensor nint_matmul_q8_ws_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor nint_matmul_q8_ws_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor input,
         int64_t group_size,
-        ::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale) {
+        ::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale) {
     return nint_matmul_ws_impl(
         bitstream, row_q_bits, row_q_bit_offsets,
         subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
@@ -3112,11 +3112,11 @@ __global__ void nint_online_reduce_kernel(const float* partial,__half* output,in
     }
 }
 
-::tyloi::Tensor nint_matmul_online_f16_cuda(
-        ::tyloi::Tensor bitstream,::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,::tyloi::Tensor input,int64_t group_size) {
+::tyloi::DenseTensor nint_matmul_online_f16_cuda(
+        ::tyloi::DenseTensor bitstream,::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,::tyloi::DenseTensor input,int64_t group_size) {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.dim()==2 &&
         input.scalar_type()==::tyloi::kFloat16 && input.size(0)>8 && input.size(0)<=32,
         "NINT online projection requires contiguous CUDA FP16 input with 9..32 rows");
@@ -3147,7 +3147,7 @@ __global__ void nint_online_reduce_kernel(const float* partial,__half* output,in
     }
     while(split<8 && output_tiles*split<processors*2 && input.size(1)>=int64_t(split*2)*kNintPrefillTileK)split*=2;
     auto partial=split>1 ? ::tyloi::cuda::empty({split,rows,outputs},input.options().dtype(::tyloi::kFloat32))
-        : ::tyloi::Tensor();
+        : ::tyloi::DenseTensor();
     const auto launch=[&](auto row_tile) {
         nint_matmul_tiled_prefill_kernel<decltype(row_tile)::value,true,false,true><<<
             dim3(output_tiles,split),dim3(32,kNintPrefillWarps),0,mfq_current_cuda_stream()>>>(
@@ -3167,32 +3167,32 @@ __global__ void nint_online_reduce_kernel(const float* partial,__half* output,in
     return output;
 }
 
-::tyloi::Tensor nint_matmul_input_mul_fixed_bits_ws_cuda(
-        ::tyloi::Tensor bitstream,::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,::tyloi::Tensor input,
-        ::tyloi::Tensor gate,int64_t activation_mode,int64_t group_size,
-        ::tyloi::Tensor quantized_input,::tyloi::Tensor input_scale,int uniform_bits) {
+::tyloi::DenseTensor nint_matmul_input_mul_fixed_bits_ws_cuda(
+        ::tyloi::DenseTensor bitstream,::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor gate,int64_t activation_mode,int64_t group_size,
+        ::tyloi::DenseTensor quantized_input,::tyloi::DenseTensor input_scale,int uniform_bits) {
     return nint_matmul_ws_impl(bitstream,row_q_bits,row_q_bit_offsets,subgroup_scale,
         subgroup_minimum,neuron_scale,neuron_minimum,input,&gate,activation_mode,
         group_size,quantized_input,input_scale,false,uniform_bits);
 }
 
-::tyloi::Tensor nint_matmul_input_mul_ws_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor gate,
+::tyloi::DenseTensor nint_matmul_input_mul_ws_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor gate,
         int64_t activation_mode,
         int64_t group_size,
-        ::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale) {
+        ::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale) {
     return nint_matmul_ws_impl(
         bitstream, row_q_bits, row_q_bit_offsets,
         subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
@@ -3201,20 +3201,20 @@ __global__ void nint_online_reduce_kernel(const float* partial,__half* output,in
 }
 
 
-::tyloi::Tensor nint_matmul_input_mul_q8_ws_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor gate,
+::tyloi::DenseTensor nint_matmul_input_mul_q8_ws_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor gate,
         int64_t activation_mode,
         int64_t group_size,
-        ::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale) {
+        ::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale) {
     return nint_matmul_ws_impl(
         bitstream, row_q_bits, row_q_bit_offsets,
         subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
@@ -3224,15 +3224,15 @@ __global__ void nint_online_reduce_kernel(const float* partial,__half* output,in
 
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-::tyloi::Tensor nint_backward_input_cuda(
-        ::tyloi::Tensor bitstream,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor subgroup_scale,
-        ::tyloi::Tensor subgroup_minimum,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_minimum,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor nint_backward_input_cuda(
+        ::tyloi::DenseTensor bitstream,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor subgroup_scale,
+        ::tyloi::DenseTensor subgroup_minimum,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_minimum,
+        ::tyloi::DenseTensor output_gradient,
         int64_t width,
         int64_t group_size) {
     TYLOINFER_RUNTIME_CHECK(
@@ -3326,9 +3326,9 @@ __global__ void nint_online_reduce_kernel(const float* partial,__half* output,in
 
 
 template <typename Output>
-static ::tyloi::Tensor nint8_zero_dequant_impl(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
+static ::tyloi::DenseTensor nint8_zero_dequant_impl(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
         int64_t width) {
     validate_nint8_zero(quantized, scale);
     TYLOINFER_RUNTIME_CHECK(
@@ -3367,30 +3367,30 @@ static ::tyloi::Tensor nint8_zero_dequant_impl(
 }
 
 
-::tyloi::Tensor nint8_zero_dequant_cuda(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
+::tyloi::DenseTensor nint8_zero_dequant_cuda(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
         int64_t width) {
     return nint8_zero_dequant_impl<__half>(
         std::move(quantized), std::move(scale), width);
 }
 
 
-::tyloi::Tensor nint8_zero_dequant_f32_cuda(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
+::tyloi::DenseTensor nint8_zero_dequant_f32_cuda(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
         int64_t width) {
     return nint8_zero_dequant_impl<float>(
         std::move(quantized), std::move(scale), width);
 }
 
 
-::tyloi::Tensor nint8_zero_gemv_ws_cuda(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor quantized_input,
-        ::tyloi::Tensor input_scale) {
+::tyloi::DenseTensor nint8_zero_gemv_ws_cuda(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor quantized_input,
+        ::tyloi::DenseTensor input_scale) {
     validate_nint8_zero(quantized, scale);
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
@@ -3460,10 +3460,10 @@ static ::tyloi::Tensor nint8_zero_dequant_impl(
 }
 
 
-::tyloi::Tensor nint8_zero_mmq_f16_packed_cuda(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor nint8_zero_mmq_f16_packed_cuda(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
+        ::tyloi::DenseTensor input,
         int64_t width) {
     validate_nint8_zero(quantized, scale);
     TYLOINFER_RUNTIME_CHECK(
@@ -3476,10 +3476,10 @@ static ::tyloi::Tensor nint8_zero_dequant_impl(
 }
 
 
-::tyloi::Tensor nint8_zero_mmq_f32_packed_cuda(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
-        ::tyloi::Tensor input,
+::tyloi::DenseTensor nint8_zero_mmq_f32_packed_cuda(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
+        ::tyloi::DenseTensor input,
         int64_t width) {
     validate_nint8_zero(quantized, scale);
     TYLOINFER_RUNTIME_CHECK(
@@ -3493,10 +3493,10 @@ static ::tyloi::Tensor nint8_zero_dequant_impl(
 
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-::tyloi::Tensor nint8_zero_backward_input_cuda(
-        ::tyloi::Tensor quantized,
-        ::tyloi::Tensor scale,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor nint8_zero_backward_input_cuda(
+        ::tyloi::DenseTensor quantized,
+        ::tyloi::DenseTensor scale,
+        ::tyloi::DenseTensor output_gradient,
         int64_t width) {
     validate_nint8_zero(quantized, scale);
     TYLOINFER_RUNTIME_CHECK(

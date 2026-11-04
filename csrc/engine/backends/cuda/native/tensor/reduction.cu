@@ -230,8 +230,8 @@ ScalarType reduction_type(ScalarType input, int operation) {
 
 template <typename Input>
 void launch_reduction_output(
-    Tensor& output,
-    const Tensor& input,
+    DenseTensor& output,
+    const DenseTensor& input,
     std::int64_t outer,
     std::int64_t reduced,
     int dimension,
@@ -249,8 +249,8 @@ void launch_reduction_output(
 
 }  // namespace
 
-Tensor reduce_cuda(
-    const Tensor& source,
+DenseTensor reduce_cuda(
+    const DenseTensor& source,
     std::int64_t dimension,
     bool keep_dimension,
     int operation) {
@@ -353,15 +353,15 @@ Tensor reduce_cuda(
     return output;
 }
 
-Tensor sum(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
+DenseTensor sum(const DenseTensor& input, std::int64_t dimension, bool keep_dimension) {
     return reduce_cuda(input, dimension, keep_dimension, 0);
 }
-Tensor mean(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
+DenseTensor mean(const DenseTensor& input, std::int64_t dimension, bool keep_dimension) {
     if (!input.defined()) throw std::invalid_argument("mean requires a defined tensor");
     if (!input.is_cuda()) throw std::invalid_argument("native CPU mean is not implemented");
     return reduce_cuda(input, dimension, keep_dimension, 1);
 }
-Tensor argmax(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
+DenseTensor argmax(const DenseTensor& input, std::int64_t dimension, bool keep_dimension) {
     return reduce_cuda(input, dimension, keep_dimension, 3);
 }
 

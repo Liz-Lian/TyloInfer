@@ -28,13 +28,13 @@ namespace tyloi::cuda::nemotron_h {
 // reuses this module's final_layernorm output. The final norm stays RMSNorm as
 // in vLLM/SGLang (llama.cpp uses LayerNorm; the real model will A/B the two).
 struct Mtp final : MtpModule {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::cuda::nemotron_h::Config config;
     QuantLinear embedding;
     int primary = 0;
     QuantLinear fusion;
-    Tensor embedding_norm, hidden_norm, output_norm;
+    DenseTensor embedding_norm, hidden_norm, output_norm;
     std::vector<Layer> layers;
     std::vector<LayerState> states;
     std::vector<int64_t> lengths;
@@ -111,23 +111,23 @@ struct Mtp final : MtpModule {
         batch = next_batch;
     }
 
-    std::pair<Tensor, Tensor> evaluate(const Tensor &hidden,
-                                       const Tensor &ids, int64_t depth = 0,
-                                       const Tensor &supplied_positions = {}) {
+    std::pair<DenseTensor, DenseTensor> evaluate(const DenseTensor &hidden,
+                                       const DenseTensor &ids, int64_t depth = 0,
+                                       const DenseTensor &supplied_positions = {}) {
         struct Ops {
-            using Tensor = ::tyloi::Tensor;
+            using DenseTensor = ::tyloi::DenseTensor;
             Mtp &model;
             Executor::Mode mode;
-            static int rank(const Tensor &x) { return x.dim(); }
-            static int64_t size(const Tensor &x, int axis) { return x.size(axis); }
-            static int64_t elements(const Tensor &x) { return x.numel(); }
-            static bool defined(const Tensor &x) { return x.defined(); }
-            Tensor embed(Tensor ids, const Tensor &like) {
+            static int rank(const DenseTensor &x) { return x.dim(); }
+            static int64_t size(const DenseTensor &x, int axis) { return x.size(axis); }
+            static int64_t elements(const DenseTensor &x) { return x.numel(); }
+            static bool defined(const DenseTensor &x) { return x.defined(); }
+            DenseTensor embed(DenseTensor ids, const DenseTensor &like) {
                 return tyloi::cuda::embed(model.embedding, std::move(ids),
                     model.execution->executor().collectives(), model.execution->executor().profiler(), model.primary)
                     .to(like.scalar_type());
             }
-            Tensor normalize(const Tensor &x, tyloi::models::nemotron_h::PredictorNorm role) {
+            DenseTensor normalize(const DenseTensor &x, tyloi::models::nemotron_h::PredictorNorm role) {
                 using Norm = tyloi::models::nemotron_h::PredictorNorm;
                 const auto &weight = role == Norm::embedding ? model.embedding_norm
                                      : role == Norm::hidden  ? model.hidden_norm
@@ -137,7 +137,7 @@ struct Mtp final : MtpModule {
                                      weight, model.config.rms_norm_eps, 0.0)
                     .reshape(x.sizes());
             }
-            Tensor positions(Tensor explicit_positions, int64_t start, int64_t tokens) {
+            DenseTensor positions(DenseTensor explicit_positions, int64_t start, int64_t tokens) {
                 if (explicit_positions.defined())
                     return explicit_positions.to(::tyloi::kInt64).contiguous();
                 // NoPE: positions only address the predictor's KV history.
@@ -146,18 +146,18 @@ struct Mtp final : MtpModule {
                                                       .device(::tyloi::kCUDA)
                                                       .dtype(::tyloi::kInt64));
             }
-            Tensor fuse(Tensor e, Tensor h) {
+            DenseTensor fuse(DenseTensor e, DenseTensor h) {
                 return model.executor->projector(mode.ffn).run(
                     model.fusion, ::tyloi::cuda::cat({e, h}, -1));
             }
-            static Tensor lengths(int64_t batch, int64_t end, const Tensor &positions) {
+            static DenseTensor lengths(int64_t batch, int64_t end, const DenseTensor &positions) {
                 return ::tyloi::cuda::full({batch}, end, positions.options());
             }
             // One predictor stage: every declared sub-block adds its own
             // pre-normed mixer branch to the same residual stream.
-            Tensor mixer_blocks(Tensor x, int64_t stage, const Tensor &pos) {
+            DenseTensor mixer_blocks(DenseTensor x, int64_t stage, const DenseTensor &pos) {
                 const int64_t tokens = x.size(1);
-                std::optional<Tensor> sequence_lengths;
+                std::optional<DenseTensor> sequence_lengths;
                 if (tokens == 1 && model.lengths[stage] > 0)
                     sequence_lengths = lengths(x.size(0), model.lengths[stage] + 1, pos);
                 AttentionStep step{pos, sequence_lengths, mfq_nullopt, mfq_nullopt,
@@ -172,7 +172,7 @@ struct Mtp final : MtpModule {
                                                      true);
     }
 
-    Tensor forward(Tensor hidden, Tensor ids) override {
+    DenseTensor forward(DenseTensor hidden, DenseTensor ids) override {
         return evaluate(hidden, ids).first;
     }
 
@@ -180,13 +180,13 @@ struct Mtp final : MtpModule {
     // step's hidden state (llama.cpp/vLLM/SGLang), so the chain value is the
     // same normalized tensor the lm_head consumes. The backbone's output_norm
     // is not applied again.
-    MtpStep step(Tensor hidden, Tensor ids) override {
+    MtpStep step(DenseTensor hidden, DenseTensor ids) override {
         auto result = evaluate(hidden, ids);
         return {result.first, result.first};
     }
 
-    MtpStep step_positioned(Tensor hidden, Tensor ids,
-                            Tensor positions) override {
+    MtpStep step_positioned(DenseTensor hidden, DenseTensor ids,
+                            DenseTensor positions) override {
         auto result = evaluate(hidden, ids, 0, positions);
         return {result.first, result.first};
     }
@@ -213,7 +213,7 @@ struct Mtp final : MtpModule {
 
     MtpSessionState
     capture_session_state(int64_t target_cache_position,
-                          const ::tyloi::Tensor &last_target_hidden) const override {
+                          const ::tyloi::DenseTensor &last_target_hidden) const override {
         const int64_t predictor_position = target_cache_position - 1;
         if (predictor_position <= 0 || predictor_position > cache_position() ||
             !last_target_hidden.defined() || last_target_hidden.dim() != 3 ||

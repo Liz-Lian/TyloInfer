@@ -31,7 +31,7 @@ __global__ void acc_bf16_kernel(
     }
 }
 
-::tyloi::Tensor acc_cuda(::tyloi::Tensor a, ::tyloi::Tensor b)
+::tyloi::DenseTensor acc_cuda(::tyloi::DenseTensor a, ::tyloi::DenseTensor b)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc: a must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc: b must be cuda contiguous");
@@ -149,8 +149,8 @@ __global__ void acc_rms_norm_kernel(const scalar_t* __restrict__ a,
     }
 }
 
-std::vector<::tyloi::Tensor> acc_rms_norm_cuda(::tyloi::Tensor a, ::tyloi::Tensor b,
-                                             ::tyloi::Tensor weight, double eps,
+std::vector<::tyloi::DenseTensor> acc_rms_norm_cuda(::tyloi::DenseTensor a, ::tyloi::DenseTensor b,
+                                             ::tyloi::DenseTensor weight, double eps,
                                              double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc_rms_norm: a must be cuda contiguous");
@@ -178,8 +178,8 @@ std::vector<::tyloi::Tensor> acc_rms_norm_cuda(::tyloi::Tensor a, ::tyloi::Tenso
     return {sum, norm};
 }
 
-std::vector<::tyloi::Tensor> acc_rms_norm_f16_cuda(::tyloi::Tensor a, ::tyloi::Tensor b,
-                                                 ::tyloi::Tensor weight, double eps,
+std::vector<::tyloi::DenseTensor> acc_rms_norm_f16_cuda(::tyloi::DenseTensor a, ::tyloi::DenseTensor b,
+                                                 ::tyloi::DenseTensor weight, double eps,
                                                  double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc_rms_norm_f16: a must be cuda contiguous");
@@ -203,9 +203,9 @@ std::vector<::tyloi::Tensor> acc_rms_norm_f16_cuda(::tyloi::Tensor a, ::tyloi::T
     return {sum, norm};
 }
 
-std::vector<::tyloi::Tensor> acc_rms_norm_bf16_cuda(
-    ::tyloi::Tensor a, ::tyloi::Tensor b,
-    ::tyloi::Tensor weight, double eps, double weight_offset)
+std::vector<::tyloi::DenseTensor> acc_rms_norm_bf16_cuda(
+    ::tyloi::DenseTensor a, ::tyloi::DenseTensor b,
+    ::tyloi::DenseTensor weight, double eps, double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous() &&
                     a.scalar_type() == ::tyloi::kBFloat16,
@@ -293,10 +293,10 @@ __global__ void gemma4_attn_residual_pre_norms_f16_kernel(
     }
 }
 
-std::vector<::tyloi::Tensor> gemma4_attn_residual_pre_norms_f16_cuda(
-    ::tyloi::Tensor residual, ::tyloi::Tensor attn,
-    ::tyloi::Tensor attn_post_weight, ::tyloi::Tensor dense_pre_weight,
-    ::tyloi::Tensor router_weight, ::tyloi::Tensor moe_pre_weight, double eps)
+std::vector<::tyloi::DenseTensor> gemma4_attn_residual_pre_norms_f16_cuda(
+    ::tyloi::DenseTensor residual, ::tyloi::DenseTensor attn,
+    ::tyloi::DenseTensor attn_post_weight, ::tyloi::DenseTensor dense_pre_weight,
+    ::tyloi::DenseTensor router_weight, ::tyloi::DenseTensor moe_pre_weight, double eps)
 {
     TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() &&
                     residual.scalar_type() == ::tyloi::kFloat16,
@@ -394,10 +394,10 @@ __global__ void gemma4_ffn_merge_f16_kernel(
     }
 }
 
-::tyloi::Tensor gemma4_ffn_merge_f16_cuda(
-    ::tyloi::Tensor dense, ::tyloi::Tensor moe, ::tyloi::Tensor residual,
-    ::tyloi::Tensor dense_post_weight, ::tyloi::Tensor moe_post_weight,
-    ::tyloi::Tensor final_post_weight, ::tyloi::Tensor layer_scale, double eps)
+::tyloi::DenseTensor gemma4_ffn_merge_f16_cuda(
+    ::tyloi::DenseTensor dense, ::tyloi::DenseTensor moe, ::tyloi::DenseTensor residual,
+    ::tyloi::DenseTensor dense_post_weight, ::tyloi::DenseTensor moe_post_weight,
+    ::tyloi::DenseTensor final_post_weight, ::tyloi::DenseTensor layer_scale, double eps)
 {
     for (const auto& value : {dense, moe, residual}) {
         TYLOINFER_RUNTIME_CHECK(value.is_cuda() && value.is_contiguous() &&
@@ -447,8 +447,8 @@ __global__ void decode_graph_commit_kernel(const int64_t* __restrict__ next,
     step[0] = idx + 1;
 }
 
-void decode_graph_commit_cuda(::tyloi::Tensor next, ::tyloi::Tensor generated, ::tyloi::Tensor step,
-                              ::tyloi::Tensor input, ::tyloi::Tensor pos, ::tyloi::Tensor len)
+void decode_graph_commit_cuda(::tyloi::DenseTensor next, ::tyloi::DenseTensor generated, ::tyloi::DenseTensor step,
+                              ::tyloi::DenseTensor input, ::tyloi::DenseTensor pos, ::tyloi::DenseTensor len)
 {
     TYLOINFER_RUNTIME_CHECK(next.is_cuda() && next.is_contiguous() && next.scalar_type() == ::tyloi::kInt64,
                 "decode_graph_commit: next must be cuda int64 contiguous");

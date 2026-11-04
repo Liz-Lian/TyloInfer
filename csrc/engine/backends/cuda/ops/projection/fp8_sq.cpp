@@ -5,7 +5,7 @@
 
 namespace tyloi::cuda {
 
-::tyloi::Tensor sq_matmul(const Fp8SqWeight& weight, ::tyloi::Tensor x) {
+::tyloi::DenseTensor sq_matmul(const tyloi::Fp8SqTensor& weight, ::tyloi::DenseTensor x) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (!weight.blob.is_cuda()) return sq_matmul_cpu(weight, x);
     auto shape = x.sizes().vec();
@@ -17,7 +17,7 @@ namespace tyloi::cuda {
     } else {
         source = source.contiguous();
     }
-    ::tyloi::Tensor output;
+    ::tyloi::DenseTensor output;
     if (weight.dtype == "MXFP8-SQ") {
         output = mxfp8_sq_matmul_cuda(
             weight.blob, weight.row_q,
@@ -49,8 +49,8 @@ namespace tyloi::cuda {
 
 } // namespace tyloi::cuda
 
-::tyloi::Tensor dequant_fp8_sq(
-        const Fp8SqWeight & weight,
+::tyloi::DenseTensor dequant_fp8_sq(
+        const tyloi::Fp8SqTensor & weight,
         bool fp32) {
     if (!weight.blob.is_cuda()) {
         auto output = ::tyloi::cuda::empty(

@@ -13,15 +13,15 @@
 namespace tyloi::cuda {
 
 template<class Ops, class Finish>
-std::tuple<::tyloi::Tensor, bool, bool> generation_prefill(
+std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         Qwen4CausalLm& model, Ops& ops, const tyloi::engine::PrefillChunk& chunk,
-        ::tyloi::Tensor& ids, const Finish& finish_prefill) {
-    using Tensor = ::tyloi::Tensor;
+        ::tyloi::DenseTensor& ids, const Finish& finish_prefill) {
+    using DenseTensor = ::tyloi::DenseTensor;
     auto& weights=ops.weights;
     auto& state=ops.state;
     auto* prepared=ops.prepared;
     auto* output=ops.output;
-    Tensor hidden;
+    DenseTensor hidden;
     bool layer_major=false,short_windows=false;
     // TQ groups all prompt rows by expert without expanding an entire
     // layer. Splitting these batches into verification windows would
@@ -36,7 +36,7 @@ std::tuple<::tyloi::Tensor, bool, bool> generation_prefill(
             if(output && output->stopped())break;
             const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
             auto part=ids.narrow(1,offset,rows);
-            Tensor window_logits;
+            DenseTensor window_logits;
             if(auto result=qwen4_decode_graph_hidden(model,part,nullptr,rows>1?1:0,
                     nullptr,{},&window_logits))
                 hidden=std::move(*result);

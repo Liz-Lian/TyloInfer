@@ -12,15 +12,15 @@
 #include <unordered_set>
 #include <utility>
 void fp8_sq_moe_matmul(
-        const Fp8SqWeight & weight,
-        ::tyloi::Tensor input,
-        ::tyloi::Tensor expert_ids,
-        ::tyloi::Tensor expert_local,
+        const tyloi::Fp8SqTensor & weight,
+        ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor expert_ids,
+        ::tyloi::DenseTensor expert_local,
         int n_experts,
         int local_experts,
         int out_per_expert,
         int neuron_len,
-        ::tyloi::Tensor output) {
+        ::tyloi::DenseTensor output) {
     if (weight.dtype == "MXFP8-SQ" || weight.dtype == "FP8-128SQ") {
         check_device(weight, input);
         check_device(expert_local, input);
@@ -74,7 +74,7 @@ void MoeScratch::bind(const std::shared_ptr<MixedNvqDispatch>& dispatch) {
 }
 
 std::shared_ptr<MoeScratch> tyloi::cuda::MoeScratchCache::get(
-        const std::shared_ptr<const void>& source, ::tyloi::Tensor x) {
+        const std::shared_ptr<const void>& source, ::tyloi::DenseTensor x) {
     std::lock_guard lock(mutex);
     for (auto it = values.begin(); it != values.end();) {
         if (it->first.expired()) it = values.erase(it);
@@ -91,7 +91,7 @@ std::shared_ptr<MoeScratch> tyloi::cuda::MoeScratchCache::get(
 }
 
 MoeActivationWorkspace MoeScratch::activation_workspace(
-        ::tyloi::Tensor x, int input_rows, int groups, int gs,
+        ::tyloi::DenseTensor x, int input_rows, int groups, int gs,
         MixedMoeTransformKey transform, bool stable) {
     // Shared quantization publishes an exact-row view. Honor that binding
     // before selecting our own scratch, including graph-sized inputs.
@@ -121,16 +121,16 @@ MoeActivationWorkspace MoeScratch::activation_workspace(
 }
 
 MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
-        ::tyloi::Tensor x,int input_rows,int groups,int gs,
+        ::tyloi::DenseTensor x,int input_rows,int groups,int gs,
         MixedMoeTransformKey transform) {
     return activation_workspace(x, input_rows, groups, gs, transform, false);
 }
 
-::tyloi::Tensor MixedMoeRuntime::forward(
+::tyloi::DenseTensor MixedMoeRuntime::forward(
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
-        ::tyloi::Tensor x,
+        ::tyloi::DenseTensor x,
         const MoeRoutePlan & route,
         bool input_prequantized,
         int epilogue_mode) const {
@@ -168,7 +168,7 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
             {tokens, routes, result_width},
             x.options().dtype(::tyloi::kFloat16));
     std::unordered_map<
-        MixedMoeTransformKey, ::tyloi::Tensor,
+        MixedMoeTransformKey, ::tyloi::DenseTensor,
         MixedMoeTransformKeyHash> prepared_inputs;
     const MixedMoeTransformKey identity{};
     prepared_inputs.emplace(identity, x);
@@ -220,7 +220,7 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
         check_device(scratch.nvq_expert_pool, x);
         check_device(scratch.nvq_expert_local, x);
     }
-    ::tyloi::Tensor active_nvq_plan;
+    ::tyloi::DenseTensor active_nvq_plan;
     if(use_active_nvq) {
         const int pairs=int(route.ids.numel());
         auto found=scratch.nvq_active_plans.find(pairs);
@@ -303,7 +303,7 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
     if(use_nint_decode) {
         for (int index : nint_dispatch->pools) {
             check_device(pools[index].expert_local, x);
-            check_nint(pools[index].nint, x);
+            check_device(pools[index].nint, x);
         }
         auto found=scratch.nint_input_plans.find(input_rows);
         if(found==scratch.nint_input_plans.end()) {
@@ -415,7 +415,7 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
                 pool.family == MixedMoeFamily::Nint8Zero)) && pool.family != MixedMoeFamily::Fp8Sq)
             check_device(pool.expert_local, x);
         if (pool.family == MixedMoeFamily::Nint && !use_kl_mmq)
-            check_nint(pool.nint, x);
+            check_device(pool.nint, x);
         else if (pool.family == MixedMoeFamily::Nint8Zero && !use_kl_mmq) {
             check_device(pool.q8_zero.q_packed, x);
             check_device(pool.q8_zero.q8_zero_scale, x);
@@ -440,7 +440,7 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
         int gs = 24;
         int groups = 0;
         MixedMoeTransformKey transform{};
-        ::tyloi::Tensor value = x;
+        ::tyloi::DenseTensor value = x;
         if (pool.family == MixedMoeFamily::Nint) {
             gs = (int)pool.nint.gs;
             groups = (int)pool.nint.ng;
@@ -646,7 +646,7 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
                ((pool.nvq.kernel_format==1 && pool.nvq.sub_bits==3) ||
                 (pool.nvq.kernel_format==8 && pool.nvq.sub_bits==4))) {
                 const auto& w=pool.nvq;Nvq1DecodeView view;
-                const std::array<::tyloi::Tensor,5> fields={w.indices_packed,w.aux_packed,
+                const std::array<::tyloi::DenseTensor,5> fields={w.indices_packed,w.aux_packed,
                     w.sub_scale_packed,w.neuron_scale,w.codebook};
                 for(int i=0;i<5;++i)if(fields[i].defined())view.pointers[i]=reinterpret_cast<int64_t>(fields[i].data_ptr());
                 view.sizes[0]=w.indices_packed.numel();view.sizes[1]=w.aux_packed.numel();
@@ -697,11 +697,11 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
     return output;
 }
 
-::tyloi::Tensor MixedMoeRuntime::forward_glu_output(
+::tyloi::DenseTensor MixedMoeRuntime::forward_glu_output(
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
-        ::tyloi::Tensor x,
+        ::tyloi::DenseTensor x,
         const MoeRoutePlan & route,
         bool gelu) const {
     if (nint_only() && kl_mmq.mode == KlMmqMode::Default) {
@@ -721,11 +721,11 @@ bool MixedMoeRuntime::supports_clamped_swiglu() const {
     return !pools.empty();
 }
 
-::tyloi::Tensor MixedMoeRuntime::forward_clamped_swiglu(
+::tyloi::DenseTensor MixedMoeRuntime::forward_clamped_swiglu(
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
-        ::tyloi::Tensor gate_up,
+        ::tyloi::DenseTensor gate_up,
         const MoeRoutePlan & route,
         double limit) const {
     if (!supports_clamped_swiglu() ||

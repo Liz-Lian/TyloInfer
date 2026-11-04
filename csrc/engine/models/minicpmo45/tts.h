@@ -17,10 +17,10 @@
 using ::tyloi::indexing::Slice;
 
 struct MiniCPMO45TtsSamplingOps {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     std::mt19937 *evaluator_rng = nullptr;
-    static Tensor temperature(Tensor scores, double value) { return scores / value; }
-    static Tensor penalties(Tensor scores, std::span<const Tensor> history, double penalty) {
+    static DenseTensor temperature(DenseTensor scores, double value) { return scores / value; }
+    static DenseTensor penalties(DenseTensor scores, std::span<const DenseTensor> history, double penalty) {
         auto counts = ::tyloi::cuda::zeros_like(scores);
         for (const auto &token : history)
             counts.scatter_add_(1, token.reshape({1, 1}),
@@ -29,10 +29,10 @@ struct MiniCPMO45TtsSamplingOps {
             ::tyloi::cuda::pow(::tyloi::cuda::full_like(counts, penalty), counts);
         return ::tyloi::cuda::where(scores < 0, scores * alpha, scores / alpha);
     }
-    static void mask_eos(Tensor &scores, int64_t token) {
+    static void mask_eos(DenseTensor &scores, int64_t token) {
         scores.index_put_({Slice(), token}, -std::numeric_limits<float>::infinity());
     }
-    Tensor reference(Tensor scores, int64_t top_k, double top_p, int64_t minimum_keep) const {
+    DenseTensor reference(DenseTensor scores, int64_t top_k, double top_p, int64_t minimum_keep) const {
         auto host = scores.reshape({-1})
                         .to(::tyloi::kCPU, ::tyloi::kFloat32)
                         .contiguous();
@@ -44,14 +44,14 @@ struct MiniCPMO45TtsSamplingOps {
                                               .device(::tyloi::kCUDA)
                                               .dtype(::tyloi::kInt64));
     }
-    static Tensor top_k(Tensor scores, int64_t count) {
+    static DenseTensor top_k(DenseTensor scores, int64_t count) {
         if (count >= scores.size(1))
             return scores;
         auto values = std::get<0>(::tyloi::cuda::topk(scores, count, -1, true, true));
         auto threshold = values.select(1, count - 1).unsqueeze(1);
         return scores.masked_fill(scores < threshold, -std::numeric_limits<float>::infinity());
     }
-    static Tensor top_p(Tensor scores, double value) {
+    static DenseTensor top_p(DenseTensor scores, double value) {
         auto sorted = ::tyloi::cuda::sort(scores, -1, true);
         auto logits = std::get<0>(sorted);
         auto indices = std::get<1>(sorted);
@@ -64,12 +64,12 @@ struct MiniCPMO45TtsSamplingOps {
         scores.scatter_(1, indices, logits);
         return scores;
     }
-    static Tensor min_p(Tensor scores, double value) {
+    static DenseTensor min_p(DenseTensor scores, double value) {
         auto maximum = std::get<0>(::tyloi::cuda::max(scores, -1, true));
         return scores.masked_fill(scores < maximum + std::log(value),
                                   -std::numeric_limits<float>::infinity());
     }
-    static Tensor sample(Tensor scores) {
+    static DenseTensor sample(DenseTensor scores) {
         return ::tyloi::cuda::multinomial(::tyloi::cuda::softmax(scores, -1), 1)
             .reshape({1})
             .to(::tyloi::kInt64);
@@ -81,7 +81,7 @@ namespace tyloi::cuda::minicpmo45 {
 struct Tts {
     struct Layer {
         FullAttention attention;
-        ::tyloi::Tensor ffn_norm;
+        ::tyloi::DenseTensor ffn_norm;
         Ffn ffn;
     };
 
@@ -107,8 +107,8 @@ struct Tts {
     tyloi::cuda::BiasWeight speaker_projector1;
     tyloi::cuda::BiasWeight speaker_projector2;
     std::vector<Layer> layers;
-    ::tyloi::Tensor output_norm;
-    ::tyloi::Tensor code_head;
+    ::tyloi::DenseTensor output_norm;
+    ::tyloi::DenseTensor code_head;
     static Tts load(const weight_loader::Loader& weights) {
         MfqCudaGuard guard(weights.placement.device);
         Tts result;
@@ -157,8 +157,8 @@ struct Tts {
         return result;
     }
 
-    ::tyloi::Tensor semantic_projection(const Projector& projector,
-                                                  ::tyloi::Tensor hidden) const {
+    ::tyloi::DenseTensor semantic_projection(const Projector& projector,
+                                                  ::tyloi::DenseTensor hidden) const {
         auto projected = tyloi::cuda::biased(projector, semantic_projector1, hidden);
         projected = ::tyloi::cuda::relu(projected);
         projected = tyloi::cuda::biased(projector, semantic_projector2, projected);
@@ -168,16 +168,16 @@ struct Tts {
         return (projected / norm.to(projected.scalar_type())).contiguous();
     }
 
-    ::tyloi::Tensor speaker_projection(const Projector& projector,
-                                                 ::tyloi::Tensor hidden) const {
+    ::tyloi::DenseTensor speaker_projection(const Projector& projector,
+                                                 ::tyloi::DenseTensor hidden) const {
         return tyloi::cuda::biased(projector, speaker_projector2, ::tyloi::cuda::relu(
                 tyloi::cuda::biased(projector, speaker_projector1, hidden)));
     }
 
-    ::tyloi::Tensor condition(
+    ::tyloi::DenseTensor condition(
             const Projector& projector,
-            ::tyloi::Tensor text_ids,
-            ::tyloi::Tensor language_hidden) const {
+            ::tyloi::DenseTensor text_ids,
+            ::tyloi::DenseTensor language_hidden) const {
         MfqCudaGuard guard(device);
         if (text_ids.dim() == 1) text_ids = text_ids.unsqueeze(0);
         if (language_hidden.dim() == 2) {
@@ -203,10 +203,10 @@ struct Tts {
         return ::tyloi::cuda::cat({merged, suffix}, 1).contiguous();
     }
 
-    ::tyloi::Tensor duplex_condition(
+    ::tyloi::DenseTensor duplex_condition(
             const Projector& projector,
-            ::tyloi::Tensor text_ids,
-            ::tyloi::Tensor language_hidden,
+            ::tyloi::DenseTensor text_ids,
+            ::tyloi::DenseTensor language_hidden,
             int64_t audio_bos_token) const {
         MfqCudaGuard guard(device);
         if (text_ids.dim() == 1) text_ids = text_ids.unsqueeze(0);
@@ -221,7 +221,7 @@ struct Tts {
             throw std::runtime_error(
                 "MiniCPM-o duplex TTS condition has invalid geometry or audio BOS");
         }
-        ::tyloi::Tensor condition;
+        ::tyloi::DenseTensor condition;
         if (text_ids.size(1) > 0) {
             auto text = minicpmo45_embedding(text_embedding, text_ids);
             auto semantic = semantic_projection(projector, language_hidden)
@@ -239,8 +239,8 @@ struct Tts {
             : bos.contiguous();
     }
 
-    ::tyloi::Tensor hidden_forward(State& state, Executor& executor,
-            const Executor::Mode& mode, ::tyloi::Tensor input_embeddings) const {
+    ::tyloi::DenseTensor hidden_forward(State& state, Executor& executor,
+            const Executor::Mode& mode, ::tyloi::DenseTensor input_embeddings) const {
         MfqCudaGuard guard(device);
         if (input_embeddings.dim() != 3 ||
                 input_embeddings.size(2) != config.hidden_size) {
@@ -260,7 +260,7 @@ struct Tts {
                     state.position, state.position + tokens,
                     ::tyloi::TensorOptions().device(::tyloi::kCUDA)
                         .dtype(::tyloi::kInt64));
-                MfqOptional<::tyloi::Tensor> sequence_length = mfq_nullopt;
+                MfqOptional<::tyloi::DenseTensor> sequence_length = mfq_nullopt;
                 if (state.position > 0) {
                     sequence_length = ::tyloi::cuda::full(
                         {batch}, state.position + tokens,
@@ -316,20 +316,20 @@ struct Tts {
             });
     }
 
-    ::tyloi::Tensor logits(::tyloi::Tensor hidden) const {
+    ::tyloi::DenseTensor logits(::tyloi::DenseTensor hidden) const {
         return ::tyloi::cuda::matmul(
             hidden.to(code_head.scalar_type()),
             code_head.transpose(0, 1));
     }
 
     struct ChunkResult {
-        ::tyloi::Tensor codes;
+        ::tyloi::DenseTensor codes;
         bool finished = false;
     };
 
     ChunkResult generate_duplex_chunk(
             State& state, Executor& executor, const Executor::Mode& mode,
-            ::tyloi::Tensor condition_embeddings,
+            ::tyloi::DenseTensor condition_embeddings,
             int64_t max_new_tokens,
             int64_t minimum_new_tokens,
             int64_t eos_token,
@@ -345,7 +345,7 @@ struct Tts {
             throw std::runtime_error(
                 "MiniCPM-o duplex TTS generation limits are invalid");
         }
-        std::vector<::tyloi::Tensor> sampled;
+        std::vector<::tyloi::DenseTensor> sampled;
         sampled.reserve(static_cast<size_t>(max_new_tokens));
         auto current = condition_embeddings.to(::tyloi::kBFloat16).contiguous();
         bool finished = false;
@@ -386,7 +386,7 @@ struct Tts {
         }
         const int64_t returned = std::max<int64_t>(
             0, static_cast<int64_t>(sampled.size()) - 1);
-        ::tyloi::Tensor codes;
+        ::tyloi::DenseTensor codes;
         if (returned > 0) {
             codes = ::tyloi::cuda::stack(sampled, 1)
                 .narrow(1, 0, returned)
@@ -400,12 +400,12 @@ struct Tts {
         return {codes, finished};
     }
 
-    ::tyloi::Tensor generate_official(
+    ::tyloi::DenseTensor generate_official(
         State& state, Executor& executor, const Executor::Mode& mode,
-        ::tyloi::Tensor condition_embeddings, int64_t steps, int64_t eos_token = 6561,
+        ::tyloi::DenseTensor condition_embeddings, int64_t steps, int64_t eos_token = 6561,
         int64_t minimum_steps = 50, double temperature = 0.8, double top_p = 0.85,
         int64_t top_k = 25, double repetition_penalty = 1.05,
-        std::vector<::tyloi::Tensor> *logits_trace = nullptr, double min_p = 0.0,
+        std::vector<::tyloi::DenseTensor> *logits_trace = nullptr, double min_p = 0.0,
         std::mt19937 *evaluator_rng = nullptr, int64_t evaluator_min_keep = 0) const {
         MfqCudaGuard guard(device);
         const tyloi::models::minicpmo45::TtsSampling config{eos_token,          minimum_steps, top_k,
@@ -415,8 +415,8 @@ struct Tts {
         if (condition_embeddings.dim() != 3 || condition_embeddings.size(0) != 1)
             throw std::runtime_error("official MiniCPM-o TTS generation requires batch size one");
         state.reset(1);
-        using Tensor = ::tyloi::Tensor;
-        std::vector<Tensor> generated;
+        using DenseTensor = ::tyloi::DenseTensor;
+        std::vector<DenseTensor> generated;
         generated.reserve(static_cast<size_t>(steps));
         auto current = condition_embeddings;
         MiniCPMO45TtsSamplingOps sampling_ops{evaluator_rng};
@@ -430,11 +430,11 @@ struct Tts {
                     logits_trace->push_back(raw_step_logits.clone());
                 return tyloi::models::minicpmo45::sample_tts(
                     sampling_ops, std::move(raw_step_logits), config,
-                    std::span<const Tensor>(generated), step, evaluator_rng != nullptr);
+                    std::span<const DenseTensor>(generated), step, evaluator_rng != nullptr);
             },
-            [&](const Tensor &token, int64_t) { generated.push_back(token); },
-            [&](const Tensor &token) { return token.eq(eos_token).all().item<bool>(); },
-            [&](const Tensor &token) {
+            [&](const DenseTensor &token, int64_t) { generated.push_back(token); },
+            [&](const DenseTensor &token) { return token.eq(eos_token).all().item<bool>(); },
+            [&](const DenseTensor &token) {
                 current = minicpmo45_embedding(code_embedding, token.unsqueeze(1));
             });
         auto sampled = ::tyloi::cuda::stack(generated, 1);

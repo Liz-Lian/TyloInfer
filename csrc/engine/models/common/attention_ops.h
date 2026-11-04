@@ -11,12 +11,12 @@
 #include <vector>
 
 namespace tyloi::cuda::attention_ops {
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using Linear = std::shared_ptr<const QuantLinear>;
-using Transform = std::function<Tensor(const Projector&, const Tensor&)>;
-using Embedding = std::function<Tensor(const Tensor&)>;
+using Transform = std::function<DenseTensor(const Projector&, const DenseTensor&)>;
+using Embedding = std::function<DenseTensor(const DenseTensor&)>;
 
-inline Tensor rms_norm(const Tensor& value, const Tensor& weight, double eps) {
+inline DenseTensor rms_norm(const DenseTensor& value, const DenseTensor& weight, double eps) {
     auto f = value.to(::tyloi::kFloat32);
     return (f * ::tyloi::cuda::rsqrt((f * f).mean(-1, true) + eps) * weight.to(::tyloi::kFloat32))
         .to(value.scalar_type());
@@ -28,12 +28,12 @@ public:
         : maximum_(maximum), width_(width), dtype_(dtype) {
         TYLOINFER_RUNTIME_CHECK(maximum > 0 && width > 0, "invalid sequence cache dimensions");
     }
-    void reset() { values_ = Tensor(); position_ = 0; }
+    void reset() { values_ = DenseTensor(); position_ = 0; }
     int64_t position() const { return position_; }
-    const Tensor& storage() const { return values_; }
+    const DenseTensor& storage() const { return values_; }
     // Graph KV owns the values while this cache still tracks their position.
-    void release_storage() { values_=Tensor(); }
-    void replace_storage(Tensor values) {
+    void release_storage() { values_=DenseTensor(); }
+    void replace_storage(DenseTensor values) {
         TYLOINFER_RUNTIME_CHECK(values.dim()==3 && values.size(1)>=position_ && values.size(1)<=maximum_ &&
             values.size(2)==width_,"replacement sequence cache geometry mismatch");
         values_=std::move(values);
@@ -46,7 +46,7 @@ public:
         if(position_)expanded.narrow(1,0,position_).copy_(values_.narrow(1,0,position_));
         values_=std::move(expanded);
     }
-    Tensor append_fixed(const Tensor& value,const Tensor& positions) {
+    DenseTensor append_fixed(const DenseTensor& value,const DenseTensor& positions) {
         TYLOINFER_RUNTIME_CHECK(values_.defined() && values_.size(1)<=maximum_ && value.dim()==3 &&
             value.size(1)<=values_.size(1)-position_ &&
             value.size(0)==values_.size(0) && value.size(2)==width_ && positions.dim()==1 &&
@@ -62,7 +62,7 @@ public:
         TYLOINFER_RUNTIME_CHECK(keep >= 0 && keep <= position_, "invalid sequence cache truncation");
         position_ = keep;
     }
-    Tensor append(const Tensor& value) {
+    DenseTensor append(const DenseTensor& value) {
         TYLOINFER_RUNTIME_CHECK(value.is_cuda() && value.dim() == 3 && value.size(0) > 0 &&
             value.size(1) > 0 && value.size(2) == width_, "invalid sequence cache append");
         TYLOINFER_RUNTIME_CHECK(!values_.defined() || (value.size(0) == values_.size(0) &&
@@ -83,10 +83,10 @@ public:
 private:
     int64_t maximum_, width_, position_ = 0;
     ::tyloi::ScalarType dtype_;
-    Tensor values_;
+    DenseTensor values_;
 };
 
-inline Tensor select_pooled_blocks(const Tensor& scores, int64_t query_offset,
+inline DenseTensor select_pooled_blocks(const DenseTensor& scores, int64_t query_offset,
     int64_t logical_length, int64_t pool, int64_t budget, bool include_tail) {
     TYLOINFER_RUNTIME_CHECK(scores.is_cuda() && scores.dim() == 3 && pool > 0 && budget > 0 &&
         budget % pool == 0 && query_offset >= 0 && logical_length >= query_offset &&

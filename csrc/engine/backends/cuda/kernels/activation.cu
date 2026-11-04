@@ -29,8 +29,8 @@ __global__ void clipped_silu_mul_kernel(const half* gate,const half* up,half* ou
     }
 }
 
-::tyloi::Tensor clipped_silu_mul_cuda(::tyloi::Tensor gate,
-        ::tyloi::Tensor up,double limit) {
+::tyloi::DenseTensor clipped_silu_mul_cuda(::tyloi::DenseTensor gate,
+        ::tyloi::DenseTensor up,double limit) {
     TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && up.device()==gate.device() &&
         gate.scalar_type()==::tyloi::kFloat16 && up.scalar_type()==::tyloi::kFloat16 &&
         gate.sizes()==up.sizes() && gate.is_contiguous() && up.is_contiguous() && limit>0,
@@ -128,7 +128,7 @@ __global__ void silu_mul_bf16_kernel(
     }
 }
 
-::tyloi::Tensor silu_mul_cuda(::tyloi::Tensor gate, ::tyloi::Tensor up)
+::tyloi::DenseTensor silu_mul_cuda(::tyloi::DenseTensor gate, ::tyloi::DenseTensor up)
 {
     TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.is_contiguous(), "silu_mul: gate must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(up.is_cuda() && up.is_contiguous(), "silu_mul: up must be cuda contiguous");
@@ -190,7 +190,7 @@ __global__ void gelu_mul_kernel(
     }
 }
 
-::tyloi::Tensor gelu_mul_cuda(::tyloi::Tensor gate, ::tyloi::Tensor up)
+::tyloi::DenseTensor gelu_mul_cuda(::tyloi::DenseTensor gate, ::tyloi::DenseTensor up)
 {
     TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.is_contiguous(), "gelu_mul: gate must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(up.is_cuda() && up.is_contiguous(), "gelu_mul: up must be cuda contiguous");
@@ -233,7 +233,7 @@ __global__ void relu_squared_kernel(
     }
 }
 
-::tyloi::Tensor relu_squared_cuda(::tyloi::Tensor input)
+::tyloi::DenseTensor relu_squared_cuda(::tyloi::DenseTensor input)
 {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous(),
         "relu_squared: input must be cuda contiguous");
@@ -296,8 +296,8 @@ __global__ void linear_gate_beta_kernel(
     }
 }
 
-std::vector<::tyloi::Tensor> linear_gate_beta_cuda(
-    ::tyloi::Tensor alpha, ::tyloi::Tensor beta, ::tyloi::Tensor dt_bias, ::tyloi::Tensor a_log,
+std::vector<::tyloi::DenseTensor> linear_gate_beta_cuda(
+    ::tyloi::DenseTensor alpha, ::tyloi::DenseTensor beta, ::tyloi::DenseTensor dt_bias, ::tyloi::DenseTensor a_log,
     bool stable_softplus)
 {
     TYLOINFER_RUNTIME_CHECK(alpha.is_cuda() && beta.is_cuda(), "linear_gate_beta: alpha/beta must be cuda tensors");

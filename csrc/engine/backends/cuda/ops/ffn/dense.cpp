@@ -9,12 +9,12 @@ namespace tyloi::cuda {
 
 
 namespace {
-void record(Trace* trace, const char* name, const Tensor& value) {
+void record(Trace* trace, const char* name, const DenseTensor& value) {
     if (trace) trace->emplace_back(name, value.to(::tyloi::kFloat32).contiguous().clone());
 }
 } // namespace
 
-static Tensor run_mlp(const Mlp& op, Tensor input, const Projector& project,
+static DenseTensor run_mlp(const Mlp& op, DenseTensor input, const Projector& project,
         CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq, Collectives& collectives,
         const Projector::Options& parallel, const Dense::Options& options) {
     if (op.parallel())
@@ -26,10 +26,10 @@ static Tensor run_mlp(const Mlp& op, Tensor input, const Projector& project,
     return op.forward(project, profiler, options.mlp, std::move(input));
 }
 
-Tensor Dense::forward(const Projector& project, CudaProfiler& profiler,
+DenseTensor Dense::forward(const Projector& project, CudaProfiler& profiler,
         KlMmqState& mmq, TqExec& tq, Branches& branches, Collectives& collectives,
         const Projector::Options& parallel, const Options& options, bool serial,
-        Tensor residual, Tensor input, Trace* trace_output) const {
+        DenseTensor residual, DenseTensor input, Trace* trace_output) const {
     const auto batch = residual.size(0), tokens = residual.size(1), width = residual.size(2);
     auto pair = linear
         ? linear_norm(profiler, norm, eps, offset, options.fp32_residual, std::move(residual), std::move(input))
@@ -45,7 +45,7 @@ Tensor Dense::forward(const Projector& project, CudaProfiler& profiler,
                 .reshape({batch, tokens, width});
         });
     }
-    Tensor output;
+    DenseTensor output;
     if (bf16) {
         output = mlp.bf16(project, profiler, options.bf16_swiglu, input)
             .to(::tyloi::kBFloat16).contiguous();
@@ -60,7 +60,7 @@ Tensor Dense::forward(const Projector& project, CudaProfiler& profiler,
                     return fp32 ? op.kld(project, profiler, mmq, input)
                                 : run_mlp(op, input, project, profiler, mmq, tq, collectives, parallel, options);
             };
-            std::vector<Tensor> outputs;
+            std::vector<DenseTensor> outputs;
             const bool ran_parallel = !fp32 && decode_branches(parallel.parallel, serial, batch * tokens) &&
                 options.important_parallel && branches.run(2, run_branch, outputs);
             if (!ran_parallel) {

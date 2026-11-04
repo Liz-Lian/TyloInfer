@@ -4,9 +4,9 @@
 #include <vector>
 
 namespace mfq_qwen4_exp {
-using ::tyloi::Tensor;
-std::vector<Tensor> ple_gate_norm_cuda(const Tensor& key,const Tensor& query,
-    const Tensor& value,const Tensor& norm,int64_t hidden,int64_t streams,double eps);
-std::vector<Tensor> ple_conv_add_cuda(const Tensor& normalized,const Tensor& weight,
-    const std::optional<Tensor>& previous,int64_t dilation,const Tensor& gated,bool half_output);
+using ::tyloi::DenseTensor;
+std::vector<DenseTensor> ple_gate_norm_cuda(const DenseTensor& key,const DenseTensor& query,
+    const DenseTensor& value,const DenseTensor& norm,int64_t hidden,int64_t streams,double eps);
+std::vector<DenseTensor> ple_conv_add_cuda(const DenseTensor& normalized,const DenseTensor& weight,
+    const std::optional<DenseTensor>& previous,int64_t dilation,const DenseTensor& gated,bool half_output);
 }

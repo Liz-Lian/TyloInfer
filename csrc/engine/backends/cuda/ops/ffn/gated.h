@@ -14,11 +14,11 @@ class Projector;
 
 class GatedResidual {
 public:
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     struct Result {
-        Tensor mixed;
-        Tensor residual;
-        Tensor gate;
+        DenseTensor mixed;
+        DenseTensor residual;
+        DenseTensor gate;
     };
     struct Options {
         bool fused_projections = true;
@@ -32,17 +32,17 @@ public:
         bool dense_injection = true;
     };
     struct Projection {
-        using Forward = std::function<Tensor(const Tensor&)>;
-        using Mix = std::function<Tensor(const Tensor&, const Tensor&, int64_t)>;
-        using Activation = std::function<Tensor(const Tensor&, int64_t, bool)>;
+        using Forward = std::function<DenseTensor(const DenseTensor&)>;
+        using Mix = std::function<DenseTensor(const DenseTensor&, const DenseTensor&, int64_t)>;
+        using Activation = std::function<DenseTensor(const DenseTensor&, int64_t, bool)>;
         Forward forward;
         Mix mixed;
         Activation activated;
         std::shared_ptr<const QuantLinear> weight;
         // F32 [column, stream], or vector layout [column/4, stream, 4].
-        Tensor prepared_right;
+        DenseTensor prepared_right;
         // Optional FP32 coefficients or packed row/group records.
-        Tensor up_group_coefficients;
+        DenseTensor up_group_coefficients;
         explicit operator bool() const { return bool(forward); }
     };
     enum class Part { generic, final_down, final_up };
@@ -51,21 +51,21 @@ public:
                                  CudaProfiler&, const Options&, Part);
 
     GatedResidual() = default;
-    GatedResidual(Tensor norm, Projection down, Projection up, Projection injection,
+    GatedResidual(DenseTensor norm, Projection down, Projection up, Projection injection,
                   int64_t hidden, int64_t streams, double eps,
                   const Options& options, const bool& cache_serial)
         : norm(std::move(norm)), down(std::move(down)), up(std::move(up)),
           injection(std::move(injection)), hidden(hidden), streams(streams), eps(eps),
           options_(&options), cache_serial_(&cache_serial) {}
 
-    Result pre(const Tensor& input, const GatedResidualMarker& marker = {}) const;
-    Result pre_after(const Tensor& input, const Tensor& residual, const Tensor& gate,
+    Result pre(const DenseTensor& input, const GatedResidualMarker& marker = {}) const;
+    Result pre_after(const DenseTensor& input, const DenseTensor& residual, const DenseTensor& gate,
                      const GatedResidualMarker& marker = {}) const;
-    Tensor post(const Tensor& input, const Tensor& residual, const Tensor& gate) const;
-    bool can_fuse(const Tensor& input) const;
+    DenseTensor post(const DenseTensor& input, const DenseTensor& residual, const DenseTensor& gate) const;
+    bool can_fuse(const DenseTensor& input) const;
 
 private:
-    Tensor norm;
+    DenseTensor norm;
     Projection down, up, injection;
     int64_t hidden = 0, streams = 0;
     double eps = 0;
@@ -73,14 +73,14 @@ private:
     const Options* options_ = nullptr;
     const bool* cache_serial_ = nullptr;
 
-    int64_t prefill_work_chunk(const Tensor& input) const;
+    int64_t prefill_work_chunk(const DenseTensor& input) const;
     template<class Project>
-    Result bounded_pre(const Tensor& input, int64_t chunk,
+    Result bounded_pre(const DenseTensor& input, int64_t chunk,
                        bool reuse_input, Project project) const;
-    Result fused(const Tensor& input, const Tensor& residual,
-                 const Tensor& gate, bool after,
+    Result fused(const DenseTensor& input, const DenseTensor& residual,
+                 const DenseTensor& gate, bool after,
                  const GatedResidualMarker& marker) const;
-    Result prepare(const Tensor& input, const Tensor& prepared_norm,
+    Result prepare(const DenseTensor& input, const DenseTensor& prepared_norm,
                    const GatedResidualMarker& marker) const;
 };
 

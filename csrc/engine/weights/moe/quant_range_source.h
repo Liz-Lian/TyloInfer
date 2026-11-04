@@ -27,9 +27,9 @@ public:
     const tyloi::MfeQuantExpertStore& store() const { return *store_; }
     MixedMoePool read_expert(int expert) const;
     MixedMoePool allocate_expert(int expert) const;
-    void copy_expert_fields(int expert,const std::vector<::tyloi::Tensor>& targets,bool touch_cache=true) const;
+    void copy_expert_fields(int expert,const std::vector<::tyloi::DenseTensor>& targets,bool touch_cache=true) const;
     bool copy_nvq_expert_fields(const std::vector<int>& experts,
-        const std::array<::tyloi::Tensor,4>& targets) const;
+        const std::array<::tyloi::DenseTensor,4>& targets) const;
     MixedMoePool decode_expert(int expert,const tyloi::MfeQuantExpert& encoded) const;
     void mark_preload_complete(bool assert_resident) { disk_sealed_.store(assert_resident); preloaded_.store(true); }
     bool expert_disk_sealed() const { return disk_sealed_.load(); }
@@ -44,8 +44,8 @@ public:
     std::size_t expert_field_bytes(int expert) const;
     const std::shared_ptr<MoeHostExpertCache>& host_cache() const { return host_cache_; }
     tyloi::MoeCacheKey host_key(int expert) const;
-    ::tyloi::Tensor forward_cpu(
-        ::tyloi::Tensor input,const MoeRoutePlan& route,
+    ::tyloi::DenseTensor forward_cpu(
+        ::tyloi::DenseTensor input,const MoeRoutePlan& route,
         const std::unordered_map<int,MoeHostExpertCache::Lease>* prepared = nullptr) const;
     std::uint64_t cpu_projections() const { return cpu_projections_.load(); }
     void record_cpu_projections(std::size_t experts) const { cpu_projections_.fetch_add(experts); }

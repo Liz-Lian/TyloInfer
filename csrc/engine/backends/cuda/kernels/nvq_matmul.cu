@@ -3725,12 +3725,12 @@ __global__ void __launch_bounds__(128) nepq_moe_grouped_tile_kernel(
 }
 
 void check_nepq_common(
-    const ::tyloi::Tensor & indices,
-    const ::tyloi::Tensor & aux,
-    const ::tyloi::Tensor & sub_scale,
-    const ::tyloi::Tensor & neuron_scale,
-    const ::tyloi::Tensor & table_pool,
-    const ::tyloi::Tensor & bank_ids,
+    const ::tyloi::DenseTensor & indices,
+    const ::tyloi::DenseTensor & aux,
+    const ::tyloi::DenseTensor & sub_scale,
+    const ::tyloi::DenseTensor & neuron_scale,
+    const ::tyloi::DenseTensor & table_pool,
+    const ::tyloi::DenseTensor & bank_ids,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format) {
@@ -3779,11 +3779,11 @@ void check_nepq_common(
 }
 
 void check_common(
-    const ::tyloi::Tensor & indices,
-    const ::tyloi::Tensor & aux,
-    const ::tyloi::Tensor & sub_scale,
-    const ::tyloi::Tensor & neuron_scale,
-    const ::tyloi::Tensor & codebook,
+    const ::tyloi::DenseTensor & indices,
+    const ::tyloi::DenseTensor & aux,
+    const ::tyloi::DenseTensor & sub_scale,
+    const ::tyloi::DenseTensor & neuron_scale,
+    const ::tyloi::DenseTensor & codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
@@ -4160,14 +4160,14 @@ void launch_aligned_group_multi2_m1(
 template <int NWARPS>
 void launch_m1_vec8_by_format(
     int format,
-    const ::tyloi::Tensor & indices,
-    const ::tyloi::Tensor & aux,
-    const ::tyloi::Tensor & sub_scale,
-    const ::tyloi::Tensor & neuron_scale,
-    const ::tyloi::Tensor & codebook,
-    const ::tyloi::Tensor & qx,
-    const ::tyloi::Tensor & xscale,
-    ::tyloi::Tensor & output,
+    const ::tyloi::DenseTensor & indices,
+    const ::tyloi::DenseTensor & aux,
+    const ::tyloi::DenseTensor & sub_scale,
+    const ::tyloi::DenseTensor & neuron_scale,
+    const ::tyloi::DenseTensor & codebook,
+    const ::tyloi::DenseTensor & qx,
+    const ::tyloi::DenseTensor & xscale,
+    ::tyloi::DenseTensor & output,
     int N,
     int ng,
     int nvec,
@@ -4271,14 +4271,14 @@ void launch_m1_vec8_by_format(
 template <int NWARPS, int MAX_M>
 void launch_batch_vec8_by_format(
     int format,
-    const ::tyloi::Tensor & indices,
-    const ::tyloi::Tensor & aux,
-    const ::tyloi::Tensor & sub_scale,
-    const ::tyloi::Tensor & neuron_scale,
-    const ::tyloi::Tensor & codebook,
-    const ::tyloi::Tensor & qx,
-    const ::tyloi::Tensor & xscale,
-    ::tyloi::Tensor & output,
+    const ::tyloi::DenseTensor & indices,
+    const ::tyloi::DenseTensor & aux,
+    const ::tyloi::DenseTensor & sub_scale,
+    const ::tyloi::DenseTensor & neuron_scale,
+    const ::tyloi::DenseTensor & codebook,
+    const ::tyloi::DenseTensor & qx,
+    const ::tyloi::DenseTensor & xscale,
+    ::tyloi::DenseTensor & output,
     int M,
     int N,
     int ng,
@@ -4299,11 +4299,11 @@ void launch_batch_vec8_by_format(
 }
 
 bool launch_group_vec8(
-    int format, const ::tyloi::Tensor& indices,
-    const ::tyloi::Tensor& aux, const ::tyloi::Tensor& sub_scale,
-    const ::tyloi::Tensor& neuron_scale, const ::tyloi::Tensor& codebook,
-    const ::tyloi::Tensor& qx, const ::tyloi::Tensor& xscale,
-    ::tyloi::Tensor& output,
+    int format, const ::tyloi::DenseTensor& indices,
+    const ::tyloi::DenseTensor& aux, const ::tyloi::DenseTensor& sub_scale,
+    const ::tyloi::DenseTensor& neuron_scale, const ::tyloi::DenseTensor& codebook,
+    const ::tyloi::DenseTensor& qx, const ::tyloi::DenseTensor& xscale,
+    ::tyloi::DenseTensor& output,
     int M, int N, int ng, int nvec, int nsign, int sub_bits, int sign_mode, cudaStream_t stream) {
     if (M > 4 || ng > 128 || N < 128 || N > 4096 ||
         (sub_bits != 4 && format != kNvq1L) || tyloi::cuda::env_lookup("TYLOINFER_NVQ_DENSE_REFERENCE")) return false;
@@ -4334,14 +4334,14 @@ bool launch_group_vec8(
 
 void launch_selected_batch_vec8(
     int format,
-    const ::tyloi::Tensor & indices,
-    const ::tyloi::Tensor & aux,
-    const ::tyloi::Tensor & sub_scale,
-    const ::tyloi::Tensor & neuron_scale,
-    const ::tyloi::Tensor & codebook,
-    const ::tyloi::Tensor & qx,
-    const ::tyloi::Tensor & xscale,
-    ::tyloi::Tensor & output,
+    const ::tyloi::DenseTensor & indices,
+    const ::tyloi::DenseTensor & aux,
+    const ::tyloi::DenseTensor & sub_scale,
+    const ::tyloi::DenseTensor & neuron_scale,
+    const ::tyloi::DenseTensor & codebook,
+    const ::tyloi::DenseTensor & qx,
+    const ::tyloi::DenseTensor & xscale,
+    ::tyloi::DenseTensor & output,
     int M,
     int N,
     int ng,
@@ -4432,14 +4432,14 @@ void launch_selected_batch_vec8(
 
 void launch_selected_m1_vec8(
     int format,
-    const ::tyloi::Tensor & indices,
-    const ::tyloi::Tensor & aux,
-    const ::tyloi::Tensor & sub_scale,
-    const ::tyloi::Tensor & neuron_scale,
-    const ::tyloi::Tensor & codebook,
-    const ::tyloi::Tensor & qx,
-    const ::tyloi::Tensor & xscale,
-    ::tyloi::Tensor & output,
+    const ::tyloi::DenseTensor & indices,
+    const ::tyloi::DenseTensor & aux,
+    const ::tyloi::DenseTensor & sub_scale,
+    const ::tyloi::DenseTensor & neuron_scale,
+    const ::tyloi::DenseTensor & codebook,
+    const ::tyloi::DenseTensor & qx,
+    const ::tyloi::DenseTensor & xscale,
+    ::tyloi::DenseTensor & output,
     int N,
     int ng,
     int nvec,
@@ -4465,11 +4465,11 @@ void launch_selected_m1_vec8(
 }
 
 NvqDeviceWeight make_device_weight(
-    const ::tyloi::Tensor & indices,
-    const ::tyloi::Tensor & aux,
-    const ::tyloi::Tensor & sub_scale,
-    const ::tyloi::Tensor & neuron_scale,
-    const ::tyloi::Tensor & codebook,
+    const ::tyloi::DenseTensor & indices,
+    const ::tyloi::DenseTensor & aux,
+    const ::tyloi::DenseTensor & sub_scale,
+    const ::tyloi::DenseTensor & neuron_scale,
+    const ::tyloi::DenseTensor & codebook,
     int neuron_len,
     int gs,
     int sub_bits,
@@ -4492,9 +4492,9 @@ template <int FORMAT, int NWARPS, int MAX_M, bool FAST_NVQ2_S4 = false>
 void launch_multi2_vec8(
     const NvqDeviceWeight & first,
     const NvqDeviceWeight & second,
-    const ::tyloi::Tensor & qx,
-    const ::tyloi::Tensor & xscale,
-    ::tyloi::Tensor & output,
+    const ::tyloi::DenseTensor & qx,
+    const ::tyloi::DenseTensor & xscale,
+    ::tyloi::DenseTensor & output,
     int M,
     cudaStream_t stream) {
     nvq_gemv_multi2_vec8_kernel<FORMAT, NWARPS, MAX_M, FAST_NVQ2_S4>
@@ -4507,9 +4507,9 @@ void launch_selected_multi2_vec8(
     int format,
     const NvqDeviceWeight & first,
     const NvqDeviceWeight & second,
-    const ::tyloi::Tensor & qx,
-    const ::tyloi::Tensor & xscale,
-    ::tyloi::Tensor & output,
+    const ::tyloi::DenseTensor & qx,
+    const ::tyloi::DenseTensor & xscale,
+    ::tyloi::DenseTensor & output,
     int M,
     cudaStream_t stream) {
 #define NVQ_MULTI2(F, NW, MAX_M) \
@@ -4628,13 +4628,13 @@ void launch_selected_multi2_vec8(
 
 }  // namespace
 
-::tyloi::Tensor nepq_dequant_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor table_pool,
-    ::tyloi::Tensor bank_ids,
+::tyloi::DenseTensor nepq_dequant_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor table_pool,
+    ::tyloi::DenseTensor bank_ids,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format) {
@@ -4670,19 +4670,19 @@ void launch_selected_multi2_vec8(
     return output;
 }
 
-::tyloi::Tensor nepq_gemv_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor table_pool,
-    ::tyloi::Tensor bank_ids,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nepq_gemv_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor table_pool,
+    ::tyloi::DenseTensor bank_ids,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
@@ -4756,19 +4756,19 @@ void launch_selected_multi2_vec8(
     return output;
 }
 
-::tyloi::Tensor nepq_mmq_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor table_pool,
-    ::tyloi::Tensor bank_ids,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nepq_mmq_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor table_pool,
+    ::tyloi::DenseTensor bank_ids,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
@@ -4832,14 +4832,14 @@ void launch_selected_multi2_vec8(
     return output;
 }
 
-::tyloi::Tensor nepq_gemm_f16_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor table_pool,
-    ::tyloi::Tensor bank_ids,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nepq_gemm_f16_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor table_pool,
+    ::tyloi::DenseTensor bank_ids,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format) {
@@ -4900,28 +4900,28 @@ void launch_selected_multi2_vec8(
     return output;
 }
 
-::tyloi::Tensor nepq_moe_grouped_matmul_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor table_pool,
-    ::tyloi::Tensor bank_ids,
-    ::tyloi::Tensor grouped_table_pool,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor ids,
+::tyloi::DenseTensor nepq_moe_grouped_matmul_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor table_pool,
+    ::tyloi::DenseTensor bank_ids,
+    ::tyloi::DenseTensor grouped_table_pool,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor ids,
     int64_t n_experts,
     int64_t out_per_expert,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format,
-    ::tyloi::Tensor out,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale,
-    ::tyloi::Tensor ids_dst,
-    ::tyloi::Tensor expert_bounds,
-    ::tyloi::Tensor tile_bounds,
-    ::tyloi::Tensor tile_experts) {
+    ::tyloi::DenseTensor out,
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale,
+    ::tyloi::DenseTensor ids_dst,
+    ::tyloi::DenseTensor expert_bounds,
+    ::tyloi::DenseTensor tile_bounds,
+    ::tyloi::DenseTensor tile_experts) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
@@ -5874,14 +5874,14 @@ __global__ void __launch_bounds__(256, 1) nepq_moe_grouped_f16_kernel(
     }
 }
 
-::tyloi::Tensor nvq_moe_grouped_matmul_pool_f16_cuda(
-    ::tyloi::Tensor indices, ::tyloi::Tensor aux, ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor codebook, ::tyloi::Tensor x,
-    ::tyloi::Tensor expert_local, int64_t n_experts, int64_t pool_experts,
+::tyloi::DenseTensor nvq_moe_grouped_matmul_pool_f16_cuda(
+    ::tyloi::DenseTensor indices, ::tyloi::DenseTensor aux, ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale, ::tyloi::DenseTensor codebook, ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor expert_local, int64_t n_experts, int64_t pool_experts,
     int64_t out_per_expert, int64_t neuron_len, int64_t gs,
     int64_t sub_bits, int64_t format, int64_t sign_mode,
-    ::tyloi::Tensor out, ::tyloi::Tensor ids_dst, ::tyloi::Tensor expert_bounds,
-    ::tyloi::Tensor tile_bounds, ::tyloi::Tensor tile_experts) {
+    ::tyloi::DenseTensor out, ::tyloi::DenseTensor ids_dst, ::tyloi::DenseTensor expert_bounds,
+    ::tyloi::DenseTensor tile_bounds, ::tyloi::DenseTensor tile_experts) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode,true);
     TYLOINFER_RUNTIME_CHECK(gs == kGroupSize, "NVQ routed FP16 requires gs24");
@@ -5927,22 +5927,22 @@ __global__ void __launch_bounds__(256, 1) nepq_moe_grouped_f16_kernel(
     return out;
 }
 
-::tyloi::Tensor nvq_moe_grouped_matmul_hetero_f16_cuda(
-    ::tyloi::Tensor weight_ptrs,
-    ::tyloi::Tensor weight_sizes,
-    ::tyloi::Tensor pool_params,
-    ::tyloi::Tensor expert_pool,
-    ::tyloi::Tensor expert_local,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_moe_grouped_matmul_hetero_f16_cuda(
+    ::tyloi::DenseTensor weight_ptrs,
+    ::tyloi::DenseTensor weight_sizes,
+    ::tyloi::DenseTensor pool_params,
+    ::tyloi::DenseTensor expert_pool,
+    ::tyloi::DenseTensor expert_local,
+    ::tyloi::DenseTensor x,
     int64_t n_experts,
     int64_t out_per_expert,
     int64_t neuron_len,
     int64_t route_tile_m,
-    ::tyloi::Tensor out,
-    ::tyloi::Tensor ids_dst,
-    ::tyloi::Tensor expert_bounds,
-    ::tyloi::Tensor tile_bounds,
-    ::tyloi::Tensor tile_experts,
+    ::tyloi::DenseTensor out,
+    ::tyloi::DenseTensor ids_dst,
+    ::tyloi::DenseTensor expert_bounds,
+    ::tyloi::DenseTensor tile_bounds,
+    ::tyloi::DenseTensor tile_experts,
     int64_t format_group,
     bool masked_experts) {
     TYLOINFER_RUNTIME_CHECK(
@@ -6208,21 +6208,21 @@ __global__ void __launch_bounds__(256, 1) nepq_moe_grouped_f16_kernel(
     return out;
 }
 
-static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
-    ::tyloi::Tensor weight_ptrs,
-    ::tyloi::Tensor weight_sizes,
-    ::tyloi::Tensor pool_params,
-    ::tyloi::Tensor expert_pool,
-    ::tyloi::Tensor expert_local,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor ids,
+static ::tyloi::DenseTensor nvq_moe_grouped_matmul_hetero_impl(
+    ::tyloi::DenseTensor weight_ptrs,
+    ::tyloi::DenseTensor weight_sizes,
+    ::tyloi::DenseTensor pool_params,
+    ::tyloi::DenseTensor expert_pool,
+    ::tyloi::DenseTensor expert_local,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor ids,
     int64_t n_experts,
     int64_t out_per_expert,
     int64_t neuron_len,
     bool input_quantized,
-    ::tyloi::Tensor out,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale,::tyloi::Tensor active_plan) {
+    ::tyloi::DenseTensor out,
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale,::tyloi::DenseTensor active_plan) {
     TYLOINFER_RUNTIME_CHECK(
         n_experts > 0 && n_experts <= 4096,
         "NVQ heterogeneous expert count must be in [1,4096]");
@@ -6379,35 +6379,35 @@ static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
     return out;
 }
 
-::tyloi::Tensor nvq_moe_grouped_matmul_hetero_ws_cuda(
-    ::tyloi::Tensor weight_ptrs,::tyloi::Tensor weight_sizes,
-    ::tyloi::Tensor pool_params,::tyloi::Tensor expert_pool,
-    ::tyloi::Tensor expert_local,::tyloi::Tensor x,::tyloi::Tensor ids,
+::tyloi::DenseTensor nvq_moe_grouped_matmul_hetero_ws_cuda(
+    ::tyloi::DenseTensor weight_ptrs,::tyloi::DenseTensor weight_sizes,
+    ::tyloi::DenseTensor pool_params,::tyloi::DenseTensor expert_pool,
+    ::tyloi::DenseTensor expert_local,::tyloi::DenseTensor x,::tyloi::DenseTensor ids,
     int64_t n_experts,int64_t out_per_expert,int64_t neuron_len,bool input_quantized,
-    ::tyloi::Tensor out,::tyloi::Tensor qx,::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor out,::tyloi::DenseTensor qx,::tyloi::DenseTensor xscale) {
     return nvq_moe_grouped_matmul_hetero_impl(weight_ptrs,weight_sizes,pool_params,expert_pool,expert_local,
         x,ids,n_experts,out_per_expert,neuron_len,input_quantized,out,qx,xscale,{});
 }
-::tyloi::Tensor nvq_moe_grouped_matmul_active_ws_cuda(
-    ::tyloi::Tensor weight_ptrs,::tyloi::Tensor weight_sizes,
-    ::tyloi::Tensor pool_params,::tyloi::Tensor expert_pool,
-    ::tyloi::Tensor expert_local,::tyloi::Tensor x,::tyloi::Tensor ids,
+::tyloi::DenseTensor nvq_moe_grouped_matmul_active_ws_cuda(
+    ::tyloi::DenseTensor weight_ptrs,::tyloi::DenseTensor weight_sizes,
+    ::tyloi::DenseTensor pool_params,::tyloi::DenseTensor expert_pool,
+    ::tyloi::DenseTensor expert_local,::tyloi::DenseTensor x,::tyloi::DenseTensor ids,
     int64_t n_experts,int64_t out_per_expert,int64_t neuron_len,bool input_quantized,
-    ::tyloi::Tensor out,::tyloi::Tensor qx,::tyloi::Tensor xscale,
-    ::tyloi::Tensor active_plan) {
+    ::tyloi::DenseTensor out,::tyloi::DenseTensor qx,::tyloi::DenseTensor xscale,
+    ::tyloi::DenseTensor active_plan) {
     TYLOINFER_RUNTIME_CHECK(active_plan.defined(),"NVQ active route plan required");
     return nvq_moe_grouped_matmul_hetero_impl(weight_ptrs,weight_sizes,pool_params,expert_pool,expert_local,
         x,ids,n_experts,out_per_expert,neuron_len,input_quantized,out,qx,xscale,active_plan);
 }
 
-::tyloi::Tensor nepq_moe_grouped_matmul_pool_f16_cuda(
-    ::tyloi::Tensor indices, ::tyloi::Tensor aux, ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor table_pool,
-    ::tyloi::Tensor bank_ids, ::tyloi::Tensor x, ::tyloi::Tensor expert_local,
+::tyloi::DenseTensor nepq_moe_grouped_matmul_pool_f16_cuda(
+    ::tyloi::DenseTensor indices, ::tyloi::DenseTensor aux, ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale, ::tyloi::DenseTensor table_pool,
+    ::tyloi::DenseTensor bank_ids, ::tyloi::DenseTensor x, ::tyloi::DenseTensor expert_local,
     int64_t n_experts, int64_t pool_experts, int64_t out_per_expert,
     int64_t neuron_len, int64_t sub_bits, int64_t format,
-    ::tyloi::Tensor out, ::tyloi::Tensor ids_dst, ::tyloi::Tensor expert_bounds,
-    ::tyloi::Tensor tile_bounds, ::tyloi::Tensor tile_experts) {
+    ::tyloi::DenseTensor out, ::tyloi::DenseTensor ids_dst, ::tyloi::DenseTensor expert_bounds,
+    ::tyloi::DenseTensor tile_bounds, ::tyloi::DenseTensor tile_experts) {
     check_nepq_common(indices, aux, sub_scale, neuron_scale, table_pool,
                       bank_ids, neuron_len, sub_bits, format);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
@@ -6454,15 +6454,15 @@ static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
     return out;
 }
 
-::tyloi::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor ids,
-    ::tyloi::Tensor expert_local,
+::tyloi::DenseTensor nvq_moe_grouped_matmul_pool_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor ids,
+    ::tyloi::DenseTensor expert_local,
     int64_t n_experts,
     int64_t pool_experts,
     int64_t out_per_expert,
@@ -6472,13 +6472,13 @@ static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
     int64_t format,
     int64_t sign_mode,
     bool input_quantized,
-    ::tyloi::Tensor out,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale,
-    ::tyloi::Tensor ids_dst,
-    ::tyloi::Tensor expert_bounds,
-    ::tyloi::Tensor tile_bounds,
-    ::tyloi::Tensor tile_experts) {
+    ::tyloi::DenseTensor out,
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale,
+    ::tyloi::DenseTensor ids_dst,
+    ::tyloi::DenseTensor expert_bounds,
+    ::tyloi::DenseTensor tile_bounds,
+    ::tyloi::DenseTensor tile_experts) {
     check_common(
         indices, aux, sub_scale, neuron_scale, codebook,
         neuron_len, gs, sub_bits, format, sign_mode,true);
@@ -6744,17 +6744,17 @@ static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
     return out;
 }
 
-::tyloi::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor table_pool,
-    ::tyloi::Tensor bank_ids,
-    ::tyloi::Tensor grouped_table_pool,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor ids,
-    ::tyloi::Tensor expert_local,
+::tyloi::DenseTensor nepq_moe_grouped_matmul_pool_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor table_pool,
+    ::tyloi::DenseTensor bank_ids,
+    ::tyloi::DenseTensor grouped_table_pool,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor ids,
+    ::tyloi::DenseTensor expert_local,
     int64_t n_experts,
     int64_t pool_experts,
     int64_t out_per_expert,
@@ -6762,13 +6762,13 @@ static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
     int64_t sub_bits,
     int64_t format,
     bool input_quantized,
-    ::tyloi::Tensor out,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale,
-    ::tyloi::Tensor ids_dst,
-    ::tyloi::Tensor expert_bounds,
-    ::tyloi::Tensor tile_bounds,
-    ::tyloi::Tensor tile_experts) {
+    ::tyloi::DenseTensor out,
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale,
+    ::tyloi::DenseTensor ids_dst,
+    ::tyloi::DenseTensor expert_bounds,
+    ::tyloi::DenseTensor tile_bounds,
+    ::tyloi::DenseTensor tile_experts) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
@@ -6917,12 +6917,12 @@ static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
     return out;
 }
 
-::tyloi::Tensor nvq_dequant_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
+::tyloi::DenseTensor nvq_dequant_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
@@ -7050,13 +7050,13 @@ __global__ void __launch_bounds__(32) nvq_backward_quad_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nvq_backward_quad_small_m(
-        const ::tyloi::Tensor & indices,
-        const ::tyloi::Tensor & aux,
-        const ::tyloi::Tensor & sub_scale,
-        const ::tyloi::Tensor & neuron_scale,
-        const ::tyloi::Tensor & codebook,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & partials,
+        const ::tyloi::DenseTensor & indices,
+        const ::tyloi::DenseTensor & aux,
+        const ::tyloi::DenseTensor & sub_scale,
+        const ::tyloi::DenseTensor & neuron_scale,
+        const ::tyloi::DenseTensor & codebook,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & partials,
         int M,
         int N,
         int K,
@@ -7184,13 +7184,13 @@ __global__ void __launch_bounds__(32) nvq_backward_vec8_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nvq_backward_vec8_small_m(
-        const ::tyloi::Tensor & indices,
-        const ::tyloi::Tensor & aux,
-        const ::tyloi::Tensor & sub_scale,
-        const ::tyloi::Tensor & neuron_scale,
-        const ::tyloi::Tensor & codebook,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & partials,
+        const ::tyloi::DenseTensor & indices,
+        const ::tyloi::DenseTensor & aux,
+        const ::tyloi::DenseTensor & sub_scale,
+        const ::tyloi::DenseTensor & neuron_scale,
+        const ::tyloi::DenseTensor & codebook,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & partials,
         int M,
         int N,
         int K,
@@ -7335,13 +7335,13 @@ __global__ void __launch_bounds__(256) nvq_backward_mma_m8_kernel(
 
 template <int FORMAT>
 void launch_nvq_backward_mma_m8(
-        const ::tyloi::Tensor & indices,
-        const ::tyloi::Tensor & aux,
-        const ::tyloi::Tensor & sub_scale,
-        const ::tyloi::Tensor & neuron_scale,
-        const ::tyloi::Tensor & codebook,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & indices,
+        const ::tyloi::DenseTensor & aux,
+        const ::tyloi::DenseTensor & sub_scale,
+        const ::tyloi::DenseTensor & neuron_scale,
+        const ::tyloi::DenseTensor & codebook,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         int M,
         int N,
         int K,
@@ -7487,14 +7487,14 @@ __global__ void __launch_bounds__(256) nepq_backward_mma_m8_kernel(
 
 template <int FORMAT>
 void launch_nepq_backward_mma_m8(
-        const ::tyloi::Tensor & indices,
-        const ::tyloi::Tensor & aux,
-        const ::tyloi::Tensor & state_stream,
-        const ::tyloi::Tensor & neuron_scale,
-        const ::tyloi::Tensor & table_pool,
-        const ::tyloi::Tensor & bank_ids,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & indices,
+        const ::tyloi::DenseTensor & aux,
+        const ::tyloi::DenseTensor & state_stream,
+        const ::tyloi::DenseTensor & neuron_scale,
+        const ::tyloi::DenseTensor & table_pool,
+        const ::tyloi::DenseTensor & bank_ids,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         int M,
         int N,
         int K,
@@ -7624,14 +7624,14 @@ __global__ void __launch_bounds__(32) nepq_backward_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nepq_backward_small_m(
-        const ::tyloi::Tensor & indices,
-        const ::tyloi::Tensor & aux,
-        const ::tyloi::Tensor & state_stream,
-        const ::tyloi::Tensor & neuron_scale,
-        const ::tyloi::Tensor & table_pool,
-        const ::tyloi::Tensor & bank_ids,
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & partials,
+        const ::tyloi::DenseTensor & indices,
+        const ::tyloi::DenseTensor & aux,
+        const ::tyloi::DenseTensor & state_stream,
+        const ::tyloi::DenseTensor & neuron_scale,
+        const ::tyloi::DenseTensor & table_pool,
+        const ::tyloi::DenseTensor & bank_ids,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & partials,
         int M,
         int N,
         int K,
@@ -7662,8 +7662,8 @@ void launch_nepq_backward_small_m(
 
 template <typename T, typename Launch>
 void launch_backward_by_dtype(
-        const ::tyloi::Tensor & output_gradient,
-        ::tyloi::Tensor & result,
+        const ::tyloi::DenseTensor & output_gradient,
+        ::tyloi::DenseTensor & result,
         Launch && launch) {
     if constexpr (std::is_same_v<T, __half>) {
         launch(
@@ -7680,13 +7680,13 @@ void launch_backward_by_dtype(
 
 }  // namespace
 
-::tyloi::Tensor nvq_backward_input_cuda(
-        ::tyloi::Tensor indices,
-        ::tyloi::Tensor aux,
-        ::tyloi::Tensor sub_scale,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor codebook,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor nvq_backward_input_cuda(
+        ::tyloi::DenseTensor indices,
+        ::tyloi::DenseTensor aux,
+        ::tyloi::DenseTensor sub_scale,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor codebook,
+        ::tyloi::DenseTensor output_gradient,
         int64_t neuron_len,
         int64_t gs,
         int64_t sub_bits,
@@ -7802,14 +7802,14 @@ void launch_backward_by_dtype(
     return result;
 }
 
-::tyloi::Tensor nepq_backward_input_cuda(
-        ::tyloi::Tensor indices,
-        ::tyloi::Tensor aux,
-        ::tyloi::Tensor state_stream,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor table_pool,
-        ::tyloi::Tensor bank_ids,
-        ::tyloi::Tensor output_gradient,
+::tyloi::DenseTensor nepq_backward_input_cuda(
+        ::tyloi::DenseTensor indices,
+        ::tyloi::DenseTensor aux,
+        ::tyloi::DenseTensor state_stream,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor table_pool,
+        ::tyloi::DenseTensor bank_ids,
+        ::tyloi::DenseTensor output_gradient,
         int64_t neuron_len,
         int64_t state_bits,
         int64_t format) {
@@ -7920,13 +7920,13 @@ void launch_backward_by_dtype(
 }
 #endif
 
-::tyloi::Tensor nvq_gemm_f16_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_gemm_f16_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
@@ -7997,21 +7997,21 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq_gemv_m1_vec8_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_gemv_m1_vec8_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t nwarps,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() &&
@@ -8057,21 +8057,21 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq_gemv_batch_vec8_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_gemv_batch_vec8_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t nwarps,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
@@ -8131,20 +8131,20 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq_gemv_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_gemv_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
@@ -8184,19 +8184,19 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq_gemv_qx_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
+::tyloi::DenseTensor nvq_gemv_qx_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() && qx.dim() == 2,
@@ -8233,20 +8233,20 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq_gemv_qx_residual_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
+::tyloi::DenseTensor nvq_gemv_qx_residual_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale,
-    ::tyloi::Tensor residual) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale,
+    ::tyloi::DenseTensor residual) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(
@@ -8297,18 +8297,18 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq_gemv_multi2_ws_cuda(
-    ::tyloi::Tensor first_indices,
-    ::tyloi::Tensor first_aux,
-    ::tyloi::Tensor first_sub_scale,
-    ::tyloi::Tensor first_neuron_scale,
-    ::tyloi::Tensor first_codebook,
-    ::tyloi::Tensor second_indices,
-    ::tyloi::Tensor second_aux,
-    ::tyloi::Tensor second_sub_scale,
-    ::tyloi::Tensor second_neuron_scale,
-    ::tyloi::Tensor second_codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_gemv_multi2_ws_cuda(
+    ::tyloi::DenseTensor first_indices,
+    ::tyloi::DenseTensor first_aux,
+    ::tyloi::DenseTensor first_sub_scale,
+    ::tyloi::DenseTensor first_neuron_scale,
+    ::tyloi::DenseTensor first_codebook,
+    ::tyloi::DenseTensor second_indices,
+    ::tyloi::DenseTensor second_aux,
+    ::tyloi::DenseTensor second_sub_scale,
+    ::tyloi::DenseTensor second_neuron_scale,
+    ::tyloi::DenseTensor second_codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t first_sub_bits,
@@ -8317,8 +8317,8 @@ void launch_backward_by_dtype(
     int64_t second_sub_bits,
     int64_t second_format,
     int64_t second_sign_mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(first_indices, first_aux, first_sub_scale, first_neuron_scale, first_codebook,
                  neuron_len, gs, first_sub_bits, first_format, first_sign_mode);
     check_common(second_indices, second_aux, second_sub_scale, second_neuron_scale, second_codebook,
@@ -8359,18 +8359,18 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq_gemv_swiglu_ws_cuda(
-    ::tyloi::Tensor gate_indices,
-    ::tyloi::Tensor gate_aux,
-    ::tyloi::Tensor gate_sub_scale,
-    ::tyloi::Tensor gate_neuron_scale,
-    ::tyloi::Tensor gate_codebook,
-    ::tyloi::Tensor up_indices,
-    ::tyloi::Tensor up_aux,
-    ::tyloi::Tensor up_sub_scale,
-    ::tyloi::Tensor up_neuron_scale,
-    ::tyloi::Tensor up_codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_gemv_swiglu_ws_cuda(
+    ::tyloi::DenseTensor gate_indices,
+    ::tyloi::DenseTensor gate_aux,
+    ::tyloi::DenseTensor gate_sub_scale,
+    ::tyloi::DenseTensor gate_neuron_scale,
+    ::tyloi::DenseTensor gate_codebook,
+    ::tyloi::DenseTensor up_indices,
+    ::tyloi::DenseTensor up_aux,
+    ::tyloi::DenseTensor up_sub_scale,
+    ::tyloi::DenseTensor up_neuron_scale,
+    ::tyloi::DenseTensor up_codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t gate_sub_bits,
@@ -8379,8 +8379,8 @@ void launch_backward_by_dtype(
     int64_t up_sub_bits,
     int64_t up_format,
     int64_t up_sign_mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(gate_indices, gate_aux, gate_sub_scale, gate_neuron_scale, gate_codebook,
                  neuron_len, gs, gate_sub_bits, gate_format, gate_sign_mode);
     check_common(up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
@@ -8454,18 +8454,18 @@ void launch_backward_by_dtype(
     return output;
 }
 
-::tyloi::Tensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
-    ::tyloi::Tensor gate_indices,
-    ::tyloi::Tensor gate_aux,
-    ::tyloi::Tensor gate_sub_scale,
-    ::tyloi::Tensor gate_neuron_scale,
-    ::tyloi::Tensor gate_codebook,
-    ::tyloi::Tensor up_indices,
-    ::tyloi::Tensor up_aux,
-    ::tyloi::Tensor up_sub_scale,
-    ::tyloi::Tensor up_neuron_scale,
-    ::tyloi::Tensor up_codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
+    ::tyloi::DenseTensor gate_indices,
+    ::tyloi::DenseTensor gate_aux,
+    ::tyloi::DenseTensor gate_sub_scale,
+    ::tyloi::DenseTensor gate_neuron_scale,
+    ::tyloi::DenseTensor gate_codebook,
+    ::tyloi::DenseTensor up_indices,
+    ::tyloi::DenseTensor up_aux,
+    ::tyloi::DenseTensor up_sub_scale,
+    ::tyloi::DenseTensor up_neuron_scale,
+    ::tyloi::DenseTensor up_codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t gate_sub_bits,
@@ -8474,8 +8474,8 @@ void launch_backward_by_dtype(
     int64_t up_sub_bits,
     int64_t up_format,
     int64_t up_sign_mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(gate_indices, gate_aux, gate_sub_scale, gate_neuron_scale, gate_codebook,
                  neuron_len, gs, gate_sub_bits, gate_format, gate_sign_mode);
     check_common(up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
@@ -8518,17 +8518,17 @@ void launch_backward_by_dtype(
 }
 
 void nvq_ffn_swiglu_quant_ws_cuda(
-    ::tyloi::Tensor gate_indices,
-    ::tyloi::Tensor gate_aux,
-    ::tyloi::Tensor gate_sub_scale,
-    ::tyloi::Tensor gate_neuron_scale,
-    ::tyloi::Tensor gate_codebook,
-    ::tyloi::Tensor up_indices,
-    ::tyloi::Tensor up_aux,
-    ::tyloi::Tensor up_sub_scale,
-    ::tyloi::Tensor up_neuron_scale,
-    ::tyloi::Tensor up_codebook,
-    ::tyloi::Tensor x,
+    ::tyloi::DenseTensor gate_indices,
+    ::tyloi::DenseTensor gate_aux,
+    ::tyloi::DenseTensor gate_sub_scale,
+    ::tyloi::DenseTensor gate_neuron_scale,
+    ::tyloi::DenseTensor gate_codebook,
+    ::tyloi::DenseTensor up_indices,
+    ::tyloi::DenseTensor up_aux,
+    ::tyloi::DenseTensor up_sub_scale,
+    ::tyloi::DenseTensor up_neuron_scale,
+    ::tyloi::DenseTensor up_codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t gate_sub_bits,
@@ -8538,11 +8538,11 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     int64_t up_format,
     int64_t up_sign_mode,
     int64_t down_gs,
-    ::tyloi::Tensor input_qx,
-    ::tyloi::Tensor input_xscale,
-    ::tyloi::Tensor output_qx,
-    ::tyloi::Tensor output_xscale,
-    ::tyloi::Tensor swiglu_scratch) {
+    ::tyloi::DenseTensor input_qx,
+    ::tyloi::DenseTensor input_xscale,
+    ::tyloi::DenseTensor output_qx,
+    ::tyloi::DenseTensor output_xscale,
+    ::tyloi::DenseTensor swiglu_scratch) {
     check_common(gate_indices, gate_aux, gate_sub_scale, gate_neuron_scale, gate_codebook,
                  neuron_len, gs, gate_sub_bits, gate_format, gate_sign_mode);
     check_common(up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
@@ -8680,22 +8680,22 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     TYLOINFER_RUNTIME_CHECK(cudaGetLastError() == cudaSuccess, "NVQ fused FFN kernel launch failed");
 }
 
-::tyloi::Tensor nvq_gemv_gate_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor gate,
+::tyloi::DenseTensor nvq_gemv_gate_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor gate,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NVQ gate mode must be 1(sigmoid) or 2(silu)");
@@ -8746,20 +8746,20 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     return output;
 }
 
-::tyloi::Tensor nvq_mmq_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
+::tyloi::DenseTensor nvq_mmq_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
@@ -8816,22 +8816,22 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     return output;
 }
 
-::tyloi::Tensor nvq_mmq_gate_ws_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor x,
-    ::tyloi::Tensor gate,
+::tyloi::DenseTensor nvq_mmq_gate_ws_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor x,
+    ::tyloi::DenseTensor gate,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t mode,
-    ::tyloi::Tensor qx,
-    ::tyloi::Tensor xscale) {
+    ::tyloi::DenseTensor qx,
+    ::tyloi::DenseTensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NVQ gate mode must be 1(sigmoid) or 2(silu)");
@@ -8899,13 +8899,13 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     return output;
 }
 
-::tyloi::Tensor nvq_embedding_lookup_cuda(
-    ::tyloi::Tensor indices,
-    ::tyloi::Tensor aux,
-    ::tyloi::Tensor sub_scale,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor codebook,
-    ::tyloi::Tensor token_ids,
+::tyloi::DenseTensor nvq_embedding_lookup_cuda(
+    ::tyloi::DenseTensor indices,
+    ::tyloi::DenseTensor aux,
+    ::tyloi::DenseTensor sub_scale,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor codebook,
+    ::tyloi::DenseTensor token_ids,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,

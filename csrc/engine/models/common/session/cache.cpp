@@ -104,7 +104,7 @@ std::vector<std::pair<std::string, double>> TextSessionCache::metrics() const {
 
 std::map<int, std::size_t> TextSessionCache::device_hot_bytes() const {
     std::map<std::pair<int, std::uintptr_t>, std::size_t> allocations;
-    const auto tensor = [&](const ::tyloi::Tensor& value) {
+    const auto tensor = [&](const ::tyloi::DenseTensor& value) {
         if (!value.defined() || !value.is_cuda()) return;
         auto& bytes = allocations[{value.get_device(), reinterpret_cast<std::uintptr_t>(value.data_ptr())}];
         bytes = std::max(bytes, std::size_t(value.numel()) * value.element_size());

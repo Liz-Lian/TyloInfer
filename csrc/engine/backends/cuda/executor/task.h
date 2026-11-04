@@ -24,7 +24,7 @@ using Slot = size_t;
 
 struct Norm {
     Slot input, output;
-    ::tyloi::Tensor weight;
+    ::tyloi::DenseTensor weight;
     double eps, offset;
 };
 
@@ -52,7 +52,7 @@ struct Attention {
     Slot input, residual, output;
     const FullAttention& weights;
     size_t state;
-    ::tyloi::Tensor* residual_out = nullptr;
+    ::tyloi::DenseTensor* residual_out = nullptr;
 };
 
 struct Linear {
@@ -75,14 +75,14 @@ struct Dense {
 struct FullFfn {
     Slot residual, input, output;
     const Ffn& weights;
-    ::tyloi::Tensor norm;
+    ::tyloi::DenseTensor norm;
     const FullAttention& attention;
 };
 
 struct LinearFfn {
     Slot residual, input, output;
     const Ffn& weights;
-    ::tyloi::Tensor norm;
+    ::tyloi::DenseTensor norm;
     const LinearAttention& attention;
 };
 
@@ -104,7 +104,7 @@ struct LinearStateView {
 };
 
 struct Inputs {
-    std::vector<::tyloi::Tensor> values;
+    std::vector<::tyloi::DenseTensor> values;
     std::optional<size_t> output = 0;
     std::span<const AttentionKvView> kv;
     AttentionStep attention;

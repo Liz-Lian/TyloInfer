@@ -10,9 +10,9 @@ namespace tyloi::cuda::deepseek_v41_runtime {
 class Vision {
 public:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    using Tensor = tyloi::Tensor;
+    using DenseTensor = tyloi::DenseTensor;
 #else
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
 #endif
     static Vision load(std::shared_ptr<const tyloi::ModelSource> source,weight_loader::Loader weights,const CommonConfig& config);
     tyloi::StepSequence<PreparedPrompt> prepare(DeepseekV41CausalLm& language, MediaCache& images,
@@ -23,11 +23,11 @@ public:
 private:
     Vision(std::shared_ptr<const tyloi::ModelSource> source,weight_loader::Loader weights,CommonConfig config)
         :source_(std::move(source)),weights_(std::move(weights)),config_(std::move(config)) {}
-    tyloi::StepSequence<Tensor> encode(
+    tyloi::StepSequence<DenseTensor> encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
-        Tensor patches,int height,int width) const;
+        DenseTensor patches,int height,int width) const;
     std::shared_ptr<const tyloi::ModelSource> source_;
     weight_loader::Loader weights_;
     CommonConfig config_;

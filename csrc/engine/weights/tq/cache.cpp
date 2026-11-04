@@ -107,7 +107,7 @@ void TqCache::report()const {
         static_cast<unsigned long long>(pin_failures_));
 }
 
-void TqCache::upload(const ::tyloi::Tensor& destination,const std::vector<std::uint8_t>& bytes) {
+void TqCache::upload(const ::tyloi::DenseTensor& destination,const std::vector<std::uint8_t>& bytes) {
     const auto started=std::chrono::steady_clock::now();
     auto& staging=stages_[destination.get_device()];
     auto* stage=staging.stages[staging.index].get();
@@ -214,8 +214,8 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
         {"host_tensor_bytes",double(tyloi::cuda::tensor_host_bytes.load())}};
 }
 
-::tyloi::Tensor TqCache::views(std::uint64_t source,
-        const std::int64_t* ids,const std::vector<::tyloi::Tensor>& weights,int device) {
+::tyloi::DenseTensor TqCache::views(std::uint64_t source,
+        const std::int64_t* ids,const std::vector<::tyloi::encoding::TqTensor>& weights,int device) {
     const MfqCudaGuard device_guard(device);
     std::lock_guard<std::mutex> guard(mutex_);
     if (!source || source > sources_.size()) throw std::out_of_range("unknown TQ source");
@@ -241,7 +241,7 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
     // images; the caller's selected weights retain their normal lifetime.
     bool changed=false;
     for(std::size_t i=0;i<weights.size();++i) {
-        const auto image=reinterpret_cast<std::uintptr_t>(::tyloi::encoding::tq_image(weights[i]).data_ptr());
+        const auto image=reinterpret_cast<std::uintptr_t>(weights[i].image().data_ptr());
         if(found->images[ids[i]]==image)continue;
         const auto view=tyloi::cuda::tq::view(weights[i]);
         std::memcpy(found->bytes.data()+ids[i]*sizeof(TrellisProjectionView),&view,sizeof(view));
@@ -254,7 +254,7 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
     return found->views;
 }
 
-std::vector<::tyloi::Tensor> TqCache::get(std::uint64_t source,const std::int64_t* ids,std::size_t count,int device) {
+std::vector<::tyloi::encoding::TqTensor> TqCache::get(std::uint64_t source,const std::int64_t* ids,std::size_t count,int device) {
     const MfqCudaGuard device_guard(device);
     std::lock_guard<std::mutex> guard(mutex_);
     if (!source || source > sources_.size()) throw std::out_of_range("unknown TQ source");
@@ -265,7 +265,7 @@ std::vector<::tyloi::Tensor> TqCache::get(std::uint64_t source,const std::int64_
         if (!ids || ids[i] < 0 || std::uint64_t(ids[i]) >= table.rows() / out)
             throw std::out_of_range("TQ routed expert ID is out of bounds");
     const auto resources=tq_->get(device);
-    std::vector<::tyloi::Tensor> result;result.reserve(count);
+    std::vector<::tyloi::encoding::TqTensor> result;result.reserve(count);
     const auto stream=mfq_get_current_cuda_stream(device);
     std::shared_ptr<tyloi::cuda::Event> uploaded;
     for(auto it=host_transfers_.begin();it!=host_transfers_.end();)

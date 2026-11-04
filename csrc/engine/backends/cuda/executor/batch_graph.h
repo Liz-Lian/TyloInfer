@@ -14,7 +14,7 @@ struct BatchGraph {
     decltype(mfq_get_stream_from_pool(false)) stream;
     std::vector<MfqCudaStream> compute_streams;
     std::unique_ptr<MfqCudaGraph> graph;
-    ::tyloi::Tensor static_next;
+    ::tyloi::DenseTensor static_next;
     std::vector<const void*> state_addresses;
     int64_t batch = 0;
     int64_t planned_len = 0;

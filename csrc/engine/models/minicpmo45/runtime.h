@@ -5,7 +5,7 @@
 #include "audio.h"
 #include "tts.h"
 
-inline auto minicpmo45_parse_bounds(::tyloi::Tensor bounds, const char *label) {
+inline auto minicpmo45_parse_bounds(::tyloi::DenseTensor bounds, const char *label) {
     if (!bounds.defined() || bounds.numel() == 0)
         return std::vector<tyloi::models::minicpmo45::MediaBound>{};
     if (bounds.dim() != 2 || bounds.size(1) != 4)
@@ -36,37 +36,37 @@ struct MiniCPMO45Runtime {
                                   CudaExecutionContext& execution);
 
     struct EncodeOps {
-        using Tensor = ::tyloi::Tensor;
+        using DenseTensor = ::tyloi::DenseTensor;
         MiniCPMO45Runtime &runtime;
-        static int64_t rank(const Tensor &t) { return t.dim(); }
-        static int64_t size(const Tensor &t, int axis) { return t.size(axis); }
-        static bool defined(const Tensor &t) { return t.defined(); }
-        static Tensor batch_ids(Tensor t) { return t.unsqueeze(0); }
-        static Tensor device_ids(Tensor t) {
+        static int64_t rank(const DenseTensor &t) { return t.dim(); }
+        static int64_t size(const DenseTensor &t, int axis) { return t.size(axis); }
+        static bool defined(const DenseTensor &t) { return t.defined(); }
+        static DenseTensor batch_ids(DenseTensor t) { return t.unsqueeze(0); }
+        static DenseTensor device_ids(DenseTensor t) {
             return t.to(::tyloi::kCUDA, ::tyloi::kInt64).contiguous();
         }
-        Tensor embed(Tensor ids) {
+        DenseTensor embed(DenseTensor ids) {
             return tyloi::cuda::minicpmo45::text::embed(
                 runtime.language, runtime.language_executor, runtime.execution.executor().collectives(),
                 runtime.execution.config.layer_placement.primary_device(), std::move(ids),
                 runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()));
         }
-        auto vision(Tensor pixels, Tensor mask, Tensor sizes) {
+        auto vision(DenseTensor pixels, DenseTensor mask, DenseTensor sizes) {
             return runtime.vision.forward_steps(runtime.projector,
                                           pixels.to(::tyloi::kCUDA), mask, sizes);
         }
-        Tensor resample(Tensor hidden, Tensor sizes) {
+        DenseTensor resample(DenseTensor hidden, DenseTensor sizes) {
             return runtime.resampler.forward(runtime.projector, hidden, sizes);
         }
         void reset_audio() { runtime.audio.reset(); }
-        auto audio(Tensor features, Tensor lengths) {
+        auto audio(DenseTensor features, DenseTensor lengths) {
             return runtime.audio.forward_steps(runtime.projector,
                                          features.to(::tyloi::kCUDA), lengths, false);
         }
-        static auto audio_lengths(Tensor lengths) {
+        static auto audio_lengths(DenseTensor lengths) {
             return MiniCPMO45AudioEncoder::pooled_lengths(lengths);
         }
-        static void scatter(Tensor &target, const Tensor &source,
+        static void scatter(DenseTensor &target, const DenseTensor &source,
                             const tyloi::models::minicpmo45::MediaBound &bound) {
             target.index({bound.batch, Slice(bound.begin, bound.end), Slice()})
                 .copy_(source.index({bound.source, Slice(0, bound.end - bound.begin), Slice()})
@@ -74,13 +74,13 @@ struct MiniCPMO45Runtime {
         }
     };
 
-    tyloi::StepSequence<tyloi::models::minicpmo45::MultimodalResult<::tyloi::Tensor>>
-    encode(::tyloi::Tensor input_ids, ::tyloi::Tensor pixels,
-                ::tyloi::Tensor patch_mask, ::tyloi::Tensor target_sizes,
-                ::tyloi::Tensor image_bounds, ::tyloi::Tensor audio_features,
-                ::tyloi::Tensor audio_lengths, ::tyloi::Tensor audio_bounds) {
+    tyloi::StepSequence<tyloi::models::minicpmo45::MultimodalResult<::tyloi::DenseTensor>>
+    encode(::tyloi::DenseTensor input_ids, ::tyloi::DenseTensor pixels,
+                ::tyloi::DenseTensor patch_mask, ::tyloi::DenseTensor target_sizes,
+                ::tyloi::DenseTensor image_bounds, ::tyloi::DenseTensor audio_features,
+                ::tyloi::DenseTensor audio_lengths, ::tyloi::DenseTensor audio_bounds) {
         EncodeOps ops{*this};
-        tyloi::models::minicpmo45::MultimodalInputs<::tyloi::Tensor> input{
+        tyloi::models::minicpmo45::MultimodalInputs<::tyloi::DenseTensor> input{
             input_ids,
             pixels,
             patch_mask,
@@ -111,7 +111,7 @@ struct MiniCPMO45DuplexSpecialIds {
     int64_t tts_pad = -1;
     int64_t audio_bos = -1;
 
-    static MiniCPMO45DuplexSpecialIds from_tensor(::tyloi::Tensor value) {
+    static MiniCPMO45DuplexSpecialIds from_tensor(::tyloi::DenseTensor value) {
         value = value.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous().reshape({-1});
         if (value.numel() != 15) {
             throw std::runtime_error(
@@ -158,10 +158,10 @@ struct MiniCPMO45DuplexSpecialIds {
 };
 
 struct MiniCPMO45DuplexStepResult {
-    ::tyloi::Tensor decision_logits;
-    ::tyloi::Tensor audio_embeddings;
-    ::tyloi::Tensor generated_ids;
-    ::tyloi::Tensor tts_codes;
+    ::tyloi::DenseTensor decision_logits;
+    ::tyloi::DenseTensor audio_embeddings;
+    ::tyloi::DenseTensor generated_ids;
+    ::tyloi::DenseTensor tts_codes;
     bool is_listen = false;
     bool end_of_turn = false;
     bool tts_force_flush = false;
@@ -205,9 +205,9 @@ struct MiniCPMO45DuplexSession {
     }
 
     void prepare(
-            ::tyloi::Tensor system_prefix_ids,
-            ::tyloi::Tensor reference_audio_features = ::tyloi::Tensor(),
-            ::tyloi::Tensor system_suffix_ids = ::tyloi::Tensor()) {
+            ::tyloi::DenseTensor system_prefix_ids,
+            ::tyloi::DenseTensor reference_audio_features = ::tyloi::DenseTensor(),
+            ::tyloi::DenseTensor system_suffix_ids = ::tyloi::DenseTensor()) {
         runtime.language_state.reset(1);
         runtime.audio.reset();
         tts_state.reset(1);
@@ -243,9 +243,9 @@ struct MiniCPMO45DuplexSession {
         }
     }
 
-    std::pair<::tyloi::Tensor, ::tyloi::Tensor> feed_embeddings(
-            ::tyloi::Tensor embeddings,
-            ::tyloi::Tensor token_ids = ::tyloi::Tensor()) {
+    std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> feed_embeddings(
+            ::tyloi::DenseTensor embeddings,
+            ::tyloi::DenseTensor token_ids = ::tyloi::DenseTensor()) {
         if (embeddings.dim() == 2) embeddings = embeddings.unsqueeze(0);
         if (embeddings.dim() != 3 || embeddings.size(0) != 1 ||
                 embeddings.size(2) != runtime.language.metadata.hidden_size) {
@@ -276,7 +276,7 @@ struct MiniCPMO45DuplexSession {
         return {logits, hidden};
     }
 
-    std::pair<::tyloi::Tensor, ::tyloi::Tensor> feed_ids(::tyloi::Tensor token_ids) {
+    std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> feed_ids(::tyloi::DenseTensor token_ids) {
         if (token_ids.dim() == 0) token_ids = token_ids.reshape({1});
         if (token_ids.dim() == 1) token_ids = token_ids.unsqueeze(0);
         token_ids = token_ids.to(::tyloi::kCUDA, ::tyloi::kInt64).contiguous();
@@ -284,14 +284,14 @@ struct MiniCPMO45DuplexSession {
             MiniCPMO45Runtime::EncodeOps{runtime}.embed(token_ids), token_ids);
     }
 
-    std::pair<::tyloi::Tensor, ::tyloi::Tensor> feed_id(int64_t token) {
+    std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> feed_id(int64_t token) {
         return feed_ids(::tyloi::cuda::tensor(
             std::vector<int64_t>{token},
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64)
                 .device(::tyloi::kCUDA)));
     }
 
-    ::tyloi::Tensor apply_text_sampling_filters(::tyloi::Tensor logits) const {
+    ::tyloi::DenseTensor apply_text_sampling_filters(::tyloi::DenseTensor logits) const {
         logits = logits.clone().to(::tyloi::kFloat32);
         if (!generated_text_ids.empty() && repetition_penalty != 1.0) {
             const size_t begin = generated_text_ids.size() >
@@ -367,7 +367,7 @@ struct MiniCPMO45DuplexSession {
         return logits;
     }
 
-    int64_t sample_text_token(::tyloi::Tensor logits, bool force_listen) const {
+    int64_t sample_text_token(::tyloi::DenseTensor logits, bool force_listen) const {
         if (force_listen) return ids.listen;
         auto original = logits.to(::tyloi::kFloat32);
         auto first = greedy
@@ -385,14 +385,14 @@ struct MiniCPMO45DuplexSession {
     }
 
     MiniCPMO45DuplexStepResult run_step(
-            ::tyloi::Tensor pixels,
-            ::tyloi::Tensor patch_mask,
-            ::tyloi::Tensor target_sizes,
-            ::tyloi::Tensor image_slice_counts,
-            ::tyloi::Tensor audio_features,
+            ::tyloi::DenseTensor pixels,
+            ::tyloi::DenseTensor patch_mask,
+            ::tyloi::DenseTensor target_sizes,
+            ::tyloi::DenseTensor image_slice_counts,
+            ::tyloi::DenseTensor audio_features,
             int64_t audio_prefix_extra_frames,
             int64_t audio_suffix_extra_frames,
-            ::tyloi::Tensor text_ids,
+            ::tyloi::DenseTensor text_ids,
             int64_t max_new_speak_tokens,
             bool force_listen,
             bool force_speak = false) {
@@ -401,9 +401,9 @@ struct MiniCPMO45DuplexSession {
                 "MiniCPM-o duplex generation requires at least two token slots");
         }
         auto pending = feed_id(ids.unit_start);
-        ::tyloi::Tensor generation_logits;
+        ::tyloi::DenseTensor generation_logits;
         bool has_content = false;
-        ::tyloi::Tensor audio_embeddings;
+        ::tyloi::DenseTensor audio_embeddings;
 
         if (pixels.defined()) {
             if (!patch_mask.defined() || !target_sizes.defined()) {
@@ -482,7 +482,7 @@ struct MiniCPMO45DuplexSession {
         result.audio_embeddings = audio_embeddings;
         std::vector<int64_t> generated;
         std::vector<int64_t> spoken_ids;
-        std::vector<::tyloi::Tensor> spoken_hidden;
+        std::vector<::tyloi::DenseTensor> spoken_hidden;
         auto logits = generation_logits;
         bool force_current = force_listen;
         for (int64_t index = 0; index < max_new_speak_tokens; ++index) {
@@ -526,8 +526,8 @@ struct MiniCPMO45DuplexSession {
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64)
                 .device(::tyloi::kCUDA));
         if (!result.is_listen) {
-            ::tyloi::Tensor text_id_tensor;
-            ::tyloi::Tensor hidden_tensor;
+            ::tyloi::DenseTensor text_id_tensor;
+            ::tyloi::DenseTensor hidden_tensor;
             if (spoken_ids.empty()) {
                 text_id_tensor = ::tyloi::cuda::empty(
                     {1, 0}, ::tyloi::TensorOptions().dtype(::tyloi::kInt64)

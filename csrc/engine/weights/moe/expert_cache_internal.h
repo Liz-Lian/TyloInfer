@@ -311,7 +311,7 @@ public:
     }
 
     const uint8_t * register_mapped_field(
-            const ::tyloi::Tensor & field) {
+            const ::tyloi::DenseTensor & field) {
         if (!mapped_gather_enabled_ || !field.defined() ||
                 field.numel() == 0) {
             return nullptr;
@@ -581,7 +581,7 @@ public:
     bool ssd_router_prefetch() const noexcept {return ssd_prediction_auto_;}
     std::unique_ptr<SsdExpertReads> begin_ssd_expert_reads(std::vector<SsdExpertRequest> requests,std::size_t gate_up_requests);
     std::vector<MoeHostExpertCache::Lease> read_ssd_experts(const std::vector<SsdExpertRequest>& requests,bool background=false);
-    struct SsdExpertCopy {MoeQuantRangeSource* source;int expert;std::vector<::tyloi::Tensor> fields;};
+    struct SsdExpertCopy {MoeQuantRangeSource* source;int expert;std::vector<::tyloi::DenseTensor> fields;};
     void copy_ssd_experts(const std::vector<SsdExpertCopy>& requests);
     std::future<void> queue_ssd_expert_copies(std::vector<SsdExpertCopy> requests);
     std::array<std::future<void>,2> queue_ssd_prefill_phases(
@@ -1209,15 +1209,15 @@ public:
 private:
     struct PrefillLoan {
         struct Arena {
-            MoeGpuArena* arena;int first;std::vector<::tyloi::Tensor> saved;
+            MoeGpuArena* arena;int first;std::vector<::tyloi::DenseTensor> saved;
             MoeHostExpertCache::Lease owner;
-            ::tyloi::Tensor keys;
+            ::tyloi::DenseTensor keys;
             std::vector<std::pair<int,int>> refresh;
         };
         struct Cohort {std::vector<int32_t> experts;std::vector<int64_t> fields;};
         struct Copy {const uint8_t* source;std::size_t offset,bytes;};
         struct Layer {std::size_t bytes=0;std::vector<Copy> copies;};
-        struct Stage {::tyloi::Tensor host;bool pinned=false;};
+        struct Stage {::tyloi::DenseTensor host;bool pinned=false;};
         std::vector<Arena> arenas;
         std::map<std::pair<int,int>,Cohort> cohorts;
         std::map<int,Layer> layers;
@@ -1377,7 +1377,7 @@ private:
     std::vector<std::array<int,3>> pipeline_bundles_;
     std::unordered_map<std::string,std::unique_ptr<MoeGpuArena>> pipeline_stages_;
     std::size_t pipeline_direct_cache_budget_=0;
-    ::tyloi::Tensor pipeline_direct_cache_storage_;
+    ::tyloi::DenseTensor pipeline_direct_cache_storage_;
     std::optional<std::size_t> pipeline_direct_cache_region_;
     uint64_t pipeline_wire_fallback_cells_=0,pipeline_wire_fallback_bytes_=0;
     std::vector<std::function<void()>> pipeline_decode_release_;
@@ -1385,19 +1385,19 @@ private:
     std::vector<std::weak_ptr<MoeScratch>> pipeline_prefill_scratch_;
     std::shared_ptr<void> pipeline_prefill_dma_metadata_;
     std::shared_ptr<void> pipeline_prefill_route_publication_;
-    ::tyloi::Tensor pipeline_prefill_ring_;
+    ::tyloi::DenseTensor pipeline_prefill_ring_;
     int pipeline_prefill_group_capacity_=0;
     bool pipeline_prefill_predictor_=false;
-    ::tyloi::Tensor pipeline_prefill_host_ring_;
-    ::tyloi::Tensor pipeline_prefill_metadata_host_;
+    ::tyloi::DenseTensor pipeline_prefill_host_ring_;
+    ::tyloi::DenseTensor pipeline_prefill_metadata_host_;
     std::size_t pipeline_prefill_metadata_stride_=0;
     std::size_t pipeline_prefill_host_stride_=0;
     bool pipeline_prefill_layer_layout_=false;
     std::map<int,std::pair<int64_t,int64_t>> pipeline_prefill_layers_;
     std::map<int,int64_t> pipeline_prefill_layer_gate_up_bytes_;
-    ::tyloi::Tensor pipeline_prefill_layer_buffer_;
-    ::tyloi::Tensor pipeline_prefill_layer_second_buffer_;
-    ::tyloi::Tensor pipeline_prefill_layer_down_buffer_;
+    ::tyloi::DenseTensor pipeline_prefill_layer_buffer_;
+    ::tyloi::DenseTensor pipeline_prefill_layer_second_buffer_;
+    ::tyloi::DenseTensor pipeline_prefill_layer_down_buffer_;
     int64_t pipeline_prefill_layer_split_=0;
     int64_t pipeline_prefill_layer_stride_=0;
     std::function<void(std::size_t)> reserve_workspace_;
@@ -1419,16 +1419,16 @@ private:
     bool pipeline_transfer_cache_=tyloi::cuda::runtime_options::transfer_cache();
     bool pipeline_mapped_copy_=tyloi::cuda::runtime_options::mapped_copy();
     std::vector<MoeCacheNewLease> pipeline_transfer_slots_;
-    ::tyloi::Tensor pipeline_host_stage_;
-    ::tyloi::Tensor pipeline_wire_gpu_;
+    ::tyloi::DenseTensor pipeline_host_stage_;
+    ::tyloi::DenseTensor pipeline_wire_gpu_;
     std::array<std::unique_ptr<tyloi::cuda::DmaCopyBatch>,2> pipeline_dma_batches_;
-    ::tyloi::Tensor pipeline_prefetch_wire_gpu_,pipeline_prefetch_host_stage_;
+    ::tyloi::DenseTensor pipeline_prefetch_wire_gpu_,pipeline_prefetch_host_stage_;
     std::vector<tyloi::MoeCacheKey> pipeline_prefetched_keys_;
-    ::tyloi::Tensor pipeline_sigmoid_table_;
+    ::tyloi::DenseTensor pipeline_sigmoid_table_;
     int64_t pipeline_wire_route_bytes_=0,pipeline_wire_route_fields_=0;
     std::array<std::pair<int64_t,int64_t>,2> pipeline_wire_geometry_{};
     std::unordered_map<int,std::vector<int64_t>> pipeline_host_staged_expert_bytes_;
-    std::shared_ptr<::tyloi::Tensor> pipeline_ram_complement_;
+    std::shared_ptr<::tyloi::DenseTensor> pipeline_ram_complement_;
     std::shared_ptr<MoePinnedExpertArena> pinned_expert_arena_;
     int64_t pipeline_ram_registered_bytes_=0;
     void* pipeline_ram_alias_=nullptr;
@@ -1805,7 +1805,7 @@ private:
     bool transfer_ready_recorded_ = false;
     cudaEvent_t route_input_ready_ = nullptr;
     cudaEvent_t route_done_ = nullptr;
-    ::tyloi::Tensor route_host_;
+    ::tyloi::DenseTensor route_host_;
     uint64_t pending_route_generation_ = 0;
     int64_t pending_route_count_ = 0;
     int pending_route_n_experts_ = 0;

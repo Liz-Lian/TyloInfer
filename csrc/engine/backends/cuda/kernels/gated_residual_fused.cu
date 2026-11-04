@@ -899,7 +899,7 @@ gated_residual_up_kernel(MhcMatrix down,MhcMatrix up,MhcMatrix inject,
     }
 }
 
-MhcMatrix mhc_matrix(const NintWeight& w) {
+MhcMatrix mhc_matrix(const tyloi::NintTensor& w) {
     MhcMatrix matrix{w.q_packed.data_ptr<uint8_t>(),w.q8_zero?nullptr:w.row_q_bits.data_ptr<uint8_t>(),
         w.q8_zero?nullptr:w.sub_scale.data_ptr<uint8_t>(),w.q8_zero?nullptr:w.sub_min.data_ptr<uint8_t>(),
         w.q8_zero?nullptr:w.row_q_bit_offsets.data_ptr<int64_t>(),w.q8_zero?nullptr:w.neuron_scale.data_ptr<float>(),
@@ -929,7 +929,7 @@ __global__ void gr_prepare_up_records_kernel(MhcMatrix weight,int4* rows,uint16_
 }
 }
 
-::tyloi::Tensor prepare_gr_up_packed_metadata(const NintWeight& weight) {
+::tyloi::DenseTensor prepare_gr_up_packed_metadata(const tyloi::NintTensor& weight) {
     TYLOINFER_RUNTIME_CHECK(weight.aligned_q8 && !weight.q8_zero && weight.gs==48 &&
         weight.neuron_len==320 && weight.out==10240 && weight.ng==7,"GR Up metadata geometry invalid");
     MfqCudaGuard guard(weight.q_packed.device());
@@ -940,7 +940,7 @@ __global__ void gr_prepare_up_records_kernel(MhcMatrix weight,int4* rows,uint16_
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return result;
 }
 
-::tyloi::Tensor prepare_gr_up_group_coefficients(const NintWeight& weight) {
+::tyloi::DenseTensor prepare_gr_up_group_coefficients(const tyloi::NintTensor& weight) {
     TYLOINFER_RUNTIME_CHECK(weight.aligned_q8 && !weight.q8_zero && weight.gs==48 &&
         weight.neuron_len==320 && weight.out==10240 && weight.ng==7,"GR Up coefficient cache geometry invalid");
     MfqCudaGuard guard(weight.q_packed.device());
@@ -950,17 +950,17 @@ __global__ void gr_prepare_up_records_kernel(MhcMatrix weight,int4* rows,uint16_
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return result;
 }
 
-std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
-    const ::tyloi::Tensor& branch,const ::tyloi::Tensor& residual,
-    const ::tyloi::Tensor& injection,const ::tyloi::Tensor& norm,
-    const NintWeight& down,const NintWeight& up,const NintWeight* inject,int64_t streams,double eps,bool after,
-    const ::tyloi::Tensor& dense_injection,const ::tyloi::Tensor& prepared_injection_right,
-    const std::function<void(const char*)>& marker,const ::tyloi::Tensor& up_group_coefficients) {
+std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
+    const ::tyloi::DenseTensor& branch,const ::tyloi::DenseTensor& residual,
+    const ::tyloi::DenseTensor& injection,const ::tyloi::DenseTensor& norm,
+    const tyloi::NintTensor& down,const tyloi::NintTensor& up,const tyloi::NintTensor* inject,int64_t streams,double eps,bool after,
+    const ::tyloi::DenseTensor& dense_injection,const ::tyloi::DenseTensor& prepared_injection_right,
+    const std::function<void(const char*)>& marker,const ::tyloi::DenseTensor& up_group_coefficients) {
     TYLOINFER_RUNTIME_CHECK((inject!=nullptr)!=dense_injection.defined(),"exactly one residual injection weight is required");
-    const auto matrix_valid=[](const NintWeight& w) {return w.out>0 && w.neuron_len>0 && w.gs>0 && w.gs<=64 &&
+    const auto matrix_valid=[](const tyloi::NintTensor& w) {return w.out>0 && w.neuron_len>0 && w.gs>0 && w.gs<=64 &&
         w.ng==(w.neuron_len+w.gs-1)/w.gs;};
     TYLOINFER_RUNTIME_CHECK(matrix_valid(down) && matrix_valid(up) && (!inject || matrix_valid(*inject)),"fused residual quantization geometry invalid");
-    const auto valid=[](const ::tyloi::Tensor& x) {return x.is_cuda() && x.is_contiguous() &&
+    const auto valid=[](const ::tyloi::DenseTensor& x) {return x.is_cuda() && x.is_contiguous() &&
         (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32);};
     TYLOINFER_RUNTIME_CHECK(valid(residual) && streams>0 && streams<=4 && residual.dim()>0 && residual.size(-1)%streams==0,
         "fused residual residual geometry/dtype unsupported");
@@ -977,7 +977,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
         :(inject->neuron_len==down.neuron_len && inject->out==streams && inject->q_packed.device()==residual.device())),"fused residual matrices disagree");
     MfqCudaGuard guard(residual.device());
     const int resident=nint_float_projection_resident_blocks(residual.get_device());
-    const auto splits=[&](const NintWeight& w) {const int blocks=((w.out+3)/4)*rows;
+    const auto splits=[&](const tyloi::NintTensor& w) {const int blocks=((w.out+3)/4)*rows;
         return int(std::min<int64_t>(w.ng,std::max(1,(resident+blocks-1)/blocks)));};
     TYLOINFER_RUNTIME_CHECK(splits(up)==1,"fused residual requires original up projection unsplit");
     int ds=splits(down);
@@ -1061,7 +1061,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
     const char* async_setting=tyloi::cuda::env_lookup("TYLOINFER_GR_ASYNC_NORMALIZED");
     const bool asynchronous=share_norm && !half && (!async_setting || async_setting[0]=='1');
     auto promoted_normalized=(dense_injection.defined() || asynchronous) && half?
-        ::tyloi::cuda::empty(residual.sizes().vec(),options.dtype(::tyloi::kFloat32)): ::tyloi::Tensor{};
+        ::tyloi::cuda::empty(residual.sizes().vec(),options.dtype(::tyloi::kFloat32)): ::tyloi::DenseTensor{};
     const bool vector_injection=prepared_injection_right.defined() && prepared_injection_right.dim()==3;
     if(prepared_injection_right.defined()) {
         const bool shape_matches=vector_injection?
@@ -1189,7 +1189,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
         down.neuron_len==10240 && down.out==320 && streams==4 &&
         rows<=8 && (reinterpret_cast<uintptr_t>(down.q_packed.data_ptr())&15u)==0 &&
         (!batch_down_option || batch_down_option[0]!='1');
-    ::tyloi::Tensor plane_values,plane_scales,plane_sums;
+    ::tyloi::DenseTensor plane_values,plane_scales,plane_sums;
     GrTwoPlane global_quantized{};
     const auto* norm_quant_option=tyloi::cuda::env_lookup("TYLOINFER_GR_NORM_QUANT_FUSED");
     const auto* norm_group_option=tyloi::cuda::env_lookup("TYLOINFER_GR_NORM_GROUP_QUANT");
@@ -1211,7 +1211,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
         norm_group_mode!=0 &&
         (!wide_norm_option || wide_norm_option[0]!='0') && (!cached_norm_option || cached_norm_option[0]!='0') &&
         hidden==2560 && streams==4 && rows<=6;
-    ::tyloi::Tensor norm_inverses;
+    ::tyloi::DenseTensor norm_inverses;
     const int norm_counter_slot=norm_group_quant && norm_group_mode==2?gr_norm_counter_slot():-1;
     if(norm_group_mode==2 && norm_counter_slot<0)norm_group_quant=false;
     if(share_norm && !norm_quant_fused && !norm_group_quant) {
@@ -1446,7 +1446,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
     TYLOINFER_RUNTIME_CHECK(!packed_down_s16 || (uniform_prepare && uniform_prepare_mode==3 &&
         split_major && direct_s16 && direct_stats && !fused_half_up && !up_int_mma),
         "direct S16 GR Down requires the existing split-major S16 Up preparation");
-    ::tyloi::Tensor uniform_up_values,uniform_up_scales,uniform_up_sums;
+    ::tyloi::DenseTensor uniform_up_values,uniform_up_scales,uniform_up_sums;
     GrTwoPlane uniform_up{};
     if(uniform_prepare) {
         constexpr int elements=336;
@@ -1731,7 +1731,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
         if(marker){marker("up_mix");marker("end");}
         TYLOINFER_CUDA_CHECK(cudaGetLastError());return {mixed,updated,next_injection};
     }
-    ::tyloi::Tensor dense_projection;
+    ::tyloi::DenseTensor dense_projection;
     if(dense_injection.defined() && !dense_warp) {
         const auto right=vector_injection?
             prepared_injection_right.transpose(1,2).reshape({down.neuron_len,streams}):
@@ -1760,7 +1760,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
             (mma_half_mode==1 || (mma_half_mode==2 && (half || rows==2))))) {
         const bool local_half=rows==1 && m1_half_mode==2;
         const int64_t elements=int64_t(rows)*336;
-        ::tyloi::Tensor values,statistics;
+        ::tyloi::DenseTensor values,statistics;
         GrUpHalf prepared{};
         if(fused_half_up)prepared={reinterpret_cast<__half*>(uniform_up.high),nullptr,uniform_up.scales};
         if(!local_half && !fused_half_up) {
@@ -1834,7 +1834,7 @@ std::vector<::tyloi::Tensor> gated_residual_two_stage_cuda(
         (mma_up && (rows>1 || mma_mode==2))) && rows<=6 &&
         fixed_groups && streams==4 && up.aligned_q8 && !up.q8_zero && up.gs==48 &&
         up.neuron_len==320 && hidden==2560 && down.neuron_len==10240 && down.out==320 && up_metadata==0;
-    ::tyloi::Tensor up_plane_values,up_plane_scales,up_plane_sums;
+    ::tyloi::DenseTensor up_plane_values,up_plane_scales,up_plane_sums;
     GrTwoPlane prepared_up=uniform_up;
     if(uniform_prepare && uniform_prepare_mode==1) {
         const auto prepare=[&](auto packed) {

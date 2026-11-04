@@ -8,8 +8,8 @@
 #include <cstdint>
 
 struct MfePoolWeight {
-    NintWeight weight;
-    ::tyloi::Tensor expert_local;
+    tyloi::NintTensor weight;
+    ::tyloi::DenseTensor expert_local;
     int local_experts = 0;
 };
 
@@ -38,13 +38,13 @@ enum class MixedMoeFamily {
 
 struct MixedMoePool {
     MixedMoeFamily family = MixedMoeFamily::Nint;
-    NintWeight nint;
-    NintWeight q8_zero;
-    Mxfp4Weight mxfp4;
-    Mxfp4SqWeight mxfp4_sq;
-    Fp8SqWeight fp8_sq;
-    NvqWeight nvq;
+    tyloi::NintTensor nint;
+    tyloi::NintTensor q8_zero;
+    tyloi::Mxfp4Tensor mxfp4;
+    tyloi::Mxfp4SqTensor mxfp4_sq;
+    tyloi::Fp8SqTensor fp8_sq;
+    tyloi::NvqTensor nvq;
     NepqWeight nepq;
-    ::tyloi::Tensor expert_local;
+    ::tyloi::DenseTensor expert_local;
     int local_experts = 0;
 };

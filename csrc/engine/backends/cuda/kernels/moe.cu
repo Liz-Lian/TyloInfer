@@ -33,24 +33,24 @@
 
 
 void launch_nint_matmul_routed_cuda(
-    ::tyloi::Tensor bitstream,
-    ::tyloi::Tensor row_q_bits,
-    ::tyloi::Tensor row_q_bit_offsets,
-    ::tyloi::Tensor subgroup_scale,
-    ::tyloi::Tensor subgroup_minimum,
-    ::tyloi::Tensor neuron_scale,
-    ::tyloi::Tensor neuron_minimum,
-    ::tyloi::Tensor quantized_input,
-    ::tyloi::Tensor input_scale,
-    ::tyloi::Tensor input,
-    ::tyloi::Tensor route_ids,
-    ::tyloi::Tensor expert_local,
+    ::tyloi::DenseTensor bitstream,
+    ::tyloi::DenseTensor row_q_bits,
+    ::tyloi::DenseTensor row_q_bit_offsets,
+    ::tyloi::DenseTensor subgroup_scale,
+    ::tyloi::DenseTensor subgroup_minimum,
+    ::tyloi::DenseTensor neuron_scale,
+    ::tyloi::DenseTensor neuron_minimum,
+    ::tyloi::DenseTensor quantized_input,
+    ::tyloi::DenseTensor input_scale,
+    ::tyloi::DenseTensor input,
+    ::tyloi::DenseTensor route_ids,
+    ::tyloi::DenseTensor expert_local,
     bool route_map_ready,
-    ::tyloi::Tensor ids_dst,
-    ::tyloi::Tensor expert_bounds,
-    ::tyloi::Tensor tile_bounds,
-    ::tyloi::Tensor tile_experts,
-    ::tyloi::Tensor output,
+    ::tyloi::DenseTensor ids_dst,
+    ::tyloi::DenseTensor expert_bounds,
+    ::tyloi::DenseTensor tile_bounds,
+    ::tyloi::DenseTensor tile_experts,
+    ::tyloi::DenseTensor output,
     int tokens,
     int routes,
     int experts,
@@ -1518,26 +1518,26 @@ __global__ void moe_weighted_reduce_shared_gate_kernel(
     }
 }
 
-void check_same_device(const ::tyloi::Tensor & reference, const ::tyloi::Tensor & tensor, const char * name) {
+void check_same_device(const ::tyloi::DenseTensor & reference, const ::tyloi::DenseTensor & tensor, const char * name) {
     TYLOINFER_RUNTIME_CHECK(tensor.device() == reference.device(), name, " must be on ", reference.device());
 }
 
 void build_expert_map(
-        const ::tyloi::Tensor & ids,
+        const ::tyloi::DenseTensor & ids,
         int experts,
         int tile_m,
-        ::tyloi::Tensor & counts,
-        ::tyloi::Tensor & cursors,
-        ::tyloi::Tensor & ids_dst,
-        ::tyloi::Tensor & expert_bounds,
-        ::tyloi::Tensor & tile_bounds,
-        ::tyloi::Tensor & tile_experts,
+        ::tyloi::DenseTensor & counts,
+        ::tyloi::DenseTensor & cursors,
+        ::tyloi::DenseTensor & ids_dst,
+        ::tyloi::DenseTensor & expert_bounds,
+        ::tyloi::DenseTensor & tile_bounds,
+        ::tyloi::DenseTensor & tile_experts,
         cudaStream_t stream,
-        ::tyloi::Tensor * secondary_tile_bounds = nullptr,
-        ::tyloi::Tensor * secondary_tile_experts = nullptr,
+        ::tyloi::DenseTensor * secondary_tile_bounds = nullptr,
+        ::tyloi::DenseTensor * secondary_tile_experts = nullptr,
         int secondary_tile_m = 0,
-        ::tyloi::Tensor * tertiary_tile_bounds = nullptr,
-        ::tyloi::Tensor * tertiary_tile_experts = nullptr,
+        ::tyloi::DenseTensor * tertiary_tile_bounds = nullptr,
+        ::tyloi::DenseTensor * tertiary_tile_experts = nullptr,
         int tertiary_tile_m = 0) {
     const int pairs = static_cast<int>(ids.numel());
     const bool has_secondary = secondary_tile_bounds != nullptr;
@@ -1635,9 +1635,9 @@ void build_expert_map(
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 void launch_nint_quantize(
-        const ::tyloi::Tensor & x,
-        ::tyloi::Tensor & qx,
-        ::tyloi::Tensor & xscale,
+        const ::tyloi::DenseTensor & x,
+        ::tyloi::DenseTensor & qx,
+        ::tyloi::DenseTensor & xscale,
         int rows,
         int k_real,
         int k_pad,
@@ -1652,15 +1652,15 @@ void launch_nint_quantize(
 }
 
 void launch_nint8_zero_moe_mma(
-        const ::tyloi::Tensor & q,
-        const ::tyloi::Tensor & scale,
-        const ::tyloi::Tensor & expert_local,
-        const ::tyloi::Tensor & x,
-        const ::tyloi::Tensor & ids_dst,
-        const ::tyloi::Tensor & expert_bounds,
-        const ::tyloi::Tensor & tile_bounds,
-        const ::tyloi::Tensor & tile_experts,
-        ::tyloi::Tensor & out,
+        const ::tyloi::DenseTensor & q,
+        const ::tyloi::DenseTensor & scale,
+        const ::tyloi::DenseTensor & expert_local,
+        const ::tyloi::DenseTensor & x,
+        const ::tyloi::DenseTensor & ids_dst,
+        const ::tyloi::DenseTensor & expert_bounds,
+        const ::tyloi::DenseTensor & tile_bounds,
+        const ::tyloi::DenseTensor & tile_experts,
+        ::tyloi::DenseTensor & out,
         int tokens,
         int routes,
         int experts,
@@ -1727,17 +1727,17 @@ void launch_nint8_zero_moe_mma(
 }
 
 void launch_nint8_zero_grouped_matmul(
-        const ::tyloi::Tensor & q,
-        const ::tyloi::Tensor & scale,
-        const ::tyloi::Tensor & qx,
-        const ::tyloi::Tensor & xscale,
-        const ::tyloi::Tensor & ids,
-        const ::tyloi::Tensor & expert_local,
-        const ::tyloi::Tensor & ids_dst,
-        const ::tyloi::Tensor & expert_bounds,
-        const ::tyloi::Tensor & tile_bounds,
-        const ::tyloi::Tensor & tile_experts,
-        ::tyloi::Tensor & out,
+        const ::tyloi::DenseTensor & q,
+        const ::tyloi::DenseTensor & scale,
+        const ::tyloi::DenseTensor & qx,
+        const ::tyloi::DenseTensor & xscale,
+        const ::tyloi::DenseTensor & ids,
+        const ::tyloi::DenseTensor & expert_local,
+        const ::tyloi::DenseTensor & ids_dst,
+        const ::tyloi::DenseTensor & expert_bounds,
+        const ::tyloi::DenseTensor & tile_bounds,
+        const ::tyloi::DenseTensor & tile_experts,
+        ::tyloi::DenseTensor & out,
         int tokens,
         int routes,
         int experts,
@@ -1874,14 +1874,14 @@ void tyloi::moe_cache_mapped_gather_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-std::vector<::tyloi::Tensor> moe_topk_cuda(
-        ::tyloi::Tensor logits,
+std::vector<::tyloi::DenseTensor> moe_topk_cuda(
+        ::tyloi::DenseTensor logits,
         int64_t top_k,
         bool use_sigmoid,
         bool use_sqrt_softplus,
         bool normalize,
         bool delayed_softmax,
-        MfqOptional<::tyloi::Tensor> bias,
+        MfqOptional<::tyloi::DenseTensor> bias,
         double norm_floor,
         double scale) {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous() && logits.dim() == 2,
@@ -2002,9 +2002,9 @@ std::vector<::tyloi::Tensor> moe_topk_cuda(
     return {ids, weights};
 }
 
-::tyloi::Tensor moe_sqrtsoftplus_weights_cuda(
-        ::tyloi::Tensor logits,
-        ::tyloi::Tensor ids,
+::tyloi::DenseTensor moe_sqrtsoftplus_weights_cuda(
+        ::tyloi::DenseTensor logits,
+        ::tyloi::DenseTensor ids,
         double norm_floor,
         double scale) {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous() && logits.dim() == 2,
@@ -2039,8 +2039,8 @@ std::vector<::tyloi::Tensor> moe_topk_cuda(
     return weights;
 }
 
-std::vector<::tyloi::Tensor> moe_build_expert_map_cuda(
-        ::tyloi::Tensor ids,
+std::vector<::tyloi::DenseTensor> moe_build_expert_map_cuda(
+        ::tyloi::DenseTensor ids,
         int64_t n_experts,
         int64_t tile_m) {
     TYLOINFER_RUNTIME_CHECK(ids.is_cuda() && ids.is_contiguous() && ids.scalar_type() == ::tyloi::kInt32 && ids.dim() == 2,
@@ -2062,8 +2062,8 @@ std::vector<::tyloi::Tensor> moe_build_expert_map_cuda(
     return {ids_dst, expert_bounds, tile_bounds, tile_experts, counts};
 }
 
-std::vector<::tyloi::Tensor> moe_build_expert_maps_cuda(
-        ::tyloi::Tensor ids,
+std::vector<::tyloi::DenseTensor> moe_build_expert_maps_cuda(
+        ::tyloi::DenseTensor ids,
         int64_t n_experts,
         int64_t tile_m,
         int64_t secondary_tile_m,
@@ -2091,8 +2091,8 @@ std::vector<::tyloi::Tensor> moe_build_expert_maps_cuda(
         {experts + 1}, options);
     auto secondary_tile_experts = ::tyloi::cuda::empty({pairs}, options);
     const bool has_tertiary = tertiary_tile_m > 0;
-    ::tyloi::Tensor tertiary_tile_bounds;
-    ::tyloi::Tensor tertiary_tile_experts;
+    ::tyloi::DenseTensor tertiary_tile_bounds;
+    ::tyloi::DenseTensor tertiary_tile_experts;
     if (has_tertiary) {
         tertiary_tile_bounds = ::tyloi::cuda::empty({experts + 1}, options);
         tertiary_tile_experts = ::tyloi::cuda::empty({pairs}, options);
@@ -2105,7 +2105,7 @@ std::vector<::tyloi::Tensor> moe_build_expert_maps_cuda(
         has_tertiary ? &tertiary_tile_bounds : nullptr,
         has_tertiary ? &tertiary_tile_experts : nullptr,
         static_cast<int>(tertiary_tile_m));
-    std::vector<::tyloi::Tensor> result{
+    std::vector<::tyloi::DenseTensor> result{
         ids_dst, expert_bounds, tile_bounds, tile_experts, counts,
         secondary_tile_bounds, secondary_tile_experts};
     if (has_tertiary) {
@@ -2116,8 +2116,8 @@ std::vector<::tyloi::Tensor> moe_build_expert_maps_cuda(
 }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-void moe_quantize_shared_input_cuda(::tyloi::Tensor input,
-        ::tyloi::Tensor descriptors,int64_t total_groups) {
+void moe_quantize_shared_input_cuda(::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor descriptors,int64_t total_groups) {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.scalar_type()==::tyloi::kFloat16 &&
         input.dim()==2 && input.size(0)>0 && input.size(0)<=65535 && input.size(1)>0 && input.size(1)<=INT_MAX &&
         descriptors.is_cuda() && descriptors.device()==input.device() && descriptors.is_contiguous() &&
@@ -2131,11 +2131,11 @@ void moe_quantize_shared_input_cuda(::tyloi::Tensor input,
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
-        ::tyloi::Tensor descriptors,int64_t total_groups,bool quantize,
-        ::tyloi::Tensor offsets,::tyloi::Tensor scales,
-        ::tyloi::Tensor minima,::tyloi::Tensor row_metadata,
-        ::tyloi::Tensor expert_local,::tyloi::Tensor ids,
+void moe_quantize_shared_nint_rows_cuda(::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor descriptors,int64_t total_groups,bool quantize,
+        ::tyloi::DenseTensor offsets,::tyloi::DenseTensor scales,
+        ::tyloi::DenseTensor minima,::tyloi::DenseTensor row_metadata,
+        ::tyloi::DenseTensor expert_local,::tyloi::DenseTensor ids,
         int64_t output_rows,int64_t local_experts) {
     const int64_t count=output_rows*local_experts;
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.scalar_type()==::tyloi::kFloat16 &&
@@ -2171,17 +2171,17 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-::tyloi::Tensor mfe_nint_matmul_ws_cuda(
-        ::tyloi::Tensor q_packed,
-        ::tyloi::Tensor row_q_bits,
-        ::tyloi::Tensor row_q_bit_offsets,
-        ::tyloi::Tensor sub_scale,
-        ::tyloi::Tensor sub_min,
-        ::tyloi::Tensor neuron_scale,
-        ::tyloi::Tensor neuron_min,
-        ::tyloi::Tensor x,
-        ::tyloi::Tensor ids,
-        ::tyloi::Tensor expert_local,
+::tyloi::DenseTensor mfe_nint_matmul_ws_cuda(
+        ::tyloi::DenseTensor q_packed,
+        ::tyloi::DenseTensor row_q_bits,
+        ::tyloi::DenseTensor row_q_bit_offsets,
+        ::tyloi::DenseTensor sub_scale,
+        ::tyloi::DenseTensor sub_min,
+        ::tyloi::DenseTensor neuron_scale,
+        ::tyloi::DenseTensor neuron_min,
+        ::tyloi::DenseTensor x,
+        ::tyloi::DenseTensor ids,
+        ::tyloi::DenseTensor expert_local,
         int64_t n_experts,
         int64_t n_local_experts,
         int64_t out_per_expert,
@@ -2189,13 +2189,13 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
         int64_t epilogue_mode,
         bool route_map_ready,
         bool input_quantized,
-        ::tyloi::Tensor out,
-        ::tyloi::Tensor qx,
-        ::tyloi::Tensor xscale,
-        ::tyloi::Tensor ids_dst,
-        ::tyloi::Tensor expert_bounds,
-        ::tyloi::Tensor tile_bounds,
-        ::tyloi::Tensor tile_experts,
+        ::tyloi::DenseTensor out,
+        ::tyloi::DenseTensor qx,
+        ::tyloi::DenseTensor xscale,
+        ::tyloi::DenseTensor ids_dst,
+        ::tyloi::DenseTensor expert_bounds,
+        ::tyloi::DenseTensor tile_bounds,
+        ::tyloi::DenseTensor tile_experts,
         int64_t route_tile_m,
         int64_t pool_phase) {
     TYLOINFER_RUNTIME_CHECK(
@@ -2396,27 +2396,27 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
     return out;
 }
 
-::tyloi::Tensor nint8_zero_moe_grouped_matmul_pool_ws_cuda(
-        ::tyloi::Tensor q,
-        ::tyloi::Tensor scale,
-        ::tyloi::Tensor x,
-        ::tyloi::Tensor ids,
-        ::tyloi::Tensor expert_local,
+::tyloi::DenseTensor nint8_zero_moe_grouped_matmul_pool_ws_cuda(
+        ::tyloi::DenseTensor q,
+        ::tyloi::DenseTensor scale,
+        ::tyloi::DenseTensor x,
+        ::tyloi::DenseTensor ids,
+        ::tyloi::DenseTensor expert_local,
         int64_t n_experts,
         int64_t n_local_experts,
         int64_t out_per_expert,
         bool route_map_ready,
         bool input_quantized,
         bool use_f16_mma,
-        ::tyloi::Tensor out,
-        ::tyloi::Tensor qx,
-        ::tyloi::Tensor xscale,
-        ::tyloi::Tensor counts,
-        ::tyloi::Tensor cursors,
-        ::tyloi::Tensor ids_dst,
-        ::tyloi::Tensor expert_bounds,
-        ::tyloi::Tensor tile_bounds,
-        ::tyloi::Tensor tile_experts,
+        ::tyloi::DenseTensor out,
+        ::tyloi::DenseTensor qx,
+        ::tyloi::DenseTensor xscale,
+        ::tyloi::DenseTensor counts,
+        ::tyloi::DenseTensor cursors,
+        ::tyloi::DenseTensor ids_dst,
+        ::tyloi::DenseTensor expert_bounds,
+        ::tyloi::DenseTensor tile_bounds,
+        ::tyloi::DenseTensor tile_experts,
         int64_t route_tile_m) {
     TYLOINFER_RUNTIME_CHECK(
         n_experts > 0 && n_experts <= 4096,
@@ -2543,7 +2543,7 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
 
 #endif
 
-::tyloi::Tensor moe_weighted_reduce_cuda(::tyloi::Tensor pair_output, ::tyloi::Tensor weights) {
+::tyloi::DenseTensor moe_weighted_reduce_cuda(::tyloi::DenseTensor pair_output, ::tyloi::DenseTensor weights) {
     const auto dtype = pair_output.scalar_type();
     TYLOINFER_RUNTIME_CHECK(pair_output.is_cuda() && pair_output.is_contiguous() &&
         (dtype == ::tyloi::kFloat16 || dtype == ::tyloi::kBFloat16 ||
@@ -2580,7 +2580,7 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
     return output;
 }
 
-::tyloi::Tensor moe_swiglu_sigmoid_table_cuda() {
+::tyloi::DenseTensor moe_swiglu_sigmoid_table_cuda() {
     auto table=::tyloi::cuda::empty({2,65536},
         ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kFloat16));
     moe_sigmoid_table_kernel<<<256,256,0,mfq_current_cuda_stream()>>>(
@@ -2589,9 +2589,9 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
     return table;
 }
 
-::tyloi::Tensor moe_swiglu_rounded_cuda(
-        ::tyloi::Tensor gate,::tyloi::Tensor up,
-        ::tyloi::Tensor sigmoid_table) {
+::tyloi::DenseTensor moe_swiglu_rounded_cuda(
+        ::tyloi::DenseTensor gate,::tyloi::DenseTensor up,
+        ::tyloi::DenseTensor sigmoid_table) {
     TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && up.is_cuda() && gate.get_device()==up.get_device() &&
         gate.is_contiguous() && up.is_contiguous() && gate.scalar_type()==::tyloi::kFloat16 &&
         up.scalar_type()==::tyloi::kFloat16 && gate.dim()==3 && gate.sizes()==up.sizes(),
@@ -2618,7 +2618,7 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
     return output;
 }
 
-::tyloi::Tensor moe_swiglu_split_cuda(::tyloi::Tensor gate_up) {
+::tyloi::DenseTensor moe_swiglu_split_cuda(::tyloi::DenseTensor gate_up) {
     TYLOINFER_RUNTIME_CHECK(gate_up.is_cuda() && gate_up.is_contiguous() &&
         gate_up.scalar_type() == ::tyloi::kFloat16 && gate_up.dim() == 3,
         "gate_up must be contiguous CUDA float16 [tokens, routes, 2 * width]");
@@ -2640,7 +2640,7 @@ void moe_quantize_shared_nint_rows_cuda(::tyloi::Tensor input,
     return output;
 }
 
-::tyloi::Tensor moe_geglu_split_cuda(::tyloi::Tensor gate_up) {
+::tyloi::DenseTensor moe_geglu_split_cuda(::tyloi::DenseTensor gate_up) {
     TYLOINFER_RUNTIME_CHECK(gate_up.is_cuda() && gate_up.is_contiguous() &&
         gate_up.scalar_type() == ::tyloi::kFloat16 && gate_up.dim() >= 2,
         "gate_up must be contiguous CUDA float16 [..., 2 * width]");
@@ -2675,8 +2675,8 @@ __global__ void moe_apply_expert_scale_kernel(
     }
 }
 
-::tyloi::Tensor moe_apply_expert_scale_cuda(
-        ::tyloi::Tensor weights, ::tyloi::Tensor ids, ::tyloi::Tensor scales) {
+::tyloi::DenseTensor moe_apply_expert_scale_cuda(
+        ::tyloi::DenseTensor weights, ::tyloi::DenseTensor ids, ::tyloi::DenseTensor scales) {
     TYLOINFER_RUNTIME_CHECK(weights.is_cuda() && weights.is_contiguous() &&
         weights.scalar_type() == ::tyloi::kFloat32 && weights.dim() == 2,
         "weights must be contiguous CUDA float32 [tokens, routes]");
@@ -2699,10 +2699,10 @@ __global__ void moe_apply_expert_scale_kernel(
     return weights;
 }
 
-::tyloi::Tensor moe_add_shared_gate_cuda(
-        ::tyloi::Tensor routed,
-        ::tyloi::Tensor shared,
-        ::tyloi::Tensor gate_logits) {
+::tyloi::DenseTensor moe_add_shared_gate_cuda(
+        ::tyloi::DenseTensor routed,
+        ::tyloi::DenseTensor shared,
+        ::tyloi::DenseTensor gate_logits) {
     TYLOINFER_RUNTIME_CHECK(routed.is_cuda() && routed.is_contiguous() &&
         routed.scalar_type() == ::tyloi::kFloat16 && routed.dim() == 2,
         "routed must be contiguous CUDA float16 [tokens, width]");
@@ -2730,11 +2730,11 @@ __global__ void moe_apply_expert_scale_kernel(
     return output;
 }
 
-::tyloi::Tensor moe_weighted_reduce_shared_gate_cuda(
-        ::tyloi::Tensor pair_output,
-        ::tyloi::Tensor weights,
-        ::tyloi::Tensor shared,
-        ::tyloi::Tensor gate_logits) {
+::tyloi::DenseTensor moe_weighted_reduce_shared_gate_cuda(
+        ::tyloi::DenseTensor pair_output,
+        ::tyloi::DenseTensor weights,
+        ::tyloi::DenseTensor shared,
+        ::tyloi::DenseTensor gate_logits) {
     TYLOINFER_RUNTIME_CHECK(pair_output.is_cuda() && pair_output.is_contiguous() &&
         pair_output.scalar_type() == ::tyloi::kFloat16 && pair_output.dim() == 3,
         "pair_output must be contiguous CUDA float16 [tokens, routes, width]");

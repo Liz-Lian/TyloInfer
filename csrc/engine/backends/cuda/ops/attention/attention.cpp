@@ -20,13 +20,13 @@ using ::tyloi::indexing::Slice;
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 struct NativeAttentionInput {
-    ::tyloi::Tensor query, key, value, positions, write_positions;
-    MfqOptional<::tyloi::Tensor> sequence_lengths, attention_mask;
+    ::tyloi::DenseTensor query, key, value, positions, write_positions;
+    MfqOptional<::tyloi::DenseTensor> sequence_lengths, attention_mask;
     std::int64_t cache_position, planned_kv_length, decode_attention_parts;
 };
 struct NativeKvView {
-    ::tyloi::Tensor visible_key, visible_value, physical_key, physical_value;
-    ::tyloi::Tensor key_chunk_ptrs, value_chunk_ptrs, page_table;
+    ::tyloi::DenseTensor visible_key, visible_value, physical_key, physical_value;
+    ::tyloi::DenseTensor key_chunk_ptrs, value_chunk_ptrs, page_table;
     KvQuantization quantization;
     std::int64_t page_size, pages_per_chunk, heads;
     bool paged() const noexcept { return page_size > 0; }
@@ -35,11 +35,11 @@ struct NativeKvView {
 using NativeAttentionInput = AttentionInput;
 #endif
 
-MfqOptional<::tyloi::Tensor> minicpmo45_attention_mask(
+MfqOptional<::tyloi::DenseTensor> minicpmo45_attention_mask(
     const NativeAttentionInput& request, const AttentionConfig& config,
     std::int64_t batch, std::int64_t tokens, std::int64_t visible_len,
     bool explicit_causal) {
-    MfqOptional<::tyloi::Tensor> result = mfq_nullopt;
+    MfqOptional<::tyloi::DenseTensor> result = mfq_nullopt;
     if (!config.official_bf16 ||
         (!explicit_causal && !request.sequence_lengths.has_value() &&
          !request.attention_mask.has_value())) {
@@ -101,21 +101,21 @@ bool rope_kv_supported(const tyloi::ops::AttentionInput& input,
         input.query.size(1) == 32 && input.key.size(1) == 8 && input.query.size(3) == 128 &&
         kv.dtype == tyloi::ScalarType::bfloat16;
 }
-void check_device(const tyloi::Tensor& query, const tyloi::Tensor& tensor) {
+void check_device(const tyloi::DenseTensor& query, const tyloi::DenseTensor& tensor) {
     if (tensor.defined() && tensor.numel() != 0 && tensor.device() != query.device())
         throw std::invalid_argument("fused attention tensor devices do not match");
 }
 void check_rope_kv_devices(const tyloi::ops::AttentionInput& input,
                            const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
-    for (const tyloi::Tensor* tensor : {&input.key, &input.value, &input.write_positions,
+    for (const tyloi::DenseTensor* tensor : {&input.key, &input.value, &input.write_positions,
                                       &table.cos, &table.sin, &kv.physical_key, &kv.physical_value})
         check_device(input.query, *tensor);
 }
 }
 
-std::optional<tyloi::Tensor> ops::norm_rope_kv(const tyloi::ops::AttentionInput& input,
+std::optional<tyloi::DenseTensor> ops::norm_rope_kv(const tyloi::ops::AttentionInput& input,
     const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table,
-    const tyloi::Tensor& q_norm, const tyloi::Tensor& k_norm, double eps, double offset) {
+    const tyloi::DenseTensor& q_norm, const tyloi::DenseTensor& k_norm, double eps, double offset) {
     if (!rope_kv_supported(input, kv, table) || kv.quantization.enabled() ||
         !q_norm.defined() || !k_norm.defined() ||
         !Executor::current().attention_options().fused_qk_rope_kv)
@@ -124,8 +124,8 @@ std::optional<tyloi::Tensor> ops::norm_rope_kv(const tyloi::ops::AttentionInput&
     check_device(input.query, q_norm);
     check_device(input.query, k_norm);
     MfqCudaGuard guard(input.query.device().index);
-    using T = ::tyloi::Tensor;
-    return tyloi::ops::measure("full.qk_norm_rope_kv_write", [&]() -> tyloi::Tensor {
+    using T = ::tyloi::DenseTensor;
+    return tyloi::ops::measure("full.qk_norm_rope_kv_write", [&]() -> tyloi::DenseTensor {
         auto q = T(input.query);
         return minicpm_qk_norm_rope_cache_write_bf16_cuda(
             q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(), T(q_norm), T(k_norm),
@@ -135,15 +135,15 @@ std::optional<tyloi::Tensor> ops::norm_rope_kv(const tyloi::ops::AttentionInput&
     });
 }
 
-std::optional<tyloi::Tensor> ops::rope_kv(const tyloi::ops::AttentionInput& input,
+std::optional<tyloi::DenseTensor> ops::rope_kv(const tyloi::ops::AttentionInput& input,
     const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
     if (!rope_kv_supported(input, kv, table) ||
         !Executor::current().attention_options().fused_rope_kv)
         return std::nullopt;
     check_rope_kv_devices(input, kv, table);
     MfqCudaGuard guard(input.query.device().index);
-    using T = ::tyloi::Tensor;
-    return tyloi::ops::measure("full.rope_kv_write", [&]() -> tyloi::Tensor {
+    using T = ::tyloi::DenseTensor;
+    return tyloi::ops::measure("full.rope_kv_write", [&]() -> tyloi::DenseTensor {
         auto q = T(input.query);
         return minicpm_bf16_rope_cache_write_cuda(
             q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(),
@@ -157,17 +157,17 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
                                         const tyloi::state::KvView& public_kv,
                                         const tyloi::ops::AttentionConfig& public_config) {
     MfqCudaGuard guard(input.query.device().index);
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     const NativeAttentionInput request{
-        Tensor(input.query), Tensor(input.key), Tensor(input.value), Tensor(input.positions),
-        Tensor(input.write_positions),
-        input.sequence_lengths ? MfqOptional<Tensor>{Tensor(*input.sequence_lengths)} : mfq_nullopt,
-        input.attention_mask ? MfqOptional<Tensor>{Tensor(*input.attention_mask)} : mfq_nullopt,
+        DenseTensor(input.query), DenseTensor(input.key), DenseTensor(input.value), DenseTensor(input.positions),
+        DenseTensor(input.write_positions),
+        input.sequence_lengths ? MfqOptional<DenseTensor>{DenseTensor(*input.sequence_lengths)} : mfq_nullopt,
+        input.attention_mask ? MfqOptional<DenseTensor>{DenseTensor(*input.attention_mask)} : mfq_nullopt,
         input.cache_position, input.planned_kv_length, input.decode_attention_parts};
-    const NativeKvView kv{Tensor(public_kv.visible_key), Tensor(public_kv.visible_value),
-        Tensor(public_kv.physical_key), Tensor(public_kv.physical_value),
-        Tensor(public_kv.key_chunk_ptrs), Tensor(public_kv.value_chunk_ptrs),
-        Tensor(public_kv.page_table), public_kv.quantization, public_kv.page_size,
+    const NativeKvView kv{DenseTensor(public_kv.visible_key), DenseTensor(public_kv.visible_value),
+        DenseTensor(public_kv.physical_key), DenseTensor(public_kv.physical_value),
+        DenseTensor(public_kv.key_chunk_ptrs), DenseTensor(public_kv.value_chunk_ptrs),
+        DenseTensor(public_kv.page_table), public_kv.quantization, public_kv.page_size,
         public_kv.pages_per_chunk, public_kv.heads};
     auto& executor = Executor::current();
     const AttentionConfig config{public_config.bf16, public_config.sliding, public_config.window,
@@ -201,7 +201,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                   : 1.0 / std::sqrt(static_cast<double>(head_dim));
     bool attention_token_major = false;
 
-    auto attention = profiler.measure("full.attention", [&]() -> ::tyloi::Tensor {
+    auto attention = profiler.measure("full.attention", [&]() -> ::tyloi::DenseTensor {
         if (kv.quantization.enabled()) {
             attention_token_major = true;
             const auto capacity = request.planned_kv_length > 0
@@ -210,8 +210,8 @@ AttentionResult dispatch_attention(const AttentionInput& request,
             return cuda_kv_attention(
                 q, kv.physical_key, kv.physical_value, kv.quantization, {},
                 request.write_positions, request.cache_position, pages, capacity,
-                request.sequence_lengths.value_or(::tyloi::Tensor{}),
-                request.attention_mask.value_or(::tyloi::Tensor{}), attn_scale);
+                request.sequence_lengths.value_or(::tyloi::DenseTensor{}),
+                request.attention_mask.value_or(::tyloi::DenseTensor{}), attn_scale);
         }
 
         if (!q.is_cuda()) {
@@ -230,7 +230,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                 kh = kh.repeat_interleave(repeat, 1);
                 vh = vh.repeat_interleave(repeat, 1);
             }
-            MfqOptional<::tyloi::Tensor> mask = mfq_nullopt;
+            MfqOptional<::tyloi::DenseTensor> mask = mfq_nullopt;
             if (config.official_bf16) {
                 mask = minicpmo45_attention_mask(request, config, batch, tokens,
                                                  kh.size(2), tokens > 1);
@@ -238,7 +238,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                 const std::int64_t visible = kh.size(2);
                 auto key_positions = ::tyloi::cuda::arange(
                     visible, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
-                ::tyloi::Tensor allowed;
+                ::tyloi::DenseTensor allowed;
                 if (tokens > 1) {
                     auto query_positions =
                         request.positions.dim() == 1
@@ -283,7 +283,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                     auto flash_kv = profiler.measure("full.flash128_kv_cast", [&]() {
                         if (specialized_casts)
                             return minicpm_flash128_kv_cast_cuda(kh, vh);
-                        return std::vector<::tyloi::Tensor>{kh.to(::tyloi::kFloat16).contiguous(),
+                        return std::vector<::tyloi::DenseTensor>{kh.to(::tyloi::kFloat16).contiguous(),
                                                        vh.to(::tyloi::kFloat16).contiguous()};
                     });
                     auto output = profiler.measure("full.flash128_kernel", [&]() {

@@ -140,7 +140,7 @@ template <typename Model> struct ReferenceLayers {
         if (!executor) executor = execution.executor().fork(model_parallel_primary_device(execution.config));
     }
 
-    ::tyloi::Tensor forward(int index, ::tyloi::Tensor input, const ::tyloi::Tensor& positions) {
+    ::tyloi::DenseTensor forward(int index, ::tyloi::DenseTensor input, const ::tyloi::DenseTensor& positions) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto scope = executor->enter();
 #endif
@@ -188,7 +188,7 @@ template <typename Model> struct ReferenceLayers {
             state = {};
     }
 
-    ::tyloi::Tensor finalize(::tyloi::Tensor hidden, std::int64_t batch, std::int64_t tokens) {
+    ::tyloi::DenseTensor finalize(::tyloi::DenseTensor hidden, std::int64_t batch, std::int64_t tokens) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto scope = executor->enter();
 #endif
@@ -197,13 +197,13 @@ template <typename Model> struct ReferenceLayers {
                                                 std::move(hidden), batch, tokens);
         else
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return ::tyloi::Tensor(model.normalize(std::move(hidden), batch, tokens));
+            return ::tyloi::DenseTensor(model.normalize(std::move(hidden), batch, tokens));
 #else
             return tyloi::cuda::gemma4::normalize(model, *executor, std::move(hidden), batch, tokens);
 #endif
     }
 
-    ::tyloi::Tensor softcap(::tyloi::Tensor logits) {
+    ::tyloi::DenseTensor softcap(::tyloi::DenseTensor logits) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto scope = executor->enter();
 #endif
@@ -211,14 +211,14 @@ template <typename Model> struct ReferenceLayers {
             return tyloi::cuda::qwen35::softcap(model, *executor, std::move(logits));
         else
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return ::tyloi::Tensor(model.softcap(std::move(logits)));
+            return ::tyloi::DenseTensor(model.softcap(std::move(logits)));
 #else
             return tyloi::cuda::gemma4::softcap(model, *executor, std::move(logits));
 #endif
     }
 };
 
-::tyloi::Tensor rows(const tyloi::ModelSource& source, const std::string& name,
+::tyloi::DenseTensor rows(const tyloi::ModelSource& source, const std::string& name,
                 std::int64_t begin, std::int64_t count) {
     const auto* record = source.find_tensor(name);
     if (!record || !record->shape || record->shape->size() != 2)
@@ -266,7 +266,7 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     if (!hidden) throw std::runtime_error("cannot create reference hidden-state scratch");
     const auto hidden_bytes = std::uint64_t(context) * width * sizeof(float);
     std::vector<float> buffer(std::size_t(context) * width);
-    auto store = [&](std::uint32_t chunk, ::tyloi::Tensor value) {
+    auto store = [&](std::uint32_t chunk, ::tyloi::DenseTensor value) {
         auto cpu = value.to(::tyloi::kCPU, ::tyloi::kFloat32).contiguous();
         hidden.seekp(chunk * hidden_bytes);
         hidden.write(reinterpret_cast<const char*>(cpu.template data_ptr<float>()), hidden_bytes);

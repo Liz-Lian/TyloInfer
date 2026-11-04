@@ -76,9 +76,9 @@ void MlaScratch::ensure_decode_workspace(int64_t B, int64_t planned_len) {
     ensure_meta();
 }
 
-std::vector<Tensor> Executor::storage() const {
-    std::vector<Tensor> result;
-    const auto append = [&](const Tensor& tensor) { if (tensor.defined()) result.push_back(tensor); };
+std::vector<DenseTensor> Executor::storage() const {
+    std::vector<DenseTensor> result;
+    const auto append = [&](const DenseTensor& tensor) { if (tensor.defined()) result.push_back(tensor); };
     const auto route = [&](const MoeRoutePlan& value) {
         append(value.ids); append(value.ids_dst); append(value.expert_bounds);
         append(value.tile_bounds); append(value.tile_experts);
@@ -152,7 +152,7 @@ std::vector<Tensor> Executor::storage() const {
 
 namespace {
 
-void record(Trace* trace, std::string_view name, const Tensor& value) {
+void record(Trace* trace, std::string_view name, const DenseTensor& value) {
     if (trace && !name.empty())
         trace->emplace_back(std::string(name), value.to(::tyloi::kFloat32).contiguous().clone());
 }
@@ -428,7 +428,7 @@ const Ffn::Mode& Executor::current_ffn() {
 }
 #endif
 
-Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
+DenseTensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto scope = enter(mfq_current_cuda_device(), mode.ffn);
 #endif
@@ -449,7 +449,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
             } else {
                 auto* trace = task.scope >= 0 && task.scope == inputs.trace_scope ? inputs.trace : nullptr;
                 auto& values = inputs.values;
-                Tensor input, second;
+                DenseTensor input, second;
                 if constexpr (std::is_same_v<Op, task::Concat>) {
                     input = values[op.first];
                     second = values[op.second];
@@ -460,7 +460,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                               std::is_same_v<Op, task::FullFfn> ||
                               std::is_same_v<Op, task::LinearFfn>) second = values[op.residual];
                 for (auto slot : release[index]) values[slot] = {};
-                auto compute = [&]() -> Tensor {
+                auto compute = [&]() -> DenseTensor {
                     if constexpr (std::is_same_v<Op, task::Norm>) {
                         return qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(::tyloi::kFloat32),
                             op.weight, op.eps, op.offset).reshape(input.sizes());
@@ -514,7 +514,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
             }
         }, task.op);
     }
-    return inputs.output ? std::move(inputs.values[*inputs.output]) : Tensor{};
+    return inputs.output ? std::move(inputs.values[*inputs.output]) : DenseTensor{};
 }
 
 void Executor::prepare(std::int64_t vocabulary) {

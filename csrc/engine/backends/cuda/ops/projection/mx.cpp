@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/ops/projection/cpu_rows.h"
 #include <cmath>
 
-CpuProjectionRows make_cpu_projection_rows(const Mxfp4Weight& w) {
+CpuProjectionRows make_cpu_projection_rows(const tyloi::Mxfp4Tensor& w) {
     TYLOINFER_RUNTIME_CHECK(!w.values.is_cuda() && !w.scales.is_cuda() && w.neuron_len>0 &&
         w.neuron_len%32==0 && w.values.numel()==w.out*(w.neuron_len/2) &&
         w.scales.numel()==w.out*(w.neuron_len/32),"invalid CPU MXFP4 projection fields");
@@ -32,10 +32,10 @@ CpuProjectionRows make_cpu_projection_rows(const Mxfp4Weight& w) {
 }
 
 using ::tyloi::indexing::Slice;
-::tyloi::Tensor mxfp8_matmul(
+::tyloi::DenseTensor mxfp8_matmul(
         CudaProfiler& profiler,
-        const Mxfp8Weight & weight,
-        ::tyloi::Tensor x) {
+        const tyloi::Mxfp8Tensor & weight,
+        ::tyloi::DenseTensor x) {
     x = x.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         x.dim() == 2 && x.size(1) == weight.neuron_len,
@@ -103,10 +103,10 @@ using ::tyloi::indexing::Slice;
     });
 }
 
-::tyloi::Tensor mxfp8_matmul_f32(
+::tyloi::DenseTensor mxfp8_matmul_f32(
         CudaProfiler& profiler,
-        const Mxfp8Weight & weight,
-        ::tyloi::Tensor x) {
+        const tyloi::Mxfp8Tensor & weight,
+        ::tyloi::DenseTensor x) {
     x = x.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         x.dim() == 2 && x.size(1) == weight.neuron_len,
@@ -123,8 +123,8 @@ using ::tyloi::indexing::Slice;
     });
 }
 
-::tyloi::Tensor mxfp8_cpu_reference(
-        const Mxfp8Weight & weight) {
+::tyloi::DenseTensor mxfp8_cpu_reference(
+        const tyloi::Mxfp8Tensor & weight) {
     auto values = weight.values.to(::tyloi::kCPU).contiguous();
     auto scales = weight.scales.to(::tyloi::kCPU).contiguous();
     const auto * value_bytes = values.data_ptr<uint8_t>();
@@ -171,10 +171,10 @@ using ::tyloi::indexing::Slice;
         .to(::tyloi::kFloat16).contiguous();
 }
 
-::tyloi::Tensor mxfp8_groupwise_matmul(
+::tyloi::DenseTensor mxfp8_groupwise_matmul(
         CudaProfiler& profiler,
-        const Mxfp8Weight & weight,
-        ::tyloi::Tensor grouped,
+        const tyloi::Mxfp8Tensor & weight,
+        ::tyloi::DenseTensor grouped,
         int64_t groups) {
     grouped = grouped.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
@@ -187,13 +187,13 @@ using ::tyloi::indexing::Slice;
         outputs_per_group % (weight.scales.size(0)==weight.out?1:weight.neuron_len/weight.scales.size(1)) == 0,
         "MXFP8 groupwise output width must preserve scale blocks");
     if(!grouped.is_cuda()) {
-        std::vector<::tyloi::Tensor> outputs;
+        std::vector<::tyloi::DenseTensor> outputs;
         outputs.reserve(static_cast<size_t>(groups));
         const auto block_rows=weight.scales.size(0)==weight.out?1:
             weight.neuron_len/weight.scales.size(1);
         const auto scale_rows=outputs_per_group/block_rows;
         for(int64_t group=0;group<groups;++group) {
-            const Mxfp8Weight shard{
+            const tyloi::Mxfp8Tensor shard{
                 weight.values.narrow(0,group*outputs_per_group,outputs_per_group),
                 weight.scales.narrow(0,group*scale_rows,scale_rows),outputs_per_group,weight.neuron_len};
             outputs.push_back(mxfp8_matmul(profiler,shard,grouped.select(1,group).contiguous()));
@@ -211,10 +211,10 @@ using ::tyloi::indexing::Slice;
     });
 }
 
-::tyloi::Tensor mxfp8_groupwise_matmul_f32(
+::tyloi::DenseTensor mxfp8_groupwise_matmul_f32(
         CudaProfiler& profiler,
-        const Mxfp8Weight & weight,
-        ::tyloi::Tensor grouped,
+        const tyloi::Mxfp8Tensor & weight,
+        ::tyloi::DenseTensor grouped,
         int64_t groups) {
     grouped = grouped.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
@@ -238,9 +238,9 @@ using ::tyloi::indexing::Slice;
     });
 }
 
-::tyloi::Tensor mxfp4_matmul(
-        const Mxfp4Weight & weight,
-        ::tyloi::Tensor x) {
+::tyloi::DenseTensor mxfp4_matmul(
+        const tyloi::Mxfp4Tensor & weight,
+        ::tyloi::DenseTensor x) {
     x = x.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         x.dim() == 2 && x.size(1) == weight.neuron_len,

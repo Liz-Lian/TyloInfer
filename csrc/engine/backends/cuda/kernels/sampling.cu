@@ -527,7 +527,7 @@ __global__ void sample_top_k_top_p_kernel(
     out[row] = chosen;
 }
 
-::tyloi::Tensor sample_greedy_cuda(::tyloi::Tensor logits)
+::tyloi::DenseTensor sample_greedy_cuda(::tyloi::DenseTensor logits)
 {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_greedy: logits must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(logits.dim() == 2, "sample_greedy: logits must be [B,V]");
@@ -594,7 +594,7 @@ __global__ void sample_top_k_top_p_kernel(
     return out;
 }
 
-::tyloi::Tensor sample_softmax_cuda(::tyloi::Tensor logits, ::tyloi::Tensor random, double temperature)
+::tyloi::DenseTensor sample_softmax_cuda(::tyloi::DenseTensor logits, ::tyloi::DenseTensor random, double temperature)
 {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_softmax: logits must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(random.is_cuda() && random.is_contiguous() && random.scalar_type() == ::tyloi::kFloat32,
@@ -621,8 +621,8 @@ __global__ void sample_top_k_top_p_kernel(
 }
 
 template<bool Conditional>
-static ::tyloi::Tensor sample_top_k_compact_impl(
-    ::tyloi::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
+static ::tyloi::DenseTensor sample_top_k_compact_impl(
+    ::tyloi::DenseTensor logits,int64_t top_k,const volatile int32_t* enabled) {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous() && logits.dim()==2,
         "sample_top_k_compact: logits must be contiguous CUDA [B,V]");
     TYLOINFER_RUNTIME_CHECK(logits.scalar_type()==::tyloi::kFloat32 ||
@@ -634,9 +634,9 @@ static ::tyloi::Tensor sample_top_k_compact_impl(
     const int items=V<=8192?1:V<=65536?4:8;
     const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
     // Explicit types keep these non-dependent for nvcc's MSVC-mode front end.
-    ::tyloi::Tensor out=::tyloi::cuda::empty({B,top_k},logits.options().dtype(::tyloi::kInt64));
-    ::tyloi::Tensor a=::tyloi::cuda::empty({int64_t(B)*blocks*top_k},out.options());
-    ::tyloi::Tensor b=::tyloi::cuda::empty(a.sizes(),a.options());
+    ::tyloi::DenseTensor out=::tyloi::cuda::empty({B,top_k},logits.options().dtype(::tyloi::kInt64));
+    ::tyloi::DenseTensor a=::tyloi::cuda::empty({int64_t(B)*blocks*top_k},out.options());
+    ::tyloi::DenseTensor b=::tyloi::cuda::empty(a.sizes(),a.options());
     auto* first=reinterpret_cast<uint64_t*>(a.data_ptr<int64_t>());
     auto* second=reinterpret_cast<uint64_t*>(b.data_ptr<int64_t>());
     const auto stream=mfq_current_cuda_stream();
@@ -661,18 +661,18 @@ static ::tyloi::Tensor sample_top_k_compact_impl(
     return out;
 }
 
-::tyloi::Tensor sample_top_k_compact_cuda(::tyloi::Tensor logits,int64_t top_k) {
+::tyloi::DenseTensor sample_top_k_compact_cuda(::tyloi::DenseTensor logits,int64_t top_k) {
     return sample_top_k_compact_impl<false>(std::move(logits),top_k,nullptr);
 }
-::tyloi::Tensor sample_top_k_compact_if_cuda(
-        ::tyloi::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
+::tyloi::DenseTensor sample_top_k_compact_if_cuda(
+        ::tyloi::DenseTensor logits,int64_t top_k,const volatile int32_t* enabled) {
     TYLOINFER_RUNTIME_CHECK(enabled,"sample_top_k_compact_if: null replay flag");
     return sample_top_k_compact_impl<true>(std::move(logits),top_k,enabled);
 }
 
-::tyloi::Tensor sample_top_k_top_p_cuda(
-    ::tyloi::Tensor logits,
-    ::tyloi::Tensor random,
+::tyloi::DenseTensor sample_top_k_top_p_cuda(
+    ::tyloi::DenseTensor logits,
+    ::tyloi::DenseTensor random,
     double temperature,
     int64_t top_k,
     double top_p)
@@ -787,7 +787,7 @@ static ::tyloi::Tensor sample_top_k_compact_impl(
     return out;
 }
 
-void sample_token_counts_add_cuda(::tyloi::Tensor counts, ::tyloi::Tensor tokens)
+void sample_token_counts_add_cuda(::tyloi::DenseTensor counts, ::tyloi::DenseTensor tokens)
 {
     TYLOINFER_RUNTIME_CHECK(counts.is_cuda() && counts.is_contiguous() && counts.scalar_type() == ::tyloi::kInt32,
                 "sample_token_counts_add: counts must be contiguous CUDA int32");
@@ -802,9 +802,9 @@ void sample_token_counts_add_cuda(::tyloi::Tensor counts, ::tyloi::Tensor tokens
         counts.data_ptr<int32_t>(), tokens.data_ptr<int64_t>(), n, (int)counts.numel());
 }
 
-::tyloi::Tensor sample_apply_penalties_cuda(
-    ::tyloi::Tensor logits,
-    ::tyloi::Tensor counts,
+::tyloi::DenseTensor sample_apply_penalties_cuda(
+    ::tyloi::DenseTensor logits,
+    ::tyloi::DenseTensor counts,
     double presence_penalty,
     double frequency_penalty,
     double repetition_penalty)

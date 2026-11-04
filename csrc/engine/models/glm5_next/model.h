@@ -11,7 +11,7 @@
 #include <array>
 
 namespace tyloi::cuda::glm5_next {
-using attention_ops::Tensor;
+using attention_ops::DenseTensor;
 using attention_ops::Linear;
 using attention_ops::Embedding;
 using attention_ops::rms_norm;
@@ -20,7 +20,7 @@ using attention_ops::select_pooled_blocks;
 
 struct KdaWeights {
     Linear query, key, value, beta, gate_a, gate_b, output;
-    Tensor conv, forget_a, forget_b, dt_bias, a_log, output_norm;
+    DenseTensor conv, forget_a, forget_b, dt_bias, a_log, output_norm;
 };
 
 class Kda {
@@ -33,7 +33,7 @@ class Kda {
                               std::isfinite(eps) && eps > 0,
                           "invalid GLM KDA configuration");
     }
-    Tensor forward(const Projector& project, KdaState& state, const Tensor &hidden, bool use_cache,
+    DenseTensor forward(const Projector& project, KdaState& state, const DenseTensor &hidden, bool use_cache,
                    int64_t confirmed = 0) const {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0,
                           "recurrent attention requires nonempty [B,T,H] input");
@@ -47,9 +47,9 @@ class Kda {
                 state.rollback_recurrent = state.recurrent;
             },
             [&] { state.rollback(); },
-            [](Tensor prefix, Tensor suffix) { return ::tyloi::cuda::cat({prefix, suffix}, 1); });
+            [](DenseTensor prefix, DenseTensor suffix) { return ::tyloi::cuda::cat({prefix, suffix}, 1); });
     }
-    Tensor forward_chunk(const Projector& project, KdaState& state, const Tensor &hidden, bool use_cache) const {
+    DenseTensor forward_chunk(const Projector& project, KdaState& state, const DenseTensor &hidden, bool use_cache) const {
         const auto b = hidden.size(0), t = hidden.size(1), channels = heads_ * width_;
         const auto options = hidden.options().dtype(::tyloi::kFloat32);
         TYLOINFER_RUNTIME_CHECK(!use_cache || !state.conv.defined() ||
@@ -70,7 +70,7 @@ class Kda {
                                   "GLM KDA projection shape mismatch");
                 return projected;
             },
-            [&](Tensor projected) {
+            [&](DenseTensor projected) {
                 auto joined = ::tyloi::cuda::cat({previous, projected}, 1).contiguous();
                 auto convolved = ssm_conv_silu_cuda(joined, w_.conv.to(::tyloi::kFloat32).contiguous(),
                                                     ::tyloi::cuda::empty({0}, options), t);
@@ -80,12 +80,12 @@ class Kda {
                         .reshape({b, t, heads_, width_})
                         .permute({0, 2, 1, 3});
                 };
-                const auto normalize = [&](const Tensor &x) {
+                const auto normalize = [&](const DenseTensor &x) {
                     return (x / ::tyloi::cuda::clamp_min((x * x).sum(-1, true).sqrt(), 1e-6)).contiguous();
                 };
                 auto q = normalize(heads(0)), k = normalize(heads(channels)),
                      v = heads(2 * channels).contiguous();
-                return std::array<Tensor, 4>{q, k, v, next_conv};
+                return std::array<DenseTensor, 4>{q, k, v, next_conv};
             },
             [&] {
                 auto forget =
@@ -96,17 +96,17 @@ class Kda {
                 auto beta = ::tyloi::cuda::sigmoid(project.run(*w_.beta, hidden).to(::tyloi::kFloat32))
                                 .transpose(1, 2)
                                 .contiguous();
-                return std::array<Tensor, 2>{forget, beta};
+                return std::array<DenseTensor, 2>{forget, beta};
             },
             [&](const auto &convolution, const auto &gates) {
                 auto q = convolution[0], k = convolution[1], v = convolution[2];
                 auto forget = gates[0], beta = gates[1];
-                Tensor attended, next_recurrent;
-                auto initial = use_cache && state.recurrent.defined() ? state.recurrent : Tensor{};
+                DenseTensor attended, next_recurrent;
+                auto initial = use_cache && state.recurrent.defined() ? state.recurrent : DenseTensor{};
                 if (width_ == 32 || width_ == 64 || width_ == 128) {
                     auto result =
                         gdn_cuda(q, k, v, forget, beta,
-                                 initial.defined() ? MfqOptional<Tensor>(initial) : mfq_nullopt);
+                                 initial.defined() ? MfqOptional<DenseTensor>(initial) : mfq_nullopt);
                     attended = result[0];
                     next_recurrent = result[1];
                 } else {
@@ -115,7 +115,7 @@ class Kda {
                     next_recurrent = initial.defined()
                                          ? initial
                                          : ::tyloi::cuda::zeros({b, heads_, width_, width_}, options);
-                    std::vector<Tensor> steps;
+                    std::vector<DenseTensor> steps;
                     for (int64_t i = 0; i < t; ++i) {
                         auto ki = k.select(2, i);
                         next_recurrent = next_recurrent * forget.select(2, i).exp().unsqueeze(-1);
@@ -129,22 +129,22 @@ class Kda {
                     }
                     attended = ::tyloi::cuda::cat(steps, 2);
                 }
-                return std::array<Tensor, 2>{attended, next_recurrent};
+                return std::array<DenseTensor, 2>{attended, next_recurrent};
             },
-            [&](Tensor attended) {
+            [&](DenseTensor attended) {
                 auto gate = project.run(*w_.gate_b, project.run(*w_.gate_a, hidden))
                                 .reshape({b, t, heads_, width_})
                                 .permute({0, 2, 1, 3});
                 return rms_norm(attended, w_.output_norm, eps_) *
                        ::tyloi::cuda::sigmoid(gate.to(::tyloi::kFloat32));
             },
-            [&](Tensor normalized) {
+            [&](DenseTensor normalized) {
                 auto result = project.run(*w_.output, normalized.permute({0, 2, 1, 3})
                                                        .reshape({b, t, channels})
                                                        .to(hidden.scalar_type()));
                 return result;
             },
-            [&](const auto &convolution, const Tensor &next) {
+            [&](const auto &convolution, const DenseTensor &next) {
                 state.conv = convolution[3];
                 state.recurrent = next;
             });
@@ -160,7 +160,7 @@ struct MlaWeights {
     Linear query_a, key_value_a, query_b, output, index_query, index_key, index_score;
     // Head-wise absorbed projections accept/return [B,T,heads,width].
     attention_ops::Transform embed_query, unembed_output;
-    Tensor query_norm, latent_norm, index_norm, index_bias, index_gate, index_position;
+    DenseTensor query_norm, latent_norm, index_norm, index_bias, index_gate, index_position;
 };
 
 struct MlaConfig {
@@ -177,7 +177,7 @@ class SparseMla {
                               c_.pool > 0 && c_.budget > 0 && c_.budget % c_.pool == 0,
                           "invalid Flash-Next MLA configuration");
     }
-    Tensor forward(const Projector& project, MlaState& state, const Tensor &hidden, bool use_cache) const {
+    DenseTensor forward(const Projector& project, MlaState& state, const DenseTensor &hidden, bool use_cache) const {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0 &&
                               hidden.size(1) > 0,
                           "GLM MLA requires nonempty [B,T,H] input");
@@ -185,7 +185,7 @@ class SparseMla {
         TYLOINFER_RUNTIME_CHECK(offset == (use_cache ? state.index.position() : 0) && t <= c_.maximum - offset,
                           "GLM MLA cache position/capacity mismatch");
         struct Projection {
-            Tensor rank, query, latent, index;
+            DenseTensor rank, query, latent, index;
         };
         const double scale = 1.0 / std::sqrt(double(c_.nope));
         return tyloi::models::glm5_next::sparse_mla(
@@ -217,7 +217,7 @@ class SparseMla {
             [&](const Projection &p) {
                 return w_.embed_query(project, p.query).permute({0, 2, 1, 3}).to(::tyloi::kFloat32);
             },
-            [&](const Tensor &query, const Projection &p) {
+            [&](const DenseTensor &query, const Projection &p) {
                 return mfq_glm5_next::dense_mla_attention(query, p.latent, offset, scale);
             },
             [&](const Projection &p) {
@@ -229,21 +229,21 @@ class SparseMla {
                 return project.run(*w_.index_query, p.rank)
                     .reshape({b, t, c_.index_heads, c_.index_width});
             },
-            [&](Tensor query, Tensor pooled) {
+            [&](DenseTensor query, DenseTensor pooled) {
                 return mfq_glm5_next::kpool_scores(query, pooled,
                                                    project.run(*w_.index_score, hidden));
             },
-            [&](Tensor scores) {
+            [&](DenseTensor scores) {
                 return select_pooled_blocks(scores, offset, offset + t, c_.pool, c_.budget,
                                             c_.tail);
             },
-            [&](const Tensor &query, const Projection &p, Tensor selected) {
+            [&](const DenseTensor &query, const Projection &p, DenseTensor selected) {
                 return mfq_glm5_next::sparse_mla_attention(query, p.latent, selected, scale);
             },
-            [&](Tensor attended) {
+            [&](DenseTensor attended) {
                 return w_.unembed_output(project, attended.to(::tyloi::kFloat16));
             },
-            [&](Tensor value) {
+            [&](DenseTensor value) {
                 return project.run(*w_.output, value.reshape({b, t, c_.heads * c_.value_width}));
             },
             [&] {
@@ -258,8 +258,8 @@ class SparseMla {
 };
 
 struct Mhc {
-    Tensor function, base, scale;
-    std::vector<Tensor> pre(const Tensor& x, const tyloi::models::glm5_next::Config& c) const {
+    DenseTensor function, base, scale;
+    std::vector<DenseTensor> pre(const DenseTensor& x, const tyloi::models::glm5_next::Config& c) const {
         return mfq_glm5_next::mhc_pre(x, function, base, scale, c.sinkhorn, c.hc_eps, c.eps);
     }
 };
@@ -267,7 +267,7 @@ struct Mhc {
 struct Layer {
     tyloi::models::glm5_next::Config config;
     Mhc attention_hc, ffn_hc;
-    Tensor attention_norm, ffn_norm;
+    DenseTensor attention_norm, ffn_norm;
     attention_ops::Transform ffn;
     std::unique_ptr<Kda> kda;
     std::unique_ptr<SparseMla> mla;
@@ -281,7 +281,7 @@ struct Model {
     tyloi::models::glm5_next::Config config;
     tyloi::models::CausalLmMetadata metadata;
     QuantLinear embed, lm_head;
-    Tensor output_norm;
+    DenseTensor output_norm;
     std::vector<Layer> layers;
 };
 } // namespace tyloi::cuda::glm5_next

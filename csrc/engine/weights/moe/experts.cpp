@@ -21,7 +21,7 @@ weights::Placement Experts::placement(std::size_t index) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (cached_source) return cached_source->placement();
 #endif
-    const auto add_payload = [&](const ::tyloi::Tensor& payload) {
+    const auto add_payload = [&](const ::tyloi::DenseTensor& payload) {
         if (!payload.defined() || !payload.is_cuda())
             throw std::invalid_argument("expert weight is not prepared for CUDA execution");
         const Device device{DeviceType::cuda, payload.get_device()};

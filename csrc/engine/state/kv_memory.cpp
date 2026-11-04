@@ -50,15 +50,15 @@ bool discrete_device() {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&host_tables,cudaDevAttrPageableMemoryAccessUsesHostPageTables,device));
     return !integrated && !host_tables;
 }
-::tyloi::Tensor external(void* data, std::shared_ptr<void> owner, const std::vector<int64_t>& shape,
+::tyloi::DenseTensor external(void* data, std::shared_ptr<void> owner, const std::vector<int64_t>& shape,
                     const ::tyloi::TensorOptions& options) {
     auto view = make_contiguous_view(data, shape, options.scalar_type(), options.target_device());
     auto storage = std::make_shared<TensorStorage>();
     storage->base = data; storage->bytes = view.nbytes(); storage->device = options.target_device();
     storage->owner = std::move(owner);
-    return Tensor(std::move(storage), view);
+    return DenseTensor(std::move(storage), view);
 }
-::tyloi::Tensor host_tensor(const std::vector<int64_t>& shape, const ::tyloi::TensorOptions& options) {
+::tyloi::DenseTensor host_tensor(const std::vector<int64_t>& shape, const ::tyloi::TensorOptions& options) {
     std::size_t bytes = width_bytes(options);
     for (const auto dimension : shape) {
         if (dimension <= 0 || std::size_t(dimension) > std::numeric_limits<std::size_t>::max()/bytes)
@@ -303,8 +303,8 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
             a->hot.set_cold_storage(cold_keys,cold_values);
             // Logical geometry only: tier-aware kernels resolve every row via
             // the maps. The owner retains the smaller physical RAM tensors.
-            a->keys=external(cold_keys.data_ptr(),std::make_shared<::tyloi::Tensor>(cold_keys),shape(a->key_width),a->options);
-            a->values=external(cold_values.data_ptr(),std::make_shared<::tyloi::Tensor>(cold_values),shape(a->value_width),a->options);
+            a->keys=external(cold_keys.data_ptr(),std::make_shared<::tyloi::DenseTensor>(cold_keys),shape(a->key_width),a->options);
+            a->values=external(cold_values.data_ptr(),std::make_shared<::tyloi::DenseTensor>(cold_values),shape(a->value_width),a->options);
         } else if(a->host) {
             a->keys=host_tensor(shape(a->key_width),a->options);a->values=host_tensor(shape(a->value_width),a->options);
             if(automatic_ram_)a->hot=HotKvCache::allocate(a->heads,a->maximum,cells,a->key_width,a->value_width,a->options);

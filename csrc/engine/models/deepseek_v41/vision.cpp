@@ -10,7 +10,7 @@
 namespace tyloi::cuda::deepseek_v41_runtime {
 namespace {
 
-Tensor vector_weight(const weight_loader::Loader& weights,
+DenseTensor vector_weight(const weight_loader::Loader& weights,
                      const std::string& name,int64_t width) {
     auto value=weights.tensor(name);
     TYLOINFER_RUNTIME_CHECK(value.dim()==1 && value.size(0)==width,"DeepSeek-V4.1 vision vector shape mismatch: "+name);
@@ -65,11 +65,11 @@ Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,weight_load
     return Vision(std::move(source),std::move(weights),config);
 }
 
-tyloi::StepSequence<Vision::Tensor> Vision::encode(
+tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
-        Tensor patches,int height,int width) const {
+        DenseTensor patches,int height,int width) const {
     const auto& v=config_.vision;
     const tyloi::models::axial_patch_vision::Config config{
         v.hidden,v.n_layers,v.n_heads,v.intermediate,v.patch_size,
@@ -109,10 +109,10 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& languag
         auto key=tyloi::cache::block_hash_hex(tyloi::cache::sha256(first,
             std::size_t(span.height*span.width*patch_width)*sizeof(float)))+"|"+
             std::to_string(span.height)+"|"+std::to_string(span.width);
-        Tensor visual(images.find(key));
+        DenseTensor visual(images.find(key));
         if(!visual.defined()) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            Tensor patches=tyloi::ops::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
+            DenseTensor patches=tyloi::ops::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
                 tyloi::TensorOptions().dtype(tyloi::ScalarType::float32).device(tyloi::DeviceType::cpu));
             patches=tyloi::ops::cast(std::move(patches),tyloi::ScalarType::float32,tyloi::Device{tyloi::DeviceType::cuda,0});
             patches=tyloi::ops::cast(std::move(patches),tyloi::ScalarType::float16);
@@ -131,7 +131,7 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& languag
         }
         TYLOINFER_RUNTIME_CHECK(visual.dim()==2 && visual.size(0)==span.rows*span.columns && visual.size(1)==config_.hidden,
                           "DeepSeek-V4.1 aligned image shape mismatch");
-        Tensor start,newline,end;
+        DenseTensor start,newline,end;
         {const auto host=weights_.for_layer(weights_.placement.device,true);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             start=vector_weight(host,"vision.special_token.start",config_.hidden);
@@ -147,7 +147,7 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& languag
 #endif
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        std::vector<Tensor> rows{tyloi::ops::cast(tyloi::ops::reshape(start,{1,-1}),visual.scalar_type())};
+        std::vector<DenseTensor> rows{tyloi::ops::cast(tyloi::ops::reshape(start,{1,-1}),visual.scalar_type())};
         for(int64_t row=0;row<span.rows;++row) {
             rows.push_back(tyloi::ops::slice(visual,0,row*span.columns,(row+1)*span.columns));
             rows.push_back(tyloi::ops::cast(tyloi::ops::reshape(newline,{1,-1}),visual.scalar_type()));
@@ -160,7 +160,7 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& languag
             tyloi::ops::copy_into(std::move(destination),std::move(joined));
         }
 #else
-        std::vector<Tensor> rows{start.reshape({1,-1}).to(visual.scalar_type())};
+        std::vector<DenseTensor> rows{start.reshape({1,-1}).to(visual.scalar_type())};
         for(int64_t row=0;row<span.rows;++row) {
             rows.push_back(visual.narrow(0,row*span.columns,span.columns));
             rows.push_back(newline.reshape({1,-1}).to(visual.scalar_type()));

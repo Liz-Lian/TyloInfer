@@ -7,17 +7,17 @@
 
 namespace tyloi::cuda {
 
-std::array<::tyloi::Tensor, 2> full_norm(
-    CudaProfiler& profiler, const ::tyloi::Tensor& ffn_norm, double eps, double offset,
-    bool bf16, bool fused_norm, bool fp32, ::tyloi::Tensor residual, ::tyloi::Tensor output);
+std::array<::tyloi::DenseTensor, 2> full_norm(
+    CudaProfiler& profiler, const ::tyloi::DenseTensor& ffn_norm, double eps, double offset,
+    bool bf16, bool fused_norm, bool fp32, ::tyloi::DenseTensor residual, ::tyloi::DenseTensor output);
 
-std::array<::tyloi::Tensor, 2> linear_norm(
-    CudaProfiler& profiler, const ::tyloi::Tensor& ffn_norm, double eps, double offset,
-    bool fp32, ::tyloi::Tensor residual, ::tyloi::Tensor output);
+std::array<::tyloi::DenseTensor, 2> linear_norm(
+    CudaProfiler& profiler, const ::tyloi::DenseTensor& ffn_norm, double eps, double offset,
+    bool fp32, ::tyloi::DenseTensor residual, ::tyloi::DenseTensor output);
 
-::tyloi::Tensor full_add(CudaProfiler& profiler, bool fp32, bool bf16_acc,
-                ::tyloi::Tensor residual, ::tyloi::Tensor ff);
+::tyloi::DenseTensor full_add(CudaProfiler& profiler, bool fp32, bool bf16_acc,
+                ::tyloi::DenseTensor residual, ::tyloi::DenseTensor ff);
 
-::tyloi::Tensor linear_add(CudaProfiler& profiler, bool fp32, ::tyloi::Tensor residual, ::tyloi::Tensor ff);
+::tyloi::DenseTensor linear_add(CudaProfiler& profiler, bool fp32, ::tyloi::DenseTensor residual, ::tyloi::DenseTensor ff);
 
 } // namespace tyloi::cuda

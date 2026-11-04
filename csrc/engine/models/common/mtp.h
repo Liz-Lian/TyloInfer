@@ -11,10 +11,10 @@
 #include <utility>
 
 struct MtpStep {
-    ::tyloi::Tensor sample_hidden;
-    ::tyloi::Tensor chain_hidden;
+    ::tyloi::DenseTensor sample_hidden;
+    ::tyloi::DenseTensor chain_hidden;
     // Optional last-row vocabulary projection computed in the predictor graph.
-    ::tyloi::Tensor sample_logits;
+    ::tyloi::DenseTensor sample_logits;
     int32_t greedy_token=-1;
 };
 
@@ -22,20 +22,20 @@ struct MtpStep {
 struct MtpModule {
     virtual ~MtpModule() = default;
     virtual void reset(int64_t batch = 1) = 0;
-    virtual ::tyloi::Tensor forward(
-        ::tyloi::Tensor previous_hidden,
-        ::tyloi::Tensor next_ids) = 0;
+    virtual ::tyloi::DenseTensor forward(
+        ::tyloi::DenseTensor previous_hidden,
+        ::tyloi::DenseTensor next_ids) = 0;
     virtual MtpStep step(
-        ::tyloi::Tensor previous_hidden,
-        ::tyloi::Tensor next_ids) {
+        ::tyloi::DenseTensor previous_hidden,
+        ::tyloi::DenseTensor next_ids) {
         auto hidden = forward(
             std::move(previous_hidden), std::move(next_ids));
         return {hidden, hidden};
     }
     virtual MtpStep step_positioned(
-        ::tyloi::Tensor,
-        ::tyloi::Tensor,
-        ::tyloi::Tensor) {
+        ::tyloi::DenseTensor,
+        ::tyloi::DenseTensor,
+        ::tyloi::DenseTensor) {
         throw std::runtime_error(
             "this CUDA MTP predictor does not accept explicit positions");
     }
@@ -64,7 +64,7 @@ struct MtpModule {
     virtual bool supports_session_state() const noexcept { return false; }
     virtual MtpSessionState capture_session_state(
         std::int64_t,
-        const ::tyloi::Tensor&) const {
+        const ::tyloi::DenseTensor&) const {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
@@ -72,26 +72,26 @@ struct MtpModule {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
-    virtual void seed_target_context(::tyloi::Tensor hidden, std::int64_t tokens) {
+    virtual void seed_target_context(::tyloi::DenseTensor hidden, std::int64_t tokens) {
         TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(1) == tokens,
                           "this CUDA MTP predictor requires complete prompt context");
         append_target_context(std::move(hidden), 0);
     }
     virtual void append_target_context(
-        ::tyloi::Tensor,
+        ::tyloi::DenseTensor,
         std::int64_t) {
         throw std::runtime_error(
             "this CUDA MTP predictor has no target-context adapter");
     }
-    virtual ::tyloi::Tensor draft_block(
-        ::tyloi::Tensor,
+    virtual ::tyloi::DenseTensor draft_block(
+        ::tyloi::DenseTensor,
         int) {
         throw std::runtime_error(
             "this CUDA MTP predictor has no block-draft adapter");
     }
-    virtual ::tyloi::Tensor draft_next(
-        ::tyloi::Tensor,
-        ::tyloi::Tensor) {
+    virtual ::tyloi::DenseTensor draft_next(
+        ::tyloi::DenseTensor,
+        ::tyloi::DenseTensor) {
         throw std::runtime_error("this CUDA MTP predictor has no block-draft adapter");
     }
 

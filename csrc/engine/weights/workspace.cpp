@@ -25,7 +25,7 @@ bool is_memory_pressure(const std::exception& error) {
         message.find("out of memory") != std::string::npos;
 }
 
-::tyloi::Tensor make_storage(std::size_t bytes) {
+::tyloi::DenseTensor make_storage(std::size_t bytes) {
     return ::tyloi::cuda::empty({static_cast<std::int64_t>(bytes)},
         ::tyloi::TensorOptions().device(::tyloi::kCUDA)
             .dtype(::tyloi::kUInt8));
@@ -156,7 +156,7 @@ void ExpertSpace::restore(std::size_t reserve_bytes, const tyloi::source::Source
     ResidentAllocationScope resident;
     while (bytes) {
         const auto chunk = std::min(bytes, std::size_t(256) << 20);
-        ::tyloi::Tensor storage;
+        ::tyloi::DenseTensor storage;
         try {
             storage = make_storage(chunk);
         } catch (const std::exception& error) {
@@ -191,7 +191,7 @@ ExpertSpace::Metrics ExpertSpace::metrics() const {
 
 } // namespace tyloi::cuda
 
-::tyloi::Tensor tyloi::cuda::WeightLoan::finish(::tyloi::Tensor output) {
+::tyloi::DenseTensor tyloi::cuda::WeightLoan::finish(::tyloi::DenseTensor output) {
     if (active_) {
         suspend();
         output = output.clone();

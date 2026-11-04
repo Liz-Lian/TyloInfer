@@ -121,7 +121,7 @@ struct Mapped {
 void publish(uint32_t* flag) {
     std::atomic_thread_fence(std::memory_order_seq_cst);host_store_fence();*(volatile uint32_t*)flag=1;
 }
-MixedMoePool fields_pool(MixedMoePool pool,const std::vector<::tyloi::Tensor>& fields,int slots,int output) {
+MixedMoePool fields_pool(MixedMoePool pool,const std::vector<::tyloi::DenseTensor>& fields,int slots,int output) {
     pool.local_experts=slots;
     if(pool.family==MixedMoeFamily::Nint) {
         auto& w=pool.nint;w.aligned_q8=false;
@@ -149,7 +149,7 @@ CpuProjectionRows rows_plan(const MixedMoePool& p,bool up_half=false) {
         return make_cpu_projection_rows(w);
     }
     if(up_half) {
-        const auto half=[](const ::tyloi::Tensor& field) {
+        const auto half=[](const ::tyloi::DenseTensor& field) {
             return field.reshape({-1}).narrow(0,field.numel()/2,field.numel()/2);
         };
         if(p.family==MixedMoeFamily::Nint) {
@@ -250,7 +250,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         MixedMoeRuntime hot,transfer;
         MoeScratch hot_scratch,transfer_scratch;
         std::vector<MoeGpuArena*> stages;
-        std::vector<::tyloi::Tensor> owner;
+        std::vector<::tyloi::DenseTensor> owner;
     };
     struct CpuJob {
         int expert=0,offset=0,count=0;
@@ -289,8 +289,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         TransferScratch transfer_scratch;
         int tokens,routes,entries;
         int calibration_expert=-1;
-        ::tyloi::Tensor input,ids,weights,output,dispatch_pointers,wire,device_abort,device_kind;
-        ::tyloi::Tensor shared_input_descriptors;
+        ::tyloi::DenseTensor input,ids,weights,output,dispatch_pointers,wire,device_abort,device_kind;
+        ::tyloi::DenseTensor shared_input_descriptors;
         int shared_input_groups=0;
         bool shared_input=false;
         bool gpu_resident_dispatch=false;
@@ -326,16 +326,16 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         std::unique_ptr<Mapped> transfer_route_plan;
         std::unique_ptr<Mapped> mapped_copy_table;
         std::unique_ptr<Mapped> kv_loan_table;
-        ::tyloi::Tensor kv_loan_snapshot;
-        ::tyloi::Tensor mapped_copy_snapshot;
+        ::tyloi::DenseTensor kv_loan_snapshot;
+        ::tyloi::DenseTensor mapped_copy_snapshot;
         std::unique_ptr<CopyEvents> copy_events;
         int native_dma_mode=0;
         std::unique_ptr<tyloi::cuda::Event> transfer_notification;
         std::array<bool,2> transfer_notification_pending{};
         std::vector<tyloi::cuda::MfePackedProjection> transfer_views;
         std::array<std::vector<TransferTemplate>,3> transfer_templates;
-        ::tyloi::Tensor shared_gate;
-        ::tyloi::Tensor shared_gate_quantized,shared_gate_scales;
+        ::tyloi::DenseTensor shared_gate;
+        ::tyloi::DenseTensor shared_gate_quantized,shared_gate_scales;
         bool shared_gate_trace_reported=false;
         bool route_fence_trace_reported=false;
         bool direct_packet_trace_reported=false;
@@ -379,7 +379,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     struct PredictionCell {
         Mapped flags;
         int routes=0;
-        ::tyloi::Tensor aborted;
+        ::tyloi::DenseTensor aborted;
         explicit PredictionCell(::tyloi::Device device,std::size_t candidates=16):flags((64+candidates*sizeof(int32_t)+127)/128*128),
             aborted(::tyloi::cuda::zeros({1},::tyloi::TensorOptions().device(device).dtype(::tyloi::kInt32))) {
             publish(flags.h<uint32_t>()+4);publish(flags.h<uint32_t>()+8);
@@ -402,7 +402,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     double cpu_ns_=0,cpu_work_=0,gpu_ns_=0,gpu_samples_=0;
     double stage_ns_=0,stage_bytes_=0;
     std::vector<tyloi::MoeCpuCostModel::Key> cpu_cost_keys_;
-    std::shared_ptr<MoeScratch> prefill_scratch(const tyloi::cuda::Projector& project,const ::tyloi::Tensor& input) {
+    std::shared_ptr<MoeScratch> prefill_scratch(const tyloi::cuda::Projector& project,const ::tyloi::DenseTensor& input) {
         auto scratch=project.moe_scratch().get(std::shared_ptr<MoeExpertCache>(sources_[0],cache_),input);
         auto& borrowed=cache_->pipeline_prefill_scratch_;
         bool found=false;
@@ -437,8 +437,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     struct PrefillBuffer {
         std::array<MixedMoeRuntime,3> projections;
         std::array<MoeScratch,3> scratch;
-        ::tyloi::Tensor maps;
-        std::array<::tyloi::Tensor,3> nvq_metadata;
+        ::tyloi::DenseTensor maps;
+        std::array<::tyloi::DenseTensor,3> nvq_metadata;
         std::array<std::vector<MoeGpuArena*>,3> stages;
         tyloi::cuda::Event gu_ready{cudaEventDisableTiming};
         tyloi::cuda::Event down_ready{cudaEventDisableTiming};
@@ -478,7 +478,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         }
         arena=std::move(prepared);return *arena;
     }
-    void initialize_prefill_stream(const ::tyloi::Tensor& ids) {
+    void initialize_prefill_stream(const ::tyloi::DenseTensor& ids) {
         if(prefill_stream_)return;
         const bool predictor=sources_[0]->layer_id_<0;
         if(cache_->ssd_experts() && cache_->pipeline_prefill_ring_.defined() &&
@@ -598,7 +598,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             int cohort_index=0;
             for(auto& cohort:source.cohorts_) {
                 auto& arena=*stages[p][cohort_index];buffer.stages[p].push_back(&arena);
-                std::vector<::tyloi::Tensor> fields;
+                std::vector<::tyloi::DenseTensor> fields;
                 for(std::size_t f=0;f<arena.fields.size();++f) {
                     const auto rows=arena.layouts[f].slot_shape[0];
                     const int slots=arena.slots/2;
@@ -645,7 +645,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         for(const auto& pool:runtime.pools)if(pool.family==MixedMoeFamily::Nvq) {
             if(index>=count)throw std::logic_error("prefill NVQ pool count changed");
             const auto& w=pool.nvq;
-            const std::array<::tyloi::Tensor,5> fields={w.indices_packed,w.aux_packed,w.sub_scale_packed,w.neuron_scale,w.codebook};
+            const std::array<::tyloi::DenseTensor,5> fields={w.indices_packed,w.aux_packed,w.sub_scale_packed,w.neuron_scale,w.codebook};
             for(int f=0;f<5;++f)pointers[index*5+f]=int64_t(reinterpret_cast<uintptr_t>(fields[f].data_ptr()));
             sizes[index*3]=w.indices_packed.numel();sizes[index*3+1]=w.aux_packed.numel();sizes[index*3+2]=w.sub_scale_packed.numel();
             const int format=int(w.kernel_format);
@@ -660,8 +660,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(dispatch.weight_sizes.data_ptr(),sizes,std::size_t(count)*3*8,cudaMemcpyHostToDevice,cache_->weight_stream_));
         TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(dispatch.pool_params.data_ptr(),params,std::size_t(count)*7*4,cudaMemcpyHostToDevice,cache_->weight_stream_));
     }
-    ::tyloi::Tensor streamed_prefill(const tyloi::cuda::Projector& project,const ::tyloi::Tensor& input,
-            const ::tyloi::Tensor& ids,const ::tyloi::Tensor& weights) {
+    ::tyloi::DenseTensor streamed_prefill(const tyloi::cuda::Projector& project,const ::tyloi::DenseTensor& input,
+            const ::tyloi::DenseTensor& ids,const ::tyloi::DenseTensor& weights) {
         using Clock=std::chrono::steady_clock;
         const auto elapsed=[](Clock::time_point started) {
             return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-started).count();
@@ -689,7 +689,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         auto* published=publication->h<uint32_t>();*published=0;
         tyloi::cuda::moe_publish_routes(nullptr,ids.data_ptr<int32_t>(),nullptr,
             publication->d<int32_t>()+16,publication->d<uint32_t>(),0,entries,stream_);
-        auto shared=shared_?shared_(project,input): ::tyloi::Tensor{};
+        auto shared=shared_?shared_(project,input): ::tyloi::DenseTensor{};
         const auto route_started=Clock::now();
         tyloi::cuda::wait_route_publication(published,stream_);
         stats.pipeline_route_wait_ns+=elapsed(route_started);
@@ -718,7 +718,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             return a<b;
         });
         const int groups=(int(order.size())+prefill_group_size-1)/prefill_group_size;
-        struct Upload {int cohort,slot,expert;std::vector<::tyloi::Tensor> fields;int route=0;};
+        struct Upload {int cohort,slot,expert;std::vector<::tyloi::DenseTensor> fields;int route=0;};
         struct Group {
             int begin=0,rows=0;
             int route_offset=0,mma_tile_m=8,wide_tile_m=8;
@@ -888,7 +888,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                     const auto& cohort=sources_[p]->cohorts_[c];
                     const auto count=std::max<std::size_t>(1,std::count_if(work[g].uploads[p].begin(),work[g].uploads[p].end(),
                         [&](const auto& upload){return upload.cohort==int(c);}));
-                    std::vector<::tyloi::Tensor> fields;
+                    std::vector<::tyloi::DenseTensor> fields;
                     for(std::size_t f=0;f<cohort.bytes_per_expert.size();++f) {
                         device_offset=prefill_align(device_offset);
                         const auto bytes=int64_t(count)*cohort.bytes_per_expert[f];
@@ -1059,7 +1059,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             route.mma_tile_bounds=take(bounds_size);route.mma_tile_experts=take(group.rows);
             route.wide_tile_bounds=take(bounds_size);route.wide_tile_experts=take(group.rows);
             route.mma_tile_m=group.mma_tile_m;route.wide_tile_m=group.wide_tile_m;
-            const auto projection=[&](int p,const ::tyloi::Tensor& x) {
+            const auto projection=[&](int p,const ::tyloi::DenseTensor& x) {
                 auto& runtime=buffer.projections[p];
                 auto& scratch=buffer.scratch[p];
                 auto shared_scratch=prefill_scratch(project,x);
@@ -1135,7 +1135,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         return !option || *option!=0;
     }
 
-    void retain_prefill_pool(const ::tyloi::Tensor& ids) {
+    void retain_prefill_pool(const ::tyloi::DenseTensor& ids) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         const auto retain=tyloi::cuda::runtime_options::moe_prefill_pool_retain();
         if((retain && *retain==0) || cache_->pipeline_prefill_pool_)return;
@@ -1177,7 +1177,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         failed_=true;
     }
 
-    void initialize_prefill_layer(const ::tyloi::Tensor& ids) {
+    void initialize_prefill_layer(const ::tyloi::DenseTensor& ids) {
         if(prefill_layer_)return;
         if(!cache_->pipeline_prefill_layer_layout_)
             throw std::logic_error("whole-layer prefill requires field-major preload");
@@ -1286,7 +1286,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                         const auto count=int(loan.experts.size());
                         std::vector<int32_t> loan_map(experts_,-1);
                         for(int i=0;i<count;++i) {hot_map[loan.experts[i]]=-1;loan_map[loan.experts[i]]=i;}
-                        std::vector<::tyloi::Tensor> fields;
+                        std::vector<::tyloi::DenseTensor> fields;
                         for(std::size_t f=0;f<loan.fields.size();++f) {
                             auto shape=cohort.arena->layouts[f].slot_shape;shape[0]*=count;
                             fields.push_back(::tyloi::cuda::from_blob(prefill_layer_pointer(prepared->slot,
@@ -1303,7 +1303,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 host_maps.push_back(std::move(hot_map));
                 const int slots=int(cohort.prefill_ram_experts.size());
                 if(!slots)continue;
-                std::vector<::tyloi::Tensor> fields;
+                std::vector<::tyloi::DenseTensor> fields;
                 for(std::size_t f=0;f<cohort.bytes_per_expert.size();++f) {
                     const auto& field=cohort.arena->layouts[f];auto shape=field.slot_shape;shape[0]*=slots;
                     const auto offset=cohort.prefill_ram_fields[f]-layout.first;
@@ -1458,8 +1458,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         cache_->record_prefill_copy(copy_prefill_layer_bytes(layer_id,slot,&profiler_));
     }
 
-    ::tyloi::Tensor whole_layer_prefill(const tyloi::cuda::Projector& project,const ::tyloi::Tensor& input,
-            const ::tyloi::Tensor& ids,const ::tyloi::Tensor& weights) {
+    ::tyloi::DenseTensor whole_layer_prefill(const tyloi::cuda::Projector& project,const ::tyloi::DenseTensor& input,
+            const ::tyloi::DenseTensor& ids,const ::tyloi::DenseTensor& weights) {
         // Bound submission to two layers of lookahead. The CPU only waits for
         // the old reader of this slot, while current GR/attention remain queued.
         // Copy-stream fences protect the other slot until its reader retires.
@@ -1499,9 +1499,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 submit_prefill_layer_copy(next->first,layer.slot^1,true);
         }
         ++cache_->stats_.pipeline_serves;
-        auto shared=shared_?shared_(project,input): ::tyloi::Tensor{};
+        auto shared=shared_?shared_(project,input): ::tyloi::DenseTensor{};
         auto route=build_moe_route_plan(ids,experts_);
-        const auto projection=[&](int p,const ::tyloi::Tensor& x) {
+        const auto projection=[&](int p,const ::tyloi::DenseTensor& x) {
             auto& runtime=layer.projections[p];
             auto& scratch=layer.scratch[p];
             auto shared_scratch=prefill_scratch(project,x);
@@ -1689,7 +1689,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 for(const auto& cohort:source.cohorts_)runtime.pools.push_back(cohort.active);
                 mapping[p]=source.expert_to_cohort_;
             }
-            std::array<const NintWeight*,3> shared{};
+            std::array<const tyloi::NintTensor*,3> shared{};
             if(shared_) {
                 for(int p=0;p<3;++p)shared[p]=&shared_weights_.projections[p]->nint;
                 cell.shared_gate=shared_weights_.gate(project,cell.input).contiguous();
@@ -2092,13 +2092,13 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         if(!cell.graphs->record(1,cell.tokens,[&]{launch_body(cell,project);},error))throw std::runtime_error(error);
         ++cache_->stats_.pipeline_graph_captures;
     }
-    ::tyloi::Tensor activation(const ::tyloi::Tensor& gate,const ::tyloi::Tensor& up,bool fused) {
+    ::tyloi::DenseTensor activation(const ::tyloi::DenseTensor& gate,const ::tyloi::DenseTensor& up,bool fused) {
         if(swiglu_limit_>0)return clipped_silu_mul_cuda(gate,up,swiglu_limit_);
         if(fused)return moe_swiglu_rounded_cuda(gate,up,cache_->pipeline_sigmoid_table_);
         return (gate*::tyloi::cuda::sigmoid(gate))*up;
     }
-    ::tyloi::Tensor gpu_ffn(Cell& cell,bool transfer,const MoeRoutePlan& route) {
-        auto projection=[&](int i,const ::tyloi::Tensor& x) {
+    ::tyloi::DenseTensor gpu_ffn(Cell& cell,bool transfer,const MoeRoutePlan& route) {
+        auto projection=[&](int i,const ::tyloi::DenseTensor& x) {
             auto& binding=cell.binding[i];auto& runtime=transfer ? binding.transfer : binding.hot;
             auto& scratch=transfer ? binding.transfer_scratch : binding.hot_scratch;
             return runtime.forward(scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route, cell.shared_input && i<2);
@@ -2114,8 +2114,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         auto gate=gu.narrow(-1,0,ff_),up=gu.narrow(-1,ff_,ff_);
         return projection(2,(gate*::tyloi::cuda::sigmoid(gate))*up);
     }
-    void launch_body(Cell& cell,const tyloi::cuda::Projector& project,const ::tyloi::Tensor* input_view=nullptr,
-            const ::tyloi::Tensor* ids_view=nullptr,const ::tyloi::Tensor* weights_view=nullptr) {
+    void launch_body(Cell& cell,const tyloi::cuda::Projector& project,const ::tyloi::DenseTensor* input_view=nullptr,
+            const ::tyloi::DenseTensor* ids_view=nullptr,const ::tyloi::DenseTensor* weights_view=nullptr) {
         const auto& input=input_view?*input_view:cell.input;
         const auto& ids=ids_view?*ids_view:cell.ids;
         if(cell.two_stage) {
@@ -2211,7 +2211,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 // Recording replaces this cell's prior capture. Return its
                 // warmup result before allocating the new gate in that pool.
                 cell.fused->bind_shared_gate({});
-                ::tyloi::Tensor gate;
+                ::tyloi::DenseTensor gate;
                 if(prepared_early && cell.shared_gate_quantized.defined()) {
                     if(auto value=try_nint_shared_gate_sigmoid_cuda(input,shared_weights_.scalar_gate->nint,
                             cell.shared_gate_quantized,cell.shared_gate_scales))gate=*value;
@@ -2271,7 +2271,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             cell.output=cell.fused->output();mark("cpu_end");mark("expert_end");return;
         }
         if(cell.shared_input)moe_quantize_shared_input_cuda(cell.input,cell.shared_input_descriptors,cell.shared_input_groups);
-        auto shared=shared_ ? shared_(project,cell.input) : ::tyloi::Tensor{};
+        auto shared=shared_ ? shared_(project,cell.input) : ::tyloi::DenseTensor{};
         mark("shared_end");
         if(cell.gpu_resident_dispatch) {
             // Residency publication precedes this graph on its compute stream.
@@ -3821,7 +3821,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         };
         for(int projection=0;projection<3;++projection) {
             auto& source=*sources_[projection];std::vector<int> slots(source.cohorts_.size());
-            struct Staged {int slot,expert;MoeHostExpertCache::Lease lease;std::vector<::tyloi::Tensor> fields;};
+            struct Staged {int slot,expert;MoeHostExpertCache::Lease lease;std::vector<::tyloi::DenseTensor> fields;};
             if(single_up() && projection==1)continue;
             std::vector<std::vector<Staged>> staged(source.cohorts_.size());
             for(const auto& group:cell.plan.groups)if(group.kind==tyloi::MoeDispatchKind::GpuTransfer) {
@@ -4255,7 +4255,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     }
 public:
     void prefetch_host(const std::vector<int32_t>& predictions,Mapped& flags) {
-        struct Field {void* destination;::tyloi::Tensor source;int64_t bytes,offset=0;};
+        struct Field {void* destination;::tyloi::DenseTensor source;int64_t bytes,offset=0;};
         std::vector<Field> fields;
         const auto lease_begin=cache_->pipeline_dma_leases_.size();
         const auto slot_begin=cache_->pipeline_transfer_slots_.size();
@@ -4367,7 +4367,7 @@ public:
         tyloi::cuda::check_stream_progress(cache_->weight_stream_);
         rollback.committed=true;
     }
-    tyloi::cuda::DecodeWindow::Task prediction(const ::tyloi::Tensor& ids) {
+    tyloi::cuda::DecodeWindow::Task prediction(const ::tyloi::DenseTensor& ids) {
         if((!tyloi::cuda::DecodeWindow::recording() && !cache_->ssd_experts()) || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<1 ||
             ids.size(1)>(cache_->ssd_experts()?int64_t(32)*experts_:2) ||
             ids.scalar_type()!=::tyloi::kInt32 || !ids.is_cuda() ||
@@ -4546,8 +4546,8 @@ public:
                 source.cohorts_[source.expert_to_cohort_[e]].arena);
         }
     }
-    ::tyloi::Tensor forward(const tyloi::cuda::Projector& project,const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,
-            const ::tyloi::Tensor& weights,bool batch_serial,int tile,int tiles) {
+    ::tyloi::DenseTensor forward(const tyloi::cuda::Projector& project,const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,
+            const ::tyloi::DenseTensor& weights,bool batch_serial,int tile,int tiles) {
         if(failed_)throw std::runtime_error("MFQ FFN session requires recovery after its previous error");
         if(!cache_->pipeline_ready())throw std::runtime_error("MFQ FFN needs completed startup cache initialization");
         const auto current=mfq_current_cuda_stream();
@@ -4731,9 +4731,9 @@ std::shared_ptr<MoeFfnPipeline> tyloi::cuda::Pipelines::make(
     return runtime;
 }
 
-::tyloi::Tensor run_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline,
-        const tyloi::cuda::Projector& project,const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,
-        const ::tyloi::Tensor& weights,bool batch_serial,int tile,int tiles) {
+::tyloi::DenseTensor run_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline,
+        const tyloi::cuda::Projector& project,const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,
+        const ::tyloi::DenseTensor& weights,bool batch_serial,int tile,int tiles) {
     if(!pipeline)throw std::runtime_error("MoE FFN pipeline is no longer available");
     if(!input.is_cuda())throw std::invalid_argument("MFQ FFN input must be CUDA");
     const MfqCudaGuard guard(input.device());
@@ -4741,7 +4741,7 @@ std::shared_ptr<MoeFfnPipeline> tyloi::cuda::Pipelines::make(
 }
 
 tyloi::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
-        std::shared_ptr<MoeFfnPipeline> pipeline,const ::tyloi::Tensor& ids) {
+        std::shared_ptr<MoeFfnPipeline> pipeline,const ::tyloi::DenseTensor& ids) {
     if(!pipeline)throw std::runtime_error("MoE FFN pipeline is no longer available");
     if(!ids.is_cuda())throw std::invalid_argument("MFQ prefetch routes must be CUDA");
     const MfqCudaGuard guard(ids.device());

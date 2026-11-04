@@ -16,7 +16,7 @@
 
 namespace tyloi::cuda::nemotron_h {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using Config = tyloi::models::nemotron_h::Config;
 
 struct Mamba {
@@ -24,16 +24,16 @@ struct Mamba {
     int64_t mamba_heads = 0, mamba_head_dim = 0, ssm_state_size = 0;
     int64_t mamba_groups = 0, conv_kernel = 0;
     double rms_norm_eps = 1e-6, time_step_limit_lo = 0.0, time_step_limit_hi = 0.0;
-    Tensor mixer_norm;
+    DenseTensor mixer_norm;
     QuantLinear in_proj;
-    Tensor conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
+    DenseTensor conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
     QuantLinear out_proj;
 };
 
 struct Moe {
     int layer = -1;
     double rms_norm_eps = 1e-6;
-    Tensor ffn_norm;
+    DenseTensor ffn_norm;
     Ffn ffn;
 };
 
@@ -49,10 +49,10 @@ struct Model {
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     QuantLinear embed, lm_head;
-    Tensor output_norm;
+    DenseTensor output_norm;
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    tyloi::Tensor embedding(tyloi::Tensor ids, int primary = 0) const;
+    tyloi::DenseTensor embedding(tyloi::DenseTensor ids, int primary = 0) const;
 #endif
 };
 

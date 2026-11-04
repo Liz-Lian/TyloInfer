@@ -9,7 +9,7 @@
 namespace tyloi::cuda::grid_vision_runtime {
 namespace {
 
-::tyloi::Tensor required_vector(const weight_loader::Loader& weights,
+::tyloi::DenseTensor required_vector(const weight_loader::Loader& weights,
                        GridVisionTensorRole role, int64_t width, size_t block = 0) {
     const auto name = grid_vision_canonical_name(role, block);
     auto value = weights.tensor(name);
@@ -95,15 +95,15 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
                                  std::move(position_weight), std::move(blocks));
 }
 
-tyloi::StepSequence<Tensor> CudaGridVisionEncoder::encode(
+tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     Projector projector,
 #endif
-    Tensor pixels,
+    DenseTensor pixels,
     const std::vector<GridShape> &grids) const {
     return tyloi::models::grid_vision::encode(
         std::move(pixels), config_, grids, blocks_,
-        [this](Tensor input, int64_t count) {
+        [this](DenseTensor input, int64_t count) {
             if (input.dim() == 5)
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 input = tyloi::ops::reshape(input, {input.size(0), -1});
@@ -141,10 +141,10 @@ tyloi::StepSequence<Tensor> CudaGridVisionEncoder::encode(
             auto run = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 auto position_weight = tyloi::ops::cast(position_weight_, position_weight_.scalar_type(), tyloi::Device{tyloi::DeviceType::cuda, 0});
-                Tensor index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                DenseTensor index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
                 index = tyloi::ops::cast(std::move(index), ::tyloi::kInt32, position_weight.device());
                 index = tyloi::ops::cast(std::move(index), ::tyloi::kInt64);
-                Tensor weights = tyloi::ops::tensor(interpolation.weights, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                DenseTensor weights = tyloi::ops::tensor(interpolation.weights, tyloi::Device{tyloi::DeviceType::cpu, 0});
                 weights = tyloi::ops::reshape(std::move(weights), {interpolation.patch_count, 4, 1});
                 weights = tyloi::ops::cast(std::move(weights), ::tyloi::kFloat32, position_weight.device());
                 auto selected = tyloi::ops::index_select(position_weight, 0, tyloi::ops::reshape(std::move(index), {-1}));
@@ -178,7 +178,7 @@ tyloi::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                        std::size_t(interpolation.patch_count * config_.hidden_size) * 48);
             return loan.finish(run());
         },
-        [](Tensor hidden, Tensor learned) {
+        [](DenseTensor hidden, DenseTensor learned) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             auto dtype = hidden.scalar_type();
             return tyloi::ops::add(std::move(hidden), tyloi::ops::cast(std::move(learned), dtype));
@@ -190,7 +190,7 @@ tyloi::StepSequence<Tensor> CudaGridVisionEncoder::encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
          , projector
 #endif
-        ](const auto &block, Tensor value, const GridVisionLayout &layout) {
+        ](const auto &block, DenseTensor value, const GridVisionLayout &layout) {
             // FP32 RoPE intermediates, Q/K/V copies and residual overlap;
             // FFN input/output plus a decoded FP16 projection. GELU is fused.
             const auto projection_scratch =
@@ -200,7 +200,7 @@ tyloi::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                 auto loan = weights_.borrow(fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
                            std::size_t(value.size(0) * config_.intermediate_size) * 12 +
                            (std::size_t(16) << 20));
-                Tensor output;
+                DenseTensor output;
                 {
                     auto resident = fields::to_cuda(block);
                     output = resident(
@@ -220,7 +220,7 @@ tyloi::StepSequence<Tensor> CudaGridVisionEncoder::encode(
 }
 
 CudaGridVisionEncoder::CudaGridVisionEncoder(
-    RoutedCache& weights, GridVisionConfig config, Tensor patch_weight, Tensor patch_bias, Tensor position_weight,
+    RoutedCache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias, DenseTensor position_weight,
     std::vector<Layer> blocks)
     : weights_(weights),
       config_(std::move(config)),

@@ -19,21 +19,21 @@ using ::tyloi::indexing::Slice;
 namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::array<tyloi::Tensor, 2> FullAttention::forward(
-        tyloi::Tensor x, const AttentionStep& step, tyloi::state::KvView cache,
+std::array<tyloi::DenseTensor, 2> FullAttention::forward(
+        tyloi::DenseTensor x, const AttentionStep& step, tyloi::state::KvView cache,
         const tyloi::ops::RopeTable& rope, tyloi::ops::Trace* trace) const {
-    using Tensor = tyloi::Tensor;
+    using DenseTensor = tyloi::DenseTensor;
     const auto profile_device = x.device();
     auto measure = [&](const char* name, auto&& operation) {
         return tyloi::ops::measure(name, profile_device, std::forward<decltype(operation)>(operation));
     };
 #else
-std::array<::tyloi::Tensor, 2> FullAttention::forward(
+std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
         const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
-        ::tyloi::Tensor x,
+        ::tyloi::DenseTensor x,
         const AttentionStep& step, AttentionKvView cache,
         AttentionScratch& scratch, const RopeCache& rope, Trace* trace) const {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     auto measure = [&](const char* name, auto&& operation) {
         return profiler.measure(name, std::forward<decltype(operation)>(operation));
     };
@@ -46,7 +46,7 @@ std::array<::tyloi::Tensor, 2> FullAttention::forward(
     const auto planned_kv_length = step.planned_kv_length;
     const auto decode_attention_parts = step.decode_attention_parts;
     std::int64_t B = x.size(0), T = x.size(1), H = x.size(2);
-    auto trace_qwen_stage = [&](const char *name, const Tensor &value,
+    auto trace_qwen_stage = [&](const char *name, const DenseTensor &value,
                                 int token_axis = 1) {
         if (!attention_output_gate || trace == nullptr)
             return;
@@ -79,14 +79,14 @@ std::array<::tyloi::Tensor, 2> FullAttention::forward(
     if (x.is_cuda())
         scratch.split(B * nh, AttentionScratch::kMaxParts, hd, x.device());
 #endif
-    Tensor physical_key(cache.physical_key), physical_value(cache.physical_value);
+    DenseTensor physical_key(cache.physical_key), physical_value(cache.physical_value);
     auto residual = x;
-    Tensor write_positions, q, k, v, q_gate;
+    DenseTensor write_positions, q, k, v, q_gate;
     bool grid_mrope_positions;
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     bool fused_qk_rope_kv;
 #endif
-    std::pair<Tensor, Tensor> kv;
+    std::pair<DenseTensor, DenseTensor> kv;
     {
         auto xn = measure("full.attn_norm", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -137,7 +137,7 @@ std::array<::tyloi::Tensor, 2> FullAttention::forward(
         trace_qwen_stage("qwen.attn_norm", xn);
         auto parts = measure("full.qkv", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            std::vector<tyloi::Tensor> result;
+            std::vector<tyloi::DenseTensor> result;
             if (!split_q_kv_projections) {
                 return tyloi::ops::project_group(xn, *qkv);
             } else {
@@ -150,7 +150,7 @@ std::array<::tyloi::Tensor, 2> FullAttention::forward(
             if (!split_q_kv_projections) {
                 return project.run(qkv, xn);
             }
-            std::vector<::tyloi::Tensor> result;
+            std::vector<::tyloi::DenseTensor> result;
             result.reserve(3);
             result.push_back(project.run(q_projection, xn));
             result.push_back(project.run(k_projection, xn));
@@ -178,7 +178,7 @@ std::array<::tyloi::Tensor, 2> FullAttention::forward(
             v_full = v_full.to(::tyloi::kBFloat16).contiguous();
 #endif
         }
-        Tensor q_raw;
+        DenseTensor q_raw;
         measure("full.qkv_view", [&]() {
             if (attention_output_gate) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -423,7 +423,7 @@ std::array<::tyloi::Tensor, 2> FullAttention::forward(
 #endif
     const bool attention_token_major = result.token_major;
     auto a = result.value;
-    Tensor oo;
+    DenseTensor oo;
     if (q_gate.defined()) {
         trace_qwen_stage("qwen.attention", a, attention_token_major ? 1 : 2);
         auto af = measure("full.attn_out_view", [&]() {

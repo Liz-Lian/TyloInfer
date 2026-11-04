@@ -60,11 +60,11 @@ private:
         Layout layout;
         int64_t key_width = 0, value_width = 0;
         ::tyloi::ScalarType dtype = ::tyloi::kFloat16;
-        ::tyloi::Tensor k_chunk_ptrs, v_chunk_ptrs;
-        std::vector<::tyloi::Tensor> k_chunks, v_chunks;
+        ::tyloi::DenseTensor k_chunk_ptrs, v_chunk_ptrs;
+        std::vector<::tyloi::DenseTensor> k_chunks, v_chunks;
     };
     struct Chunk {
-        ::tyloi::Tensor k, v;
+        ::tyloi::DenseTensor k, v;
     };
 
     static size_t checked_maximum_pages(int32_t sequences, int64_t pages_per_sequence);
@@ -80,7 +80,7 @@ private:
     std::vector<std::uint64_t> page_generations_;
     std::uint64_t generation_ = 1;
     std::vector<std::int32_t> host_page_table_;
-    std::map<int, ::tyloi::Tensor> device_page_tables_;
+    std::map<int, ::tyloi::DenseTensor> device_page_tables_;
     std::vector<Pool> layers_;
     size_t storage_pages_ = 0;
     size_t reserved_bytes_ = 0;

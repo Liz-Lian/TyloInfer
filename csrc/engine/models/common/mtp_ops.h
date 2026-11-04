@@ -21,24 +21,24 @@ template<class Model> int64_t mtp_predictor_prefill_chunk_size(Model&, int64_t r
 template<class Model, class Ops> bool mtp_cache_only_prompt_history(Model&, Ops&) { return false; }
 template<class Model, class Ops> void mtp_initialize(Model&, Ops&) {}
 
-template<class Model, class Ops, class Tensor, class Finish>
-std::optional<Tensor> mtp_target_forward(Model&, Ops&, Tensor&, Tensor*, int64_t, std::uint64_t, const Finish&) { return std::nullopt; }
+template<class Model, class Ops, class DenseTensor, class Finish>
+std::optional<DenseTensor> mtp_target_forward(Model&, Ops&, DenseTensor&, DenseTensor*, int64_t, std::uint64_t, const Finish&) { return std::nullopt; }
 
-template<class Model, class Ops, class Chunk, class Tensor, class Timer, class Finish>
-std::optional<typename Ops::PrefillResult> mtp_prefill(Model&, Ops&, const Chunk&, Tensor&, Tensor&, Timer&, const Finish&) { return std::nullopt; }
+template<class Model, class Ops, class Chunk, class DenseTensor, class Timer, class Finish>
+std::optional<typename Ops::PrefillResult> mtp_prefill(Model&, Ops&, const Chunk&, DenseTensor&, DenseTensor&, Timer&, const Finish&) { return std::nullopt; }
 
-template<class Model, class Ops, class Tensor>
-std::optional<MtpStep> mtp_predictor_step(Model&, Ops&, Tensor&, Tensor&, Tensor&) { return std::nullopt; }
+template<class Model, class Ops, class DenseTensor>
+std::optional<MtpStep> mtp_predictor_step(Model&, Ops&, DenseTensor&, DenseTensor&, DenseTensor&) { return std::nullopt; }
 template<class Model, class Ops> void mtp_predictor_compact(Model&, Ops&, MtpStep&) {}
-template<class Model, class Ops, class Tensor>
-bool mtp_predictor_history_step(Model&, Ops&, Tensor&, Tensor&, Tensor&, bool) { return false; }
+template<class Model, class Ops, class DenseTensor>
+bool mtp_predictor_history_step(Model&, Ops&, DenseTensor&, DenseTensor&, DenseTensor&, bool) { return false; }
 template<class Model, class Ops, class Started>
 double mtp_begin_predictor_prefill(Model&, Ops&, int64_t, Started started) {
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
-template<class Model, class Ops, class Tensor> void mtp_predictor_prefill_begin(Model&, Ops&, Tensor&) {}
-template<class Model, class Ops, class Tensor, class Timer>
-void mtp_predictor_prefill(Model&, Ops& ops, Tensor& hidden, Tensor& ids, Tensor& positions, Timer&, bool&) {
+template<class Model, class Ops, class DenseTensor> void mtp_predictor_prefill_begin(Model&, Ops&, DenseTensor&) {}
+template<class Model, class Ops, class DenseTensor, class Timer>
+void mtp_predictor_prefill(Model&, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions, Timer&, bool&) {
     (void)ops.predictor_step(std::move(hidden),std::move(ids),std::move(positions));
 }
 

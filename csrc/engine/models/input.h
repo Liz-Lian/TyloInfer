@@ -9,17 +9,17 @@
 namespace tyloi::models {
 
 struct Input {
-    using Tensor = tyloi::Tensor;
-    using Trace = std::vector<Tensor>;
+    using DenseTensor = tyloi::DenseTensor;
+    using Trace = std::vector<DenseTensor>;
 
-    Tensor ids;
-    std::optional<Tensor> embeddings;
-    std::optional<Tensor> positions;
-    std::optional<Tensor> lengths;
-    std::optional<Tensor> attention_mask;
-    std::optional<Tensor> cache_positions;
+    DenseTensor ids;
+    std::optional<DenseTensor> embeddings;
+    std::optional<DenseTensor> positions;
+    std::optional<DenseTensor> lengths;
+    std::optional<DenseTensor> attention_mask;
+    std::optional<DenseTensor> cache_positions;
     Trace* trace = nullptr;
-    Tensor* raw_hidden = nullptr;
+    DenseTensor* raw_hidden = nullptr;
     bool advance = false;
     std::int64_t confirmed = 0;
     std::int64_t kv_length = 0;

@@ -4,7 +4,7 @@
 // FP32 batched GR projection from compressed NINT weights. The only decoded
 // weights are a small shared-memory tile reused by sixty-four token rows.
 namespace {
-bool gr_prefill_selected(const ::tyloi::Tensor& input) {
+bool gr_prefill_selected(const ::tyloi::DenseTensor& input) {
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
     return (!option || std::atoi(option)!=0) && input.dim()>0 && input.size(-1)>0 &&
         input.numel()/input.size(-1)>=32;
@@ -119,8 +119,8 @@ __global__ __launch_bounds__(BM*TileN/(RegisterN*RegisterM),1) void gr_prefill_m
     }
 }
 
-::tyloi::Tensor gr_prefill_matmul(const NintWeight& weight,
-        const ::tyloi::Tensor& input) {
+::tyloi::DenseTensor gr_prefill_matmul(const tyloi::NintTensor& weight,
+        const ::tyloi::DenseTensor& input) {
     auto x=input.scalar_type()==::tyloi::kFloat16 ? input.contiguous() : input.to(::tyloi::kFloat32).contiguous();
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.size(-1)==weight.neuron_len && weight.q_packed.is_cuda() &&
         input.device()==weight.q_packed.device() && weight.gs>0 && weight.neuron_len>0 &&

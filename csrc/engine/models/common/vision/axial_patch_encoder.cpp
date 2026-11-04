@@ -56,11 +56,11 @@ struct CudaAxialPatchVisionTower::Impl {
     weight_loader::Loader loader;
     Config config;
 
-    tyloi::StepSequence<Tensor> encode_steps(
+    tyloi::StepSequence<DenseTensor> encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                                           Projector projector,
 #endif
-                                          Tensor patches,
+                                          DenseTensor patches,
                                           int height, int width) const {
         if (height <= 0 || width <= 0 || height > std::numeric_limits<int>::max() / width)
             throw std::invalid_argument("invalid axial patch vision grid");
@@ -81,11 +81,11 @@ struct CudaAxialPatchVisionTower::Impl {
 #endif
         const auto activations = std::size_t(count) * std::size_t(std::max(6 * hidden, 2 * config.intermediate)) * sizeof(float)
             + (std::size_t(32) << 20);
-        Tensor value;
+        DenseTensor value;
         {
             auto patch = affine(host, "vision.patch_embedding", config.patch_width(), hidden);
             auto loan = loader.cache.borrow(fields::bytes(patch) + activations);
-            Tensor output;
+            DenseTensor output;
             {
                 auto device = fields::to_cuda(std::move(patch));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -117,7 +117,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate),
                 affine(host, prefix + ".mlp.down", config.intermediate, hidden)};
             auto loan = loader.cache.borrow(fields::bytes(block) + activations);
-            Tensor output;
+            DenseTensor output;
             {
                 auto weights = fields::to_cuda(std::move(block));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -167,12 +167,12 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
                 affine(host, "vision.aligner.output", config.output_hidden, config.output_hidden)};
             auto loan = loader.cache.borrow(fields::bytes(weights) + activations);
-            Tensor output;
+            DenseTensor output;
             {
                 auto device = fields::to_cuda(std::move(weights));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 auto padded = tyloi::ops::cat({device.norm(value), tyloi::ops::zeros({1, hidden}, value.options())}, 0);
-                Tensor index = tyloi::ops::tensor(indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                DenseTensor index = tyloi::ops::tensor(indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
                 index = tyloi::ops::cast(index, ::tyloi::kInt64);
                 index = tyloi::ops::cast(index, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, 0});
                 auto gathered = tyloi::ops::reshape(tyloi::ops::contiguous(tyloi::ops::transpose(
@@ -218,11 +218,11 @@ CudaAxialPatchVisionTower::CudaAxialPatchVisionTower(CudaAxialPatchVisionTower&&
 CudaAxialPatchVisionTower& CudaAxialPatchVisionTower::operator=(CudaAxialPatchVisionTower&&) noexcept = default;
 CudaAxialPatchVisionTower::~CudaAxialPatchVisionTower() = default;
 
-tyloi::StepSequence<Tensor> CudaAxialPatchVisionTower::encode_steps(
+tyloi::StepSequence<DenseTensor> CudaAxialPatchVisionTower::encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     Projector projector,
 #endif
-    Tensor patches, int height, int width) const {
+    DenseTensor patches, int height, int width) const {
     return impl_->encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         projector,
@@ -230,17 +230,17 @@ tyloi::StepSequence<Tensor> CudaAxialPatchVisionTower::encode_steps(
         std::move(patches), height, width);
 }
 
-Tensor CudaAxialPatchVisionTower::encode(
+DenseTensor CudaAxialPatchVisionTower::encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     Projector projector,
 #endif
-    Tensor patches, int height, int width) const {
+    DenseTensor patches, int height, int width) const {
     auto steps = encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         projector,
 #endif
         std::move(patches), height, width);
-    Tensor output;
+    DenseTensor output;
     while (auto step = steps.next()) if (step.value) output = std::move(*step.value);
     return output;
 }

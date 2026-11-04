@@ -15,8 +15,8 @@
 namespace tq_ops {
 
 IndexedJobs make_indexed_jobs(
-        std::span<const ::tyloi::Tensor> gate, std::span<const ::tyloi::Tensor> up,
-        std::span<const ::tyloi::Tensor> down,
+        std::span<const ::tyloi::encoding::TqTensor> gate, std::span<const ::tyloi::encoding::TqTensor> up,
+        std::span<const ::tyloi::encoding::TqTensor> down,
         const std::vector<std::vector<std::int64_t>>& slots,
         std::size_t begin, std::int64_t routes, std::int64_t input,
         std::int64_t hidden, std::int64_t output, bool wide) {
@@ -87,8 +87,8 @@ IndexedJobs make_indexed_jobs(
             std::move(wide_tiles), std::move(wide_gate_up)};
 }
 
-void routed_projection(const std::vector<::tyloi::Tensor>& weights,
-        ::tyloi::Tensor source, ::tyloi::Tensor output) {
+void routed_projection(const std::vector<::tyloi::encoding::TqTensor>& weights,
+        ::tyloi::DenseTensor source, ::tyloi::DenseTensor output) {
     source.require_dense(); output.require_dense();
     if (source.dim() != 2 && source.dim() != 3)
         throw std::invalid_argument("invalid prepared TQ routed activation geometry");
@@ -128,9 +128,9 @@ void routed_projection(const std::vector<::tyloi::Tensor>& weights,
     }
 }
 
-void run_long_expert(const ::tyloi::Tensor& gate, const ::tyloi::Tensor& up,
-        const ::tyloi::Tensor& down, const std::vector<std::int64_t>& slots,
-        std::int64_t routes, const ::tyloi::Tensor& source, ::tyloi::Tensor output,
+void run_long_expert(const ::tyloi::encoding::TqTensor& gate, const ::tyloi::encoding::TqTensor& up,
+        const ::tyloi::encoding::TqTensor& down, const std::vector<std::int64_t>& slots,
+        std::int64_t routes, const ::tyloi::DenseTensor& source, ::tyloi::DenseTensor output,
         tyloi::cuda::BlasResources* blas, float limit) {
     source.require_dense(); output.require_dense();
     std::vector<std::int64_t> token_ids;
@@ -143,7 +143,7 @@ void run_long_expert(const ::tyloi::Tensor& gate, const ::tyloi::Tensor& up,
         const_cast<std::int64_t*>(slots.data()), {static_cast<std::int64_t>(slots.size())},
         ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(source.device(), false, false);
     const auto gathered = source.index_select(0, token_index);
-    ::tyloi::Tensor activated;
+    ::tyloi::DenseTensor activated;
     if (limit > 0) {
         const auto gv = tyloi::cuda::tq::project(gate, blas, gathered);
         const auto uv = tyloi::cuda::tq::project(up, blas, gathered);
@@ -159,11 +159,11 @@ void run_long_expert(const ::tyloi::Tensor& gate, const ::tyloi::Tensor& up,
     output.index_copy_(0, slot_index, tyloi::cuda::tq::project(down, blas, std::move(activated)));
 }
 
-void run_indexed(std::span<const ::tyloi::Tensor> gate,
-        std::span<const ::tyloi::Tensor> up, std::span<const ::tyloi::Tensor> down,
+void run_indexed(std::span<const ::tyloi::encoding::TqTensor> gate,
+        std::span<const ::tyloi::encoding::TqTensor> up, std::span<const ::tyloi::encoding::TqTensor> down,
         const std::vector<std::vector<std::int64_t>>& slots, std::size_t begin,
-        std::int64_t routes, const ::tyloi::Tensor& source, ::tyloi::Tensor activated,
-        ::tyloi::Tensor pairs, float limit, bool wide) {
+        std::int64_t routes, const ::tyloi::DenseTensor& source, ::tyloi::DenseTensor activated,
+        ::tyloi::DenseTensor pairs, float limit, bool wide) {
     source.require_dense(); activated.require_dense(); pairs.require_dense();
     const auto input = source.size(-1);
     const auto hidden = activated.size(-1);
@@ -179,7 +179,7 @@ void run_indexed(std::span<const ::tyloi::Tensor> gate,
         wide_jobs.insert(wide_jobs.end(), jobs.wide[tile].begin(), jobs.wide[tile].end());
     }
     const auto upload_plan = [&](const auto& values) {
-        if (values.empty()) return ::tyloi::Tensor{};
+        if (values.empty()) return ::tyloi::DenseTensor{};
         const auto bytes = static_cast<std::int64_t>(values.size() * sizeof(values[0]));
         return ::tyloi::cuda::from_blob(const_cast<void*>(static_cast<const void*>(values.data())),
             {bytes}, ::tyloi::TensorOptions().dtype(::tyloi::kUInt8))

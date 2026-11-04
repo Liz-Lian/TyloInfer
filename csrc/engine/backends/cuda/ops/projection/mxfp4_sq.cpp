@@ -4,7 +4,7 @@
 
 namespace tyloi::cuda {
 
-::tyloi::Tensor sq_matmul(const Mxfp4SqWeight& weight, ::tyloi::Tensor x) {
+::tyloi::DenseTensor sq_matmul(const tyloi::Mxfp4SqTensor& weight, ::tyloi::DenseTensor x) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (!weight.blob.is_cuda()) return sq_matmul_cpu(weight, x);
     auto shape = x.sizes().vec();
@@ -40,8 +40,8 @@ namespace tyloi::cuda {
 
 } // namespace tyloi::cuda
 
-::tyloi::Tensor dequant_mxfp4_sq_cpu(
-        const Mxfp4SqWeight& weight) {
+::tyloi::DenseTensor dequant_mxfp4_sq_cpu(
+        const tyloi::Mxfp4SqTensor& weight) {
     auto output = ::tyloi::cuda::empty(
         {weight.out, weight.neuron_len},
         weight.blob.options().dtype(::tyloi::kFloat32));

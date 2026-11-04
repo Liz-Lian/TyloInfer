@@ -152,11 +152,11 @@ __global__ __launch_bounds__(256,1) void gdn_decode_window_kernel(
  }
 }
 
-std::vector<::tyloi::Tensor> gdn_decode_window_cuda(const ::tyloi::Tensor& qkv,const ::tyloi::Tensor& gate,
- const ::tyloi::Tensor& alpha,const ::tyloi::Tensor& beta,const ::tyloi::Tensor& conv,const ::tyloi::Tensor& state,
- const ::tyloi::Tensor& weights,const ::tyloi::Tensor& bias,const ::tyloi::Tensor& a_log,const ::tyloi::Tensor& norm,
+std::vector<::tyloi::DenseTensor> gdn_decode_window_cuda(const ::tyloi::DenseTensor& qkv,const ::tyloi::DenseTensor& gate,
+ const ::tyloi::DenseTensor& alpha,const ::tyloi::DenseTensor& beta,const ::tyloi::DenseTensor& conv,const ::tyloi::DenseTensor& state,
+ const ::tyloi::DenseTensor& weights,const ::tyloi::DenseTensor& bias,const ::tyloi::DenseTensor& a_log,const ::tyloi::DenseTensor& norm,
  int nk,int nv,int confirmed,double conv_eps,double norm_eps,bool silu,bool half,bool transposed,
- const std::vector<::tyloi::Tensor>& checkpoint_conv,const std::vector<::tyloi::Tensor>& checkpoint_state) {
+ const std::vector<::tyloi::DenseTensor>& checkpoint_conv,const std::vector<::tyloi::DenseTensor>& checkpoint_state) {
  TYLOINFER_RUNTIME_CHECK(qkv.dim()==3 && qkv.size(0)==1 && qkv.size(1)>=2 && qkv.size(1)<=8 &&
   nk>0 && nv>0 && nv<=65535 && nv%nk==0 && int64_t(2)*nk+nv<=std::numeric_limits<int>::max()/128,
   "GDN window heads/sequence invalid");
@@ -164,7 +164,7 @@ std::vector<::tyloi::Tensor> gdn_decode_window_cuda(const ::tyloi::Tensor& qkv,c
  TYLOINFER_RUNTIME_CHECK(confirmed>=1 && confirmed<=tokens &&
   checkpoint_conv.size()==size_t(tokens-confirmed) && checkpoint_state.size()==checkpoint_conv.size(),"GDN window geometry invalid");
  const auto device=qkv.device();
- const auto real=[&](const ::tyloi::Tensor& x){return x.is_cuda() && x.device()==device && x.is_contiguous() && x.scalar_type()==::tyloi::kFloat32;};
+ const auto real=[&](const ::tyloi::DenseTensor& x){return x.is_cuda() && x.device()==device && x.is_contiguous() && x.scalar_type()==::tyloi::kFloat32;};
  TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && qkv.scalar_type()==::tyloi::kFloat16 && qkv.size(2)==channels &&
   qkv.stride(2)==1 && qkv.stride(1)>=channels && std::isfinite(conv_eps) && conv_eps>0 && std::isfinite(norm_eps) && norm_eps>0,
   "GDN window QKV/epsilon invalid");
@@ -173,7 +173,7 @@ std::vector<::tyloi::Tensor> gdn_decode_window_cuda(const ::tyloi::Tensor& qkv,c
   (weights.sizes().vec()==std::vector<int64_t>({channels,1,4}) || weights.sizes().vec()==std::vector<int64_t>({4,channels})) &&
   bias.numel()==nv && a_log.numel()==nv && norm.numel()==128,"GDN window state/weights invalid");
  const auto gate_type=gate.scalar_type();
- const auto projection=[&](const ::tyloi::Tensor& x,const std::vector<int64_t>& shape) {
+ const auto projection=[&](const ::tyloi::DenseTensor& x,const std::vector<int64_t>& shape) {
   return x.is_cuda() && x.device()==device && x.scalar_type()==gate_type && x.sizes().vec()==shape &&
    x.stride(1)>0 && x.stride(2)>0;
  };

@@ -16,19 +16,19 @@
 #include <vector>
 
 void fp8_sq_moe_matmul(
-    const Fp8SqWeight& weight,
-    ::tyloi::Tensor input,
-    ::tyloi::Tensor expert_ids,
-    ::tyloi::Tensor expert_local,
+    const tyloi::Fp8SqTensor& weight,
+    ::tyloi::DenseTensor input,
+    ::tyloi::DenseTensor expert_ids,
+    ::tyloi::DenseTensor expert_local,
     int n_experts,
     int local_experts,
     int out_per_expert,
     int neuron_len,
-    ::tyloi::Tensor output);
+    ::tyloi::DenseTensor output);
 
 struct MixedNintInputPlan {
-    ::tyloi::Tensor weight_ptrs,quantize_descriptors;
-    ::tyloi::Tensor row_metadata_workspace;
+    ::tyloi::DenseTensor weight_ptrs,quantize_descriptors;
+    ::tyloi::DenseTensor row_metadata_workspace;
     int total_groups=0;
 };
 
@@ -45,21 +45,21 @@ struct MoeOptions {
 
 struct MoeScratch {
     std::unordered_map<int,MixedNintInputPlan> nint_input_plans;
-    std::unordered_map<int,::tyloi::Tensor> nvq_active_plans;
+    std::unordered_map<int,::tyloi::DenseTensor> nvq_active_plans;
     std::unordered_map<MixedMoeActivationKey, MoeActivationWorkspace,
                        MixedMoeActivationKeyHash> activation_workspaces;
-    ::tyloi::Tensor nint_expert_pool, nint_expert_local;
-    ::tyloi::Tensor nvq_expert_pool, nvq_expert_local;
+    ::tyloi::DenseTensor nint_expert_pool, nint_expert_local;
+    ::tyloi::DenseTensor nvq_expert_pool, nvq_expert_local;
     std::weak_ptr<MixedNintDispatch> nint_binding;
     std::weak_ptr<MixedNvqDispatch> nvq_binding;
 
     void bind(const std::shared_ptr<MixedNintDispatch>& dispatch);
     void bind(const std::shared_ptr<MixedNvqDispatch>& dispatch);
     MoeActivationWorkspace activation_workspace(
-            ::tyloi::Tensor x, int input_rows, int groups, int gs,
+            ::tyloi::DenseTensor x, int input_rows, int groups, int gs,
             MixedMoeTransformKey transform, bool stable = true);
     MoeActivationWorkspace prefill_activation_workspace(
-            ::tyloi::Tensor x, int input_rows, int groups, int gs,
+            ::tyloi::DenseTensor x, int input_rows, int groups, int gs,
             MixedMoeTransformKey transform);
 };
 
@@ -70,7 +70,7 @@ struct MoeScratchCache {
              std::owner_less<std::weak_ptr<const void>>> values;
     mutable std::mutex mutex;
 
-    std::shared_ptr<MoeScratch> get(const std::shared_ptr<const void>& source, ::tyloi::Tensor input);
+    std::shared_ptr<MoeScratch> get(const std::shared_ptr<const void>& source, ::tyloi::DenseTensor input);
 };
 }
 
@@ -87,30 +87,30 @@ struct MixedMoeRuntime {
     std::shared_ptr<MixedNintDispatch> nint_dispatch;
     bool nint_only() const;
 
-    ::tyloi::Tensor forward(
+    ::tyloi::DenseTensor forward(
             MoeScratch& scratch,
             const MoeOptions& options,
             KlMmqState& kl_mmq,
-            ::tyloi::Tensor x,
+            ::tyloi::DenseTensor x,
             const MoeRoutePlan & route,
             bool input_prequantized = false,
             int epilogue_mode = 0) const;
 
-    ::tyloi::Tensor forward_glu_output(
+    ::tyloi::DenseTensor forward_glu_output(
             MoeScratch& scratch,
             const MoeOptions& options,
             KlMmqState& kl_mmq,
-            ::tyloi::Tensor x,
+            ::tyloi::DenseTensor x,
             const MoeRoutePlan & route,
             bool gelu) const;
 
     bool supports_clamped_swiglu() const;
 
-    ::tyloi::Tensor forward_clamped_swiglu(
+    ::tyloi::DenseTensor forward_clamped_swiglu(
             MoeScratch& scratch,
             const MoeOptions& options,
             KlMmqState& kl_mmq,
-            ::tyloi::Tensor gate_up,
+            ::tyloi::DenseTensor gate_up,
             const MoeRoutePlan & route,
             double limit) const;
 };

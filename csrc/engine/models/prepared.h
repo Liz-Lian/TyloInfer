@@ -10,11 +10,11 @@ namespace tyloi::models {
 
 struct Prepared {
     std::vector<std::int64_t> token_ids;
-    Tensor embeddings;
-    Tensor positions;
+    DenseTensor embeddings;
+    DenseTensor positions;
     int decode_position_delta = 0;
     std::string cache_key;
-    Tensor image_mask;
+    DenseTensor image_mask;
 
     bool transformed() const noexcept {
         return embeddings.defined() || positions.defined() ||

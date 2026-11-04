@@ -5,8 +5,8 @@
 
 namespace {
 
-bool same_tensor_layout(const ::tyloi::Tensor& expected,
-                        const ::tyloi::Tensor& candidate) {
+bool same_tensor_layout(const ::tyloi::DenseTensor& expected,
+                        const ::tyloi::DenseTensor& candidate) {
     if (expected.defined() != candidate.defined()) return false;
     if (!expected.defined()) return true;
     if (expected.data_ptr() != candidate.data_ptr() ||
@@ -22,8 +22,8 @@ bool same_tensor_layout(const ::tyloi::Tensor& expected,
     return true;
 }
 
-bool same_storage(const std::vector<::tyloi::Tensor>& expected,
-                  const std::vector<::tyloi::Tensor>& candidate) {
+bool same_storage(const std::vector<::tyloi::DenseTensor>& expected,
+                  const std::vector<::tyloi::DenseTensor>& candidate) {
     if (expected.size() != candidate.size()) return false;
     for (std::size_t index = 0; index < expected.size(); ++index)
         if (!same_tensor_layout(expected[index], candidate[index])) return false;
@@ -88,7 +88,7 @@ std::vector<MfqCudaStream> DecodeGraphCache::graph_participant_streams(
 bool DecodeGraphCache::matches(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-        const std::vector<::tyloi::Tensor>& candidate_storage) const {
+        const std::vector<::tyloi::DenseTensor>& candidate_storage) const {
     return valid && planned_len == candidate_len && greedy == candidate_greedy &&
            same_storage(storage, candidate_storage) &&
            (candidate_greedy ||
@@ -117,8 +117,8 @@ void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
 }
 
 void DecodeGraphCache::initialize_inputs(
-        const ::tyloi::Tensor& pending, int64_t position,
-        const ::tyloi::Tensor& random_host) {
+        const ::tyloi::DenseTensor& pending, int64_t position,
+        const ::tyloi::DenseTensor& random_host) {
     cudaStream_t graph_stream = stream.stream();
     std::int64_t length = position + 1;
     std::int64_t step = 1;
@@ -152,7 +152,7 @@ void DecodeGraphCache::initialize_inputs(
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream));
 }
 
-void DecodeGraphCache::upload_random(const ::tyloi::Tensor& random_host) {
+void DecodeGraphCache::upload_random(const ::tyloi::DenseTensor& random_host) {
     TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(random.data_ptr<float>(),
         random_host.data_ptr<float>(),
         sizeof(float),
@@ -164,14 +164,14 @@ void DecodeGraphCache::invalidate() {
     if (graph) graph->reset();
     graph.reset();
     storage.clear();
-    static_next = ::tyloi::Tensor();
+    static_next = ::tyloi::DenseTensor();
     valid = false;
 }
 
 void DecodeGraphCache::set_key(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-        const std::vector<::tyloi::Tensor>& candidate_storage) {
+        const std::vector<::tyloi::DenseTensor>& candidate_storage) {
     planned_len = candidate_len;
     greedy = candidate_greedy;
     temperature = sampling.temperature;

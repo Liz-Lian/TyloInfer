@@ -41,8 +41,8 @@ struct MoeActivationWorkspace {
         while (capacity < rows) capacity *= 2;
         return capacity;
     }
-    ::tyloi::Tensor qx;
-    ::tyloi::Tensor xscale;
+    ::tyloi::DenseTensor qx;
+    ::tyloi::DenseTensor xscale;
 };
 
 struct MixedMoeTransformKey {
@@ -96,7 +96,7 @@ struct MfeScratch {
     mutable std::mutex mutex;
 
     MoeActivationWorkspace get(const std::shared_ptr<const Pools>& pools,
-                               ::tyloi::Tensor input, int rows, int groups,
+                               ::tyloi::DenseTensor input, int rows, int groups,
                                int gs, bool stable = true);
 };
 

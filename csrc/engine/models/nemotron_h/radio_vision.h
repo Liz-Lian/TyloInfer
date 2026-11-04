@@ -26,7 +26,7 @@
 
 namespace tyloi::cuda::nemotron_h {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 using tyloi::models::nemotron_h::RadioPositionInterpolation;
 using tyloi::models::nemotron_h::RadioVisionConfig;
 
@@ -40,7 +40,7 @@ using tyloi::models::nemotron_h::RadioVisionConfig;
 // layer_scale parameter.
 class RadioEncoder {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    using Tensor = tyloi::Tensor;
+    using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
     static RadioEncoder load(const tyloi::cuda::weight_loader::Loader& weights,
@@ -82,11 +82,11 @@ class RadioEncoder {
     }
 
     // `patches` is [rows * columns, patch_width] row-major normalized pixels.
-    Tensor encode(
+    DenseTensor encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                   const tyloi::cuda::Projector& projector,
 #endif
-                  Tensor patches, std::int64_t rows,
+                  DenseTensor patches, std::int64_t rows,
                   std::int64_t columns) const {
         const auto& config = config_;
         if (rows <= 0 || columns <= 0 || rows > config.position_side() ||
@@ -143,40 +143,40 @@ class RadioEncoder {
         BiasWeight key;
         BiasWeight value;
         BiasWeight output;
-        ::tyloi::Tensor norm1_weight;
-        ::tyloi::Tensor norm1_bias;
-        ::tyloi::Tensor norm2_weight;
-        ::tyloi::Tensor norm2_bias;
+        ::tyloi::DenseTensor norm1_weight;
+        ::tyloi::DenseTensor norm1_bias;
+        ::tyloi::DenseTensor norm2_weight;
+        ::tyloi::DenseTensor norm2_bias;
         BiasWeight fc1;
         BiasWeight fc2;
         int64_t heads = 0;
         int64_t head_dim = 0;
         double layer_norm_eps = 1e-6;
 
-        Tensor forward(
+        DenseTensor forward(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                 const Projector& projector,
 #endif
-                Tensor input,
-                MfqOptional<Tensor> mask = mfq_nullopt) const {
+                DenseTensor input,
+                MfqOptional<DenseTensor> mask = mfq_nullopt) const {
             if (heads <= 0 || head_dim <= 0) {
                 throw std::runtime_error("vision block head geometry is invalid");
             }
             const int64_t batch = input.size(0);
             const int64_t tokens = input.size(1);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto split_heads = [&](Tensor value) {
+            auto split_heads = [&](DenseTensor value) {
                 return tyloi::ops::contiguous(tyloi::ops::transpose(
                     tyloi::ops::reshape(value, {batch, tokens, heads, head_dim}), 1, 2));
             };
 #else
-            auto split_heads = [&](Tensor value) {
+            auto split_heads = [&](DenseTensor value) {
                 return value.reshape({batch, tokens, heads, head_dim}).transpose(1, 2).contiguous();
             };
 #endif
             const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            const auto norm = [&](const Tensor& x, const Tensor& weight, const Tensor& bias) {
+            const auto norm = [&](const DenseTensor& x, const DenseTensor& weight, const DenseTensor& bias) {
                 const auto dtype = x.scalar_type();
                 return tyloi::ops::contiguous(tyloi::ops::cast(
                     tyloi::ops::layer_norm(x, tyloi::ops::cast(weight, dtype),
@@ -258,17 +258,17 @@ class RadioEncoder {
     // Cropped-position embedding: bilinear interpolation of the square table
     // onto this image's patch grid, gathered with the four-tap index/weight
     // table so no host-to-device reshape is needed.
-    Tensor interpolated_positions(std::int64_t rows, std::int64_t columns) const {
+    DenseTensor interpolated_positions(std::int64_t rows, std::int64_t columns) const {
         const auto interpolation = tyloi::models::nemotron_h::make_radio_position_interpolation(
             static_cast<std::int32_t>(rows), static_cast<std::int32_t>(columns),
             static_cast<std::int32_t>(config_.position_side()));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         const auto table = tyloi::ops::reshape(position_embedding,
             {config_.position_side() * config_.position_side(), config_.hidden_size});
-        Tensor index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
+        DenseTensor index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
         index = tyloi::ops::cast(index, ::tyloi::kInt32, table.device());
         index = tyloi::ops::cast(index, ::tyloi::kInt64);
-        Tensor weights = tyloi::ops::tensor(interpolation.weights, tyloi::Device{tyloi::DeviceType::cpu, 0});
+        DenseTensor weights = tyloi::ops::tensor(interpolation.weights, tyloi::Device{tyloi::DeviceType::cpu, 0});
         weights = tyloi::ops::reshape(weights, {interpolation.patch_count, 4, 1});
         weights = tyloi::ops::cast(weights, ::tyloi::kFloat32, table.device());
         return tyloi::ops::contiguous(tyloi::ops::sum(tyloi::ops::multiply(tyloi::ops::reshape(
@@ -305,8 +305,8 @@ class RadioEncoder {
     }
 
     QuantLinear patch_projection;
-    Tensor position_embedding;
-    Tensor cls_register_token;
+    DenseTensor position_embedding;
+    DenseTensor cls_register_token;
     std::vector<Layer> layers;
     RadioVisionConfig config_;
 };
@@ -315,7 +315,7 @@ class RadioEncoder {
 // (downsample 0.5, `ps_version v2`) -> `mlp1` (RMSNorm, up, relu-squared, down).
 class RadioProjector {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    using Tensor = tyloi::Tensor;
+    using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
     static RadioProjector load(const tyloi::cuda::weight_loader::Loader& weights,
@@ -345,11 +345,11 @@ class RadioProjector {
 
     // `features` is [1, rows * columns, hidden]; the result is
     // [rows * columns / 4, text_hidden_size] in pixel-shuffle token order.
-    Tensor project(
+    DenseTensor project(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                    const tyloi::cuda::Projector& projector,
 #endif
-                   Tensor features, std::int64_t rows,
+                   DenseTensor features, std::int64_t rows,
                    std::int64_t columns) const {
         const auto& config = config_;
         const auto stride = config.downsample_factor;
@@ -364,7 +364,7 @@ class RadioProjector {
         }
         const auto dtype = features.scalar_type();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        auto hidden = Tensor(tyloi::ops::contiguous(tyloi::ops::cast(
+        auto hidden = DenseTensor(tyloi::ops::contiguous(tyloi::ops::cast(
             tyloi::ops::layer_norm(features, tyloi::ops::cast(norm_weight, dtype),
                                  tyloi::ops::cast(norm_bias, dtype), config.layer_norm_eps), dtype)));
 #else
@@ -414,9 +414,9 @@ class RadioProjector {
     }
 
   private:
-    Tensor norm_weight;
-    Tensor norm_bias;
-    Tensor mlp_norm;
+    DenseTensor norm_weight;
+    DenseTensor norm_bias;
+    DenseTensor mlp_norm;
     BiasWeight up;
     BiasWeight down;
     RadioVisionConfig config_;
@@ -426,7 +426,7 @@ class RadioProjector {
 // the language model's placeholder rows.
 class RadioVisionTower {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    using Tensor = tyloi::Tensor;
+    using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
     static RadioVisionTower load(const tyloi::cuda::weight_loader::Loader& weights,
@@ -435,11 +435,11 @@ class RadioVisionTower {
                                 RadioProjector::load(weights, config), config);
     }
 
-    Tensor embed(
+    DenseTensor embed(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                  const tyloi::cuda::Projector& projector,
 #endif
-                 Tensor patches, std::int64_t rows,
+                 DenseTensor patches, std::int64_t rows,
                  std::int64_t columns) const {
         auto features = encoder_.encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -484,7 +484,7 @@ struct RadioImageGrid {
 // positions are plain token offsets and only address the text cache.
 class CudaRadioPromptComponent {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    using Tensor = tyloi::Tensor;
+    using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
     static CudaRadioPromptComponent load(const tyloi::cuda::weight_loader::Loader& weights,
@@ -518,7 +518,7 @@ class CudaRadioPromptComponent {
         const auto runs = placeholder_runs(token_ids, grids);
         const auto cache_key = media_cache_key(media, grids);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        Tensor pixels = tyloi::ops::from_blob(
+        DenseTensor pixels = tyloi::ops::from_blob(
                           const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
                           tyloi::TensorOptions()
                               .dtype(tyloi::ScalarType::float32)
@@ -537,7 +537,7 @@ class CudaRadioPromptComponent {
         co_yield tyloi::StepState::advanced;
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        Tensor ids = tyloi::ops::tensor(token_ids, tyloi::Device{tyloi::DeviceType::cpu, 0});
+        DenseTensor ids = tyloi::ops::tensor(token_ids, tyloi::Device{tyloi::DeviceType::cpu, 0});
         ids = tyloi::ops::reshape(ids, {1, static_cast<std::int64_t>(token_ids.size())});
         ids = tyloi::ops::cast(ids, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, 0});
         auto embeddings = tyloi::ops::contiguous(language.embedding(ids, primary));
@@ -572,7 +572,7 @@ class CudaRadioPromptComponent {
 #endif
                              grid.rows, grid.columns);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            Tensor index = tyloi::ops::tensor(run, tyloi::Device{tyloi::DeviceType::cpu, 0});
+            DenseTensor index = tyloi::ops::tensor(run, tyloi::Device{tyloi::DeviceType::cpu, 0});
             index = tyloi::ops::cast(index, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, 0});
             tyloi::ops::index_copy(embeddings, 1, index,
                 tyloi::ops::unsqueeze(tyloi::ops::cast(projected, embeddings.scalar_type()), 0));

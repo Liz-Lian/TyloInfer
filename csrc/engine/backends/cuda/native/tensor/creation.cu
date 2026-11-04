@@ -55,7 +55,7 @@ void manual_seed(std::int64_t seed) {
     native_random_seed.store(seed, std::memory_order_relaxed);
 }
 
-Tensor cat(std::span<const Tensor> tensors, std::int64_t dimension) {
+DenseTensor cat(std::span<const DenseTensor> tensors, std::int64_t dimension) {
     if (tensors.empty()) throw std::invalid_argument("cat requires at least one tensor");
     for (const auto& tensor : tensors) tensor.require_dense();
     const auto selected = normalize_dimension(dimension, tensors.front().dim());
@@ -88,15 +88,15 @@ Tensor cat(std::span<const Tensor> tensors, std::int64_t dimension) {
     return output;
 }
 
-Tensor cat(std::initializer_list<Tensor> tensors, std::int64_t dimension) {
-    return cat(std::span<const Tensor>(tensors.begin(), tensors.size()), dimension);
+DenseTensor cat(std::initializer_list<DenseTensor> tensors, std::int64_t dimension) {
+    return cat(std::span<const DenseTensor>(tensors.begin(), tensors.size()), dimension);
 }
 
-Tensor cat(const std::vector<Tensor>& tensors, std::int64_t dimension) {
-    return cat(std::span<const Tensor>(tensors), dimension);
+DenseTensor cat(const std::vector<DenseTensor>& tensors, std::int64_t dimension) {
+    return cat(std::span<const DenseTensor>(tensors), dimension);
 }
 
-Tensor stack(std::span<const Tensor> tensors, std::int64_t dimension) {
+DenseTensor stack(std::span<const DenseTensor> tensors, std::int64_t dimension) {
     if (tensors.empty()) throw std::invalid_argument("stack requires at least one tensor");
     for (const auto& tensor : tensors) tensor.require_dense();
     auto selected = dimension;
@@ -104,21 +104,21 @@ Tensor stack(std::span<const Tensor> tensors, std::int64_t dimension) {
     if (selected < 0 || selected > tensors.front().dim()) {
         throw std::out_of_range("stack dimension is out of range");
     }
-    std::vector<Tensor> expanded;
+    std::vector<DenseTensor> expanded;
     expanded.reserve(tensors.size());
     for (const auto& tensor : tensors) expanded.push_back(tensor.unsqueeze(selected));
     return cat(expanded, selected);
 }
 
-Tensor stack(std::initializer_list<Tensor> tensors, std::int64_t dimension) {
-    return stack(std::span<const Tensor>(tensors.begin(), tensors.size()), dimension);
+DenseTensor stack(std::initializer_list<DenseTensor> tensors, std::int64_t dimension) {
+    return stack(std::span<const DenseTensor>(tensors.begin(), tensors.size()), dimension);
 }
 
-Tensor stack(const std::vector<Tensor>& tensors, std::int64_t dimension) {
-    return stack(std::span<const Tensor>(tensors), dimension);
+DenseTensor stack(const std::vector<DenseTensor>& tensors, std::int64_t dimension) {
+    return stack(std::span<const DenseTensor>(tensors), dimension);
 }
 
-Tensor arange(
+DenseTensor arange(
     std::int64_t start,
     std::int64_t end,
     std::int64_t step,
@@ -153,15 +153,15 @@ Tensor arange(
     return output;
 }
 
-Tensor arange(std::int64_t start, std::int64_t end, const TensorOptions& options) {
+DenseTensor arange(std::int64_t start, std::int64_t end, const TensorOptions& options) {
     return arange(start, end, 1, options);
 }
 
-Tensor arange(std::int64_t end, const TensorOptions& options) {
+DenseTensor arange(std::int64_t end, const TensorOptions& options) {
     return arange(0, end, 1, options);
 }
 
-Tensor randn(std::span<const std::int64_t> shape, const TensorOptions& options) {
+DenseTensor randn(std::span<const std::int64_t> shape, const TensorOptions& options) {
     const auto elements = std::accumulate(
         shape.begin(), shape.end(), std::int64_t{1}, std::multiplies<>());
     std::mt19937_64 generator(static_cast<std::uint64_t>(
@@ -175,11 +175,11 @@ Tensor randn(std::span<const std::int64_t> shape, const TensorOptions& options) 
     return result.to(options.scalar_type()).reshape(shape);
 }
 
-Tensor randn(std::initializer_list<std::int64_t> shape, const TensorOptions& options) {
+DenseTensor randn(std::initializer_list<std::int64_t> shape, const TensorOptions& options) {
     return randn(std::span<const std::int64_t>(shape.begin(), shape.size()), options);
 }
 
-Tensor randint(
+DenseTensor randint(
     std::int64_t low,
     std::int64_t high,
     std::span<const std::int64_t> shape,
@@ -198,14 +198,14 @@ Tensor randint(
     return result.to(options.scalar_type()).reshape(shape);
 }
 
-Tensor randint(
+DenseTensor randint(
     std::int64_t high,
     std::span<const std::int64_t> shape,
     const TensorOptions& options) {
     return randint(0, high, shape, options);
 }
 
-Tensor randperm(std::int64_t size, const TensorOptions& options) {
+DenseTensor randperm(std::int64_t size, const TensorOptions& options) {
     std::vector<std::int64_t> values(static_cast<std::size_t>(size));
     std::iota(values.begin(), values.end(), 0);
     std::mt19937_64 generator(static_cast<std::uint64_t>(
@@ -215,10 +215,10 @@ Tensor randperm(std::int64_t size, const TensorOptions& options) {
         .to(options.scalar_type());
 }
 
-Tensor where(
-    const Tensor& condition_source,
-    const Tensor& yes_source,
-    const Tensor& no_source) {
+DenseTensor where(
+    const DenseTensor& condition_source,
+    const DenseTensor& yes_source,
+    const DenseTensor& no_source) {
     condition_source.require_dense(); yes_source.require_dense(); no_source.require_dense();
     auto shape = broadcast_shape(yes_source, no_source);
     // The condition can introduce token or batch axes absent from both
@@ -243,12 +243,12 @@ Tensor where(
     return output;
 }
 
-Tensor where(const Tensor& condition, const Tensor& yes, double no) {
+DenseTensor where(const DenseTensor& condition, const DenseTensor& yes, double no) {
     condition.require_dense(); yes.require_dense();
     return where(condition, yes, full_like(yes, no));
 }
 
-Tensor where(const Tensor& condition, double yes, const Tensor& no) {
+DenseTensor where(const DenseTensor& condition, double yes, const DenseTensor& no) {
     condition.require_dense(); no.require_dense();
     return where(condition, full_like(no, yes), no);
 }

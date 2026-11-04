@@ -28,7 +28,7 @@ public:
     void suspend();
     void finish();
     // Move the output out of borrowed storage before returning it to the cache.
-    ::tyloi::Tensor finish(::tyloi::Tensor output);
+    ::tyloi::DenseTensor finish(::tyloi::DenseTensor output);
 private:
     std::shared_ptr<MoeExpertCache> cache_;
     bool active_=false;
@@ -73,7 +73,7 @@ public:
 
 private:
     struct PrefillRegion {
-        ::tyloi::Tensor storage;
+        ::tyloi::DenseTensor storage;
         std::size_t region = 0;
     };
 
@@ -86,7 +86,7 @@ private:
     RoutedCache& weights_;
     int device_;
     std::shared_ptr<KvExpertLoan> loan_;
-    ::tyloi::Tensor decode_storage_;
+    ::tyloi::DenseTensor decode_storage_;
     std::optional<std::size_t> decode_region_;
     std::vector<PrefillRegion> prefill_regions_;
     std::uint64_t prefill_reclaimed_used_bytes_ = 0;

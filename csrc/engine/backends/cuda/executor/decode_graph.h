@@ -35,16 +35,16 @@ struct DecodeGraphBranchScope {
 struct DecodeGraphCache {
     decltype(mfq_get_stream_from_pool(false)) stream;
     std::vector<MfqCudaStream> compute_streams;
-    std::vector<::tyloi::Tensor> storage;
+    std::vector<::tyloi::DenseTensor> storage;
     std::unique_ptr<MfqCudaGraph> graph;
-    ::tyloi::Tensor static_input;
-    ::tyloi::Tensor static_pos;
-    ::tyloi::Tensor static_len;
-    ::tyloi::Tensor static_step;
-    ::tyloi::Tensor generated;
-    ::tyloi::Tensor random;
-    ::tyloi::Tensor counts;
-    ::tyloi::Tensor static_next;
+    ::tyloi::DenseTensor static_input;
+    ::tyloi::DenseTensor static_pos;
+    ::tyloi::DenseTensor static_len;
+    ::tyloi::DenseTensor static_step;
+    ::tyloi::DenseTensor generated;
+    ::tyloi::DenseTensor random;
+    ::tyloi::DenseTensor counts;
+    ::tyloi::DenseTensor static_next;
     int64_t generated_capacity = 0;
     int64_t planned_len = 0;
     bool greedy = false;
@@ -64,15 +64,15 @@ struct DecodeGraphCache {
         const tyloi::cuda::Collectives& collectives) const;
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
-                 const std::vector<::tyloi::Tensor>& candidate_storage) const;
+                 const std::vector<::tyloi::DenseTensor>& candidate_storage) const;
     void ensure_storage(int64_t vocab_size);
-    void initialize_inputs(const ::tyloi::Tensor& pending, int64_t position,
-                           const ::tyloi::Tensor& random_host);
-    void upload_random(const ::tyloi::Tensor& random_host);
+    void initialize_inputs(const ::tyloi::DenseTensor& pending, int64_t position,
+                           const ::tyloi::DenseTensor& random_host);
+    void upload_random(const ::tyloi::DenseTensor& random_host);
     void invalidate();
     void set_key(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
-                 const std::vector<::tyloi::Tensor>& candidate_storage);
+                 const std::vector<::tyloi::DenseTensor>& candidate_storage);
 };
 
 template <typename StateTensor, typename PositionState, typename Warmup>
@@ -83,10 +83,10 @@ void prepare_decode_graph_memory(
         MfqCudaGraph& graph,
         Warmup&& warmup,
         const std::vector<MfqCudaStream>& participant_streams = {}) {
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
     struct SavedRecurrentState {
         StateTensor* target;
-        Tensor value;
+        DenseTensor value;
         const void* address;
     };
     // Snapshot before entering the private graph allocator. These copies are
@@ -94,14 +94,14 @@ void prepare_decode_graph_memory(
     std::vector<SavedRecurrentState> saved;
     saved.reserve(states.size());
     for (auto* state : states) {
-        saved.push_back({state, Tensor(*state).clone(), state->data_ptr()});
+        saved.push_back({state, DenseTensor(*state).clone(), state->data_ptr()});
     }
     const int64_t saved_position = position_state.position();
     auto restore = [&]() {
         for (const auto& state : saved) {
             TYLOINFER_RUNTIME_CHECK(state.target->data_ptr() == state.address,
                 "decode warmup changed recurrent storage addresses");
-            Tensor(*state.target).copy_(state.value);
+            DenseTensor(*state.target).copy_(state.value);
         }
         TYLOINFER_RUNTIME_CHECK(position_state.position() == saved_position,
             "static decode warmup changed cache position");

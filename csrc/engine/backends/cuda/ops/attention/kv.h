@@ -8,15 +8,15 @@
 namespace tyloi::cuda {
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::pair<::tyloi::Tensor, ::tyloi::Tensor> append_kv(
+std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
     AttentionKvView cache, bool aten_write,
-    ::tyloi::Tensor key, ::tyloi::Tensor value,
-    ::tyloi::Tensor positions, int64_t start_position, int64_t end_position,
+    ::tyloi::DenseTensor key, ::tyloi::DenseTensor value,
+    ::tyloi::DenseTensor positions, int64_t start_position, int64_t end_position,
     bool contiguous_prefill_prefix = false);
 #else
 namespace ops {
-std::pair<tyloi::Tensor, tyloi::Tensor> append_kv(tyloi::state::KvView, tyloi::Tensor, tyloi::Tensor,
-                                               tyloi::Tensor, int64_t, bool);
+std::pair<tyloi::DenseTensor, tyloi::DenseTensor> append_kv(tyloi::state::KvView, tyloi::DenseTensor, tyloi::DenseTensor,
+                                               tyloi::DenseTensor, int64_t, bool);
 }
 #endif
 

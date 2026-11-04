@@ -6,11 +6,11 @@
 #include <array>
 
 namespace tyloi::cuda::minicpmo45 {
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 struct Layer {
     FullAttention attention;
-    Tensor ffn_norm;
+    DenseTensor ffn_norm;
     Ffn ffn;
     int device = 0;
     bool cpu = false;

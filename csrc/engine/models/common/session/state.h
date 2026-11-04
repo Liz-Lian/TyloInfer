@@ -19,8 +19,8 @@ namespace tyloi::state { struct KvQuantization; }
 namespace tyloi::cuda { using KvQuantization = tyloi::state::KvQuantization; }
 
 struct KvSnapshot {
-    ::tyloi::Tensor k;
-    ::tyloi::Tensor v;
+    ::tyloi::DenseTensor k;
+    ::tyloi::DenseTensor v;
     int64_t capacity = 0;
     bool ring = false;
 
@@ -31,8 +31,8 @@ struct KvSnapshot {
     }
 };
 
-inline bool session_kv_geometry_matches(const ::tyloi::Tensor& k,
-        const ::tyloi::Tensor& v) {
+inline bool session_kv_geometry_matches(const ::tyloi::DenseTensor& k,
+        const ::tyloi::DenseTensor& v) {
     if(!k.defined()||!v.defined()||k.dim()!=4||v.dim()!=4||k.scalar_type()!=v.scalar_type())return false;
     for(int axis=0;axis<3;++axis)if(k.size(axis)!=v.size(axis))return false;
     return k.scalar_type()==::tyloi::kInt32 || k.size(3)==v.size(3);
@@ -73,8 +73,8 @@ template <typename Model> struct FullAttentionSessionCodec {
 struct CudaDecodedPagedLayer {
     int64_t capacity = 0;
     int device = -1;
-    ::tyloi::Tensor k;
-    ::tyloi::Tensor v;
+    ::tyloi::DenseTensor k;
+    ::tyloi::DenseTensor v;
 };
 
 struct CudaDecodedPagedBlock {
@@ -102,19 +102,19 @@ TextSessionState decode_cuda_paged_session(
     const std::vector<int64_t>& tokens,
     size_t block_size);
 
-size_t session_tensor_bytes(const ::tyloi::Tensor& tensor);
+size_t session_tensor_bytes(const ::tyloi::DenseTensor& tensor);
 
 bool session_tensor_layout_matches(
-    const ::tyloi::Tensor& target,
-    const ::tyloi::Tensor& source);
+    const ::tyloi::DenseTensor& target,
+    const ::tyloi::DenseTensor& source);
 
 void restore_session_tensor(
-    ::tyloi::Tensor& target,
-    const ::tyloi::Tensor& source);
+    ::tyloi::DenseTensor& target,
+    const ::tyloi::DenseTensor& source);
 
 void restore_session_prefix_tensor(
-    ::tyloi::Tensor& target,
-    const ::tyloi::Tensor& source,
+    ::tyloi::DenseTensor& target,
+    const ::tyloi::DenseTensor& source,
     int64_t dimension,
     int64_t capacity);
 

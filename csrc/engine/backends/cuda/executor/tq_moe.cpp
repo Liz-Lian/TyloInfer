@@ -33,15 +33,15 @@ bool tq_graph_supports_tokens(std::int64_t tokens)noexcept {
 
 namespace {
 
-struct TqGraphLease {std::array<std::vector<::tyloi::Tensor>,3> weights;void clear(){for(auto& w:weights)w.clear();}};
+struct TqGraphLease {std::array<std::vector<::tyloi::encoding::TqTensor>,3> weights;void clear(){for(auto& w:weights)w.clear();}};
 const char tq_graph_lease_identity=0;
 struct TqMoeGraphStage {
     std::array<std::shared_ptr<TqRoutedWeight>,3> banks;
     std::shared_ptr<TqGraphLease> lease;
     MfqCudaStream stream;
     std::unique_ptr<tyloi::cuda::HostBuffer> host_ids;
-    std::array<::tyloi::Tensor,3> views;
-    ::tyloi::Tensor input,ids,weights,hidden,pairs,result,plan,route_snapshot;
+    std::array<::tyloi::DenseTensor,3> views;
+    ::tyloi::DenseTensor input,ids,weights,hidden,pairs,result,plan,route_snapshot;
     ::tyloi::ScalarType route_dtype;
     void* mapped_routes=nullptr;
     std::vector<int64_t> widened_routes;
@@ -52,7 +52,7 @@ struct TqMoeGraphStage {
     std::array<Plane,13> planes{};
     struct KernelChunk {int plane;std::size_t first,segment;unsigned capacity;cudaGraphNode_t node;};
     std::vector<KernelChunk> kernels;
-    TqMoeGraphStage(TqExec& exec,const TqMoeBanks& b,const ::tyloi::Tensor& source,int count,::tyloi::ScalarType route_type,
+    TqMoeGraphStage(TqExec& exec,const TqMoeBanks& b,const ::tyloi::DenseTensor& source,int count,::tyloi::ScalarType route_type,
                    std::shared_ptr<TqGraphLease> l)
         :banks{b.gate,b.up,b.down},lease(std::move(l)),stream(mfq_get_current_cuda_stream(source.get_device())),
          route_dtype(route_type),
@@ -109,7 +109,7 @@ struct TqMoeGraphStage {
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
     void* route_data()const {return static_cast<uint8_t*>(host_ids->data())+64;}
-    void publish_routes(const ::tyloi::Tensor& current,bool views,const int64_t* device_ids) {
+    void publish_routes(const ::tyloi::DenseTensor& current,bool views,const int64_t* device_ids) {
         if(!mapped_routes) {
             TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(route_data(),device_ids,route_bytes,cudaMemcpyDeviceToHost,stream.stream()));
             return;
@@ -238,8 +238,8 @@ struct TqMoeGraphStage {
 #endif
     }
 };
-::tyloi::Tensor tq_graph_forward(TqExec& exec,const TqMoeBanks& banks,const ::tyloi::Tensor& source,const ::tyloi::Tensor& ids,
-        const ::tyloi::Tensor& weights,float limit,tyloi::cuda::DecodeWindow& window) {
+::tyloi::DenseTensor tq_graph_forward(TqExec& exec,const TqMoeBanks& banks,const ::tyloi::DenseTensor& source,const ::tyloi::DenseTensor& ids,
+        const ::tyloi::DenseTensor& weights,float limit,tyloi::cuda::DecodeWindow& window) {
     window.mark_current("expert_begin");
     auto lease=window.workspace<TqGraphLease>(&tq_graph_lease_identity,[]{return std::make_shared<TqGraphLease>();});
     auto stage=window.workspace<TqMoeGraphStage>(&banks,[&] {
@@ -300,8 +300,8 @@ struct TqMoeGraphStage {
 }
 }
 
-::tyloi::Tensor TqMoeBanks::forward(TqExec& exec,::tyloi::Tensor input_value,::tyloi::Tensor ids,
-        ::tyloi::Tensor weights,float limit,CudaProfiler* profiler,std::int64_t expert_begin,std::int64_t expert_end)const {
+::tyloi::DenseTensor TqMoeBanks::forward(TqExec& exec,::tyloi::DenseTensor input_value,::tyloi::DenseTensor ids,
+        ::tyloi::DenseTensor weights,float limit,CudaProfiler* profiler,std::int64_t expert_begin,std::int64_t expert_end)const {
     const auto phase=[&](const char* name,auto&& operation) {
         return profiler?profiler->measure(name,operation):operation();
     };
@@ -431,7 +431,7 @@ struct TqMoeGraphStage {
         const auto activation_budget=std::max<std::uint64_t>(minimum_activations,
             std::min<std::uint64_t>({std::uint64_t(gemm_groups?64:16)<<20,available/16,useful_activations}));
         auto activations=::tyloi::cuda::empty({static_cast<int64_t>(activation_budget)},source.options().dtype(::tyloi::kUInt8));
-        ::tyloi::Tensor decoded;
+        ::tyloi::DenseTensor decoded;
         cublasHandle_t blas=nullptr;
         if(gemm_groups) {
             const auto useful=4*std::uint64_t(up->input)*hidden*std::min<std::size_t>(16,gemm_groups);
@@ -456,7 +456,7 @@ struct TqMoeGraphStage {
         for(std::size_t begin=0;begin<prefill_groups;begin+=image_batch) {
             const auto count=std::min(image_batch,prefill_groups-begin);
             const auto banks=phase("tq.moe.weights",[&] {
-                return std::array<std::vector<::tyloi::Tensor>,3>{
+                return std::array<std::vector<::tyloi::encoding::TqTensor>,3>{
                     gate->cache->get(gate->source_id,unique.data()+begin,count,source.get_device()),
                     up->cache->get(up->source_id,unique.data()+begin,count,source.get_device()),
                     down->cache->get(down->source_id,unique.data()+begin,count,source.get_device())};
@@ -527,7 +527,7 @@ struct TqMoeGraphStage {
             const auto count=std::min<std::size_t>(std::min<std::size_t>(65535,unique.size()-begin),
                 std::max<std::uint64_t>(1,(free/2)/per_expert));
             const auto banks=phase("tq.moe.weights",[&] {
-                return std::array<std::vector<::tyloi::Tensor>,3>{
+                return std::array<std::vector<::tyloi::encoding::TqTensor>,3>{
                     gate->cache->get(gate->source_id,unique.data()+begin,count,source.get_device()),
                     up->cache->get(up->source_id,unique.data()+begin,count,source.get_device()),
                     down->cache->get(down->source_id,unique.data()+begin,count,source.get_device())};
@@ -537,7 +537,7 @@ struct TqMoeGraphStage {
                 // Preserve the tuned single-vector geometry. Each selected
                 // expert gets one slot, with no multi-token dummy work.
                 const auto tables=phase("tq.moe.views",[&] {
-                    return std::array<::tyloi::Tensor,3>{
+                    return std::array<::tyloi::DenseTensor,3>{
                         gate->cache->views(gate->source_id,unique.data()+begin,g,source.get_device()),
                         up->cache->views(up->source_id,unique.data()+begin,u,source.get_device()),
                         down->cache->views(down->source_id,unique.data()+begin,d,source.get_device())};

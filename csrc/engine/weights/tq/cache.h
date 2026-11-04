@@ -24,10 +24,10 @@ public:
     ~TqCache();
 
     std::uint64_t add(std::shared_ptr<const tyloi::TqTable>, std::int64_t rows);
-    std::vector<::tyloi::Tensor> get(std::uint64_t source, const std::int64_t* ids,
+    std::vector<::tyloi::encoding::TqTensor> get(std::uint64_t source, const std::int64_t* ids,
                               std::size_t count, int device);
-    ::tyloi::Tensor views(std::uint64_t source, const std::int64_t* ids,
-                                      const std::vector<::tyloi::Tensor>& weights, int device);
+    ::tyloi::DenseTensor views(std::uint64_t source, const std::int64_t* ids,
+                                      const std::vector<::tyloi::encoding::TqTensor>& weights, int device);
     std::size_t budget();
     void resize(std::size_t bytes);
     std::size_t reserve(std::size_t bytes);
@@ -52,7 +52,7 @@ private:
         }
     };
     struct DeviceEntry {
-        ::tyloi::Tensor weight;
+        ::tyloi::encoding::TqTensor weight;
         std::shared_ptr<tyloi::cuda::Event> uploaded;
         cudaStream_t producer = nullptr;
         std::size_t source_bytes = 0;
@@ -60,7 +60,7 @@ private:
     struct ViewTable {
         int device;
         cudaStream_t stream;
-        ::tyloi::Tensor views;
+        ::tyloi::DenseTensor views;
         std::vector<std::uintptr_t> images;
         std::vector<std::uint8_t> bytes;
     };
@@ -91,5 +91,5 @@ private:
 
     std::size_t reserve_host_locked(std::size_t bytes);
     void report() const;
-    void upload(const ::tyloi::Tensor&, const std::vector<std::uint8_t>&);
+    void upload(const ::tyloi::DenseTensor&, const std::vector<std::uint8_t>&);
 };

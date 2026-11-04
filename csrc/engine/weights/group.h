@@ -24,4 +24,4 @@ QuantLinearGroup make_quant_group(
     bool preserve_projection_boundaries = false);
 
 DenseLinearGroup make_dense_group(
-    const std::vector<::tyloi::Tensor>& weights);
+    const std::vector<::tyloi::DenseTensor>& weights);

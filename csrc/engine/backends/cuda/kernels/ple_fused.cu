@@ -77,9 +77,9 @@ __global__ void ple_conv_add_kernel(const float* input,const float* weight,const
 }
 }
 
-std::vector<Tensor> ple_gate_norm_cuda(const Tensor& key,const Tensor& query,const Tensor& value,
-        const Tensor& norm,int64_t hidden,int64_t streams,double eps) {
-    const auto valid=[](const Tensor& x) {return x.is_cuda() && x.is_contiguous() &&
+std::vector<DenseTensor> ple_gate_norm_cuda(const DenseTensor& key,const DenseTensor& query,const DenseTensor& value,
+        const DenseTensor& norm,int64_t hidden,int64_t streams,double eps) {
+    const auto valid=[](const DenseTensor& x) {return x.is_cuda() && x.is_contiguous() &&
         (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32);};
     TYLOINFER_RUNTIME_CHECK(valid(key) && valid(query) && valid(value) && key.sizes()==query.sizes() &&
         hidden>0 && hidden<=8192 && streams>0 && key.numel()==value.numel()*streams &&
@@ -107,8 +107,8 @@ std::vector<Tensor> ple_gate_norm_cuda(const Tensor& key,const Tensor& query,con
     return {gated,normalized};
 }
 
-std::vector<Tensor> ple_conv_add_cuda(const Tensor& input,const Tensor& source_weight,
-        const std::optional<Tensor>& previous,int64_t dilation,const Tensor& gated,bool half_output) {
+std::vector<DenseTensor> ple_conv_add_cuda(const DenseTensor& input,const DenseTensor& source_weight,
+        const std::optional<DenseTensor>& previous,int64_t dilation,const DenseTensor& gated,bool half_output) {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.dim()==3 &&
         input.scalar_type()==::tyloi::kFloat32 && gated.is_contiguous() && gated.scalar_type()==::tyloi::kFloat32 &&
         gated.sizes()==input.sizes() && gated.device()==input.device() && dilation>0,

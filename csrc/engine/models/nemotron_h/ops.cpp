@@ -32,18 +32,18 @@
 namespace tyloi::cuda::nemotron_h {
 namespace {
 
-using Tensor = ::tyloi::Tensor;
+using DenseTensor = ::tyloi::DenseTensor;
 
 // The canonical graph returns the last K-1 convolution inputs for the next
 // call. Runtime CUDA graphs retain this storage address across requests.
-Tensor next_convolution_state(const Tensor& conv_input, int64_t kernel) {
+DenseTensor next_convolution_state(const DenseTensor& conv_input, int64_t kernel) {
     return conv_input.narrow(1, conv_input.size(1) - (kernel - 1), kernel - 1).contiguous();
 }
 
 } // namespace
 
-static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor& executor,
-                            Tensor x, const Executor::Mode& mode) {
+static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Executor& executor,
+                            DenseTensor x, const Executor::Mode& mode) {
     const auto& [layer, mamba_heads, mamba_head_dim, ssm_state_size, mamba_groups, conv_kernel,
                  rms_norm_eps, time_step_limit_lo, time_step_limit_hi, mixer_norm, in_proj,
                  conv_weight, conv_bias, a_log, d, dt_bias, scan_norm, out_proj] = weights;
@@ -81,7 +81,7 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                              mixer_norm, rms_norm_eps, 0.0)
             .reshape({B, T, H});
     });
-    auto mixed = tyloi::models::selective_state_attention<Tensor>(
+    auto mixed = tyloi::models::selective_state_attention<DenseTensor>(
                 true,
                 [&]() {
                     auto projected = profiler.measure("mamba.in_proj", [&] {
@@ -96,9 +96,9 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                         speculative_xbc = xbc;
                         speculative_dt = dt;
                     }
-                    return std::array<Tensor, 3>{std::move(gate), std::move(xbc), std::move(dt)};
+                    return std::array<DenseTensor, 3>{std::move(gate), std::move(xbc), std::move(dt)};
                 },
-                [&](const std::array<Tensor, 3>& projected) {
+                [&](const std::array<DenseTensor, 3>& projected) {
                     const auto& xbc = projected[1];
                     auto convolved = profiler.measure("mamba.conv", [&] {
                         if (T == 1)
@@ -117,9 +117,9 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                     auto c = convolved.narrow(2, inner + groups * state_width, groups * state_width)
                                  .reshape({B, T, groups, state_width})
                                  .contiguous();
-                    return std::array<Tensor, 3>{std::move(x), std::move(b), std::move(c)};
+                    return std::array<DenseTensor, 3>{std::move(x), std::move(b), std::move(c)};
                 },
-                [&](const std::array<Tensor, 3>& signals, const Tensor& dt) {
+                [&](const std::array<DenseTensor, 3>& signals, const DenseTensor& dt) {
                     return profiler.measure("mamba.scan", [&] {
                         if (T == 1) {
                             auto y = selective_state_scan_decode_cuda(
@@ -128,15 +128,15 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                                 signals[1].select(1, 0).contiguous(),
                                 signals[2].select(1, 0).contiguous(), d, time_step_limit_lo,
                                 time_step_limit_hi);
-                            return std::array<Tensor, 2>{y.unsqueeze(1), Tensor()};
+                            return std::array<DenseTensor, 2>{y.unsqueeze(1), DenseTensor()};
                         }
                         auto scanned = selective_state_scan_prefill_cuda(
                             signals[0], dt, dt_bias, a_log, signals[1], signals[2], d,
                             state.recurrent, time_step_limit_lo, time_step_limit_hi);
-                        return std::array<Tensor, 2>{std::move(scanned[0]), std::move(scanned[1])};
+                        return std::array<DenseTensor, 2>{std::move(scanned[0]), std::move(scanned[1])};
                     });
                 },
-                [&](Tensor scanned, Tensor gate) {
+                [&](DenseTensor scanned, DenseTensor gate) {
                     return profiler.measure("mamba.gated_norm", [&] {
                         return grouped_gated_rms_norm_cuda(
                                    scanned.reshape({B * T, inner}),
@@ -145,12 +145,12 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                             .reshape({B, T, inner});
                     });
                 },
-                [&](Tensor normalized) {
+                [&](DenseTensor normalized) {
                     return profiler.measure(
                         "mamba.out_proj",
                         [&] { return executor.projector(mode.ffn).run(out_proj, normalized); });
                 },
-                [&](const Tensor& final_state) {
+                [&](const DenseTensor& final_state) {
                     if (final_state.defined())
                         state.recurrent.copy_(final_state);
                 });
@@ -163,8 +163,8 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
 }
 
 static void clear_speculative(MambaState& activity) noexcept {
-    activity.speculative_xbc = Tensor();
-    activity.speculative_dt = Tensor();
+    activity.speculative_xbc = DenseTensor();
+    activity.speculative_dt = DenseTensor();
     activity.mixer.commit();
 }
 
@@ -223,7 +223,7 @@ static void rollback_speculative(const Mamba& weights, MambaState& activity, int
     }
 }
 
-static Tensor moe_forward(const Moe& weights, Executor& executor, Tensor x,
+static DenseTensor moe_forward(const Moe& weights, Executor& executor, DenseTensor x,
                           const Executor::Mode& mode) {
     const auto& [layer, rms_norm_eps, ffn_norm, ffn] = weights;
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
@@ -247,7 +247,7 @@ static Tensor moe_forward(const Moe& weights, Executor& executor, Tensor x,
     return acc_cuda(rr, mm).reshape({B, T, H});
 }
 
-static Tensor attention_residual(Executor& executor, Tensor residual, Tensor attention_output,
+static DenseTensor attention_residual(Executor& executor, DenseTensor residual, DenseTensor attention_output,
                                  int64_t batch, int64_t tokens, int64_t hidden) {
     auto rr = residual.reshape({-1, hidden});
     auto aa = attention_output.reshape({-1, hidden});
@@ -262,7 +262,7 @@ static Tensor attention_residual(Executor& executor, Tensor residual, Tensor att
     });
 }
 
-static Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
+static DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids) {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
@@ -272,10 +272,10 @@ static Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-tyloi::Tensor Model::embedding(tyloi::Tensor ids, int primary) const {
+tyloi::DenseTensor Model::embedding(tyloi::DenseTensor ids, int primary) const {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
-    if (ids.dim() == 1) ids = Tensor(std::move(ids)).unsqueeze(0);
+    if (ids.dim() == 1) ids = DenseTensor(std::move(ids)).unsqueeze(0);
     tyloi::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
                                "token IDs must not be empty");
     auto normalized = tyloi::ops::contiguous(tyloi::ops::copy(
@@ -287,15 +287,15 @@ tyloi::Tensor Model::embedding(tyloi::Tensor ids, int primary) const {
 }
 #endif
 
-Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, Tensor ids, const Executor::Mode& mode) {
+DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
+             int primary, DenseTensor ids, const Executor::Mode& mode) {
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
-Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
+DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
     const Task task{task::Norm{0, 0, model.output_norm, model.metadata.rms_norm_eps,
@@ -306,14 +306,14 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
-Tensor softcap(const Model& model, Executor& executor, Tensor value) {
+DenseTensor softcap(const Model& model, Executor& executor, DenseTensor value) {
     const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
     Inputs inputs;
     inputs.values = {std::move(value)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
+DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
         Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
@@ -332,8 +332,8 @@ bool supports_speculation(const Model& model) noexcept {
            });
 }
 
-Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
-                     std::size_t scratch_index, Tensor input, const AttentionStep& step,
+DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
+                     std::size_t scratch_index, DenseTensor input, const AttentionStep& step,
                      std::int64_t confirmed, const Executor::Mode& mode) {
     MfqCudaGuard guard(layer.device);
     if (const auto* mamba = std::get_if<Mamba>(&layer.weights)) {
@@ -371,7 +371,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
     cache.quantization = attention.kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     (void)scratch_index;
-    Tensor residual;
+    DenseTensor residual;
     const Task task{task::Attention{0, 1, 2, attention, 0, &residual}, 0};
     const auto view = cache.view();
     Inputs inputs;
@@ -393,11 +393,11 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
 #endif
 }
 
-Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(collectives, mode.primary, Tensor(std::move(input.ids)));
-    auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
+    auto ids = normalize_ids(collectives, mode.primary, DenseTensor(std::move(input.ids)));
+    auto embeddings = input.embeddings.has_value() ? DenseTensor(std::move(*input.embeddings))
         : embed(model, executor, collectives, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
@@ -420,10 +420,10 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     const auto options = ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, mode.primary))
                              .dtype(::tyloi::kInt64);
     auto physical = input.cache_positions.has_value()
-        ? collectives.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? collectives.copy(DenseTensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto semantic = input.positions.has_value()
-        ? collectives.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? collectives.copy(DenseTensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
     tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
         (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
@@ -439,11 +439,11 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
         input.lengths = ::tyloi::cuda::full({B}, state.cache_pos + 1, options);
-    AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
-        input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
+    AttentionStep step{semantic, input.lengths ? MfqOptional<DenseTensor>(DenseTensor(*input.lengths)) : mfq_nullopt,
+        input.cache_positions.has_value() ? MfqOptional<DenseTensor>(physical) : mfq_nullopt,
         {}, state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
-    const auto trace = [&](const Tensor& value) {
+    const auto trace = [&](const DenseTensor& value) {
         if (input.trace)
             input.trace->push_back(collectives.copy(value, mode.primary).to(::tyloi::kFloat32).clone());
     };
@@ -452,11 +452,11 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         const auto& layer = model.layers[index];
         MfqCudaGuard layer_guard(layer.device);
         auto local = step;
-        local.positions = collectives.copy(Tensor(step.positions), layer.device);
+        local.positions = collectives.copy(DenseTensor(step.positions), layer.device);
         if (step.sequence_lengths.has_value())
-            local.sequence_lengths = collectives.copy(Tensor(*step.sequence_lengths), layer.device);
+            local.sequence_lengths = collectives.copy(DenseTensor(*step.sequence_lengths), layer.device);
         if (step.cache_positions.has_value())
-            local.cache_positions = collectives.copy(Tensor(*step.cache_positions), layer.device);
+            local.cache_positions = collectives.copy(DenseTensor(*step.cache_positions), layer.device);
         hidden = forward_layer(layer, state.layers[index], executor, index,
             collectives.copy(std::move(hidden), layer.device), local, input.confirmed, mode);
         trace(hidden);
@@ -651,8 +651,8 @@ void State::reset(std::int64_t next_batch) {
         if (auto* cache = std::get_if<KVCache>(&layers[index])) {
             if (cache->defined() && cache->batch_size() != next_batch) *cache = KVCache();
         } else if (auto* mamba = std::get_if<MambaState>(&layers[index])) {
-            mamba->speculative_xbc = Tensor();
-            mamba->speculative_dt = Tensor();
+            mamba->speculative_xbc = DenseTensor();
+            mamba->speculative_dt = DenseTensor();
             mamba->mixer.reset(next_batch);
         }
     }
@@ -669,9 +669,9 @@ void State::commit_speculative() {
     speculative_confirmed = 0;
 }
 
-std::vector<Tensor> State::storage() const {
-    std::vector<Tensor> result;
-    const auto append = [&result](const Tensor& tensor) {
+std::vector<DenseTensor> State::storage() const {
+    std::vector<DenseTensor> result;
+    const auto append = [&result](const DenseTensor& tensor) {
         if (tensor.defined()) result.push_back(tensor);
     };
     for (const auto& layer : layers) {
@@ -692,8 +692,8 @@ std::vector<Tensor> State::storage() const {
     return result;
 }
 
-std::vector<Tensor*> State::graph_state() {
-    std::vector<Tensor*> result;
+std::vector<DenseTensor*> State::graph_state() {
+    std::vector<DenseTensor*> result;
     for (auto& layer : layers) {
         auto* mamba = std::get_if<MambaState>(&layer);
         if (mamba == nullptr) continue;

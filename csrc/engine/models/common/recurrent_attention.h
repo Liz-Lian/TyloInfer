@@ -49,9 +49,9 @@ auto gated_delta_attention(bool cache, Project project, Convolve convolve, Gates
 // state; scan() returns {y, final recurrent state} and updates the recurrent
 // state in place when it is a single decode step. commit() receives the final
 // state produced by a prefill scan (undefined for decode).
-template <class Tensor, class Project, class Convolve, class Scan, class GatedNorm, class Output,
+template <class DenseTensor, class Project, class Convolve, class Scan, class GatedNorm, class Output,
           class Commit>
-Tensor selective_state_attention(bool cache, Project project, Convolve convolve, Scan scan,
+DenseTensor selective_state_attention(bool cache, Project project, Convolve convolve, Scan scan,
                                 GatedNorm norm_gate, Output output, Commit commit) {
     auto projected = project();
     if (projected.size() != 3)

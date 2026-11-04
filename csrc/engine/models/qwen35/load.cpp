@@ -25,9 +25,9 @@ namespace {
 struct LayerLoader : TransformerWeightLoader {
     using Ffn = tyloi::cuda::Ffn;
     bool mirror_scalars = true;
-    using Tensor = ::tyloi::Tensor;
+    using DenseTensor = ::tyloi::DenseTensor;
 
-    static Tensor log_negative(Tensor value) {
+    static DenseTensor log_negative(DenseTensor value) {
         return ::tyloi::cuda::log(-value);
     }
 

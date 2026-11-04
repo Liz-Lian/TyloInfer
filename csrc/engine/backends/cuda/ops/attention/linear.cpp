@@ -19,15 +19,15 @@ namespace tyloi::cuda {
 
 namespace {
 
-template <class Tensor> struct LinearProjections {
-    Tensor qkv, qk, value, output_gate, alpha, beta;
+template <class DenseTensor> struct LinearProjections {
+    DenseTensor qkv, qk, value, output_gate, alpha, beta;
 };
 
 // Convolution/QK normalization can be one fused native operator. GDN updates
 // its native recurrent state; the model owns its placement in the graph.
-template <class Tensor, class Project, class Gates, class Convolve, class Recur, class Normalize,
+template <class DenseTensor, class Project, class Gates, class Convolve, class Recur, class Normalize,
           class Output>
-Tensor linear_attention(Tensor normalized, Project project, Gates gates, Convolve convolve,
+DenseTensor linear_attention(DenseTensor normalized, Project project, Gates gates, Convolve convolve,
                         Recur recur, Normalize normalize, Output output) {
     auto projected = project(std::move(normalized));
     auto recurrence_gates = gates(projected);
@@ -39,16 +39,16 @@ Tensor linear_attention(Tensor normalized, Project project, Gates gates, Convolv
 
 } // namespace
 
-std::array<::tyloi::Tensor, 2> LinearAttention::forward(
+std::array<::tyloi::DenseTensor, 2> LinearAttention::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        ::tyloi::Tensor input,
+        ::tyloi::DenseTensor input,
         LinearView state, LinearInputs* captured) const {
     return input.is_cuda() ? cuda(project, profiler, options, std::move(input), state, captured)
                            : cpu(project, std::move(input), state);
 }
 
-std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
-        const Projector& project, ::tyloi::Tensor x,
+std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
+        const Projector& project, ::tyloi::DenseTensor x,
         LinearView state) const {
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t nk = key_heads;
@@ -65,8 +65,8 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
                   .reshape({B, T, H});
     auto output = linear_attention(
               std::move(xn),
-              [&](::tyloi::Tensor xn) {
-                ::tyloi::Tensor qkv, qk_part, v_part, z, alpha_raw,
+              [&](::tyloi::DenseTensor xn) {
+                ::tyloi::DenseTensor qkv, qk_part, v_part, z, alpha_raw,
                     beta_raw;
                 if (dense_ab_tail) {
                   auto parts = project.run(in_proj, xn);
@@ -107,11 +107,11 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
                 }
 
                 return LinearProjections<
-                    ::tyloi::Tensor>{qkv, qk_part,   v_part,
+                    ::tyloi::DenseTensor>{qkv, qk_part,   v_part,
                                                 z,   alpha_raw, beta_raw};
               },
               [&](const LinearProjections<
-                  ::tyloi::Tensor> &p) {
+                  ::tyloi::DenseTensor> &p) {
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
                 auto beta = ::tyloi::cuda::sigmoid(
                     beta_raw.to(::tyloi::kFloat32)
@@ -128,11 +128,11 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
                 auto gate_t = gate.transpose(1, 2).contiguous();
                 auto beta_t = beta.transpose(1, 2).contiguous();
 
-                return std::array<::tyloi::Tensor, 2>{gate_t,
+                return std::array<::tyloi::DenseTensor, 2>{gate_t,
                                                                  beta_t};
               },
               [&](const LinearProjections<
-                  ::tyloi::Tensor> &p) {
+                  ::tyloi::DenseTensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto conv_input = ::tyloi::cuda::cat({state.convolution, qkv}, 1);
                 state.convolution.copy_(conv_input.narrow(
@@ -196,14 +196,14 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
                   }
                 }
 
-                return std::array<::tyloi::Tensor, 3>{q, k, v};
+                return std::array<::tyloi::DenseTensor, 3>{q, k, v};
               },
-              [&](std::array<::tyloi::Tensor, 3> qkv,
-                  std::array<::tyloi::Tensor, 2> gates) {
+              [&](std::array<::tyloi::DenseTensor, 3> qkv,
+                  std::array<::tyloi::DenseTensor, 2> gates) {
                 auto q = qkv[0], k = qkv[1], v = qkv[2];
                 auto gate_t = gates[0], beta_t = gates[1];
                 auto recurrent = state.recurrent;
-                std::vector<::tyloi::Tensor> outputs;
+                std::vector<::tyloi::DenseTensor> outputs;
                 outputs.reserve(static_cast<size_t>(T));
                 const double retrieve_scale =
                     1.0 / std::sqrt(static_cast<double>(dk));
@@ -231,7 +231,7 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
 
                 return y;
               },
-              [&](::tyloi::Tensor y) {
+              [&](::tyloi::DenseTensor y) {
                 auto y_flat =
                     y.reshape({-1, dv}).to(::tyloi::kFloat32);
                 auto inverse = ::tyloi::cuda::rsqrt(
@@ -244,10 +244,10 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
 
                 return yf;
               },
-              [&](::tyloi::Tensor yf, ::tyloi::Tensor z) {
+              [&](::tyloi::DenseTensor yf, ::tyloi::DenseTensor z) {
                 z = z.reshape({B, T, nv, dv}).transpose(1, 2).contiguous();
                 auto zf = z.transpose(1, 2).contiguous().reshape({B, T, vsz});
-                ::tyloi::Tensor attention_output;
+                ::tyloi::DenseTensor attention_output;
                 if (dense_out_proj) {
                   auto dtype = out_proj_dense.scalar_type();
                   auto gated =
@@ -262,12 +262,12 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
                 }
                 return attention_output;
               });
-    return std::array<::tyloi::Tensor, 2>{std::move(x), std::move(output)};
+    return std::array<::tyloi::DenseTensor, 2>{std::move(x), std::move(output)};
 }
 
-std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
+std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        ::tyloi::Tensor x,
+        ::tyloi::DenseTensor x,
         LinearView state, LinearInputs* captured) const {
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     int64_t nk = key_heads,
@@ -286,8 +286,8 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
           });
     auto output = linear_attention(
               std::move(xn),
-              [&](::tyloi::Tensor xn) {
-                ::tyloi::Tensor qkv, qk_part, v_part, z, alpha_raw,
+              [&](::tyloi::DenseTensor xn) {
+                ::tyloi::DenseTensor qkv, qk_part, v_part, z, alpha_raw,
                     beta_raw;
                 if (dense_ab_tail) {
                   auto parts = profiler.measure("linear.in_proj", [&]() {
@@ -387,11 +387,11 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
                 }
 
                 return LinearProjections<
-                    ::tyloi::Tensor>{qkv, qk_part,   v_part,
+                    ::tyloi::DenseTensor>{qkv, qk_part,   v_part,
                                                 z,   alpha_raw, beta_raw};
               },
               [&](const LinearProjections<
-                  ::tyloi::Tensor> &p) {
+                  ::tyloi::DenseTensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
                 auto gates = profiler.measure("linear.gates_fused", [&]() {
@@ -412,11 +412,11 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
                   captured->split = split_in_proj;
                 }
 
-                return std::array<::tyloi::Tensor, 2>{gate_t,
+                return std::array<::tyloi::DenseTensor, 2>{gate_t,
                                                                  beta_t};
               },
               [&](const LinearProjections<
-                  ::tyloi::Tensor> &p) {
+                  ::tyloi::DenseTensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto bias =
                     conv_bias.defined()
@@ -425,7 +425,7 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
                               {0}, ::tyloi::TensorOptions()
                                        .device(::tyloi::kCUDA)
                                        .dtype(::tyloi::kFloat32));
-                ::tyloi::Tensor q, k, v;
+                ::tyloi::DenseTensor q, k, v;
                 bool fused_prefill =
                     T >= 256 && options.fused_conv;
                 if (T > 1 && split_in_proj && fused_prefill) {
@@ -462,7 +462,7 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
                           -1);
                     });
                   }
-                  ::tyloi::Tensor conv;
+                  ::tyloi::DenseTensor conv;
                   if (T == 1) {
                     conv = profiler.measure("linear.conv_silu_decode", [&]() {
                       return ssm_conv_silu_decode_cuda(state.convolution, qkv,
@@ -517,17 +517,17 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
                   });
                 }
 
-                return std::array<::tyloi::Tensor, 3>{q, k, v};
+                return std::array<::tyloi::DenseTensor, 3>{q, k, v};
               },
-              [&](std::array<::tyloi::Tensor, 3> qkv,
-                  std::array<::tyloi::Tensor, 2> gates) {
+              [&](std::array<::tyloi::DenseTensor, 3> qkv,
+                  std::array<::tyloi::DenseTensor, 2> gates) {
                 auto q = qkv[0], k = qkv[1], v = qkv[2];
                 auto gate_t = gates[0], beta_t = gates[1];
-                auto recurrent_step = [&](::tyloi::Tensor rq,
-                                          ::tyloi::Tensor rk,
-                                          ::tyloi::Tensor rv,
-                                          ::tyloi::Tensor rg,
-                                          ::tyloi::Tensor rb) {
+                auto recurrent_step = [&](::tyloi::DenseTensor rq,
+                                          ::tyloi::DenseTensor rk,
+                                          ::tyloi::DenseTensor rv,
+                                          ::tyloi::DenseTensor rg,
+                                          ::tyloi::DenseTensor rb) {
                   const bool transposed = state.transposed;
                   if (transposed) {
                     if (tiled_v_heads)
@@ -553,7 +553,7 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
 
                 return y;
               },
-              [&](::tyloi::Tensor y) {
+              [&](::tyloi::DenseTensor y) {
                 auto y_norm = profiler.measure("linear.out_norm", [&]() {
                   return rms_norm_cuda(y.reshape({-1, dv}).to(
                                            ::tyloi::kFloat32),
@@ -567,8 +567,8 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
 
                 return yf;
               },
-              [&](::tyloi::Tensor yf, ::tyloi::Tensor z) {
-                ::tyloi::Tensor oo;
+              [&](::tyloi::DenseTensor yf, ::tyloi::DenseTensor z) {
+                ::tyloi::DenseTensor oo;
                 z = profiler.measure("linear.z_view", [&]() {
                   return z.reshape({B, T, nv, dv}).transpose(1, 2).contiguous();
                 });
@@ -591,7 +591,7 @@ std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
                 }
                 return oo;
               });
-    return std::array<::tyloi::Tensor, 2>{std::move(x), std::move(output)};
+    return std::array<::tyloi::DenseTensor, 2>{std::move(x), std::move(output)};
 }
 
 void LinearAttention::replay(
@@ -637,7 +637,7 @@ void LinearAttention::replay(
     const bool transposed = state.transposed;
     const auto gate = inputs.gate.narrow(2, 0, T).contiguous();
     const auto beta = inputs.beta.narrow(2, 0, T).contiguous();
-    std::vector<::tyloi::Tensor> output;
+    std::vector<::tyloi::DenseTensor> output;
     if (transposed) {
       output = tiled_v_heads
                    ? gdn_inplace_transposed_tiled_cuda(

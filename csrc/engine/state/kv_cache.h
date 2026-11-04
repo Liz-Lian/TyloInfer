@@ -7,11 +7,11 @@
 #include <utility>
 
 struct KVCache {
-    ::tyloi::Tensor k;
-    ::tyloi::Tensor v;
-    ::tyloi::Tensor k_chunk_ptrs;
-    ::tyloi::Tensor v_chunk_ptrs;
-    ::tyloi::Tensor page_table;
+    ::tyloi::DenseTensor k;
+    ::tyloi::DenseTensor v;
+    ::tyloi::DenseTensor k_chunk_ptrs;
+    ::tyloi::DenseTensor v_chunk_ptrs;
+    ::tyloi::DenseTensor page_table;
     bool ring = false;
     tyloi::cuda::KvQuantization quantization;
     int64_t paged_batch = 0;
@@ -34,9 +34,9 @@ struct KVCache {
         tyloi::cuda::KvQuantization quantization = {});
 
     static KVCache paged_view(
-        ::tyloi::Tensor key_chunks,
-        ::tyloi::Tensor value_chunks,
-        ::tyloi::Tensor pages,
+        ::tyloi::DenseTensor key_chunks,
+        ::tyloi::DenseTensor value_chunks,
+        ::tyloi::DenseTensor pages,
         int64_t batch,
         int64_t heads,
         int64_t head_dim,

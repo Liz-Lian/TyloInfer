@@ -7,8 +7,8 @@
 #include <array>
 #include <utility>
 
-::tyloi::Tensor Block::forward_context(CudaExecutionContext &execution,
-                                                  ::tyloi::Tensor x,
+::tyloi::DenseTensor Block::forward_context(CudaExecutionContext &execution,
+                                                  ::tyloi::DenseTensor x,
                                                   const Context &context, const RopeCache &rope) {
     TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
                       "block does not support speculative verification");
@@ -30,18 +30,18 @@ void FullBlock::reset(int64_t B) {
     cache = KVCache();
 }
 
-::tyloi::Tensor
-FullBlock::forward(CudaExecutionContext &execution, ::tyloi::Tensor x,
-                   ::tyloi::Tensor pos, int64_t cache_pos,
-                   const MfqOptional<::tyloi::Tensor> &seq_len, const RopeCache &rope,
-                   const MfqOptional<::tyloi::Tensor> &cache_positions,
-                   const MfqOptional<::tyloi::Tensor> &attention_mask) {
+::tyloi::DenseTensor
+FullBlock::forward(CudaExecutionContext &execution, ::tyloi::DenseTensor x,
+                   ::tyloi::DenseTensor pos, int64_t cache_pos,
+                   const MfqOptional<::tyloi::DenseTensor> &seq_len, const RopeCache &rope,
+                   const MfqOptional<::tyloi::DenseTensor> &cache_positions,
+                   const MfqOptional<::tyloi::DenseTensor> &attention_mask) {
     return forward_impl(execution, std::move(x), std::move(pos), cache_pos, seq_len, rope,
                         cache_positions, attention_mask, 0, 0);
 }
 
-::tyloi::Tensor FullBlock::forward_context(CudaExecutionContext &execution,
-                                                      ::tyloi::Tensor x,
+::tyloi::DenseTensor FullBlock::forward_context(CudaExecutionContext &execution,
+                                                      ::tyloi::DenseTensor x,
                                                       const Context &context,
                                                       const RopeCache &rope) {
     TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
@@ -52,11 +52,11 @@ FullBlock::forward(CudaExecutionContext &execution, ::tyloi::Tensor x,
                         context.decode_attention_parts);
 }
 
-::tyloi::Tensor FullBlock::forward_impl(
-    CudaExecutionContext &execution, ::tyloi::Tensor x, ::tyloi::Tensor pos,
-    int64_t cache_pos, const MfqOptional<::tyloi::Tensor> &seq_len,
-    const RopeCache &rope, const MfqOptional<::tyloi::Tensor> &cache_positions,
-    const MfqOptional<::tyloi::Tensor> &attention_mask, int64_t planned_kv_length,
+::tyloi::DenseTensor FullBlock::forward_impl(
+    CudaExecutionContext &execution, ::tyloi::DenseTensor x, ::tyloi::DenseTensor pos,
+    int64_t cache_pos, const MfqOptional<::tyloi::DenseTensor> &seq_len,
+    const RopeCache &rope, const MfqOptional<::tyloi::DenseTensor> &cache_positions,
+    const MfqOptional<::tyloi::DenseTensor> &attention_mask, int64_t planned_kv_length,
     int64_t decode_attention_parts) {
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const tyloi::cuda::AttentionStep step{
@@ -75,7 +75,7 @@ FullBlock::forward(CudaExecutionContext &execution, ::tyloi::Tensor x,
     cache.quantization = kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     const auto mode = execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn;
-    std::array<tyloi::Tensor, 2> attention;
+    std::array<tyloi::DenseTensor, 2> attention;
     {
         auto scope = tyloi::cuda::Executor::current().enter(mode);
         attention = tyloi::cuda::FullAttention::forward(
@@ -96,9 +96,9 @@ FullBlock::forward(CudaExecutionContext &execution, ::tyloi::Tensor x,
 #endif
 }
 
-::tyloi::Tensor FullBlock::forward_ffn(
-    CudaExecutionContext& execution, ::tyloi::Tensor residual,
-    ::tyloi::Tensor output, int64_t, int64_t, int64_t) {
+::tyloi::DenseTensor FullBlock::forward_ffn(
+    CudaExecutionContext& execution, ::tyloi::DenseTensor residual,
+    ::tyloi::DenseTensor output, int64_t, int64_t, int64_t) {
     auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
     return executor->full_ffn(
         ffn, ffn_norm, *this, std::move(residual), std::move(output),

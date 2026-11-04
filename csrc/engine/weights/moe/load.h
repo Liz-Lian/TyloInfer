@@ -23,8 +23,8 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
     bool cuda,
     const MoeLoadOptions& options = {});
 int64_t mixed_moe_storage_bytes(const MixedMoeRuntime& runtime);
-::tyloi::Tensor copy_cpu_weight_to_cuda(
-    const ::tyloi::Tensor& source);
+::tyloi::DenseTensor copy_cpu_weight_to_cuda(
+    const ::tyloi::DenseTensor& source);
 tyloi::cuda::Experts to_gpu_mixed_moe(
     const tyloi::mfe::Data& source,
     const MoeLoadOptions& options = {});

@@ -109,7 +109,7 @@ public:
         }catch(...){}
     }
     SpeculativeStats speculative_stats() const {std::lock_guard<std::mutex> lock(mutex_);return speculative_stats_;}
-    std::size_t add(::tyloi::Tensor owner,int64_t capacity,std::size_t row_bytes,bool prefix,int64_t ratio=1,bool manual=false,bool external=false) {
+    std::size_t add(::tyloi::DenseTensor owner,int64_t capacity,std::size_t row_bytes,bool prefix,int64_t ratio=1,bool manual=false,bool external=false) {
         std::lock_guard<std::mutex> lock(mutex_);
         Region region;region.owner=std::move(owner);region.capacity=capacity;region.row_bytes=row_bytes;region.prefix=prefix;region.ratio=ratio;
         region.manual_live=manual?0:-1;
@@ -317,7 +317,7 @@ private:
             if(unsigned(expert)<unsigned(experts))packet_masks_[expert]|=uint32_t(1)<<row;
         }
     }
-    struct Region {::tyloi::Tensor owner;int64_t capacity=0,ratio=1,manual_live=-1;std::size_t row_bytes=0,begin=0,end=0,largest_free=0;bool prefix=false,external=false;std::map<std::size_t,std::size_t> free;};
+    struct Region {::tyloi::DenseTensor owner;int64_t capacity=0,ratio=1,manual_live=-1;std::size_t row_bytes=0,begin=0,end=0,largest_free=0;bool prefix=false,external=false;std::map<std::size_t,std::size_t> free;};
     struct Entry {Key key;std::size_t region,first,pages,bytes;uint64_t packet=0;bool retired=false,published=false;
         uint64_t forecast_packet=0;
         uint64_t order=0,prior_order=0,epoch=0,last_use_packet=0,prior_use_packet=0;
