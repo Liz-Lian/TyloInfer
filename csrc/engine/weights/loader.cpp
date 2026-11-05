@@ -5,7 +5,7 @@
 #include "engine/weights/moe/load.h"
 #include "env.h"
 #include "engine/weights/loader.h"
-#include "engine/backends/cuda/ops/projection/projection.h"
+#include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/group.h"
 #include "engine/weights/quant.h"
 #include "engine/weights/encoding/dense_blob.h"
@@ -15,8 +15,6 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
-#include "engine/backends/cuda/ops/ffn/moe.h"
-#include "engine/backends/cuda/ops/ffn/tq.h"
 #include "engine/weights/moe/expert_cache.h"
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/weights/moe/cached_source_internal.h"
@@ -888,7 +886,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::dense(const std::string& name) co
         dtype=="F16" ? ::tyloi::kFloat16 : dtype=="BF16" ? ::tyloi::kBFloat16 : ::tyloi::kFloat32));
 }
 
-Routed Loader::routed(const std::string& name, int layer,
+std::shared_ptr<const ::tyloi::Tensor> Loader::routed(const std::string& name, int layer,
     int64_t experts, int64_t output, int64_t input, const std::string& role) const {
     const auto& file = source;
     const auto& dtype=tyloi::require_tensor(file, name).dtype;
@@ -896,26 +894,15 @@ Routed Loader::routed(const std::string& name, int layer,
         auto weight=load_tq_routed_weight(cache,tq,file,name,experts,output,input);
         if (placement.experts.enabled())
             weight->slices = plan_moe_expert_parallel_slices(placement.experts, weight->experts, name);
-        Routed result=[weight](const Projector&,const DenseTensor& source,const DenseTensor& ids) {
-            return tq_ops::routed_projection(*weight,source,ids);
-        };
-        result.projections.push_back(std::move(weight));
-        return result;
+        return weight;
     }
     if (dtype=="F32" || dtype=="F16" || dtype=="BF16") {
         TYLOINFER_RUNTIME_CHECK(!placement.experts.enabled(),
             "expert parallelism requires packed routed tensors: ",name);
-        auto w=std::static_pointer_cast<const DenseTensor>(dense(name));
-        TYLOINFER_RUNTIME_CHECK(w->sizes().vec()==std::vector<int64_t>({experts,output,input}),
+        auto w=dense(name);
+        TYLOINFER_RUNTIME_CHECK(w->dim()==3 && w->size(0)==experts && w->size(1)==output && w->size(2)==input,
             "dense expert tensor shape mismatch: ",name);
-        Routed result=[w,output,input](const Projector&, const DenseTensor& x,const DenseTensor& ids) {
-            const auto rows=ids.size(0), routes=ids.size(1);
-            auto selected=w->index_select(0,ids.reshape({-1}).to(::tyloi::kInt64)).reshape({rows,routes,output,input});
-            auto source=x.dim()==2 ? x.unsqueeze(1).expand({rows,routes,input}) : x;
-            return ::tyloi::cuda::matmul(selected,source.to(w->scalar_type()).unsqueeze(-1)).squeeze(-1);
-        };
-        result.projections.push_back(std::move(w));
-        return result;
+        return w;
     }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -925,35 +912,23 @@ Routed Loader::routed(const std::string& name, int layer,
     auto w=this->experts(name,true,layer,role.empty() ? this->role : role);
     TYLOINFER_RUNTIME_CHECK(w->size(0)==experts && w->size(1)==output && w->size(2)==input,
         "routed tensor shape mismatch: ",name);
-    Routed result=[w,experts](const Projector& project, const DenseTensor& x,const DenseTensor& ids) {
-        auto route=build_moe_route_plan(ids.to(::tyloi::kInt32).contiguous(),int(experts));
-        return project.run(*w, x.contiguous(), route);
-    };
-    result.projections.push_back(w);
-    return result;
+    return w;
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
 
-Routed Loader::routed_gate_up(const std::string& mlp_prefix,
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::routed_gate_up(const std::string& mlp_prefix,
     int layer, int64_t experts, int64_t width, int64_t input, const std::string& role) const {
     const auto& file = source;
     const auto base=mlp_prefix+".experts";
     const auto gate_name=base+".gate.weight",up_name=base+".up.weight";
     const bool has_gate=tyloi::has_tensor(file, gate_name),has_up=tyloi::has_tensor(file, up_name);
     TYLOINFER_RUNTIME_CHECK(has_gate==has_up,"incomplete routed Gate/Up pair under ",base);
-    if (!has_gate) return routed(base+".gate_up.weight",layer,experts,2*width,input,role);
-    auto gate=routed(gate_name,layer,experts,width,input,"gate");
-    auto up=routed(up_name,layer,experts,width,input,"up");
-    auto projections=gate.projections;
-    projections.insert(projections.end(),up.projections.begin(),up.projections.end());
-    Routed result=[gate=std::move(gate),up=std::move(up)](const Projector& project, const DenseTensor& x,const DenseTensor& ids) {
-        return ::tyloi::cuda::cat({gate(project,x,ids),up(project,x,ids)},-1);
-    };
-    result.projections=std::move(projections);
-    return result;
+    if (!has_gate) return {routed(base+".gate_up.weight",layer,experts,2*width,input,role)};
+    return {routed(gate_name,layer,experts,width,input,"gate"),
+            routed(up_name,layer,experts,width,input,"up")};
 }
 
 

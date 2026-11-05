@@ -22,7 +22,8 @@ auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, boo
     auto down = ops.routed(p + ".experts.down.weight", layer, c.experts, c.hidden, c.moe_intermediate);
     auto router = ops.weight(p + ".router.weight");
     auto shared = load_dense_ffn(ops, p + ".shared_expert", c.swiglu_limit);
-    auto bias = ops.fp32(dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".router.bias")));
+    auto bias = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".router.bias"))
+                    .to(::tyloi::kFloat32).contiguous();
     return ops.moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
                    std::move(bias), c);
 }
@@ -94,8 +95,10 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         return false;
     }
     result.config = c;
-    result.embedding_norm = ops.fp32(dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight")));
-    result.hidden_norm = ops.fp32(dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight")));
+    result.embedding_norm = dynamic_cast<const typename Loader::DenseTensor&>(
+        *ops.dense("predictor.embedding_norm.weight")).to(::tyloi::kFloat32).contiguous();
+    result.hidden_norm = dynamic_cast<const typename Loader::DenseTensor&>(
+        *ops.dense("predictor.hidden_norm.weight")).to(::tyloi::kFloat32).contiguous();
     result.output_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.output_norm.weight"));
     result.fusion = ops.weight("predictor.fusion.weight");
     for (int64_t i = 0; i < count; ++i) {
@@ -107,9 +110,9 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         layer.attention = load_mla(ops, c, int(i), p + ".attention");
         result.layers.push_back(std::move(layer));
     }
-    require_model(ops.shape(result.embedding_norm) == std::vector<int64_t>{c.hidden} &&
-                      ops.shape(result.hidden_norm) == std::vector<int64_t>{c.hidden} &&
-                      ops.elements(result.output_norm) == c.hidden,
+    require_model(result.embedding_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
+                      result.hidden_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
+                      result.output_norm.numel() == c.hidden,
                   "GLM5-Next MTP normalization width disagrees with backbone");
     result.lengths.resize(count, 0);
     return true;

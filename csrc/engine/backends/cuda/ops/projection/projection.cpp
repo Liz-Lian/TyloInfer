@@ -3,9 +3,12 @@
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/executor/tq.h"
+#include "engine/backends/cuda/ops/ffn/tq.h"
+#include "engine/backends/cuda/native/tensor/tensor.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"
+#include "engine/weights/tq/routed.h"
 
 #include <algorithm>
 #include <optional>
@@ -593,6 +596,29 @@ Projector::grouped(
     auto y = mxfp8_matmul(profiler_, mx8, x.reshape({-1, x.size(-1)}));
     shape.back() = y.size(-1);
     return y.reshape(shape);
+}
+
+::tyloi::DenseTensor Projector::run(
+        const ::tyloi::Tensor& weight, ::tyloi::DenseTensor x,
+        ::tyloi::DenseTensor ids) const {
+    if (const auto* tq = dynamic_cast<const ::tyloi::TqBank*>(&weight))
+        return tq_ops::routed_projection(*tq, x, ids);
+    if (const auto* w = dynamic_cast<const ::tyloi::DenseTensor*>(&weight)) {
+        const auto rows = ids.size(0), routes = ids.size(1);
+        const auto output = w->size(1), input = w->size(2);
+        auto selected = w->index_select(0, ids.reshape({-1}).to(::tyloi::kInt64))
+            .reshape({rows, routes, output, input});
+        auto source = x.dim() == 2 ? x.unsqueeze(1).expand({rows, routes, input}) : x;
+        return ::tyloi::cuda::matmul(selected, source.to(w->scalar_type()).unsqueeze(-1)).squeeze(-1);
+    }
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (!dynamic_cast<const ::tyloi::MfeTensor*>(&weight))
+        throw std::invalid_argument("unsupported expert tensor layout");
+    auto route = build_moe_route_plan(ids.to(::tyloi::kInt32).contiguous(), int(weight.size(0)));
+    return run(weight, x.contiguous(), route);
+#else
+    throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
+#endif
 }
 
 bool Projector::grouped(std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const {

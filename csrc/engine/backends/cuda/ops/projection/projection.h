@@ -50,6 +50,8 @@ public:
 
     ::tyloi::DenseTensor run(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input) const;
     ::tyloi::DenseTensor run(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input,
+        ::tyloi::DenseTensor ids) const;
+    ::tyloi::DenseTensor run(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input,
         const MoeRoutePlan& route) const;
     std::vector<::tyloi::DenseTensor> run(
         std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights,

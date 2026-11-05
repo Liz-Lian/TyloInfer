@@ -16,13 +16,13 @@ namespace tyloi::cuda::glm5_next {
 using Config = tyloi::models::glm5_next::Config;
 using attention_ops::Transform;
 
-static Transform headwise(weight_loader::Routed projection,int64_t heads,int64_t output) {
+static Transform headwise(Linear projection,int64_t heads,int64_t output) {
     return [projection=std::move(projection),heads,output](
             const Projector& project, const DenseTensor& x) {
         TYLOINFER_RUNTIME_CHECK(x.dim()==4 && x.size(2)==heads,"GLM head-wise projection shape mismatch");
         const auto b=x.size(0),t=x.size(1),rows=b*t*heads;
         auto ids=::tyloi::cuda::arange(rows,x.options().dtype(::tyloi::kInt32)).remainder(heads).reshape({rows,1});
-        return projection(project,x.reshape({rows,x.size(-1)}),ids).reshape({b,t,heads,output});
+        return project.run(*projection,x.reshape({rows,x.size(-1)}),ids).reshape({b,t,heads,output});
     };
 }
 
@@ -40,7 +40,7 @@ static Transform dense_ffn(Linear gate, Linear up, Linear down, double limit) {
     };
 }
 
-static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed down,
+static Transform glm_moe(std::vector<Linear> gate_up, Linear down,
                       Linear router, Transform shared, DenseTensor bias, const Config &c) {
     return [gate_up, down, router, shared, bias, c](const Projector& project,
                                                     const DenseTensor &x) {
@@ -56,13 +56,17 @@ static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed do
         {
             DenseTensor hidden;
             {
-                auto gu = gate_up(project, source, selected[0]);
+                auto gu = project.run(*gate_up[0], source, selected[0]);
+                if (gate_up.size() == 2) {
+                    auto up = project.run(*gate_up[1], source, selected[0]);
+                    gu = ::tyloi::cuda::cat({gu, up}, -1);
+                }
                 auto gate = ::tyloi::cuda::clamp_max(gu.narrow(-1, 0, c.moe_intermediate), c.swiglu_limit);
                 auto up = ::tyloi::cuda::clamp(gu.narrow(-1, c.moe_intermediate, c.moe_intermediate),
                                                 -c.swiglu_limit, c.swiglu_limit);
                 hidden = (gate * ::tyloi::cuda::sigmoid(gate)) * up;
             }
-            auto pairs = down(project, hidden, selected[0]);
+            auto pairs = project.run(*down, hidden, selected[0]);
             hidden = {};
             auto reduced = ::tyloi::cuda::zeros({source.size(0), c.hidden},
                                                 source.options().dtype(::tyloi::kFloat32));
@@ -83,7 +87,7 @@ struct LayerLoader : weight_loader::Loader {
         return {std::move(function), std::move(base), std::move(scale)};
     }
     static DenseTensor concat(const std::vector<DenseTensor> &parts) { return ::tyloi::cuda::cat(parts, 0); }
-    static auto headwise(weight_loader::Routed projection, int64_t heads, int64_t output) {
+    static auto headwise(Linear projection, int64_t heads, int64_t output) {
         return glm5_next::headwise(std::move(projection), heads, output);
     }
     static auto kda(KdaWeights weights, const Config &c) {
@@ -98,7 +102,7 @@ struct LayerLoader : weight_loader::Loader {
     static auto gated_mlp(Linear gate, Linear up, Linear down, double limit) {
         return dense_ffn(std::move(gate), std::move(up), std::move(down), limit);
     }
-    static auto moe(weight_loader::Routed gate_up, weight_loader::Routed down, Linear router,
+    static auto moe(std::vector<Linear> gate_up, Linear down, Linear router,
                     Transform shared, DenseTensor bias, const Config &c) {
         return glm_moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
                        std::move(bias), c);

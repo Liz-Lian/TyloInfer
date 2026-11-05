@@ -9,7 +9,8 @@ namespace tyloi::models::qwen4_exp {
 
 template <class Loader>
 auto load_residual(Loader &ops, const Config &c, const std::string &p, bool combine) {
-    auto norm = ops.fp32(dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".norm.weight")));
+    auto norm = dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".norm.weight"))
+                    .to(::tyloi::kFloat32).contiguous();
     auto down = ops.residual_linear(p + ".down.weight"), up = ops.residual_linear(p + ".up.weight");
     decltype(down) injection{};
     if (combine)
@@ -84,15 +85,17 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         return false;
     }
     result.config = c;
-    result.embedding_norm = ops.fp32(dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight")));
-    result.hidden_norm = ops.fp32(dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight")));
+    result.embedding_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight"))
+                                .to(::tyloi::kFloat32).contiguous();
+    result.hidden_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight"))
+                             .to(::tyloi::kFloat32).contiguous();
     result.embedding_fusion = ops.weight("predictor.fusion.embedding.weight");
     result.hidden_fusion = ops.weight("predictor.fusion.hidden.weight");
     result.final_mixer = ops.final_mixer(load_residual(ops, c, "predictor.mhc.pre", false));
     for (int64_t i = 0; i < count; ++i)
         result.layers.push_back(ops.block(c, int(i), true));
-    require_model(ops.shape(result.embedding_norm) == std::vector<int64_t>{c.hidden} &&
-                      ops.shape(result.hidden_norm) == std::vector<int64_t>{c.hidden * c.streams},
+    require_model(result.embedding_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
+                      result.hidden_norm.sizes().vec() == std::vector<int64_t>{c.hidden * c.streams},
                   "Qwen4-Exp MTP normalization width disagrees with backbone");
     result.positions.resize(count);
     result.lengths.resize(count, 0);

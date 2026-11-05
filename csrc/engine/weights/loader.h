@@ -9,10 +9,6 @@
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/tq/routed.h"
 
-#include <functional>
-
-namespace tyloi::cuda { class Projector; }
-
 std::vector<tyloi::TensorParallelSlice> plan_moe_expert_parallel_slices(
     const ParallelConfig& parallel, int64_t extent, const std::string& name);
 
@@ -44,19 +40,6 @@ std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
 
 namespace tyloi::cuda::weight_loader {
 using DenseTensor = ::tyloi::DenseTensor;
-struct Routed {
-    using Function=std::function<DenseTensor(const Projector&,const DenseTensor&,const DenseTensor&)>;
-    Function function;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> projections;
-    Routed()=default;
-    template<class Callable, std::enable_if_t<!std::is_same_v<std::decay_t<Callable>,Routed>,int> =0>
-    Routed(Callable&& call):function(std::forward<Callable>(call)) {}
-    DenseTensor operator()(const Projector& project,const DenseTensor& input,const DenseTensor& ids)const {
-        return function(project,input,ids);
-    }
-    explicit operator bool()const{return bool(function);}
-};
-
 // The source and cache owner outlive all loading, including streamed media layers.
 struct Loader {
     using DenseTensor = ::tyloi::DenseTensor;
@@ -111,13 +94,10 @@ struct Loader {
     std::shared_ptr<const ::tyloi::Tensor> experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
     std::shared_ptr<const ::tyloi::Tensor> dense(const std::string& name) const;
-    Routed routed(const std::string& name, int layer, int64_t experts, int64_t output,
+    std::shared_ptr<const ::tyloi::Tensor> routed(const std::string& name, int layer, int64_t experts, int64_t output,
                   int64_t input, const std::string& role = {}) const;
-    Routed routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
                          int64_t input, const std::string& role = {}) const;
-    static DenseTensor fp32(const DenseTensor& value) { return value.to(::tyloi::kFloat32).contiguous(); }
-    static auto shape(const DenseTensor& value) { return value.sizes().vec(); }
-    static int64_t elements(const DenseTensor& value) { return value.numel(); }
 private:
     DenseTensor host_value(const std::string& name) const;
     Experts build_experts(const std::string& name, bool cacheable, int layer,

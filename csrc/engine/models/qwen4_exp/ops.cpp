@@ -231,7 +231,7 @@ DenseTensor Gdn::project_output(const tyloi::cuda::Projector& projector,const De
 }
 
 
-static auto qwen_moe(Pipelines& pipelines, weight_loader::Routed gate_up, weight_loader::Routed down,
+static auto qwen_moe(Pipelines& pipelines, std::vector<Linear> gate_up, Linear down,
                        Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
                        const Config &c, MoeFfnPrefetch* prefetch=nullptr) {
     const auto shared_g=std::move(sg),shared_u=std::move(su);
@@ -325,11 +325,10 @@ static auto qwen_moe(Pipelines& pipelines, weight_loader::Routed gate_up, weight
         return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,input));
     };
     std::shared_ptr<TqMoeBanks> tq;
-    auto banks = tq_banks(gate_up.projections.empty() ? nullptr : gate_up.projections.front(),
-        gate_up.projections.empty() ? nullptr : gate_up.projections.back(),
-        down.projections.empty() ? nullptr : down.projections.front());
+    auto banks = tq_banks(gate_up.empty() ? nullptr : gate_up.front(),
+        gate_up.empty() ? nullptr : gate_up.back(), down);
     if(banks.gate || banks.up || banks.down) {
-        TYLOINFER_RUNTIME_CHECK(gate_up.projections.size()==2 && down.projections.size()==1 &&
+        TYLOINFER_RUNTIME_CHECK(gate_up.size()==2 && down &&
             banks.gate && banks.up && banks.down,
             "TQ MoE requires separate Gate, Up and Down banks");
         tq=std::make_shared<TqMoeBanks>(std::move(banks));
@@ -340,7 +339,7 @@ static auto qwen_moe(Pipelines& pipelines, weight_loader::Routed gate_up, weight
     MoeFfnPrefetch prefetch_fn;
     if(!tq) {
         owned_pipeline=pipelines.make(
-            gate_up.projections,down.projections,shared,{},std::move(shared_weights));
+            gate_up,{down},shared,{},std::move(shared_weights));
         if(owned_pipeline) {
             const std::weak_ptr<MoeFfnPipeline> borrowed=owned_pipeline;
             if(prefetch)prefetch_fn=[borrowed](const DenseTensor& ids) {
@@ -363,7 +362,7 @@ static auto qwen_moe(Pipelines& pipelines, weight_loader::Routed gate_up, weight
             ((layer_prefill && *layer_prefill!=0 && moe_expert_cache_layer_prefill_ready(execution.weights.moe)) ||
              moe_expert_cache_ssd_experts(execution.weights.moe));
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        const bool use_pipeline=borrowed && (gate_up.projections.size()!=1 ||
+        const bool use_pipeline=borrowed && (gate_up.size()!=1 ||
             combined_prefill ||
             ((source.size(0)<=8 || (source.size(0)<=32 && execution.executor().mode().ffn.batch_serial)) &&
              execution.executor().options().moe_ffn.two_stage &&
@@ -391,12 +390,17 @@ static auto qwen_moe(Pipelines& pipelines, weight_loader::Routed gate_up, weight
         else {
             DenseTensor hidden;
             {
-                auto gu = gate_up(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), source, selected[0]);
+                const auto& project = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config));
+                auto gu = project.run(*gate_up[0], source, selected[0]);
+                if(gate_up.size()==2) {
+                    auto up = project.run(*gate_up[1], source, selected[0]);
+                    gu = ::tyloi::cuda::cat({gu, up}, -1);
+                }
                 auto gate = gu.narrow(-1, 0, c.moe_width),
                      up = gu.narrow(-1, c.moe_width, c.moe_width);
                 hidden = (gate * ::tyloi::cuda::sigmoid(gate)) * up;
             }
-            auto pairs = down(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), hidden, selected[0]);
+            auto pairs = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*down, hidden, selected[0]);
             hidden = {};
             auto reduced = ::tyloi::cuda::zeros({source.size(0), c.hidden},
                                                 source.options().dtype(::tyloi::kFloat32));
@@ -507,14 +511,13 @@ struct BlockLoader : weight_loader::Loader {
         auto shared=std::make_shared<const QsaWeights>(std::move(weights));
         return std::make_unique<Qsa>(std::move(shared), geometry, std::move(rotary), true, true, execution.offload, execution.kv);
     }
-    auto moe(weight_loader::Routed gate_up, weight_loader::Routed down, Linear router,
+    auto moe(std::vector<Linear> gate_up, Linear down, Linear router,
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
         if(router_capture)*router_capture=router;
         if(tq_graph_capture) {
-            const auto banks = tq_banks(gate_up.projections.empty() ? nullptr : gate_up.projections.front(),
-                gate_up.projections.empty() ? nullptr : gate_up.projections.back(),
-                down.projections.empty() ? nullptr : down.projections.front());
-            *tq_graph_capture = gate_up.projections.size()==2 && down.projections.size()==1 &&
+            const auto banks = tq_banks(gate_up.empty() ? nullptr : gate_up.front(),
+                gate_up.empty() ? nullptr : gate_up.back(), down);
+            *tq_graph_capture = gate_up.size()==2 && down &&
                 banks.gate && banks.up && banks.down;
         }
         return qwen_moe(execution.executor().pipelines(), std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
