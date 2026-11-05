@@ -1,31 +1,34 @@
 #include "engine/weights/tq/routed.h"
-#include "engine/weights/tq/cache.h"
-#include "engine/backends/cuda/ops/ffn/tq.h"
 
-#include "backend.h"
-
+#include <limits>
 #include <stdexcept>
-#include <utility>
 
+std::int64_t tyloi::TqBank::numel() const {
+    TensorView view;
+    view.rank = 3;
+    view.sizes[0] = experts;
+    view.sizes[1] = out;
+    view.sizes[2] = input;
+    return view.numel();
+}
 
-::tyloi::DenseTensor TqRoutedWeight::forward(::tyloi::DenseTensor input_value,::tyloi::DenseTensor ids)const {
-    if(!cache || !source_id || experts<1 || out<1 || input<1 ||
-       ids.dim()!=2 || ids.size(1)<1 || ids.size(1)>65535 || input_value.size(-1)!=input ||
-       !input_value.is_cuda() || (input_value.dim()!=2 && input_value.dim()!=3))
-        throw std::invalid_argument("invalid TQ routed activation geometry");
-    const auto tokens=ids.size(0),routes=ids.size(1);
-    if(input_value.size(0)!=tokens || (input_value.dim()==3 && input_value.size(1)!=routes))
-        throw std::invalid_argument("TQ routed token/route count differs");
-    const auto source=input_value.contiguous();
-    auto result=::tyloi::cuda::empty({tokens,routes,out},source.options());
-    if(!tokens)return result;
-    const MfqCudaGuard guard(source.get_device());
-    auto host=ids.contiguous().cpu().to(::tyloi::kInt64);
-    const auto* selected=host.data_ptr<std::int64_t>();
-    for(std::int64_t i=0;i<host.numel();++i) {
-        if(selected[i]<0 || selected[i]>=experts)throw std::out_of_range("TQ routed expert ID is out of bounds");
+std::size_t tyloi::TqBank::nbytes() const {
+    const auto elements = numel();
+    if (static_cast<std::uint64_t>(elements) > std::numeric_limits<std::size_t>::max() / 2)
+        throw std::overflow_error("tensor byte count overflow");
+    return static_cast<std::size_t>(elements) * 2;
+}
+
+std::int64_t tyloi::TqBank::size(std::int64_t dimension) const {
+    if (dimension < 0) dimension += 3;
+    switch (dimension) {
+        case 0: return experts;
+        case 1: return out;
+        case 2: return input;
+        default: throw std::out_of_range("tensor dimension is out of range");
     }
-    const auto owners=cache->get(source_id,selected,host.numel(),source.get_device());
-    tq_ops::routed_projection(owners,std::move(source),result);
-    return result;
+}
+
+std::shared_ptr<const tyloi::Tensor> tyloi::TqBank::relocated(Device) const {
+    throw std::invalid_argument("TQ source relocation is unsupported");
 }

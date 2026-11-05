@@ -89,32 +89,14 @@ void load_moe(Block& block, Loader& ops, const Config& config, int layer,
     ffn.moe_delayed_softmax = false;
     ffn.moe_router_scale = config.routed_scaling_factor;
     ffn.moe_shared_ungated = true;
-    const bool dense_bank = ffn.moe_dense_up.defined() || ffn.moe_dense_down.defined();
     const auto rows = static_cast<int64_t>(config.num_routed_experts);
-    bool expert_shapes =
-        dense_bank ? ffn.moe_dense_up.dim() == 3 &&
-                         ffn.moe_dense_up.size(0) == rows &&
-                         ffn.moe_dense_up.size(1) == config.moe_intermediate_size &&
-                         ffn.moe_dense_up.size(2) == config.moe_latent_size &&
-                         ffn.moe_dense_down.dim() == 3 &&
-                         ffn.moe_dense_down.size(0) == rows &&
-                         ffn.moe_dense_down.size(1) == config.moe_latent_size &&
-                         ffn.moe_dense_down.size(2) == config.moe_intermediate_size
-                   : ffn.moe_up && ffn.moe_down && ffn.moe_up->size(0) == config.num_routed_experts &&
-                         ffn.moe_up->size(2) == config.moe_latent_size &&
-                         ffn.moe_up->size(1) == config.moe_intermediate_size &&
-                         ffn.moe_down->size(0) == config.num_routed_experts &&
-                         ffn.moe_down->size(2) == config.moe_intermediate_size &&
-                         ffn.moe_down->size(1) == config.moe_latent_size;
-    if constexpr(requires { ffn.moe_tq; }) {
-        if(ffn.moe_tq) {
-            const auto& tq=*ffn.moe_tq;
-            expert_shapes=tq.up && tq.down && !tq.gate &&
-                tq.up->experts==config.num_routed_experts && tq.down->experts==config.num_routed_experts &&
-                tq.up->out==config.moe_intermediate_size && tq.up->input==config.moe_latent_size &&
-                tq.down->out==config.moe_latent_size && tq.down->input==config.moe_intermediate_size;
-        }
-    }
+    const bool expert_shapes = ffn.moe_up && ffn.moe_down && !ffn.moe_gate &&
+        ffn.moe_up->dim() == 3 && ffn.moe_down->dim() == 3 &&
+        ffn.moe_up->size(0) == rows && ffn.moe_down->size(0) == rows &&
+        ffn.moe_up->size(1) == config.moe_intermediate_size &&
+        ffn.moe_up->size(2) == config.moe_latent_size &&
+        ffn.moe_down->size(1) == config.moe_latent_size &&
+        ffn.moe_down->size(2) == config.moe_intermediate_size;
     bool router_shape=ffn.moe_router.dim()==2 &&
         ffn.moe_router.size(0)==config.num_routed_experts &&
         ffn.moe_router.size(1)==config.hidden_size;

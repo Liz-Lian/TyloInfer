@@ -131,9 +131,9 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     if (cpu_offload) {
         const int64_t gate_up_bytes =
             layer.ffn.moe_split_gate_up
-                ? mixed_moe_storage_bytes(*layer.ffn.cpu_moe_gate) + mixed_moe_storage_bytes(*layer.ffn.cpu_moe_up)
-                : mixed_moe_storage_bytes(*layer.ffn.cpu_moe_gate_up);
-        const int64_t down_bytes = mixed_moe_storage_bytes(*layer.ffn.cpu_moe_down);
+                ? layer.ffn.moe_gate->backing_nbytes() + layer.ffn.moe_up->backing_nbytes()
+                : layer.ffn.moe_gate_up->backing_nbytes();
+        const int64_t down_bytes = layer.ffn.moe_down->backing_nbytes();
         host_bytes += gate_up_bytes + down_bytes;
         std::cerr << "cpu_offload layer=" << i << " gate_up_bytes=" << gate_up_bytes
                   << " down_bytes=" << down_bytes

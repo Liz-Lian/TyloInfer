@@ -130,11 +130,8 @@ struct DeepseekV41Dspark final : MtpModule {
                    function.size(1) == function_width && scale.numel() == 3 && base.numel() == 24 &&
                    norm.numel() == config.hidden;
         };
-        const auto routed_experts = result->mlp.moe_tq
-                                        ? result->mlp.moe_tq->gate->experts
-                                        : result->mlp.moe_split_gate_up
-                                        ? (result->mlp.moe_gate ? result->mlp.moe_gate->size(0) : 0)
-                                        : (result->mlp.moe_gate_up ? result->mlp.moe_gate_up->size(0) : 0);
+        const auto& routed = result->mlp.moe_split_gate_up ? result->mlp.moe_gate : result->mlp.moe_gate_up;
+        const auto routed_experts = routed ? routed->size(0) : 0;
         TYLOINFER_RUNTIME_CHECK(valid_mhc(result->attention_mhc_function, result->attention_mhc_scale,
                                     result->attention_mhc_base, result->attention_norm) &&
                               valid_mhc(result->mlp_mhc_function, result->mlp_mhc_scale,
@@ -155,8 +152,7 @@ struct DeepseekV41Dspark final : MtpModule {
                               result->key_value_norm.numel() == config.head_dim &&
                               result->sinks.numel() == config.n_heads &&
                               routed_experts == config.dspark_n_experts &&
-                              (result->mlp.moe_tq?result->mlp.moe_tq->down->experts:
-                                  (result->mlp.moe_down ? result->mlp.moe_down->size(0) : 0)) == config.dspark_n_experts,
+                              (result->mlp.moe_down ? result->mlp.moe_down->size(0) : 0) == config.dspark_n_experts,
                           "DeepSeek-V4.1 DSpark stage tensor geometry disagrees at stage ", stage);
         return result;
     }

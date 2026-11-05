@@ -16,7 +16,7 @@ bool tq_graph_supports_tokens(std::int64_t tokens) noexcept;
 // Three ordinary [experts, rows, columns] TQ tensors. Expert ID selects a row
 // range; each row retains its own bit width, scale and encoded data.
 struct TqMoeBanks {
-    std::shared_ptr<TqRoutedWeight> gate, up, down;
+    std::shared_ptr<const tyloi::TqBank> gate, up, down;
     std::vector<tyloi::TensorParallelSlice> slices;
 
     ::tyloi::DenseTensor forward(
@@ -25,3 +25,7 @@ struct TqMoeBanks {
         float swiglu_limit = 0, CudaProfiler* profiler = nullptr,
         std::int64_t expert_begin = 0, std::int64_t expert_end = -1) const;
 };
+
+TqMoeBanks tq_banks(std::shared_ptr<const tyloi::Tensor> gate,
+                    std::shared_ptr<const tyloi::Tensor> up,
+                    std::shared_ptr<const tyloi::Tensor> down);

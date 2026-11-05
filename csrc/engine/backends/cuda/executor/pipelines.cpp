@@ -43,7 +43,7 @@ void Pipelines::drain() {
 void Pipelines::prepare(Ffn& f) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if(!f.moe_pipeline.expired() || !tyloi::cuda::uses_expert_cache(f) || tyloi::cuda::expert_parallel(f) ||
-            f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
+            cpu_expert(f.moe_gate) || cpu_expert(f.moe_up) || cpu_expert(f.moe_gate_up) || cpu_expert(f.moe_down) ||
             routes_.enabled())return;
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up;
     // An ungated bank publishes Up in both slots; the pipeline detects the

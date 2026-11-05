@@ -1,4 +1,7 @@
 #include "engine/backends/cuda/ops/ffn/tq.h"
+#include "engine/weights/tq/routed.h"
+#include "engine/weights/tq/cache.h"
+#include "backend.h"
 
 #include "engine/backends/cuda/ops/projection/tq_detail.h"
 #include "engine/backends/cuda/native/blas.h"
@@ -13,6 +16,29 @@
 
 
 namespace tq_ops {
+
+::tyloi::DenseTensor routed_projection(const ::tyloi::TqBank& bank,
+        ::tyloi::DenseTensor input_value, ::tyloi::DenseTensor ids) {
+    if(!bank.cache || !bank.source_id || bank.experts<1 || bank.out<1 || bank.input<1 ||
+       ids.dim()!=2 || ids.size(1)<1 || ids.size(1)>65535 || input_value.size(-1)!=bank.input ||
+       !input_value.is_cuda() || (input_value.dim()!=2 && input_value.dim()!=3))
+        throw std::invalid_argument("invalid TQ routed activation geometry");
+    const auto tokens=ids.size(0),routes=ids.size(1);
+    if(input_value.size(0)!=tokens || (input_value.dim()==3 && input_value.size(1)!=routes))
+        throw std::invalid_argument("TQ routed token/route count differs");
+    const auto source=input_value.contiguous();
+    auto result=::tyloi::cuda::empty({tokens,routes,bank.out},source.options());
+    if(!tokens)return result;
+    const MfqCudaGuard guard(source.get_device());
+    auto host=ids.contiguous().cpu().to(::tyloi::kInt64);
+    const auto* selected=host.data_ptr<std::int64_t>();
+    for(std::int64_t i=0;i<host.numel();++i) {
+        if(selected[i]<0 || selected[i]>=bank.experts)throw std::out_of_range("TQ routed expert ID is out of bounds");
+    }
+    const auto owners=bank.cache->get(bank.source_id,selected,host.numel(),source.get_device());
+    routed_projection(owners,std::move(source),result);
+    return result;
+}
 
 IndexedJobs make_indexed_jobs(
         std::span<const ::tyloi::encoding::TqTensor> gate, std::span<const ::tyloi::encoding::TqTensor> up,

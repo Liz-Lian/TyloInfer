@@ -7,7 +7,6 @@
 #include "engine/weights/loader.h"
 #include "engine/weights/tq/load.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
-#include "engine/backends/cuda/executor/tq_moe.h"
 
 #include <cstdio>
 #include <cmath>
@@ -98,17 +97,18 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
                                      const std::string& name, int layer) const {
     using Role = tyloi::models::ExpertProjection;
     const auto& record = tyloi::require_tensor(weights.source, name);
+    std::shared_ptr<const ::tyloi::Tensor>* weight = nullptr;
+    const char* role = nullptr;
+    switch (projection) {
+        case Role::gate: weight = &ffn.moe_gate; role = "gate"; break;
+        case Role::up: weight = &ffn.moe_up; role = "up"; break;
+        case Role::gate_up: weight = &ffn.moe_gate_up; role = "gate_up"; break;
+        case Role::down: weight = &ffn.moe_down; role = "down"; break;
+    }
     if(record.dtype=="TQ") {
         if(projection==Role::gate_up)
             throw std::invalid_argument("TQ MoE stores separate Gate, Up and Down tensors: "+name);
-        auto weight=load_tq_routed_weight(weights.cache,weights.tq,weights.source,name);
-        if(!ffn.moe_tq)ffn.moe_tq=std::make_shared<TqMoeBanks>();
-        switch(projection) {
-            case Role::gate: ffn.moe_tq->gate=std::move(weight);break;
-            case Role::up: ffn.moe_tq->up=std::move(weight);break;
-            case Role::gate_up: break;
-            case Role::down: ffn.moe_tq->down=std::move(weight);break;
-        }
+        *weight = weights.experts(name, true, layer, role);
         return;
     }
     if (record.dtype == "F32" || record.dtype == "F16" || record.dtype == "BF16") {
@@ -125,31 +125,15 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
         if (bank.dim() != 3)
             throw std::runtime_error(
                 "dense routed expert tensor must be [experts,out,in]: " + name);
-        switch (projection) {
-            case Role::gate: ffn.moe_dense_gate = std::move(bank); break;
-            case Role::up: ffn.moe_dense_up = std::move(bank); break;
-            case Role::down: ffn.moe_dense_down = std::move(bank); break;
-            case Role::gate_up: break;
-        }
+        *weight = std::make_shared<::tyloi::DenseTensor>(std::move(bank));
         return;
     }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    std::shared_ptr<const ::tyloi::Tensor>* weight = nullptr;
-    std::shared_ptr<const ::tyloi::MfeTensor>* cpu = nullptr;
-    const char* role = nullptr;
-    switch (projection) {
-        case Role::gate: weight = &ffn.moe_gate; cpu = &ffn.cpu_moe_gate; role = "gate"; break;
-        case Role::up: weight = &ffn.moe_up; cpu = &ffn.cpu_moe_up; role = "up"; break;
-        case Role::gate_up: weight = &ffn.moe_gate_up; cpu = &ffn.cpu_moe_gate_up; role = "gate_up"; break;
-        case Role::down: weight = &ffn.moe_down; cpu = &ffn.cpu_moe_down; role = "down"; break;
-    }
-    if (cpu_offloaded) {
-        *cpu = load_mfe_cpu_offloaded(weights.source, name);
-        *weight = *cpu;
-    } else {
+    if (cpu_offloaded)
+        *weight = load_mfe_cpu_offloaded(weights.source, name);
+    else
         *weight = weights.experts(name, true, layer, role);
-    }
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
@@ -173,18 +157,17 @@ tyloi::cuda::Ffn load_moe_weights(const tyloi::cuda::weight_loader::Loader& weig
     auto result=tyloi::models::load_moe_weights<tyloi::cuda::Ffn>(
         loader, std::string(prefix), options.layer, options.router_bias_required,
         options.ungated_experts, options.ungated_shared);
-    if(result.moe_tq) {
-        auto& banks=*result.moe_tq;
-        TYLOINFER_RUNTIME_CHECK(banks.up && banks.down && (options.ungated_experts || banks.gate),
+    const auto gate = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_gate);
+    const auto up = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_up);
+    const auto down = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_down);
+    if (gate || up || down) {
+        TYLOINFER_RUNTIME_CHECK(up && down && (options.ungated_experts || gate),
             "TQ expert banks cannot be mixed with legacy routed formats");
-        TYLOINFER_RUNTIME_CHECK(banks.up->experts==banks.down->experts &&
-            banks.up->out==banks.down->input && banks.up->input==banks.down->out &&
-            (!banks.gate || (banks.gate->experts==banks.up->experts &&
-                banks.gate->out==banks.up->out && banks.gate->input==banks.up->input)),
+        TYLOINFER_RUNTIME_CHECK(up->experts==down->experts &&
+            up->out==down->input && up->input==down->out &&
+            (!gate || (gate->experts==up->experts &&
+                gate->out==up->out && gate->input==up->input)),
             "TQ Gate/Up/Down expert dimensions disagree");
-        const auto& parallel = weights.placement.experts;
-        if (parallel.enabled())
-            banks.slices = plan_moe_expert_parallel_slices(parallel, banks.up->experts, std::string(prefix));
     }
     result.moe_router_projection=std::move(loader.router_projection);
     return result;

@@ -231,7 +231,7 @@ DenseTensor Gdn::project_output(const tyloi::cuda::Projector& projector,const De
 }
 
 
-static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weight_loader::Routed gate_up, weight_loader::Routed down,
+static auto qwen_moe(Pipelines& pipelines, weight_loader::Routed gate_up, weight_loader::Routed down,
                        Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
                        const Config &c, MoeFfnPrefetch* prefetch=nullptr) {
     const auto shared_g=std::move(sg),shared_u=std::move(su);
@@ -325,14 +325,14 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
         return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,input));
     };
     std::shared_ptr<TqMoeBanks> tq;
-    if(!gate_up.tq_projections.empty() || !down.tq_projections.empty()) {
-        TYLOINFER_RUNTIME_CHECK(gate_up.tq_projections.size()==2 && down.tq_projections.size()==1 &&
-            gate_up.projections.empty() && down.projections.empty(),
+    auto banks = tq_banks(gate_up.projections.empty() ? nullptr : gate_up.projections.front(),
+        gate_up.projections.empty() ? nullptr : gate_up.projections.back(),
+        down.projections.empty() ? nullptr : down.projections.front());
+    if(banks.gate || banks.up || banks.down) {
+        TYLOINFER_RUNTIME_CHECK(gate_up.projections.size()==2 && down.projections.size()==1 &&
+            banks.gate && banks.up && banks.down,
             "TQ MoE requires separate Gate, Up and Down banks");
-        tq=std::make_shared<TqMoeBanks>();
-        tq->gate=gate_up.tq_projections[0];tq->up=gate_up.tq_projections[1];tq->down=down.tq_projections[0];
-        if (parallel.enabled())
-            tq->slices = plan_moe_expert_parallel_slices(parallel, tq->up->experts, "TQ experts");
+        tq=std::make_shared<TqMoeBanks>(std::move(banks));
     }
     std::weak_ptr<MoeFfnPipeline> pipeline;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -505,8 +505,14 @@ struct BlockLoader : weight_loader::Loader {
     auto moe(weight_loader::Routed gate_up, weight_loader::Routed down, Linear router,
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
         if(router_capture)*router_capture=router;
-        if(tq_graph_capture)*tq_graph_capture=gate_up.tq_projections.size()==2 && down.tq_projections.size()==1;
-        return qwen_moe(execution.executor().pipelines(), placement.experts, std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
+        if(tq_graph_capture) {
+            const auto banks = tq_banks(gate_up.projections.empty() ? nullptr : gate_up.projections.front(),
+                gate_up.projections.empty() ? nullptr : gate_up.projections.back(),
+                down.projections.empty() ? nullptr : down.projections.front());
+            *tq_graph_capture = gate_up.projections.size()==2 && down.projections.size()==1 &&
+                banks.gate && banks.up && banks.down;
+        }
+        return qwen_moe(execution.executor().pipelines(), std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
                         std::move(sg), std::move(su), std::move(sd), c, prefetch_capture);
     }
     auto embedding(const std::string &name) const {

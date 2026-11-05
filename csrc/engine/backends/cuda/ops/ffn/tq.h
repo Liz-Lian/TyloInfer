@@ -9,6 +9,7 @@
 #include <span>
 #include <vector>
 
+namespace tyloi { class TqBank; }
 namespace tyloi::cuda { class BlasResources; }
 
 namespace tq_ops {
@@ -29,6 +30,9 @@ IndexedJobs make_indexed_jobs(
     const std::vector<std::vector<std::int64_t>>& slots,
     std::size_t begin, std::int64_t routes, std::int64_t input,
     std::int64_t hidden, std::int64_t output, bool wide = false);
+
+::tyloi::DenseTensor routed_projection(
+    const ::tyloi::TqBank& weight, ::tyloi::DenseTensor source, ::tyloi::DenseTensor ids);
 
 void routed_projection(
     const std::vector<::tyloi::encoding::TqTensor>& weights,

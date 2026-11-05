@@ -7,7 +7,6 @@
 #include <memory>
 
 class MoeFfnPipeline;
-struct TqMoeBanks;
 struct MoeRoutePlan;
 
 namespace tyloi::cuda {
@@ -52,16 +51,6 @@ public:
     std::shared_ptr<const ::tyloi::Tensor> moe_gate;
     std::shared_ptr<const ::tyloi::Tensor> moe_up;
     std::shared_ptr<const ::tyloi::Tensor> moe_down;
-    // Ordinary TQ row tables retain their own cache and never enter MFE pools.
-    std::shared_ptr<TqMoeBanks> moe_tq;
-    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_gate_up;
-    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_gate;
-    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_up;
-    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_down;
-    // Dense (F32/F16/BF16) routed expert banks: [experts,out,in].
-    ::tyloi::DenseTensor moe_dense_gate;
-    ::tyloi::DenseTensor moe_dense_up;
-    ::tyloi::DenseTensor moe_dense_down;
     // Optional latent projections around the routed branch only.
     std::shared_ptr<const ::tyloi::Tensor> moe_latent_in;
     std::shared_ptr<const ::tyloi::Tensor> moe_latent_out;
@@ -113,6 +102,7 @@ private:
 };
 
 Mlp dense(const Ffn& ffn, const Projector& project);
+std::shared_ptr<const ::tyloi::MfeTensor> cpu_expert(const std::shared_ptr<const ::tyloi::Tensor>& weight);
 bool uses_expert_cache(const Ffn& ffn);
 bool expert_parallel(const Ffn& ffn);
 

@@ -36,7 +36,7 @@ namespace {
 struct TqGraphLease {std::array<std::vector<::tyloi::encoding::TqTensor>,3> weights;void clear(){for(auto& w:weights)w.clear();}};
 const char tq_graph_lease_identity=0;
 struct TqMoeGraphStage {
-    std::array<std::shared_ptr<TqRoutedWeight>,3> banks;
+    std::array<std::shared_ptr<const tyloi::TqBank>,3> banks;
     std::shared_ptr<TqGraphLease> lease;
     MfqCudaStream stream;
     std::unique_ptr<tyloi::cuda::HostBuffer> host_ids;
@@ -242,10 +242,11 @@ struct TqMoeGraphStage {
         const ::tyloi::DenseTensor& weights,float limit,tyloi::cuda::DecodeWindow& window) {
     window.mark_current("expert_begin");
     auto lease=window.workspace<TqGraphLease>(&tq_graph_lease_identity,[]{return std::make_shared<TqGraphLease>();});
-    auto stage=window.workspace<TqMoeGraphStage>(&banks,[&] {
+    auto stage=window.workspace<TqMoeGraphStage>(banks.up.get(),[&] {
         return std::make_shared<TqMoeGraphStage>(exec,banks,source,int(ids.size(1)),ids.scalar_type(),lease);
     });
-    if(stage->routes!=ids.size(1) || stage->input.sizes()!=source.sizes() || stage->input.scalar_type()!=source.scalar_type() ||
+    if(stage->banks[0]!=banks.gate || stage->banks[1]!=banks.up || stage->banks[2]!=banks.down ||
+       stage->routes!=ids.size(1) || stage->input.sizes()!=source.sizes() || stage->input.scalar_type()!=source.scalar_type() ||
        stage->route_dtype!=ids.scalar_type())
         throw std::invalid_argument("TQ graph stage geometry changed");
     const bool views=tyloi::cuda::runtime_options::window_input_views() && source.is_contiguous() &&
@@ -440,7 +441,7 @@ struct TqMoeGraphStage {
             decoded=::tyloi::cuda::empty({static_cast<int64_t>(bytes)},source.options().dtype(::tyloi::kUInt8));
             blas=resources->get();
         }
-        const auto image_bound=[](const TqRoutedWeight& w) {
+        const auto image_bound=[](const tyloi::TqBank& w) {
             return std::uint64_t(w.out)*(((std::uint64_t(w.input)+255)&~std::uint64_t(255))*2+16)+512;
         };
         const auto image_per_expert=image_bound(*gate)+image_bound(*up)+image_bound(*down);
@@ -516,7 +517,7 @@ struct TqMoeGraphStage {
         // The live batch is bounded by current free VRAM, not a device or
         // model whitelist. FP16-sized images conservatively bound every
         // supported 1..8-bit compressed row plus metadata and scale data.
-        const auto image_bound=[](const TqRoutedWeight& w) {
+        const auto image_bound=[](const tyloi::TqBank& w) {
             return std::uint64_t(w.out)*(((std::uint64_t(w.input)+255)&~std::uint64_t(255))*2+16)+512;
         };
         const auto per_expert=image_bound(*gate)+image_bound(*up)+image_bound(*down);
@@ -562,5 +563,29 @@ struct TqMoeGraphStage {
     }
     phase("tq.moe.reduce",[&] {tq_detail::status(mfq_tq_weighted_reduce(pairs.data_ptr(),coefficients.data_ptr<float>(),result.data_ptr(),
         static_cast<int>(tokens),static_cast<int>(routes),static_cast<int>(width),type,mfq_current_cuda_stream()));return 0;});
+    return result;
+}
+
+TqMoeBanks tq_banks(std::shared_ptr<const tyloi::Tensor> gate,
+                    std::shared_ptr<const tyloi::Tensor> up,
+                    std::shared_ptr<const tyloi::Tensor> down) {
+    TqMoeBanks result;
+    result.gate = std::dynamic_pointer_cast<const tyloi::TqBank>(gate);
+    result.up = std::dynamic_pointer_cast<const tyloi::TqBank>(up);
+    result.down = std::dynamic_pointer_cast<const tyloi::TqBank>(down);
+    const auto* owner = result.up ? result.up.get() : result.gate ? result.gate.get() : result.down.get();
+    if (!owner) return result;
+    result.slices = owner->slices;
+    for (const auto& bank : {result.gate, result.up, result.down}) {
+        if (!bank) continue;
+        if (bank->slices.size() != result.slices.size())
+            throw std::invalid_argument("TQ expert parallel slices differ");
+        for (std::size_t i = 0; i < result.slices.size(); ++i) {
+            const auto& a = bank->slices[i];
+            const auto& b = result.slices[i];
+            if (a.device != b.device || a.begin != b.begin || a.end != b.end)
+                throw std::invalid_argument("TQ expert parallel slices differ");
+        }
+    }
     return result;
 }

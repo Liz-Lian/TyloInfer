@@ -23,7 +23,7 @@
     return result;
 }
 
-std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
+std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
         tyloi::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
         const tyloi::source::Source& source,
         const std::string& name) {
@@ -35,7 +35,7 @@ std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
     return load_tq_routed_weight(weights, exec, source, name, shape[0], shape[1], shape[2]);
 }
 
-std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
+std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
         tyloi::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
         const tyloi::source::Source& source,
         const std::string& name, std::int64_t experts, std::int64_t output,
@@ -47,7 +47,7 @@ std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
         throw std::invalid_argument("TQ routed projection shape differs: " + name);
     }
     auto cache = weights.ensure_tq(exec);
-    auto result = std::make_shared<TqRoutedWeight>();
+    auto result = std::make_shared<tyloi::TqBank>();
     result->cache = cache;
     result->experts = experts;
     result->out = output;

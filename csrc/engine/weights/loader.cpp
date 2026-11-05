@@ -16,6 +16,7 @@
 #include <limits>
 #include <numeric>
 #include "engine/backends/cuda/ops/ffn/moe.h"
+#include "engine/backends/cuda/ops/ffn/tq.h"
 #include "engine/weights/moe/expert_cache.h"
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/weights/moe/cached_source_internal.h"
@@ -857,6 +858,19 @@ static std::shared_ptr<const ::tyloi::MfeTensor> expert_tensor(Experts weight, D
 }
 std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, bool cacheable,
     int layer, const std::string& role) const {
+    const auto& dtype = tyloi::require_tensor(source, name).dtype;
+    if (dtype == "F32" || dtype == "F16" || dtype == "BF16") {
+        auto bank = native(name);
+        if (bank.dim() != 3)
+            throw std::runtime_error("dense routed expert tensor must be [experts,out,in]: " + name);
+        return std::make_shared<DenseTensor>(std::move(bank));
+    }
+    if (dtype == "TQ") {
+        auto bank = load_tq_routed_weight(cache, tq, source, name);
+        if (placement.experts.enabled())
+            bank->slices = plan_moe_expert_parallel_slices(placement.experts, bank->experts, name);
+        return bank;
+    }
     return expert_tensor(build_experts(name, cacheable, layer, role), Device{DeviceType::cuda, placement.device});
 }
 DenseTensor Loader::dense(const std::string& name) const {
@@ -879,24 +893,28 @@ Routed Loader::routed(const std::string& name, int layer,
     const auto& dtype=tyloi::require_tensor(file, name).dtype;
     if(dtype=="TQ") {
         auto weight=load_tq_routed_weight(cache,tq,file,name,experts,output,input);
+        if (placement.experts.enabled())
+            weight->slices = plan_moe_expert_parallel_slices(placement.experts, weight->experts, name);
         Routed result=[weight](const Projector&,const DenseTensor& source,const DenseTensor& ids) {
-            return weight->forward(source,ids);
+            return tq_ops::routed_projection(*weight,source,ids);
         };
-        result.tq_projections.push_back(std::move(weight));
+        result.projections.push_back(std::move(weight));
         return result;
     }
     if (dtype=="F32" || dtype=="F16" || dtype=="BF16") {
         TYLOINFER_RUNTIME_CHECK(!placement.experts.enabled(),
             "expert parallelism requires packed routed tensors: ",name);
-        auto w=dense(name);
-        TYLOINFER_RUNTIME_CHECK(w.sizes().vec()==std::vector<int64_t>({experts,output,input}),
+        auto w=std::make_shared<DenseTensor>(dense(name));
+        TYLOINFER_RUNTIME_CHECK(w->sizes().vec()==std::vector<int64_t>({experts,output,input}),
             "dense expert tensor shape mismatch: ",name);
-        return [w,output,input](const Projector&, const DenseTensor& x,const DenseTensor& ids) {
+        Routed result=[w,output,input](const Projector&, const DenseTensor& x,const DenseTensor& ids) {
             const auto rows=ids.size(0), routes=ids.size(1);
-            auto selected=w.index_select(0,ids.reshape({-1}).to(::tyloi::kInt64)).reshape({rows,routes,output,input});
+            auto selected=w->index_select(0,ids.reshape({-1}).to(::tyloi::kInt64)).reshape({rows,routes,output,input});
             auto source=x.dim()==2 ? x.unsqueeze(1).expand({rows,routes,input}) : x;
-            return ::tyloi::cuda::matmul(selected,source.to(w.scalar_type()).unsqueeze(-1)).squeeze(-1);
+            return ::tyloi::cuda::matmul(selected,source.to(w->scalar_type()).unsqueeze(-1)).squeeze(-1);
         };
+        result.projections.push_back(std::move(w));
+        return result;
     }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -930,13 +948,10 @@ Routed Loader::routed_gate_up(const std::string& mlp_prefix,
     auto up=routed(up_name,layer,experts,width,input,"up");
     auto projections=gate.projections;
     projections.insert(projections.end(),up.projections.begin(),up.projections.end());
-    auto tq_projections=gate.tq_projections;
-    tq_projections.insert(tq_projections.end(),up.tq_projections.begin(),up.tq_projections.end());
     Routed result=[gate=std::move(gate),up=std::move(up)](const Projector& project, const DenseTensor& x,const DenseTensor& ids) {
         return ::tyloi::cuda::cat({gate(project,x,ids),up(project,x,ids)},-1);
     };
     result.projections=std::move(projections);
-    result.tq_projections=std::move(tq_projections);
     return result;
 }
 
