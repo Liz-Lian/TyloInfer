@@ -3,12 +3,13 @@
 #include "backend.h"
 #include "engine/state/kv_offload.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_hot_cache.h"
-#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace tyloi::cuda {
+class Budget;
+class ExpertSpace;
 class KvExpertLoan;
 // Placement applies to raw K/V. Indexer and kernel scratch remain GPU-local.
 struct KvMemoryOptions {
@@ -51,7 +52,7 @@ public:
     // Called after dense weights and predictor load, before expert arenas.
     void finalize(std::size_t minimum_experts = 0);
     void ensure(int64_t tokens);
-    void set_reservation(std::function<void(std::size_t)> callback) { reserve_ = std::move(callback); }
+    void bind_budget(Budget* budget, ExpertSpace* space) { budget_ = budget; expert_space_ = space; }
     std::shared_ptr<KvOffloadStore> offload() const { return offload_; }
     bool dynamic() const { return options_.dynamic; }
     std::shared_ptr<KvExpertLoan> expert_loan() const { return expert_loan_; }
@@ -62,7 +63,8 @@ private:
     KvMemoryOptions options_;
     std::vector<std::weak_ptr<KvMemoryAllocation>> allocations_;
     std::shared_ptr<KvOffloadStore> offload_;
-    std::function<void(std::size_t)> reserve_;
+    Budget* budget_ = nullptr;
+    ExpertSpace* expert_space_ = nullptr;
     bool ready_ = false;
     bool automatic_ram_ = false;
     std::shared_ptr<KvExpertLoan> expert_loan_;

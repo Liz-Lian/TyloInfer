@@ -1,5 +1,6 @@
 #include "env.h"
 #include "engine/state/kv_memory.h"
+#include "engine/budget.h"
 #include "engine/backends/cuda/native/vmm.h"
 #include "engine/state/kv_budget.h"
 #include "engine/weights/moe/kv_expert_loan.h"
@@ -344,7 +345,7 @@ void KvMemoryManager::ensure(int64_t tokens) {
     if(expert_loan_)expert_loan_->ensure(tokens);
     std::size_t growth=0;
     for(auto& weak:allocations_)if(auto a=weak.lock())growth+=a->growth_bytes(std::min(a->maximum,tokens));
-    if(growth && reserve_)reserve_(growth+(64ULL<<20));
+    if(growth && budget_)budget_->reserve_kv(growth+(64ULL<<20), expert_space_);
     for(auto& weak:allocations_)if(auto a=weak.lock())a->ensure(std::min(a->maximum,tokens));
 }
 std::size_t KvMemoryManager::growth_reserve() const {

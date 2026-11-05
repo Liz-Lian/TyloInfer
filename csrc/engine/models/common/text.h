@@ -67,6 +67,8 @@ struct Text {
     std::shared_ptr<KvOffloadStore>& offload;
     CudaRuntimeConfig config;
     std::shared_ptr<const tyloi::ModelSource> source;
+    std::optional<Budget> budget;
+    std::optional<ExpertSpace> expert_space;
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
@@ -79,10 +81,8 @@ struct Text {
     DecodeGraphCache graph;
     TextSessionCache cache;
     tyloi::engine::mtp::State mtp_state;
-    std::optional<Budget> budget;
     std::unique_ptr<tyloi::engine::Batch> batching;
     bool duplex_active = false;
-    std::optional<ExpertSpace> expert_space;
     int graph_draft_depth=3;
     bool preparing_graph_depth=true;
 
@@ -223,26 +223,9 @@ struct Text {
         }
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
-                const auto device = execution->config.layer_placement.primary_device();
-                auto context = tyloi::cuda::default_context(device);
-                if (context->available_memory() >= bytes) return;
-                if(expert_space && !expert_space->empty()) {
-                    std::cerr<<"runtime_workspace_cache_reclaim reason=kv_growth requested_bytes="<<bytes
-                        <<" available_bytes="<<context->available_memory()<<'\n';
-                    expert_space->release(bytes);
-                }
-                if(context->available_memory()>=bytes)return;
-                std::size_t hot = 0;
-                for (const auto& [name,value] : cache.metrics())
-                    if (name == "prefix_cache_hot_bytes") hot = std::size_t(value);
-                const auto shortage = bytes - context->available_memory();
-                cache.trim_hot(hot > shortage ? hot - shortage : 0);
-                context->reclaim_idle_memory();
-                if (context->available_memory() < bytes)
-                    throw InferenceInputError(InferenceInputErrorCode::ContextLength,
-                        "insufficient VRAM for context growth; reduce concurrent requests or prompt length");
+                budget->reserve_kv(bytes, expert_space ? &*expert_space : nullptr);
             };
-            if(kv)kv->set_reservation(language.reserve_kv_workspace);
+            if(kv)kv->bind_budget(&*budget, expert_space ? &*expert_space : nullptr);
         }
 #endif
         if(const auto bytes=runtime_options::resident_budget_bytes()) {
@@ -324,28 +307,27 @@ struct Text {
                       })
             language.restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
-        if(kv)kv->set_reservation({});
+        if(kv)kv->bind_budget(nullptr, nullptr);
         bind_moe_budget(weights.moe, nullptr);
         if (offload) offload->bind_budget(nullptr);
     }
     ~Text() {
         clear_bindings();
         batching.reset();
-        expert_space.reset();
     }
     SessionResult session(const SessionCommand& command) {
         if(command.kind!=SessionCommand::Kind::memory_budget)return cache.control(command);
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
-        return budget->set(command, [this] {
-            if(expert_space) expert_space->release();
-            finish_moe_expert_exchanges(weights.moe);
-            graph.invalidate();
-            if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
-                qwen4_release_decode_graphs(language,components.mtp.get());
-            if(batching)batching->release_idle_buffers();
-            if(components.mtp)components.mtp->reset(1);
-            state.reset(1);
-        });
+        auto change = budget->change(command);
+        if(expert_space) expert_space->release();
+        finish_moe_expert_exchanges(weights.moe);
+        graph.invalidate();
+        if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
+            qwen4_release_decode_graphs(language,components.mtp.get());
+        if(batching)batching->release_idle_buffers();
+        if(components.mtp)components.mtp->reset(1);
+        state.reset(1);
+        return change.apply();
     }
     bool exclusive() const { return duplex_active; }
     bool mtp_available() const { return bool(components.mtp); }

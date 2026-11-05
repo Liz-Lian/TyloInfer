@@ -59,6 +59,22 @@ void Budget::reclaim(std::size_t bytes, ExpertSpace* space) {
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
 }
 
+void Budget::reserve_kv(std::size_t bytes, ExpertSpace* space) {
+    auto context = default_context(primary_device_);
+    if (context->available_memory() >= bytes) return;
+    if (space && !space->empty()) {
+        std::cerr<<"runtime_workspace_cache_reclaim reason=kv_growth requested_bytes="<<bytes
+            <<" available_bytes="<<context->available_memory()<<'\n';
+        space->release(bytes);
+    }
+    if (context->available_memory() >= bytes) return;
+    trim_prefix(bytes);
+    context->reclaim_idle_memory();
+    if (context->available_memory() < bytes)
+        throw engine::InferenceInputError(engine::InferenceInputErrorCode::ContextLength,
+            "insufficient VRAM for context growth; reduce concurrent requests or prompt length");
+}
+
 void Budget::reserve_ram(std::size_t bytes) {
     cache_.reserve_ram(bytes);
     weights_.reserve(bytes);

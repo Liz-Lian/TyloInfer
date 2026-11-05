@@ -306,7 +306,7 @@ private:
 
     void clear_bindings() noexcept {
         restore_decode_workspace_ = {};
-        if (kv_) kv_->set_reservation({});
+        if (kv_) kv_->bind_budget(nullptr, nullptr);
         bind_moe_budget(weights_.moe, nullptr);
         if (offload_) offload_->bind_budget(nullptr);
     }

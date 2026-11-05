@@ -188,7 +188,7 @@ bool Engine::exclusive() const { return false; }
 void Engine::execute(const std::vector<RequestId>&) {}
 
 void Engine::clear_bindings() noexcept {
-    if (impl_->kv_) impl_->kv_->set_reservation({});
+    if (impl_->kv_) impl_->kv_->bind_budget(nullptr, nullptr);
     bind_moe_budget(impl_->weights_->moe, nullptr);
 }
 
