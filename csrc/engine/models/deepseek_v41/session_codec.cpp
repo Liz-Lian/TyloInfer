@@ -87,10 +87,11 @@ CudaPagedPayload encode_block(
         if(state.mtp) {
             const auto& mtp=*state.mtp;
             const auto* rings=std::get_if<tyloi::models::deepseek_v41::MtpSnapshot>(&mtp.payload);
+            const auto* hidden=dynamic_cast<const ::tyloi::DenseTensor*>(mtp.last_target_hidden.get());
             if(mtp.cache_pos!=state.cache_pos || !rings || rings->rings.empty() ||
-                    !mtp.last_target_hidden.defined())
+                    !hidden || !hidden->defined())
                 throw std::runtime_error("incompatible DeepSeek-V4.1 DSpark checkpoint");
-            writer.tensor(mtp.last_target_hidden);
+            writer.tensor(*hidden);
             writer.scalar<uint32_t>(uint32_t(rings->rings.size()));
             for(const auto& ring:rings->rings)writer.tensor(ring);
         }
@@ -206,7 +207,7 @@ TextSessionState decode_session(
         for(size_t i=0;i<predictor.size();++i) {
             auto& [value,device]=predictor[i];
             auto target=value.to(::tyloi::Device{::tyloi::DeviceType::cuda,device});mtp.bytes+=session_tensor_bytes(target);
-            if(!i)mtp.last_target_hidden=std::move(target);else rings.push_back(std::move(target));
+            if(!i)mtp.last_target_hidden=std::make_shared<::tyloi::DenseTensor>(std::move(target));else rings.push_back(std::move(target));
         }
         state.bytes+=mtp.bytes;
     }

@@ -1021,18 +1021,20 @@ MtpSessionState Predictor::capture_session_state(int64_t target_position,const D
         auto pos=count?positions[i].narrow(-1,0,count).clone():DenseTensor{};
         state.bytes+=session_tensor_bytes(pos);snapshot.positions.push_back(std::move(pos));
     }
-    state.last_target_hidden=hidden.clone();state.bytes+=session_tensor_bytes(state.last_target_hidden);
+    auto saved_hidden=hidden.clone();state.bytes+=session_tensor_bytes(saved_hidden);
+    state.last_target_hidden=std::make_shared<DenseTensor>(std::move(saved_hidden));
     return state;
 }
 
 void Predictor::restore_session_state(const MtpSessionState& state) {
     const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::MtpSnapshot>(&state.payload);
+    const auto* hidden=dynamic_cast<const DenseTensor*>(state.last_target_hidden.get());
     TYLOINFER_RUNTIME_CHECK(supports_session_state() && state.cache_pos>0 &&
         snapshot && snapshot->blocks.size()==layers.size() && snapshot->positions.size()==layers.size() &&
         snapshot->lengths.size()==layers.size() && snapshot->lengths.front()==state.cache_pos &&
-        state.last_target_hidden.defined() && state.last_target_hidden.dim()==3 &&
-        state.last_target_hidden.size(0)==1 && state.last_target_hidden.size(1)==1 &&
-        state.last_target_hidden.size(2)==hidden_norm.numel(),"incompatible Qwen4 MTP session state");
+        hidden && hidden->defined() && hidden->dim()==3 &&
+        hidden->size(0)==1 && hidden->size(1)==1 &&
+        hidden->size(2)==hidden_norm.numel(),"incompatible Qwen4 MTP session state");
     reset(1);
     for(std::size_t i=0;i<layers.size();++i)if(snapshot->lengths[i]) {
         restore_block_session(*layers[i],snapshot->blocks[i],snapshot->lengths[i]);

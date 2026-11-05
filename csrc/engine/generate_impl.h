@@ -241,7 +241,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
             output, input.prompt.size(), reused, stable,logical_chunk);
     }
     Generation speculate(tyloi::engine::InferenceRequest &input, tyloi::engine::InferenceOutput &output,
-        size_t reused, Hidden restored, Hidden *committed) {
+        size_t reused, const std::shared_ptr<const ::tyloi::Tensor>& restored, Hidden *committed) {
         if constexpr (has_forward<Model, State> && !requires {
             replay(model, state, *executor, int64_t{});
         }) {
@@ -256,7 +256,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
                 prefill_chunk(input.prompt.size()-reused),
                 prepared ? &*prepared : nullptr,
                 reused,
-                std::move(restored),
+                restored ? dynamic_cast<const Hidden&>(*restored) : Hidden{},
                 committed,prefix_boundary,restore);
         }
     }

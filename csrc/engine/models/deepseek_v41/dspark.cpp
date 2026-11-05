@@ -247,9 +247,10 @@ struct DeepseekV41Dspark final : MtpModule {
         TYLOINFER_RUNTIME_CHECK(batch==1 && cache_pos==position && position>0 && rings.size()==stages.size() &&
             hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)>0 && hidden.size(2)==width,
             "DeepSeek-V4.1 DSpark session position or hidden state disagrees");
-        MtpSessionState state;state.cache_pos=position;state.last_target_hidden=hidden.clone();
+        MtpSessionState state;state.cache_pos=position;
+        auto saved_hidden=hidden.clone();state.bytes=session_tensor_bytes(saved_hidden);
+        state.last_target_hidden=std::make_shared<DenseTensor>(std::move(saved_hidden));
         auto& saved=state.payload.emplace<tyloi::models::deepseek_v41::MtpSnapshot>();
-        state.bytes=session_tensor_bytes(state.last_target_hidden);
         for(const auto& ring:rings) {
             TYLOINFER_RUNTIME_CHECK(ring.dim()==3 && ring.size(0)==1 && ring.size(1)==config.sliding_window &&
                 ring.size(2)==config.head_dim,"DeepSeek-V4.1 DSpark session ring disagrees");
@@ -261,11 +262,11 @@ struct DeepseekV41Dspark final : MtpModule {
 
     void restore_session_state(const MtpSessionState& state) override {
         const auto width=config.hidden*int64_t(config.dspark_target_layer_ids.size());
-        const auto& hidden=state.last_target_hidden;
+        const auto* hidden=dynamic_cast<const DenseTensor*>(state.last_target_hidden.get());
         const auto* saved=std::get_if<tyloi::models::deepseek_v41::MtpSnapshot>(&state.payload);
         if(state.cache_pos<=0 || state.cache_pos>maximum_context ||
-                !saved || saved->rings.size()!=stages.size() || !hidden.defined() || !hidden.is_cuda() ||
-                hidden.dim()!=3 || hidden.size(0)!=1 || hidden.size(1)<=0 || hidden.size(2)!=width)
+                !saved || saved->rings.size()!=stages.size() || !hidden || !hidden->defined() || !hidden->is_cuda() ||
+                hidden->dim()!=3 || hidden->size(0)!=1 || hidden->size(1)<=0 || hidden->size(2)!=width)
             throw CudaSessionStateError("DeepSeek-V4.1 DSpark session state is incompatible");
         for(const auto& ring:saved->rings)
             if(!ring.defined() || !ring.is_cuda() || ring.scalar_type()!=::tyloi::kFloat16 ||

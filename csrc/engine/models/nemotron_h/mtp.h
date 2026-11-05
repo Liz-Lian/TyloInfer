@@ -231,8 +231,9 @@ struct Mtp final : MtpModule {
             snapshots.push_back(
                 capture_kv(std::get<KVCache>(states[index]), predictor_position, state.bytes));
         }
-        state.last_target_hidden = last_target_hidden.clone();
-        state.bytes += session_tensor_bytes(state.last_target_hidden);
+        auto hidden = last_target_hidden.clone();
+        state.bytes += session_tensor_bytes(hidden);
+        state.last_target_hidden = std::make_shared<::tyloi::DenseTensor>(std::move(hidden));
         return state;
     }
 
@@ -242,10 +243,10 @@ struct Mtp final : MtpModule {
             if (std::holds_alternative<FullAttention>(layers[index].weights))
                 saved.push_back(index);
         const auto *blocks = std::get_if<std::vector<KvSnapshot>>(&state.payload);
+        const auto *hidden = dynamic_cast<const ::tyloi::DenseTensor*>(state.last_target_hidden.get());
         if (state.cache_pos <= 0 || blocks == nullptr || blocks->size() != saved.size() ||
-            !state.last_target_hidden.defined() || state.last_target_hidden.dim() != 3 ||
-            state.last_target_hidden.size(0) != 1 || state.last_target_hidden.size(1) != 1 ||
-            state.last_target_hidden.size(2) != config.hidden_size) {
+            !hidden || !hidden->defined() || hidden->dim() != 3 ||
+            hidden->size(0) != 1 || hidden->size(1) != 1 || hidden->size(2) != config.hidden_size) {
             throw std::runtime_error("Nemotron-H MTP session state is incompatible");
         }
         for (std::size_t index = 0; index < saved.size(); ++index) {

@@ -73,17 +73,18 @@ MtpSessionState MtpState::capture(int64_t target_position, const ::tyloi::DenseT
         MfqCudaGuard guard(layout_[index].device);
         blocks.push_back(capture_kv(kv_[index], position, saved.bytes));
     }
-    saved.last_target_hidden = hidden.clone();
-    saved.bytes += session_tensor_bytes(saved.last_target_hidden);
+    auto saved_hidden = hidden.clone();
+    saved.bytes += session_tensor_bytes(saved_hidden);
+    saved.last_target_hidden = std::make_shared<::tyloi::DenseTensor>(std::move(saved_hidden));
     return saved;
 }
 
 MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
     const auto* blocks = std::get_if<std::vector<KvSnapshot>>(&saved.payload);
+    const auto* hidden = dynamic_cast<const ::tyloi::DenseTensor*>(saved.last_target_hidden.get());
     if (saved.cache_pos <= 0 || blocks == nullptr || blocks->size() != kv_.size() ||
-        !saved.last_target_hidden.defined() || saved.last_target_hidden.dim() != 3 ||
-        saved.last_target_hidden.size(0) != 1 || saved.last_target_hidden.size(1) != 1 ||
-        saved.last_target_hidden.size(2) != hidden_)
+        !hidden || !hidden->defined() || hidden->dim() != 3 ||
+        hidden->size(0) != 1 || hidden->size(1) != 1 || hidden->size(2) != hidden_)
         throw CudaSessionStateError("Qwen MTP session state is incompatible");
     for (size_t index = 0; index < blocks->size(); ++index) {
         if (saved.cache_pos > layout_[index].capacity)
