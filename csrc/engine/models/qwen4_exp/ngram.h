@@ -1,6 +1,8 @@
 #pragma once
-#include "../common/causal_forward.h"
+
+#include "engine/models/common/check.h"
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 

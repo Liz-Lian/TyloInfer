@@ -2,8 +2,8 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/models/session.h"
+#include "engine/models/common/check.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/causal_forward.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/group.h"
@@ -24,7 +24,7 @@
 #include <iostream>
 #include <span>
 #include "engine/models/deepseek_v4/snapshot.h"
-#include "engine/models/common/session_codec.h"
+#include "engine/models/session_codec.h"
 
 namespace tyloi::cuda::deepseek_v4 {
 
@@ -421,7 +421,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
 bool g_dsv4_fused_hc = true;
 bool g_dsv4_compare_hc_ops = false;
 
-static std::vector<::tyloi::DenseTensor>
+std::vector<::tyloi::DenseTensor>
 dsv4_hc_split_sinkhorn(::tyloi::DenseTensor mixes, ::tyloi::DenseTensor scale,
                        ::tyloi::DenseTensor base, int64_t hc_mult, int64_t iterations,
                        double eps) {

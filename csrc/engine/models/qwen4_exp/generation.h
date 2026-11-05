@@ -14,7 +14,7 @@ namespace tyloi::cuda {
 
 template<class Ops, class Finish>
 std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
-        Qwen4CausalLm& model, Ops& ops, const tyloi::engine::PrefillChunk& chunk,
+        qwen4_exp::Model& model, Ops& ops, const tyloi::engine::PrefillChunk& chunk,
         ::tyloi::DenseTensor& ids, const Finish& finish_prefill) {
     using DenseTensor = ::tyloi::DenseTensor;
     auto& weights=ops.weights;
@@ -40,8 +40,10 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
             if(auto result=qwen4_decode_graph_hidden(model,part,nullptr,rows>1?1:0,
                     nullptr,{},&window_logits))
                 hidden=std::move(*result);
-            else hidden=model.hidden_forward(part,mfq_nullopt,mfq_nullopt,nullptr,
-                mfq_nullopt,nullptr,rows>1?1:0);
+            else
+                hidden = model.forward(tyloi::models::Input{part, {}, {}, {}, {}, {}, nullptr, nullptr,
+                                                            false, rows>1?1:0, 0, 0},
+                                       ops.state);
             if(rows>1)state.commit_speculative();
             offset+=rows;
         }
@@ -54,14 +56,14 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
     return {std::move(hidden),layer_major,short_windows};
 }
 
-inline bool generation_workspace(Qwen4CausalLm& model, WeightLoan& workspace,
+inline bool generation_workspace(qwen4_exp::Model& model, WeightLoan& workspace,
                                  int64_t rows) {
     return workspace.begin((std::size_t(4)<<30)+
-        std::size_t(rows)*model.hidden_size()*model.hc_mult()*sizeof(float)*4)>0;
+        std::size_t(rows)*model.metadata.hidden_size*model.metadata.hc_mult*sizeof(float)*4)>0;
 }
 
 template<class Ops>
-std::optional<int64_t> generation_decode(Qwen4CausalLm& model, Ops& ops) {
+std::optional<int64_t> generation_decode(qwen4_exp::Model& model, Ops& ops) {
     if(ops.known_token_host.defined()) {
         const bool greedy=ops.sampler.greedy() && !ops.has_penalties && !ops.constraint;
         if(auto result=qwen4_decode_graph_logits(model,ops.pending.reshape({1,1}),greedy?2:1,ops.known_token_host)) {
@@ -74,7 +76,7 @@ std::optional<int64_t> generation_decode(Qwen4CausalLm& model, Ops& ops) {
 }
 
 template<class Ops>
-void generation_request(Qwen4CausalLm& model, Ops& ops, const tyloi::engine::InferenceRequest& input) {
+void generation_request(qwen4_exp::Model& model, Ops& ops, const tyloi::engine::InferenceRequest& input) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     model.decode_reserve_until=std::min<int64_t>(ops.info.max_context,
         int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
@@ -88,7 +90,7 @@ void generation_request(Qwen4CausalLm& model, Ops& ops, const tyloi::engine::Inf
 #endif
 }
 
-inline bool generation_borrow(Qwen4CausalLm& model, std::size_t tokens, const PreparedPrompt* prepared) {
+inline bool generation_borrow(qwen4_exp::Model& model, std::size_t tokens, const PreparedPrompt* prepared) {
     return qwen4_layer_major_prefill_eligible(model,std::min<std::size_t>(tokens,8192)) &&
         (!prepared || !prepared->transformed());
 }

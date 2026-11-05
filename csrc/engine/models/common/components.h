@@ -61,7 +61,7 @@ struct RuntimeComponents {
     }
 
     static constexpr bool streamed_kv() noexcept {
-        return std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>;
+        return std::is_same_v<Model, tyloi::cuda::qwen4_exp::Model>;
     }
 
     tyloi::engine::Metrics metrics() const {
@@ -81,13 +81,13 @@ struct RuntimeComponents {
     }
 
     tyloi::engine::Metrics profile_metrics(const Model& language) const {
-        if constexpr (std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>)
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen4_exp::Model>)
             return tyloi::cuda::qwen4_decode_graph_profile_metrics(language, mtp.get());
         return {};
     }
 
     std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language) const {
-        if constexpr (std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>)
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen4_exp::Model>)
             return tyloi::cuda::qwen4_cache_memory_metrics(language, mtp.get());
         return std::nullopt;
     }
@@ -116,7 +116,7 @@ struct RuntimeComponents {
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
         if (composite) return composite->prepare(tokens, media);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if constexpr (std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>)
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen4_exp::Model>)
 #endif
         if (grid_vision)
             return grid_vision->prepare(language, images,
@@ -162,9 +162,9 @@ RuntimeComponents<Model> load_runtime_components(
 
 
 template <>
-RuntimeComponents<tyloi::cuda::Qwen4CausalLm>
+RuntimeComponents<tyloi::cuda::qwen4_exp::Model>
 load_runtime_components(
-    tyloi::cuda::Qwen4CausalLm& model,
+    tyloi::cuda::qwen4_exp::Model& model,
         const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 

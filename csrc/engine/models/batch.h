@@ -25,7 +25,7 @@ std::unique_ptr<tyloi::engine::Batch> make_batch(
     std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots);
 
 std::unique_ptr<tyloi::engine::Batch> make_batch(
-    Qwen4CausalLm& model, CudaExecutionContext& execution,
+    qwen4_exp::Model& model, CudaExecutionContext& execution,
     const CudaContinuousBatchConfig& config, std::int64_t chunk_size);
 
 } // namespace tyloi::cuda

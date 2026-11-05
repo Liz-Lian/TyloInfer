@@ -37,7 +37,7 @@ class BatchOps {
         DenseTensor logits, greedy_tokens;
     };
 
-    BatchOps(Qwen4CausalLm&, CudaExecutionContext&, CudaContinuousBatchConfig);
+    BatchOps(qwen4_exp::Model&, CudaExecutionContext&, CudaContinuousBatchConfig);
     ~BatchOps();
     int64_t vocab_size() const;
     int64_t max_context() const;
@@ -65,7 +65,7 @@ class BatchOps {
     void initialize_prefill(const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk);
     Sample finish_prefill(const std::shared_ptr<Request>&, DenseTensor next);
 
-    Qwen4CausalLm& model_;
+    qwen4_exp::Model& model_;
     CudaExecutionContext& execution_;
     CudaContinuousBatchConfig config_;
     std::vector<std::weak_ptr<Request>> requests_;

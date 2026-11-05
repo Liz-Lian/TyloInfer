@@ -59,10 +59,6 @@ struct HybridBlockSessionState {
     }
 };
 
-namespace tyloi::cuda {
-template <typename Model> struct CudaCausalOps;
-} // namespace tyloi::cuda
-
 struct CudaDecodedPagedLayer {
     int64_t capacity = 0;
     int device = -1;

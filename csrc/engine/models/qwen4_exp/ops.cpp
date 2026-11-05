@@ -1035,10 +1035,136 @@ void Predictor::restore_session_state(const MtpSessionState& state) {
 } // namespace tyloi::cuda::qwen4_exp
 
 namespace tyloi::cuda {
-bool Qwen4Model::adapter_prefetch_token_rows(Qwen4CausalLm& model,const ::tyloi::DenseTensor& ids) {
+using qwen4_exp::Model;
+namespace {
+
+::tyloi::DenseTensor qwen4_last_hidden(::tyloi::DenseTensor hidden) {
+    return hidden.index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()});
+}
+::tyloi::DenseTensor qwen4_logits_from_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden) {
+    const auto cap = model.metadata.final_logit_softcapping;
+    auto logits = model.adapter_logits(model.lm_head, std::move(hidden));
+    return cap > 0.0 ? ::tyloi::cuda::tanh(logits / cap) * cap : logits;
+}
+::tyloi::DenseTensor qwen4_finalize_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden,
+                                           std::int64_t batch, std::int64_t tokens) {
+    return model.adapter_finalize_hidden(std::move(hidden), model.output_norm, batch, tokens);
+}
+
+::tyloi::DenseTensor qwen4_forward(qwen4_exp::Model& model, qwen4_exp::State& state,
+                                   tyloi::models::Input input) {
+    auto scope = model.execution_scope();
+    const auto primary = model.execution->config.layer_placement.primary_device();
+    auto ids = model.device_ids(std::move(input.ids));
+    auto embeddings = input.embeddings.has_value()
+        ? model.execution->executor().collectives().copy(std::move(*input.embeddings), primary).contiguous()
+        : model.embed_tokens(ids);
+    const auto B = ids.size(0), T = ids.size(1);
+    tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+                                     embeddings.size(1) == T && embeddings.size(2) == model.hidden_size(),
+                                 "inputs_embeds shape must match [batch,tokens,hidden_size]");
+    model.adapter_validate_forward(B, T, state.cache_pos, input.positions.has_value(),
+                                   input.cache_positions.has_value(), input.attention_mask.has_value());
+    tyloi::models::require_model(state.speculative_start < 0 || state.speculative_suffix_forward,
+                                 "commit or roll back the pending speculative pass before forwarding");
+    const auto confirmed = input.confirmed;
+    tyloi::models::require_model(
+        confirmed >= 0 && (confirmed == 0 ||
+            (confirmed < T && B == 1 && state.cache_pos > 0 &&
+             (!input.positions.has_value() || model.adapter_allows_speculative_position_override()) &&
+             !input.cache_positions.has_value() && !input.attention_mask.has_value() &&
+             model.supports_speculation())),
+        "unsupported speculative backbone geometry");
+    if (confirmed > 0) {
+        tyloi::models::require_model(state.cache_pos + T <= model.max_position_embeddings(),
+                                     "speculative pass exceeds context capacity");
+        state.speculative_start = state.cache_pos;
+        state.speculative_confirmed = confirmed;
+    }
+    if (model.adapter_requires_batch_reset(B) || state.cache_pos == 0)
+        state.reset(B);
+    auto cache_positions = ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T,
+                                                 ::tyloi::TensorOptions()
+                                                     .device(::tyloi::kCUDA)
+                                                     .dtype(::tyloi::kInt64));
+    auto current = input.positions.has_value()
+        ? model.device_ids(*input.positions)
+        : (state.decode_position_delta == 0 ? cache_positions
+                                            : cache_positions + state.decode_position_delta);
+    if ((current.dim() == 2 || current.dim() == 3) && current.size(0) == 4)
+        current = current.narrow(0, 1, 3);
+    auto full_positions = model.positions.defined()
+        ? ::tyloi::cuda::cat({model.positions, current}, -1)
+        : current;
+    tyloi::models::require_model((current.dim() == 1 || (current.dim() == 2 && current.size(0) == 3) ||
+                                     (current.dim() == 3 && current.size(0) == 3 && current.size(1) == B)) &&
+                                     current.size(-1) == T,
+                                 "Qwen4 positions require [T], [3,T], [4,T], [3,B,T] or [4,B,T]");
+    DenseTensor host_ids, cpu_positions, cpu_cache_positions;
+    const bool pinned = model.execution->config.moe_pipeline ||
+                        model.execution->config.dense_cpu_layer_count > 0;
+    if (pinned) {
+        host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+        cpu_positions = current.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+        cpu_cache_positions = cache_positions.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+        for (const auto& block : model.blocks)
+            block->prefetch_token_ids(host_ids);
+    }
+    auto hidden = model.adapter_prepare_hidden(
+        model.execution->executor().collectives().copy(embeddings, primary).contiguous(), B, T);
+    model.adapter_begin_forward(input.raw_hidden != nullptr);
+    const auto trace_layer = [&] {
+        if (!input.trace) return;
+        input.trace->push_back(
+            model.execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone());
+    };
+    if (input.trace)
+        input.trace->push_back(hidden.to(::tyloi::kFloat32).clone());
+    for (auto& block : model.blocks) {
+        MfqCudaGuard guard(block->cuda_device);
+        auto local_ids = block->cpu_offloaded
+            ? host_ids
+            : model.execution->executor().collectives().copy(ids, block->cuda_device);
+        auto local_pos = block->cpu_offloaded
+            ? cpu_positions
+            : model.execution->executor().collectives().copy(current, block->cuda_device);
+        auto local_cache_positions = block->cpu_offloaded
+            ? cpu_cache_positions
+            : model.execution->executor().collectives().copy(cache_positions, block->cuda_device);
+        const RopeCache& active_rope = block->cpu_offloaded
+            ? model.cpu_rope
+            : (model.device_ropes.empty() ? model.rope : model.device_ropes.at(block->cuda_device));
+        tyloi::cuda::BlockContext context;
+        context.token_ids = local_ids;
+        context.host_token_ids = host_ids;
+        context.positions = local_pos;
+        context.full_positions = model.adapter_block_positions(full_positions, local_pos,
+                                                              block->cuda_device);
+        context.cache_position = state.cache_pos;
+        context.confirmed_prefix = confirmed;
+        context.planned_kv_length = input.kv_length;
+        context.decode_attention_parts = input.attention_parts;
+        context.cache_positions = local_cache_positions;
+        hidden = block->cpu_offloaded
+            ? hidden.to(::tyloi::kCPU).contiguous()
+            : model.execution->executor().collectives().copy(hidden, block->cuda_device);
+        hidden = block->forward_context(*model.execution, std::move(hidden), context, active_rope);
+        trace_layer();
+    }
+    model.adapter_finish_forward(full_positions, B, T);
+    state.cache_pos += T;
+    hidden = model.execution->executor().collectives().copy(hidden, primary);
+    auto finalized = model.adapter_finalize_hidden(std::move(hidden), model.output_norm, B, T);
+    if (input.raw_hidden)
+        *input.raw_hidden = model.adapter_raw_hidden(DenseTensor(), finalized);
+    return finalized;
+}
+
+} // namespace
+bool Model::adapter_prefetch_token_rows(qwen4_exp::Model& model,const ::tyloi::DenseTensor& ids) {
     return reuse_decode_graphs && graph_registry && qwen4_prefetch_decode_ple(model,ids);
 }
-bool qwen4_prefetch_decode_ple(Qwen4CausalLm& model,const ::tyloi::DenseTensor& host_ids) {
+bool qwen4_prefetch_decode_ple(qwen4_exp::Model& model,const ::tyloi::DenseTensor& host_ids) {
     bool issued=false;
     for(const auto& block:model.blocks) {
         auto* qwen4=dynamic_cast<qwen4_exp::Qwen4Block*>(block.get());
@@ -1130,7 +1256,7 @@ struct Qwen4DecodeGraph {
     int64_t kv_capacity=0;
     bool failed=false;
     ::tyloi::DenseTensor last_compact;
-    explicit Qwen4DecodeGraph(Qwen4CausalLm& model):stream(mfq_get_current_cuda_stream()),ple_stream(mfq_get_stream_from_pool()) {
+    explicit Qwen4DecodeGraph(qwen4_exp::Model& model):stream(mfq_get_current_cuda_stream()),ple_stream(mfq_get_stream_from_pool()) {
         const bool enabled=model.router_lookahead.value_or(tyloi::cuda::runtime_options::router_lookahead_override().value_or(
             moe_expert_cache_ssd_experts(model.execution->weights.moe)));
         for(std::size_t i=0;i<model.blocks.size();++i) {
@@ -1156,7 +1282,7 @@ struct Qwen4DecodeGraph {
             [](const auto* attention){return attention->graph_capacity()>0;});
     }
 
-    ::tyloi::DenseTensor run(Qwen4CausalLm& model,::tyloi::DenseTensor ids,int kind,
+    ::tyloi::DenseTensor run(qwen4_exp::Model& model,::tyloi::DenseTensor ids,int kind,
                                   ::tyloi::DenseTensor* raw_hidden=nullptr,int confirmed=0,bool* initialized=nullptr,
                                   const ::tyloi::DenseTensor& host_ids={},::tyloi::DenseTensor* logits=nullptr,
                                   std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true) {
@@ -1170,7 +1296,7 @@ struct Qwen4DecodeGraph {
         const int result_kind=kind;
         if(tokens==1 && kind>=1 && kind<=4)kind=4;
         release_moe_prefill_buffers(model.execution->weights.moe);
-        const auto required=model.cache_pos+tokens;
+        const auto required=model.active->cache_pos+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=model.max_position_embeddings(),"Qwen4 graph exceeds context capacity");
         if(!qsa.empty() && qsa.front()->graph_capacity()) {
             model.execution->kv->ensure(required);
@@ -1188,7 +1314,7 @@ struct Qwen4DecodeGraph {
                 kv_capacity=std::min(model.max_position_embeddings(),kv_capacity>model.max_position_embeddings()/2
                     ? model.max_position_embeddings() : kv_capacity*2);
             if(const auto* trace=tyloi::cuda::env_lookup("TYLOINFER_RUNTIME_TRACE_CUDA_GRAPH");trace && trace[0]=='1')
-                std::cerr<<"runtime_qwen4_graph_capacity position="<<model.cache_pos
+                std::cerr<<"runtime_qwen4_graph_capacity position="<<model.active->cache_pos
                     <<" required="<<required<<" planned="<<planned<<" capacity="<<kv_capacity<<'\n';
         }
         const bool prediction=tokens==1 && !model.execution->weights.tq && model.router_lookahead.value_or(
@@ -1208,7 +1334,7 @@ struct Qwen4DecodeGraph {
             cell.host_ids.copy_(host_ids);
         } else cell.host_ids.copy_(ids.to(::tyloi::kCPU,::tyloi::kInt64));
         cell.ids.copy_(ids);
-        mfq_qwen4_exp::fill_decode_positions(cell.cache_positions,cell.positions,model.cache_pos,model.decode_position_delta);
+        mfq_qwen4_exp::fill_decode_positions(cell.cache_positions,cell.positions,model.active->cache_pos,model.active->decode_position_delta);
         try {
             // PLE depends only on token IDs and the committed ngram context.
             // Start its read before waiting for adaptive expert exchanges,
@@ -1302,7 +1428,7 @@ struct Qwen4DecodeGraph {
                     if(kind>=3) {
                         cell.output=std::move(hidden);
                         if(kind==4) {
-                            cell.logits=model.logits_from_hidden(cell.output);
+                            cell.logits=qwen4_logits_from_hidden(model, cell.output);
                             if(tokens>1 && cell.logits.size(-1)>=64) {
                                 auto compact=sample_top_k_compact_if_cuda(cell.logits.reshape({tokens,-1}).contiguous(),64,
                                     cell.compact_control.device);
@@ -1314,9 +1440,9 @@ struct Qwen4DecodeGraph {
                                 cudaMemcpyDeviceToHost,stream.stream()));
                         }
                     }
-                    else if(kind==2)cell.output=model.adapter_next_token(model.lm_head,model.last_hidden(std::move(hidden)));
-                    else if(kind==1)cell.output=model.adapter_last_logits(model.lm_head,model.last_hidden(std::move(hidden)));
-                    else cell.output=model.logits_from_hidden(std::move(hidden));
+                    else if(kind==2)cell.output=model.adapter_next_token(model.lm_head,qwen4_last_hidden(std::move(hidden)));
+                    else if(kind==1)cell.output=model.adapter_last_logits(model.lm_head,qwen4_last_hidden(std::move(hidden)));
+                    else cell.output=qwen4_logits_from_hidden(model, std::move(hidden));
                     cell.window.mark(-1,"window_end");
                     auto audit=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks.front()).router_audit;
                     if(audit)cell.window.enroll({audit.get(),[]{},[]{},[audit]{audit->finish_sample();},{}});
@@ -1335,17 +1461,17 @@ struct Qwen4DecodeGraph {
                 for(const auto& block:model.blocks) {
                     auto& b=static_cast<qwen4_exp::Qwen4Block&>(*block);
                     const auto& checkpoint=cell.checkpoints[layer++];
-                    const auto position=model.cache_pos+confirmed;
+                    const auto position=model.active->cache_pos+confirmed;
                     if(b.gdn)b.gdn->bind_graph_checkpoint(checkpoint.gdn_conv,checkpoint.gdn_state,position);
                     if(b.ple)b.ple->bind_graph_checkpoint(checkpoint.ple_conv,cell.ple[ple_index++]->prefix_context,position);
                 }
-                model.speculative_start=model.cache_pos;model.speculative_confirmed=confirmed;
+                model.active->speculative_start=model.active->cache_pos;model.active->speculative_confirmed=confirmed;
                 model.speculative_prefix_retention=true;
             }
             for(const auto& block:model.blocks) {
                 auto& b=static_cast<qwen4_exp::Qwen4Block&>(*block);if(b.qsa)b.qsa->advance_graph(tokens);
             }
-            model.cache_pos+=tokens;
+            model.active->cache_pos+=tokens;
             model.positions=append_decode_positions(model.positions,cell.positions,position_storage,
                 model.max_position_embeddings());model.batch=1;
             // MTP can retain history until a later probe. Each step must own its
@@ -1363,16 +1489,16 @@ struct Qwen4DecodeGraph {
         } catch(...) {failed=true;throw;}
     }
 };
-::tyloi::DenseTensor qwen4_decode_graph_compact_topk(const Qwen4CausalLm& model) {
+::tyloi::DenseTensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model& model) {
     return model.graph_registry?model.graph_registry->last_compact: ::tyloi::DenseTensor{};
 }
 
-std::optional<::tyloi::DenseTensor> qwen4_decode_graph_logits(Qwen4CausalLm& model,::tyloi::DenseTensor ids,int kind,
+std::optional<::tyloi::DenseTensor> qwen4_decode_graph_logits(qwen4_exp::Model& model,::tyloi::DenseTensor ids,int kind,
         const ::tyloi::DenseTensor& host_ids) {
     if (!streamed_decode_graphs(*model.execution)) return {};
     const bool tq=bool(model.execution->weights.tq);
     if((!tq && (!model.execution->config.moe_pipeline || !model.execution->weights.moe)) ||
-            model.cache_pos==0 || model.speculative_start>=0)return {};
+            model.active->cache_pos==0 || model.active->speculative_start>=0)return {};
     if(ids.dim()==1)ids=ids.unsqueeze(0);
     if(ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<1 || ids.size(1)>8 || model.positions.dim()!=1)return {};
     if(tq) {
@@ -1382,12 +1508,12 @@ std::optional<::tyloi::DenseTensor> qwen4_decode_graph_logits(Qwen4CausalLm& mod
             if(!b.tq_graph_ffn || (b.ple && !b.ple->graph_supported()))return {};
         }
     }
-    TYLOINFER_RUNTIME_CHECK(model.cache_pos+ids.size(1)<=model.max_position_embeddings(),"MFQ window exceeds context");
+    TYLOINFER_RUNTIME_CHECK(model.active->cache_pos+ids.size(1)<=model.max_position_embeddings(),"MFQ window exceeds context");
     if(!model.graph_registry)model.graph_registry=std::make_unique<Qwen4DecodeGraph>(model);
     return model.graph_registry->run(model,model.device_ids(std::move(ids)),kind,nullptr,0,nullptr,host_ids);
 }
 
-void qwen4_report_decode_graph(const Qwen4CausalLm& model,std::ostream& output) {
+void qwen4_report_decode_graph(const qwen4_exp::Model& model,std::ostream& output) {
     if(!model.graph_registry)return;
     for(const auto& [key,cell]:model.graph_registry->cells)
         for(const auto& phase:cell->window.gpu_phases())if(phase.samples)
@@ -1398,7 +1524,7 @@ void qwen4_report_decode_graph(const Qwen4CausalLm& model,std::ostream& output) 
 }
 
 std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(
-        const Qwen4CausalLm& model,const MtpModule* mtp) {
+        const qwen4_exp::Model& model,const MtpModule* mtp) {
     std::vector<std::pair<std::string,double>> result;
     if(!tyloi::cuda::runtime_options::layer_timings())return result;
     const auto append=[&](const auto& cells,const char* role,const char* attribute,const char* state) {
@@ -1433,33 +1559,33 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(
 }
 
 std::optional<::tyloi::DenseTensor> qwen4_decode_graph_hidden(
-        Qwen4CausalLm& model,::tyloi::DenseTensor ids,::tyloi::DenseTensor* raw_hidden,int64_t confirmed,
+        qwen4_exp::Model& model,::tyloi::DenseTensor ids,::tyloi::DenseTensor* raw_hidden,int64_t confirmed,
         bool* initialized,const ::tyloi::DenseTensor& host_ids,::tyloi::DenseTensor* logits,
         std::vector<int32_t>* greedy_tokens,bool compact_sampling) {
     if(initialized)*initialized=false;
     const bool tq=bool(model.execution->weights.tq);
     if(!streamed_decode_graphs(*model.execution) ||
             (!tq && (!model.execution->config.moe_pipeline || !model.execution->weights.moe)) ||
-            model.speculative_start>=0)return {};
+            model.active->speculative_start>=0)return {};
     // Retained windows own initialized, reset recurrent/KV storage. The
     // first row of a new prompt can replay them without an eager FFN copy.
-    if(model.cache_pos==0 && (!model.graph_registry || !model.graph_registry->reusable()))return {};
+    if(model.active->cache_pos==0 && (!model.graph_registry || !model.graph_registry->reusable()))return {};
     if(ids.dim()==1)ids=ids.unsqueeze(0);
     if(ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<1 || ids.size(1)>8 ||
-        (model.cache_pos!=0 && model.positions.dim()!=1) ||
+        (model.active->cache_pos!=0 && model.positions.dim()!=1) ||
         confirmed<0 || (confirmed && confirmed>=ids.size(1)))return {};
     if(tq && !tq_graph_supports_tokens(ids.size(1)))return {};
     for(const auto& block:model.blocks) {
         const auto& b=static_cast<const qwen4_exp::Qwen4Block&>(*block);
         if((!b.prefetch && !b.tq_graph_ffn) || (b.ple && !b.ple->graph_supported()))return {};
     }
-    TYLOINFER_RUNTIME_CHECK(model.cache_pos+ids.size(1)<=model.max_position_embeddings(),"MFQ window exceeds context");
+    TYLOINFER_RUNTIME_CHECK(model.active->cache_pos+ids.size(1)<=model.max_position_embeddings(),"MFQ window exceeds context");
     if(!model.graph_registry)model.graph_registry=std::make_unique<Qwen4DecodeGraph>(model);
     return model.graph_registry->run(model,model.device_ids(std::move(ids)),(logits || greedy_tokens)?4:3,raw_hidden,
         static_cast<int>(confirmed),initialized,host_ids,logits,greedy_tokens,compact_sampling);
 }
 
-void qwen4_release_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp) {
+void qwen4_release_decode_graphs(qwen4_exp::Model& model,MtpModule* mtp) {
     finish_moe_expert_exchanges(model.execution->weights.moe);
     if(model.graph_registry)model.graph_registry->restore_legacy();
     model.graph_registry.reset();
@@ -1471,7 +1597,7 @@ void qwen4_release_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp) {
     }
 }
 
-std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm& model,const MtpModule* mtp,int maximum_draft_depth) {
+std::size_t qwen4_mtp_graph_reserve(const qwen4_exp::Model& model,const MtpModule* mtp,int maximum_draft_depth) {
     const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp);
     const auto* reuse=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
@@ -1489,7 +1615,7 @@ std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm& model,const MtpModule* 
     return std::size_t(extra_rows)*(recurrent_bytes+(std::size_t(256)<<20));
 }
 
-void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_draft_depth) {
+void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,MtpModule* mtp,int maximum_draft_depth) {
     const auto* reuse=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     model.reuse_decode_graphs=!reuse || reuse[0]!='0';
     auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(mtp);
@@ -1524,9 +1650,9 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
     // Diverse synthetic IDs exercise more routed experts than sixteen copies
     // of one token. Only loading uses these rows; all request state is reset.
     std::vector<int64_t> warm_ids(16);
-    for(std::size_t i=0;i<warm_ids.size();++i)warm_ids[i]=int64_t((i*7919+17)%model.vocab_size());
+    for(std::size_t i=0;i<warm_ids.size();++i)warm_ids[i]=int64_t((i*7919+17)%model.metadata.vocab_size);
     auto ids=::tyloi::cuda::tensor(warm_ids,options.device(::tyloi::kCPU)).to(::tyloi::kCUDA).reshape({1,16});
-    model.reset(1);
+    model.active->reset(1);
     if(tyloi::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=bootstrap\n";
     // Bootstrap with single-token rows. A sixteen-row eager forward otherwise
     // materializes a whole expert layer just to initialize graph state, before
@@ -1537,7 +1663,12 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
     for(int row=0;row<(tq?1:16);++row) {
         auto token=ids.narrow(1,row,1);
         ::tyloi::DenseTensor hidden;
-        (void)model.hidden_forward(token,mfq_nullopt,mfq_nullopt,nullptr,mfq_nullopt,&hidden);
+        {
+            tyloi::models::Input in;
+            in.ids = token;
+            in.raw_hidden = &hidden;
+            (void)model.forward(in, *model.active);
+        }
         raw_rows.push_back(hidden.clone());
     }
     auto raw=::tyloi::cuda::cat(raw_rows,1);
@@ -1598,17 +1729,17 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
         // width before requests lend spare VRAM to resident experts; capturing
         // widths five/six afterwards also needs live recurrent-state clones.
         for(int rows=verification_rows;rows>=1;--rows) {
-            if(model.cache_pos+rows+2>model.max_position_embeddings())model.reset(1);
+            if(model.active->cache_pos+rows+2>model.max_position_embeddings())model.active->reset(1);
             ::tyloi::DenseTensor hidden,logits;
             (void)qwen4_decode_graph_hidden(model,ids.narrow(1,0,rows),&hidden,
                 rows>1?1:0,nullptr,{},&logits);
-            if(rows>1)model.commit_speculative();
+            if(rows>1)model.active->commit_speculative();
         }
         // Capturing and replaying once leaves cold per-width staging paths.
         // Exercise both single-row drafting and batched history/verification
         // again with different IDs before accepting the first request.
         for(int pass=0;pass<2;++pass)for(int rows=1;rows<=verification_rows;++rows) {
-            if(model.cache_pos+rows+2>model.max_position_embeddings())break;
+            if(model.active->cache_pos+rows+2>model.max_position_embeddings())break;
             const auto offset=4+pass*4;
             auto tokens=ids.narrow(1,offset,rows);
             predictor->trim_cache_to(16);
@@ -1623,7 +1754,7 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
             (void)predictor->step(raw.narrow(1,offset+rows-1,1),tokens.narrow(1,rows-1,1));
             ::tyloi::DenseTensor hidden,logits;
             (void)qwen4_decode_graph_hidden(model,tokens,&hidden,rows>1?1:0,nullptr,{},&logits);
-            if(rows>1)model.commit_speculative();
+            if(rows>1)model.active->commit_speculative();
         }
         predictor->reset(1);
     }
@@ -1632,14 +1763,14 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
     if(moe_expert_cache_ssd_experts(model.execution->weights.moe) &&
             !model.router_lookahead.has_value() && !runtime_options::router_lookahead_override().has_value()) {
         struct Restore {
-            Qwen4CausalLm& model;std::optional<bool> previous;
+            qwen4_exp::Model& model;std::optional<bool> previous;
             ~Restore(){model.router_lookahead=previous;}
         } restore{model,model.router_lookahead};
         model.router_lookahead=true;
-        if(model.cache_pos+4>=model.max_position_embeddings())model.reset(1);
+        if(model.active->cache_pos+4>=model.max_position_embeddings())model.active->reset(1);
         (void)qwen4_decode_graph_logits(model,ids.narrow(1,0,1),1);
     }
-    model.reset(1);
+    model.active->reset(1);
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     std::cerr<<"runtime_qwen4_graph_warmup target_captures="<<model.decode_graph_captures
         <<" maximum_draft_depth="<<(predictor?maximum_draft_depth:0)
@@ -1649,8 +1780,8 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
     default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
 }
 
-void qwen4_set_rotary_fusion(Qwen4CausalLm& model, bool enabled) {
-    TYLOINFER_RUNTIME_CHECK(!model.graph_registry && model.cache_pos == 0,
+void qwen4_set_rotary_fusion(qwen4_exp::Model& model, bool enabled) {
+    TYLOINFER_RUNTIME_CHECK(!model.graph_registry && model.active->cache_pos == 0,
                       "reset the model before switching rotary execution");
     mfq_cuda_synchronize();
     for (const auto& block : model.blocks) {
@@ -1659,8 +1790,8 @@ void qwen4_set_rotary_fusion(Qwen4CausalLm& model, bool enabled) {
     }
 }
 
-void qwen4_set_attention_grouping(Qwen4CausalLm& model, bool enabled) {
-    TYLOINFER_RUNTIME_CHECK(!model.graph_registry && model.cache_pos == 0,
+void qwen4_set_attention_grouping(qwen4_exp::Model& model, bool enabled) {
+    TYLOINFER_RUNTIME_CHECK(!model.graph_registry && model.active->cache_pos == 0,
                       "reset the model before switching attention projection groups");
     mfq_cuda_synchronize();
     for (const auto& block : model.blocks) {
@@ -1670,7 +1801,7 @@ void qwen4_set_attention_grouping(Qwen4CausalLm& model, bool enabled) {
     }
 }
 
-void qwen4_begin_router_lookahead_audit(Qwen4CausalLm& model,int samples) {
+void qwen4_begin_router_lookahead_audit(qwen4_exp::Model& model,int samples) {
     if(model.blocks.size()<2 || model.graph_registry || samples<=0)
         throw std::invalid_argument("router lookahead audit requires a fresh multilayer decode session");
     auto audit=std::make_shared<RouterLookaheadInputs>(static_cast<int>(model.blocks.size()),
@@ -1681,7 +1812,7 @@ void qwen4_begin_router_lookahead_audit(Qwen4CausalLm& model,int samples) {
         b.router_audit=audit;
     }
 }
-void qwen4_finish_router_lookahead_audit(Qwen4CausalLm& model,const std::string& prefix) {
+void qwen4_finish_router_lookahead_audit(qwen4_exp::Model& model,const std::string& prefix) {
     auto audit=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks.front()).router_audit;
     if(!audit || !audit->samples())throw std::runtime_error("router lookahead audit captured no decode inputs");
     std::ofstream file(prefix+"-logits.f32",std::ios::binary);
@@ -1702,7 +1833,7 @@ void qwen4_finish_router_lookahead_audit(Qwen4CausalLm& model,const std::string&
         <<" scores=predicted_then_same_layer_oracle row_dtype=FP32\n";
 }
 
-tyloi::models::SnapshotSize snapshot_size(const Qwen4CausalLm& model,const MtpModule* mtp) {
+tyloi::models::SnapshotSize snapshot_size(const qwen4_exp::Model& model,const MtpModule* mtp) {
     std::size_t bytes=session_tensor_bytes(model.positions);
     const auto count_block=[&](const qwen4_exp::Qwen4Block& block,int64_t count) {
         if(count<=0)return;
@@ -1710,10 +1841,10 @@ tyloi::models::SnapshotSize snapshot_size(const Qwen4CausalLm& model,const MtpMo
         if(block.gdn)for(const auto* tensor:block.gdn->graph_state())bytes+=session_tensor_bytes(*tensor);
         if(block.ple)bytes+=session_tensor_bytes(block.ple->conv_state());
     };
-    for(const auto& block:model.blocks)count_block(static_cast<const qwen4_exp::Qwen4Block&>(*block),model.cache_pos);
+    for(const auto& block:model.blocks)count_block(static_cast<const qwen4_exp::Qwen4Block&>(*block),model.active->cache_pos);
     if(const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp)) {
         for(std::size_t i=0;i<predictor->layers.size();++i) {
-            const auto count=std::min(model.cache_pos-1,predictor->lengths[i]);
+            const auto count=std::min(model.active->cache_pos-1,predictor->lengths[i]);
             count_block(*predictor->layers[i],count);
             if(count>0)bytes+=std::size_t(count)*3*predictor->positions[i].element_size();
         }
@@ -1724,7 +1855,7 @@ tyloi::models::SnapshotSize snapshot_size(const Qwen4CausalLm& model,const MtpMo
 }
 
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
-        const Qwen4CausalLm& model,const MtpModule* mtp) {
+        const qwen4_exp::Model& model,const MtpModule* mtp) {
     // Shared checkpoint views and recurrent state aliases count once. These
     // are existing cache tensors; collecting telemetry never copies GPU data.
     std::map<std::pair<int,std::uintptr_t>,std::size_t> allocations;
@@ -1768,19 +1899,19 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
                 devices[model.execution->config.layer_placement.primary_device()]+=std::size_t(metric.second);
             }
     std::vector<std::pair<std::string,double>> result{{"kv_cache_bytes",double(bytes)},
-        {"kv_cache_contexts",model.cache_pos>0?double(model.batch):0.0}};
+        {"kv_cache_contexts",model.active->cache_pos>0?double(model.batch):0.0}};
     for(const auto& [device,size]:devices)result.emplace_back("gpu_"+std::to_string(device)+"_live_kv_bytes",double(size));
     return result;
 }
 
-Qwen4Model::Qwen4Model() = default;
-Qwen4Model::~Qwen4Model() = default;
+Model::Model() = default;
+Model::~Model() = default;
 
 } // namespace tyloi::cuda
 
 namespace tyloi::cuda {
-Qwen4Model::Qwen4Model(Qwen4Model&&) noexcept = default;
-Qwen4Model& Qwen4Model::operator=(Qwen4Model&&) noexcept = default;
+Model::Model(Model&&) noexcept = default;
+Model& Model::operator=(Model&&) noexcept = default;
 
 struct Qwen4BatchRequestState::Impl {
     struct Layer {
@@ -1802,7 +1933,7 @@ struct Qwen4BatchRequestState::Impl {
     }
 };
 
-Qwen4BatchRequestState::Qwen4BatchRequestState(Qwen4CausalLm& model)
+Qwen4BatchRequestState::Qwen4BatchRequestState(qwen4_exp::Model& model)
     : state_(std::make_unique<Impl>()) {
     const auto primary = model.execution->config.layer_placement.primary_device();
     for (const auto& base : model.blocks) {
@@ -1848,7 +1979,7 @@ std::size_t Qwen4BatchRequestState::resident_bytes() const {
 }
 struct Qwen4BatchDecodeGraph::Impl {
     using DenseTensor = ::tyloi::DenseTensor;
-    Qwen4CausalLm& model;
+    qwen4_exp::Model& model;
     MfqCudaStream stream;
     Event ready;
     std::unique_ptr<Graph> memory_pool;
@@ -1861,7 +1992,7 @@ struct Qwen4BatchDecodeGraph::Impl {
     DenseTensor ids, logits;
     bool greedy = false;
     int64_t captures = 0, replays = 0;
-    explicit Impl(Qwen4CausalLm& owner) : model(owner), stream(mfq_get_current_cuda_stream()) {}
+    explicit Impl(qwen4_exp::Model& owner) : model(owner), stream(mfq_get_current_cuda_stream()) {}
     void clear() {
         if (requests.empty() && !window) return;
         finish_moe_expert_exchanges(model.execution->weights.moe);
@@ -1880,7 +2011,7 @@ struct Qwen4BatchDecodeGraph::Impl {
         ids = {}; logits = {};
     }
 };
-Qwen4BatchDecodeGraph::Qwen4BatchDecodeGraph(Qwen4CausalLm& model)
+Qwen4BatchDecodeGraph::Qwen4BatchDecodeGraph(qwen4_exp::Model& model)
     : graph_(std::make_unique<Impl>(model)) {}
 Qwen4BatchDecodeGraph::~Qwen4BatchDecodeGraph() = default;
 void Qwen4BatchDecodeGraph::clear() { graph_->clear(); }
@@ -1986,7 +2117,7 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
     for (int64_t row = 0; row < batch; ++row) {
         auto& state = *requests[row]->state_;
         mfq_qwen4_exp::fill_decode_positions(graph.cache_positions[row],graph.positions[row],
-                                            state.cache_position,model.decode_position_delta);
+                                            state.cache_position,model.active->decode_position_delta);
         for (std::size_t i = 0; i < state.layers.size(); ++i) if (state.layers[i].ple) {
             if(!graph.window->valid())ple_contexts.emplace_back(state.layers[i].ple.get(),state.layers[i].ple->session_context());
             state.layers[i].ple->upload_graph(host_ids.narrow(0,row,1),*graph.ple[row][i]);
@@ -2073,9 +2204,9 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
                 else {hidden=block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);pending_residual.reset();}
                 graph.window->mark(static_cast<int>(i),"block_end");
             }
-            auto finalized=model.finalize_hidden(std::move(hidden),batch,1);
-            graph.logits = greedy ? model.adapter_next_token(model.lm_head,model.last_hidden(std::move(finalized)))
-                .reshape({batch,1}) : model.logits_from_hidden(std::move(finalized)).reshape({batch,-1});
+            auto finalized=qwen4_finalize_hidden(model, std::move(hidden),batch,1);
+            graph.logits = greedy ? model.adapter_next_token(model.lm_head,qwen4_last_hidden(std::move(finalized)))
+                .reshape({batch,1}) : qwen4_logits_from_hidden(model, std::move(finalized)).reshape({batch,-1});
             graph.window->mark(-1,"window_end");
         },[&] { for (const auto& saved : recurrent) saved.tensor->copy_(saved.snapshot); },
         [&] { graph.logits = {}; }); }
@@ -2107,7 +2238,7 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
     return graph.logits;
 }
 
-std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(Qwen4CausalLm& model,
+std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         const std::vector<Qwen4BatchRequestState*>& requests,
         const std::vector<::tyloi::DenseTensor>& chunks) {
     TYLOINFER_RUNTIME_CHECK(!requests.empty() && requests.size()==chunks.size(),"invalid packed prefill rows");
@@ -2198,7 +2329,7 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(Qwen4CausalLm& model,
                 return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
             });
     }
-    hidden=model.finalize_hidden(std::move(hidden),1,tokens);
+    hidden=qwen4_finalize_hidden(model, std::move(hidden),1,tokens);
     std::vector<::tyloi::DenseTensor> result;
     for (std::size_t row=0;row<requests.size();++row) {
         result.push_back(hidden.narrow(1,offsets[row+1]-1,1));
@@ -2208,7 +2339,7 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(Qwen4CausalLm& model,
     return result;
 }
 
-::tyloi::DenseTensor qwen4_batch_decode(Qwen4CausalLm& model,
+::tyloi::DenseTensor qwen4_batch_decode(qwen4_exp::Model& model,
         const std::vector<Qwen4BatchRequestState*>& requests, ::tyloi::DenseTensor ids,
         const ::tyloi::DenseTensor& host_ids) {
     const auto batch = static_cast<int64_t>(requests.size());
@@ -2258,7 +2389,7 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(Qwen4CausalLm& model,
         // Tiles share the expert transfer cache across all eligible rows.
         hidden = block.ffn_gr.post(block.batch_ffn(execution,ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
     }
-    auto logits = model.logits_from_hidden(model.finalize_hidden(std::move(hidden),batch,1)).reshape({batch,-1});
+    auto logits = qwen4_logits_from_hidden(model, qwen4_finalize_hidden(model, std::move(hidden),batch,1)).reshape({batch,-1});
     for (int64_t row = 0; row < batch; ++row) {
         requests[row]->state_->positions = std::move(full[row]);
         ++requests[row]->state_->cache_position;
@@ -2266,12 +2397,12 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(Qwen4CausalLm& model,
     return logits;
 }
 
-void Qwen4Model::adapter_validate_load_options() const {
+void Model::adapter_validate_load_options() const {
     validate_native_placement(execution->config.tensor_parallel, execution->config.layer_placement,
                               execution->config.n_gpu_layers);
 }
 
-void Qwen4Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+void Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
                                           ::tyloi::DenseTensor &output_norm) {
     qwen4_exp::BlockLoader loader{weights,*execution};
     loader.role = "qwen4_exp";
@@ -2280,12 +2411,12 @@ void Qwen4Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Load
     output_norm = ::tyloi::DenseTensor();
 }
 
-std::unique_ptr<qwen4_exp::Qwen4Block> Qwen4Model::adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer,
+std::unique_ptr<qwen4_exp::Qwen4Block> Model::adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer,
                                                       int, const std::string &) {
     return std::make_unique<qwen4_exp::Qwen4Block>(*execution, weights, config, layer);
 }
 
-void Qwen4Model::adapter_reset(int64_t new_batch) {
+void Model::adapter_reset(int64_t new_batch) {
     speculative_prefix_retention=false;
     if(execution && execution->weights.moe)finish_moe_expert_exchanges(execution->weights.moe);
     const bool retain=reuse_decode_graphs && new_batch==1 && graph_registry && graph_registry->reusable();
@@ -2295,7 +2426,7 @@ void Qwen4Model::adapter_reset(int64_t new_batch) {
     positions = ::tyloi::DenseTensor();
     batch = new_batch;
 }
-void Qwen4Model::adapter_begin_forward(bool) {
+void Model::adapter_begin_forward(bool) {
     for(auto& block:blocks)block->retained_prefix=false;
     if(graph_registry) {
         if(reuse_decode_graphs && graph_registry->reusable()) {
@@ -2305,12 +2436,12 @@ void Qwen4Model::adapter_begin_forward(bool) {
 }
 
 ::tyloi::DenseTensor
-Qwen4Model::adapter_block_positions(const ::tyloi::DenseTensor &full_positions,
+Model::adapter_block_positions(const ::tyloi::DenseTensor &full_positions,
                                     const ::tyloi::DenseTensor &, int device) const {
     return execution->executor().collectives().copy(full_positions, device);
 }
 
-void Qwen4Model::adapter_finish_forward(const ::tyloi::DenseTensor &full_positions,
+void Model::adapter_finish_forward(const ::tyloi::DenseTensor &full_positions,
                                         int64_t new_batch, int64_t tokens) {
     positions = full_positions;
     batch = new_batch;
@@ -2324,7 +2455,7 @@ void Qwen4Model::adapter_finish_forward(const ::tyloi::DenseTensor &full_positio
 
 // Keep each compressed expert image resident while advancing all prompt chunks
 // through that layer. Attention and PLE still advance in causal token order.
-bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm& model, int64_t tokens) {
+bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model& model, int64_t tokens) {
     const auto enabled=tyloi::cuda::runtime_options::moe_prefill_layer_major();
     const auto whole=tyloi::cuda::runtime_options::moe_prefill_layer();
     const bool tq=model.execution && bool(model.execution->weights.tq);
@@ -2332,7 +2463,7 @@ bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm& model, int64_t toke
     // does not require registration in the legacy MFE transfer pipeline.
     // Keep explicit user overrides and the existing legacy selection policy.
     if((enabled && *enabled==0) || (whole && *whole==0) || (!tq && !whole) || tokens<=128 ||
-       tokens>16384 || model.speculative_start>=0 || !model.execution ||
+       tokens>16384 || model.active->speculative_start>=0 || !model.execution ||
        (!tq && !model.execution->config.moe_pipeline) || !model.execution->weights.moe ||
        model.execution->config.dense_cpu_layer_count || model.execution->config.tensor_parallel.enabled() ||
        model.execution->config.expert_parallel.enabled())return false;
@@ -2342,7 +2473,7 @@ bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm& model, int64_t toke
     return true;
 }
 
-std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
+std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,
                           std::size_t stable, bool transformed, bool) {
     // Bound residual/FFN storage as well as projection tiles. Long
@@ -2355,7 +2486,7 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
 }
 
 ::tyloi::DenseTensor qwen4_layer_major_prefill_hidden(
-        Qwen4CausalLm& model,::tyloi::DenseTensor ids,int64_t compute_chunk,
+        qwen4_exp::Model& model,::tyloi::DenseTensor ids,int64_t compute_chunk,
         bool last_only,const std::function<bool()>& cancelled,::tyloi::DenseTensor* raw_hidden,
         bool raw_hidden_host) {
     return qwen4_layer_major_prefill_hidden(model,std::move(ids),compute_chunk,last_only,
@@ -2363,7 +2494,7 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
 }
 
 ::tyloi::DenseTensor qwen4_layer_major_prefill_hidden(
-        Qwen4CausalLm& model,::tyloi::DenseTensor ids,int64_t compute_chunk,
+        qwen4_exp::Model& model,::tyloi::DenseTensor ids,int64_t compute_chunk,
         bool last_only,const std::function<bool()>& cancelled,::tyloi::DenseTensor* raw_hidden,
         bool raw_hidden_host,const std::function<void()>& computation_finished) {
     using DenseTensor=::tyloi::DenseTensor;
@@ -2374,7 +2505,7 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
     auto scope=model.execution_scope();
     ids=model.device_ids(std::move(ids));
     const auto tokens=ids.size(1);
-    const auto cache_start=model.cache_pos;
+    const auto cache_start=model.active->cache_pos;
     auto& profiler=model.execution->executor().profiler();
     const auto* profile_once=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_PREFILL_ONCE");
     static std::atomic<uint64_t> profile_requests{0};
@@ -2428,15 +2559,17 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
     }
     tyloi::cuda::ResidentAllocationScope persistent_preamble;
     model.adapter_validate_forward(1,tokens,cache_start,false,false,false);
-    if(cache_start==0)model.reset(1);
+    if(cache_start==0)model.active->reset(1);
     model.adapter_begin_forward(raw_hidden!=nullptr);
     auto current=::tyloi::cuda::arange(cache_start,cache_start+tokens,ids.options());
-    if(model.decode_position_delta)current=current+model.decode_position_delta;
+    if(model.active->decode_position_delta)current=current+model.active->decode_position_delta;
     auto prepared=model.adapter_prepare_positions(std::move(current),1,tokens);
-    model.adapter_validate_positions(prepared.positions,1,tokens,false);
+    auto prepared_full=model.positions.defined()?
+        ::tyloi::cuda::cat({model.positions,prepared},-1):prepared;
+    model.adapter_validate_positions(prepared,1,tokens,false);
     auto cpu_ids=ids.to(::tyloi::kCPU,::tyloi::kInt64).contiguous();
     persistent_preamble.finish();
-    DenseTensor hidden=::tyloi::cuda::empty({1,tokens,model.hidden_size()*model.hc_mult()},
+    DenseTensor hidden=::tyloi::cuda::empty({1,tokens,model.metadata.hidden_size*model.metadata.hc_mult},
                            ids.options().dtype(::tyloi::kFloat16));
     for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
         if(cancelled && cancelled())return {};
@@ -2520,8 +2653,8 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
             BlockContext context;
             context.token_ids=ids.narrow(1,begin,count);
             context.host_token_ids=cpu_ids.narrow(1,begin,count);
-            context.positions=prepared.positions.narrow(-1,begin,count);
-            context.full_positions=prepared.full_positions.narrow(-1,0,cache_start+begin+count);
+            context.positions=prepared.narrow(-1,begin,count);
+            context.full_positions=prepared_full.narrow(-1,0,cache_start+begin+count);
             context.cache_position=cache_start+begin;
             block->prefetch_token_ids(context.host_token_ids);
             auto input=hidden.narrow(1,begin,count);
@@ -2663,8 +2796,8 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
         const auto begin=((tokens-1)/compute_chunk)*compute_chunk;
         DenseTensor result;
         {
-            auto finalized=model.finalize_hidden(hidden.narrow(1,begin,tokens-begin),1,tokens-begin);
-            result=model.last_hidden(std::move(finalized)).unsqueeze(1);
+            auto finalized=qwen4_finalize_hidden(model, hidden.narrow(1,begin,tokens-begin),1,tokens-begin);
+            result=qwen4_last_hidden(std::move(finalized)).unsqueeze(1);
         }
         if(computation_finished)computation_finished();
         if(borrowed_workspace) {
@@ -2673,20 +2806,20 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
             hidden={};
             workspace_loan.finish();
         }
-        model.adapter_finish_forward(prepared.full_positions,1,tokens);
-        model.cache_pos=cache_start+tokens;
+        model.adapter_finish_forward(prepared_full,1,tokens);
+        model.active->cache_pos=cache_start+tokens;
         return result;
     }
     DenseTensor finalized;
     if(last_only) {
         // Use the same final GR dispatch and rounding as chunk-major prefill.
         const auto begin=((tokens-1)/compute_chunk)*compute_chunk;
-        finalized=model.finalize_hidden(hidden.narrow(1,begin,tokens-begin),1,tokens-begin);
-        finalized=model.last_hidden(std::move(finalized)).unsqueeze(1);
+        finalized=qwen4_finalize_hidden(model, hidden.narrow(1,begin,tokens-begin),1,tokens-begin);
+        finalized=qwen4_last_hidden(std::move(finalized)).unsqueeze(1);
     } else {
         for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
             const auto count=std::min(compute_chunk,tokens-begin);
-            auto part=model.finalize_hidden(hidden.narrow(1,begin,count),1,count);
+            auto part=qwen4_finalize_hidden(model, hidden.narrow(1,begin,count),1,count);
             if(!finalized.defined())finalized=::tyloi::cuda::empty({1,tokens,part.size(-1)},part.options());
             finalized.narrow(1,begin,count).copy_(part);
         }
@@ -2701,13 +2834,13 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
         finalized=finalized.clone();
         workspace_loan.finish();
     }
-    model.adapter_finish_forward(prepared.full_positions,1,tokens);
-    model.cache_pos=cache_start+tokens;
+    model.adapter_finish_forward(prepared_full,1,tokens);
+    model.active->cache_pos=cache_start+tokens;
     if(raw_hidden)*raw_hidden=hidden;
     return finalized;
 }
 
-::tyloi::DenseTensor Qwen4Model::adapter_finalize_hidden(::tyloi::DenseTensor hidden,
+::tyloi::DenseTensor Model::adapter_finalize_hidden(::tyloi::DenseTensor hidden,
                                                                const ::tyloi::DenseTensor &,
                                                                int64_t, int64_t) const {
     auto* window=DecodeWindow::recording();
@@ -2719,12 +2852,12 @@ std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
 }
 
 ::tyloi::DenseTensor
-Qwen4Model::adapter_last_logits(const QuantLinear &lm_head,
+Model::adapter_last_logits(const QuantLinear &lm_head,
                                 ::tyloi::DenseTensor hidden) const {
     return adapter_logits(lm_head, std::move(hidden));
 }
 
-::tyloi::DenseTensor Qwen4Model::adapter_next_token(const QuantLinear &lm_head,
+::tyloi::DenseTensor Model::adapter_next_token(const QuantLinear &lm_head,
                                                           ::tyloi::DenseTensor hidden) const {
     auto* window=DecodeWindow::recording();
     if(window)window->mark(-1,"lm_head_begin");
@@ -2735,49 +2868,130 @@ Qwen4Model::adapter_last_logits(const QuantLinear &lm_head,
     return output;
 }
 
-void Qwen4Model::adapter_rollback_speculative(int64_t keep) {
+void Model::adapter_rollback_speculative(int64_t keep) {
     speculative_prefix_retention=false;
     if (positions.defined())
         positions = positions.narrow(-1, 0, keep);
 }
 
+namespace qwen4_exp {
+
+tyloi::models::Info Model::info() const {
+    return {metadata.vocab_size, config.maximum, "qwen4_exp",
+            std::size_t(metadata.hidden_size) * sizeof(float) * 8, true, true};
+}
+
+MfqModelCapabilities Model::capabilities() const {
+    const auto state = cuda_component_state(graph, plan, false, false);
+    const auto caps = cuda_runtime_capabilities(graph, plan, state, false, false);
+    return {graph.architecture, caps.text, caps.image_input, caps.video_input,
+        caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp,
+        "model-graph+cuda-adapters"};
+}
+
+tyloi::engine::Metrics Model::metrics() const {
+    const auto state = cuda_component_state(graph, plan, false, false);
+    return {{"kv_memory_supported", 0.0},
+        {"kv_quantization_supported", 0.0},
+        {"kv_quantization_bits", 0.0},
+        {"vision_declared", double(state.vision_declared)},
+        {"vision_supported", double(state.vision_supported)},
+        {"vision_available", double(state.vision_available)},
+        {"mtp_declared", double(state.mtp_declared)},
+        {"mtp_supported", double(state.mtp_supported)},
+        {"mtp_available", double(state.mtp_available)}};
+}
+
+std::unique_ptr<tyloi::models::State> Model::make_state() const {
+    // shortcut: states are single-flight per engine; the bridge is released in ~State
+    return std::make_unique<State>(const_cast<Model&>(*this));
+}
+
+tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
+    const std::vector<std::int64_t>&, const MfqMultimodalInput&, tyloi::models::State&) const {
+    throw std::invalid_argument("model has no multimodal component");
+}
+
+::tyloi::DenseTensor Model::embedding(::tyloi::DenseTensor ids, int) const {
+    auto scope = execution_scope();
+    return embed_tokens(device_ids(std::move(ids)));
+}
+
+::tyloi::DenseTensor Model::normalize(::tyloi::DenseTensor hidden, std::int64_t, std::int64_t) const {
+    return hidden;
+}
+
+::tyloi::DenseTensor Model::softcap(::tyloi::DenseTensor logits) const {
+    return logits;
+}
+
+::tyloi::DenseTensor Model::logits(::tyloi::DenseTensor hidden, bool) const {
+    return adapter_logits(lm_head, std::move(hidden));
+}
+
+::tyloi::DenseTensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+                                    const tyloi::models::ForwardOptions&) const {
+    // shortcut: the graph registry and position tail are model-side request
+    // bookkeeping; they move into State with the recurrent caches
+    return qwen4_forward(const_cast<Model&>(*this), static_cast<State&>(state_value), std::move(input));
+}
+
+::tyloi::DenseTensor Model::hidden_forward_speculative_suffix(::tyloi::DenseTensor ids,
+                                                              ::tyloi::DenseTensor* raw_hidden) {
+    auto& state = *active;
+    tyloi::models::require_model(state.speculative_start >= 0 && state.speculative_confirmed == 0 &&
+                                     !state.speculative_suffix_forward,
+                                 "speculative suffix is not active");
+    state.speculative_suffix_forward = true;
+    try {
+        auto result = qwen4_forward(*this, state,
+                                    tyloi::models::Input{std::move(ids), {}, {}, {}, {}, {}, nullptr,
+                                                         raw_hidden, false, 0, 0, 0});
+        state.speculative_suffix_forward = false;
+        return result;
+    } catch (...) {
+        state.speculative_suffix_forward = false;
+        throw;
+    }
+}
+
+void Model::rollback_speculative(std::int64_t accepted) {
+    auto& state = *active;
+    tyloi::models::require_model(state.speculative_start >= 0 && accepted >= 0,
+                                 "no speculative transaction");
+    const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
+    for (auto& block : blocks)
+        block->rollback_speculative(keep);
+    adapter_rollback_speculative(keep);
+    state.cache_pos = keep;
+    state.speculative_start = -1;
+    state.speculative_confirmed = 0;
+}
+
+void Model::load_config(std::string_view payload) {
+    auto& config = this->config;
+    auto& metadata = this->metadata;
+    config = CausalConfig::from_json(payload);
+    metadata.vocab_size = config.vocab;
+    metadata.hidden_size = config.hidden;
+    metadata.num_hidden_layers = config.layers;
+    metadata.num_attention_heads = config.heads;
+    metadata.num_key_value_heads = config.kv_heads;
+    metadata.head_dim = config.width;
+    metadata.max_position_embeddings = config.maximum;
+    metadata.rotary_dim = config.rotary;
+    metadata.num_experts = config.experts;
+    metadata.hc_mult = config.streams;
+    metadata.rope_base = config.rope_base;
+    metadata.rms_norm_eps = config.eps;
+    metadata.tie_word_embeddings = config.tied_embeddings;
+    metadata.multi_axis_positions = true;
+    metadata.flash_next = true;
+    metadata.model_type = "qwen4_exp";
+    metadata.layer_types = config.layer_types;
+}
+
+// read/load live in common/components.cpp next to ModelLoader.
+
+} // namespace qwen4_exp
 } // namespace tyloi::cuda
-
-namespace tyloi::cuda {
-
-TextSessionStateKind CudaSessionCodec<Qwen4Model>::kind(const Qwen4CausalLm& model) {
-    return model.execution && !model.execution->offload && !model.blocks.empty()
-        ? TextSessionStateKind::Qwen4 : TextSessionStateKind::Unsupported;
-}
-bool CudaSessionCodec<Qwen4Model>::supports_paged(const Qwen4CausalLm& model) { return kind(model)==TextSessionStateKind::Qwen4; }
-
-TextSessionState CudaSessionCodec<Qwen4Model>::capture(const Qwen4CausalLm& model,const std::vector<int64_t>& tokens) {
-    TYLOINFER_RUNTIME_CHECK(kind(model)==TextSessionStateKind::Qwen4 && model.batch==1 && model.cache_pos>0 &&
-        std::size_t(model.cache_pos)==tokens.size() && model.speculative_start<0,
-        "Qwen4 text session boundary is unavailable");
-    TextSessionState state;state.tokens=tokens;state.cache_pos=model.cache_pos;
-    tyloi::models::qwen4_exp::Snapshot snapshot;
-    for(const auto& block:model.blocks)snapshot.blocks.push_back(qwen4_exp::capture_block_session(
-        static_cast<const qwen4_exp::Qwen4Block&>(*block),model.cache_pos,state.bytes));
-    snapshot.positions=model.positions.clone();state.bytes+=session_tensor_bytes(snapshot.positions);
-    state.payload=std::move(snapshot);
-    return state;
-}
-
-void CudaSessionCodec<Qwen4Model>::restore(Qwen4CausalLm& model,const TextSessionState& state) {
-    const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::Snapshot>(&state.payload);
-    TYLOINFER_RUNTIME_CHECK(kind(model)==TextSessionStateKind::Qwen4 && snapshot && snapshot->blocks.size()==model.blocks.size() &&
-        state.cache_pos>0 && std::size_t(state.cache_pos)==state.tokens.size() &&
-        snapshot->positions.defined() && snapshot->positions.size(-1)==state.cache_pos,
-        "incompatible Qwen4 text session state");
-    model.reset(1);
-    for(std::size_t i=0;i<snapshot->blocks.size();++i)qwen4_exp::restore_block_session(
-        static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]),snapshot->blocks[i],state.cache_pos);
-    model.positions=snapshot->positions.clone();model.cache_pos=state.cache_pos;
-}
-
-} // namespace tyloi::cuda
-
-namespace tyloi::models {
-template struct qwen4_exp::CausalLm<cuda::CudaCausalOps<cuda::Qwen4Model>>;
-} // namespace tyloi::models

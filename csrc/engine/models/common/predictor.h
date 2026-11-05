@@ -1,5 +1,7 @@
 #pragma once
-#include "causal_forward.h"
+
+#include "engine/models/common/check.h"
+#include <cstdint>
 
 namespace tyloi::models {
 struct PredictorCursor {

@@ -57,7 +57,7 @@ using State = std::variant<
 #endif
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State>>,
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State>>,
-    std::unique_ptr<Text<Qwen4CausalLm>>,
+    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State>>,
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State>>,
     std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State>>,
     std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State>>>;

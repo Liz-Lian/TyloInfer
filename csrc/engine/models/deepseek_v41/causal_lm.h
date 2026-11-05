@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
-#include "../common/causal_forward.h"
-#include "../common/causal_model.h"
+#include "../common/causal_metadata.h"
+#include "../common/check.h"
 #include "../common/transformer_layer.h"
 #include <optional>
 #include <vector>

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "../causal_forward.h"
 #include "engine/generation/sequence.h"
 #include "engine/ops.h"
 #include "grid_vision.h"

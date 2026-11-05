@@ -1,6 +1,6 @@
 #pragma once
 #include "config.h"
-#include "../common/causal_model.h"
+#include "../common/causal_metadata.h"
 #include "../common/predictor.h"
 #include "../common/recurrent_attention.h"
 #include "../common/transformer_layer.h"
@@ -187,70 +187,5 @@ auto decoder_layer_chained(DenseTensor hidden, bool has_ple, bool linear,
     auto ffn_branch = ffn(ffn_mix[0]);
     return ffn_post(std::move(ffn_branch), ffn_mix);
 }
-
-template <class Backend> struct CausalLm : models::CausalModelBase<Backend, CausalLm<Backend>> {
-    using DenseTensor = typename Backend::DenseTensor;
-    static bool accepts_backbone(std::string_view backbone) { return backbone == "qwen4_exp"; }
-    template <class Graph, class Source>
-    void adapter_load_config(std::string_view payload, const Graph &graph, const Source &source) {
-        auto &config = this->config;
-        auto &metadata = this->metadata;
-
-        config = Config::from_json(payload);
-        metadata.vocab_size = config.vocab;
-        metadata.hidden_size = config.hidden;
-        metadata.num_hidden_layers = config.layers;
-        metadata.num_attention_heads = config.heads;
-        metadata.num_key_value_heads = config.kv_heads;
-        metadata.head_dim = config.width;
-        metadata.max_position_embeddings = config.maximum;
-        metadata.rotary_dim = config.rotary;
-        metadata.num_experts = config.experts;
-        metadata.hc_mult = config.streams;
-        metadata.rope_base = config.rope_base;
-        metadata.rms_norm_eps = config.eps;
-        metadata.tie_word_embeddings = config.tied_embeddings;
-        metadata.multi_axis_positions = true;
-        metadata.flash_next = true;
-        metadata.model_type = "qwen4_exp";
-        metadata.layer_types = config.layer_types;
-    }
-    DenseTensor adapter_prepare_hidden(DenseTensor hidden, int64_t batch, int64_t tokens) const {
-        return this->repeat_hidden(std::move(hidden), this->metadata.hc_mult);
-    }
-    CausalPositions<DenseTensor> adapter_prepare_positions(DenseTensor current, int64_t, int64_t) {
-        const auto rank = Backend::rank(current);
-        if ((rank == 2 || rank == 3) && Backend::size(current, 0) == 4)
-            current = this->position_axes(std::move(current), 1, 3);
-        auto full = this->defined(this->positions)
-                        ? this->concat_positions(this->positions, current)
-                        : current;
-        return {std::move(current), std::move(full)};
-    }
-    void adapter_validate_positions(const DenseTensor &positions, int64_t batch, int64_t tokens,
-                                    bool has_mrope) const {
-        const auto rank = Backend::rank(positions);
-        require_model((rank == 1 || (rank == 2 && Backend::size(positions, 0) == 3) ||
-                       (rank == 3 && Backend::size(positions, 0) == 3 &&
-                        Backend::size(positions, 1) == batch)) &&
-                          Backend::size(positions, -1) == tokens,
-                      "Qwen4 positions require [T], [3,T], [4,T], [3,B,T] or [4,B,T]");
-    }
-    void adapter_set_max_position_embeddings(int64_t value) { this->config.maximum = value; }
-    void adapter_validate_forward(int64_t new_batch, int64_t tokens, int64_t cache_position, bool,
-                                  bool has_cache_position_override, bool has_attention_mask) const {
-        require_model(tokens > 0 &&
-                          cache_position + tokens <= this->metadata.max_position_embeddings &&
-                          !has_cache_position_override && !has_attention_mask,
-                      "Qwen4 requires unpadded causal cache positions");
-        (void)new_batch;
-    }
-    bool adapter_requires_batch_reset(int64_t new_batch) const noexcept {
-        return this->batch != 0 && this->batch != new_batch;
-    }
-    bool adapter_allows_speculative_position_override() const noexcept { return true; }
-    bool adapter_force_cache_advance() const noexcept { return true; }
-    bool adapter_supports_speculation() const noexcept { return true; }
-};
 
 } // namespace tyloi::models::qwen4_exp

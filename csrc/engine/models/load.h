@@ -50,12 +50,12 @@ inline constexpr auto with_model = []<typename F>(
     auto finish = [&](auto& owner, auto& state, auto& executor, auto& runtime_components, auto started) {
         auto& model = *owner;
         using Model = std::remove_cvref_t<decltype(model)>;
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
-            Executor::prepare(model.vocab_size());
+        if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
+            Executor::prepare(model.metadata.vocab_size);
         tyloi::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
         std::size_t graph_reserve=0;
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+        if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             if (moe_expert_cache_has_sources(execution.weights.moe) &&
                     !moe_expert_cache_finalized(execution.weights.moe)) {
                 graph_reserve=qwen4_mtp_graph_reserve(model,runtime_components.mtp.get());
@@ -248,8 +248,23 @@ inline constexpr auto with_model = []<typename F>(
                 execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().collectives(), execution.executor().profiler());
             return finish(owner, state, executor, components, started);
         }
-        case CudaBackbone::qwen4_exp:
-            return load.template operator()<Qwen4CausalLm>();
+        case CudaBackbone::qwen4_exp: {
+            auto started = std::chrono::steady_clock::now();
+            auto owner = std::make_shared<qwen4_exp::Model>();
+            qwen4_exp::read(*owner, source, tyloi::models::config_json(*source, options.config_path),
+                            options.context_size);
+            owner->execution = &execution;
+            qwen4_exp::load(*owner, execution, options.context_size, true, true);
+            weight_loader::Loader weights{*owner->source, execution.config.weights,
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
+                execution.weights, execution.executor().tq()};
+            auto runtime_components = load_runtime_components(*owner, weights, load_optional_components);
+            auto state = std::unique_ptr<qwen4_exp::State>(static_cast<qwen4_exp::State*>(
+                owner->make_state().release()));
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+            return finish(owner, state, executor, runtime_components, started);
+        }
         case CudaBackbone::deepseek_v4: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);

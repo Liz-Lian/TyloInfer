@@ -23,36 +23,36 @@
 
 namespace tyloi::cuda {
 
-inline bool mtp_stream_prompt_history(Qwen4CausalLm&, int64_t tokens, const char* option) {
+inline bool mtp_stream_prompt_history(qwen4_exp::Model&, int64_t tokens, const char* option) {
     return tokens>16384 && (!option || option[0]!='0');
 }
-inline bool mtp_host_prompt_history(Qwen4CausalLm& model, int64_t tokens) {
+inline bool mtp_host_prompt_history(qwen4_exp::Model& model, int64_t tokens) {
     const auto* option=env_lookup("TYLOINFER_MTP_HOST_PROMPT_HISTORY");
     if(option)return option[0]!='0';
-    const auto bytes=std::size_t(tokens)*model.hidden_size()*model.hc_mult()*sizeof(uint16_t);
+    const auto bytes=std::size_t(tokens)*model.metadata.hidden_size*model.metadata.hc_mult*sizeof(uint16_t);
     return bytes+(std::size_t(32)<<20)>default_context(mfq_current_cuda_device())->available_memory();
 }
-inline bool mtp_bootstrap_before_publication(Qwen4CausalLm&, const char* option) { return !option || option[0]!='0'; }
-template<class Mtp> bool mtp_retains_partial_target_prefix(Qwen4CausalLm& model, Mtp& mtp, int accepted) {
+inline bool mtp_bootstrap_before_publication(qwen4_exp::Model&, const char* option) { return !option || option[0]!='0'; }
+template<class Mtp> bool mtp_retains_partial_target_prefix(qwen4_exp::Model& model, Mtp& mtp, int accepted) {
     if(model.speculative_prefix_retention && accepted>=0)return true;
     return mtp.retains_partial_target_prefix();
 }
-inline std::size_t mtp_history_merge_limit(Qwen4CausalLm&) { return 128; }
-inline std::size_t mtp_history_flush_threshold(Qwen4CausalLm&, const char* option) { return !option || option[0]!='0'?4:512; }
-inline std::size_t mtp_parked_history_flush_threshold(Qwen4CausalLm&, const char* option) { return !option || option[0]!='0'?16:512; }
-inline int64_t mtp_predictor_prefill_chunk_size(Qwen4CausalLm&, int64_t requested) { return std::min<int64_t>(1024,requested); }
-template<class Ops> bool mtp_cache_only_prompt_history(Qwen4CausalLm&, Ops& ops) {
+inline std::size_t mtp_history_merge_limit(qwen4_exp::Model&) { return 128; }
+inline std::size_t mtp_history_flush_threshold(qwen4_exp::Model&, const char* option) { return !option || option[0]!='0'?4:512; }
+inline std::size_t mtp_parked_history_flush_threshold(qwen4_exp::Model&, const char* option) { return !option || option[0]!='0'?16:512; }
+inline int64_t mtp_predictor_prefill_chunk_size(qwen4_exp::Model&, int64_t requested) { return std::min<int64_t>(1024,requested); }
+template<class Ops> bool mtp_cache_only_prompt_history(qwen4_exp::Model&, Ops& ops) {
     const auto* option=env_lookup("TYLOINFER_MTP_CACHE_ONLY_PRIME");
     const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(&ops.mtp);
     return (!option || option[0]!='0') && predictor && predictor->layers.size()==1;
 }
-template<class Ops> void mtp_initialize(Qwen4CausalLm&, Ops& ops) {
+template<class Ops> void mtp_initialize(qwen4_exp::Model&, Ops& ops) {
     if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp))
         predictor->compact_graph_sampling=ops.captured_compact_requested();
 }
 
 template<class Ops, class DenseTensor, class Finish>
-std::optional<DenseTensor> mtp_target_forward(Qwen4CausalLm& model, Ops& ops, DenseTensor& ids, DenseTensor* raw,
+std::optional<DenseTensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops, DenseTensor& ids, DenseTensor* raw,
                                          int64_t confirmed, std::uint64_t transfer_before, const Finish& finish_profile) {
     if(!ops.transformed_prompt) {
         bool initialized=false;
@@ -73,7 +73,7 @@ std::optional<DenseTensor> mtp_target_forward(Qwen4CausalLm& model, Ops& ops, De
 }
 
 template<class Ops, class Chunk, class DenseTensor, class Timer, class Finish>
-std::optional<typename Ops::PrefillResult> mtp_prefill(Qwen4CausalLm& model, Ops& ops, const Chunk& chunk,
+std::optional<typename Ops::PrefillResult> mtp_prefill(qwen4_exp::Model& model, Ops& ops, const Chunk& chunk,
                                                       DenseTensor& ids, DenseTensor& raw, Timer& timer, const Finish& finish_prefill) {
     if(!ops.transformed_prompt && model.reuse_decode_graphs && model.graph_registry && chunk.count<=128) {
         std::vector<DenseTensor> hidden_rows,raw_rows;
@@ -101,7 +101,7 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(Qwen4CausalLm& model, Ops
 }
 
 template<class Ops, class DenseTensor>
-std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions) {
+std::optional<MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions) {
     auto& mtp=ops.mtp;
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
     auto& target_maintenance=ops.target_maintenance;
@@ -190,13 +190,13 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, DenseT
 }
 
 template<class Ops>
-void mtp_predictor_compact(Qwen4CausalLm&, Ops& ops, MtpStep& result) {
+void mtp_predictor_compact(qwen4_exp::Model&, Ops& ops, MtpStep& result) {
     if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp);predictor && result.sample_logits.defined())
         ops.projected_predictor_compact=predictor->graph_compact_topk();
 }
 
 template<class Ops, class DenseTensor>
-bool mtp_predictor_history_step(Qwen4CausalLm& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions, bool scalar_chain) {
+bool mtp_predictor_history_step(qwen4_exp::Model& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions, bool scalar_chain) {
     if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp);
         predictor && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
         for(int64_t offset=0;offset<ids.size(1);offset+=4) {
@@ -211,7 +211,7 @@ bool mtp_predictor_history_step(Qwen4CausalLm& model, Ops& ops, DenseTensor& hid
 }
 
 template<class Ops, class Started>
-double mtp_begin_predictor_prefill(Qwen4CausalLm& model, Ops& ops, int64_t pairs, Started started) {
+double mtp_begin_predictor_prefill(qwen4_exp::Model& model, Ops& ops, int64_t pairs, Started started) {
     if(ops.cache_only_prompt_history())return 0;
     if(pairs<=128 || !model.reuse_decode_graphs || !model.graph_registry)return 0;
     prepare_moe_decode_residency(ops.weights.moe);
@@ -224,19 +224,19 @@ double mtp_begin_predictor_prefill(Qwen4CausalLm& model, Ops& ops, int64_t pairs
 }
 
 template<class Ops, class DenseTensor>
-void mtp_predictor_prefill_begin(Qwen4CausalLm& model, Ops& ops, DenseTensor& ids) {
+void mtp_predictor_prefill_begin(qwen4_exp::Model& model, Ops& ops, DenseTensor& ids) {
     if(!ops.cache_only_prompt_history() && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128)
         ops.end_predictor_prefill();
 }
 
 template<class Ops, class DenseTensor, class Timer>
-void mtp_predictor_prefill(Qwen4CausalLm& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions,
+void mtp_predictor_prefill(qwen4_exp::Model& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions,
                            Timer& timer, bool& prefill_finished) {
     if(ops.cache_only_prompt_history()) {
         auto& predictor=static_cast<qwen4_exp::Predictor&>(ops.mtp);
         WeightLoan workspace(ops.weights.moe);
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
-            std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);
+            std::size_t(ids.size(1))*model.metadata.hidden_size*model.metadata.hc_mult*sizeof(float)*12);
         {
             auto resident_hidden=hidden.to(::tyloi::kCUDA);
             (void)predictor.evaluate(resident_hidden,ids,0,true,positions,{},true);

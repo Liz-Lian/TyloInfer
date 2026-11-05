@@ -90,7 +90,7 @@ struct Text {
         // These regions hold legacy paged expert fields. TQ retains ordinary
         // compressed tensor images and cannot consume those page addresses.
         if(weights.tq)return;
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+        if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             if(preparing_graph_depth || !expert_space || expert_space->has_decode() || !components.mtp)return;
             const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
             const auto active=qwen4_mtp_graph_reserve(language,components.mtp.get(),graph_draft_depth);
@@ -113,7 +113,7 @@ struct Text {
     }
 
     void prepare_graph_depth(const InferenceRequest& input) {
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+        if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             if(!components.mtp)return;
             const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
             if(!language.reuse_decode_graphs || !execution->config.moe_pipeline || (warmup && warmup[0]=='0'))return;
@@ -189,7 +189,7 @@ struct Text {
                 cache.reserve_ram(bytes);weights.reserve(bytes);
             });
         if (config.continuous_batch.max_sequences) {
-            if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
+            if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
                 batching = make_batch(language, *execution, config.continuous_batch,
                     config.generation.prefill_chunk_size);
             else {
@@ -229,7 +229,7 @@ struct Text {
                     cache.reserve_ram(bytes);weights.reserve(bytes);
                 });
         }
-        if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
+        if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
                 const auto device = execution->config.layer_placement.primary_device();
                 auto context = tyloi::cuda::default_context(device);
@@ -259,7 +259,7 @@ struct Text {
             command.bytes=bytes;
             session(command);
         }
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+        if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             qwen4_warmup_decode_graphs(language,components.mtp.get());
             // Exercise the same draft/verify/commit loop as a real request.
             // Graph-only warmup cannot cover its history replay, sampling and
@@ -285,7 +285,7 @@ struct Text {
                 request.sampling.max_tokens=static_cast<int32_t>(
                     std::min<int64_t>(64,language.max_position_embeddings()-16));
                 request.sampling.mtp_max_draft_tokens=3;
-                for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.vocab_size());
+                for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.metadata.vocab_size);
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
                 auto generation=run_mtp_generation(language,state,executor.get(),execution->executor().collectives(),
@@ -320,7 +320,7 @@ struct Text {
         }
     }
     bool can_batch(const EngineRequest& request) const {
-        if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
+        if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
             return batching && !request.input.media && request.input.cache_plan.session_id.empty() &&
                 !(request.input.sampling.enable_mtp && components.mtp);
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), bool(components.mtp));
@@ -331,7 +331,7 @@ struct Text {
                           value.restore_decode_workspace = std::function<void()>();
                       })
             language.restore_decode_workspace={};
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) language.reserve_kv_workspace={};
+        if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
         if(kv)kv->set_reservation({});
         set_moe_workspace_reservation(weights.moe,{});
         if (offload) offload->set_ram_reservation({});
@@ -347,7 +347,7 @@ struct Text {
             if(expert_space) expert_space->release();
             finish_moe_expert_exchanges(weights.moe);
             graph.invalidate();
-            if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
+            if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
                 qwen4_release_decode_graphs(language,components.mtp.get());
             if(batching)batching->release_idle_buffers();
             if(components.mtp)components.mtp->reset(1);
@@ -406,7 +406,7 @@ struct Text {
     Generation generate(const RequestId& id, InferenceRequest& input, InferenceOutput& output, bool batched) {
         if (batched) {
             graph.invalidate();
-            if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
+            if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
                 // Exclusive MTP generation has ended before a batch starts.
                 // Its graph consumers must retire before idle batch buffers.
                 qwen4_release_decode_graphs(language,components.mtp.get());

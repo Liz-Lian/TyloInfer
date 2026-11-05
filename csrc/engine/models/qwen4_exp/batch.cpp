@@ -42,19 +42,19 @@ class CacheScope {
 
 } // namespace
 
-BatchOps::BatchOps(Qwen4CausalLm& model, CudaExecutionContext& execution,
+BatchOps::BatchOps(qwen4_exp::Model& model, CudaExecutionContext& execution,
                    CudaContinuousBatchConfig config)
     : model_(model), execution_(execution), config_(std::move(config)) {
     TYLOINFER_RUNTIME_CHECK(config_.max_sequences > 0 && config_.max_sequences <= 32,
                             "Flash-Next continuous batching supports 1..32 requests");
-    model_.reset(1);
+    model_.active->reset(1);
     if (config_.cuda_graph)
         graph_ = std::make_unique<Qwen4BatchDecodeGraph>(model_);
 }
 
 BatchOps::~BatchOps() = default;
 
-int64_t BatchOps::vocab_size() const { return model_.vocab_size(); }
+int64_t BatchOps::vocab_size() const { return model_.metadata.vocab_size; }
 
 int64_t BatchOps::max_context() const { return model_.max_position_embeddings(); }
 
@@ -91,7 +91,7 @@ tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
     CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     initialize_prefill(request, chunk);
     return tyloi::cuda::budget_batch_prefill(
-        model_.hidden_size(), model_.hc_mult(), execution_.config.layer_placement.primary_device(),
+        model_.metadata.hidden_size, model_.metadata.hc_mult, execution_.config.layer_placement.primary_device(),
         execution_.weights.moe, chunk,
         request->cache->prefill_growth_bytes(chunk.count));
 }
@@ -126,7 +126,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
             // The preceding exclusive request's global KV/recurrent state is
             // unused while independent batch rows own their own context.
             qwen4_release_decode_graphs(model_, nullptr);
-            model_.reset(1);
+            model_.active->reset(1);
             release_moe_decode_buffers(execution_.weights.moe);
             default_context(execution_.config.layer_placement.primary_device())->reclaim_idle_memory();
         }
@@ -142,7 +142,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
                 .reshape({1, -1});
         request->sampler.emplace(request->sampling);
         if (request->sampler->has_penalties())
-            request->counts = SamplingOps::token_counts(request->prefill_ids, model_.vocab_size());
+            request->counts = SamplingOps::token_counts(request->prefill_ids, model_.metadata.vocab_size);
     }
     TYLOINFER_RUNTIME_CHECK(request->cache->position() == chunk.offset,
                             "Flash-Next batch prefill position mismatch");
@@ -178,7 +178,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
         if (finished)
             next = tyloi::engine::sample_logits(
                 *request->sampler,
-                model_.logits_from_hidden(model_.last_hidden(std::move(hidden))).reshape({1, -1}),
+                model_.logits(model_.adapter_last_logits(model_.lm_head, hidden.index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()}))).reshape({1, -1}),
                 request->counts, request->token_constraint);
         TYLOINFER_CUDA_CHECK(
             cudaEventRecord(timer->finished_event(), mfq_get_current_cuda_stream()));
@@ -263,7 +263,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
             }
             std::vector<DenseTensor> next(items.size());
             if (!last.empty()) {
-                auto logits = model_.logits_from_hidden(::tyloi::cuda::cat(last, 0))
+                auto logits = model_.logits(::tyloi::cuda::cat(last, 0))
                                   .reshape({int64_t(last.size()), -1});
                 for (std::size_t i = 0; i < finished.size(); ++i) {
                     const auto row = finished[i];
@@ -414,7 +414,7 @@ void BatchOps::recover(State& state) {
 namespace tyloi::cuda {
 
 std::unique_ptr<tyloi::engine::Batch> make_batch(
-    Qwen4CausalLm& model, CudaExecutionContext& execution,
+    qwen4_exp::Model& model, CudaExecutionContext& execution,
     const CudaContinuousBatchConfig& config, std::int64_t chunk_size) {
     return std::make_unique<tyloi::engine::ContinuousBatch<qwen4_exp::BatchOps>>(
         chunk_size, config.prefill_token_budget, model, execution, config);

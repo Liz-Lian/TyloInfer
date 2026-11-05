@@ -5,7 +5,7 @@
 #include "ops.h"
 #include "vision.h"
 #include "engine/models/common/check.h"
-#include "engine/models/common/session_codec.h"
+#include "engine/models/session_codec.h"
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 
