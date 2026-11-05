@@ -40,6 +40,40 @@ Apple M5 Max · 40-core GPU · 128 GiB · GGUF IQ3_XXS · 4,096-token input. Spe
 | TyloInfer | 1,001 | 40.1 | 121.5 |
 | [Splash 1.5.0](https://github.com/incoai/splash/releases/tag/1.5.0) | **1,085** | — | **131.2** |
 
+### CUDA · Qwen3.8-27B
+
+NVIDIA RTX 3090 Ti · 24 GiB VRAM · 4K Python code continuation · hot API requests · greedy decoding · 256 output tokens · FP16/BF16 KV · prompt reuse disabled. Speeds in tokens/s; PP uses ordinary decoding, and generation excludes the first-token wait.
+
+**GSQ-RCO IQ2_XS**
+
+| Engine | Prompt processing | Generation | Native MTP | DFlash2 (drafts) |
+| --- | ---: | ---: | ---: | ---: |
+| TyloInfer | **2,237** | **83.5** | **171.4** | **206.8** (≤6) |
+| NInfer-all | 1,729 | 73.0 | 150.2 | 151.1 (6) |
+| llama.cpp b12125 | 1,601 | 57.2 | 93.9 | 104.9 (5) |
+| ik_llama.cpp | 1,371 | 52.4 | 83.6 | 56.3 (7) |
+
+**UD-Q4_K_XL**
+
+| Engine | Prompt processing | Generation | Native MTP | DFlash2 (drafts) |
+| --- | ---: | ---: | ---: | ---: |
+| TyloInfer | **2,110** | 43.2 | 101.1 | 136.0 (≤6) |
+| NInfer-all | 2,008 | **46.9** | **110.5** | 136.3 (7) |
+| llama.cpp b12125 | 1,799 | 43.9 | 89.3 | 109.9 (5) |
+| ik_llama.cpp | 1,513 | 43.6 | 78.0 | 58.2 (7) |
+| OpenJet | 1,750 | 39.1 | 103.4 | — |
+| tqLLM | 1,821 | 42.5 | 108.2 | **173.1** (7) |
+
+**NInfer-3090 · native Q4/Q5 weights (separate comparison)**
+
+| Engine | Prompt processing | Generation | Native MTP | DFlash2 (drafts) |
+| --- | ---: | ---: | ---: | ---: |
+| NInfer-3090 | 3,369 | 52.5 | 135.8 | 166.9 (7) |
+
+- NInfer-all uses **8-bit (INT8) activations for prefill**. tqLLM and NInfer-3090 also enable INT8 prefill GEMMs. Native MTP uses 3 drafts; TyloInfer adapts up to 3.
+- ik_llama.cpp and tqLLM ran in WSL2; the others ran on Windows. NInfer-3090 uses different native weights and its template adds 13 prompt tokens.
+- tqLLM uses an approximate 4-bit shortlist / INT8-rescored output head and a Q8_0 DFlash2 companion; the other DFlash2 companions use Q4_0.
+
 ## Quick start
 
 ### Build and serve
