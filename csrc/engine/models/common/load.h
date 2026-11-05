@@ -11,7 +11,6 @@
 #include <string_view>
 
 namespace tyloi { class ModelSource; }
-struct CudaExecutionContext;
 
 struct TransformerWeightLoader {
     const tyloi::cuda::weight_loader::Loader& weights;
@@ -73,12 +72,4 @@ std::string configure_yarn(tyloi::ops::YarnScaling& yarn, bool extend, std::stri
 
 void validate_model_source(const tyloi::ModelSource& source);
 
-} // namespace tyloi::cuda
-
-namespace tyloi::cuda {
-template <typename Model>
-Model load_causal_lm(CudaExecutionContext& execution, const std::string& model_path,
-                    const std::string& config_path, std::int64_t context_size_override = 0,
-                    bool load_blocks = true, bool defer_moe_cache_finalize = false,
-                    std::shared_ptr<const tyloi::ModelSource> source = {}, bool load_input_output = true);
 } // namespace tyloi::cuda

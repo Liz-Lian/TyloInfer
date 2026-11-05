@@ -214,10 +214,6 @@ struct Text {
                 expert_space.emplace(weights,
                     execution->config.layer_placement.primary_device(), std::move(expert_loan));
             restore_decode_workspace=[this]{restore_graph_expert_space();};
-            if constexpr (requires(Model& value) {
-                              value.restore_decode_workspace = std::function<void()>();
-                          })
-                language.restore_decode_workspace = restore_decode_workspace;
             bind_moe_budget(weights.moe, &*budget,
                 expert_space ? &*expert_space : nullptr);
         }
@@ -302,10 +298,6 @@ struct Text {
     }
     void clear_bindings() noexcept {
         restore_decode_workspace={};
-        if constexpr (requires(Model& value) {
-                          value.restore_decode_workspace = std::function<void()>();
-                      })
-            language.restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
         if(kv)kv->bind_budget(nullptr, nullptr);
         bind_moe_budget(weights.moe, nullptr);

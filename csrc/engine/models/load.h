@@ -69,28 +69,6 @@ inline constexpr auto with_model = []<typename F>(
             graph_reserve, execution.config.report_cuda_memory);
         return run(owner, state, executor, runtime_components, started, loaded_at, source);
     };
-    auto load = [&]<typename Model>() {
-        auto started = std::chrono::steady_clock::now();
-        auto owner = std::make_shared<Model>(load_causal_lm<Model>(
-                execution,
-                options.model_path,
-                options.config_path,
-                options.context_size,
-                true,
-                load_optional_components,
-                source));
-        auto& model = *owner;
-        weight_loader::Loader weights{*model.source, execution.config.weights,
-            {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
-             execution.config.tensor_parallel, moe_parallel_config(execution.config)},
-            execution.weights, execution.executor().tq()};
-        auto runtime_components =
-            load_runtime_components(model, weights, load_optional_components);
-        std::unique_ptr<Model> state;
-        auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-        auto components = std::move(runtime_components);
-        return finish(owner, state, executor, components, started);
-    };
     auto load_tts = [&] {
         auto started = std::chrono::steady_clock::now();
         auto definition = tyloi::models::config_json(*source, options.config_path);
