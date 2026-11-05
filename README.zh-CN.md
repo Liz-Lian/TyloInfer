@@ -23,12 +23,24 @@ Apple Silicon 使用 Metal；NVIDIA GPU 支持 Linux 和 Windows 下的 CUDA。R
 
 ## 推理性能
 
-Apple M5 Max · 40 核 GPU · 128 GiB · 4,096 token 输入，单位为 token/s。
+Apple M5 Max · 40 核 GPU · 128 GiB · GGUF IQ3_XXS · 4,096 token 输入，单位为 token/s。
 
-| 模型 | 格式 | Prompt Processing | Generation | DFlash2 生成 |
-| --- | --- | ---: | ---: | ---: |
-| Qwen3.8-Flash-Next | GGUF IQ3_XXS | 2,572 | 73.7 | 162.4 |
-| Qwen3.8-27B | GGUF IQ3_XXS | 1,001 | 40.1 | 121.5 |
+### Qwen3.8-Flash-Next
+
+| 推理引擎 | Prompt Processing | Generation | DFlash2 生成 |
+| --- | ---: | ---: | ---: |
+| TyloInfer | 2,572 | 73.7 | **162.4** |
+| [Strata 0.1.52](https://github.com/Niko1221/Strata/commit/5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d) | — | **76.3** | — |
+| [Splash 1.4.1](https://github.com/incoai/splash/releases/tag/1.4.1) | **2,599** | — | 148.9 |
+
+### Qwen3.8-27B
+
+| 推理引擎 | Prompt Processing | Generation | DFlash2 生成 |
+| --- | ---: | ---: | ---: |
+| TyloInfer | 1,001 | 40.1 | 121.5 |
+| [Splash 1.5.0](https://github.com/incoai/splash/releases/tag/1.5.0) | **1,085** | — | **131.2** |
+
+Strata 的 Prompt Processing 记录包含首次着色器编译时间，此处不列入对比。
 
 ## 快速开始
 
