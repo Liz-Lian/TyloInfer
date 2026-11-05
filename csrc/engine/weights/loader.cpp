@@ -3,11 +3,15 @@
 #include "engine/weights/moe/experts.h"
 #include <iostream>
 #include "engine/weights/moe/load.h"
+#include "engine/weights/routed_cache.h"
+#include "engine/weights/tq/routed.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "env.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/group.h"
 #include "engine/weights/quant.h"
+#include "engine/weights/sharded.h"
 #include "engine/weights/encoding/dense_blob.h"
 #include "engine/weights/memory.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
@@ -17,6 +21,8 @@
 #include <numeric>
 #include "engine/weights/moe/expert_cache.h"
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/weights/encoding/fp8_sq_blob.h"
+#include "engine/weights/encoding/quant/nint_rows.h"
 #include "engine/weights/moe/cached_source_internal.h"
 #endif
 #include "engine/weights/moe/expert_store.h"
@@ -117,6 +123,7 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::tenso
 #endif
 }
 
+#if TYLOINFER_ENABLE_MFQ_COMPAT
 static bool is_nint_linear_dtype(const std::string & dtype) {
     return dtype == "NINT" || dtype == "NINT8-0";
 }
@@ -124,6 +131,7 @@ static bool is_nint_linear_dtype(const std::string & dtype) {
 static bool is_nvq_linear_dtype(const std::string & dtype) {
     return dtype == "NVQ" || dtype == "NPQ";
 }
+#endif
 
 static TensorParallelAxis infer_tensor_parallel_axis(
         const std::string & name) {
@@ -181,7 +189,7 @@ plan_parallel_slices(
     return slices;
 }
 
-std::vector<tyloi::TensorParallelSlice>
+static std::vector<tyloi::TensorParallelSlice>
 plan_moe_expert_parallel_slices(
         const ParallelConfig& parallel,
         int64_t extent,
@@ -589,13 +597,6 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::weigh
     const auto shard_dtype = shards.front().weight->scalar_type();
     return std::make_shared<tyloi::ShardedTensor>(
         logical_out, logical_neuron_len, shard_dtype, axis, std::move(shards));
-}
-
-bool is_quant_dtype(const std::string & dtype) {
-    return dtype == "TQ" || is_nint_linear_dtype(dtype) ||
-        is_nvq_linear_dtype(dtype) || dtype == "MXFP4-SQ" ||
-        tyloi::fp8sq::is_dtype(dtype) ||
-        dtype == "MXFP4" || dtype == "MXFP8";
 }
 
 static std::vector<tyloi::TensorParallelSlice>

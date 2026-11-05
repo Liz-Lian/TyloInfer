@@ -25,6 +25,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
 #include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/routed_cache.h"
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/state.h"
 #include "engine/models/minicpmo45/state.h"

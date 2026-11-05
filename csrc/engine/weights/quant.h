@@ -14,8 +14,11 @@
 #endif
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
+
+bool is_quant_dtype(const std::string& dtype);
 
 tyloi::mxfp4::Data select_mxfp4_cpu_rows(
     const tyloi::mxfp4::Data& source, const std::vector<int64_t>& rows);

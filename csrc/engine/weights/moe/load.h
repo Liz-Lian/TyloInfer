@@ -1,21 +1,25 @@
 #pragma once
 
 #include "engine/weights/moe/experts.h"
+#include "engine/weights/moe/options.h"
 #include "engine/weights/encoding/quant/mfe_blob.h"
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace tyloi { namespace source { class Source; } }
 
-struct MoeLoadOptions {
-    bool nvq2 = false;
-    bool nvq_groups = false;
-    bool heterogeneous = true;
-};
-
 tyloi::mfe::Data load_mfe_cpu(
+    const tyloi::source::Source& source, const std::string& name);
+std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
+    const tyloi::source::Source& source, const std::string& name);
+::tyloi::DenseTensor mfe_dense_reference(
+    const tyloi::source::Source& source, const std::string& name,
+    ::tyloi::DenseTensor input, const std::vector<std::int32_t>& expert_ids,
+    int tokens, int routes, bool routed_input);
+::tyloi::DenseTensor materialize_mfe_dense(
     const tyloi::source::Source& source, const std::string& name);
 tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data& source);
 std::shared_ptr<::tyloi::MfeTensor> make_mfe(

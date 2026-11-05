@@ -12,7 +12,9 @@
 
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/weights/placement.h"
+#include "engine/weights/routed_cache.h"
 
 #include <iostream>
 #include <stdexcept>

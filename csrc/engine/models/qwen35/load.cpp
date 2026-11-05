@@ -11,6 +11,7 @@
 #include "engine/models/common/model_graph.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/group.h"
+#include "engine/weights/quant.h"
 #include "engine/weights/source/read.h"
 
 #include <algorithm>

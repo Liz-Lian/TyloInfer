@@ -2,6 +2,7 @@
 #include "engine/models/session.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/weights/loader.h"
+#include "engine/weights/routed_cache.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "dspark.h"

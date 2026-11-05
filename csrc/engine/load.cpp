@@ -24,6 +24,7 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/routed_cache.h"
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/tensor/backend.h"

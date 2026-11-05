@@ -6,6 +6,7 @@
 #include "engine/weights/workspace.h"
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/ops.h"
 #include "engine/models/common/transformer_layer.h"

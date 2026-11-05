@@ -18,6 +18,7 @@
 #include "engine/scheduler/request.h"
 #include "engine/models/prepare.h"
 #include "engine/weights/memory.h"
+#include "engine/weights/routed_cache.h"
 
 #include <algorithm>
 #include <exception>

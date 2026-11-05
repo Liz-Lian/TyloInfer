@@ -1,16 +1,22 @@
 #pragma once
 
-#include "engine/backends/cuda/ops/projection/quant_linear.h"
+#include "engine/tensor.h"
 #include "engine/weights/bias.h"
-#include "engine/weights/moe/experts.h"
-#include "engine/weights/source/read.h"
+#include "engine/weights/moe/options.h"
 #include "engine/weights/placement.h"
-#include "engine/weights/moe/load.h"
-#include "engine/weights/routed_cache.h"
-#include "engine/weights/tq/routed.h"
+#include "engine/weights/source/read.h"
+#include "engine/weights/tensor_parallel.h"
 
-std::vector<tyloi::TensorParallelSlice> plan_moe_expert_parallel_slices(
-    const ParallelConfig& parallel, int64_t extent, const std::string& name);
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+class TqExec;
+namespace tyloi { class NintRows; }
+namespace tyloi::cuda { struct Experts; struct RoutedCache; }
 
 struct MfqDropFileCacheGuard {
     bool& setting;
@@ -26,20 +32,10 @@ struct MfqDropFileCacheGuard {
     }
 };
 
-bool is_quant_dtype(const std::string& dtype);
 std::shared_ptr<tyloi::NintRows> load_nint_row_table(
     const tyloi::source::Source& source, const std::string& name, bool prefer_mapping=false);
-std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
-    const tyloi::source::Source& source, const std::string& name);
-::tyloi::DenseTensor mfe_dense_reference(
-    const tyloi::source::Source& source, const std::string& name,
-    ::tyloi::DenseTensor input, const std::vector<std::int32_t>& expert_ids,
-    int tokens, int routes, bool routed_input);
-::tyloi::DenseTensor materialize_mfe_dense(
-    const tyloi::source::Source& source, const std::string& name);
 
 namespace tyloi::cuda::weight_loader {
-using DenseTensor = ::tyloi::DenseTensor;
 // The source and cache owner outlive all loading, including streamed media layers.
 struct Loader {
     using DenseTensor = ::tyloi::DenseTensor;

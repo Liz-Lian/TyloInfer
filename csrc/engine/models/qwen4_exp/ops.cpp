@@ -19,6 +19,7 @@
 #include "predictor.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/group.h"
+#include "engine/weights/encoding/quant/nint_rows.h"
 #include "engine/weights/encoding/tq.h"
 #include "engine/weights/tq/source.h"
 #include "engine/weights/tq/rows.h"

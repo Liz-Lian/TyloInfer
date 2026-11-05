@@ -5,7 +5,8 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/moe/load.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/tq/load.h"
+#include "engine/weights/quant.h"
+#include "engine/weights/tq/routed.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
 
 #include <cstdio>
