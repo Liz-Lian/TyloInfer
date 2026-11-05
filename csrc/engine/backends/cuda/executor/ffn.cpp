@@ -19,9 +19,9 @@ DenseTensor Executor::full_ffn(
     const auto& attention_ = options_.attention;
     const auto& dense_ = options_.dense;
     if (!ffn.is_moe) {
-        Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
+        Dense op{dense(ffn, project_), {}, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
             attention.official_bf16, attention.attention_output_gate};
-        if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
+        if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons, project_));
         const auto& parallel = projection_;
         auto options = dense_;
         options.mlp.nvq_fusion = parallel.nvq_fusion;
@@ -48,9 +48,8 @@ DenseTensor Executor::full_ffn(
     residual = pair[0];
     auto input = pair[1].reshape({B * T, H});
     record_trace("qwen.ffn_norm", input);
-    auto mlp = dense(ffn);
     auto ff = attention.official_bf16
-        ? mlp.bf16(project_, profiler, dense_.bf16_swiglu, input)
+        ? dense(ffn, project_).bf16(project_, profiler, dense_.bf16_swiglu, input)
               .reshape({B, T, H}).to(::tyloi::kBFloat16).contiguous()
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         : ffn.forward(input, mode).reshape({B, T, H});
@@ -72,9 +71,9 @@ DenseTensor Executor::linear_ffn(
     const auto& projection_ = options_.projection;
     const auto& dense_ = options_.dense;
     if (!ffn.is_moe) {
-        Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps,
+        Dense op{dense(ffn, project_), {}, ffn_norm, attention.rms_norm_eps,
             attention.norm_weight_offset, false, false, true};
-        if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
+        if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons, project_));
         const auto& parallel = projection_;
         auto options = dense_;
         options.mlp.nvq_fusion = parallel.nvq_fusion;

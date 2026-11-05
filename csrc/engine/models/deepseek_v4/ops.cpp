@@ -92,7 +92,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
         layer.compressor.cache_quant_mode = 1;
         layer.compressor.projection = make_fp32_quant_group(
             collectives, primary,
-            weights.build_group({p + "attention.compressor.key_value.weight",
+            weights.group({p + "attention.compressor.key_value.weight",
                                          p + "attention.compressor.gate.weight"}));
         layer.compressor.ape = weights.tensor(p + "attention.compressor.position")
                                 .to(::tyloi::kFloat32)
@@ -108,7 +108,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
         layer.indexer_compressor.cache_quant_mode = 2;
         layer.indexer_compressor.projection = make_fp32_quant_group(
             collectives, primary,
-            weights.build_group({p + "attention.indexer.compressor.key_value.weight",
+            weights.group({p + "attention.indexer.compressor.key_value.weight",
                                          p + "attention.indexer.compressor.gate.weight"}));
         layer.indexer_compressor.ape =
             weights.tensor(p + "attention.indexer.compressor.position")

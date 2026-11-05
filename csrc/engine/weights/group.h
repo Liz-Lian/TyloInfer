@@ -21,7 +21,7 @@ Projections make_projections(
 DenseLinearGroup make_fp32_quant_group(
     tyloi::cuda::Collectives& collectives,
     int primary,
-    QuantLinearGroup group);
+    std::span<const std::shared_ptr<const tyloi::Tensor>> weights);
 
 QuantLinearGroup make_quant_group(
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers,

@@ -127,8 +127,8 @@ void load_moe(Block& block, Loader& ops, const Config& config, int layer,
         ffn.moe_latent_in->size(1) != config.hidden_size ||
         ffn.moe_latent_out->size(0) != config.hidden_size ||
         ffn.moe_latent_out->size(1) != config.moe_latent_size ||
-        ffn.shared->gate_up.outs.size() != 1 ||
-        ffn.shared->gate_up.outs[0] != config.moe_shared_intermediate_size ||
+        ffn.shared->gate_up.size() != 1 ||
+        ffn.shared->gate_up[0]->size(0) != config.moe_shared_intermediate_size ||
         ffn.shared->down->size(0) != config.hidden_size ||
         ffn.shared->down->size(1) != config.moe_shared_intermediate_size ||
         ops.elements(block.ffn_norm) != config.hidden_size) {
@@ -151,7 +151,7 @@ void load_dense_mlp(Block& block, Loader& ops, const Config& config, int layer,
     ffn.down = ops.linear(mlp + "down.weight");
     ffn.gate_up = ops.gate_up({mlp + "up.weight"}, ffn.down);
     ffn.activation = tyloi::ops::MlpActivation::relu_squared;
-    if (ffn.gate_up.outs.size() != 1 || ffn.gate_up.outs[0] != config.intermediate_size ||
+    if (ffn.gate_up.size() != 1 || ffn.gate_up[0]->size(0) != config.intermediate_size ||
         ffn.down->size(0) != config.hidden_size ||
         ffn.down->size(1) != config.intermediate_size) {
         throw std::runtime_error("Nemotron-H dense MLP shapes disagree with config at layer " +

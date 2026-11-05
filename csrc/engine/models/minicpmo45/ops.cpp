@@ -236,7 +236,9 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
         .to(::tyloi::kBFloat16).contiguous();
 }
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
-               const Executor::Mode& mode, Input input) {
+               const Executor::Mode& run_mode, Input input) {
+    auto mode = run_mode;
+    mode.ffn.independent = true;
     MfqCudaGuard guard(mode.primary);
     auto ids = token_ids(copies, mode.primary, DenseTensor(std::move(input.ids)));
     auto hidden = input.embeddings ? DenseTensor(std::move(*input.embeddings))

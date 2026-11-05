@@ -236,15 +236,19 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
     const auto shared_d=std::move(sd),shared_gate_weight=std::move(shared_gate);
     TYLOINFER_RUNTIME_CHECK(shared_g && shared_u && shared_d && shared_gate_weight,
         "Qwen shared expert requires projection weights");
-    std::shared_ptr<QuantLinearGroup> shared_tq;
     const auto shared_g_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(shared_g.get());
     const auto shared_u_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(shared_u.get());
-    if(shared_g_tq && shared_u_tq &&
-       shared_g_tq->image().device().is_cuda() && shared_u_tq->image().device().is_cuda())
-        shared_tq=std::make_shared<QuantLinearGroup>(make_quant_group({shared_g,shared_u},false,false));
+    const bool shared_tq = shared_g_tq && shared_u_tq &&
+        shared_g_tq->image().device().is_cuda() && shared_u_tq->image().device().is_cuda();
     auto shared_raw=[shared_g,shared_u,shared_d,shared_gate_weight,shared_tq](const tyloi::cuda::Projector& project,const DenseTensor& source) {
         if(shared_tq) {
-            auto output=project.run(*shared_d,project.swiglu(*shared_tq,source));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            const std::array<std::shared_ptr<const tyloi::Tensor>, 2> weights{shared_g, shared_u};
+            const auto group = project.group(weights);
+#else
+            const auto group = make_quant_group({shared_g, shared_u}, false, false);
+#endif
+            auto output=project.run(*shared_d,project.swiglu(group,source));
             return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,source))*output;
         }
         DenseTensor hidden;

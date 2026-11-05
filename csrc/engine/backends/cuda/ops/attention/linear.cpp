@@ -4,6 +4,9 @@
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/weights/group.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -54,6 +57,17 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::forward(
 std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
         const Projector& project, ::tyloi::DenseTensor x,
         LinearView state) const {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    const auto in_group = !split_in_proj ? project.group(in_proj) : QuantLinearGroup{};
+    const auto qkv_group = split_in_proj ? project.group(qkv_proj) : QuantLinearGroup{};
+    const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
+        ? project.group(ab_nint_proj) : QuantLinearGroup{};
+#else
+    const auto in_group = !split_in_proj ? make_quant_group(in_proj, grouped_weights, true) : QuantLinearGroup{};
+    const auto qkv_group = split_in_proj ? make_quant_group(qkv_proj, grouped_weights, true) : QuantLinearGroup{};
+    const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
+        ? make_quant_group(ab_nint_proj, grouped_weights, true) : QuantLinearGroup{};
+#endif
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t nk = key_heads;
     const int64_t nv = value_heads;
@@ -73,7 +87,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                 ::tyloi::DenseTensor qkv, qk_part, v_part, z, alpha_raw,
                     beta_raw;
                 if (dense_ab_tail) {
-                  auto parts = project.run(in_proj, xn);
+                  auto parts = project.run(in_group, xn);
                   qkv = parts[0].to(::tyloi::kFloat32);
                   z = parts[1];
                   auto ab = ab_proj.forward(xn);
@@ -81,7 +95,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                   beta_raw = ab[1];
                 } else if (split_in_proj) {
                   if (split_dense_zab) {
-                    auto qkv_parts = project.run(qkv_proj, xn);
+                    auto qkv_parts = project.run(qkv_group, xn);
                     qk_part = qkv_parts[0];
                     v_part = qkv_parts[1];
                     auto zab = zab_proj.forward(xn);
@@ -89,11 +103,11 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                     alpha_raw = zab[1];
                     beta_raw = zab[2];
                   } else {
-                    auto qkv_parts = project.run(qkv_proj, xn);
+                    auto qkv_parts = project.run(qkv_group, xn);
                     qk_part = qkv_parts[0];
                     v_part = qkv_parts[1];
                     z = project.run(*z_proj, xn);
-                    auto ab = ab_is_nint ? project.run(ab_nint_proj, xn)
+                    auto ab = ab_is_nint ? project.run(ab_group, xn)
                                          : ab_proj.forward(xn);
                     alpha_raw = ab[0];
                     beta_raw = ab[1];
@@ -103,7 +117,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                        v_part.to(::tyloi::kFloat32)},
                       -1);
                 } else {
-                  auto parts = project.run(in_proj, xn);
+                  auto parts = project.run(in_group, xn);
                   qkv = parts[0].to(::tyloi::kFloat32);
                   z = parts[1];
                   alpha_raw = parts[2];
@@ -273,6 +287,17 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         ::tyloi::DenseTensor x,
         LinearView state, LinearInputs* captured) const {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    const auto in_group = !split_in_proj ? project.group(in_proj) : QuantLinearGroup{};
+    const auto qkv_group = split_in_proj ? project.group(qkv_proj) : QuantLinearGroup{};
+    const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
+        ? project.group(ab_nint_proj) : QuantLinearGroup{};
+#else
+    const auto in_group = !split_in_proj ? make_quant_group(in_proj, grouped_weights, false) : QuantLinearGroup{};
+    const auto qkv_group = split_in_proj ? make_quant_group(qkv_proj, grouped_weights, false) : QuantLinearGroup{};
+    const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
+        ? make_quant_group(ab_nint_proj, grouped_weights, false) : QuantLinearGroup{};
+#endif
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     int64_t nk = key_heads,
             nv = value_heads;
@@ -295,7 +320,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                     beta_raw;
                 if (dense_ab_tail) {
                   auto parts = profiler.measure("linear.in_proj", [&]() {
-                    return project.run(in_proj, xn);
+                    return project.run(in_group, xn);
                   });
                   qkv = profiler.measure("linear.qkv_cast", [&]() {
                     return parts[0].to(::tyloi::kFloat32);
@@ -310,19 +335,19 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                   if (!shared_projection_input && !split_dense_zab &&
                       ab_is_nint &&
                       options.shared_input &&
-                      qkv_proj.layers.size() == 2) {
+                      qkv_proj.size() == 2) {
                     std::vector<const ::tyloi::Tensor*> projections = {
-                        qkv_proj.layers[0].get(),
-                        qkv_proj.layers[1].get(),
+                        qkv_proj[0].get(),
+                        qkv_proj[1].get(),
                         z_proj.get(),
                     };
                     const bool shared_tp_ab =
-                        ab_nint_proj.layers.size() == 2 &&
-                        dynamic_cast<const ::tyloi::ShardedTensor*>(ab_nint_proj.layers[0].get()) &&
-                        dynamic_cast<const ::tyloi::ShardedTensor*>(ab_nint_proj.layers[1].get());
+                        ab_nint_proj.size() == 2 &&
+                        dynamic_cast<const ::tyloi::ShardedTensor*>(ab_nint_proj[0].get()) &&
+                        dynamic_cast<const ::tyloi::ShardedTensor*>(ab_nint_proj[1].get());
                     if (shared_tp_ab) {
-                      projections.push_back(ab_nint_proj.layers[0].get());
-                      projections.push_back(ab_nint_proj.layers[1].get());
+                      projections.push_back(ab_nint_proj[0].get());
+                      projections.push_back(ab_nint_proj[1].get());
                     }
                     if (tensor_parallel_output_projections_compatible(
                             projections)) {
@@ -338,7 +363,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                         beta_raw = parts[4];
                       } else {
                         auto ab = profiler.measure("linear.ab_proj", [&]() {
-                          return project.run(ab_nint_proj, xn);
+                          return project.run(ab_group, xn);
                         });
                         alpha_raw = ab[0];
                         beta_raw = ab[1];
@@ -350,7 +375,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                     if (split_dense_zab) {
                       auto qkv_parts =
                           profiler.measure("linear.qkv_proj", [&]() {
-                            return project.run(qkv_proj, xn);
+                            return project.run(qkv_group, xn);
                           });
                       qk_part = qkv_parts[0];
                       v_part = qkv_parts[1];
@@ -363,7 +388,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                     } else {
                       auto qkv_parts =
                           profiler.measure("linear.qkv_proj", [&]() {
-                            return project.run(qkv_proj, xn);
+                            return project.run(qkv_group, xn);
                           });
                       qk_part = qkv_parts[0];
                       v_part = qkv_parts[1];
@@ -371,7 +396,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                         return project.run(*z_proj, xn);
                       });
                       auto ab = profiler.measure("linear.ab_proj", [&]() {
-                        return ab_is_nint ? project.run(ab_nint_proj, xn)
+                        return ab_is_nint ? project.run(ab_group, xn)
                                           : ab_proj.forward(xn);
                       });
                       alpha_raw = ab[0];
@@ -380,7 +405,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                   }
                 } else {
                   auto parts = profiler.measure("linear.in_proj", [&]() {
-                    return project.run(in_proj, xn);
+                    return project.run(in_group, xn);
                   });
                   qkv = profiler.measure("linear.qkv_cast", [&]() {
                     return parts[0].to(::tyloi::kFloat32);

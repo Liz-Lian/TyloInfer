@@ -1,6 +1,9 @@
 #include "engine/models/session.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/weights/group.h"
+#endif
 #include "engine/models/glm_dsa/snapshot.h"
 #include "engine/models/glm_dsa/model.h"
 #include "engine/models/glm_dsa/state.h"
@@ -496,8 +499,13 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     const auto& kv_a_norm = layer.kv_a_norm;
     const auto& index_k_norm = layer.index_k_norm;
     const auto& index_k_bias = layer.index_k_bias;
-    const auto& input_proj = layer.input_proj;
-    const auto& q_proj = layer.q_proj;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    const auto input_proj = project.group(layer.input_proj);
+    const auto q_proj = project.group(layer.q_proj);
+#else
+    const auto input_proj = make_quant_group(layer.input_proj, true, false);
+    const auto q_proj = make_quant_group(layer.q_proj, true, false);
+#endif
     const auto& embed_q = layer.embed_q;
     const auto& unembed_out = layer.unembed_out;
     const auto& o_proj = *layer.o_proj;

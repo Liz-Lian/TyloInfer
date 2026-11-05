@@ -13,19 +13,16 @@ std::vector<Task> Predictor::tasks() const {
     result.push_back({task::Norm{0, 0, hidden_norm, eps, offset}, 0, "mtp.hidden_norm"});
     result.push_back({task::Concat{1, 0, 0}});
     result.push_back({task::Project{0, 0, *fusion}, 0, "mtp.fusion"});
-    const auto dense = [](const Ffn& ffn) -> Mlp {
-        TYLOINFER_RUNTIME_CHECK(!ffn.is_moe, "Qwen MTP requires dense predictor projections");
-        return {ffn.gate_up, *ffn.down, ffn.activation, ffn.geglu, ffn.swiglu_limit};
-    };
     for (size_t index = 0; index < layers.size(); ++index) {
         const auto& layer = layers[index];
         const auto& attention = layer.attention;
+        TYLOINFER_RUNTIME_CHECK(!layer.ffn.is_moe &&
+            (!layer.ffn.important_neurons || !layer.ffn.important_neurons->is_moe),
+            "Qwen MTP requires dense predictor projections");
         result.push_back({task::Attention{0, 1, 2, attention, index}, attention.layer});
-        task::Dense ffn{1, 2, 0, {dense(layer.ffn), {}, layer.ffn_norm,
+        task::Dense ffn{1, 2, 0, layer.ffn, layer.ffn_norm,
             attention.rms_norm_eps, attention.norm_weight_offset,
-            attention.official_bf16, attention.attention_output_gate}};
-        if (layer.ffn.important_neurons)
-            ffn.weights.important.emplace(dense(*layer.ffn.important_neurons));
+            attention.official_bf16, attention.attention_output_gate};
         result.push_back({std::move(ffn), attention.layer});
     }
     result.push_back({task::Norm{0, 0, output_norm, eps, offset}, 0, "mtp.output_norm"});

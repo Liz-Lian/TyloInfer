@@ -70,6 +70,7 @@ QuantLinearGroup tyloi::cuda::Projector::group(
         std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const {
     TYLOINFER_RUNTIME_CHECK(!weights.empty(), "empty quantized linear group");
     QuantLinearGroup result;
+    result.decode_branch_parallel = !independent_;
     result.layers.assign(weights.begin(), weights.end());
     std::vector<::tyloi::encoding::TqTensor> tq_weights;
     bool all_tq = true;
@@ -88,7 +89,7 @@ QuantLinearGroup tyloi::cuda::Projector::group(
     result.nvq_prefix2 = tyloi::mfq_compat_enabled && nvq0 && nvq1 &&
         nvq0->is_cuda() && nvq_pair_compatible(*nvq0, *nvq1);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (options_.grouped && tyloi::mfq_compat_enabled) {
+    if (options_.nint_grouped && !independent_ && tyloi::mfq_compat_enabled) {
         std::vector<tyloi::NintTensor> segments;
         std::vector<std::vector<int64_t>> sizes;
         bool all_nint = true;

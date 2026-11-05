@@ -599,32 +599,6 @@ bool is_quant_dtype(const std::string & dtype) {
         dtype == "MXFP4" || dtype == "MXFP8";
 }
 
-QuantLinearGroup tyloi::cuda::weight_loader::Loader::build_group(const std::vector<std::string> & names,
-    size_t required_compatible_prefix,
-    const std::vector<tyloi::TensorParallelSlice> *
-        slices_override,
-    bool preserve_projection_boundaries) const {
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers;
-    layers.reserve(names.size());
-    for (const auto & name : names) {
-        layers.push_back(weight(name,
-            slices_override != nullptr
-                ? std::optional<TensorParallelAxis>(
-                    TensorParallelAxis::Output)
-                : std::nullopt,
-            slices_override));
-    }
-    if (required_compatible_prefix > layers.size()) {
-        throw std::runtime_error("invalid required quantized-group prefix length");
-    }
-    // A compatible prefix is fused opportunistically by make_quant_group().
-    // Mixed-precision Q/K and gate/up pairs remain separate
-    // branches and preserve the recipe-selected layouts.
-    return make_quant_group(
-        std::move(layers), options.grouped,
-        placement.cpu, preserve_projection_boundaries);
-}
-
 static std::vector<tyloi::TensorParallelSlice>
 tensor_parallel_output_slices_for_input(
         const ::tyloi::Tensor & input_parallel) {
@@ -648,26 +622,6 @@ tensor_parallel_output_slices_for_input(
         input_parallel.size(1),
         1);
     return result;
-}
-
-QuantLinearGroup tyloi::cuda::weight_loader::Loader::build_gate_up(const std::vector<std::string> & names,
-        const ::tyloi::Tensor & down,
-        size_t required_compatible_prefix,
-        bool preserve_projection_boundaries) const {
-    // An ungated MLP has one Up projection; only the available prefix may fuse.
-    required_compatible_prefix = std::min(required_compatible_prefix, names.size());
-    auto slices =
-        tensor_parallel_output_slices_for_input(
-            down);
-    return slices.empty()
-        ? build_group(names,
-            required_compatible_prefix,
-            nullptr,
-            preserve_projection_boundaries)
-        : build_group(names,
-            required_compatible_prefix,
-            &slices,
-            preserve_projection_boundaries);
 }
 
 std::shared_ptr<tyloi::NintRows> load_nint_row_table(

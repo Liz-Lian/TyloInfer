@@ -438,32 +438,15 @@ static ::tyloi::DenseTensor dequant_quant_linear_f32(
 DenseLinearGroup make_fp32_quant_group(
         tyloi::cuda::Collectives& collectives,
         int primary,
-        QuantLinearGroup group) {
+        std::span<const std::shared_ptr<const tyloi::Tensor>> weights) {
     DenseLinearGroup dense;
-    dense.outs = group.outs;
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (group.nint_grouped) {
-        if (group.nint.split_w.empty()) {
-            dense.w = dequant_nint_dense_f32(group.nint.w);
-        } else {
-            std::vector<::tyloi::DenseTensor> parts;
-            parts.reserve(group.nint.split_w.size());
-            for (const auto & weight : group.nint.split_w) {
-                parts.push_back(dequant_nint_dense_f32(weight));
-            }
-            dense.w = ::tyloi::cuda::cat(parts, 0).contiguous();
-        }
-    } else
-#endif
-    {
-        std::vector<::tyloi::DenseTensor> parts;
-        parts.reserve(group.layers.size());
-        for (const auto & linear : group.layers) {
-            parts.push_back(dequant_quant_linear_f32(
-                collectives, primary, *linear));
-        }
-        dense.w = ::tyloi::cuda::cat(parts, 0).contiguous();
+    std::vector<::tyloi::DenseTensor> parts;
+    parts.reserve(weights.size());
+    for (const auto& weight : weights) {
+        dense.outs.push_back(weight->size(0));
+        parts.push_back(dequant_quant_linear_f32(collectives, primary, *weight));
     }
+    dense.w = ::tyloi::cuda::cat(parts, 0).contiguous();
     TYLOINFER_RUNTIME_CHECK(
         dense.w.dim() == 2 &&
             dense.w.size(0) ==

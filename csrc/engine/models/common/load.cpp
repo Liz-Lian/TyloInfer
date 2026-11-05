@@ -36,15 +36,15 @@ void load_important_neuron_branch(const tyloi::cuda::weight_loader::Loader& weig
 
     auto high = std::make_unique<tyloi::cuda::Ffn>();
     high->down = weights.weight(down_high, TensorParallelAxis::Input);
-    high->gate_up = weights.build_gate_up({gate_high, up_high}, *high->down);
+    high->gate_up = weights.gate_up({gate_high, up_high}, *high->down);
     high->geglu = f.geglu;
     high->swiglu_limit = f.swiglu_limit;
 
-    if (f.gate_up.outs.size() != 2 || high->gate_up.outs.size() != 2 ||
-        f.gate_up.outs[0] != f.gate_up.outs[1] || high->gate_up.outs[0] != high->gate_up.outs[1] ||
+    if (f.gate_up.size() != 2 || high->gate_up.size() != 2 ||
+        f.gate_up[0]->size(0) != f.gate_up[1]->size(0) || high->gate_up[0]->size(0) != high->gate_up[1]->size(0) ||
         f.down->size(0) != hidden_size || high->down->size(0) != hidden_size ||
-        f.down->size(1) != f.gate_up.outs[0] ||
-        high->down->size(1) != high->gate_up.outs[0] ||
+        f.down->size(1) != f.gate_up[0]->size(0) ||
+        high->down->size(1) != high->gate_up[0]->size(0) ||
         f.down->size(1) + high->down->size(1) != intermediate_size) {
         throw std::runtime_error("important-neuron FFN tensor shapes disagree with model config");
     }
@@ -65,12 +65,12 @@ bool TransformerWeightLoader::has(const std::string& name) const { return tyloi:
     }
     return dense(name).to(::tyloi::kFloat32).contiguous();
 }
-QuantLinearGroup TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
-    return weights.build_group(names);
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
+    return weights.group(names);
 }
-QuantLinearGroup TransformerWeightLoader::gate_up(const std::vector<std::string>& names,
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> TransformerWeightLoader::gate_up(const std::vector<std::string>& names,
                                                  const std::shared_ptr<const ::tyloi::Tensor>& down) const {
-    return weights.build_gate_up(names, *down, shared_gate_up_compatible_prefix,
+    return weights.gate_up(names, *down, shared_gate_up_compatible_prefix,
                               preserve_projection_boundaries);
 }
 void TransformerWeightLoader::qkv(tyloi::cuda::FullAttention& block, const std::vector<std::string>& names) const {
@@ -80,30 +80,15 @@ void TransformerWeightLoader::qkv(tyloi::cuda::FullAttention& block, const std::
         is_quant_dtype(tyloi::require_tensor(weights.source, names[2]).dtype);
     if (mirror_kv) {
         block.split_q_kv_projections = true;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         block.q_projection = weights.weight(names[0]);
         block.k_projection = weights.weight(names[1], TensorParallelAxis::Mirrored);
         block.v_projection = weights.weight(names[2], TensorParallelAxis::Mirrored);
-#else
-        block.q_projection = linear(names[0]);
-        block.k_projection = weights.weight(names[1], TensorParallelAxis::Mirrored);
-        block.v_projection = weights.weight(names[2], TensorParallelAxis::Mirrored);
-#endif
     } else {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         block.qkv = weights.group(names, 2, nullptr, preserve_projection_boundaries);
-#else
-        block.qkv = weights.build_group(names, 2, nullptr,
-                                    preserve_projection_boundaries);
-#endif
     }
 }
 void TransformerWeightLoader::output(tyloi::cuda::FullAttention& block, const std::string& name) const {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     block.o = weights.weight(name);
-#else
-    block.o = linear(name);
-#endif
 }
 void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, tyloi::cuda::Ffn& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {

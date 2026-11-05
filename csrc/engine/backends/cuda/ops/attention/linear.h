@@ -43,11 +43,13 @@ struct LinearAttention {
     bool ab_is_nint = false;
     bool dense_out_proj = false;
     bool tiled_v_heads = false;
-    QuantLinearGroup in_proj;
-    QuantLinearGroup qkv_proj;
-    QuantLinearGroup qkvz_proj;
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> in_proj;
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> qkv_proj;
     std::shared_ptr<const ::tyloi::Tensor> z_proj;
-    QuantLinearGroup ab_nint_proj;
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> ab_nint_proj;
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+    bool grouped_weights = true;
+#endif
     DenseLinearGroup ab_proj;
     DenseLinearGroup zab_proj;
     std::shared_ptr<const ::tyloi::Tensor> out_proj;

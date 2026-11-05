@@ -100,11 +100,6 @@ struct Loader {
     DenseTensor norm(const std::string& name, std::int64_t width) const;
     weights::BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
     weights::BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
-    QuantLinearGroup build_group(const std::vector<std::string>& names, size_t prefix = 0,
-        const std::vector<tyloi::TensorParallelSlice>* slices = nullptr,
-        bool preserve_boundaries = false) const;
-    QuantLinearGroup build_gate_up(const std::vector<std::string>& names, const ::tyloi::Tensor& down,
-        size_t prefix = 2, bool preserve_boundaries = false) const;
     Experts build_experts(const std::string& name, bool cacheable = false, int layer = -1,
                     const std::string& role = {}) const;
     std::shared_ptr<const ::tyloi::Tensor> weight(const std::string& name,

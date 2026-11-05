@@ -1,6 +1,7 @@
 #include "engine/models/common/attention.h"
 #include "engine/ops.h"
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/weights/group.h"
 #include "engine/backends/cuda/ops/attention/kv.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
@@ -284,7 +285,7 @@ std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
         trace_qwen_stage("qwen.attn_norm", xn);
         auto parts = measure("full.qkv", [&]() {
             if (!split_q_kv_projections) {
-                return project.run(qkv, xn);
+                return project.run(make_quant_group(qkv, true, !xn.is_cuda()), xn);
             }
             std::vector<::tyloi::DenseTensor> result;
             result.reserve(3);

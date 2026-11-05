@@ -379,7 +379,7 @@ Projector Executor::projector(const Ffn::Mode& mode) {
 
 Projector Executor::projector(const Ffn::Mode& mode, int primary) {
     return {profiler_, mmq_, *tq_, branches_, collectives_, mfe_scratch_, moe_scratch_, options_.projection,
-            primary, mode.serial, mode.projection_major};
+            primary, mode.serial, mode.projection_major, mode.independent};
 }
 
 AttentionScratch& Executor::attention_scratch(std::size_t index) {
@@ -584,7 +584,13 @@ DenseTensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode
                         values[op.residual] = std::move(output[0]);
                         return std::move(output[1]);
                     } else if constexpr (std::is_same_v<Op, task::Dense>) {
-                        return op.weights.forward(project, profiler_, mmq_, *tq_, branches_, collectives_,
+                        TYLOINFER_RUNTIME_CHECK(!op.weights.is_moe &&
+                            (!op.weights.important_neurons || !op.weights.important_neurons->is_moe),
+                            "Qwen MTP requires dense predictor projections");
+                        Dense weights{dense(op.weights, project), {}, op.norm, op.eps, op.offset, op.bf16, op.trace};
+                        if (op.weights.important_neurons)
+                            weights.important.emplace(dense(*op.weights.important_neurons, project));
+                        return weights.forward(project, profiler_, mmq_, *tq_, branches_, collectives_,
                             options.projection, options.dense, mode.ffn.serial, std::move(second), std::move(input), trace);
                     } else if constexpr (std::is_same_v<Op, task::FullFfn>) {
                         return full_ffn(op.weights, op.norm, op.attention,

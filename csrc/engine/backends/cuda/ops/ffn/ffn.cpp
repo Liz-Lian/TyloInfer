@@ -13,6 +13,9 @@
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/weights/group.h"
+#endif
 #include "engine/ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
@@ -112,9 +115,13 @@ void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, b
 #endif
 }
 
-Mlp dense(const Ffn& f) {
+Mlp dense(const Ffn& f, const Projector& project) {
     TYLOINFER_RUNTIME_CHECK(f.down, "FFN down projection is missing");
-    return {f.gate_up, *f.down, f.activation, f.geglu, f.swiglu_limit};
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    return {project.group(f.gate_up), *f.down, f.activation, f.geglu, f.swiglu_limit};
+#else
+    return {make_quant_group(f.gate_up, true, false), *f.down, f.activation, f.geglu, f.swiglu_limit};
+#endif
 }
 
 namespace {
@@ -251,7 +258,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 if (use_f32_down) {
                     TYLOINFER_RUNTIME_CHECK(!branch.is_moe,
                         "FP32-output IN diagnostic requires a local dense SiLU FFN");
-                    return dense(branch).kld(project_, profiler, mmq_, xh);
+                    return dense(branch, project_).kld(project_, profiler, mmq_, xh);
                 }
                 return branch.forward_impl(xh, executor, mode_, project_, input_ids, false, mfq_nullopt);
         };
@@ -277,8 +284,10 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
             return acc_cuda(low.contiguous(), high.contiguous());
         });
     }
-    if (!f.is_moe && dense(f).parallel()) {
-        return sharded(dense(f), xh, executor, project_);
+    std::optional<Mlp> mlp;
+    if (!f.is_moe) {
+        mlp.emplace(dense(f, project_));
+        if (mlp->parallel()) return sharded(*mlp, xh, executor, project_);
     }
     if (f.is_moe) {
         const bool tq_routed=bool(f.moe_tq);
@@ -776,7 +785,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
     }
     TYLOINFER_RUNTIME_CHECK(f.activation != ActivationKind::relu_squared || !f.important_neurons,
                       "relu-squared FFN does not support important neurons");
-    return local(dense(f), xh, executor, project_);
+    return local(*mlp, xh, executor, project_);
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -813,8 +822,7 @@ tyloi::DenseTensor mlp(tyloi::DenseTensor input, std::span<const std::shared_ptr
     if (input.is_cuda()) guard.emplace(input.device().index);
     auto& executor = Executor::current();
     const auto project = executor.projector(Executor::current_ffn());
-    const auto group = project.group(gate_up);
-    const Mlp weights{group, down, activation,
+    const Mlp weights{project.group(gate_up), down, activation,
                       activation == tyloi::ops::MlpActivation::gelu_gated, swiglu_limit};
     weights.check(DenseTensor(input), project.primary_device());
     auto x = half(DenseTensor(input), executor.profiler());

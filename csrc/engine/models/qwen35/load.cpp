@@ -34,9 +34,12 @@ struct LayerLoader : TransformerWeightLoader {
     void linear_projections(LinearAttention& attention,
                             const tyloi::models::qwen35::LinearWeightNames& names,
                             bool split_qkv) const {
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+        attention.grouped_weights = weights.options.grouped;
+#endif
         if (split_qkv) {
             attention.split_in_proj = true;
-            attention.qkv_proj = weights.build_group({names.qk, names.value});
+            attention.qkv_proj = weights.group({names.qk, names.value});
             if (is_quant_dtype(require_tensor(weights.source, names.gate).dtype)) {
                 attention.z_proj = weights.weight(names.gate);
                 const bool alpha_quant = is_quant_dtype(require_tensor(weights.source, names.alpha).dtype);
@@ -50,11 +53,13 @@ struct LayerLoader : TransformerWeightLoader {
                         mirror_scalars
                             ? std::optional<TensorParallelAxis>(TensorParallelAxis::Mirrored)
                             : std::nullopt;
-                    attention.ab_nint_proj = make_quant_group(
-                        {weights.weight(names.alpha, scalar_axis),
-                         weights.weight(names.beta, scalar_axis)},
-                        weights.options.grouped,
-                        weights.placement.cpu);
+                    if (mirror_scalars && weights.placement.tensor.enabled()) {
+                        attention.ab_nint_proj = {
+                            weights.weight(names.alpha, scalar_axis),
+                            weights.weight(names.beta, scalar_axis)};
+                    } else {
+                        attention.ab_nint_proj = weights.group({names.alpha, names.beta});
+                    }
                 } else {
                     attention.ab_proj = make_dense_group({
                         weights.tensor(names.alpha),
@@ -76,10 +81,10 @@ struct LayerLoader : TransformerWeightLoader {
             throw std::runtime_error(
                 "linear_attention alpha/beta must use the same storage kind");
         if (alpha_quant) {
-            attention.in_proj = weights.build_group({names.qkv, names.gate, names.alpha, names.beta});
+            attention.in_proj = weights.group({names.qkv, names.gate, names.alpha, names.beta});
         } else {
             attention.dense_ab_tail = true;
-            attention.in_proj = weights.build_group({names.qkv, names.gate});
+            attention.in_proj = weights.group({names.qkv, names.gate});
             attention.ab_proj = make_dense_group({
                 weights.tensor(names.alpha),
                 weights.tensor(names.beta)});

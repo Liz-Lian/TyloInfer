@@ -41,6 +41,7 @@ public:
         bool reduce_to_primary = true;
         bool fp16_reduce = true;
         bool grouped = true;
+        bool nint_grouped = true;
         bool parallel = true;
         bool nvq_fusion = true;
         MoeOptions moe;
@@ -49,10 +50,10 @@ public:
     Projector(CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
               Branches& branches, Collectives& collectives, MfeScratch& mfe_scratch,
               MoeScratchCache& moe_scratch, const Options& options,
-              int primary, const bool& serial, const bool& projection_major)
+              int primary, const bool& serial, const bool& projection_major, bool independent)
         : profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches),
           collectives_(collectives), mfe_scratch_(mfe_scratch), moe_scratch_(moe_scratch), options_(options), primary_(primary),
-          serial_(serial), projection_major_(projection_major) {}
+          serial_(serial), projection_major_(projection_major), independent_(independent) {}
 
     int primary_device() const { return primary_; }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -112,6 +113,7 @@ private:
     int primary_;
     const bool& serial_;
     const bool& projection_major_;
+    bool independent_;
 
     ::tyloi::DenseTensor sharded(const ::tyloi::ShardedTensor& weight, ::tyloi::DenseTensor input,
                                       MfqOptional<::tyloi::DenseTensor> gate, InputGateMode mode) const;

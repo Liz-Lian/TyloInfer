@@ -25,7 +25,7 @@ namespace tyloi::cuda {
 
 // Read-only projection view; routing, cache leases and branch scheduling stay with the caller.
 struct Mlp {
-    const QuantLinearGroup& gate_up;
+    QuantLinearGroup gate_up;
     const ::tyloi::Tensor& down;
     tyloi::ops::MlpActivation activation;
     bool geglu;

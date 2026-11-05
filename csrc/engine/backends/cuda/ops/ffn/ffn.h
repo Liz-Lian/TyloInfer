@@ -35,9 +35,10 @@ public:
         int tiles = 1;
         bool reuse_input = true;
         bool projection_major = false;
+        bool independent = false;
     };
 
-    QuantLinearGroup gate_up;
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up;
     std::shared_ptr<const ::tyloi::Tensor> down;
     std::unique_ptr<Ffn> important_neurons;
     bool geglu = false;
@@ -111,7 +112,7 @@ private:
         ::tyloi::DenseTensor route_weights) const;
 };
 
-Mlp dense(const Ffn& ffn);
+Mlp dense(const Ffn& ffn, const Projector& project);
 bool uses_expert_cache(const Ffn& ffn);
 bool expert_parallel(const Ffn& ffn);
 

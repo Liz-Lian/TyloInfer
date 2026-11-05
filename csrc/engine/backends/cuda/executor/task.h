@@ -69,7 +69,10 @@ struct Replay {
 
 struct Dense {
     Slot residual, input, output;
-    tyloi::cuda::Dense weights;
+    const Ffn& weights;
+    ::tyloi::DenseTensor norm;
+    double eps, offset;
+    bool bf16, trace;
 };
 
 struct FullFfn {

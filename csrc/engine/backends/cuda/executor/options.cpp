@@ -631,6 +631,7 @@ std::pair<tyloi::cuda::CudaLoadConfig, tyloi::cuda::Executor::Options> tyloi::cu
         "TYLOINFER_DSV4_GROUPWISE_OUTPUT_A", true);
     result.weights.grouped = enabled_unless_disabled(
         "TYLOINFER_DIAGNOSTIC_DISABLE_NINT_GROUP");
+    numeric.projection.nint_grouped = result.weights.grouped;
     numeric.dense.fp32_residual = tyloi::cuda::env_flag(
         "TYLOINFER_DIAGNOSTIC_FP32_RESIDUAL", false);
     numeric.dense.important_fp32 = tyloi::cuda::env_flag(

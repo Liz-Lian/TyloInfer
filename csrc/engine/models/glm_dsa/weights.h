@@ -84,15 +84,15 @@ void load_layer_weights(Block& b, Loader& ops, const Config& c, int i, const std
     b.o_proj = ops.linear(ap + "output.weight");
     load_ffn(ops, c, i, b.ffn);
 
-    const bool input_shape_ok = b.input_proj.outs.size() == (b.full_indexer ? 4u : 2u) &&
-                                b.input_proj.outs[0] == c.q_lora_rank &&
-                                b.input_proj.outs[1] == c.kv_lora_rank + c.qk_rope_head_dim &&
-                                (!b.full_indexer || (b.input_proj.outs[2] == c.index_head_dim &&
-                                                      b.input_proj.outs[3] == c.index_n_heads));
+    const bool input_shape_ok = b.input_proj.size() == (b.full_indexer ? 4u : 2u) &&
+                                b.input_proj[0]->size(0) == c.q_lora_rank &&
+                                b.input_proj[1]->size(0) == c.kv_lora_rank + c.qk_rope_head_dim &&
+                                (!b.full_indexer || (b.input_proj[2]->size(0) == c.index_head_dim &&
+                                                      b.input_proj[3]->size(0) == c.index_n_heads));
     const bool q_shape_ok =
-        b.q_proj.outs.size() == (b.full_indexer ? 2u : 1u) &&
-        b.q_proj.outs[0] == c.num_attention_heads * (c.qk_nope_head_dim + c.qk_rope_head_dim) &&
-        (!b.full_indexer || b.q_proj.outs[1] == c.index_n_heads * c.index_head_dim);
+        b.q_proj.size() == (b.full_indexer ? 2u : 1u) &&
+        b.q_proj[0]->size(0) == c.num_attention_heads * (c.qk_nope_head_dim + c.qk_rope_head_dim) &&
+        (!b.full_indexer || b.q_proj[1]->size(0) == c.index_n_heads * c.index_head_dim);
     const bool head_shape_ok = b.embed_q.n_experts == c.num_attention_heads &&
                                b.embed_q.neuron_len == c.qk_nope_head_dim &&
                                b.embed_q.out_per_expert == c.kv_lora_rank &&
