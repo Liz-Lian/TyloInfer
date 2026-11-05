@@ -315,14 +315,14 @@ private:
         if (!online_budget_supported())
             throw std::invalid_argument(
                 "online memory budgeting requires a single-device CUDA worker");
-        return budget_->set(command, [this] {
-            if (expert_space_) expert_space_->release();
-            finish_moe_expert_exchanges(weights_.moe);
-            graph_->invalidate();
-            if (batching_) batching_->release_idle_buffers();
-            if (components().mtp) components().mtp->reset(1);
-            state().reset(1);
-        });
+        auto change = budget_->change(command);
+        if (expert_space_) expert_space_->release();
+        finish_moe_expert_exchanges(weights_.moe);
+        graph_->invalidate();
+        if (batching_) batching_->release_idle_buffers();
+        if (components().mtp) components().mtp->reset(1);
+        state().reset(1);
+        return change.apply();
     }
 
     void load() {

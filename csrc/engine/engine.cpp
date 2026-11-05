@@ -211,13 +211,13 @@ void Engine::clear_bindings() noexcept {
 SessionResult Engine::set_budget(const SessionCommand& command) {
     if (impl_->load_.layer_placement.devices.size() > 1 || impl_->load_.tensor_parallel.enabled() || impl_->load_.expert_parallel.enabled())
         throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
-    return impl_->budget_->set(command, [this] {
-        if (impl_->expert_space_) impl_->expert_space_->release();
-        finish_moe_expert_exchanges(impl_->weights_->moe);
-        impl_->graph_->invalidate();
-        if (impl_->ready_) reset_states(1);
-        if (impl_->idle_state_) impl_->idle_state_->reset(1);
-    });
+    auto change = impl_->budget_->change(command);
+    if (impl_->expert_space_) impl_->expert_space_->release();
+    finish_moe_expert_exchanges(impl_->weights_->moe);
+    impl_->graph_->invalidate();
+    if (impl_->ready_) reset_states(1);
+    if (impl_->idle_state_) impl_->idle_state_->reset(1);
+    return change.apply();
 }
 
 #endif

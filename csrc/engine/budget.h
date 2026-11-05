@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 
 class MoeExpertCache;
@@ -33,10 +32,23 @@ public:
     Budget(WeightMemoryLedger& weight_memory, RoutedCache& weights,
         internal::TextSessionCache& cache, int primary_device);
 
-    // The quiescent single-device owner calls this in its CUDA scope; retire runs once and is not retained.
-    engine::SessionResult set(
-        const engine::SessionCommand& command,
-        const std::function<void()>& retire);
+    class Change {
+    public:
+        Change(const Change&) = delete;
+        Change& operator=(const Change&) = delete;
+        engine::SessionResult apply();
+
+    private:
+        friend class Budget;
+        Change(Budget&, const engine::SessionCommand&);
+        Budget& budget_;
+        std::size_t bytes, requested_weights, limit, dense, minimum;
+        std::size_t previous_limit, previous_experts, before;
+    };
+
+    // Create to validate, then retire State and apply once in the same quiescent owner CUDA scope.
+    // Budget must outlive Change.
+    Change change(const engine::SessionCommand& command);
 
     std::size_t resident() const noexcept { return resident_budget_; }
     std::size_t weights() const noexcept { return weight_budget_; }

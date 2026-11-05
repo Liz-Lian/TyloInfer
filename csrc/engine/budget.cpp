@@ -123,19 +123,22 @@ void Budget::decode(ExpertSpace* space, const ModelSource* source) {
     if (space) space->restore(runtime_options::workspace_reserve_bytes(), source);
 }
 
-engine::SessionResult Budget::set(
-        const engine::SessionCommand& command,
-        const std::function<void()>& retire) {
-    const auto context = default_context(primary_device_);
-    const auto dense = weight_memory_.resident_bytes();
-    const auto minimum = moe_expert_cache_minimum_bytes(weights_.moe);
-    const auto requested_weights = command.weight_bytes.value_or(weight_budget_);
+Budget::Change Budget::change(const engine::SessionCommand& command) {
+    return Change(*this, command);
+}
+
+Budget::Change::Change(Budget& budget, const engine::SessionCommand& command)
+    : budget_(budget), bytes(command.bytes) {
+    const auto context = default_context(budget.primary_device_);
+    dense = budget.weight_memory_.resident_bytes();
+    minimum = moe_expert_cache_minimum_bytes(budget.weights_.moe);
+    requested_weights = command.weight_bytes.value_or(budget.weight_budget_);
     if (requested_weights && requested_weights < dense + minimum)
         throw std::invalid_argument("weight budget is below dense weights and minimum expert working set");
-    auto limit = command.bytes ? allocation_ceiling_
-            ? std::min<std::size_t>(command.bytes, allocation_ceiling_)
+    limit = command.bytes ? budget.allocation_ceiling_
+            ? std::min<std::size_t>(command.bytes, budget.allocation_ceiling_)
             : command.bytes
-        : allocation_ceiling_;
+        : budget.allocation_ceiling_;
     if (limit) {
         std::size_t free = 0, total = 0;
         TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&free, &total));
@@ -143,14 +146,18 @@ engine::SessionResult Budget::set(
     }
     if (limit && limit < dense + minimum)
         throw std::invalid_argument("resident memory budget is below non-offloadable weights");
-    const auto previous_limit = context->memory_stats().limit;
-    const auto previous_experts = weights_.budget();
-    const auto before = context->resident_memory_usage();
+    previous_limit = context->memory_stats().limit;
+    previous_experts = budget.weights_.budget();
+    before = context->resident_memory_usage();
+}
 
-    retire();
+engine::SessionResult Budget::Change::apply() {
+    auto& weights_ = budget_.weights_;
+    auto& cache_ = budget_.cache_;
+    const auto context = default_context(budget_.primary_device_);
     release_moe_decode_buffers(weights_.moe);
     context->reclaim_idle_memory();
-    auto target = requested_weights ? requested_weights - dense : initial_expert_budget_;
+    auto target = requested_weights ? requested_weights - dense : budget_.initial_expert_budget_;
     std::size_t hot = 0, expert_bytes = 0;
     for (const auto& [name, value] : cache_.metrics())
         if (name == "prefix_cache_hot_bytes") hot = std::size_t(value);
@@ -178,8 +185,8 @@ engine::SessionResult Budget::set(
         context->set_memory_limit(previous_limit);
         throw;
     }
-    resident_budget_ = command.bytes;
-    weight_budget_ = requested_weights;
+    budget_.resident_budget_ = bytes;
+    budget_.weight_budget_ = requested_weights;
     const auto after = context->resident_memory_usage();
     return {before > after ? before - after : 0, {}};
 }
