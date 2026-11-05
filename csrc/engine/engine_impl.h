@@ -250,7 +250,7 @@ private:
     std::shared_ptr<KvOffloadStore> offload_;
     std::unique_ptr<Executor> root_executor_;
     std::unique_ptr<CudaExecutionContext> execution_;
-    std::shared_ptr<WeightMemoryLedger> weight_memory_;
+    std::shared_ptr<tyloi::weights::Memory> weight_memory_;
     std::shared_ptr<const tyloi::ModelSource> source_;
     tyloi::engine::RuntimeConfig config_;
     std::shared_ptr<Model> model_;
@@ -343,8 +343,8 @@ private:
                 execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
             internal::setup_cuda_load(options_, execution_->config, *root_executor_, weights_, kv_, offload_);
             execution_->executor().profiler().enabled = false;
-            weight_memory_ = std::make_shared<WeightMemoryLedger>();
-            WeightMemoryLoadScope memory_load(*weight_memory_);
+            weight_memory_ = std::make_shared<tyloi::weights::Memory>();
+            tyloi::weights::LoadScope memory_load(*weight_memory_);
             ::tyloi::cuda::NoGradGuard no_grad;
             config_ = internal::resolve_cuda_runtime_config(options_);
 

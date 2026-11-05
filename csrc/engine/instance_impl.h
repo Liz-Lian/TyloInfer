@@ -149,8 +149,8 @@ class EngineInstance final : public Engine {
                 CudaScope scope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
                 setup_cuda_load(options, execution->config, *executor, weights, kv, offload);
                 execution->executor().profiler().enabled = false;
-                auto weight_memory=std::make_shared<WeightMemoryLedger>();
-                const WeightMemoryLoadScope memory_load(*weight_memory);
+                auto weight_memory=std::make_shared<tyloi::weights::Memory>();
+                const tyloi::weights::LoadScope memory_load(*weight_memory);
                 ::tyloi::cuda::NoGradGuard no_grad;
                 auto config = resolve_cuda_runtime_config(options);
                 const auto kv_options = runtime_options::qsa_kv_offload();

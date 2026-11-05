@@ -32,7 +32,7 @@ inline tyloi::engine::Metrics runtime_metrics(
         const tyloi::models::Mtp* mtp,
         const tyloi::engine::mtp::State* mtp_state, int graph_depth,
         const ExpertSpace* space, tyloi::engine::Batch* batching,
-        const tyloi::ModelSource* source, WeightMemoryLedger& ledger,
+        const tyloi::ModelSource* source, tyloi::weights::Memory& ledger,
         const RoutedCache& weights, KvMemoryManager* kv,
         KvOffloadStore* offload, const internal::TextSessionCache& cache,
         const Budget& budget, std::span<const tyloi::Executor::Memory> devices,

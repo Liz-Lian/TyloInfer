@@ -1,17 +1,18 @@
 #include "engine/weights/memory.h"
 
-#include "engine/backends/cuda/native/tensor/tensor.h"
+#include "engine/backends/cuda/native/allocation.h"
+#include "engine/tensor.h"
 
-namespace tyloi::cuda {
+namespace tyloi::weights {
 namespace {
-thread_local WeightMemoryLedger* loading_weight_memory = nullptr;
+thread_local Memory* loading_weight_memory = nullptr;
 }
 
-void WeightMemoryLedger::observe_ple(const std::shared_ptr<void>& owner, std::size_t bytes) {
+void Memory::observe_ple(const std::shared_ptr<void>& owner, std::size_t bytes) {
     ple_.push_back({owner, bytes});
 }
 
-std::size_t WeightMemoryLedger::resident_bytes(int device) const {
+std::size_t Memory::resident_bytes(int device) const {
     std::size_t bytes = 0;
     for (const auto& weak : weights_)
         if (auto storage = weak.lock())
@@ -20,7 +21,7 @@ std::size_t WeightMemoryLedger::resident_bytes(int device) const {
     return bytes;
 }
 
-std::size_t WeightMemoryLedger::ple_bytes() const {
+std::size_t Memory::ple_bytes() const {
     std::size_t bytes = 0;
     for (const auto& payload : ple_)
         if (!payload.owner.expired())
@@ -28,12 +29,12 @@ std::size_t WeightMemoryLedger::ple_bytes() const {
     return bytes;
 }
 
-WeightMemoryLoadScope::WeightMemoryLoadScope(WeightMemoryLedger& ledger)
-    : previous_(loading_weight_memory), allocation_(ledger.weights_) {
+LoadScope::LoadScope(Memory& ledger)
+    : previous_(loading_weight_memory), allocation_(std::make_unique<tyloi::cuda::AllocationScope>(ledger.weights_)) {
     loading_weight_memory = &ledger;
 }
 
-WeightMemoryLoadScope::~WeightMemoryLoadScope() {
+LoadScope::~LoadScope() {
     loading_weight_memory = previous_;
 }
 

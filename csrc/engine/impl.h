@@ -22,7 +22,7 @@ struct Engine::Impl {
     std::vector<Device> devices_;
     bool budget_supported_ = false;
     std::shared_ptr<const ModelSource> source_;
-    std::shared_ptr<cuda::WeightMemoryLedger> ledger_;
+    std::shared_ptr<tyloi::weights::Memory> ledger_;
     std::unique_ptr<cuda::RoutedCache> weights_;
     std::shared_ptr<cuda::KvMemoryManager> kv_;
     std::unique_ptr<models::State> idle_state_;

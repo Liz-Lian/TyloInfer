@@ -1,5 +1,6 @@
 #include "engine/weights/mapped_embedding.h"
 #include "engine/backends/cuda/native/device.h"
+#include "engine/backends/cuda/native/allocation.h"
 #include "engine/weights/moe/experts.h"
 #include <iostream>
 #include "engine/weights/moe/load.h"
@@ -654,7 +655,7 @@ std::shared_ptr<tyloi::NintRows> load_nint_row_table(
         [read = std::move(read)](std::size_t offset, std::uint8_t* out, std::size_t count) {
             read(offset, reinterpret_cast<std::byte*>(out), count);
         }, parallel,std::move(batch));
-    tyloi::cuda::observe_streamed_ple(table,static_cast<std::size_t>(metadata.nbytes));
+    tyloi::weights::observe_streamed_ple(table,static_cast<std::size_t>(metadata.nbytes));
     return table;
 
 #else

@@ -178,7 +178,7 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
     std::shared_ptr<const ModelSource> source;
-    std::shared_ptr<WeightMemoryLedger> ledger;
+    std::shared_ptr<tyloi::weights::Memory> ledger;
     auto weights = std::make_unique<RoutedCache>();
     std::shared_ptr<KvMemoryManager> kv;
     std::shared_ptr<KvOffloadStore> offload;
@@ -200,8 +200,8 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
             internal::setup_cuda_load(options, load, *root, *weights, kv, offload);
             root->set_primary(load.layer_placement.primary_device());
             root->profiler().enabled = false;
-            ledger = std::make_shared<WeightMemoryLedger>();
-            WeightMemoryLoadScope memory_load(*ledger);
+            ledger = std::make_shared<tyloi::weights::Memory>();
+            tyloi::weights::LoadScope memory_load(*ledger);
             runtime = internal::resolve_cuda_runtime_config(options);
             if (runtime.continuous_batch.max_sequences)
                 throw std::invalid_argument("continuous batching is unavailable for this model");
@@ -237,28 +237,17 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
             !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
         const bool graph_allowed = load.dsv4_cpu_offload_layers.empty() && load.dense_cpu_layer_count == 0 &&
             model_parallel_cuda_graph_enabled(load, *root, *weights);
-        auto model_info = model->info();
-        engine::EngineInfo info;
-        info.max_requests = std::max<std::size_t>(1, runtime.continuous_batch.max_sequences);
-        info.max_context = model_info.max_context;
-        info.vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
-        info.model_type = model_info.model_type;
-        info.capabilities = model->capabilities();
-        const auto& caps = info.capabilities;
-        info.duplex = caps.full_duplex;
-        info.multimodal = caps.image_input || caps.video_input || caps.audio_input || caps.audio_output || caps.full_duplex;
-        info.reload = true;
-        auto text = engine::TextProcessor::load(*source, options.tokenizer_model, info.vocab_size, info.model_type);
-        if (text) info.chat = text->chat_template_capabilities();
-        info.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), info.vocab_size);
+        const auto model_info = model->info();
+        const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
+        auto text = engine::TextProcessor::load(*source, options.tokenizer_model, vocab_size, model_info.model_type);
+        auto stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
 
         auto impl = std::make_unique<engine::Engine::Impl>();
         impl->forward_options_ = {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
         impl->graph_allowed_ = graph_allowed;
         impl->budget_supported_ = budget_supported;
         impl->devices_ = std::move(devices);
-        impl->model_info_ = std::move(model_info);
-        impl->info_ = std::move(info);
+        impl->info_.stop_token_ids = std::move(stop_token_ids);
         impl->text_ = std::move(text);
         impl->runtime_ = std::move(runtime);
         impl->source_ = std::move(source);

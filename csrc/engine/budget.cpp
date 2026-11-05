@@ -37,7 +37,7 @@ tyloi::engine::PrefillChunk budget_batch_prefill(
     return chunk;
 }
 
-Budget::Budget(WeightMemoryLedger& weight_memory, RoutedCache& weights,
+Budget::Budget(tyloi::weights::Memory& weight_memory, RoutedCache& weights,
         internal::TextSessionCache& cache, int primary_device)
     : weight_memory_(weight_memory), weights_(weights), cache_(cache),
       primary_device_(primary_device), initial_expert_budget_(weights.budget()),

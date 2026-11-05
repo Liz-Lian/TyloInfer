@@ -1,6 +1,7 @@
 #include "engine/engine.h"
 #include "engine/scheduler/scheduler.h"
 
+#include <algorithm>
 #include <exception>
 #include <iostream>
 #include <utility>
@@ -25,6 +26,7 @@
 namespace tyloi::engine {
 
 Engine::Engine() = default;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 Engine::Engine(EngineParts&& parts)
     : model_(std::move(parts.model)), executor_(std::move(parts.executor)), impl_(std::move(parts.impl)) {}
 
@@ -32,8 +34,20 @@ Engine::Engine(EngineParts&& parts)
 void Engine::install() {
     auto& impl = *impl_;
     try {
+        impl.model_info_ = model_->info();
+        auto& info = impl.info_;
+        info.max_requests = std::max<std::size_t>(1, impl.runtime_.continuous_batch.max_sequences);
+        info.max_context = impl.model_info_.max_context;
+        info.vocab_size = static_cast<std::int32_t>(impl.model_info_.vocab_size);
+        info.model_type = impl.model_info_.model_type;
+        info.capabilities = model_->capabilities();
+        const auto& caps = info.capabilities;
+        info.duplex = caps.full_duplex;
+        info.multimodal = caps.image_input || caps.video_input || caps.audio_input || caps.audio_output || caps.full_duplex;
+        info.reload = true;
+        if (impl.text_) info.chat = impl.text_->chat_template_capabilities();
         auto scope = executor_->enter();
-        cuda::WeightMemoryLoadScope memory_load(*impl.ledger_);
+        tyloi::weights::LoadScope memory_load(*impl.ledger_);
         impl.graph_.emplace(impl.model_info_.max_context, Device(kCUDA, impl.forward_options_.primary), executor_->graph());
         impl.cache_.emplace(impl.runtime_.session_cache, impl.runtime_.prefix_cache,
             cuda::internal::make_cuda_paged_prefix_cache(*impl.source_, impl.model_info_.max_context,
@@ -73,6 +87,7 @@ void Engine::rebuild(EngineParts&& parts) {
     impl_ = std::move(parts.impl);
     install();
 }
+#endif
 Engine::~Engine() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (scheduler_ || executor_) {

@@ -59,7 +59,7 @@ struct Text {
     using State = S;
     using Parts = P;
 
-    std::shared_ptr<WeightMemoryLedger> weight_memory;
+    std::shared_ptr<tyloi::weights::Memory> weight_memory;
     CudaExecutionContext* execution;
     Executor& root_executor;
     RoutedCache& weights;
@@ -163,7 +163,7 @@ struct Text {
             std::unique_ptr<Executor> executor_owner, Parts model_components,
             tyloi::engine::RuntimeConfig runtime_config,
             std::shared_ptr<const tyloi::ModelSource> model_source,
-            std::shared_ptr<WeightMemoryLedger> ledger)
+            std::shared_ptr<tyloi::weights::Memory> ledger)
         : weight_memory(std::move(ledger)), execution(&borrowed), root_executor(borrowed.executor()),
           weights(borrowed_weights),
           kv(borrowed_kv), offload(borrowed_offload), config(std::move(runtime_config)),

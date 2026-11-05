@@ -1,16 +1,17 @@
 #pragma once
 
-#include "engine/backends/cuda/native/allocation.h"
-
 #include <cstddef>
 #include <memory>
 #include <vector>
 
-namespace tyloi::cuda {
+namespace tyloi { struct TensorStorage; }
+namespace tyloi::cuda { class AllocationScope; }
 
-class WeightMemoryLedger {
+namespace tyloi::weights {
+
+class Memory {
     struct Payload { std::weak_ptr<void> owner; std::size_t bytes; };
-    AllocationScope::Log weights_;
+    std::vector<std::weak_ptr<tyloi::TensorStorage>> weights_;
     std::vector<Payload> ple_;
 
 public:
@@ -19,18 +20,18 @@ public:
     std::size_t ple_bytes() const;
 
 private:
-    friend class WeightMemoryLoadScope;
+    friend class LoadScope;
 };
 
-class WeightMemoryLoadScope {
-    WeightMemoryLedger* previous_;
-    AllocationScope allocation_;
+class LoadScope {
+    Memory* previous_;
+    std::unique_ptr<tyloi::cuda::AllocationScope> allocation_;
 
 public:
-    explicit WeightMemoryLoadScope(WeightMemoryLedger& ledger);
-    ~WeightMemoryLoadScope();
-    WeightMemoryLoadScope(const WeightMemoryLoadScope&) = delete;
-    WeightMemoryLoadScope& operator=(const WeightMemoryLoadScope&) = delete;
+    explicit LoadScope(Memory& ledger);
+    ~LoadScope();
+    LoadScope(const LoadScope&) = delete;
+    LoadScope& operator=(const LoadScope&) = delete;
 };
 
 void observe_streamed_ple(const std::shared_ptr<void>& owner, std::size_t bytes);
