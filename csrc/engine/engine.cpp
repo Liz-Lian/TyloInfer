@@ -13,7 +13,6 @@
 #include "engine/scheduler/request.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/executor/options.h"
-#include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/budget.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/session/cache.h"
@@ -40,7 +39,7 @@ void Engine::install() {
         auto scope = installed_root.enter(impl.load_.layer_placement.primary_device());
         cuda::WeightMemoryLoadScope memory_load(*impl.ledger_);
         impl.model_info_ = model_->info();
-        impl.graph_.emplace(impl.model_info_.max_context);
+        impl.graph_.emplace(impl.model_info_.max_context, Device(kCUDA, impl.forward_options_.primary), impl.forward_->graph());
         impl.cache_.emplace(impl.runtime_.session_cache, impl.runtime_.prefix_cache,
             cuda::internal::make_cuda_paged_prefix_cache(*impl.source_, impl.model_info_.max_context,
                 impl.idle_state_->supports_paged_text_session_state(), impl.runtime_.prefix_cache),

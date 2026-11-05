@@ -121,6 +121,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                    CudaProfiler& profiler);
 #else
 namespace ops {
+std::int64_t attention_parts(std::int64_t planned_len);
 tyloi::ops::AttentionResult attention(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
                                     const tyloi::ops::AttentionConfig&);
 std::optional<tyloi::DenseTensor> norm_rope_kv(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,

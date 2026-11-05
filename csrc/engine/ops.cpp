@@ -92,6 +92,12 @@ AttentionResult attention(const AttentionInput& request, const state::KvView& kv
     return cuda::ops::attention(request, kv, config);
 }
 
+std::int64_t attention_parts(std::int64_t planned_len, Device target) {
+    device(target);
+    if (!target.is_cuda()) throw std::invalid_argument("attention parts require a CUDA device");
+    return cuda::ops::attention_parts(planned_len);
+}
+
 std::shared_ptr<Tensor> attention(const Tensor& query_tensor, const Tensor& key_tensor, const Tensor& value_tensor,
                  const Tensor* mask, double scale) {
     const auto& query = dense(query_tensor);
@@ -518,6 +524,23 @@ std::shared_ptr<Tensor> sample_greedy(const Tensor& logits_tensor) {
     input(logits);
     require_cuda(logits);
     return owner(::sample_greedy_cuda(logits));
+}
+
+void decode_commit(const Tensor& next, Tensor& generated, Tensor& step,
+                   Tensor& input_tensor, Tensor& position, Tensor& length) {
+    input(next);
+    require_cuda(next);
+    for (const Tensor* value : {&generated, &step, &input_tensor, &position, &length})
+        compatible(next, *value);
+    for (const Tensor* value : std::initializer_list<const Tensor*>{&next, &generated, &step, &input_tensor, &position, &length}) {
+        const auto& item = dense(*value);
+        if (item.scalar_type() != kInt64 || !item.is_contiguous())
+            throw std::invalid_argument("decode commit requires contiguous int64 tensors");
+    }
+    if (dense(next).numel() != 1 || dense(generated).numel() < 1 || dense(step).numel() != 1 ||
+        dense(input_tensor).numel() != 1 || dense(position).numel() != 1 || dense(length).numel() != 1)
+        throw std::invalid_argument("invalid decode commit geometry");
+    cuda::ops::decode_commit(dense(next), dense(generated), dense(step), dense(input_tensor), dense(position), dense(length));
 }
 std::shared_ptr<Tensor> sample_stochastic(const Tensor& logits_tensor, const Tensor& random_tensor,
                                           double temperature, std::int64_t top_k, double top_p) {

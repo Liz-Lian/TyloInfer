@@ -8,10 +8,8 @@
 #include "engine/models/common/mtp.h"
 #include "engine/models/source.h"
 #include "engine/backends/cuda/executor/options.h"
-#include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/profile.h"
-#include "engine/backends/cuda/ops/attention/scratch.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/moe/expert_cache.h"
 
@@ -56,8 +54,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     auto& cache = *impl_->cache_;
     const auto& info = impl_->model_info_;
     const auto& config = impl_->runtime_;
-    const auto mode = root.forward_mode(impl_->load_.layer_placement.primary_device());
-    const models::ForwardOptions forward_options{mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
+    const auto& forward_options = impl_->forward_options_;
     const auto& prompt = input.prompt;
     const auto& cache_plan = input.cache_plan;
     if (config.generation.prefill_chunk_size <= 0)
@@ -175,7 +172,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
                   << " transfer_bytes=" << budget.transfer_bytes << '\n';
     }
 
-    auto full_ids = ops::reshape(*ops::tensor(std::span<const int64_t>(prompt), Device(kCUDA, mode.primary)), {1, -1});
+    auto full_ids = ops::reshape(*ops::tensor(std::span<const int64_t>(prompt), Device(kCUDA, forward_options.primary)), {1, -1});
     graph.ensure_storage(info.vocab_size);
     Sampler sampler(input.sampling, full_ids->device());
     const bool penalties = sampler.has_penalties();
@@ -208,7 +205,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         {
             PrefillActivity activity;
             auto timer = executor_->timer();
-            auto scope = cuda::Executor::current().enter(mode.ffn);
             models::Input model_input;
             model_input.ids = ops::contiguous(*ops::slice(*full_ids, 1, chunk.offset, chunk.offset + chunk.count));
             model_input.advance = true;
@@ -245,9 +241,9 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     if (weights.moe) restore_graph_expert_space();
     const bool graph_active = config.decode_graph.enabled &&
         impl_->load_.dsv4_cpu_offload_layers.empty() && impl_->load_.dense_cpu_layer_count == 0 &&
-        model_parallel_cuda_graph_enabled(impl_->load_, root, weights) &&
+        impl_->graph_allowed_ &&
         (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
-        mfq_cuda_graph_capture_supported() && !weights.moe &&
+        graph.graph && !weights.moe &&
         input.sampling.max_tokens >= config.decode_graph.minimum_generation_tokens &&
         input.sampling.max_tokens <= graph.generated_capacity;
     bool graph_prepared = false;
@@ -263,7 +259,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_yield std::move(delta);
         if (output.stopped()) break;
         if (!graph_active) {
-            auto scope = cuda::Executor::current().enter(mode.ffn);
             models::Input model_input;
             model_input.ids = ops::reshape(*pending, {1, 1});
             model_input.advance = true;
@@ -274,51 +269,51 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
             if (profile) profile->finish();
             token = ops::item(*pending);
         } else {
-            graph.ensure_compute_streams(root.collectives());
-            MfqCudaGuard device_guard(graph.stream.device_index());
-            auto stream_guards = activate_cuda_graph_compute_streams(graph.compute_streams);
+            auto scope = graph.graph->enter();
             if (!graph_prepared) {
                 if (penalties) ops::add_token_counts(*graph.counts, *ops::contiguous(*pending));
                 graph.initialize_inputs(*pending, state.position(), sampler.random_host());
                 const auto requested = state.position() + input.sampling.max_tokens;
-                const auto planned = decode_graph_bucket(requested, info.max_context);
-                const auto parts = decode_graph_attention_parts(planned, AttentionScratch::kMaxParts);
-                auto graph_mode = mode; graph_mode.ffn.serial = true;
-                const models::ForwardOptions graph_options{graph_mode.kv_capacity, graph_mode.trace, graph_mode.trace_layer, graph_mode.primary};
+                const auto planned = decode_bucket(requested, info.max_context);
+                const auto parts = ops::attention_parts(planned, graph.device);
                 const auto sample_static = [&] {
-                    auto scope = cuda::Executor::current().enter(graph_mode.ffn);
                     models::Input model_input;
                     model_input.ids = graph.static_input; model_input.positions = graph.static_pos;
                     model_input.cache_positions = graph.static_pos; model_input.lengths = graph.static_len;
                     model_input.kv_length = planned; model_input.attention_parts = parts;
-                    auto hidden = model_->forward(std::move(model_input), state, graph_options);
+                    auto hidden = model_->forward(std::move(model_input), state, forward_options);
                     auto logits = ops::reshape(*ops::contiguous(*project(*hidden, !(sampler.greedy() && !penalties))), {1, -1});
                     if (penalties) sampler.apply_penalties(*logits, *graph.counts);
                     return sampler.greedy() ? ops::sample_greedy(*logits) :
                         ops::sample_stochastic(*logits, *graph.random, sampler.params().temperature, sampler.params().top_k, sampler.params().top_p);
                 };
-                const auto storage = [&] {
-                    auto values = state.storage();
-                    auto scratch = impl_->forward_->storage();
-                    values.insert(values.end(), scratch.begin(), scratch.end());
-                    return values;
-                };
-                auto captured = storage();
+                auto captured = state.storage();
                 const bool hit = graph.matches(planned, sampler.params(), sampler.greedy(), captured);
                 if (hit) ++graph.reuses;
                 else {
                     graph.invalidate();
-                    graph.graph = std::make_unique<MfqCudaGraph>();
                     try {
-                        prepare_decode_graph_memory(state.graph_state(), state, info.double_warmup,
-                            *graph.graph, sample_static, graph.graph_participant_streams(root.collectives()));
-                        graph.graph->capture_begin();
+                        auto recurrent = state.graph_state();
+                        const auto saved_position = state.position();
+                        graph.graph->prepare(recurrent);
+                        if (!recurrent.empty() || info.double_warmup) {
+                            const auto restore = [&] {
+                                graph.graph->restore();
+                                if (state.position() != saved_position)
+                                    throw std::runtime_error("static decode warmup changed cache position");
+                            };
+                            for (int pass = 0; pass < 2; ++pass) {
+                                try { sample_static(); restore(); }
+                                catch (...) { restore(); throw; }
+                            }
+                        }
+                        graph.graph->begin();
                         auto next = sample_static();
                         if (penalties) ops::add_token_counts(*graph.counts, *ops::contiguous(*next));
                         graph.capture_next(std::move(next));
-                        graph.graph->capture_end();
-                        captured = storage();
-                        graph.set_key(planned, sampler.params(), sampler.greedy(), captured);
+                        captured = state.storage();
+                        graph.graph->end(captured);
+                        graph.set_key(planned, sampler.params(), sampler.greedy());
                         ++graph.captures;
                     } catch (...) { graph.invalidate(); throw; }
                     report_cuda_memory(impl_->load_.report_cuda_memory, "runtime_graph_capture");

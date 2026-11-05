@@ -216,7 +216,7 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
                 gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
                 state = model->make_state();
                 if (runtime_options::kv_vram_preallocated()) state->preallocate();
-                forward = root->fork(model_parallel_primary_device(load));
+                forward = root->fork(load.layer_placement.primary_device());
                 if (owner->plan.vision != CudaVisionAdapter::none || owner->plan.predictor != CudaPredictorAdapter::none)
                     throw std::runtime_error("CUDA component adapter is unsupported for this model");
                 finalize_kv(kv.get(), *weights, offload);
@@ -225,6 +225,9 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
             }
         }
         auto impl = std::make_unique<engine::Engine::Impl>();
+        const auto mode = root->forward_mode(load.layer_placement.primary_device());
+        impl->forward_options_ = {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
+        impl->graph_allowed_ = model_parallel_cuda_graph_enabled(load, *root, *weights);
         impl->options_ = std::move(options);
         impl->load_ = std::move(load);
         impl->runtime_ = std::move(runtime);

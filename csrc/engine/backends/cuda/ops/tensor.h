@@ -4,6 +4,8 @@
 
 namespace tyloi::cuda::ops {
 
+void decode_commit(tyloi::DenseTensor next, tyloi::DenseTensor generated, tyloi::DenseTensor step,
+                   tyloi::DenseTensor input, tyloi::DenseTensor position, tyloi::DenseTensor length);
 tyloi::DenseTensor tensor(std::span<const float> values, Device target);
 tyloi::DenseTensor tensor(std::span<const std::int32_t> values, Device target);
 tyloi::DenseTensor tensor(std::span<const std::int64_t> values, Device target);

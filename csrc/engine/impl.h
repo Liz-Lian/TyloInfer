@@ -4,7 +4,7 @@
 #include "engine/engine.h"
 #include "engine/load.h"
 #include "engine/budget.h"
-#include "engine/backends/cuda/executor/decode_graph.h"
+#include "engine/generation/decode.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/session/cache.h"
@@ -26,10 +26,12 @@ struct Engine::Impl {
     std::shared_ptr<cuda::KvMemoryManager> kv_;
     std::shared_ptr<cuda::KvOffloadStore> offload_;
     std::unique_ptr<models::State> idle_state_;
-    std::unique_ptr<cuda::Executor> forward_;
+    std::unique_ptr<tyloi::Executor> forward_;
+    models::ForwardOptions forward_options_{};
+    bool graph_allowed_ = false;
     models::Info model_info_{};
     mtp::State mtp_state_;
-    std::optional<DecodeGraphCache> graph_;
+    std::optional<Decode> graph_;
     std::optional<cuda::internal::TextSessionCache> cache_;
     std::optional<cuda::Budget> budget_;
     std::optional<cuda::ExpertSpace> expert_space_;

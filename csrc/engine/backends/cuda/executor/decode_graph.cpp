@@ -1,8 +1,12 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+#endif
 
 #include <algorithm>
+#include <exception>
 
 namespace {
 
@@ -146,12 +150,120 @@ activate_cuda_graph_compute_streams(
         const std::vector<MfqCudaStream>& compute_streams) {
     std::vector<std::unique_ptr<MfqCudaStreamGuard>> guards;
     guards.reserve(compute_streams.size());
-    for (const auto& stream : compute_streams) {
-        guards.push_back(
-            std::make_unique<MfqCudaStreamGuard>(stream));
+    try {
+        for (const auto& stream : compute_streams)
+            guards.push_back(std::make_unique<MfqCudaStreamGuard>(stream));
+    } catch (...) {
+        while (!guards.empty()) guards.pop_back();
+        throw;
     }
     return guards;
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+namespace {
+class ExecutionGraph final : public tyloi::Executor::Graph {
+    struct Scope final : tyloi::Executor::Scope {
+        MfqCudaGuard device;
+        std::vector<std::unique_ptr<MfqCudaStreamGuard>> streams;
+        std::unique_ptr<tyloi::Executor::Scope> executor;
+        Scope(tyloi::cuda::Executor& owner, const std::vector<MfqCudaStream>& compute, int primary)
+            : device(primary), streams(activate_cuda_graph_compute_streams(compute)) {
+            try {
+                auto mode = tyloi::cuda::Executor::current_ffn();
+                mode.serial = true;
+                executor = owner.enter(mode);
+            } catch (...) {
+                while (!streams.empty()) streams.pop_back();
+                throw;
+            }
+        }
+        ~Scope() override {
+            executor.reset();
+            while (!streams.empty()) streams.pop_back();
+        }
+    };
+    struct Saved {
+        tyloi::Tensor* target;
+        std::shared_ptr<tyloi::Tensor> value;
+        decode_graph_detail::Layout layout;
+    };
+public:
+    ExecutionGraph(tyloi::cuda::Executor& owner, int primary)
+        : owner_(owner), primary_(primary), stream_(mfq_get_stream_from_pool(false, primary)),
+          compute_(make_cuda_graph_compute_streams(stream_, owner.collectives())),
+          participants_(cuda_graph_participant_streams(compute_, owner.collectives())) {}
+    ~ExecutionGraph() override { try { invalidate(); } catch (...) {} }
+    std::unique_ptr<tyloi::Executor::Scope> enter() override {
+        return std::make_unique<Scope>(owner_, compute_, primary_);
+    }
+    bool matches(std::span<const std::shared_ptr<const tyloi::Tensor>> owners) const override {
+        std::vector<std::shared_ptr<const tyloi::Tensor>> all(owners.begin(), owners.end());
+        auto scratch = owner_.storage();
+        all.insert(all.end(), scratch.begin(), scratch.end());
+        return graph_.valid() && same_storage(layout_, all);
+    }
+    void prepare(std::span<tyloi::Tensor* const> recurrent) override {
+        saved_.reserve(recurrent.size());
+        for (auto* state : recurrent)
+            saved_.push_back({state, tyloi::ops::clone(*state), decode_graph_detail::snapshot_layout(*state)});
+        graph_.prepare_memory(participants_);
+    }
+    void restore() override {
+        for (const auto& state : saved_) {
+            TYLOINFER_RUNTIME_CHECK(decode_graph_detail::same_layout(state.layout, *state.target),
+                "decode warmup changed recurrent storage addresses");
+            tyloi::ops::copy_into(*state.target, *state.value);
+            TYLOINFER_RUNTIME_CHECK(decode_graph_detail::same_layout(state.layout, *state.target),
+                "decode warmup changed recurrent storage addresses");
+        }
+        wait();
+    }
+    void begin() override { saved_.clear(); graph_.capture_begin(); }
+    void end(std::span<const std::shared_ptr<const tyloi::Tensor>> owners) override {
+        graph_.capture_end();
+        owners_.assign(owners.begin(), owners.end());
+        auto scratch = owner_.storage();
+        owners_.insert(owners_.end(), scratch.begin(), scratch.end());
+        for (const auto& tensor : owners_)
+            layout_.push_back(tensor ? std::optional(decode_graph_detail::snapshot_layout(*tensor)) : std::nullopt);
+    }
+    void replay() override { graph_.replay(); }
+    void wait() override {
+        std::exception_ptr failure;
+        for (const auto& stream : participants_) {
+            try {
+                MfqCudaGuard guard(stream.device_index());
+                TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
+            } catch (...) {
+                if (!failure) failure = std::current_exception();
+            }
+        }
+        if (failure) std::rethrow_exception(failure);
+    }
+    void invalidate() override {
+        graph_.reset();
+        wait();
+        layout_.clear(); owners_.clear(); saved_.clear();
+    }
+private:
+    tyloi::cuda::Executor& owner_;
+    int primary_;
+    MfqCudaStream stream_;
+    std::vector<MfqCudaStream> compute_, participants_;
+    MfqCudaGraph graph_;
+    std::vector<Saved> saved_;
+    std::vector<std::shared_ptr<const tyloi::Tensor>> owners_;
+    std::vector<std::optional<decode_graph_detail::Layout>> layout_;
+};
+}
+
+std::unique_ptr<tyloi::Executor::Graph> tyloi::cuda::Executor::graph() {
+    MfqCudaGuard guard(primary_);
+    if (!default_context(primary_)->supports_async_allocations()) return nullptr;
+    return std::make_unique<ExecutionGraph>(*this, primary_);
+}
+#endif
 
 DecodeGraphCache::DecodeGraphCache(int64_t context_capacity)
     : stream(mfq_get_stream_from_pool(false)),

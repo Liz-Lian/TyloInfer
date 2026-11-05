@@ -39,6 +39,7 @@ struct AttentionConfig {
 struct AttentionResult { std::shared_ptr<Tensor> value; bool token_major = false; };
 AttentionResult attention(const AttentionInput& input, const state::KvView& kv,
                           const AttentionConfig& config);
+std::int64_t attention_parts(std::int64_t planned_len, Device device);
 std::shared_ptr<Tensor> attention(const Tensor& query, const Tensor& key, const Tensor& value,
                  const Tensor* additive_mask, double scale);
 // Writes the supplied backing and returns visible KV; paged prefixes may be gathered.
@@ -201,6 +202,8 @@ inline std::shared_ptr<Tensor> empty(std::initializer_list<std::int64_t> shape, 
     return empty(std::span<const std::int64_t>(shape.begin(), shape.size()), options);
 }
 std::shared_ptr<Tensor> sample_greedy(const Tensor& logits);
+void decode_commit(const Tensor& next, Tensor& generated, Tensor& step,
+                   Tensor& input, Tensor& position, Tensor& length);
 std::shared_ptr<Tensor> sample_stochastic(const Tensor& logits, const Tensor& random,
                                           double temperature, std::int64_t top_k, double top_p);
 void add_token_counts(Tensor& counts, const Tensor& ids);

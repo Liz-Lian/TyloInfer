@@ -34,6 +34,7 @@ public:
     std::unique_ptr<tyloi::Executor::Scope> enter() override;
     std::unique_ptr<tyloi::Executor::Timer> timer() override;
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
+    std::unique_ptr<tyloi::Executor::Graph> graph() override;
     void drain() override;
 #else
     std::unique_ptr<tyloi::Executor::Scope> enter();

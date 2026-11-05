@@ -4,6 +4,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/ops/attention/scratch.h"
 #endif
 
 #include <algorithm>
@@ -15,6 +16,12 @@
 #include <vector>
 
 namespace tyloi::cuda {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::int64_t ops::attention_parts(std::int64_t planned_len) {
+    return std::min<std::int64_t>(planned_len >= 192 ? (planned_len + 127) / 128 : 1,
+                                  AttentionScratch::kMaxParts);
+}
+#endif
 namespace {
 
 using ::tyloi::indexing::Slice;

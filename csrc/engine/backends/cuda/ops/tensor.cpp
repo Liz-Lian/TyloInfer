@@ -6,12 +6,18 @@
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 
 #include <optional>
 #include <vector>
 
 namespace tyloi::cuda::ops {
 
+void decode_commit(tyloi::DenseTensor next, tyloi::DenseTensor generated, tyloi::DenseTensor step,
+                   tyloi::DenseTensor input, tyloi::DenseTensor position, tyloi::DenseTensor length) {
+    MfqCudaGuard guard(next.device().index);
+    decode_graph_commit_cuda(next, generated, step, input, position, length);
+}
 template <typename Value>
 static tyloi::DenseTensor tensor_values(std::span<const Value> values, Device target) {
     return ::tyloi::cuda::tensor(values, TensorOptions().dtype(::tyloi::cuda::scalar_type_for<Value>()).device(target));
