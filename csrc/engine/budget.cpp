@@ -59,6 +59,11 @@ void Budget::reclaim(std::size_t bytes, ExpertSpace* space) {
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
 }
 
+void Budget::reserve_ram(std::size_t bytes) {
+    cache_.reserve_ram(bytes);
+    weights_.reserve(bytes);
+}
+
 std::size_t Budget::trim_prefix(std::size_t bytes) {
     const auto context=default_context(primary_device_);
     std::size_t hot=0;

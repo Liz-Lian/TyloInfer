@@ -1,4 +1,5 @@
 #include "engine/weights/workspace.h"
+#include "engine/budget.h"
 #include "engine/weights/moe/prepare.h"
 #include "engine/weights/moe/load.h"
 #include "env.h"
@@ -1001,7 +1002,7 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     // Reclaim revocable expert overflow before backing up and borrowing the
     // primary expert arrays. Both consumers use the same physical headroom.
-    if(reserve_workspace_ && context->available_memory()<workspace_bytes)reserve_workspace_(workspace_bytes);
+    if(budget_ && context->available_memory()<workspace_bytes)reserve_workspace(workspace_bytes);
     if((option && option[0]=='0') || !complete_residency_ || !layer_prefill_ready())return 0;
     if(!force && context->available_memory()>=workspace_bytes)return 0;
     const auto loan_started=std::chrono::steady_clock::now();
@@ -1053,7 +1054,7 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
         bool created=false;
         const auto allocate_image=[&] {
             created=true;
-            if(reserve_ram_workspace_)reserve_ram_workspace_(image_bytes);
+            if(budget_)budget_->reserve_ram(image_bytes);
             reclaim_optional_host(image_bytes);
             std::vector<::tyloi::DenseTensor> fields;
             for(std::size_t f=0;f<arena->fields.size();++f) {
@@ -1176,7 +1177,7 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     }
     std::size_t largest=0;
     for(const auto& [id,bytes]:sizes){loan->layers[id].bytes=bytes;largest=std::max(largest,bytes);}
-    if(reserve_ram_workspace_)reserve_ram_workspace_(largest*2);
+    if(budget_)budget_->reserve_ram(largest*2);
     for(auto& stage:loan->stages)stage.host=::tyloi::cuda::empty(
         {int64_t(largest)},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8));
     for(const auto& source:sources_)for(const auto& cohort:source->cohorts_) {
@@ -2498,9 +2499,12 @@ void resize_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache,std::s
     release_moe_decode_buffers(cache);
     cache->resize(bytes);
 }
-void set_moe_workspace_reservation(const std::shared_ptr<MoeExpertCache>& cache,
-        std::function<void(std::size_t)> reserve,std::function<void(std::size_t)> reserve_ram) {
-    if(cache)cache->set_workspace_reservation(std::move(reserve),std::move(reserve_ram));
+void MoeExpertCache::reserve_workspace(std::size_t bytes) {
+    if(budget_)budget_->reclaim(bytes, expert_space_);
+}
+void bind_moe_budget(const std::shared_ptr<MoeExpertCache>& cache,
+        tyloi::cuda::Budget* budget, tyloi::cuda::ExpertSpace* space) {
+    if(cache) { cache->budget_=budget; cache->expert_space_=space; }
 }
 void reserve_moe_workspace(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes) {
     if(cache)cache->reserve_workspace(bytes);

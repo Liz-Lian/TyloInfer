@@ -115,11 +115,8 @@ protected:
             }
             {
                 CudaScope scope(execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
-                expert_space_.reset();
                 clear_bindings();
                 batching_.reset();
-                budget_.reset();
-                cache_.reset();
                 graph_.reset();
                 components_.reset();
                 images_.clear();
@@ -130,6 +127,9 @@ protected:
                 execution_->executor().pipelines().clear();
                 offload_.reset();
                 kv_.reset();
+                expert_space_.reset();
+                budget_.reset();
+                cache_.reset();
                 weights_.reset();
             }
             execution_.reset();
@@ -307,8 +307,8 @@ private:
     void clear_bindings() noexcept {
         restore_decode_workspace_ = {};
         if (kv_) kv_->set_reservation({});
-        set_moe_workspace_reservation(weights_.moe, {});
-        if (offload_) offload_->set_ram_reservation({});
+        bind_moe_budget(weights_.moe, nullptr);
+        if (offload_) offload_->bind_budget(nullptr);
     }
 
     engine::SessionResult set_budget(const engine::SessionCommand& command) {
@@ -418,12 +418,7 @@ private:
         budget_.emplace(
             *weight_memory_, weights_, *cache_,
             execution_->config.layer_placement.primary_device());
-        if (offload_) {
-            offload_->set_ram_reservation([this](std::size_t bytes) {
-                cache_->reserve_ram(bytes);
-                weights_.reserve(bytes);
-            });
-        }
+        if (offload_) offload_->bind_budget(&*budget_);
         if (config_.continuous_batch.max_sequences) {
             auto batch_config = config_.continuous_batch;
             batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution_->config, execution_->executor(), execution_->weights);
@@ -451,16 +446,8 @@ private:
                     std::move(expert_loan));
             }
             restore_decode_workspace_ = [this] { restore_graph_expert_space(); };
-            set_moe_workspace_reservation(
-                weights_.moe,
-                [this](std::size_t bytes) {
-                    budget_->reclaim(
-                        bytes, expert_space_ ? &*expert_space_ : nullptr);
-                },
-                [this](std::size_t bytes) {
-                    cache_->reserve_ram(bytes);
-                    weights_.reserve(bytes);
-                });
+            bind_moe_budget(weights_.moe, &*budget_,
+                expert_space_ ? &*expert_space_ : nullptr);
         }
 #endif
         if (const auto bytes = runtime_options::resident_budget_bytes()) {

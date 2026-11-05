@@ -547,8 +547,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             const auto reserve=tyloi::cuda::runtime_options::workspace_reserve_bytes()/(cache_->ssd_experts()?1:2);
             auto available=context->available_memory()+context->workspace_available();
             const auto requested=std::size_t(ring_bytes(capacity))+reserve;
-            if(cache_->ssd_experts() && available<requested && cache_->reserve_workspace_) {
-                cache_->reserve_workspace_(requested);
+            if(cache_->ssd_experts() && available<requested && cache_->budget_) {
+                cache_->reserve_workspace(requested);
                 available=context->available_memory()+context->workspace_available();
             }
             const auto limit=available>reserve?available-reserve:0;
@@ -1217,8 +1217,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             const auto reserve=tyloi::cuda::runtime_options::workspace_reserve_bytes()/2;
             auto available=context->available_memory()+context->workspace_available();
             const auto requested=std::size_t(maximum)*2+reserve;
-            if(cache_->pipeline_prefill_layer_overlap_ && available<requested && cache_->reserve_workspace_) {
-                cache_->reserve_workspace_(requested);
+            if(cache_->pipeline_prefill_layer_overlap_ && available<requested && cache_->budget_) {
+                cache_->reserve_workspace(requested);
                 available=context->available_memory()+context->workspace_available();
             }
             if(cache_->pipeline_prefill_layer_overlap_ &&

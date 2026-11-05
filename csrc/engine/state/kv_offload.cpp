@@ -1,4 +1,5 @@
 #include "engine/state/kv_offload.h"
+#include "engine/budget.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 
@@ -56,7 +57,7 @@ struct KvOffloadStore::Block {
 };
 
 struct KvOffloadStore::Impl {
-    std::function<void(std::size_t)> reserve_ram;
+    Budget* budget = nullptr;
     explicit Impl(KvOffloadConfig value) : config(std::move(value)) {
         if (config.buffer_bytes < 4096 || config.gpu_budget_bytes < config.buffer_bytes)
             throw std::invalid_argument("CUDA KV budget cannot hold its I/O staging buffer");
@@ -108,7 +109,7 @@ struct KvOffloadStore::Impl {
             block->ram_offset=offset;ram_bytes+=block->bytes;ram_lru.push_front(block);
         } else {
             initialize_disk();
-            if(reserve_ram)reserve_ram(block->bytes*2);
+            if(budget)budget->reserve_ram(block->bytes*2);
             auto cpu=block->gpu.to(::tyloi::kCPU).contiguous();
             std::vector<std::uint8_t> payload(block->bytes);
             std::memcpy(payload.data(),cpu.data_ptr(),payload.size());
@@ -158,7 +159,7 @@ struct KvOffloadStore::Impl {
             auto block = found->second.block.lock();
             if (block) {
                 if (!block->cold) {
-                    if (reserve_ram) reserve_ram(block->bytes * 2);
+                    if (budget) budget->reserve_ram(block->bytes * 2);
                     auto cpu = block->gpu.to(::tyloi::kCPU).contiguous();
                     std::vector<std::uint8_t> payload(block->bytes);
                     std::memcpy(payload.data(), cpu.data_ptr(), payload.size());
@@ -281,7 +282,7 @@ KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows)
         }
         impl_->h2d_bytes+=block->bytes;return result;
     }
-    if (impl_->reserve_ram) impl_->reserve_ram(block->bytes * 2);
+    if (impl_->budget) impl_->budget->reserve_ram(block->bytes * 2);
     auto payload = impl_->ram->read(block->cold);
     const auto options = block->options;
     auto cpu = ::tyloi::cuda::empty({block->rows, block->width}, options.device(::tyloi::kCPU));
@@ -295,8 +296,8 @@ KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows)
 }
 
 void KvOffloadStore::flush() { if(impl_->ram)impl_->ram->flush(); }
-void KvOffloadStore::set_ram_reservation(std::function<void(std::size_t)> reserve) {
-    impl_->reserve_ram = std::move(reserve);
+void KvOffloadStore::bind_budget(Budget* budget) {
+    impl_->budget = budget;
 }
 void KvOffloadStore::set_expert_loan(std::shared_ptr<KvExpertLoan> loan) {
     std::lock_guard<std::recursive_mutex> lock(impl_->mutex);

@@ -184,10 +184,7 @@ struct Text {
         try {
         budget.emplace(*weight_memory, weights, cache,
             execution->config.layer_placement.primary_device());
-        if (offload)
-            offload->set_ram_reservation([this](std::size_t bytes) {
-                cache.reserve_ram(bytes);weights.reserve(bytes);
-            });
+        if (offload) offload->bind_budget(&*budget);
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
                 batching = make_batch(language, *execution, config.continuous_batch,
@@ -221,13 +218,8 @@ struct Text {
                               value.restore_decode_workspace = std::function<void()>();
                           })
                 language.restore_decode_workspace = restore_decode_workspace;
-            set_moe_workspace_reservation(weights.moe,
-                [this](std::size_t bytes) {
-                    budget->reclaim(bytes, expert_space ? &*expert_space : nullptr);
-                },
-                [this](std::size_t bytes) {
-                    cache.reserve_ram(bytes);weights.reserve(bytes);
-                });
+            bind_moe_budget(weights.moe, &*budget,
+                expert_space ? &*expert_space : nullptr);
         }
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
@@ -333,12 +325,13 @@ struct Text {
             language.restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
         if(kv)kv->set_reservation({});
-        set_moe_workspace_reservation(weights.moe,{});
-        if (offload) offload->set_ram_reservation({});
+        bind_moe_budget(weights.moe, nullptr);
+        if (offload) offload->bind_budget(nullptr);
     }
     ~Text() {
-        expert_space.reset();
         clear_bindings();
+        batching.reset();
+        expert_space.reset();
     }
     SessionResult session(const SessionCommand& command) {
         if(command.kind!=SessionCommand::Kind::memory_budget)return cache.control(command);

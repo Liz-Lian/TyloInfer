@@ -48,9 +48,8 @@ void Engine::install() {
                 set_moe_kv_expert_loan(impl.weights_->moe, loan);
             }
             if (loan) impl.expert_space_.emplace(*impl.weights_, impl.forward_options_.primary, std::move(loan));
-            set_moe_workspace_reservation(impl.weights_->moe,
-                [this](std::size_t bytes) { impl_->budget_->reclaim(bytes, impl_->expert_space_ ? &*impl_->expert_space_ : nullptr); },
-                [this](std::size_t bytes) { impl_->cache_->reserve_ram(bytes); impl_->weights_->reserve(bytes); });
+            bind_moe_budget(impl.weights_->moe, &*impl.budget_,
+                impl.expert_space_ ? &*impl.expert_space_ : nullptr);
         }
         if (const auto bytes = cuda::runtime_options::resident_budget_bytes()) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
@@ -144,13 +143,15 @@ void Engine::unload_model() {
         std::unique_ptr<tyloi::Executor::Scope> scope;
         try { scope = executor_->enter(); }
         catch (...) { remember(std::current_exception()); }
-        impl_->expert_space_.reset();
         clear_bindings();
-        impl_->budget_.reset(); impl_->cache_.reset(); impl_->graph_.reset();
+        impl_->graph_.reset();
         try { executor_->clear(); }
         catch (...) { remember(std::current_exception()); }
         impl_->idle_state_.reset(); model_.reset();
-        impl_->kv_.reset(); impl_->weights_.reset();
+        impl_->kv_.reset();
+        impl_->expert_space_.reset();
+        impl_->budget_.reset(); impl_->cache_.reset();
+        impl_->weights_.reset();
         scope.reset();
         executor_.reset();
     }
@@ -188,7 +189,7 @@ void Engine::execute(const std::vector<RequestId>&) {}
 
 void Engine::clear_bindings() noexcept {
     if (impl_->kv_) impl_->kv_->set_reservation({});
-    set_moe_workspace_reservation(impl_->weights_->moe, {});
+    bind_moe_budget(impl_->weights_->moe, nullptr);
 }
 
 SessionResult Engine::set_budget(const SessionCommand& command) {

@@ -35,7 +35,7 @@ inline std::string moe_packed_transfer_prefix(int projection,bool predictor) {
     return std::string("decodepacked:")+(predictor && moe_predictor_transfer_cache_enabled()?"mtp:":"")+
         std::to_string(projection)+":";
 }
-namespace tyloi::cuda {class KvExpertLoan;}
+namespace tyloi::cuda {class Budget; class ExpertSpace; class KvExpertLoan;}
 void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<tyloi::cuda::KvExpertLoan> loan);
 
 // The owner outlives every temporary tensor allocated from the borrowed tails.
@@ -95,8 +95,8 @@ std::size_t moe_expert_cache_minimum_bytes(const std::shared_ptr<MoeExpertCache>
 std::size_t moe_expert_cache_budget_bytes(const std::shared_ptr<MoeExpertCache>& cache);
 void resize_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache, std::size_t bytes);
 // Reclaim lower-priority cache storage before reducing prefill transfer overlap.
-void set_moe_workspace_reservation(const std::shared_ptr<MoeExpertCache>& cache,
-    std::function<void(std::size_t)> reserve,std::function<void(std::size_t)> reserve_ram={});
+void bind_moe_budget(const std::shared_ptr<MoeExpertCache>& cache,
+    tyloi::cuda::Budget* budget, tyloi::cuda::ExpertSpace* space = nullptr);
 void reserve_moe_workspace(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes);
 std::size_t reclaim_moe_optional_host(const std::shared_ptr<MoeExpertCache>& cache,
     std::size_t allocation_bytes=0);

@@ -54,6 +54,7 @@ public:
     std::size_t weights() const noexcept { return weight_budget_; }
     // Call within the owner's execution scope.
     void reclaim(std::size_t bytes, ExpertSpace* space);
+    void reserve_ram(std::size_t bytes);
     std::int64_t prefill(std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic);
     void decode(ExpertSpace* space, const ModelSource* source);

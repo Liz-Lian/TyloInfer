@@ -50,11 +50,9 @@ public:
     MoePrefillWorkspaceBudget prefill_workspace_budget(bool allow_borrow) const;
     std::optional<std::size_t> available_host_ram() const;
     std::size_t reclaim_optional_host(std::size_t allocation_bytes);
-    void reserve_workspace(std::size_t bytes) {if(reserve_workspace_)reserve_workspace_(bytes);}
-    void set_workspace_reservation(std::function<void(std::size_t)> reserve,
-                                   std::function<void(std::size_t)> reserve_ram={}) {
-        reserve_workspace_=std::move(reserve);reserve_ram_workspace_=std::move(reserve_ram);
-    }
+    void reserve_workspace(std::size_t bytes);
+    tyloi::cuda::Budget* budget_ = nullptr;
+    tyloi::cuda::ExpertSpace* expert_space_ = nullptr;
     bool layer_prefill_ready() const { return pipeline_prefill_layer_layout_ && pipeline_ram_registered_bytes_>0; }
     std::uint64_t streamed_bytes() const {return stats_.ram_pcie_bytes;}
     ::tyloi::Device device() const {return ::tyloi::Device(::tyloi::kCUDA, owner_device_);}
@@ -1226,7 +1224,6 @@ private:
         ~PrefillLoan() {for(auto& stage:stages)if(stage.pinned)(void)cudaHostUnregister(stage.host.data_ptr());}
     };
     std::unique_ptr<PrefillLoan> prefill_loan_;
-    std::function<void(std::size_t)> reserve_ram_workspace_;
     struct DmaCallSample {
         int layer=0,tokens=0,entries=0;
         bool window=false;
@@ -1400,7 +1397,6 @@ private:
     ::tyloi::DenseTensor pipeline_prefill_layer_down_buffer_;
     int64_t pipeline_prefill_layer_split_=0;
     int64_t pipeline_prefill_layer_stride_=0;
-    std::function<void(std::size_t)> reserve_workspace_;
     bool pipeline_prefill_layer_overlap_=false;
     std::array<cudaEvent_t,2> pipeline_prefill_layer_ready_{};
     std::array<cudaEvent_t,2> pipeline_prefill_layer_gate_up_ready_{};

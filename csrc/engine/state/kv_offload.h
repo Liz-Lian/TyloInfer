@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 #include <utility>
-#include <functional>
 
 namespace tyloi::cuda {
+class Budget;
 class KvExpertLoan;
 struct KvOffloadConfig {
     std::size_t gpu_budget_bytes = 0;
@@ -39,7 +39,7 @@ public:
     const KvOffloadConfig& config() const;
     std::vector<std::pair<std::string, double>> metrics() const;
     void flush();
-    void set_ram_reservation(std::function<void(std::size_t)> reserve);
+    void bind_budget(Budget* budget);
     void set_expert_loan(std::shared_ptr<KvExpertLoan> loan);
     std::size_t expert_loan_bytes() const;
 private:
