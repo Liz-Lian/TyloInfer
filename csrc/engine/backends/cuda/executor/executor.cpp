@@ -364,6 +364,36 @@ AttentionScratch& Executor::attention_scratch(tyloi::Device device, AttentionGeo
 
 namespace {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+class ExecutorProfile final : public tyloi::Executor::Profile {
+public:
+    ExecutorProfile(CudaProfiler& profiler, const char* name)
+        : profiler_(profiler), previous_(profiler.enabled), name_(name) {
+        try {
+            profiler_.reset();
+            profiler_.enabled = true;
+            range_.emplace(profiler_, name_);
+        } catch (...) {
+            profiler_.enabled = previous_;
+            throw;
+        }
+    }
+
+    ~ExecutorProfile() override { profiler_.enabled = previous_; }
+
+    void finish() override {
+        range_->finish();
+        range_.reset();
+        profiler_.report(name_);
+        profiler_.enabled = previous_;
+    }
+
+private:
+    CudaProfiler& profiler_;
+    bool previous_;
+    std::string name_;
+    std::optional<CudaProfiler::Range> range_;
+};
+
 class ExecutorScope;
 thread_local ExecutorScope* active_scope = nullptr;
 #endif
@@ -423,6 +453,14 @@ std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::unique_ptr<tyloi::Executor::Timer> Executor::timer() {
+    return std::make_unique<internal::PrefillCudaTimer>();
+}
+
+std::unique_ptr<tyloi::Executor::Profile> Executor::profile(const char* name) {
+    return std::make_unique<ExecutorProfile>(profiler_, name);
+}
+
 std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device, const Ffn::Mode& mode) {
     return std::make_unique<ExecutorScope>(*this, device, contexts_, mode);
 }

@@ -33,10 +33,10 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         while (!output.stopped()) {
             StepResult<models::Prepared> step;
             {
-                cuda::internal::PrefillCudaTimer timer;
+                auto timer = executor_->timer();
                 step = preparation.next();
-                TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(), mfq_get_current_cuda_stream()));
-                output.metrics.multimodal_ms += timer.elapsed_ms();
+                timer->stop();
+                output.metrics.multimodal_ms += timer->elapsed_ms();
             }
             if (step.value) {
                 prepared = std::move(*step.value);
@@ -207,7 +207,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         const auto chunk = next_prefill_chunk(end, offset, chunk_size);
         {
             PrefillActivity activity;
-            cuda::internal::PrefillCudaTimer timer;
+            auto timer = executor_->timer();
             auto scope = cuda::Executor::current().enter(mode.ffn);
             models::Input model_input;
             model_input.ids = ops::contiguous(*ops::slice(*full_ids, 1, chunk.offset, chunk.offset + chunk.count));
@@ -218,10 +218,10 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
             }
             auto hidden = model_->forward(std::move(model_input), state, forward_options);
             if (prepared && prepared->transformed()) state.set_position_delta(prepared->decode_position_delta);
-            TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(), mfq_get_current_cuda_stream()));
+            timer->stop();
             if (!output.stopped() && chunk.offset + chunk.count == int64_t(prompt.size()))
                 pending = sample(project(*hidden, true));
-            const auto ms = timer.elapsed_ms();
+            const auto ms = timer->elapsed_ms();
             elapsed += ms;
             if (config.decode_graph.trace) std::cerr << "runtime_prefill_chunk offset=" << chunk.offset
                 << " tokens=" << chunk.count << " layer_major=0 short_windows=0 compute_chunk=" << chunk_size
@@ -267,18 +267,11 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
             models::Input model_input;
             model_input.ids = ops::reshape(*pending, {1, 1});
             model_input.advance = true;
-            const auto run = [&] {
-                auto hidden = model_->forward(std::move(model_input), state, forward_options);
-                return sample(project(*hidden, !(sampler.greedy() && !penalties && !input.token_constraint)));
-            };
             const auto* profiling = env_lookup("TYLOINFER_PROFILE_DECODE");
-            if (profiling && profiling[0] == '1') {
-                auto& profiler = root.profiler();
-                const bool previous = profiler.enabled;
-                profiler.reset(); profiler.enabled = true;
-                try { pending = profiler.measure("runtime.decode", run); profiler.report("runtime.decode"); profiler.enabled = previous; }
-                catch (...) { profiler.enabled = previous; throw; }
-            } else pending = run();
+            auto profile = profiling && profiling[0] == '1' ? executor_->profile("runtime.decode") : nullptr;
+            auto hidden = model_->forward(std::move(model_input), state, forward_options);
+            pending = sample(project(*hidden, !(sampler.greedy() && !penalties && !input.token_constraint)));
+            if (profile) profile->finish();
             token = ops::item(*pending);
         } else {
             graph.ensure_compute_streams(root.collectives());

@@ -32,6 +32,8 @@ class Executor
 public:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::unique_ptr<tyloi::Executor::Scope> enter() override;
+    std::unique_ptr<tyloi::Executor::Timer> timer() override;
+    std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
     void drain() override;
 #else
     std::unique_ptr<tyloi::Executor::Scope> enter();

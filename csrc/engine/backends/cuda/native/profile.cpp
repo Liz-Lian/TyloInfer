@@ -109,6 +109,10 @@ cudaEvent_t PrefillCudaTimer::finished_event() const {
     return finished_;
 }
 
+void PrefillCudaTimer::stop() {
+    TYLOINFER_CUDA_CHECK(cudaEventRecord(finished_, stream_));
+}
+
 double PrefillCudaTimer::elapsed_ms() const {
     TYLOINFER_CUDA_CHECK(cudaEventSynchronize(finished_));
     float elapsed = 0.0f;

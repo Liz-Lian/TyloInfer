@@ -2,6 +2,7 @@
 
 #include "engine/backends/cuda/native/tensor/backend.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/executor.h"
 #include "engine/ops.h"
 #endif
 
@@ -99,7 +100,11 @@ struct CudaProfiler {
 
 namespace tyloi::cuda::internal {
 
-class PrefillCudaTimer {
+class PrefillCudaTimer
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    : public tyloi::Executor::Timer
+#endif
+{
 public:
     PrefillCudaTimer();
     ~PrefillCudaTimer();
@@ -108,7 +113,13 @@ public:
     PrefillCudaTimer& operator=(const PrefillCudaTimer&) = delete;
 
     cudaEvent_t finished_event() const;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    void stop() override;
+    double elapsed_ms() const override;
+#else
+    void stop();
     double elapsed_ms() const;
+#endif
 
 private:
     cudaStream_t stream_ = nullptr;
