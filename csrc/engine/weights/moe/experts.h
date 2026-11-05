@@ -31,7 +31,7 @@ struct Experts {
     bool partial_experts = false;
     bool unified_nint_projection = false;
     std::vector<Shard> expert_parallel_shards;
-    std::shared_ptr<::tyloi::MfeTensor> resident;
+    std::shared_ptr<const ::tyloi::MfeTensor> resident;
     std::shared_ptr<MoeCachedSource> cached_source;
     std::vector<MoeActivationGeometry> activation_geometries;
     int activation_workspace_domain = 0;
@@ -99,6 +99,8 @@ struct Experts {
     bool supports_clamped_swiglu() const;
 };
 
+Experts expert_runtime(const std::shared_ptr<const ::tyloi::Tensor>& weight);
+
 void prefetch_experts(const Experts& weight, const MoeRoutePlan& route, bool begin = false);
 
 bool prefetch_cached_moe_projection_bundle(
@@ -109,5 +111,5 @@ bool prefetch_cached_moe_projection_bundle(
 } // namespace tyloi::cuda
 
 tyloi::cuda::Experts stage_cpu_mixed_moe(
-    const std::shared_ptr<::tyloi::MfeTensor>& runtime,
+    const std::shared_ptr<const ::tyloi::MfeTensor>& runtime,
     bool heterogeneous);

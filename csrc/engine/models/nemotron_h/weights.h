@@ -100,12 +100,12 @@ void load_moe(Block& block, Loader& ops, const Config& config, int layer,
                          ffn.moe_dense_down.size(0) == rows &&
                          ffn.moe_dense_down.size(1) == config.moe_latent_size &&
                          ffn.moe_dense_down.size(2) == config.moe_intermediate_size
-                   : ffn.moe_up.n_experts == config.num_routed_experts &&
-                         ffn.moe_up.neuron_len == config.moe_latent_size &&
-                         ffn.moe_up.out_per_expert == config.moe_intermediate_size &&
-                         ffn.moe_down.n_experts == config.num_routed_experts &&
-                         ffn.moe_down.neuron_len == config.moe_intermediate_size &&
-                         ffn.moe_down.out_per_expert == config.moe_latent_size;
+                   : ffn.moe_up && ffn.moe_down && ffn.moe_up->size(0) == config.num_routed_experts &&
+                         ffn.moe_up->size(2) == config.moe_latent_size &&
+                         ffn.moe_up->size(1) == config.moe_intermediate_size &&
+                         ffn.moe_down->size(0) == config.num_routed_experts &&
+                         ffn.moe_down->size(2) == config.moe_intermediate_size &&
+                         ffn.moe_down->size(1) == config.moe_latent_size;
     if constexpr(requires { ffn.moe_tq; }) {
         if(ffn.moe_tq) {
             const auto& tq=*ffn.moe_tq;

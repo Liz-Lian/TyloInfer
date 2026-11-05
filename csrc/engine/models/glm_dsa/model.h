@@ -23,7 +23,7 @@ struct Layer {
     int device = 0;
     DenseTensor attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
     std::vector<std::shared_ptr<const tyloi::Tensor>> input_proj, q_proj;
-    Experts embed_q, unembed_out;
+    std::shared_ptr<const tyloi::Tensor> embed_q, unembed_out;
     std::shared_ptr<const tyloi::Tensor> o_proj;
     Ffn ffn;
 };

@@ -1,4 +1,6 @@
 #include "experts.h"
+#include "engine/weights/encoding/mfe.h"
+#include "engine/weights/moe/prepare.h"
 #include "engine/weights/encoding/format_features.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -9,6 +11,42 @@
 #include <algorithm>
 
 namespace tyloi::cuda {
+
+Experts expert_runtime(const std::shared_ptr<const ::tyloi::Tensor>& value) {
+    if (!value) return {};
+    auto weight = std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(value);
+    if (!weight) throw std::invalid_argument("expected MFE expert tensor");
+    Experts result;
+    result.n_experts = weight->n_experts;
+    result.out_per_expert = weight->out_per_expert;
+    result.neuron_len = weight->neuron_len;
+    result.partial_experts = weight->partial_experts;
+    result.pools = weight->compact;
+    result.cached_source = weight->cached_source;
+    for (const auto& shard : weight->shards) {
+        if (!shard.weight) throw std::runtime_error("expert-parallel MoE shard is missing");
+        result.expert_parallel_shards.push_back({shard.device, shard.expert_begin, shard.expert_end,
+            std::make_shared<Experts>(expert_runtime(shard.weight))});
+    }
+    if (result.pools) {
+        result.unified_nint_projection = true;
+        result.activation_workspace_domain = 1;
+        for (const auto& pool : *result.pools) {
+            MoeActivationGeometry geometry{static_cast<int>(pool.weight.ng), static_cast<int>(pool.weight.gs), 0, 0};
+            if (std::find(result.activation_geometries.begin(), result.activation_geometries.end(), geometry) == result.activation_geometries.end())
+                result.activation_geometries.push_back(geometry);
+        }
+    } else if (result.cached_source || !weight->pools.empty()) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        const auto& metadata = result.cached_source ? result.cached_source->source_tensor() : *weight;
+        result.unified_nint_projection = metadata.nint_only();
+        result.activation_geometries = moe_activation_geometry(metadata.pools);
+        result.activation_workspace_domain = 2;
+        if (!result.cached_source) result.resident = weight;
+#endif
+    }
+    return result;
+}
 
 weights::Placement Experts::placement(std::size_t index) const {
     if (index >= size()) throw std::out_of_range("expert index out of range");

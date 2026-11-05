@@ -10,11 +10,10 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
     const NintLinearGroup& group);
 #endif
 
-Projections make_projections(
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_projections(
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights,
     bool group_nint,
-    bool cpu_layer,
-    size_t prefix = 1);
+    bool cpu_layer);
 
 }
 

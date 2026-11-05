@@ -41,8 +41,8 @@ public:
     Pipelines& operator=(const Pipelines&) = delete;
 
     std::shared_ptr<MoeFfnPipeline> make(
-        const std::vector<std::shared_ptr<Experts>>& gate_up,
-        const std::vector<std::shared_ptr<Experts>>& down,
+        const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& gate_up,
+        const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& down,
         MoeFfnShared shared = {}, MoeFfnDispatchObserver observer = {},
         MoeFfnSharedWeights shared_weights = {}, double swiglu_limit = 0) const;
     void add(std::shared_ptr<MoeFfnPipeline> pipeline);

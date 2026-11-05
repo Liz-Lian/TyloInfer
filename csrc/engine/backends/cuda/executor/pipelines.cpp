@@ -11,8 +11,8 @@ namespace tyloi::cuda {
 
 #if !TYLOINFER_ENABLE_MFQ_COMPAT
 std::shared_ptr<MoeFfnPipeline> Pipelines::make(
-    const std::vector<std::shared_ptr<Experts>>&,
-    const std::vector<std::shared_ptr<Experts>>&,
+    const std::vector<std::shared_ptr<const ::tyloi::Tensor>>&,
+    const std::vector<std::shared_ptr<const ::tyloi::Tensor>>&,
     MoeFfnShared, MoeFfnDispatchObserver, MoeFfnSharedWeights, double) const {
     return {};
 }
@@ -45,15 +45,15 @@ void Pipelines::prepare(Ffn& f) {
     if(!f.moe_pipeline.expired() || !tyloi::cuda::uses_expert_cache(f) || tyloi::cuda::expert_parallel(f) ||
             f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
             routes_.enabled())return;
-    std::vector<std::shared_ptr<tyloi::cuda::Experts>> gate_up;
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up;
     // An ungated bank publishes Up in both slots; the pipeline detects the
     // single-image layout from the projection geometry, not the model name.
     if(f.moe_ungated_experts)
-        gate_up={std::make_shared<tyloi::cuda::Experts>(f.moe_up),std::make_shared<tyloi::cuda::Experts>(f.moe_up)};
-    else if(f.moe_split_gate_up)gate_up={std::make_shared<tyloi::cuda::Experts>(f.moe_gate),std::make_shared<tyloi::cuda::Experts>(f.moe_up)};
-    else gate_up={std::make_shared<tyloi::cuda::Experts>(f.moe_gate_up)};
+        gate_up={f.moe_up,f.moe_up};
+    else if(f.moe_split_gate_up)gate_up={f.moe_gate,f.moe_up};
+    else gate_up={f.moe_gate_up};
     auto pipeline=make(
-        gate_up,{std::make_shared<tyloi::cuda::Experts>(f.moe_down)},
+        gate_up,{f.moe_down},
         {},{},{},f.swiglu_limit);
     if(!pipeline)return;
     add(pipeline);

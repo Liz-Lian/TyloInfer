@@ -388,18 +388,18 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
 }
 
 namespace {
-DenseTensor headwise_project(const Projector& projector, MlaScratch& scratch, const Experts& weight,
+DenseTensor headwise_project(const Projector& projector, MlaScratch& scratch, const tyloi::Tensor& weight,
                         DenseTensor x, int64_t B, int64_t T, int64_t heads) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     if (x.dim() != 4 || x.size(0) != B || x.size(1) != T || x.size(2) != heads ||
-        x.size(3) != weight.neuron_len || weight.n_experts != heads) {
+        x.size(3) != weight.size(2) || weight.size(0) != heads) {
         throw std::runtime_error("GLM head-wise MFE projection shape mismatch");
     }
     const int64_t rows = B * T * heads;
     const auto &route = scratch.head_route(rows, static_cast<int>(heads));
-    auto y = projector.run(weight, x.contiguous().reshape({rows, weight.neuron_len}), route);
-    return y.reshape({B, T, heads, weight.out_per_expert});
+    auto y = projector.run(weight, x.contiguous().reshape({rows, weight.size(2)}), route);
+    return y.reshape({B, T, heads, weight.size(1)});
 
 #else
     throw std::runtime_error("Legacy head-wise projections require a compatibility build");
@@ -506,8 +506,8 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     const auto input_proj = make_quant_group(layer.input_proj, true, false);
     const auto q_proj = make_quant_group(layer.q_proj, true, false);
 #endif
-    const auto& embed_q = layer.embed_q;
-    const auto& unembed_out = layer.unembed_out;
+    const auto& embed_q = *layer.embed_q;
+    const auto& unembed_out = *layer.unembed_out;
     const auto& o_proj = *layer.o_proj;
     const auto& ffn = layer.ffn;
     const bool full_indexer = layer.full_indexer;

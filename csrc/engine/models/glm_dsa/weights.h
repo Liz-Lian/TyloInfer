@@ -33,11 +33,12 @@ void load_ffn(Loader& ops, const Config& c, int i, Ffn& f) {
         f.moe_delayed_softmax = false;
         f.moe_shared_ungated = true;
         f.moe_router_scale = c.routed_scaling_factor;
-        if (f.moe_gate_up.n_experts != c.num_experts || f.moe_down.n_experts != c.num_experts ||
-            f.moe_gate_up.neuron_len != c.hidden_size ||
-            f.moe_gate_up.out_per_expert != 2 * c.moe_intermediate_size ||
-            f.moe_down.neuron_len != c.moe_intermediate_size ||
-            f.moe_down.out_per_expert != c.hidden_size || ops.shape(f.moe_router).size() != 2 ||
+        if (!f.moe_gate_up || !f.moe_down ||
+            f.moe_gate_up->size(0) != c.num_experts || f.moe_down->size(0) != c.num_experts ||
+            f.moe_gate_up->size(2) != c.hidden_size ||
+            f.moe_gate_up->size(1) != 2 * c.moe_intermediate_size ||
+            f.moe_down->size(2) != c.moe_intermediate_size ||
+            f.moe_down->size(1) != c.hidden_size || ops.shape(f.moe_router).size() != 2 ||
             ops.shape(f.moe_router)[0] != c.num_experts || ops.shape(f.moe_router)[1] != c.hidden_size ||
             ops.elements(f.moe_router_bias) != c.num_experts) {
             throw std::runtime_error("GLM DSA MoE tensor shapes disagree with config at layer " +
@@ -93,12 +94,12 @@ void load_layer_weights(Block& b, Loader& ops, const Config& c, int i, const std
         b.q_proj.size() == (b.full_indexer ? 2u : 1u) &&
         b.q_proj[0]->size(0) == c.num_attention_heads * (c.qk_nope_head_dim + c.qk_rope_head_dim) &&
         (!b.full_indexer || b.q_proj[1]->size(0) == c.index_n_heads * c.index_head_dim);
-    const bool head_shape_ok = b.embed_q.n_experts == c.num_attention_heads &&
-                               b.embed_q.neuron_len == c.qk_nope_head_dim &&
-                               b.embed_q.out_per_expert == c.kv_lora_rank &&
-                               b.unembed_out.n_experts == c.num_attention_heads &&
-                               b.unembed_out.neuron_len == c.kv_lora_rank &&
-                               b.unembed_out.out_per_expert == c.v_head_dim &&
+    const bool head_shape_ok = b.embed_q->size(0) == c.num_attention_heads &&
+                               b.embed_q->size(2) == c.qk_nope_head_dim &&
+                               b.embed_q->size(1) == c.kv_lora_rank &&
+                               b.unembed_out->size(0) == c.num_attention_heads &&
+                               b.unembed_out->size(2) == c.kv_lora_rank &&
+                               b.unembed_out->size(1) == c.v_head_dim &&
                                b.o_proj->size(1) == c.num_attention_heads * c.v_head_dim &&
                                b.o_proj->size(0) == c.hidden_size;
     if (!input_shape_ok || !q_shape_ok || !head_shape_ok || ops.elements(b.attn_norm) != c.hidden_size ||

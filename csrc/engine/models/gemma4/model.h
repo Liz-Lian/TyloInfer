@@ -35,16 +35,15 @@ struct Layer {
     tyloi::models::Mlp ffn;
     std::shared_ptr<const tyloi::Tensor> attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
     std::shared_ptr<const tyloi::Tensor> layer_scale;
-    std::shared_ptr<const tyloi::Tensor> gemma_moe_gate_up, gemma_moe_down;
     std::shared_ptr<const tyloi::Tensor> gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #else
     DenseTensor ffn_norm;
     Ffn ffn;
     DenseTensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
     DenseTensor layer_scale;
-    Experts gemma_moe_gate_up, gemma_moe_down;
     DenseTensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #endif
+    std::shared_ptr<const tyloi::Tensor> gemma_moe_gate_up, gemma_moe_down;
     bool gemma4_moe = false;
     int gemma_top_k = 0;
     int device = 0;

@@ -135,8 +135,8 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
     }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    tyloi::cuda::Experts* weight = nullptr;
-    std::shared_ptr<::tyloi::MfeTensor>* cpu = nullptr;
+    std::shared_ptr<const ::tyloi::Tensor>* weight = nullptr;
+    std::shared_ptr<const ::tyloi::MfeTensor>* cpu = nullptr;
     const char* role = nullptr;
     switch (projection) {
         case Role::gate: weight = &ffn.moe_gate; cpu = &ffn.cpu_moe_gate; role = "gate"; break;
@@ -146,19 +146,19 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
     }
     if (cpu_offloaded) {
         *cpu = load_mfe_cpu_offloaded(weights.source, name);
-        *weight = cpu_mixed_moe_metadata(*cpu);
+        *weight = *cpu;
     } else {
-        *weight = weights.build_experts(name, true, layer, role);
+        *weight = weights.experts(name, true, layer, role);
     }
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-tyloi::cuda::Experts TransformerWeightLoader::headwise(const std::string& name) const {
+std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::headwise(const std::string& name) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-    return weights.build_experts(name);
+    return weights.experts(name);
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");

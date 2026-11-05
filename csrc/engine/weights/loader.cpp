@@ -903,8 +903,8 @@ Routed Loader::routed(const std::string& name, int layer,
     // Predictor layers have their own expert images and must not share the
     // backbone's layer-zero transfer range or prefill lookahead.
     if(name.starts_with("predictor."))layer=-1-layer;
-    auto w=std::make_shared<tyloi::cuda::Experts>(this->build_experts(name,true,layer,role.empty() ? this->role : role));
-    TYLOINFER_RUNTIME_CHECK(w->n_experts==experts && w->out_per_expert==output && w->neuron_len==input,
+    auto w=this->experts(name,true,layer,role.empty() ? this->role : role);
+    TYLOINFER_RUNTIME_CHECK(w->size(0)==experts && w->size(1)==output && w->size(2)==input,
         "routed tensor shape mismatch: ",name);
     Routed result=[w,experts](const Projector& project, const DenseTensor& x,const DenseTensor& ids) {
         auto route=build_moe_route_plan(ids.to(::tyloi::kInt32).contiguous(),int(experts));

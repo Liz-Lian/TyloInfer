@@ -131,9 +131,9 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     if (cpu_offload) {
         const int64_t gate_up_bytes =
             layer.ffn.moe_split_gate_up
-                ? layer.ffn.moe_gate.mixed_weight_bytes + layer.ffn.moe_up.mixed_weight_bytes
-                : layer.ffn.moe_gate_up.mixed_weight_bytes;
-        const int64_t down_bytes = layer.ffn.moe_down.mixed_weight_bytes;
+                ? mixed_moe_storage_bytes(*layer.ffn.cpu_moe_gate) + mixed_moe_storage_bytes(*layer.ffn.cpu_moe_up)
+                : mixed_moe_storage_bytes(*layer.ffn.cpu_moe_gate_up);
+        const int64_t down_bytes = mixed_moe_storage_bytes(*layer.ffn.cpu_moe_down);
         host_bytes += gate_up_bytes + down_bytes;
         std::cerr << "cpu_offload layer=" << i << " gate_up_bytes=" << gate_up_bytes
                   << " down_bytes=" << down_bytes
@@ -166,18 +166,18 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
         layer.output_b->size(0) == c.hidden_size;
     const bool gate_up_shapes =
         layer.ffn.moe_split_gate_up
-            ? layer.ffn.moe_gate.n_experts == c.num_experts &&
-                  layer.ffn.moe_up.n_experts == c.num_experts &&
-                  layer.ffn.moe_gate.neuron_len == c.hidden_size &&
-                  layer.ffn.moe_up.neuron_len == c.hidden_size &&
-                  layer.ffn.moe_gate.out_per_expert == c.moe_intermediate_size &&
-                  layer.ffn.moe_up.out_per_expert == c.moe_intermediate_size
-            : layer.ffn.moe_gate_up.n_experts == c.num_experts &&
-                  layer.ffn.moe_gate_up.neuron_len == c.hidden_size &&
-                  layer.ffn.moe_gate_up.out_per_expert == 2 * c.moe_intermediate_size;
-    const bool moe_shapes = gate_up_shapes && layer.ffn.moe_down.n_experts == c.num_experts &&
-                            layer.ffn.moe_down.neuron_len == c.moe_intermediate_size &&
-                            layer.ffn.moe_down.out_per_expert == c.hidden_size &&
+            ? layer.ffn.moe_gate && layer.ffn.moe_up && layer.ffn.moe_gate->size(0) == c.num_experts &&
+                  layer.ffn.moe_up->size(0) == c.num_experts &&
+                  layer.ffn.moe_gate->size(2) == c.hidden_size &&
+                  layer.ffn.moe_up->size(2) == c.hidden_size &&
+                  layer.ffn.moe_gate->size(1) == c.moe_intermediate_size &&
+                  layer.ffn.moe_up->size(1) == c.moe_intermediate_size
+            : layer.ffn.moe_gate_up && layer.ffn.moe_gate_up->size(0) == c.num_experts &&
+                  layer.ffn.moe_gate_up->size(2) == c.hidden_size &&
+                  layer.ffn.moe_gate_up->size(1) == 2 * c.moe_intermediate_size;
+    const bool moe_shapes = gate_up_shapes && layer.ffn.moe_down && layer.ffn.moe_down->size(0) == c.num_experts &&
+                            layer.ffn.moe_down->size(2) == c.moe_intermediate_size &&
+                            layer.ffn.moe_down->size(1) == c.hidden_size &&
                             layer.ffn.moe_router.size(0) == c.num_experts &&
                             layer.ffn.moe_router.size(1) == c.hidden_size;
     if (!base_shapes || !moe_shapes) {

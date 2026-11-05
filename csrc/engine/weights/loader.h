@@ -47,7 +47,7 @@ using DenseTensor = ::tyloi::DenseTensor;
 struct Routed {
     using Function=std::function<DenseTensor(const Projector&,const DenseTensor&,const DenseTensor&)>;
     Function function;
-    std::vector<std::shared_ptr<tyloi::cuda::Experts>> projections;
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> projections;
     std::vector<std::shared_ptr<TqRoutedWeight>> tq_projections;
     Routed()=default;
     template<class Callable, std::enable_if_t<!std::is_same_v<std::decay_t<Callable>,Routed>,int> =0>
@@ -100,8 +100,6 @@ struct Loader {
     DenseTensor norm(const std::string& name, std::int64_t width) const;
     weights::BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
     weights::BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
-    Experts build_experts(const std::string& name, bool cacheable = false, int layer = -1,
-                    const std::string& role = {}) const;
     std::shared_ptr<const ::tyloi::Tensor> weight(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr) const;
@@ -121,5 +119,8 @@ struct Loader {
     static DenseTensor fp32(const DenseTensor& value) { return value.to(::tyloi::kFloat32).contiguous(); }
     static auto shape(const DenseTensor& value) { return value.sizes().vec(); }
     static int64_t elements(const DenseTensor& value) { return value.numel(); }
+private:
+    Experts build_experts(const std::string& name, bool cacheable, int layer,
+                          const std::string& role) const;
 };
 } // namespace tyloi::cuda::weight_loader

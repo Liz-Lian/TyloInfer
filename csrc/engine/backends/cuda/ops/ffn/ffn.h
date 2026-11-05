@@ -48,16 +48,16 @@ public:
     bool moe_split_gate_up = false;
     // Routed experts without a gate projection use the activation above.
     bool moe_ungated_experts = false;
-    Experts moe_gate_up;
-    Experts moe_gate;
-    Experts moe_up;
-    Experts moe_down;
+    std::shared_ptr<const ::tyloi::Tensor> moe_gate_up;
+    std::shared_ptr<const ::tyloi::Tensor> moe_gate;
+    std::shared_ptr<const ::tyloi::Tensor> moe_up;
+    std::shared_ptr<const ::tyloi::Tensor> moe_down;
     // Ordinary TQ row tables retain their own cache and never enter MFE pools.
     std::shared_ptr<TqMoeBanks> moe_tq;
-    std::shared_ptr<::tyloi::MfeTensor> cpu_moe_gate_up;
-    std::shared_ptr<::tyloi::MfeTensor> cpu_moe_gate;
-    std::shared_ptr<::tyloi::MfeTensor> cpu_moe_up;
-    std::shared_ptr<::tyloi::MfeTensor> cpu_moe_down;
+    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_gate_up;
+    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_gate;
+    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_up;
+    std::shared_ptr<const ::tyloi::MfeTensor> cpu_moe_down;
     // Dense (F32/F16/BF16) routed expert banks: [experts,out,in].
     ::tyloi::DenseTensor moe_dense_gate;
     ::tyloi::DenseTensor moe_dense_up;

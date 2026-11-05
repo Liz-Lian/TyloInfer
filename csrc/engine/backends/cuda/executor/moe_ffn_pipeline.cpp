@@ -4719,25 +4719,27 @@ public:
 };
 
 std::shared_ptr<MoeFfnPipeline> tyloi::cuda::Pipelines::make(
-        const std::vector<std::shared_ptr<tyloi::cuda::Experts>>& gate_up,
-        const std::vector<std::shared_ptr<tyloi::cuda::Experts>>& down,MoeFfnShared shared,MoeFfnDispatchObserver observer,
+        const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& gate_up,
+        const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& down,MoeFfnShared shared,MoeFfnDispatchObserver observer,
         MoeFfnSharedWeights shared_weights,double swiglu_limit) const {
     if((gate_up.size()!=1 && gate_up.size()!=2) || down.size()!=1)return {};
-    const auto& up=gate_up.back();
-    for(const auto& w:{gate_up[0],up,down[0]})if(!w || !w->cached_source)return {};
+    const auto* gate=dynamic_cast<const ::tyloi::MfeTensor*>(gate_up[0].get());
+    const auto* up=dynamic_cast<const ::tyloi::MfeTensor*>(gate_up.back().get());
+    const auto* down_weight=dynamic_cast<const ::tyloi::MfeTensor*>(down[0].get());
+    for(const auto* w:{gate,up,down_weight})if(!w || !w->cached_source)return {};
     // Combined predictor projections support short decode and the whole-layer
     // prefill image; backbone/tensor-parallel dispatch remains unchanged.
-    if(gate_up.size()==1 && (gate_up[0]->cached_source->layer_id()>=0 || down[0]->neuron_len%2))return {};
+    if(gate_up.size()==1 && (gate->cached_source->layer_id()>=0 || down_weight->neuron_len%2))return {};
     if(gate_up.size()==1) {
-        for(const auto& w:{gate_up[0],down[0]})if(!w->cached_source->two_stage_compatible())return {};
+        for(const auto* w:{gate,down_weight})if(!w->cached_source->two_stage_compatible())return {};
         if(shared)for(const auto& w:shared_weights.projections) {
             const auto* nint=nint_payload(w);
             if(!nint || nint->q8_zero)return {};
         }
     }
-    if(!gate_up[0]->cached_source->pipeline_enabled())return {};
+    if(!gate->cached_source->pipeline_enabled())return {};
     auto runtime=std::make_shared<MoeFfnPipeline>(profiler_,mmq_,kernels_,options_,std::array<std::shared_ptr<MoeCachedSource>,3>{
-        gate_up[0]->cached_source,up->cached_source,down[0]->cached_source},std::move(shared),std::move(observer),std::move(shared_weights),swiglu_limit);
+        gate->cached_source,up->cached_source,down_weight->cached_source},std::move(shared),std::move(observer),std::move(shared_weights),swiglu_limit);
     return runtime;
 }
 

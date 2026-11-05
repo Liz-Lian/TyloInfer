@@ -160,26 +160,28 @@ DenseTensor Gdn::project_weight(const tyloi::cuda::Projector& projector,const ::
 }
 
 DenseTensor Gdn::project_qkv(const tyloi::cuda::Projector& projector,const DenseTensor& source) const {
-    if(w_->qkv_count==1)return project_weight(projector,*w_->input_projection.weights[0],source);
+    if(w_->qkv_count==1)return project_weight(projector,*w_->input_projection[0],source);
     return qwen_gdn_project_rows(source,[&](const DenseTensor& input) {
-        return ::tyloi::cuda::cat({projector.run(*w_->input_projection.weights[0],input),
-            projector.run(*w_->input_projection.weights[1],input),
-            projector.run(*w_->input_projection.weights[2],input)},-1);
+        return ::tyloi::cuda::cat({projector.run(*w_->input_projection[0],input),
+            projector.run(*w_->input_projection[1],input),
+            projector.run(*w_->input_projection[2],input)},-1);
     });
 }
 
 std::vector<DenseTensor> Gdn::project_inputs(const tyloi::cuda::Projector& projector,const DenseTensor& source) const {
-    if(!(grouped_projection_ && w_->input_projection.grouped()))
+    if(!(grouped_projection_ && projector.grouped(w_->input_projection)))
         return {project_qkv(projector,source),
-            project_weight(projector,*w_->input_projection.weights[w_->qkv_count],source),
-            project_weight(projector,*w_->input_projection.weights[w_->qkv_count+1],source),
-            project_weight(projector,*w_->input_projection.weights[w_->qkv_count+2],source)};
+            project_weight(projector,*w_->input_projection[w_->qkv_count],source),
+            project_weight(projector,*w_->input_projection[w_->qkv_count+1],source),
+            project_weight(projector,*w_->input_projection[w_->qkv_count+2],source)};
     auto* window=tyloi::cuda::DecodeWindow::recording();
     if(window)window->mark_current("gdn_input_begin");
     const auto rows=qwen_gdn_prefill_projection_rows;
     const auto project=[&](const DenseTensor& input) {
-        auto result=projector.run(w_->input_projection,input);
-        if(w_->qkv_count==3 && w_->input_projection.prefix==1) {
+        const auto option=tyloi::cuda::runtime_options::gdn_packed_qkv();
+        const size_t prefix=w_->qkv_count==3 && (!option || *option)?3:1;
+        auto result=projector.run(w_->input_projection,input,prefix);
+        if(w_->qkv_count==3 && prefix==1) {
             TYLOINFER_RUNTIME_CHECK(result.size()==6,"GDN input projection count mismatch");
             result={::tyloi::cuda::cat({result[0],result[1],result[2]},-1),result[3],result[4],result[5]};
         }
@@ -449,11 +451,11 @@ struct BlockLoader : weight_loader::Loader {
         TYLOINFER_RUNTIME_CHECK(!independent || !has(p + ".qkv.weight"), "ambiguous Qwen4 GDN input projections");
         GdnWeights w;
         if(independent)for(const auto* name:{"query","key","value"})
-            w.input_projection.weights.push_back(weight(p+"."+name+".weight"));
-        else w.input_projection.weights.push_back(weight(p+".qkv.weight"));
-        w.input_projection.weights.push_back(weight(p+".gate.weight"));
-        w.input_projection.weights.push_back(weight(p+".alpha.weight"));
-        w.input_projection.weights.push_back(weight(p+".beta.weight"));
+            w.input_projection.push_back(weight(p+"."+name+".weight"));
+        else w.input_projection.push_back(weight(p+".qkv.weight"));
+        w.input_projection.push_back(weight(p+".gate.weight"));
+        w.input_projection.push_back(weight(p+".alpha.weight"));
+        w.input_projection.push_back(weight(p+".beta.weight"));
         w.qkv_count=independent?3:1;
         w.output=weight(p+".output.weight");
         w.conv=dense(p+".conv.weight");w.dt_bias=dense(p+".dt_bias");w.a_log=dense(p+".a");w.norm=dense(p+".norm.weight");
@@ -462,23 +464,20 @@ struct BlockLoader : weight_loader::Loader {
     auto qsa_weights(const std::string &p) const {
         QsaWeights w;
         for(const auto* name:{"query","key","value"})
-            w.input_projection.weights.push_back(weight(p+"."+name+".weight"));
-        w.input_projection.weights.push_back(weight(p+".indexer.query_key.weight"));
+            w.input_projection.push_back(weight(p+"."+name+".weight"));
+        w.input_projection.push_back(weight(p+".indexer.query_key.weight"));
         w.output=weight(p+".output.weight");
         w.query_norm=dense(p+".query_norm.weight");w.key_norm=dense(p+".key_norm.weight");
         w.index_query_norm=dense(p+".indexer.query_norm.weight");w.index_key_norm=dense(p+".indexer.key_norm.weight");
         if(has(p+".gate.weight")) {
-            w.input_projection.weights.push_back(weight(p+".gate.weight"));
+            w.input_projection.push_back(weight(p+".gate.weight"));
             w.has_gate=true;
         }
         return w;
     }
     auto gdn(GdnWeights weights, const Config &c) const {
-        const auto packed_qkv_option=tyloi::cuda::runtime_options::gdn_packed_qkv();
-        const bool packed_qkv=weights.qkv_count==3 && (!packed_qkv_option || *packed_qkv_option);
-        weights.input_projection=make_projections(std::move(weights.input_projection.weights),
-            options.grouped,placement.cpu,packed_qkv?3:1);
-        if(!weights.input_projection.grouped())weights.input_projection.prefix=1;
+        weights.input_projection=pack_projections(std::move(weights.input_projection),
+            options.grouped,placement.cpu);
         auto shared=std::make_shared<const GdnWeights>(std::move(weights));
         return std::make_unique<Gdn>(std::move(shared), c.key_heads, c.value_heads, c.linear_width,
                                      c.kernel, c.eps, c.silu_gate,true,execution.executor().mode().transposed,
@@ -486,7 +485,7 @@ struct BlockLoader : weight_loader::Loader {
                                      execution.executor().options().gdn_fused_core);
     }
     auto qsa(QsaWeights weights, const Config &c) const {
-        weights.input_projection=make_projections(std::move(weights.input_projection.weights),
+        weights.input_projection=pack_projections(std::move(weights.input_projection),
             options.grouped,placement.cpu);
         QsaConfig geometry{c.heads, c.kv_heads, c.width, c.index_heads, c.index_width,
                            c.pool, c.budget, c.maximum, c.eps};

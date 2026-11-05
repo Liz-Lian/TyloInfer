@@ -33,7 +33,7 @@ struct TransformerWeightLoader {
         const std::string& down, const std::string& gate, const std::string& up) const;
     void experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
-    tyloi::cuda::Experts headwise(const std::string& name) const;
+    std::shared_ptr<const ::tyloi::Tensor> headwise(const std::string& name) const;
     static auto shape(const ::tyloi::DenseTensor& value) { return value.sizes().vec(); }
     static int64_t elements(const ::tyloi::DenseTensor& value) { return value.numel(); }
 };

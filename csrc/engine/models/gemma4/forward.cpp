@@ -190,8 +190,8 @@ static DenseTensor forward_ffn(const Layer& weights, Executor& executor, const E
     const auto& ffn_pre_norm_2 = weights.ffn_pre_norm_2;
     const auto& ffn_post_norm_2 = weights.ffn_post_norm_2;
     const auto& layer_scale = weights.layer_scale;
-    const auto& gemma_moe_gate_up = weights.gemma_moe_gate_up;
-    const auto& gemma_moe_down = weights.gemma_moe_down;
+    const auto gemma_moe_gate_up = expert_runtime(weights.gemma_moe_gate_up);
+    const auto gemma_moe_down = expert_runtime(weights.gemma_moe_down);
     const auto& gemma_router = weights.gemma_router;
     const auto& gemma_router_norm_scale = weights.gemma_router_norm_scale;
     const auto& gemma_expert_scale = weights.gemma_expert_scale;

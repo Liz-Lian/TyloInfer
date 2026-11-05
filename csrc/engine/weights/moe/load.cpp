@@ -592,7 +592,7 @@ static NepqWeight copy_cpu_nepq_to_cuda(const NepqWeight & source) {
 }
 
 tyloi::cuda::Experts stage_cpu_mixed_moe(
-        const std::shared_ptr<::tyloi::MfeTensor> & cpu,
+        const std::shared_ptr<const ::tyloi::MfeTensor> & cpu,
         bool heterogeneous) {
     if (!cpu) throw std::runtime_error("missing CPU-offloaded MoE state");
     auto runtime = std::make_shared<::tyloi::MfeTensor>();

@@ -9,12 +9,14 @@
 
 #include <algorithm>
 #include <optional>
+#include <numeric>
 #include <utility>
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/ops.h"
+#endif
 
 namespace {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -121,6 +123,7 @@ QuantLinearGroup tyloi::cuda::Projector::group(
     return result;
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 tyloi::DenseTensor tyloi::cuda::ops::embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight) {
     std::optional<MfqCudaGuard> guard;
     if (ids.is_cuda()) guard.emplace(ids.device().index);
@@ -592,10 +595,72 @@ Projector::grouped(
     return y.reshape(shape);
 }
 
+bool Projector::grouped(std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const {
+    if (weights.empty()) return false;
+    const ::tyloi::encoding::TqTensor* first = nullptr;
+    size_t tq_count = 0;
+    bool all_nint = options_.nint_grouped && !independent_ && tyloi::mfq_compat_enabled;
+    for (const auto& weight : weights) {
+        const auto* tq = dynamic_cast<const ::tyloi::encoding::TqTensor*>(weight.get());
+        if (tq && tq->is_cuda()) {
+            if (first && (weight->size(1) != first->size(1) || tq->device() != first->device())) return false;
+            if (!first) first = tq;
+            ++tq_count;
+        }
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        const auto* nint = dynamic_cast<const tyloi::NintTensor*>(weight.get());
+        all_nint = all_nint && nint && nint->q_packed.is_cuda() && weight->size(1) == weights.front()->size(1);
+#else
+        all_nint = false;
+#endif
+    }
+    return tq_count >= 2 || all_nint;
+}
+
 std::vector<::tyloi::DenseTensor> Projector::run(
-        const Projections& projections,
-        ::tyloi::DenseTensor x) const {
-    for (const auto& weight : projections.weights) check_projection(*weight, x);
+        std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights,
+        ::tyloi::DenseTensor x, size_t prefix) const {
+    TYLOINFER_RUNTIME_CHECK(prefix >= 1 && prefix <= weights.size(),
+        "invalid grouped projection prefix");
+    struct {
+        std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights;
+        QuantLinearGroup group;
+        std::vector<size_t> indices;
+        size_t prefix;
+        bool joined = false;
+    } projections{weights, {}, {}, prefix};
+    for (const auto& weight : weights) check_projection(*weight, x);
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> tq_weights;
+    const ::tyloi::encoding::TqTensor* first = nullptr;
+    bool compatible = true;
+    for (size_t i = 0; i < weights.size(); ++i) {
+        const auto* tq = dynamic_cast<const ::tyloi::encoding::TqTensor*>(weights[i].get());
+        if (!tq || !tq->is_cuda()) continue;
+        if (first && (weights[i]->size(1) != first->size(1) || tq->device() != first->device())) {
+            compatible = false;
+            break;
+        }
+        if (!first) first = tq;
+        tq_weights.push_back(weights[i]);
+        projections.indices.push_back(i);
+    }
+    if (compatible && tq_weights.size() >= 2) {
+        projections.group = group(tq_weights);
+        projections.joined = prefix > 1 && projections.indices.size() >= prefix;
+        for (size_t i = 0; projections.joined && i < prefix; ++i)
+            projections.joined = projections.indices[i] == i;
+        if (projections.joined) projections.group.tq.join_prefix(prefix);
+    } else if (compatible && grouped(weights)) {
+        projections.group = group(weights);
+        auto& nint = projections.group.nint;
+        projections.joined = prefix > 1 && (nint.split_w.empty() || nint.split_outs.front().size() >= prefix);
+        if (projections.joined) {
+            auto& sizes = nint.split_w.empty() ? nint.outs : nint.split_outs.front();
+            const auto combined = std::accumulate(sizes.begin(), sizes.begin() + prefix, int64_t(0));
+            sizes.erase(sizes.begin(), sizes.begin() + prefix);
+            sizes.insert(sizes.begin(), combined);
+        }
+    }
     const auto join = [&projections](std::vector<::tyloi::DenseTensor> outputs) {
         if (projections.prefix <= 1 || outputs.empty()) return outputs;
         std::vector<::tyloi::DenseTensor> prefix(

@@ -21,18 +21,6 @@ namespace tyloi::cuda {
 class Branches;
 struct Experts;
 
-struct Projections {
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights;
-    QuantLinearGroup group;
-    std::vector<size_t> indices;
-    size_t prefix = 1;
-    bool joined = false;
-
-    bool grouped() const noexcept {
-        return group.tq.defined() || group.nint_grouped;
-    }
-};
-
 // Bound resources and options must outlive this object; drain before resetting them.
 class Projector {
 public:
@@ -56,14 +44,16 @@ public:
           serial_(serial), projection_major_(projection_major), independent_(independent) {}
 
     int primary_device() const { return primary_; }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     QuantLinearGroup group(std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const;
-#endif
+    bool grouped(std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const;
     MoeScratchCache& moe_scratch() const { return moe_scratch_; }
 
     ::tyloi::DenseTensor run(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input) const;
+    ::tyloi::DenseTensor run(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input,
+        const MoeRoutePlan& route) const;
     std::vector<::tyloi::DenseTensor> run(
-        const Projections& projections, ::tyloi::DenseTensor input) const;
+        std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights,
+        ::tyloi::DenseTensor input, size_t prefix = 1) const;
     std::vector<::tyloi::DenseTensor> run(
         const QuantLinearGroup& group, ::tyloi::DenseTensor input) const;
     ::tyloi::DenseTensor gated(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input,

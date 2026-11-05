@@ -234,92 +234,36 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
 }
 #endif
 
-Projections make_projections(
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_projections(
         std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights,
         bool group_nint,
-        bool cpu_layer,
-        size_t prefix) {
-    Projections result;
-    result.weights = std::move(weights);
-    result.prefix = prefix;
-    if (result.weights.empty()) return result;
-    TYLOINFER_RUNTIME_CHECK(
-        prefix >= 1 && prefix <= result.weights.size(),
-        "invalid grouped projection prefix");
-    if (cpu_layer) return result;
-
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> tq_weights;
-    std::vector<size_t> tq_indices;
-    const auto tq_of = [](const std::shared_ptr<const ::tyloi::Tensor>& weight) {
-        return dynamic_cast<const ::tyloi::encoding::TqTensor*>(weight.get());
-    };
-    for (size_t i = 0; i < result.weights.size(); ++i) {
-        const auto & weight = result.weights[i];
-        const auto * tq = tq_of(weight);
-        if (tq == nullptr || !tq->is_cuda()) {
-            continue;
-        }
-        if (!tq_weights.empty() &&
-                (weight->size(1) != tq_weights.front()->size(1) ||
-                 tq->device() != tq_of(tq_weights.front())->device())) {
-            return result;
-        }
-        tq_weights.push_back(weight);
-        tq_indices.push_back(i);
+        bool cpu_layer) {
+    if (weights.empty() || cpu_layer) return weights;
+    const ::tyloi::encoding::TqTensor* first = nullptr;
+    std::vector<::tyloi::encoding::TqTensor> tq_weights;
+    for (const auto& weight : weights) {
+        const auto* tq = dynamic_cast<const ::tyloi::encoding::TqTensor*>(weight.get());
+        if (!tq || !tq->is_cuda()) continue;
+        if (first && (weight->size(1) != first->size(1) || tq->device() != first->device()))
+            return weights;
+        if (!first) first = tq;
+        tq_weights.push_back(*tq);
     }
     if (tq_weights.size() >= 2) {
-        result.group = make_quant_group(
-            tq_weights, group_nint, cpu_layer);
-        TYLOINFER_RUNTIME_CHECK(
-            result.group.tq.defined(),
-            "TQ projection group was not constructed");
-        result.indices = std::move(tq_indices);
-        result.joined = prefix > 1 && result.indices.size() >= prefix;
-        for (size_t i = 0; result.joined && i < prefix; ++i) {
-            result.joined = result.indices[i] == i;
-        }
-        if (result.joined) result.group.tq.join_prefix(prefix);
-        return result;
+        tyloi::cuda::tq::validate_group(tq_weights);
+        return weights;
     }
-
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (!group_nint) return result;
-    for (size_t i = 0; i < result.weights.size(); ++i) {
-        const auto & weight = result.weights[i];
+    if (!group_nint) return weights;
+    for (const auto& weight : weights) {
         const auto* nint = dynamic_cast<const tyloi::NintTensor*>(weight.get());
-        if (nint == nullptr || !nint->q_packed.is_cuda()) {
-            return result;
-        }
-        if (i > 0 && weight->size(1) != result.weights.front()->size(1)) {
-            return result;
-        }
+        if (!nint || !nint->q_packed.is_cuda() || weight->size(1) != weights.front()->size(1))
+            return weights;
     }
-
-    auto group = make_quant_group(
-        result.weights, group_nint, cpu_layer);
-    if (!group.nint_grouped) return result;
-    result.group = std::move(group);
-
-    result.weights = nint_aliases(result.weights, result.group.nint);
-
-    result.joined = prefix > 1 &&
-        (result.group.nint.split_w.empty() ||
-         result.group.nint.split_outs.front().size() >= prefix);
-    const auto join_sizes = [prefix](auto & sizes) {
-        const auto combined = std::accumulate(
-            sizes.begin(), sizes.begin() + prefix, int64_t(0));
-        sizes.erase(sizes.begin(), sizes.begin() + prefix);
-        sizes.insert(sizes.begin(), combined);
-    };
-    if (result.joined) {
-        if (result.group.nint.split_w.empty()) {
-            join_sizes(result.group.nint.outs);
-        } else {
-            join_sizes(result.group.nint.split_outs.front());
-        }
-    }
+    auto group = make_quant_group(weights, group_nint, cpu_layer);
+    if (group.nint_grouped) return nint_aliases(weights, group.nint);
 #endif
-    return result;
+    return weights;
 }
 
 } // namespace tyloi::cuda
