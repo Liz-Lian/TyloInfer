@@ -40,8 +40,6 @@ Apple M5 Max · 40 核 GPU · 128 GiB · GGUF IQ3_XXS · 4,096 token 输入，�
 | TyloInfer | 1,001 | 40.1 | 121.5 |
 | [Splash 1.5.0](https://github.com/incoai/splash/releases/tag/1.5.0) | **1,085** | — | **131.2** |
 
-Strata 的 Prompt Processing 记录包含首次着色器编译时间，此处不列入对比。
-
 ## 快速开始
 
 ### 源码构建与部署
