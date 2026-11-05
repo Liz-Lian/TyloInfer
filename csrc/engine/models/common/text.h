@@ -48,7 +48,7 @@ using namespace tyloi::cuda::internal;
 template <class M, class S>
 std::unique_ptr<engine::Batch> make_batch(
     std::shared_ptr<const M>, S*, std::unique_ptr<Executor>, Collectives&,
-    Executor::Mode, std::shared_ptr<MoeExpertCache>, CudaContinuousBatchConfig,
+    Executor::Mode, std::shared_ptr<MoeExpertCache>, tyloi::engine::ContinuousBatchConfig,
     std::int64_t, bool, bool, int) {
     throw std::invalid_argument("continuous batching is unavailable for this model");
 }
@@ -65,7 +65,7 @@ struct Text {
     RoutedCache& weights;
     std::shared_ptr<KvMemoryManager>& kv;
     std::shared_ptr<KvOffloadStore>& offload;
-    CudaRuntimeConfig config;
+    tyloi::engine::RuntimeConfig config;
     std::shared_ptr<const tyloi::ModelSource> source;
     std::optional<Budget> budget;
     std::optional<ExpertSpace> expert_space;
@@ -161,7 +161,7 @@ struct Text {
             std::shared_ptr<KvOffloadStore>& borrowed_offload,
             std::shared_ptr<Model> model_owner, std::unique_ptr<State> state_owner,
             std::unique_ptr<Executor> executor_owner, Parts model_components,
-            CudaRuntimeConfig runtime_config,
+            tyloi::engine::RuntimeConfig runtime_config,
             std::shared_ptr<const tyloi::ModelSource> model_source,
             std::shared_ptr<WeightMemoryLedger> ledger)
         : weight_memory(std::move(ledger)), execution(&borrowed), root_executor(borrowed.executor()),

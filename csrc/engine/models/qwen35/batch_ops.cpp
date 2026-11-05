@@ -29,7 +29,7 @@ tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
         model_->metadata.hidden_size, model_->metadata.hc_mult, mode_.primary, moe_cache_, chunk);
 }
 
-bool batch_graph_enabled(const Model& model, const CudaContinuousBatchConfig& config) {
+bool batch_graph_enabled(const Model& model, const tyloi::engine::ContinuousBatchConfig& config) {
     return config.cuda_graph && !Batch::has_cached_moe(model) &&
            mfq_cuda_graph_capture_supported();
 }
@@ -37,7 +37,7 @@ bool batch_graph_enabled(const Model& model, const CudaContinuousBatchConfig& co
 BatchOps::BatchOps(std::shared_ptr<const Model> model, std::unique_ptr<Executor> executor,
                    Collectives& collectives, Executor::Mode mode, Batch::Options options,
                    std::shared_ptr<MoeExpertCache> moe_cache,
-                   CudaContinuousBatchConfig config)
+                   tyloi::engine::ContinuousBatchConfig config)
     : model_(std::move(model)), collectives_(collectives), mode_(mode),
       state_(model_, std::move(executor), mode_.transposed, options),
       moe_cache_(std::move(moe_cache)), config_(std::move(config)),
@@ -401,7 +401,7 @@ namespace tyloi::cuda {
 std::unique_ptr<tyloi::engine::Batch> make_batch(
     std::shared_ptr<const qwen35::Model> model, qwen35::State* serial,
     std::unique_ptr<Executor> executor, Collectives& copies, Executor::Mode mode,
-    std::shared_ptr<MoeExpertCache> cache, CudaContinuousBatchConfig config,
+    std::shared_ptr<MoeExpertCache> cache, tyloi::engine::ContinuousBatchConfig config,
     std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots) {
     if (serial && preallocate) {
         for (auto& layer_state : serial->layers)

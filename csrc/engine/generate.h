@@ -39,7 +39,7 @@ tyloi::engine::Generation generate(
     std::function<void()> drain,
     const tyloi::models::Info& info, const tyloi::ModelSource* source,
     DecodeGraphCache& graph, TextSessionCache& cache,
-    const CudaRuntimeConfig& config, tyloi::engine::InferenceRequest& request,
+    const tyloi::engine::RuntimeConfig& config, tyloi::engine::InferenceRequest& request,
     tyloi::engine::InferenceOutput& output, tyloi::engine::mtp::State& mtp_state,
     Predictor* mtp = nullptr,
     std::optional<PreparedPrompt> prepared = {},

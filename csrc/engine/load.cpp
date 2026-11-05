@@ -182,7 +182,7 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
     std::shared_ptr<KvMemoryManager> kv;
     std::shared_ptr<KvOffloadStore> offload;
     CudaLoadConfig load;
-    CudaRuntimeConfig runtime;
+    tyloi::engine::RuntimeConfig runtime;
     std::unique_ptr<Executor> root;
     std::shared_ptr<models::CausalModel> model;
     std::unique_ptr<models::State> state;
@@ -334,20 +334,21 @@ std::int32_t graph_minimum(const char* name) {
 
 } // namespace
 
-CudaRuntimeConfig resolve_cuda_runtime_config(
+tyloi::engine::RuntimeConfig resolve_cuda_runtime_config(
         const CudaEngineOptions& options) {
-    CudaRuntimeConfig config;
     const auto* profile_decode = env_lookup("TYLOINFER_PROFILE_DECODE");
-    config.profile_decode = profile_decode && profile_decode[0] == '1';
+    const bool profile_decode_enabled = profile_decode && profile_decode[0] == '1';
     const auto* trace_moe = env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
-    config.trace_moe = trace_moe && trace_moe[0] && trace_moe[0] != '0';
+    const bool trace_moe_enabled = trace_moe && trace_moe[0] && trace_moe[0] != '0';
     if(options.prefill_chunk_size < 0 || options.prefill_chunk_size > 8192)
         throw std::invalid_argument("prefill chunk size must be Auto (0) or in [1, 8192]");
-    config.prefill_chunk_auto = options.prefill_chunk_size == 0;
-    const auto chunk_limit = config.prefill_chunk_auto ? int64_t(8192) : options.prefill_chunk_size;
-    static_cast<tyloi::engine::RuntimeConfig&>(config) =
-        tyloi::engine::resolve_runtime_config(chunk_limit);
-    static_cast<tyloi::engine::ContinuousBatchConfig&>(config.continuous_batch) =
+    const bool prefill_chunk_auto = options.prefill_chunk_size == 0;
+    const auto chunk_limit = prefill_chunk_auto ? int64_t(8192) : options.prefill_chunk_size;
+    auto config = tyloi::engine::resolve_runtime_config(chunk_limit);
+    config.prefill_chunk_auto = prefill_chunk_auto;
+    config.profile_decode = profile_decode_enabled;
+    config.trace_moe = trace_moe_enabled;
+    config.continuous_batch =
         tyloi::engine::resolve_batch_config(options.continuous_batching, chunk_limit);
     config.decode_graph.enabled = environment_enabled(
         "TYLOINFER_RUNTIME_CUDA_GRAPH", true);

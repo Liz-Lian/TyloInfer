@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/weights/workspace.h"
+#include "engine/config.h"
 
 #include "env.h"
 #include "engine/weights/routed_cache.h"
@@ -140,7 +141,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     tyloi::cuda::Sampler sampler;
     bool has_penalties;
     const PreparedPrompt *prepared;
-    const CudaDecodeGraphConfig graph_config;
+    const tyloi::engine::GraphConfig graph_config;
     ::tyloi::DenseTensor full_ids;
     std::int32_t generation_limit = 0;
     bool graph_active = false;
@@ -154,7 +155,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         RoutedCache& weights, bool& serial_branches, bool report_memory,
         const tyloi::models::Info &info, DecodeGraphCache &graph,
         const tyloi::engine::InferenceRequest &request, const PreparedPrompt *prepared,
-        const CudaDecodeGraphConfig &graph_config,int64_t compute_chunk=1024,
+        const tyloi::engine::GraphConfig &graph_config,int64_t compute_chunk=1024,
         tyloi::engine::InferenceOutput* inference_output=nullptr,
         std::function<void()> restore = {})
         : model(model), state(state), executor(executor), collectives(collectives), mode(mode), profiler(profiler),

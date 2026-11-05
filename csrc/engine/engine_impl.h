@@ -252,7 +252,7 @@ private:
     std::unique_ptr<CudaExecutionContext> execution_;
     std::shared_ptr<WeightMemoryLedger> weight_memory_;
     std::shared_ptr<const tyloi::ModelSource> source_;
-    CudaRuntimeConfig config_;
+    tyloi::engine::RuntimeConfig config_;
     std::shared_ptr<Model> model_;
     std::unique_ptr<State> state_;
     std::unique_ptr<Executor> executor_;

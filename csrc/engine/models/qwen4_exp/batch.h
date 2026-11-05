@@ -3,7 +3,7 @@
 #include "engine/models/common/batch.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/qwen4_exp/ops.h"
-#include "engine/load.h"
+#include "engine/config.h"
 #include "engine/generation/batch.h"
 #include "engine/backends/cuda/executor/sampling.h"
 
@@ -37,7 +37,7 @@ class BatchOps {
         DenseTensor logits, greedy_tokens;
     };
 
-    BatchOps(qwen4_exp::Model&, CudaExecutionContext&, CudaContinuousBatchConfig);
+    BatchOps(qwen4_exp::Model&, CudaExecutionContext&, tyloi::engine::ContinuousBatchConfig);
     ~BatchOps();
     int64_t vocab_size() const;
     int64_t max_context() const;
@@ -67,7 +67,7 @@ class BatchOps {
 
     qwen4_exp::Model& model_;
     CudaExecutionContext& execution_;
-    CudaContinuousBatchConfig config_;
+    tyloi::engine::ContinuousBatchConfig config_;
     std::vector<std::weak_ptr<Request>> requests_;
     std::unique_ptr<Qwen4BatchDecodeGraph> graph_;
     int64_t decode_batches_ = 0, decode_tokens_ = 0, greedy_batches_ = 0;

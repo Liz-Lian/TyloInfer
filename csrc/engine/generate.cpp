@@ -267,7 +267,7 @@ namespace tyloi::cuda::internal {
         const tyloi::models::Info &, const tyloi::ModelSource*,                                          \
         DecodeGraphCache &,                                                                        \
         TextSessionCache &,                                                                        \
-        const CudaRuntimeConfig &,                                                                 \
+        const tyloi::engine::RuntimeConfig &,                                                      \
         tyloi::engine::InferenceRequest &,                                                           \
         tyloi::engine::InferenceOutput &,                                                            \
         tyloi::engine::mtp::State &,                                                                  \

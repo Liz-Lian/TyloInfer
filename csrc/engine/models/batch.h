@@ -1,19 +1,21 @@
 #pragma once
 
-#include "engine/load.h"
+#include "engine/config.h"
 #include "engine/generation/batch.h"
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/common/causal_model_ops.h"
 
 #include <cstdint>
 #include <memory>
 
 class MoeExpertCache;
+struct CudaExecutionContext;
 
 namespace tyloi::cuda::qwen35 {
 struct Model;
 class State;
 }
+
+namespace tyloi::cuda::qwen4_exp { struct Model; }
 
 namespace tyloi::cuda {
 
@@ -21,11 +23,11 @@ namespace tyloi::cuda {
 std::unique_ptr<tyloi::engine::Batch> make_batch(
     std::shared_ptr<const qwen35::Model> model, qwen35::State* serial,
     std::unique_ptr<Executor> executor, Collectives& copies, Executor::Mode mode,
-    std::shared_ptr<MoeExpertCache> cache, CudaContinuousBatchConfig config,
+    std::shared_ptr<MoeExpertCache> cache, tyloi::engine::ContinuousBatchConfig config,
     std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots);
 
 std::unique_ptr<tyloi::engine::Batch> make_batch(
     qwen4_exp::Model& model, CudaExecutionContext& execution,
-    const CudaContinuousBatchConfig& config, std::int64_t chunk_size);
+    const tyloi::engine::ContinuousBatchConfig& config, std::int64_t chunk_size);
 
 } // namespace tyloi::cuda

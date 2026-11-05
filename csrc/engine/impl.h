@@ -2,7 +2,7 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/engine.h"
-#include "engine/load.h"
+#include "engine/config.h"
 #include "engine/budget.h"
 #include "engine/generation/decode.h"
 #include "engine/models/causal_model.h"
@@ -11,12 +11,14 @@
 #include "engine/weights/workspace.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/memory.h"
+#include "engine/weights/routed_cache.h"
+#include "engine/state/kv_memory.h"
 
 namespace tyloi::engine {
 
 // Engine private storage keeps device-specific types out of engine.h.
 struct Engine::Impl {
-    cuda::CudaRuntimeConfig runtime_;
+    RuntimeConfig runtime_;
     std::vector<Device> devices_;
     bool budget_supported_ = false;
     std::shared_ptr<const ModelSource> source_;

@@ -43,7 +43,7 @@ class CacheScope {
 } // namespace
 
 BatchOps::BatchOps(qwen4_exp::Model& model, CudaExecutionContext& execution,
-                   CudaContinuousBatchConfig config)
+                   tyloi::engine::ContinuousBatchConfig config)
     : model_(model), execution_(execution), config_(std::move(config)) {
     TYLOINFER_RUNTIME_CHECK(config_.max_sequences > 0 && config_.max_sequences <= 32,
                             "Flash-Next continuous batching supports 1..32 requests");
@@ -415,7 +415,7 @@ namespace tyloi::cuda {
 
 std::unique_ptr<tyloi::engine::Batch> make_batch(
     qwen4_exp::Model& model, CudaExecutionContext& execution,
-    const CudaContinuousBatchConfig& config, std::int64_t chunk_size) {
+    const tyloi::engine::ContinuousBatchConfig& config, std::int64_t chunk_size) {
     return std::make_unique<tyloi::engine::ContinuousBatch<qwen4_exp::BatchOps>>(
         chunk_size, config.prefill_token_budget, model, execution, config);
 }

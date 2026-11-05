@@ -21,25 +21,6 @@ namespace tyloi::engine { class Engine; }
 
 namespace tyloi::cuda {
 
-struct CudaContinuousBatchConfig : tyloi::engine::ContinuousBatchConfig {
-    bool greedy = true;
-    bool cuda_graph = true;
-    bool paged_kv = true;
-    std::int32_t cuda_graph_minimum_tokens = 16;
-};
-
-struct CudaRuntimeConfig : tyloi::engine::RuntimeConfig {
-    bool prefill_chunk_auto = true;
-    bool profile_decode = false;
-    bool trace_moe = false;
-    CudaDecodeGraphConfig decode_graph;
-    CudaContinuousBatchConfig continuous_batch;
-};
-
-} // namespace tyloi::cuda
-
-namespace tyloi::cuda {
-
 // Read once at owner construction; controls read on access stay in options.h.
 struct CudaLoadConfig {
     weight_loader::Loader::Options weights;
@@ -117,7 +98,7 @@ void reload_cuda_engine(tyloi::engine::Engine& engine, CudaEngineOptions options
 
 namespace tyloi::cuda::internal {
 
-CudaRuntimeConfig resolve_cuda_runtime_config(const CudaEngineOptions& options);
+tyloi::engine::RuntimeConfig resolve_cuda_runtime_config(const CudaEngineOptions& options);
 void setup_cuda_load(
     const CudaLoadOptions& options,
     CudaLoadConfig& config, Executor& executor, RoutedCache& weights,

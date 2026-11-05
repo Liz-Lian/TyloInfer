@@ -2,7 +2,7 @@
 
 #include "engine/models/common/batch.h"
 #include "engine/backends/cuda/executor/batch_graph.h"
-#include "engine/load.h"
+#include "engine/config.h"
 #include "engine/generation/batch.h"
 #include "engine/backends/cuda/executor/sampling.h"
 #include "engine/models/qwen35/batch.h"
@@ -17,7 +17,7 @@
 
 namespace tyloi::cuda::qwen35 {
 
-bool batch_graph_enabled(const Model&, const CudaContinuousBatchConfig&);
+bool batch_graph_enabled(const Model&, const tyloi::engine::ContinuousBatchConfig&);
 
 struct BatchRequest : tyloi::engine::BatchRequest {
     using tyloi::engine::BatchRequest::BatchRequest;
@@ -42,7 +42,7 @@ class BatchOps {
     // Calls run inside the owner's CUDA device/context scope.
     BatchOps(std::shared_ptr<const Model>, std::unique_ptr<Executor>, Collectives&,
              Executor::Mode, Batch::Options, std::shared_ptr<MoeExpertCache>,
-             CudaContinuousBatchConfig);
+             tyloi::engine::ContinuousBatchConfig);
     ~BatchOps();
     BatchOps(const BatchOps&) = delete;
     BatchOps& operator=(const BatchOps&) = delete;
@@ -72,7 +72,7 @@ class BatchOps {
     const Executor::Mode mode_;
     Batch state_;
     std::shared_ptr<MoeExpertCache> moe_cache_;
-    const CudaContinuousBatchConfig config_;
+    const tyloi::engine::ContinuousBatchConfig config_;
     int32_t max_sequences_ = 0;
     bool moe_enabled_ = false;
     bool cached_moe_enabled_ = false;

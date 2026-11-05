@@ -7,16 +7,6 @@
 
 struct MoeOptions;
 
-namespace tyloi::cuda {
-
-struct CudaDecodeGraphConfig {
-    bool enabled = true;
-    bool trace = false;
-    std::int32_t minimum_generation_tokens = 16;
-};
-
-} // namespace tyloi::cuda
-
 namespace tyloi::cuda::runtime_options {
 MoeOptions moe(MoeOptions options);
 struct QsaKvOffloadOptions {
