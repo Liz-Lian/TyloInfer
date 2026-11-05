@@ -24,7 +24,7 @@ bool projected(const LinearInputs& value) {
            value.tokens != 0 || value.split;
 }
 
-bool on_layer_device(const DenseTensor& tensor, const Layout& layer) {
+bool on_layer_device(const ::tyloi::Tensor& tensor, const Layout& layer) {
     return layer.cpu ? !tensor.is_cuda()
                      : tensor.is_cuda() && tensor.get_device() == layer.device;
 }
@@ -75,10 +75,10 @@ void validate_full_snapshot(const Layout& model_layer, const FullLayout& layer,
     validate_kv(state);
     const bool quantized = layer.quantization.enabled();
     const auto dtype = quantized ? ::tyloi::kInt32 : layer.dtype;
-    if (!(state.ring == layer.sliding && state.k.scalar_type() == dtype &&
-          state.v.scalar_type() == dtype && on_layer_device(state.k, model_layer) &&
-          on_layer_device(state.v, model_layer) && state.k.size(1) == layer.kv_heads &&
-          state.v.size(1) == layer.kv_heads))
+    if (!(state.ring == layer.sliding && state.k->scalar_type() == dtype &&
+          state.v->scalar_type() == dtype && on_layer_device(*state.k, model_layer) &&
+          on_layer_device(*state.v, model_layer) && state.k->size(1) == layer.kv_heads &&
+          state.v->size(1) == layer.kv_heads))
         throw CudaSessionStateError("Qwen full-attention session topology changed");
     const auto key_width = quantized
                                ? cuda_kv_packed_width(static_cast<int>(layer.head_dim),
@@ -88,13 +88,13 @@ void validate_full_snapshot(const Layout& model_layer, const FullLayout& layer,
                                  ? cuda_kv_packed_width(static_cast<int>(layer.head_dim),
                                                          layer.quantization.value_bits())
                                  : layer.head_dim;
-    if (state.k.size(3) != key_width || state.v.size(3) != value_width)
+    if (state.k->size(3) != key_width || state.v->size(3) != value_width)
         throw CudaSessionStateError("Qwen full-attention session quantization changed");
 }
 
 void validate_full_snapshot_length(const KvSnapshot& state, std::int64_t cache_pos) {
-    if ((!state.ring && (cache_pos > state.capacity || state.k.size(2) != cache_pos)) ||
-        (state.ring && state.k.size(2) != state.capacity))
+    if ((!state.ring && (cache_pos > state.capacity || state.k->size(2) != cache_pos)) ||
+        (state.ring && state.k->size(2) != state.capacity))
         throw CudaSessionStateError("Qwen full-attention session length changed");
 }
 
@@ -332,7 +332,9 @@ TextSessionState State::capture_text_session_state(
             validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention), snapshot,
                                      !layout.cpu && *transposed_);
             saved.kind = HybridBlockSessionStateKind::Recurrent;
-            saved.mixer = snapshot;
+            saved.convolution = std::make_shared<DenseTensor>(snapshot.convolution);
+            saved.recurrent = std::make_shared<DenseTensor>(snapshot.recurrent);
+            saved.transposed = snapshot.transposed;
             state.bytes += session_tensor_bytes(snapshot.convolution);
             state.bytes += session_tensor_bytes(snapshot.recurrent);
         }
@@ -378,8 +380,13 @@ State::Restore State::prepare(const TextSessionState& state) const {
             } else {
                 if (saved.kind != HybridBlockSessionStateKind::Recurrent)
                     throw CudaSessionStateError("Qwen hybrid recurrent layer changed");
+                const auto* convolution = dynamic_cast<const DenseTensor*>(saved.convolution.get());
+                const auto* recurrent = dynamic_cast<const DenseTensor*>(saved.recurrent.get());
+                if (!convolution || !recurrent)
+                    throw CudaSessionStateError("Qwen recurrent session topology changed");
                 validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention),
-                                         saved.mixer, !layout.cpu && *transposed_);
+                                         Recurrent::State{*convolution, *recurrent, saved.transposed},
+                                         !layout.cpu && *transposed_);
             }
         }
     }
@@ -415,12 +422,14 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
             auto& linear = std::get<LinearState>(restore.layers[index]);
             linear.speculative_ffn_batches = current.speculative_ffn_batches;
             linear.speculative_projection_batches = current.speculative_projection_batches;
+            const auto& convolution = dynamic_cast<const DenseTensor&>(*saved.convolution);
+            const auto& recurrent = dynamic_cast<const DenseTensor&>(*saved.recurrent);
             // Candidate owns copy targets through the caller's asynchronous drain.
             linear.mixer.view().convolution = ::tyloi::cuda::empty(
-                saved.mixer.convolution.sizes(), saved.mixer.convolution.options());
+                convolution.sizes(), convolution.options());
             linear.mixer.view().recurrent = ::tyloi::cuda::empty(
-                saved.mixer.recurrent.sizes(), saved.mixer.recurrent.options());
-            linear.mixer.restore(saved.mixer);
+                recurrent.sizes(), recurrent.options());
+            linear.mixer.restore(Recurrent::State{convolution, recurrent, saved.transposed});
         }
     }
 }

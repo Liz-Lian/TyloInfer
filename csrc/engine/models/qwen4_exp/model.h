@@ -1059,7 +1059,7 @@ class Qsa {
     void capture_session(tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count,std::size_t& bytes) const {
         TYLOINFER_RUNTIME_CHECK(!offload_ && count>0 && count<=position(),"invalid Qwen4 QSA session boundary");
         const auto save=[&](const DenseTensor& tensor) {
-            auto saved=tensor.contiguous().clone();bytes+=session_tensor_bytes(saved);return saved;
+            auto saved=std::make_shared<DenseTensor>(tensor.contiguous().clone());bytes+=session_tensor_bytes(*saved);return saved;
         };
         if(managed_memory() && memory_->hot.exclusive()) {
             auto pair=memory_->hot.gather(count);
@@ -1075,26 +1075,29 @@ class Qsa {
         state.index=save(index_.storage().narrow(1,0,count));
     }
     void restore_session(const tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count) {
-        TYLOINFER_RUNTIME_CHECK(!offload_ && state.keys.defined() && state.values.defined() && state.index.defined() &&
-            state.keys.dim()==3 && state.keys.size(0)==1 && state.keys.size(1)==count &&
-            state.keys.size(2)==c_.kv_heads*key_width() && state.keys.scalar_type()==cache_dtype() &&
-            state.values.dim()==3 && state.values.size(0)==1 && state.values.size(1)==count &&
-            state.values.size(2)==c_.kv_heads*value_width() && state.values.scalar_type()==cache_dtype() &&
-            state.index.dim()==3 && state.index.size(0)==1 && state.index.size(1)==count && state.index.size(2)==c_.index_width,
+        const auto* keys=dynamic_cast<const DenseTensor*>(state.keys.get());
+        const auto* values=dynamic_cast<const DenseTensor*>(state.values.get());
+        const auto* index=dynamic_cast<const DenseTensor*>(state.index.get());
+        TYLOINFER_RUNTIME_CHECK(!offload_ && keys && values && index && keys->defined() && values->defined() && index->defined() &&
+            keys->dim()==3 && keys->size(0)==1 && keys->size(1)==count &&
+            keys->size(2)==c_.kv_heads*key_width() && keys->scalar_type()==cache_dtype() &&
+            values->dim()==3 && values->size(0)==1 && values->size(1)==count &&
+            values->size(2)==c_.kv_heads*value_width() && values->scalar_type()==cache_dtype() &&
+            index->dim()==3 && index->size(0)==1 && index->size(1)==count && index->size(2)==c_.index_width,
             "incompatible Qwen4 QSA session state");
         reset();activate_memory();
         if(managed_memory()) {
             memory_->ensure(count);
-            auto k=state.keys.reshape({1,count,c_.kv_heads,key_width()}).permute({0,2,1,3});
-            auto v=state.values.reshape({1,count,c_.kv_heads,value_width()}).permute({0,2,1,3});
+            auto k=keys->reshape({1,count,c_.kv_heads,key_width()}).permute({0,2,1,3});
+            auto v=values->reshape({1,count,c_.kv_heads,value_width()}).permute({0,2,1,3});
             auto positions=::tyloi::cuda::arange(count,graph_keys_.options().dtype(::tyloi::kInt64));
             if(memory_->hot.exclusive())memory_->hot.append(k,v,positions);
             else {
                 graph_keys_.narrow(2,0,count).copy_(k);graph_values_.narrow(2,0,count).copy_(v);
                 memory_->hot.publish(graph_keys_,graph_values_,positions);
             }
-            keys_.advance_fixed(count);values_.advance_fixed(count);index_.append(state.index);graph_prepared_=false;
-        } else {keys_.append(state.keys);values_.append(state.values);index_.append(state.index);}
+            keys_.advance_fixed(count);values_.advance_fixed(count);index_.append(*index);graph_prepared_=false;
+        } else {keys_.append(*keys);values_.append(*values);index_.append(*index);}
     }
     std::vector<DenseTensor> resident_cache_tensors() const {
         if(managed_memory())return {}; // Count physical GPU/RAM tiers through KvMemoryManager.

@@ -12,10 +12,11 @@ namespace tyloi::cuda::deepseek_v41 {
 using deepseek_v41_runtime::Block;
 
 namespace {
-bool session_tensor(const DenseTensor& value,int64_t tokens,int64_t width,
+bool session_tensor(const std::shared_ptr<const ::tyloi::Tensor>& value,int64_t tokens,int64_t width,
                     ::tyloi::ScalarType dtype) {
-    return value.defined() && value.is_cuda() && value.dim()==3 && value.size(0)==1 &&
-        value.size(1)==tokens && value.size(2)==width && value.scalar_type()==dtype;
+    return value && value->defined() && value->is_cuda() && value->dim()==3 && value->size(0)==1 &&
+        value->size(1)==tokens && value->size(2)==width && value->scalar_type()==dtype &&
+        dynamic_cast<const DenseTensor*>(value.get());
 }
 
 void validate_layer(const Block& block,const tyloi::models::deepseek_v41::BlockSnapshot& saved,
@@ -24,8 +25,7 @@ void validate_layer(const Block& block,const tyloi::models::deepseek_v41::BlockS
     const bool local=session_tensor(saved.local_kv,config.sliding_window,config.head_dim,
                                      ::tyloi::kFloat16);
     bool global=saved.compressed_length==0 && saved.partial_length==0 &&
-        !saved.compressed_kv.defined() && !saved.index_k.defined() &&
-        !saved.partial_kv.defined() && !saved.partial_score.defined();
+        !saved.compressed_kv && !saved.index_k && !saved.partial_kv && !saved.partial_score;
     if(block.kv_source()) {
         global=block.ratio>0 && saved.compressed_length==position/block.ratio &&
             saved.partial_length==(block.ratio>1?position%block.ratio:0) &&
@@ -38,7 +38,7 @@ void validate_layer(const Block& block,const tyloi::models::deepseek_v41::BlockS
                                             ::tyloi::kFloat32) &&
                 session_tensor(saved.partial_score,block.ratio,config.head_dim,
                                ::tyloi::kFloat32);
-        else global=global && !saved.partial_kv.defined() && !saved.partial_score.defined();
+        else global=global && !saved.partial_kv && !saved.partial_score;
     }
     if(!local || !global)throw CudaSessionStateError("DeepSeek-V4.1 session layer geometry is incompatible");
 }
@@ -155,9 +155,10 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
         if(block.L().speculative_pending || source.position!=cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
-        const auto copy=[&](const DenseTensor& value) {
-            if(!value.defined())return DenseTensor{};
-            auto result=value.clone();state.bytes+=session_tensor_bytes(result);return result;
+        const auto copy=[&](const DenseTensor& value) -> std::shared_ptr<const ::tyloi::Tensor> {
+            if(!value.defined())return {};
+            auto result=std::make_shared<DenseTensor>(value.clone());
+            state.bytes+=session_tensor_bytes(*result);return result;
         };
         saved.local_kv=copy(source.local_kv);
         saved.compressed_length=source.compressed_length;saved.partial_length=source.partial_length;
@@ -190,15 +191,15 @@ void State::restore_text_session_state(const TextSessionState& state) {
         Block& block=*model_.blocks[i];
         MfqCudaGuard guard(block.cuda_device);
         const auto& saved=snapshot->blocks[i];auto& target=block.L();
-        restore_session_tensor(target.local_kv,saved.local_kv);
+        restore_session_tensor(target.local_kv,saved.local_kv.get());
         if(block.kv_source()) {
-            restore_session_prefix_tensor(target.compressed_kv,saved.compressed_kv,1,
+            restore_session_prefix_tensor(target.compressed_kv,*saved.compressed_kv,1,
                                           std::max<int64_t>(1,block.max_context/block.ratio));
-            restore_session_prefix_tensor(target.index_k,saved.index_k,1,
+            restore_session_prefix_tensor(target.index_k,*saved.index_k,1,
                                           std::max<int64_t>(1,block.max_context/block.ratio));
             if(block.ratio>1) {
-                restore_session_tensor(target.partial_kv,saved.partial_kv);
-                restore_session_tensor(target.partial_score,saved.partial_score);
+                restore_session_tensor(target.partial_kv,saved.partial_kv.get());
+                restore_session_tensor(target.partial_score,saved.partial_score.get());
             }
         }
         target.position=state.cache_pos;target.compressed_length=saved.compressed_length;

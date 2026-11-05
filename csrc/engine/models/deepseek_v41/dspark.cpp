@@ -256,8 +256,8 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         for(const auto& ring:rings) {
             TYLOINFER_RUNTIME_CHECK(ring.dim()==3 && ring.size(0)==1 && ring.size(1)==config.sliding_window &&
                 ring.size(2)==config.head_dim,"DeepSeek-V4.1 DSpark session ring disagrees");
-            saved.rings.push_back(ring.clone());
-            state.bytes+=session_tensor_bytes(saved.rings.back());
+            saved.rings.push_back(std::make_shared<DenseTensor>(ring.clone()));
+            state.bytes+=session_tensor_bytes(*saved.rings.back());
         }
         return state;
     }
@@ -271,12 +271,12 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 hidden->dim()!=3 || hidden->size(0)!=1 || hidden->size(1)<=0 || hidden->size(2)!=width)
             throw CudaSessionStateError("DeepSeek-V4.1 DSpark session state is incompatible");
         for(const auto& ring:saved->rings)
-            if(!ring.defined() || !ring.is_cuda() || ring.scalar_type()!=::tyloi::kFloat16 ||
-                    ring.dim()!=3 || ring.size(0)!=1 || ring.size(1)!=config.sliding_window ||
-                    ring.size(2)!=config.head_dim)
+            if(!ring || !ring->defined() || !ring->is_cuda() || ring->scalar_type()!=::tyloi::kFloat16 ||
+                    ring->dim()!=3 || ring->size(0)!=1 || ring->size(1)!=config.sliding_window ||
+                    ring->size(2)!=config.head_dim || !dynamic_cast<const DenseTensor*>(ring.get()))
                 throw CudaSessionStateError("DeepSeek-V4.1 DSpark saved ring geometry is incompatible");
         if(batch!=1 || rings.size()!=stages.size() || !attention_meta.defined())reset(1);
-        for(std::size_t i=0;i<rings.size();++i)restore_session_tensor(rings[i],saved->rings[i]);
+        for(std::size_t i=0;i<rings.size();++i)restore_session_tensor(rings[i],saved->rings[i].get());
         position=state.cache_pos;
     }
 
@@ -574,11 +574,11 @@ void run_dspark_self_check() {
                       "DeepSeek-V4.1 DSpark session restore lost its committed ring");
     predictor.append_target_context(history.narrow(1,0,1).contiguous(),257);
     TYLOINFER_RUNTIME_CHECK(predictor.rings.front().equal(advanced) &&
-                      std::get<tyloi::models::deepseek_v41::MtpSnapshot>(saved.payload).rings.front().equal(expected_ring),
+                      dynamic_cast<const DenseTensor&>(*std::get<tyloi::models::deepseek_v41::MtpSnapshot>(saved.payload).rings.front()).equal(expected_ring),
                       "DeepSeek-V4.1 DSpark session changed continuation or mutated its snapshot");
     auto broken=saved;
     std::get<tyloi::models::deepseek_v41::MtpSnapshot>(broken.payload).rings.front()=
-        std::get<tyloi::models::deepseek_v41::MtpSnapshot>(broken.payload).rings.front().narrow(1,0,127);
+        std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*std::get<tyloi::models::deepseek_v41::MtpSnapshot>(broken.payload).rings.front()).narrow(1,0,127));
     bool rejected=false;try{predictor.restore_session_state(broken);}catch(const CudaSessionStateError&){rejected=true;}
     TYLOINFER_RUNTIME_CHECK(rejected && predictor.cache_position()==258 && predictor.rings.front().equal(advanced),
                       "DeepSeek-V4.1 DSpark accepted an incompatible session ring");

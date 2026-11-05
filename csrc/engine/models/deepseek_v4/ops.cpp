@@ -536,18 +536,18 @@ static PoolSnapshot capture_pool(const PoolState &source, int64_t cache_pos, siz
         throw std::runtime_error("DeepSeek V4 session compressor state is unavailable");
     }
     const int64_t visible = std::min<int64_t>(cache_pos / source.ratio, source.capacity);
-    state.state_kv = source.state_kv.clone();
-    state.state_gate = source.state_gate.clone();
+    state.state_kv = std::make_shared<DenseTensor>(source.state_kv.clone());
+    state.state_gate = std::make_shared<DenseTensor>(source.state_gate.clone());
     if (source.overlap) {
-        state.previous_kv = source.previous_kv.clone();
-        state.previous_gate = source.previous_gate.clone();
+        state.previous_kv = std::make_shared<DenseTensor>(source.previous_kv.clone());
+        state.previous_gate = std::make_shared<DenseTensor>(source.previous_gate.clone());
     }
-    state.pool = source.pool.narrow(1, 0, visible).clone();
-    bytes += session_tensor_bytes(state.state_kv);
-    bytes += session_tensor_bytes(state.state_gate);
-    bytes += session_tensor_bytes(state.previous_kv);
-    bytes += session_tensor_bytes(state.previous_gate);
-    bytes += session_tensor_bytes(state.pool);
+    state.pool = std::make_shared<DenseTensor>(source.pool.narrow(1, 0, visible).clone());
+    bytes += session_tensor_bytes(*state.state_kv);
+    bytes += session_tensor_bytes(*state.state_gate);
+    if (state.previous_kv) bytes += session_tensor_bytes(*state.previous_kv);
+    if (state.previous_gate) bytes += session_tensor_bytes(*state.previous_gate);
+    bytes += session_tensor_bytes(*state.pool);
     return state;
 }
 
@@ -558,23 +558,25 @@ static void restore_pool(PoolState &target, const PoolSnapshot &state) {
     }
     if (state.ratio <= 0)
         return;
-    if (state.capacity <= 0 || !state.state_kv.defined() || !state.state_gate.defined() ||
-        !state.pool.defined() || state.pool.dim() != 3 || state.pool.size(0) != 1 ||
-        state.pool.size(1) > state.capacity ||
-        (state.overlap && (!state.previous_kv.defined() || !state.previous_gate.defined()))) {
+    if (state.capacity <= 0 || !state.state_kv || !state.state_kv->defined() ||
+        !state.state_gate || !state.state_gate->defined() ||
+        !state.pool || !state.pool->defined() || state.pool->dim() != 3 || state.pool->size(0) != 1 ||
+        state.pool->size(1) > state.capacity ||
+        (state.overlap && (!state.previous_kv || !state.previous_kv->defined() ||
+                           !state.previous_gate || !state.previous_gate->defined()))) {
         throw CudaSessionStateError("DeepSeek V4 saved compressor state is invalid");
     }
     target.capacity = state.capacity;
-    restore_session_tensor(target.state_kv, state.state_kv);
-    restore_session_tensor(target.state_gate, state.state_gate);
+    restore_session_tensor(target.state_kv, state.state_kv.get());
+    restore_session_tensor(target.state_gate, state.state_gate.get());
     if (state.overlap) {
-        restore_session_tensor(target.previous_kv, state.previous_kv);
-        restore_session_tensor(target.previous_gate, state.previous_gate);
+        restore_session_tensor(target.previous_kv, state.previous_kv.get());
+        restore_session_tensor(target.previous_gate, state.previous_gate.get());
     } else {
         target.previous_kv = ::tyloi::DenseTensor();
         target.previous_gate = ::tyloi::DenseTensor();
     }
-    restore_session_prefix_tensor(target.pool, state.pool, 1, state.capacity);
+    restore_session_prefix_tensor(target.pool, *state.pool, 1, state.capacity);
 }
 
 void PoolState::reset(int64_t batch, int64_t max_positions) {
@@ -750,8 +752,8 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
         if (!layer.local_cache.defined())
             throw std::runtime_error("DeepSeek V4 local session cache is unavailable");
         tyloi::models::deepseek_v4::BlockSnapshot saved;
-        saved.local_cache = layer.local_cache.clone();
-        state.bytes += session_tensor_bytes(saved.local_cache);
+        saved.local_cache = std::make_shared<DenseTensor>(layer.local_cache.clone());
+        state.bytes += session_tensor_bytes(*saved.local_cache);
         saved.compressor = capture_pool(layer.compressor, cache_pos, state.bytes);
         saved.indexer_compressor = capture_pool(layer.indexer_compressor, cache_pos, state.bytes);
         saved_layers.push_back(std::move(saved));
@@ -769,10 +771,10 @@ void State::restore_text_session_state(const TextSessionState& state) {
         MfqCudaGuard guard(layout_[i].device);
         auto& layer = layers[i];
         const auto& saved = (*saved_layers)[i];
-        if (!saved.local_cache.defined() || saved.local_cache.dim() != 3 ||
-            saved.local_cache.size(0) != 1 || saved.local_cache.size(1) != 128)
+        if (!saved.local_cache || !saved.local_cache->defined() || saved.local_cache->dim() != 3 ||
+            saved.local_cache->size(0) != 1 || saved.local_cache->size(1) != 128)
             throw CudaSessionStateError("DeepSeek V4 saved local cache is invalid");
-        restore_session_tensor(layer.local_cache, saved.local_cache);
+        restore_session_tensor(layer.local_cache, saved.local_cache.get());
         restore_pool(layer.compressor, saved.compressor);
         restore_pool(layer.indexer_compressor, saved.indexer_compressor);
     }

@@ -1,9 +1,10 @@
 #pragma once
 
-#include "backend.h"
+#include "engine/tensor.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace tyloi::models::deepseek_v4 {
 
@@ -13,30 +14,30 @@ struct PoolSnapshot {
     int64_t cache_quant_mode = 0;
     int64_t capacity = 0;
     bool overlap = false;
-    ::tyloi::DenseTensor state_kv;
-    ::tyloi::DenseTensor state_gate;
-    ::tyloi::DenseTensor previous_kv;
-    ::tyloi::DenseTensor previous_gate;
-    ::tyloi::DenseTensor pool;
+    std::shared_ptr<const ::tyloi::Tensor> state_kv;
+    std::shared_ptr<const ::tyloi::Tensor> state_gate;
+    std::shared_ptr<const ::tyloi::Tensor> previous_kv;
+    std::shared_ptr<const ::tyloi::Tensor> previous_gate;
+    std::shared_ptr<const ::tyloi::Tensor> pool;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
-        visit(state_kv);
-        visit(state_gate);
-        visit(previous_kv);
-        visit(previous_gate);
-        visit(pool);
+        if (state_kv) visit(*state_kv);
+        if (state_gate) visit(*state_gate);
+        if (previous_kv) visit(*previous_kv);
+        if (previous_gate) visit(*previous_gate);
+        if (pool) visit(*pool);
     }
 };
 
 struct BlockSnapshot {
-    ::tyloi::DenseTensor local_cache;
+    std::shared_ptr<const ::tyloi::Tensor> local_cache;
     PoolSnapshot compressor;
     PoolSnapshot indexer_compressor;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
-        visit(local_cache);
+        if (local_cache) visit(*local_cache);
         compressor.tensors(visit);
         indexer_compressor.tensors(visit);
     }

@@ -80,11 +80,11 @@ State::Restore State::prepare(const TextSessionState& state) const {
         validate_kv(cache);
         const auto device = ::tyloi::Device(layout.cpu ? ::tyloi::kCPU : ::tyloi::kCUDA,
                                        layout.cpu ? -1 : layout.device);
-        if (cache.ring || cache.k.device() != device || cache.v.device() != device ||
-            cache.k.scalar_type() != ::tyloi::kFloat16 || cache.v.scalar_type() != ::tyloi::kFloat16 ||
-            cache.k.size(1) != layout.heads || cache.v.size(1) != layout.heads ||
-            cache.k.size(3) != layout.head_dim || cache.v.size(3) != layout.head_dim ||
-            cache.k.size(2) != state.cache_pos || cache.capacity < state.cache_pos)
+        if (cache.ring || cache.k->device() != device || cache.v->device() != device ||
+            cache.k->scalar_type() != ::tyloi::kFloat16 || cache.v->scalar_type() != ::tyloi::kFloat16 ||
+            cache.k->size(1) != layout.heads || cache.v->size(1) != layout.heads ||
+            cache.k->size(3) != layout.head_dim || cache.v->size(3) != layout.head_dim ||
+            cache.k->size(2) != state.cache_pos || cache.capacity < state.cache_pos)
             throw CudaSessionStateError("MiniCPM TTS session cache geometry changed");
     }
     return {std::vector<KVCache>(layers.size()), state.cache_pos, state.decode_position_delta};

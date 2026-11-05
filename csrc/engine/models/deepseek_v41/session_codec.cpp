@@ -22,9 +22,13 @@ Header header(CudaPagedReader& reader) {
         throw CudaSessionStateError("invalid DeepSeek-V4.1 prefix header");
     return result;
 }
-void optional(CudaPagedWriter& writer,const ::tyloi::DenseTensor& value) {
-    writer.scalar<uint32_t>(value.defined()?1:0);
-    if(value.defined())writer.tensor(value);
+void optional(CudaPagedWriter& writer,const ::tyloi::Tensor* value) {
+    writer.scalar<uint32_t>(value && value->defined()?1:0);
+    if(value && value->defined()) {
+        const auto* dense=dynamic_cast<const ::tyloi::DenseTensor*>(value);
+        if(!dense)throw std::runtime_error("inconsistent DeepSeek-V4.1 compression checkpoint");
+        writer.tensor(*dense);
+    }
 }
 ::tyloi::DenseTensor optional(CudaPagedReader& reader,int expected_device) {
     const auto present=reader.scalar<uint32_t>("tensor presence");
@@ -60,25 +64,30 @@ CudaPagedPayload encode_block(
     for(const auto value:{start,count,snapshot->blocks.size(),size_t(exact?(state.mtp?3:1):0)})
         writer.scalar<uint32_t>(uint32_t(value));
     for(const auto& layer:snapshot->blocks) {
-        const int64_t ratio=layer.compressed_kv.defined()?(layer.partial_kv.defined()?layer.partial_kv.size(1):1):0;
-        const int64_t kv_width=ratio?layer.compressed_kv.size(2):0;
-        const int64_t index_width=ratio && layer.index_k.defined()?layer.index_k.size(2):0;
-        if(!layer.local_kv.is_cuda() || (ratio && (!index_width ||
+        const auto* compressed=dynamic_cast<const ::tyloi::DenseTensor*>(layer.compressed_kv.get());
+        const auto* index=dynamic_cast<const ::tyloi::DenseTensor*>(layer.index_k.get());
+        const int64_t ratio=compressed && compressed->defined()?(layer.partial_kv && layer.partial_kv->defined()?layer.partial_kv->size(1):1):0;
+        const int64_t kv_width=ratio?compressed->size(2):0;
+        const int64_t index_width=ratio && index && index->defined()?index->size(2):0;
+        if((layer.compressed_kv && !compressed) || (layer.index_k && !index) ||
+                !layer.local_kv || !layer.local_kv->is_cuda() || (ratio && (!index_width ||
                 layer.compressed_length!=state.cache_pos/ratio ||
                 layer.partial_length!=state.cache_pos%ratio ||
-                !shape(layer.compressed_kv,layer.compressed_length,kv_width,::tyloi::kFloat16) ||
-                !shape(layer.index_k,layer.compressed_length,index_width,::tyloi::kFloat16))))
+                !shape(*compressed,layer.compressed_length,kv_width,::tyloi::kFloat16) ||
+                !shape(*index,layer.compressed_length,index_width,::tyloi::kFloat16))))
             throw std::runtime_error("inconsistent DeepSeek-V4.1 compression checkpoint");
         writer.scalar<int64_t>(ratio);writer.scalar<int64_t>(kv_width);writer.scalar<int64_t>(index_width);
-        writer.scalar<int32_t>(layer.local_kv.get_device());
-        const auto range=[&](const ::tyloi::DenseTensor& value) {
-            return ratio && end/ratio>start/ratio
-                ?value.narrow(1,int64_t(start)/ratio,int64_t(end/ratio-start/ratio)): ::tyloi::DenseTensor{};
+        writer.scalar<int32_t>(layer.local_kv->get_device());
+        const auto range=[&](const ::tyloi::DenseTensor* value) {
+            if(ratio && end/ratio>start/ratio) {
+                auto part=value->narrow(1,int64_t(start)/ratio,int64_t(end/ratio-start/ratio));
+                optional(writer,&part);
+            } else optional(writer,nullptr);
         };
-        optional(writer,range(layer.compressed_kv));optional(writer,range(layer.index_k));
-        optional(writer,exact?layer.local_kv: ::tyloi::DenseTensor{});
-        optional(writer,exact?layer.partial_kv: ::tyloi::DenseTensor{});
-        optional(writer,exact?layer.partial_score: ::tyloi::DenseTensor{});
+        range(compressed);range(index);
+        optional(writer,exact?layer.local_kv.get():nullptr);
+        optional(writer,exact?layer.partial_kv.get():nullptr);
+        optional(writer,exact?layer.partial_score.get():nullptr);
     }
     if(exact) {
         const auto& context=snapshot->engram->context;
@@ -93,7 +102,12 @@ CudaPagedPayload encode_block(
                 throw std::runtime_error("incompatible DeepSeek-V4.1 DSpark checkpoint");
             writer.tensor(*hidden);
             writer.scalar<uint32_t>(uint32_t(rings->rings.size()));
-            for(const auto& ring:rings->rings)writer.tensor(ring);
+            for(const auto& ring:rings->rings) {
+                const auto* dense=dynamic_cast<const ::tyloi::DenseTensor*>(ring.get());
+                if(!dense || !dense->defined())
+                    throw std::runtime_error("incompatible DeepSeek-V4.1 DSpark checkpoint");
+                writer.tensor(*dense);
+            }
         }
     }
     return std::move(writer).finish();
@@ -154,7 +168,9 @@ TextSessionState decode_session(
                                           !shape(score,layout.ratio,layout.kv_width,::tyloi::kFloat32))))
                 throw CudaSessionStateError("invalid DeepSeek-V4.1 exact checkpoint tensors");
             if(i+1==payloads.size()) {
-                layers[j].local_kv=std::move(local);layers[j].partial_kv=std::move(partial);layers[j].partial_score=std::move(score);
+                layers[j].local_kv=std::make_shared<::tyloi::DenseTensor>(std::move(local));
+                if(partial.defined())layers[j].partial_kv=std::make_shared<::tyloi::DenseTensor>(std::move(partial));
+                if(score.defined())layers[j].partial_score=std::make_shared<::tyloi::DenseTensor>(std::move(score));
             }
         }
         if(exact) {
@@ -181,10 +197,10 @@ TextSessionState decode_session(
     for(size_t j=0;j<layers.size();++j) {
         auto& layer=layers[j];const auto& layout=layouts[j];
         const auto device=::tyloi::Device{::tyloi::DeviceType::cuda,layout.device};
-        layer.local_kv=layer.local_kv.to(device);
+        layer.local_kv=layer.local_kv->relocated(device);
         if(layout.ratio) {
             layer.compressed_length=state.cache_pos/layout.ratio;layer.partial_length=state.cache_pos%layout.ratio;
-            std::array<::tyloi::DenseTensor*,2> destination{&layer.compressed_kv,&layer.index_k};
+            std::array<std::shared_ptr<const ::tyloi::Tensor>*,2> destination{&layer.compressed_kv,&layer.index_k};
             for(size_t field=0;field<2;++field) {
                 const auto width=field?layout.index_width:layout.kv_width;
                 auto& parts=fragments[j][field];
@@ -192,14 +208,14 @@ TextSessionState decode_session(
                     parts.size()==1?parts.front(): ::tyloi::cuda::cat(parts,1);
                 if(!shape(value,layer.compressed_length,width,::tyloi::kFloat16))
                     throw CudaSessionStateError("incomplete DeepSeek-V4.1 compressed prefix");
-                *destination[field]=value.to(device);
+                *destination[field]=std::make_shared<::tyloi::DenseTensor>(value.to(device));
             }
             if(layout.ratio>1) {
-                layer.partial_kv=layer.partial_kv.to(device);layer.partial_score=layer.partial_score.to(device);
+                layer.partial_kv=layer.partial_kv->relocated(device);layer.partial_score=layer.partial_score->relocated(device);
             }
         }
         for(const auto* tensor:{&layer.local_kv,&layer.compressed_kv,&layer.index_k,&layer.partial_kv,&layer.partial_score})
-            state.bytes+=session_tensor_bytes(*tensor);
+            if(*tensor)state.bytes+=session_tensor_bytes(**tensor);
     }
     if(!predictor.empty()) {
         auto& mtp=state.mtp.emplace();mtp.cache_pos=state.cache_pos;
@@ -207,7 +223,8 @@ TextSessionState decode_session(
         for(size_t i=0;i<predictor.size();++i) {
             auto& [value,device]=predictor[i];
             auto target=value.to(::tyloi::Device{::tyloi::DeviceType::cuda,device});mtp.bytes+=session_tensor_bytes(target);
-            if(!i)mtp.last_target_hidden=std::make_shared<::tyloi::DenseTensor>(std::move(target));else rings.push_back(std::move(target));
+            if(!i)mtp.last_target_hidden=std::make_shared<::tyloi::DenseTensor>(std::move(target));
+            else rings.push_back(std::make_shared<::tyloi::DenseTensor>(std::move(target)));
         }
         state.bytes+=mtp.bytes;
     }

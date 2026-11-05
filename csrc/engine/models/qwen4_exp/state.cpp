@@ -86,24 +86,25 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     tyloi::models::qwen4_exp::Snapshot snapshot;
     for (const auto& block : model_.blocks)
         snapshot.blocks.push_back(capture_block_session(*block, cache_pos, state.bytes));
-    snapshot.positions = model_.positions.clone();
-    state.bytes += session_tensor_bytes(snapshot.positions);
+    snapshot.positions = std::make_shared<DenseTensor>(model_.positions.clone());
+    state.bytes += session_tensor_bytes(*snapshot.positions);
     state.payload = std::move(snapshot);
     return state;
 }
 
 void State::restore_text_session_state(const TextSessionState& state) {
     const auto* snapshot = std::get_if<tyloi::models::qwen4_exp::Snapshot>(&state.payload);
+    const auto* positions = snapshot ? dynamic_cast<const DenseTensor*>(snapshot->positions.get()) : nullptr;
     TYLOINFER_RUNTIME_CHECK(text_session_state_kind() == TextSessionStateKind::Qwen4 && snapshot &&
                                 snapshot->blocks.size() == model_.blocks.size() && state.cache_pos > 0 &&
                                 std::size_t(state.cache_pos) == state.tokens.size() &&
-                                snapshot->positions.defined() &&
-                                snapshot->positions.size(-1) == state.cache_pos,
+                                positions && positions->defined() &&
+                                positions->size(-1) == state.cache_pos,
                             "incompatible Qwen4 text session state");
     reset(1);
     for (std::size_t i = 0; i < snapshot->blocks.size(); ++i)
         restore_block_session(*model_.blocks[i], snapshot->blocks[i], state.cache_pos);
-    model_.positions = snapshot->positions.clone();
+    model_.positions = positions->clone();
     cache_pos = state.cache_pos;
 }
 

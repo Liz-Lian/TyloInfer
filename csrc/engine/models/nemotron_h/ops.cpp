@@ -767,9 +767,12 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
             if (mamba->mixer.pending() || !mamba->mixer.defined())
                 throw std::runtime_error("Nemotron-H mamba session state is unavailable");
             snapshot.kind = HybridBlockSessionStateKind::Recurrent;
-            snapshot.mixer = mamba->mixer.snapshot();
-            saved.bytes += session_tensor_bytes(snapshot.mixer.convolution);
-            saved.bytes += session_tensor_bytes(snapshot.mixer.recurrent);
+            const auto mixer = mamba->mixer.snapshot();
+            snapshot.convolution = std::make_shared<DenseTensor>(mixer.convolution);
+            snapshot.recurrent = std::make_shared<DenseTensor>(mixer.recurrent);
+            snapshot.transposed = mixer.transposed;
+            saved.bytes += session_tensor_bytes(*snapshot.convolution);
+            saved.bytes += session_tensor_bytes(*snapshot.recurrent);
         } else {
             snapshot.kind = HybridBlockSessionStateKind::Stateless;
         }
@@ -818,19 +821,19 @@ void State::restore_text_session_state(const TextSessionState& saved) {
             const auto* mamba = std::get_if<MambaLayout>(&layout.mixer);
             const auto width = mamba != nullptr ? mamba->heads * mamba->head_dim +
                 2 * mamba->groups * mamba->state_size : 0;
-            const auto& conv = snapshot.mixer.convolution;
-            const auto& recurrent = snapshot.mixer.recurrent;
+            const auto* conv = dynamic_cast<const DenseTensor*>(snapshot.convolution.get());
+            const auto* recurrent = dynamic_cast<const DenseTensor*>(snapshot.recurrent.get());
             if (snapshot.kind != HybridBlockSessionStateKind::Recurrent || mamba == nullptr ||
                 !std::holds_alternative<MambaState>(layers[index]) ||
-                !conv.defined() || !recurrent.defined() ||
-                conv.scalar_type() != ::tyloi::kFloat32 ||
-                recurrent.scalar_type() != ::tyloi::kFloat32 ||
-                conv.dim() != 3 || conv.size(0) != 1 ||
-                conv.size(1) != mamba->conv_kernel - 1 || conv.size(2) != width ||
-                recurrent.dim() != 4 || recurrent.size(0) != 1 ||
-                recurrent.size(1) != mamba->heads || recurrent.size(2) != mamba->head_dim ||
-                recurrent.size(3) != mamba->state_size || !conv.is_cuda() || !recurrent.is_cuda() ||
-                conv.get_device() != layout.device || recurrent.get_device() != layout.device)
+                !conv || !recurrent || !conv->defined() || !recurrent->defined() ||
+                conv->scalar_type() != ::tyloi::kFloat32 ||
+                recurrent->scalar_type() != ::tyloi::kFloat32 ||
+                conv->dim() != 3 || conv->size(0) != 1 ||
+                conv->size(1) != mamba->conv_kernel - 1 || conv->size(2) != width ||
+                recurrent->dim() != 4 || recurrent->size(0) != 1 ||
+                recurrent->size(1) != mamba->heads || recurrent->size(2) != mamba->head_dim ||
+                recurrent->size(3) != mamba->state_size || !conv->is_cuda() || !recurrent->is_cuda() ||
+                conv->get_device() != layout.device || recurrent->get_device() != layout.device)
                 throw CudaSessionStateError("Nemotron-H mamba session topology changed");
         }
         for (std::size_t index = 0; index < layers.size(); ++index) {
@@ -840,7 +843,9 @@ void State::restore_text_session_state(const TextSessionState& saved) {
                 const auto& full = std::get<FullLayout>(layout_[index].mixer);
                 restore_kv(*cache, snapshot.full_attention, full.head_dim, full.dtype, full.quantization);
             } else if (auto* mamba = std::get_if<MambaState>(&layers[index])) {
-                mamba->mixer.restore(snapshot.mixer);
+                mamba->mixer.restore(Recurrent::State{
+                    dynamic_cast<const DenseTensor&>(*snapshot.convolution),
+                    dynamic_cast<const DenseTensor&>(*snapshot.recurrent), snapshot.transposed});
                 clear_speculative(*mamba);
             }
         }

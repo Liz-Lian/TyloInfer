@@ -1,7 +1,6 @@
 #pragma once
 
-#include "backend.h"
-#include "engine/state/recurrent.h"
+#include "engine/tensor.h"
 #include "engine/models/common/session/paged.h"
 
 #include <cstddef>
@@ -19,20 +18,20 @@ namespace tyloi::state { struct KvQuantization; }
 namespace tyloi::cuda { using KvQuantization = tyloi::state::KvQuantization; }
 
 struct KvSnapshot {
-    ::tyloi::DenseTensor k;
-    ::tyloi::DenseTensor v;
+    std::shared_ptr<const ::tyloi::Tensor> k;
+    std::shared_ptr<const ::tyloi::Tensor> v;
     int64_t capacity = 0;
     bool ring = false;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
-        visit(k);
-        visit(v);
+        if (k) visit(*k);
+        if (v) visit(*v);
     }
 };
 
-inline bool session_kv_geometry_matches(const ::tyloi::DenseTensor& k,
-        const ::tyloi::DenseTensor& v) {
+inline bool session_kv_geometry_matches(const ::tyloi::Tensor& k,
+        const ::tyloi::Tensor& v) {
     if(!k.defined()||!v.defined()||k.dim()!=4||v.dim()!=4||k.scalar_type()!=v.scalar_type())return false;
     for(int axis=0;axis<3;++axis)if(k.size(axis)!=v.size(axis))return false;
     return k.scalar_type()==::tyloi::kInt32 || k.size(3)==v.size(3);
@@ -49,21 +48,23 @@ struct HybridBlockSessionState {
     HybridBlockSessionStateKind kind =
         HybridBlockSessionStateKind::FullAttention;
     KvSnapshot full_attention;
-    tyloi::cuda::Recurrent::State mixer;
+    std::shared_ptr<const ::tyloi::Tensor> convolution;
+    std::shared_ptr<const ::tyloi::Tensor> recurrent;
+    bool transposed = true;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
         full_attention.tensors(visit);
-        visit(mixer.convolution);
-        visit(mixer.recurrent);
+        if (convolution) visit(*convolution);
+        if (recurrent) visit(*recurrent);
     }
 };
 
 struct CudaDecodedPagedLayer {
     int64_t capacity = 0;
     int device = -1;
-    ::tyloi::DenseTensor k;
-    ::tyloi::DenseTensor v;
+    std::shared_ptr<const ::tyloi::Tensor> k;
+    std::shared_ptr<const ::tyloi::Tensor> v;
 };
 
 struct CudaDecodedPagedBlock {
@@ -91,19 +92,19 @@ TextSessionState decode_cuda_paged_session(
     const std::vector<int64_t>& tokens,
     size_t block_size);
 
-size_t session_tensor_bytes(const ::tyloi::DenseTensor& tensor);
+size_t session_tensor_bytes(const ::tyloi::Tensor& tensor);
 
 bool session_tensor_layout_matches(
-    const ::tyloi::DenseTensor& target,
-    const ::tyloi::DenseTensor& source);
+    const ::tyloi::Tensor& target,
+    const ::tyloi::Tensor& source);
 
 void restore_session_tensor(
     ::tyloi::DenseTensor& target,
-    const ::tyloi::DenseTensor& source);
+    const ::tyloi::Tensor* source);
 
 void restore_session_prefix_tensor(
     ::tyloi::DenseTensor& target,
-    const ::tyloi::DenseTensor& source,
+    const ::tyloi::Tensor& source,
     int64_t dimension,
     int64_t capacity);
 

@@ -125,15 +125,15 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
         tyloi::models::glm_dsa::BlockSnapshot saved;
         saved.full_indexer = layout_[i].full_indexer;
         saved.kv_capacity = layer.kv_cache.size(2);
-        saved.kv_cache = layer.kv_cache.narrow(2, 0, cache_pos).clone();
-        state.bytes += session_tensor_bytes(saved.kv_cache);
+        saved.kv_cache = std::make_shared<DenseTensor>(layer.kv_cache.narrow(2, 0, cache_pos).clone());
+        state.bytes += session_tensor_bytes(*saved.kv_cache);
         if (saved.full_indexer) {
             if (!layer.index_cache.defined() || layer.index_cache.dim() != 3 ||
                 layer.index_cache.size(0) != 1 || cache_pos > layer.index_cache.size(1))
                 throw std::runtime_error("GLM DSA session index cache is unavailable");
             saved.index_capacity = layer.index_cache.size(1);
-            saved.index_cache = layer.index_cache.narrow(1, 0, cache_pos).clone();
-            state.bytes += session_tensor_bytes(saved.index_cache);
+            saved.index_cache = std::make_shared<DenseTensor>(layer.index_cache.narrow(1, 0, cache_pos).clone());
+            state.bytes += session_tensor_bytes(*saved.index_cache);
         }
         saved_layers.push_back(std::move(saved));
     }
@@ -150,16 +150,16 @@ void State::restore_text_session_state(const TextSessionState& state) {
         MfqCudaGuard guard(layout_[i].device);
         auto& layer = layers[i];
         const auto& saved = (*saved_layers)[i];
-        if (layout_[i].full_indexer != saved.full_indexer || !saved.kv_cache.defined() ||
-            saved.kv_cache.dim() != 4 || saved.kv_cache.size(0) != 1 ||
-            saved.kv_cache.size(2) != state.cache_pos)
+        if (layout_[i].full_indexer != saved.full_indexer || !saved.kv_cache || !saved.kv_cache->defined() ||
+            saved.kv_cache->dim() != 4 || saved.kv_cache->size(0) != 1 ||
+            saved.kv_cache->size(2) != state.cache_pos)
             throw CudaSessionStateError("GLM DSA saved MLA cache is invalid");
-        restore_session_prefix_tensor(layer.kv_cache, saved.kv_cache, 2, saved.kv_capacity);
+        restore_session_prefix_tensor(layer.kv_cache, *saved.kv_cache, 2, saved.kv_capacity);
         if (saved.full_indexer) {
-            if (!saved.index_cache.defined() || saved.index_cache.dim() != 3 ||
-                saved.index_cache.size(0) != 1 || saved.index_cache.size(1) != state.cache_pos)
+            if (!saved.index_cache || !saved.index_cache->defined() || saved.index_cache->dim() != 3 ||
+                saved.index_cache->size(0) != 1 || saved.index_cache->size(1) != state.cache_pos)
                 throw CudaSessionStateError("GLM DSA saved index cache is invalid");
-            restore_session_prefix_tensor(layer.index_cache, saved.index_cache, 1, saved.index_capacity);
+            restore_session_prefix_tensor(layer.index_cache, *saved.index_cache, 1, saved.index_capacity);
         } else layer.index_cache = {};
     }
     for (auto& [device, selection] : selections) {

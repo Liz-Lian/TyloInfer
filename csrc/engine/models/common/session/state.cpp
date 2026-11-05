@@ -35,14 +35,16 @@ std::vector<CudaPagedPayload> encode_cuda_paged_session(const TextSessionState &
         writer.scalar<uint32_t>(static_cast<uint32_t>(block_size));
         writer.scalar<uint32_t>(static_cast<uint32_t>(layers->size()));
         for (const auto &layer : *layers) {
-            if (layer.ring || layer.capacity <= 0 || !layer.k.defined() || !layer.v.defined() ||
-                !session_kv_geometry_matches(layer.k,layer.v) ||
-                layer.k.size(2) < start + static_cast<int64_t>(block_size)) {
+            const auto* k = dynamic_cast<const ::tyloi::DenseTensor*>(layer.k.get());
+            const auto* v = dynamic_cast<const ::tyloi::DenseTensor*>(layer.v.get());
+            if (layer.ring || layer.capacity <= 0 || !k || !v ||
+                !session_kv_geometry_matches(*k,*v) ||
+                k->size(2) < start + static_cast<int64_t>(block_size)) {
                 throw std::runtime_error("CUDA session layer cannot be block-sliced");
             }
             writer.scalar<int64_t>(layer.capacity);
-            writer.tensor(layer.k.narrow(2, start, static_cast<int64_t>(block_size)));
-            writer.tensor(layer.v.narrow(2, start, static_cast<int64_t>(block_size)));
+            writer.tensor(k->narrow(2, start, static_cast<int64_t>(block_size)));
+            writer.tensor(v->narrow(2, start, static_cast<int64_t>(block_size)));
         }
         result.push_back(std::move(writer).finish());
     }
@@ -84,8 +86,8 @@ CudaDecodedPagedBlock decode_cuda_paged_block(const std::vector<uint8_t> &payloa
             throw CudaSessionStateError("invalid CUDA paged cache layer");
         }
         layer.device = key.second;
-        layer.k = std::move(key.first);
-        layer.v = std::move(value.first);
+        layer.k = std::make_shared<::tyloi::DenseTensor>(std::move(key.first));
+        layer.v = std::make_shared<::tyloi::DenseTensor>(std::move(value.first));
         block.layers.push_back(std::move(layer));
     }
     reader.expect_end();
@@ -129,13 +131,13 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
         for (const auto &block : blocks) {
             const auto &layer = block.layers[layer_index];
             if (layer.capacity != final.capacity || layer.device != final.device ||
-                layer.k.scalar_type() != final.k.scalar_type() ||
-                layer.k.size(0) != final.k.size(0) || layer.k.size(1) != final.k.size(1) ||
-                layer.k.size(3) != final.k.size(3) || layer.v.size(3)!=final.v.size(3)) {
+                layer.k->scalar_type() != final.k->scalar_type() ||
+                layer.k->size(0) != final.k->size(0) || layer.k->size(1) != final.k->size(1) ||
+                layer.k->size(3) != final.k->size(3) || layer.v->size(3)!=final.v->size(3)) {
                 throw CudaSessionStateError("inconsistent CUDA paged cache topology");
             }
-            keys.push_back(layer.k);
-            values.push_back(layer.v);
+            keys.push_back(dynamic_cast<const ::tyloi::DenseTensor&>(*layer.k));
+            values.push_back(dynamic_cast<const ::tyloi::DenseTensor&>(*layer.v));
         }
         auto key = ::tyloi::cuda::cat(keys, 2).contiguous();
         auto value = ::tyloi::cuda::cat(values, 2).contiguous();
@@ -147,8 +149,8 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
         state.bytes += static_cast<size_t>(key.numel() * key.element_size() +
                                            value.numel() * value.element_size());
         layers.push_back(KvSnapshot{
-            std::move(key),
-            std::move(value),
+            std::make_shared<::tyloi::DenseTensor>(std::move(key)),
+            std::make_shared<::tyloi::DenseTensor>(std::move(value)),
             final.capacity,
             false,
         });
@@ -156,33 +158,41 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
     return state;
 }
 
-size_t session_tensor_bytes(const ::tyloi::DenseTensor &tensor) {
+size_t session_tensor_bytes(const ::tyloi::Tensor &tensor) {
     if (!tensor.defined())
         return 0;
     return static_cast<size_t>(tensor.numel()) * tensor.element_size();
 }
 
-bool session_tensor_layout_matches(const ::tyloi::DenseTensor &target,
-                                   const ::tyloi::DenseTensor &source) {
-    return target.defined() && source.defined() && target.sizes() == source.sizes() &&
-           target.scalar_type() == source.scalar_type() && target.device() == source.device();
+bool session_tensor_layout_matches(const ::tyloi::Tensor &target,
+                                   const ::tyloi::Tensor &source) {
+    if (!target.defined() || !source.defined() || target.dim() != source.dim() ||
+        target.scalar_type() != source.scalar_type() || target.device() != source.device()) return false;
+    for (int64_t i = 0; i < target.dim(); ++i)
+        if (target.size(i) != source.size(i)) return false;
+    return true;
 }
 
 void restore_session_tensor(::tyloi::DenseTensor &target,
-                            const ::tyloi::DenseTensor &source) {
-    if (!source.defined()) {
+                            const ::tyloi::Tensor *source) {
+    if (!source || !source->defined()) {
         target = ::tyloi::DenseTensor();
         return;
     }
-    if (!session_tensor_layout_matches(target, source)) {
-        target = ::tyloi::cuda::empty(source.sizes(), source.options());
+    const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(source);
+    if (!dense) throw CudaSessionStateError("session tensor is not dense");
+    if (!session_tensor_layout_matches(target, *dense)) {
+        target = ::tyloi::cuda::empty(dense->sizes(), dense->options());
     }
-    target.copy_(source);
+    target.copy_(*dense);
 }
 
 void restore_session_prefix_tensor(::tyloi::DenseTensor &target,
-                                   const ::tyloi::DenseTensor &source, int64_t dimension,
+                                   const ::tyloi::Tensor &tensor, int64_t dimension,
                                    int64_t capacity) {
+    const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&tensor);
+    if (!dense) throw CudaSessionStateError("session prefix tensor is not dense");
+    const auto& source = *dense;
     if (!source.defined() || dimension < 0 || dimension >= source.dim() || capacity <= 0 ||
         source.size(dimension) > capacity) {
         throw CudaSessionStateError("session prefix tensor layout is invalid");
@@ -210,17 +220,19 @@ KvSnapshot capture_kv(const KVCache &cache, int64_t cache_pos, size_t &bytes) {
     state.ring = cache.ring;
     const int64_t saved_tokens =
         state.ring ? state.capacity : std::min<int64_t>(cache_pos, state.capacity);
-    state.k = cache.k.narrow(2, 0, saved_tokens).clone();
-    state.v = cache.v.narrow(2, 0, saved_tokens).clone();
-    bytes += session_tensor_bytes(state.k);
-    bytes += session_tensor_bytes(state.v);
+    state.k = std::make_shared<::tyloi::DenseTensor>(cache.k.narrow(2, 0, saved_tokens).clone());
+    state.v = std::make_shared<::tyloi::DenseTensor>(cache.v.narrow(2, 0, saved_tokens).clone());
+    bytes += session_tensor_bytes(*state.k);
+    bytes += session_tensor_bytes(*state.v);
     return state;
 }
 
 void validate_kv(const KvSnapshot& state) {
-    if (!state.k.defined() || !state.v.defined() || state.capacity <= 0 || state.k.dim() != 4 ||
-        !session_kv_geometry_matches(state.k,state.v) || state.k.size(0) != 1 ||
-        state.k.size(2) > state.capacity) {
+    if (!dynamic_cast<const ::tyloi::DenseTensor*>(state.k.get()) ||
+        !dynamic_cast<const ::tyloi::DenseTensor*>(state.v.get()) ||
+        state.capacity <= 0 || state.k->dim() != 4 ||
+        !session_kv_geometry_matches(*state.k,*state.v) || state.k->size(0) != 1 ||
+        state.k->size(2) > state.capacity) {
         throw CudaSessionStateError("full-attention session KV layout is invalid");
     }
 }
@@ -228,12 +240,12 @@ void validate_kv(const KvSnapshot& state) {
 void restore_kv(KVCache &cache, const KvSnapshot &state, int64_t head_dim,
                 ::tyloi::ScalarType dtype, tyloi::cuda::KvQuantization quantization) {
     validate_kv(state);
-    restore_session_prefix_tensor(cache.k, state.k, 2, state.capacity);
-    restore_session_prefix_tensor(cache.v, state.v, 2, state.capacity);
+    restore_session_prefix_tensor(cache.k, *state.k, 2, state.capacity);
+    restore_session_prefix_tensor(cache.v, *state.v, 2, state.capacity);
     cache.ring = state.ring;
     cache.quantization = quantization;
-    cache.paged_batch = state.k.size(0);
-    cache.paged_heads = state.k.size(1);
+    cache.paged_batch = state.k->size(0);
+    cache.paged_heads = state.k->size(1);
     cache.paged_head_dim = head_dim;
     cache.paged_dtype = dtype;
     cache.k_chunk_ptrs = {};

@@ -980,7 +980,7 @@ tyloi::models::qwen4_exp::BlockSnapshot capture_block_session(const Qwen4Block& 
     tyloi::models::qwen4_exp::BlockSnapshot state;
     const auto save=[&](const DenseTensor& tensor) {
         TYLOINFER_RUNTIME_CHECK(tensor.defined(),"Qwen4 recurrent session state is unavailable");
-        auto saved=tensor.clone();bytes+=session_tensor_bytes(saved);return saved;
+        auto saved=std::make_shared<DenseTensor>(tensor.clone());bytes+=session_tensor_bytes(*saved);return saved;
     };
     if(block.qsa)block.qsa->capture_session(state,position,bytes);
     if(block.gdn) {
@@ -999,8 +999,17 @@ tyloi::models::qwen4_exp::BlockSnapshot capture_block_session(const Qwen4Block& 
 void restore_block_session(Qwen4Block& block,const tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t position) {
     block.reset(1);
     if(block.qsa)block.qsa->restore_session(state,position);
-    if(block.gdn)block.gdn->restore_session(state.convolution,state.recurrent,block.retain_graph_storage);
-    if(block.ple)block.ple->restore_session(state.ple_convolution,{state.ple_batch,state.ple_tokens},block.retain_graph_storage);
+    if(block.gdn) {
+        const auto* convolution=dynamic_cast<const DenseTensor*>(state.convolution.get());
+        const auto* recurrent=dynamic_cast<const DenseTensor*>(state.recurrent.get());
+        TYLOINFER_RUNTIME_CHECK(convolution && recurrent,"missing Qwen4 GDN session state");
+        block.gdn->restore_session(*convolution,*recurrent,block.retain_graph_storage);
+    }
+    if(block.ple) {
+        const auto* convolution=dynamic_cast<const DenseTensor*>(state.ple_convolution.get());
+        TYLOINFER_RUNTIME_CHECK(convolution,"missing Qwen4 PLE session state");
+        block.ple->restore_session(*convolution,{state.ple_batch,state.ple_tokens},block.retain_graph_storage);
+    }
 }
 
 bool Predictor::supports_session_state() const noexcept {
@@ -1019,8 +1028,12 @@ MtpSessionState Predictor::capture_session_state(int64_t target_position,const t
         const auto count=std::min(position,lengths[i]);
         snapshot.lengths.push_back(count);
         snapshot.blocks.push_back(count?capture_block_session(*layers[i],count,state.bytes):tyloi::models::qwen4_exp::BlockSnapshot{});
-        auto pos=count?positions[i].narrow(-1,0,count).clone():DenseTensor{};
-        state.bytes+=session_tensor_bytes(pos);snapshot.positions.push_back(std::move(pos));
+        std::shared_ptr<const tyloi::Tensor> pos;
+        if(count) {
+            pos=std::make_shared<DenseTensor>(positions[i].narrow(-1,0,count).clone());
+            state.bytes+=session_tensor_bytes(*pos);
+        }
+        snapshot.positions.push_back(std::move(pos));
     }
     auto saved_hidden=hidden.clone();state.bytes+=session_tensor_bytes(saved_hidden);
     state.last_target_hidden=std::make_shared<DenseTensor>(std::move(saved_hidden));
@@ -1039,7 +1052,9 @@ void Predictor::restore_session_state(const MtpSessionState& state) {
     reset(1);
     for(std::size_t i=0;i<layers.size();++i)if(snapshot->lengths[i]) {
         restore_block_session(*layers[i],snapshot->blocks[i],snapshot->lengths[i]);
-        positions[i]=snapshot->positions[i].clone();lengths[i]=snapshot->lengths[i];
+        const auto* position=dynamic_cast<const DenseTensor*>(snapshot->positions[i].get());
+        TYLOINFER_RUNTIME_CHECK(position && position->defined(),"incompatible Qwen4 MTP session state");
+        positions[i]=position->clone();lengths[i]=snapshot->lengths[i];
     }
 }
 
@@ -1730,7 +1745,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
                 predictor->layers[0]->qsa->capture_session(actual,16+rows,bytes);
                 for(const auto& pair:{std::pair{actual.keys,expected.keys},std::pair{actual.values,expected.values},
                                      std::pair{actual.index,expected.index}}) {
-                    const auto a=pair.first.cpu().contiguous(),b=pair.second.cpu().contiguous();
+                    const auto a=dynamic_cast<const DenseTensor&>(*pair.first).cpu().contiguous(),b=dynamic_cast<const DenseTensor&>(*pair.second).cpu().contiguous();
                     TYLOINFER_RUNTIME_CHECK(a.sizes()==b.sizes() && a.scalar_type()==b.scalar_type() &&
                         std::memcmp(a.data_ptr(),b.data_ptr(),a.nbytes())==0,"MTP scalar history chain changed KV/index bytes");
                 }

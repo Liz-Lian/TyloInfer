@@ -98,10 +98,10 @@ MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
             ? cuda_kv_packed_width(int(layout.head_dim), layout.quantization.value_bits()) : layout.head_dim;
         const auto dtype = layout.quantization.enabled() ? ::tyloi::kInt32 : layout.dtype;
         if (block.capacity > layout.capacity || block.ring ||
-            block.k.size(1) != layout.heads || block.k.size(2) != saved.cache_pos ||
-            block.k.size(3) != key_width || block.v.size(3) != value_width ||
-            block.k.scalar_type() != dtype || !block.k.is_cuda() || !block.v.is_cuda() ||
-            block.k.get_device() != layout.device || block.v.get_device() != layout.device)
+            block.k->size(1) != layout.heads || block.k->size(2) != saved.cache_pos ||
+            block.k->size(3) != key_width || block.v->size(3) != value_width ||
+            block.k->scalar_type() != dtype || !block.k->is_cuda() || !block.v->is_cuda() ||
+            block.k->get_device() != layout.device || block.v->get_device() != layout.device)
             throw CudaSessionStateError("Qwen MTP session KV topology changed");
     }
     return {std::vector<KVCache>(kv_.size()), saved.cache_pos};
