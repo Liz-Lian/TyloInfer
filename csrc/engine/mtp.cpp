@@ -16,6 +16,6 @@
       ::tyloi::DenseTensor *, std::size_t, std::function<void()>)
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State);
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::Qwen4CausalLm, tyloi::cuda::Qwen4CausalLm);
-TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::DeepseekV41CausalLm, tyloi::cuda::DeepseekV41CausalLm);
+TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::deepseek_v41::Model, tyloi::cuda::deepseek_v41::State);
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::nemotron_h::Model, tyloi::cuda::nemotron_h::State);
 #undef TYLOINFER_INSTANTIATE_MTP

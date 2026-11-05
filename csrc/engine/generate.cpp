@@ -37,7 +37,7 @@ TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm_dsa::Model, tyloi::cuda::glm_dsa::St
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::Qwen4CausalLm, tyloi::cuda::Qwen4CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::deepseek_v4::Model, tyloi::cuda::deepseek_v4::State)
-TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::DeepseekV41CausalLm, tyloi::cuda::DeepseekV41CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::deepseek_v41::Model, tyloi::cuda::deepseek_v41::State)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::nemotron_h::Model, tyloi::cuda::nemotron_h::State)
 #undef TYLOINFER_INSTANTIATE_FLOW
 } // namespace tyloi::cuda::internal

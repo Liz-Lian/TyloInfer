@@ -3,6 +3,8 @@
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #include "ops.h"
+#include "vision.h"
+#include "engine/models/common/check.h"
 #include "engine/models/common/session_codec.h"
 
 namespace tyloi::cuda::deepseek_v41_runtime {
@@ -188,9 +190,12 @@ DenseTensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Den
 
 } // namespace tyloi::cuda::deepseek_v41_runtime
 
-namespace tyloi::cuda {
+namespace tyloi::cuda::deepseek_v41 {
 
-tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm& model,const MtpModule* mtp) {
+using deepseek_v41_runtime::Block;
+using tyloi::models::require_model;
+
+tyloi::models::SnapshotSize snapshot_size(const Model& model,const MtpModule* mtp) {
     std::size_t incoming=256; // Rolling Engram history and scalar metadata.
     const auto prefix_bytes=[](const auto& tensor,int64_t rows) -> std::size_t {
         return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
@@ -209,52 +214,132 @@ tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm& model,const
     return {incoming,incoming};
 }
 
-void DeepseekV41Model::adapter_validate_load_options() const {
+void Model::load_config(std::string_view payload) {
+    auto& config = this->config;
+    auto& metadata = this->metadata;
+    config = CausalConfig::from_json(payload);
+    metadata.vocab_size = config.vocab;
+    metadata.hidden_size = config.hidden;
+    metadata.num_hidden_layers = config.n_layers;
+    metadata.num_attention_heads = config.n_heads;
+    metadata.num_key_value_heads = config.n_kv_heads;
+    metadata.head_dim = config.head_dim;
+    metadata.max_position_embeddings = config.max_position_embeddings;
+    metadata.rotary_dim = config.rope_head_dim;
+    metadata.num_experts = config.n_experts;
+    metadata.hc_mult = config.hc_mult;
+    metadata.rope_base = config.rope_theta;
+    metadata.rms_norm_eps = config.rms_eps;
+    metadata.hc_eps = config.hc_eps;
+    metadata.model_type = config.text_model_type;
+    metadata.layer_types.assign(static_cast<std::size_t>(config.n_layers), "deepseek_v41");
+}
+
+tyloi::models::Info Model::info() const {
+    return {metadata.vocab_size, config.max_position_embeddings, config.text_model_type,
+            std::size_t(metadata.hidden_size) * sizeof(float) * 8, true, true};
+}
+
+MfqModelCapabilities Model::capabilities() const {
+    const auto state = cuda_component_state(graph, plan, bool(vision), false);
+    const auto caps = cuda_runtime_capabilities(graph, plan, state, bool(vision), false);
+    return {graph.architecture, caps.text, caps.image_input, caps.video_input,
+        caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp,
+        "model-graph+cuda-adapters"};
+}
+
+tyloi::engine::Metrics Model::metrics() const {
+    const auto state = cuda_component_state(graph, plan, bool(vision), false);
+    return {{"kv_memory_supported", 0.0},
+        {"kv_quantization_supported", 0.0},
+        {"kv_quantization_bits", 0.0},
+        {"vision_declared", double(state.vision_declared)},
+        {"vision_supported", double(state.vision_supported)},
+        {"vision_available", double(state.vision_available)},
+        {"mtp_declared", double(state.mtp_declared)},
+        {"mtp_supported", double(state.mtp_supported)},
+        {"mtp_available", double(state.mtp_available)}};
+}
+
+std::unique_ptr<tyloi::models::State> Model::make_state() const {
+    // shortcut: states are single-flight per engine; the bridge is released in ~State
+    return std::make_unique<State>(const_cast<Model&>(*this));
+}
+
+tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
+    const std::vector<std::int64_t>& tokens, const MfqMultimodalInput& media,
+    tyloi::models::State&) const {
+    if (!vision)
+        throw std::invalid_argument("model has no multimodal component");
+    return vision->prepare(const_cast<Model&>(*this), const_cast<Model&>(*this).media, tokens, media);
+}
+
+::tyloi::DenseTensor Model::embedding(::tyloi::DenseTensor ids, int) const {
+    auto scope = execution_scope();
+    return embed_tokens(device_ids(std::move(ids)));
+}
+
+::tyloi::DenseTensor Model::normalize(::tyloi::DenseTensor hidden, std::int64_t, std::int64_t) const {
+    return hidden;
+}
+
+::tyloi::DenseTensor Model::softcap(::tyloi::DenseTensor logits) const {
+    return logits;
+}
+
+::tyloi::DenseTensor Model::logits(::tyloi::DenseTensor hidden, bool) const {
+    return adapter_logits(lm_head, std::move(hidden));
+}
+
+bool Model::supports_speculation() const {
+    return !blocks.empty();
+}
+
+void Model::adapter_validate_load_options() const {
     deepseek_v41_runtime::validate_load_options(*execution);
 }
 
-void DeepseekV41Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
-                                                ::tyloi::DenseTensor &output_norm) {
+void Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+                                     ::tyloi::DenseTensor& output_norm) {
     CausalResources::adapter_load_final_state(weights, output_norm);
 }
 
-void DeepseekV41Model::adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights) {
+void Model::adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights) {
     shared = deepseek_v41_runtime::load_shared_state(weights.source, config);
 }
 
-bool DeepseekV41Model::adapter_prefetch_token_rows(DeepseekV41CausalLm& model,
-        const ::tyloi::DenseTensor& ids) {
+bool Model::adapter_prefetch_token_rows(Model&, const ::tyloi::DenseTensor& ids) {
+    const auto cache_pos = active ? active->cache_pos : shared->cache_position;
     if(!shared || shared->batch!=1 || !shared->engram_hash || shared->engram_prefetch.empty())return false;
     if(!ids.is_cpu() || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<=0 ||
             ids.size(1)>std::numeric_limits<int>::max() || ids.scalar_type()!=::tyloi::kInt64 ||
             !ids.is_contiguous())throw std::invalid_argument("Engram prefetch needs contiguous host token IDs");
-    const auto hashes=shared->engram_hash->preview(ids.data_ptr<int64_t>(),1,int(ids.size(1)),model.cache_pos);
+    const auto hashes=shared->engram_hash->preview(ids.data_ptr<int64_t>(),1,int(ids.size(1)),cache_pos);
     for(const auto* memory:shared->engram_prefetch)memory->prefetch(hashes);
     return true;
 }
 
-std::unique_ptr<deepseek_v41_runtime::Block> DeepseekV41Model::adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights,
-                                                            int layer, int,
-                                                            const std::string &type) {
+std::unique_ptr<deepseek_v41_runtime::Block> Model::adapter_load_block(
+        const tyloi::cuda::weight_loader::Loader& weights, int layer, int,
+        const std::string& type) {
     TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");
     return deepseek_v41_runtime::load_block(execution->executor().pipelines(), weights, layer, shared,
-                                              execution->config.deepseek_v41_engram_cache_rows);
+                                            execution->config.deepseek_v41_engram_cache_rows);
 }
 
-void DeepseekV41Model::adapter_begin_forward(bool capture_raw_hidden) {
+void Model::adapter_begin_forward(bool capture_raw_hidden) const {
     TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 target capture state is unavailable");
     shared->begin_forward(capture_raw_hidden, shared->config.dspark_target_layer_ids.size());
 }
 
-::tyloi::DenseTensor DeepseekV41Model::collapse_hidden(::tyloi::DenseTensor hidden,
-                                                             int64_t batch, int64_t tokens) const {
+::tyloi::DenseTensor Model::collapse_hidden(::tyloi::DenseTensor hidden, std::int64_t,
+                                            std::int64_t) const {
     return deepseek_v41_runtime::finalize_hidden(shared, hidden, execution->executor().profiler());
 }
 
-::tyloi::DenseTensor
-DeepseekV41Model::normalize_hidden(::tyloi::DenseTensor hidden,
-                                   const ::tyloi::DenseTensor &output_norm, int64_t batch,
-                                   int64_t tokens) const {
+::tyloi::DenseTensor Model::normalize_hidden(::tyloi::DenseTensor hidden,
+                                             const ::tyloi::DenseTensor& output_norm,
+                                             std::int64_t batch, std::int64_t tokens) const {
     return execution->executor().profiler().measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, metadata.hidden_size})
                                  .to(::tyloi::kFloat32),
@@ -263,29 +348,170 @@ DeepseekV41Model::normalize_hidden(::tyloi::DenseTensor hidden,
     });
 }
 
-::tyloi::DenseTensor
-DeepseekV41Model::adapter_raw_hidden(const ::tyloi::DenseTensor &,
-                                     const ::tyloi::DenseTensor &) const {
+::tyloi::DenseTensor Model::adapter_prepare_hidden(::tyloi::DenseTensor hidden, std::int64_t batch,
+                                                   std::int64_t tokens) const {
+    const auto width = hidden.size(-1);
+    return hidden.to(::tyloi::kFloat16)
+        .unsqueeze(2)
+        .expand({batch, tokens, metadata.hc_mult, width})
+        .contiguous();
+}
+
+::tyloi::DenseTensor Model::adapter_finalize_hidden(::tyloi::DenseTensor hidden,
+                                                    const ::tyloi::DenseTensor& output_norm,
+                                                    std::int64_t batch, std::int64_t tokens) const {
+    auto collapsed = collapse_hidden(std::move(hidden), batch, tokens);
+    return normalize_hidden(std::move(collapsed), output_norm, batch, tokens);
+}
+
+::tyloi::DenseTensor Model::adapter_raw_hidden(const ::tyloi::DenseTensor&,
+                                               const ::tyloi::DenseTensor&) const {
     return shared->dspark_target_hidden();
 }
 
-void DeepseekV41Model::adapter_begin_speculative() {
+void Model::adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
+                                     bool has_position_override, bool has_cache_position_override,
+                                     bool has_attention_mask) const {
+    require_model(
+        tokens > 0 && cache_position + tokens <= metadata.max_position_embeddings &&
+            !has_position_override && !has_cache_position_override && !has_attention_mask,
+        "DeepSeek-V4.1 currently requires contiguous causal cache positions "
+        "without an external mask");
+}
+
+void Model::adapter_begin_speculative() {
     TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 speculative state is unavailable");
     shared->begin_speculative();
 }
 
-void DeepseekV41Model::adapter_commit_speculative() {
+void Model::adapter_commit_speculative() {
     TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 speculative state is unavailable");
     shared->commit_speculative();
 }
 
-void DeepseekV41Model::adapter_rollback_speculative(int64_t position) {
+void Model::adapter_rollback_speculative(std::int64_t position) {
     TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 speculative state is unavailable");
     shared->rollback_speculative(position);
 }
 
-} // namespace tyloi::cuda
+::tyloi::DenseTensor Model::hidden_forward_speculative_suffix(::tyloi::DenseTensor ids,
+                                                              ::tyloi::DenseTensor* raw_hidden) {
+    auto& state = *active;
+    require_model(state.speculative_start >= 0 && state.speculative_confirmed == 0 &&
+                      !state.speculative_suffix_forward,
+                  "speculative suffix is not active");
+    state.speculative_suffix_forward = true;
+    try {
+        auto result = forward(tyloi::models::Input{std::move(ids), {}, {}, {}, {}, {}, nullptr,
+                                                   raw_hidden, false, 0, 0, 0},
+                              state);
+        state.speculative_suffix_forward = false;
+        return result;
+    } catch (...) {
+        state.speculative_suffix_forward = false;
+        throw;
+    }
+}
 
-namespace tyloi::models {
-template struct deepseek_v41::CausalLm<cuda::CudaCausalOps<cuda::DeepseekV41Model>>;
-} // namespace tyloi::models
+void Model::rollback_speculative(std::int64_t accepted) {
+    auto& state = *active;
+    require_model(state.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
+    const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
+    for (auto& block : blocks)
+        block->rollback_speculative(keep);
+    adapter_rollback_speculative(keep);
+    state.cache_pos = keep;
+    state.speculative_start = -1;
+    state.speculative_confirmed = 0;
+}
+
+// The decode forward, ported from the retired generic causal loop. The block
+// records own the layer math; this owns geometry, speculation bookkeeping and
+// device placement of the walked tensors.
+::tyloi::DenseTensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+                                    const tyloi::models::ForwardOptions&) const {
+    auto& state = static_cast<State&>(state_value);
+    auto scope = execution_scope();
+    const auto primary = execution->config.layer_placement.primary_device();
+    auto ids = device_ids(std::move(input.ids));
+    auto embeddings = input.embeddings.has_value()
+        ? execution->executor().collectives().copy(std::move(*input.embeddings), primary).contiguous()
+        : embed_tokens(ids);
+    const auto B = ids.size(0), T = ids.size(1);
+    require_model(embeddings.dim() == 3 && embeddings.size(0) == B && embeddings.size(1) == T &&
+                      embeddings.size(2) == hidden_size(),
+                  "inputs_embeds shape must match [batch,tokens,hidden_size]");
+    adapter_validate_forward(B, T, state.cache_pos, input.positions.has_value(),
+                             input.cache_positions.has_value(), input.attention_mask.has_value());
+    require_model(state.speculative_start < 0 || state.speculative_suffix_forward,
+                  "commit or roll back the pending speculative pass before forwarding");
+    const auto confirmed = input.confirmed;
+    require_model(confirmed >= 0 && (confirmed == 0 ||
+                      (confirmed < T && B == 1 && state.cache_pos > 0 && supports_speculation())),
+                  "unsupported speculative backbone geometry");
+    if (confirmed > 0) {
+        require_model(state.cache_pos + T <= max_position_embeddings(),
+                      "speculative pass exceeds context capacity");
+        state.speculative_start = state.cache_pos;
+        state.speculative_confirmed = confirmed;
+    }
+    if (state.cache_pos == 0)
+        state.reset(B);
+    auto positions = ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T,
+                                           ::tyloi::TensorOptions()
+                                               .device(::tyloi::kCUDA)
+                                               .dtype(::tyloi::kInt64));
+    if (state.decode_position_delta != 0)
+        positions = positions + state.decode_position_delta;
+    DenseTensor host_ids, cpu_positions;
+    if (execution->config.moe_pipeline || execution->config.dense_cpu_layer_count > 0) {
+        host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+        cpu_positions = positions.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+    }
+    auto hidden = adapter_prepare_hidden(std::move(embeddings), B, T);
+    adapter_begin_forward(input.raw_hidden != nullptr);
+    if (input.trace)
+        input.trace->push_back(hidden.to(::tyloi::kFloat32).clone());
+    const auto trace_layer = [&] {
+        if (!input.trace) return;
+        input.trace->push_back(
+            execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone());
+    };
+    for (auto& block : blocks) {
+        MfqCudaGuard guard(block->cuda_device);
+        auto local_ids = block->cpu_offloaded
+            ? host_ids
+            : execution->executor().collectives().copy(ids, block->cuda_device);
+        auto local_pos = block->cpu_offloaded
+            ? cpu_positions
+            : execution->executor().collectives().copy(positions, block->cuda_device);
+        block->set_token_ids(local_ids);
+        const RopeCache& active_rope = block->cpu_offloaded
+            ? cpu_rope
+            : (device_ropes.empty() ? rope : device_ropes.at(block->cuda_device));
+        BlockContext context;
+        context.token_ids = local_ids;
+        context.host_token_ids = host_ids;
+        context.positions = local_pos;
+        context.full_positions = local_pos;
+        context.cache_position = state.cache_pos;
+        context.confirmed_prefix = confirmed;
+        context.planned_kv_length = input.kv_length;
+        context.decode_attention_parts = input.attention_parts;
+        if (block->cpu_offloaded)
+            hidden = hidden.to(::tyloi::kCPU).contiguous();
+        else
+            hidden = execution->executor().collectives().copy(hidden, block->cuda_device);
+        hidden = block->forward_context(*execution, std::move(hidden), context, active_rope);
+        trace_layer();
+    }
+    // finish hook is the CausalResources no-op for this family
+    state.cache_pos += T;
+    hidden = execution->executor().collectives().copy(hidden, primary);
+    auto finalized = adapter_finalize_hidden(std::move(hidden), output_norm, B, T);
+    if (input.raw_hidden)
+        *input.raw_hidden = adapter_raw_hidden(DenseTensor(), finalized);
+    return finalized;
+}
+
+} // namespace tyloi::cuda::deepseek_v41

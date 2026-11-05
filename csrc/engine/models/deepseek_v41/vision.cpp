@@ -86,7 +86,7 @@ tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
     }
 }
 
-tyloi::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language, MediaCache& images,
+tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
@@ -94,11 +94,11 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& languag
     auto spans=validate_media(config_,tokens,media);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto ids=tyloi::ops::reshape(tyloi::ops::tensor(tokens,tyloi::Device{tyloi::DeviceType::cuda,0}),{1,-1});
-    auto embeddings=tyloi::ops::contiguous(language.embed_forward(ids));
+    auto embeddings=tyloi::ops::contiguous(language.embedding(ids));
 #else
     auto options=::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
     auto ids=::tyloi::cuda::tensor(tokens,options).reshape({1,-1});
-    auto embeddings=language.embed_forward(ids).contiguous();
+    auto embeddings=language.embedding(ids).contiguous();
 #endif
     std::vector<uint8_t> mask(tokens.size(),0);
     std::string request_key="deepseek_v41|";

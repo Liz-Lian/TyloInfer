@@ -9,6 +9,10 @@
 #include "engine/models/deepseek_v41/causal_lm.h"
 
 #include "engine/models/common/causal_model_ops.h"
+#include "engine/models/causal_model.h"
+#include "engine/models/common/prompt.h"
+#include "engine/models/info.h"
+#include "engine/metrics.h"
 #include "engine/models/common/session/size.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "dspark.h"
@@ -17,6 +21,7 @@
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/models/deepseek_v41/config.h"
+#include "engine/models/deepseek_v41/state.h"
 
 #include <algorithm>
 #include <array>
@@ -33,6 +38,8 @@
 namespace tyloi::cuda { class Pipelines; }
 
 namespace tyloi::cuda::deepseek_v41_runtime {
+
+class Vision;
 
 using DenseTensor = ::tyloi::DenseTensor;
 using CommonConfig = tyloi::models::deepseek_v41::Config;
@@ -981,57 +988,140 @@ inline int run_self_check() {
 
 namespace tyloi::cuda {
 
-tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm&,const MtpModule*);
+namespace deepseek_v41 {
 
-struct DeepseekV41Model : CausalResources {
-    static constexpr bool joint_speculation_supported=true;
-    bool adapter_prefetch_token_rows(DeepseekV41CausalLm&,const ::tyloi::DenseTensor&);
-    template <class Backend> using CausalModel = tyloi::models::deepseek_v41::CausalLm<Backend>;
-    tyloi::models::deepseek_v41::Config config;
+tyloi::models::SnapshotSize snapshot_size(const Model&, const MtpModule*);
+
+// The model record: weights, placement and load-time state. Request data
+// lives in State; blocks reference the shared scratch through `shared`.
+struct Model : CausalResources, tyloi::models::CausalModel {
+    using CausalConfig = tyloi::models::deepseek_v41::Config;
+    static bool accepts_backbone(std::string_view backbone) { return backbone == "deepseek_v41"; }
+
+    // ---- tyloi::models::CausalModel
+    tyloi::models::Info info() const override;
+    MfqModelCapabilities capabilities() const override;
+    tyloi::engine::Metrics metrics() const override;
+    std::unique_ptr<tyloi::models::State> make_state() const override;
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
+        const MfqMultimodalInput& media, tyloi::models::State& state) const override;
+    ::tyloi::DenseTensor embedding(::tyloi::DenseTensor ids, int primary = 0) const override;
+    ::tyloi::DenseTensor normalize(::tyloi::DenseTensor hidden, std::int64_t batch,
+        std::int64_t tokens) const override;
+    ::tyloi::DenseTensor softcap(::tyloi::DenseTensor logits) const override;
+    ::tyloi::DenseTensor logits(::tyloi::DenseTensor hidden, bool capped = true) const override;
+    ::tyloi::DenseTensor forward(tyloi::models::Input input, tyloi::models::State& state,
+                                 const tyloi::models::ForwardOptions& options = {}) const override;
+
+    // ---- speculative contract used by the MTP sequence
+    bool supports_speculation() const;
+    bool supports_suffix_speculation() const noexcept { return true; }
+    ::tyloi::DenseTensor hidden_forward_speculative_suffix(::tyloi::DenseTensor ids,
+                                                           ::tyloi::DenseTensor* raw_hidden = nullptr);
+    void rollback_speculative(std::int64_t accepted);
+    bool adapter_prefetch_token_rows(Model& model, const ::tyloi::DenseTensor& ids);
+
+    // ---- weights and load-time state
+    std::shared_ptr<const tyloi::ModelSource> source;
+    tyloi::ModelGraph graph;
+    CudaModelPlan plan;
+    RopeCache rope;
+    RopeCache cpu_rope;
+    std::unordered_map<int, RopeCache> device_ropes;
+    QuantLinear embed;
+    ::tyloi::DenseTensor output_norm;
+    QuantLinear lm_head;
+    CausalConfig config;
+    std::vector<std::unique_ptr<deepseek_v41_runtime::Block>> blocks;
+    // shortcut: scratch shared with the active request State; split into
+    // load-once tables plus request fields when requests stop being single-flight
     std::shared_ptr<deepseek_v41_runtime::SharedState> shared;
+    State* active = nullptr;
+    std::unique_ptr<deepseek_v41_runtime::Vision> vision;
+    tyloi::cuda::MediaCache media;
 
+    // ---- helpers absorbed from the retired CausalLm plumbing
+    auto execution_scope() const {
+        return CudaScope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
+    }
+    ::tyloi::DenseTensor device_ids(::tyloi::DenseTensor ids) const {
+        return execution->executor().collectives()
+            .copy(ids.to(::tyloi::kInt64), execution->config.layer_placement.primary_device())
+            .contiguous();
+    }
+    ::tyloi::DenseTensor embed_tokens(::tyloi::DenseTensor ids) const {
+        return execution->executor().profiler().measure(
+            "model.embed", [&] { return adapter_embed(quant_embedding_lookup(embed, ids)); });
+    }
+    static ::tyloi::DenseTensor softcap_apply(::tyloi::DenseTensor logits, double cap) {
+        return ::tyloi::cuda::tanh(logits / cap) * cap;
+    }
+    std::int64_t hidden_size() const noexcept { return metadata.hidden_size; }
+    std::int64_t max_position_embeddings() const noexcept { return config.max_position_embeddings; }
+    std::int64_t num_hidden_layers() const noexcept { return config.n_layers; }
+    bool tie_word_embeddings() const noexcept { return metadata.tie_word_embeddings; }
+    template <class Loader> bool has_independent_output_weights(Loader &loader) const {
+        return !tie_word_embeddings() && loader.has_weight("model.output.weight");
+    }
+    template <class Loader> void load_weights(Loader &loader, bool with_blocks = true) {
+        constexpr auto embedding = "model.token_embedding.weight";
+        constexpr auto output = "model.output.weight";
+        this->embed = loader.embedding(embedding);
+        loader.final_state(this->output_norm);
+        this->lm_head = tie_word_embeddings() || !loader.has_weight(output)
+                            ? loader.tied_output(this->embed, embedding)
+                            : loader.output(output);
+        if (with_blocks) {
+            loader.prepare_blocks();
+            this->blocks.reserve(static_cast<std::size_t>(num_hidden_layers()));
+            for (int layer = 0; layer < num_hidden_layers(); ++layer)
+                this->blocks.push_back(loader.block(layer, std::string(metadata.layer_types.at(static_cast<std::size_t>(layer)))));
+        }
+    }
+    void load_config(std::string_view payload);
+
+    // ---- family adapters (implementations in ops.cpp)
     void adapter_validate_load_options() const;
     void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
-                                  ::tyloi::DenseTensor &output_norm);
+                                  ::tyloi::DenseTensor& output_norm);
     void adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights);
     std::unique_ptr<deepseek_v41_runtime::Block> adapter_load_block(
         const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
-        const std::string &type);
-    std::vector<std::unique_ptr<deepseek_v41_runtime::Block>> blocks;
-
-    void adapter_begin_forward(bool capture_raw_hidden);
-    bool adapter_supports_prepared_prompt() const noexcept {return true;}
-    void adapter_set_image_mask(::tyloi::DenseTensor mask) {shared->set_image_mask(std::move(mask));}
-    ::tyloi::DenseTensor collapse_hidden(::tyloi::DenseTensor hidden, int64_t batch,
-                                               int64_t tokens) const;
+        const std::string& type);
+    void adapter_begin_forward(bool capture_raw_hidden) const;
+    bool adapter_supports_prepared_prompt() const noexcept { return true; }
+    void adapter_set_image_mask(::tyloi::DenseTensor mask) { shared->set_image_mask(std::move(mask)); }
+    ::tyloi::DenseTensor collapse_hidden(::tyloi::DenseTensor hidden, std::int64_t batch,
+                                         std::int64_t tokens) const;
     ::tyloi::DenseTensor normalize_hidden(::tyloi::DenseTensor hidden,
-                                                const ::tyloi::DenseTensor &output_norm,
-                                                int64_t batch, int64_t tokens) const;
-    ::tyloi::DenseTensor
-    adapter_raw_hidden(const ::tyloi::DenseTensor &hidden,
-                       const ::tyloi::DenseTensor &finalized) const;
+                                          const ::tyloi::DenseTensor& output_norm, std::int64_t batch,
+                                          std::int64_t tokens) const;
+    ::tyloi::DenseTensor adapter_prepare_hidden(::tyloi::DenseTensor hidden, std::int64_t batch,
+                                                std::int64_t tokens) const;
+    ::tyloi::DenseTensor adapter_finalize_hidden(::tyloi::DenseTensor hidden,
+                                                 const ::tyloi::DenseTensor& output_norm,
+                                                 std::int64_t batch, std::int64_t tokens) const;
+    ::tyloi::DenseTensor adapter_raw_hidden(const ::tyloi::DenseTensor& hidden,
+                                            const ::tyloi::DenseTensor& finalized) const;
+    void adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
+                                  bool has_position_override, bool has_cache_position_override,
+                                  bool has_attention_mask) const;
     void adapter_begin_speculative();
     void adapter_commit_speculative();
-    void adapter_rollback_speculative(int64_t keep);
+    void adapter_rollback_speculative(std::int64_t keep);
 };
 
-template <> struct CudaSessionCodec<DeepseekV41Model> {
-    using Model = DeepseekV41CausalLm;
-    static TextSessionStateKind kind(const Model& model);
-    static bool supports_paged(const Model& model);
-    static TextSessionState capture(const Model& model,const std::vector<int64_t>& tokens);
-    static void restore(Model& model,const TextSessionState& state);
-};
+void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
+         std::string_view definition, std::int64_t context_size);
+void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
+          bool defer_moe_cache_finalize, bool load_blocks, bool load_optional_components);
 
 ::tyloi::DenseTensor deepseek_v41_prefill_hidden(
-    DeepseekV41CausalLm& model, ::tyloi::DenseTensor ids, std::int64_t compute_chunk,
+    Model& model, State& state, ::tyloi::DenseTensor ids, std::int64_t compute_chunk,
     const std::function<bool()>& stopped = {}, ::tyloi::DenseTensor* raw_hidden = nullptr);
-std::int64_t prefill_span(const DeepseekV41CausalLm&, std::size_t tokens,
+std::int64_t prefill_span(const Model&, std::size_t tokens,
                           std::int64_t chunk, std::size_t, std::size_t,
                           bool transformed, bool retained);
 
+} // namespace deepseek_v41
 } // namespace tyloi::cuda
-
-namespace tyloi::models {
-extern template struct deepseek_v41::CausalLm<cuda::CudaCausalOps<cuda::DeepseekV41Model>>;
-} // namespace tyloi::models

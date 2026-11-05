@@ -13,6 +13,9 @@
 #include "engine/models/glm5_next/forward.h"
 #include "engine/models/nemotron_h/mtp.h"
 #include "engine/models/deepseek_v41/dspark.h"
+#include "engine/models/deepseek_v41/ops.h"
+#include "engine/models/deepseek_v41/vision.h"
+#include "engine/models/common/check.h"
 
 #include "engine/weights/moe/expert_cache.h"
 
@@ -163,7 +166,6 @@ Model tyloi::cuda::load_causal_lm(CudaExecutionContext &execution, const std::st
                                                   std::shared_ptr<const tyloi::ModelSource>, bool)
 
 TYLOINFER_INSTANTIATE_CAUSAL_LM(tyloi::cuda::Qwen4CausalLm);
-TYLOINFER_INSTANTIATE_CAUSAL_LM(tyloi::cuda::DeepseekV41CausalLm);
 
 #undef TYLOINFER_INSTANTIATE_CAUSAL_LM
 
@@ -279,12 +281,66 @@ RuntimeComponents<tyloi::cuda::glm5_next::Model> load_runtime_components(
     return result;
 }
 
-template <>
-RuntimeComponents<tyloi::cuda::DeepseekV41CausalLm> load_runtime_components(
-        tyloi::cuda::DeepseekV41CausalLm& model,
+namespace tyloi::cuda::deepseek_v41 {
+
+using tyloi::models::require_model;
+
+void read(Model& model, std::shared_ptr<const tyloi::ModelSource> model_source,
+          std::string_view definition, std::int64_t context_size) {
+    model.source = std::move(model_source);
+    const auto& source = *model.source;
+    validate_model_source(source);
+    model.graph = tyloi::models::graph(source);
+    model.plan = cuda_model_plan(model.graph);
+    require_model(Model::accepts_backbone(model.graph.backbone),
+                  "model backbone does not match the requested causal model");
+    model.load_config(definition);
+    require_model(model.num_hidden_layers() == model.graph.topology.text_layers,
+                  "model graph/config text-layer topology mismatch");
+    if (context_size > 0) {
+        require_model(context_size <= model.max_position_embeddings(),
+                      "--ctx-size exceeds max_position_embeddings");
+        model.config.max_position_embeddings = context_size;
+        model.metadata.max_position_embeddings = context_size;
+    }
+}
+
+void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
+          bool defer_moe_cache_finalize, bool load_blocks, bool load_optional_components) {
+    auto definition = tyloi::models::config_json(*model.source, {});
+    definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
+        std::move(definition), model.graph.backbone, context_size);
+    read(model, model.source, definition, context_size);
+    model.execution = &execution;
+    model.adapter_validate_load_options();
+    if (execution.config.expert_parallel.enabled() && model.metadata.num_experts <= 0)
+        throw std::runtime_error("--expert-parallel requires a model with routed experts");
+    execution.config.layer_placement.prepare(model.num_hidden_layers());
+    execution.config.dense_cpu_layer_count = 0;
+    if (execution.config.n_gpu_layers >= 0 && execution.config.n_gpu_layers < model.num_hidden_layers())
+        throw std::runtime_error("--n-gpu-layers currently supports dense Qwen-style blocks only");
+    CudaScope model_guard(execution.config.layer_placement.primary_device(), execution.executor().contexts());
+    weight_loader::Loader tensors{*model.source, execution.config.weights,
+        {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+         execution.config.tensor_parallel, moe_parallel_config(execution.config)},
+        execution.weights, execution.executor().tq()};
+    ModelLoader<Model> weights{model, tensors};
+    model.load_weights(weights, load_blocks);
+    if (moe_expert_cache_has_sources(execution.weights.moe) &&
+        !moe_expert_cache_finalized(execution.weights.moe) && !defer_moe_cache_finalize)
+        finalize_moe_expert_cache(execution.weights.moe);
+    if (load_optional_components)
+        load_runtime_components(model, tensors, true);
+}
+
+} // namespace tyloi::cuda::deepseek_v41
+
+RuntimeComponents<tyloi::cuda::deepseek_v41::Model> load_runtime_components(
+        tyloi::cuda::deepseek_v41::Model& model,
         const tyloi::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
-    RuntimeComponents<tyloi::cuda::DeepseekV41CausalLm> result{model.graph, model.plan};
+    using tyloi::cuda::deepseek_v41::Model;
+    RuntimeComponents<Model> result{model.graph, model.plan};
     if (!load_optional_components) return result;
     if ((result.plan.vision != tyloi::cuda::CudaVisionAdapter::none &&
          result.plan.vision != tyloi::cuda::CudaVisionAdapter::deepseek_v41) ||
@@ -295,7 +351,8 @@ RuntimeComponents<tyloi::cuda::DeepseekV41CausalLm> load_runtime_components(
             "unsupported DeepSeek-V4.1 CUDA component adapter");
     }
     if(result.plan.vision==tyloi::cuda::CudaVisionAdapter::deepseek_v41) {
-        result.deepseek_vision.emplace(tyloi::cuda::deepseek_v41_runtime::Vision::load(model.source,weights,model.shared->config));
+        model.vision = std::make_unique<tyloi::cuda::deepseek_v41_runtime::Vision>(
+            tyloi::cuda::deepseek_v41_runtime::Vision::load(model.source,weights,model.config));
         result.vision_available=true;
     }
     if (result.plan.predictor ==

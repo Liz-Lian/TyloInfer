@@ -16,6 +16,8 @@
 #include "engine/models/glm_dsa/state.h"
 #include "engine/models/deepseek_v4/load.h"
 #include "engine/models/deepseek_v4/state.h"
+#include "engine/models/deepseek_v41/ops.h"
+#include "engine/models/deepseek_v41/state.h"
 #include "engine/models/glm5_next/load.h"
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/state.h"
@@ -274,8 +276,22 @@ inline constexpr auto with_model = []<typename F>(
             auto components = load_runtime_components(*owner, weights, load_optional_components);
             return finish(owner, state, executor, components, started);
         }
-        case CudaBackbone::deepseek_v41:
-            return load.template operator()<DeepseekV41CausalLm>();
+        case CudaBackbone::deepseek_v41: {
+            auto started = std::chrono::steady_clock::now();
+            auto definition = tyloi::models::config_json(*source, options.config_path);
+            auto owner = std::make_shared<deepseek_v41::Model>();
+            deepseek_v41::read(*owner, source, definition, options.context_size);
+            weight_loader::Loader weights{*owner->source, execution.config.weights,
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
+                execution.weights, execution.executor().tq()};
+            deepseek_v41::load(*owner, execution, options.context_size, false, true, false);
+            auto runtime_components = load_runtime_components(*owner, weights, load_optional_components);
+            auto state = std::unique_ptr<deepseek_v41::State>(static_cast<deepseek_v41::State*>(
+                owner->make_state().release()));
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+            return finish(owner, state, executor, runtime_components, started);
+        }
         case CudaBackbone::nemotron_h: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);

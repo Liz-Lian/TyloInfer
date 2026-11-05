@@ -8,25 +8,26 @@
 
 #include <utility>
 
-namespace tyloi::cuda {
+namespace tyloi::cuda::deepseek_v41 {
+using Model = deepseek_v41::Model;
 
 template<class Ops, class Finish>
 std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
-        DeepseekV41CausalLm& model, Ops& ops, const tyloi::engine::PrefillChunk&,
+        Model& model, Ops& ops, const tyloi::engine::PrefillChunk&,
         ::tyloi::DenseTensor& ids, const Finish&) {
     ::tyloi::DenseTensor hidden;
     if(!ops.prepared || !ops.prepared->transformed())
-        hidden=deepseek_v41_prefill_hidden(model,ids,ops.prefill_compute_chunk,
+        hidden=deepseek_v41_prefill_hidden(model,ops.state,ids,ops.prefill_compute_chunk,
             [&] {return ops.output && ops.output->stopped();});
     return {std::move(hidden),false,false};
 }
 
-inline void generation_prefill_begin(DeepseekV41CausalLm&, DecodeGraphCache& graph, bool streamed) {
+inline void generation_prefill_begin(Model&, DecodeGraphCache& graph, bool streamed) {
     if(streamed)graph.invalidate();
 }
 
 template<class Ops>
-void generation_prefill_end(DeepseekV41CausalLm&, Ops& ops, bool streamed, bool retained) {
+void generation_prefill_end(Model&, Ops& ops, bool streamed, bool retained) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if(streamed && !retained) {
         // Private FFN graphs retain their transfer arenas after a
@@ -38,4 +39,4 @@ void generation_prefill_end(DeepseekV41CausalLm&, Ops& ops, bool streamed, bool 
 #endif
 }
 
-} // namespace tyloi::cuda
+} // namespace tyloi::cuda::deepseek_v41

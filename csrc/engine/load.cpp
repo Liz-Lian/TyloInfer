@@ -1,6 +1,7 @@
 #include "engine/load.h"
 #include "engine/ops.h"
 #include "engine/models/load.h"
+#include "engine/models/deepseek_v41/vision.h"
 #include "engine/models/batch.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
@@ -58,7 +59,7 @@ using State = std::variant<
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State>>,
     std::unique_ptr<Text<Qwen4CausalLm>>,
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State>>,
-    std::unique_ptr<Text<DeepseekV41CausalLm>>,
+    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State>>,
     std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State>>>;
 
 } // namespace tyloi::cuda::engine_detail

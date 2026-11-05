@@ -1,20 +1,24 @@
-#include "engine/backends/cuda/executor/execution.h"
-#include "ops.h"
+#include "engine/models/deepseek_v41/state.h"
+#include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/session.h"
 #include "engine/models/deepseek_v41/snapshot.h"
+#include "engine/models/common/check.h"
 
-namespace tyloi::cuda {
+#include <algorithm>
+#include <stdexcept>
+
+namespace tyloi::cuda::deepseek_v41 {
+
+using deepseek_v41_runtime::Block;
+
 namespace {
-using NativeBlock=deepseek_v41_runtime::Block;
-using DenseTensor=::tyloi::DenseTensor;
-
 bool session_tensor(const DenseTensor& value,int64_t tokens,int64_t width,
                     ::tyloi::ScalarType dtype) {
     return value.defined() && value.is_cuda() && value.dim()==3 && value.size(0)==1 &&
         value.size(1)==tokens && value.size(2)==width && value.scalar_type()==dtype;
 }
 
-void validate_layer(const NativeBlock& block,const tyloi::models::deepseek_v41::BlockSnapshot& saved,
+void validate_layer(const Block& block,const tyloi::models::deepseek_v41::BlockSnapshot& saved,
                     int64_t position) {
     const auto& config=block.config;
     const bool local=session_tensor(saved.local_kv,config.sliding_window,config.head_dim,
@@ -40,37 +44,115 @@ void validate_layer(const NativeBlock& block,const tyloi::models::deepseek_v41::
 }
 }
 
-TextSessionStateKind CudaSessionCodec<DeepseekV41Model>::kind(const Model& model) {
-    return model.shared && model.shared->engram_hash && !model.blocks.empty() &&
-        std::all_of(model.blocks.begin(),model.blocks.end(),[](const auto& block) {
-            return dynamic_cast<const NativeBlock*>(block.get())!=nullptr;
-        })?TextSessionStateKind::DeepseekV41:TextSessionStateKind::Unsupported;
+State::State(Model& model) : shared(model.shared), model_(model) {
+    model_.active = this;
+    TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 model has no shared state");
 }
 
-bool CudaSessionCodec<DeepseekV41Model>::supports_paged(const Model& model) {
-    return kind(model)==TextSessionStateKind::DeepseekV41;
+State::~State() {
+    if (model_.active == this)
+        model_.active = nullptr;
 }
 
-TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
-        const std::vector<int64_t>& tokens) {
-    if(kind(model)!=TextSessionStateKind::DeepseekV41 || model.cache_pos<=0 ||
-            std::size_t(model.cache_pos)!=tokens.size())
+void State::reset(std::int64_t next_batch) {
+    cache_pos = decode_position_delta = 0;
+    speculative_start = -1;
+    speculative_confirmed = 0;
+    speculative_suffix_forward = false;
+    batch = next_batch;
+    for (auto& block : model_.blocks)
+        block->reset(next_batch);
+}
+
+std::vector<tyloi::DenseTensor> State::storage() const {
+    std::vector<tyloi::DenseTensor> result;
+    for (const auto& block : model_.blocks) {
+        const auto& state = block->L();
+        if (state.local_kv.defined()) result.push_back(state.local_kv);
+        if (state.compressed_kv.defined()) result.push_back(state.compressed_kv);
+        if (state.index_k.defined()) result.push_back(state.index_k);
+        if (state.partial_kv.defined()) result.push_back(state.partial_kv);
+    }
+    return result;
+}
+
+void State::begin_speculative_suffix(std::int64_t draft_tokens) {
+    using tyloi::models::require_model;
+    require_model(model_.supports_suffix_speculation() && draft_tokens > 0 &&
+                      cache_pos + draft_tokens <= model_.max_position_embeddings(),
+                  "invalid speculative suffix");
+    speculative_start = cache_pos;
+    speculative_confirmed = 0;
+    model_.adapter_begin_speculative();
+    std::size_t begun = 0;
+    try {
+        for (auto& block : model_.blocks) {
+            MfqCudaGuard guard(block->cuda_device);
+            block->begin_speculative(draft_tokens);
+            ++begun;
+        }
+    } catch (...) {
+        for (std::size_t i = 0; i < begun; ++i) {
+            try {
+                MfqCudaGuard guard(model_.blocks[i]->cuda_device);
+                model_.blocks[i]->commit_speculative();
+            } catch (...) {
+            }
+        }
+        try {
+            model_.adapter_rollback_speculative(cache_pos);
+        } catch (...) {
+        }
+        speculative_start = -1;
+        throw;
+    }
+}
+
+void State::commit_speculative() {
+    using tyloi::models::require_model;
+    require_model(speculative_start >= 0, "no speculative transaction");
+    for (auto& block : model_.blocks) {
+        MfqCudaGuard guard(block->cuda_device);
+        block->commit_speculative();
+    }
+    model_.adapter_commit_speculative();
+    speculative_start = -1;
+    speculative_confirmed = 0;
+}
+
+bool State::supports_text_session_state() const {
+    return text_session_state_kind() != TextSessionStateKind::Unsupported;
+}
+
+bool State::supports_paged_text_session_state() const {
+    return text_session_state_kind() == TextSessionStateKind::DeepseekV41;
+}
+
+TextSessionStateKind State::text_session_state_kind() const {
+    return shared && shared->engram_hash && !model_.blocks.empty()
+        ? TextSessionStateKind::DeepseekV41
+        : TextSessionStateKind::Unsupported;
+}
+
+TextSessionState State::capture_text_session_state(const std::vector<std::int64_t>& tokens) const {
+    if(text_session_state_kind()!=TextSessionStateKind::DeepseekV41 || cache_pos<=0 ||
+            std::size_t(cache_pos)!=tokens.size())
         throw std::runtime_error("DeepSeek-V4.1 text session token count disagrees with cache");
-    auto hash=model.shared->engram_hash->snapshot();
-    if(hash.batch!=1 || hash.position!=model.cache_pos)
+    auto hash=shared->engram_hash->snapshot();
+    if(hash.batch!=1 || hash.position!=cache_pos)
         throw std::runtime_error("DeepSeek-V4.1 session Engram position disagrees with cache");
     TextSessionState state;
-    state.tokens=tokens;state.cache_pos=model.cache_pos;
+    state.tokens=tokens;state.cache_pos=cache_pos;
     auto& snapshot=state.payload.emplace<tyloi::models::deepseek_v41::Snapshot>();
     snapshot.engram=std::make_shared<const tyloi::models::deepseek_v41::EngramHashSnapshot>(std::move(hash));
     state.bytes=snapshot.engram->context.size()*sizeof(int64_t);
     auto& layers=snapshot.blocks;
-    layers.reserve(model.blocks.size());
-    for(const auto& item:model.blocks) {
-        const auto& block=dynamic_cast<const NativeBlock&>(*item);
+    layers.reserve(model_.blocks.size());
+    for(const auto& item:model_.blocks) {
+        const Block& block=*item;
         MfqCudaGuard guard(block.cuda_device);
         const auto& source=block.L();
-        if(block.L().speculative_pending || source.position!=model.cache_pos)
+        if(block.L().speculative_pending || source.position!=cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
         const auto copy=[&](const DenseTensor& value) {
@@ -89,22 +171,23 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
     return state;
 }
 
-void CudaSessionCodec<DeepseekV41Model>::restore(Model& model,const TextSessionState& state) {
+void State::restore_text_session_state(const TextSessionState& state) {
     const auto* snapshot=std::get_if<tyloi::models::deepseek_v41::Snapshot>(&state.payload);
-    if(kind(model)!=TextSessionStateKind::DeepseekV41 || !snapshot || snapshot->blocks.size()!=model.blocks.size() ||
-            state.cache_pos<=0 || state.cache_pos>model.max_position_embeddings() ||
+    if(text_session_state_kind()!=TextSessionStateKind::DeepseekV41 || !snapshot ||
+            snapshot->blocks.size()!=model_.blocks.size() ||
+            state.cache_pos<=0 || state.cache_pos>model_.max_position_embeddings() ||
             std::size_t(state.cache_pos)!=state.tokens.size() || state.decode_position_delta!=0 ||
             !snapshot->engram || snapshot->engram->batch!=1 ||
             snapshot->engram->position!=state.cache_pos)
         throw CudaSessionStateError("DeepSeek-V4.1 text session state is incompatible");
     // Validate every layer and rolling n-gram before changing the active cache.
-    auto hash=*model.shared->engram_hash;
+    auto hash=*shared->engram_hash;
     hash.restore(*snapshot->engram);
     for(std::size_t i=0;i<snapshot->blocks.size();++i)
-        validate_layer(dynamic_cast<const NativeBlock&>(*model.blocks[i]),snapshot->blocks[i],state.cache_pos);
-    model.reset(1);
+        validate_layer(*model_.blocks[i],snapshot->blocks[i],state.cache_pos);
+    reset(1);
     for(std::size_t i=0;i<snapshot->blocks.size();++i) {
-        auto& block=dynamic_cast<NativeBlock&>(*model.blocks[i]);
+        Block& block=*model_.blocks[i];
         MfqCudaGuard guard(block.cuda_device);
         const auto& saved=snapshot->blocks[i];auto& target=block.L();
         restore_session_tensor(target.local_kv,saved.local_kv);
@@ -121,8 +204,9 @@ void CudaSessionCodec<DeepseekV41Model>::restore(Model& model,const TextSessionS
         target.position=state.cache_pos;target.compressed_length=saved.compressed_length;
         target.partial_length=saved.partial_length;
     }
-    *model.shared->engram_hash=std::move(hash);
-    model.shared->set_image_mask({});
-    model.cache_pos=state.cache_pos;
+    *shared->engram_hash=std::move(hash);
+    shared->set_image_mask({});
+    cache_pos=state.cache_pos;
 }
-} // namespace tyloi::cuda
+
+} // namespace tyloi::cuda::deepseek_v41

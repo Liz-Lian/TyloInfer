@@ -1,6 +1,5 @@
 #pragma once
 
-#include "engine/models/deepseek_v41/vision.h"
 #include "engine/models/minicpmo45/components.h"
 #include "engine/models/minicpmo45/text/model.h"
 #include "engine/models/nemotron_h/radio_vision.h"
@@ -49,7 +48,6 @@ struct RuntimeComponents {
     std::optional<
         tyloi::cuda::grid_vision_runtime::CudaGridVisionPromptComponent>
         grid_vision;
-    std::optional<tyloi::cuda::deepseek_v41_runtime::Vision> deepseek_vision;
     std::optional<tyloi::cuda::nemotron_h::CudaRadioPromptComponent>
         radio_vision;
     std::unique_ptr<MtpModule> mtp;
@@ -130,13 +128,6 @@ struct RuntimeComponents {
                 executor,
 #endif
                 tokens, media);
-        if constexpr (std::is_same_v<Model, tyloi::cuda::DeepseekV41CausalLm>)
-            if (deepseek_vision)
-                return deepseek_vision->prepare(language, images,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    projector,
-#endif
-                    tokens, media);
         if constexpr (std::is_same_v<Model, tyloi::cuda::nemotron_h::Model>)
             if (radio_vision)
                 return radio_vision->prepare(language,
@@ -185,9 +176,9 @@ load_runtime_components(
     tyloi::cuda::Collectives& copies, CudaProfiler& profiler);
 
 template <>
-RuntimeComponents<tyloi::cuda::DeepseekV41CausalLm>
+RuntimeComponents<tyloi::cuda::deepseek_v41::Model>
 load_runtime_components(
-    tyloi::cuda::DeepseekV41CausalLm& model,
+    tyloi::cuda::deepseek_v41::Model& model,
         const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 

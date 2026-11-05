@@ -105,7 +105,6 @@ struct CausalResources {
 };
 
 struct Qwen4Model;
-struct DeepseekV41Model;
 
 template <typename Model> struct CudaCausalOps;
 template <typename Model>
@@ -357,7 +356,3 @@ using Qwen4CausalLm = tyloi::models::qwen4_exp::CausalLm<CudaCausalOps<Qwen4Mode
 }
 // namespace tyloi::cuda
 
-namespace tyloi::cuda {
-using DeepseekV41CausalLm = tyloi::models::deepseek_v41::CausalLm<CudaCausalOps<DeepseekV41Model>>;
-
-} // namespace tyloi::cuda
