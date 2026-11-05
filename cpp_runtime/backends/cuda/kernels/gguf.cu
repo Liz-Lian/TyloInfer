@@ -622,7 +622,7 @@ void matvec_group(const DenseProjection* projections,std::size_t count,std::int6
                 throw std::invalid_argument("GGUF dense group row encoding differs");
             entry.position_major=supports_interleaved_activation(p.type,tokens);
             entry.warps=projection_reduction_warps(columns/Dot<Format>::qk*Dot<Format>::parts);
-            constexpr bool supports_cooperative=Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q5_K ||
+            constexpr bool supports_cooperative=Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q3_K || Format==GGML_TYPE_IQ4_NL || Format==GGML_TYPE_Q5_K ||
                 Format==GGML_TYPE_Q6_K || Format==GGML_TYPE_IQ4_XS;
             entry.cooperative=(supports_cooperative || (tokens==1 && dense_long_reduction<Format>)) && p.rows<=INT_MAX/tokens && p.stride<=INT_MAX && entry.warps>1 &&
                 (tokens>1 || single_token_dense_cooperative<Format>(p.rows,columns/Dot<Format>::qk*Dot<Format>::parts,group_blocks));
@@ -632,6 +632,10 @@ void matvec_group(const DenseProjection* projections,std::size_t count,std::int6
             if constexpr(Format==GGML_TYPE_IQ4_XS) {
                 entry.warps=canonical_iq4_k_warps(columns);
                 entry.cooperative=tokens>1 && entry.warps>1 && p.rows<=INT_MAX/tokens && p.stride<=INT_MAX;
+            }
+            if constexpr(Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q3_K || Format==GGML_TYPE_IQ4_NL)if(tokens>1 && p.rows<=INT_MAX/tokens && p.stride<=INT_MAX) {
+                entry.whole_group=true;entry.cooperative=true;
+                entry.warps=projection_reduction_warps(columns/WholeQ8Prepared::qk);
             }
             if constexpr(Format==GGML_TYPE_Q4_K || Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K) {
                 // Native 32-value groups require the decoder's actual source
@@ -676,11 +680,11 @@ bool try_dense_cooperative(const void* packed,std::uint64_t stride,std::int64_t 
     // loads/dots. Two to four warps cooperate on the reduction and share a
     // decoded fragment across tokens. Short axes retain the one-warp path;
     // cooperative block size follows the number of independent weight parts.
-    constexpr bool supported=Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q5_K ||
+    constexpr bool supported=Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q3_K || Format==GGML_TYPE_IQ4_NL || Format==GGML_TYPE_Q5_K ||
         Format==GGML_TYPE_Q6_K || Format==GGML_TYPE_IQ4_XS || dense_long_reduction<Format>;
     if constexpr(!supported)return false;
     else {
-        if constexpr(Format!=GGML_TYPE_Q8_0 && Format!=GGML_TYPE_Q5_K &&
+        if constexpr(Format!=GGML_TYPE_Q8_0 && Format!=GGML_TYPE_Q3_K && Format!=GGML_TYPE_IQ4_NL && Format!=GGML_TYPE_Q5_K &&
                 Format!=GGML_TYPE_Q6_K && Format!=GGML_TYPE_IQ4_XS)if(tokens!=1)return false;
         if(tokens<1 || tokens>8 || rows>INT_MAX/tokens || columns>INT_MAX || stride>INT_MAX)return false;
         if constexpr(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K)if(tokens>1 && columns%256==0 &&
@@ -723,23 +727,27 @@ bool try_dense_cooperative(const void* packed,std::uint64_t stride,std::int64_t 
         if(tokens==1 && !single_token_dense_cooperative<Format>(rows,columns/Dot<Format>::qk*Dot<Format>::parts))return false;
         const auto launch=[&](auto capacity) {
             constexpr int Count=decltype(capacity)::value;
-            // Bound the accumulator and shared-partial footprint to eight
-            // output/token pairs. Longer windows process one output row.
+            // Q8_0 amortizes normalization across complete 32-value groups;
+            // its two-row tile also shares the activation words. Other
+            // formats retain the smaller row tile for longer windows.
             // Q6_K's two-row tile now shares decoded activation words and
             // scales. Three or four tokens amortize that tile; a two-token
             // Q6_K window retains the lighter one-row projection.
-            constexpr int Outputs=Count>1 && Count<=4 && (Format!=GGML_TYPE_Q6_K || Count>2)?2:1;
+            constexpr bool WholeQ8=(Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q3_K || Format==GGML_TYPE_IQ4_NL) && Count>1;
+            constexpr int Outputs=WholeQ8 || (Count>1 && Count<=4 && (Format!=GGML_TYPE_Q6_K || Count>2))?2:1;
+            using Prepared=std::conditional_t<WholeQ8,WholeWindowDot<Format>,PreparedDot<Format>>;
             const auto run=[&]<int Warps>() {
-                const auto function=project_dense_cooperative_q8<Format,Count,Outputs,Warps,PreparedDot<Format>,Format==GGML_TYPE_IQ4_XS>;
+                const auto function=project_dense_cooperative_q8<Format,Count,Outputs,Warps,Prepared,Format==GGML_TYPE_IQ4_XS || WholeQ8>;
                 function<<<unsigned((rows+Outputs-1)/Outputs),dim3(32,Warps),0,stream>>>(
                     static_cast<const std::uint8_t*>(packed),int(stride),int(rows),int(columns),int(tokens),
                     static_cast<const block_q8_1*>(input),output,std::is_same_v<Output,half>);
                 if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
                     "gguf_dense_cooperative",reinterpret_cast<const void*>(function),
                     "format="+std::to_string(Format)+" M="+std::to_string(tokens)+" outputs="+std::to_string(Outputs)+
-                    " warps="+std::to_string(Warps));
+                    " warps="+std::to_string(Warps)+" whole_q8_group="+std::to_string(WholeQ8));
             };
-            const int warps=Format==GGML_TYPE_IQ4_XS?canonical_iq4_k_warps(columns):projection_reduction_warps(columns/Dot<Format>::qk*Dot<Format>::parts);
+            const int warps=Format==GGML_TYPE_IQ4_XS?canonical_iq4_k_warps(columns):projection_reduction_warps(columns/Prepared::qk*Prepared::parts);
+            if constexpr(WholeQ8)if(warps==1){run.template operator()<1>();return;}
             if(warps==2)run.template operator()<2>();
             else if(warps==3)run.template operator()<3>();
             else run.template operator()<4>();
@@ -748,7 +756,12 @@ bool try_dense_cooperative(const void* packed,std::uint64_t stride,std::int64_t 
         else if(tokens==2)launch(std::integral_constant<int,2>{});
         else if(tokens==3)launch(std::integral_constant<int,3>{});
         else if(tokens==4)launch(std::integral_constant<int,4>{});
-        else launch(std::integral_constant<int,8>{});
+        else if constexpr(Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q3_K || Format==GGML_TYPE_IQ4_NL) {
+            if(tokens==5)launch(std::integral_constant<int,5>{});
+            else if(tokens==6)launch(std::integral_constant<int,6>{});
+            else if(tokens==7)launch(std::integral_constant<int,7>{});
+            else launch(std::integral_constant<int,8>{});
+        }else launch(std::integral_constant<int,8>{});
         return true;
     }
 }

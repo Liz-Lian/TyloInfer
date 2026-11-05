@@ -15,27 +15,22 @@ namespace mfq::cuda::gguf {
 namespace {
 // Retire one token's decoded activation after the output rows consume it.
 // The ordinary M=1..4 prepared dots and reduction order remain unchanged.
-struct Iq4WindowPrepared : PreparedDot<GGML_TYPE_IQ4_XS> {
-    struct Activation { int codes[8]; float scale; };
-    __device__ static Activation load_activation(const block_q8_1* input, int part) {
-        Activation a;
-        const auto* x = input + part / 4;
-        #pragma unroll
-        for (int j = 0; j < 8; ++j) a.codes[j] = get_int_b4(x->qs, j);
-        a.scale = __low2float(x->ds);
-        return a;
-    }
-    __device__ static float apply_activation(const Weight& w, const Activation& a) {
-        int sum = 0;
-        #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            sum = ggml_cuda_dp4a(w.codes[j].x, a.codes[j], sum);
-            sum = ggml_cuda_dp4a(w.codes[j].y, a.codes[j + 4], sum);
-        }
-        sum *= w.scale_code;
-        return (w.scale * a.scale) * sum;
+template<bool Streaming=false>
+struct Iq4WindowPrepared : M1PreparedDot<GGML_TYPE_IQ4_XS> {
+    using Base=M1PreparedDot<GGML_TYPE_IQ4_XS>;
+    __device__ static Weight load(const void* data,int block,int part) {
+        if constexpr(Streaming)return Base::load_streaming(data,block,part);
+        else return Base::load(data,block,part);
     }
 };
+
+bool stream_iq4_window(std::int64_t columns) {
+    // Two complete four-warp K tiles produce a wider input
+    // working set benefits from retaining activations instead of weight
+    // fragments. Two output rows reduce the long window's register load.
+    constexpr int groups_per_tile=4*32;
+    return columns/32>=2*groups_per_tile;
+}
 
 // Q6 uses the M=1 aligned-word decoder for every window. Reconstructing
 // each lane's words avoids exchanging compressed payloads between lanes.
@@ -106,14 +101,21 @@ bool project_dense_window_q8(ggml_type type, const void* packed, std::uint64_t s
             reinterpret_cast<const void*>(function), "format=" + std::to_string(type) +
             " M=" + std::to_string(tokens) + " output_rows=" + std::to_string(Rows) +
             " activation_reuse=1 warp_first=" + std::to_string(WarpFirst) +
+            " streaming_weight_loads=" + std::to_string(std::is_same_v<Prepared,DirectQ5Group> ||
+                std::is_same_v<Prepared,Iq4WindowPrepared<true>>) +
             " direct_weight_gather=" + std::to_string(Format==GGML_TYPE_Q6_K) +
             " warps=" + std::to_string(Warps));
     };
     if (type == GGML_TYPE_IQ4_XS) {
         const int warps=canonical_iq4_k_warps(columns);
-        if(warps==3)launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared,3,4,true>();
-        else if(warps==4)launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared,4,4,true>();
-        else launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared,1,4,true>();
+        const auto iq4=[&]<int Warps>() {
+            if(stream_iq4_window(columns))
+                launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared<true>,Warps,2,true>();
+            else launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared<>,Warps,4,true>();
+        };
+        if(warps==3)iq4.template operator()<3>();
+        else if(warps==4)iq4.template operator()<4>();
+        else iq4.template operator()<1>();
     }
     // Cover a whole Q8 group before applying scales, reusing the same
     // contiguous decoder as M=1. Eight-value fragments repeat metadata and
@@ -136,10 +138,16 @@ bool project_dense_window_q8(ggml_type type, const void* packed, std::uint64_t s
 }
 bool supports_dense_split_window_q8(ggml_type type,const void* packed,std::uint64_t stride,
         std::int64_t rows,std::int64_t columns,std::int64_t tokens) noexcept {
-    if((type!=GGML_TYPE_Q5_K && type!=GGML_TYPE_Q6_K && type!=GGML_TYPE_Q4_K && type!=GGML_TYPE_IQ4_XS) ||
+    const auto block_columns=type==GGML_TYPE_Q8_0 || type==GGML_TYPE_IQ4_NL?32:256;
+    if((type!=GGML_TYPE_Q5_K && type!=GGML_TYPE_Q6_K && type!=GGML_TYPE_Q4_K && type!=GGML_TYPE_IQ4_XS &&
+            type!=GGML_TYPE_Q3_K && type!=GGML_TYPE_IQ4_NL && type!=GGML_TYPE_Q8_0) ||
             tokens<5 || tokens>8 || !packed ||
-            rows<1 || rows>INT_MAX/tokens || columns<256 || columns>INT_MAX || columns%256 ||
+            rows<1 || rows>INT_MAX/tokens || columns<block_columns || columns>INT_MAX || columns%block_columns ||
             stride>INT_MAX || stride<mfq::gguf::row_bytes(type,columns))return false;
+    // The shared producer writes a uint2 helper per Q8 block. An odd
+    // number of 32-value packets puts that plane at four-byte alignment;
+    // those small external matrices retain the native Q8 packet instead.
+    if((std::uint64_t(columns)*std::uint64_t(tokens))&63u)return false;
     const auto alignment=type==GGML_TYPE_Q5_K?15u:(type==GGML_TYPE_Q4_K || type==GGML_TYPE_IQ4_XS)?3u:1u;
     return !((reinterpret_cast<std::uintptr_t>(packed)|stride)&alignment);
 }
@@ -155,17 +163,40 @@ bool project_dense_split_window_q8(ggml_type type,const void* packed,std::uint64
             static_cast<const uint8_t*>(packed),int(stride),int(rows),int(columns),int(tokens),
             static_cast<const block_q8_1*>(input),output,half_output);
         if(dispatch_trace::enabled())dispatch_trace::record(stream,"gguf_dense_split_window",reinterpret_cast<const void*>(function),
-            "format="+std::to_string(type)+" M="+std::to_string(tokens)+" split_q8_planes=1 exact_token_tile=1 cached_integer_sum="+
+            "format="+std::to_string(type)+" M="+std::to_string(tokens)+" output_rows="+std::to_string(Rows)+
+            " streaming_weight_loads="+std::to_string(Format==GGML_TYPE_Q5_K ||
+                std::is_same_v<Base,Iq4WindowPrepared<true>>)+" split_q8_planes=1 exact_token_tile=1 cached_integer_sum="+
             std::to_string(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q4_K)+" warps="+std::to_string(Warps));
     };
     const auto count=[&]<int Count>() {
-    if(type==GGML_TYPE_Q6_K)launch.template operator()<Count,GGML_TYPE_Q6_K,M1PreparedDot<GGML_TYPE_Q6_K>,4,2,true>();
-    else if(type==GGML_TYPE_Q4_K)launch.template operator()<Count,GGML_TYPE_Q4_K,M1PreparedDot<GGML_TYPE_Q4_K>,1,2,true>();
+    if(type==GGML_TYPE_Q8_0 || type==GGML_TYPE_Q3_K || type==GGML_TYPE_IQ4_NL) {
+        const auto groups=columns/32,needed=(groups+31)/32;
+        const int warps=groups<64?1:needed<4?int(needed):4;
+        const auto format=[&]<int Format>() {
+            const auto run=[&]<int Warps>() {
+                launch.template operator()<Count,Format,WholeWindowDot<Format>,Warps,2,true>();
+            };
+            if(warps==1)run.template operator()<1>();else if(warps==2)run.template operator()<2>();
+            else if(warps==3)run.template operator()<3>();else run.template operator()<4>();
+        };
+        if(type==GGML_TYPE_Q8_0)format.template operator()<GGML_TYPE_Q8_0>();
+        else if(type==GGML_TYPE_Q3_K)format.template operator()<GGML_TYPE_Q3_K>();
+        else format.template operator()<GGML_TYPE_IQ4_NL>();
+    }
+    else if(type==GGML_TYPE_Q6_K)launch.template operator()<Count,GGML_TYPE_Q6_K,M1PreparedDot<GGML_TYPE_Q6_K>,4,2,true>();
+    // Four output rows amortize activation reads across the wider window.
+    // Count<=8 keeps the warp reduction within its 32-output capacity.
+    else if(type==GGML_TYPE_Q4_K)launch.template operator()<Count,GGML_TYPE_Q4_K,M1PreparedDot<GGML_TYPE_Q4_K>,1,4,true>();
     else if(type==GGML_TYPE_IQ4_XS) {
         const int warps=canonical_iq4_k_warps(columns);
-        if(warps==3)launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared,3,4,true>();
-        else if(warps==4)launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared,4,4,true>();
-        else launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared,1,4,true>();
+        const auto iq4=[&]<int Warps>() {
+            if(stream_iq4_window(columns))
+                launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared<true>,Warps,2,true>();
+            else launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared<>,Warps,4,true>();
+        };
+        if(warps==3)iq4.template operator()<3>();
+        else if(warps==4)iq4.template operator()<4>();
+        else iq4.template operator()<1>();
     }else {
         const int warps=whole_q8_k_warps(columns);
         const auto q5=[&]<int Warps>(){

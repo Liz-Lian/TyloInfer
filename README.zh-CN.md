@@ -57,7 +57,7 @@ NVIDIA RTX 3090 Ti · 4K input · 256 output
 
 | 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（最快草稿数） |
 | --- | ---: | ---: | ---: | ---: |
-| TyloInfer | **2,174** | 45.3 | **117.1** | 145.1（≤6） |
+| TyloInfer | **2,174** | 45.3 | **114.5** | 170.2（7） |
 | NInfer-all | 2,008 | **46.9** | 110.5 | 136.3（7） |
 | llama.cpp b12125 | 1,799 | 43.9 | 89.3 | 109.9（5） |
 | ik_llama.cpp | 1,513 | 43.6 | 78.0 | 58.2（7） |

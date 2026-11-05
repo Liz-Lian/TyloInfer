@@ -157,6 +157,7 @@ template<> struct PreparedDot<GGML_TYPE_Q8_0> : Dot<GGML_TYPE_Q8_0> {
         return vec_dot_q8_0_q8_1_impl<float,VDR_Q8_0_Q8_1_MMVQ>(w.codes,codes,w.scale,__low2float(x->ds));
     }
 };
+#include "gguf_dot_whole.cuh"
 template<> struct PreparedDot<GGML_TYPE_Q2_0> : Dot<GGML_TYPE_Q2_0> {
     using DecodedWeight = void;
     struct Weight {int codes[8];float scale;int part;};

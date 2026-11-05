@@ -37,7 +37,7 @@ struct Graph {
 void run(ggml_type format,int rows,int columns,int tokens,bool half_output,int& cases,
          int prefix=0,bool split=false,bool grouped=false,bool position_major=false) {
     const auto* traits=ggml_get_type_traits(format);
-    if(traits->blck_size!=256 || !traits->to_float)
+    if(traits->blck_size!=((format==GGML_TYPE_Q8_0 || format==GGML_TYPE_IQ4_NL)?32:256) || !traits->to_float)
         throw std::runtime_error("Window block traits differ from the decoder");
     const auto block_bytes=traits->type_size;
     const auto stride=std::size_t(ggml_row_size(format,columns));
@@ -46,9 +46,10 @@ void run(ggml_type format,int rows,int columns,int tokens,bool half_output,int& 
     for(std::size_t block=0;block<weights.size()/block_bytes;++block) {
         const auto d=__float2half((block%2?-.00031f:.00031f)*float(block%17));
         const auto minimum=__float2half((block%3?-.00017f:.00017f)*float(block%19));
-        const auto scale_offset=format==GGML_TYPE_Q6_K?block_bytes-2:0;
+        const auto scale_offset=format==GGML_TYPE_Q6_K || format==GGML_TYPE_Q3_K?block_bytes-2:0;
         std::memcpy(weights.data()+block*block_bytes+scale_offset,&d,2);
-        if(format!=GGML_TYPE_Q6_K)std::memcpy(weights.data()+block*block_bytes+2,&minimum,2);
+        if(format==GGML_TYPE_Q4_K || format==GGML_TYPE_Q5_K)
+            std::memcpy(weights.data()+block*block_bytes+2,&minimum,2);
     }
     std::vector<float> input(std::size_t(tokens)*columns),decoded(std::size_t(rows)*columns);
     std::vector<Q8> packed(std::size_t(tokens)*(columns/32));
@@ -95,7 +96,7 @@ void run(ggml_type format,int rows,int columns,int tokens,bool half_output,int& 
         for(std::size_t i=0;i<input.size();++i)
             input[i]=std::sin(float(i)*(.013f+.003f*replay))*(replay+1)*.17f;
         if(replay)for(std::size_t block=0;block<weights.size()/block_bytes;++block)
-            weights[block*block_bytes+16+block%32]^=std::uint8_t(0x5a+replay);
+            weights[block*block_bytes+((format==GGML_TYPE_Q8_0 || format==GGML_TYPE_IQ4_NL)?2:16)+block%(format==GGML_TYPE_IQ4_NL?16:32)]^=std::uint8_t(0x5a+replay);
         for(int row=0;row<rows;++row)
             traits->to_float(weights.data()+row*stride,decoded.data()+row*columns,columns);
         // Uploads and graph execution share one stream; no default-stream ordering is assumed.
@@ -223,6 +224,19 @@ int main(int argc,char** argv)try {
     if(cudaGetDeviceCount(&devices)!=cudaSuccess || !devices){std::puts("SKIP: CUDA unavailable");return 77;}
     int cases=0;
     const bool affine_only=argc==2 && std::string(argv[1])=="--q4-affine-check";
+    if(!affine_only) {
+        for(auto format:{GGML_TYPE_Q8_0,GGML_TYPE_Q3_K,GGML_TYPE_IQ4_NL}) {
+        for(int columns:{256,512,768,1280,4096,6144,8192,10240})for(int rows:{1,33})
+            for(int tokens:{1,2,3,4,5,6,7,8})for(bool half:{false,true})for(int prefix:{0,2})
+                run(format,rows,columns,tokens,half,cases,prefix);
+        for(int columns:{256,512,768,1280,4096,6144,8192,10240})for(int tokens:{2,3,4})
+            for(bool half:{false,true})for(int prefix:{0,2})
+                run(format,33,columns,tokens,half,cases,prefix,false,true);
+        }
+        for(auto format:{GGML_TYPE_Q8_0,GGML_TYPE_IQ4_NL})for(int columns:{32,128})
+            for(int tokens:{1,2,3,4,5,6,7,8})for(bool half:{false,true})
+                run(format,33,columns,tokens,half,cases,2);
+    }
     for(int columns:{256,512,768,1280,2560,4096,6144,10240})
         for(int rows:{1,33})for(int tokens:{2,3,4,5,6,7,8})for(bool half:{false,true})
             run(GGML_TYPE_Q4_K,rows,columns,tokens,half,cases);
@@ -269,10 +283,23 @@ int main(int argc,char** argv)try {
             run(format,rows,columns,tokens,half,cases);
     for(int tokens:{5,6,7,8})for(bool half:{false,true})run(format,33,1280,tokens,half,cases,4);
     }
-    for(auto format:{GGML_TYPE_Q4_K,GGML_TYPE_Q5_K,GGML_TYPE_Q6_K,GGML_TYPE_IQ4_XS}) {
+    for(auto format:{GGML_TYPE_Q4_K,GGML_TYPE_Q5_K,GGML_TYPE_Q6_K,GGML_TYPE_IQ4_XS,
+            GGML_TYPE_Q8_0,GGML_TYPE_Q3_K,GGML_TYPE_IQ4_NL}) {
         for(int columns:{256,512,768,1024,1280,2048,2560,4096,6144,10240})
             for(int rows:{1,33})for(int tokens:{5,6,7,8})for(bool half:{false,true})
                 run(format,rows,columns,tokens,half,cases,false,true);
+        if(format==GGML_TYPE_Q8_0 || format==GGML_TYPE_Q3_K || format==GGML_TYPE_IQ4_NL)
+            for(int tokens:{5,6,7,8})for(bool half:{false,true})
+                run(format,33,1280,tokens,half,cases,2,true);
+        if(format==GGML_TYPE_Q8_0 || format==GGML_TYPE_IQ4_NL)
+            for(int columns:{32,128})for(int tokens:{5,6,7,8})for(bool half:{false,true}) {
+                const auto row_stride=ggml_row_size(format,columns);
+                const bool supported=gg::supports_dense_split_window_q8(format,reinterpret_cast<const void*>(2),
+                    row_stride,33,columns,tokens);
+                if(supported!=(columns*tokens%64==0))
+                    throw std::runtime_error("Small split-window helper alignment differs");
+                if(supported)run(format,33,columns,tokens,half,cases,2,true);
+            }
         for(int tokens:{1,2,3,4,9})
             if(gg::supports_dense_split_window_q8(format,reinterpret_cast<const void*>(16),
                     ggml_row_size(format,256),1,256,tokens))
@@ -292,6 +319,6 @@ int main(int argc,char** argv)try {
             throw std::runtime_error("Unsupported window consumed the ordinary projection");
     if(gg::project_dense_window_q8(GGML_TYPE_Q2_K,nullptr,0,1,256,nullptr,8,nullptr,false,nullptr))
         throw std::runtime_error("Unsupported format consumed the ordinary projection");
-    std::printf("Q4/IQ4/Q5/Q6 native/split window groups scalar-double/F16-F32/M2..8/tails/changed-input-and-weight-graph cases=%d PASS\n",cases);
+    std::printf("Q3/Q4/IQ4/Q5/Q6/Q8 native/split window groups scalar-double/F16-F32/M1..8/tails/changed-input-and-weight-graph cases=%d PASS\n",cases);
     return 0;
 }catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 1;}

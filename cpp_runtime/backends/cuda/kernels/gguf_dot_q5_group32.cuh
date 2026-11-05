@@ -42,15 +42,16 @@ struct Q5Group32Prepared {
     }
 };
 // Broadcast compressed words directly to the eight lanes sharing a Q5
-// block. This avoids peer shuffles while preserving canonical GGUF bytes.
+// block. Stream these one-use fragments so the token window's repeatedly
+// reused activations remain in L1. Keep the canonical GGUF bytes unchanged.
 struct DirectQ5Group : Q5Group32Prepared {
     __device__ static Weight load(const void* data,int block,int group) {
         const auto* b=static_cast<const block_q5_K*>(data)+block;
         const auto* low=b->qs+32*(group/2);
-        const auto a=__ldg(reinterpret_cast<const uint4*>(low));
-        const auto c=__ldg(reinterpret_cast<const uint4*>(low+16));
-        const auto h0=__ldg(reinterpret_cast<const uint4*>(b->qh));
-        const auto h1=__ldg(reinterpret_cast<const uint4*>(b->qh+16));
+        const auto a=__ldcs(reinterpret_cast<const uint4*>(low));
+        const auto c=__ldcs(reinterpret_cast<const uint4*>(low+16));
+        const auto h0=__ldcs(reinterpret_cast<const uint4*>(b->qh));
+        const auto h1=__ldcs(reinterpret_cast<const uint4*>(b->qh+16));
         const unsigned lo[8]={a.x,a.y,a.z,a.w,c.x,c.y,c.z,c.w};
         const unsigned hi[8]={h0.x,h0.y,h0.z,h0.w,h1.x,h1.y,h1.z,h1.w};
         Weight w;w.group=group;
@@ -58,12 +59,18 @@ struct DirectQ5Group : Q5Group32Prepared {
         for(int j=0;j<8;++j)
             w.codes[j]=int((lo[j]>>((group&1)*4))&0x0f0f0f0fu)|
                 int(((hi[j]>>group)<<4)&0x10101010u);
-        if(group<4){w.scale=b->scales[group]&63;w.minimum=b->scales[group+4]&63;}
+        // The row reader already requires 16-byte alignment. Read scales
+        // and both half scales together instead of separate byte gathers.
+        const auto header=__ldcs(reinterpret_cast<const uint4*>(b));
+        const auto shift=8*(group&3);
+        const auto scale_low=header.y>>shift,minimum_low=header.z>>shift,last=header.w>>shift;
+        if(group<4){w.scale=scale_low&63;w.minimum=minimum_low&63;}
         else {
-            w.scale=(b->scales[group+4]&15)|((b->scales[group-4]>>6)<<4);
-            w.minimum=(b->scales[group+4]>>4)|((b->scales[group]>>6)<<4);
+            w.scale=(last&15)|(((scale_low>>6)&3)<<4);
+            w.minimum=((last>>4)&15)|(((minimum_low>>6)&3)<<4);
         }
-        w.d=__half22float2(b->dm);
+        w.d=make_float2(__half2float(__ushort_as_half(header.x&65535)),
+            __half2float(__ushort_as_half(header.x>>16)));
         return w;
     }
 };
