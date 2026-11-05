@@ -30,7 +30,7 @@ using tyloi::engine::Generation;
 namespace generation_detail {
 
 template <class Model, class State, class Predictor> struct RequestOps {
-    using Hidden = ::tyloi::DenseTensor;
+    using Hidden = std::shared_ptr<tyloi::Tensor>;
     using Restore = TextSessionRestore;
     Model &model;
     State &state;
@@ -207,7 +207,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     void invalidate_plan() { graph.invalidate(); }
     std::size_t prefix_boundary=0;
     void set_prefix_boundary(std::size_t tokens) { prefix_boundary=tokens; }
-    bool has_hidden(const Hidden &value) const { return value.defined(); }
+    bool has_hidden(const Hidden &value) const { return value && value->defined(); }
     void reset() {
         if (batching) return;
         state.reset(1);
@@ -256,7 +256,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
                 prefill_chunk(input.prompt.size()-reused),
                 prepared ? &*prepared : nullptr,
                 reused,
-                restored ? dynamic_cast<const Hidden&>(*restored) : Hidden{},
+                restored,
                 committed,prefix_boundary,restore);
         }
     }

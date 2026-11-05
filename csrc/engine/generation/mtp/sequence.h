@@ -2,9 +2,11 @@
 
 #include "../step.h"
 #include "policy.h"
+#include "engine/tensor.h"
 
 #include <algorithm>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -19,12 +21,13 @@ inline void require_execution(bool condition, const char *message) {
 // predictor work and numerical sampling; acceptance and commit order are shared.
 template <class Ops>
 Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOutput &output,
-    int64_t prefill_chunk_size, size_t reused_tokens, typename Ops::DenseTensor restored_last_hidden,
-    typename Ops::DenseTensor *session_last_hidden, size_t stable_prefix_tokens = 0) {
+    int64_t prefill_chunk_size, size_t reused_tokens, std::shared_ptr<const tyloi::Tensor> restored,
+    std::shared_ptr<tyloi::Tensor> *session_last_hidden, size_t stable_prefix_tokens = 0) {
     const auto &prompt = request.prompt;
     const auto &sampling = request.sampling;
     const auto &token_constraint = request.token_constraint;
     using DenseTensor = typename Ops::DenseTensor;
+    DenseTensor restored_last_hidden = restored ? dynamic_cast<const DenseTensor&>(*restored) : DenseTensor{};
     auto &state = ops.state;
     const auto &metadata = ops.info;
     auto &mtp = ops.mtp;
@@ -34,7 +37,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     namespace policy = tyloi::engine::mtp;
     using policy::CompactDistribution;
     if (session_last_hidden != nullptr) {
-        *session_last_hidden = DenseTensor();
+        session_last_hidden->reset();
     }
     if (output.result.cancelled)
         co_return;
@@ -199,7 +202,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 // Keep an exact checkpoint before the final prompt token so
                 // an identical retry can reuse the prefix and recompute logits.
                 auto context=raw_chunks.size()==1?std::move(raw_chunks.front()):ops.concatenate(raw_chunks,1);
-                *session_last_hidden=ops.clone(ops.slice(context,1,ops.size(context,1)-1,1));
+                *session_last_hidden=std::make_shared<DenseTensor>(ops.clone(ops.slice(context,1,ops.size(context,1)-1,1)));
                 prime_blockwise(context,offset,reused_tokens==0);
                 prompt_context_seeded=true;raw_chunks.clear();
                 co_yield PrefillProgress{
@@ -223,7 +226,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if (output.stopped() && flush_history) flush_history();
             output.metrics.mtp = mtp_state.stats;
             if (session_last_hidden != nullptr) {
-                *session_last_hidden = committed_last_hidden;
+                *session_last_hidden = std::make_shared<DenseTensor>(committed_last_hidden);
             }
         };
         auto logits = ops.logits_for(ops.slice(hidden, 1, ops.size(hidden, 1) - 1, 1));
@@ -302,7 +305,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         hidden = DenseTensor{};
         logits = DenseTensor{};
         if(session_last_hidden != nullptr) {
-            *session_last_hidden = committed_last_hidden;
+            *session_last_hidden = std::make_shared<DenseTensor>(committed_last_hidden);
             // Initial prompt caching precedes token-one publication. Charge it
             // to TTFT rather than the interval between generated tokens.
             co_yield PrefillProgress{

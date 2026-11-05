@@ -12,8 +12,9 @@
       const tyloi::models::Info &, const tyloi::ModelSource*, tyloi::models::Mtp &,  \
       tyloi::engine::mtp::State &,                                                \
       InferenceRequest &, InferenceOutput &, int64_t,                            \
-      const tyloi::cuda::PreparedPrompt *, std::size_t, ::tyloi::DenseTensor,     \
-      ::tyloi::DenseTensor *, std::size_t, std::function<void()>)
+      const tyloi::cuda::PreparedPrompt *, std::size_t,                            \
+      std::shared_ptr<const tyloi::Tensor>, std::shared_ptr<tyloi::Tensor> *,      \
+      std::size_t, std::function<void()>)
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State);
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::qwen4_exp::Model, tyloi::cuda::qwen4_exp::State);
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::deepseek_v41::Model, tyloi::cuda::deepseek_v41::State);

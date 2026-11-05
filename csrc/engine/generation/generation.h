@@ -125,7 +125,7 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
                 if (use_mtp) {
                     if (!ops.has_hidden(last_target_hidden) || position <= 1)
                         return;
-                    saved.mtp = mtp->capture_session_state(position, last_target_hidden);
+                    saved.mtp = mtp->capture_session_state(position, *last_target_hidden);
                     saved.bytes += saved.mtp->bytes;
                 }
                 session_cache.store(cache_plan.session_id, std::move(saved));

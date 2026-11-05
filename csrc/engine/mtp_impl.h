@@ -17,8 +17,8 @@ run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
                    InferenceOutput &output, int64_t prefill_chunk_size,
                    const tyloi::cuda::PreparedPrompt *prepared,
                    std::size_t reused_tokens,
-                   ::tyloi::DenseTensor restored_last_hidden,
-                   ::tyloi::DenseTensor *session_last_hidden,
+                   std::shared_ptr<const tyloi::Tensor> restored_last_hidden,
+                   std::shared_ptr<tyloi::Tensor> *session_last_hidden,
                    std::size_t stable_prefix_tokens, std::function<void()> restore) {
   auto logical_chunk=prefill_chunk_size;
   if constexpr(requires { prefill_span(model,request.prompt.size(),prefill_chunk_size,reused_tokens,0,false,false); }) {
