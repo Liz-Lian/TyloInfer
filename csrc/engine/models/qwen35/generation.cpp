@@ -15,7 +15,7 @@ template Generation generate( \
     tyloi::engine::mtp::State &, PREDICTOR *, \
     std::optional<PreparedPrompt>, tyloi::engine::Batch*, std::string, \
     std::function<void()>);
-TYLOINFER_INSTANTIATE_QWEN35_GENERATION(MtpModule)
+TYLOINFER_INSTANTIATE_QWEN35_GENERATION(tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_QWEN35_GENERATION(tyloi::cuda::qwen35::Mtp)
 #undef TYLOINFER_INSTANTIATE_QWEN35_GENERATION
 } // namespace tyloi::cuda::internal
@@ -27,6 +27,6 @@ template Generation run_mtp_generation<tyloi::cuda::qwen35::Model, tyloi::cuda::
     tyloi::cuda::qwen35::Model &, tyloi::cuda::qwen35::State &,
     tyloi::cuda::Executor*, tyloi::cuda::Collectives&, tyloi::cuda::Executor::Mode,
     tyloi::cuda::RoutedCache&, const tyloi::models::Info &, const tyloi::ModelSource*,
-    MtpModule &, tyloi::engine::mtp::State &, InferenceRequest &, InferenceOutput &, int64_t,
+    tyloi::models::Mtp &, tyloi::engine::mtp::State &, InferenceRequest &, InferenceOutput &, int64_t,
     const tyloi::cuda::PreparedPrompt *, std::size_t, ::tyloi::DenseTensor,
     ::tyloi::DenseTensor *, std::size_t, std::function<void()>);

@@ -1,44 +1,32 @@
 #pragma once
 
 #include "engine/models/session.h"
-#include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/tensor.h"
 #include "engine/generation/mtp/policy.h"
 #include "engine/requests/sampling.h"
 
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
-#include <utility>
+
+namespace tyloi::models {
 
 struct MtpStep {
-    ::tyloi::DenseTensor sample_hidden;
-    ::tyloi::DenseTensor chain_hidden;
+    std::shared_ptr<Tensor> sample_hidden;
+    std::shared_ptr<Tensor> chain_hidden;
     // Optional last-row vocabulary projection computed in the predictor graph.
-    ::tyloi::DenseTensor sample_logits;
+    std::shared_ptr<Tensor> sample_logits;
     int32_t greedy_token=-1;
 };
 
 // Predictors provide model math, cache state and speculative policy behavior.
-struct MtpModule {
-    virtual ~MtpModule() = default;
+struct Mtp {
+    virtual ~Mtp() = default;
     virtual void reset(int64_t batch = 1) = 0;
-    virtual ::tyloi::DenseTensor forward(
-        ::tyloi::DenseTensor previous_hidden,
-        ::tyloi::DenseTensor next_ids) = 0;
     virtual MtpStep step(
-        ::tyloi::DenseTensor previous_hidden,
-        ::tyloi::DenseTensor next_ids) {
-        auto hidden = forward(
-            std::move(previous_hidden), std::move(next_ids));
-        return {hidden, hidden};
-    }
-    virtual MtpStep step_positioned(
-        ::tyloi::DenseTensor,
-        ::tyloi::DenseTensor,
-        ::tyloi::DenseTensor) {
-        throw std::runtime_error(
-            "this CUDA MTP predictor does not accept explicit positions");
-    }
+        const Tensor& previous_hidden,
+        const Tensor& next_ids,
+        const Tensor* positions = nullptr) = 0;
     virtual int64_t cache_position() const noexcept = 0;
     virtual void trim_cache_to(int64_t position) = 0;
     virtual bool teacher_forced_prompt_prime() const noexcept = 0;
@@ -64,7 +52,7 @@ struct MtpModule {
     virtual bool supports_session_state() const noexcept { return false; }
     virtual MtpSessionState capture_session_state(
         std::int64_t,
-        const ::tyloi::DenseTensor&) const {
+        const Tensor&) const {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
@@ -72,27 +60,29 @@ struct MtpModule {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
-    virtual void seed_target_context(::tyloi::DenseTensor hidden, std::int64_t tokens) {
-        TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(1) == tokens,
-                          "this CUDA MTP predictor requires complete prompt context");
-        append_target_context(std::move(hidden), 0);
+    virtual void seed_target_context(const Tensor& hidden, std::int64_t tokens) {
+        if (hidden.dim() != 3 || hidden.size(1) != tokens)
+            throw std::runtime_error("this CUDA MTP predictor requires complete prompt context");
+        append_target_context(hidden, 0);
     }
     virtual void append_target_context(
-        ::tyloi::DenseTensor,
+        const Tensor&,
         std::int64_t) {
         throw std::runtime_error(
             "this CUDA MTP predictor has no target-context adapter");
     }
-    virtual ::tyloi::DenseTensor draft_block(
-        ::tyloi::DenseTensor,
+    virtual std::shared_ptr<Tensor> draft_block(
+        const Tensor&,
         int) {
         throw std::runtime_error(
             "this CUDA MTP predictor has no block-draft adapter");
     }
-    virtual ::tyloi::DenseTensor draft_next(
-        ::tyloi::DenseTensor,
-        ::tyloi::DenseTensor) {
+    virtual std::shared_ptr<Tensor> draft_next(
+        const Tensor&,
+        const Tensor&) {
         throw std::runtime_error("this CUDA MTP predictor has no block-draft adapter");
     }
 
 };
+
+}  // namespace tyloi::models

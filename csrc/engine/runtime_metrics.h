@@ -29,7 +29,7 @@ inline tyloi::engine::Metrics runtime_metrics(
         const tyloi::engine::Metrics& component_metrics,
         const tyloi::engine::Metrics& profile_metrics,
         std::optional<tyloi::engine::Metrics> memory, bool streamed_kv,
-        const MtpModule* mtp,
+        const tyloi::models::Mtp* mtp,
         const tyloi::engine::mtp::State* mtp_state, int graph_depth,
         const ExpertSpace* space, tyloi::engine::Batch* batching,
         const tyloi::ModelSource* source, WeightMemoryLedger& ledger,

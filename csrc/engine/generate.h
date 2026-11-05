@@ -30,7 +30,7 @@ struct CudaProfiler;
 namespace tyloi::cuda::internal {
 
 // Creation and every resume run inside the owner's CUDA device/context scope.
-template <typename Model, typename State, typename Predictor = MtpModule>
+template <typename Model, typename State, typename Predictor = tyloi::models::Mtp>
 tyloi::engine::Generation generate(
     Model& model, State& state, tyloi::cuda::Executor* executor,
     tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
@@ -54,7 +54,7 @@ tyloi::engine::Generation run_mtp_generation(
     tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
     tyloi::cuda::RoutedCache& weights,
     const tyloi::models::Info& info, const tyloi::ModelSource* source,
-    MtpModule& mtp, tyloi::engine::mtp::State& mtp_state,
+    tyloi::models::Mtp& mtp, tyloi::engine::mtp::State& mtp_state,
     tyloi::engine::InferenceRequest& request,
     tyloi::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,
     const tyloi::cuda::PreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,

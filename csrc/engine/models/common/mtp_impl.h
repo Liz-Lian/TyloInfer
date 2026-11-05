@@ -126,7 +126,7 @@ template <class Model, class State> struct CudaMtpOps {
   tyloi::cuda::RoutedCache& weights;
   const tyloi::models::Info &info;
   const tyloi::ModelSource* source;
-  MtpModule &mtp;
+  tyloi::models::Mtp &mtp;
   tyloi::engine::mtp::State &mtp_state;
   const tyloi::cuda::PreparedPrompt *prepared;
   bool transformed_prompt;
@@ -291,7 +291,7 @@ template <class Model, class State> struct CudaMtpOps {
              tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
              tyloi::cuda::RoutedCache& weights,
              const tyloi::models::Info &info, const tyloi::ModelSource* source,
-             MtpModule &mtp, tyloi::engine::mtp::State &mtp_state,
+             tyloi::models::Mtp &mtp, tyloi::engine::mtp::State &mtp_state,
              const tyloi::cuda::PreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output,
              std::function<void()> restore = {})
@@ -429,10 +429,10 @@ template <class Model, class State> struct CudaMtpOps {
   };
   double blockwise_prompt_context(DenseTensor hidden,int64_t position,bool seed) {
     PrefillCudaTimer timer;
-    if(seed)mtp.seed_target_context(std::move(hidden),position);
+    if(seed)mtp.seed_target_context(hidden,position);
     else {
       const auto start=position-hidden.size(1);
-      mtp.append_target_context(std::move(hidden),start);
+      mtp.append_target_context(hidden,start);
     }
     TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
     return timer.elapsed_ms();
@@ -527,21 +527,21 @@ template <class Model, class State> struct CudaMtpOps {
                ? result.reshape({1, tokens}).expand({3, tokens}).contiguous()
                : result;
   }
-  MtpStep predictor_step(DenseTensor hidden, DenseTensor ids, DenseTensor positions) {
+  tyloi::models::MtpStep predictor_step(DenseTensor hidden, DenseTensor ids, DenseTensor positions) {
     if(auto result=mtp_predictor_step(model,*this,hidden,ids,positions))
       return std::move(*result);
-    auto result=positions.defined()
-               ? mtp.step_positioned(std::move(hidden), std::move(ids),
-                                     std::move(positions))
-               : mtp.step(std::move(hidden), std::move(ids));
+    auto result=mtp.step(hidden, ids, positions.defined() ? &positions : nullptr);
     const bool initialized=mtp.take_graph_initialization();
     target_maintenance=target_maintenance || initialized;
-    projected_predictor_logits = result.sample_logits;
+    projected_predictor_logits = result.sample_logits
+        ? dynamic_cast<const DenseTensor&>(*result.sample_logits) : DenseTensor{};
     projected_predictor_compact={};
     mtp_predictor_compact(model,*this,result);
     projected_predictor_greedy = result.greedy_token;
-    projected_predictor_hidden = result.sample_logits.defined()
-        ? result.sample_hidden.narrow(1, result.sample_hidden.size(1)-1, 1).contiguous() : DenseTensor{};
+    if (projected_predictor_logits.defined()) {
+      const auto& sample_hidden = dynamic_cast<const DenseTensor&>(*result.sample_hidden);
+      projected_predictor_hidden = sample_hidden.narrow(1, sample_hidden.size(1)-1, 1).contiguous();
+    } else projected_predictor_hidden = {};
     return result;
   }
   void predictor_history_step(DenseTensor hidden, DenseTensor ids, DenseTensor positions,bool scalar_chain=false) {

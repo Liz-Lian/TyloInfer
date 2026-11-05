@@ -271,7 +271,7 @@ namespace tyloi::cuda::internal {
         tyloi::engine::InferenceRequest &,                                                           \
         tyloi::engine::InferenceOutput &,                                                            \
         tyloi::engine::mtp::State &,                                                                  \
-        MtpModule *,                                                                               \
+        tyloi::models::Mtp *,                                                                      \
         std::optional<PreparedPrompt>,                                                         \
         tyloi::engine::Batch*, std::string,                    \
         std::function<void()>);

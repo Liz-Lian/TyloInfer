@@ -101,7 +101,7 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(qwen4_exp::Model& model, 
 }
 
 template<class Ops, class DenseTensor>
-std::optional<MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions) {
+std::optional<tyloi::models::MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, DenseTensor& hidden, DenseTensor& ids, DenseTensor& positions) {
     auto& mtp=ops.mtp;
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
     auto& target_maintenance=ops.target_maintenance;
@@ -116,9 +116,9 @@ std::optional<MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, Den
         const auto check_start=mtp.cache_position();
         if(!checked[ids.size(1)]) {
           const auto start=mtp.cache_position();
-          auto expected=mtp.step_positioned(hidden,ids,positions);
-          expected_hidden=expected.sample_hidden.narrow(1,prefix,1).clone();
-          expected_chain=expected.chain_hidden.narrow(1,prefix,1).clone();
+          auto expected=mtp.step(hidden,ids,positions.defined()?&positions:nullptr);
+          expected_hidden=dynamic_cast<const DenseTensor&>(*expected.sample_hidden).narrow(1,prefix,1).clone();
+          expected_chain=dynamic_cast<const DenseTensor&>(*expected.chain_hidden).narrow(1,prefix,1).clone();
           mtp.trim_cache_to(start);
         }
 #endif
@@ -140,12 +140,12 @@ std::optional<MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, Den
             positions.defined()?positions.narrow(-1,prefix,1):DenseTensor{});
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
         if(expected_hidden.defined()) {
-          const auto difference=[&](const MtpStep& reference) {
+          const auto difference=[&](const tyloi::models::MtpStep& reference) {
             double maximum=0;bool close=true;
-            for(const auto& pair:std::array<std::pair<DenseTensor,DenseTensor>,2>{{
+            for(const auto& pair:std::array<std::pair<std::shared_ptr<tyloi::Tensor>,std::shared_ptr<tyloi::Tensor>>,2>{{
                     {result.sample_hidden,reference.sample_hidden},{result.chain_hidden,reference.chain_hidden}}}) {
-              const auto actual=pair.first.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
-              const auto expected=pair.second.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
+              const auto actual=dynamic_cast<const DenseTensor&>(*pair.first).to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
+              const auto expected=dynamic_cast<const DenseTensor&>(*pair.second).to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
               TYLOINFER_RUNTIME_CHECK(actual.sizes()==expected.sizes(),"MTP history-tail shape differs from full predictor");
               for(int64_t i=0;i<actual.numel();++i) {
                 const auto error=std::abs(double(actual.template data_ptr<float>()[i])-expected.template data_ptr<float>()[i]);
@@ -155,14 +155,17 @@ std::optional<MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, Den
             }
             return std::make_pair(maximum,close);
           };
-          const auto [batch_error,batch_close]=difference({expected_hidden,expected_chain});
+          const auto [batch_error,batch_close]=difference({std::make_shared<DenseTensor>(expected_hidden),
+                                                          std::make_shared<DenseTensor>(expected_chain)});
           double scalar_error=0;
           if(!batch_close) {
             mtp.trim_cache_to(check_start);
-            MtpStep scalar;
-            for(int64_t row=0;row<ids.size(1);++row)
-              scalar=mtp.step_positioned(hidden.narrow(1,row,1),ids.narrow(1,row,1),
-                  positions.defined()?positions.narrow(-1,row,1):DenseTensor{});
+            tyloi::models::MtpStep scalar;
+            for(int64_t row=0;row<ids.size(1);++row) {
+              auto row_positions=positions.defined()?positions.narrow(-1,row,1):DenseTensor{};
+              scalar=mtp.step(hidden.narrow(1,row,1),ids.narrow(1,row,1),
+                              row_positions.defined()?&row_positions:nullptr);
+            }
             const auto [error,close]=difference(scalar);scalar_error=error;
             std::fprintf(stderr,"runtime_mtp_history_tail_scalar_check rows=%lld batch_max_error=%.8f scalar_max_error=%.8f close=%d\n",
                 static_cast<long long>(ids.size(1)),batch_error,scalar_error,int(close));
@@ -176,7 +179,7 @@ std::optional<MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, Den
         return result;
       }
       if(model.reuse_decode_graphs && model.graph_registry && ids.size(1)>4 && ids.size(1)<=128) {
-        MtpStep last;
+        tyloi::models::MtpStep last;
         for(int64_t offset=0;offset<ids.size(1);offset+=4) {
           const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
           auto part_positions=positions.defined()?positions.narrow(-1,offset,rows):DenseTensor{};
@@ -190,8 +193,8 @@ std::optional<MtpStep> mtp_predictor_step(qwen4_exp::Model& model, Ops& ops, Den
 }
 
 template<class Ops>
-void mtp_predictor_compact(qwen4_exp::Model&, Ops& ops, MtpStep& result) {
-    if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp);predictor && result.sample_logits.defined())
+void mtp_predictor_compact(qwen4_exp::Model&, Ops& ops, tyloi::models::MtpStep& result) {
+    if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp);predictor && result.sample_logits && result.sample_logits->defined())
         ops.projected_predictor_compact=predictor->graph_compact_topk();
 }
 

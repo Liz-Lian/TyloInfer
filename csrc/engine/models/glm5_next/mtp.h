@@ -11,7 +11,7 @@ namespace tyloi::cuda::glm5_next {
 using attention_ops::Linear;
 class SparseMla;
 
-struct Mtp final : MtpModule {
+struct Mtp final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
     struct Layer {
         DenseTensor attention_norm, ffn_norm;
@@ -44,9 +44,8 @@ struct Mtp final : MtpModule {
                                        const DenseTensor &supplied_positions = {},
                                        const DenseTensor &supplied_embeddings = {});
 
-    DenseTensor forward(DenseTensor hidden, DenseTensor ids) override;
-
-    MtpStep step(DenseTensor hidden, DenseTensor ids) override;
+    tyloi::models::MtpStep step(const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
+                                const ::tyloi::Tensor* positions = nullptr) override;
 
     int64_t cache_position() const noexcept override;
 

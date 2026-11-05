@@ -27,7 +27,7 @@ namespace tyloi::cuda::nemotron_h {
 // hidden and each further draft step
 // reuses this module's final_layernorm output. The final norm stays RMSNorm as
 // in vLLM/SGLang (llama.cpp uses LayerNorm; the real model will A/B the two).
-struct Mtp final : MtpModule {
+struct Mtp final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::cuda::nemotron_h::Config config;
@@ -172,23 +172,18 @@ struct Mtp final : MtpModule {
                                                      true);
     }
 
-    DenseTensor forward(DenseTensor hidden, DenseTensor ids) override {
-        return evaluate(hidden, ids).first;
-    }
-
     // Depth chaining reuses the MTP's own final_layernorm output as the next
     // step's hidden state (llama.cpp/vLLM/SGLang), so the chain value is the
     // same normalized tensor the lm_head consumes. The backbone's output_norm
     // is not applied again.
-    MtpStep step(DenseTensor hidden, DenseTensor ids) override {
-        auto result = evaluate(hidden, ids);
-        return {result.first, result.first};
-    }
-
-    MtpStep step_positioned(DenseTensor hidden, DenseTensor ids,
-                            DenseTensor positions) override {
-        auto result = evaluate(hidden, ids, 0, positions);
-        return {result.first, result.first};
+    tyloi::models::MtpStep step(const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
+                                const ::tyloi::Tensor* positions = nullptr) override {
+        auto result = evaluate(dynamic_cast<const DenseTensor&>(hidden),
+                               dynamic_cast<const DenseTensor&>(ids), 0,
+                               positions && positions->defined() ? dynamic_cast<const DenseTensor&>(*positions)
+                                                                 : DenseTensor{});
+        auto output = std::make_shared<DenseTensor>(std::move(result.first));
+        return {output, output};
     }
 
     int64_t cache_position() const noexcept override {
@@ -213,7 +208,8 @@ struct Mtp final : MtpModule {
 
     MtpSessionState
     capture_session_state(int64_t target_cache_position,
-                          const ::tyloi::DenseTensor &last_target_hidden) const override {
+                          const ::tyloi::Tensor &last_target) const override {
+        const auto& last_target_hidden = dynamic_cast<const DenseTensor&>(last_target);
         const int64_t predictor_position = target_cache_position - 1;
         if (predictor_position <= 0 || predictor_position > cache_position() ||
             !last_target_hidden.defined() || last_target_hidden.dim() != 3 ||

@@ -195,7 +195,7 @@ namespace tyloi::cuda::deepseek_v41 {
 using deepseek_v41_runtime::Block;
 using tyloi::models::require_model;
 
-tyloi::models::SnapshotSize snapshot_size(const Model& model,const MtpModule* mtp) {
+tyloi::models::SnapshotSize snapshot_size(const Model& model,const tyloi::models::Mtp* mtp) {
     std::size_t incoming=256; // Rolling Engram history and scalar metadata.
     const auto prefix_bytes=[](const auto& tensor,int64_t rows) -> std::size_t {
         return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;

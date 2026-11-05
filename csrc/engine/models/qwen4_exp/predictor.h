@@ -15,7 +15,7 @@ using attention_ops::Linear;
 struct Qwen4Block;
 struct Qwen4MtpGraph;
 
-struct Predictor final : MtpModule {
+struct Predictor final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::models::qwen4_exp::Config config;
@@ -62,10 +62,8 @@ struct Predictor final : MtpModule {
                                        const DenseTensor &supplied_embeddings = {},
                                        bool history_only = false);
 
-    DenseTensor forward(DenseTensor hidden, DenseTensor ids) override;
-
-    MtpStep step(DenseTensor hidden, DenseTensor ids) override;
-    MtpStep step_positioned(DenseTensor hidden, DenseTensor ids, DenseTensor positions) override;
+    tyloi::models::MtpStep step(const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
+                                const tyloi::Tensor* positions = nullptr) override;
     void history_step(DenseTensor hidden, DenseTensor ids, DenseTensor positions = {},
                       bool scalar_chain = false);
 
@@ -81,7 +79,7 @@ struct Predictor final : MtpModule {
     std::unique_ptr<tyloi::engine::mtp::DepthPolicy> depth_policy(
         int maximum_depth, tyloi::engine::mtp::PolicyState& state) const override;
     bool supports_session_state() const noexcept override;
-    MtpSessionState capture_session_state(int64_t,const DenseTensor&) const override;
+    MtpSessionState capture_session_state(int64_t,const tyloi::Tensor&) const override;
     void restore_session_state(const MtpSessionState&) override;
 };
 

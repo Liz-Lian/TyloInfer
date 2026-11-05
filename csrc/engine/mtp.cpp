@@ -9,7 +9,7 @@
   template Generation run_mtp_generation<MODEL, STATE>(                         \
       MODEL &, STATE &, tyloi::cuda::Executor*, tyloi::cuda::Collectives&,           \
       tyloi::cuda::Executor::Mode, tyloi::cuda::RoutedCache&,                        \
-      const tyloi::models::Info &, const tyloi::ModelSource*, MtpModule &,           \
+      const tyloi::models::Info &, const tyloi::ModelSource*, tyloi::models::Mtp &,  \
       tyloi::engine::mtp::State &,                                                \
       InferenceRequest &, InferenceOutput &, int64_t,                            \
       const tyloi::cuda::PreparedPrompt *, std::size_t, ::tyloi::DenseTensor,     \

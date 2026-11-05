@@ -444,14 +444,15 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 require_execution(mtp.cache_position() == predictor_history_position,
                     "block predictor cache did not advance");
                 if (requested_depth > 0) {
-                    auto block = mtp.draft_block(
+                    auto block_result = mtp.draft_block(
                         ops.ids_for({next_ids.back()}), requested_depth);
+                    const auto& block = dynamic_cast<const DenseTensor&>(*block_result);
                     require_execution(ops.size(block, 1) == requested_depth,
                         "block predictor returned an incomplete draft");
                     auto previous = ops.ids_for({next_ids.back()});
                     for (int position = 0; position < requested_depth; ++position) {
-                        const auto token = select_draft(
-                            mtp.draft_next(ops.slice(block, 1, position, 1), previous));
+                        auto logits = mtp.draft_next(ops.slice(block, 1, position, 1), previous);
+                        const auto token = select_draft(dynamic_cast<const DenseTensor&>(*logits));
                         previous = ops.ids_for({token});
                     }
                 }
@@ -490,10 +491,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             predictor_history_position += history_rows;
             require_execution(mtp.cache_position() == predictor_history_position,
                 "MTP predictor cache did not advance");
-            auto sample_hidden =
-                ops.slice(head.sample_hidden, 1, ops.size(head.sample_hidden, 1) - 1, 1);
-            auto chain_hidden =
-                ops.slice(head.chain_hidden, 1, ops.size(head.chain_hidden, 1) - 1, 1);
+            const auto& sample = dynamic_cast<const DenseTensor&>(*head.sample_hidden);
+            const auto& chain = dynamic_cast<const DenseTensor&>(*head.chain_hidden);
+            auto sample_hidden = ops.slice(sample, 1, ops.size(sample, 1) - 1, 1);
+            auto chain_hidden = ops.slice(chain, 1, ops.size(chain, 1) - 1, 1);
             for (int position = 0; position < requested_depth; ++position) {
                 auto draft_logits = ops.reshape(ops.logits_for(sample_hidden), {1, -1});
                 const int32_t token = select_draft(draft_logits);
@@ -507,8 +508,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                         positioned_prompt
                             ? ops.decode_positions(predictor_history_position + position + 1, 1)
                             : DenseTensor{});
-                    sample_hidden = std::move(next.sample_hidden);
-                    chain_hidden = std::move(next.chain_hidden);
+                    sample_hidden = dynamic_cast<const DenseTensor&>(*next.sample_hidden);
+                    chain_hidden = dynamic_cast<const DenseTensor&>(*next.chain_hidden);
                 }
             }
             return result;

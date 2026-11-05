@@ -19,7 +19,7 @@
 
 namespace tyloi::cuda::qwen4_exp { struct Qwen4Block; }
 namespace tyloi::cuda { class GatedResidual; }
-struct MtpModule;
+namespace tyloi::models { struct Mtp; }
 
 namespace tyloi::cuda {
 struct Qwen4DecodeGraph;
@@ -77,13 +77,13 @@ std::optional<::tyloi::DenseTensor> qwen4_decode_graph_hidden(
     bool* initialized=nullptr,const ::tyloi::DenseTensor& host_ids={},
     ::tyloi::DenseTensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
 void qwen4_report_decode_graph(const qwen4_exp::Model&,std::ostream&);
-std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const MtpModule*);
+std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const tyloi::models::Mtp*);
 ::tyloi::DenseTensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model&);
-void qwen4_release_decode_graphs(qwen4_exp::Model&,MtpModule*);
-void qwen4_warmup_decode_graphs(qwen4_exp::Model&,MtpModule*,int maximum_draft_depth=3);
-std::size_t qwen4_mtp_graph_reserve(const qwen4_exp::Model&,const MtpModule*,int maximum_draft_depth=5);
-tyloi::models::SnapshotSize snapshot_size(const qwen4_exp::Model&,const MtpModule*);
-std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const MtpModule*);
+void qwen4_release_decode_graphs(qwen4_exp::Model&,tyloi::models::Mtp*);
+void qwen4_warmup_decode_graphs(qwen4_exp::Model&,tyloi::models::Mtp*,int maximum_draft_depth=3);
+std::size_t qwen4_mtp_graph_reserve(const qwen4_exp::Model&,const tyloi::models::Mtp*,int maximum_draft_depth=5);
+tyloi::models::SnapshotSize snapshot_size(const qwen4_exp::Model&,const tyloi::models::Mtp*);
+std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const tyloi::models::Mtp*);
 bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, int64_t tokens);
 std::int64_t prefill_span(const qwen4_exp::Model&, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,

@@ -50,7 +50,7 @@ struct RuntimeComponents {
         grid_vision;
     std::optional<tyloi::cuda::nemotron_h::CudaRadioPromptComponent>
         radio_vision;
-    std::unique_ptr<MtpModule> mtp;
+    std::unique_ptr<tyloi::models::Mtp> mtp;
     std::unique_ptr<tyloi::cuda::minicpmo45::Components> composite;
     bool vision_available = false;
     bool mtp_available = false;

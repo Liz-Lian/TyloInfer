@@ -395,13 +395,14 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
         [&](int64_t layer, const auto &pos) {});
 }
 
-DenseTensor Mtp::forward(DenseTensor hidden, DenseTensor ids) {
-    return evaluate(hidden, ids).first;
-}
-
-MtpStep Mtp::step(DenseTensor hidden, DenseTensor ids) {
-    auto result = evaluate(hidden, ids);
-    return {std::move(result.first), std::move(result.second)};
+tyloi::models::MtpStep Mtp::step(const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
+                                  const ::tyloi::Tensor* positions) {
+    if (positions && positions->defined())
+        throw std::runtime_error("this CUDA MTP predictor does not accept explicit positions");
+    auto result = evaluate(dynamic_cast<const DenseTensor&>(hidden),
+                           dynamic_cast<const DenseTensor&>(ids));
+    return {std::make_shared<DenseTensor>(std::move(result.first)),
+            std::make_shared<DenseTensor>(std::move(result.second))};
 }
 
 int64_t Mtp::cache_position() const noexcept {

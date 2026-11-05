@@ -17,7 +17,7 @@ class Mtp;
 
 void restore_session(State&, Mtp*, const TextSessionState&, const std::function<void()>&);
 
-class Mtp final : public MtpModule {
+class Mtp final : public tyloi::models::Mtp {
 public:
     Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding, RopeCache rope,
         std::unique_ptr<Executor> executor, Collectives& copies,
@@ -25,16 +25,14 @@ public:
         bool preallocate);
 
     void reset(int64_t batch = 1) override;
-    ::tyloi::DenseTensor forward(
-        ::tyloi::DenseTensor hidden, ::tyloi::DenseTensor next_ids) override;
-    MtpStep step_positioned(::tyloi::DenseTensor hidden,
-        ::tyloi::DenseTensor next_ids, ::tyloi::DenseTensor positions) override;
+    tyloi::models::MtpStep step(const ::tyloi::Tensor& hidden,
+        const ::tyloi::Tensor& next_ids, const ::tyloi::Tensor* positions = nullptr) override;
 
     int64_t cache_position() const noexcept override { return state_.position(); }
     void trim_cache_to(int64_t position) override;
     bool supports_session_state() const noexcept override { return true; }
     MtpSessionState capture_session_state(int64_t target_cache_position,
-        const ::tyloi::DenseTensor& last_target_hidden) const override;
+        const ::tyloi::Tensor& last_target_hidden) const override;
 
     bool teacher_forced_prompt_prime() const noexcept override { return true; }
     bool target_bootstrap_decode() const noexcept override { return false; }

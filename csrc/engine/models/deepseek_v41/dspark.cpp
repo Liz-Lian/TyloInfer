@@ -48,7 +48,7 @@ dspark_full_attention_plan(std::int64_t batch, std::int64_t queries, std::int64_
     return {std::move(indices), std::move(mask)};
 }
 
-struct DeepseekV41Dspark final : MtpModule {
+struct DeepseekV41Dspark final : tyloi::models::Mtp {
     CudaExecutionContext *execution = nullptr;
     std::shared_ptr<const ::tyloi::Tensor> embedding, output;
     double softcap = 0;
@@ -234,7 +234,8 @@ struct DeepseekV41Dspark final : MtpModule {
         position = 0;
     }
 
-    DenseTensor forward(DenseTensor, DenseTensor) override {
+    tyloi::models::MtpStep step(const tyloi::Tensor&, const tyloi::Tensor&,
+                                const tyloi::Tensor* = nullptr) override {
         throw std::runtime_error("DeepSeek-V4.1 DSpark uses blockwise drafting");
     }
 
@@ -242,7 +243,8 @@ struct DeepseekV41Dspark final : MtpModule {
 
     bool supports_session_state() const noexcept override {return true;}
 
-    MtpSessionState capture_session_state(int64_t cache_pos,const DenseTensor& hidden) const override {
+    MtpSessionState capture_session_state(int64_t cache_pos,const tyloi::Tensor& input_hidden) const override {
+        const auto& hidden=dynamic_cast<const DenseTensor&>(input_hidden);
         const auto width=config.hidden*int64_t(config.dspark_target_layer_ids.size());
         TYLOINFER_RUNTIME_CHECK(batch==1 && cache_pos==position && position>0 && rings.size()==stages.size() &&
             hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)>0 && hidden.size(2)==width,
@@ -305,16 +307,18 @@ struct DeepseekV41Dspark final : MtpModule {
         return static_cast<int>(config.dspark_block_size);
     }
 
-    void seed_target_context(DenseTensor hidden, std::int64_t tokens) override {
+    void seed_target_context(const tyloi::Tensor& input_hidden, std::int64_t tokens) override {
+        const auto& hidden = dynamic_cast<const DenseTensor&>(input_hidden);
         TYLOINFER_RUNTIME_CHECK(position == 0 && hidden.dim() == 3 && hidden.size(1) > 0 &&
             tokens >= hidden.size(1) && tokens <= maximum_context &&
             hidden.size(1) >= std::min(tokens, config.sliding_window),
             "invalid DeepSeek-V4.1 DSpark prompt tail");
         position = tokens - hidden.size(1);
-        append_target_context(std::move(hidden), position);
+        append_target_context(hidden, position);
     }
 
-    void append_target_context(DenseTensor target_hidden, std::int64_t start_position) override {
+    void append_target_context(const tyloi::Tensor& input_hidden, std::int64_t start_position) override {
+        auto target_hidden = dynamic_cast<const DenseTensor&>(input_hidden);
         const auto target_width =
             config.hidden * static_cast<std::int64_t>(config.dspark_target_layer_ids.size());
         TYLOINFER_RUNTIME_CHECK(target_hidden.dim() == 3 && target_hidden.size(0) == batch &&
@@ -407,7 +411,8 @@ struct DeepseekV41Dspark final : MtpModule {
             [&](DenseTensor attended) { return stage.output_projection(*execution, attended); });
     }
 
-    DenseTensor draft_block(DenseTensor anchor_ids, int requested) override {
+    std::shared_ptr<tyloi::Tensor> draft_block(const tyloi::Tensor& input_ids, int requested) override {
+        auto anchor_ids = dynamic_cast<const DenseTensor&>(input_ids);
         const auto physical_width =
             std::min<std::int64_t>(config.dspark_block_size, maximum_context - position);
         TYLOINFER_RUNTIME_CHECK(
@@ -426,7 +431,7 @@ struct DeepseekV41Dspark final : MtpModule {
                             1)
                             .contiguous();
         }
-        return tyloi::models::deepseek_v41::dspark_draft(
+        return std::make_shared<DenseTensor>(tyloi::models::deepseek_v41::dspark_draft(
             physical_width, requested, stages.size(),
             [&](int64_t) {
                 return tyloi::cuda::embed(*embedding, draft_ids, execution->executor().collectives(),
@@ -494,18 +499,21 @@ struct DeepseekV41Dspark final : MtpModule {
                     .to(::tyloi::kFloat32)
                     .contiguous();
             },
-            [](DenseTensor logits, int64_t count) { return logits.narrow(1, 0, count); });
+            [](DenseTensor logits, int64_t count) { return logits.narrow(1, 0, count); }));
     }
 
-    DenseTensor draft_next(DenseTensor logits, DenseTensor previous) override {
+    std::shared_ptr<tyloi::Tensor> draft_next(const tyloi::Tensor& input_logits,
+                                              const tyloi::Tensor& input_previous) override {
+        const auto& logits = dynamic_cast<const DenseTensor&>(input_logits);
+        const auto& previous = dynamic_cast<const DenseTensor&>(input_previous);
         auto markov = quant_embedding_lookup(*markov_embedding, previous)
                           .to(::tyloi::kFloat16)
                           .contiguous();
-        return logits + execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*markov_output, markov).to(::tyloi::kFloat32);
+        return std::make_shared<DenseTensor>(logits + execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*markov_output, markov).to(::tyloi::kFloat32));
     }
 };
 
-std::unique_ptr<::MtpModule> load_dspark_if_present(CudaExecutionContext &execution,
+std::unique_ptr<tyloi::models::Mtp> load_dspark_if_present(CudaExecutionContext &execution,
                                                     const weight_loader::Loader& weights,
                                                     const CommonConfig &config,
                                                     std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,

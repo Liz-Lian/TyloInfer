@@ -37,13 +37,13 @@ Mtp::Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding, Rope
 
 void Mtp::reset(int64_t batch) { state_.reset(batch); }
 
-::tyloi::DenseTensor Mtp::forward(::tyloi::DenseTensor hidden, ::tyloi::DenseTensor next_ids) {
-    return evaluate(std::move(hidden), std::move(next_ids), {});
-}
-
-MtpStep Mtp::step_positioned(::tyloi::DenseTensor hidden,
-        ::tyloi::DenseTensor next_ids, ::tyloi::DenseTensor positions) {
-    auto output = evaluate(std::move(hidden), std::move(next_ids), std::move(positions));
+tyloi::models::MtpStep Mtp::step(const ::tyloi::Tensor& hidden,
+        const ::tyloi::Tensor& next_ids, const ::tyloi::Tensor* positions) {
+    auto output = std::make_shared<::tyloi::DenseTensor>(evaluate(
+        dynamic_cast<const ::tyloi::DenseTensor&>(hidden),
+        dynamic_cast<const ::tyloi::DenseTensor&>(next_ids),
+        positions && positions->defined() ? dynamic_cast<const ::tyloi::DenseTensor&>(*positions)
+                                          : ::tyloi::DenseTensor{}));
     return {output, output};
 }
 
@@ -100,9 +100,9 @@ MtpStep Mtp::step_positioned(::tyloi::DenseTensor hidden,
 
 void Mtp::trim_cache_to(int64_t position) { state_.trim(position); }
 
-MtpSessionState Mtp::capture_session_state(int64_t position, const ::tyloi::DenseTensor& hidden) const {
+MtpSessionState Mtp::capture_session_state(int64_t position, const ::tyloi::Tensor& hidden) const {
     MfqCudaGuard guard(device_);
-    return state_.capture(position, hidden);
+    return state_.capture(position, dynamic_cast<const ::tyloi::DenseTensor&>(hidden));
 }
 
 void restore_session(State& state, Mtp* mtp, const TextSessionState& snapshot,

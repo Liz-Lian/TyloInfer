@@ -991,7 +991,7 @@ namespace tyloi::cuda {
 
 namespace deepseek_v41 {
 
-tyloi::models::SnapshotSize snapshot_size(const Model&, const MtpModule*);
+tyloi::models::SnapshotSize snapshot_size(const Model&, const tyloi::models::Mtp*);
 
 // The model record: weights, placement and load-time state. Request data
 // lives in State; blocks reference the shared scratch through `shared`.
