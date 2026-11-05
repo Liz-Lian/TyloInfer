@@ -119,7 +119,7 @@ DenseTensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, DenseTensor 
                 block.publish_compressed_source(*model.execution, source, model.cache_pos);
                 return source;
             });
-            block.prefilled_global_end = model.cache_pos + count;
+            block.L().prefilled_global_end = model.cache_pos + count;
         }
         tail_hidden = append_tail(tail_hidden, hidden, config.sliding_window);
         tail_pre = append_tail(tail_pre, model.shared->previous_pre, config.sliding_window);
@@ -149,8 +149,8 @@ DenseTensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, DenseTensor 
         if (cancelled()) return {};
         if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=decoder layer="<<layer<<" tokens="<<replay_tokens<<'\n';
         auto& block = *model.blocks.at(layer);
-        block.state.position = replay_begin;
-        block.replay_local_window = truncated_local;
+        block.L().position = replay_begin;
+        block.L().replay_local_window = truncated_local;
         tail_hidden = apply_layer(ops,layer,std::move(tail_hidden));
     }
     model.adapter_finish_forward(ops.full_positions, batch, replay_tokens);

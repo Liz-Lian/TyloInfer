@@ -69,8 +69,8 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
     for(const auto& item:model.blocks) {
         const auto& block=dynamic_cast<const NativeBlock&>(*item);
         MfqCudaGuard guard(block.cuda_device);
-        const auto& source=block.state;
-        if(block.speculative_pending || source.position!=model.cache_pos)
+        const auto& source=block.L();
+        if(block.L().speculative_pending || source.position!=model.cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
         const auto copy=[&](const DenseTensor& value) {
@@ -106,7 +106,7 @@ void CudaSessionCodec<DeepseekV41Model>::restore(Model& model,const TextSessionS
     for(std::size_t i=0;i<snapshot->blocks.size();++i) {
         auto& block=dynamic_cast<NativeBlock&>(*model.blocks[i]);
         MfqCudaGuard guard(block.cuda_device);
-        const auto& saved=snapshot->blocks[i];auto& target=block.state;
+        const auto& saved=snapshot->blocks[i];auto& target=block.L();
         restore_session_tensor(target.local_kv,saved.local_kv);
         if(block.kv_source()) {
             restore_session_prefix_tensor(target.compressed_kv,saved.compressed_kv,1,

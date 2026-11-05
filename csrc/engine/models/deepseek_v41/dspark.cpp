@@ -625,22 +625,25 @@ void run_dspark_self_check() {
 
     Block checkpoint;
     checkpoint.config.sliding_window = 4;
-    checkpoint.state.local_kv =
+    checkpoint.layer = 0;
+    checkpoint.shared = std::make_shared<SharedState>();
+    checkpoint.shared->layers.resize(1);
+    checkpoint.L().local_kv =
         ::tyloi::cuda::arange(8, ::tyloi::TensorOptions()
                                           .device(::tyloi::kCUDA)
                                           .dtype(::tyloi::kFloat16))
             .reshape({1, 4, 2});
-    checkpoint.state.position = 4;
+    checkpoint.L().position = 4;
     checkpoint.begin_speculative(2);
     auto overwritten =
-        ::tyloi::cuda::full({1, 2, 2}, 99.0, checkpoint.state.local_kv.options());
-    checkpoint.state.local_kv.narrow(1, 0, 2).copy_(overwritten);
-    checkpoint.state.position = 6;
+        ::tyloi::cuda::full({1, 2, 2}, 99.0, checkpoint.L().local_kv.options());
+    checkpoint.L().local_kv.narrow(1, 0, 2).copy_(overwritten);
+    checkpoint.L().position = 6;
     checkpoint.rollback_speculative(4);
     auto restored =
-        checkpoint.state.local_kv.to(::tyloi::kCPU, ::tyloi::kFloat32)
+        checkpoint.L().local_kv.to(::tyloi::kCPU, ::tyloi::kFloat32)
             .contiguous();
-    TYLOINFER_RUNTIME_CHECK(checkpoint.state.position == 4 &&
+    TYLOINFER_RUNTIME_CHECK(checkpoint.L().position == 4 &&
                           restored.index({0, 0, 0}).item<float>() == 0.0f &&
                           restored.index({0, 1, 1}).item<float>() == 3.0f,
                       "DeepSeek-V4.1 DSpark ring rollback contract failed");

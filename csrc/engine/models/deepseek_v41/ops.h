@@ -37,8 +37,37 @@ namespace tyloi::cuda::deepseek_v41_runtime {
 using DenseTensor = ::tyloi::DenseTensor;
 using CommonConfig = tyloi::models::deepseek_v41::Config;
 
+// Per-request, per-layer runtime: the KV ring plus the speculative checkpoint
+// and layer flags. Blocks reference their entry through SharedState, so the
+// weight records stay state-free once the model/state split completes.
+struct LayerState {
+    DenseTensor local_kv;
+    DenseTensor compressed_kv;
+    DenseTensor index_k;
+    DenseTensor partial_kv;
+    DenseTensor partial_score;
+    std::int64_t position = 0;
+    std::int64_t compressed_length = 0;
+    std::int64_t partial_length = 0;
+
+    DenseTensor speculative_local_slots;
+    DenseTensor speculative_slot_ids;
+    DenseTensor speculative_partial_kv;
+    DenseTensor speculative_partial_score;
+    DenseTensor speculative_projected_kv;
+    DenseTensor speculative_projected_score;
+    DenseTensor current_ids;
+    std::int64_t speculative_position = -1;
+    std::int64_t speculative_compressed_length = 0;
+    std::int64_t speculative_partial_length = 0;
+    std::int64_t prefilled_global_end = -1;
+    bool speculative_pending = false;
+    bool replay_local_window = false;
+};
+
 struct SharedState {
     CommonConfig config;
+    std::vector<LayerState> layers;
     DenseTensor compressed_kv;
     DenseTensor index_k;
     DenseTensor topk;
@@ -357,8 +386,13 @@ struct Block final {
     std::int64_t ratio = 0;
     std::int64_t max_context = 0;
     std::shared_ptr<SharedState> shared;
-    AttentionState state;
-    DenseTensor current_ids;
+
+    LayerState &L() const {
+        TYLOINFER_RUNTIME_CHECK(shared && layer >= 0 &&
+                              layer < std::int64_t(shared->layers.size()),
+                          "DeepSeek-V4.1 layer state is not allocated");
+        return shared->layers[static_cast<std::size_t>(layer)];
+    }
 
     DenseTensor attention_norm;
     DenseTensor mlp_norm;
@@ -388,18 +422,6 @@ struct Block final {
     DenseTensor vision_router_bias;
     TailRope rope;
     std::unique_ptr<Engram> engram;
-    DenseTensor speculative_local_slots;
-    DenseTensor speculative_slot_ids;
-    DenseTensor speculative_partial_kv;
-    DenseTensor speculative_partial_score;
-    DenseTensor speculative_projected_kv;
-    DenseTensor speculative_projected_score;
-    std::int64_t speculative_position = -1;
-    std::int64_t speculative_compressed_length = 0;
-    std::int64_t speculative_partial_length = 0;
-    bool speculative_pending = false;
-    std::int64_t prefilled_global_end = -1;
-    bool replay_local_window = false;
 
     bool kv_source() const noexcept { return config.is_kv_source(layer); }
 
@@ -409,38 +431,38 @@ struct Block final {
         const auto half = ::tyloi::TensorOptions()
                               .device(::tyloi::kCUDA)
                               .dtype(::tyloi::kFloat16);
-        state.local_kv =
+        L().local_kv =
             ::tyloi::cuda::zeros({batch, config.sliding_window, config.head_dim}, half);
-        state.compressed_kv = DenseTensor();
-        state.index_k = DenseTensor();
-        state.partial_kv = DenseTensor();
-        state.partial_score = DenseTensor();
+        L().compressed_kv = DenseTensor();
+        L().index_k = DenseTensor();
+        L().partial_kv = DenseTensor();
+        L().partial_score = DenseTensor();
         if (kv_source()) {
             const auto capacity = std::max<std::int64_t>(1, max_context / ratio);
-            state.compressed_kv =
+            L().compressed_kv =
                 ::tyloi::cuda::zeros({batch, capacity, config.head_dim}, half);
-            state.index_k =
+            L().index_k =
                 ::tyloi::cuda::zeros({batch, capacity, config.index_head_dim}, half);
             if (ratio > 1) {
                 const auto fp32 = half.dtype(::tyloi::kFloat32);
-                state.partial_kv = ::tyloi::cuda::zeros({batch, ratio, config.head_dim}, fp32);
-                state.partial_score = ::tyloi::cuda::full(
+                L().partial_kv = ::tyloi::cuda::zeros({batch, ratio, config.head_dim}, fp32);
+                L().partial_score = ::tyloi::cuda::full(
                     {batch, ratio, config.head_dim}, -std::numeric_limits<float>::infinity(), fp32);
             }
         }
-        state.position = 0;
-        state.compressed_length = 0;
-        state.partial_length = 0;
-        speculative_local_slots = DenseTensor();
-        speculative_slot_ids = DenseTensor();
-        speculative_partial_kv = DenseTensor();
-        speculative_partial_score = DenseTensor();
-        speculative_projected_kv = DenseTensor();
-        speculative_projected_score = DenseTensor();
-        speculative_position = -1;
-        speculative_pending = false;
-        prefilled_global_end = -1;
-        replay_local_window = false;
+        L().position = 0;
+        L().compressed_length = 0;
+        L().partial_length = 0;
+        L().speculative_local_slots = DenseTensor();
+        L().speculative_slot_ids = DenseTensor();
+        L().speculative_partial_kv = DenseTensor();
+        L().speculative_partial_score = DenseTensor();
+        L().speculative_projected_kv = DenseTensor();
+        L().speculative_projected_score = DenseTensor();
+        L().speculative_position = -1;
+        L().speculative_pending = false;
+        L().prefilled_global_end = -1;
+        L().replay_local_window = false;
         if (layer == 0)
             shared->reset_session(batch);
     }
@@ -448,74 +470,74 @@ struct Block final {
     bool supports_speculation() const noexcept { return true; }
 
     void begin_speculative(std::int64_t draft_tokens) {
-        TYLOINFER_RUNTIME_CHECK(!speculative_pending && draft_tokens > 0 &&
-                              draft_tokens <= config.sliding_window && state.local_kv.defined(),
+        TYLOINFER_RUNTIME_CHECK(!L().speculative_pending && draft_tokens > 0 &&
+                              draft_tokens <= config.sliding_window && L().local_kv.defined(),
                           "invalid DeepSeek-V4.1 speculative checkpoint");
-        speculative_position = state.position;
-        speculative_compressed_length = state.compressed_length;
-        speculative_partial_length = state.partial_length;
-        speculative_slot_ids =
-            ::tyloi::cuda::arange(state.position, state.position + draft_tokens,
-                                       state.local_kv.options().dtype(::tyloi::kInt64))
+        L().speculative_position = L().position;
+        L().speculative_compressed_length = L().compressed_length;
+        L().speculative_partial_length = L().partial_length;
+        L().speculative_slot_ids =
+            ::tyloi::cuda::arange(L().position, L().position + draft_tokens,
+                                       L().local_kv.options().dtype(::tyloi::kInt64))
                 .remainder(static_cast<double>(config.sliding_window))
                 .to(::tyloi::kInt64)
                 .contiguous();
-        speculative_local_slots = state.local_kv.index_select(1, speculative_slot_ids).clone();
-        if (state.partial_kv.defined()) {
-            speculative_partial_kv = state.partial_kv.clone();
-            speculative_partial_score = state.partial_score.clone();
+        L().speculative_local_slots = L().local_kv.index_select(1, L().speculative_slot_ids).clone();
+        if (L().partial_kv.defined()) {
+            L().speculative_partial_kv = L().partial_kv.clone();
+            L().speculative_partial_score = L().partial_score.clone();
         }
-        speculative_pending = true;
+        L().speculative_pending = true;
     }
 
     void commit_speculative() {
-        speculative_pending = false;
-        speculative_local_slots = DenseTensor();
-        speculative_slot_ids = DenseTensor();
-        speculative_partial_kv = DenseTensor();
-        speculative_partial_score = DenseTensor();
-        speculative_projected_kv = DenseTensor();
-        speculative_projected_score = DenseTensor();
-        speculative_position = -1;
+        L().speculative_pending = false;
+        L().speculative_local_slots = DenseTensor();
+        L().speculative_slot_ids = DenseTensor();
+        L().speculative_partial_kv = DenseTensor();
+        L().speculative_partial_score = DenseTensor();
+        L().speculative_projected_kv = DenseTensor();
+        L().speculative_projected_score = DenseTensor();
+        L().speculative_position = -1;
     }
 
     void rollback_speculative(std::int64_t position) {
-        TYLOINFER_RUNTIME_CHECK(speculative_pending && position >= speculative_position &&
-                              position <= state.position &&
-                              speculative_local_slots.defined() && speculative_slot_ids.defined(),
+        TYLOINFER_RUNTIME_CHECK(L().speculative_pending && position >= L().speculative_position &&
+                              position <= L().position &&
+                              L().speculative_local_slots.defined() && L().speculative_slot_ids.defined(),
                           "DeepSeek-V4.1 speculative checkpoint is unavailable");
-        const auto kept=position-speculative_position;
-        TYLOINFER_RUNTIME_CHECK(kept<=speculative_slot_ids.numel(),"DeepSeek-V4.1 retained prefix is out of range");
-        const auto rejected=speculative_slot_ids.numel()-kept;
-        if(rejected)state.local_kv.index_copy_(1,speculative_slot_ids.narrow(0,kept,rejected),
-            speculative_local_slots.narrow(1,kept,rejected));
-        if (speculative_partial_kv.defined()) {
-            state.partial_kv.copy_(speculative_partial_kv);
-            state.partial_score.copy_(speculative_partial_score);
+        const auto kept=position-L().speculative_position;
+        TYLOINFER_RUNTIME_CHECK(kept<=L().speculative_slot_ids.numel(),"DeepSeek-V4.1 retained prefix is out of range");
+        const auto rejected=L().speculative_slot_ids.numel()-kept;
+        if(rejected)L().local_kv.index_copy_(1,L().speculative_slot_ids.narrow(0,kept,rejected),
+            L().speculative_local_slots.narrow(1,kept,rejected));
+        if (L().speculative_partial_kv.defined()) {
+            L().partial_kv.copy_(L().speculative_partial_kv);
+            L().partial_score.copy_(L().speculative_partial_score);
         }
-        state.position = position;
-        state.compressed_length = speculative_compressed_length;
-        state.partial_length = speculative_partial_length;
+        L().position = position;
+        L().compressed_length = L().speculative_compressed_length;
+        L().partial_length = L().speculative_partial_length;
         if(kept && kv_source()) {
-            const auto total=speculative_partial_length+kept;
-            state.compressed_length+=total/ratio;
-            state.partial_length=total%ratio;
+            const auto total=L().speculative_partial_length+kept;
+            L().compressed_length+=total/ratio;
+            L().partial_length=total%ratio;
             // Complete compressed rows already contain the accepted prefix.
             // Rebuild only its unfinished group from the saved projections;
             // this needs no attention, projection or expert recomputation.
-            for(int64_t slot=0;slot<state.partial_length;++slot) {
-                const auto source=total-state.partial_length+slot-speculative_partial_length;
+            for(int64_t slot=0;slot<L().partial_length;++slot) {
+                const auto source=total-L().partial_length+slot-L().speculative_partial_length;
                 if(source<0)continue; // The original partial group was restored above.
-                TYLOINFER_RUNTIME_CHECK(speculative_projected_kv.defined() && speculative_projected_score.defined(),
+                TYLOINFER_RUNTIME_CHECK(L().speculative_projected_kv.defined() && L().speculative_projected_score.defined(),
                                   "DeepSeek-V4.1 retained compressor projections are unavailable");
-                state.partial_kv.narrow(1,slot,1).copy_(speculative_projected_kv.narrow(1,source,1));
-                state.partial_score.narrow(1,slot,1).copy_(speculative_projected_score.narrow(1,source,1));
+                L().partial_kv.narrow(1,slot,1).copy_(L().speculative_projected_kv.narrow(1,source,1));
+                L().partial_score.narrow(1,slot,1).copy_(L().speculative_projected_score.narrow(1,source,1));
             }
         }
         commit_speculative();
     }
 
-    void set_token_ids(const DenseTensor &ids) { current_ids = ids; }
+    void set_token_ids(const DenseTensor &ids) { L().current_ids = ids; }
     // No dense warmup state: the recurrent cache lives in AttentionState.
     std::vector<DenseTensor*> graph_warmup_state() { return {}; }
 
@@ -557,7 +579,7 @@ struct Block final {
         const auto tokens = input.size(1);
         DenseTensor projected_kv, projected_score;
         return tyloi::models::deepseek_v41::compress(
-            state, tokens, position, ratio,
+            L(), tokens, position, ratio,
             [&] {
                 return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_key_value, input), compressor_norm,
                                     config.rms_eps);
@@ -569,9 +591,9 @@ struct Block final {
                 projected_score = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_gate, input)
                                       .to(::tyloi::kFloat32)
                                       .contiguous();
-                if(speculative_pending) {
-                    speculative_projected_kv=projected_kv;
-                    speculative_projected_score=projected_score;
+                if(L().speculative_pending) {
+                    L().speculative_projected_kv=projected_kv;
+                    L().speculative_projected_score=projected_score;
                 }
             },
             [&](int64_t complete, int64_t cutoff) {
@@ -584,18 +606,18 @@ struct Block final {
                                     config.rms_eps);
             },
             [&](int64_t cutoff, int64_t remainder) {
-                state.partial_kv.narrow(1, 0, remainder)
+                L().partial_kv.narrow(1, 0, remainder)
                     .copy_(projected_kv.narrow(1, cutoff, remainder));
-                state.partial_score.narrow(1, 0, remainder)
+                L().partial_score.narrow(1, 0, remainder)
                     .copy_(projected_score.narrow(1, cutoff, remainder));
             },
             [&](int64_t token, int64_t slot) {
-                state.partial_kv.narrow(1, slot, 1).copy_(projected_kv.narrow(1, token, 1));
-                state.partial_score.narrow(1, slot, 1).copy_(projected_score.narrow(1, token, 1));
+                L().partial_kv.narrow(1, slot, 1).copy_(projected_kv.narrow(1, token, 1));
+                L().partial_score.narrow(1, slot, 1).copy_(projected_score.narrow(1, token, 1));
             },
             [&] {
                 auto pooled =
-                    (state.partial_kv * ::tyloi::cuda::softmax(state.partial_score, 1))
+                    (L().partial_kv * ::tyloi::cuda::softmax(L().partial_score, 1))
                         .sum(1, true);
                 return weighted_rms(pooled.to(::tyloi::kFloat16), compressor_norm,
                                     config.rms_eps);
@@ -606,12 +628,12 @@ struct Block final {
     void publish_compressed_source(CudaExecutionContext &execution, const DenseTensor &input,
                                    std::int64_t position) {
         std::optional<DenseTensor> latent;
-        if (prefilled_global_end == position + input.size(1)) prefilled_global_end = -1;
+        if (L().prefilled_global_end == position + input.size(1)) L().prefilled_global_end = -1;
         else latent = update_compressed_source(execution, input, position);
         if (latent) {
             const auto count = latent->size(1);
-            const auto begin = state.compressed_length;
-            TYLOINFER_RUNTIME_CHECK(begin + count <= state.compressed_kv.size(1),
+            const auto begin = L().compressed_length;
+            TYLOINFER_RUNTIME_CHECK(begin + count <= L().compressed_kv.size(1),
                               "DeepSeek-V4.1 compressed cache capacity exceeded");
             auto group_positions =
                 ::tyloi::cuda::arange(begin * ratio, (begin + count) * ratio, ratio,
@@ -624,13 +646,13 @@ struct Block final {
             compressed = deepseek_v41_mxfp4_e4m3_scale_sim_cuda(compressed.contiguous());
             auto rows = ::tyloi::cuda::arange(
                 begin, begin + count, latent->options().dtype(::tyloi::kInt64));
-            state.index_k.index_copy_(1, rows, index_values);
-            state.compressed_kv.index_copy_(1, rows, compressed);
-            state.compressed_length += count;
+            L().index_k.index_copy_(1, rows, index_values);
+            L().compressed_kv.index_copy_(1, rows, compressed);
+            L().compressed_length += count;
         }
-        shared->compressed_kv = state.compressed_kv;
-        shared->index_k = state.index_k;
-        shared->compressed_length = state.compressed_length;
+        shared->compressed_kv = L().compressed_kv;
+        shared->index_k = L().index_k;
+        shared->compressed_length = L().compressed_length;
         shared->ratio = ratio;
     }
 
@@ -741,8 +763,8 @@ struct Block final {
                     auto slot = ::tyloi::cuda::full(
                         {1}, position % config.sliding_window,
                         positions.options().dtype(::tyloi::kInt64));
-                    state.local_kv.index_copy_(1, slot, local);
-                    local_for_attention = state.local_kv;
+                    L().local_kv.index_copy_(1, slot, local);
+                    local_for_attention = L().local_kv;
                 } else {
                     const auto history = local_history;
                     std::vector<DenseTensor> local_parts;
@@ -753,7 +775,7 @@ struct Block final {
                                          .remainder(static_cast<double>(config.sliding_window))
                                          .to(::tyloi::kInt64)
                                          .contiguous();
-                        local_parts.push_back(state.local_kv.index_select(1, slots));
+                        local_parts.push_back(L().local_kv.index_select(1, slots));
                     }
                     local_parts.push_back(local);
                     local_for_attention =
@@ -767,7 +789,7 @@ struct Block final {
                                             .remainder(static_cast<double>(config.sliding_window))
                                             .to(::tyloi::kInt64)
                                             .contiguous();
-                    state.local_kv.index_copy_(1, recent_slots,
+                    L().local_kv.index_copy_(1, recent_slots,
                                                local.narrow(1, tokens - recent, recent));
                 }
 
@@ -815,7 +837,7 @@ struct Block final {
                     .transpose(1, 2)
                     .contiguous();
             },
-            [&] { state.position += tokens; },
+            [&] { L().position += tokens; },
             [&](DenseTensor attended) { return output_projection(execution, attended); });
     }
 
@@ -839,17 +861,17 @@ struct Block final {
                    const RopeCache &, const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt,
                    const MfqOptional<DenseTensor> &attention_mask = mfq_nullopt) {
         auto &profiler = execution.executor().profiler();
-        TYLOINFER_RUNTIME_CHECK(current_ids.defined() && hidden.dim() == 4 &&
+        TYLOINFER_RUNTIME_CHECK(L().current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
                               positions.dim() == 1 && positions.numel() == hidden.size(1) &&
                               !cache_positions.has_value() && !attention_mask.has_value() &&
-                              state.position == cache_position,
+                              L().position == cache_position,
                           "DeepSeek-V4.1 block input/cache mismatch");
         shared->enter_layer(layer, config.n_layers, hidden.size(0), hidden.size(1), cache_position,
-                            hidden.device(), current_ids);
+                            hidden.device(), L().current_ids);
 
         const auto batch = hidden.size(0), tokens = hidden.size(1);
-        const bool truncated_local = std::exchange(replay_local_window, false);
+        const bool truncated_local = std::exchange(L().replay_local_window, false);
         return tyloi::models::deepseek_v41::decoder_layer(
             std::move(hidden), bool(engram), shared->previous_pre,
             [&](DenseTensor value) {
@@ -886,11 +908,11 @@ struct Block final {
                         auto bias=::tyloi::cuda::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         return mlp.forward(
-                            value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, current_ids, bias)
+                            value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, L().current_ids, bias)
 #else
                         auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
                         return mlp.forward(
-                            value.reshape({-1,config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, current_ids, bias)
+                            value.reshape({-1,config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, L().current_ids, bias)
 #endif
                             .reshape({batch,tokens,config.hidden});
                     }
@@ -907,15 +929,15 @@ struct Block final {
 #endif
                                 moe_expert_cache_ssd_router_prefetch(
                                     execution.weights.moe),
-                                current_ids);
+                                L().current_ids);
                         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                     return mlp.forward(
-                            value.reshape({-1, config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, current_ids)
+                            value.reshape({-1, config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, L().current_ids)
 #else
                     auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
                     return mlp.forward(
-                            value.reshape({-1, config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, current_ids)
+                            value.reshape({-1, config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, L().current_ids)
 #endif
                         .reshape({batch, tokens, config.hidden});
                 });

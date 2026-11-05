@@ -173,6 +173,7 @@ std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &sour
                                                const CommonConfig &config) {
     auto state = std::make_shared<SharedState>();
     state->config = config;
+    state->layers.resize(static_cast<std::size_t>(config.n_layers));
     state->engram_hash = EngramHashState::load(source, config);
     return state;
 }
@@ -195,7 +196,7 @@ tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm& model,const
         return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
     };
     for(const auto& item:model.blocks) {
-        const auto& state=item->state;
+        const auto& state=item->L();
         incoming+=session_tensor_bytes(state.local_kv)+session_tensor_bytes(state.partial_kv)+
             session_tensor_bytes(state.partial_score)+prefix_bytes(state.compressed_kv,state.compressed_length)+
             prefix_bytes(state.index_k,state.compressed_length);
