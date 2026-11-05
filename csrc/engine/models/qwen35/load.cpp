@@ -110,7 +110,7 @@ struct LayerLoader : TransformerWeightLoader {
 
 } // namespace
 
-Layer load_layer(const weight_loader::Loader& weights, const Config& config,
+Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
                  int index, const std::string& type, bool mirror_scalars,
                  std::string_view tensor_root) {
     if (index < 0 || index >= config.num_hidden_layers)
@@ -159,7 +159,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config,
 }
 
 Model load(std::shared_ptr<const tyloi::ModelSource> source,
-           const weight_loader::Loader& weights, LayerPlacementConfig& placement,
+           const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
            tyloi::ops::YarnScaling& yarn, int& cpu_layers,
            const LoadOptions& options) {
     tyloi::cuda::validate_model_source(*source);

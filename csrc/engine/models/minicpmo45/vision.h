@@ -84,7 +84,7 @@ struct MiniCPMO45VisionEncoder {
     };
 
     static Layer load_layer(
-            const tyloi::cuda::weight_loader::Loader& weights, int index,
+            const tyloi::weights::Loader& weights, int index,
             int64_t heads, int64_t head_dim) {
         const std::string prefix = "vision.block." + std::to_string(index);
         Layer result;
@@ -114,7 +114,7 @@ struct MiniCPMO45VisionEncoder {
     int64_t patch_size = 14;
     int64_t position_side = 70;
 
-    static MiniCPMO45VisionEncoder load(const tyloi::cuda::weight_loader::Loader& weights) {
+    static MiniCPMO45VisionEncoder load(const tyloi::weights::Loader& weights) {
         MiniCPMO45VisionEncoder result;
         result.patch_weight =
             dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.patch_embedding.weight"));
@@ -237,7 +237,7 @@ struct MiniCPMO45Resampler {
     int64_t heads = 32;
     int64_t head_dim = 128;
 
-    static MiniCPMO45Resampler load(const tyloi::cuda::weight_loader::Loader& weights) {
+    static MiniCPMO45Resampler load(const tyloi::weights::Loader& weights) {
         MiniCPMO45Resampler result;
         if (!weights.source.has_asset(MINICPMO45_RESAMPLER_POS_EMBED_ASSET)) {
             throw std::runtime_error("MiniCPM-o MFQ is missing the exact Resampler position asset; "

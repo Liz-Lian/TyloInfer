@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace tyloi { class ModelSource; }
-namespace tyloi::cuda::weight_loader { struct Loader; }
+namespace tyloi::weights { struct Loader; }
 
 enum class TextSessionStateKind : int;
 struct TextSessionState;
@@ -46,9 +46,9 @@ struct CausalResources {
     CudaExecutionContext *execution = nullptr;
     bool adapter_uses_common_rope() const noexcept;
     void adapter_configure_rope(RopeCache &rope, ::tyloi::Device device) const;
-    void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+    void adapter_load_final_state(const tyloi::weights::Loader& weights,
                                   ::tyloi::DenseTensor &output_norm);
-    void adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights);
+    void adapter_prepare_blocks(const tyloi::weights::Loader& weights);
     ::tyloi::DenseTensor adapter_embed(::tyloi::DenseTensor output) const;
     ::tyloi::DenseTensor
     adapter_raw_hidden(const ::tyloi::DenseTensor &hidden,

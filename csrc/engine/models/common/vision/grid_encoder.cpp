@@ -10,7 +10,7 @@
 namespace tyloi::cuda::grid_vision_runtime {
 namespace {
 
-::tyloi::DenseTensor required_vector(const weight_loader::Loader& weights,
+::tyloi::DenseTensor required_vector(const ::tyloi::weights::Loader& weights,
                        GridVisionTensorRole role, int64_t width, size_t block = 0) {
     const auto name = grid_vision_canonical_name(role, block);
     auto value = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
@@ -20,7 +20,7 @@ namespace {
     return value;
 }
 
-vision::LayerNorm load_norm(const weight_loader::Loader& weights,
+vision::LayerNorm load_norm(const ::tyloi::weights::Loader& weights,
                           GridVisionTensorRole weight, GridVisionTensorRole bias, int64_t width,
                           double epsilon, size_t block = 0) {
     return {
@@ -32,7 +32,7 @@ vision::LayerNorm load_norm(const weight_loader::Loader& weights,
 
 } // namespace
 
-CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& weights,
+CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader& weights, RoutedCache& cache,
                                                   const GridVisionConfig &config) {
     config.validate();
     const auto hidden = config.hidden_size;
@@ -94,7 +94,7 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
         }
         blocks.push_back(std::move(block));
     }
-    return CudaGridVisionEncoder(weights.cache, config, std::move(patch_weight), std::move(patch_bias),
+    return CudaGridVisionEncoder(cache, config, std::move(patch_weight), std::move(patch_bias),
                                  std::move(position_weight), std::move(blocks));
 }
 
@@ -237,7 +237,7 @@ CudaGridVisionEncoder::CudaGridVisionEncoder(
       blocks_(std::move(blocks)) {}
 
 CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
-    const weight_loader::Loader& weights, const GridVisionConfig &vision,
+    const ::tyloi::weights::Loader& weights, RoutedCache& cache, const GridVisionConfig &vision,
     int64_t image_token_id, int64_t video_token_id, std::string input_contract,
     std::string position_policy) {
     if (input_contract != kGridVisionInputContract) {
@@ -268,7 +268,7 @@ CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
         throw std::runtime_error("grid-Vision merger geometry mismatch");
     }
     return CudaGridVisionPromptComponent(
-        weights.cache, CudaGridVisionEncoder::load(placed, vision), std::move(merger_norm),
+        cache, CudaGridVisionEncoder::load(placed, cache, vision), std::move(merger_norm),
         std::move(merger_up), std::move(merger_down), image_token_id, video_token_id,
         std::move(input_contract), std::move(position_policy));
 }

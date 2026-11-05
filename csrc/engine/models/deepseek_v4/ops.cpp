@@ -28,7 +28,7 @@
 
 namespace tyloi::cuda::deepseek_v4 {
 
-Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
+Layer load_layer(const tyloi::weights::Loader& weights, const Config &c, int i,
                  const std::string &type, Collectives& collectives, int primary,
                  const std::unordered_set<int>& offload, int64_t& host_bytes) {
     const auto &config = c;
@@ -207,7 +207,7 @@ void validate_offload(const Config &config, const std::unordered_set<int>& offlo
     }
 }
 
-OutputHeadWeights load_output_head(const weight_loader::Loader& weights) {
+OutputHeadWeights load_output_head(const tyloi::weights::Loader& weights) {
     return {
         dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.mhc.output.function"))
             .to(::tyloi::kFloat32)
@@ -280,7 +280,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConfig& placement,
+void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           Collectives& collectives, int primary, const std::unordered_set<int>& offload,
           int64_t& host_bytes, int gpu_layers) {
     const auto& c = model.config;

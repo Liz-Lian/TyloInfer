@@ -57,7 +57,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-Layer load_layer(const weight_loader::Loader& weights, const Config& config, int index,
+Layer load_layer(const tyloi::weights::Loader& weights, const Config& config, int index,
                  const std::string& type) {
     if (type != "full_attention")
         throw std::runtime_error("unsupported MiniCPM layer type: " + type);
@@ -74,7 +74,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config, int
     return layer;
 }
 
-void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConfig& placement,
+void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           int gpu_layers, bool expert_parallel, bool load_layers, bool load_input_output,
           const tyloi::ops::YarnScaling& yarn) {
     const auto& config = model.config;

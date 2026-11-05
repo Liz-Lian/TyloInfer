@@ -5,7 +5,7 @@
 #include "engine/models/glm5_next/config.h"
 #include "engine/models/glm5_next/state.h"
 
-namespace tyloi::cuda::weight_loader { struct Loader; }
+namespace tyloi::weights { struct Loader; }
 
 namespace tyloi::cuda::glm5_next {
 using attention_ops::Linear;
@@ -32,7 +32,7 @@ struct Mtp final : tyloi::models::Mtp {
     ~Mtp() override;
     Mtp(Mtp&&) noexcept;
 
-    static std::optional<Mtp> load_if_present(const weight_loader::Loader& weights,
+    static std::optional<Mtp> load_if_present(const ::tyloi::weights::Loader& weights,
                                                       Projector projector, Collectives& copies,
                                                       CudaProfiler& profiler, std::shared_ptr<const ::tyloi::Tensor> embedding,
                                                       const tyloi::models::glm5_next::Config &main);

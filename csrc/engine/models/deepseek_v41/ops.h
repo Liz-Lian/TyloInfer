@@ -953,11 +953,11 @@ struct Block final {
     }
 };
 
-tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
+tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const tyloi::weights::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 
-std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
+std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Loader& weights,
                                     std::int64_t layer, const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows);
 void validate_load_options(const CudaExecutionContext &execution);
 std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &source,
@@ -1083,11 +1083,11 @@ struct Model : CausalResources, tyloi::models::CausalModel {
 
     // ---- family adapters (implementations in ops.cpp)
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+    void adapter_load_final_state(const tyloi::weights::Loader& weights,
                                   ::tyloi::DenseTensor& output_norm);
-    void adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights);
+    void adapter_prepare_blocks(const tyloi::weights::Loader& weights);
     std::unique_ptr<deepseek_v41_runtime::Block> adapter_load_block(
-        const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
+        const tyloi::weights::Loader& weights, int layer, int device,
         const std::string& type);
     void adapter_begin_forward(bool capture_raw_hidden) const;
     bool adapter_supports_prepared_prompt() const noexcept { return true; }

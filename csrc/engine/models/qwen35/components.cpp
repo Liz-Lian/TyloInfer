@@ -73,7 +73,7 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
 
 Components Components::load(
     Model& model,
-    const weight_loader::Loader& weights,
+    const ::tyloi::weights::Loader& weights, RoutedCache& cache,
     LayerPlacementConfig& placement,
     int& cpu_layers,
     Executor& executor,
@@ -88,7 +88,7 @@ Components Components::load(
     if (!optional) return components;
     const bool mtp_allowed =
         !placement.enabled() && cpu_layers == 0 && !cpu_offload &&
-        !weights.cache.moe;
+        !cache.moe;
 
     if (components.plan.vision == CudaVisionAdapter::grid_vit) {
         const auto* component = components.graph.component("vision");
@@ -100,7 +100,7 @@ Components Components::load(
         }
         components.grid_vision.emplace(
             grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                weights, *config.grid_vision,
+                weights, cache, *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
     } else if (components.plan.vision != CudaVisionAdapter::none) {

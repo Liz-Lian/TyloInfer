@@ -47,7 +47,7 @@ struct Mtp final : tyloi::models::Mtp {
     int64_t predictor_capacity() const noexcept { return config.max_position_embeddings; }
 
     static std::optional<Mtp> load_if_present(CudaExecutionContext &execution,
-                                              const weight_loader::Loader& weights,
+                                              const ::tyloi::weights::Loader& weights,
                                               const tyloi::models::nemotron_h::Config &main,
                                               std::shared_ptr<const ::tyloi::Tensor> embedding) {
         const bool fusion_present = weights.has("predictor.fusion.weight");

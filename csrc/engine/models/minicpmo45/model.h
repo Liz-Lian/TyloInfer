@@ -17,7 +17,7 @@
 #include <vector>
 
 struct LayerPlacementConfig;
-namespace tyloi::cuda::weight_loader { struct Loader; }
+namespace tyloi::weights { struct Loader; }
 
 namespace tyloi::cuda::minicpmo45 {
 
@@ -36,7 +36,7 @@ struct Model {
 };
 
 Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definition, int64_t context);
-void load(Model&, const weight_loader::Loader&, const LayerPlacementConfig&, int cpu_layers,
+void load(Model&, const tyloi::weights::Loader&, const LayerPlacementConfig&, int cpu_layers,
           const tyloi::ops::YarnScaling&);
 
 } // namespace tyloi::cuda::minicpmo45

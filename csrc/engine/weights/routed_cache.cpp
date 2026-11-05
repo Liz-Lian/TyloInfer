@@ -6,6 +6,12 @@
 
 namespace tyloi::cuda {
 
+tyloi::weights::Loader RoutedCache::loader(const tyloi::source::Source& source,
+        tyloi::weights::Loader::Options options, tyloi::weights::Loader::Placement placement,
+        std::shared_ptr<TqExec> exec) {
+    return tyloi::weights::Loader(source, std::move(options), std::move(placement), *this, std::move(exec));
+}
+
 std::shared_ptr<TqCache> RoutedCache::ensure_tq(const std::shared_ptr<TqExec>& exec) {
     if (!tq) {
         const auto bytes = device_bytes.value_or(moe_expert_cache_budget_bytes(moe));

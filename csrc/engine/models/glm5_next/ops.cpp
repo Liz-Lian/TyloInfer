@@ -79,7 +79,7 @@ static Transform glm_moe(std::vector<Linear> gate_up, Linear down,
     };
 }
 
-struct LayerLoader : weight_loader::Loader {
+struct LayerLoader : ::tyloi::weights::Loader {
     using KdaWeights = glm5_next::KdaWeights;
     using MlaWeights = glm5_next::MlaWeights;
 
@@ -129,7 +129,7 @@ static DenseTensor execute(const Layer& layer, LayerState& activity, const Proje
         [&](DenseTensor branch) { return ffn(project, branch); });
 }
 
-Layer load_layer(const weight_loader::Loader& weights, const Config& config, int index) {
+Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config, int index) {
     MfqCudaGuard guard(weights.placement.device);
     Layer layer;
     layer.device = weights.placement.device;
@@ -160,7 +160,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-void load(Model& model, const weight_loader::Loader& weights,
+void load(Model& model, const ::tyloi::weights::Loader& weights,
           LayerPlacementConfig& placement, int gpu_layers, bool load_layers,
           bool load_input_output) {
     validate_native_placement(weights.placement.tensor, placement, gpu_layers);
@@ -313,7 +313,7 @@ Mtp::Mtp(Projector project, Collectives& copies, CudaProfiler& profiler,
 Mtp::~Mtp() = default;
 Mtp::Mtp(Mtp&&) noexcept = default;
 
-std::optional<Mtp> Mtp::load_if_present(const weight_loader::Loader& weights,
+std::optional<Mtp> Mtp::load_if_present(const ::tyloi::weights::Loader& weights,
                                                       Projector projector, Collectives& copies,
                                                       CudaProfiler& profiler, std::shared_ptr<const ::tyloi::Tensor> embedding,
                                                       const tyloi::models::glm5_next::Config &main) {

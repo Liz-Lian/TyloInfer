@@ -18,7 +18,7 @@ MiniCPMO45Runtime MiniCPMO45Runtime::load(
         const tyloi::cuda::minicpmo45::text::Model& language,
         tyloi::cuda::minicpmo45::text::State& language_state,
         tyloi::cuda::Executor& language_executor,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         CudaExecutionContext& execution) {
     auto &placement = execution.config.layer_placement;
     MfqCudaGuard guard(placement.primary_device());
@@ -39,14 +39,14 @@ struct Components::State {
     std::optional<MiniCPMO45DuplexSession> duplex_session;
 
     State(const text::Model& language, text::State& language_state,
-          Executor& language_executor, const weight_loader::Loader& weights,
+          Executor& language_executor, const tyloi::weights::Loader& weights,
           CudaExecutionContext& execution)
         : runtime(MiniCPMO45Runtime::load(language, language_state, language_executor,
                                          weights, execution)) {}
 };
 
 Components::Components(const text::Model& language, text::State& language_state,
-                       Executor& language_executor, const weight_loader::Loader& weights,
+                       Executor& language_executor, const tyloi::weights::Loader& weights,
                        CudaExecutionContext& execution)
     : state_(std::make_unique<State>(language, language_state, language_executor, weights,
                                      execution)) {}

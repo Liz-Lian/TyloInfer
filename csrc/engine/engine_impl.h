@@ -364,12 +364,12 @@ private:
 
             CudaScope load_scope(
                 execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
-            weight_loader::Loader loader{
+            auto loader = weights_.loader(
                 *source_, execution_->config.weights,
                 {execution_->config.layer_placement.primary_device(), false,
                  execution_->config.drop_file_cache, execution_->config.tensor_parallel,
                  moe_parallel_config(execution_->config)},
-                weights_, execution_->executor().tq()};
+                execution_->executor().tq());
             executor_ = execution_->executor().fork(model_parallel_primary_device(execution_->config));
             const bool preallocate = runtime_options::kv_vram_preallocated();
             model_ = Load(
@@ -381,7 +381,7 @@ private:
             state_ = std::make_unique<State>(*model_, execution_->executor().mode().transposed);
             if (preallocate) state_->preallocate();
             components_.emplace(Parts::load(
-                *model_, loader, execution_->config.layer_placement, execution_->config.dense_cpu_layer_count,
+                *model_, loader, weights_, execution_->config.layer_placement, execution_->config.dense_cpu_layer_count,
                 *executor_, execution_->executor().collectives(),
                 execution_->executor().mmq().kv_cache_capacity,
                 execution_->executor().mode().trace, execution_->executor().mode().trace_layer,

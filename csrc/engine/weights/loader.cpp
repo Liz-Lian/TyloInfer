@@ -36,6 +36,16 @@
 #include <cstdio>
 #include <atomic>
 
+struct tyloi::weights::Loader::Impl {
+    tyloi::cuda::RoutedCache& cache;
+    std::shared_ptr<TqExec> tq;
+};
+
+tyloi::weights::Loader::Loader(const tyloi::source::Source& source, Options options,
+        Placement placement, cuda::RoutedCache& cache, std::shared_ptr<TqExec> tq)
+    : source(source), options(std::move(options)), placement(std::move(placement)),
+      impl_(std::make_shared<Impl>(Impl{cache, std::move(tq)})) {}
+
 void LayerPlacementConfig::prepare(int64_t layers) {
     layer_devices.assign(static_cast<size_t>(layers), primary_device());
     if (!enabled()) return;
@@ -64,7 +74,7 @@ static std::vector<std::uint8_t> read_weight(
     return result;
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::tensor(const std::string& name) const {
+std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::tensor(const std::string& name) const {
     const auto& mfq = source;
     const tyloi::cuda::AllocationScope weight_memory;
     const bool cpu_layer = placement.cpu;
@@ -198,7 +208,7 @@ plan_moe_expert_parallel_slices(
     return plan_parallel_slices(extent, 1, parallel, name);
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::weight(const std::string & name,
+std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::weight(const std::string & name,
         std::optional<TensorParallelAxis> axis_override,
         const std::vector<tyloi::TensorParallelSlice> *
             slices_override) const {
@@ -663,7 +673,7 @@ std::shared_ptr<tyloi::NintRows> load_nint_row_table(
 #endif
 }
 
-tyloi::cuda::Experts tyloi::cuda::weight_loader::Loader::build_experts(const std::string & name,
+tyloi::cuda::Experts tyloi::weights::Loader::build_experts(const std::string & name,
         bool cacheable,
         int layer_id,
         const std::string & projection_role) const {
@@ -672,7 +682,7 @@ tyloi::cuda::Experts tyloi::cuda::weight_loader::Loader::build_experts(const std
 
     const auto& quant = options.quant;
     const tyloi::cuda::AllocationScope weight_memory;
-    auto& cache = this->cache.moe;
+    auto& cache = impl_->cache.moe;
     if (cache && cacheable &&
             !placement.experts.enabled() &&
             options.ranges) {
@@ -801,7 +811,7 @@ std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
 #endif
 }
 
-namespace tyloi::cuda::weight_loader {
+namespace tyloi::weights {
 std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vector<std::string>& names,
     size_t prefix, const std::vector<tyloi::TensorParallelSlice>* slices, bool preserve_boundaries) const {
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers;
@@ -825,7 +835,7 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vec
     });
     if (all_nint && options.grouped && !placement.cpu && !preserve_boundaries) {
         auto group = make_quant_group(layers, true, false);
-        return nint_aliases(layers, group.nint);
+        return cuda::nint_aliases(layers, group.nint);
     }
 #endif
     return layers;
@@ -836,7 +846,7 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::gate_up(const std::v
     return group(names, std::min(prefix, names.size()), slices.empty() ? nullptr : &slices,
                  preserve_boundaries);
 }
-static std::shared_ptr<const ::tyloi::MfeTensor> expert_tensor(Experts weight, Device device) {
+static std::shared_ptr<const ::tyloi::MfeTensor> expert_tensor(cuda::Experts weight, Device device) {
     if (weight.resident) return weight.resident;
     auto result = std::make_shared<::tyloi::MfeTensor>();
     result->n_experts = weight.n_experts;
@@ -866,7 +876,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, 
         return bank;
     }
     if (dtype == "TQ") {
-        auto bank = load_tq_routed_weight(cache, tq, source, name);
+        auto bank = load_tq_routed_weight(impl_->cache, impl_->tq, source, name);
         if (placement.experts.enabled())
             bank->slices = plan_moe_expert_parallel_slices(placement.experts, bank->experts, name);
         return bank;
@@ -893,7 +903,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::routed(const std::string& name, i
     const auto& file = source;
     const auto& dtype=tyloi::require_tensor(file, name).dtype;
     if(dtype=="TQ") {
-        auto weight=load_tq_routed_weight(cache,tq,file,name,experts,output,input);
+        auto weight=load_tq_routed_weight(impl_->cache,impl_->tq,file,name,experts,output,input);
         if (placement.experts.enabled())
             weight->slices = plan_moe_expert_parallel_slices(placement.experts, weight->experts, name);
         return weight;
@@ -935,9 +945,9 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::routed_gate_up(const
 
 
 
-} // namespace tyloi::cuda::weight_loader
+} // namespace tyloi::weights
 
-::tyloi::DenseTensor tyloi::cuda::weight_loader::Loader::host_value(const std::string &name) const {
+::tyloi::DenseTensor tyloi::weights::Loader::host_value(const std::string &name) const {
     const auto &record = tyloi::require_tensor(source, name);
     ::tyloi::ScalarType dtype;
     size_t item_size;
@@ -960,17 +970,17 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::routed_gate_up(const
                          ::tyloi::TensorOptions().dtype(dtype)).clone();
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::host(const std::string &name) const {
+std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::host(const std::string &name) const {
     return std::make_shared<DenseTensor>(host_value(name));
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::native(const std::string &name) const {
+std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::native(const std::string &name) const {
     const tyloi::cuda::AllocationScope weight_memory;
     MfqCudaGuard guard(placement.device);
     return std::make_shared<DenseTensor>(host_value(name).to(::tyloi::kCUDA).contiguous());
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::embedding(const std::string& name, bool independent_output) const {
+std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::embedding(const std::string& name, bool independent_output) const {
     const auto* mapped=tyloi::cuda::env_lookup("TYLOINFER_EMBEDDING_MAPPED");
     const bool mapped_control=mapped && mapped[0]=='2';
     const bool use_mapped=mapped ? mapped[0]=='1' || mapped_control :
@@ -1033,19 +1043,19 @@ BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count) {
 
 } // namespace tyloi::weights
 
-namespace tyloi::cuda::weight_loader {
+namespace tyloi::weights {
 
-weights::BiasWeight Loader::biased(const std::string& weight_name,
+BiasWeight Loader::biased(const std::string& weight_name,
                           const std::string& bias_name) const {
-    weights::BiasWeight result;
+    BiasWeight result;
     result.weight = weight(weight_name);
     if (!bias_name.empty() && has(bias_name)) result.bias = tensor(bias_name);
     return result;
 }
 
-weights::BiasWeight Loader::affine(const std::string& weight_name,
+BiasWeight Loader::affine(const std::string& weight_name,
                           const std::string& bias_name) const {
-    weights::BiasWeight result{weight(weight_name), {}};
+    BiasWeight result{weight(weight_name), {}};
     if (has(bias_name)) {
         auto bias = tensor(bias_name);
         if (bias->dim() != 1 || bias->size(0) != result.weight->size(0)) {
@@ -1065,4 +1075,4 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::norm(const std::string& name, std
     return std::make_shared<DenseTensor>(std::move(weight));
 }
 
-} // namespace tyloi::cuda::weight_loader
+} // namespace tyloi::weights

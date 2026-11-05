@@ -8,16 +8,16 @@
 #include <memory>
 
 struct CudaExecutionContext;
+namespace tyloi::weights { struct Loader; }
 namespace tyloi::cuda {
 class Executor;
-namespace weight_loader { struct Loader; }
 namespace minicpmo45 {
 namespace text { struct Model; class State; }
 
 class Components {
   public:
     Components(const text::Model& language, text::State& language_state,
-               Executor& language_executor, const weight_loader::Loader& weights,
+               Executor& language_executor, const tyloi::weights::Loader& weights,
                CudaExecutionContext& execution);
     ~Components();
 

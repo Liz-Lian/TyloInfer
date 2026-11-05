@@ -11,7 +11,7 @@
 
 namespace tyloi::cuda::gemma4 {
 struct LayerLoader {
-    const weight_loader::Loader& weights;
+    const tyloi::weights::Loader& weights;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto dense(const std::string& name) const {
         return weights.tensor(name);
@@ -116,7 +116,7 @@ struct LayerLoader {
     }
 };
 
-Layer load_layer(const weight_loader::Loader& weights, const Config &config,
+Layer load_layer(const tyloi::weights::Loader& weights, const Config &config,
                  int layer, const std::string &type) {
     MfqCudaGuard guard(weights.placement.device);
     Layer result;
@@ -126,7 +126,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &config,
     return result;
 }
 
-void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConfig& placement,
+void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           int gpu_layers, bool expert_parallel, bool load_layers, bool load_input_output) {
     const auto& config = model.config;
     if (expert_parallel && config.num_experts <= 0)

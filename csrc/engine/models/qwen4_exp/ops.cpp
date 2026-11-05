@@ -422,7 +422,7 @@ static auto qwen_moe(Pipelines& pipelines, std::vector<Linear> gate_up, Linear d
     return result;
 }
 
-struct BlockLoader : weight_loader::Loader {
+struct BlockLoader : tyloi::weights::Loader {
     using GdnWeights = qwen4_exp::GdnWeights;
     using QsaWeights = qwen4_exp::QsaWeights;
     using PleWeights = qwen4_exp::PleWeights;
@@ -583,7 +583,7 @@ struct BlockLoader : weight_loader::Loader {
 };
 
 // Block weights load through the local loader; defined here where it is complete.
-Qwen4Block::Qwen4Block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
+Qwen4Block::Qwen4Block(CudaExecutionContext &execution, const tyloi::weights::Loader& weights,
                        const tyloi::models::qwen4_exp::Config &c, int layer, bool predictor) {
     BlockLoader loader{weights, execution, &router, &prefetch, &tq_graph_ffn};
     loader.role = "qwen4_exp";
@@ -774,7 +774,7 @@ Predictor::Predictor(Predictor&&) noexcept = default;
 Predictor& Predictor::operator=(Predictor&&) noexcept = default;
 
 std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execution,
-                                                      const weight_loader::Loader& weights,
+                                                      const tyloi::weights::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
                                                       std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                       double softcap) {
@@ -2438,7 +2438,7 @@ void Model::adapter_validate_load_options() const {
                               execution->config.n_gpu_layers);
 }
 
-void Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+void Model::adapter_load_final_state(const tyloi::weights::Loader& weights,
                                           ::tyloi::DenseTensor &output_norm) {
     qwen4_exp::BlockLoader loader{weights,*execution};
     loader.role = "qwen4_exp";
@@ -2447,7 +2447,7 @@ void Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& w
     output_norm = ::tyloi::DenseTensor();
 }
 
-std::unique_ptr<qwen4_exp::Qwen4Block> Model::adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer,
+std::unique_ptr<qwen4_exp::Qwen4Block> Model::adapter_load_block(const tyloi::weights::Loader& weights, int layer,
                                                       int, const std::string &) {
     return std::make_unique<qwen4_exp::Qwen4Block>(*execution, weights, config, layer);
 }

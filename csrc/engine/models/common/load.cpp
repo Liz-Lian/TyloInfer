@@ -13,7 +13,7 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 
-void load_important_neuron_branch(const tyloi::cuda::weight_loader::Loader& weights,
+void load_important_neuron_branch(const tyloi::weights::Loader& weights,
                                   int64_t hidden_size, int64_t intermediate_size, tyloi::cuda::Ffn &f,
                                   const std::string &down_name, const std::string &gate_name,
                                   const std::string &up_name) {
@@ -147,7 +147,7 @@ std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::headwise(const s
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-tyloi::cuda::Ffn load_moe_weights(const tyloi::cuda::weight_loader::Loader& weights,
+tyloi::cuda::Ffn load_moe_weights(const tyloi::weights::Loader& weights,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
     TransformerWeightLoader loader{weights};
     loader.keep_quantized_router=true;

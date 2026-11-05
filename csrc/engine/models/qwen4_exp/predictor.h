@@ -6,7 +6,7 @@
 #include "engine/models/qwen4_exp/config.h"
 
 struct CudaExecutionContext;
-namespace tyloi::cuda::weight_loader { struct Loader; }
+namespace tyloi::weights { struct Loader; }
 
 namespace tyloi::cuda { class GatedResidual; }
 
@@ -46,7 +46,7 @@ struct Predictor final : tyloi::models::Mtp {
     Predictor& operator=(Predictor&&) noexcept;
 
     static std::optional<Predictor> load_if_present(CudaExecutionContext &execution,
-                                                      const weight_loader::Loader& weights,
+                                                      const tyloi::weights::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
                                                       std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                       double softcap);

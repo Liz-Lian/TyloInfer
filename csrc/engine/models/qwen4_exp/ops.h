@@ -237,10 +237,10 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     Model(Model&&) noexcept;
     Model& operator=(Model&&) noexcept;
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+    void adapter_load_final_state(const tyloi::weights::Loader& weights,
                                   ::tyloi::DenseTensor& output_norm);
     std::unique_ptr<qwen4_exp::Qwen4Block> adapter_load_block(
-        const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
+        const tyloi::weights::Loader& weights, int layer, int device,
         const std::string& type);
     void adapter_reset(int64_t batch);
     void adapter_begin_forward(bool capture_raw_hidden);

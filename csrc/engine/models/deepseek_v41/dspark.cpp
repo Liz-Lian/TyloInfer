@@ -69,7 +69,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     std::int64_t position = 0;
 
     static std::unique_ptr<Block> load_stage(Pipelines& pipelines,
-                                             const weight_loader::Loader& weights,
+                                             const tyloi::weights::Loader& weights,
                                              const CommonConfig &config, std::int64_t stage) {
         const auto prefix = "predictor.stage." + std::to_string(stage) + ".";
         auto result = std::make_unique<Block>();
@@ -159,7 +159,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     }
 
     static std::optional<DeepseekV41Dspark> load_if_present(CudaExecutionContext &execution,
-                                                            const weight_loader::Loader& weights,
+                                                            const tyloi::weights::Loader& weights,
                                                             const CommonConfig &config,
                                                             std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                             double softcap) {
@@ -515,7 +515,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 };
 
 std::unique_ptr<tyloi::models::Mtp> load_dspark_if_present(CudaExecutionContext &execution,
-                                                    const weight_loader::Loader& weights,
+                                                    const tyloi::weights::Loader& weights,
                                                     const CommonConfig &config,
                                                     std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                     double softcap) {

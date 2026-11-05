@@ -201,7 +201,7 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 
 } // namespace
 
-Layer load_layer(const weight_loader::Loader& weights, const Config& config, int index,
+Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config, int index,
                  const std::string& type) {
     MfqCudaGuard guard(weights.placement.device);
     Layer layer;
@@ -234,7 +234,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConfig& placement,
+void load(Model& model, const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           int gpu_layers, bool load_layers, bool load_input_output, const tyloi::ops::YarnScaling& yarn) {
     const auto& c = model.config;
     placement.prepare(c.num_hidden_layers);

@@ -19,7 +19,7 @@ namespace tyloi::cuda::axial_patch_vision {
 namespace {
 using vision::RmsNorm;
 
-weights::BiasWeight affine(const weight_loader::Loader& loader,
+weights::BiasWeight affine(const ::tyloi::weights::Loader& loader,
               const std::string& prefix, std::int64_t input, std::int64_t output) {
     auto result = loader.affine(prefix + ".weight", prefix + ".bias");
     TYLOINFER_RUNTIME_CHECK(result.weight->size(1) == input && result.weight->size(0) == output,
@@ -27,7 +27,7 @@ weights::BiasWeight affine(const weight_loader::Loader& loader,
     return result;
 }
 
-RmsNorm norm(const weight_loader::Loader& loader,
+RmsNorm norm(const ::tyloi::weights::Loader& loader,
              const std::string& name, std::int64_t width, double epsilon) {
     return RmsNorm{dynamic_cast<const ::tyloi::DenseTensor&>(*loader.norm(name, width)), epsilon};
 }
@@ -64,7 +64,8 @@ struct AlignerWeights {
 
 struct CudaAxialPatchVisionTower::Impl {
     // The model owns the source for the lifetime of its vision component.
-    weight_loader::Loader loader;
+    ::tyloi::weights::Loader loader;
+    RoutedCache& cache;
     Config config;
 
     tyloi::StepSequence<DenseTensor> encode_steps(
@@ -95,7 +96,7 @@ struct CudaAxialPatchVisionTower::Impl {
         DenseTensor value;
         {
             auto patch = affine(host, "vision.patch_embedding", config.patch_width(), hidden);
-            auto loan = loader.cache.borrow(fields::bytes(patch) + activations);
+            auto loan = cache.borrow(fields::bytes(patch) + activations);
             DenseTensor output;
             {
                 auto staged = std::move(patch);
@@ -128,7 +129,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, prefix + ".attention.output", hidden, hidden),
                 affine(host, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate),
                 affine(host, prefix + ".mlp.down", config.intermediate, hidden)};
-            auto loan = loader.cache.borrow(fields::bytes(block) + activations);
+            auto loan = cache.borrow(fields::bytes(block) + activations);
             DenseTensor output;
             {
                 auto weights = std::move(block);
@@ -179,7 +180,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 norm(host, "vision.output_norm.weight", hidden, config.rms_eps),
                 affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
                 affine(host, "vision.aligner.output", config.output_hidden, config.output_hidden)};
-            auto loan = loader.cache.borrow(fields::bytes(weights) + activations);
+            auto loan = cache.borrow(fields::bytes(weights) + activations);
             DenseTensor output;
             {
                 auto staged = std::move(weights);
@@ -219,12 +220,12 @@ struct CudaAxialPatchVisionTower::Impl {
 };
 
 CudaAxialPatchVisionTower CudaAxialPatchVisionTower::load(
-    const weight_loader::Loader& loader, const Config& config) {
+    const ::tyloi::weights::Loader& loader, RoutedCache& cache, const Config& config) {
     config.validate();
     for (const auto* name : {"vision.patch_embedding.weight", "vision.output_norm.weight",
                             "vision.aligner.input.weight", "vision.aligner.output.weight"})
         TYLOINFER_RUNTIME_CHECK(loader.has(name), std::string("axial patch vision tensor missing: ") + name);
-    return CudaAxialPatchVisionTower(std::make_unique<Impl>(Impl{loader, config}));
+    return CudaAxialPatchVisionTower(std::make_unique<Impl>(Impl{loader, cache, config}));
 }
 
 CudaAxialPatchVisionTower::CudaAxialPatchVisionTower(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}

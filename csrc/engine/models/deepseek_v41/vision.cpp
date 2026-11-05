@@ -10,7 +10,7 @@
 namespace tyloi::cuda::deepseek_v41_runtime {
 namespace {
 
-DenseTensor vector_weight(const weight_loader::Loader& weights,
+DenseTensor vector_weight(const tyloi::weights::Loader& weights,
                      const std::string& name,int64_t width) {
     auto value=dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
     TYLOINFER_RUNTIME_CHECK(value.dim()==1 && value.size(0)==width,"DeepSeek-V4.1 vision vector shape mismatch: "+name);
@@ -54,7 +54,7 @@ std::vector<Span> validate_media(const CommonConfig& config,const std::vector<in
 }
 } // namespace
 
-Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,weight_loader::Loader weights,const CommonConfig& config) {
+Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,RoutedCache& cache,const CommonConfig& config) {
     TYLOINFER_RUNTIME_CHECK(source && config.has_vision() && config.image_token_id>=0 &&
         config.image_token_id<config.vocab && config.vision.hidden%config.vision.n_heads==0 &&
         (config.vision.hidden/config.vision.n_heads)%4==0,"invalid DeepSeek-V4.1 CUDA vision config");
@@ -62,7 +62,7 @@ Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,weight_load
             "vision.aligner.input.weight","vision.aligner.output.weight","vision.special_token.start",
             "vision.special_token.newline","vision.special_token.end"})
         TYLOINFER_RUNTIME_CHECK(has_tensor(*source,name),std::string("DeepSeek-V4.1 vision tensor missing: ")+name);
-    return Vision(std::move(source),std::move(weights),config);
+    return Vision(std::move(source),std::move(weights),cache,config);
 }
 
 tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
@@ -74,7 +74,7 @@ tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
     const tyloi::models::axial_patch_vision::Config config{
         v.hidden,v.n_layers,v.n_heads,v.intermediate,v.patch_size,
         v.downsample_ratio,config_.hidden,v.rope_theta,1e-6};
-    auto tower=tyloi::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(weights_,config);
+    auto tower=tyloi::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(weights_,cache_,config);
     auto steps=tower.encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         projector,

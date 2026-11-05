@@ -35,7 +35,7 @@ struct MfqDropFileCacheGuard {
 std::shared_ptr<tyloi::NintRows> load_nint_row_table(
     const tyloi::source::Source& source, const std::string& name, bool prefer_mapping=false);
 
-namespace tyloi::cuda::weight_loader {
+namespace tyloi::weights {
 // The source and cache owner outlive all loading, including streamed media layers.
 struct Loader {
     using DenseTensor = ::tyloi::DenseTensor;
@@ -59,8 +59,6 @@ struct Loader {
     const tyloi::source::Source& source;
     Options options;
     Placement placement;
-    RoutedCache& cache;
-    std::shared_ptr<TqExec> tq;
     const char* role = "";
 
     Loader for_layer(int device, bool cpu) const {
@@ -76,8 +74,8 @@ struct Loader {
     std::shared_ptr<const ::tyloi::Tensor> native(const std::string& name) const;
     std::shared_ptr<const ::tyloi::Tensor> host(const std::string& name) const;
     std::shared_ptr<const ::tyloi::Tensor> norm(const std::string& name, std::int64_t width) const;
-    weights::BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
-    weights::BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
+    BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
+    BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
     std::shared_ptr<const ::tyloi::Tensor> weight(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr) const;
@@ -95,8 +93,13 @@ struct Loader {
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
                          int64_t input, const std::string& role = {}) const;
 private:
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+    Loader(const tyloi::source::Source& source, Options options, Placement placement,
+           cuda::RoutedCache& cache, std::shared_ptr<TqExec> tq);
+    friend struct cuda::RoutedCache;
     DenseTensor host_value(const std::string& name) const;
-    Experts build_experts(const std::string& name, bool cacheable, int layer,
-                          const std::string& role) const;
+    cuda::Experts build_experts(const std::string& name, bool cacheable, int layer,
+                                const std::string& role) const;
 };
-} // namespace tyloi::cuda::weight_loader
+} // namespace tyloi::weights

@@ -43,7 +43,7 @@ class RadioEncoder {
     using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
-    static RadioEncoder load(const tyloi::cuda::weight_loader::Loader& weights,
+    static RadioEncoder load(const ::tyloi::weights::Loader& weights,
                              const RadioVisionConfig &config) {
         config.validate();
         RadioEncoder result;
@@ -225,7 +225,7 @@ class RadioEncoder {
                 weights::bias_rows(fused, 2 * width, width)};
     }
 
-    static Layer load_layer(const tyloi::cuda::weight_loader::Loader& weights,
+    static Layer load_layer(const ::tyloi::weights::Loader& weights,
                             const RadioVisionConfig &config, std::int64_t index) {
         const std::string prefix = "vision.block." + std::to_string(index);
         const auto fused = weights.biased(prefix + ".attention.qkv.weight", prefix + ".attention.qkv.bias");
@@ -321,7 +321,7 @@ class RadioProjector {
     using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
-    static RadioProjector load(const tyloi::cuda::weight_loader::Loader& weights,
+    static RadioProjector load(const ::tyloi::weights::Loader& weights,
                                const RadioVisionConfig &config) {
         RadioProjector result;
         result.norm_weight =
@@ -433,7 +433,7 @@ class RadioVisionTower {
     using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
-    static RadioVisionTower load(const tyloi::cuda::weight_loader::Loader& weights,
+    static RadioVisionTower load(const ::tyloi::weights::Loader& weights,
                                  const RadioVisionConfig &config) {
         return RadioVisionTower(RadioEncoder::load(weights, config),
                                 RadioProjector::load(weights, config), config);
@@ -491,7 +491,7 @@ class CudaRadioPromptComponent {
     using DenseTensor = tyloi::DenseTensor;
 #endif
   public:
-    static CudaRadioPromptComponent load(const tyloi::cuda::weight_loader::Loader& weights,
+    static CudaRadioPromptComponent load(const ::tyloi::weights::Loader& weights,
                                          const RadioVisionConfig &config,
                                          std::string input_contract,
                                          std::string position_policy) {

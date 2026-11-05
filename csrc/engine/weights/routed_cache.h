@@ -1,5 +1,7 @@
 #pragma once
 
+#include "engine/weights/loader.h"
+
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -27,6 +29,9 @@ struct RoutedCache {
     std::size_t host_bytes = 0;
     std::size_t host_limit = 0;
 
+    tyloi::weights::Loader loader(const tyloi::source::Source& source,
+        tyloi::weights::Loader::Options options, tyloi::weights::Loader::Placement placement,
+        std::shared_ptr<TqExec> exec);
     std::shared_ptr<TqCache> ensure_tq(const std::shared_ptr<TqExec>& exec);
     std::vector<std::pair<std::string, double>> metrics() const;
     std::size_t budget() const;

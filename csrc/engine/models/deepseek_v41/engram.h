@@ -308,7 +308,7 @@ class EngramTable {
 
 class Engram {
   public:
-    static std::unique_ptr<Engram> load(const weight_loader::Loader& weights, const EngramConfig &config,
+    static std::unique_ptr<Engram> load(const tyloi::weights::Loader& weights, const EngramConfig &config,
                                         int layer, std::size_t cache_rows) {
         const auto found =
             std::find(config.engram_layer_ids.begin(), config.engram_layer_ids.end(), layer);

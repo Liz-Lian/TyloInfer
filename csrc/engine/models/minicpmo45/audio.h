@@ -12,7 +12,7 @@ struct MiniCPMO45WhisperAttention {
     int64_t heads = 16;
     int64_t head_dim = 64;
 
-    static MiniCPMO45WhisperAttention load(const tyloi::cuda::weight_loader::Loader& weights, const std::string &prefix) {
+    static MiniCPMO45WhisperAttention load(const tyloi::weights::Loader& weights, const std::string &prefix) {
         MiniCPMO45WhisperAttention result;
         result.q = weights.biased(prefix + ".query.weight", prefix + ".query.bias");
         result.k = weights.biased(prefix + ".key.weight");
@@ -72,7 +72,7 @@ struct MiniCPMO45WhisperLayer {
     ::tyloi::DenseTensor key_cache;
     ::tyloi::DenseTensor value_cache;
 
-    static MiniCPMO45WhisperLayer load(const tyloi::cuda::weight_loader::Loader& weights,
+    static MiniCPMO45WhisperLayer load(const tyloi::weights::Loader& weights,
                                        int index) {
         const std::string prefix = "audio.block." + std::to_string(index);
         MiniCPMO45WhisperLayer result;
@@ -130,7 +130,7 @@ struct MiniCPMO45AudioEncoder {
     tyloi::weights::BiasWeight projector1;
     tyloi::weights::BiasWeight projector2;
 
-    static MiniCPMO45AudioEncoder load(const tyloi::cuda::weight_loader::Loader& weights) {
+    static MiniCPMO45AudioEncoder load(const tyloi::weights::Loader& weights) {
         MiniCPMO45AudioEncoder result;
         result.conv1_weight =
             dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv1.weight"));

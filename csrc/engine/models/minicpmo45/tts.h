@@ -109,7 +109,7 @@ struct Tts {
     std::vector<Layer> layers;
     ::tyloi::DenseTensor output_norm;
     ::tyloi::DenseTensor code_head;
-    static Tts load(const weight_loader::Loader& weights) {
+    static Tts load(const tyloi::weights::Loader& weights) {
         MfqCudaGuard guard(weights.placement.device);
         Tts result;
         result.device = weights.placement.device;

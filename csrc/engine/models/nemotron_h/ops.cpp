@@ -509,7 +509,7 @@ void validate_components(const tyloi::ModelGraph& graph) {
             "implementation under the predictor tensor root");
 }
 
-Layer load_layer(Pipelines& pipelines, const weight_loader::Loader& weights,
+Layer load_layer(Pipelines& pipelines, const ::tyloi::weights::Loader& weights,
                  const Config& config, int layer, const std::string& type,
                  std::string_view tensor_root) {
     MfqCudaGuard guard(weights.placement.device);
@@ -566,7 +566,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-void load(Model& model, const weight_loader::Loader& weights, Pipelines& pipelines,
+void load(Model& model, const ::tyloi::weights::Loader& weights, Pipelines& pipelines,
           LayerPlacementConfig& placement, int gpu_layers, bool expert_parallel,
           bool load_layers, bool load_input_output) {
     const auto& config = model.config;

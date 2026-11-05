@@ -32,7 +32,7 @@ struct MiniCPMO45Runtime {
     static MiniCPMO45Runtime load(const tyloi::cuda::minicpmo45::text::Model& language,
                                   tyloi::cuda::minicpmo45::text::State& language_state,
                                   tyloi::cuda::Executor& language_executor,
-                                  const tyloi::cuda::weight_loader::Loader& weights,
+                                  const tyloi::weights::Loader& weights,
                                   CudaExecutionContext& execution);
 
     struct EncodeOps {

@@ -157,7 +157,7 @@ struct RuntimeComponents {
 template <typename Model>
 RuntimeComponents<Model> load_runtime_components(
     Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
     bool load_optional_components);
 
 
@@ -165,13 +165,13 @@ template <>
 RuntimeComponents<tyloi::cuda::qwen4_exp::Model>
 load_runtime_components(
     tyloi::cuda::qwen4_exp::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
     bool load_optional_components);
 
 RuntimeComponents<tyloi::cuda::glm5_next::Model>
 load_runtime_components(
     tyloi::cuda::glm5_next::Model& model,
-    const tyloi::cuda::weight_loader::Loader& weights,
+    const tyloi::weights::Loader& weights,
     bool load_optional_components, tyloi::cuda::Projector projector,
     tyloi::cuda::Collectives& copies, CudaProfiler& profiler);
 
@@ -179,13 +179,13 @@ template <>
 RuntimeComponents<tyloi::cuda::deepseek_v41::Model>
 load_runtime_components(
     tyloi::cuda::deepseek_v41::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
     bool load_optional_components);
 
 RuntimeComponents<tyloi::cuda::nemotron_h::Model>
 load_runtime_components(
     tyloi::cuda::nemotron_h::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
     bool load_optional_components,
     CudaExecutionContext& execution);
 
@@ -195,12 +195,12 @@ load_runtime_components(
     tyloi::cuda::minicpmo45::text::Model& model,
     tyloi::cuda::minicpmo45::text::State& state,
     tyloi::cuda::Executor& executor,
-    const tyloi::cuda::weight_loader::Loader& weights,
+    const tyloi::weights::Loader& weights,
     bool load_optional_components, CudaExecutionContext& execution);
 
 template <>
 RuntimeComponents<tyloi::cuda::minicpmo45::Model>
 load_runtime_components(
     tyloi::cuda::minicpmo45::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
     bool load_optional_components);

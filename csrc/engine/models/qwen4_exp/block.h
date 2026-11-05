@@ -69,7 +69,7 @@ struct Qwen4Block final {
         return ::tyloi::cuda::cat(outputs,0);
     }
     // Defined in ops.cpp, next to the loader it uses.
-    Qwen4Block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
+    Qwen4Block(CudaExecutionContext &execution, const tyloi::weights::Loader& weights,
                const tyloi::models::qwen4_exp::Config &c, int layer, bool predictor = false);
     bool retain_graph_storage=false,retained_prefix=false;
     void reset(int64_t) {

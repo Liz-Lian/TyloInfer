@@ -54,7 +54,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-void load(Model& model, const weight_loader::Loader& weights, const LayerPlacementConfig& placement,
+void load(Model& model, const tyloi::weights::Loader& weights, const LayerPlacementConfig& placement,
           int cpu_layers, const tyloi::ops::YarnScaling& yarn) {
     const auto& config = model.config;
     MfqCudaGuard guard(weights.placement.device);

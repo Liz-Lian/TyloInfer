@@ -110,7 +110,7 @@ namespace {
 
 auto load_qwen(
     std::shared_ptr<const ModelSource> source,
-    const weight_loader::Loader& weights,
+    const tyloi::weights::Loader& weights,
     LayerPlacementConfig& placement,
     tyloi::ops::YarnScaling& yarn,
     int& cpu_layers,
@@ -217,9 +217,9 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
                     std::move(definition), models::graph(*source).backbone, options.context_size);
                 auto owner = std::make_shared<gemma4::Model>(gemma4::read(source, definition, options.context_size));
                 model = owner;
-                weight_loader::Loader loader{*source, load.weights,
+                auto loader = weights->loader(*source, load.weights,
                     {load.layer_placement.primary_device(), false, load.drop_file_cache,
-                     load.tensor_parallel, moe_parallel_config(load)}, *weights, root->tq()};
+                     load.tensor_parallel, moe_parallel_config(load)}, root->tq());
                 load.dense_cpu_layer_count = 0;
                 gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
                 state = model->make_state();

@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-namespace tyloi::cuda::weight_loader { struct Loader; }
+namespace tyloi::weights { struct Loader; }
 
 namespace tyloi::cuda {
 class Collectives;
@@ -40,7 +40,7 @@ using DenseTensor = ::tyloi::DenseTensor;
 
 class CudaGridVisionEncoder {
   public:
-    static CudaGridVisionEncoder load(const weight_loader::Loader& weights,
+    static CudaGridVisionEncoder load(const ::tyloi::weights::Loader& weights, RoutedCache& cache,
                                       const GridVisionConfig &config);
 
     tyloi::StepSequence<DenseTensor> encode(
@@ -161,7 +161,7 @@ class CudaGridVisionEncoder {
 class CudaGridVisionPromptComponent {
   public:
     static CudaGridVisionPromptComponent
-    load(const weight_loader::Loader& weights,
+    load(const ::tyloi::weights::Loader& weights, RoutedCache& cache,
          const GridVisionConfig &vision, int64_t image_token_id, int64_t video_token_id,
          std::string input_contract, std::string position_policy);
 

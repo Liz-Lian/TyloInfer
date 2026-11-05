@@ -13,7 +13,7 @@
 namespace tyloi { class ModelSource; }
 
 struct TransformerWeightLoader {
-    const tyloi::cuda::weight_loader::Loader& weights;
+    const tyloi::weights::Loader& weights;
     bool preserve_projection_boundaries = false;
     bool cpu_offloaded = false;
     std::size_t shared_gate_up_compatible_prefix = 2;
@@ -51,11 +51,11 @@ struct MoeWeightLoadOptions {
 };
 
 tyloi::cuda::Ffn load_moe_weights(
-    const tyloi::cuda::weight_loader::Loader& weights,
+    const tyloi::weights::Loader& weights,
     std::string_view prefix,
     const MoeWeightLoadOptions& options);
 void load_important_neuron_branch(
-    const tyloi::cuda::weight_loader::Loader& weights,
+    const tyloi::weights::Loader& weights,
     int64_t hidden_size,
     int64_t intermediate_size,
     tyloi::cuda::Ffn& ffn,

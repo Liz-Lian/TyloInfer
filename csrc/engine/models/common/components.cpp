@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/weights/loader.h"
+#include "engine/weights/routed_cache.h"
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/models/glm5_next/mtp.h"
@@ -29,7 +30,7 @@ namespace {
 // causal model supplies weight relationships and layer traversal.
 template <class Model> struct ModelLoader {
     Model &model;
-    const tyloi::cuda::weight_loader::Loader& weights;
+    const tyloi::weights::Loader& weights;
     auto embedding(const std::string& name) {
         return weights.embedding(name,
                               model.has_independent_output_weights(*this));
@@ -65,7 +66,7 @@ template <class Model> struct ModelLoader {
 template <typename Model>
 RuntimeComponents<Model> load_runtime_components(
         Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<Model> result{model.graph, model.plan};
     if (load_optional_components &&
@@ -80,7 +81,7 @@ RuntimeComponents<Model> load_runtime_components(
 template <>
 RuntimeComponents<tyloi::cuda::qwen4_exp::Model> load_runtime_components(
         tyloi::cuda::qwen4_exp::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<tyloi::cuda::qwen4_exp::Model> result{model.graph, model.plan};
     if (!load_optional_components) return result;
@@ -115,7 +116,7 @@ RuntimeComponents<tyloi::cuda::qwen4_exp::Model> load_runtime_components(
         const auto* component = result.graph.component("vision");
         result.grid_vision.emplace(
             tyloi::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                weights, config, image, video,
+                weights, model.execution->weights, config, image, video,
                 component->input_contract, component->position_policy));
         result.vision_available = true;
     } else if (result.plan.vision != tyloi::cuda::CudaVisionAdapter::none) {
@@ -146,7 +147,7 @@ RuntimeComponents<tyloi::cuda::qwen4_exp::Model> load_runtime_components(
 
 RuntimeComponents<tyloi::cuda::glm5_next::Model> load_runtime_components(
         tyloi::cuda::glm5_next::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         bool load_optional_components, tyloi::cuda::Projector projector,
         tyloi::cuda::Collectives& copies, CudaProfiler& profiler) {
     RuntimeComponents<tyloi::cuda::glm5_next::Model> result{model.graph, model.plan};
@@ -213,10 +214,10 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
     if (execution.config.n_gpu_layers >= 0 && execution.config.n_gpu_layers < model.num_hidden_layers())
         throw std::runtime_error("--n-gpu-layers currently supports dense Qwen-style blocks only");
     CudaScope model_guard(execution.config.layer_placement.primary_device(), execution.executor().contexts());
-    weight_loader::Loader tensors{*model.source, execution.config.weights,
+    auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
          execution.config.tensor_parallel, moe_parallel_config(execution.config)},
-        execution.weights, execution.executor().tq()};
+        execution.executor().tq());
     ModelLoader<Model> weights{model, tensors};
     model.load_weights(weights, load_blocks);
     if (moe_expert_cache_has_sources(execution.weights.moe) &&
@@ -300,10 +301,10 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
             }
         }
     }
-    weight_loader::Loader tensors{*model.source, execution.config.weights,
+    auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
          execution.config.tensor_parallel, moe_parallel_config(execution.config)},
-        execution.weights, execution.executor().tq()};
+        execution.executor().tq());
     ModelLoader<Model> weights{model, tensors};
     model.load_weights(weights, load_blocks);
     if (moe_expert_cache_has_sources(execution.weights.moe) &&
@@ -315,7 +316,7 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
 
 RuntimeComponents<tyloi::cuda::deepseek_v41::Model> load_runtime_components(
         tyloi::cuda::deepseek_v41::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         bool load_optional_components) {
     using tyloi::cuda::deepseek_v41::Model;
     RuntimeComponents<Model> result{model.graph, model.plan};
@@ -330,7 +331,7 @@ RuntimeComponents<tyloi::cuda::deepseek_v41::Model> load_runtime_components(
     }
     if(result.plan.vision==tyloi::cuda::CudaVisionAdapter::deepseek_v41) {
         model.vision = std::make_unique<tyloi::cuda::deepseek_v41_runtime::Vision>(
-            tyloi::cuda::deepseek_v41_runtime::Vision::load(model.source,weights,model.config));
+            tyloi::cuda::deepseek_v41_runtime::Vision::load(model.source, weights, model.execution->weights, model.config));
         result.vision_available=true;
     }
     if (result.plan.predictor ==
@@ -348,7 +349,7 @@ RuntimeComponents<tyloi::cuda::deepseek_v41::Model> load_runtime_components(
 
 RuntimeComponents<tyloi::cuda::nemotron_h::Model> load_runtime_components(
         tyloi::cuda::nemotron_h::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         bool load_optional_components,
         CudaExecutionContext& execution) {
     RuntimeComponents<tyloi::cuda::nemotron_h::Model> result{model.graph, model.plan};
@@ -393,7 +394,7 @@ load_runtime_components(
         tyloi::cuda::minicpmo45::text::Model& model,
         tyloi::cuda::minicpmo45::text::State& state,
         tyloi::cuda::Executor& executor,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         bool load_optional_components, CudaExecutionContext& execution) {
     RuntimeComponents<tyloi::cuda::minicpmo45::text::Model> result{model.graph, model.plan};
     if (!load_optional_components ||
@@ -416,14 +417,14 @@ template <>
 RuntimeComponents<tyloi::cuda::minicpmo45::Model>
 load_runtime_components(
         tyloi::cuda::minicpmo45::Model& model,
-        const tyloi::cuda::weight_loader::Loader& weights,
+        const tyloi::weights::Loader& weights,
         bool) {
     RuntimeComponents<tyloi::cuda::minicpmo45::Model> result{model.graph, model.plan};
     return result;
 }
 
 #define TYLOINFER_INSTANTIATE_COMPONENTS(TYPE)                                  \
-    template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const tyloi::cuda::weight_loader::Loader&, bool)
+    template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const tyloi::weights::Loader&, bool)
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 TYLOINFER_INSTANTIATE_COMPONENTS(tyloi::cuda::gemma4::Model);

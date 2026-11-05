@@ -23,7 +23,7 @@ namespace tyloi::cuda {
 
 // Read once at owner construction; controls read on access stay in options.h.
 struct CudaLoadConfig {
-    weight_loader::Loader::Options weights;
+    tyloi::weights::Loader::Options weights;
     bool report_cuda_memory = false;
     bool model_parallel_cuda_graph = true;
     bool tensor_parallel_cuda_graph = true;

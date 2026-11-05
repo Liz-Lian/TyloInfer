@@ -9,7 +9,7 @@
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 
-tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
+tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const tyloi::weights::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k) {
     auto result = load_moe_weights(weights, prefix,
@@ -28,7 +28,7 @@ tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& 
     return result;
 }
 
-std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
+std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Loader& weights,
                                     std::int64_t layer,
                                     const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows) {
     TYLOINFER_RUNTIME_CHECK(shared, "missing DeepSeek-V4.1 CUDA state");
@@ -299,12 +299,12 @@ void Model::adapter_validate_load_options() const {
     deepseek_v41_runtime::validate_load_options(*execution);
 }
 
-void Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+void Model::adapter_load_final_state(const tyloi::weights::Loader& weights,
                                      ::tyloi::DenseTensor& output_norm) {
     CausalResources::adapter_load_final_state(weights, output_norm);
 }
 
-void Model::adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights) {
+void Model::adapter_prepare_blocks(const tyloi::weights::Loader& weights) {
     shared = deepseek_v41_runtime::load_shared_state(weights.source, config);
 }
 
@@ -320,7 +320,7 @@ bool Model::adapter_prefetch_token_rows(Model&, const ::tyloi::DenseTensor& ids)
 }
 
 std::unique_ptr<deepseek_v41_runtime::Block> Model::adapter_load_block(
-        const tyloi::cuda::weight_loader::Loader& weights, int layer, int,
+        const tyloi::weights::Loader& weights, int layer, int,
         const std::string& type) {
     TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");
     return deepseek_v41_runtime::load_block(execution->executor().pipelines(), weights, layer, shared,
