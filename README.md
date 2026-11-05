@@ -64,14 +64,8 @@ NVIDIA RTX 3090 Ti · 24 GiB VRAM · 4K Python code continuation · hot API requ
 | OpenJet | 1,750 | 39.1 | 103.4 | — |
 | tqLLM | 1,821 | 42.5 | 108.2 | **173.1** (7) |
 
-**NInfer-3090 · native Q4/Q5 weights (separate comparison)**
-
-| Engine | Prompt processing | Generation | Native MTP | DFlash2 (drafts) |
-| --- | ---: | ---: | ---: | ---: |
-| NInfer-3090 | 3,369 | 52.5 | 135.8 | 166.9 (7) |
-
-- NInfer-all uses **8-bit (INT8) activations for prefill**. tqLLM and NInfer-3090 also enable INT8 prefill GEMMs. Native MTP uses 3 drafts; TyloInfer adapts up to 3.
-- ik_llama.cpp and tqLLM ran in WSL2; the others ran on Windows. NInfer-3090 uses different native weights and its template adds 13 prompt tokens.
+- NInfer-all uses **8-bit (INT8) activations for prefill**. tqLLM also enables INT8 prefill GEMMs. Native MTP uses 3 drafts; TyloInfer adapts up to 3.
+- ik_llama.cpp and tqLLM ran in WSL2; the others ran on Windows.
 - tqLLM uses an approximate 4-bit shortlist / INT8-rescored output head and a Q8_0 DFlash2 companion; the other DFlash2 companions use Q4_0.
 
 ## Quick start
