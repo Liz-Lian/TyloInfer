@@ -825,7 +825,7 @@ tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count,
         routing.activation == tyloi::ops::RouterActivation::sigmoid,
         routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
         routing.normalize, routing.delayed_softmax, mfq_nullopt, 1e-20, routing.scale);
-    return {result.at(0), result.at(1)};
+    return {std::make_shared<DenseTensor>(result.at(0)), std::make_shared<DenseTensor>(result.at(1))};
 }
 tyloi::DenseTensor expert_scale(tyloi::DenseTensor weights, tyloi::DenseTensor ids, const tyloi::DenseTensor& scales) {
     MfqCudaGuard guard(weights.device().index);
@@ -859,25 +859,25 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
             return project.glu(*gate, DenseTensor(input), route, true);
         });
         prefetch_down();
-        result.pairs = profiler.measure("gemma.moe_down", [&] {
+        result.pairs = std::make_shared<DenseTensor>(profiler.measure("gemma.moe_down", [&] {
             return project.run(*down, hidden, route);
-        });
+        }));
         return result;
     }
     auto packed = profiler.measure("gemma.moe_gate_up", [&] {
         return project.run(*gate, DenseTensor(input), route);
     });
     prefetch_down();
-    if (trace) result.gate_up = packed.to(::tyloi::kFloat32).contiguous().clone();
+    if (trace) result.gate_up = std::make_shared<DenseTensor>(packed.to(::tyloi::kFloat32).contiguous().clone());
     if (!trace && packed.size(0) <= 4) {
-        result.pairs = profiler.measure("gemma.moe_geglu_down", [&] {
+        result.pairs = std::make_shared<DenseTensor>(profiler.measure("gemma.moe_geglu_down", [&] {
             return project.gated(*down, packed, route, true);
-        });
+        }));
         return result;
     }
     auto hidden = profiler.measure("gemma.moe_geglu", [&] { return moe_geglu_split_cuda(packed); });
-    if (trace) result.hidden = hidden.to(::tyloi::kFloat32).contiguous().clone();
-    result.pairs = profiler.measure("gemma.moe_down", [&] { return project.run(*down, hidden, route); });
+    if (trace) result.hidden = std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).contiguous().clone());
+    result.pairs = std::make_shared<DenseTensor>(profiler.measure("gemma.moe_down", [&] { return project.run(*down, hidden, route); }));
     return result;
 #else
     throw std::runtime_error("Routed GEGLU expert weights require a compatibility build");

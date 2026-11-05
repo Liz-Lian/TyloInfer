@@ -91,24 +91,33 @@ MfqOptional<::tyloi::DenseTensor> minicpmo45_attention_mask(
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace {
+const tyloi::DenseTensor& dense(const tyloi::Tensor& tensor) {
+    const auto* result = dynamic_cast<const tyloi::DenseTensor*>(&tensor);
+    if (!result) throw std::invalid_argument("attention requires dense tensors");
+    return *result;
+}
 bool rope_kv_supported(const tyloi::ops::AttentionInput& input,
                                const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
     return input.query.defined() && input.key.defined() && input.positions.defined() &&
-        input.write_positions.defined() && input.query.dim() == 4 && input.key.dim() == 4 &&
+        input.write_positions.defined() && table.cos && table.sin &&
+        input.query.dim() == 4 && input.key.dim() == 4 &&
         input.query.device().is_cuda() &&
         input.write_positions.dim() == 1 && input.positions.dim() == 1 && input.query.size(2) == 1 &&
-        !kv.paged() && !kv.ring && table.rotary_dim == 128 && table.sections.numel() == 0 &&
+        !kv.paged() && !kv.ring && table.rotary_dim == 128 &&
+        (!table.sections || !table.sections->defined() || table.sections->numel() == 0) &&
         input.query.size(1) == 32 && input.key.size(1) == 8 && input.query.size(3) == 128 &&
         kv.dtype == tyloi::ScalarType::bfloat16;
 }
-void check_device(const tyloi::DenseTensor& query, const tyloi::DenseTensor& tensor) {
+void check_device(const tyloi::Tensor& query, const tyloi::Tensor& tensor) {
     if (tensor.defined() && tensor.numel() != 0 && tensor.device() != query.device())
         throw std::invalid_argument("fused attention tensor devices do not match");
 }
 void check_rope_kv_devices(const tyloi::ops::AttentionInput& input,
                            const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
-    for (const tyloi::DenseTensor* tensor : {&input.key, &input.value, &input.write_positions,
-                                      &table.cos, &table.sin, &kv.physical_key, &kv.physical_value})
+    for (const tyloi::Tensor* tensor : {&input.key, &input.value, &input.write_positions,
+                                      table.cos.get(), table.sin.get(),
+                                      static_cast<const tyloi::Tensor*>(&kv.physical_key),
+                                      static_cast<const tyloi::Tensor*>(&kv.physical_value)})
         check_device(input.query, *tensor);
 }
 }
@@ -126,11 +135,11 @@ std::optional<tyloi::DenseTensor> ops::norm_rope_kv(const tyloi::ops::AttentionI
     MfqCudaGuard guard(input.query.device().index);
     using T = ::tyloi::DenseTensor;
     return tyloi::ops::measure("full.qk_norm_rope_kv_write", [&]() -> tyloi::DenseTensor {
-        auto q = T(input.query);
+        auto q = dense(input.query);
         return minicpm_qk_norm_rope_cache_write_bf16_cuda(
-            q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(), T(q_norm), T(k_norm),
-            T(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
-            T(input.write_positions), T(table.cos), T(table.sin), T(kv.physical_key), T(kv.physical_value),
+            q.contiguous(), dense(input.key).contiguous(), dense(input.value).contiguous(), T(q_norm), T(k_norm),
+            dense(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
+            dense(input.write_positions), dense(*table.cos), dense(*table.sin), T(kv.physical_key), T(kv.physical_value),
             eps, offset);
     });
 }
@@ -144,11 +153,11 @@ std::optional<tyloi::DenseTensor> ops::rope_kv(const tyloi::ops::AttentionInput&
     MfqCudaGuard guard(input.query.device().index);
     using T = ::tyloi::DenseTensor;
     return tyloi::ops::measure("full.rope_kv_write", [&]() -> tyloi::DenseTensor {
-        auto q = T(input.query);
+        auto q = dense(input.query);
         return minicpm_bf16_rope_cache_write_cuda(
-            q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(),
-            T(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
-            T(input.write_positions), T(table.cos), T(table.sin), T(kv.physical_key), T(kv.physical_value),
+            q.contiguous(), dense(input.key).contiguous(), dense(input.value).contiguous(),
+            dense(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
+            dense(input.write_positions), dense(*table.cos), dense(*table.sin), T(kv.physical_key), T(kv.physical_value),
             table.rotary_dim);
     });
 }
@@ -159,10 +168,10 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
     MfqCudaGuard guard(input.query.device().index);
     using DenseTensor = ::tyloi::DenseTensor;
     const NativeAttentionInput request{
-        DenseTensor(input.query), DenseTensor(input.key), DenseTensor(input.value), DenseTensor(input.positions),
-        DenseTensor(input.write_positions),
-        input.sequence_lengths ? MfqOptional<DenseTensor>{DenseTensor(*input.sequence_lengths)} : mfq_nullopt,
-        input.attention_mask ? MfqOptional<DenseTensor>{DenseTensor(*input.attention_mask)} : mfq_nullopt,
+        dense(input.query), dense(input.key), dense(input.value), dense(input.positions),
+        dense(input.write_positions),
+        input.sequence_lengths ? MfqOptional<DenseTensor>{dense(*input.sequence_lengths)} : mfq_nullopt,
+        input.attention_mask ? MfqOptional<DenseTensor>{dense(*input.attention_mask)} : mfq_nullopt,
         input.cache_position, input.planned_kv_length, input.decode_attention_parts};
     const NativeKvView kv{DenseTensor(public_kv.visible_key), DenseTensor(public_kv.visible_value),
         DenseTensor(public_kv.physical_key), DenseTensor(public_kv.physical_value),
@@ -466,7 +475,11 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                     kv.visible_value.contiguous(), attn_scale, true);
     });
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    return AttentionResult{std::make_shared<::tyloi::DenseTensor>(std::move(attention)), attention_token_major};
+#else
     return AttentionResult{std::move(attention), attention_token_major};
+#endif
 }
 
 } // namespace tyloi::cuda

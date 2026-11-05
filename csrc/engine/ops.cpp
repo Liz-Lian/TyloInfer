@@ -19,27 +19,51 @@
 namespace tyloi::ops {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace {
+const DenseTensor& dense(const Tensor& value) {
+    const auto* result = dynamic_cast<const DenseTensor*>(&value);
+    if (!result || result->is_encoded()) throw std::invalid_argument("operation requires a dense tensor");
+    return *result;
+}
+DenseTensor& dense(Tensor& value) {
+    auto* result = dynamic_cast<DenseTensor*>(&value);
+    if (!result || result->is_encoded()) throw std::invalid_argument("operation requires a dense tensor");
+    return *result;
+}
+std::shared_ptr<Tensor> owner(DenseTensor value) {
+    return std::make_shared<DenseTensor>(std::move(value));
+}
+std::vector<std::shared_ptr<Tensor>> owners(std::vector<DenseTensor> values) {
+    std::vector<std::shared_ptr<Tensor>> result;
+    result.reserve(values.size());
+    for (auto& value : values) result.push_back(owner(std::move(value)));
+    return result;
+}
 void device(Device value) {
     if (!value.is_cpu() && !value.is_cuda())
         throw std::invalid_argument("unsupported tensor device");
     if (value.is_cuda()) (void)cuda::Executor::current();
 }
-void input(const DenseTensor& value) {
+void input(const Tensor& value_tensor) {
+    const auto& value = dense(value_tensor);
     if (!value.defined()) throw std::invalid_argument("undefined tensor");
     value.require_dense();
     device(value.device());
 }
-void compatible(const DenseTensor& left, const DenseTensor& right) {
+void compatible(const Tensor& left_tensor, const Tensor& right_tensor) {
+    const auto& left = ::tyloi::ops::dense(left_tensor);
+    const auto& right = ::tyloi::ops::dense(right_tensor);
     input(left);
     input(right);
     if (left.device() != right.device())
         throw std::invalid_argument("tensor devices do not match");
 }
-void require_cuda(const DenseTensor& value) {
+void require_cuda(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     if (!value.device().is_cuda()) throw std::invalid_argument("operation requires a CUDA tensor");
 }
-bool encoded(std::initializer_list<const DenseTensor*> values) {
-    for (const auto* value : values) if (value->is_encoded()) return true;
+bool encoded(std::initializer_list<const Tensor*> values) {
+    for (const auto* value : values)
+        if (value && (!dynamic_cast<const DenseTensor*>(value) || value->is_encoded())) return true;
     return false;
 }
 }
@@ -53,7 +77,7 @@ AttentionResult attention(const AttentionInput& request, const state::KvView& kv
     if (request.sequence_lengths) input(*request.sequence_lengths);
     if (request.attention_mask) input(*request.attention_mask);
     if (request.query.dim() != 4 || request.key.dim() != 4 || request.value.dim() != 4 ||
-        request.key.sizes() != request.value.sizes() ||
+        dense(request.key).sizes() != dense(request.value).sizes() ||
         request.query.size(0) != request.key.size(0) ||
         request.query.size(2) != request.key.size(2) ||
         request.query.size(3) != request.key.size(3) || request.key.size(1) <= 0 ||
@@ -67,8 +91,11 @@ AttentionResult attention(const AttentionInput& request, const state::KvView& kv
     return cuda::ops::attention(request, kv, config);
 }
 
-DenseTensor attention(DenseTensor query, DenseTensor key, DenseTensor value,
-                 const std::optional<DenseTensor>& mask, double scale) {
+std::shared_ptr<Tensor> attention(const Tensor& query_tensor, const Tensor& key_tensor, const Tensor& value_tensor,
+                 const Tensor* mask, double scale) {
+    const auto& query = dense(query_tensor);
+    const auto& key = dense(key_tensor);
+    const auto& value = dense(value_tensor);
     compatible(query, key);
     compatible(query, value);
     if (mask) compatible(query, *mask);
@@ -84,47 +111,55 @@ DenseTensor attention(DenseTensor query, DenseTensor key, DenseTensor value,
             throw std::invalid_argument("attention query, key and value geometry is incompatible");
     }
     require_cuda(query);
-    return cuda::ops::attention(std::move(query), std::move(key), std::move(value), mask, scale);
+    const std::optional<DenseTensor> dense_mask = mask ? std::optional<DenseTensor>(dense(*mask)) : std::nullopt;
+    return owner(cuda::ops::attention(query, key, value, dense_mask, scale));
 }
 
-DenseTensor rope(DenseTensor value, DenseTensor positions, const RopeTable& table, bool bf16, bool grid) {
-    compatible(value, table.cos);
-    compatible(value, table.sin);
-    table.sections.require_dense(); table.empty_sections.require_dense();
-    table.interleaved_order.require_dense(); table.interleaved_inverse.require_dense();
+std::shared_ptr<Tensor> rope(const Tensor& value_tensor, const Tensor& positions_tensor, const RopeTable& table, bool bf16, bool grid) {
+    const auto& value = dense(value_tensor);
+    const auto& positions = dense(positions_tensor);
+    if (!table.cos || !table.sin) throw std::invalid_argument("RoPE table requires cosine and sine");
+    compatible(value, *table.cos);
+    compatible(value, *table.sin);
+    for (const auto* item : {table.sections.get(), table.empty_sections.get(),
+                             table.interleaved_order.get(), table.interleaved_inverse.get()})
+        if (item) (void)dense(*item);
     input(positions);
     if (value.dim() == 0 || table.rotary_dim <= 0 || table.rotary_dim % 2 != 0 ||
         table.rotary_dim > value.size(-1))
         throw std::invalid_argument("invalid RoPE rotary dimension");
     require_cuda(value);
-    return cuda::ops::rope(std::move(value), std::move(positions), table, bf16, grid);
+    return owner(cuda::ops::rope(value, positions, table, bf16, grid));
 }
-std::optional<DenseTensor> norm_rope_kv(const AttentionInput& request, const state::KvView& kv,
-    const RopeTable& table, const DenseTensor& q_norm, const DenseTensor& k_norm, double eps, double offset) {
-    if (!request.query.is_cuda()) return std::nullopt;
+std::shared_ptr<Tensor> norm_rope_kv(const AttentionInput& request, const state::KvView& kv,
+    const RopeTable& table, const Tensor& q_norm, const Tensor& k_norm, double eps, double offset) {
+    if (!request.query.is_cuda()) return nullptr;
     if (encoded({&request.query, &request.key, &request.value, &request.positions, &request.write_positions,
-                 &table.cos, &table.sin, &table.sections, &table.empty_sections, &table.interleaved_order,
-                 &table.interleaved_inverse, &q_norm, &k_norm, &kv.visible_key, &kv.visible_value,
-                 &kv.physical_key, &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table}) ||
-        (request.sequence_lengths && request.sequence_lengths->is_encoded()) ||
-        (request.attention_mask && request.attention_mask->is_encoded())) return std::nullopt;
-    return cuda::ops::norm_rope_kv(request, kv, table, q_norm, k_norm, eps, offset);
+                 table.cos.get(), table.sin.get(), table.sections.get(), table.empty_sections.get(), table.interleaved_order.get(),
+                 table.interleaved_inverse.get(), &q_norm, &k_norm, &kv.visible_key, &kv.visible_value,
+                 &kv.physical_key, &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table,
+                 request.sequence_lengths, request.attention_mask})) return nullptr;
+    auto result = cuda::ops::norm_rope_kv(request, kv, table, dense(q_norm), dense(k_norm), eps, offset);
+    return result ? owner(std::move(*result)) : nullptr;
 }
-std::optional<DenseTensor> rope_kv(const AttentionInput& request, const state::KvView& kv,
+std::shared_ptr<Tensor> rope_kv(const AttentionInput& request, const state::KvView& kv,
                                const RopeTable& table) {
-    if (!request.query.is_cuda()) return std::nullopt;
+    if (!request.query.is_cuda()) return nullptr;
     if (encoded({&request.query, &request.key, &request.value, &request.positions, &request.write_positions,
-                 &table.cos, &table.sin, &table.sections, &table.empty_sections, &table.interleaved_order,
-                 &table.interleaved_inverse, &kv.visible_key, &kv.visible_value, &kv.physical_key,
-                 &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table}) ||
-        (request.sequence_lengths && request.sequence_lengths->is_encoded()) ||
-        (request.attention_mask && request.attention_mask->is_encoded())) return std::nullopt;
-    return cuda::ops::rope_kv(request, kv, table);
+                 table.cos.get(), table.sin.get(), table.sections.get(), table.empty_sections.get(), table.interleaved_order.get(),
+                 table.interleaved_inverse.get(), &kv.visible_key, &kv.visible_value, &kv.physical_key,
+                 &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table,
+                 request.sequence_lengths, request.attention_mask})) return nullptr;
+    auto result = cuda::ops::rope_kv(request, kv, table);
+    return result ? owner(std::move(*result)) : nullptr;
 }
 
-std::pair<DenseTensor, DenseTensor> append_kv(state::KvView kv, DenseTensor key, DenseTensor value,
-                                    DenseTensor positions, std::int64_t start,
+std::pair<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>> append_kv(state::KvView kv, const Tensor& key_tensor, const Tensor& value_tensor,
+                                    const Tensor& positions_tensor, std::int64_t start,
                                     bool contiguous_prefill_prefix) {
+    const auto& key = dense(key_tensor);
+    const auto& value = dense(value_tensor);
+    const auto& positions = dense(positions_tensor);
     compatible(key, value);
     compatible(key, positions);
     if (key.dim() != 4 || value.dim() != 4 || key.sizes() != value.sizes())
@@ -135,52 +170,74 @@ std::pair<DenseTensor, DenseTensor> append_kv(state::KvView kv, DenseTensor key,
     // A zero batch skips the unpaged, unquantized index writes.
     if (kv.paged() || kv.quantization.enabled() || positions.dim() != 2 || positions.size(0) != 0)
         require_cuda(key);
-    return cuda::ops::append_kv(std::move(kv), std::move(key), std::move(value),
-                                std::move(positions), start, contiguous_prefill_prefix);
+    auto result = cuda::ops::append_kv(std::move(kv), key, value, positions, start, contiguous_prefill_prefix);
+    return {owner(std::move(result.first)), owner(std::move(result.second))};
 }
 
-DenseTensor add(DenseTensor left, DenseTensor right) {
+std::shared_ptr<Tensor> add(const Tensor& left_tensor, const Tensor& right_tensor) {
+    const auto& left = ::tyloi::ops::dense(left_tensor);
+    const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
     require_cuda(left);
-    return cuda::ops::add(std::move(left), std::move(right));
+    return owner(cuda::ops::add(left, right));
 }
-DenseTensor multiply(DenseTensor left, DenseTensor right) {
+std::shared_ptr<Tensor> multiply(const Tensor& left_tensor, const Tensor& right_tensor) {
+    const auto& left = ::tyloi::ops::dense(left_tensor);
+    const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
     require_cuda(left);
-    return cuda::ops::multiply(std::move(left), std::move(right));
+    return owner(cuda::ops::multiply(left, right));
 }
-DenseTensor matmul(DenseTensor left, DenseTensor right) {
+std::shared_ptr<Tensor> matmul(const Tensor& left_tensor, const Tensor& right_tensor) {
+    const auto& left = ::tyloi::ops::dense(left_tensor);
+    const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
     require_cuda(left);
-    return cuda::ops::matmul(std::move(left), std::move(right));
+    return owner(cuda::ops::matmul(left, right));
 }
-DenseTensor transpose(DenseTensor value, std::int64_t first, std::int64_t second) {
+std::shared_ptr<Tensor> transpose(const Tensor& value_tensor, std::int64_t first, std::int64_t second) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return tyloi::transpose(std::move(value), first, second);
+    return owner(tyloi::transpose(value, first, second));
 }
-DenseTensor add_residual(DenseTensor residual, DenseTensor value) {
+std::shared_ptr<Tensor> add_residual(const Tensor& residual_tensor, const Tensor& value_tensor) {
+    const auto& residual = ::tyloi::ops::dense(residual_tensor);
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     compatible(residual, value);
     require_cuda(residual);
-    return cuda::ops::add_residual(std::move(residual), std::move(value));
+    return owner(cuda::ops::add_residual(residual, value));
 }
-std::optional<ResidualNorms> residual_norms(DenseTensor residual, DenseTensor attention, const DenseTensor& attention_weight,
-                                            const DenseTensor& dense_weight, const DenseTensor& router_weight,
-                                            const DenseTensor& expert_weight, double eps) {
-    if (!residual.is_cuda()) return std::nullopt;
-    if (encoded({&residual, &attention, &attention_weight, &dense_weight, &router_weight, &expert_weight}))
-        return std::nullopt;
-    return cuda::ops::residual_norms(std::move(residual), std::move(attention), attention_weight,
+std::optional<ResidualNorms> residual_norms(const Tensor& residual_tensor, const Tensor& attention_tensor, const Tensor& attention_weight_tensor,
+                                            const Tensor& dense_weight_tensor, const Tensor& router_weight_tensor,
+                                            const Tensor& expert_weight_tensor, double eps) {
+    if (!residual_tensor.is_cuda() ||
+        encoded({&residual_tensor, &attention_tensor, &attention_weight_tensor,
+                 &dense_weight_tensor, &router_weight_tensor, &expert_weight_tensor})) return std::nullopt;
+    const auto& residual = ::tyloi::ops::dense(residual_tensor);
+    const auto& attention = ::tyloi::ops::dense(attention_tensor);
+    const auto& attention_weight = ::tyloi::ops::dense(attention_weight_tensor);
+    const auto& dense_weight = ::tyloi::ops::dense(dense_weight_tensor);
+    const auto& router_weight = ::tyloi::ops::dense(router_weight_tensor);
+    const auto& expert_weight = ::tyloi::ops::dense(expert_weight_tensor);
+    return cuda::ops::residual_norms(residual, attention, attention_weight,
                                      dense_weight, router_weight, expert_weight, eps);
 }
-DenseTensor merge_norms(DenseTensor dense, DenseTensor experts, DenseTensor residual, const DenseTensor& dense_weight,
-                   const DenseTensor& expert_weight, const DenseTensor& output_weight,
-                   const DenseTensor& scale, double eps) {
+std::shared_ptr<Tensor> merge_norms(const Tensor& dense_tensor, const Tensor& experts_tensor, const Tensor& residual_tensor, const Tensor& dense_weight_tensor,
+                   const Tensor& expert_weight_tensor, const Tensor& output_weight_tensor,
+                   const Tensor& scale_tensor, double eps) {
+    const auto& dense = ::tyloi::ops::dense(dense_tensor);
+    const auto& experts = ::tyloi::ops::dense(experts_tensor);
+    const auto& residual = ::tyloi::ops::dense(residual_tensor);
+    const auto& dense_weight = ::tyloi::ops::dense(dense_weight_tensor);
+    const auto& expert_weight = ::tyloi::ops::dense(expert_weight_tensor);
+    const auto& output_weight = ::tyloi::ops::dense(output_weight_tensor);
+    const auto& scale = ::tyloi::ops::dense(scale_tensor);
     for (const DenseTensor* value : std::initializer_list<const DenseTensor*>{
              &experts, &residual, &dense_weight, &expert_weight, &output_weight, &scale})
         compatible(dense, *value);
     require_cuda(dense);
-    return cuda::ops::merge_norms(std::move(dense), std::move(experts), std::move(residual),
-                                  dense_weight, expert_weight, output_weight, scale, eps);
+    return owner(cuda::ops::merge_norms(dense, experts, residual,
+                                  dense_weight, expert_weight, output_weight, scale, eps));
 }
 struct ProfileRange::Impl {
     std::optional<cuda::DeviceGuard> guard;
@@ -197,35 +254,45 @@ ProfileRange::ProfileRange(const char* name, std::optional<Device> device) {
 }
 ProfileRange::~ProfileRange() = default;
 void ProfileRange::finish() { if (impl_) impl_->range->finish(); }
-SelectedExperts topk(DenseTensor logits, std::int64_t count, const MoeRouting& routing) {
+SelectedExperts topk(const Tensor& logits_tensor, std::int64_t count, const MoeRouting& routing) {
+    const auto& logits = ::tyloi::ops::dense(logits_tensor);
     input(logits);
     require_cuda(logits);
-    return cuda::ops::topk(std::move(logits), count, routing);
+    return cuda::ops::topk(logits, count, routing);
 }
-DenseTensor expert_scale(DenseTensor weights, DenseTensor ids, const DenseTensor& scales) {
+void expert_scale(Tensor& weights_tensor, const Tensor& ids_tensor, const Tensor& scales_tensor) {
+    auto& weights = dense(weights_tensor);
+    const auto& ids = dense(ids_tensor);
+    const auto& scales = dense(scales_tensor);
     compatible(weights, ids);
     compatible(weights, scales);
     require_cuda(weights);
-    return cuda::ops::expert_scale(std::move(weights), std::move(ids), scales);
+    cuda::ops::expert_scale(weights, ids, scales);
 }
-DenseTensor weighted_reduce(DenseTensor pairs, DenseTensor weights) {
+std::shared_ptr<Tensor> weighted_reduce(const Tensor& pairs_tensor, const Tensor& weights_tensor) {
+    const auto& pairs = ::tyloi::ops::dense(pairs_tensor);
+    const auto& weights = ::tyloi::ops::dense(weights_tensor);
     compatible(pairs, weights);
     require_cuda(pairs);
-    return cuda::ops::weighted_reduce(std::move(pairs), std::move(weights));
+    return owner(cuda::ops::weighted_reduce(pairs, weights));
 }
-RoutedGeglu routed_geglu(DenseTensor value, DenseTensor ids,
+RoutedGeglu routed_geglu(const Tensor& value_tensor, const Tensor& ids_tensor,
                          const tyloi::cuda::Experts& gate_up, const tyloi::cuda::Experts& down,
                          bool trace) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& ids = ::tyloi::ops::dense(ids_tensor);
     compatible(value, ids);
     if (gate_up.size() == 0 || down.size() == 0 || value.dim() != 2 || ids.dim() != 2 || value.size(0) != ids.size(0) ||
         gate_up.size() != down.size() || gate_up.shape().cols != value.size(-1) ||
         gate_up.shape().rows % 2 != 0 || gate_up.shape().rows / 2 != down.shape().cols)
         throw std::invalid_argument("routed GEGLU input, routes, and expert banks are incompatible");
     require_cuda(value);
-    return cuda::ops::routed_geglu(std::move(value), std::move(ids), gate_up, down, trace);
+    return cuda::ops::routed_geglu(value, ids, gate_up, down, trace);
 }
 
-DenseTensor rms_norm(DenseTensor value, const DenseTensor& weight, double eps, double offset, ScalarType output_type) {
+std::shared_ptr<Tensor> rms_norm(const Tensor& value_tensor, const Tensor& weight_tensor, double eps, double offset, ScalarType output_type) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& weight = ::tyloi::ops::dense(weight_tensor);
     input(value);
     input(weight);
     if (value.device() != weight.device() || value.dim() == 0 || weight.dim() == 0 ||
@@ -236,346 +303,434 @@ DenseTensor rms_norm(DenseTensor value, const DenseTensor& weight, double eps, d
         output_type != ScalarType::bfloat16)
         throw std::invalid_argument("unsupported rms_norm output type");
     require_cuda(value);
-    return cuda::ops::rms_norm(std::move(value), weight, eps, offset, output_type);
+    return owner(cuda::ops::rms_norm(value, weight, eps, offset, output_type));
 }
-DenseTensor layer_norm(DenseTensor value, const DenseTensor& weight, const DenseTensor& bias, double epsilon) {
+std::shared_ptr<Tensor> layer_norm(const Tensor& value_tensor, const Tensor& weight_tensor, const Tensor& bias_tensor, double epsilon) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& weight = ::tyloi::ops::dense(weight_tensor);
+    const auto& bias = ::tyloi::ops::dense(bias_tensor);
     compatible(value, weight);
     compatible(value, bias);
     if (value.dim() == 0 || weight.dim() != 1 || bias.dim() != 1 ||
         weight.size(0) != value.size(-1) || bias.size(0) != value.size(-1))
         throw std::invalid_argument("layer_norm input and weights are incompatible");
     require_cuda(value);
-    return cuda::ops::layer_norm(std::move(value), weight, bias, epsilon);
+    return owner(cuda::ops::layer_norm(value, weight, bias, epsilon));
 }
-DenseTensor gelu(DenseTensor value, bool approximate) {
+std::shared_ptr<Tensor> gelu(const Tensor& value_tensor, bool approximate) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::gelu(std::move(value), approximate);
+    return owner(cuda::ops::gelu(value, approximate));
 }
-DenseTensor silu(DenseTensor value) {
+std::shared_ptr<Tensor> silu(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::silu(std::move(value));
+    return owner(cuda::ops::silu(value));
 }
-DenseTensor relu_squared(DenseTensor value) {
+std::shared_ptr<Tensor> relu_squared(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::relu_squared(std::move(value));
+    return owner(cuda::ops::relu_squared(value));
 }
-DenseTensor axial_rope(DenseTensor value, const std::vector<std::int32_t>& positions, double theta) {
+std::shared_ptr<Tensor> axial_rope(const Tensor& value_tensor, const std::vector<std::int32_t>& positions, double theta) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::axial_rope(std::move(value), positions, theta);
+    return owner(cuda::ops::axial_rope(value, positions, theta));
 }
-DenseTensor segmented_attention(DenseTensor query, DenseTensor key, DenseTensor value,
+std::shared_ptr<Tensor> segmented_attention(const Tensor& query_tensor, const Tensor& key_tensor, const Tensor& value_tensor,
                            const std::vector<std::int32_t>& lengths) {
+    const auto& query = ::tyloi::ops::dense(query_tensor);
+    const auto& key = ::tyloi::ops::dense(key_tensor);
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     compatible(query, key);
     compatible(query, value);
     require_cuda(query);
-    return cuda::ops::segmented_attention(std::move(query), std::move(key), std::move(value), lengths);
+    return owner(cuda::ops::segmented_attention(query, key, value, lengths));
 }
-std::array<DenseTensor, 3> qkv_norm(std::array<DenseTensor, 3> values, std::array<DenseTensor, 3> weights,
+std::array<std::shared_ptr<Tensor>, 3> qkv_norm(std::array<const Tensor*, 3> values, std::array<const Tensor*, 3> weights,
                                double eps, double offset, ScalarType output_type) {
     if (output_type != ScalarType::float32 && output_type != ScalarType::bfloat16)
         throw std::invalid_argument("unsupported qkv_norm output type");
+    std::array<const DenseTensor*, 3> dense_weights{};
     for (std::size_t i = 0; i < values.size(); ++i) {
-        input(values[i]);
-        if (weights[i].defined()) {
-            compatible(values[i], weights[i]);
-            if (values[i].dim() == 0 || weights[i].dim() == 0 ||
-                values[i].size(-1) <= 0 || weights[i].numel() != values[i].size(-1))
+        if (!values[i]) throw std::invalid_argument("qkv_norm requires all values");
+        input(*values[i]);
+        if (weights[i]) dense_weights[i] = &dense(*weights[i]);
+        if (weights[i] && weights[i]->defined()) {
+            compatible(*values[i], *weights[i]);
+            if (values[i]->dim() == 0 || weights[i]->dim() == 0 ||
+                values[i]->size(-1) <= 0 || weights[i]->numel() != values[i]->size(-1))
                 throw std::invalid_argument("qkv_norm input and weight are incompatible");
         }
     }
     for (std::size_t i = 0; i < values.size(); ++i)
-        if (weights[i].defined()) require_cuda(values[i]);
-    return cuda::ops::qkv_norm(std::move(values), std::move(weights), eps, offset, output_type);
+        if (weights[i] && weights[i]->defined()) require_cuda(*values[i]);
+    (void)cuda::Executor::current();
+    std::array<DenseTensor, 3> dense_values{dense(*values[0]), dense(*values[1]), dense(*values[2])};
+    auto result = cuda::ops::qkv_norm(std::move(dense_values), dense_weights, eps, offset, output_type);
+    return {owner(std::move(result[0])), owner(std::move(result[1])), owner(std::move(result[2]))};
 }
-DenseTensor softcap(DenseTensor value, double cap) {
+std::shared_ptr<Tensor> softcap(const Tensor& value_tensor, double cap) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     if (cap > 0.0) require_cuda(value);
-    return cuda::ops::softcap(std::move(value), cap);
+    return owner(cuda::ops::softcap(value, cap));
 }
-DenseTensor scale(DenseTensor value, double factor) {
+std::shared_ptr<Tensor> scale(const Tensor& value_tensor, double factor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::scale(std::move(value), factor);
+    return owner(cuda::ops::scale(value, factor));
 }
-DenseTensor embedding(DenseTensor ids, const ::tyloi::Tensor& weight) {
+std::shared_ptr<Tensor> embedding(const Tensor& ids_tensor, const ::tyloi::Tensor& weight) {
+    const auto& ids = ::tyloi::ops::dense(ids_tensor);
     input(ids);
-    return cuda::ops::embedding(std::move(ids), weight);
+    return owner(cuda::ops::embedding(ids, weight));
 }
-DenseTensor project(DenseTensor value, const ::tyloi::Tensor& weight) {
+std::shared_ptr<Tensor> project(const Tensor& value_tensor, const ::tyloi::Tensor& weight) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return cuda::ops::project(std::move(value), weight);
+    return owner(cuda::ops::project(value, weight));
 }
-DenseTensor linear(DenseTensor value, const ::tyloi::Tensor& weight, const DenseTensor& bias) {
-    input(value);
-    if (bias.defined()) input(bias);
-    return cuda::ops::linear(std::move(value), weight, bias);
-}
-DenseTensor affine(DenseTensor value, const ::tyloi::Tensor& weight, const DenseTensor& bias) {
+std::shared_ptr<Tensor> linear(const Tensor& value_tensor, const ::tyloi::Tensor& weight, const Tensor& bias_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& bias = ::tyloi::ops::dense(bias_tensor);
     input(value);
     if (bias.defined()) input(bias);
-    return cuda::ops::affine(std::move(value), weight, bias);
+    return owner(cuda::ops::linear(value, weight, bias));
 }
-DenseTensor mlp(DenseTensor value, const ::QuantLinearGroup& gate_up, const ::tyloi::Tensor& down,
+std::shared_ptr<Tensor> affine(const Tensor& value_tensor, const ::tyloi::Tensor& weight, const Tensor& bias_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& bias = ::tyloi::ops::dense(bias_tensor);
+    input(value);
+    if (bias.defined()) input(bias);
+    return owner(cuda::ops::affine(value, weight, bias));
+}
+std::shared_ptr<Tensor> mlp(const Tensor& value_tensor, const ::QuantLinearGroup& gate_up, const ::tyloi::Tensor& down,
            MlpActivation activation, double swiglu_limit) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return cuda::ops::mlp(std::move(value), gate_up, down, activation, swiglu_limit);
+    return owner(cuda::ops::mlp(value, gate_up, down, activation, swiglu_limit));
 }
-std::vector<DenseTensor> project_group(DenseTensor value, const ::QuantLinearGroup& group) {
+std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& value_tensor, const ::QuantLinearGroup& group) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return cuda::ops::project_group(std::move(value), group);
+    return owners(cuda::ops::project_group(value, group));
 }
-DenseTensor sigmoid_project(DenseTensor value, DenseTensor gate, const ::tyloi::Tensor& weight) {
+std::shared_ptr<Tensor> sigmoid_project(const Tensor& value_tensor, const Tensor& gate_tensor, const ::tyloi::Tensor& weight) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& gate = ::tyloi::ops::dense(gate_tensor);
     compatible(value, gate);
-    return cuda::ops::sigmoid_project(std::move(value), std::move(gate), weight);
+    return owner(cuda::ops::sigmoid_project(value, gate, weight));
 }
-DenseTensor tensor(std::span<const float> values, Device target) {
+std::shared_ptr<Tensor> tensor(std::span<const float> values, Device target) {
     device(target);
-    return cuda::ops::tensor(values, target);
+    return owner(cuda::ops::tensor(values, target));
 }
-DenseTensor tensor(std::span<const std::int32_t> values, Device target) {
+std::shared_ptr<Tensor> tensor(std::span<const std::int32_t> values, Device target) {
     device(target);
-    return cuda::ops::tensor(values, target);
+    return owner(cuda::ops::tensor(values, target));
 }
-DenseTensor tensor(std::span<const std::int64_t> values, Device target) {
+std::shared_ptr<Tensor> tensor(std::span<const std::int64_t> values, Device target) {
     device(target);
-    return cuda::ops::tensor(values, target);
+    return owner(cuda::ops::tensor(values, target));
 }
-DenseTensor tensor(std::span<const std::uint8_t> values, Device target) {
+std::shared_ptr<Tensor> tensor(std::span<const std::uint8_t> values, Device target) {
     device(target);
-    return cuda::ops::tensor(values, target);
+    return owner(cuda::ops::tensor(values, target));
 }
-DenseTensor from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options) {
+std::shared_ptr<Tensor> from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options) {
     device(options.target_device());
-    return cuda::ops::from_blob(data, shape, options);
+    return owner(cuda::ops::from_blob(data, shape, options));
 }
-DenseTensor copy(DenseTensor value, Device target) {
+std::shared_ptr<Tensor> copy(const Tensor& value_tensor, Device target) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     device(target);
-    return cuda::ops::copy(std::move(value), target);
+    return owner(cuda::ops::copy(value, target));
 }
-void copy_into(DenseTensor destination, DenseTensor source) {
+void copy_into(Tensor& destination_tensor, const Tensor& source_tensor) {
+    auto& destination = ::tyloi::ops::dense(destination_tensor);
+    const auto& source = ::tyloi::ops::dense(source_tensor);
     input(destination);
     input(source);
-    cuda::ops::copy_into(std::move(destination), std::move(source));
+    cuda::ops::copy_into(destination, source);
 }
-DenseTensor cast(DenseTensor value, ScalarType type) {
+std::shared_ptr<Tensor> cast(const Tensor& value_tensor, ScalarType type) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return cuda::ops::cast(std::move(value), type);
+    return owner(cuda::ops::cast(value, type));
 }
-DenseTensor cast(DenseTensor value, ScalarType type, Device target) {
+std::shared_ptr<Tensor> cast(const Tensor& value_tensor, ScalarType type, Device target) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     device(target);
-    return cuda::ops::cast(std::move(value), type, target);
+    return owner(cuda::ops::cast(value, type, target));
 }
-DenseTensor contiguous(DenseTensor value) {
+std::shared_ptr<Tensor> contiguous(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return cuda::ops::contiguous(std::move(value));
+    return owner(cuda::ops::contiguous(value));
 }
-DenseTensor clone(DenseTensor value) {
+std::shared_ptr<Tensor> clone(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return cuda::ops::clone(std::move(value));
+    return owner(cuda::ops::clone(value));
 }
-DenseTensor reshape(DenseTensor value, std::span<const std::int64_t> shape) {
+std::shared_ptr<Tensor> reshape(const Tensor& value_tensor, std::span<const std::int64_t> shape) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return tyloi::reshape(std::move(value), shape);
+    return owner(tyloi::reshape(value, shape));
 }
-DenseTensor expand(DenseTensor value, std::span<const std::int64_t> shape) {
+std::shared_ptr<Tensor> expand(const Tensor& value_tensor, std::span<const std::int64_t> shape) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return tyloi::expand(std::move(value), shape);
+    return owner(tyloi::expand(value, shape));
 }
-DenseTensor cat(std::span<const DenseTensor> values, std::int64_t dim) {
+std::shared_ptr<Tensor> cat(std::span<const Tensor* const> values, std::int64_t dim) {
     if (values.empty()) throw std::invalid_argument("cat requires at least one tensor");
-    input(values.front());
-    for (const auto& value : values.subspan(1)) compatible(values.front(), value);
-    return cuda::ops::cat(values, dim);
+    std::vector<DenseTensor> dense_values;
+    dense_values.reserve(values.size());
+    for (const auto* value : values) {
+        if (!value) throw std::invalid_argument("cat requires non-null tensors");
+        if (dense_values.empty()) input(*value);
+        else compatible(dense_values.front(), *value);
+        dense_values.push_back(dense(*value));
+    }
+    return owner(cuda::ops::cat(dense_values, dim));
 }
-DenseTensor zeros(std::span<const std::int64_t> shape, const TensorOptions& options) {
+std::shared_ptr<Tensor> zeros(std::span<const std::int64_t> shape, const TensorOptions& options) {
     device(options.target_device());
-    return cuda::ops::zeros(shape, options);
+    return owner(cuda::ops::zeros(shape, options));
 }
-DenseTensor select(DenseTensor value, std::int64_t dim, std::int64_t index) {
+std::shared_ptr<Tensor> select(const Tensor& value_tensor, std::int64_t dim, std::int64_t index) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return tyloi::select(std::move(value), dim, index);
+    return owner(tyloi::select(value, dim, index));
 }
-DenseTensor unsqueeze(DenseTensor value, std::int64_t dim) {
+std::shared_ptr<Tensor> unsqueeze(const Tensor& value_tensor, std::int64_t dim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return tyloi::unsqueeze(std::move(value), dim);
+    return owner(tyloi::unsqueeze(value, dim));
 }
-DenseTensor slice(DenseTensor value, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step) {
+std::shared_ptr<Tensor> slice(const Tensor& value_tensor, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return tyloi::slice(std::move(value), dim, start, end, step);
+    return owner(tyloi::slice(value, dim, start, end, step));
 }
-DenseTensor index_select(DenseTensor value, std::int64_t dim, DenseTensor indices) {
+std::shared_ptr<Tensor> index_select(const Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& indices = ::tyloi::ops::dense(indices_tensor);
     compatible(value, indices);
     require_cuda(value);
-    return cuda::ops::index_select(std::move(value), dim, std::move(indices));
+    return owner(cuda::ops::index_select(value, dim, indices));
 }
-DenseTensor sum(DenseTensor value, std::int64_t dim, bool keepdim) {
+std::shared_ptr<Tensor> sum(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::sum(std::move(value), dim, keepdim);
+    return owner(cuda::ops::sum(value, dim, keepdim));
 }
-void index_copy(DenseTensor value, std::int64_t dim, DenseTensor indices, DenseTensor source) {
+void index_copy(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor, const Tensor& source_tensor) {
+    auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& indices = ::tyloi::ops::dense(indices_tensor);
+    const auto& source = ::tyloi::ops::dense(source_tensor);
     compatible(value, indices);
     compatible(value, source);
     require_cuda(value);
-    cuda::ops::index_copy(std::move(value), dim, std::move(indices), std::move(source));
+    cuda::ops::index_copy(value, dim, indices, source);
 }
-std::vector<DenseTensor> chunk(DenseTensor value, std::int64_t count, std::int64_t dim) {
+std::vector<std::shared_ptr<Tensor>> chunk(const Tensor& value_tensor, std::int64_t count, std::int64_t dim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    return tyloi::chunk(std::move(value), count, dim);
+    return owners(tyloi::chunk(value, count, dim));
 }
-DenseTensor arange(std::int64_t first, std::int64_t last, Device target) {
+std::shared_ptr<Tensor> arange(std::int64_t first, std::int64_t last, Device target) {
     device(target);
-    return cuda::ops::arange(first, last, target);
+    return owner(cuda::ops::arange(first, last, target));
 }
-DenseTensor full(std::span<const std::int64_t> shape, std::int64_t value, Device target) {
+std::shared_ptr<Tensor> full(std::span<const std::int64_t> shape, std::int64_t value, Device target) {
     device(target);
-    return cuda::ops::full(shape, value, target);
+    return owner(cuda::ops::full(shape, value, target));
 }
-DenseTensor add(DenseTensor value, std::int64_t offset) {
+std::shared_ptr<Tensor> add(const Tensor& value_tensor, std::int64_t offset) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::add(std::move(value), offset);
+    return owner(cuda::ops::add(value, offset));
 }
-DenseTensor mean(DenseTensor value, std::int64_t dim, bool keepdim) {
+std::shared_ptr<Tensor> mean(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::mean(std::move(value), dim, keepdim);
+    return owner(cuda::ops::mean(value, dim, keepdim));
 }
-DenseTensor amax(DenseTensor value, std::int64_t dim, bool keepdim) {
+std::shared_ptr<Tensor> amax(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::amax(std::move(value), dim, keepdim);
+    return owner(cuda::ops::amax(value, dim, keepdim));
 }
-DenseTensor argmax(DenseTensor value, std::int64_t dim, bool keepdim) {
+std::shared_ptr<Tensor> argmax(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::argmax(std::move(value), dim, keepdim);
+    return owner(cuda::ops::argmax(value, dim, keepdim));
 }
-DenseTensor all(DenseTensor value, std::int64_t dim, bool keepdim) {
+std::shared_ptr<Tensor> all(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::all(std::move(value), dim, keepdim);
+    return owner(cuda::ops::all(value, dim, keepdim));
 }
-DenseTensor any(DenseTensor value, std::int64_t dim, bool keepdim) {
+std::shared_ptr<Tensor> any(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::any(std::move(value), dim, keepdim);
+    return owner(cuda::ops::any(value, dim, keepdim));
 }
-DenseTensor abs(DenseTensor value) {
+std::shared_ptr<Tensor> abs(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::abs(std::move(value));
+    return owner(cuda::ops::abs(value));
 }
-DenseTensor square(DenseTensor value) {
+std::shared_ptr<Tensor> square(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::square(std::move(value));
+    return owner(cuda::ops::square(value));
 }
-DenseTensor exp(DenseTensor value) {
+std::shared_ptr<Tensor> exp(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::exp(std::move(value));
+    return owner(cuda::ops::exp(value));
 }
-DenseTensor sqrt(DenseTensor value) {
+std::shared_ptr<Tensor> sqrt(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::sqrt(std::move(value));
+    return owner(cuda::ops::sqrt(value));
 }
-DenseTensor logical_not(DenseTensor value) {
+std::shared_ptr<Tensor> logical_not(const Tensor& value_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::logical_not(std::move(value));
+    return owner(cuda::ops::logical_not(value));
 }
-DenseTensor clamp(DenseTensor value, double minimum, double maximum) {
+std::shared_ptr<Tensor> clamp(const Tensor& value_tensor, double minimum, double maximum) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::clamp(std::move(value), minimum, maximum);
+    return owner(cuda::ops::clamp(value, minimum, maximum));
 }
-DenseTensor clamp_min(DenseTensor value, double minimum) {
+std::shared_ptr<Tensor> clamp_min(const Tensor& value_tensor, double minimum) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::clamp_min(std::move(value), minimum);
+    return owner(cuda::ops::clamp_min(value, minimum));
 }
-DenseTensor clamp_max(DenseTensor value, double maximum) {
+std::shared_ptr<Tensor> clamp_max(const Tensor& value_tensor, double maximum) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::clamp_max(std::move(value), maximum);
+    return owner(cuda::ops::clamp_max(value, maximum));
 }
-DenseTensor remainder(DenseTensor value, double divisor) {
+std::shared_ptr<Tensor> remainder(const Tensor& value_tensor, double divisor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::remainder(std::move(value), divisor);
+    return owner(cuda::ops::remainder(value, divisor));
 }
-DenseTensor eq(DenseTensor left, DenseTensor right) {
+std::shared_ptr<Tensor> eq(const Tensor& left_tensor, const Tensor& right_tensor) {
+    const auto& left = ::tyloi::ops::dense(left_tensor);
+    const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
     require_cuda(left);
-    return cuda::ops::eq(std::move(left), std::move(right));
+    return owner(cuda::ops::eq(left, right));
 }
-DenseTensor eq(DenseTensor value, double other) {
+std::shared_ptr<Tensor> eq(const Tensor& value_tensor, double other) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::eq(std::move(value), other);
+    return owner(cuda::ops::eq(value, other));
 }
-DenseTensor ne(DenseTensor left, DenseTensor right) {
+std::shared_ptr<Tensor> ne(const Tensor& left_tensor, const Tensor& right_tensor) {
+    const auto& left = ::tyloi::ops::dense(left_tensor);
+    const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
     require_cuda(left);
-    return cuda::ops::ne(std::move(left), std::move(right));
+    return owner(cuda::ops::ne(left, right));
 }
-DenseTensor ne(DenseTensor value, double other) {
+std::shared_ptr<Tensor> ne(const Tensor& value_tensor, double other) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::ne(std::move(value), other);
+    return owner(cuda::ops::ne(value, other));
 }
-bool equal(const DenseTensor& left, const DenseTensor& right) {
+bool equal(const Tensor& left_tensor, const Tensor& right_tensor) {
+    const auto& left = ::tyloi::ops::dense(left_tensor);
+    const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
     require_cuda(left);
     return cuda::ops::equal(left, right);
 }
-DenseTensor masked_select(DenseTensor value, DenseTensor mask) {
+std::shared_ptr<Tensor> masked_select(const Tensor& value_tensor, const Tensor& mask_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& mask = ::tyloi::ops::dense(mask_tensor);
     compatible(value, mask);
     require_cuda(value);
-    return cuda::ops::masked_select(std::move(value), std::move(mask));
+    return owner(cuda::ops::masked_select(value, mask));
 }
-DenseTensor gather(DenseTensor value, std::int64_t dim, DenseTensor indices) {
+std::shared_ptr<Tensor> gather(const Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& indices = ::tyloi::ops::dense(indices_tensor);
     compatible(value, indices);
     require_cuda(value);
-    return cuda::ops::gather(std::move(value), dim, std::move(indices));
+    return owner(cuda::ops::gather(value, dim, indices));
 }
-DenseTensor repeat(DenseTensor value, std::span<const std::int64_t> repeats) {
+std::shared_ptr<Tensor> repeat(const Tensor& value_tensor, std::span<const std::int64_t> repeats) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::repeat(std::move(value), repeats);
+    return owner(cuda::ops::repeat(value, repeats));
 }
-DenseTensor repeat_interleave(DenseTensor value, std::int64_t repeats, std::int64_t dim) {
+std::shared_ptr<Tensor> repeat_interleave(const Tensor& value_tensor, std::int64_t repeats, std::int64_t dim) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::repeat_interleave(std::move(value), repeats, dim);
+    return owner(cuda::ops::repeat_interleave(value, repeats, dim));
 }
-DenseTensor tril(DenseTensor value, std::int64_t diagonal) {
+std::shared_ptr<Tensor> tril(const Tensor& value_tensor, std::int64_t diagonal) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     require_cuda(value);
-    return cuda::ops::tril(std::move(value), diagonal);
+    return owner(cuda::ops::tril(value, diagonal));
 }
-DenseTensor masked_fill(DenseTensor value, DenseTensor mask, double fill_value) {
+std::shared_ptr<Tensor> masked_fill(const Tensor& value_tensor, const Tensor& mask_tensor, double fill_value) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& mask = ::tyloi::ops::dense(mask_tensor);
     compatible(value, mask);
     require_cuda(value);
-    return cuda::ops::masked_fill(std::move(value), std::move(mask), fill_value);
+    return owner(cuda::ops::masked_fill(value, mask, fill_value));
 }
-void masked_fill_inplace(DenseTensor value, DenseTensor mask, double fill_value) {
+void masked_fill_inplace(Tensor& value_tensor, const Tensor& mask_tensor, double fill_value) {
+    auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& mask = ::tyloi::ops::dense(mask_tensor);
     compatible(value, mask);
     require_cuda(value);
-    cuda::ops::masked_fill_inplace(std::move(value), std::move(mask), fill_value);
+    cuda::ops::masked_fill_inplace(value, mask, fill_value);
 }
-void fill(DenseTensor value, double fill_value) {
+void fill(Tensor& value_tensor, double fill_value) {
+    auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     if (value.is_cuda()) {
-        cuda::ops::fill(std::move(value), fill_value);
+        cuda::ops::fill(value, fill_value);
         return;
     }
     if (!value.is_contiguous())
@@ -621,22 +776,30 @@ void fill(DenseTensor value, double fill_value) {
             throw std::invalid_argument("CPU fill for this scalar type is not implemented yet");
     }
 }
-void scatter_add(DenseTensor value, std::int64_t dim, DenseTensor indices, DenseTensor source) {
+void scatter_add(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor, const Tensor& source_tensor) {
+    auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& indices = ::tyloi::ops::dense(indices_tensor);
+    const auto& source = ::tyloi::ops::dense(source_tensor);
     compatible(value, indices);
     compatible(value, source);
     require_cuda(value);
-    cuda::ops::scatter_add(std::move(value), dim, std::move(indices), std::move(source));
+    cuda::ops::scatter_add(value, dim, indices, source);
 }
-void scatter(DenseTensor value, std::int64_t dim, DenseTensor indices, DenseTensor source) {
+void scatter(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor, const Tensor& source_tensor) {
+    auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& indices = ::tyloi::ops::dense(indices_tensor);
+    const auto& source = ::tyloi::ops::dense(source_tensor);
     compatible(value, indices);
     compatible(value, source);
     require_cuda(value);
-    cuda::ops::scatter(std::move(value), dim, std::move(indices), std::move(source));
+    cuda::ops::scatter(value, dim, indices, source);
 }
-void index_fill(DenseTensor value, std::int64_t dim, DenseTensor indices, double fill_value) {
+void index_fill(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor, double fill_value) {
+    auto& value = ::tyloi::ops::dense(value_tensor);
+    const auto& indices = ::tyloi::ops::dense(indices_tensor);
     compatible(value, indices);
     require_cuda(value);
-    cuda::ops::index_fill(std::move(value), dim, std::move(indices), fill_value);
+    cuda::ops::index_fill(value, dim, indices, fill_value);
 }
 #endif
 } // namespace tyloi::ops

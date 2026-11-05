@@ -18,19 +18,28 @@
 #include "engine/backends/cuda/executor/executor.h"
 
 tyloi::ops::RopeTable RopeCache::view() const {
-    return {cos, sin, sections, empty_sections, interleaved_order, interleaved_inverse, rotary_dim};
+    using T = ::tyloi::DenseTensor;
+    return {std::make_shared<T>(cos), std::make_shared<T>(sin), std::make_shared<T>(sections),
+            std::make_shared<T>(empty_sections), std::make_shared<T>(interleaved_order),
+            std::make_shared<T>(interleaved_inverse), rotary_dim};
 }
 
 tyloi::DenseTensor tyloi::cuda::ops::rope(tyloi::DenseTensor input, tyloi::DenseTensor positions,
     const tyloi::ops::RopeTable& table, bool bf16, bool grid_mrope_positions) {
     MfqCudaGuard guard(input.device().index);
     RopeCache cache;
-    cache.cos = table.cos;
-    cache.sin = table.sin;
-    cache.sections = table.sections;
-    cache.empty_sections = table.empty_sections;
-    cache.interleaved_order = table.interleaved_order;
-    cache.interleaved_inverse = table.interleaved_inverse;
+    auto copy = [](const std::shared_ptr<const tyloi::Tensor>& value, tyloi::DenseTensor& target) {
+        if (!value) return;
+        const auto* dense = dynamic_cast<const tyloi::DenseTensor*>(value.get());
+        if (!dense) throw std::invalid_argument("RoPE requires dense table tensors");
+        target = *dense;
+    };
+    copy(table.cos, cache.cos);
+    copy(table.sin, cache.sin);
+    copy(table.sections, cache.sections);
+    copy(table.empty_sections, cache.empty_sections);
+    copy(table.interleaved_order, cache.interleaved_order);
+    copy(table.interleaved_inverse, cache.interleaved_inverse);
     cache.rotary_dim = table.rotary_dim;
     auto x = input, pos = positions;
     return bf16 ? cache.apply_bf16(x.is_cuda() && Executor::current().attention_options().fused_rope, x, pos)

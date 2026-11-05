@@ -24,46 +24,46 @@ tyloi::DenseTensor tyloi::cuda::ops::rms_norm(tyloi::DenseTensor input, const ty
     return normalized.reshape(value.sizes());
 }
 std::array<tyloi::DenseTensor, 3> tyloi::cuda::ops::qkv_norm(std::array<tyloi::DenseTensor, 3> values,
-    std::array<tyloi::DenseTensor, 3> weights, double eps, double offset, tyloi::ScalarType output_type) {
+    std::array<const tyloi::DenseTensor*, 3> weights, double eps, double offset, tyloi::ScalarType output_type) {
     using T = ::tyloi::DenseTensor;
     T q(values[0]), k(values[1]), v(values[2]);
-    T qw(weights[0]), kw(weights[1]), vw(weights[2]);
+    const auto* qw = weights[0]; const auto* kw = weights[1]; const auto* vw = weights[2];
     const bool bf16 = output_type == tyloi::ScalarType::bfloat16;
     const bool fused = Executor::current().attention_options().fused_norm;
-    if (bf16 && fused && qw.defined() && kw.defined() &&
+    if (bf16 && fused && qw && qw->defined() && kw && kw->defined() &&
         q.scalar_type() == ::tyloi::kBFloat16 && k.scalar_type() == ::tyloi::kBFloat16) {
         if (values[0].device() != values[1].device())
             throw std::invalid_argument("paired norm tensor devices do not match");
         auto normalized = tyloi::ops::measure("full.qk_norm", values[0].device(), [&] {
             MfqCudaGuard guard(values[0].device().index);
-            return qwen_rms_norm_pair_bf16_cuda(q, k, qw, kw, eps, offset);
+            return qwen_rms_norm_pair_bf16_cuda(q, k, *qw, *kw, eps, offset);
         });
         q = normalized[0].reshape_as(q); k = normalized[1].reshape_as(k);
-    } else if (!bf16 && qw.defined() && kw.defined() &&
+    } else if (!bf16 && qw && qw->defined() && kw && kw->defined() &&
         q.scalar_type() == ::tyloi::kFloat16 && k.scalar_type() == ::tyloi::kFloat16) {
         if (values[0].device() != values[1].device())
             throw std::invalid_argument("paired norm tensor devices do not match");
         auto normalized = tyloi::ops::measure("full.qk_norm", values[0].device(), [&] {
             MfqCudaGuard guard(values[0].device().index);
-            return rms_norm_pair_f16_f32_offset_cuda(q, k, qw, kw, eps, offset);
+            return rms_norm_pair_f16_f32_offset_cuda(q, k, *qw, *kw, eps, offset);
         });
         q = normalized[0].reshape_as(q); k = normalized[1].reshape_as(k);
     } else {
-        if (qw.defined()) q = tyloi::ops::measure("full.q_norm", values[0].device(), [&] {
+        if (qw && qw->defined()) q = tyloi::ops::measure("full.q_norm", values[0].device(), [&] {
             MfqCudaGuard guard(values[0].device().index);
-            return bf16 ? qwen_rms_norm_bf16(fused, q.reshape({-1, q.size(-1)}), qw, eps, offset).reshape_as(q)
-                        : qwen_rms_norm(q.reshape({-1, q.size(-1)}).to(::tyloi::kFloat32), qw, eps, offset).reshape_as(q);
+            return bf16 ? qwen_rms_norm_bf16(fused, q.reshape({-1, q.size(-1)}), *qw, eps, offset).reshape_as(q)
+                        : qwen_rms_norm(q.reshape({-1, q.size(-1)}).to(::tyloi::kFloat32), *qw, eps, offset).reshape_as(q);
         });
-        if (kw.defined()) k = tyloi::ops::measure("full.k_norm", values[1].device(), [&] {
+        if (kw && kw->defined()) k = tyloi::ops::measure("full.k_norm", values[1].device(), [&] {
             MfqCudaGuard guard(values[1].device().index);
-            return bf16 ? qwen_rms_norm_bf16(fused, k.reshape({-1, k.size(-1)}), kw, eps, offset).reshape_as(k)
-                        : qwen_rms_norm(k.reshape({-1, k.size(-1)}).to(::tyloi::kFloat32), kw, eps, offset).reshape_as(k);
+            return bf16 ? qwen_rms_norm_bf16(fused, k.reshape({-1, k.size(-1)}), *kw, eps, offset).reshape_as(k)
+                        : qwen_rms_norm(k.reshape({-1, k.size(-1)}).to(::tyloi::kFloat32), *kw, eps, offset).reshape_as(k);
         });
     }
-    if (vw.defined()) v = tyloi::ops::measure("full.v_norm", values[2].device(), [&] {
+    if (vw && vw->defined()) v = tyloi::ops::measure("full.v_norm", values[2].device(), [&] {
         MfqCudaGuard guard(values[2].device().index);
-        return bf16 ? qwen_rms_norm_bf16(fused, v.reshape({-1, v.size(-1)}), vw, eps, offset).reshape_as(v)
-                    : qwen_rms_norm(v.reshape({-1, v.size(-1)}).to(::tyloi::kFloat32), vw, eps, offset).reshape_as(v);
+        return bf16 ? qwen_rms_norm_bf16(fused, v.reshape({-1, v.size(-1)}), *vw, eps, offset).reshape_as(v)
+                    : qwen_rms_norm(v.reshape({-1, v.size(-1)}).to(::tyloi::kFloat32), *vw, eps, offset).reshape_as(v);
     });
     return {q, k, v};
 }
@@ -91,7 +91,8 @@ std::optional<tyloi::ops::ResidualNorms> tyloi::cuda::ops::residual_norms(
             flat_residual, flat_attention, T(attention_weight), T(dense_weight),
             T(router_weight), T(expert_weight), eps);
     });
-    return tyloi::ops::ResidualNorms{values.at(0), values.at(1), values.at(2), values.at(3)};
+    return tyloi::ops::ResidualNorms{std::make_shared<T>(values.at(0)), std::make_shared<T>(values.at(1)),
+                                     std::make_shared<T>(values.at(2)), std::make_shared<T>(values.at(3))};
 }
 tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
     tyloi::DenseTensor dense, tyloi::DenseTensor experts, tyloi::DenseTensor residual,

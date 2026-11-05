@@ -15,6 +15,12 @@
 namespace tyloi {
 namespace {
 
+DenseTensor dense_result(const std::shared_ptr<Tensor>& result) {
+    const auto* value = dynamic_cast<const DenseTensor*>(result.get());
+    if (!value || value->is_encoded()) throw std::invalid_argument("operation returned a non-dense tensor");
+    return *value;
+}
+
 std::size_t normalize_dimension(std::int64_t dimension, std::size_t rank, bool allow_end = false) {
     const auto upper = static_cast<std::int64_t>(rank) + (allow_end ? 1 : 0);
     auto normalized = dimension;
@@ -65,7 +71,7 @@ DenseTensor reshape(const DenseTensor& source, std::span<const std::int64_t> sha
         // shortcut: getenv replaces the frozen native env snapshot; fine while
         // the switch is only read before serving starts.
         const auto* option = std::getenv("TYLOINFER_TENSOR_VIEW_RESHAPE");
-        if (option && option[0] == '0') return reshape(ops::contiguous(source), shape);
+        if (option && option[0] == '0') return reshape(dense_result(ops::contiguous(source)), shape);
         // Validate/infer the requested dimensions without copying storage.
         auto packed=view;packed.rank=1;packed.sizes[0]=source.numel();packed.strides[0]=1;
         auto result=reshape_view(packed,shape);
@@ -89,7 +95,7 @@ DenseTensor reshape(const DenseTensor& source, std::span<const std::int64_t> sha
             if(axis>0){chunk_stride=view.strides[axis-1];source_count=output_count=1;}
         }
         if(compatible && output_axis==-1)return source.alias(result,source.byte_offset());
-        return reshape(ops::contiguous(source), shape);
+        return reshape(dense_result(ops::contiguous(source)), shape);
     }
     return source.alias(reshape_view(view, shape), source.byte_offset());
 }
@@ -176,7 +182,7 @@ DenseTensor flatten(const DenseTensor& source, std::int64_t start, std::int64_t 
     if (!source.defined()) {
         throw std::invalid_argument("flatten requires a defined tensor");
     }
-    if (!source.is_contiguous()) return flatten(ops::contiguous(source), start, end);
+    if (!source.is_contiguous()) return flatten(dense_result(ops::contiguous(source)), start, end);
     const auto first = normalize_dimension(start, view.rank);
     const auto last = normalize_dimension(end, view.rank);
     if (first > last) {
@@ -267,7 +273,7 @@ DenseTensor index(const DenseTensor& source, std::initializer_list<TensorIndex> 
             continue;
         }
         if (index.kind() == TensorIndex::Kind::tensor) {
-            result = ops::index_select(result, dimension, index.tensor());
+            result = dense_result(ops::index_select(result, dimension, index.tensor()));
             ++dimension;
             continue;
         }
@@ -392,21 +398,21 @@ DenseTensor DenseTensor::slice(
 DenseTensor DenseTensor::index(std::initializer_list<TensorIndex> indices) const { return tyloi::index(*this, indices); }
 
 DenseTensor DenseTensor::index_select(std::int64_t dimension, const DenseTensor& indices) const {
-    return ops::index_select(*this, dimension, indices);
+    return dense_result(ops::index_select(*this, dimension, indices));
 }
 
 DenseTensor DenseTensor::gather(std::int64_t dimension, const DenseTensor& indices) const {
-    return ops::gather(*this, dimension, indices);
+    return dense_result(ops::gather(*this, dimension, indices));
 }
 
 DenseTensor DenseTensor::expand(std::span<const std::int64_t> shape) const { return tyloi::expand(*this, shape); }
 
 DenseTensor DenseTensor::repeat(std::span<const std::int64_t> repeats) const {
-    return ops::repeat(*this, repeats);
+    return dense_result(ops::repeat(*this, repeats));
 }
 
 DenseTensor DenseTensor::repeat_interleave(std::int64_t repeats, std::int64_t dimension) const {
-    return ops::repeat_interleave(*this, repeats, dimension);
+    return dense_result(ops::repeat_interleave(*this, repeats, dimension));
 }
 
 DenseTensor DenseTensor::unfold(
@@ -421,55 +427,55 @@ std::vector<DenseTensor> DenseTensor::split_with_sizes(
 std::vector<DenseTensor> DenseTensor::chunk(std::int64_t chunks, std::int64_t dimension) const { return tyloi::chunk(*this, chunks, dimension); }
 
 DenseTensor DenseTensor::mean(std::int64_t dimension, bool keep_dimension) const {
-    return ops::mean(*this, dimension, keep_dimension);
+    return dense_result(ops::mean(*this, dimension, keep_dimension));
 }
 
 DenseTensor DenseTensor::mean() const { return reshape({-1}).mean(0, false); }
 DenseTensor DenseTensor::sum(std::int64_t dimension, bool keep_dimension) const {
-    return ops::sum(*this, dimension, keep_dimension);
+    return dense_result(ops::sum(*this, dimension, keep_dimension));
 }
 DenseTensor DenseTensor::sum() const { return reshape({-1}).sum(0, false); }
 DenseTensor DenseTensor::max() const { return reshape({-1}).amax(0, false); }
 DenseTensor DenseTensor::amax(std::int64_t dimension, bool keep_dimension) const {
-    return ops::amax(*this, dimension, keep_dimension);
+    return dense_result(ops::amax(*this, dimension, keep_dimension));
 }
 DenseTensor DenseTensor::norm() const { return square().sum().sqrt(); }
-DenseTensor DenseTensor::abs() const { return ops::abs(*this); }
-DenseTensor DenseTensor::square() const { return ops::square(*this); }
-DenseTensor DenseTensor::exp() const { return ops::exp(*this); }
-DenseTensor DenseTensor::sqrt() const { return ops::sqrt(*this); }
+DenseTensor DenseTensor::abs() const { return dense_result(ops::abs(*this)); }
+DenseTensor DenseTensor::square() const { return dense_result(ops::square(*this)); }
+DenseTensor DenseTensor::exp() const { return dense_result(ops::exp(*this)); }
+DenseTensor DenseTensor::sqrt() const { return dense_result(ops::sqrt(*this)); }
 DenseTensor DenseTensor::clamp(double minimum, double maximum) const {
-    return ops::clamp(*this, minimum, maximum);
+    return dense_result(ops::clamp(*this, minimum, maximum));
 }
 DenseTensor DenseTensor::clamp_min(double minimum) const {
-    return ops::clamp_min(*this, minimum);
+    return dense_result(ops::clamp_min(*this, minimum));
 }
 DenseTensor DenseTensor::clamp_max(double maximum) const {
-    return ops::clamp_max(*this, maximum);
+    return dense_result(ops::clamp_max(*this, maximum));
 }
 DenseTensor DenseTensor::remainder(double divisor) const {
-    return ops::remainder(*this, divisor);
+    return dense_result(ops::remainder(*this, divisor));
 }
 DenseTensor DenseTensor::argmax(std::int64_t dimension, bool keep_dimension) const {
-    return ops::argmax(*this, dimension, keep_dimension);
+    return dense_result(ops::argmax(*this, dimension, keep_dimension));
 }
-DenseTensor DenseTensor::eq(const DenseTensor& other) const { return ops::eq(*this, other); }
-DenseTensor DenseTensor::eq(double other) const { return ops::eq(*this, other); }
-DenseTensor DenseTensor::ne(const DenseTensor& other) const { return ops::ne(*this, other); }
-DenseTensor DenseTensor::ne(double other) const { return ops::ne(*this, other); }
+DenseTensor DenseTensor::eq(const DenseTensor& other) const { return dense_result(ops::eq(*this, other)); }
+DenseTensor DenseTensor::eq(double other) const { return dense_result(ops::eq(*this, other)); }
+DenseTensor DenseTensor::ne(const DenseTensor& other) const { return dense_result(ops::ne(*this, other)); }
+DenseTensor DenseTensor::ne(double other) const { return dense_result(ops::ne(*this, other)); }
 DenseTensor DenseTensor::all() const { return reshape({-1}).all(0, false); }
 DenseTensor DenseTensor::all(std::int64_t dimension, bool keep_dimension) const {
-    return ops::all(*this, dimension, keep_dimension);
+    return dense_result(ops::all(*this, dimension, keep_dimension));
 }
 DenseTensor DenseTensor::any(std::int64_t dimension, bool keep_dimension) const {
-    return ops::any(*this, dimension, keep_dimension);
+    return dense_result(ops::any(*this, dimension, keep_dimension));
 }
-DenseTensor DenseTensor::logical_not() const { return ops::logical_not(*this); }
+DenseTensor DenseTensor::logical_not() const { return dense_result(ops::logical_not(*this)); }
 bool DenseTensor::equal(const DenseTensor& other) const { return ops::equal(*this, other); }
-DenseTensor DenseTensor::masked_select(const DenseTensor& mask) const { return ops::masked_select(*this, mask); }
-DenseTensor DenseTensor::tril(std::int64_t diagonal) const { return ops::tril(*this, diagonal); }
+DenseTensor DenseTensor::masked_select(const DenseTensor& mask) const { return dense_result(ops::masked_select(*this, mask)); }
+DenseTensor DenseTensor::tril(std::int64_t diagonal) const { return dense_result(ops::tril(*this, diagonal)); }
 DenseTensor DenseTensor::masked_fill(const DenseTensor& mask, double value) const {
-    return ops::masked_fill(*this, mask, value);
+    return dense_result(ops::masked_fill(*this, mask, value));
 }
 DenseTensor& DenseTensor::masked_fill_(const DenseTensor& mask, double value) {
     ops::masked_fill_inplace(*this, mask, value);
@@ -477,19 +483,19 @@ DenseTensor& DenseTensor::masked_fill_(const DenseTensor& mask, double value) {
 }
 
 DenseTensor DenseTensor::contiguous() const {
-    return ops::contiguous(*this);
+    return dense_result(ops::contiguous(*this));
 }
 
 DenseTensor DenseTensor::clone() const {
-    return ops::clone(*this);
+    return dense_result(ops::clone(*this));
 }
 
 DenseTensor DenseTensor::to(ScalarType type) const {
-    return ops::cast(*this, type);
+    return dense_result(ops::cast(*this, type));
 }
 
 DenseTensor DenseTensor::to(Device target_device) const {
-    return ops::copy(*this, target_device);
+    return dense_result(ops::copy(*this, target_device));
 }
 
 DenseTensor& DenseTensor::copy_(const DenseTensor& source, bool) {
@@ -507,7 +513,9 @@ DenseTensor& DenseTensor::fill_(double value) {
 }
 
 DenseTensor& DenseTensor::add_(const DenseTensor& value) {
-    return copy_(ops::add(*this, value));
+    auto result = ops::add(*this, value);
+    ops::copy_into(*this, *result);
+    return *this;
 }
 
 DenseTensor& DenseTensor::scatter_add_(
@@ -537,7 +545,8 @@ DenseTensor& DenseTensor::index_fill_(
 DenseTensor& DenseTensor::index_put_(
     std::initializer_list<TensorIndex> indices, const DenseTensor& value) {
     value.require_dense();
-    ops::copy_into(index(indices), value);
+    auto view = index(indices);
+    ops::copy_into(view, value);
     return *this;
 }
 
