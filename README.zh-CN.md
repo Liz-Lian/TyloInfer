@@ -40,6 +40,40 @@ Apple M5 Max · 40 核 GPU · 128 GiB · GGUF IQ3_XXS · 4,096 token 输入，�
 | TyloInfer | 1,001 | 40.1 | 121.5 |
 | [Splash 1.5.0](https://github.com/incoai/splash/releases/tag/1.5.0) | **1,085** | — | **131.2** |
 
+### CUDA · Qwen3.8-27B
+
+NVIDIA RTX 3090 Ti · 24 GiB 显存 · 4K Python 代码续写 · API 热轮 · 贪心解码 · 输出 256 token · FP16/BF16 KV · 关闭提示词复用。单位为 token/s；PP 取普通解码模式，生成速度扣除首 token 前的等待。
+
+**GSQ-RCO IQ2_XS**
+
+| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（草稿数） |
+| --- | ---: | ---: | ---: | ---: |
+| TyloInfer | **2,237** | **83.5** | **171.4** | **206.8**（≤6） |
+| NInfer-all | 1,729 | 73.0 | 150.2 | 151.1（6） |
+| llama.cpp b12125 | 1,601 | 57.2 | 93.9 | 104.9（5） |
+| ik_llama.cpp | 1,371 | 52.4 | 83.6 | 56.3（7） |
+
+**UD-Q4_K_XL**
+
+| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（草稿数） |
+| --- | ---: | ---: | ---: | ---: |
+| TyloInfer | **2,110** | 43.2 | 101.1 | 136.0（≤6） |
+| NInfer-all | 2,008 | **46.9** | **110.5** | 136.3（7） |
+| llama.cpp b12125 | 1,799 | 43.9 | 89.3 | 109.9（5） |
+| ik_llama.cpp | 1,513 | 43.6 | 78.0 | 58.2（7） |
+| OpenJet | 1,750 | 39.1 | 103.4 | — |
+| tqLLM | 1,821 | 42.5 | 108.2 | **173.1**（7） |
+
+**NInfer-3090 · 原生 Q4/Q5 权重（单列对照）**
+
+| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（草稿数） |
+| --- | ---: | ---: | ---: | ---: |
+| NInfer-3090 | 3,369 | 52.5 | 135.8 | 166.9（7） |
+
+- NInfer-all 的 prefill 使用 **8bit（INT8）激活**。tqLLM、NInfer-3090 也启用了 INT8 prefill GEMM。原生 MTP 使用 3 个草稿，TyloInfer 自适应至多 3 个。
+- ik_llama.cpp、tqLLM 在 WSL2 下运行，其余为 Windows。NInfer-3090 使用不同的原生权重，其模板额外增加 13 个输入 token。
+- tqLLM 使用近似的 4bit 候选筛选／INT8 重算输出头，DFlash2 配套权重为 Q8_0；其它 DFlash2 配套权重为 Q4_0。
+
 ## 快速开始
 
 ### 源码构建与部署
