@@ -100,7 +100,7 @@ static void upload_mixed_dispatch_metadata(
     if(!asynchronous)TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
-static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
+static void initialize_mixed_nint_dispatch(::tyloi::MfeTensor& runtime) {
     runtime.nint_dispatch.reset();
     if(runtime.n_experts<=0 || runtime.n_experts>4096 || runtime.neuron_len<=0 ||
         runtime.out_per_expert<=0 || runtime.out_per_expert>INT_MAX)return;
@@ -140,7 +140,7 @@ static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
 }
 
 void prepare_moe(
-        MixedMoeRuntime & runtime,
+        ::tyloi::MfeTensor & runtime,
         bool heterogeneous,bool dense_prefill,
         const std::vector<std::vector<int32_t>>* expert_local_host) {
     if(expert_local_host && expert_local_host->size()!=runtime.pools.size())

@@ -252,7 +252,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         ~DmaTimes(){for(auto event:points)if(event)cudaEventDestroy(event);}
     };
     struct Binding {
-        MixedMoeRuntime hot,transfer;
+        ::tyloi::MfeTensor hot,transfer;
         MoeScratch hot_scratch,transfer_scratch;
         std::vector<MoeGpuArena*> stages;
         std::vector<::tyloi::DenseTensor> owner;
@@ -325,7 +325,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         bool cached_resident=false;
         bool reuse_plan=false;
         bool check_reused_views=false;
-        std::array<MixedMoeRuntime,3> fused_projections;
+        std::array<::tyloi::MfeTensor,3> fused_projections;
         std::unique_ptr<tyloi::cuda::MoeBatch> fused;
         std::unique_ptr<Mapped> transfer_index,transfer_descriptors,ssd_gate_up_descriptors;
         std::unique_ptr<Mapped> transfer_route_plan;
@@ -440,7 +440,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     // The group-local route space avoids a full-layer transfer/output workspace.
     static constexpr int prefill_group_capacity=96;
     struct PrefillBuffer {
-        std::array<MixedMoeRuntime,3> projections;
+        std::array<::tyloi::MfeTensor,3> projections;
         std::array<MoeScratch,3> scratch;
         ::tyloi::DenseTensor maps;
         std::array<::tyloi::DenseTensor,3> nvq_metadata;
@@ -1075,7 +1075,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                         shared_scratch->prefill_activation_workspace(
                             x,group.rows,geometry.groups,geometry.gs,transform));
                 }
-                auto output=runtime.forward(scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route);
+                auto output=tyloi::cuda::mixed_project(runtime, scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route);
                 // Variable group densities must not retain one q8 scratch
                 // allocation per row count across all prompt chunks.
                 scratch.nint_input_plans.clear();scratch.nvq_active_plans.clear();
@@ -1120,7 +1120,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
     }
         struct LayerPrefill {
-        std::array<MixedMoeRuntime,3> projections;
+        std::array<::tyloi::MfeTensor,3> projections;
         std::array<MoeScratch,3> scratch;
         int layer_id=0,slot=0;
         int64_t ram_begin=0,bytes=0;
@@ -1522,7 +1522,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                         x,rows,geometry.groups,geometry.gs,transform));
             }
             auto output=profiler_.measure(p==0?"prefill.expert_gate":p==1?"prefill.expert_up":"prefill.expert_down",[&] {
-                return runtime.forward(scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route);
+                return tyloi::cuda::mixed_project(runtime, scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route);
             });
             scratch.activation_workspaces.clear();return output;
         };
@@ -1701,7 +1701,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 for(int p=0;p<3;++p)shared[p]=nint_payload(shared_weights_.projections[p]);
                 cell.shared_gate=shared_weights_.gate(project,cell.input).contiguous();
             }
-            cell.fused=std::make_unique<tyloi::cuda::MoeBatch>(std::array<const MixedMoeRuntime*,3>{&cell.fused_projections[0],
+            cell.fused=std::make_unique<tyloi::cuda::MoeBatch>(std::array<const ::tyloi::MfeTensor*,3>{&cell.fused_projections[0],
                 &cell.fused_projections[1],&cell.fused_projections[2]},cell.input,cell.ids,cell.weights,
                 cache_->pipeline_sigmoid_table_,shared,cell.shared_gate,width_,ff_,&mapping,!shared_,combined_gate_up_,
                 batch_serial && cell.tokens==8?8:0,swiglu_limit_,up_only_,false);
@@ -2109,7 +2109,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         auto projection=[&](int i,const ::tyloi::DenseTensor& x) {
             auto& binding=cell.binding[i];auto& runtime=transfer ? binding.transfer : binding.hot;
             auto& scratch=transfer ? binding.transfer_scratch : binding.hot_scratch;
-            return runtime.forward(scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route, cell.shared_input && i<2);
+            return tyloi::cuda::mixed_project(runtime, scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route, cell.shared_input && i<2);
         };
         auto gate_output=projection(0,cell.input);
         // An ungated bank publishes Up in the Gate slot and has no activation

@@ -90,7 +90,7 @@ std::size_t MoeExpertCache::reclaim_optional_host(std::size_t allocation_bytes) 
 
 std::shared_ptr<MoeCachedSource> MoeExpertCache::register_source(
         const std::string & name,
-        std::shared_ptr<MixedMoeRuntime> cpu,
+        std::shared_ptr<::tyloi::MfeTensor> cpu,
         int minimum_slots,
         int layer_id,
         std::string projection_role) {
@@ -106,7 +106,7 @@ std::shared_ptr<MoeCachedSource> MoeExpertCache::register_source(
 
 std::shared_ptr<MoeCachedSource> MoeExpertCache::register_range_source(
         const std::string & name,
-        std::shared_ptr<MixedMoeRuntime> metadata,
+        std::shared_ptr<::tyloi::MfeTensor> metadata,
         std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> store,
         int minimum_slots,
         int layer_id,
@@ -2390,7 +2390,7 @@ bool MoeExpertCache::prepare_bundle_deferred(
 
 static tyloi::cuda::Experts wrap_cached_moe_source(
         const std::shared_ptr<MoeCachedSource> & source,
-        const std::shared_ptr<MixedMoeRuntime> & cpu) {
+        const std::shared_ptr<::tyloi::MfeTensor> & cpu) {
     tyloi::cuda::Experts result =
         cpu_mixed_moe_metadata(cpu);
     result.mixed_weight_bytes = source->logical_weight_bytes();
@@ -2427,7 +2427,7 @@ bool tyloi::cuda::prefetch_cached_moe_projection_bundle(
 tyloi::cuda::Experts cache_moe_weight(
         const std::shared_ptr<MoeExpertCache>& cache,
         const std::string& name,
-        const std::shared_ptr<MixedMoeRuntime>& runtime,
+        const std::shared_ptr<::tyloi::MfeTensor>& runtime,
         int minimum_slots,
         int layer_id,
         const std::string& projection_role,

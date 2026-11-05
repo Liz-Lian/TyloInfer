@@ -809,7 +809,7 @@ tyloi::cuda::Experts tyloi::cuda::weight_loader::Loader::build_experts(const std
     }
     if (cache && cacheable && !has_matrix_local_sq) {
         auto runtime =
-            make_mixed_moe_runtime(cpu, false);
+            make_mfe(cpu, false);
         return cache_moe_weight(
             cache,
             name, runtime,
@@ -832,11 +832,11 @@ tyloi::cuda::Experts tyloi::cuda::weight_loader::Loader::build_experts(const std
 #endif
 }
 
-std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
+std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
         const tyloi::source::Source & mfq, const std::string & name) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-    return make_mixed_moe_runtime(load_mfe_cpu(mfq, name), false);
+    return make_mfe(load_mfe_cpu(mfq, name), false);
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");

@@ -10,7 +10,7 @@
 #include <vector>
 
 class MoeCachedSource;
-struct MixedMoeRuntime;
+namespace tyloi { class MfeTensor; }
 struct MoeRoutePlan;
 
 namespace tyloi::cuda {
@@ -31,7 +31,7 @@ struct Experts {
     bool partial_experts = false;
     bool unified_nint_projection = false;
     std::vector<Shard> expert_parallel_shards;
-    std::shared_ptr<MixedMoeRuntime> resident;
+    std::shared_ptr<::tyloi::MfeTensor> resident;
     std::shared_ptr<MoeCachedSource> cached_source;
     std::vector<MoeActivationGeometry> activation_geometries;
     int activation_workspace_domain = 0;
@@ -109,5 +109,5 @@ bool prefetch_cached_moe_projection_bundle(
 } // namespace tyloi::cuda
 
 tyloi::cuda::Experts stage_cpu_mixed_moe(
-    const std::shared_ptr<MixedMoeRuntime>& runtime,
+    const std::shared_ptr<::tyloi::MfeTensor>& runtime,
     bool heterogeneous);

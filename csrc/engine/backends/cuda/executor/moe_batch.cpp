@@ -88,7 +88,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::DenseTenso
 }
 namespace tyloi::cuda {
 
-MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
+MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
         const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,const ::tyloi::DenseTensor& weights,const ::tyloi::DenseTensor& sigmoid,
         const std::array<const tyloi::NintTensor*,3>& shared,const ::tyloi::DenseTensor& shared_gate,
         int output_columns,int intermediate_columns,const std::array<std::vector<int32_t>,3>* cohort_by_expert,bool output_pairs,

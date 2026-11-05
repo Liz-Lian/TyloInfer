@@ -144,13 +144,13 @@ void set_moe_expert_cache_profile(
     tyloi::MoeCacheProfile profile);
 
 namespace tyloi::cuda { struct Experts; }
-struct MixedMoeRuntime;
+namespace tyloi { class MfeTensor; }
 namespace tyloi::cuda { class MfeMxfp4ExpertStore; }
 
 tyloi::cuda::Experts cache_moe_weight(
     const std::shared_ptr<MoeExpertCache>& cache,
     const std::string& name,
-    const std::shared_ptr<MixedMoeRuntime>& runtime,
+    const std::shared_ptr<::tyloi::MfeTensor>& runtime,
     int minimum_slots,
     int layer_id,
     const std::string& projection_role,

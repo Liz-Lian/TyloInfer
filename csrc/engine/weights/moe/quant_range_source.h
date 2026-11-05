@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-struct MixedMoeRuntime;
+namespace tyloi { class MfeTensor; }
 struct MoeRoutePlan;
 
 // Shared source for GPU cache misses and original-FP32 CPU cold projections.
@@ -23,7 +23,7 @@ class MoePinnedExpertArena;
 class MoeQuantRangeSource {
 public:
     explicit MoeQuantRangeSource(std::shared_ptr<tyloi::MfeQuantExpertStore> store);
-    const std::shared_ptr<MixedMoeRuntime>& metadata() const { return metadata_; }
+    const std::shared_ptr<::tyloi::MfeTensor>& metadata() const { return metadata_; }
     const tyloi::MfeQuantExpertStore& store() const { return *store_; }
     MixedMoePool read_expert(int expert) const;
     MixedMoePool allocate_expert(int expert) const;
@@ -72,7 +72,7 @@ private:
         std::size_t offset=0,bytes=0;
     };
     std::shared_ptr<tyloi::MfeQuantExpertStore> store_;
-    std::shared_ptr<MixedMoeRuntime> metadata_;
+    std::shared_ptr<::tyloi::MfeTensor> metadata_;
     std::vector<std::int64_t> q_strides_;
     std::vector<std::size_t> field_bytes_;
     std::vector<std::vector<FieldLayout>> field_layouts_;

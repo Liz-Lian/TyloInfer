@@ -54,7 +54,7 @@ bool Experts::supports_clamped_swiglu() const {
                           });
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    return (pools && !pools->empty()) || (resident && resident->supports_clamped_swiglu()) ||
+    return (pools && !pools->empty()) || (resident && supports_clamp(*resident)) ||
            (cached_source && cached_source->supports_clamped_swiglu());
 #else
     return pools && !pools->empty();

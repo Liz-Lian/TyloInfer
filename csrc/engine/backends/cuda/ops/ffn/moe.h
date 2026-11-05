@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/weights/moe/pool.h"
+#include "engine/weights/encoding/mfe.h"
 #include "engine/weights/moe/dispatch.h"
 #include "engine/backends/cuda/ops/ffn/activation.h"
 #include "engine/backends/cuda/ops/ffn/routes.h"
@@ -74,43 +74,15 @@ struct MoeScratchCache {
 };
 }
 
-struct MixedMoeRuntime {
-    int n_experts = 0;
-    int out_per_expert = 0;
-    int neuron_len = 0;
-    bool partial_experts = false;
-    // A streamed prompt group is still prefill when a rare expert has <=8
-    // rows. Its workspaces are shared by capacity, not cached per row count.
-    bool prefill_only = false;
-    std::vector<MixedMoePool> pools;
-    std::shared_ptr<MixedNvqDispatch> nvq_dispatch;
-    std::shared_ptr<MixedNintDispatch> nint_dispatch;
-    bool nint_only() const;
-
-    ::tyloi::DenseTensor forward(
-            MoeScratch& scratch,
-            const MoeOptions& options,
-            KlMmqState& kl_mmq,
-            ::tyloi::DenseTensor x,
-            const MoeRoutePlan & route,
-            bool input_prequantized = false,
-            int epilogue_mode = 0) const;
-
-    ::tyloi::DenseTensor forward_glu_output(
-            MoeScratch& scratch,
-            const MoeOptions& options,
-            KlMmqState& kl_mmq,
-            ::tyloi::DenseTensor x,
-            const MoeRoutePlan & route,
-            bool gelu) const;
-
-    bool supports_clamped_swiglu() const;
-
-    ::tyloi::DenseTensor forward_clamped_swiglu(
-            MoeScratch& scratch,
-            const MoeOptions& options,
-            KlMmqState& kl_mmq,
-            ::tyloi::DenseTensor gate_up,
-            const MoeRoutePlan & route,
-            double limit) const;
-};
+namespace tyloi::cuda {
+DenseTensor mixed_project(const MfeTensor& weight, MoeScratch& scratch,
+    const MoeOptions& options, KlMmqState& kl_mmq, DenseTensor x,
+    const MoeRoutePlan& route, bool input_prequantized = false, int epilogue_mode = 0);
+DenseTensor mixed_glu(const MfeTensor& weight, MoeScratch& scratch,
+    const MoeOptions& options, KlMmqState& kl_mmq, DenseTensor x,
+    const MoeRoutePlan& route, bool gelu);
+bool supports_clamp(const MfeTensor& weight);
+DenseTensor mixed_clamp(const MfeTensor& weight, MoeScratch& scratch,
+    const MoeOptions& options, KlMmqState& kl_mmq, DenseTensor gate_up,
+    const MoeRoutePlan& route, double limit);
+}

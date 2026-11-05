@@ -12,6 +12,106 @@
 #include <numeric>
 #include <unordered_set>
 
+bool tyloi::MfeTensor::nint_only() const {
+    return !pools.empty() && std::all_of(pools.begin(), pools.end(),
+        [](const MixedMoePool& pool) { return pool.family == MixedMoeFamily::Nint; });
+}
+
+bool tyloi::MfeTensor::defined() const noexcept {
+    if (n_experts <= 0 || out_per_expert <= 0 || neuron_len <= 0 || pools.empty()) return false;
+    for (const auto& pool : pools) {
+        const auto* payload = pool.payload();
+        if (!(payload ? payload->defined() : pool.nepq.indices_packed.defined()) ||
+            !pool.expert_local.defined()) return false;
+    }
+    return true;
+}
+
+std::int64_t tyloi::MfeTensor::numel() const {
+    TensorView view;
+    view.rank = 3;
+    view.sizes[0] = n_experts;
+    view.sizes[1] = out_per_expert;
+    view.sizes[2] = neuron_len;
+    return view.numel();
+}
+
+std::size_t tyloi::MfeTensor::nbytes() const {
+    const auto elements = numel();
+    if (static_cast<std::uint64_t>(elements) > std::numeric_limits<std::size_t>::max() / 2)
+        throw std::overflow_error("tensor byte count overflow");
+    return static_cast<std::size_t>(elements) * 2;
+}
+
+std::size_t tyloi::MfeTensor::backing_nbytes() const {
+    return backing_bytes(buffers());
+}
+
+std::int64_t tyloi::MfeTensor::size(std::int64_t dimension) const {
+    if (dimension < 0) dimension += 3;
+    switch (dimension) {
+        case 0: return n_experts;
+        case 1: return out_per_expert;
+        case 2: return neuron_len;
+        default: throw std::out_of_range("tensor dimension is out of range");
+    }
+}
+
+const tyloi::Device& tyloi::MfeTensor::device() const noexcept {
+    for (const auto& pool : pools) {
+        const auto* payload = pool.payload();
+        if (payload && payload->defined()) return payload->device();
+        if (!payload && pool.nepq.indices_packed.defined()) return pool.nepq.indices_packed.device();
+    }
+    static const Device unprepared{};
+    return unprepared;
+}
+
+std::vector<const tyloi::DenseTensor*> tyloi::MfeTensor::buffers() const {
+    std::vector<const DenseTensor*> result;
+    for (const auto& pool : pools) {
+        if (const auto* payload = pool.payload()) {
+            auto values = payload->buffers();
+            result.insert(result.end(), values.begin(), values.end());
+        } else {
+            auto values = nepq_buffers(pool.nepq);
+            result.insert(result.end(), values.begin(), values.end());
+        }
+        result.push_back(&pool.expert_local);
+    }
+    if (nvq_dispatch) {
+        const auto& d = *nvq_dispatch;
+        result.insert(result.end(), {&d.metadata_device, &d.metadata_host, &d.map_ptrs,
+            &d.weight_ptrs, &d.weight_sizes, &d.pool_params,
+            &d.initial_expert_pool, &d.initial_expert_local});
+    }
+    if (nint_dispatch) {
+        const auto& d = *nint_dispatch;
+        result.insert(result.end(), {&d.metadata_device, &d.metadata_host, &d.map_ptrs,
+            &d.pool_params, &d.initial_expert_pool, &d.initial_expert_local});
+    }
+    return result;
+}
+
+void tyloi::MfeTensor::record_stream(std::uintptr_t stream) const {
+    for (const auto* buffer : buffers())
+        if (buffer && buffer->defined()) buffer->record_stream(stream);
+}
+
+std::shared_ptr<const tyloi::Tensor> tyloi::MfeTensor::relocated(Device target) const {
+    if (!defined())
+        throw std::invalid_argument("MFE relocation before preparation is unsupported");
+    auto moved = std::make_shared<MfeTensor>(*this);
+    if (device() == target) return moved;
+    if (nvq_dispatch || nint_dispatch)
+        throw std::invalid_argument("MFE relocation with prepared dispatch is unsupported");
+    for (const auto* buffer : moved->buffers()) {
+        auto& writable = const_cast<DenseTensor&>(*buffer);
+        if (writable.defined() && writable.device() != target) writable = writable.to(target);
+    }
+    return moved;
+}
+
 static void initialize_mfe_nint_runtime(tyloi::cuda::Experts & result) {
     if (!result.pools || result.pools->empty()) {
         throw std::runtime_error("MFE NINT runtime requires at least one pool");
@@ -87,7 +187,7 @@ static int64_t tensor_storage_bytes(const ::tyloi::DenseTensor & value) {
 
 // Physical bytes of every backing an expert runtime keeps alive. Aliased
 // buffers are counted once, the same rule the projection weights use.
-int64_t mixed_moe_storage_bytes(const MixedMoeRuntime & runtime) {
+int64_t mixed_moe_storage_bytes(const ::tyloi::MfeTensor & runtime) {
     std::vector<const ::tyloi::DenseTensor*> buffers;
     if (runtime.nint_dispatch) {
         const auto& d = *runtime.nint_dispatch;
@@ -104,11 +204,11 @@ int64_t mixed_moe_storage_bytes(const MixedMoeRuntime & runtime) {
     return static_cast<int64_t>(::tyloi::backing_bytes(buffers));
 }
 
-std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
+std::shared_ptr<::tyloi::MfeTensor> make_mfe(
         const tyloi::mfe::Data & cpu,
         bool cuda,
         const MoeLoadOptions& options) {
-    auto runtime = std::make_shared<MixedMoeRuntime>();
+    auto runtime = std::make_shared<::tyloi::MfeTensor>();
     runtime->n_experts = cpu.n_experts;
     runtime->out_per_expert = cpu.out_per_expert;
     runtime->neuron_len = cpu.neuron_len;
@@ -206,7 +306,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
 }
 
 static tyloi::cuda::Experts wrap_mixed_moe_runtime(
-        const std::shared_ptr<MixedMoeRuntime> & runtime) {
+        const std::shared_ptr<::tyloi::MfeTensor> & runtime) {
     tyloi::cuda::Experts result;
     result.unified_nint_projection = runtime->nint_only();
     result.n_experts = runtime->n_experts;
@@ -224,7 +324,7 @@ tyloi::cuda::Experts to_gpu_mixed_moe(
         const tyloi::mfe::Data & cpu,
         const MoeLoadOptions& options) {
     return wrap_mixed_moe_runtime(
-        make_mixed_moe_runtime(cpu, true, options));
+        make_mfe(cpu, true, options));
 }
 
 tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
@@ -271,7 +371,7 @@ tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
         return result;
     }
 
-    auto runtime = std::make_shared<MixedMoeRuntime>();
+    auto runtime = std::make_shared<::tyloi::MfeTensor>();
     runtime->n_experts = cpu.n_experts;
     runtime->out_per_expert = cpu.out_per_expert;
     runtime->neuron_len = cpu.neuron_len;
@@ -447,10 +547,10 @@ static NepqWeight copy_cpu_nepq_to_cuda(const NepqWeight & source) {
 }
 
 tyloi::cuda::Experts stage_cpu_mixed_moe(
-        const std::shared_ptr<MixedMoeRuntime> & cpu,
+        const std::shared_ptr<::tyloi::MfeTensor> & cpu,
         bool heterogeneous) {
     if (!cpu) throw std::runtime_error("missing CPU-offloaded MoE state");
-    auto runtime = std::make_shared<MixedMoeRuntime>();
+    auto runtime = std::make_shared<::tyloi::MfeTensor>();
     runtime->n_experts = cpu->n_experts;
     runtime->out_per_expert = cpu->out_per_expert;
     runtime->neuron_len = cpu->neuron_len;
@@ -484,7 +584,7 @@ tyloi::cuda::Experts stage_cpu_mixed_moe(
 }
 
 tyloi::cuda::Experts cpu_mixed_moe_metadata(
-        const std::shared_ptr<MixedMoeRuntime> & runtime) {
+        const std::shared_ptr<::tyloi::MfeTensor> & runtime) {
     tyloi::cuda::Experts result;
     result.unified_nint_projection = runtime->nint_only();
     result.n_experts = runtime->n_experts;

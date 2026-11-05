@@ -151,7 +151,7 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     tyloi::cuda::Experts* weight = nullptr;
-    std::shared_ptr<MixedMoeRuntime>* cpu = nullptr;
+    std::shared_ptr<::tyloi::MfeTensor>* cpu = nullptr;
     const char* role = nullptr;
     switch (projection) {
         case Role::gate: weight = &ffn.moe_gate; cpu = &ffn.cpu_moe_gate; role = "gate"; break;

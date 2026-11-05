@@ -46,7 +46,7 @@ public:
             MoeExpertCache * cache,
             int id,
             std::string name,
-            std::shared_ptr<MixedMoeRuntime> cpu,
+            std::shared_ptr<::tyloi::MfeTensor> cpu,
             int minimum_slots,
             int layer_id,
             std::string projection_role,
@@ -282,7 +282,7 @@ public:
     void finalize() {
         const MfqCudaGuard guard(cache_->device());
         if (active_) return;
-        active_ = std::make_shared<MixedMoeRuntime>();
+        active_ = std::make_shared<::tyloi::MfeTensor>();
         active_->n_experts = cpu_->n_experts;
         active_->out_per_expert = cpu_->out_per_expert;
         active_->neuron_len = cpu_->neuron_len;
@@ -426,7 +426,7 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return staged.resident->forward(temporary, options, mmq, x, route);
+            return tyloi::cuda::mixed_project(*staged.resident, temporary, options, mmq, x, route);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
@@ -434,11 +434,11 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return staged.resident->forward(temporary, options, mmq, x, route);
+            return tyloi::cuda::mixed_project(*staged.resident, temporary, options, mmq, x, route);
         }
         require_cache_device(x);
         const MfqCudaGuard guard(cache_->device());
-        auto output = active_->forward(scratch, options, mmq, x, route);
+        auto output = tyloi::cuda::mixed_project(*active_, scratch, options, mmq, x, route);
         cache_->record_compute_use();
         return output;
     }
@@ -467,11 +467,11 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return staged.resident->forward(temporary, options, mmq, x, route);
+            return tyloi::cuda::mixed_project(*staged.resident, temporary, options, mmq, x, route);
         }
         require_cache_device(x);
         const MfqCudaGuard guard(cache_->device());
-        auto output = active_->forward(scratch, options, mmq, x, route, true);
+        auto output = tyloi::cuda::mixed_project(*active_, scratch, options, mmq, x, route, true);
         cache_->record_compute_use();
         return output;
     }
@@ -497,7 +497,7 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return staged.resident->forward_glu_output(temporary, options, mmq, x, route, gelu);
+            return tyloi::cuda::mixed_glu(*staged.resident, temporary, options, mmq, x, route, gelu);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
@@ -508,11 +508,11 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return staged.resident->forward_glu_output(temporary, options, mmq, x, route, gelu);
+            return tyloi::cuda::mixed_glu(*staged.resident, temporary, options, mmq, x, route, gelu);
         }
         require_cache_device(x);
         const MfqCudaGuard guard(cache_->device());
-        auto output = active_->forward_glu_output(scratch, options, mmq, x, route, gelu);
+        auto output = tyloi::cuda::mixed_glu(*active_, scratch, options, mmq, x, route, gelu);
         cache_->record_compute_use();
         return output;
     }
@@ -545,24 +545,24 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_cpu_mixed_moe(cpu_, heterogeneous);
             MoeScratch temporary;
-            return staged.resident->forward_clamped_swiglu(temporary, options, mmq, gate_up, route, limit);
+            return tyloi::cuda::mixed_clamp(*staged.resident, temporary, options, mmq, gate_up, route, limit);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
             cache_->count_full_projection_fallback();
             auto staged = stage_cpu_mixed_moe(cpu_, heterogeneous);
             MoeScratch temporary;
-            return staged.resident->forward_clamped_swiglu(temporary, options, mmq, gate_up, route, limit);
+            return tyloi::cuda::mixed_clamp(*staged.resident, temporary, options, mmq, gate_up, route, limit);
         }
         require_cache_device(gate_up);
         const MfqCudaGuard guard(cache_->device());
-        auto output = active_->forward_clamped_swiglu(scratch, options, mmq, gate_up, route, limit);
+        auto output = tyloi::cuda::mixed_clamp(*active_, scratch, options, mmq, gate_up, route, limit);
         cache_->record_compute_use();
         return output;
     }
 
     bool supports_clamped_swiglu() const {
-        return cpu_->supports_clamped_swiglu();
+        return tyloi::cuda::supports_clamp(*cpu_);
     }
 
     static bool prefetch_bundle(
@@ -612,12 +612,12 @@ private:
     friend class MoeResidencyManager;
     friend struct MoeResidencyTestAccess;
 
-    std::shared_ptr<MixedMoeRuntime> fallback_runtime() {
+    std::shared_ptr<::tyloi::MfeTensor> fallback_runtime() {
         if (quant_source_) throw std::runtime_error("quantized range cache cannot stage a full projection");
         if (!range_store_) return cpu_;
         std::lock_guard<std::mutex> guard(fallback_mutex_);
         if (!fallback_cpu_) {
-            fallback_cpu_ = make_mixed_moe_runtime(
+            fallback_cpu_ = make_mfe(
                 tyloi::mfe::unpack(range_store_->read_blob()), false);
         }
         return fallback_cpu_;
@@ -684,7 +684,7 @@ private:
             auto gpu_x = x.dim() == 3 ? x.index_select(1, gpu_index) : x;
             auto gpu_route = build_moe_route_plan(::tyloi::cuda::tensor(gpu_ids).reshape({1,
                 static_cast<std::int64_t>(gpu_ids.size())}).to(x.device()), cpu_->n_experts);
-            gpu_y = active_->forward(scratch, options, mmq, gpu_x, gpu_route);
+            gpu_y = tyloi::cuda::mixed_project(*active_, scratch, options, mmq, gpu_x, gpu_route);
             cache_->record_compute_use();
         }
         auto cpu_y = quant_source_->forward_cpu(cpu_x, cpu_route, &held);
@@ -732,7 +732,7 @@ private:
             if (!cache_->prepare(*this,gpu_experts,false)) throw std::logic_error("resident GPU subset does not fit its arena");
             auto gpu_x=x.reshape({-1,cpu_->neuron_len}).index_select(0,::tyloi::cuda::tensor(gpu_input_positions).to(x.device()));
             auto gpu_route=build_moe_route_plan(::tyloi::cuda::tensor(gpu_ids).reshape({static_cast<std::int64_t>(gpu_ids.size()),1}).to(x.device()),cpu_->n_experts);
-            gpu_y=active_->forward(scratch, options, mmq, gpu_x, gpu_route);
+            gpu_y=tyloi::cuda::mixed_project(*active_, scratch, options, mmq, gpu_x, gpu_route);
             cache_->record_compute_use();
         }
         MoeRoutePlan cpu_route;
@@ -751,13 +751,13 @@ private:
     std::string name_;
     int layer_id_ = -1;
     std::string projection_role_;
-    std::shared_ptr<MixedMoeRuntime> cpu_;
+    std::shared_ptr<::tyloi::MfeTensor> cpu_;
     std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> range_store_;
     std::shared_ptr<MoeQuantRangeSource> quant_source_;
     std::mutex fallback_mutex_;
-    std::shared_ptr<MixedMoeRuntime> fallback_cpu_;
+    std::shared_ptr<::tyloi::MfeTensor> fallback_cpu_;
     std::vector<MoeCachedCohort> cohorts_;
     std::vector<int> expert_to_cohort_;
     std::vector<int> expert_to_local_;
-    std::shared_ptr<MixedMoeRuntime> active_;
+    std::shared_ptr<::tyloi::MfeTensor> active_;
 };

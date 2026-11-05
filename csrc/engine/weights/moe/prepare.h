@@ -5,10 +5,10 @@
 #include <cstdint>
 #include <vector>
 
-struct MixedMoeRuntime;
+namespace tyloi { class MfeTensor; }
 
 std::vector<MoeActivationGeometry> moe_activation_geometry(
     const std::vector<MixedMoePool>& pools);
 
-void prepare_moe(MixedMoeRuntime& runtime,bool heterogeneous,bool dense_prefill=false,
+void prepare_moe(::tyloi::MfeTensor& runtime,bool heterogeneous,bool dense_prefill=false,
     const std::vector<std::vector<int32_t>>* expert_local_host=nullptr);

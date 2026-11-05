@@ -49,13 +49,6 @@ void fp8_sq_moe_matmul(
     throw std::runtime_error("unsupported FP8-SQ MoE dtype");
 }
 
-bool MixedMoeRuntime::nint_only() const {
-    return !pools.empty() && std::all_of(
-        pools.begin(), pools.end(), [](const MixedMoePool & pool) {
-            return pool.family == MixedMoeFamily::Nint;
-        });
-}
-
 void MoeScratch::bind(const std::shared_ptr<MixedNintDispatch>& dispatch) {
     if (nint_binding.owner_before(dispatch) || dispatch.owner_before(nint_binding)) {
         nint_input_plans.clear();
@@ -126,17 +119,26 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
     return activation_workspace(x, input_rows, groups, gs, transform, false);
 }
 
-::tyloi::DenseTensor MixedMoeRuntime::forward(
+::tyloi::DenseTensor tyloi::cuda::mixed_project(
+        const MfeTensor& weight,
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
         ::tyloi::DenseTensor x,
         const MoeRoutePlan & route,
         bool input_prequantized,
-        int epilogue_mode) const {
+        int epilogue_mode) {
+    const auto& n_experts = weight.n_experts;
+    const auto& out_per_expert = weight.out_per_expert;
+    const auto& neuron_len = weight.neuron_len;
+    const auto& partial_experts = weight.partial_experts;
+    const auto& prefill_only = weight.prefill_only;
+    const auto& pools = weight.pools;
+    const auto& nvq_dispatch = weight.nvq_dispatch;
+    const auto& nint_dispatch = weight.nint_dispatch;
     if (epilogue_mode < 0 || epilogue_mode > 2 ||
             (epilogue_mode != 0 &&
-             (!nint_only() || (out_per_expert % 2) != 0))) {
+             (!weight.nint_only() || (out_per_expert % 2) != 0))) {
         throw std::runtime_error(
             "mixed MFE projection epilogue requires only canonical NINT");
     }
@@ -697,19 +699,20 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
     return output;
 }
 
-::tyloi::DenseTensor MixedMoeRuntime::forward_glu_output(
+::tyloi::DenseTensor tyloi::cuda::mixed_glu(
+        const MfeTensor& weight,
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
         ::tyloi::DenseTensor x,
         const MoeRoutePlan & route,
-        bool gelu) const {
-    if (nint_only() && kl_mmq.mode == KlMmqMode::Default) {
-        return forward(
+        bool gelu) {
+    if (weight.nint_only() && kl_mmq.mode == KlMmqMode::Default) {
+        return mixed_project(weight,
             scratch, options, kl_mmq,
             x, route, false, gelu ? 2 : 1);
     }
-    auto gate_up = forward(
+    auto gate_up = mixed_project(weight,
         scratch, options, kl_mmq,
         x, route);
     return gelu
@@ -717,18 +720,21 @@ MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
         : moe_swiglu_split_cuda(gate_up);
 }
 
-bool MixedMoeRuntime::supports_clamped_swiglu() const {
-    return !pools.empty();
+bool tyloi::cuda::supports_clamp(const MfeTensor& weight) {
+    return !weight.pools.empty();
 }
 
-::tyloi::DenseTensor MixedMoeRuntime::forward_clamped_swiglu(
+::tyloi::DenseTensor tyloi::cuda::mixed_clamp(
+        const MfeTensor& weight,
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
         ::tyloi::DenseTensor gate_up,
         const MoeRoutePlan & route,
-        double limit) const {
-    if (!supports_clamped_swiglu() ||
+        double limit) {
+    const auto n_experts = weight.n_experts;
+    const auto neuron_len = weight.neuron_len;
+    if (!supports_clamp(weight) ||
         !gate_up.is_cuda() || !gate_up.is_contiguous() ||
         gate_up.scalar_type() != ::tyloi::kFloat16 ||
         gate_up.dim() != 3 || gate_up.size(2) != 2 * neuron_len) {
@@ -748,7 +754,7 @@ bool MixedMoeRuntime::supports_clamped_swiglu() const {
     auto up = ::tyloi::cuda::clamp(parts[1], -limit, limit);
     auto activation =
         (::tyloi::cuda::silu(gate) * up).contiguous();
-    return forward(
+    return mixed_project(weight,
         scratch, options, kl_mmq,
         activation, route);
 }

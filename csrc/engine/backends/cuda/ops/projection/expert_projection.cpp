@@ -73,7 +73,7 @@ DenseTensor Projector::run(const Experts& weight, DenseTensor input,
             return weight.cached_source->forward(
                 *scratch, options, mmq_, options.heterogeneous, input, route);
         }
-        return weight.resident->forward(*moe_scratch_.get(weight.resident, input), options, mmq_, input, route, prequantized);
+        return tyloi::cuda::mixed_project(*weight.resident, *moe_scratch_.get(weight.resident, input), options, mmq_, input, route, prequantized);
     }
     return nint(weight).forward(mfe_scratch_, input, route, prequantized, epilogue);
 #else
@@ -94,7 +94,7 @@ DenseTensor Projector::glu(const Experts& weight, DenseTensor input,
         if (weight.cached_source)
             return weight.cached_source->forward_glu_output(
                 *moe_scratch_.get(weight.cached_source, input), options, mmq_, options.heterogeneous, input, route, gelu);
-        return weight.resident->forward_glu_output(*moe_scratch_.get(weight.resident, input), options, mmq_, input, route, gelu);
+        return tyloi::cuda::mixed_glu(*weight.resident, *moe_scratch_.get(weight.resident, input), options, mmq_, input, route, gelu);
     }
     return run(weight, input, route, false, gelu ? 2 : 1);
 #else
@@ -139,9 +139,9 @@ DenseTensor Projector::clamped(const Experts& weight, DenseTensor input,
         return weight.cached_source->forward_clamped_swiglu(
             *moe_scratch_.get(weight.cached_source, input), options, mmq_, options.heterogeneous, input, route, limit);
     }
-    if (weight.resident && weight.resident->supports_clamped_swiglu()) {
+    if (weight.resident && tyloi::cuda::supports_clamp(*weight.resident)) {
         const auto options = runtime_options::moe(options_.moe);
-        return weight.resident->forward_clamped_swiglu(*moe_scratch_.get(weight.resident, input), options, mmq_, input, route, limit);
+        return tyloi::cuda::mixed_clamp(*weight.resident, *moe_scratch_.get(weight.resident, input), options, mmq_, input, route, limit);
     }
     return nint(weight).clamped(mfe_scratch_, input, route, limit);
 #else

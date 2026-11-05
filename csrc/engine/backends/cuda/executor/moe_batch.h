@@ -51,7 +51,7 @@ class MoeBatch {
     MfeCachedDispatch cached_dispatch_{};
     void trace_dispatch();
 public:
-    MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
+    MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
         const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,
         const ::tyloi::DenseTensor& weights,const ::tyloi::DenseTensor& sigmoid,
         const std::array<const tyloi::NintTensor*,3>& shared={},const ::tyloi::DenseTensor& shared_gate={},

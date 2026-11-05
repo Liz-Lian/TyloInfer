@@ -63,7 +63,7 @@ std::size_t expert_fields_bytes(const MixedMoePool& pool) {
 }
 
 MoeQuantRangeSource::MoeQuantRangeSource(std::shared_ptr<tyloi::MfeQuantExpertStore> store)
-    :store_(std::move(store)),metadata_(std::make_shared<MixedMoeRuntime>()) {
+    :store_(std::move(store)),metadata_(std::make_shared<::tyloi::MfeTensor>()) {
     if (!store_) throw std::invalid_argument("missing quantized expert range source");
     const auto* profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     profile_ssd_=profile && profile[0]=='1';

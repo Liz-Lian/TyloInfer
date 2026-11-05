@@ -181,14 +181,14 @@ public:
 
     std::shared_ptr<MoeCachedSource> register_source(
         const std::string & name,
-        std::shared_ptr<MixedMoeRuntime> cpu,
+        std::shared_ptr<::tyloi::MfeTensor> cpu,
         int minimum_slots,
         int layer_id,
         std::string projection_role);
 
     std::shared_ptr<MoeCachedSource> register_range_source(
         const std::string & name,
-        std::shared_ptr<MixedMoeRuntime> metadata,
+        std::shared_ptr<::tyloi::MfeTensor> metadata,
         std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> store,
         int minimum_slots,
         int layer_id,

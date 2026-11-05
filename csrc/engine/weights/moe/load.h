@@ -18,11 +18,11 @@ struct MoeLoadOptions {
 tyloi::mfe::Data load_mfe_cpu(
     const tyloi::source::Source& source, const std::string& name);
 tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data& source);
-std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
+std::shared_ptr<::tyloi::MfeTensor> make_mfe(
     const tyloi::mfe::Data& source,
     bool cuda,
     const MoeLoadOptions& options = {});
-int64_t mixed_moe_storage_bytes(const MixedMoeRuntime& runtime);
+int64_t mixed_moe_storage_bytes(const ::tyloi::MfeTensor& runtime);
 ::tyloi::DenseTensor copy_cpu_weight_to_cuda(
     const ::tyloi::DenseTensor& source);
 tyloi::cuda::Experts to_gpu_mixed_moe(
@@ -35,4 +35,4 @@ tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
     int device,
     const MoeLoadOptions& options = {});
 tyloi::cuda::Experts cpu_mixed_moe_metadata(
-    const std::shared_ptr<MixedMoeRuntime>& runtime);
+    const std::shared_ptr<::tyloi::MfeTensor>& runtime);

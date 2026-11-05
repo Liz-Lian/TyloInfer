@@ -33,7 +33,7 @@ struct MfqDropFileCacheGuard {
 bool is_quant_dtype(const std::string& dtype);
 std::shared_ptr<tyloi::NintRows> load_nint_row_table(
     const tyloi::source::Source& source, const std::string& name, bool prefer_mapping=false);
-std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
+std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
     const tyloi::source::Source& source, const std::string& name);
 ::tyloi::DenseTensor mfe_dense_reference(
     const tyloi::source::Source& source, const std::string& name,
