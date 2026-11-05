@@ -28,7 +28,7 @@ Apple M5 Max · 40-core GPU · 128 GiB · 4,096-token input. Speeds in tokens/s.
 | Model | Format | Prompt processing | Generation | With DFlash2 |
 | --- | --- | ---: | ---: | ---: |
 | Qwen3.8-Flash-Next | GGUF IQ3_XXS | 2,572 | 73.7 | 162.4 |
-| Qwen3.8-27B | GGUF IQ3_XXS | 997 | 40.1 | 121.5 |
+| Qwen3.8-27B | GGUF IQ3_XXS | 1,001 | 40.1 | 121.5 |
 
 ## Quick start
 

@@ -28,7 +28,7 @@ Apple M5 Max · 40 核 GPU · 128 GiB · 4,096 token 输入，单位为 token/s�
 | 模型 | 格式 | Prompt Processing | Generation | DFlash2 生成 |
 | --- | --- | ---: | ---: | ---: |
 | Qwen3.8-Flash-Next | GGUF IQ3_XXS | 2,572 | 73.7 | 162.4 |
-| Qwen3.8-27B | GGUF IQ3_XXS | 997 | 40.1 | 121.5 |
+| Qwen3.8-27B | GGUF IQ3_XXS | 1,001 | 40.1 | 121.5 |
 
 ## 快速开始
 
