@@ -23,12 +23,24 @@ Apple Silicon uses Metal; NVIDIA GPUs use CUDA on Linux and Windows. ROCm suppor
 
 ## Performance
 
-Apple M5 Max · 40-core GPU · 128 GiB · 4,096-token input. Speeds in tokens/s.
+Apple M5 Max · 40-core GPU · 128 GiB · GGUF IQ3_XXS · 4,096-token input. Speeds in tokens/s.
 
-| Model | Format | Prompt processing | Generation | With DFlash2 |
-| --- | --- | ---: | ---: | ---: |
-| Qwen3.8-Flash-Next | GGUF IQ3_XXS | 2,572 | 73.7 | 162.4 |
-| Qwen3.8-27B | GGUF IQ3_XXS | 1,001 | 40.1 | 121.5 |
+### Qwen3.8-Flash-Next
+
+| Engine | Prompt processing | Generation | With DFlash2 |
+| --- | ---: | ---: | ---: |
+| TyloInfer | 2,572 | 73.7 | **162.4** |
+| [Strata 0.1.52](https://github.com/Niko1221/Strata/commit/5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d) | — | **76.3** | — |
+| [Splash 1.4.1](https://github.com/incoai/splash/releases/tag/1.4.1) | **2,599** | — | 148.9 |
+
+### Qwen3.8-27B
+
+| Engine | Prompt processing | Generation | With DFlash2 |
+| --- | ---: | ---: | ---: |
+| TyloInfer | 1,001 | 40.1 | 121.5 |
+| [Splash 1.5.0](https://github.com/incoai/splash/releases/tag/1.5.0) | **1,085** | — | **131.2** |
+
+Strata's prompt-processing recording includes first-use shader compilation and is omitted here.
 
 ## Quick start
 
