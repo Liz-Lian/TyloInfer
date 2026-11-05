@@ -64,14 +64,8 @@ NVIDIA RTX 3090 Ti · 24 GiB 显存 · 4K Python 代码续写 · API 热轮 · �
 | OpenJet | 1,750 | 39.1 | 103.4 | — |
 | tqLLM | 1,821 | 42.5 | 108.2 | **173.1**（7） |
 
-**NInfer-3090 · 原生 Q4/Q5 权重（单列对照）**
-
-| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（草稿数） |
-| --- | ---: | ---: | ---: | ---: |
-| NInfer-3090 | 3,369 | 52.5 | 135.8 | 166.9（7） |
-
-- NInfer-all 的 prefill 使用 **8bit（INT8）激活**。tqLLM、NInfer-3090 也启用了 INT8 prefill GEMM。原生 MTP 使用 3 个草稿，TyloInfer 自适应至多 3 个。
-- ik_llama.cpp、tqLLM 在 WSL2 下运行，其余为 Windows。NInfer-3090 使用不同的原生权重，其模板额外增加 13 个输入 token。
+- NInfer-all 的 prefill 使用 **8bit（INT8）激活**。tqLLM 也启用了 INT8 prefill GEMM。原生 MTP 使用 3 个草稿，TyloInfer 自适应至多 3 个。
+- ik_llama.cpp、tqLLM 在 WSL2 下运行，其余为 Windows。
 - tqLLM 使用近似的 4bit 候选筛选／INT8 重算输出头，DFlash2 配套权重为 Q8_0；其它 DFlash2 配套权重为 Q4_0。
 
 ## 快速开始
