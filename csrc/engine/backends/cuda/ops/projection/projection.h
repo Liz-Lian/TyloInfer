@@ -7,8 +7,8 @@
 namespace tyloi::cuda::ops {
 tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight);
 tyloi::DenseTensor project(tyloi::DenseTensor input, const ::tyloi::Tensor& weight);
-tyloi::DenseTensor linear(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor& bias);
-tyloi::DenseTensor affine(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor& bias);
+tyloi::DenseTensor linear(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor* bias);
+tyloi::DenseTensor affine(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor* bias);
 std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input, const ::QuantLinearGroup& group);
 tyloi::DenseTensor sigmoid_project(tyloi::DenseTensor input, tyloi::DenseTensor gate, const ::tyloi::Tensor& weight);
 }

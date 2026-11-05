@@ -272,8 +272,8 @@ CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
 }
 
 CudaGridVisionPromptComponent::CudaGridVisionPromptComponent(
-    RoutedCache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm, BiasWeight merger_up,
-    BiasWeight merger_down, int64_t image_token_id, int64_t video_token_id,
+    RoutedCache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm, tyloi::weights::BiasWeight merger_up,
+    tyloi::weights::BiasWeight merger_down, int64_t image_token_id, int64_t video_token_id,
     std::string input_contract, std::string position_policy)
     : weights_(weights),
       encoder_(std::move(encoder)),

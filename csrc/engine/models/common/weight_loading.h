@@ -123,14 +123,26 @@ void load_attention_mixer(Block& block, Loader& ops, const ModelConfig& config, 
     block.attention_output_gate = output_gate;
     if constexpr (requires { block.no_rope = false; })
         block.no_rope = config.positional_encoding == PositionalEncoding::none;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    block.attn_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(prefix + "attention.norm.weight"));
+#else
     block.attn_norm = ops.dense(prefix + "attention.norm.weight");
+#endif
     const auto attention = prefix + "attention.";
     ops.qkv(block, {attention + "query.weight", attention + "key.weight", attention + "value.weight"});
     ops.output(block, attention + "output.weight");
     if (ops.has(attention + "query_norm.weight"))
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        block.q_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(attention + "query_norm.weight"));
+#else
         block.q_norm = ops.dense(attention + "query_norm.weight");
+#endif
     if (ops.has(attention + "key_norm.weight"))
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        block.k_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(attention + "key_norm.weight"));
+#else
         block.k_norm = ops.dense(attention + "key_norm.weight");
+#endif
 }
 
 template <class Block, class Loader>

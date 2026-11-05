@@ -124,8 +124,8 @@ std::shared_ptr<Tensor> project(const Tensor& input, const ::tyloi::Tensor& weig
 // linear uses dense weight dtype for dense projection and bias; otherwise it adds
 // bias in the projection result dtype. It restores input dtype and makes contiguous.
 // affine adds bias in the projection result dtype without restoring input dtype.
-std::shared_ptr<Tensor> linear(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor& bias);
-std::shared_ptr<Tensor> affine(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor& bias);
+std::shared_ptr<Tensor> linear(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor* bias = nullptr);
+std::shared_ptr<Tensor> affine(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor* bias = nullptr);
 std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& input, const ::QuantLinearGroup& group);
 // Computes project(input * sigmoid(gate)).
 std::shared_ptr<Tensor> sigmoid_project(const Tensor& input, const Tensor& gate, const ::tyloi::Tensor& weight);

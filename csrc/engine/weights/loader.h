@@ -98,8 +98,8 @@ struct Loader {
     DenseTensor native(const std::string& name) const;
     DenseTensor host(const std::string& name) const;
     DenseTensor norm(const std::string& name, std::int64_t width) const;
-    BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
-    BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
+    weights::BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
+    weights::BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
     QuantLinearGroup build_group(const std::vector<std::string>& names, size_t prefix = 0,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr,
         bool preserve_boundaries = false) const;

@@ -140,16 +140,16 @@ class RadioEncoder {
 
   private:
     struct Layer {
-        BiasWeight query;
-        BiasWeight key;
-        BiasWeight value;
-        BiasWeight output;
+        weights::BiasWeight query;
+        weights::BiasWeight key;
+        weights::BiasWeight value;
+        weights::BiasWeight output;
         ::tyloi::DenseTensor norm1_weight;
         ::tyloi::DenseTensor norm1_bias;
         ::tyloi::DenseTensor norm2_weight;
         ::tyloi::DenseTensor norm2_bias;
-        BiasWeight fc1;
-        BiasWeight fc2;
+        weights::BiasWeight fc1;
+        weights::BiasWeight fc2;
         int64_t heads = 0;
         int64_t head_dim = 0;
         double layer_norm_eps = 1e-6;
@@ -184,16 +184,16 @@ class RadioEncoder {
                                          tyloi::ops::cast(bias, dtype), layer_norm_eps), dtype));
             };
             auto normalized = norm(input, norm1_weight, norm1_bias);
-            auto q = split_heads(tyloi::ops::linear(normalized, *query.weight, query.bias));
-            auto k = split_heads(tyloi::ops::linear(normalized, *key.weight, key.bias));
-            auto v = split_heads(tyloi::ops::linear(normalized, *value.weight, value.bias));
+            auto q = split_heads(tyloi::ops::linear(normalized, *query.weight, query.bias.get()));
+            auto k = split_heads(tyloi::ops::linear(normalized, *key.weight, key.bias.get()));
+            auto v = split_heads(tyloi::ops::linear(normalized, *value.weight, value.bias.get()));
             auto attended = tyloi::ops::attention(std::move(q), std::move(k), std::move(v), mask, scale);
             auto branch = tyloi::ops::linear(tyloi::ops::reshape(tyloi::ops::transpose(attended, 1, 2),
-                {batch, tokens, heads * head_dim}), *output.weight, output.bias);
+                {batch, tokens, heads * head_dim}), *output.weight, output.bias.get());
             input = tyloi::ops::contiguous(tyloi::ops::add(input, tyloi::ops::cast(branch, input.scalar_type())));
             normalized = norm(input, norm2_weight, norm2_bias);
             branch = tyloi::ops::linear(tyloi::ops::gelu(
-                tyloi::ops::linear(normalized, *fc1.weight, fc1.bias)), *fc2.weight, fc2.bias);
+                tyloi::ops::linear(normalized, *fc1.weight, fc1.bias.get())), *fc2.weight, fc2.bias.get());
 #else
             auto normalized = vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
             auto q = split_heads(tyloi::cuda::biased(projector, query, normalized));
@@ -215,12 +215,12 @@ class RadioEncoder {
         }
     };
 
-    static std::array<BiasWeight, 3> split_fused_qkv(const BiasWeight &fused, int64_t width) {
+    static std::array<weights::BiasWeight, 3> split_fused_qkv(const weights::BiasWeight &fused, int64_t width) {
         if (width <= 0 || fused.weight->size(0) != 3 * width) {
             throw std::runtime_error("fused vision qkv projection is not [3*w, hidden]");
         }
-        return {bias_rows(fused, 0, width), bias_rows(fused, width, width),
-                bias_rows(fused, 2 * width, width)};
+        return {weights::bias_rows(fused, 0, width), weights::bias_rows(fused, width, width),
+                weights::bias_rows(fused, 2 * width, width)};
     }
 
     static Layer load_layer(const tyloi::cuda::weight_loader::Loader& weights,
@@ -395,9 +395,9 @@ class RadioProjector {
             tyloi::ops::reshape(tyloi::ops::cast(hidden, ::tyloi::kFloat32), {-1, config.shuffle_width()}),
             tyloi::ops::cast(mlp_norm, ::tyloi::kFloat32), config.projector_norm_eps, 0.0),
             hidden.sizes()), dtype);
-        auto projected = tyloi::ops::relu_squared(tyloi::ops::linear(normalized, *up.weight, up.bias));
+        auto projected = tyloi::ops::relu_squared(tyloi::ops::linear(normalized, *up.weight, up.bias.get()));
         return tyloi::ops::contiguous(tyloi::ops::reshape(
-            tyloi::ops::linear(std::move(projected), *down.weight, down.bias),
+            tyloi::ops::linear(std::move(projected), *down.weight, down.bias.get()),
             {patches / (stride * stride), config.text_hidden_size}));
 #else
         auto normalized = qwen_rms_norm(hidden.to(::tyloi::kFloat32).reshape(
@@ -418,8 +418,8 @@ class RadioProjector {
     DenseTensor norm_weight;
     DenseTensor norm_bias;
     DenseTensor mlp_norm;
-    BiasWeight up;
-    BiasWeight down;
+    weights::BiasWeight up;
+    weights::BiasWeight down;
     RadioVisionConfig config_;
 };
 

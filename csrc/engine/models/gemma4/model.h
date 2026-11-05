@@ -21,9 +21,7 @@
 
 namespace tyloi::cuda::gemma4 {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using DenseTensor = tyloi::DenseTensor;
-#else
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 using DenseTensor = ::tyloi::DenseTensor;
 #endif
 using Config = tyloi::models::gemma4::Config;
@@ -33,12 +31,12 @@ class State;
 struct Layer {
     FullAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    tyloi::DenseTensor ffn_norm;
+    std::shared_ptr<const tyloi::Tensor> ffn_norm;
     tyloi::models::Mlp ffn;
-    tyloi::DenseTensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
-    tyloi::DenseTensor layer_scale;
+    std::shared_ptr<const tyloi::Tensor> attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
+    std::shared_ptr<const tyloi::Tensor> layer_scale;
     std::shared_ptr<const tyloi::cuda::Experts> gemma_moe_gate_up, gemma_moe_down;
-    tyloi::DenseTensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
+    std::shared_ptr<const tyloi::Tensor> gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #else
     DenseTensor ffn_norm;
     Ffn ffn;
@@ -85,7 +83,7 @@ struct Model
     double embed_scale = 1.0;
     std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    tyloi::DenseTensor output_norm;
+    std::shared_ptr<const tyloi::Tensor> output_norm;
 #else
     DenseTensor output_norm;
 #endif

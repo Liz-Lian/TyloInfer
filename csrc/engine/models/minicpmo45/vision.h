@@ -41,16 +41,16 @@ inline ::tyloi::DenseTensor minicpmo45_layer_norm(
 
 struct MiniCPMO45VisionEncoder {
     struct Layer {
-        tyloi::cuda::BiasWeight query;
-        tyloi::cuda::BiasWeight key;
-        tyloi::cuda::BiasWeight value;
-        tyloi::cuda::BiasWeight output;
+        tyloi::weights::BiasWeight query;
+        tyloi::weights::BiasWeight key;
+        tyloi::weights::BiasWeight value;
+        tyloi::weights::BiasWeight output;
         ::tyloi::DenseTensor norm1_weight;
         ::tyloi::DenseTensor norm1_bias;
         ::tyloi::DenseTensor norm2_weight;
         ::tyloi::DenseTensor norm2_bias;
-        tyloi::cuda::BiasWeight fc1;
-        tyloi::cuda::BiasWeight fc2;
+        tyloi::weights::BiasWeight fc1;
+        tyloi::weights::BiasWeight fc2;
         int64_t heads = 0;
         int64_t head_dim = 0;
         double layer_norm_eps = 1e-6;
@@ -222,7 +222,7 @@ struct MiniCPMO45VisionEncoder {
 struct MiniCPMO45Resampler {
     ::tyloi::DenseTensor query;
     ::tyloi::DenseTensor position_embedding;
-    tyloi::cuda::BiasWeight kv_projection;
+    tyloi::weights::BiasWeight kv_projection;
     ::tyloi::DenseTensor q_norm_weight;
     ::tyloi::DenseTensor q_norm_bias;
     ::tyloi::DenseTensor kv_norm_weight;

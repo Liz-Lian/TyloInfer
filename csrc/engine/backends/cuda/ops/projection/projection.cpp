@@ -30,7 +30,7 @@ tyloi::DenseTensor tyloi::cuda::ops::project(tyloi::DenseTensor input, const ::t
 }
 
 tyloi::DenseTensor tyloi::cuda::ops::linear(tyloi::DenseTensor input, const ::tyloi::Tensor& weight,
-                                  const tyloi::DenseTensor& bias) {
+                                  const tyloi::DenseTensor* bias) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
     return biased(Executor::current().projector(Executor::current_ffn()), weight,
@@ -38,15 +38,15 @@ tyloi::DenseTensor tyloi::cuda::ops::linear(tyloi::DenseTensor input, const ::ty
 }
 
 tyloi::DenseTensor tyloi::cuda::ops::affine(tyloi::DenseTensor input, const ::tyloi::Tensor& weight,
-                                    const tyloi::DenseTensor& bias) {
+                                    const tyloi::DenseTensor* bias) {
     auto output = project(std::move(input), weight);
-    if (!bias.defined()) return output;
-    if (output.device() != bias.device())
+    if (!bias || !bias->defined()) return output;
+    if (output.device() != bias->device())
         throw std::invalid_argument("tensor devices do not match");
     std::optional<MfqCudaGuard> guard;
     if (output.is_cuda()) guard.emplace(output.device().index);
     auto native = output;
-    return native + bias.to(native.scalar_type());
+    return native + bias->to(native.scalar_type());
 }
 
 std::vector<tyloi::DenseTensor> tyloi::cuda::ops::project_group(tyloi::DenseTensor input,

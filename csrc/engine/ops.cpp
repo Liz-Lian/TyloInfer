@@ -397,18 +397,18 @@ std::shared_ptr<Tensor> project(const Tensor& value_tensor, const ::tyloi::Tenso
     input(value);
     return owner(cuda::ops::project(value, weight));
 }
-std::shared_ptr<Tensor> linear(const Tensor& value_tensor, const ::tyloi::Tensor& weight, const Tensor& bias_tensor) {
+std::shared_ptr<Tensor> linear(const Tensor& value_tensor, const ::tyloi::Tensor& weight, const Tensor* bias_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
-    const auto& bias = ::tyloi::ops::dense(bias_tensor);
     input(value);
-    if (bias.defined()) input(bias);
+    const auto* bias = bias_tensor ? &::tyloi::ops::dense(*bias_tensor) : nullptr;
+    if (bias && bias->defined()) input(*bias);
     return owner(cuda::ops::linear(value, weight, bias));
 }
-std::shared_ptr<Tensor> affine(const Tensor& value_tensor, const ::tyloi::Tensor& weight, const Tensor& bias_tensor) {
+std::shared_ptr<Tensor> affine(const Tensor& value_tensor, const ::tyloi::Tensor& weight, const Tensor* bias_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
-    const auto& bias = ::tyloi::ops::dense(bias_tensor);
     input(value);
-    if (bias.defined()) input(bias);
+    const auto* bias = bias_tensor ? &::tyloi::ops::dense(*bias_tensor) : nullptr;
+    if (bias && bias->defined()) input(*bias);
     return owner(cuda::ops::affine(value, weight, bias));
 }
 std::shared_ptr<Tensor> mlp(const Tensor& value_tensor, const ::QuantLinearGroup& gate_up, const ::tyloi::Tensor& down,

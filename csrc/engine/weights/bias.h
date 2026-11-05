@@ -1,16 +1,17 @@
 #pragma once
 
-#include "engine/backends/cuda/ops/projection/quant_linear.h"
+#include "engine/tensor.h"
 
 #include <cstdint>
+#include <memory>
 
-namespace tyloi::cuda {
+namespace tyloi::weights {
 
 struct BiasWeight {
     std::shared_ptr<const ::tyloi::Tensor> weight;
-    ::tyloi::DenseTensor bias;
+    std::shared_ptr<const ::tyloi::Tensor> bias;
 };
 
 BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count);
 
-} // namespace tyloi::cuda
+} // namespace tyloi::weights

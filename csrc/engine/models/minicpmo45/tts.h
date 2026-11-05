@@ -102,10 +102,10 @@ struct Tts {
     RopeCache rope;
     std::shared_ptr<const ::tyloi::Tensor> text_embedding;
     std::shared_ptr<const ::tyloi::Tensor> code_embedding;
-    tyloi::cuda::BiasWeight semantic_projector1;
-    tyloi::cuda::BiasWeight semantic_projector2;
-    tyloi::cuda::BiasWeight speaker_projector1;
-    tyloi::cuda::BiasWeight speaker_projector2;
+    tyloi::weights::BiasWeight semantic_projector1;
+    tyloi::weights::BiasWeight semantic_projector2;
+    tyloi::weights::BiasWeight speaker_projector1;
+    tyloi::weights::BiasWeight speaker_projector2;
     std::vector<Layer> layers;
     ::tyloi::DenseTensor output_norm;
     ::tyloi::DenseTensor code_head;

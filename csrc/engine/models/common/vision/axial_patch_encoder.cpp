@@ -17,7 +17,7 @@ namespace tyloi::cuda::axial_patch_vision {
 namespace {
 using vision::RmsNorm;
 
-BiasWeight affine(const weight_loader::Loader& loader,
+weights::BiasWeight affine(const weight_loader::Loader& loader,
               const std::string& prefix, std::int64_t input, std::int64_t output) {
     auto result = loader.affine(prefix + ".weight", prefix + ".bias");
     TYLOINFER_RUNTIME_CHECK(result.weight->size(1) == input && result.weight->size(0) == output,
@@ -32,7 +32,7 @@ RmsNorm norm(const weight_loader::Loader& loader,
 
 struct BlockWeights {
     RmsNorm norm1, norm2;
-    BiasWeight qkv, output, gate_up, down;
+    weights::BiasWeight qkv, output, gate_up, down;
     template<class F> void visit_tensors(F visit) const {
         norm1.visit_tensors(visit); norm2.visit_tensors(visit);
         fields::tensors(qkv, visit); fields::tensors(output, visit);
@@ -47,7 +47,7 @@ struct BlockWeights {
 
 struct AlignerWeights {
     RmsNorm norm;
-    BiasWeight input, output;
+    weights::BiasWeight input, output;
     template<class F> void visit_tensors(F visit) const {
         norm.visit_tensors(visit); fields::tensors(input, visit);
         fields::tensors(output, visit);
@@ -99,7 +99,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto staged = std::move(patch);
                 fields::to_device(staged, patches.device());
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                output = tyloi::ops::affine(patches, *staged.weight, staged.bias);
+                output = tyloi::ops::affine(patches, *staged.weight, staged.bias.get());
 #else
                 output = tyloi::cuda::affine(projector, device, patches);
 #endif
@@ -132,7 +132,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto weights = std::move(block);
                 fields::to_device(weights, value.device());
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto qkv = tyloi::ops::affine(weights.norm1(value), *weights.qkv.weight, weights.qkv.bias);
+                auto qkv = tyloi::ops::affine(weights.norm1(value), *weights.qkv.weight, weights.qkv.bias.get());
                 const auto rope = [&](int index) {
                     return tyloi::ops::axial_rope(tyloi::ops::reshape(
                         tyloi::ops::slice(qkv, -1, index * hidden, (index + 1) * hidden),
@@ -141,11 +141,11 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto query = rope(0), key = rope(1);
                 auto v = tyloi::ops::reshape(tyloi::ops::slice(qkv, -1, 2 * hidden, 3 * hidden), {count, heads, dim});
                 auto attended = tyloi::ops::reshape(tyloi::ops::segmented_attention(query, key, v, {std::int32_t(count)}), {count, hidden});
-                auto result = tyloi::ops::add(value, tyloi::ops::affine(std::move(attended), *weights.output.weight, weights.output.bias));
-                auto gate_up = tyloi::ops::affine(weights.norm2(result), *weights.gate_up.weight, weights.gate_up.bias);
+                auto result = tyloi::ops::add(value, tyloi::ops::affine(std::move(attended), *weights.output.weight, weights.output.bias.get()));
+                auto gate_up = tyloi::ops::affine(weights.norm2(result), *weights.gate_up.weight, weights.gate_up.bias.get());
                 output = tyloi::ops::add(result, tyloi::ops::affine(tyloi::ops::multiply(
                     tyloi::ops::silu(tyloi::ops::slice(gate_up, -1, 0, config.intermediate)),
-                    tyloi::ops::slice(gate_up, -1, config.intermediate, 2 * config.intermediate)), *weights.down.weight, weights.down.bias));
+                    tyloi::ops::slice(gate_up, -1, config.intermediate, 2 * config.intermediate)), *weights.down.weight, weights.down.bias.get()));
 #else
                 auto qkv = tyloi::cuda::affine(projector, weights.qkv, weights.norm1(value));
                 const auto rope = [&](int index) {
@@ -199,8 +199,8 @@ struct CudaAxialPatchVisionTower::Impl {
                     .transpose(1, 2).contiguous().reshape({grid.count(), hidden * ratio * ratio});
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto projected = tyloi::ops::affine(std::move(gathered), *staged.input.weight, staged.input.bias);
-                output = tyloi::ops::affine(tyloi::ops::gelu(projected), *staged.output.weight, staged.output.bias);
+                auto projected = tyloi::ops::affine(std::move(gathered), *staged.input.weight, staged.input.bias.get());
+                output = tyloi::ops::affine(tyloi::ops::gelu(projected), *staged.output.weight, staged.output.bias.get());
 #else
                 auto projected = tyloi::cuda::affine(projector, staged.input, std::move(gathered));
                 output = tyloi::cuda::affine(projector, staged.output, ::tyloi::cuda::gelu(projected, "none"));

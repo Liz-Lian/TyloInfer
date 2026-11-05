@@ -55,7 +55,7 @@ std::array<std::shared_ptr<tyloi::Tensor>, 2> FullAttention::forward(
     const auto& active_rope = attention_rope.cos && attention_rope.cos->defined() ? attention_rope : rope;
     const bool apply_rotary = !no_rope;
     auto xn = measure("full.attn_norm", [&]() {
-        return tyloi::ops::rms_norm(*x, attn_norm, rms_norm_eps, norm_weight_offset,
+        return tyloi::ops::rms_norm(*x, *attn_norm, rms_norm_eps, norm_weight_offset,
             official_bf16 ? tyloi::ScalarType::bfloat16 : tyloi::ScalarType::float32);
     });
     auto positions_cast = tyloi::ops::cast(step.cache_positions ? *step.cache_positions : pos,
@@ -120,10 +120,11 @@ std::array<std::shared_ptr<tyloi::Tensor>, 2> FullAttention::forward(
     });
     std::pair<std::shared_ptr<tyloi::Tensor>, std::shared_ptr<tyloi::Tensor>> kv;
     bool prepared = false;
-    if (apply_rotary && official_bf16 && !v_norm.defined()) {
+    if (apply_rotary && official_bf16 && (!v_norm || !v_norm->defined()) &&
+        q_norm && q_norm->defined() && k_norm && k_norm->defined()) {
         auto result = tyloi::ops::norm_rope_kv(
             tyloi::ops::AttentionInput{*q, *k, *v, pos, *write_positions}, cache,
-            active_rope, q_norm, k_norm, rms_norm_eps, norm_weight_offset);
+            active_rope, *q_norm, *k_norm, rms_norm_eps, norm_weight_offset);
         if (result) {
             q = std::move(result);
             prepared = true;
@@ -131,7 +132,7 @@ std::array<std::shared_ptr<tyloi::Tensor>, 2> FullAttention::forward(
     }
     if (!prepared) {
         auto normalized = tyloi::ops::qkv_norm({q.get(), k.get(), v.get()},
-            {&q_norm, &k_norm, &v_norm}, rms_norm_eps, norm_weight_offset,
+            {q_norm.get(), k_norm.get(), v_norm.get()}, rms_norm_eps, norm_weight_offset,
             official_bf16 ? tyloi::ScalarType::bfloat16 : tyloi::ScalarType::float32);
         q = normalized[0];
         k = normalized[1];

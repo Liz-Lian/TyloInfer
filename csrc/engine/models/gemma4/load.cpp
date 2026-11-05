@@ -12,6 +12,11 @@
 
 namespace tyloi::cuda::gemma4 {
 struct LayerLoader : TransformerWeightLoader {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    auto dense(const std::string& name) const {
+        return std::make_shared<tyloi::DenseTensor>(TransformerWeightLoader::dense(name));
+    }
+#endif
     auto rope(int64_t capacity, const tyloi::models::gemma4::LayerSpec &spec) {
         auto cache = RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -21,18 +26,38 @@ struct LayerLoader : TransformerWeightLoader {
 #endif
     }
     auto ones(int64_t width) {
-        return ::tyloi::cuda::ones({width}, ::tyloi::TensorOptions()
+        auto value = ::tyloi::cuda::ones({width}, ::tyloi::TensorOptions()
                                                      .device(::tyloi::kCUDA)
                                                      .dtype(::tyloi::kFloat32));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return std::make_shared<tyloi::DenseTensor>(std::move(value));
+#else
+        return value;
+#endif
     }
     auto layer_scale(const std::string &name) {
-        return dense(name).to(::tyloi::kFloat16).contiguous();
+        auto value = TransformerWeightLoader::dense(name).to(::tyloi::kFloat16).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return std::make_shared<tyloi::DenseTensor>(std::move(value));
+#else
+        return value;
+#endif
     }
     auto router_parameter(const std::string &name) {
-        return dense(name).to(::tyloi::kFloat32).contiguous();
+        auto value = TransformerWeightLoader::dense(name).to(::tyloi::kFloat32).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return std::make_shared<tyloi::DenseTensor>(std::move(value));
+#else
+        return value;
+#endif
     }
     auto normalized_router_parameter(const std::string &name, double divisor) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        auto value = TransformerWeightLoader::dense(name).to(::tyloi::kFloat32).contiguous();
+        return std::make_shared<tyloi::DenseTensor>((value / divisor).contiguous());
+#else
         return (router_parameter(name) / divisor).contiguous();
+#endif
     }
     auto mlp(const std::vector<std::string>& names, const std::string& down_name) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -59,8 +84,12 @@ struct LayerLoader : TransformerWeightLoader {
 #endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    static auto shape(const tyloi::DenseTensor& value) { return value.sizes().vec(); }
-    static int64_t elements(const tyloi::DenseTensor& value) { return value.numel(); }
+    static auto shape(const std::shared_ptr<const tyloi::Tensor>& value) {
+        std::vector<int64_t> result;
+        for (int64_t i = 0; i < value->dim(); ++i) result.push_back(value->size(i));
+        return result;
+    }
+    static int64_t elements(const std::shared_ptr<const tyloi::Tensor>& value) { return value->numel(); }
     static auto expert_shape(const tyloi::cuda::Experts& weight) {
         return std::array<int64_t, 3>{weight.n_experts, weight.out_per_expert, weight.neuron_len};
     }
@@ -99,7 +128,11 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        model.output_norm = std::make_shared<tyloi::DenseTensor>(weights.tensor("model.output_norm.weight"));
+#else
         model.output_norm = weights.tensor("model.output_norm.weight");
+#endif
         if (separate || weights.placement.tensor.enabled()) {
             model.lm_head = weights.weight(
                 separate ? "model.output.weight" : "model.token_embedding.weight",
@@ -119,7 +152,11 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        model.output_norm = std::make_shared<tyloi::DenseTensor>(weights.tensor("model.output_norm.weight"));
+#else
         model.output_norm = weights.tensor("model.output_norm.weight");
+#endif
     }
 }
 

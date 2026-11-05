@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/weights/bias.h"
+#include "engine/weights/sharded.h"
 
 #include <cstddef>
 #include <utility>
@@ -20,9 +21,9 @@ void tensors(const std::shared_ptr<const ::tyloi::Tensor>& weight, Visitor visit
 }
 
 template <class Visitor>
-void tensors(const BiasWeight& weight, Visitor visit) {
+void tensors(const weights::BiasWeight& weight, Visitor visit) {
     tensors(weight.weight, visit);
-    if (weight.bias.defined()) visit(weight.bias);
+    if (weight.bias && weight.bias->defined()) tensors(weight.bias, visit);
 }
 
 // Anything that enumerates its own tensors, such as a vision weight block.
@@ -37,9 +38,9 @@ inline void to_device(std::shared_ptr<const ::tyloi::Tensor>& weight, ::tyloi::D
     weight = weight->relocated(device);
 }
 
-inline void to_device(BiasWeight& weight, ::tyloi::Device device) {
+inline void to_device(weights::BiasWeight& weight, ::tyloi::Device device) {
     to_device(weight.weight, device);
-    if (weight.bias.defined()) weight.bias = weight.bias.to(device);
+    if (weight.bias && weight.bias->defined()) to_device(weight.bias, device);
 }
 
 template <class Weights>

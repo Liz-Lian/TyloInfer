@@ -5,10 +5,10 @@
 #include "vision.h"
 
 struct MiniCPMO45WhisperAttention {
-    tyloi::cuda::BiasWeight q;
-    tyloi::cuda::BiasWeight k;
-    tyloi::cuda::BiasWeight v;
-    tyloi::cuda::BiasWeight output;
+    tyloi::weights::BiasWeight q;
+    tyloi::weights::BiasWeight k;
+    tyloi::weights::BiasWeight v;
+    tyloi::weights::BiasWeight output;
     int64_t heads = 16;
     int64_t head_dim = 64;
 
@@ -67,8 +67,8 @@ struct MiniCPMO45WhisperLayer {
     ::tyloi::DenseTensor attention_norm_bias;
     ::tyloi::DenseTensor final_norm_weight;
     ::tyloi::DenseTensor final_norm_bias;
-    tyloi::cuda::BiasWeight fc1;
-    tyloi::cuda::BiasWeight fc2;
+    tyloi::weights::BiasWeight fc1;
+    tyloi::weights::BiasWeight fc2;
     ::tyloi::DenseTensor key_cache;
     ::tyloi::DenseTensor value_cache;
 
@@ -127,8 +127,8 @@ struct MiniCPMO45AudioEncoder {
     std::vector<MiniCPMO45WhisperLayer> layers;
     ::tyloi::DenseTensor final_norm_weight;
     ::tyloi::DenseTensor final_norm_bias;
-    tyloi::cuda::BiasWeight projector1;
-    tyloi::cuda::BiasWeight projector2;
+    tyloi::weights::BiasWeight projector1;
+    tyloi::weights::BiasWeight projector2;
 
     static MiniCPMO45AudioEncoder load(const tyloi::cuda::weight_loader::Loader& weights) {
         MiniCPMO45AudioEncoder result;

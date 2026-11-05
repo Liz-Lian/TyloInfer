@@ -1007,7 +1007,7 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::cuda::weight_loader::Loader::embed
 
 }
 
-namespace tyloi::cuda {
+namespace tyloi::weights {
 
 BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count) {
     const auto& weight = *value.weight;
@@ -1023,32 +1023,35 @@ BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count) {
     BiasWeight result;
     result.weight = std::make_shared<::tyloi::DenseTensor>(
         dense->narrow(0, begin, count).contiguous());
-    if (bias.defined()) {
-        result.bias = bias.narrow(0, begin, count).contiguous();
+    if (bias) {
+        const auto& dense_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*bias);
+        if (dense_bias.defined()) result.bias = std::make_shared<::tyloi::DenseTensor>(
+            dense_bias.narrow(0, begin, count).contiguous());
     }
     return result;
 }
 
-} // namespace tyloi::cuda
+} // namespace tyloi::weights
 
 namespace tyloi::cuda::weight_loader {
 
-BiasWeight Loader::biased(const std::string& weight_name,
+weights::BiasWeight Loader::biased(const std::string& weight_name,
                           const std::string& bias_name) const {
-    BiasWeight result;
+    weights::BiasWeight result;
     result.weight = weight(weight_name);
-    if (!bias_name.empty() && has(bias_name)) result.bias = tensor(bias_name);
+    if (!bias_name.empty() && has(bias_name)) result.bias = std::make_shared<DenseTensor>(tensor(bias_name));
     return result;
 }
 
-BiasWeight Loader::affine(const std::string& weight_name,
+weights::BiasWeight Loader::affine(const std::string& weight_name,
                           const std::string& bias_name) const {
-    BiasWeight result{weight(weight_name), {}};
+    weights::BiasWeight result{weight(weight_name), {}};
     if (has(bias_name)) {
-        result.bias = tensor(bias_name);
-        if (result.bias.dim() != 1 || result.bias.size(0) != result.weight->size(0)) {
+        auto bias = tensor(bias_name);
+        if (bias.dim() != 1 || bias.size(0) != result.weight->size(0)) {
             throw std::runtime_error("vision affine bias shape mismatch: " + bias_name);
         }
+        result.bias = std::make_shared<DenseTensor>(std::move(bias));
     }
     return result;
 }

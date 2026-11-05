@@ -50,7 +50,7 @@ struct FullAttention {
     bool no_rope = false;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     tyloi::ops::RopeTable attention_rope;
-    tyloi::DenseTensor attn_norm, q_norm, k_norm, v_norm;
+    std::shared_ptr<const tyloi::Tensor> attn_norm, q_norm, k_norm, v_norm;
     std::shared_ptr<const QuantLinearGroup> qkv;
 #else
     RopeCache attention_rope;

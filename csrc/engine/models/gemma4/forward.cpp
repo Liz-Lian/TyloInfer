@@ -61,9 +61,9 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
     trace_stage(mode, layer, "attention_output", oo);
     std::shared_ptr<tyloi::Tensor> prepared_residual, dense_input, router_input, moe_input;
     bool fused_norms = false;
-    if (weights.gemma4_moe && mode.trace == nullptr && weights.layer_scale.defined()) {
-        auto prepared = ops::residual_norms(residual, oo, weights.attn_post_norm, weights.ffn_norm,
-                                           weights.gemma_router_norm_scale, weights.ffn_pre_norm_2, eps);
+    if (weights.gemma4_moe && mode.trace == nullptr && weights.layer_scale && weights.layer_scale->defined()) {
+        auto prepared = ops::residual_norms(residual, oo, *weights.attn_post_norm, *weights.ffn_norm,
+                                           *weights.gemma_router_norm_scale, *weights.ffn_pre_norm_2, eps);
         if (prepared) {
             fused_norms = true;
             prepared_residual = ops::reshape(*prepared->residual, layer_shape);
@@ -75,7 +75,7 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
     if (!fused_norms) {
         auto attn_post = measure("gemma.attn_post_norm", [&] {
             auto flat = ops::reshape(oo, flat_shape);
-            return gemma_rms_norm_f16(*flat, weights.attn_post_norm, eps, offset);
+            return gemma_rms_norm_f16(*flat, *weights.attn_post_norm, eps, offset);
         });
         prepared_residual = measure("gemma.attn_residual", [&] {
             auto flat = ops::reshape(residual, flat_shape);
@@ -85,17 +85,17 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
         trace_stage(mode, layer, "attention_residual", *prepared_residual);
         dense_input = measure("gemma.ffn_pre_norm", [&] {
             auto flat = ops::reshape(*prepared_residual, flat_shape);
-            return gemma_rms_norm_f16(*flat, weights.ffn_norm, eps, offset);
+            return gemma_rms_norm_f16(*flat, *weights.ffn_norm, eps, offset);
         });
         if (weights.gemma4_moe) {
             router_input = measure("gemma.router_norm", [&] {
                 auto flat = ops::reshape(*prepared_residual, flat_shape);
                 auto converted = ops::cast(*flat, tyloi::ScalarType::float32);
-                return ops::rms_norm(*converted, weights.gemma_router_norm_scale, eps, offset);
+                return ops::rms_norm(*converted, *weights.gemma_router_norm_scale, eps, offset);
             });
             moe_input = measure("gemma.ffn_pre_norm_2", [&] {
                 auto flat = ops::reshape(*prepared_residual, flat_shape);
-                return gemma_rms_norm_f16(*flat, weights.ffn_pre_norm_2, eps, offset);
+                return gemma_rms_norm_f16(*flat, *weights.ffn_pre_norm_2, eps, offset);
             });
         }
     }
@@ -110,12 +110,12 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
     });
     if (weights.gemma4_moe) {
         if (!fused_norms) {
-            result = normalize(*result, weights.ffn_post_norm_1, "gemma.ffn_post_norm_1");
+            result = normalize(*result, *weights.ffn_post_norm_1, "gemma.ffn_post_norm_1");
             trace_stage(mode, layer, "dense_output", *result);
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         auto router_logits = measure("gemma.router", [&] {
-            auto transposed = ops::transpose(weights.gemma_router, 0, 1);
+            auto transposed = ops::transpose(*weights.gemma_router, 0, 1);
             return ops::matmul(*router_input, *transposed);
         });
         auto selected = measure("gemma.topk", [&] {
@@ -126,7 +126,7 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
         trace_stage(mode, layer, "route_weights_before_scale", *selected.weights);
         {
             ops::ProfileRange range("gemma.route_scale", profile_device);
-            ops::expert_scale(*selected.weights, *selected.ids, weights.gemma_expert_scale);
+            ops::expert_scale(*selected.weights, *selected.ids, *weights.gemma_expert_scale);
             range.finish();
         }
         trace_stage(mode, layer, "route_weights", *selected.weights);
@@ -145,13 +145,13 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
         if (fused_norms) {
             result = measure("gemma.ffn_merge", [&] {
                 auto flat = ops::reshape(*prepared_residual, flat_shape);
-                auto merged = ops::merge_norms(*result, *moe_output, *flat, weights.ffn_post_norm_1,
-                                                weights.ffn_post_norm_2, weights.ffn_post_norm,
-                                                weights.layer_scale, eps);
+                auto merged = ops::merge_norms(*result, *moe_output, *flat, *weights.ffn_post_norm_1,
+                                                *weights.ffn_post_norm_2, *weights.ffn_post_norm,
+                                                *weights.layer_scale, eps);
                 return ops::reshape(*merged, layer_shape);
             });
         } else {
-            auto normalized = normalize(*moe_output, weights.ffn_post_norm_2, "gemma.ffn_post_norm_2");
+            auto normalized = normalize(*moe_output, *weights.ffn_post_norm_2, "gemma.ffn_post_norm_2");
             result = measure("gemma.ffn_combine", [&] { return ops::add(*result, *normalized); });
         }
 #else
@@ -159,14 +159,14 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
 #endif
     }
     if (!fused_norms) {
-        auto normalized = normalize(*result, weights.ffn_post_norm, "gemma.ffn_post_norm");
+        auto normalized = normalize(*result, *weights.ffn_post_norm, "gemma.ffn_post_norm");
         result = measure("gemma.ffn_residual", [&] {
             auto flat = ops::reshape(*prepared_residual, flat_shape);
             auto added = ops::add_residual(*flat, *normalized);
             return ops::reshape(*added, layer_shape);
         });
-        if (weights.layer_scale.defined())
-            result = measure("gemma.layer_scale", [&] { return ops::multiply(*result, weights.layer_scale); });
+        if (weights.layer_scale && weights.layer_scale->defined())
+            result = measure("gemma.layer_scale", [&] { return ops::multiply(*result, *weights.layer_scale); });
     }
     trace_stage(mode, layer, "layer_output", *result);
     return result;
@@ -416,7 +416,7 @@ std::shared_ptr<tyloi::Tensor> Model::normalize(const tyloi::Tensor& hidden, std
     const std::array<std::int64_t, 3> shape{batch, tokens, model.config.hidden_size};
     auto shaped = tyloi::ops::reshape(hidden, shape);
     return tyloi::ops::measure("model.output_norm", shaped->device(), [&] {
-        return tyloi::ops::rms_norm(*shaped, model.output_norm,
+        return tyloi::ops::rms_norm(*shaped, *model.output_norm,
                                        model.config.rms_norm_eps, 0.0);
     });
 #else
