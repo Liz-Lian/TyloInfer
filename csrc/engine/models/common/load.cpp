@@ -57,12 +57,10 @@ std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::linear(const std
     return weights.weight(name);
 }
 bool TransformerWeightLoader::has(const std::string& name) const { return tyloi::has_tensor(weights.source, name); }
-::tyloi::DenseTensor TransformerWeightLoader::router_parameter(const std::string& name) const {
-    if(keep_quantized_router && name.ends_with("router.weight") && tyloi::require_tensor(weights.source,name).dtype=="TQ") {
-        router_projection=linear(name);
-        return {};
-    }
-    return dense(name).to(::tyloi::kFloat32).contiguous();
+std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::router_parameter(const std::string& name) const {
+    if(keep_quantized_router && name.ends_with("router.weight") && tyloi::require_tensor(weights.source,name).dtype=="TQ")
+        return linear(name);
+    return std::make_shared<::tyloi::DenseTensor>(dense(name).to(::tyloi::kFloat32).contiguous());
 }
 std::vector<std::shared_ptr<const ::tyloi::Tensor>> TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
     return weights.group(names);
@@ -169,7 +167,6 @@ tyloi::cuda::Ffn load_moe_weights(const tyloi::cuda::weight_loader::Loader& weig
                 gate->out==up->out && gate->input==up->input)),
             "TQ Gate/Up/Down expert dimensions disagree");
     }
-    result.moe_router_projection=std::move(loader.router_projection);
     return result;
 }
 

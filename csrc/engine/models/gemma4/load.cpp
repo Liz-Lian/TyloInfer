@@ -79,14 +79,6 @@ struct LayerLoader : TransformerWeightLoader {
     auto experts(const std::string &name, int layer, const char *projection) {
         return weights.experts(name, true, layer, projection);
     }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    static auto shape(const std::shared_ptr<const tyloi::Tensor>& value) {
-        std::vector<int64_t> result;
-        for (int64_t i = 0; i < value->dim(); ++i) result.push_back(value->size(i));
-        return result;
-    }
-    static int64_t elements(const std::shared_ptr<const tyloi::Tensor>& value) { return value->numel(); }
-#endif
     static auto expert_shape(const tyloi::Tensor& weight) {
         return std::array<int64_t, 3>{weight.size(0), weight.size(1), weight.size(2)};
     }

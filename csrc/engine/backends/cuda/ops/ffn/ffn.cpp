@@ -105,17 +105,18 @@ void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, b
     // Cover each row's leading candidates without reading low-confidence
     // tails just because the leading experts are already cached.
     constexpr int64_t candidates_per_row=4;
-    if(f.moe_hash_ids.defined()) {
+    if(f.moe_hash_ids) {
         if(!input_ids.has_value() || !input_ids.value().numel())return;
-        ids=f.moe_hash_ids.index_select(0,input_ids.value().reshape({-1}).to(::tyloi::kCUDA,::tyloi::kInt64));
+        ids=dynamic_cast<const DenseTensor&>(*f.moe_hash_ids).index_select(0,input_ids.value().reshape({-1}).to(::tyloi::kCUDA,::tyloi::kInt64));
         ids=ids.narrow(1,0,std::min(candidates_per_row,ids.size(1))).to(::tyloi::kInt32).contiguous();
     }else {
         auto row=x.reshape({-1,x.size(-1)}).to(::tyloi::kFloat32);
-        auto logits=f.moe_router_projection?project_.run(*f.moe_router_projection, row).contiguous():
-            ::tyloi::cuda::matmul(row,f.moe_router.transpose(0,1)).contiguous();
+        const auto* router = dynamic_cast<const DenseTensor*>(f.moe_router.get());
+        auto logits=(router ? ::tyloi::cuda::matmul(row,router->transpose(0,1)) :
+            project_.run(*f.moe_router, row)).contiguous();
         ids=moe_topk_cuda(logits,std::min({int64_t(f.moe_top_k),logits.size(-1),candidates_per_row}),f.moe_use_sigmoid,
             f.moe_use_sqrt_softplus,f.moe_normalize,f.moe_delayed_softmax,
-            f.moe_router_bias.defined()?MfqOptional<::tyloi::DenseTensor>(f.moe_router_bias):mfq_nullopt,
+            f.moe_router_bias?MfqOptional<::tyloi::DenseTensor>(dynamic_cast<const DenseTensor&>(*f.moe_router_bias)):mfq_nullopt,
             1e-20,f.moe_router_scale).at(0).to(::tyloi::kInt32).contiguous();
     }
     // Visit each row's highest-ranked candidate before lower ranks, so one
@@ -350,8 +351,8 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
             }
             return ::tyloi::cuda::cat(outputs, 0).reshape(xh.sizes());
         }
-        if (!f.shared || f.moe_top_k <= 0 || (!f.moe_router.defined() && !f.moe_router_projection) ||
-            (!f.moe_shared_ungated && !f.moe_shared_gate.defined())) {
+        if (!f.shared || f.moe_top_k <= 0 || !f.moe_router ||
+            (!f.moe_shared_ungated && !f.moe_shared_gate)) {
             throw std::runtime_error("incomplete MoE FFN state");
         }
         auto xf = xh.reshape({-1, xh.size(-1)}).contiguous();
@@ -405,7 +406,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
         auto shared_gate = [&] {
             if (!shared_gate_logits.defined())
                 shared_gate_logits = profiler.measure("moe.shared_gate", [&] {
-                    return ::tyloi::cuda::matmul(xf32, f.moe_shared_gate.transpose(0, 1))
+                    return ::tyloi::cuda::matmul(xf32, dynamic_cast<const DenseTensor&>(*f.moe_shared_gate).transpose(0, 1))
                         .contiguous();
                 });
             return shared_gate_logits;
@@ -413,15 +414,16 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
         std::vector<::tyloi::DenseTensor> selected;
         {
             auto router_logits = profiler.measure("moe.router", [&]() {
-                return f.moe_router_projection?project_.run(*f.moe_router_projection, xf32):
-                    ::tyloi::cuda::matmul(xf32, f.moe_router.transpose(0, 1));
+                const auto* router = dynamic_cast<const DenseTensor*>(f.moe_router.get());
+                return router ? ::tyloi::cuda::matmul(xf32, router->transpose(0, 1)) :
+                    project_.run(*f.moe_router, xf32);
             });
-            if (f.moe_hash_ids.defined()) {
+            if (f.moe_hash_ids) {
                 if (!input_ids.has_value()) {
                     throw std::runtime_error("hash-routed MoE requires the current token ids");
                 }
                 selected = profiler.measure("moe.hash_route", [&]() {
-                    auto ids = f.moe_hash_ids
+                    auto ids = dynamic_cast<const DenseTensor&>(*f.moe_hash_ids)
                                    .index_select(0, input_ids.value().reshape({-1}).to(
                                                         ::tyloi::kCUDA,
                                                         ::tyloi::kInt64))
@@ -436,8 +438,8 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                     return moe_topk_cuda(
                         router_logits.contiguous(), f.moe_top_k, f.moe_use_sigmoid,
                         f.moe_use_sqrt_softplus, f.moe_normalize, f.moe_delayed_softmax,
-                        router_bias.has_value()?router_bias:f.moe_router_bias.defined()
-                            ? MfqOptional<::tyloi::DenseTensor>(f.moe_router_bias)
+                        router_bias.has_value()?router_bias:f.moe_router_bias
+                            ? MfqOptional<::tyloi::DenseTensor>(dynamic_cast<const DenseTensor&>(*f.moe_router_bias))
                             : mfq_nullopt,
                         1e-20, f.moe_router_scale);
                 });
@@ -487,7 +489,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 });
             if (!f.moe_split_gate_up && !f.moe_shared_ungated) {
                 shared_gate_logits = profiler.measure("moe.shared_gate", [&]() {
-                    return ::tyloi::cuda::matmul(xf32, f.moe_shared_gate.transpose(0, 1))
+                    return ::tyloi::cuda::matmul(xf32, dynamic_cast<const DenseTensor&>(*f.moe_shared_gate).transpose(0, 1))
                         .contiguous();
                 });
             }
@@ -698,7 +700,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                         if (!f.moe_shared_ungated && !shared_gate_logits.defined()) {
                             shared_gate_logits = profiler.measure("moe.shared_gate", [&]() {
                                 return ::tyloi::cuda::matmul(xf32,
-                                                                  f.moe_shared_gate.transpose(0, 1))
+                                                                  dynamic_cast<const DenseTensor&>(*f.moe_shared_gate).transpose(0, 1))
                                     .contiguous();
                             });
                         }
@@ -831,9 +833,9 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
     const auto& f = *this;
     if (router_bias.has_value()) {
         const auto& bias = router_bias.value();
-        TYLOINFER_RUNTIME_CHECK(f.is_moe && !f.moe_hash_ids.defined() && bias.defined() &&
-            ((bias.dim()==1 && bias.size(0)==(f.moe_router_projection?f.moe_router_projection->size(0):f.moe_router.size(0))) ||
-             (bias.dim()==2 && bias.size(0)==x.numel()/x.size(-1) && bias.size(1)==(f.moe_router_projection?f.moe_router_projection->size(0):f.moe_router.size(0)))),
+        TYLOINFER_RUNTIME_CHECK(f.is_moe && !f.moe_hash_ids && f.moe_router && bias.defined() &&
+            ((bias.dim()==1 && bias.size(0)==f.moe_router->size(0)) ||
+             (bias.dim()==2 && bias.size(0)==x.numel()/x.size(-1) && bias.size(1)==f.moe_router->size(0))),
                           "MoE router correction bias shape mismatch");
     }
     const auto project = executor.projector(mode);

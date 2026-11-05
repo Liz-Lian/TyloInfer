@@ -140,9 +140,9 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
                   << " total_host_bytes=" << host_bytes << std::endl;
     }
     if (i < config.hash_layer_count) {
-        layer.ffn.moe_hash_ids = weights.tensor(p + "mlp.router.token_to_expert")
+        layer.ffn.moe_hash_ids = std::make_shared<::tyloi::DenseTensor>(weights.tensor(p + "mlp.router.token_to_expert")
                                   .to(::tyloi::kInt32)
-                                  .contiguous();
+                                  .contiguous());
     }
     layer.ffn.moe_top_k = static_cast<int>(c.num_experts_per_tok);
     layer.ffn.moe_use_sqrt_softplus = true;
@@ -178,8 +178,8 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     const bool moe_shapes = gate_up_shapes && layer.ffn.moe_down && layer.ffn.moe_down->size(0) == c.num_experts &&
                             layer.ffn.moe_down->size(2) == c.moe_intermediate_size &&
                             layer.ffn.moe_down->size(1) == c.hidden_size &&
-                            layer.ffn.moe_router.size(0) == c.num_experts &&
-                            layer.ffn.moe_router.size(1) == c.hidden_size;
+                            layer.ffn.moe_router && layer.ffn.moe_router->size(0) == c.num_experts &&
+                            layer.ffn.moe_router->size(1) == c.hidden_size;
     if (!base_shapes || !moe_shapes) {
         throw std::runtime_error("DeepSeek V4 tensor shapes disagree with config at layer " +
                                  std::to_string(i));

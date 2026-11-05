@@ -54,11 +54,10 @@ public:
     // Optional latent projections around the routed branch only.
     std::shared_ptr<const ::tyloi::Tensor> moe_latent_in;
     std::shared_ptr<const ::tyloi::Tensor> moe_latent_out;
-    ::tyloi::DenseTensor moe_router;
-    std::shared_ptr<const ::tyloi::Tensor> moe_router_projection;
-    ::tyloi::DenseTensor moe_shared_gate;
-    ::tyloi::DenseTensor moe_router_bias;
-    ::tyloi::DenseTensor moe_hash_ids;
+    std::shared_ptr<const ::tyloi::Tensor> moe_router;
+    std::shared_ptr<const ::tyloi::Tensor> moe_shared_gate;
+    std::shared_ptr<const ::tyloi::Tensor> moe_router_bias;
+    std::shared_ptr<const ::tyloi::Tensor> moe_hash_ids;
     std::unique_ptr<Ffn> shared;
     int moe_top_k = 0;
     bool moe_use_sigmoid = false;

@@ -97,13 +97,9 @@ void load_moe(Block& block, Loader& ops, const Config& config, int layer,
         ffn.moe_up->size(2) == config.moe_latent_size &&
         ffn.moe_down->size(1) == config.moe_latent_size &&
         ffn.moe_down->size(2) == config.moe_intermediate_size;
-    bool router_shape=ffn.moe_router.dim()==2 &&
-        ffn.moe_router.size(0)==config.num_routed_experts &&
-        ffn.moe_router.size(1)==config.hidden_size;
-    if constexpr(requires { ffn.moe_router_projection; })
-        if(ffn.moe_router_projection)router_shape=ffn.moe_router_projection->size(0)==config.num_routed_experts &&
-            ffn.moe_router_projection->size(1)==config.hidden_size;
-    if (!expert_shapes || !router_shape || !ffn.moe_latent_in || !ffn.moe_latent_out ||
+    const auto router_shape = ops.shape(ffn.moe_router);
+    if (!expert_shapes || router_shape.size() != 2 || router_shape[0] != config.num_routed_experts ||
+        router_shape[1] != config.hidden_size || !ffn.moe_latent_in || !ffn.moe_latent_out ||
         ops.elements(ffn.moe_router_bias) != config.num_routed_experts ||
         ffn.moe_latent_in->size(0) != config.moe_latent_size ||
         ffn.moe_latent_in->size(1) != config.hidden_size ||

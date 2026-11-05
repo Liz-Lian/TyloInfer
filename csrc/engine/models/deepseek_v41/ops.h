@@ -912,7 +912,8 @@ struct Block final {
                 return profiler.measure("deepseek_v41.mlp", [&] {
                     if(shared->image_mask.defined()) {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
-                        auto bias=::tyloi::cuda::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
+                        TYLOINFER_RUNTIME_CHECK(mlp.moe_router_bias, "DeepSeek-V4.1 router bias is missing");
+                        auto bias=::tyloi::cuda::where(shared->routing_mask,vision_router_bias,dynamic_cast<const ::tyloi::DenseTensor&>(*mlp.moe_router_bias)).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         return mlp.forward(
                             value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, L().current_ids, bias)

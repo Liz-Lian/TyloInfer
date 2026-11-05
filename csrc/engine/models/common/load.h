@@ -18,12 +18,11 @@ struct TransformerWeightLoader {
     bool preserve_projection_boundaries = false;
     bool cpu_offloaded = false;
     std::size_t shared_gate_up_compatible_prefix = 2;
-    mutable std::shared_ptr<const ::tyloi::Tensor> router_projection;
     bool keep_quantized_router = false;
 
     bool has(const std::string& name) const;
     ::tyloi::DenseTensor dense(const std::string& name) const;
-    ::tyloi::DenseTensor router_parameter(const std::string& name) const;
+    std::shared_ptr<const ::tyloi::Tensor> router_parameter(const std::string& name) const;
     std::shared_ptr<const ::tyloi::Tensor> linear(const std::string& name) const;
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> projections(const std::vector<std::string>& names) const;
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up(const std::vector<std::string>& names, const std::shared_ptr<const ::tyloi::Tensor>& down) const;
@@ -36,6 +35,12 @@ struct TransformerWeightLoader {
     std::shared_ptr<const ::tyloi::Tensor> headwise(const std::string& name) const;
     static auto shape(const ::tyloi::DenseTensor& value) { return value.sizes().vec(); }
     static int64_t elements(const ::tyloi::DenseTensor& value) { return value.numel(); }
+    static auto shape(const std::shared_ptr<const ::tyloi::Tensor>& value) {
+        std::vector<int64_t> result;
+        if (value) for (int64_t i = 0; i < value->dim(); ++i) result.push_back(value->size(i));
+        return result;
+    }
+    static int64_t elements(const std::shared_ptr<const ::tyloi::Tensor>& value) { return value ? value->numel() : 0; }
 };
 struct MoeWeightLoadOptions {
     int layer;
