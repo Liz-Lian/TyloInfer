@@ -41,9 +41,9 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
                     nullptr,{},&window_logits))
                 hidden=std::move(*result);
             else
-                hidden = model.forward(tyloi::models::Input{part, {}, {}, {}, {}, {}, nullptr, nullptr,
+                hidden = dynamic_cast<const DenseTensor&>(*model.forward(tyloi::models::Input{std::make_shared<DenseTensor>(part), {}, {}, {}, {}, {}, nullptr, nullptr,
                                                             false, rows>1?1:0, 0, 0},
-                                       ops.state);
+                                       ops.state));
             if(rows>1)state.commit_speculative();
             offset+=rows;
         }

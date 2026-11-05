@@ -92,14 +92,9 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& languag
 #endif
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const {
     auto spans=validate_media(config_,tokens,media);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto ids=tyloi::ops::reshape(tyloi::ops::tensor(tokens,tyloi::Device{tyloi::DeviceType::cuda,0}),{1,-1});
-    auto embeddings=tyloi::ops::contiguous(language.embedding(ids));
-#else
     auto options=::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
     auto ids=::tyloi::cuda::tensor(tokens,options).reshape({1,-1});
-    auto embeddings=language.embedding(ids).contiguous();
-#endif
+    auto embeddings=dynamic_cast<const DenseTensor&>(*language.embedding(ids)).contiguous();
     std::vector<uint8_t> mask(tokens.size(),0);
     std::string request_key="deepseek_v41|";
     for(std::size_t i=0;i<spans.size();++i) {
@@ -111,16 +106,9 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& languag
             std::to_string(span.height)+"|"+std::to_string(span.width);
         DenseTensor visual(images.find(key));
         if(!visual.defined()) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            DenseTensor patches=tyloi::ops::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
-                tyloi::TensorOptions().dtype(tyloi::ScalarType::float32).device(tyloi::DeviceType::cpu));
-            patches=tyloi::ops::cast(std::move(patches),tyloi::ScalarType::float32,tyloi::Device{tyloi::DeviceType::cuda,0});
-            patches=tyloi::ops::cast(std::move(patches),tyloi::ScalarType::float16);
-#else
             auto patches=::tyloi::cuda::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
                 ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(::tyloi::kCPU))
                 .to(::tyloi::kCUDA).to(::tyloi::kFloat16);
-#endif
             auto encoding=encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                 projector,
@@ -133,33 +121,10 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& languag
                           "DeepSeek-V4.1 aligned image shape mismatch");
         DenseTensor start,newline,end;
         {const auto host=weights_.for_layer(weights_.placement.device,true);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            start=vector_weight(host,"vision.special_token.start",config_.hidden);
-            start=tyloi::ops::cast(start,start.scalar_type(),tyloi::Device{tyloi::DeviceType::cuda,0});
-            newline=vector_weight(host,"vision.special_token.newline",config_.hidden);
-            newline=tyloi::ops::cast(newline,newline.scalar_type(),tyloi::Device{tyloi::DeviceType::cuda,0});
-            end=vector_weight(host,"vision.special_token.end",config_.hidden);
-            end=tyloi::ops::cast(end,end.scalar_type(),tyloi::Device{tyloi::DeviceType::cuda,0});
-#else
             start=vector_weight(host,"vision.special_token.start",config_.hidden).to(::tyloi::kCUDA);
             newline=vector_weight(host,"vision.special_token.newline",config_.hidden).to(::tyloi::kCUDA);
             end=vector_weight(host,"vision.special_token.end",config_.hidden).to(::tyloi::kCUDA);
-#endif
         }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        std::vector<DenseTensor> rows{tyloi::ops::cast(tyloi::ops::reshape(start,{1,-1}),visual.scalar_type())};
-        for(int64_t row=0;row<span.rows;++row) {
-            rows.push_back(tyloi::ops::slice(visual,0,row*span.columns,(row+1)*span.columns));
-            rows.push_back(tyloi::ops::cast(tyloi::ops::reshape(newline,{1,-1}),visual.scalar_type()));
-        }
-        rows.push_back(tyloi::ops::cast(tyloi::ops::reshape(end,{1,-1}),visual.scalar_type()));
-        {
-            auto destination=tyloi::ops::slice(embeddings,1,span.begin,span.end);
-            auto joined=tyloi::ops::unsqueeze(tyloi::ops::cat(rows,0),0);
-            joined=tyloi::ops::cast(std::move(joined),embeddings.scalar_type());
-            tyloi::ops::copy_into(std::move(destination),std::move(joined));
-        }
-#else
         std::vector<DenseTensor> rows{start.reshape({1,-1}).to(visual.scalar_type())};
         for(int64_t row=0;row<span.rows;++row) {
             rows.push_back(visual.narrow(0,row*span.columns,span.columns));
@@ -168,16 +133,16 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& languag
         rows.push_back(end.reshape({1,-1}).to(visual.scalar_type()));
         embeddings.narrow(1,span.begin,span.end-span.begin).copy_(
             ::tyloi::cuda::cat(rows,0).unsqueeze(0).to(embeddings.scalar_type()));
-#endif
         std::fill(mask.begin()+span.begin,mask.begin()+span.end,1);
         request_key+=key+"|"+std::to_string(span.begin)+"|"+std::to_string(span.end)+";";
         co_yield tyloi::StepState::advanced;
     }
-    PreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    PreparedPrompt prepared{tokens,std::make_shared<DenseTensor>(std::move(embeddings)),{},0,std::move(request_key)};
     auto mask_tensor=tyloi::ops::tensor(mask,tyloi::Device{tyloi::DeviceType::cpu,0});
     prepared.image_mask=tyloi::ops::reshape(*mask_tensor,{1,-1});
 #else
+    PreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
     prepared.image_mask=::tyloi::cuda::tensor(mask,::tyloi::TensorOptions()
         .dtype(::tyloi::kUInt8).device(::tyloi::kCPU)).reshape({1,-1});
 #endif

@@ -178,7 +178,8 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
         if (finished)
             next = tyloi::engine::sample_logits(
                 *request->sampler,
-                model_.logits(model_.adapter_last_logits(model_.lm_head, hidden.index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()}))).reshape({1, -1}),
+                dynamic_cast<const DenseTensor&>(*model_.logits(
+                    hidden.index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()}))).reshape({1, -1}),
                 request->counts, request->token_constraint);
         TYLOINFER_CUDA_CHECK(
             cudaEventRecord(timer->finished_event(), mfq_get_current_cuda_stream()));
@@ -263,7 +264,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
             }
             std::vector<DenseTensor> next(items.size());
             if (!last.empty()) {
-                auto logits = model_.logits(::tyloi::cuda::cat(last, 0))
+                auto logits = dynamic_cast<const DenseTensor&>(*model_.logits(::tyloi::cuda::cat(last, 0)))
                                   .reshape({int64_t(last.size()), -1});
                 for (std::size_t i = 0; i < finished.size(); ++i) {
                     const auto row = finished[i];

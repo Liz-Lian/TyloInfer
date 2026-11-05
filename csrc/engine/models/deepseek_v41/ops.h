@@ -1005,12 +1005,12 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
-    ::tyloi::DenseTensor embedding(::tyloi::DenseTensor ids, int primary = 0) const override;
-    ::tyloi::DenseTensor normalize(::tyloi::DenseTensor hidden, std::int64_t batch,
+    std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const override;
+    std::shared_ptr<tyloi::Tensor> normalize(const tyloi::Tensor& hidden, std::int64_t batch,
         std::int64_t tokens) const override;
-    ::tyloi::DenseTensor softcap(::tyloi::DenseTensor logits) const override;
-    ::tyloi::DenseTensor logits(::tyloi::DenseTensor hidden, bool capped = true) const override;
-    ::tyloi::DenseTensor forward(tyloi::models::Input input, tyloi::models::State& state,
+    std::shared_ptr<tyloi::Tensor> softcap(const tyloi::Tensor& logits) const override;
+    std::shared_ptr<tyloi::Tensor> logits(const tyloi::Tensor& hidden, bool capped = true) const override;
+    std::shared_ptr<tyloi::Tensor> forward(tyloi::models::Input input, tyloi::models::State& state,
                                  const tyloi::models::ForwardOptions& options = {}) const override;
 
     // ---- speculative contract used by the MTP sequence
@@ -1090,7 +1090,9 @@ struct Model : CausalResources, tyloi::models::CausalModel {
         const std::string& type);
     void adapter_begin_forward(bool capture_raw_hidden) const;
     bool adapter_supports_prepared_prompt() const noexcept { return true; }
-    void adapter_set_image_mask(::tyloi::DenseTensor mask) { shared->set_image_mask(std::move(mask)); }
+    void adapter_set_image_mask(std::shared_ptr<const tyloi::Tensor> mask) {
+        shared->set_image_mask(mask ? dynamic_cast<const ::tyloi::DenseTensor&>(*mask) : ::tyloi::DenseTensor{});
+    }
     ::tyloi::DenseTensor collapse_hidden(::tyloi::DenseTensor hidden, std::int64_t batch,
                                          std::int64_t tokens) const;
     ::tyloi::DenseTensor normalize_hidden(::tyloi::DenseTensor hidden,

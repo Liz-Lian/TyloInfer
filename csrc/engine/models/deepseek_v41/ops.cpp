@@ -274,21 +274,21 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     return vision->prepare(const_cast<Model&>(*this), const_cast<Model&>(*this).media, tokens, media);
 }
 
-::tyloi::DenseTensor Model::embedding(::tyloi::DenseTensor ids, int) const {
+std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int) const {
     auto scope = execution_scope();
-    return embed_tokens(device_ids(std::move(ids)));
+    return std::make_shared<DenseTensor>(embed_tokens(device_ids(dynamic_cast<const DenseTensor&>(ids))));
 }
 
-::tyloi::DenseTensor Model::normalize(::tyloi::DenseTensor hidden, std::int64_t, std::int64_t) const {
-    return hidden;
+std::shared_ptr<tyloi::Tensor> Model::normalize(const tyloi::Tensor& hidden, std::int64_t, std::int64_t) const {
+    return std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(hidden));
 }
 
-::tyloi::DenseTensor Model::softcap(::tyloi::DenseTensor logits) const {
-    return logits;
+std::shared_ptr<tyloi::Tensor> Model::softcap(const tyloi::Tensor& logits) const {
+    return std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(logits));
 }
 
-::tyloi::DenseTensor Model::logits(::tyloi::DenseTensor hidden, bool) const {
-    return adapter_logits(*lm_head, std::move(hidden));
+std::shared_ptr<tyloi::Tensor> Model::logits(const tyloi::Tensor& hidden, bool) const {
+    return std::make_shared<DenseTensor>(adapter_logits(*lm_head, dynamic_cast<const DenseTensor&>(hidden)));
 }
 
 bool Model::supports_speculation() const {
@@ -402,11 +402,13 @@ void Model::adapter_rollback_speculative(std::int64_t position) {
                   "speculative suffix is not active");
     state.speculative_suffix_forward = true;
     try {
-        auto result = forward(tyloi::models::Input{std::move(ids), {}, {}, {}, {}, {}, nullptr,
-                                                   raw_hidden, false, 0, 0, 0},
+        std::shared_ptr<tyloi::Tensor> raw;
+        auto result = forward(tyloi::models::Input{std::make_shared<DenseTensor>(std::move(ids)), {}, {}, {}, {}, {}, nullptr,
+                                                   raw_hidden ? &raw : nullptr, false, 0, 0, 0},
                               state);
+        if (raw_hidden) *raw_hidden = dynamic_cast<const DenseTensor&>(*raw);
         state.speculative_suffix_forward = false;
-        return result;
+        return dynamic_cast<const DenseTensor&>(*result);
     } catch (...) {
         state.speculative_suffix_forward = false;
         throw;
@@ -428,21 +430,22 @@ void Model::rollback_speculative(std::int64_t accepted) {
 // The decode forward, ported from the retired generic causal loop. The block
 // records own the layer math; this owns geometry, speculation bookkeeping and
 // device placement of the walked tensors.
-::tyloi::DenseTensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                                     const tyloi::models::ForwardOptions&) const {
     auto& state = static_cast<State&>(state_value);
     auto scope = execution_scope();
     const auto primary = execution->config.layer_placement.primary_device();
-    auto ids = device_ids(std::move(input.ids));
-    auto embeddings = input.embeddings.has_value()
-        ? execution->executor().collectives().copy(std::move(*input.embeddings), primary).contiguous()
+    require_model(input.ids && input.ids->defined(), "token ids are required");
+    auto ids = device_ids(dynamic_cast<const DenseTensor&>(*input.ids));
+    auto embeddings = input.embeddings
+        ? execution->executor().collectives().copy(dynamic_cast<const DenseTensor&>(*input.embeddings), primary).contiguous()
         : embed_tokens(ids);
     const auto B = ids.size(0), T = ids.size(1);
     require_model(embeddings.dim() == 3 && embeddings.size(0) == B && embeddings.size(1) == T &&
                       embeddings.size(2) == hidden_size(),
                   "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    adapter_validate_forward(B, T, state.cache_pos, input.positions.has_value(),
-                             input.cache_positions.has_value(), input.attention_mask.has_value());
+    adapter_validate_forward(B, T, state.cache_pos, bool(input.positions),
+                             bool(input.cache_positions), bool(input.attention_mask));
     require_model(state.speculative_start < 0 || state.speculative_suffix_forward,
                   "commit or roll back the pending speculative pass before forwarding");
     const auto confirmed = input.confirmed;
@@ -471,11 +474,11 @@ void Model::rollback_speculative(std::int64_t accepted) {
     auto hidden = adapter_prepare_hidden(std::move(embeddings), B, T);
     adapter_begin_forward(input.raw_hidden != nullptr);
     if (input.trace)
-        input.trace->push_back(hidden.to(::tyloi::kFloat32).clone());
+        input.trace->push_back(std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).clone()));
     const auto trace_layer = [&] {
         if (!input.trace) return;
-        input.trace->push_back(
-            execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone());
+        input.trace->push_back(std::make_shared<DenseTensor>(
+            execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone()));
     };
     for (auto& block : blocks) {
         MfqCudaGuard guard(block->cuda_device);
@@ -510,8 +513,8 @@ void Model::rollback_speculative(std::int64_t accepted) {
     hidden = execution->executor().collectives().copy(hidden, primary);
     auto finalized = adapter_finalize_hidden(std::move(hidden), output_norm, B, T);
     if (input.raw_hidden)
-        *input.raw_hidden = adapter_raw_hidden(DenseTensor(), finalized);
-    return finalized;
+        *input.raw_hidden = std::make_shared<DenseTensor>(adapter_raw_hidden(DenseTensor(), finalized));
+    return std::make_shared<DenseTensor>(std::move(finalized));
 }
 
 } // namespace tyloi::cuda::deepseek_v41

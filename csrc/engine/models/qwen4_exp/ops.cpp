@@ -1063,24 +1063,25 @@ namespace {
                                    tyloi::models::Input input) {
     auto scope = model.execution_scope();
     const auto primary = model.execution->config.layer_placement.primary_device();
-    auto ids = model.device_ids(std::move(input.ids));
-    auto embeddings = input.embeddings.has_value()
-        ? model.execution->executor().collectives().copy(std::move(*input.embeddings), primary).contiguous()
+    tyloi::models::require_model(bool(input.ids), "Qwen4 forward requires token ids");
+    auto ids = model.device_ids(dynamic_cast<const DenseTensor&>(*input.ids));
+    auto embeddings = input.embeddings
+        ? model.execution->executor().collectives().copy(dynamic_cast<const DenseTensor&>(*input.embeddings), primary).contiguous()
         : model.embed_tokens(ids);
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
                                      embeddings.size(1) == T && embeddings.size(2) == model.hidden_size(),
                                  "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    model.adapter_validate_forward(B, T, state.cache_pos, input.positions.has_value(),
-                                   input.cache_positions.has_value(), input.attention_mask.has_value());
+    model.adapter_validate_forward(B, T, state.cache_pos, bool(input.positions),
+                                   bool(input.cache_positions), bool(input.attention_mask));
     tyloi::models::require_model(state.speculative_start < 0 || state.speculative_suffix_forward,
                                  "commit or roll back the pending speculative pass before forwarding");
     const auto confirmed = input.confirmed;
     tyloi::models::require_model(
         confirmed >= 0 && (confirmed == 0 ||
             (confirmed < T && B == 1 && state.cache_pos > 0 &&
-             (!input.positions.has_value() || model.adapter_allows_speculative_position_override()) &&
-             !input.cache_positions.has_value() && !input.attention_mask.has_value() &&
+             (!input.positions || model.adapter_allows_speculative_position_override()) &&
+             !input.cache_positions && !input.attention_mask &&
              model.supports_speculation())),
         "unsupported speculative backbone geometry");
     if (confirmed > 0) {
@@ -1095,8 +1096,8 @@ namespace {
                                                  ::tyloi::TensorOptions()
                                                      .device(::tyloi::kCUDA)
                                                      .dtype(::tyloi::kInt64));
-    auto current = input.positions.has_value()
-        ? model.device_ids(*input.positions)
+    auto current = input.positions
+        ? model.device_ids(dynamic_cast<const DenseTensor&>(*input.positions))
         : (state.decode_position_delta == 0 ? cache_positions
                                             : cache_positions + state.decode_position_delta);
     if ((current.dim() == 2 || current.dim() == 3) && current.size(0) == 4)
@@ -1124,10 +1125,10 @@ namespace {
     const auto trace_layer = [&] {
         if (!input.trace) return;
         input.trace->push_back(
-            model.execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone());
+            std::make_shared<DenseTensor>(model.execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone()));
     };
     if (input.trace)
-        input.trace->push_back(hidden.to(::tyloi::kFloat32).clone());
+        input.trace->push_back(std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).clone()));
     for (auto& block : model.blocks) {
         MfqCudaGuard guard(block->cuda_device);
         auto local_ids = block->cpu_offloaded
@@ -1164,7 +1165,7 @@ namespace {
     hidden = model.execution->executor().collectives().copy(hidden, primary);
     auto finalized = model.adapter_finalize_hidden(std::move(hidden), model.output_norm, B, T);
     if (input.raw_hidden)
-        *input.raw_hidden = model.adapter_raw_hidden(DenseTensor(), finalized);
+        *input.raw_hidden = std::make_shared<DenseTensor>(model.adapter_raw_hidden(DenseTensor(), finalized));
     return finalized;
 }
 
@@ -1670,14 +1671,14 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,MtpModule* mtp,int maxim
     // completes; eight-row bootstrap cells multiply that transient footprint.
     for(int row=0;row<(tq?1:16);++row) {
         auto token=ids.narrow(1,row,1);
-        ::tyloi::DenseTensor hidden;
+        std::shared_ptr<::tyloi::Tensor> hidden;
         {
             tyloi::models::Input in;
-            in.ids = token;
+            in.ids = std::make_shared<::tyloi::DenseTensor>(token);
             in.raw_hidden = &hidden;
             (void)model.forward(in, *model.active);
         }
-        raw_rows.push_back(hidden.clone());
+        raw_rows.push_back(dynamic_cast<const ::tyloi::DenseTensor&>(*hidden).clone());
     }
     auto raw=::tyloi::cuda::cat(raw_rows,1);
     raw_rows.clear();
@@ -2920,28 +2921,28 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     throw std::invalid_argument("model has no multimodal component");
 }
 
-::tyloi::DenseTensor Model::embedding(::tyloi::DenseTensor ids, int) const {
+std::shared_ptr<::tyloi::Tensor> Model::embedding(const ::tyloi::Tensor& ids, int) const {
     auto scope = execution_scope();
-    return embed_tokens(device_ids(std::move(ids)));
+    return std::make_shared<::tyloi::DenseTensor>(embed_tokens(device_ids(dynamic_cast<const ::tyloi::DenseTensor&>(ids))));
 }
 
-::tyloi::DenseTensor Model::normalize(::tyloi::DenseTensor hidden, std::int64_t, std::int64_t) const {
-    return hidden;
+std::shared_ptr<::tyloi::Tensor> Model::normalize(const ::tyloi::Tensor& hidden, std::int64_t, std::int64_t) const {
+    return std::make_shared<::tyloi::DenseTensor>(dynamic_cast<const ::tyloi::DenseTensor&>(hidden));
 }
 
-::tyloi::DenseTensor Model::softcap(::tyloi::DenseTensor logits) const {
-    return logits;
+std::shared_ptr<::tyloi::Tensor> Model::softcap(const ::tyloi::Tensor& logits) const {
+    return std::make_shared<::tyloi::DenseTensor>(dynamic_cast<const ::tyloi::DenseTensor&>(logits));
 }
 
-::tyloi::DenseTensor Model::logits(::tyloi::DenseTensor hidden, bool) const {
-    return adapter_logits(*lm_head, std::move(hidden));
+std::shared_ptr<::tyloi::Tensor> Model::logits(const ::tyloi::Tensor& hidden, bool) const {
+    return std::make_shared<::tyloi::DenseTensor>(adapter_logits(*lm_head, dynamic_cast<const ::tyloi::DenseTensor&>(hidden)));
 }
 
-::tyloi::DenseTensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+std::shared_ptr<::tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                                     const tyloi::models::ForwardOptions&) const {
     // shortcut: the graph registry and position tail are model-side request
     // bookkeeping; they move into State with the recurrent caches
-    return qwen4_forward(const_cast<Model&>(*this), static_cast<State&>(state_value), std::move(input));
+    return std::make_shared<::tyloi::DenseTensor>(qwen4_forward(const_cast<Model&>(*this), static_cast<State&>(state_value), std::move(input)));
 }
 
 ::tyloi::DenseTensor Model::hidden_forward_speculative_suffix(::tyloi::DenseTensor ids,
@@ -2952,9 +2953,11 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
                                  "speculative suffix is not active");
     state.speculative_suffix_forward = true;
     try {
+        std::shared_ptr<::tyloi::Tensor> raw;
         auto result = qwen4_forward(*this, state,
-                                    tyloi::models::Input{std::move(ids), {}, {}, {}, {}, {}, nullptr,
-                                                         raw_hidden, false, 0, 0, 0});
+                                    tyloi::models::Input{std::make_shared<::tyloi::DenseTensor>(std::move(ids)), {}, {}, {}, {}, {}, nullptr,
+                                                         raw_hidden ? &raw : nullptr, false, 0, 0, 0});
+        if (raw_hidden) *raw_hidden = dynamic_cast<const ::tyloi::DenseTensor&>(*raw);
         state.speculative_suffix_forward = false;
         return result;
     } catch (...) {
