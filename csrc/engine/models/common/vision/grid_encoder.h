@@ -213,7 +213,7 @@ class CudaGridVisionPromptComponent {
                 const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
                 tyloi::TensorOptions().dtype(tyloi::ScalarType::float32).device(tyloi::DeviceType::cpu));
             pixels = tyloi::ops::clone(std::move(pixels));
-            pixels = tyloi::ops::cast(std::move(pixels), tyloi::ScalarType::float32, tyloi::Device{tyloi::DeviceType::cuda, 0});
+            pixels = tyloi::ops::cast(std::move(pixels), tyloi::ScalarType::float32, tyloi::Device{tyloi::kCUDA, primary});
 #else
             auto pixels = ::tyloi::cuda::from_blob(
                               const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
@@ -264,9 +264,14 @@ class CudaGridVisionPromptComponent {
                 auto loan = weights_.borrow(bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
                 DenseTensor output;
                 {
-                    auto norm = fields::to_cuda(merger_norm_);
-                    auto up = fields::to_cuda(merger_up_);
-                    auto down = fields::to_cuda(merger_down_);
+                    // Stage copies of the merger weights on the primary device.
+                    auto norm = merger_norm_;
+                    auto up = merger_up_;
+                    auto down = merger_down_;
+                    const auto device = tyloi::Device{tyloi::kCUDA, primary};
+                    fields::to_device(norm, device);
+                    fields::to_device(up, device);
+                    fields::to_device(down, device);
                     output = merge(norm, up, down);
                 }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -286,7 +291,7 @@ class CudaGridVisionPromptComponent {
             {grid},
             [&](const auto &tokens) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto ids = tyloi::ops::tensor(tokens, tyloi::Device{tyloi::DeviceType::cuda, 0});
+                auto ids = tyloi::ops::tensor(tokens, tyloi::Device{tyloi::kCUDA, primary});
                 DenseTensor shaped = tyloi::ops::reshape(std::move(ids), {1, -1});
                 if constexpr (requires(const Model &value, DenseTensor value_ids, int device) {
                                   value.embedding(std::move(value_ids), device);
@@ -319,7 +324,7 @@ class CudaGridVisionPromptComponent {
             },
             [](DenseTensor &embeddings, const DenseTensor &vision, const std::vector<int64_t> &indices) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto index = tyloi::ops::tensor(indices, tyloi::Device{tyloi::DeviceType::cuda, 0});
+                auto index = tyloi::ops::tensor(indices, embeddings.device());
                 tyloi::ops::index_copy(embeddings, 1, std::move(index),
                     tyloi::ops::unsqueeze(tyloi::ops::cast(vision, embeddings.scalar_type()), 0));
 #else
@@ -330,11 +335,11 @@ class CudaGridVisionPromptComponent {
                 embeddings.index_copy_(1, index, vision.to(embeddings.scalar_type()).unsqueeze(0));
 #endif
             },
-            [](const GridMropePositions &positions) {
+            [primary](const GridMropePositions &positions) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 DenseTensor values = tyloi::ops::tensor(positions.values, tyloi::Device{tyloi::DeviceType::cpu, 0});
                 values = tyloi::ops::reshape(std::move(values), {3, positions.token_count});
-                values = tyloi::ops::cast(std::move(values), ::tyloi::kInt32, tyloi::Device{tyloi::DeviceType::cuda, 0});
+                values = tyloi::ops::cast(std::move(values), ::tyloi::kInt32, tyloi::Device{tyloi::kCUDA, primary});
                 return tyloi::ops::cast(std::move(values), ::tyloi::kInt64);
 #else
                 return ::tyloi::cuda::tensor(positions.values,

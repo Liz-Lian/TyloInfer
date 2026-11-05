@@ -525,7 +525,7 @@ class CudaRadioPromptComponent {
                               .dtype(tyloi::ScalarType::float32)
                               .device(tyloi::DeviceType::cpu));
         pixels = tyloi::ops::clone(pixels);
-        pixels = tyloi::ops::cast(pixels, ::tyloi::kFloat32, tyloi::Device{::tyloi::kCUDA, 0});
+        pixels = tyloi::ops::cast(pixels, ::tyloi::kFloat32, tyloi::Device{::tyloi::kCUDA, primary});
 #else
         auto pixels = ::tyloi::cuda::from_blob(
                           const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
@@ -540,7 +540,7 @@ class CudaRadioPromptComponent {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         DenseTensor ids = tyloi::ops::tensor(token_ids, tyloi::Device{tyloi::DeviceType::cpu, 0});
         ids = tyloi::ops::reshape(ids, {1, static_cast<std::int64_t>(token_ids.size())});
-        ids = tyloi::ops::cast(ids, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, 0});
+        ids = tyloi::ops::cast(ids, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, primary});
         auto embeddings = tyloi::ops::contiguous(language.embedding(ids, primary));
 #else
         auto ids = ::tyloi::cuda::tensor(
@@ -574,7 +574,7 @@ class CudaRadioPromptComponent {
                              grid.rows, grid.columns);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             DenseTensor index = tyloi::ops::tensor(run, tyloi::Device{tyloi::DeviceType::cpu, 0});
-            index = tyloi::ops::cast(index, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, 0});
+            index = tyloi::ops::cast(index, ::tyloi::kInt64, embeddings.device());
             tyloi::ops::index_copy(embeddings, 1, index,
                 tyloi::ops::unsqueeze(tyloi::ops::cast(projected, embeddings.scalar_type()), 0));
 #else
@@ -592,7 +592,7 @@ class CudaRadioPromptComponent {
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto positions = tyloi::ops::reshape(tyloi::ops::arange(0,
-            static_cast<std::int64_t>(token_ids.size()), tyloi::Device{::tyloi::kCUDA, 0}),
+            static_cast<std::int64_t>(token_ids.size()), tyloi::Device{::tyloi::kCUDA, primary}),
             {1, static_cast<std::int64_t>(token_ids.size())});
 #else
         auto positions = ::tyloi::cuda::arange(

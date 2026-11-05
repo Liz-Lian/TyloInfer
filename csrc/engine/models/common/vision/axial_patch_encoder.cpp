@@ -96,9 +96,10 @@ struct CudaAxialPatchVisionTower::Impl {
             auto loan = loader.cache.borrow(fields::bytes(patch) + activations);
             DenseTensor output;
             {
-                auto device = fields::to_cuda(std::move(patch));
+                auto staged = std::move(patch);
+                fields::to_device(staged, patches.device());
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                output = tyloi::ops::affine(patches, *device.weight, device.bias);
+                output = tyloi::ops::affine(patches, *staged.weight, staged.bias);
 #else
                 output = tyloi::cuda::affine(projector, device, patches);
 #endif
@@ -128,7 +129,8 @@ struct CudaAxialPatchVisionTower::Impl {
             auto loan = loader.cache.borrow(fields::bytes(block) + activations);
             DenseTensor output;
             {
-                auto weights = fields::to_cuda(std::move(block));
+                auto weights = std::move(block);
+                fields::to_device(weights, value.device());
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 auto qkv = tyloi::ops::affine(weights.norm1(value), *weights.qkv.weight, weights.qkv.bias);
                 const auto rope = [&](int index) {
@@ -178,17 +180,18 @@ struct CudaAxialPatchVisionTower::Impl {
             auto loan = loader.cache.borrow(fields::bytes(weights) + activations);
             DenseTensor output;
             {
-                auto device = fields::to_cuda(std::move(weights));
+                auto staged = std::move(weights);
+                fields::to_device(staged, value.device());
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto padded = tyloi::ops::cat({device.norm(value), tyloi::ops::zeros({1, hidden}, value.options())}, 0);
+                auto padded = tyloi::ops::cat({staged.norm(value), tyloi::ops::zeros({1, hidden}, value.options())}, 0);
                 DenseTensor index = tyloi::ops::tensor(indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
                 index = tyloi::ops::cast(index, ::tyloi::kInt64);
-                index = tyloi::ops::cast(index, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, 0});
+                index = tyloi::ops::cast(index, ::tyloi::kInt64, value.device());
                 auto gathered = tyloi::ops::reshape(tyloi::ops::contiguous(tyloi::ops::transpose(
                     tyloi::ops::reshape(tyloi::ops::index_select(padded, 0, index), {grid.count(), ratio * ratio, hidden}), 1, 2)),
                     {grid.count(), hidden * ratio * ratio});
 #else
-                auto padded = ::tyloi::cuda::cat({device.norm(value), ::tyloi::cuda::zeros({1, hidden}, value.options())}, 0);
+                auto padded = ::tyloi::cuda::cat({staged.norm(value), ::tyloi::cuda::zeros({1, hidden}, value.options())}, 0);
                 auto index = ::tyloi::cuda::tensor(indices,
                     ::tyloi::TensorOptions().dtype(::tyloi::kInt32).device(::tyloi::kCPU))
                     .to(::tyloi::kInt64).to(::tyloi::kCUDA);
@@ -196,11 +199,11 @@ struct CudaAxialPatchVisionTower::Impl {
                     .transpose(1, 2).contiguous().reshape({grid.count(), hidden * ratio * ratio});
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto projected = tyloi::ops::affine(std::move(gathered), *device.input.weight, device.input.bias);
-                output = tyloi::ops::affine(tyloi::ops::gelu(projected), *device.output.weight, device.output.bias);
+                auto projected = tyloi::ops::affine(std::move(gathered), *staged.input.weight, staged.input.bias);
+                output = tyloi::ops::affine(tyloi::ops::gelu(projected), *staged.output.weight, staged.output.bias);
 #else
-                auto projected = tyloi::cuda::affine(projector, device.input, std::move(gathered));
-                output = tyloi::cuda::affine(projector, device.output, ::tyloi::cuda::gelu(projected, "none"));
+                auto projected = tyloi::cuda::affine(projector, staged.input, std::move(gathered));
+                output = tyloi::cuda::affine(projector, staged.output, ::tyloi::cuda::gelu(projected, "none"));
 #endif
             }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

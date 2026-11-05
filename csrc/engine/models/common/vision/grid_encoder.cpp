@@ -102,9 +102,11 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 #endif
     DenseTensor pixels,
     const std::vector<GridShape> &grids) const {
+    // Everything this encoder stages follows the pixels' device.
+    const auto device = pixels.device();
     return tyloi::models::grid_vision::encode(
         std::move(pixels), config_, grids, blocks_,
-        [this](DenseTensor input, int64_t count) {
+        [this, &device](DenseTensor input, int64_t count) {
             if (input.dim() == 5)
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 input = tyloi::ops::reshape(input, {input.size(0), -1});
@@ -117,11 +119,11 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                     "grid-ViT pixel values must be flattened CxTxHxW patches");
             auto run = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto weight = tyloi::ops::cast(patch_weight_, patch_weight_.scalar_type(), tyloi::Device{tyloi::DeviceType::cuda, 0});
+                auto weight = tyloi::ops::cast(patch_weight_, patch_weight_.scalar_type(), device);
                 weight = tyloi::ops::reshape(std::move(weight), {config_.hidden_size, config_.patch_width()});
                 auto output = tyloi::ops::matmul(tyloi::ops::cast(input, weight.scalar_type()),
                                                tyloi::ops::transpose(weight, 0, 1));
-                auto bias = tyloi::ops::cast(patch_bias_, patch_bias_.scalar_type(), tyloi::Device{tyloi::DeviceType::cuda, 0});
+                auto bias = tyloi::ops::cast(patch_bias_, patch_bias_.scalar_type(), device);
                 bias = tyloi::ops::cast(std::move(bias), output.scalar_type());
                 return tyloi::ops::add(std::move(output), std::move(bias));
 #else
@@ -138,10 +140,10 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                        std::size_t(count * config_.hidden_size) * 16);
             return loan.finish(run());
         },
-        [this](const LearnedPositionInterpolation &interpolation) {
+        [this, &device](const LearnedPositionInterpolation &interpolation) {
             auto run = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto position_weight = tyloi::ops::cast(position_weight_, position_weight_.scalar_type(), tyloi::Device{tyloi::DeviceType::cuda, 0});
+                auto position_weight = tyloi::ops::cast(position_weight_, position_weight_.scalar_type(), device);
                 DenseTensor index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
                 index = tyloi::ops::cast(std::move(index), ::tyloi::kInt32, position_weight.device());
                 index = tyloi::ops::cast(std::move(index), ::tyloi::kInt64);
@@ -203,7 +205,9 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                            (std::size_t(16) << 20));
                 DenseTensor output;
                 {
-                    auto resident = fields::to_cuda(block);
+                    // Block weights stage on the same device as the hidden state.
+                    auto resident = block;
+                    fields::to_device(resident, value.device());
                     output = resident(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                         projector,
