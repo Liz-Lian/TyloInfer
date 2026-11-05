@@ -1,4 +1,5 @@
 #include "engine/models/common/session/paged.h"
+#include "backend.h"
 
 #include <cstring>
 #include <limits>
@@ -8,7 +9,10 @@ void CudaPagedWriter::raw(const void *data, size_t size) {
     bytes_.insert(bytes_.end(), begin, begin + size);
 }
 
-void CudaPagedWriter::tensor(const ::tyloi::DenseTensor &source) {
+void CudaPagedWriter::tensor(const ::tyloi::Tensor &tensor) {
+    const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&tensor);
+    if (!dense) throw std::runtime_error("invalid CUDA paged cache tensor");
+    const auto& source = *dense;
     if (!source.defined() || !source.is_cuda() || source.dim() <= 0 || source.dim() > 8) {
         throw std::runtime_error("invalid CUDA paged cache tensor");
     }
@@ -41,7 +45,7 @@ void CudaPagedReader::raw(void *destination, size_t size, const char *name) {
     cursor_ += size;
 }
 
-std::pair<::tyloi::DenseTensor, int> CudaPagedReader::tensor() {
+std::pair<std::shared_ptr<const ::tyloi::Tensor>, int> CudaPagedReader::tensor() {
     const auto dtype_value = scalar<int32_t>("dtype");
     const auto device = scalar<int32_t>("device");
     const auto rank = scalar<uint32_t>("rank");
@@ -76,7 +80,7 @@ std::pair<::tyloi::DenseTensor, int> CudaPagedReader::tensor() {
     auto cpu = ::tyloi::cuda::empty(
         shape, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(dtype));
     raw(cpu.data_ptr(), static_cast<size_t>(bytes), "tensor");
-    return {std::move(cpu), device};
+    return {std::make_shared<::tyloi::DenseTensor>(std::move(cpu)), device};
 }
 
 void CudaPagedReader::expect_end() const {

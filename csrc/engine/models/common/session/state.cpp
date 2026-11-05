@@ -1,4 +1,5 @@
 #include "engine/models/common/session/state.h"
+#include "backend.h"
 #include "engine/models/session.h"
 #include "engine/state/kv_cache.h"
 
@@ -81,13 +82,13 @@ CudaDecodedPagedBlock decode_cuda_paged_block(const std::vector<uint8_t> &payloa
         layer.capacity = reader.scalar<int64_t>("capacity");
         auto key = reader.tensor();
         auto value = reader.tensor();
-        if (key.second != value.second || !session_kv_geometry_matches(key.first,value.first) ||
-            key.first.size(2) != static_cast<int64_t>(block.count)) {
+        if (key.second != value.second || !session_kv_geometry_matches(*key.first,*value.first) ||
+            key.first->size(2) != static_cast<int64_t>(block.count)) {
             throw CudaSessionStateError("invalid CUDA paged cache layer");
         }
         layer.device = key.second;
-        layer.k = std::make_shared<::tyloi::DenseTensor>(std::move(key.first));
-        layer.v = std::make_shared<::tyloi::DenseTensor>(std::move(value.first));
+        layer.k = std::move(key.first);
+        layer.v = std::move(value.first);
         block.layers.push_back(std::move(layer));
     }
     reader.expect_end();

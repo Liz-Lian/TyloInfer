@@ -1,5 +1,7 @@
 #include "engine/models/qwen4_exp/session_codec.h"
 
+#include "backend.h"
+
 #include "engine/models/session.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 
@@ -20,14 +22,13 @@ Qwen4PagedHeader read_qwen4_header(CudaPagedReader& reader) {
     return header;
 }
 void write_optional(CudaPagedWriter& writer,const ::tyloi::Tensor* tensor) {
-    const auto* dense=dynamic_cast<const ::tyloi::DenseTensor*>(tensor);
-    if(tensor && !dense)throw CudaSessionStateError("incompatible Qwen4 session tensor");
-    writer.scalar<uint32_t>(dense && dense->defined()?1:0);if(dense && dense->defined())writer.tensor(*dense);
+    if(tensor && !dynamic_cast<const ::tyloi::DenseTensor*>(tensor))throw CudaSessionStateError("incompatible Qwen4 session tensor");
+    writer.scalar<uint32_t>(tensor && tensor->defined()?1:0);if(tensor && tensor->defined())writer.tensor(*tensor);
 }
 std::shared_ptr<const ::tyloi::Tensor> read_optional(CudaPagedReader& reader) {
     if(!reader.scalar<uint32_t>("tensor presence"))return {};
     auto [tensor,device]=reader.tensor();
-    return std::make_shared<::tyloi::DenseTensor>(tensor.to(::tyloi::Device{::tyloi::DeviceType::cuda,device}));
+    return tensor->relocated(::tyloi::Device{::tyloi::DeviceType::cuda,device});
 }
 void write_recurrent(CudaPagedWriter& writer,const tyloi::models::qwen4_exp::BlockSnapshot& layer) {
     write_optional(writer,layer.convolution.get());write_optional(writer,layer.recurrent.get());write_optional(writer,layer.ple_convolution.get());

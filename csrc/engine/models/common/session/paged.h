@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backend.h"
+#include "engine/tensor.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +32,7 @@ public:
     }
 
     void raw(const void* data, size_t size);
-    void tensor(const ::tyloi::DenseTensor& source);
+    void tensor(const ::tyloi::Tensor& source);
     CudaPagedPayload finish() &&;
 
 private:
@@ -60,7 +60,7 @@ public:
     }
 
     void raw(void* destination, size_t size, const char* name);
-    std::pair<::tyloi::DenseTensor, int> tensor();
+    std::pair<std::shared_ptr<const ::tyloi::Tensor>, int> tensor();
     void expect_end() const;
 
 private:
