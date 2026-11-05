@@ -1,12 +1,15 @@
 #include "engine/models/gemma4/state.h"
 #include "engine/models/gemma4/model.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/ops.h"
+#else
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/models/common/session/paged.h"
 #endif
 
 #include <stdexcept>
+#include <utility>
 
 namespace tyloi::cuda::gemma4 {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -69,6 +72,31 @@ void State::reset(std::int64_t next_batch) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::vector<tyloi::Tensor*> State::graph_state() {
+    if (cache_pos <= 0 || layers.empty())
+        throw std::runtime_error("Gemma4 graph warmup requires a prefilled KV cache");
+
+    std::vector<std::shared_ptr<tyloi::Tensor>> views;
+    views.reserve(layers.size() * 2);
+    for (const auto& cache : layers) {
+        if (cache.paged() || !cache.defined() || cache.physical_key->dim() != 4 ||
+            cache.physical_value->dim() != 4 || cache.physical_key->size(2) <= 0 ||
+            cache.physical_value->size(2) != cache.physical_key->size(2))
+            throw std::runtime_error("Gemma4 graph warmup requires allocated non-paged KV caches with matching capacities");
+        const auto capacity = cache.physical_key->size(2);
+        if (!cache.ring && cache_pos >= capacity)
+            throw std::runtime_error("Gemma4 graph warmup exceeds KV cache capacity");
+        const auto position = cache.ring ? cache_pos % capacity : cache_pos;
+        views.push_back(tyloi::ops::slice(*cache.physical_key, 2, position, position + 1));
+        views.push_back(tyloi::ops::slice(*cache.physical_value, 2, position, position + 1));
+    }
+    std::vector<tyloi::Tensor*> result;
+    result.reserve(views.size());
+    for (const auto& view : views) result.push_back(view.get());
+    graph_views_ = std::move(views);
+    return result;
+}
+
 std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
     std::vector<std::shared_ptr<const tyloi::Tensor>> result;
 #else

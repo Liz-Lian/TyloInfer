@@ -34,7 +34,7 @@ public:
     void advance(std::int64_t tokens) noexcept override { cache_pos += tokens; }
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
     std::vector<std::shared_ptr<const tyloi::Tensor>> storage() const override;
-    std::vector<tyloi::Tensor*> graph_state() override { return {}; }
+    std::vector<tyloi::Tensor*> graph_state() override;
 #else
     void preallocate();
     void reset(std::int64_t batch);
@@ -81,6 +81,9 @@ public:
 
 private:
     std::vector<Layout> layout_;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::vector<std::shared_ptr<tyloi::Tensor>> graph_views_;
+#endif
 };
 
 } // namespace tyloi::cuda::gemma4
