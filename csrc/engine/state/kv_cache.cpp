@@ -12,8 +12,8 @@ tyloi::state::KvView tyloi::state::allocate_kv(
     if(quantization.enabled())opts=opts.dtype(::tyloi::kInt32);
     TYLOINFER_RUNTIME_CHECK(!ring || !quantization.enabled(),"TurboQuant ring cache is unsupported");
     KvView result;
-    result.physical_key = ::tyloi::cuda::zeros({B,H,max_seq,quantization.enabled()?tyloi::cuda::cuda_kv_packed_width(int(D),quantization.key_bits()):D},opts);
-    result.physical_value = ::tyloi::cuda::zeros({B,H,max_seq,quantization.enabled()?tyloi::cuda::cuda_kv_packed_width(int(D),quantization.value_bits()):D},opts);
+    result.physical_key = std::make_shared<DenseTensor>(::tyloi::cuda::zeros({B,H,max_seq,quantization.enabled()?tyloi::cuda::cuda_kv_packed_width(int(D),quantization.key_bits()):D},opts));
+    result.physical_value = std::make_shared<DenseTensor>(::tyloi::cuda::zeros({B,H,max_seq,quantization.enabled()?tyloi::cuda::cuda_kv_packed_width(int(D),quantization.value_bits()):D},opts));
     result.quantization = quantization;
     result.ring = ring;
     result.batch = B;
@@ -36,8 +36,8 @@ KVCache::KVCache(
       paged_head_dim(D), paged_dtype(dtype) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto allocated = tyloi::state::allocate_kv(B, H, max_seq, D, use_ring, device, dtype, settings);
-    k = std::move(allocated.physical_key);
-    v = std::move(allocated.physical_value);
+    k = dynamic_cast<const ::tyloi::DenseTensor&>(*allocated.physical_key);
+    v = dynamic_cast<const ::tyloi::DenseTensor&>(*allocated.physical_value);
 #else
     auto opts = ::tyloi::TensorOptions().device(device).dtype(dtype);
     if(quantization.enabled())opts=opts.dtype(::tyloi::kInt32);

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -114,11 +115,10 @@ void check_device(const tyloi::Tensor& query, const tyloi::Tensor& tensor) {
 }
 void check_rope_kv_devices(const tyloi::ops::AttentionInput& input,
                            const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
-    for (const tyloi::Tensor* tensor : {&input.key, &input.value, &input.write_positions,
-                                      table.cos.get(), table.sin.get(),
-                                      static_cast<const tyloi::Tensor*>(&kv.physical_key),
-                                      static_cast<const tyloi::Tensor*>(&kv.physical_value)})
-        check_device(input.query, *tensor);
+    for (const tyloi::Tensor* tensor : std::initializer_list<const tyloi::Tensor*>{
+             &input.key, &input.value, &input.write_positions, table.cos.get(), table.sin.get(),
+             kv.physical_key.get(), kv.physical_value.get()})
+        if (tensor) check_device(input.query, *tensor);
 }
 }
 
@@ -139,7 +139,7 @@ std::optional<tyloi::DenseTensor> ops::norm_rope_kv(const tyloi::ops::AttentionI
         return minicpm_qk_norm_rope_cache_write_bf16_cuda(
             q.contiguous(), dense(input.key).contiguous(), dense(input.value).contiguous(), T(q_norm), T(k_norm),
             dense(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
-            dense(input.write_positions), dense(*table.cos), dense(*table.sin), T(kv.physical_key), T(kv.physical_value),
+            dense(input.write_positions), dense(*table.cos), dense(*table.sin), dense_kv_buffer(kv.physical_key), dense_kv_buffer(kv.physical_value),
             eps, offset);
     });
 }
@@ -151,13 +151,12 @@ std::optional<tyloi::DenseTensor> ops::rope_kv(const tyloi::ops::AttentionInput&
         return std::nullopt;
     check_rope_kv_devices(input, kv, table);
     MfqCudaGuard guard(input.query.device().index);
-    using T = ::tyloi::DenseTensor;
     return tyloi::ops::measure("full.rope_kv_write", [&]() -> tyloi::DenseTensor {
         auto q = dense(input.query);
         return minicpm_bf16_rope_cache_write_cuda(
             q.contiguous(), dense(input.key).contiguous(), dense(input.value).contiguous(),
             dense(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
-            dense(input.write_positions), dense(*table.cos), dense(*table.sin), T(kv.physical_key), T(kv.physical_value),
+            dense(input.write_positions), dense(*table.cos), dense(*table.sin), dense_kv_buffer(kv.physical_key), dense_kv_buffer(kv.physical_value),
             table.rotary_dim);
     });
 }
@@ -173,10 +172,10 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
         input.sequence_lengths ? MfqOptional<DenseTensor>{dense(*input.sequence_lengths)} : mfq_nullopt,
         input.attention_mask ? MfqOptional<DenseTensor>{dense(*input.attention_mask)} : mfq_nullopt,
         input.cache_position, input.planned_kv_length, input.decode_attention_parts};
-    const NativeKvView kv{DenseTensor(public_kv.visible_key), DenseTensor(public_kv.visible_value),
-        DenseTensor(public_kv.physical_key), DenseTensor(public_kv.physical_value),
-        DenseTensor(public_kv.key_chunk_ptrs), DenseTensor(public_kv.value_chunk_ptrs),
-        DenseTensor(public_kv.page_table), public_kv.quantization, public_kv.page_size,
+    const NativeKvView kv{dense_kv_buffer(public_kv.visible_key), dense_kv_buffer(public_kv.visible_value),
+        dense_kv_buffer(public_kv.physical_key), dense_kv_buffer(public_kv.physical_value),
+        dense_kv_buffer(public_kv.key_chunk_ptrs), dense_kv_buffer(public_kv.value_chunk_ptrs),
+        dense_kv_buffer(public_kv.page_table), public_kv.quantization, public_kv.page_size,
         public_kv.pages_per_chunk, public_kv.heads};
     auto& executor = Executor::current();
     const AttentionConfig config{public_config.bf16, public_config.sliding, public_config.window,

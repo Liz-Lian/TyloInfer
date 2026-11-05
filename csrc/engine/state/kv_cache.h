@@ -57,9 +57,19 @@ struct KVCache {
         return is_paged() || quantization.enabled() ? paged_dtype : k.scalar_type();
     }
     tyloi::cuda::AttentionKvView view() const {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        const auto owner = [](const ::tyloi::DenseTensor& value) -> std::shared_ptr<::tyloi::Tensor> {
+            return value.defined() ? std::make_shared<::tyloi::DenseTensor>(value) : nullptr;
+        };
+        return {{}, {}, owner(k), owner(v), owner(k_chunk_ptrs), owner(v_chunk_ptrs), owner(page_table), quantization,
+                page_size, pages_per_chunk, is_paged() ? paged_heads : k.size(1), ring,
+                batch_size(), is_paged() || quantization.enabled() ? paged_head_dim : k.size(3),
+                scalar_type()};
+#else
         return {{}, {}, k, v, k_chunk_ptrs, v_chunk_ptrs, page_table, quantization,
                 page_size, pages_per_chunk, is_paged() ? paged_heads : k.size(1), ring,
                 batch_size(), is_paged() || quantization.enabled() ? paged_head_dim : k.size(3),
                 scalar_type()};
+#endif
     }
 };

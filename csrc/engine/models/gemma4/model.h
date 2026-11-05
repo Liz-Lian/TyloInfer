@@ -71,11 +71,11 @@ struct Model
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
-    tyloi::DenseTensor embedding(tyloi::DenseTensor ids, int primary = 0) const override;
-    tyloi::DenseTensor normalize(tyloi::DenseTensor hidden, std::int64_t batch, std::int64_t tokens) const override;
-    tyloi::DenseTensor softcap(tyloi::DenseTensor logits) const override;
-    tyloi::DenseTensor logits(tyloi::DenseTensor hidden, bool capped = true) const override;
-    tyloi::DenseTensor forward(tyloi::models::Input input, tyloi::models::State& state,
+    std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const override;
+    std::shared_ptr<tyloi::Tensor> normalize(const tyloi::Tensor& hidden, std::int64_t batch, std::int64_t tokens) const override;
+    std::shared_ptr<tyloi::Tensor> softcap(const tyloi::Tensor& logits) const override;
+    std::shared_ptr<tyloi::Tensor> logits(const tyloi::Tensor& hidden, bool capped = true) const override;
+    std::shared_ptr<tyloi::Tensor> forward(tyloi::models::Input input, tyloi::models::State& state,
                         const Options& options = {}) const override;
 #endif
     std::shared_ptr<const tyloi::ModelSource> source;

@@ -17,10 +17,10 @@ namespace tyloi::cuda {
 
 struct AttentionStep {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    tyloi::DenseTensor positions;
-    std::optional<tyloi::DenseTensor> sequence_lengths;
-    std::optional<tyloi::DenseTensor> cache_positions;
-    std::optional<tyloi::DenseTensor> attention_mask;
+    std::shared_ptr<const tyloi::Tensor> positions;
+    std::shared_ptr<const tyloi::Tensor> sequence_lengths;
+    std::shared_ptr<const tyloi::Tensor> cache_positions;
+    std::shared_ptr<const tyloi::Tensor> attention_mask;
 #else
     ::tyloi::DenseTensor positions;
     MfqOptional<::tyloi::DenseTensor> sequence_lengths = mfq_nullopt;
@@ -62,8 +62,8 @@ struct FullAttention {
     std::shared_ptr<const ::tyloi::Tensor> q_projection, k_projection, v_projection, o;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     tyloi::state::KvQuantization kv_quantization;
-    std::array<tyloi::DenseTensor, 2> forward(
-        tyloi::DenseTensor input, const AttentionStep& step,
+    std::array<std::shared_ptr<tyloi::Tensor>, 2> forward(
+        const tyloi::Tensor& input, const AttentionStep& step,
         tyloi::state::KvView cache, const tyloi::ops::RopeTable& rope,
         tyloi::ops::Trace* trace = nullptr) const;
 #else

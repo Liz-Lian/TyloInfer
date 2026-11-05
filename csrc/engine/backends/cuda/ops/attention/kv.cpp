@@ -22,10 +22,10 @@ std::pair<tyloi::DenseTensor, tyloi::DenseTensor> ops::append_kv(
     const bool aten_write = Executor::current().attention_options().write_aten;
     std::optional<MfqCudaGuard> guard;
     if (key.is_cuda()) guard.emplace(key.device().index);
-    ::tyloi::DenseTensor k(cache.physical_key), v(cache.physical_value);
-    const ::tyloi::DenseTensor k_chunk_ptrs(cache.key_chunk_ptrs);
-    const ::tyloi::DenseTensor v_chunk_ptrs(cache.value_chunk_ptrs);
-    const ::tyloi::DenseTensor page_table(cache.page_table);
+    ::tyloi::DenseTensor k = dense_kv_buffer(cache.physical_key), v = dense_kv_buffer(cache.physical_value);
+    const auto k_chunk_ptrs = dense_kv_buffer(cache.key_chunk_ptrs);
+    const auto v_chunk_ptrs = dense_kv_buffer(cache.value_chunk_ptrs);
+    const auto page_table = dense_kv_buffer(cache.page_table);
 #else
 std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
         AttentionKvView cache, bool aten_write,

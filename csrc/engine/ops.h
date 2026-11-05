@@ -24,7 +24,7 @@ namespace tyloi::ops {
 // In the native CUDA runtime, computation requires CUDA unless stated below.
 // CUDA execution and prepared-weight operations require an execution scope.
 // qkv_norm and append_kv also require a scope for their CPU passthrough cases.
-using Trace = std::vector<std::pair<std::string, DenseTensor>>;
+using Trace = std::vector<std::pair<std::string, std::shared_ptr<Tensor>>>;
 
 // Query, key and value are [B,H,T,D]; KV may use fewer heads.
 struct AttentionInput {

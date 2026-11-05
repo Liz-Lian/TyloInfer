@@ -64,14 +64,14 @@ void State::reset(std::int64_t next_batch) {
         block->reset(next_batch);
 }
 
-std::vector<tyloi::DenseTensor> State::storage() const {
-    std::vector<tyloi::DenseTensor> result;
+std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
+    std::vector<std::shared_ptr<const tyloi::Tensor>> result;
     for (const auto& block : model_.blocks) {
         const auto& state = block->L();
-        if (state.local_kv.defined()) result.push_back(state.local_kv);
-        if (state.compressed_kv.defined()) result.push_back(state.compressed_kv);
-        if (state.index_k.defined()) result.push_back(state.index_k);
-        if (state.partial_kv.defined()) result.push_back(state.partial_kv);
+        if (state.local_kv.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.local_kv));
+        if (state.compressed_kv.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.compressed_kv));
+        if (state.index_k.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.index_k));
+        if (state.partial_kv.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.partial_kv));
     }
     return result;
 }

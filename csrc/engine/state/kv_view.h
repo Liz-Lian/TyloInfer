@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <memory>
 
 namespace tyloi::state {
 
@@ -15,9 +16,9 @@ struct KvQuantization {
 };
 
 struct KvView {
-    DenseTensor visible_key, visible_value;
-    DenseTensor physical_key, physical_value;
-    DenseTensor key_chunk_ptrs, value_chunk_ptrs, page_table;
+    std::shared_ptr<Tensor> visible_key, visible_value;
+    std::shared_ptr<Tensor> physical_key, physical_value;
+    std::shared_ptr<Tensor> key_chunk_ptrs, value_chunk_ptrs, page_table;
     KvQuantization quantization;
     std::int64_t page_size = 0;
     std::int64_t pages_per_chunk = 0;
@@ -30,8 +31,8 @@ struct KvView {
     bool paged() const noexcept { return page_size > 0; }
     bool defined() const noexcept {
         return paged()
-            ? key_chunk_ptrs.defined() && value_chunk_ptrs.defined() && page_table.defined()
-            : physical_key.defined() && physical_value.defined();
+            ? key_chunk_ptrs && key_chunk_ptrs->defined() && value_chunk_ptrs && value_chunk_ptrs->defined() && page_table && page_table->defined()
+            : physical_key && physical_key->defined() && physical_value && physical_value->defined();
     }
 };
 

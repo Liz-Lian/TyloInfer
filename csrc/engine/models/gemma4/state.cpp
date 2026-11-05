@@ -69,8 +69,8 @@ void State::reset(std::int64_t next_batch) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::vector<tyloi::DenseTensor> State::storage() const {
-    std::vector<tyloi::DenseTensor> result;
+std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
+    std::vector<std::shared_ptr<const tyloi::Tensor>> result;
 #else
 std::vector<DenseTensor> State::storage() const {
     std::vector<DenseTensor> result;
@@ -78,12 +78,12 @@ std::vector<DenseTensor> State::storage() const {
     for (const auto& cache : layers) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if (cache.paged()) {
-            if (cache.key_chunk_ptrs.defined()) result.push_back(cache.key_chunk_ptrs);
-            if (cache.value_chunk_ptrs.defined()) result.push_back(cache.value_chunk_ptrs);
-            if (cache.page_table.defined()) result.push_back(cache.page_table);
+            if (cache.key_chunk_ptrs && cache.key_chunk_ptrs->defined()) result.push_back(cache.key_chunk_ptrs);
+            if (cache.value_chunk_ptrs && cache.value_chunk_ptrs->defined()) result.push_back(cache.value_chunk_ptrs);
+            if (cache.page_table && cache.page_table->defined()) result.push_back(cache.page_table);
         } else {
-            if (cache.physical_key.defined()) result.push_back(cache.physical_key);
-            if (cache.physical_value.defined()) result.push_back(cache.physical_value);
+            if (cache.physical_key && cache.physical_key->defined()) result.push_back(cache.physical_key);
+            if (cache.physical_value && cache.physical_value->defined()) result.push_back(cache.physical_value);
         }
 #else
         if (cache.is_paged()) {

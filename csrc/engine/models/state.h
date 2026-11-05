@@ -3,6 +3,7 @@
 #include "engine/tensor.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace tyloi::models {
@@ -15,8 +16,10 @@ public:
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;
-    virtual std::vector<tyloi::DenseTensor> storage() const = 0;
-    virtual std::vector<tyloi::DenseTensor*> graph_state() = 0;
+    // Owners keep storage alive; deduplicate using backing identity, not object identity.
+    virtual std::vector<std::shared_ptr<const tyloi::Tensor>> storage() const = 0;
+    // Borrow writable objects from this state; their lifetime remains tied to it.
+    virtual std::vector<tyloi::Tensor*> graph_state() = 0;
     virtual bool supports_text_session_state() const = 0;
     virtual bool supports_paged_text_session_state() const = 0;
 };

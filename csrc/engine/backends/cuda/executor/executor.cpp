@@ -153,8 +153,13 @@ std::vector<DenseTensor> Executor::storage() const {
 namespace {
 
 void record(Trace* trace, std::string_view name, const DenseTensor& value) {
-    if (trace && !name.empty())
+    if (trace && !name.empty()) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        trace->emplace_back(std::string(name), std::make_shared<DenseTensor>(value.to(::tyloi::kFloat32).contiguous().clone()));
+#else
         trace->emplace_back(std::string(name), value.to(::tyloi::kFloat32).contiguous().clone());
+#endif
+    }
 }
 
 std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inputs& inputs) {

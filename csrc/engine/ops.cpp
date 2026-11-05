@@ -83,10 +83,10 @@ AttentionResult attention(const AttentionInput& request, const state::KvView& kv
         request.query.size(3) != request.key.size(3) || request.key.size(1) <= 0 ||
         request.query.size(1) <= 0 || request.query.size(3) <= 0)
         throw std::invalid_argument("attention query, key and value geometry is incompatible");
-    for (const DenseTensor* tensor : {&kv.visible_key, &kv.visible_value, &kv.physical_key,
-                                  &kv.physical_value, &kv.key_chunk_ptrs,
-                                  &kv.value_chunk_ptrs, &kv.page_table})
-        if (tensor->defined()) compatible(request.query, *tensor);
+    for (const Tensor* tensor : {kv.visible_key.get(), kv.visible_value.get(), kv.physical_key.get(),
+                                  kv.physical_value.get(), kv.key_chunk_ptrs.get(),
+                                  kv.value_chunk_ptrs.get(), kv.page_table.get()})
+        if (tensor && tensor->defined()) compatible(request.query, *tensor);
     require_cuda(request.query);
     return cuda::ops::attention(request, kv, config);
 }
@@ -136,8 +136,8 @@ std::shared_ptr<Tensor> norm_rope_kv(const AttentionInput& request, const state:
     if (!request.query.is_cuda()) return nullptr;
     if (encoded({&request.query, &request.key, &request.value, &request.positions, &request.write_positions,
                  table.cos.get(), table.sin.get(), table.sections.get(), table.empty_sections.get(), table.interleaved_order.get(),
-                 table.interleaved_inverse.get(), &q_norm, &k_norm, &kv.visible_key, &kv.visible_value,
-                 &kv.physical_key, &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table,
+                 table.interleaved_inverse.get(), &q_norm, &k_norm, kv.visible_key.get(), kv.visible_value.get(),
+                 kv.physical_key.get(), kv.physical_value.get(), kv.key_chunk_ptrs.get(), kv.value_chunk_ptrs.get(), kv.page_table.get(),
                  request.sequence_lengths, request.attention_mask})) return nullptr;
     auto result = cuda::ops::norm_rope_kv(request, kv, table, dense(q_norm), dense(k_norm), eps, offset);
     return result ? owner(std::move(*result)) : nullptr;
@@ -147,8 +147,8 @@ std::shared_ptr<Tensor> rope_kv(const AttentionInput& request, const state::KvVi
     if (!request.query.is_cuda()) return nullptr;
     if (encoded({&request.query, &request.key, &request.value, &request.positions, &request.write_positions,
                  table.cos.get(), table.sin.get(), table.sections.get(), table.empty_sections.get(), table.interleaved_order.get(),
-                 table.interleaved_inverse.get(), &kv.visible_key, &kv.visible_value, &kv.physical_key,
-                 &kv.physical_value, &kv.key_chunk_ptrs, &kv.value_chunk_ptrs, &kv.page_table,
+                 table.interleaved_inverse.get(), kv.visible_key.get(), kv.visible_value.get(), kv.physical_key.get(),
+                 kv.physical_value.get(), kv.key_chunk_ptrs.get(), kv.value_chunk_ptrs.get(), kv.page_table.get(),
                  request.sequence_lengths, request.attention_mask})) return nullptr;
     auto result = cuda::ops::rope_kv(request, kv, table);
     return result ? owner(std::move(*result)) : nullptr;
@@ -164,9 +164,9 @@ std::pair<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>> append_kv(state::KvV
     compatible(key, positions);
     if (key.dim() != 4 || value.dim() != 4 || key.sizes() != value.sizes())
         throw std::invalid_argument("KV write key and value geometry is incompatible");
-    for (const DenseTensor* tensor : {&kv.physical_key, &kv.physical_value, &kv.key_chunk_ptrs,
-                                  &kv.value_chunk_ptrs, &kv.page_table})
-        if (tensor->defined()) compatible(key, *tensor);
+    for (const Tensor* tensor : {kv.physical_key.get(), kv.physical_value.get(), kv.key_chunk_ptrs.get(),
+                                  kv.value_chunk_ptrs.get(), kv.page_table.get()})
+        if (tensor && tensor->defined()) compatible(key, *tensor);
     // A zero batch skips the unpaged, unquantized index writes.
     if (kv.paged() || kv.quantization.enabled() || positions.dim() != 2 || positions.size(0) != 0)
         require_cuda(key);

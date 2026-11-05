@@ -32,9 +32,15 @@ DenseTensor Executor::full_ffn(
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     auto& profiler = profiler_;
     auto record_trace = [&](const char* name, const DenseTensor& value) {
-        if (attention.attention_output_gate && trace_output)
+        if (attention.attention_output_gate && trace_output) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            trace_output->emplace_back(name, std::make_shared<DenseTensor>(value.reshape({B, T, -1})
+                .to(::tyloi::kFloat32).contiguous().clone()));
+#else
             trace_output->emplace_back(name, value.reshape({B, T, -1})
                 .to(::tyloi::kFloat32).contiguous().clone());
+#endif
+        }
     };
     auto pair = full_norm(profiler, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
                           attention.official_bf16, attention_.fused_norm,

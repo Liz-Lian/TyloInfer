@@ -3,23 +3,17 @@
 #include "engine/tensor.h"
 
 #include <cstdint>
-#include <optional>
+#include <memory>
 #include <vector>
 
 namespace tyloi::models {
 
 struct Input {
-    using DenseTensor = tyloi::DenseTensor;
-    using Trace = std::vector<DenseTensor>;
+    using Trace = std::vector<std::shared_ptr<Tensor>>;
 
-    DenseTensor ids;
-    std::optional<DenseTensor> embeddings;
-    std::optional<DenseTensor> positions;
-    std::optional<DenseTensor> lengths;
-    std::optional<DenseTensor> attention_mask;
-    std::optional<DenseTensor> cache_positions;
+    std::shared_ptr<const Tensor> ids, embeddings, positions, lengths, attention_mask, cache_positions;
     Trace* trace = nullptr;
-    DenseTensor* raw_hidden = nullptr;
+    std::shared_ptr<Tensor>* raw_hidden = nullptr;
     bool advance = false;
     std::int64_t confirmed = 0;
     std::int64_t kv_length = 0;

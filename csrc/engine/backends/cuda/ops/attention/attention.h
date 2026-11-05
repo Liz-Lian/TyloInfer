@@ -9,6 +9,7 @@
 #endif
 
 #include <cstdint>
+#include <stdexcept>
 #include <utility>
 
 namespace tyloi::cuda {
@@ -56,12 +57,28 @@ struct AttentionInput {
 };
 #endif
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+inline ::tyloi::DenseTensor dense_kv_buffer(const std::shared_ptr<::tyloi::Tensor>& tensor) {
+    if (!tensor || !tensor->defined()) return {};
+    const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(tensor.get());
+    if (!dense) throw std::invalid_argument("attention requires dense tensors");
+    return *dense;
+}
+#endif
+
 inline QuantizedKvPages quantized_pages(const AttentionKvView& kv) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    return kv.paged() ? QuantizedKvPages{dense_kv_buffer(kv.key_chunk_ptrs), dense_kv_buffer(kv.value_chunk_ptrs),
+                                        dense_kv_buffer(kv.page_table), static_cast<int>(kv.page_size),
+                                        static_cast<int>(kv.pages_per_chunk), static_cast<int>(kv.heads)}
+                      : QuantizedKvPages{};
+#else
     using DenseTensor = ::tyloi::DenseTensor;
     return kv.paged() ? QuantizedKvPages{DenseTensor(kv.key_chunk_ptrs), DenseTensor(kv.value_chunk_ptrs),
                                         DenseTensor(kv.page_table), static_cast<int>(kv.page_size),
                                         static_cast<int>(kv.pages_per_chunk), static_cast<int>(kv.heads)}
                       : QuantizedKvPages{};
+#endif
 }
 
 struct AttentionKernels {

@@ -14,7 +14,7 @@
 namespace tyloi::cuda::gemma4 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-DenseTensor forward_layer(const Layer&, tyloi::state::KvView&, DenseTensor, const AttentionStep&,
+std::shared_ptr<tyloi::Tensor> forward_layer(const Layer&, tyloi::state::KvView&, const tyloi::Tensor&, const AttentionStep&,
                      const Model::Options&);
 #else
 DenseTensor embed(const Model&, Executor&, Collectives&, int primary, DenseTensor ids,

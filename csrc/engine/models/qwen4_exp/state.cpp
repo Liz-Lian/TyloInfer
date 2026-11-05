@@ -28,16 +28,16 @@ void State::reset(std::int64_t next_batch) {
         block->reset(next_batch);
 }
 
-std::vector<tyloi::DenseTensor> State::storage() const {
-    std::vector<tyloi::DenseTensor> result;
+std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
+    std::vector<std::shared_ptr<const tyloi::Tensor>> result;
     for (const auto& block : model_.blocks)
         for (auto* tensor : block->graph_warmup_state())
-            result.push_back(*tensor);
+            result.push_back(std::make_shared<tyloi::DenseTensor>(*tensor));
     return result;
 }
 
-std::vector<tyloi::DenseTensor*> State::graph_state() {
-    std::vector<tyloi::DenseTensor*> warmup_states;
+std::vector<tyloi::Tensor*> State::graph_state() {
+    std::vector<tyloi::Tensor*> warmup_states;
     for (const auto& block : model_.blocks)
         for (auto* state : block->graph_warmup_state())
             warmup_states.push_back(state);
