@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/tensor.h"
+#include "engine/requests/constraint.h"
 #include "engine/state/kv_view.h"
 #include "engine/weights/weights.h"
 
@@ -198,6 +199,17 @@ std::shared_ptr<Tensor> zeros(std::span<const std::int64_t> shape, const TensorO
 inline std::shared_ptr<Tensor> zeros(std::initializer_list<std::int64_t> shape, const TensorOptions& options) {
     return zeros(std::span<const std::int64_t>(shape.begin(), shape.size()), options);
 }
+std::shared_ptr<Tensor> empty(std::span<const std::int64_t> shape, const TensorOptions& options);
+inline std::shared_ptr<Tensor> empty(std::initializer_list<std::int64_t> shape, const TensorOptions& options) {
+    return empty(std::span<const std::int64_t>(shape.begin(), shape.size()), options);
+}
+std::shared_ptr<Tensor> sample_greedy(const Tensor& logits);
+std::shared_ptr<Tensor> sample_stochastic(const Tensor& logits, const Tensor& random,
+                                          double temperature, std::int64_t top_k, double top_p);
+void add_token_counts(Tensor& counts, const Tensor& ids);
+void apply_penalties(Tensor& logits, const Tensor& counts, double presence, double frequency, double repetition);
+std::shared_ptr<Tensor> constrain(const Tensor& logits, const MfqTokenConstraintPtr& constraint);
+std::int64_t item(const Tensor& value);
 std::shared_ptr<Tensor> select(const Tensor& input, std::int64_t dim, std::int64_t index);
 std::shared_ptr<Tensor> unsqueeze(const Tensor& input, std::int64_t dim);
 std::shared_ptr<Tensor> slice(const Tensor& input, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step = 1);

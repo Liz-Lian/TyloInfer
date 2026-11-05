@@ -169,6 +169,10 @@ private:
     DenseTensor random_cuda_;
 };
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+using Sampler = tyloi::engine::Sampler;
+#else
 using Sampler = tyloi::engine::Sampler<SamplingOps>;
+#endif
 
 } // namespace tyloi::cuda

@@ -175,7 +175,8 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& languag
     }
     PreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    prepared.image_mask=tyloi::ops::reshape(tyloi::ops::tensor(mask,tyloi::Device{tyloi::DeviceType::cpu,0}),{1,-1});
+    auto mask_tensor=tyloi::ops::tensor(mask,tyloi::Device{tyloi::DeviceType::cpu,0});
+    prepared.image_mask=tyloi::ops::reshape(*mask_tensor,{1,-1});
 #else
     prepared.image_mask=::tyloi::cuda::tensor(mask,::tyloi::TensorOptions()
         .dtype(::tyloi::kUInt8).device(::tyloi::kCPU)).reshape({1,-1});

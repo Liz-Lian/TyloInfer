@@ -591,8 +591,9 @@ class CudaRadioPromptComponent {
             co_yield tyloi::StepState::advanced;
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        auto positions = tyloi::ops::reshape(tyloi::ops::arange(0,
-            static_cast<std::int64_t>(token_ids.size()), tyloi::Device{::tyloi::kCUDA, primary}),
+        auto position_values = tyloi::ops::arange(0,
+            static_cast<std::int64_t>(token_ids.size()), tyloi::Device{::tyloi::kCUDA, primary});
+        auto positions = tyloi::ops::reshape(*position_values,
             {1, static_cast<std::int64_t>(token_ids.size())});
 #else
         auto positions = ::tyloi::cuda::arange(

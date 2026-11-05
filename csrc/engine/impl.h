@@ -13,8 +13,6 @@
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/memory.h"
 
-#include <functional>
-
 namespace tyloi::engine {
 
 // Engine private storage keeps device-specific types out of engine.h.
@@ -35,7 +33,6 @@ struct Engine::Impl {
     std::optional<cuda::internal::TextSessionCache> cache_;
     std::optional<cuda::Budget> budget_;
     std::optional<cuda::ExpertSpace> expert_space_;
-    std::function<void()> restore_;
     std::unique_ptr<TextProcessor> text_;
     EngineInfo info_;
     bool ready_ = false;

@@ -96,7 +96,11 @@ public:
 
     ::tyloi::DenseTensor run(std::span<const Task> tasks, Inputs inputs,
                                    const Mode& mode);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> storage() const;
+#else
     std::vector<::tyloi::DenseTensor> storage() const;
+#endif
     Projector projector(const Ffn::Mode& mode);
     Projector projector(const Ffn::Mode& mode, int primary);
     ::tyloi::DenseTensor full_ffn(

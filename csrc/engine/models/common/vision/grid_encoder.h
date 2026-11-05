@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -351,9 +352,15 @@ class CudaGridVisionPromptComponent {
                     .to(::tyloi::kInt64);
 #endif
             });
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        co_yield PreparedPrompt{token_ids, std::make_shared<DenseTensor>(std::move(prepared.embeddings)),
+                                    std::make_shared<DenseTensor>(std::move(prepared.positions)), prepared.decode_delta,
+                                    std::move(cache_key)};
+#else
         co_yield PreparedPrompt{token_ids, std::move(prepared.embeddings),
                                     std::move(prepared.positions), prepared.decode_delta,
                                     std::move(cache_key)};
+#endif
     }
 
     const std::string &input_contract() const noexcept { return input_contract_; }

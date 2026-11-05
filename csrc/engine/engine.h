@@ -5,9 +5,6 @@
 #include "requests/result.h"
 #include "executor.h"
 #include "generation/sequence.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "models/prepared.h"
-#endif
 
 #include <chrono>
 #include <future>
@@ -124,9 +121,6 @@ private:
     friend EngineParts tyloi::cuda::internal::build_engine_parts(tyloi::cuda::CudaEngineOptions);
     friend std::unique_ptr<Engine> tyloi::cuda::load_cuda_engine(tyloi::cuda::CudaEngineOptions);
     friend void tyloi::cuda::reload_cuda_engine(Engine&, tyloi::cuda::CudaEngineOptions);
-    template <class Ops, class State>
-    friend tyloi::StepSequence<EventData> generate_prepared(Ops&, State&, InferenceRequest&, InferenceOutput&,
-        const RequestId&, bool);
     // The model and executor enter through the constructor; nothing writes
     // Engine fields from outside.
     explicit Engine(EngineParts&& parts);
@@ -134,11 +128,6 @@ private:
     void install();
     void rebuild(EngineParts&& parts);
 
-    using Prepared = models::Prepared;
-    tyloi::StepSequence<Prepared> prepare(InferenceRequest&, models::State&);
-    std::pair<tyloi::StepResult<Prepared>, double> advance_preparation(tyloi::StepSequence<Prepared>&);
-    tyloi::StepSequence<EventData> generate_text(InferenceRequest&, InferenceOutput&, models::State&,
-        std::optional<Prepared>, const RequestId&, bool);
     SessionResult set_budget(const SessionCommand&);
     void restore_graph_expert_space();
     void clear_bindings() noexcept;

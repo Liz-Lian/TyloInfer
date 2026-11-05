@@ -8,13 +8,10 @@
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/impl.h"
 #include "engine/drain.h"
-#include "engine/generate.h"
-#include "engine/generation/generation.h"
 #include "engine/runtime_metrics.h"
 #include "engine/models/prepare.h"
 #include "engine/scheduler/request.h"
 #include "engine/backends/cuda/native/env.h"
-#include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/budget.h"
@@ -60,7 +57,6 @@ void Engine::install() {
                 set_moe_kv_expert_loan(impl.weights_->moe, loan);
             }
             if (loan) impl.expert_space_.emplace(*impl.weights_, impl.load_.layer_placement.primary_device(), std::move(loan));
-            impl.restore_ = [this] { restore_graph_expert_space(); };
             set_moe_workspace_reservation(impl.weights_->moe,
                 [this](std::size_t bytes) { impl_->budget_->reclaim(bytes, impl_->expert_space_ ? &*impl_->expert_space_ : nullptr); },
                 [this](std::size_t bytes) { impl_->cache_->reserve_ram(bytes); impl_->weights_->reserve(bytes); });
@@ -216,32 +212,6 @@ bool Engine::exclusive() const { return false; }
 
 void Engine::execute(const std::vector<RequestId>&) {}
 
-tyloi::StepSequence<Engine::Prepared> Engine::prepare(InferenceRequest& input, models::State& state) {
-    return model_->prepare(input.prompt, *input.vision, state);
-}
-
-std::pair<tyloi::StepResult<Engine::Prepared>, double> Engine::advance_preparation(tyloi::StepSequence<Prepared>& preparation) {
-    internal::PrefillCudaTimer timer;
-    auto step = preparation.next();
-    TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(), mfq_get_current_cuda_stream()));
-    return std::pair{std::move(step), timer.elapsed_ms()};
-}
-
-tyloi::StepSequence<EventData> Engine::generate_text(InferenceRequest& input, InferenceOutput& output, models::State& state, std::optional<Prepared> prepared, const RequestId& id, bool) {
-    return internal::generate(*model_, state, impl_->forward_.get(), cuda_root(*executor_).collectives(),
-        cuda_root(*executor_).forward_mode(impl_->load_.layer_placement.primary_device()), cuda_root(*executor_).profiler(), *impl_->weights_,
-        cuda_root(*executor_).mode().ffn.serial, impl_->load_.report_cuda_memory,
-        impl_->load_.dsv4_cpu_offload_layers.empty() && impl_->load_.dense_cpu_layer_count == 0 &&
-            model_parallel_cuda_graph_enabled(impl_->load_, cuda_root(*executor_), *impl_->weights_),
-        [this] { drain_cuda(cuda_root(*executor_), *impl_->weights_, impl_->offload_.get(), impl_->load_.layer_placement, impl_->load_.tensor_parallel, impl_->load_.expert_parallel); },
-        impl_->model_info_, impl_->source_.get(), *impl_->graph_, *impl_->cache_, impl_->runtime_, input, output, impl_->mtp_state_,
-        static_cast<MtpModule*>(nullptr), std::move(prepared), nullptr, id, impl_->restore_);
-}
-
-tyloi::StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
-    return engine::generate_prepared(*this, *request.state, request.input, *request.output, id, request.batched);
-}
-
 void Engine::restore_graph_expert_space() {
     if (impl_->weights_->tq) return;
     prepare_moe_decode_residency(impl_->weights_->moe);
@@ -250,7 +220,6 @@ void Engine::restore_graph_expert_space() {
 }
 
 void Engine::clear_bindings() noexcept {
-    impl_->restore_ = {};
     if (impl_->kv_) impl_->kv_->set_reservation({});
     set_moe_workspace_reservation(impl_->weights_->moe, {});
     if (impl_->offload_) impl_->offload_->set_ram_reservation({});

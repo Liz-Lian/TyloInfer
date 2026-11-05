@@ -19,7 +19,6 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/input.h"
-#include "engine/models/causal_model.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -35,12 +34,6 @@ using ::tyloi::indexing::Slice;
 
 template <typename Model, typename State>
 constexpr bool has_forward =
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    requires(Model& model, State& state, tyloi::cuda::Input input,
-             const tyloi::models::ForwardOptions& options) {
-        static_cast<const tyloi::models::CausalModel&>(model).forward(std::move(input), state, options);
-    } ||
-#endif
     requires(
     Model& model, State& state, tyloi::cuda::Executor& executor,
     tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
@@ -50,11 +43,6 @@ constexpr bool has_forward =
 
 template <typename Model>
 constexpr bool has_logits =
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    requires(Model& model, DenseTensor hidden) {
-        static_cast<const tyloi::models::CausalModel&>(model).logits(std::move(hidden), true);
-    } ||
-#endif
     requires(
     Model& model, tyloi::cuda::Executor& executor, DenseTensor hidden) {
     logits(model, executor, std::move(hidden), true);
@@ -64,39 +52,19 @@ template <typename Model, typename State>
 DenseTensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
               Collectives& collectives, const Executor::Mode& mode, tyloi::cuda::Input input) {
     static_assert(has_forward<Model, State>);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).forward(
-                               std::move(input), state, forward_options(mode)); }) {
-        const tyloi::models::CausalModel& causal = model;
-        auto scope = Executor::current().enter(mode.ffn);
-        return DenseTensor(causal.forward(std::move(input), state, forward_options(mode)));
-    } else
-#endif
-    {
-        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                                "CUDA model forward requires an executor");
-        return forward(model, state, *executor, collectives,
-                       mode, std::move(input));
-    }
+    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                            "CUDA model forward requires an executor");
+    return forward(model, state, *executor, collectives,
+                   mode, std::move(input));
 }
 
 template <typename Model>
 DenseTensor project(Model& model, tyloi::cuda::Executor* executor,
                const Executor::Mode& mode, DenseTensor value, bool capped) {
     static_assert(has_logits<Model>);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).logits(
-                               std::move(value), capped); }) {
-        const tyloi::models::CausalModel& causal = model;
-        auto scope = Executor::current().enter(mode.ffn);
-        return DenseTensor(causal.logits(std::move(value), capped));
-    } else
-#endif
-    {
-        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                                "CUDA model logits requires an executor");
-        return logits(model, *executor, std::move(value), capped, mode);
-    }
+    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                            "CUDA model logits requires an executor");
+    return logits(model, *executor, std::move(value), capped, mode);
 }
 
 template <typename Model, typename State>

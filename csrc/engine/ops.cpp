@@ -14,6 +14,7 @@
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/device.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #endif
 
 namespace tyloi::ops {
@@ -506,6 +507,53 @@ std::shared_ptr<Tensor> cat(std::span<const Tensor* const> values, std::int64_t 
 std::shared_ptr<Tensor> zeros(std::span<const std::int64_t> shape, const TensorOptions& options) {
     device(options.target_device());
     return owner(cuda::ops::zeros(shape, options));
+}
+std::shared_ptr<Tensor> empty(std::span<const std::int64_t> shape, const TensorOptions& options) {
+    device(options.target_device());
+    return owner(cuda::empty(shape, options));
+}
+std::shared_ptr<Tensor> sample_greedy(const Tensor& logits_tensor) {
+    const auto& logits = dense(logits_tensor);
+    input(logits);
+    require_cuda(logits);
+    return owner(::sample_greedy_cuda(logits));
+}
+std::shared_ptr<Tensor> sample_stochastic(const Tensor& logits_tensor, const Tensor& random_tensor,
+                                          double temperature, std::int64_t top_k, double top_p) {
+    const auto& logits = dense(logits_tensor);
+    const auto& random = dense(random_tensor);
+    compatible(logits, random);
+    require_cuda(logits);
+    if (top_k > 0)
+        return owner(::sample_top_k_top_p_cuda(logits, random, temperature, top_k, top_p));
+    return owner(::sample_softmax_cuda(logits, random, temperature));
+}
+void add_token_counts(Tensor& counts_tensor, const Tensor& ids_tensor) {
+    auto& counts = dense(counts_tensor);
+    const auto& ids = dense(ids_tensor);
+    compatible(counts, ids);
+    require_cuda(counts);
+    ::sample_token_counts_add_cuda(counts, ids);
+}
+void apply_penalties(Tensor& logits_tensor, const Tensor& counts_tensor,
+                     double presence, double frequency, double repetition) {
+    auto& logits = dense(logits_tensor);
+    const auto& counts = dense(counts_tensor);
+    compatible(logits, counts);
+    require_cuda(logits);
+    ::sample_apply_penalties_cuda(logits, counts, presence, frequency, repetition);
+}
+std::shared_ptr<Tensor> constrain(const Tensor& logits_tensor, const MfqTokenConstraintPtr& constraint) {
+    const auto& logits = dense(logits_tensor);
+    input(logits);
+    auto masked = logits.to(kCPU, kFloat32).contiguous();
+    constraint->apply(masked.data_ptr<float>(), static_cast<std::size_t>(masked.numel()));
+    return owner(std::move(masked));
+}
+std::int64_t item(const Tensor& value_tensor) {
+    const auto& value = dense(value_tensor);
+    input(value);
+    return value.item<std::int64_t>();
 }
 std::shared_ptr<Tensor> select(const Tensor& value_tensor, std::int64_t dim, std::int64_t index) {
     const auto& value = ::tyloi::ops::dense(value_tensor);

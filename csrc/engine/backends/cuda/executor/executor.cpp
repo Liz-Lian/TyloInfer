@@ -76,9 +76,17 @@ void MlaScratch::ensure_decode_workspace(int64_t B, int64_t planned_len) {
     ensure_meta();
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> Executor::storage() const {
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> result;
+    const auto append = [&](const DenseTensor& tensor) {
+        if (tensor.defined()) result.push_back(std::make_shared<DenseTensor>(tensor));
+    };
+#else
 std::vector<DenseTensor> Executor::storage() const {
     std::vector<DenseTensor> result;
     const auto append = [&](const DenseTensor& tensor) { if (tensor.defined()) result.push_back(tensor); };
+#endif
     const auto route = [&](const MoeRoutePlan& value) {
         append(value.ids); append(value.ids_dst); append(value.expert_bounds);
         append(value.tile_bounds); append(value.tile_experts);

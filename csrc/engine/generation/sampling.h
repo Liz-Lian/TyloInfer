@@ -1,6 +1,10 @@
 #pragma once
 
 #include "engine/requests/constraint.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/ops.h"
+#include "engine/requests/sampling.h"
+#endif
 
 #include <cstdint>
 #include <algorithm>
@@ -69,6 +73,60 @@ std::int64_t sample_top_k_top_p(std::span<const float> logits, std::int64_t top_
     return kept_indices.back();
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+class Sampler {
+public:
+    using Params = MfqSamplingParams;
+
+    explicit Sampler(Params params, Device device)
+        : params_(std::move(params)), rng_(params_.seed),
+          random_host_(ops::empty({1}, TensorOptions().dtype(kFloat32).device(kCPU).pinned_memory(true))),
+          random_cuda_(ops::empty({1}, TensorOptions().dtype(kFloat32).device(device))) {
+        if (params_.top_k < 0)
+            throw std::invalid_argument("top_k must be non-negative");
+    }
+
+    const Params& params() const noexcept { return params_; }
+    bool greedy() const noexcept { return params_.temperature <= 0.0 || params_.top_k == 1; }
+    bool has_penalties() const noexcept {
+        return params_.presence_penalty != 0.0 || params_.frequency_penalty != 0.0 ||
+            params_.repetition_penalty != 1.0;
+    }
+    void reset_seed(std::uint64_t seed) {
+        params_.seed = seed;
+        rng_.seed(seed);
+    }
+    void discard_random(std::uint64_t draws) { rng_.discard(draws); }
+    float next_uniform_float() {
+        std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
+        return uniform(rng_);
+    }
+    double next_uniform() { return std::generate_canonical<double, 53>(rng_); }
+    Tensor& random_host() noexcept { return *random_host_; }
+    const Tensor& next_random() {
+        ops::fill(*random_host_, next_uniform_float());
+        return *random_host_;
+    }
+    std::shared_ptr<Tensor> sample(const Tensor& logits) {
+        if (greedy()) return ops::sample_greedy(logits);
+        ops::copy_into(*random_cuda_, next_random());
+        return ops::sample_stochastic(logits, *random_cuda_, params_.temperature, params_.top_k, params_.top_p);
+    }
+    std::shared_ptr<Tensor> sample(Tensor& logits, const Tensor& counts) {
+        if (has_penalties()) apply_penalties(logits, counts);
+        return sample(logits);
+    }
+    void apply_penalties(Tensor& logits, const Tensor& counts) {
+        ops::apply_penalties(logits, counts, params_.presence_penalty,
+                             params_.frequency_penalty, params_.repetition_penalty);
+    }
+
+private:
+    Params params_;
+    std::mt19937_64 rng_;
+    std::shared_ptr<Tensor> random_host_, random_cuda_;
+};
+#else
 // Ops supplies:
 //   using DenseTensor;
 //   using Params;
@@ -185,5 +243,6 @@ typename Ops::DenseTensor sample_logits(
     }
     return next;
 }
+#endif
 
 } // namespace tyloi::engine
