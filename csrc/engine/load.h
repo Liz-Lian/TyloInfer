@@ -29,6 +29,8 @@ struct CudaContinuousBatchConfig : tyloi::engine::ContinuousBatchConfig {
 
 struct CudaRuntimeConfig : tyloi::engine::RuntimeConfig {
     bool prefill_chunk_auto = true;
+    bool profile_decode = false;
+    bool trace_moe = false;
     CudaDecodeGraphConfig decode_graph;
     CudaContinuousBatchConfig continuous_batch;
 };

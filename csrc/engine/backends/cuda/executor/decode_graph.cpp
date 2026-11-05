@@ -3,6 +3,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/native/profile.h"
 #endif
 
 #include <algorithm>
@@ -227,6 +228,7 @@ public:
         owners_.insert(owners_.end(), scratch.begin(), scratch.end());
         for (const auto& tensor : owners_)
             layout_.push_back(tensor ? std::optional(decode_graph_detail::snapshot_layout(*tensor)) : std::nullopt);
+        report_cuda_memory(owner_.options().report_memory, "runtime_graph_capture");
     }
     void replay() override { graph_.replay(); }
     void wait() override {

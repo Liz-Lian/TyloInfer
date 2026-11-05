@@ -3,10 +3,7 @@
 #include "engine/generation/step.h"
 #include "engine/generation/sampling.h"
 #include "engine/scheduler/request.h"
-#include "engine/models/common/mtp.h"
 #include "engine/models/source.h"
-#include "engine/backends/cuda/native/env.h"
-#include "engine/backends/cuda/native/profile.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/moe/expert_cache.h"
 
@@ -47,7 +44,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     if (output.stopped()) co_return;
     auto& weights = *impl_->weights_;
     auto& graph = *impl_->graph_;
-    auto& cache = *impl_->cache_;
     const auto& info = impl_->model_info_;
     const auto& config = impl_->runtime_;
     const auto& forward_options = impl_->forward_options_;
@@ -68,11 +64,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     if (output.stopped()) co_return;
 
     const auto trace = [&](const char* boundary, bool wait = true) {
-        static const bool enabled = [] {
-            const char* value = env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
-            return value && value[0] && value[0] != '0';
-        }();
-        if (!enabled || std::uncaught_exceptions()) return;
+        if (!config.trace_moe || std::uncaught_exceptions()) return;
         std::cerr << "moe_request_cache_stats boundary=" << boundary << '\n';
         if (wait) print_moe_expert_cache_stats(weights.moe, std::cerr);
         std::cerr << "moe_phase_metrics boundary=" << boundary;
@@ -98,23 +90,9 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         if (std::uncaught_exceptions()) graph.invalidate();
     }};
     trace("begin");
-    const std::string input_key = prepared ? prepared->cache_key : std::string{};
-    const bool caching = state.supports_text_session_state() &&
-        (!prepared || !prepared->transformed() || !input_key.empty()) && plan.stable_prefix_tokens > 0 &&
-        (!cache_plan.session_id.empty() || cache.persistent_prefix_enabled());
-    cuda::internal::TextSessionRestore restored;
-    if (caching) restored = cache.restore_best(state, [&] { drain(); },
-        static_cast<MtpModule*>(nullptr), cache_plan.session_id, prompt, plan.stable_prefix_tokens, input_key);
-    if (restored.tokens) graph.invalidate();
-    else state.reset(1);
-    std::size_t history_size = prompt.size();
-    const auto snapshot = [&] {
-        if (caching && !output.result.cancelled && state.position() > 0 &&
-            static_cast<std::size_t>(state.position()) <= history_size)
-            std::cerr << "runtime_session_cache action=skip error=text session state is unsupported by this model\n";
-    };
+    state.reset(1);
 
-    const auto tokens = prompt.size() - restored.tokens;
+    const auto tokens = prompt.size();
     const auto limit = config.generation.prefill_chunk_size;
     const auto chunk_size = impl_->budget_->prefill(tokens, limit, info.prefill_row_bytes,
         state.position() > 0, config.prefill_chunk_auto);
@@ -144,11 +122,9 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     };
     std::shared_ptr<Tensor> pending;
     double elapsed = 0;
-    auto offset = static_cast<int64_t>(restored.tokens);
+    int64_t offset = 0;
     while (offset < static_cast<int64_t>(prompt.size()) && !output.stopped()) {
-        const auto end = offset < static_cast<int64_t>(caching ? plan.stable_prefix_tokens : 0)
-            ? std::min<int64_t>(prompt.size(), plan.stable_prefix_tokens) : int64_t(prompt.size());
-        const auto chunk = next_prefill_chunk(end, offset, chunk_size);
+        const auto chunk = next_prefill_chunk(int64_t(prompt.size()), offset, chunk_size);
         {
             PrefillActivity activity;
             auto timer = executor_->timer();
@@ -171,16 +147,10 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
                 << " elapsed_ms=" << ms << " timing=before_cache_restore\n";
         }
         offset += chunk.count;
-        if (caching && static_cast<std::size_t>(offset) == plan.stable_prefix_tokens) snapshot();
         const auto multimodal_ms = output.metrics.multimodal_ms;
-        co_yield PrefillProgress{{static_cast<std::size_t>(offset - restored.tokens), elapsed, multimodal_ms, elapsed + multimodal_ms}};
+        co_yield PrefillProgress{{static_cast<std::size_t>(offset), elapsed, multimodal_ms, elapsed + multimodal_ms}};
     }
     if (output.stopped()) {
-        if (caching) {
-            auto tail = output.finish();
-            if (!tail.diffs.empty()) co_yield std::move(tail);
-        }
-        snapshot();
         cleanup.finish();
         co_return;
     }
@@ -198,7 +168,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     while (!output.stopped()) {
         auto delta = output.append(std::vector<int64_t>{token});
         if (penalties && !graph_active) ops::add_token_counts(*graph.counts, *ops::contiguous(*pending));
-        history_size += delta.token_ids.size();
         if (!traced_decode && !delta.token_ids.empty()) {
             trace("decode_begin", false);
             traced_decode = true;
@@ -209,8 +178,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
             models::Input model_input;
             model_input.ids = ops::reshape(*pending, {1, 1});
             model_input.advance = true;
-            const auto* profiling = env_lookup("TYLOINFER_PROFILE_DECODE");
-            auto profile = profiling && profiling[0] == '1' ? executor_->profile("runtime.decode") : nullptr;
+            auto profile = config.profile_decode ? executor_->profile("runtime.decode") : nullptr;
             auto hidden = model_->forward(std::move(model_input), state, forward_options);
             pending = sample(project(*hidden, !(sampler.greedy() && !penalties && !input.token_constraint)));
             if (profile) profile->finish();
@@ -263,7 +231,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
                         graph.set_key(planned, sampler.params(), sampler.greedy());
                         ++graph.captures;
                     } catch (...) { graph.invalidate(); throw; }
-                    report_cuda_memory(impl_->load_.report_cuda_memory, "runtime_graph_capture");
                 }
                 if (config.decode_graph.trace) std::cerr << "runtime_cuda_graph action=" << (hit ? "reuse" : "capture")
                     << " requested_len=" << requested << " planned_len=" << planned << " captures=" << graph.captures
@@ -276,11 +243,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
             state.advance(1);
         }
     }
-    if (caching) {
-        auto tail = output.finish();
-        if (!tail.diffs.empty()) co_yield std::move(tail);
-    }
-    snapshot();
     cleanup.finish();
 }
 } // namespace tyloi::engine

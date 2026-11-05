@@ -86,6 +86,7 @@ public:
         bool gdn_transposed_state = true;
         bool gemma4_fused_norms = true;
         bool dsv4_groupwise_output_a = true;
+        bool report_memory = false;
         std::string profile_filter;
     };
 

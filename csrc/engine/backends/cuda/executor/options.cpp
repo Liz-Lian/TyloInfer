@@ -542,6 +542,7 @@ std::pair<tyloi::cuda::CudaLoadConfig, tyloi::cuda::Executor::Options> tyloi::cu
     tyloi::cuda::Executor::Options numeric;
     numeric.profile_filter = tyloi::cuda::env_value("TYLOINFER_PROFILE_CUDA_FILTER").value_or("");
     result.report_cuda_memory = tyloi::cuda::env_flag("TYLOINFER_REPORT_CUDA_MEMORY", false);
+    numeric.report_memory = result.report_cuda_memory;
 
     const auto parallel_graph = tyloi::cuda::env_value("TYLOINFER_MODEL_PARALLEL_CUDA_GRAPH");
     if (parallel_graph) {

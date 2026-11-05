@@ -300,6 +300,10 @@ std::int32_t graph_minimum(const char* name) {
 CudaRuntimeConfig resolve_cuda_runtime_config(
         const CudaEngineOptions& options) {
     CudaRuntimeConfig config;
+    const auto* profile_decode = env_lookup("TYLOINFER_PROFILE_DECODE");
+    config.profile_decode = profile_decode && profile_decode[0] == '1';
+    const auto* trace_moe = env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
+    config.trace_moe = trace_moe && trace_moe[0] && trace_moe[0] != '0';
     if(options.prefill_chunk_size < 0 || options.prefill_chunk_size > 8192)
         throw std::invalid_argument("prefill chunk size must be Auto (0) or in [1, 8192]");
     config.prefill_chunk_auto = options.prefill_chunk_size == 0;
