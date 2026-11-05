@@ -18,10 +18,31 @@ template<class F> void rejects(F&& fn) {
 }
 
 #include "mtp_probability_policy_test.h"
+#include "mtp_resident_policy_test.h"
 
 int main() {
     check_probability_depth_policy();
+    check_resident_depth_policy();
     using namespace mfq::engine::mtp;
+    {
+        DepthController block(7,nullptr,7.0,1.03,true,60.0,true);
+        DepthController serial(7,nullptr,7.0,1.03,true,60.0);
+        require(block.depth()==7 && serial.depth()==1);
+        // Maintenance cannot price a draft window or advance its sweep.
+        block.observe(7,0,1000.0,false);
+        require(block.depth()==7 && !block.measured_cycle_ms(7));
+        std::array<bool,8> measured{};
+        int rounds=0;
+        while(block.warming_up() && rounds++<64) {
+            const int depth=block.depth();measured[depth]=true;
+            // One proposal alone loses; the constant block setup is
+            // amortized by wider verification. Low shallow acceptance
+            // must not suppress their measurement.
+            block.observe(depth,depth/2,depth?18.0+depth:12.0);
+        }
+        require(rounds<64 && !block.warming_up());
+        for(int depth=0;depth<=7;++depth)require(measured[depth] && block.measured_cycle_ms(depth));
+    }
     {
         for(bool batch:{false,true}) {
             PolicyState state;

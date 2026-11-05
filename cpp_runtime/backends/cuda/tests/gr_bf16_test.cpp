@@ -595,10 +595,10 @@ int main(int argc,char** argv) {
             benchmark_shared_gate_multiply(std::stoi(argv[2]),std::stoi(argv[3]),std::stoi(argv[4]),std::stoi(argv[5]));return 0;
         }
         if(argc==2 && std::string(argv[1])=="--shared-gate-multiply-check") {
-            for(int width:{1,127,257,2560,4097,8193})for(int rows:{1,2,3,4,6})
+            for(int width:{1,127,257,2560,4097,8193})for(int rows:{1,2,3,4,6,8,32,97})
                 for(auto input:{tb::kFloat16,tb::kFloat32})for(auto expert:{tb::kFloat16,tb::kFloat32})
-                    check_shared_gate_multiply(width,rows,input,expert,width==257 && rows==4);
-            std::cout<<"FP32 shared gate120cases+changinggraphs+overflow/views/precision checks PASS\n";return 0;
+                    check_shared_gate_multiply(width,rows,input,expert,(width==257 && rows==4) || (width==4097 && rows==32));
+            std::cout<<"FP32 shared gate192cases+changinggraphs+overflow/views/precision checks PASS\n";return 0;
         }
         if(argc==2 && std::string(argv[1])=="--shared-gate-check") {
             for(int width:{1,127,257,2560,4097,8193})for(int rows:{1,2,3,4,6,8,32,97})

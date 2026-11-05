@@ -55,8 +55,9 @@ void begin_speculative_suffix(Model &model, int64_t tokens, Guard guard) {
     }
 }
 
-template <class Model, class Guard>
-void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard) {
+template <class Model, class Guard, class BeforeAdapter>
+void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard,
+                        BeforeAdapter before_adapter) {
     require_model(model.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
     const auto keep = model.speculative_start + model.speculative_confirmed + accepted;
     for (auto &block : model.blocks) {
@@ -66,6 +67,7 @@ void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard
         else
             block->rollback_speculative(keep);
     }
+    before_adapter();
     if (commit)
         model.adapter_commit_speculative();
     else {
@@ -74,6 +76,11 @@ void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard
     }
     model.speculative_start = -1;
     model.speculative_confirmed = 0;
+}
+
+template <class Model, class Guard>
+void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard) {
+    finish_speculative(model, commit, accepted, std::move(guard), [] {});
 }
 
 // The model's logical cache and layer traversal are independent of storage.

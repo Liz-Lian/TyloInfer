@@ -3435,23 +3435,30 @@ struct GgufMoeStage {
     void prepare_direct_copy(cudaStream_t copy_stream) {
         if(!direct)return;
         auto* flags=reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(mapped_routes)+64);
-        mfq::cuda::wait_mapped_flag(flags,copy_stream);
+        copy_descriptors.record_stream(reinterpret_cast<std::uintptr_t>(copy_stream));
+        mfq::cuda::gguf::StreamPlanSnapshot plan;
+        plan.ready=flags;plan.mapped=static_cast<std::uint8_t*>(mapped_routes)+copy_offset;
+        plan.cancelled=flags+1;plan.snapshot=copy_descriptors.data_ptr();
+        plan.capacity=3*std::min(tokens*routes,banks[0]->experts);
+        if(cpu_buffer) {
+            plan.cpu_slots=reinterpret_cast<const std::int32_t*>(static_cast<const std::uint8_t*>(cpu_mapped)+64);
+            plan.device_slots=reinterpret_cast<std::int32_t*>(copy_descriptors.data_ptr<std::uint8_t>()+cpu_slots_offset);
+            plan.slots=tokens*routes;
+        }
+        if(route_groups.defined()) {
+            plan.host_groups=reinterpret_cast<const mfq::cuda::gguf::RouteGroup*>(
+                static_cast<const std::uint8_t*>(mapped_routes)+route_group_offset);
+            plan.device_groups=static_cast<mfq::cuda::gguf::RouteGroup*>(route_groups.data_ptr());
+        }
+        plan.group_capacity=tokens*routes;
         if(resident_overlap) {
             streamed_device_addresses.record_stream(reinterpret_cast<std::uintptr_t>(copy_stream));
-            mfq::cuda::gguf::snapshot_routed_addresses(reinterpret_cast<const std::uint64_t*>(
-                static_cast<const std::uint8_t*>(mapped_routes)+128+tokens*routes*sizeof(std::int64_t)),
-                reinterpret_cast<std::uint64_t*>(streamed_device_addresses.data_ptr()),ids.data_ptr<std::int64_t>(),
-                tokens*routes,banks[0]->experts,copy_stream);
+            plan.mapped_addresses=reinterpret_cast<const std::uint64_t*>(
+                static_cast<const std::uint8_t*>(mapped_routes)+128+tokens*routes*sizeof(std::int64_t));
+            plan.addresses=reinterpret_cast<std::uint64_t*>(streamed_device_addresses.data_ptr());
+            plan.ids=ids.data_ptr<std::int64_t>();plan.selected_slots=tokens*routes;plan.experts=banks[0]->experts;
         }
-        copy_descriptors.record_stream(reinterpret_cast<std::uintptr_t>(copy_stream));
-        const auto* host_groups=route_groups.defined()?reinterpret_cast<const mfq::cuda::gguf::RouteGroup*>(
-            static_cast<const std::uint8_t*>(mapped_routes)+route_group_offset):nullptr;
-        mfq::cuda::gguf::snapshot_direct_plan(static_cast<std::uint8_t*>(mapped_routes)+copy_offset,flags+1,
-            copy_descriptors.data_ptr(),3*std::min(tokens*routes,banks[0]->experts),
-            cpu_buffer?reinterpret_cast<const std::int32_t*>(static_cast<const std::uint8_t*>(cpu_mapped)+64):nullptr,
-            cpu_buffer?reinterpret_cast<std::int32_t*>(copy_descriptors.data_ptr<std::uint8_t>()+cpu_slots_offset):nullptr,
-            cpu_buffer?tokens*routes:0,host_groups,route_groups.defined()?static_cast<mfq::cuda::gguf::RouteGroup*>(route_groups.data_ptr()):nullptr,
-            tokens*routes,copy_stream);
+        mfq::cuda::gguf::snapshot_stream_plan(plan,copy_stream);
         if(decode_dma) {
             mfq::cuda::wait_mapped_flag(reinterpret_cast<const std::uint32_t*>(static_cast<const std::uint8_t*>(mapped_routes)+72),copy_stream);
             copy_gate_up_done->record(copy_stream);

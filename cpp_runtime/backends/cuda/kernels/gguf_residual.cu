@@ -70,13 +70,17 @@ __global__ void project_residual_mix(const std::uint8_t* packed,std::uint64_t st
         if(lanes==32)reduced=mfq::cuda::warp_sums::reduce<Capacity,32>(values,local);
         else if(lanes==16)reduced=mfq::cuda::warp_sums::reduce<Capacity,16>(values,local);
         else reduced=mfq::cuda::warp_sums::reduce<Capacity,8>(values,local);
+        // Evaluate independent stream gates together, retaining the original
+        // projection reductions and ordered accumulation of contributions.
+        float contribution=0.f;
+        if(local==owner && token<M && selected<streams) {
+            const auto at=std::int64_t(token)*width+std::int64_t(selected)*hidden+row;
+            const float gate=1.f/(1.f+expf(-reduced));
+            contribution=__fmul_rn(gate,normalized[at]);
+        }
         for(int group=0;group<parts && first+group<streams;++group) {
-            const float projection=__shfl_sync(0xffffffffu,reduced,group*lanes+owner);
-            if(lane==owner && token<M) {
-                const auto at=std::int64_t(token)*width+std::int64_t(first+group)*hidden+row;
-                const float gate=1.f/(1.f+expf(-projection));
-                mixed=__fadd_rn(mixed,__fmul_rn(gate,normalized[at]));
-            }
+            const float value=__shfl_sync(0xffffffffu,contribution,group*lanes+owner);
+            if(lane==owner && token<M)mixed=__fadd_rn(mixed,value);
         }
     }
     if(lane==owner && token<M)output[std::int64_t(token)*hidden+row]=mixed/streams;

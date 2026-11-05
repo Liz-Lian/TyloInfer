@@ -40,6 +40,9 @@ struct GgufWeight {
         return bool(correction) || bool(rotation) || (type >= GGML_TYPE_TQ2_T && type <= GGML_TYPE_TQK4);
     }
     bool prefers_original_input() const noexcept {return bool(projection_correction) || base_prefers_original_input();}
+    // Packed four-row projections reuse native Q8 words across their rows.
+    // Canonical projections retain their position-major packet preference.
+    bool prefers_position_major_q8(std::int64_t tokens) const noexcept;
     mfq_tensor_backend::Tensor forward(mfq_tensor_backend::Tensor input,bool allow_mmq = true) const;
     mfq_tensor_backend::Tensor forward_base(mfq_tensor_backend::Tensor input,bool allow_mmq) const;
     bool can_forward_prefill_residual(std::int64_t tokens,const mfq_tensor_backend::Tensor& residual) const;

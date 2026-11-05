@@ -7,6 +7,7 @@
 // 64KB shared-mem opt-in via cudaFuncSetAttribute).
 
 #include <cuda_runtime.h>
+#include "gdn_update.cuh"
 #include <cuda_fp16.h>
 #include "gdn_input.cuh"
 #define GGML_COMMON_DECL_CUDA
@@ -243,14 +244,14 @@ __global__ void gdn_warp_column_kernel(
             for (int r = 0; r < ROWS; ++r) {
                 int i = r * WARP + lane;
                 float dec = (i < D) ? expf(gt[i]) : 0.0f;
-                s_shard[r] = dec * s_shard[r] + k_reg[r] * delta;
+                s_shard[r] = mfq_gdn_update(s_shard[r],dec,k_reg[r],delta);
                 o += s_shard[r] * q_reg[r];
             }
         } else {
             float dec = expf(*gt);
             #pragma unroll
             for (int r = 0; r < ROWS; ++r) {
-                s_shard[r] = dec * s_shard[r] + k_reg[r] * delta;
+                s_shard[r] = mfq_gdn_update(s_shard[r],dec,k_reg[r],delta);
                 o += s_shard[r] * q_reg[r];
             }
         }
@@ -504,6 +505,12 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
     __shared__ bool final_tile,final_key_group;
     const auto store_conv=[&](size_t index,float value) {
         convolution_out[index]=value;
+        if constexpr(InplaceConv)if(state_addresses) {
+            // Independent requests keep their original history allocations.
+            // Preserve the contiguous returned history as well as updating
+            // its owner after every tile in the key group has finished reading.
+            const_cast<float*>(convolution_state)[index-size_t(batch)*(taps-1)*channels]=value;
+        }
         if constexpr(Snapshot)checkpoint_convolution[index]=value;
     };
     float q=0,k=0,v=0;
@@ -634,9 +641,7 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
             const size_t index=transposed_state?size_t(column)*width+i:size_t(i)*width+column;
             // Preserve the original warp-column kernel's contracted operand
             // order, including its one-row and multiple-row distinction.
-            states[row]=rows==1
-                ? __fmaf_rn(keys[row],delta,__fmul_rn(decay,states[row]))
-                : __fmaf_rn(decay,states[row],__fmul_rn(keys[row],delta));
+            states[row]=mfq_gdn_update(states[row],decay,keys[row],delta);
             result+=states[row]*queries[row];
             recurrent_out[state_head+index]=states[row];
             if constexpr(Snapshot)checkpoint_recurrent[state_head+index]=states[row];
@@ -649,13 +654,11 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
         }
     }
     if(tiles>1) {
-        // Only warp leaders publish attended columns into the cross-tile
-        // workspace. Recurrent state is consumed after kernel completion;
-        // the block barrier also completes every convolution-history read
-        // before the completion counter can enable an in-place commit.
-        if constexpr(BroadcastNorm==4) {
-            if(lane==0)__threadfence();
-        }else __threadfence();
+        // The CTA barrier orders every writer's workspace stores and every
+        // convolution-history read before the leader's acq_rel RMW. Its
+        // release publishes them transitively; the acquire/release RMW chain
+        // makes all tiles visible to the final CTA. No additional per-thread
+        // device fence is needed before this barrier and release operation.
         __syncthreads();
         if(tid==0) {
             auto* counter=reinterpret_cast<uint32_t*>(workspace+size_t(workspace_head)*(width+1)+width);
@@ -671,7 +674,7 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
             // read. Publish group readiness before the output epilogue.
             const int group_size=int(divisors.group_size),first_head=tiled_heads?key_head:key_head*group_size;
             auto* counter=reinterpret_cast<uint32_t*>(workspace+
-                (size_t(batch)*value_heads+first_head)*(width+1)+width);
+                (size_t(state_batch)*value_heads+first_head)*(width+1)+width);
             cuda::atomic_ref<uint32_t,cuda::thread_scope_device> progress(*counter);
             const uint32_t bit=1u<<(8+(tiled_heads?head_group:head-first_head)),mask=((1u<<group_size)-1u)<<8;
             const uint32_t previous=progress.fetch_or(bit,cuda::std::memory_order_acq_rel);
@@ -707,14 +710,15 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
         // Threads unused by output normalization commit history in parallel.
         const int column=tid-width,vc=qk_width+head*width+column;
         const size_t base=size_t(batch)*(taps-1)*channels;
+        const size_t input_base=size_t(state_batch)*(taps-1)*channels;
         for(int tap=0;tap<taps-2;++tap)
-            store_conv(base+size_t(tap)*channels+vc,convolution_state[base+size_t(tap+1)*channels+vc]);
+            store_conv(base+size_t(tap)*channels+vc,convolution_state[input_base+size_t(tap+1)*channels+vc]);
         store_conv(base+size_t(taps-2)*channels+vc,gdn_qkv_value(qkv,size_t(batch)*qkv_stride+vc,qkv_float));
         if(final_key_group) {
             const int qc=key_head*width+column,kc=key_heads*width+qc;
             for(int tap=0;tap<taps-2;++tap) {
-                store_conv(base+size_t(tap)*channels+qc,convolution_state[base+size_t(tap+1)*channels+qc]);
-                store_conv(base+size_t(tap)*channels+kc,convolution_state[base+size_t(tap+1)*channels+kc]);
+                store_conv(base+size_t(tap)*channels+qc,convolution_state[input_base+size_t(tap+1)*channels+qc]);
+                store_conv(base+size_t(tap)*channels+kc,convolution_state[input_base+size_t(tap+1)*channels+kc]);
             }
             store_conv(base+size_t(taps-2)*channels+qc,gdn_qkv_value(qkv,size_t(batch)*qkv_stride+qc,qkv_float));
             store_conv(base+size_t(taps-2)*channels+kc,gdn_qkv_value(qkv,size_t(batch)*qkv_stride+kc,qkv_float));
@@ -752,7 +756,7 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
         const int group_size=int(divisors.group_size),first_head=tiled_heads?key_head:key_head*group_size;
         if(final_key_group && tid<group_size) {
                 auto* counter=reinterpret_cast<uint32_t*>(workspace+
-                    (size_t(batch)*value_heads+first_head+tid*(tiled_heads?key_heads:1))*(width+1)+width);
+                    (size_t(state_batch)*value_heads+first_head+tid*(tiled_heads?key_heads:1))*(width+1)+width);
                 cuda::atomic_ref<uint32_t,cuda::thread_scope_device> progress(*counter);
                 progress.store(0u,cuda::std::memory_order_release);
         }
@@ -846,9 +850,9 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
         : tb::empty({batch,1,value_heads*width},qkv.options().dtype(output_half?tb::kFloat16:tb::kFloat32));
     const auto* conv_option=std::getenv("TYLOINFER_GDN_INPLACE_CONV");
     const bool conv_default=transposed_state;
-    const bool inplace_conv=(conv_option?conv_option[0]!='0':conv_default) && !independent && inplace_state &&
+    const bool inplace_conv=(conv_option?conv_option[0]!='0':conv_default) && inplace_state &&
         tiles>1 && value_heads/key_heads<=24;
-    auto conv=inplace_conv?convolution_state:tb::empty({batch,taps-1,channels},convolution_state.options());
+    auto conv=inplace_conv && !independent?convolution_state:tb::empty({batch,taps-1,channels},convolution_state.options());
     auto state=inplace_state?recurrent_state:tb::empty_like(recurrent_state);
     if(tiles>1 && !workspace.defined() && !independent)workspace=tb::zeros({batch,value_heads,width+1},convolution_state.options());
     TYLOINFER_RUNTIME_CHECK(!workspace.defined() || (real(workspace) &&
@@ -918,7 +922,7 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
     else if(tiles==2)select_types.template operator()<2>();
     else select_types.template operator()<4>();
     TYLOINFER_CUDA_CHECK(cudaGetLastError());
-    if(independent) {
+    if(independent && !inplace_conv) {
         const int64_t elements=(taps-1)*channels;
         gdn_commit_independent_convolution<<<dim3(unsigned((elements+255)/256),unsigned(batch)),256,0,mfq_current_cuda_stream()>>>(
             conv.data_ptr<float>(),state_addresses.data_ptr<int64_t>(),elements);

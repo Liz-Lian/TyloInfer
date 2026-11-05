@@ -1,4 +1,5 @@
 #include "full_block.h"
+#include "attention_mma_verify.h"
 #include "gguf_prefill_fusion.h"
 #include "runtime/execution_options.h"
 #include "models/common/attention.h"
@@ -184,8 +185,18 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                 active_rope.sections.numel() == 0 && nh == 32 && nkh == 8 && hd == 128 &&
                 cache.scalar_type() == mfq_tensor_backend::kBFloat16 &&
                 execution.config.minicpm_fused_qk_norm_rope_kv;
+            const bool native_qk_positions=!grid_mrope_positions &&
+                ((pos.dim()==1 && pos.numel()==T) ||
+                 (pos.dim()==2 && pos.size(0)==B && pos.size(1)==T));
+            // Paged decode consumes physical pages directly. Paged prefill
+            // still needs normalized K/V or a gathered prefix from append().
+            const bool native_qk_cache=cache.is_paged()
+                ? T==1 && seq_len.has_value()
+                : T==1 || cache_pos>0;
             const bool native_qk_candidate=apply_rotary && !official_bf16 && x.is_cuda() &&
-                T==1 && pos.dim()==1 && write_positions.dim()==1 && !cache.is_paged() &&
+                // The initial multi-token prefill consumes the new K/V rows
+                // directly; subsequent attention reads the resident KV cache.
+                native_qk_cache && native_qk_positions &&
                 !cache.ring && !cache.quantization.enabled() && !execution.config.kv_cache_write_aten &&
                 cache.scalar_type()==mfq_tensor_backend::kFloat16 && !v_norm.defined() &&
                 q_norm.defined() && k_norm.defined() &&
@@ -246,10 +257,12 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                         return native_qk_ready?view:view.contiguous();
                     });
                     auto k = profiler.measure("full.k_view", [&]() {
-                        return k_full.reshape({B, T, nkh, hd}).transpose(1, 2).contiguous();
+                        auto view=k_full.reshape({B, T, nkh, hd}).transpose(1, 2);
+                        return native_qk_ready?view:view.contiguous();
                     });
                     auto v = profiler.measure("full.v_view", [&]() {
-                        return v_full.reshape({B, T, nkh, hd}).transpose(1, 2).contiguous();
+                        auto view=v_full.reshape({B, T, nkh, hd}).transpose(1, 2);
+                        return native_qk_ready?view:view.contiguous();
                     });
                     return mfq::models::AttentionHeads<mfq_tensor_backend::Tensor>{
                         q, k, v,
@@ -262,12 +275,18 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                     auto &v = heads.value;
                     if(native_qk_ready) {
                         q=profiler.measure("full.qk_norm_rope_kv_write",[&] {
+                            if(cache.is_paged())return qk_norm_rope_paged_cache_cuda(q,k,v,q_norm,k_norm,
+                                pos.to(q.device(),mfq_tensor_backend::kInt64).contiguous(),write_positions,
+                                active_rope.cos,active_rope.sin,cache.k_chunk_ptrs,cache.v_chunk_ptrs,
+                                cache.page_table,cache.page_size,cache.pages_per_chunk,
+                                active_rope.rotary_dim,rms_norm_eps,norm_weight_offset);
                             return qk_norm_rope_cache_cuda(q,k,v,q_norm,k_norm,
                                 pos.to(q.device(),mfq_tensor_backend::kInt64).contiguous(),
                                 write_positions,active_rope.cos,active_rope.sin,cache.k,cache.v,
                                 active_rope.rotary_dim,rms_norm_eps,norm_weight_offset);
                         });
-                        kv={cache.k.narrow(2,0,cache_pos+T),cache.v.narrow(2,0,cache_pos+T)};
+                        if(!cache.is_paged())
+                            kv={cache.k.narrow(2,0,cache_pos+T),cache.v.narrow(2,0,cache_pos+T)};
                         return true;
                     }
                     if (!fused_qk_rope_kv)
@@ -592,7 +611,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                         attn_scale, attention_window);
                                     attention_token_major = true;
                                 } else if (!sliding && T >= 32 && hd == 256 &&
-                                           (nh == 4 * nkh || nh == 8 * nkh) &&
+                                           nkh > 0 && nh % nkh == 0 &&
                                            mma_attention_enabled) {
                                     a = mfq_attention_mma256_cuda(
                                         q.to(mfq_tensor_backend::kFloat32).contiguous(), kh, vh,
@@ -650,7 +669,13 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                 // Full attention is the causal window kernel
                                 // with a window covering the entire cache.
                                 // Each query uses its own seq_len-T+t bound.
-                                a = attention_cache_swa_planned_cuda(
+                                // Match decode's FP32 query/output contract. The
+                                // generic cache API returns the query dtype and
+                                // would round both sides of the MMA computation.
+                                a=try_attention_mma_verify_cuda(
+                                    q,cache.k,cache.v,seq_len.value(),attn_scale,planned_len);
+                                if(a.defined())attention_token_major=true;
+                                else a = attention_cache_swa_planned_cuda(
                                     typed_query(),cache.k,cache.v,seq_len.value(),attn_scale,
                                     cache.k.size(2),planned_len);
                             } else if (cache.is_paged()) {

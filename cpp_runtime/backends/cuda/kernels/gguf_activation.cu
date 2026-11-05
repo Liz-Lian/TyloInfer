@@ -409,15 +409,10 @@ static void quantize_acc_rms_input_impl(const void* residual,const void* project
             reinterpret_cast<const void*>(kernel),"M="+std::to_string(rows)+" native_packet="+std::to_string(native!=nullptr));
     };
     const auto typed=[&]<class Added>() {
-        if constexpr(PositionMajor) {
-            // Match acc_rms_norm_f16_cuda's scalar/pair reduction exactly.
-            // Its vector path uses 256 threads after four pair iterations.
-            if(width>=2*256*4 && !(reinterpret_cast<uintptr_t>(weight)&7))
-                launch.template operator()<Added,256,true>();
-            else launch.template operator()<Added,256,false>();
-        }else {
-            if(width>=4*1024)launch.template operator()<Added,1024>();else launch.template operator()<Added,256>();
-        }
+        // Packet layout and token count must preserve the M1 RMS addition
+        // tree; changing it can change Q8 rounding and the selected token.
+        if(width>=4*1024)launch.template operator()<Added,1024>();
+        else launch.template operator()<Added,256>();
     };
     if(projection_float)typed.template operator()<float2>();else typed.template operator()<half2>();
     checked(cudaGetLastError());

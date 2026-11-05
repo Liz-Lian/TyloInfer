@@ -14,6 +14,27 @@ struct GdnReplayLayer {
     // decay. These are computed by verification, without changing state.
     const float* updates=nullptr;
 };
+// Evaluate a window into separate final-state storage. Confirmed state stays
+// unchanged until the caller commits the full window or replays a prefix.
+// Returns output, final convolution, final recurrence, and [T,Hv,257]
+// normalized-key/rank-one-delta/decay records for exact prefix replay.
+std::vector<mfq_tensor_backend::Tensor> gdn_verify_window_cuda(
+    const mfq_tensor_backend::Tensor& qkv,const mfq_tensor_backend::Tensor& output_gate,
+    const mfq_tensor_backend::Tensor& alpha,const mfq_tensor_backend::Tensor& beta,
+    const mfq_tensor_backend::Tensor& convolution_state,const mfq_tensor_backend::Tensor& recurrent_state,
+    const mfq_tensor_backend::Tensor& convolution_weight,const mfq_tensor_backend::Tensor& dt_bias,
+    const mfq_tensor_backend::Tensor& a_log,const mfq_tensor_backend::Tensor& norm_weight,
+    int key_heads,int value_heads,double convolution_eps,double norm_eps,
+    bool silu_gate,bool output_half,bool transposed_state,bool tiled_heads=false,
+    bool quantize_output=false,bool position_major=false);
+// Apply verification's recorded rank-one updates and convolution history in
+// one state-only launch. Exact input/output aliases are supported; partial
+// aliases and unsupported geometry return false before modifying outputs.
+bool try_gdn_replay_updates_cuda(
+    const mfq_tensor_backend::Tensor& qkv,const mfq_tensor_backend::Tensor& updates,
+    const mfq_tensor_backend::Tensor& initial_convolution,const mfq_tensor_backend::Tensor& initial_recurrent,
+    mfq_tensor_backend::Tensor& convolution,mfq_tensor_backend::Tensor& recurrent,
+    std::int64_t retained_tokens,bool transposed_state);
 // The descriptors and next-convolution buffers persist across windows. State
 // commits run across layers, followed by one convolution-history copy.
 void gdn_replay_commit_layers_cuda(const mfq_tensor_backend::Tensor& descriptors,

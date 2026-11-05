@@ -5,7 +5,11 @@
 #include <algorithm>
 #include <climits>
 #include <unordered_set>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include "attention_mma_verify.h"
+#include "mfq_cuda_attention_ops.h"
 
 #define TYLOINFER_FATTN_KERNEL_ONLY
 #include "mfq_fattn_mma_f16.cuh"
@@ -345,6 +349,16 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_launch(
     const auto status = cudaGetLastError();
     TYLOINFER_RUNTIME_CHECK(status == cudaSuccess,
                 "mfq_attention_mma256 launch failed: ", cudaGetErrorString(status));
+    if (const char* trace = std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH"); trace && trace[0] == '1') {
+        static std::atomic_flag reported = ATOMIC_FLAG_INIT;
+        if (!reported.test_and_set()) {
+            cudaFuncAttributes attributes{};
+            const auto result = cudaFuncGetAttributes(&attributes, kernel);
+            std::fprintf(stderr, "native_attention_prefill_mma actual_launch=1 q_tile=%d head_tile=%d "
+                "M=%d q_heads=%d kv_heads=%d registers=%d shared_bytes=%zu resource_status=%d\n",
+                ncols1, ncols2, T, Hq, Hk, attributes.numRegs, shared_total, int(result));
+        }
+    }
     return out;
 }
 
@@ -366,10 +380,15 @@ mfq_tensor_backend::Tensor mfq_attention_mma256_cuda(
     TYLOINFER_RUNTIME_CHECK(D == 256 && k.size(3) == D && v.size(3) == D, "mfq_attention_mma256: head_dim must be 256");
     const int gqa_ratio = Hk > 0 ? Hq / Hk : 0;
     TYLOINFER_RUNTIME_CHECK(Hk > 0 && Hq % Hk == 0 &&
-                (gqa_ratio == 4 || gqa_ratio == 8) &&
+                gqa_ratio > 0 &&
                 k.size(0) == B && v.size(0) == B &&
                 k.size(2) == T && v.size(2) == T && v.size(1) == Hk,
-                "mfq_attention_mma256: requires self-attention with GQA ratio 4 or 8");
+                "mfq_attention_mma256: requires self-attention with an integral GQA ratio");
+    // A single head column covers every integral GQA ratio, including tails.
+    // Keep 32 MMA columns: this body is compiled for Volta, Turing and newer;
+    // the bundled Turing implementation omits tiles wider than 32 columns.
+    if (gqa_ratio != 4 && gqa_ratio != 8)
+        return mfq_attention_mma_launch<256, 256, 32, 1>(q, k, v, scale, false, 0);
     if (T % FATTN_KQ_STRIDE == 0) {
         return gqa_ratio == 8
             ? mfq_attention_mma_launch<256, 256, 8, 8>(
@@ -725,7 +744,7 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
     TYLOINFER_RUNTIME_CHECK(meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == mfq_tensor_backend::kFloat32,
                 "mfq_attention_mma_decode: meta must be contiguous CUDA f32");
     }
-    TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && (OwnedWorkspace?(q.size(2)>=1 && q.size(2)<=NCOLS1):q.size(2)==1) && k_cache.dim() == 4 && v_cache.dim() == 4,
+    TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && (OwnedWorkspace?(q.size(2)>=1 && q.size(2)<=8):q.size(2)==1) && k_cache.dim() == 4 && v_cache.dim() == 4,
                 "mfq_attention_mma_decode: expected q[B,Hq,1,D], cache[B,Hk,max_seq,D]");
 
     const int B = (int)q.size(0);
@@ -864,11 +883,23 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
                 "mfq_attention_mma_decode: meta workspace too small");
     raw_blocks = int(std::min<int64_t>(raw_blocks, workspace_blocks));
     }
-    const int rounded_blocks = std::max(
-        ntiles_dst, (raw_blocks / ntiles_dst) * ntiles_dst);
-    const int blocks_per_tile = rounded_blocks / ntiles_dst;
+    // Keep each query tile's K partition independent of the token window.
+    // Extra causal queries add output tiles, with the same per-tile arithmetic.
+    const int query_tiles=(T+ncols1-1)/ncols1;
+    const int base_blocks=std::max(ntiles_dst,(raw_blocks/ntiles_dst)*ntiles_dst);
+    const int blocks_per_tile=base_blocks/ntiles_dst;
+    const int rounded_blocks=base_blocks*query_tiles;
+    const int destination_tiles=ntiles_dst*query_tiles;
     const size_t meta_float2 = (size_t)rounded_blocks * ncols * (2 + DV_EXPECTED / 2);
-    if constexpr(OwnedWorkspace)meta=mfq_tensor_backend::empty({int64_t(2*meta_float2)},q.options());
+    if constexpr(OwnedWorkspace) {
+        // Scalar callers already own a persistent stream-K workspace. Keep it
+        // when compatible; verification windows may acquire their graph pool
+        // workspace. Capacity follows this launch, never a device/model label.
+        if(!meta.defined() || meta.device()!=q.device() || !meta.is_contiguous() ||
+                meta.scalar_type()!=mfq_tensor_backend::kFloat32 ||
+                static_cast<size_t>(meta.numel())<2*meta_float2)
+            meta=mfq_tensor_backend::empty({int64_t(2*meta_float2)},q.options());
+    }
     else {
     TYLOINFER_RUNTIME_CHECK((size_t)meta.numel() >= 2 * meta_float2,
                 "mfq_attention_mma_decode: meta workspace too small");
@@ -912,11 +943,11 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
                 cudaGetErrorString(status));
 
     if (blocks_per_tile > 1) {
-        const uint3 fd0 = init_fastdiv_values(Hk * iter_z_gqa);
-        const uint3 fd1 = init_fastdiv_values(iter_z_gqa);
-        const uint3 fd2 = init_fastdiv_values(1);
+        const uint3 fd0 = init_fastdiv_values(Hk * iter_z_gqa * query_tiles);
+        const uint3 fd1 = init_fastdiv_values(iter_z_gqa * query_tiles);
+        const uint3 fd2 = init_fastdiv_values(query_tiles);
         flash_attn_stream_k_fixup_uniform<DV_EXPECTED, ncols1, ncols2>
-            <<<dim3(ntiles_dst, ncols1, ncols2), DV_EXPECTED, 0, stream>>>(
+            <<<dim3(destination_tiles, ncols1, ncols2), DV_EXPECTED, 0, stream>>>(
                 static_cast<float*>(out.data_ptr()),
                 reinterpret_cast<const float2*>(meta.data_ptr<float>()),
                 T, Hq, Hk, rounded_blocks, gqa_ratio, blocks_per_tile, fd0, fd1, fd2);
@@ -932,8 +963,13 @@ mfq_tensor_backend::Tensor mfq_attention_mma256_decode_cuda(
     mfq_tensor_backend::Tensor seq_len, double scale, int64_t planned_len,
     mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta)
 {
-    return mfq_attention_mma_decode_impl<256, 256, 1, 8>(
+    auto result=mfq_attention_mma_decode_impl<256, 256, 4, 8, false, true>(
         q, k_cache, v_cache, seq_len, scale, planned_len, mask, kv_max, meta);
+    if(result.defined())return result;
+    // No compiled FP16 MMA body or insufficient actual CTA resources.
+    // The generic cache operator supports the same causal query window.
+    return attention_cache_swa_planned_cuda(
+        q,k_cache,v_cache,seq_len,scale,k_cache.size(2),planned_len);
 }
 
 mfq_tensor_backend::Tensor mfq_attention_mma512_decode_cuda(
@@ -941,8 +977,13 @@ mfq_tensor_backend::Tensor mfq_attention_mma512_decode_cuda(
     mfq_tensor_backend::Tensor seq_len, double scale, int64_t planned_len,
     mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta)
 {
-    return mfq_attention_mma_decode_impl<512, 512, 1, 8>(
+    auto result=mfq_attention_mma_decode_impl<512, 512, 4, 8, false, true>(
         q, k_cache, v_cache, seq_len, scale, planned_len, mask, kv_max, meta);
+    if(result.defined())return result;
+    // No compiled FP16 MMA body or insufficient actual CTA resources.
+    // The generic cache operator supports the same causal query window.
+    return attention_cache_swa_planned_cuda(
+        q,k_cache,v_cache,seq_len,scale,k_cache.size(2),planned_len);
 }
 
 mfq_tensor_backend::Tensor attention_glm_mla576_decode_cuda(
@@ -978,9 +1019,9 @@ mfq_tensor_backend::Tensor try_attention_mma_verify_cuda(
         const auto launch=[&]<int Count>() {
             return mfq_attention_mma_decode_impl<D,D,Count,8,false,true>(q,k,v,lengths,scale,planned_length,{},{},{});
         };
-        if(q.size(2)<=2)return launch.template operator()<2>();
-        if(q.size(2)<=4)return launch.template operator()<4>();
-        return launch.template operator()<8>();
+        // Four queries and eight GQA columns use the common 32-column MMA
+        // body. The tile remains the same across singleton/verification calls.
+        return launch.template operator()<4>();
     };
     tb::Tensor result;
     switch(q.size(3)) {

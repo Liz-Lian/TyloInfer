@@ -73,7 +73,7 @@ std::vector<mfq_tensor_backend::Tensor> try_gguf_gated_residual_pre(
     // position-major groups retain their corresponding preparation layouts.
     const bool fused_input=hidden%32==0 && !prefers_gguf_m1_aligned(pre_weights,tokens) &&
         std::none_of(pre_weights.begin(),pre_weights.end(),[&](const auto& weight){
-            return mfq::cuda::gguf::supports_interleaved_activation(weight.type,tokens);
+            return weight.prefers_position_major_q8(tokens);
         });
     if(fused_input) {
         normalized=tb::empty_like(input);

@@ -24,10 +24,10 @@ template<int F,int R,int W,int BlockWarps=4,bool Cached=false>__global__ void __
  }else project_aligned_m1_body<F,R,W,BlockWarps>(packed,stride,rows,columns,input,scales,output,half_output,blockIdx.x,scratch);
 }
 template<int F>int aligned_k_warps(int64_t rows,int64_t columns,uint64_t group_blocks=0){
- if constexpr(F==GGML_TYPE_IQ1_S||F==GGML_TYPE_IQ1_M)return 1;
+ if constexpr(F==GGML_TYPE_IQ4_XS)return canonical_iq4_k_warps(columns);
+ else if constexpr(F==GGML_TYPE_IQ1_S||F==GGML_TYPE_IQ1_M)return 1;
  else {const auto parts=columns/M1PreparedDot<F>::qk*M1PreparedDot<F>::parts;if(parts<4*32)return 1;
   const int cooperative_warps=parts%(3*32)==0&&parts%(4*32)!=0?3:4;
-  if constexpr(F==GGML_TYPE_IQ4_XS)if(!group_blocks)return cooperative_warps;
   int device=0;checked_m1(cudaGetDevice(&device));static thread_local int cached_device=-1,sms=0,active=0;
   if(cached_device!=device){checked_m1(cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,device));checked_m1(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active,project_aligned_m1<F,2,1>,128,0));cached_device=device;}
   const auto blocks=group_blocks?group_blocks:uint64_t((rows+7)/8);return active>0&&blocks<uint64_t(sms)*unsigned(active)?cooperative_warps:1;
@@ -42,7 +42,7 @@ template<int F,bool AllowKCooperation=true>__device__ __forceinline__ void align
  project_aligned_m1_body<F,2,1>(static_cast<const uint8_t*>(p.packed),p.stride,int(p.rows),columns,input,scales,p.output,half_output,tile,scratch);
 }
 template<int F,bool SplitK>__device__ __forceinline__ void aligned_pair_entry(const AlignedEntry& entry,int columns,const uint4* input,const unsigned* scales,bool half_output,unsigned tile,float* scratch){
- if constexpr(SplitK&&F!=GGML_TYPE_IQ1_S&&F!=GGML_TYPE_IQ1_M){const auto& p=entry.p;project_aligned_m1_body<F,2,2>(static_cast<const uint8_t*>(p.packed),p.stride,int(p.rows),columns,input,scales,p.output,half_output,tile,scratch);}
+ if constexpr(SplitK&&F!=GGML_TYPE_IQ1_S&&F!=GGML_TYPE_IQ1_M&&F!=GGML_TYPE_IQ4_XS){const auto& p=entry.p;project_aligned_m1_body<F,2,2>(static_cast<const uint8_t*>(p.packed),p.stride,int(p.rows),columns,input,scales,p.output,half_output,tile,scratch);}
  else aligned_entry<F,false>(entry,columns,input,scales,half_output,tile,scratch);
 }
 template<int A,int B,bool Half,bool SplitK>__global__ void __launch_bounds__(128) project_aligned_pair(AlignedEntry a,AlignedEntry b,int columns,const uint4* input,const unsigned* scales){
@@ -51,7 +51,7 @@ template<int A,int B,bool Half,bool SplitK>__global__ void __launch_bounds__(128
  __shared__ float scratch[16];if(blockIdx.x<a.end)aligned_pair_entry<A,SplitK>(a,columns,input,scales,Half,blockIdx.x,scratch);else aligned_pair_entry<B,SplitK>(b,columns,input,scales,Half,blockIdx.x-b.begin,scratch);
 }
 template<int A>void launch_aligned_second(const AlignedPacket& p,int columns,const uint4* input,const unsigned* scales,bool half_output,cudaStream_t stream){
- const auto launch=[&]<int B,bool Half,bool SplitK>(){auto a=p.entries[0],b=p.entries[1];constexpr int ARows=SplitK&&A!=GGML_TYPE_IQ1_S&&A!=GGML_TYPE_IQ1_M?4:8,BRows=SplitK&&B!=GGML_TYPE_IQ1_S&&B!=GGML_TYPE_IQ1_M?4:8;
+ const auto launch=[&]<int B,bool Half,bool SplitK>(){auto a=p.entries[0],b=p.entries[1];constexpr int ARows=SplitK&&A!=GGML_TYPE_IQ1_S&&A!=GGML_TYPE_IQ1_M&&A!=GGML_TYPE_IQ4_XS?4:8,BRows=SplitK&&B!=GGML_TYPE_IQ1_S&&B!=GGML_TYPE_IQ1_M&&B!=GGML_TYPE_IQ4_XS?4:8;
   a.end=unsigned((a.p.rows+ARows-1)/ARows);b.begin=a.end;b.end=b.begin+unsigned((b.p.rows+BRows-1)/BRows);
   const auto fn=project_aligned_pair<A,B,Half,SplitK>;fn<<<b.end,dim3(32,4),0,stream>>>(a,b,columns,input,scales);
   if(dispatch_trace::enabled())dispatch_trace::record(stream,"gguf_dense_m1_aligned_pair",reinterpret_cast<const void*>(fn),"M=1 formats="+std::to_string(A)+"/"+std::to_string(B)+" split_k="+std::to_string(SplitK));};

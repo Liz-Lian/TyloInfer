@@ -1,3 +1,4 @@
+#include "float_projection.h"
 #include "gguf_weight.h"
 #include "tyloinfer/gguf_model_source.h"
 #include "gguf_cpu.h"
@@ -161,6 +162,29 @@ public:
         const std::uint16_t scale=0x7bff;
         auto& image=*images_.at(name);
         for(std::size_t i=0;i<image.size();i+=sizeof(block_q4_0))std::memcpy(image.data()+i,&scale,sizeof(scale));
+    }
+    void full_q2_codes(const std::string& name) {
+        auto& image=*images_.at(name);
+        for(std::size_t i=0;i<image.size();++i)image[i]=std::byte(uint8_t(i*29+i/7+17));
+        const float scales[]={0.f,1.f/1024,-1.f/512,1.f/2048};
+        for(std::size_t i=0;i<image.size();i+=sizeof(block_q2_K)) {
+            const auto block=i/sizeof(block_q2_K);
+            for(int j=0;j<16;++j)image[i+offsetof(block_q2_K,scales)+j]=
+                std::byte(uint8_t(((block+j*5)%16)|(((block*3+j*7)%16)<<4)));
+            const auto d=ggml_fp32_to_fp16(scales[block%4]);
+            const auto minimum=ggml_fp32_to_fp16(scales[(block+1)%4]);
+            std::memcpy(image.data()+i+offsetof(block_q2_K,d),&d,sizeof(d));
+            std::memcpy(image.data()+i+offsetof(block_q2_K,dmin),&minimum,sizeof(minimum));
+        }
+    }
+    void full_q6_codes(const std::string& name) {
+        auto& image=*images_.at(name);
+        for(std::size_t i=0;i<image.size();++i)image[i]=std::byte(uint8_t(i*29+i/7+17));
+        const float scales[]={0.f,1.f/1024,-1.f/512,1.f/2048};
+        for(std::size_t i=0;i<image.size();i+=sizeof(block_q6_K)) {
+            const auto scale=ggml_fp32_to_fp16(scales[(i/sizeof(block_q6_K))%4]);
+            std::memcpy(image.data()+i+offsetof(block_q6_K,d),&scale,sizeof(scale));
+        }
     }
     void full_iq3_codes(const std::string& name) {
         auto& image=*images_.at(name);
@@ -862,6 +886,79 @@ void run_fused_dense_activation() {
     std::cout<<"GGUF fused sigmoid/SiLU product/Q8, FP16/FP32 dtype boundaries: "<<cases<<" cases PASS\n";
 }
 
+void run_weight_packet_preferences() {
+    namespace gg=mfq::cuda::gguf;
+    const auto exact=[](const tb::Tensor& a,const tb::Tensor& b) {
+        const auto x=a.cpu().contiguous(),y=b.cpu().contiguous();
+        require(x.sizes()==y.sizes() && x.scalar_type()==y.scalar_type() &&
+            !std::memcmp(x.data_ptr(),y.data_ptr(),x.nbytes()),"GGUF packet selection changed projection bits");
+    };
+    int cases=0;
+    for(auto type:{GGML_TYPE_IQ3_S,GGML_TYPE_IQ3_XXS})
+    for(int width:{256,768})for(int rows:{24,260})for(int tokens:{2,3,4})
+    for(auto dtype:{tb::kFloat16,tb::kFloat32}) {
+        Source source;source.add("w",{rows,width},type);
+        auto canonical=load_gguf_weight(source,"w",mfq_current_cuda_device());
+        auto quad=canonical;quad.packed=canonical.packed.clone();quad.repack_inplace();
+        require(quad.quad_projection_ready(),"Fixture did not prepare four-row weights");
+        require(!quad.prefers_position_major_q8(tokens) && canonical.prefers_position_major_q8(tokens),
+            "GGUF packet preference ignored compute storage");
+        auto host=tb::empty({1,tokens,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        for(int64_t i=0;i<host.numel();++i)host.data_ptr<float>()[i]=.3f*std::sin(float(i)*.173f);
+        auto input=host.to(tb::kCUDA,dtype);
+        auto native=tb::empty({int64_t(tokens*gg::q8_row_bytes(width))},quad.packed.options());
+        auto interleaved=tb::empty({int64_t(gg::interleaved_activation_bytes(tokens,width))},quad.packed.options());
+        gg::quantize_input_interleaved(input.data_ptr(),dtype==tb::kFloat16,tokens,width,
+            interleaved.data_ptr(),native.data_ptr(),mfq_current_cuda_stream());
+        const auto quad_reference=quad.forward_q8_base(native,tokens,dtype,false);
+        exact(quad_reference,quad.forward_q8_base(interleaved,tokens,dtype,true));
+        const auto canonical_reference=canonical.forward_q8_base(interleaved,tokens,dtype,true);
+        for(bool mixed:{false,true}) {
+            const std::vector<GgufWeight> weights{quad,mixed?canonical:quad};
+            auto prepared=prepare_gguf_group_input(weights,input);
+            require(prepared.native.defined() && prepared.interleaved.defined()==mixed,
+                "GGUF group omitted a required packet or retained an unused layout");
+            auto outputs=prepared.project_all(weights);
+            exact(outputs[0].reshape({tokens,rows}),quad_reference);
+            exact(outputs[1].reshape({tokens,rows}),mixed?canonical_reference:quad_reference);
+            QuantLinearGroup group;
+            for(const auto& weight:weights){QuantLinear layer;layer.kind=QuantLinearKind::Gguf;layer.gguf=weight;group.layers.push_back(std::move(layer));}
+            CudaExecutionContext execution;tb::Tensor normalized;
+            const auto norm=tb::ones({width},input.options().dtype(tb::kFloat32));
+            auto fused=group.prepare_rms_norm_input(execution,input,norm,1e-5,0.,normalized);
+            require(!fused.shape.empty() && fused.native.defined() && fused.interleaved.defined()==mixed,
+                "Fused RMS preparation disagreed with projection packet preference");
+            auto fused_output=group.forward_prepared_rms(fused);
+            auto separate=prepare_gguf_group_input(weights,normalized);
+            auto expected=separate.project_all(weights);
+            for(size_t i=0;i<expected.size();++i)exact(fused_output[i],expected[i]);
+            if(type==GGML_TYPE_IQ3_XXS && width==768 && rows==24 && tokens==3 &&
+                    dtype==tb::kFloat32 && mixed) {
+                struct Pool {
+                    std::shared_ptr<mfq::cuda::Context> context=mfq::cuda::default_context(mfq_current_cuda_device());
+                    cudaStream_t stream=mfq_current_cuda_stream();bool owned=!context->has_graph_pool(stream);
+                    Pool(){if(owned)context->begin_graph_pool(stream);}
+                    ~Pool(){if(owned)context->end_graph_pool(stream);}
+                } pool;
+                mfq::cuda::DecodeWindow graph(mfq_current_cuda_stream());
+                std::vector<tb::Tensor> captured;
+                graph.capture([&]{
+                    fused=group.prepare_rms_norm_input(execution,input,norm,1e-5,0.,normalized);
+                    captured=group.forward_prepared_rms(fused);
+                },[]{},[&]{captured.clear();fused={};normalized={};});
+                for(int step=0;step<3;++step) {
+                    input.copy_(input*-.9f);graph.run();
+                    auto reference=group.prepare_rms_norm_input(execution,input,norm,1e-5,0.,normalized);
+                    expected=group.forward_prepared_rms(reference);
+                    for(size_t i=0;i<expected.size();++i)exact(captured[i],expected[i]);
+                }
+            }
+            ++cases;
+        }
+    }
+    std::cout<<"GGUF packed/canonical mixed packet groups and fused RMS: "<<cases<<" cases PASS\n";
+}
+
 void run_corrected_normalized_input() {
     namespace gg=mfq::cuda::gguf;
     using Tensor=tb::Tensor;
@@ -1014,6 +1111,53 @@ void run_fused_residual_normalized_input() {
     std::cout<<"GGUF fused residual RMSNorm/Q8, exact residual and packed output: "<<cases<<" cases PASS\n";
 }
 
+void run_residual_rms_order() {
+    namespace gg=mfq::cuda::gguf;
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto stream=mfq_current_cuda_stream();int cases=0,graphs=0;
+    const auto exact=[](const tb::Tensor& x,const tb::Tensor& y) {
+        auto a=x.contiguous().cpu(),b=y.contiguous().cpu();
+        require(a.nbytes()==b.nbytes() && std::memcmp(a.data_ptr(),b.data_ptr(),a.nbytes())==0,
+            "Residual RMS/Q8 arithmetic changed with token count or packet layout");
+    };
+    for(int rows:{2,3,4,5,6,7,8})for(int width:{96,768,2048,4096,5120,6144,16640})
+    for(auto dtype:{tb::kFloat16,tb::kFloat32})for(float offset:{0.f,1.f}) {
+        auto h=tb::empty({rows,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        auto ph=tb::empty_like(h),wh=tb::empty({width},h.options());
+        for(int64_t i=0;i<h.numel();++i){h.data_ptr<float>()[i]=std::sin(float(i)*.173f)*2.f;ph.data_ptr<float>()[i]=std::cos(float(i)*.31f)*.73f;}
+        for(int i=0;i<width;++i)wh.data_ptr<float>()[i]=std::cos(float(i)*.27f)*.73f;
+        auto a=h.to(tb::kCUDA,tb::kFloat16),b=ph.to(tb::kCUDA,dtype),w=wh.to(tb::kCUDA);
+        auto sum=tb::empty_like(a),norm=tb::empty_like(a),refsum=tb::empty_like(a),refnorm=tb::empty_like(a);
+        const auto stride=gg::q8_row_bytes(width);
+        auto q=tb::empty({int64_t(rows*stride)},a.options().dtype(tb::kUInt8)),refq=tb::empty_like(q);
+        const bool interleaved=gg::supports_interleaved_activation(GGML_TYPE_IQ4_XS,rows);
+        auto pos=interleaved?tb::empty({int64_t(gg::interleaved_activation_bytes(rows,width))},q.options()):tb::Tensor{};
+        auto ps=tb::empty_like(a),pn=tb::empty_like(a),pq=tb::empty_like(q);
+        const auto compute=[&] {
+            gg::quantize_acc_rms_input(a.data_ptr(),b.data_ptr(),dtype==tb::kFloat32,w.data_ptr<float>(),rows,width,1e-5f,offset,sum.data_ptr(),norm.data_ptr(),q.data_ptr(),stream);
+            if(interleaved)gg::quantize_acc_rms_input_interleaved(a.data_ptr(),b.data_ptr(),dtype==tb::kFloat32,w.data_ptr<float>(),rows,width,1e-5f,offset,ps.data_ptr(),pn.data_ptr(),pos.data_ptr(),pq.data_ptr(),stream);
+        };
+        const auto verify=[&] {
+            for(int row=0;row<rows;++row)gg::quantize_acc_rms_input(
+                a.data_ptr<mfq_half>()+row*width,static_cast<const uint8_t*>(b.data_ptr())+row*width*(dtype==tb::kFloat32?sizeof(float):sizeof(mfq_half)),dtype==tb::kFloat32,
+                w.data_ptr<float>(),1,width,1e-5f,offset,refsum.data_ptr<mfq_half>()+row*width,refnorm.data_ptr<mfq_half>()+row*width,refq.data_ptr<uint8_t>()+row*stride,stream);
+            exact(sum,refsum);exact(norm,refnorm);exact(q,refq);
+            if(interleaved){exact(ps,refsum);exact(pn,refnorm);exact(pq,refq);}
+        };
+        compute();verify();++cases;
+        if(width==5120 && (rows==3 || rows==8) && offset==0.f) {
+            struct Graph {cudaGraph_t graph=nullptr;cudaGraphExec_t exec=nullptr;
+                ~Graph(){if(exec)cudaGraphExecDestroy(exec);if(graph)cudaGraphDestroy(graph);}} graph;
+            TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));
+            TYLOINFER_CUDA_CHECK(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));compute();
+            TYLOINFER_CUDA_CHECK(cudaStreamEndCapture(stream,&graph.graph));
+            TYLOINFER_CUDA_CHECK(cudaGraphInstantiate(&graph.exec,graph.graph,nullptr,nullptr,0));
+            for(int step=0;step<3;++step){a.copy_(a*-.9f);b.copy_(b*1.03125f);TYLOINFER_CUDA_CHECK(cudaGraphLaunch(graph.exec,stream));verify();++graphs;}
+        }
+    }
+    std::cout<<"Residual RMS/Q8 exact M1 versus M2..8, native/interleaved: "<<cases<<" cases + "<<graphs<<" changed-input Graph replays PASS\n";
+}
+
 void run_fused_rms_activation() {
     namespace gg=mfq::cuda::gguf;
     int cases=0;
@@ -1040,32 +1184,69 @@ void run_fused_rms_activation() {
 }
 
 void run_small_f32_projection() {
-    int cases=0;
-    for(int tokens:{1,2,3,4,5,6})for(int rows:{3,23,96})for(int width:{127,768,5120}) {
-        auto xh=tb::empty({tokens,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
-        auto wh=tb::empty({rows,width},xh.options());
+    int cases=0,graphs=0;
+    for(int tokens:{1,2,3,4,5,6,7,8})for(int rows:{3,23,96})for(int width:{127,768,5120})for(int offset:{0,1}) {
+        auto xh=tb::empty({tokens*width+offset},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        auto wh=tb::empty({rows*width+offset},xh.options());
         for(int64_t i=0;i<xh.numel();++i)xh.data_ptr<float>()[i]=std::sin(float(i)*.173f)*2.f;
         for(int64_t i=0;i<wh.numel();++i)wh.data_ptr<float>()[i]=std::cos(float(i)*.31f)*.73f;
-        auto x=xh.to(tb::kCUDA),weight=wh.to(tb::kCUDA),actual=dense_projection(x,weight);
+        auto xs=xh.to(tb::kCUDA),ws=wh.to(tb::kCUDA);
+        auto x=xs.narrow(0,offset,tokens*width).reshape({tokens,width});
+        auto weight=ws.narrow(0,offset,rows*width).reshape({rows,width});
+        auto actual=dense_projection(x,weight);
+        auto fused=try_dense_f32_projection_cuda(x,weight);
+        // Three output rows always fit the short projection schedule. Wider
+        // fixtures may legitimately use GEMM on a device with fewer SMs.
+        require(rows!=3 || fused.defined(),"small F32 projection omitted a supported token window");
         const auto y=actual.cpu();
+        if(fused.defined()) {
+            const auto expected=fused.cpu();
+            require(std::memcmp(y.data_ptr(),expected.data_ptr(),y.nbytes())==0,
+                "dense projection did not use the available short F32 schedule");
+        }
         for(int t=0;t<tokens;++t)for(int row=0;row<rows;++row) {
             double sum=0,magnitude=0;
             for(int k=0;k<width;++k) {
-                const double term=double(xh.data_ptr<float>()[t*width+k])*wh.data_ptr<float>()[row*width+k];
+                const double term=double(xh.data_ptr<float>()[offset+t*width+k])*wh.data_ptr<float>()[offset+row*width+k];
                 sum+=term;magnitude+=std::abs(term);
             }
             require(std::isfinite(y.data_ptr<float>()[t*rows+row]) &&
                 std::abs(y.data_ptr<float>()[t*rows+row]-sum)<=1e-5+1e-6*magnitude,
                 "small F32 projection differs from double reference");
         }
-        for(int t=0;t<tokens;++t) {
+        for(int t=0;fused.defined() && t<tokens;++t) {
             auto single=dense_projection(x.narrow(0,t,1),weight).cpu();
             require(std::memcmp(single.data_ptr(),y.data_ptr<float>()+t*rows,single.nbytes())==0,
                 "small F32 projection changed singleton accumulation in a short window");
         }
+        if((tokens==3 || tokens==8) && rows==3 && width==768 && offset==0) {
+            struct Pool {
+                std::shared_ptr<mfq::cuda::Context> context=mfq::cuda::default_context(mfq_current_cuda_device());
+                cudaStream_t stream=mfq_current_cuda_stream();
+                bool owned=!context->has_graph_pool(stream);
+                Pool(){if(owned)context->begin_graph_pool(stream);}
+                ~Pool(){if(owned)context->end_graph_pool(stream);}
+            } pool;
+            mfq::cuda::DecodeWindow graph(pool.stream);
+            tb::Tensor output;
+            graph.capture([&]{output=dense_projection(x,weight);},[]{});
+            const auto original=x.clone();
+            for(float scale:{.3f,.8f,1.1f}) {
+                x.copy_(original*scale);
+                graph.run();
+                const auto actual=output.cpu();
+                for(int t=0;t<tokens;++t) {
+                    const auto expected=dense_projection(x.narrow(0,t,1),weight).cpu();
+                    require(std::memcmp(expected.data_ptr(),actual.data_ptr<float>()+t*rows,expected.nbytes())==0,
+                        "small F32 projection Graph differs from changed singleton inputs");
+                }
+                ++graphs;
+            }
+            x.copy_(original);
+        }
         ++cases;
     }
-    std::cout<<"Small F32 projections, tails and singleton-equivalent windows: "<<cases<<" cases PASS\n";
+    std::cout<<"Small F32 projections, tails and singleton-equivalent windows: "<<cases<<" cases, "<<graphs<<" changing Graphs PASS\n";
 }
 
 void run_fused_hidden_quantization() {
@@ -1811,6 +1992,37 @@ void run_interleaved_dense_projection() {
         require(x.scalar_type()==y.scalar_type() && x.sizes()==y.sizes() &&
             std::memcmp(x.data_ptr(),y.data_ptr(),x.nbytes())==0,message);
     };
+    // The same IQ4_XS row must survive a change of verification width or
+    // activation packet layout without changing the next FP16 KV entry.
+    for(int columns:{256,768,4096,6144})for(int rows:{1,17,129})
+    for(auto dtype:{tb::kFloat16,tb::kFloat32}) {
+        Source source;source.add("w",{rows,columns},GGML_TYPE_IQ4_XS);
+        auto weight=load_gguf_weight(source,"w",mfq_current_cuda_device());
+        auto input=tb::empty({8,columns},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        for(int64_t i=0;i<input.numel();++i)input.data_ptr<float>()[i]=std::sin(i*.173f)*.37f;
+        input=input.to(tb::kCUDA).to(dtype);
+        const auto bytes=int64_t(gg::q8_row_bytes(columns));
+        auto native=tb::empty({8*bytes},input.options().dtype(tb::kUInt8));
+        if(dtype==tb::kFloat16)gg::quantize_input_f16(input.data_ptr(),8,columns,native.data_ptr(),stream);
+        else gg::quantize_input(input.data_ptr<float>(),8,columns,native.data_ptr(),stream);
+        for(auto output_type:{tb::kFloat16,tb::kFloat32}) {
+            std::vector<tb::Tensor> serial;
+            for(int t=0;t<8;++t)serial.push_back(weight.forward_q8(native.narrow(0,t*bytes,bytes),1,output_type));
+            const auto reference=tb::cat(serial,0);
+            for(int tokens=2;tokens<=8;++tokens) {
+                bits(weight.forward_q8(native.narrow(0,0,tokens*bytes),tokens,output_type),
+                    reference.narrow(0,0,tokens),"IQ4_XS native M1/window reduction differs");
+                if(tokens<=4) {
+                    auto packed=tb::empty({int64_t(gg::interleaved_activation_bytes(tokens,columns))},native.options());
+                    gg::quantize_input_interleaved(input.data_ptr(),dtype==tb::kFloat16,tokens,columns,
+                        packed.data_ptr(),nullptr,stream);
+                    bits(weight.forward_q8(packed,tokens,output_type,true),reference.narrow(0,0,tokens),
+                        "IQ4_XS interleaved M1/window reduction differs");
+                }
+                ++cases;
+            }
+        }
+    }
     for(int columns:{256,768,4096,6144})for(int tokens:{2,3,4})for(auto dtype:{tb::kFloat16,tb::kFloat32}) {
         const int capacity=tokens==2?2:4,blocks=columns/32;
         auto host=tb::empty({tokens,columns},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
@@ -2132,11 +2344,69 @@ void run_gguf_residual_activation(int bench_tokens=0,int bench_columns=0,int ben
     std::printf("GGUF fused residual activation/Q8/injection cases=%d changing_graph=%d exact/guards PASS\n",cases,changed);
 }
 
+void run_gguf_q6_group() {
+    namespace gg=mfq::cuda::gguf;
+    const auto stream=mfq_current_cuda_stream();int cases=0,graphs=0;
+    for(int columns:{256,768,4096,10240,16640})for(int rows:{1,7,33,321}) {
+        Source source;source.add("down",{rows,columns},GGML_TYPE_Q6_K);
+        source.add("inject",{3,columns},GGML_TYPE_Q6_K);
+        source.full_q6_codes("down");source.full_q6_codes("inject");
+        const auto down=load_gguf_weight(source,"down",mfq_current_cuda_device());
+        const auto inject=load_gguf_weight(source,"inject",mfq_current_cuda_device());
+        const tb::Tensor decoded[]={source.decoded("down"),source.decoded("inject")};
+        for(int tokens:{1,2,3,4})for(bool half:{false,true}) {
+            const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+            auto host=tb::empty({tokens,columns},options.device(tb::kCPU));
+            for(int64_t i=0;i<host.numel();++i)host.data_ptr<float>()[i]=.3f*std::sin(float(i)*.173f);
+            auto x=host.to(tb::kCUDA),q=tb::empty({int64_t(tokens*gg::q8_row_bytes(columns))},options.dtype(tb::kUInt8));
+            const auto dtype=half?tb::kFloat16:tb::kFloat32;
+            auto a=tb::full({tokens*rows+2},-12344.f,options.dtype(dtype));
+            auto b=tb::full({tokens*3+2},-12344.f,options.dtype(dtype));
+            auto out=a.narrow(0,1,tokens*rows),aux=b.narrow(0,1,tokens*3);
+            const gg::DenseProjection projections[]={
+                {down.packed.data_ptr(),down.row_bytes,rows,out.data_ptr(),GGML_TYPE_Q6_K},
+                {nullptr,0,0,nullptr,GGML_TYPE_Q6_K},
+                {inject.packed.data_ptr(),inject.row_bytes,3,aux.data_ptr(),GGML_TYPE_Q6_K}};
+            const auto compute=[&]{gg::quantize_input(x.data_ptr<float>(),tokens,columns,q.data_ptr(),stream);
+                gg::matvec_group(projections,3,columns,q.data_ptr(),nullptr,tokens,half,stream);};
+            const auto verify=[&] {
+                const auto packed=q.cpu();const auto* input=static_cast<const block_q8_1*>(packed.data_ptr());
+                const tb::Tensor actual[]={a.to(tb::kCPU,tb::kFloat32),b.to(tb::kCPU,tb::kFloat32)};
+                for(int matrix=0;matrix<2;++matrix) {
+                    const int n=matrix?3:rows;const auto* values=actual[matrix].data_ptr<float>();
+                    require(values[0]==-12344.f && values[tokens*n+1]==-12344.f,"Q6 group overwrote an output boundary");
+                    for(int i=0;i<tokens*n;++i)require(std::isfinite(values[i+1]),"Q6 group returned nonfinite output");
+                    for(int row:{0,n/2,n-1})for(int token=0;token<tokens;++token) {
+                        double reference=0,magnitude=0;
+                        for(int k=0;k<columns;++k) {
+                            const auto& block=input[token*(columns/32)+k/32];float scale;
+                            ggml_fp16_to_fp32_row(&block.d,&scale,1);
+                            const double term=double(decoded[matrix].data_ptr<float>()[row*columns+k])*scale*block.qs[k%32];
+                            reference+=term;magnitude+=std::abs(term);
+                        }
+                        const double error=std::abs(values[1+token*n+row]-reference);
+                        const double allowance=2.e-6*magnitude+1.e-7+(half?.001*std::abs(reference)+1.e-6:0);
+                        require(error<=allowance,"Q6 group differs from independent FP64 canonical weight/Q8 reference");
+                    }
+                }
+            };
+            compute();verify();++cases;
+            if(columns==10240 && rows==33 && tokens>=3 && !half) {
+                mfq::cuda::DecodeWindow graph(stream);graph.capture(compute,[]{},[]{});
+                for(float amplitude:{0.f,-.3f,2.f}){x.copy_(host.to(tb::kCUDA)*amplitude);graph.run();verify();++graphs;}
+            }
+        }
+    }
+    std::cout<<"Q6 grouped projections M1..4 FP16/FP32, signed/zero scales, empty member, tails, guards, independent FP64 cases="
+        <<cases<<" changing_graph="<<graphs<<" PASS\n";
+}
+
 void run_gguf_residual_pre_runtime() {
     run_gguf_residual_activation();
     const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     struct PoolEnd {std::shared_ptr<mfq::cuda::Context> c;cudaStream_t s;~PoolEnd(){c->end_graph_pool(s);}} end{context,stream};
+    run_gguf_q6_group();
     CudaExecutionContext execution;
     int cases=0,graphs=0;
     const auto check_type=[&](ggml_type type) {
@@ -2198,7 +2468,7 @@ void run_gguf_residual_mix_runtime() {
     CudaExecutionContext execution;
     int cases=0,graphs=0,fallbacks=0;
     const auto check_format=[&](ggml_type type) {
-        for(int streams:{1,2,3,4,5}) {
+        for(int streams:{1,2,3,4,5,8,9}) {
             const int columns=3*ggml_blck_size(type),hidden=7;
             Source source;source.add("up",{hidden*streams,columns},type);
             if(type>=GGML_TYPE_PTQ1_0 && type<=GGML_TYPE_TQK4)source.full_compact_codes("up",type);
@@ -2227,7 +2497,7 @@ void run_gguf_residual_mix_runtime() {
                 const auto direct=try_gguf_residual_mix(weight,x,normalized,streams);
                 require(direct.defined()==supported,"GGUF residual fusion capability disagrees");
                 verify(projection.mixed(execution,x,normalized,streams));++cases;
-                if(type==GGML_TYPE_Q8_0 && streams==5 && rows==3) {
+                if(type==GGML_TYPE_Q8_0 && streams>=3 && rows==3) {
                     tb::Tensor actual;mfq::cuda::DecodeWindow graph(mfq_current_cuda_stream());
                     graph.capture([&]{actual=projection.mixed(execution,x,normalized,streams);},[]{},[&]{actual={};});
                     for(float factor:{0.f,.3f,1.f}) {
@@ -2248,7 +2518,7 @@ void run_gguf_residual_mix_runtime() {
 #define CHECK_GGUF_RESIDUAL(name) check_format(GGML_TYPE_##name);
     TYLOINFER_GGUF_FORMATS(CHECK_GGUF_RESIDUAL)
 #undef CHECK_GGUF_RESIDUAL
-    std::cout<<"GGUF residual mix all28formats M1..4 streams1..5 strided/shared-activation/fallback cases="
+    std::cout<<"GGUF residual mix all28formats M1..4 streams1,2,3,4,5,8,9 strided/shared-activation/fallback cases="
         <<cases<<" changing_graph="<<graphs<<" FP16_fallback="<<fallbacks<<" PASS\n";
 }
 
@@ -2675,6 +2945,9 @@ void run_parallel_projection_group() {
     std::cout<<"GGUF/dense parallel projection changing graphs, shared streams and aliased teardown cases="<<checked<<" PASS\n";
 }
 #include "gguf_quad_storage_test.h"
+#include "gguf_iq2_fractional_test.h"
+#include "gguf_token_vector_test.h"
+#include "gguf_q2_affine_test.h"
 void run_combined_row_storage() {
     for(const auto type:{
 #define TYLOINFER_GGUF_JOIN_FORMAT(name) GGML_TYPE_##name,
@@ -2986,6 +3259,27 @@ void run_long_dense_pairs() {
     std::cout<<"Long dense pairs, native/aligned Q8, changing Graph inputs, FP32/FP16 and odd-row guards: "<<cases<<" cases max_FP32_relative_L2="<<peak_relative<<" PASS\n";
 }
 
+void run_iq4_group_consistency() {
+    int cases=0;
+    for(int columns:{256,768,4096,6144})for(auto peer:{GGML_TYPE_IQ4_XS,GGML_TYPE_IQ2_XXS}) {
+        Source source;source.add("a",{17,columns},GGML_TYPE_IQ4_XS);source.add("b",{9,columns},peer);
+        std::vector<GgufWeight> weights{load_gguf_weight(source,"a",mfq_current_cuda_device()),
+            load_gguf_weight(source,"b",mfq_current_cuda_device())};
+        for(int tokens:{1,2,3,4,8})for(auto dtype:{tb::kFloat16,tb::kFloat32,tb::kBFloat16}) {
+            auto x=tb::empty({1,tokens,columns},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+            for(int64_t i=0;i<x.numel();++i)x.data_ptr<float>()[i]=.37f*std::sin(float(i)*.173f);
+            x=x.to(tb::kCUDA).to(dtype);
+            const auto actual=project_gguf_group(weights,x);
+            const auto expected=weights[0].forward(x);
+            require(actual.size()==2 && actual[0].sizes()==expected.sizes() && actual[0].scalar_type()==expected.scalar_type(),
+                "IQ4_XS group lost shape/dtype");
+            require((actual[0].to(tb::kFloat32)-expected.to(tb::kFloat32)).abs().max().item<float>()==0,
+                ("IQ4_XS native/mixed-quad group changed reduction K="+std::to_string(columns)+
+                " peer="+std::to_string(int(peer))+" M="+std::to_string(tokens)+" dtype="+std::to_string(int(dtype))).c_str());++cases;
+        }
+    }
+    std::cout<<"GGUF IQ4_XS native/mixed-quad group consistency cases="<<cases<<" PASS\n";
+}
 void run_shared_quantization(int columns=256) {
     // Empty descriptors occur between real members of a batched group;
     // accepting them must not require backing storage or activation packets.
@@ -3020,7 +3314,8 @@ void run_shared_quantization(int columns=256) {
             require(actual[i].scalar_type()==expected.scalar_type() && actual[i].sizes().vec()==expected.sizes().vec(),
                 "GGUF shared activation changed projection shape or precision");
             if(rows)require((actual[i].to(tb::kFloat32)-expected.to(tb::kFloat32)).abs().max().item<float>()==0,
-                "GGUF shared activation changed mixed-format output bits");
+                ("GGUF shared activation changed mixed-format output bits format="+std::to_string(int(weights[i].type))+
+                " M="+std::to_string(rows)+" K="+std::to_string(columns)+" dtype="+std::to_string(int(dtype))).c_str());
         }
     }
     std::cout<<"GGUF mixed-format batched/shared projections K="<<columns<<" zero/tail rows, FP16/32/BF16 PASS\n";
@@ -4409,6 +4704,20 @@ void run_row_correction(const char* dense_file,const char* moe_file) {
 }
 
 int main(int argc,char** argv) {
+    if(argc==2 && std::strcmp(argv[1],"--q2-packed-affine-check")==0) {
+        int devices=0;if(cudaGetDeviceCount(&devices)!=cudaSuccess || !devices)return 77;
+        try{run_q2_packed_affine();return 0;}
+        catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+    }
+    if(argc==2 && std::strcmp(argv[1],"--quad-token-vector-check")==0) {
+        int devices=0;if(cudaGetDeviceCount(&devices)!=cudaSuccess || !devices)return 77;
+        try{run_quad_token_vectors();return 0;}
+        catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+    }
+    if(argc==2 && std::strcmp(argv[1],"--residual-rms-order-check")==0) {
+        try{run_residual_rms_order();return 0;}
+        catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+    }
     if(argc==2 && std::strcmp(argv[1],"--quad-decode-check")==0) {
         int devices=0;if(cudaGetDeviceCount(&devices)!=cudaSuccess || !devices)return 77;
         try{run_quad_decode_views();return 0;}
@@ -4421,7 +4730,7 @@ int main(int argc,char** argv) {
     if(argc==2 && std::strcmp(argv[1],"--quad-storage-check")==0) {
         std::cout.setf(std::ios::unitbuf);
         int devices=0;if(cudaGetDeviceCount(&devices)!=cudaSuccess || !devices)return 77;
-        try{run_quad_compute_storage();return 0;}
+        try{run_quad_compute_storage();run_iq2_fractional_cpu_reference();run_quad_token_vectors();run_q2_packed_affine();return 0;}
         catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}
     }
     if(argc==2 && std::strcmp(argv[1],"--m1-affine-k-check")==0) {
@@ -4445,7 +4754,7 @@ int main(int argc,char** argv) {
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
     if(argc==2 && std::strcmp(argv[1],"--normalized-input-check")==0) {
-        try{run_fused_normalized_input();run_fused_residual_normalized_input();run_corrected_normalized_input();return 0;}
+        try{run_fused_normalized_input();run_fused_residual_normalized_input();run_corrected_normalized_input();run_weight_packet_preferences();return 0;}
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
     if(argc==2 && std::strcmp(argv[1],"--row-correction-check")==0) {
@@ -4622,6 +4931,15 @@ int main(int argc,char** argv) {
         try{for(int width:{768,2560,2816,8192,16640})run_shared_quantization(width);return 0;}
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
+    if(argc==2 && std::strcmp(argv[1],"--shared-quantization-check")==0) {
+        try{run_shared_quantization();return 0;}
+        catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+    }
+    if(argc==2 && std::strcmp(argv[1],"--iq4-decode-consistency-check")==0) {
+        int devices=0;if(cudaGetDeviceCount(&devices)!=cudaSuccess || !devices)return 77;
+        try{run_interleaved_dense_projection();run_iq4_group_consistency();return 0;}
+        catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+    }
     if(argc==2 && std::strcmp(argv[1],"--gated-input-check")==0) {
         try{run_fused_dense_activation();run_fused_rms_activation();return 0;}
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
@@ -4750,6 +5068,6 @@ int main(int argc,char** argv) {
         try{bench_resident_overlap(argc>2?std::stoi(argv[2]):0,argc>3 && std::string(argv[3])=="half",std::strcmp(argv[1],"--resident-overlap-rotating-bench")==0);return 0;}catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
     try{run_mapped_flag_wait();run_timed_mapped_flag_wait();run_cpu_auto_balance();run_mmq_scatter();run_split_expert_copy();run_host_snapshot();run_host_snapshot(true);run_mmq_products();run_mmq_moe();run_compact_mmq_gather();run_inplace_mmq_moe();run_strata_adaptive_slots();run_pinned_copy_plan();run_decode_dma();run_resident_pool_separation();run_fused_expert_reduce();run_cpu_experts();run_borrowed_gguf_prefill();run_borrowed_gguf_prefill(true);}catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
-    try { run();run_corrected_normalized_input();run_gguf_iq_codebooks();run_m1_residual();run_small_f32_projection();run_m1_affine_k();run_aligned_m1();run_dense_format_pairs();run_long_dense_pairs();run_dense_projection_overlap();run_fused_normalized_input();run_fused_residual_normalized_input();run_fused_dense_activation();run_fused_rms_activation();run_scaled_dense_prefill();run_fused_hidden_quantization(); run_combined_moe(); run_combined_moe(true);run_combined_moe(false,true);run_prefill_arena_reuse();run_failed_expert_batch(); run_global_prefill_admission(); run_projection_group();run_projection_group(false);run_combined_row_storage();run_shared_quantization(); run_direct_chain(); run_exclusive_cache();run_exclusive_cache(true); run_multi_packet(); run_prompt_admission();run_speculative_admission();run_fixed_speculative_admission();run_host_event_retirement();run_admission_failure_and_lifetime(); std::cout << "GGUF cache/prefill/graph/row-stage/slicing/combined-MoE/exclusive-cache/multi-packet/prompt+speculative-admission passed\n"; }
+    try { run_residual_rms_order();run();run_weight_packet_preferences();run_corrected_normalized_input();run_gguf_iq_codebooks();run_m1_residual();run_small_f32_projection();run_m1_affine_k();run_aligned_m1();run_dense_format_pairs();run_long_dense_pairs();run_dense_projection_overlap();run_fused_normalized_input();run_fused_residual_normalized_input();run_fused_dense_activation();run_fused_rms_activation();run_scaled_dense_prefill();run_fused_hidden_quantization(); run_combined_moe(); run_combined_moe(true);run_combined_moe(false,true);run_prefill_arena_reuse();run_failed_expert_batch(); run_global_prefill_admission(); run_projection_group();run_projection_group(false);run_combined_row_storage();run_shared_quantization(); run_direct_chain(); run_exclusive_cache();run_exclusive_cache(true); run_multi_packet(); run_prompt_admission();run_speculative_admission();run_fixed_speculative_admission();run_host_event_retirement();run_admission_failure_and_lifetime(); std::cout << "GGUF cache/prefill/graph/row-stage/slicing/combined-MoE/exclusive-cache/multi-packet/prompt+speculative-admission passed\n"; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

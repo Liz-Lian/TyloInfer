@@ -1899,7 +1899,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_head_mul(
         (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32) &&
         x.size(2)==gguf.neuron_len && batch*tokens>=1 && batch*tokens<=32) {
         const auto stream=mfq_get_current_cuda_stream(x.get_device());
-        const bool position_major=mfq::cuda::gguf::supports_interleaved_activation(gguf.type,batch*tokens);
+        const bool position_major=gguf.prefers_position_major_q8(batch*tokens);
         const auto bytes=position_major?mfq::cuda::gguf::interleaved_activation_bytes(batch*tokens,gguf.neuron_len):
             batch*tokens*mfq::cuda::gguf::q8_row_bytes(gguf.neuron_len);
         auto activation=tb::empty({int64_t(bytes)},
@@ -1932,7 +1932,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_mul(
             (x.scalar_type()==mfq_tensor_backend::kFloat16 || x.scalar_type()==mfq_tensor_backend::kFloat32) &&
             x.size(-1)==gguf.neuron_len && tokens>=1 && tokens<=32) {
         const auto stream=mfq_get_current_cuda_stream(x.get_device());
-        const bool position_major=mfq::cuda::gguf::supports_interleaved_activation(gguf.type,tokens);
+        const bool position_major=gguf.prefers_position_major_q8(tokens);
         const auto bytes=position_major?mfq::cuda::gguf::interleaved_activation_bytes(tokens,gguf.neuron_len):
             tokens*mfq::cuda::gguf::q8_row_bytes(gguf.neuron_len);
         auto activation=mfq_tensor_backend::empty(
@@ -2034,7 +2034,7 @@ GgufProjectionInput QuantLinearGroup::prepare_rms_norm_input(
         prefer_aligned|=mfq::cuda::gguf::prefers_m1_aligned(w.type);
         keep_original|=bool(w.projection_correction);
         if(w.neuron_len!=width || w.packed.device()!=input.device() || w.base_prefers_original_input())return {};
-        const bool interleaved=mfq::cuda::gguf::supports_interleaved_activation(w.type,rows);
+        const bool interleaved=w.prefers_position_major_q8(rows);
         need_interleaved|=interleaved;need_native|=!interleaved;
     }
     const bool aligned_m1=supports_aligned && prefer_aligned;
@@ -2083,7 +2083,7 @@ GgufProjectionInput QuantLinearGroup::prepare_acc_rms_norm_input(
         prefer_aligned|=mfq::cuda::gguf::prefers_m1_aligned(w.type);
         keep_original|=bool(w.projection_correction);
         if(w.neuron_len!=width || w.packed.device()!=residual.device() || w.base_prefers_original_input())return {};
-        const bool interleaved=mfq::cuda::gguf::supports_interleaved_activation(w.type,rows);
+        const bool interleaved=w.prefers_position_major_q8(rows);
         need_interleaved|=interleaved;need_native|=!interleaved;
     }
     const bool aligned_m1=supports_aligned && prefer_aligned;
@@ -2142,7 +2142,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_rms_gate(
             gate.stride(0)>=tokens*gate.stride(1) && width>0 && width%32==0 &&
             heads*width==gguf.neuron_len && batch*tokens>=1 && batch*tokens<=32) {
         const auto stream=mfq_get_current_cuda_stream(attended.get_device());
-        const bool position_major=mfq::cuda::gguf::supports_interleaved_activation(gguf.type,batch*tokens);
+        const bool position_major=gguf.prefers_position_major_q8(batch*tokens);
         const auto bytes=position_major?mfq::cuda::gguf::interleaved_activation_bytes(batch*tokens,heads*width):
             batch*tokens*mfq::cuda::gguf::q8_row_bytes(heads*width);
         auto activation=tb::empty({int64_t(bytes)},

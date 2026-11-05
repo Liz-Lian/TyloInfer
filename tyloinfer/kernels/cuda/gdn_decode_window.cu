@@ -1,8 +1,10 @@
 #include "mfq_cuda_linear_attention_ops.h"
+#include "gdn_update.cuh"
 #include "mfq_cuda_gdn_replay_ops.h"
 #define GGML_COMMON_DECL_CUDA
 #include "ggml-common.h"
 #include "../../../cpp_runtime/backends/cuda/kernels/gguf_quantize.cuh"
+#include "../../../cpp_runtime/backends/cuda/kernels/gguf.h"
 #include "../../../cpp_runtime/backends/cuda/kernels/warp_sums.cuh"
 #include <cuda_fp16.h>
 #include <cmath>
@@ -15,14 +17,61 @@
 #include <limits>
 #include <type_traits>
 namespace tb=mfq_tensor_backend;
-// A warp retains four state rows for each of its sixteen value columns.
+// Each warp retains four state rows per owned value column.
 // Time steps reuse those registers; only rollback prefixes and the final
 // state are written. Convolution history remains read-only until completion.
-struct GdnWindowSnapshots {float* conv[8]{};float* state[8]{};int confirmed=1;float* updates=nullptr;block_q8_1* quantized=nullptr;bool position_major=false;};
+struct GdnWindowSnapshots {float* conv[8]{};float* state[8]{};int confirmed=1;float* updates=nullptr;block_q8_1* quantized=nullptr;bool position_major=false;float* final_state=nullptr;};
 
 enum class GdnWindowMode {Snapshots,ReadOnly,Commit,RecordUpdates};
 
-template<class Gate,class Output,GdnWindowMode Mode,int Columns=16>
+
+// Convolution and normalization depend only on projected inputs. Prepare
+// them once per head/token, independently of the recurrent column tiles.
+template<class Gate>
+__global__ void gdn_prepare_window_inputs(const void* qkv,const Gate* alpha,const Gate* beta,
+ const float* conv,const float* weights,const float* bias,const float* a_log,float* prepared,
+ int nk,int nv,int layout,float eps,int64_t qs,int64_t as,int64_t ah,int64_t bs,int64_t bh,
+ bool qkv_float,bool tiled_heads) {
+ constexpr int D=128;
+ const int head=blockIdx.x,t=blockIdx.y,tid=threadIdx.x;
+ const int kh=tiled_heads?head%nk:head/(nv/nk),channels=(2*nk+nv)*D;
+ const int qc=kh*D+tid,kc=nk*D+qc,vc=2*nk*D+head*D+tid;
+ float q=0,k=0,v=0;
+ #pragma unroll
+ for(int tap=0;tap<4;++tap) {
+  const int from=t+tap-3;
+  const float qv=from<0?conv[size_t(from+3)*channels+qc]:gdn_qkv_value(qkv,int64_t(from)*qs+qc,qkv_float);
+  const float kv=from<0?conv[size_t(from+3)*channels+kc]:gdn_qkv_value(qkv,int64_t(from)*qs+kc,qkv_float);
+  const float vv=from<0?conv[size_t(from+3)*channels+vc]:gdn_qkv_value(qkv,int64_t(from)*qs+vc,qkv_float);
+  q+=qv*weights[layout==0?size_t(qc)*4+tap:size_t(tap)*channels+qc];
+  k+=kv*weights[layout==0?size_t(kc)*4+tap:size_t(tap)*channels+kc];
+  v+=vv*weights[layout==0?size_t(vc)*4+tap:size_t(tap)*channels+vc];
+ }
+ q=q/(1.f+expf(-q));k=k/(1.f+expf(-k));v=v/(1.f+expf(-v));
+ __shared__ float qsum[D],ksum[D],inverse_q,inverse_k;
+ qsum[tid]=q*q;ksum[tid]=k*k;__syncthreads();
+ if(tid<32) {
+  float qr=qsum[tid]+qsum[tid+64],kr=ksum[tid]+ksum[tid+64];
+  qr+=qsum[tid+32]+qsum[tid+96];kr+=ksum[tid+32]+ksum[tid+96];
+  #pragma unroll
+  for(int stride=16;stride>0;stride>>=1) {
+   const float qo=__shfl_down_sync(0xffffffffu,qr,stride),ko=__shfl_down_sync(0xffffffffu,kr,stride);
+   if(tid<stride){qr+=qo;kr+=ko;}
+  }
+  if(!tid){inverse_q=1.f/fmaxf(sqrtf(qr),eps);inverse_k=1.f/fmaxf(sqrtf(kr),eps);}
+ }
+ __syncthreads();
+ auto* out=prepared+(size_t(t)*nv+head)*386;
+ out[tid]=q*inverse_q;out[128+tid]=k*inverse_k;out[256+tid]=v;
+ if(!tid) {
+  const float a=float(alpha[int64_t(t)*as+int64_t(head)*ah])+bias[head];
+  const float sp=fmaxf(a,0.f)+log1pf(expf(-fabsf(a)));
+  out[384]=expf(sp*-expf(a_log[head]));
+  out[385]=1.f/(1.f+expf(-float(beta[int64_t(t)*bs+int64_t(head)*bh])));
+ }
+}
+
+template<class Gate,class Output,GdnWindowMode Mode,int Columns=16,bool Prepared=false>
 __device__ __forceinline__ void gdn_decode_window_body(
  const void* __restrict__ qkv,const Gate* __restrict__ output_gate,
  const void* __restrict__ alpha,const void* __restrict__ beta,
@@ -30,8 +79,8 @@ __device__ __forceinline__ void gdn_decode_window_body(
  const float* __restrict__ bias,const float* __restrict__ a_log,const float* __restrict__ norm,
  Output* __restrict__ output,float* __restrict__ next_conv,
  int nk,int nv,int tokens,int layout,bool transposed,bool silu,float conv_eps,double norm_eps,
- int64_t qs,int64_t gs,int64_t as,int64_t ah,int64_t bs,int64_t bh,GdnWindowSnapshots snapshots,bool qkv_float,bool tiled_heads,bool gates_float=std::is_same_v<Gate,float>) {
- constexpr int D=128,Warps=8;
+ int64_t qs,int64_t gs,int64_t as,int64_t ah,int64_t bs,int64_t bh,GdnWindowSnapshots snapshots,bool qkv_float,bool tiled_heads,bool gates_float=std::is_same_v<Gate,float>,const float* prepared=nullptr) {
+ constexpr int D=128,Warps=Prepared?4:8;
  static_assert(Columns>0 && 16%Columns==0);
  static_assert(Mode!=GdnWindowMode::ReadOnly || Columns==16);
  constexpr bool Readout=Mode!=GdnWindowMode::Commit,
@@ -54,6 +103,7 @@ __device__ __forceinline__ void gdn_decode_window_body(
  for(int t=0;t<tokens;++t) {
   // Every token reads the original history or an already projected QKV row.
   // No head may overwrite shared Q/K history while another still needs it.
+  if constexpr(!Prepared) {
   float q=0,k=0,v=0;
   if(tid<D) {
    #pragma unroll
@@ -102,19 +152,22 @@ __device__ __forceinline__ void gdn_decode_window_body(
    key[tid]*=ksum[0];
   }
   __syncthreads();
+  }
+  const float* coefficients=Prepared?prepared+(size_t(t)*nv+head)*386:nullptr;
   const int checkpoint=t+1-snapshots.confirmed;
-  if constexpr(Mode==GdnWindowMode::RecordUpdates)if(blockIdx.z==0) {
+  if constexpr(Mode==GdnWindowMode::RecordUpdates || Mode==GdnWindowMode::ReadOnly)
+  if(snapshots.updates && blockIdx.z==0) {
    const auto base=(size_t(t)*nv+head)*257;
-   if(tid<D)snapshots.updates[base+tid]=key[tid];
-   if(!tid)snapshots.updates[base+256]=decay_value;
+   if(tid<D)snapshots.updates[base+tid]=Prepared?coefficients[128+tid]:key[tid];
+   if(!tid)snapshots.updates[base+256]=Prepared?coefficients[384]:decay_value;
   }
   float* snapshot_state=nullptr;
   if constexpr(Mode==GdnWindowMode::Snapshots)
    snapshot_state=checkpoint>=0 && t+1<tokens?snapshots.state[checkpoint]:nullptr;
-  const float decay=decay_value,bt=beta_value;
+  const float decay=Prepared?coefficients[384]:decay_value,bt=Prepared?coefficients[385]:beta_value;
   float keys[4],queries[4];
   #pragma unroll
-  for(int r=0;r<4;++r){keys[r]=key[r*32+lane];if constexpr(Readout)queries[r]=query[r*32+lane];}
+  for(int r=0;r<4;++r){keys[r]=Prepared?coefficients[128+r*32+lane]:key[r*32+lane];if constexpr(Readout)queries[r]=Prepared?coefficients[r*32+lane]:query[r*32+lane];}
   // Reduce all columns together, retaining the same XOR addition tree.
   // A scalar reduction per column repeats five warp shuffles each time;
   // the transposed butterfly shares those levels across the live columns.
@@ -129,13 +182,13 @@ __device__ __forceinline__ void gdn_decode_window_body(
   for(int c=0;c<Columns;++c) {
    const int column=warp+(int(blockIdx.z)*Columns+c)*Warps;
    const float projected=__shfl_sync(0xffffffffu,projected_columns,mfq::cuda::warp_sums::owner<Columns>(c));
-   const float delta=(value[column]-decay*projected)*bt;
-   if constexpr(Mode==GdnWindowMode::RecordUpdates)
-    if(!lane)snapshots.updates[(size_t(t)*nv+head)*257+128+column]=delta;
+   const float delta=((Prepared?coefficients[256+column]:value[column])-decay*projected)*bt;
+   if constexpr(Mode==GdnWindowMode::RecordUpdates || Mode==GdnWindowMode::ReadOnly)
+    if(snapshots.updates && !lane)snapshots.updates[(size_t(t)*nv+head)*257+128+column]=delta;
    float result=0;
    #pragma unroll
    for(int r=0;r<4;++r) {
-    states[c][r]=__fmaf_rn(decay,states[c][r],__fmul_rn(keys[r],delta));
+    states[c][r]=mfq_gdn_update(states[c][r],decay,keys[r],delta);
     if constexpr(Readout)result+=states[c][r]*queries[r];
     if(snapshot_state) {
      const int i=r*32+lane;
@@ -181,7 +234,7 @@ __device__ __forceinline__ void gdn_decode_window_body(
    else output[at]=rounded;
   }
   }
-  if constexpr(WriteState)if(tid<D && (Columns==16 || blockIdx.z==0)) {
+  if constexpr(WriteState || Mode==GdnWindowMode::ReadOnly || Mode==GdnWindowMode::RecordUpdates)if(tid<D && (Columns==16 || blockIdx.z==0)) {
    float* destination=t+1==tokens?next_conv:nullptr;
    if constexpr(Mode==GdnWindowMode::Snapshots)
     if(t+1<tokens && checkpoint>=0)destination=snapshots.conv[checkpoint];
@@ -197,37 +250,40 @@ __device__ __forceinline__ void gdn_decode_window_body(
     }
    }
   }
-  __syncthreads();
+  if constexpr(!Prepared)__syncthreads();
  }
- if constexpr(WriteState) {
+ if constexpr(WriteState || Mode==GdnWindowMode::ReadOnly || Mode==GdnWindowMode::RecordUpdates) {
+ float* final_state=WriteState?state:snapshots.final_state;
+ if(final_state) {
  #pragma unroll
  for(int c=0;c<Columns;++c) {
   const int column=warp+(int(blockIdx.z)*Columns+c)*Warps;
   #pragma unroll
   for(int r=0;r<4;++r) {
    const int i=r*32+lane;
-   state[size_t(head)*D*D+(transposed?size_t(column)*D+i:size_t(i)*D+column)]=states[c][r];
+   final_state[size_t(head)*D*D+(transposed?size_t(column)*D+i:size_t(i)*D+column)]=states[c][r];
   }
  }
 }
+ }
 
 }
 template<class Gate,class Output,GdnWindowMode Mode>
-__global__ __launch_bounds__(256,(Mode==GdnWindowMode::RecordUpdates || Mode==GdnWindowMode::Snapshots)?2:1) void gdn_decode_window_kernel(
+__global__ __launch_bounds__(Mode==GdnWindowMode::RecordUpdates?128:256,(Mode==GdnWindowMode::RecordUpdates || Mode==GdnWindowMode::Snapshots)?2:1) void gdn_decode_window_kernel(
  const void* __restrict__ qkv,const Gate* __restrict__ output_gate,
  const Gate* __restrict__ alpha,const Gate* __restrict__ beta,
  const float* __restrict__ conv,float* __restrict__ state,const float* __restrict__ weights,
  const float* __restrict__ bias,const float* __restrict__ a_log,const float* __restrict__ norm,
  Output* __restrict__ output,float* __restrict__ next_conv,
  int nk,int nv,int tokens,int layout,bool transposed,bool silu,float conv_eps,double norm_eps,
- int64_t qs,int64_t gs,int64_t as,int64_t ah,int64_t bs,int64_t bh,GdnWindowSnapshots snapshots,bool qkv_float,bool tiled_heads) {
- // Split state columns into four smaller tiles. Besides reducing the live
- // state per thread, this exposes more independent blocks for short windows.
+ int64_t qs,int64_t gs,int64_t as,int64_t ah,int64_t bs,int64_t bh,GdnWindowSnapshots snapshots,bool qkv_float,bool tiled_heads,const float* prepared) {
+ // Prepared verification uses eight four-warp column tiles. Snapshots
+ // retain four eight-warp tiles; both expose independent state columns.
  // Output normalization waits for all tiles; each column retains its exact
  // recurrence and checkpoint arithmetic.
  constexpr int Columns=(Mode==GdnWindowMode::RecordUpdates || Mode==GdnWindowMode::Snapshots)?4:16;
- gdn_decode_window_body<Gate,Output,Mode,Columns>(qkv,output_gate,alpha,beta,conv,state,weights,bias,a_log,norm,
-  output,next_conv,nk,nv,tokens,layout,transposed,silu,conv_eps,norm_eps,qs,gs,as,ah,bs,bh,snapshots,qkv_float,tiled_heads);
+ gdn_decode_window_body<Gate,Output,Mode,Columns,Mode==GdnWindowMode::RecordUpdates>(qkv,output_gate,alpha,beta,conv,state,weights,bias,a_log,norm,
+  output,next_conv,nk,nv,tokens,layout,transposed,silu,conv_eps,norm_eps,qs,gs,as,ah,bs,bh,snapshots,qkv_float,tiled_heads,std::is_same_v<Gate,float>,prepared);
 }
 
 __global__ __launch_bounds__(256,2) void gdn_replay_commit_layers_kernel(const GdnReplayLayer* layers,int keep) {
@@ -296,8 +352,8 @@ __global__ void gdn_apply_recorded_updates(const GdnReplayLayer* layers,int keep
   for(int part=0;part<4;++part) {
    const int row=d.transposed?(at+part)%128:(at+part)/128;
    const int column=d.transposed?(at+part)/128:(at+part)%128;
-   for(int t=0;t<keep;++t)parts[part]=__fmaf_rn(updates[t*257+256],parts[part],
-    __fmul_rn(updates[t*257+row],updates[t*257+128+column]));
+   for(int t=0;t<keep;++t)parts[part]=mfq_gdn_update(parts[part],updates[t*257+256],
+    updates[t*257+row],updates[t*257+128+column]);
   }
   if(aligned)*reinterpret_cast<float4*>(state+at)=value;
   else {state[at]=value.x;state[at+1]=value.y;state[at+2]=value.z;state[at+3]=value.w;}
@@ -352,13 +408,14 @@ static std::vector<tb::Tensor> gdn_window_impl(const tb::Tensor& qkv,const tb::T
  const tb::Tensor& alpha,const tb::Tensor& beta,const tb::Tensor& conv,const tb::Tensor& state,
  const tb::Tensor& weights,const tb::Tensor& bias,const tb::Tensor& a_log,const tb::Tensor& norm,
  int nk,int nv,int confirmed,double conv_eps,double norm_eps,bool silu,bool half,bool transposed,
- const std::vector<tb::Tensor>& checkpoint_conv,const std::vector<tb::Tensor>& checkpoint_state,bool tiled_heads,GdnWindowMode mode,bool quantize_output=false,bool position_major=false) {
+ const std::vector<tb::Tensor>& checkpoint_conv,const std::vector<tb::Tensor>& checkpoint_state,bool tiled_heads,GdnWindowMode mode,bool quantize_output=false,bool position_major=false,bool out_of_place=false) {
+ TYLOINFER_RUNTIME_CHECK(!out_of_place || mode==GdnWindowMode::ReadOnly || mode==GdnWindowMode::RecordUpdates,"GDN separate final state requires read-only verification");
  TYLOINFER_RUNTIME_CHECK(!quantize_output || mode!=GdnWindowMode::Commit,"GDN output preparation requires a readout");
  TYLOINFER_RUNTIME_CHECK(qkv.dim()==3 && qkv.size(0)==1 && qkv.size(1)>=1 && qkv.size(1)<=8 &&
   nk>0 && nv>0 && nv<=65535 && nv%nk==0 && int64_t(2)*nk+nv<=std::numeric_limits<int>::max()/128,
   "GDN window heads/sequence invalid");
  const int tokens=int(qkv.size(1)),channels=(2*nk+nv)*128;
- TYLOINFER_RUNTIME_CHECK(!position_major || (quantize_output && tokens>=2 && tokens<=4),"GDN position-major output requires 2..4 Q8 rows");
+ TYLOINFER_RUNTIME_CHECK(!position_major || (quantize_output && tokens>=2 && tokens<=8),"GDN position-major output requires 2..8 Q8 rows");
  TYLOINFER_RUNTIME_CHECK(confirmed>=1 && confirmed<=tokens &&
   checkpoint_conv.size()==size_t(tokens-confirmed) && checkpoint_state.size()==checkpoint_conv.size(),"GDN window geometry invalid");
  const auto device=qkv.device();
@@ -386,13 +443,18 @@ static std::vector<tb::Tensor> gdn_window_impl(const tb::Tensor& qkv,const tb::T
  }
  const MfqCudaGuard guard(device);
  auto output=mode==GdnWindowMode::Commit?tb::Tensor{}:quantize_output?
-  tb::empty({int64_t(position_major?(tokens==2?2:4):tokens)*nv*4*int64_t(sizeof(block_q8_1))},qkv.options().dtype(tb::kUInt8)):
+  tb::empty({int64_t(position_major?mfq::cuda::gguf::interleaved_activation_bytes(tokens,int64_t(nv)*128):
+    tokens*nv*4*int64_t(sizeof(block_q8_1)))},qkv.options().dtype(tb::kUInt8)):
   tb::empty({1,tokens,nv*128},qkv.options().dtype(half?tb::kFloat16:tb::kFloat32));
  const bool deferred=mode==GdnWindowMode::RecordUpdates || mode==GdnWindowMode::Snapshots;
  auto attended=deferred?tb::empty({1,tokens,nv*128},state.options()):tb::Tensor{};
+ auto prepared=mode==GdnWindowMode::RecordUpdates?tb::empty({tokens,nv,386},state.options()):tb::Tensor{};
  const bool read_only=mode==GdnWindowMode::ReadOnly || mode==GdnWindowMode::RecordUpdates;
- auto next_conv=read_only?tb::Tensor{}:tb::empty_like(conv);GdnWindowSnapshots snapshots;snapshots.confirmed=confirmed;
- auto updates=mode==GdnWindowMode::RecordUpdates?tb::empty({tokens,nv,257},state.options()):tb::Tensor{};
+ auto next_conv=read_only && !out_of_place?tb::Tensor{}:tb::empty_like(conv);GdnWindowSnapshots snapshots;snapshots.confirmed=confirmed;
+ auto next_state=out_of_place?tb::empty_like(state):state;
+ if(out_of_place)snapshots.final_state=next_state.data_ptr<float>();
+ auto updates=mode==GdnWindowMode::RecordUpdates || out_of_place?
+  tb::empty({tokens,nv,257},state.options()):tb::Tensor{};
  if(updates.defined())snapshots.updates=updates.data_ptr<float>();
  if(quantize_output && !deferred)snapshots.quantized=static_cast<block_q8_1*>(output.data_ptr());
  snapshots.position_major=position_major;
@@ -407,12 +469,16 @@ static std::vector<tb::Tensor> gdn_window_impl(const tb::Tensor& qkv,const tb::T
    cudaFuncAttributes a;TYLOINFER_CUDA_CHECK(cudaFuncGetAttributes(&a,kernel));reported=true;
    std::fprintf(stderr,"gdn_register_resources mode=%d registers=%d local=%zu shared=%zu\n",int(Mode),a.numRegs,a.localSizeBytes,a.sharedSizeBytes);
   }
-  const dim3 grid(nv,1,(Mode==GdnWindowMode::RecordUpdates || Mode==GdnWindowMode::Snapshots)?4:1);
-  kernel<<<grid,256,0,mfq_current_cuda_stream()>>>(qkv.data_ptr(),gate.data_ptr<Gate>(),alpha.data_ptr<Gate>(),beta.data_ptr<Gate>(),
+  if constexpr(Mode==GdnWindowMode::RecordUpdates)
+   gdn_prepare_window_inputs<Gate><<<dim3(nv,tokens),128,0,mfq_current_cuda_stream()>>>(qkv.data_ptr(),alpha.data_ptr<Gate>(),beta.data_ptr<Gate>(),
+    conv.data_ptr<float>(),weights.data_ptr<float>(),bias.data_ptr<float>(),a_log.data_ptr<float>(),prepared.data_ptr<float>(),nk,nv,
+    weights.dim()==3?0:1,float(conv_eps),qkv.stride(1),alpha.stride(1),alpha.stride(2),beta.stride(1),beta.stride(2),qkv.scalar_type()==tb::kFloat32,tiled_heads);
+  const dim3 grid(nv,1,Mode==GdnWindowMode::RecordUpdates?8:Mode==GdnWindowMode::Snapshots?4:1);
+  kernel<<<grid,Mode==GdnWindowMode::RecordUpdates?128:256,0,mfq_current_cuda_stream()>>>(qkv.data_ptr(),gate.data_ptr<Gate>(),alpha.data_ptr<Gate>(),beta.data_ptr<Gate>(),
    conv.data_ptr<float>(),state.data_ptr<float>(),weights.data_ptr<float>(),bias.data_ptr<float>(),a_log.data_ptr<float>(),norm.data_ptr<float>(),
    (Mode==GdnWindowMode::RecordUpdates || Mode==GdnWindowMode::Snapshots)?attended.data_ptr<Output>():output.defined() && !quantize_output?output.data_ptr<Output>():nullptr,
    next_conv.defined()?next_conv.data_ptr<float>():nullptr,nk,nv,tokens,weights.dim()==3?0:1,transposed,silu,float(conv_eps),norm_eps,
-   qkv.stride(1),gate.stride(1),alpha.stride(1),alpha.stride(2),beta.stride(1),beta.stride(2),snapshots,qkv.scalar_type()==tb::kFloat32,tiled_heads);
+   qkv.stride(1),gate.stride(1),alpha.stride(1),alpha.stride(2),beta.stride(1),beta.stride(2),snapshots,qkv.scalar_type()==tb::kFloat32,tiled_heads,prepared.defined()?prepared.data_ptr<float>():nullptr);
  };
  const auto precision=[&]<GdnWindowMode Mode>() {
   if(gate.scalar_type()==tb::kFloat16){if(half)launch.template operator()<Mode>(__half{},__half{});else launch.template operator()<Mode>(__half{},float{});}
@@ -442,9 +508,18 @@ static std::vector<tb::Tensor> gdn_window_impl(const tb::Tensor& qkv,const tb::T
  static std::atomic<unsigned> seen{0};const unsigned bit=1u<<(tokens+(quantize_output?8:0));
  if(!(seen.fetch_or(bit,std::memory_order_relaxed)&bit))std::fprintf(stderr,
   "runtime_mtp_gdn_window enabled=1 tokens=%d key_heads=%d value_heads=%d checkpoints=%d output_q8=%d state_tiles=%d reduction=columns\n",
-  tokens,nk,nv,tokens-confirmed,int(quantize_output),(mode==GdnWindowMode::RecordUpdates || mode==GdnWindowMode::Snapshots)?4:1);
- if(updates.defined())return {output,next_conv,state,updates};
- return {output,next_conv,state};
+  tokens,nk,nv,tokens-confirmed,int(quantize_output),mode==GdnWindowMode::RecordUpdates?8:mode==GdnWindowMode::Snapshots?4:1);
+ if(updates.defined())return {output,next_conv,next_state,updates};
+ return {output,next_conv,next_state};
+}
+
+std::vector<tb::Tensor> gdn_verify_window_cuda(const tb::Tensor& qkv,const tb::Tensor& gate,
+ const tb::Tensor& alpha,const tb::Tensor& beta,const tb::Tensor& conv,const tb::Tensor& state,
+ const tb::Tensor& weights,const tb::Tensor& bias,const tb::Tensor& a_log,const tb::Tensor& norm,
+ int nk,int nv,double conv_eps,double norm_eps,bool silu,bool half,bool transposed,
+ bool tiled_heads,bool quantize_output,bool position_major) {
+ return gdn_window_impl(qkv,gate,alpha,beta,conv,state,weights,bias,a_log,norm,nk,nv,int(qkv.size(1)),
+  conv_eps,norm_eps,silu,half,transposed,{}, {},tiled_heads,GdnWindowMode::RecordUpdates,quantize_output,position_major,true);
 }
 
 std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::Tensor& gate,

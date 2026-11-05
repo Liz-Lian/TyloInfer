@@ -72,6 +72,7 @@ struct CausalResources {
     mfq_tensor_backend::Tensor adapter_prepare_hidden(mfq_tensor_backend::Tensor hidden,
                                                       int64_t batch, int64_t tokens) const;
     void adapter_begin_forward(bool capture_raw_hidden);
+    void adapter_capture_hidden(const mfq_tensor_backend::Tensor&) {}
 
     mfq_tensor_backend::Tensor
     adapter_block_positions(const mfq_tensor_backend::Tensor &full_positions,
@@ -331,6 +332,7 @@ template <typename Model> struct CudaCausalOps : Model {
                 context.attention_mask = local_attention_mask;
             }
             x = b->forward_context(*model.execution, std::move(x), context, active_rope);
+            model.adapter_capture_hidden(x);
             return x;
         }
         void trace(const Tensor &x) {

@@ -187,6 +187,11 @@ target_link_libraries(mfq-mtp-policy-test PRIVATE mfq-engine)
 target_compile_features(mfq-mtp-policy-test PRIVATE cxx_std_20)
 add_test(NAME mfq-mtp-policy-test COMMAND mfq-mtp-policy-test)
 
+add_executable(mfq-speculative-commit-test speculative_commit_test.cpp)
+target_link_libraries(mfq-speculative-commit-test PRIVATE mfq-models)
+target_compile_features(mfq-speculative-commit-test PRIVATE cxx_std_20)
+add_test(NAME mfq-speculative-commit-test COMMAND mfq-speculative-commit-test)
+
 if(TARGET mfq-tokenizer)
 add_executable(mfq-speculative-sequence-test speculative_sequence_test.cpp)
 target_link_libraries(mfq-speculative-sequence-test PRIVATE mfq-engine)

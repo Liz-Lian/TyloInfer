@@ -1,9 +1,11 @@
 #include "models/dflash2/dflash2.h"
 #include "models/dflash2/weight_quant.h"
 #include "models/qwen4_exp/ops.h"
+#include "models/qwen35/ops.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "mfq_cuda_context.h"
 #include "runtime/decode_window.h"
+#include "runtime/graph_pool_lease.h"
 #include "kernels/dflash2.h"
 #include "ggml-quants.h"
 #include "tyloinfer/gguf_model_source.h"
@@ -24,6 +26,105 @@
 namespace tb = mfq_tensor_backend;
 namespace {
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void check_draft_inputs() {
+    namespace df=mfq::cuda::dflash2;
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto stream=mfq_current_cuda_stream();
+    const auto lease=mfq::cuda::GraphPoolLease::acquire(context,stream);
+    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64);
+    int cases=0,replays=0;
+    for(int rows:{1,3,8,33,257})for(int64_t start:{int64_t(-2),int64_t(4096),int64_t(1)<<33}) {
+        auto anchor=tb::full({1},int64_t(42),options);
+        auto ids=tb::full({rows+2},int64_t(-7),options),positions=tb::full({rows+2},int64_t(-9),options);
+        const auto run=[&]{df::prepare_draft_inputs(anchor.data_ptr<int64_t>(),ids.data_ptr<int64_t>()+1,
+            positions.data_ptr<int64_t>()+1,rows,start,stream);};
+        const auto compare=[&](int64_t token) {
+            auto a=ids.cpu(),b=positions.cpu();const auto* x=a.data_ptr<int64_t>();const auto* y=b.data_ptr<int64_t>();
+            require(x[0]==-7 && x[rows+1]==-7 && y[0]==-9 && y[rows+1]==-9,"Draft inputs changed a guard");
+            require(x[1]==token,"Draft anchor differs");
+            for(int r=0;r<rows;++r)require(y[r+1]==start+r && (r==0 || x[r+1]==-7),"Draft positions or mask IDs differ");
+        };
+        run();compare(42);++cases;
+        mfq::cuda::DecodeWindow graph(stream);graph.capture(run,[]{});
+        for(int64_t token:{int64_t(0),int64_t(17),int64_t(248319)}) {
+            anchor.copy_(tb::full({1},token,options));graph.run();compare(token);++replays;
+        }
+    }
+    for(int rows:{1,3,8,17})for(int width:{1,31,32,257,5120})
+        for(auto type:{tb::kFloat32,tb::kFloat16,tb::kBFloat16})for(bool masked:{false,true}) {
+            auto host=tb::empty({masked?1:rows,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+            for(int64_t i=0;i<host.numel();++i)host.data_ptr<float>()[i]=.31f*std::sin(float(i)*.017f);
+            auto input=host.to(tb::kCUDA,type),saved=input.clone();
+            auto mask=tb::empty({width},host.options());for(int i=0;i<width;++i)mask.data_ptr<float>()[i]=.17f*std::cos(float(i)*.021f);
+            mask=mask.to(tb::kCUDA);
+            auto expected=tb::empty({rows,width},mask.options());
+            auto storage=tb::full({int64_t(rows)*width+2},-12345.f,mask.options());
+            const auto kind=type==tb::kFloat32?df::DraftEmbeddingType::Float32:type==tb::kFloat16?df::DraftEmbeddingType::Float16:df::DraftEmbeddingType::BFloat16;
+            const auto run=[&] {
+                auto rounded=input.to(tb::kBFloat16).to(tb::kFloat32);
+                if(masked) {
+                    expected.narrow(0,0,1).copy_(rounded);
+                    if(rows>1)expected.narrow(0,1,rows-1).copy_(mask.reshape({1,width}).expand({rows-1,width}));
+                }else expected.copy_(rounded);
+                df::prepare_draft_hidden(input.data_ptr(),kind,masked?mask.data_ptr<float>():nullptr,
+                    storage.data_ptr<float>()+1,rows,width,stream);
+            };
+            const auto compare=[&] {
+                auto ref=expected.cpu(),out=storage.cpu();const auto* x=out.data_ptr<float>();
+                require(x[0]==-12345.f && x[out.numel()-1]==-12345.f,"Draft hidden changed an output guard");
+                require(!std::memcmp(ref.data_ptr(),x+1,ref.nbytes()),"Draft hidden differs from BF16 conversion and mask override");
+            };
+            run();compare();++cases;
+            if(rows==8 && width==257) {
+                mfq::cuda::DecodeWindow graph(stream);graph.capture(run,[]{});
+                for(float factor:{.91f,-.37f,0.f}){input.copy_(saved*factor);graph.run();compare();++replays;}
+            }
+        }
+    bool rejected=false;
+    try{df::prepare_draft_inputs(nullptr,nullptr,nullptr,0,INT64_MAX,stream);}catch(const std::invalid_argument&){rejected=true;}
+    require(rejected,"Draft inputs accepted invalid pointers/geometry");
+    std::cout<<"Draft preparation tails/types/guards cases="<<cases<<" changing graph replays="<<replays<<" PASS\n";
+}
+void check_dense_target_hidden() {
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    int cases=0;
+    for(int rows:{1,3,17})for(auto dtype:{tb::kFloat16,tb::kFloat32}) {
+        mfq::cuda::Qwen35Model target;
+        const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+        auto hidden=tb::arange(rows*32,options).reshape({1,rows,32}).to(dtype);
+        target.adapter_begin_forward(true);
+        require(target.adapter_raw_hidden(hidden,{ }).data_ptr()==hidden.data_ptr(),
+            "Dense target without external draft changed its raw hidden state");
+        target.hidden_capture=std::make_shared<mfq::cuda::Qwen35HiddenCapture>();
+        target.hidden_capture->layers={1,4,7};
+        for(int pass=0;pass<2;++pass) {
+            target.adapter_begin_forward(true);
+            std::vector<tb::Tensor> expected;
+            for(int layer=0;layer<8;++layer) {
+                auto value=(hidden.to(tb::kFloat32)+float(layer+pass*10)).to(dtype);
+                target.adapter_capture_hidden(value);
+                if(layer==1 || layer==4 || layer==7)expected.push_back(value.to(tb::kFloat32));
+            }
+            const auto actual=target.adapter_raw_hidden(hidden,{}),reference=tb::cat(expected,-1);
+            const auto actual_host=actual.cpu(),reference_host=reference.cpu();
+            require(actual.sizes().vec()==std::vector<int64_t>({1,rows,96}) &&
+                actual.scalar_type()==tb::kFloat32 &&
+                !std::memcmp(actual_host.data_ptr(),reference_host.data_ptr(),actual.nbytes()),
+                "Dense DFlash2 taps changed layer order, dtype, token rows or request contents");
+            ++cases;
+        }
+        target.adapter_begin_forward(true);
+        target.adapter_capture_hidden(hidden);
+        bool rejected=false;
+        try{(void)target.adapter_raw_hidden(hidden,{});}catch(const std::exception&){rejected=true;}
+        require(rejected,"Dense DFlash2 accepted missing target layers");
+        target.adapter_begin_forward(false);
+        require(target.adapter_raw_hidden(hidden,{}).data_ptr()==hidden.data_ptr(),
+            "Ordinary dense decoding retained external draft taps");
+        ++cases;
+    }
+    std::cout<<"Dense DFlash2 target taps order/dtype/multiple requests/disabled/missing layers cases="<<cases<<" PASS\n";
+}
 void check_weight_quantization() {
     const auto options=tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32);
     int checked=0;const int threads=mfq_get_num_threads();
@@ -511,14 +612,18 @@ void check_bf16_context() {
         Graph graph;graph.capture_begin();store_context(key.data_ptr<float>(),value.data_ptr<float>(),norm.data_ptr<float>(),
             table.data_ptr<float>(),positions.data_ptr<int64_t>(),actual_k.data_ptr(),actual_v.data_ptr(),
             rows,heads,dimension,window,1e-6f,stream,compact);graph.capture_end();
-        for(int64_t start:{int64_t(0),int64_t(137),int64_t(131071)}) {
-            positions.copy_(tb::arange(start,start+rows,positions.options()));
+        for(int64_t start:{int64_t(0),int64_t(137),int64_t(131071)})for(int live=0;live<=rows;++live) {
+            positions.fill_(-1);
+            if(live)positions.narrow(0,0,live).copy_(tb::arange(start,start+live,positions.options()));
             rotary_table(positions.data_ptr<int64_t>(),table.data_ptr<float>(),rows,dimension,10000.f,stream);
             norm_rope_tabled(key.data_ptr<float>(),norm.data_ptr<float>(),table.data_ptr<float>(),rotated.data_ptr<float>(),
                 rows,heads,dimension,1e-6f,stream);
-            const auto slots=positions.remainder(double(window)).to(tb::kInt64);
+            const auto slots=positions.narrow(0,0,live).remainder(double(window)).to(tb::kInt64);
             expected_k.fill_(.25);expected_v.fill_(-.5);actual_k.copy_(expected_k);actual_v.copy_(expected_v);
-            expected_k.index_copy_(0,slots,rotated.to(actual_k.scalar_type()));expected_v.index_copy_(0,slots,value.to(actual_v.scalar_type()));
+            if(live) {
+                expected_k.index_copy_(0,slots,rotated.narrow(0,0,live).to(actual_k.scalar_type()));
+                expected_v.index_copy_(0,slots,value.narrow(0,0,live).to(actual_v.scalar_type()));
+            }
             graph.replay();
             for(const auto& pair:{std::pair{actual_k,expected_k},std::pair{actual_v,expected_v}}) {
                 const auto a=pair.first.cpu(),b=pair.second.cpu();
@@ -1112,6 +1217,9 @@ void context_overlap_reference(const std::filesystem::path& directory) {
         const auto baseline=serial->draft_block(projection,anchor,3).clone();
         parallel->append_target_context_for_draft(features,position);
         const auto actual=parallel->draft_block(projection,anchor,3).clone();
+        const bool initialized=parallel->take_graph_initialization();
+        if(step==1)require(initialized,"DFlash2 initial context graph preparation was not reported");
+        else if(step<=7)require(!initialized,"DFlash2 captured another draft graph when only the committed row count changed");
         // No host copy between parallel append and block launch: the event
         // edges themselves must protect its attention reads of the KV rings.
         exact(expected,baseline,"DFlash2 serial graph changed the nonzero-attention eager result");
@@ -1143,6 +1251,10 @@ void context_overlap_reference(const std::filesystem::path& directory) {
             // Restore writes ran on another stream; the next block must wait
             // for those writes even though its last update used per-layer gates.
             exact(expected,parallel->draft_block(projection,anchor,3),"DFlash2 cross-stream prefix restore raced draft attention");
+            // A draft immediately after restore has no pending context batch
+            // and may prepare its separate standalone graph. Consume that
+            // maintenance event before checking the next commit width.
+            (void)parallel->take_graph_initialization();
         }
         if(step==7) {
             const auto next=pattern({1,2,64},1.7f).to(tb::kCUDA);
@@ -1193,7 +1305,7 @@ void context_graph_reference(CudaExecutionContext& execution,mfq::cuda::Qwen4Cau
     std::cout<<"DFlash2 changing context graphs M1/2/4 + restored prefix exact KV bytes PASS\n";
 }
 void model_parity(const std::filesystem::path& directory,const std::filesystem::path& case_path,
-                  const std::filesystem::path& real_head={},bool benchmark_overlap=false) {
+                  const std::filesystem::path& real_head={},bool benchmark_overlap=false,bool overlap_parity=false) {
     using namespace mfq::cuda;
     const auto config=mfq::cuda::dflash2::Config::load(directory);
     std::ifstream file(case_path,std::ios::binary);int32_t header[4]{};
@@ -1229,7 +1341,7 @@ void model_parity(const std::filesystem::path& directory,const std::filesystem::
         target.lm_head.gguf=load_gguf_weight(source,"model.output.weight",target.embed.dense.get_device());
         require(target.lm_head.gguf.out==config.vocabulary && target.lm_head.gguf.neuron_len==width,
             "DFlash2 parity target head geometry differs");
-        if(!benchmark_overlap) {
+        if(!benchmark_overlap && !overlap_parity) {
             const auto packed=target.lm_head.gguf.packed.cpu();
             std::ofstream output(case_path.parent_path()/"target-head.bin",std::ios::binary);
             output.write(static_cast<const char*>(packed.data_ptr()),packed.nbytes());
@@ -1239,6 +1351,41 @@ void model_parity(const std::filesystem::path& directory,const std::filesystem::
     }
     const auto history=tb::tensor(taps).reshape({1,rows,width*int64_t(config.target_layers.size())}).to(tb::kCUDA);
     auto id=tb::tensor(std::vector<int64_t>{anchor}).reshape({1,1}).to(tb::kCUDA);
+    if(overlap_parity) {
+        GraphMode graphs("0");ContextOverlapMode overlap("0");
+        auto eager=mfq::cuda::dflash2::load(execution,target,directory);
+        ContextOverlapMode::set("1");auto combined=mfq::cuda::dflash2::load(execution,target,directory);
+        const int64_t start=int64_t(rows)+header[3];
+        eager->seed_target_context(history,start);combined->seed_target_context(history,start);
+        const MtpTarget projection(target);
+        const auto exact=[](const tb::Tensor& a,const tb::Tensor& b,const char* message) {
+            const auto x=a.cpu().contiguous(),y=b.cpu().contiguous();
+            require(x.scalar_type()==y.scalar_type() && x.sizes()==y.sizes() &&
+                !std::memcmp(x.data_ptr(),y.data_ptr(),x.nbytes()),message);
+        };
+        for(int step=0;step<16;++step) {
+            const int count=1+step%mfq::cuda::dflash2::kQ8TileRows;
+            const auto features=history.narrow(1,(step*13)%(rows-count+1),count);
+            GraphMode::set("0");eager->append_target_context(features,eager->cache_position());
+            const auto expected=eager->draft_block(projection,id,std::min(3,eager->maximum_draft_depth())).clone();
+            GraphMode::set("1");combined->append_target_context_for_draft(features,combined->cache_position());
+            const auto actual=combined->draft_block(projection,id,std::min(3,combined->maximum_draft_depth())).clone();
+            exact(expected,actual,"Real DFlash2 fixed-context graph changed draft logits");
+            require(combined->take_graph_initialization()==(step==0),
+                "Real DFlash2 commit width caused additional graph preparation");
+            const auto last=features.narrow(1,count-1,1);
+            const auto reference=eager->capture_session_state(eager->cache_position(),last);
+            const auto state=combined->capture_session_state(combined->cache_position(),last);
+            for(std::size_t layer=0;layer<reference.qwen4_blocks.size();++layer) {
+                exact(reference.qwen4_blocks[layer].keys,state.qwen4_blocks[layer].keys,
+                    "Real DFlash2 padded commit changed K or an untouched ring cell");
+                exact(reference.qwen4_blocks[layer].values,state.qwen4_blocks[layer].values,
+                    "Real DFlash2 padded commit changed V or an untouched ring cell");
+            }
+        }
+        std::cout<<"Real DFlash2 weights fixed-context graph, M1..8 changed commits, exact eager logits and KV, one preparation: 16 cases PASS\n";
+        return;
+    }
     if(benchmark_overlap) {
         GraphMode graphs("1");ContextOverlapMode overlap("0");
         std::array<std::unique_ptr<MtpModule>,2> drafts;
@@ -1425,6 +1572,8 @@ int main(int argc, char** argv) {
         // fixtures and their graph executables, including instrumented runs.
         const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
         std::cout<<std::unitbuf;
+        if(argc==2 && std::string(argv[1])=="--draft-input-check"){check_draft_inputs();return 0;}
+        if(argc==2 && std::string(argv[1])=="--dense-target-hidden-check"){check_dense_target_hidden();return 0;}
         if(argc==4 && std::string(argv[1])=="--greedy-packet-bench"){benchmark_greedy_packet(std::stoi(argv[2]),std::stoi(argv[3]));return 0;}
         if(argc==2 && std::string(argv[1])=="--greedy-selector-check"){check_greedy_selector_walk();return 0;}
         if(argc==2 && std::string(argv[1])=="--greedy-probability-check"){check_greedy_probability();check_combined_sampling_packet();check_greedy_packet_export();return 0;}
@@ -1435,6 +1584,7 @@ int main(int argc, char** argv) {
         if(argc==2 && std::string(argv[1])=="--pointwise-check"){check_pointwise_q8();return 0;}
         if(argc==3 && std::string(argv[1])=="--pointwise-bench"){pointwise_benchmark(std::stoi(argv[2])!=0);return 0;}
         if(argc==4 && std::string(argv[1])=="--model-parity"){model_parity(argv[2],argv[3]);return 0;}
+        if(argc==4 && std::string(argv[1])=="--context-overlap-parity"){model_parity(argv[2],argv[3],{},false,true);return 0;}
         if(argc==5 && std::string(argv[1])=="--model-parity-head"){model_parity(argv[2],argv[3],argv[4]);return 0;}
         if(argc==5 && std::string(argv[1])=="--context-overlap-bench"){model_parity(argv[2],argv[3],argv[4],true);return 0;}
         if(argc==2 && std::string(argv[1])=="--rotary-bench"){rotary_benchmark();return 0;}
@@ -1446,6 +1596,7 @@ int main(int argc, char** argv) {
         if(argc>=2 && std::string(argv[1])=="--attention-bench"){attention_benchmark(argc>2 && std::stoi(argv[2])==16,argc>3?std::stoi(argv[3]):0);return 0;}
         if(argc==2 && (std::string(argv[1])=="--normalization-bench" || std::string(argv[1])=="--normalization-fused-bench")){normalization_benchmark(std::string(argv[1])=="--normalization-fused-bench");return 0;}
         if (argc != 2) throw std::invalid_argument("DFlash2 test requires a workspace fixture directory");
+        check_draft_inputs();
         check_greedy_selector_walk();check_device_enqueue();check_mapped_selector();check_mapped_selector(true);check_bf16_context();check_pointwise_q8();check_rms_q8();check_tiled_attention();check_rotary_table();check_tiled_gemm();check_kernels(); run(argv[1]);run(std::filesystem::path(argv[1])/"shared-pool",true);context_overlap_reference(std::filesystem::path(argv[1])/"overlap");
         std::cout << "DFlash2 convolution/RMS/RoPE/attention/loader/block draft/selector/ring/target capture passed\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

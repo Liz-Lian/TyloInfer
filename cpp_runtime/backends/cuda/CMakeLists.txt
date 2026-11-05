@@ -93,6 +93,7 @@ set(TYLOINFER_CUDA_KERNEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/kernels/qsa_tq_encode.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/qsa_tq_fit.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf.cu
+    ${TYLOINFER_CUDA_ROOT}/kernels/gguf_stream_plan.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_activation.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_dense_m1_aligned.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_m1_residual.cu
@@ -103,6 +104,7 @@ set(TYLOINFER_CUDA_KERNEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/kernels/qk_prepare.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_input.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_compact.cu
+    ${TYLOINFER_CUDA_ROOT}/kernels/gguf_compact_async.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_row_residual.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_residual.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_residual_prepare.cu
@@ -111,8 +113,10 @@ set(TYLOINFER_CUDA_KERNEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_tensorcore.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_prefill_scale.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/gguf_mmq.cu
+    ${TYLOINFER_CUDA_ROOT}/kernels/gguf_window.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/dflash2.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/dflash2_gemm.cu
+    ${TYLOINFER_CUDA_ROOT}/kernels/dflash2_q4.cu
     # DeepSeek indexers use this signed Hadamard transform in native TQ/GGUF too.
     ${TYLOINFER_CUDA_KERNEL_ROOT}/nepq.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/acc.cu
@@ -128,6 +132,8 @@ set(TYLOINFER_CUDA_KERNEL_SOURCES
     ${TYLOINFER_CUDA_KERNEL_ROOT}/ple_fused.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/glm5_next.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/gated_delta_net.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/gdn_replay.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/gdn_replay_updates.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/gdn_decode_window.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/glm_dsa.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_cache.cu
@@ -340,6 +346,19 @@ if(BUILD_TESTING)
         mfq-cuda-native-kernels)
     mfq_add_cuda_test(tyloinfer-cuda-gguf-compact-test
         ${TYLOINFER_CUDA_ROOT}/tests/gguf_compact_test.cpp
+        mfq-cuda-native-kernels mfq-ggml)
+    add_test(NAME tyloinfer-cuda-gguf-compact-async-test
+        COMMAND tyloinfer-cuda-gguf-compact-test --async-only)
+    set_tests_properties(tyloinfer-cuda-gguf-compact-async-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME tyloinfer-cuda-gguf-compact-staged-book-test
+        COMMAND tyloinfer-cuda-gguf-compact-test --staged-book)
+    set_tests_properties(tyloinfer-cuda-gguf-compact-staged-book-test PROPERTIES SKIP_RETURN_CODE 77)
+
+    mfq_add_cuda_test(tyloinfer-cuda-gguf-affine-groups-test
+        ${TYLOINFER_CUDA_ROOT}/tests/gguf_affine_groups_test.cpp
+        mfq-cuda-native-kernels mfq-ggml)
+    mfq_add_cuda_test(tyloinfer-cuda-gguf-stream-plan-test
+        ${TYLOINFER_CUDA_ROOT}/tests/gguf_stream_plan_test.cpp
         mfq-cuda-native-kernels mfq-ggml)
     mfq_add_cuda_test(tyloinfer-cuda-gguf-quant-test
         ${TYLOINFER_CUDA_ROOT}/tests/gguf_quant_test.cpp
@@ -838,6 +857,19 @@ if(BUILD_TESTING)
     add_test(NAME tyloinfer-cuda-gdn-prepared-replay-test
         COMMAND tyloinfer-cuda-gdn-prefill-test --gdn-prepared-replay-check)
     set_tests_properties(tyloinfer-cuda-gdn-prepared-replay-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(tyloinfer-cuda-qk-prepare-test ${TYLOINFER_CUDA_ROOT}/tests/qk_prepare_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-qk-prepare-test)
+    target_compile_definitions(tyloinfer-cuda-qk-prepare-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-qk-prepare-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-qk-prepare-test COMMAND tyloinfer-cuda-qk-prepare-test)
+    set_tests_properties(tyloinfer-cuda-qk-prepare-test PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(tyloinfer-cuda-gdn-publication-test ${TYLOINFER_CUDA_ROOT}/tests/gdn_publication_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-gdn-publication-test)
+    target_compile_definitions(tyloinfer-cuda-gdn-publication-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-gdn-publication-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-gdn-publication-test COMMAND tyloinfer-cuda-gdn-publication-test)
+    set_tests_properties(tyloinfer-cuda-gdn-publication-test PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(tyloinfer-cuda-qsa-test ${TYLOINFER_CUDA_ROOT}/tests/qsa_test.cpp
         ${TYLOINFER_CUDA_ROOT}/tests/qsa_tile_bench.cu)
     mfq_configure_cuda_runtime_target(tyloinfer-cuda-qsa-test)
@@ -943,6 +975,26 @@ if(BUILD_TESTING)
     target_link_libraries(tyloinfer-cuda-attention-mma-gqa-test PRIVATE mfq-cuda-runtime)
     add_test(NAME tyloinfer-cuda-attention-mma-gqa-test COMMAND tyloinfer-cuda-attention-mma-gqa-test)
     set_tests_properties(tyloinfer-cuda-attention-mma-gqa-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(tyloinfer-cuda-gdn-recorded-replay-batch-test ${TYLOINFER_CUDA_ROOT}/tests/gdn_recorded_replay_batch_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-gdn-recorded-replay-batch-test)
+    target_compile_definitions(tyloinfer-cuda-gdn-recorded-replay-batch-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-gdn-recorded-replay-batch-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-gdn-recorded-replay-batch-test COMMAND tyloinfer-cuda-gdn-recorded-replay-batch-test)
+    set_tests_properties(tyloinfer-cuda-gdn-recorded-replay-batch-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME tyloinfer-cuda-gdn-recorded-replay-copy-override-test COMMAND tyloinfer-cuda-gdn-recorded-replay-batch-test --copy-batch-override-check)
+    set_tests_properties(tyloinfer-cuda-gdn-recorded-replay-copy-override-test PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "TYLOINFER_RECURRENT_COPY_BATCH=0")
+    add_executable(tyloinfer-cuda-qwen35-predictor-queue-test ${TYLOINFER_CUDA_ROOT}/tests/qwen35_predictor_queue_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-qwen35-predictor-queue-test)
+    target_compile_definitions(tyloinfer-cuda-qwen35-predictor-queue-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-qwen35-predictor-queue-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-qwen35-predictor-queue-test COMMAND tyloinfer-cuda-qwen35-predictor-queue-test)
+    set_tests_properties(tyloinfer-cuda-qwen35-predictor-queue-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(tyloinfer-cuda-attention-mma-prefill-test ${TYLOINFER_CUDA_ROOT}/tests/attention_mma_prefill_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-attention-mma-prefill-test)
+    target_compile_definitions(tyloinfer-cuda-attention-mma-prefill-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-attention-mma-prefill-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-attention-mma-prefill-test COMMAND tyloinfer-cuda-attention-mma-prefill-test)
+    set_tests_properties(tyloinfer-cuda-attention-mma-prefill-test PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(tyloinfer-cuda-attention-mma-verify-test ${TYLOINFER_CUDA_ROOT}/tests/attention_mma_verify_test.cpp)
     mfq_configure_cuda_runtime_target(tyloinfer-cuda-attention-mma-verify-test)
     target_compile_definitions(tyloinfer-cuda-attention-mma-verify-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
@@ -997,6 +1049,11 @@ if(BUILD_TESTING)
     add_test(NAME tyloinfer-cuda-gguf-row-correction-test COMMAND tyloinfer-cuda-gguf-runtime-test --row-correction-check)
     set_tests_properties(tyloinfer-cuda-gguf-row-correction-test PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(tyloinfer-cuda-dflash2-test ${TYLOINFER_CUDA_ROOT}/tests/dflash2_test.cpp)
+    add_executable(tyloinfer-cuda-gguf-window-test ${TYLOINFER_CUDA_ROOT}/tests/gguf_window_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-gguf-window-test)
+    target_link_libraries(tyloinfer-cuda-gguf-window-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-gguf-window-test COMMAND tyloinfer-cuda-gguf-window-test)
+    set_tests_properties(tyloinfer-cuda-gguf-window-test PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(tyloinfer-cuda-gr-bf16-test ${TYLOINFER_CUDA_ROOT}/tests/gr_bf16_test.cpp)
     mfq_configure_cuda_runtime_target(tyloinfer-cuda-gr-bf16-test)
     target_link_libraries(tyloinfer-cuda-gr-bf16-test PRIVATE mfq-cuda-runtime)
@@ -1024,8 +1081,21 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tyloinfer-cuda-dflash2-test COMMAND tyloinfer-cuda-dflash2-test ${CMAKE_CURRENT_BINARY_DIR}/dflash2-fixture)
     add_test(NAME tyloinfer-dflash2-weight-pack-test COMMAND tyloinfer-cuda-dflash2-test --weight-quant-check)
+    add_test(NAME tyloinfer-dflash2-dense-target-hidden-test COMMAND tyloinfer-cuda-dflash2-test --dense-target-hidden-check)
+    set_tests_properties(tyloinfer-dflash2-dense-target-hidden-test PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(tyloinfer-dflash2-weight-pack-test PROPERTIES LABELS cpu)
     set_tests_properties(tyloinfer-cuda-dflash2-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(tyloinfer-cuda-dflash2-q4-test ${TYLOINFER_CUDA_ROOT}/tests/dflash2_q4_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-dflash2-q4-test)
+    target_link_libraries(tyloinfer-cuda-dflash2-q4-test PRIVATE mfq-cuda-runtime)
+    target_compile_definitions(tyloinfer-cuda-dflash2-q4-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    if(MSVC)
+        target_compile_options(tyloinfer-cuda-dflash2-q4-test PRIVATE /EHsc)
+    endif()
+    add_test(NAME tyloinfer-dflash2-q4-weight-pack-test COMMAND tyloinfer-cuda-dflash2-q4-test --cpu)
+    set_tests_properties(tyloinfer-dflash2-q4-weight-pack-test PROPERTIES LABELS cpu)
+    add_test(NAME tyloinfer-cuda-dflash2-q4-test COMMAND tyloinfer-cuda-dflash2-q4-test)
+    set_tests_properties(tyloinfer-cuda-dflash2-q4-test PROPERTIES SKIP_RETURN_CODE 77)
     mfq_configure_cuda_runtime_target(tyloinfer-cuda-gguf-runtime-test)
     target_link_libraries(tyloinfer-cuda-gguf-runtime-test PRIVATE mfq-cuda-runtime)
     target_include_directories(tyloinfer-cuda-gguf-runtime-test PRIVATE
@@ -1080,6 +1150,8 @@ if(BUILD_TESTING)
     add_test(NAME tyloinfer-cuda-gguf-gated-input-test COMMAND tyloinfer-cuda-gguf-runtime-test --gated-input-check)
     set_tests_properties(tyloinfer-cuda-gguf-gated-input-test PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME tyloinfer-cuda-gguf-interleaved-projection-test COMMAND tyloinfer-cuda-gguf-runtime-test --interleaved-projection-check)
+    add_test(NAME tyloinfer-cuda-gguf-iq4-decode-consistency-test COMMAND tyloinfer-cuda-gguf-runtime-test --iq4-decode-consistency-check)
+    set_tests_properties(tyloinfer-cuda-gguf-iq4-decode-consistency-test PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(tyloinfer-cuda-gguf-interleaved-projection-test PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME tyloinfer-cuda-gguf-parallel-projection-test COMMAND tyloinfer-cuda-gguf-runtime-test --parallel-projection-check)
     set_tests_properties(tyloinfer-cuda-gguf-parallel-projection-test PROPERTIES SKIP_RETURN_CODE 77)
@@ -1188,6 +1260,8 @@ if(BUILD_TESTING)
         TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
     target_link_libraries(mfq-cuda-runtime-state-test PRIVATE mfq-cuda-runtime)
     add_test(NAME mfq-cuda-runtime-state-test COMMAND mfq-cuda-runtime-state-test)
+    add_test(NAME tyloinfer-cuda-attention-prefix-test COMMAND mfq-cuda-runtime-state-test --attention-prefix-check)
+    set_tests_properties(tyloinfer-cuda-attention-prefix-test PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME tyloinfer-cuda-tq-parallel-test COMMAND mfq-cuda-runtime-state-test --tq-tp-check)
     add_test(NAME mfq-cuda-mfe-prepare-test COMMAND mfq-cuda-runtime-state-test --mfe-prepare-check)
     add_test(NAME mfq-cuda-mfe-transfer-test COMMAND mfq-cuda-runtime-state-test --mfe-transfer-check)

@@ -1020,6 +1020,98 @@ void run_queued_greedy_chain() {
     std::cout<<"Queued greedy chain/fallback/positions/tails/penalties/probability/blockwise cases="<<cases<<" PASS\n";
 }
 
+void run_commit_target_hook() {
+    struct AcceptedOps:Ops {
+        int fixed_mtp_draft_depth()const{return 3;}
+        int32_t sample_normal(Tensor,Tensor){return 0;}
+    };
+    struct CommitOps:AcceptedOps {
+        int* commits;
+        void commit_target(){++*commits;model.commit_speculative();}
+    };
+    std::vector<int64_t> reference;int64_t target_end=-1,predictor_end=-1;
+    for(bool hooked:{false,true}) {
+        Model model;Predictor predictor;int commits=0;
+        InferenceRequest request;request.chat=false;request.prompt={0,0,0};
+        request.sampling.max_tokens=19;request.sampling.mtp_max_draft_tokens=3;request.sampling.temperature=0.;
+        InferenceOutput output(request,nullptr,"target-commit-hook");Tensor last;
+        AcceptedOps base{Ops{model,predictor}};
+        auto generation=hooked
+            ?speculative_sequence(CommitOps{base,&commits},request,output,512,0,Tensor{},&last)
+            :speculative_sequence(base,request,output,512,0,Tensor{},&last);
+        std::vector<int64_t> tokens;
+        while(auto step=generation.next())if(step.value)
+            if(const auto* delta=std::get_if<TokenOutput>(&*step.value))
+                tokens.insert(tokens.end(),delta->token_ids.begin(),delta->token_ids.end());
+        if(!hooked){reference=tokens;target_end=model.cache_pos;predictor_end=predictor.cache_position();}
+        else if(!commits || tokens!=reference || model.cache_pos!=target_end || predictor.cache_position()!=predictor_end)
+            throw std::runtime_error("Target commit hook changed output/cache or was bypassed");
+    }
+    std::cout<<"Target commit hook and legacy fallback PASS\n";
+}
+
+void run_device_draft_verification() {
+    struct LegacyOps:Ops {
+        bool perfect;int depth;
+        int fixed_mtp_draft_depth()const{return depth;}
+        int32_t sample_normal(Tensor logits,Tensor counts){return perfect?0:Ops::sample_normal(logits,counts);}
+    };
+    struct DeviceOps:LegacyOps {
+        bool enabled;int* queued;int* resolved;int* pending_rows;
+        Tensor enqueue_greedy_chain(Tensor hidden,Tensor,Tensor,int count,Tensor* verification_ids) {
+            if(!enabled)return {};
+            ++*queued;mtp.position+=size(hidden,1)+count-1;
+            *pending_rows=count+1;*verification_ids={{1,*pending_rows}};
+            return {{count},true,perfect?0:1};
+        }
+        std::pair<std::vector<int32_t>,std::vector<int32_t>> resolve_queued_greedy(
+                const Tensor& proposals,const Tensor& targets) {
+            if(*pending_rows!=size(targets,0) || model.cache_pos<*pending_rows)
+                throw std::runtime_error("Queued drafts were resolved before target verification");
+            ++*resolved;*pending_rows=0;
+            return {std::vector<int32_t>(size(proposals,0),int32_t(proposals.start)),
+                std::vector<int32_t>(size(targets,0),0)};
+        }
+    };
+    static_assert(requires(DeviceOps& ops,Tensor tensor,Tensor* ids) {
+        ops.enqueue_greedy_chain(tensor,tensor,tensor,int{},ids);
+        ops.resolve_queued_greedy(tensor,tensor);
+    });
+    int cases=0;
+    for(bool perfect:{false,true})for(int depth:{1,2,3})for(int limit:{2,19}) {
+        std::vector<int64_t> expected;int64_t target_end=-1,predictor_end=-1;
+        for(int mode:{0,1,2}) {
+            Model model;Predictor predictor;int queued=0,resolved=0,pending_rows=0;
+            InferenceRequest request;request.chat=false;request.prompt={0,0,0};
+            request.sampling.max_tokens=limit;request.sampling.mtp_max_draft_tokens=depth;
+            request.sampling.temperature=0.;
+            InferenceOutput output(request,nullptr,"device-draft-verification");Tensor last;
+            LegacyOps legacy{Ops{model,predictor},perfect,depth};
+            auto generation=mode==0?speculative_sequence(legacy,request,output,512,0,Tensor{},&last):
+                speculative_sequence(DeviceOps{legacy,mode==2,&queued,&resolved,&pending_rows},
+                    request,output,512,0,Tensor{},&last);
+            std::vector<int64_t> tokens;
+            while(auto step=generation.next())if(step.value)
+                if(const auto* delta=std::get_if<TokenOutput>(&*step.value))
+                    tokens.insert(tokens.end(),delta->token_ids.begin(),delta->token_ids.end());
+            if(!mode){expected=tokens;target_end=model.cache_pos;predictor_end=predictor.cache_position();}
+            else {
+                if(tokens!=expected || model.cache_pos!=target_end || predictor.cache_position()!=predictor_end ||
+                        queued!=resolved || pending_rows || ((mode==1 || depth==1 || limit==2) && queued) ||
+                        (mode==2 && depth>1 && limit==19 && !queued))
+                    throw std::runtime_error("Device draft verification mismatch: mode="+std::to_string(mode)+
+                        " perfect="+std::to_string(perfect)+" depth="+std::to_string(depth)+" limit="+std::to_string(limit)+
+                        " tokens="+std::to_string(tokens==expected)+" target="+std::to_string(model.cache_pos)+
+                        "/"+std::to_string(target_end)+" predictor="+std::to_string(predictor.cache_position())+
+                        "/"+std::to_string(predictor_end)+" queued="+std::to_string(queued)+" resolved="+
+                        std::to_string(resolved)+" pending="+std::to_string(pending_rows));
+                ++cases;
+            }
+        }
+    }
+    std::cout<<"Device drafts, combined verification, full/partial acceptance and fallback PASS cases="<<cases<<'\n';
+}
+
 int main() try {
     for (const bool dspark : {false, true}) {
         Model model;
@@ -1079,5 +1171,7 @@ int main() try {
     batch_policy_observations();
     run_probability_options();
     run_queued_greedy_chain();
+    run_commit_target_hook();
+    run_device_draft_verification();
     std::cout << "shared speculative sequence output/cache/dispatch tests passed\n";
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

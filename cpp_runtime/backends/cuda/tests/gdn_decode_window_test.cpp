@@ -34,7 +34,7 @@ int main(int argc,char** argv)try {
  const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
  const auto stream=mfq_current_cuda_stream();
  int cases=0,replays=0;
- for(int tokens:{2,3,4,6,8})for(int combination=0;combination<64;++combination) {
+ for(int tokens:{2,3,4,5,6,7,8})for(int combination=0;combination<64;++combination) {
   const bool tiled=combination&32;
   const int nk=combination&1?16:2,nv=nk*(combination&2?3:1),channels=(2*nk+nv)*128;
   const auto gate_type=combination&4?tb::kFloat32:tb::kFloat16;
@@ -84,6 +84,21 @@ int main(int argc,char** argv)try {
    for(int i=0;i<tokens-confirmed;++i){exact(cc[1][i],cc[0][i],"checkpoint conv");exact(cs[1][i],cs[0][i],"checkpoint state");}
   };
   auto expected=old(),actual=candidate();check(actual,expected);++cases;
+  const auto saved_conv=initial_conv.clone(),saved_state=initial_state.clone();
+  Tensor verification_updates;
+  for(bool quantized:{false,true})for(bool position_major:{false,true}) {
+   if(position_major && !quantized)continue;
+   auto separate=gdn_verify_window_cuda(qkv,gate,alpha,beta,initial_conv,initial_state,weight,bias,a,norm,
+    nk,nv,1e-6,eps,silu,output_half,transposed,tiled,quantized,position_major);
+   check(separate[0],expected,position_major);
+   exact(separate[1],conv[0],"separate final convolution");
+   exact(separate[2],state[0],"separate final recurrence");
+   exact(initial_conv,saved_conv,"verification changed initial convolution");
+   exact(initial_state,saved_state,"verification changed initial recurrence");
+   if(!verification_updates.defined())verification_updates=separate[3];
+   else exact(separate[3],verification_updates,"output packet changed verification updates");
+   ++cases;
+  }
   auto replay_conv=initial_conv.clone(),replay_state=initial_state.clone();
   if(combination&8) {
    auto storage=tb::empty({initial_state.numel()+1},initial_state.options());
@@ -97,6 +112,7 @@ int main(int argc,char** argv)try {
   exact(replay_conv,initial_conv,"read-only convolution");exact(replay_state,initial_state,"read-only state");
   auto recorded=gdn_replay_window_cuda(qkv,gate,alpha,beta,replay_conv,replay_state,weight,bias,a,norm,
    nk,nv,1e-6,eps,silu,output_half,transposed,false,tiled,true);
+  exact(verification_updates,recorded[3],"fused verification update records differ");
   exact(recorded[0],read[0],"recorded-update output");
   auto prepared=gdn_replay_window_cuda(qkv,gate,alpha,beta,replay_conv,replay_state,weight,bias,a,norm,
    nk,nv,1e-6,eps,silu,output_half,transposed,false,tiled,true,true);
@@ -104,7 +120,7 @@ int main(int argc,char** argv)try {
   if(output_half)mfq::cuda::gguf::quantize_input_f16(read[0].data_ptr(),tokens,nv*128,quantized.data_ptr(),stream);
   else mfq::cuda::gguf::quantize_input(read[0].data_ptr<float>(),tokens,nv*128,quantized.data_ptr(),stream);
   reset(1);check(candidate(true),expected);
-  if(tokens<=4) {
+  if(tokens<=8) {
    reset(1);check(candidate(true,true),expected,true);
    auto interleaved=gdn_replay_window_cuda(qkv,gate,alpha,beta,replay_conv,replay_state,weight,bias,a,norm,
     nk,nv,1e-6,eps,silu,output_half,transposed,false,tiled,true,true,true);
@@ -136,6 +152,18 @@ int main(int argc,char** argv)try {
    replay_conv.copy_(initial_conv);replay_state.copy_(initial_state);
    gdn_replay_commit_layers_cuda(update_descriptor,1,nv,channels,keep,true);
    exact(replay_conv,legacy_conv,"recorded prefix convolution");exact(replay_state,legacy_state,"recorded prefix state");
+   if(!try_gdn_replay_updates_cuda(qkv,verification_updates,initial_conv,initial_state,
+       next_conv,replay_state,keep,transposed))throw std::runtime_error("recorded prefix disjoint dispatch failed");
+   exact(next_conv,legacy_conv,"one-kernel disjoint prefix convolution");
+   exact(replay_state,legacy_state,"one-kernel disjoint prefix state");
+   replay_conv.copy_(initial_conv);replay_state.copy_(initial_state);
+   if(!try_gdn_replay_updates_cuda(qkv,verification_updates,replay_conv,replay_state,
+       replay_conv,replay_state,keep,transposed))throw std::runtime_error("recorded prefix inplace dispatch failed");
+   exact(replay_conv,legacy_conv,"one-kernel inplace prefix convolution");
+   exact(replay_state,legacy_state,"one-kernel inplace prefix state");
+   exact(initial_conv,saved_conv,"prefix replay changed immutable convolution");
+   exact(initial_state,saved_state,"prefix replay changed immutable state");
+   cases+=2;
   }
   if(recorded_benchmark && tokens<=4 && (combination==3 || combination==35)) {
    mfq::cuda::Graph graph;std::vector<Tensor> owned;
@@ -179,6 +207,29 @@ int main(int argc,char** argv)try {
     <<" read_and_commit_us="<<samples[2]<<" avoided_state_bytes="<<(tokens-1)*initial_state.nbytes()<<std::endl;
   }
   if(combination==3 || combination==35) {
+   {
+   mfq::cuda::Graph rank_graph;std::vector<Tensor> rank_owned;
+   auto rank_conv=tb::empty_like(initial_conv),rank_state=tb::empty_like(initial_state);
+   const auto rank_execute=[&] {
+    rank_owned=gdn_verify_window_cuda(qkv,gate,alpha,beta,initial_conv,initial_state,weight,bias,a,norm,
+      nk,nv,1e-6,eps,silu,output_half,transposed,tiled);
+    if(!try_gdn_replay_updates_cuda(qkv,rank_owned[3],initial_conv,initial_state,
+       rank_conv,rank_state,tokens-1,transposed))throw std::runtime_error("rank-update Graph dispatch failed");
+   };
+   rank_graph.prepare_memory();rank_execute();mfq_cuda_synchronize();rank_owned.clear();
+   rank_graph.capture_begin();rank_execute();rank_graph.capture_end();
+   auto rank_base=qkv.clone();
+   for(float amplitude:{.3f,.8f,1.1f}) {
+    qkv.copy_(rank_base*amplitude);rank_graph.replay();
+    auto reference_conv=initial_conv.clone(),reference_state=initial_state.clone();
+    const auto reference=gdn_replay_window_cuda(qkv.narrow(1,0,tokens-1),gate.narrow(1,0,tokens-1),
+      alpha.narrow(1,0,tokens-1),beta.narrow(1,0,tokens-1),reference_conv,reference_state,
+      weight,bias,a,norm,nk,nv,1e-6,eps,silu,output_half,transposed,true,tiled);
+    exact(rank_conv,reference[1],"changed-input rank Graph convolution");
+    exact(rank_state,reference_state,"changed-input rank Graph state");++replays;
+   }
+   qkv.copy_(rank_base);
+   }
    mfq::cuda::Graph oldgraph,newgraph;Tensor oldout,newout;
    oldgraph.prepare_memory();oldout=old();mfq_cuda_synchronize();oldout={};reset(0);
    oldgraph.capture_begin();oldout=old();oldgraph.capture_end();
@@ -206,6 +257,38 @@ int main(int argc,char** argv)try {
    std::cout<<"gdn_register_window tokens="<<tokens<<" heads="<<nv<<" old_us="<<times[0][2]<<" new_us="<<times[1][2]<<std::endl;
    }
   }
+ }
+ {
+  constexpr int tokens=3,nv=2,channels=768;
+  auto qkv=data({1,tokens,channels},201,.2f),updates=data({tokens,nv,257},202,.1f);
+  auto conv=data({1,3,channels},203,.2f),state=data({1,nv,128,128},204,.1f);
+  auto output_conv=conv.clone(),output_state=state.clone();
+  const auto rejected=[&](const Tensor& input,const Tensor& records,const Tensor& ic,const Tensor& is,
+      Tensor& oc,Tensor& os,int keep) {
+   auto before_c=oc.clone(),before_s=os.clone();
+   if(try_gdn_replay_updates_cuda(input,records,ic,is,oc,os,keep,true))
+    throw std::runtime_error("invalid rank-update input accepted");
+   exact(oc,before_c,"rejected rank input changed convolution");
+   exact(os,before_s,"rejected rank input changed state");++cases;
+  };
+  rejected(qkv,updates,conv,state,output_conv,output_state,0);
+  rejected(qkv,updates,conv,state,output_conv,output_state,tokens+1);
+  rejected(qkv,updates.narrow(2,0,256),conv,state,output_conv,output_state,1);
+  rejected(qkv.cpu(),updates,conv,state,output_conv,output_state,1);
+  auto ss=tb::empty({state.numel()+1},state.options());
+  auto si=ss.narrow(0,0,state.numel()).reshape(state.sizes());
+  auto so=ss.narrow(0,1,state.numel()).reshape(state.sizes());
+  si.copy_(state);rejected(qkv,updates,conv,si,output_conv,so,1);
+  auto cs=tb::empty({conv.numel()+1},conv.options());
+  auto ci=cs.narrow(0,0,conv.numel()).reshape(conv.sizes());
+  auto co=cs.narrow(0,1,conv.numel()).reshape(conv.sizes());
+  ci.copy_(conv);rejected(qkv,updates,ci,state,co,output_state,1);
+  auto shared=tb::empty({state.numel()+qkv.numel()+updates.numel()},state.options());
+  auto shared_state=shared.narrow(0,0,state.numel()).reshape(state.sizes());
+  auto shared_qkv=shared.narrow(0,0,qkv.numel()).reshape(qkv.sizes());
+  rejected(shared_qkv,updates,conv,state,output_conv,shared_state,1);
+  auto shared_updates=shared.narrow(0,0,updates.numel()).reshape(updates.sizes());
+  rejected(qkv,shared_updates,conv,state,output_conv,shared_state,1);
  }
  mfq_cuda_synchronize();
  std::cout<<"gdn_register_window exact_cases="<<cases<<" changing_graph="<<replays<<" PASS\n";

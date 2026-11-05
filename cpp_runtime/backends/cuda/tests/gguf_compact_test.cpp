@@ -231,12 +231,134 @@ void run(int format, int tokens, int rows, int columns, bool misaligned, bool be
     }
     cudaStreamDestroy(stream);
 }
+
+void run_routed(int format,int tokens,bool routed,bool preserve,
+        bool async=false,int rows=37,int columns=1280,bool aligned=false) {
+    constexpr int experts=5,routes=3;
+    const auto type=CompactFormat(format);
+    const auto row_bytes=compact_row_bytes(type,columns);
+    const auto stride=async?(row_bytes+7)&~uint64_t(7):row_bytes+3;
+    const auto upload_shift=async && aligned?1:0;
+    const auto block_bytes=compact_row_bytes(type,128);
+    std::array<std::vector<std::uint8_t>,2> weights;
+    std::array<std::vector<float>,2> decoded;
+    for(int bank=0;bank<2;++bank) {
+        auto& bytes=weights[bank];bytes.resize(experts*rows*stride+2);
+        for(std::size_t i=0;i<bytes.size();++i)bytes[i]=std::uint8_t(i*29+i/17+13+bank*97);
+        for(int row=0;row<experts*rows;++row)for(int block=0;block<columns/128;++block) {
+            const auto at=row*(columns/128)+block;
+            const auto scale=__float2half(at%7?float(at%2?-.0173:.0117)*(1+at%5):0.f);
+            std::memcpy(bytes.data()+1+row*stride+block*block_bytes,&scale,2);
+        }
+        decoded[bank]=reference(bytes,stride,format,experts*rows,columns);
+    }
+    const auto slots=tokens*routes,input_rows=routed?slots:tokens;
+    std::vector<Q8> input(std::size_t(input_rows)*(columns/32));
+    std::vector<std::int64_t> ids(slots);
+    std::array<std::vector<std::uint64_t>,2> addresses;
+    for(auto& table:addresses)table.resize(experts);
+    std::vector<float> initial(std::size_t(slots)*rows+2,7.f),actual(initial.size());
+    const std::uint32_t sentinel=0x5a5a5a5a;
+    std::memcpy(initial.data(),&sentinel,4);std::memcpy(&initial.back(),&sentinel,4);
+    Device<std::uint8_t> first(weights[0].size()),second(weights[1].size());
+    Device<std::uint64_t> first_addresses(experts),second_addresses(experts);
+    Device<std::int64_t> selected(slots);Device<RouteGroup> groups(slots+1);
+    Device<Q8> x(input.size());Device<float> out(initial.size()),up(initial.size());
+    struct Graph {
+        cudaStream_t stream=nullptr;cudaGraph_t graph=nullptr;cudaGraphExec_t exec=nullptr;
+        ~Graph(){if(exec)cudaGraphExecDestroy(exec);if(graph)cudaGraphDestroy(graph);if(stream)cudaStreamDestroy(stream);}
+    } graph;
+    check(cudaStreamCreateWithFlags(&graph.stream,cudaStreamNonBlocking));
+    check(cudaMemcpyAsync(first.data,weights[0].data()+upload_shift,weights[0].size()-upload_shift,cudaMemcpyHostToDevice,graph.stream));
+    check(cudaMemcpyAsync(second.data,weights[1].data()+upload_shift,weights[1].size()-upload_shift,cudaMemcpyHostToDevice,graph.stream));
+    const auto launch=[&] {
+        prepare_route_groups(selected.data,slots,tokens,groups.data,graph.stream);
+        if(!(async?try_compact_routed_project_async:try_compact_routed_project)(type,first_addresses.data,stride,experts,rows,columns,
+                selected.data,groups.data,tokens,routes,x.data,routed,out.data+1,graph.stream,preserve,
+                second_addresses.data,stride,up.data+1,true,true,true))
+            throw std::runtime_error("Compact routed entry rejected a supported format");
+    };
+    // Reuse one captured graph while expert IDs, bank holes and activations change.
+    for(int replay=0;replay<3;++replay) {
+        for(int e=0;e<experts;++e) {
+            addresses[0][e]=e==(experts-1+replay)%experts?0:reinterpret_cast<std::uintptr_t>(first.data+1-upload_shift+e*rows*stride);
+            addresses[1][e]=e==(experts-2+replay)%experts?0:reinterpret_cast<std::uintptr_t>(second.data+1-upload_shift+e*rows*stride);
+        }
+        for(int m=0;m<tokens;++m)for(int r=0;r<routes;++r)
+            ids[m*routes+r]=replay==0?r:(r*3+m*replay+1)%experts;
+        ids[0]=-1;ids.back()=experts;
+        for(std::size_t i=0;i<input.size();++i) {
+            input[i].d=__float2half(.0037f*(1+(i+replay)%5));input[i].s=__float2half(0.f);
+            for(int k=0;k<32;++k)input[i].qs[k]=std::int8_t((i*19+k*31+replay*11)%255-127);
+        }
+        for(int bank=0;bank<2;++bank)check(cudaMemcpyAsync(bank?second_addresses.data:first_addresses.data,
+            addresses[bank].data(),experts*sizeof(std::uint64_t),cudaMemcpyHostToDevice,graph.stream));
+        check(cudaMemcpyAsync(selected.data,ids.data(),slots*sizeof(std::int64_t),cudaMemcpyHostToDevice,graph.stream));
+        check(cudaMemcpyAsync(x.data,input.data(),input.size()*sizeof(Q8),cudaMemcpyHostToDevice,graph.stream));
+        for(auto* destination:{out.data,up.data})check(cudaMemcpyAsync(destination,initial.data(),initial.size()*sizeof(float),cudaMemcpyHostToDevice,graph.stream));
+        if(!replay) {
+            check(cudaStreamSynchronize(graph.stream));
+            check(cudaStreamBeginCapture(graph.stream,cudaStreamCaptureModeThreadLocal));launch();
+            check(cudaStreamEndCapture(graph.stream,&graph.graph));check(cudaGraphInstantiate(&graph.exec,graph.graph,0));
+        }
+        check(cudaGraphLaunch(graph.exec,graph.stream));
+        for(int bank=0;bank<2;++bank) {
+            check(cudaMemcpyAsync(actual.data(),bank?up.data:out.data,actual.size()*sizeof(float),cudaMemcpyDeviceToHost,graph.stream));
+            check(cudaStreamSynchronize(graph.stream));
+            if(std::memcmp(actual.data(),&sentinel,4) || std::memcmp(&actual.back(),&sentinel,4))
+                throw std::runtime_error("Compact routed projection overwrote an output guard");
+            for(int slot=0;slot<slots;++slot)for(int row=0;row<rows;++row) {
+                const auto expert=ids[slot];
+                const bool missing=expert<0 || expert>=experts || !addresses[bank][expert];
+                double expected=missing && preserve?7.:0.,absolute=0.;
+                if(!missing)for(int k=0;k<columns;++k) {
+                    const auto at=(routed?slot:slot/routes)*columns+k;
+                    const auto& q=input[at/32];
+                    const double term=double(decoded[bank][(expert*rows+row)*columns+k])*
+                        (__half2float(q.d)*q.qs[at%32]);
+                    expected+=term;absolute+=std::abs(term);
+                }
+                const auto value=actual[1+slot*rows+row];
+                if(!std::isfinite(value) || std::abs(value-expected)>3e-6*absolute+1e-6)
+                    throw std::runtime_error("Compact routed graph differs from independent scalar decoder: format="+
+                        std::to_string(format)+" tokens="+std::to_string(tokens)+" routed="+std::to_string(routed)+
+                        " preserve="+std::to_string(preserve)+" replay="+std::to_string(replay)+" bank="+std::to_string(bank)+
+                        " slot="+std::to_string(slot)+" row="+std::to_string(row)+" expected="+std::to_string(expected)+
+                        " actual="+std::to_string(value));
+            }
+        }
+    }
+}
 }
 
 int main(int argc, char** argv) {
     try {
         int devices = 0;
         if (cudaGetDeviceCount(&devices) != cudaSuccess || !devices) { std::puts("SKIP: CUDA unavailable"); return 77; }
+        if(argc==2 && std::string(argv[1])=="--staged-book") {
+            int cases=0;
+            for(int format=144;format<=151;++format)for(int m:{2,3,4,8,32})
+                for(int shape=0;shape<3;++shape)for(bool routed:{false,true})for(bool preserve:{false,true}) {
+                    const int rows=shape==0?63:shape==1?64:129,columns=shape<2?512:640;
+                    run_routed(format,m,routed,preserve,false,rows,columns);++cases;
+                }
+            std::printf("compact staged book: %d cases x3 changing Graph replays, two-row cost threshold, original bytes, FP64 oracle and guards PASS\n",cases);
+            return 0;
+        }
+        if(argc==2 && (std::string(argv[1])=="--async-only" || std::string(argv[1])=="--async-memory")) {
+            const bool memory=std::string(argv[1])=="--async-memory";
+            int cases=0;
+            for(int format=144;format<=151;++format)for(int m:{2,3,4,8,32}) {
+                if(memory && m!=4)continue;
+                for(int shape=0;shape<3;++shape)for(bool routed:{false,true})for(bool preserve:{false,true}) {
+                    const int rows=shape==0?1:shape==1?37:129;
+                    const int columns=shape==0?128:shape==1?1152:2560;
+                    run_routed(format,m,routed,preserve,true,rows,columns,shape!=1);++cases;
+                }
+            }
+            std::printf("compact async: %d cases x3 changing Graph replays, eight formats, partial K/N, aligned/unaligned banks, missing/preserve, FP64 oracle and guards PASS\n",cases);
+            return 0;
+        }
         if (argc == 6 || argc == 7) {
             const int f = std::stoi(argv[1]), m = std::stoi(argv[2]), n = std::stoi(argv[3]), k = std::stoi(argv[4]), kind = std::stoi(argv[5]);
             const bool native_pair = argc == 7;
@@ -256,6 +378,8 @@ int main(int argc, char** argv) {
                 run<__half>(format, 4, 129, 2560, false, false);
                 run<float>(format, 17, 7, 128, false, false);
                 run<Q8>(format, 32, 7, 128, false, false);
+                if(format>=144)for(int m:{2,3,4,8,32})for(bool routed:{false,true})for(bool preserve:{false,true})
+                    run_routed(format,m,routed,preserve);
             }
         }
         if(argc!=6 && argc!=7)std::puts("compact9 strided grouped FP16 decode/scalar oracle/unaligned packed bytes/batch gaps PASS");

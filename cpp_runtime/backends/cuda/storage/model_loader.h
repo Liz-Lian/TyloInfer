@@ -127,9 +127,11 @@ auto with_loaded_cuda_model(
         if(!source->find_tensor("predictor.embedding_norm.weight"))
             throw std::invalid_argument("the MTP GGUF companion has no canonical predictor tensors");
     } else source=mfq::open_model_source(options.model_path);
-    if(!execution.dflash2_draft_path.empty() &&
-            cuda_backbone(source->resolved_model_graph().backbone)!=CudaBackbone::qwen4_exp)
-        throw std::invalid_argument("DFlash2 requires a Flash-Next target model");
+    if(!execution.dflash2_draft_path.empty()) {
+        const auto backbone=cuda_backbone(source->resolved_model_graph().backbone);
+        if(backbone!=CudaBackbone::qwen4_exp && backbone!=CudaBackbone::generic_qwen)
+            throw std::invalid_argument("DFlash2 requires a compatible Qwen target model");
+    }
     auto load = [&]<typename Model>() {
         auto started = std::chrono::steady_clock::now();
         Model model = load_causal_lm<Model>(

@@ -14,7 +14,8 @@ namespace mfq::cuda {
 struct RecurrentMixerState {
     mfq_tensor_backend::Tensor convolution;
     mfq_tensor_backend::Tensor recurrent;
-    // Confirmed state captured before a speculative window was evaluated.
+    // Transaction storage: initial snapshots, or an out-of-place recurrent
+    // result when the owner uses checkpoint_convolution().
     mfq_tensor_backend::Tensor speculative_convolution;
     mfq_tensor_backend::Tensor speculative_recurrent;
     bool speculative_pending = false;
@@ -41,6 +42,17 @@ struct RecurrentMixerState {
         speculative_convolution =
             snapshot(std::move(speculative_convolution), convolution);
         speculative_recurrent = snapshot(std::move(speculative_recurrent), recurrent);
+        speculative_pending = true;
+    }
+
+    // Verification can keep recurrence read-only and place its result in
+    // transaction storage instead of copying the initial recurrent matrix.
+    // The owner commits or discards that result; restore() applies only to
+    // the full snapshot produced by checkpoint().
+    void checkpoint_convolution() {
+        speculative_convolution =
+            snapshot(std::move(speculative_convolution), convolution);
+        speculative_recurrent = mfq_tensor_backend::Tensor();
         speculative_pending = true;
     }
 

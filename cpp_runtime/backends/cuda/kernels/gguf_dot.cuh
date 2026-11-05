@@ -7,6 +7,24 @@ namespace {
 // Q8_1 activation dots use the bundled llama.cpp/ggml implementation (MIT).
 // Warp/block assignment and the custom Q2_0 dot follow Strata iq_kernels.cu,
 // Copyright (c) 2026 Niko1221 and contributors, MIT: ../../../third_party/strata.LICENSE.
+
+// The weighted numerator stays below 2^23 even for signed-byte inputs:
+// 2 * 16 * 43 * 128 * 31 = 5,459,968. Conversion to FP32 is exact.
+// Keep GGUF's odd local scales fractional until applying the shared base.
+// Dividing the integer dot first introduces an input-dependent truncation.
+template<int Format>
+__device__ __forceinline__ float iq2_fractional_group(
+        int lo,int hi,int low_scale,int high_scale,float weight_scale,float activation_scale) {
+    int weighted;
+    if constexpr(Format==GGML_TYPE_IQ2_XXS)weighted=(lo+hi)*low_scale;
+    else weighted=lo*(2*low_scale+1)+hi*(2*high_scale+1);
+    return ((weight_scale*.125f)*activation_scale)*float(weighted);
+}
+
+template<int Format>
+__device__ __forceinline__ float iq2_fractional_dot(
+        const void* weight,const block_q8_1* input,int block,int part);
+
 template<int Format> struct Dot;
 #define TYLOINFER_GGUF_DOT(Name, Function, Qk, Qi, Step) \
 template<> struct Dot<GGML_TYPE_##Name> { \
@@ -25,12 +43,12 @@ TYLOINFER_GGUF_DOT(Q3_K, vec_dot_q3_K_q8_1, 256, QI3_K, VDR_Q3_K_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(Q4_K, vec_dot_q4_K_q8_1, 256, QI4_K, VDR_Q4_K_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(Q5_K, vec_dot_q5_K_q8_1, 256, QI5_K, VDR_Q5_K_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(Q6_K, vec_dot_q6_K_q8_1, 256, QI6_K, VDR_Q6_K_Q8_1_MMVQ)
-TYLOINFER_GGUF_DOT(IQ2_XXS, vec_dot_iq2_xxs_q8_1, 256, QI2_XXS, VDR_IQ2_XXS_Q8_1_MMVQ)
-TYLOINFER_GGUF_DOT(IQ2_XS, vec_dot_iq2_xs_q8_1, 256, QI2_XS, VDR_IQ2_XS_Q8_1_MMVQ)
+TYLOINFER_GGUF_DOT(IQ2_XXS, iq2_fractional_dot<GGML_TYPE_IQ2_XXS>, 256, QI2_XXS, VDR_IQ2_XXS_Q8_1_MMVQ)
+TYLOINFER_GGUF_DOT(IQ2_XS, iq2_fractional_dot<GGML_TYPE_IQ2_XS>, 256, QI2_XS, VDR_IQ2_XS_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(IQ3_XXS, vec_dot_iq3_xxs_q8_1, 256, QI3_XXS, VDR_IQ3_XXS_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(IQ4_NL, vec_dot_iq4_nl_q8_1, 32, QI4_NL, VDR_IQ4_NL_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(IQ3_S, vec_dot_iq3_s_q8_1, 256, QI3_S, VDR_IQ3_S_Q8_1_MMVQ)
-TYLOINFER_GGUF_DOT(IQ2_S, vec_dot_iq2_s_q8_1, 256, QI2_S, VDR_IQ2_S_Q8_1_MMVQ)
+TYLOINFER_GGUF_DOT(IQ2_S, iq2_fractional_dot<GGML_TYPE_IQ2_S>, 256, QI2_S, VDR_IQ2_S_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(IQ4_XS, vec_dot_iq4_xs_q8_1, 256, QI4_XS, VDR_IQ4_XS_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(IQ1_S, vec_dot_iq1_s_q8_1, 256, QI1_S, VDR_IQ1_S_Q8_1_MMVQ)
 TYLOINFER_GGUF_DOT(IQ1_M, vec_dot_iq1_m_q8_1, 256, QI1_M, VDR_IQ1_M_Q8_1_MMVQ)
@@ -121,6 +139,14 @@ template<int Format> struct CompactDot {
 TYLOINFER_GGUF_COMPACT_FORMATS(TYLOINFER_COMPACT_DOT)
 #undef TYLOINFER_COMPACT_DOT
 #include "gguf_dot_prepared.cuh"
+
+template<int Format>
+__device__ __forceinline__ float iq2_fractional_dot(
+        const void* weight,const block_q8_1* input,int block,int part) {
+    const auto decoded=PreparedIq2<Format>::load(weight,block,part);
+    return PreparedIq2<Format>::apply(decoded,input);
+}
+
 
 template<int Format>
 __device__ float q8_dot(const std::uint8_t* weight, const block_q8_1* x, std::int64_t columns, int lane) {

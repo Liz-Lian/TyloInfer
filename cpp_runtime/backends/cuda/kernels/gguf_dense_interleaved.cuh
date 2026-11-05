@@ -62,6 +62,28 @@ __device__ __forceinline__ void project_dense_position_major_body(const uint8_t*
     }
    }
   }
+  if constexpr(Coop && Format==GGML_TYPE_IQ4_XS) {
+   // Match native M1: reduce lanes inside each K warp, then add the K
+   // partials in warp order. Token/row ownership may change independently.
+   constexpr int Count=R*M,Capacity=warp_sums::capacity(Count);
+   float values[Capacity]{};
+   #pragma unroll
+   for(int r=0;r<R;++r)
+    #pragma unroll
+    for(int t=0;t<M;++t)values[r*M+t]=sums[r][t];
+   const float value=warp_sums::reduce<Capacity>(values,lane);
+   const int index=warp_sums::index<Capacity>(lane);
+   const bool owner=lane==warp_sums::owner<Capacity>(index);
+   if(warp<Warps && owner && index<Count)scratch[warp*Capacity+index]=value;
+   __syncthreads();
+   if(warp || !owner || index>=Count)return;
+   float sum=scratch[index];
+   #pragma unroll
+   for(int w=1;w<Warps;++w)sum+=scratch[w*Capacity+index];
+   const int r=index/M,t=index%M;
+   if(row+r<rows)store_projection(output,t*rows+row+r,sum,half_output);
+   return;
+  }
   if constexpr(Coop) {
    auto& partial=*reinterpret_cast<float(*)[Warps-1][R][M][32]>(scratch);
    if(warp && warp<Warps)for(int r=0;r<R;++r)for(int t=0;t<M;++t)partial[warp-1][r][t][lane]=sums[r][t];

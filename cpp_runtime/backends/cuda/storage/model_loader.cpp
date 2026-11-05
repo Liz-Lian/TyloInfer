@@ -304,6 +304,15 @@ RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(
             "CUDA vision adapter is unsupported for Qwen");
     }
 
+    if (!model.execution->dflash2_draft_path.empty()) {
+        if (model.execution->layer_placement.enabled() || model.execution->dense_cpu_layer_count ||
+                !model.execution->dsv4_cpu_offload_layers.empty() || model.execution->moe_expert_cache ||
+                model.execution->gguf_expert_cache)
+            throw std::runtime_error("DFlash2 Qwen target requires GPU-resident blocks");
+        result.mtp = mfq::cuda::dflash2::load(*model.execution, model, model.execution->dflash2_draft_path);
+        result.mtp_available = true;
+        return result;
+    }
     if (result.plan.predictor == mfq::cuda::CudaPredictorAdapter::qwen35) {
         const auto& model_execution = *model.execution;
         const bool supported_placement =

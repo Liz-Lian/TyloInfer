@@ -8,6 +8,7 @@
 #include "ops.h"
 #include "runtime/decode_window.h"
 #include "mfq_cuda_context.h"
+#include "mfq_cuda_sampling_ops.h"
 #include "runtime/graph_pool_lease.h"
 #include "models/qwen35/mtp_graph.h"
 #include <map>
@@ -30,16 +31,23 @@ struct Qwen35Mtp final : MtpModule {
             Tensor hidden,ids,positions,physical_positions,lengths,output,logits;
             explicit Cell(cudaStream_t stream):graph(stream){}
         };
+        struct GreedyCell {
+            mfq::cuda::DecodeWindow graph;
+            Tensor hidden,ids,positions,physical_positions,lengths,proposals,verification_ids;
+            explicit GreedyCell(cudaStream_t stream):graph(stream){}
+        };
         std::shared_ptr<mfq::cuda::Context> context;
         cudaStream_t stream;
         std::shared_ptr<mfq::cuda::GraphPoolLease> pool;
         const void* target_identity=nullptr;
         std::vector<std::pair<const void*,const void*>> cache_addresses;
         std::map<std::tuple<int,int64_t,int>,std::unique_ptr<Cell>> cells;
+        std::map<std::tuple<int,int64_t,int>,std::unique_ptr<GreedyCell>> greedy_cells;
         uint64_t captures=0,replays=0;
         PredictorGraphs():context(mfq::cuda::default_context(mfq_current_cuda_device())),
             stream(mfq_current_cuda_stream()),pool(mfq::cuda::GraphPoolLease::acquire(context,stream)) {}
         ~PredictorGraphs() {
+            greedy_cells.clear();
             cells.clear();
             std::cerr<<"runtime_qwen35_predictor_graph captures="<<captures<<" replays="<<replays<<'\n';
         }
@@ -105,9 +113,9 @@ struct Qwen35Mtp final : MtpModule {
         return step_positioned(target,std::move(hidden),std::move(ids),{});
     }
 
-    std::optional<MtpStep> graph_step(const MtpTarget& target,
+    PredictorGraphs* graph_registry(const MtpTarget& target,
             const mfq_tensor_backend::Tensor& hidden,const mfq_tensor_backend::Tensor& ids,
-            const mfq_tensor_backend::Tensor& positions, int history_mode = 0) {
+            const mfq_tensor_backend::Tensor& positions) {
         namespace tb=mfq_tensor_backend;
         if(cache_pos<=0 || hidden.dim()!=3 || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<1 ||
                 ids.size(1)>1+mfq::engine::mtp::kMaximumReportedDraftDepth ||
@@ -126,8 +134,19 @@ struct Qwen35Mtp final : MtpModule {
         if(!predictor_graphs)predictor_graphs=std::make_unique<PredictorGraphs>();
         auto& registry=*predictor_graphs;
         if(registry.target_identity!=identity || registry.cache_addresses!=addresses) {
-            registry.cells.clear();registry.target_identity=identity;registry.cache_addresses=std::move(addresses);
+            registry.greedy_cells.clear();registry.cells.clear();
+            registry.target_identity=identity;registry.cache_addresses=std::move(addresses);
         }
+        return &registry;
+    }
+
+    std::optional<MtpStep> graph_step(const MtpTarget& target,
+            const mfq_tensor_backend::Tensor& hidden,const mfq_tensor_backend::Tensor& ids,
+            const mfq_tensor_backend::Tensor& positions, int history_mode = 0) {
+        namespace tb=mfq_tensor_backend;
+        auto* graphs=graph_registry(target,hidden,ids,positions);
+        if(!graphs)return {};
+        auto& registry=*graphs;
         const auto tokens=ids.size(1);
         auto& owner=registry.cells[{int(hidden.scalar_type()),tokens,history_mode}];
         if(!owner)owner=std::make_unique<PredictorGraphs::Cell>(registry.stream);
@@ -157,7 +176,11 @@ struct Qwen35Mtp final : MtpModule {
             std::cerr<<"runtime_qwen35_predictor_graph_capture rows="<<tokens<<" history_mode="<<history_mode
                 <<" nodes="<<cell.graph.nodes()<<'\n';
         }
-        cell.graph.run();++registry.replays;cache_pos=start+tokens;
+        // Input copies, sampling and the next predictor step use this stream.
+        // Keep them ordered without waiting for each device-only graph on the
+        // host. Graphs with CPU work or I/O retain their synchronous replay.
+        if(!cell.graph.enqueue_if_device_only())cell.graph.run();
+        ++registry.replays;cache_pos=start+tokens;
         if(history_mode==1)return MtpStep{};
         auto output=cell.output.clone();
         return MtpStep{output,output,cell.logits};
@@ -182,6 +205,87 @@ struct Qwen35Mtp final : MtpModule {
             const mfq_tensor_backend::Tensor& positions = {}) {
         if(!cache_only_history_supported() || ids.size(1)<=1)return {};
         return graph_step(target,hidden,ids,positions,2);
+    }
+
+    // Keep proposals on the ordered device stream so target verification can
+    // consume them before the host needs either set of sampled token IDs.
+    std::optional<mfq_tensor_backend::Tensor> enqueue_greedy_chain(const MtpTarget& target,
+            mfq_tensor_backend::Tensor hidden,mfq_tensor_backend::Tensor ids,
+            mfq_tensor_backend::Tensor positions,int depth,
+            mfq_tensor_backend::Tensor* verification_ids=nullptr) {
+        namespace tb=mfq_tensor_backend;
+        if(depth<2 || depth>mfq::engine::mtp::kMaximumReportedDraftDepth || cache_pos<=0 ||
+                hidden.dim()!=3 || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<1 ||
+                hidden.size(0)!=1 || hidden.size(1)!=ids.size(1) || !hidden.is_cuda() ||
+                !ids.is_cuda() || ids.scalar_type()!=tb::kInt64 || !cache_only_history_supported())return {};
+        // Check the entire chain before advancing any predictor history.
+        const auto end=cache_pos+ids.size(1)+depth-1;
+        for(const auto& block:blocks) {
+            const auto* full=dynamic_cast<const FullBlock*>(block.get());
+            if(!full || !full->cache.k.defined() || full->cache.k.dim()<3 ||
+                    end>full->cache.k.size(2))return {};
+        }
+        auto* graphs=graph_registry(target,hidden,ids,positions);
+        if(!graphs)return {};
+        auto& registry=*graphs;
+        const auto tokens=ids.size(1),start=cache_pos;
+        auto& owner=registry.greedy_cells[{int(hidden.scalar_type()),tokens,depth}];
+        if(!owner)owner=std::make_unique<PredictorGraphs::GreedyCell>(registry.stream);
+        auto& cell=*owner;
+        auto physical=tb::arange(start,start+tokens,ids.options());
+        auto pos=positions.defined()?positions.reshape({tokens}).to(ids.device(),tb::kInt64).contiguous():physical;
+        if(!cell.ids.defined()) {
+            cell.hidden=hidden.contiguous().clone();cell.ids=ids.clone();cell.positions=pos.clone();
+            cell.physical_positions=physical.clone();cell.lengths=tb::full({1},start+tokens,ids.options());
+        } else {
+            cell.hidden.copy_(hidden);cell.ids.copy_(ids);cell.positions.copy_(pos);
+            cell.physical_positions.copy_(physical);cell.lengths.fill_(start+tokens);
+        }
+        if(!cell.graph.valid()) {
+            cell.graph.capture([&] {
+                tb::Tensor output;
+                if(tokens>1) {
+                    (void)evaluate(target,cell.hidden.narrow(1,0,tokens-1),cell.ids.narrow(1,0,tokens-1),
+                        cell.positions.narrow(0,0,tokens-1),cell.physical_positions.narrow(0,0,tokens-1),{},true);
+                    output=evaluate(target,cell.hidden.narrow(1,tokens-1,1),cell.ids.narrow(1,tokens-1,1),
+                        cell.positions.narrow(0,tokens-1,1),cell.physical_positions.narrow(0,tokens-1,1),cell.lengths);
+                } else output=evaluate(target,cell.hidden,cell.ids,cell.positions,cell.physical_positions,cell.lengths);
+                std::vector<tb::Tensor> proposals;
+                proposals.reserve(depth);
+                for(int i=0;i<depth;++i) {
+                    auto last=output.narrow(1,output.size(1)-1,1);
+                    auto logits=target.logits(last.to(tb::kFloat16).contiguous()).reshape({1,-1});
+                    auto token=sample_greedy_cuda(logits.contiguous()).reshape({1});
+                    proposals.push_back(token);
+                    if(i+1<depth) {
+                        auto next_position=cell.positions.narrow(0,tokens-1,1)+(i+1);
+                        auto next_physical=cell.physical_positions.narrow(0,tokens-1,1)+(i+1);
+                        auto next_length=cell.lengths+(i+1);
+                        output=evaluate(target,last,token.reshape({1,1}),next_position,next_physical,next_length);
+                    }
+                }
+                cell.proposals=tb::cat(proposals,0);
+                cell.verification_ids=tb::cat({cell.ids.narrow(1,tokens-1,1).reshape({1}),
+                    cell.proposals},0).reshape({1,depth+1});
+            },[&]{cache_pos=start;},[&]{cell.proposals={};cell.verification_ids={};});
+            ++registry.captures;graph_initialized=true;
+            std::cerr<<"runtime_qwen35_predictor_chain_capture rows="<<tokens<<" depth="<<depth
+                <<" nodes="<<cell.graph.nodes()<<'\n';
+        }
+        if(!cell.graph.enqueue_if_device_only())cell.graph.run();
+        ++registry.replays;cache_pos=end;
+        if(verification_ids)*verification_ids=cell.verification_ids;
+        return cell.proposals;
+    }
+
+    std::optional<std::vector<int32_t>> queued_greedy_chain(const MtpTarget& target,
+            mfq_tensor_backend::Tensor hidden,mfq_tensor_backend::Tensor ids,
+            mfq_tensor_backend::Tensor positions,int depth) {
+        auto proposals=enqueue_greedy_chain(target,std::move(hidden),std::move(ids),std::move(positions),depth);
+        if(!proposals)return {};
+        const auto host=proposals->cpu().contiguous();
+        const auto* values=host.data_ptr<int64_t>();
+        return std::vector<int32_t>(values,values+depth);
     }
 
     MtpStep step_positioned(const MtpTarget &target, mfq_tensor_backend::Tensor hidden,

@@ -14,7 +14,7 @@ __device__ __forceinline__ void project_dense_pair_entry(const DensePairEntry& e
         int columns,const block_q8_1* input,bool half_output,unsigned tile,float* scratch) {
     // IQ1 already uses four-row reuse and two K warps. Other long rows
     // split their decode chain between two warps without changing storage.
-    if constexpr(SplitK && Format!=GGML_TYPE_IQ1_S && Format!=GGML_TYPE_IQ1_M)
+    if constexpr(SplitK && Format!=GGML_TYPE_IQ1_S && Format!=GGML_TYPE_IQ1_M && Format!=GGML_TYPE_IQ4_XS)
         project_dense_reused_q8_body<Format,2,2>(static_cast<const std::uint8_t*>(entry.packed),
             entry.stride,entry.rows,columns,input,entry.output,half_output,tile,scratch);
     else project_dense_single_q8_body<Format>(static_cast<const std::uint8_t*>(entry.packed),
@@ -38,8 +38,8 @@ bool try_dense_pair_second(const DenseGroupPacket& packet,int columns,const bloc
         const auto& a=packet.entries[0];const auto& b=packet.entries[1];
         const DensePairEntry first{a.projection.packed,a.projection.stride,int(a.projection.rows),a.projection.output};
         const DensePairEntry second{b.projection.packed,b.projection.stride,int(b.projection.rows),b.projection.output};
-        constexpr int FirstRows=SplitK && First!=GGML_TYPE_IQ1_S && First!=GGML_TYPE_IQ1_M?4:8;
-        constexpr int SecondRows=SplitK && Second!=GGML_TYPE_IQ1_S && Second!=GGML_TYPE_IQ1_M?4:8;
+        constexpr int FirstRows=SplitK && First!=GGML_TYPE_IQ1_S && First!=GGML_TYPE_IQ1_M && First!=GGML_TYPE_IQ4_XS?4:8;
+        constexpr int SecondRows=SplitK && Second!=GGML_TYPE_IQ1_S && Second!=GGML_TYPE_IQ1_M && Second!=GGML_TYPE_IQ4_XS?4:8;
         const unsigned split=unsigned((a.projection.rows+FirstRows-1)/FirstRows);
         const unsigned end=split+unsigned((b.projection.rows+SecondRows-1)/SecondRows);
         const auto function=project_dense_pair_single<First,Second,Half,SplitK>;

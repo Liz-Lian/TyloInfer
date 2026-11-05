@@ -453,10 +453,8 @@ template<int Format,bool RawPermutation=false> struct PreparedIq2 : Dot<Format> 
             lo=ggml_cuda_dp4a(w.codes[j],codes[j],lo);
             hi=ggml_cuda_dp4a(w.codes[j+4],codes[j+4],hi);
         }
-        int sum;
-        if constexpr(Format==GGML_TYPE_IQ2_XXS)sum=(lo+hi)*w.low_scale/8;
-        else sum=(lo*w.low_scale+hi*w.high_scale+(lo+hi)/2)/4;
-        return (w.scale*scale)*sum;
+        return iq2_fractional_group<Format>(
+            lo,hi,w.low_scale,w.high_scale,w.scale,scale);
     }
     __device__ static float apply(const Weight& w,const block_q8_1* x) {
         int codes[8];
