@@ -34,15 +34,23 @@ bool stream_iq4_window(std::int64_t columns) {
 
 // Q6 uses the M=1 aligned-word decoder for every window. Reconstructing
 // each lane's words avoids exchanging compressed payloads between lanes.
-template<int Format,class Base,int InputTokens=8>struct SplitWindow:Base{
+template<int Format,class Base,int InputTokens=8,bool ReuseRowActivations=false>struct SplitWindow:Base{
+ static constexpr int exact_window_tokens=InputTokens;
  __device__ static typename Base::Activation load_window_activation(const block_q8_1* input,int columns,int token,int block,int part){
   typename Base::Activation a{};
   const unsigned groups=unsigned(columns/32),group=unsigned(block)*(Base::qk/32)+(Format==GGML_TYPE_IQ4_XS?unsigned(part/4):unsigned(part));
   const unsigned packet=unsigned(token)*groups+group;
   const auto* low=static_cast<const uint8_t*>(static_cast<const void*>(input));
   const auto* high=low+uint64_t(columns)*InputTokens/2;uint4 x,y;
+  if constexpr(ReuseRowActivations) {
+   // Expose the read-only packets to common-subexpression elimination
+   // across output rows. Opaque address assembly repeats these loads.
+   x=__ldg(reinterpret_cast<const uint4*>(low)+packet);
+   y=__ldg(reinterpret_cast<const uint4*>(high)+packet);
+  }else {
   asm("{ .reg .u64 p; mad.wide.u32 p,%5,16,%4; ld.global.nc.v4.u32 {%0,%1,%2,%3},[p]; }":"=r"(x.x),"=r"(x.y),"=r"(x.z),"=r"(x.w):"l"(low),"r"(packet));
   asm("{ .reg .u64 p; mad.wide.u32 p,%5,16,%4; ld.global.nc.v4.u32 {%0,%1,%2,%3},[p]; }":"=r"(y.x),"=r"(y.y),"=r"(y.z),"=r"(y.w):"l"(high),"r"(packet));
+  }
   a.codes[0]=x.x;a.codes[1]=x.y;a.codes[2]=x.z;a.codes[3]=x.w;a.codes[4]=y.x;a.codes[5]=y.y;a.codes[6]=y.z;a.codes[7]=y.w;
   if constexpr(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q4_K){
    const auto helper=__ldg(reinterpret_cast<const uint2*>(low+uint64_t(groups)*InputTokens*36)+packet);
@@ -101,6 +109,7 @@ bool project_dense_window_q8(ggml_type type, const void* packed, std::uint64_t s
             reinterpret_cast<const void*>(function), "format=" + std::to_string(type) +
             " M=" + std::to_string(tokens) + " output_rows=" + std::to_string(Rows) +
             " activation_reuse=1 warp_first=" + std::to_string(WarpFirst) +
+            " weight_first=" + std::to_string(Format==GGML_TYPE_Q5_K && Rows>2 && WarpFirst) +
             " streaming_weight_loads=" + std::to_string(std::is_same_v<Prepared,DirectQ5Group> ||
                 std::is_same_v<Prepared,Iq4WindowPrepared<true>>) +
             " direct_weight_gather=" + std::to_string(Format==GGML_TYPE_Q6_K) +
@@ -158,12 +167,14 @@ bool project_dense_split_window_q8(ggml_type type,const void* packed,std::uint64
     if(!supports_dense_split_window_q8(type,packed,stride,rows,columns,tokens))return false;
     if(!input || !output)throw std::invalid_argument("Dense split-window activation/output missing");
     const auto launch=[&]<int Count,int Format,class Base,int Warps,int Rows,bool WarpFirst>() {
-        const auto function=project_dense_cooperative_q8<Format,Count,Rows,Warps,SplitWindow<Format,Base,Count>,WarpFirst>;
+        const auto function=project_dense_cooperative_q8<Format,Count,Rows,Warps,
+            SplitWindow<Format,Base,Count,(Format==GGML_TYPE_Q5_K && Rows>2 && WarpFirst)>,WarpFirst>;
         function<<<unsigned((rows+Rows-1)/Rows),dim3(32,Warps),0,stream>>>(
             static_cast<const uint8_t*>(packed),int(stride),int(rows),int(columns),int(tokens),
             static_cast<const block_q8_1*>(input),output,half_output);
         if(dispatch_trace::enabled())dispatch_trace::record(stream,"gguf_dense_split_window",reinterpret_cast<const void*>(function),
             "format="+std::to_string(type)+" M="+std::to_string(tokens)+" output_rows="+std::to_string(Rows)+
+            " weight_first="+std::to_string(Format==GGML_TYPE_Q5_K && Rows>2 && WarpFirst)+
             " streaming_weight_loads="+std::to_string(Format==GGML_TYPE_Q5_K ||
                 std::is_same_v<Base,Iq4WindowPrepared<true>>)+" split_q8_planes=1 exact_token_tile=1 cached_integer_sum="+
             std::to_string(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q4_K)+" warps="+std::to_string(Warps));

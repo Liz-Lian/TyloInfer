@@ -163,6 +163,13 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
         const block_q8_1* input,void* output,bool half_output,unsigned tile,float* scratch) {
     using F=Prepared;
     static_assert(BlockWarps>=Warps && (WarpFirst || BlockWarps==Warps));
+    // Split packets have an exact token extent in both their data layout
+    // and host dispatch. Keep that extent visible to the optimizer; a
+    // capacity-only native packet still uses its runtime token count.
+    if constexpr(requires {F::exact_window_tokens;}) {
+        static_assert(F::exact_window_tokens==Tokens);
+        tokens=F::exact_window_tokens;
+    }
     constexpr int Groups=BlockWarps/Warps;
     const int block_warp=int(threadIdx.y),lane=int(threadIdx.x);
     const bool active=block_warp<Groups*Warps;
@@ -172,7 +179,20 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
     float sums[OutputRows][Tokens]{};
     for(int i=warp*32+lane;active && (Groups==1 || row0<rows) && i<columns/F::qk*F::parts;i+=32*Warps) {
         const int block=i/F::parts,part=F::step*(i%F::parts);
-        if constexpr(OutputRows>2 && WarpFirst && requires {typename F::Activation;}) {
+        if constexpr(OutputRows>2 && WarpFirst && Format==GGML_TYPE_Q5_K && requires {typename F::Activation;}) {
+            // Consume each Q5 row's complete token window before preparing
+            // another row. Repeated activation reads stay in L1 while the
+            // streaming weight reader avoids competing for that cache.
+            #pragma unroll
+            for(int r=0;r<OutputRows;++r) {
+                const auto weight=F::load(packed+std::uint64_t(min(row0+r,rows-1))*stride,block,part);
+                #pragma unroll
+                for(int t=0;t<Tokens;++t)if(t<tokens) {
+                    const auto activation=window_activation<F>(input,columns,t,block,part);
+                    sums[r][t]+=F::apply_activation(weight,activation);
+                }
+            }
+        }else if constexpr(OutputRows>2 && WarpFirst && requires {typename F::Activation;}) {
             // Load each weight fragment once for the complete token window.
             // A token's activation is consumed by all rows before preparing
             // the next token, keeping its live register interval short.
