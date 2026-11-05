@@ -1,12 +1,11 @@
 #pragma once
 
-#include "engine/backends/cuda/executor/options.h"
+#include "engine/executor.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/models/common/mtp.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/placement.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/generation/batch.h"
 #include "engine/budget.h"
@@ -14,14 +13,13 @@
 #include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/weights/workspace.h"
-#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/weights/memory.h"
 #include "engine/models/source.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <optional>
-#include <set>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -32,13 +30,13 @@ inline tyloi::engine::Metrics runtime_metrics(
         const tyloi::engine::Metrics& profile_metrics,
         std::optional<tyloi::engine::Metrics> memory, bool streamed_kv,
         const MtpModule* mtp,
-        const tyloi::engine::mtp::State& mtp_state, int graph_depth,
+        const tyloi::engine::mtp::State* mtp_state, int graph_depth,
         const ExpertSpace* space, tyloi::engine::Batch* batching,
         const tyloi::ModelSource* source, WeightMemoryLedger& ledger,
         const RoutedCache& weights, KvMemoryManager* kv,
         KvOffloadStore* offload, const internal::TextSessionCache& cache,
-        const Budget& budget, const LayerPlacementConfig& placement,
-        const ParallelConfig& tp, const ParallelConfig& ep) {
+        const Budget& budget, std::span<const tyloi::Executor::Memory> devices,
+        tyloi::Device primary, bool online_budget_supported) {
     using tyloi::engine::Metrics;
 
     const auto batch_metrics = batching ? batching->metrics() : Metrics{};
@@ -95,27 +93,19 @@ inline tyloi::engine::Metrics runtime_metrics(
                 return std::size_t(value);
         return std::size_t(0);
     };
-    std::set<int> devices(placement.devices.begin(), placement.devices.end());
-    devices.insert(tp.devices.begin(), tp.devices.end());
-    devices.insert(ep.devices.begin(), ep.devices.end());
-    const auto primary = placement.primary_device();
-    devices.insert(primary);
     auto prefix_bytes = cache.device_hot_bytes();
     std::size_t allocated = 0, reserved = 0, free_bytes = 0, total_bytes = 0, buffers = 0;
-    for (const int device : devices) {
-        MfqCudaGuard guard(device);
-        size_t free = 0, total = 0;
-        TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&free, &total));
-        const auto memory_stats = mfq_cuda_memory_stats(device);
-        const auto external = device == primary ? metric_bytes("kv_memory_vmm_bytes") : 0;
-        const auto resident = std::max(memory_stats.reserved_bytes, memory_stats.allocated_bytes) + external;
+    for (const auto& snapshot : devices) {
+        const auto device = snapshot.device.index;
+        const auto external = snapshot.device == primary ? metric_bytes("kv_memory_vmm_bytes") : 0;
+        const auto resident = std::max(snapshot.reserved, snapshot.allocated) + external;
         const auto stem = "gpu_" + std::to_string(device) + "_";
         auto device_weights = ledger.resident_bytes(device);
-        if (device == primary)
+        if (snapshot.device == primary)
             device_weights += metric_bytes("resident_expert_cache_bytes");
         const auto hot = prefix_bytes[device];
         auto live = metric_bytes(stem + "live_kv_bytes");
-        if (device == primary)
+        if (snapshot.device == primary)
             for (const auto& [name, value] : batch_metrics)
                 if (name == "continuous_batching_request_kv_bytes")
                     live += std::size_t(value);
@@ -123,8 +113,8 @@ inline tyloi::engine::Metrics runtime_metrics(
             {stem + "resident_bytes", double(resident)},
             {stem + "resident_weight_bytes", double(device_weights)},
             {stem + "prefix_cache_bytes", double(hot)},
-            {stem + "memory_total_bytes", double(total)},
-            {stem + "memory_available_bytes", double(free)}});
+            {stem + "memory_total_bytes", double(snapshot.total)},
+            {stem + "memory_available_bytes", double(snapshot.available)}});
         if (memory) {
             const auto categorized = device_weights + live + hot;
             const auto buffer = resident > categorized ? resident - categorized : 0;
@@ -132,10 +122,10 @@ inline tyloi::engine::Metrics runtime_metrics(
             metrics.emplace_back(stem + "kv_bytes", double(live + hot));
             buffers += buffer;
         }
-        allocated += memory_stats.allocated_bytes + external;
-        reserved += memory_stats.reserved_bytes + external;
-        free_bytes += free;
-        total_bytes += total;
+        allocated += snapshot.allocated + external;
+        reserved += snapshot.reserved + external;
+        free_bytes += snapshot.available;
+        total_bytes += snapshot.total;
     }
     metrics.insert(metrics.end(), {
         {"device_free_bytes", double(free_bytes)},
@@ -146,8 +136,6 @@ inline tyloi::engine::Metrics runtime_metrics(
         metrics.emplace_back("resident_buffer_bytes", double(buffers));
     const auto expert_bytes = metric_bytes("resident_expert_cache_bytes");
     const auto minimum = moe_expert_cache_minimum_bytes(weights.moe);
-    const bool online_budget_supported = placement.devices.size() <= 1 &&
-        !tp.enabled() && !ep.enabled();
     metrics.insert(metrics.end(), {
         {"resident_memory_dynamic_budget", online_budget_supported ? 1.0 : 0.0},
         {"resident_weight_dynamic_budget", online_budget_supported ? 1.0 : 0.0},
@@ -165,7 +153,7 @@ inline tyloi::engine::Metrics runtime_metrics(
             {"qsa_kv_ssd_bytes", 0.0}});
     }
     if (mtp) {
-        tyloi::engine::mtp::append_generation_metrics(metrics, mtp_state.stats);
+        tyloi::engine::mtp::append_generation_metrics(metrics, mtp_state->stats);
         metrics.emplace_back("mtp_predictor_graph_replays",
             double(mtp->graph_replay_count()));
     }

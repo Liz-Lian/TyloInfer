@@ -1,13 +1,20 @@
 #pragma once
 
+#include "engine/tensor.h"
+
 #include <memory>
 #include <span>
+#include <vector>
 
 namespace tyloi {
 
-class Tensor;
 class Executor {
 public:
+    struct Memory {
+        Device device;
+        std::size_t allocated, reserved, available, total;
+    };
+
     class Scope {
     public:
         virtual ~Scope() = default;
@@ -52,6 +59,8 @@ public:
     virtual std::unique_ptr<Timer> timer() = 0;
     virtual std::unique_ptr<Profile> profile(const char* name) = 0;
     virtual std::unique_ptr<Graph> graph() = 0;
+    // Query allocator and physical byte snapshots for the requested devices within this executor's scope.
+    virtual std::vector<Memory> memory(std::span<const Device> devices) const = 0;
     // Stop concurrent submissions and call within this executor's scope.
     // Wait for executor work; owners coordinate weights and offload separately.
     virtual void drain() = 0;

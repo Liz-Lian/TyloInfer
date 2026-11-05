@@ -5,7 +5,6 @@
 #include "engine/load.h"
 #include "engine/budget.h"
 #include "engine/generation/decode.h"
-#include "engine/generation/mtp/state.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
@@ -17,9 +16,9 @@ namespace tyloi::engine {
 
 // Engine private storage keeps device-specific types out of engine.h.
 struct Engine::Impl {
-    cuda::CudaEngineOptions options_;
-    cuda::CudaLoadConfig load_;
     cuda::CudaRuntimeConfig runtime_;
+    std::vector<Device> devices_;
+    bool budget_supported_ = false;
     std::shared_ptr<const ModelSource> source_;
     std::shared_ptr<cuda::WeightMemoryLedger> ledger_;
     std::unique_ptr<cuda::RoutedCache> weights_;
@@ -28,7 +27,6 @@ struct Engine::Impl {
     models::ForwardOptions forward_options_{};
     bool graph_allowed_ = false;
     models::Info model_info_{};
-    mtp::State mtp_state_;
     std::optional<Decode> graph_;
     std::optional<cuda::internal::TextSessionCache> cache_;
     std::optional<cuda::Budget> budget_;

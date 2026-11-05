@@ -24,6 +24,20 @@
 
 namespace tyloi::cuda {
 
+std::vector<tyloi::Executor::Memory> Executor::memory(std::span<const tyloi::Device> devices) const {
+    std::vector<tyloi::Executor::Memory> result;
+    result.reserve(devices.size());
+    for (const auto device : devices) {
+        if (!device.is_cuda()) throw std::invalid_argument("CUDA executor requires CUDA devices");
+        MfqCudaGuard guard(device.index);
+        std::size_t available = 0, total = 0;
+        TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&available, &total));
+        const auto stats = mfq_cuda_memory_stats(device.index);
+        result.push_back({device, stats.allocated_bytes, stats.reserved_bytes, available, total});
+    }
+    return result;
+}
+
 
 const MoeRoutePlan& MlaScratch::head_route(int64_t rows, int heads) {
     const int64_t key = rows * 4096 + heads;

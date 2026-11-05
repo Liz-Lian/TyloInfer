@@ -509,12 +509,12 @@ private:
             const auto* mtp = parts.mtp.get();
             return engine_detail::runtime_metrics(
                 component_metrics, profile_metrics, std::move(memory), streamed_kv, mtp,
-                mtp_state_, 3,
+                &mtp_state_, 3,
                 expert_space_ ? &*expert_space_ : nullptr, batching_.get(),
                 source_.get(), *weight_memory_, weights_, kv_.get(),
                 offload_.get(), *cache_, *budget_,
-                execution_->config.layer_placement, execution_->config.tensor_parallel,
-                execution_->config.expert_parallel);
+                execution_->executor().memory(cuda_devices(execution_->config)),
+                tyloi::Device(tyloi::kCUDA, execution_->config.layer_placement.primary_device()), online_budget_supported());
         } else {
             auto result = components().control(value);
             if constexpr (std::is_same_v<T, MfqDuplexSessionParams>)

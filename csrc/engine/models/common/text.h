@@ -434,10 +434,13 @@ struct Text {
             const bool streamed_kv = parts.streamed_kv();
             const auto* mtp = parts.mtp.get();
             return runtime_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,mtp,
-                mtp_state,graph_draft_depth,
+                &mtp_state,graph_draft_depth,
                 expert_space ? &*expert_space : nullptr,batching.get(),source.get(),
                 *weight_memory,weights,kv.get(),offload.get(),cache,*budget,
-                execution->config.layer_placement,execution->config.tensor_parallel,execution->config.expert_parallel);
+                execution->executor().memory(cuda_devices(execution->config)),
+                tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()),
+                execution->config.layer_placement.devices.size() <= 1 &&
+                    !execution->config.tensor_parallel.enabled() && !execution->config.expert_parallel.enabled());
         } else {
             auto result = components.control(value);
             if constexpr (std::is_same_v<T, MfqDuplexSessionParams>)

@@ -157,7 +157,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     auto token = ops::item(*pending);
     if (weights.moe) impl_->budget_->decode(impl_->expert_space_ ? &*impl_->expert_space_ : nullptr, impl_->source_.get());
     const bool graph_active = config.decode_graph.enabled &&
-        impl_->load_.dsv4_cpu_offload_layers.empty() && impl_->load_.dense_cpu_layer_count == 0 &&
         impl_->graph_allowed_ &&
         (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
         graph.graph && !weights.moe &&

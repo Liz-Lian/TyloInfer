@@ -35,12 +35,14 @@ public:
     std::unique_ptr<tyloi::Executor::Timer> timer() override;
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
     std::unique_ptr<tyloi::Executor::Graph> graph() override;
+    std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices) const override;
     void drain() override;
     void clear() override;
     // Set the default device during loading, before publication or concurrent submissions.
     void set_primary(int primary) noexcept { primary_ = primary; }
 #else
     std::unique_ptr<tyloi::Executor::Scope> enter();
+    std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices) const;
 #endif
     std::unique_ptr<tyloi::Executor::Scope> enter(int device);
     void join();

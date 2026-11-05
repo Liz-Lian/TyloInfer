@@ -38,6 +38,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -65,6 +66,17 @@ using State = std::variant<
 } // namespace tyloi::cuda::engine_detail
 
 namespace tyloi::cuda {
+
+std::vector<tyloi::Device> cuda_devices(const CudaLoadConfig& config) {
+    std::set<int> devices(config.layer_placement.devices.begin(), config.layer_placement.devices.end());
+    devices.insert(config.tensor_parallel.devices.begin(), config.tensor_parallel.devices.end());
+    devices.insert(config.expert_parallel.devices.begin(), config.expert_parallel.devices.end());
+    devices.insert(config.layer_placement.primary_device());
+    std::vector<tyloi::Device> result;
+    result.reserve(devices.size());
+    for (const int device : devices) result.emplace_back(tyloi::kCUDA, device);
+    return result;
+}
 
 bool model_parallel_enabled(const CudaLoadConfig& config) {
     return config.tensor_parallel.enabled() || config.expert_parallel.enabled();
@@ -190,6 +202,8 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
             ledger = std::make_shared<WeightMemoryLedger>();
             WeightMemoryLoadScope memory_load(*ledger);
             runtime = internal::resolve_cuda_runtime_config(options);
+            if (runtime.continuous_batch.max_sequences)
+                throw std::invalid_argument("continuous batching is unavailable for this model");
             const auto kv_options = runtime_options::qsa_kv_offload();
             if (kv_options.gpu_budget_bytes)
                 throw std::invalid_argument("CUDA streamed KV requires a QSA model");
@@ -216,12 +230,35 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
                 if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             }
         }
-        auto impl = std::make_unique<engine::Engine::Impl>();
         const auto mode = root->forward_mode(load.layer_placement.primary_device());
+        auto devices = cuda_devices(load);
+        const bool budget_supported = load.layer_placement.devices.size() <= 1 &&
+            !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
+        const bool graph_allowed = load.dsv4_cpu_offload_layers.empty() && load.dense_cpu_layer_count == 0 &&
+            model_parallel_cuda_graph_enabled(load, *root, *weights);
+        auto model_info = model->info();
+        engine::EngineInfo info;
+        info.max_requests = std::max<std::size_t>(1, runtime.continuous_batch.max_sequences);
+        info.max_context = model_info.max_context;
+        info.vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
+        info.model_type = model_info.model_type;
+        info.capabilities = model->capabilities();
+        const auto& caps = info.capabilities;
+        info.duplex = caps.full_duplex;
+        info.multimodal = caps.image_input || caps.video_input || caps.audio_input || caps.audio_output || caps.full_duplex;
+        info.reload = true;
+        auto text = engine::TextProcessor::load(*source, options.tokenizer_model, info.vocab_size, info.model_type);
+        if (text) info.chat = text->chat_template_capabilities();
+        info.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), info.vocab_size);
+
+        auto impl = std::make_unique<engine::Engine::Impl>();
         impl->forward_options_ = {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
-        impl->graph_allowed_ = model_parallel_cuda_graph_enabled(load, *root, *weights);
-        impl->options_ = std::move(options);
-        impl->load_ = std::move(load);
+        impl->graph_allowed_ = graph_allowed;
+        impl->budget_supported_ = budget_supported;
+        impl->devices_ = std::move(devices);
+        impl->model_info_ = std::move(model_info);
+        impl->info_ = std::move(info);
+        impl->text_ = std::move(text);
         impl->runtime_ = std::move(runtime);
         impl->source_ = std::move(source);
         impl->ledger_ = std::move(ledger);

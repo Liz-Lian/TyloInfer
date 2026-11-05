@@ -15,6 +15,7 @@
 #include <string>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace tyloi::engine { class Engine; }
 
@@ -79,6 +80,7 @@ class KvOffloadStore;
 struct RoutedCache;
 
 std::pair<CudaLoadConfig, Executor::Options> load_cuda_execution_config();
+std::vector<tyloi::Device> cuda_devices(const CudaLoadConfig& config);
 bool model_parallel_enabled(const CudaLoadConfig& config);
 const ParallelConfig& model_parallel_config(const CudaLoadConfig& config);
 const ParallelConfig& moe_parallel_config(const CudaLoadConfig& config);
