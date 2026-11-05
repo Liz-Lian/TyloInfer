@@ -458,7 +458,10 @@ struct BlockLoader : weight_loader::Loader {
         w.input_projection.push_back(weight(p+".beta.weight"));
         w.qkv_count=independent?3:1;
         w.output=weight(p+".output.weight");
-        w.conv=dense(p+".conv.weight");w.dt_bias=dense(p+".dt_bias");w.a_log=dense(p+".a");w.norm=dense(p+".norm.weight");
+        w.conv=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".conv.weight"));
+        w.dt_bias=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".dt_bias"));
+        w.a_log=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".a"));
+        w.norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".norm.weight"));
         return w;
     }
     auto qsa_weights(const std::string &p) const {
@@ -467,8 +470,10 @@ struct BlockLoader : weight_loader::Loader {
             w.input_projection.push_back(weight(p+"."+name+".weight"));
         w.input_projection.push_back(weight(p+".indexer.query_key.weight"));
         w.output=weight(p+".output.weight");
-        w.query_norm=dense(p+".query_norm.weight");w.key_norm=dense(p+".key_norm.weight");
-        w.index_query_norm=dense(p+".indexer.query_norm.weight");w.index_key_norm=dense(p+".indexer.key_norm.weight");
+        w.query_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".query_norm.weight"));
+        w.key_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".key_norm.weight"));
+        w.index_query_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".indexer.query_norm.weight"));
+        w.index_key_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".indexer.key_norm.weight"));
         if(has(p+".gate.weight")) {
             w.input_projection.push_back(weight(p+".gate.weight"));
             w.has_gate=true;
@@ -539,7 +544,7 @@ struct BlockLoader : weight_loader::Loader {
         const auto &type = require_tensor(source, name).dtype;
         TYLOINFER_RUNTIME_CHECK(type == "I64" || type == "I32",
                           "Qwen4 PLE metadata must be a dense integer array: ", name);
-        auto host = tensor(name).to(::tyloi::kInt64).contiguous().cpu();
+        auto host = dynamic_cast<const ::tyloi::DenseTensor&>(*tensor(name)).to(::tyloi::kInt64).contiguous().cpu();
         TYLOINFER_RUNTIME_CHECK(host.dim() == 1, "Qwen4 PLE metadata must be a vector");
         return {host.data_ptr<int64_t>(), host.data_ptr<int64_t>() + host.numel()};
     }

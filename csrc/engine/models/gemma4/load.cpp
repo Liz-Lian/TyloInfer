@@ -1,6 +1,5 @@
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/weights.h"
-#include "engine/models/common/load.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/weights/loader.h"
 
@@ -11,11 +10,34 @@
 #include <utility>
 
 namespace tyloi::cuda::gemma4 {
-struct LayerLoader : TransformerWeightLoader {
+struct LayerLoader {
+    const weight_loader::Loader& weights;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto dense(const std::string& name) const {
-        return std::make_shared<tyloi::DenseTensor>(TransformerWeightLoader::dense(name));
+        return weights.tensor(name);
     }
+#else
+    auto dense(const std::string& name) const {
+        return dynamic_cast<const tyloi::DenseTensor&>(*weights.tensor(name));
+    }
+#endif
+    void qkv(FullAttention& attention, const std::vector<std::string>& names) const {
+        attention.qkv = weights.group(names, 2);
+    }
+    void output(FullAttention& attention, const std::string& name) const {
+        attention.o = weights.weight(name);
+    }
+    static auto shape(const std::shared_ptr<const tyloi::Tensor>& value) {
+        std::vector<int64_t> result;
+        if (value) for (int64_t i = 0; i < value->dim(); ++i) result.push_back(value->size(i));
+        return result;
+    }
+    static int64_t elements(const std::shared_ptr<const tyloi::Tensor>& value) {
+        return value ? value->numel() : 0;
+    }
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+    static auto shape(const tyloi::DenseTensor& value) { return value.sizes().vec(); }
+    static int64_t elements(const tyloi::DenseTensor& value) { return value.numel(); }
 #endif
     auto rope(int64_t capacity, const tyloi::models::gemma4::LayerSpec &spec) {
         auto cache = RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
@@ -26,35 +48,39 @@ struct LayerLoader : TransformerWeightLoader {
 #endif
     }
     auto ones(int64_t width) {
-        auto value = ::tyloi::cuda::ones({width}, ::tyloi::TensorOptions()
-                                                     .device(::tyloi::kCUDA)
-                                                     .dtype(::tyloi::kFloat32));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return std::make_shared<tyloi::DenseTensor>(std::move(value));
+        const std::array<int64_t, 1> shape{width};
+        auto value = tyloi::ops::full(shape, 1, tyloi::Device(
+            weights.placement.cpu ? tyloi::kCPU : tyloi::kCUDA, weights.placement.device));
+        return tyloi::ops::cast(*value, tyloi::kFloat32);
 #else
-        return value;
+        return ::tyloi::cuda::ones({width}, ::tyloi::TensorOptions()
+            .device(::tyloi::Device(weights.placement.cpu ? tyloi::kCPU : tyloi::kCUDA,
+                                    weights.placement.device))
+            .dtype(::tyloi::kFloat32));
 #endif
     }
     auto layer_scale(const std::string &name) {
-        auto value = TransformerWeightLoader::dense(name).to(::tyloi::kFloat16).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return std::make_shared<tyloi::DenseTensor>(std::move(value));
+        auto value = tyloi::ops::cast(*weights.tensor(name), tyloi::kFloat16);
+        return tyloi::ops::contiguous(*value);
 #else
-        return value;
+        return dense(name).to(::tyloi::kFloat16).contiguous();
 #endif
     }
     auto router_parameter(const std::string &name) {
-        auto value = TransformerWeightLoader::dense(name).to(::tyloi::kFloat32).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return std::make_shared<tyloi::DenseTensor>(std::move(value));
+        auto value = tyloi::ops::cast(*weights.tensor(name), tyloi::kFloat32);
+        return tyloi::ops::contiguous(*value);
 #else
-        return value;
+        return dense(name).to(::tyloi::kFloat32).contiguous();
 #endif
     }
     auto normalized_router_parameter(const std::string &name, double divisor) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        auto value = TransformerWeightLoader::dense(name).to(::tyloi::kFloat32).contiguous();
-        return std::make_shared<tyloi::DenseTensor>((value / divisor).contiguous());
+        auto value = router_parameter(name);
+        const auto& dense = dynamic_cast<const tyloi::DenseTensor&>(*value);
+        return std::make_shared<tyloi::DenseTensor>((dense / divisor).contiguous());
 #else
         return (router_parameter(name) / divisor).contiguous();
 #endif
@@ -62,13 +88,12 @@ struct LayerLoader : TransformerWeightLoader {
     auto mlp(const std::vector<std::string>& names, const std::string& down_name) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto down = weights.weight(down_name);
-        auto group = weights.gate_up(names, *down, shared_gate_up_compatible_prefix,
-                                     preserve_projection_boundaries);
+        auto group = weights.gate_up(names, *down, 2);
         return tyloi::models::Mlp{std::move(group), std::move(down),
                                 tyloi::ops::MlpActivation::gelu_gated};
 #else
-        auto down = linear(down_name);
-        auto group = gate_up(names, down);
+        auto down = weights.weight(down_name);
+        auto group = weights.gate_up(names, *down, 2);
         Ffn result;
         result.geglu = true;
         result.down = std::move(down);
@@ -96,7 +121,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &config,
     MfqCudaGuard guard(weights.placement.device);
     Layer result;
     result.device = weights.placement.device;
-    LayerLoader loader{{weights}};
+    LayerLoader loader{weights};
     tyloi::models::gemma4::load_layer(result.attention, result, loader, config, layer, type);
     return result;
 }
@@ -120,9 +145,9 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        model.output_norm = std::make_shared<tyloi::DenseTensor>(weights.tensor("model.output_norm.weight"));
-#else
         model.output_norm = weights.tensor("model.output_norm.weight");
+#else
+        model.output_norm = dynamic_cast<const tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
 #endif
         if (separate || weights.placement.tensor.enabled()) {
             model.lm_head = weights.weight(
@@ -144,9 +169,9 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        model.output_norm = std::make_shared<tyloi::DenseTensor>(weights.tensor("model.output_norm.weight"));
-#else
         model.output_norm = weights.tensor("model.output_norm.weight");
+#else
+        model.output_norm = dynamic_cast<const tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
 #endif
     }
 }

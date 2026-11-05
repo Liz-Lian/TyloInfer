@@ -64,9 +64,9 @@ struct Mtp final : tyloi::models::Mtp {
         result.executor = execution.executor().fork(model_parallel_primary_device(execution.config));
         result.embedding = std::move(embedding);
         result.primary = weights.placement.device;
-        result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
-        result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
-        result.output_norm = weights.tensor("predictor.output_norm.weight");
+        result.embedding_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.embedding_norm.weight"));
+        result.hidden_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.hidden_norm.weight"));
+        result.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.output_norm.weight"));
         result.fusion = weights.weight("predictor.fusion.weight");
         TYLOINFER_RUNTIME_CHECK(result.fusion->size(1) == 2 * main.hidden_size &&
                               result.fusion->size(0) == main.hidden_size &&

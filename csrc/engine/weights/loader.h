@@ -93,10 +93,10 @@ struct Loader {
     bool has(const std::string& name) const { return has_tensor(source, name); }
     bool has_prefix(const std::string& prefix) const { return has_tensor_prefix(source, prefix); }
     // Dense parameters promote half precision to F32; native/host preserve stored dtype.
-    DenseTensor tensor(const std::string& name) const;
-    DenseTensor native(const std::string& name) const;
-    DenseTensor host(const std::string& name) const;
-    DenseTensor norm(const std::string& name, std::int64_t width) const;
+    std::shared_ptr<const ::tyloi::Tensor> tensor(const std::string& name) const;
+    std::shared_ptr<const ::tyloi::Tensor> native(const std::string& name) const;
+    std::shared_ptr<const ::tyloi::Tensor> host(const std::string& name) const;
+    std::shared_ptr<const ::tyloi::Tensor> norm(const std::string& name, std::int64_t width) const;
     weights::BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
     weights::BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
     std::shared_ptr<const ::tyloi::Tensor> weight(const std::string& name,
@@ -110,7 +110,7 @@ struct Loader {
     std::shared_ptr<const ::tyloi::Tensor> embedding(const std::string& name, bool independent_output) const;
     std::shared_ptr<const ::tyloi::Tensor> experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
-    DenseTensor dense(const std::string& name) const;
+    std::shared_ptr<const ::tyloi::Tensor> dense(const std::string& name) const;
     Routed routed(const std::string& name, int layer, int64_t experts, int64_t output,
                   int64_t input, const std::string& role = {}) const;
     Routed routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
@@ -119,6 +119,7 @@ struct Loader {
     static auto shape(const DenseTensor& value) { return value.sizes().vec(); }
     static int64_t elements(const DenseTensor& value) { return value.numel(); }
 private:
+    DenseTensor host_value(const std::string& name) const;
     Experts build_experts(const std::string& name, bool cacheable, int layer,
                           const std::string& role) const;
 };

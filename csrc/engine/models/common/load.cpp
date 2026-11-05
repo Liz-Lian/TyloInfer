@@ -51,7 +51,7 @@ void load_important_neuron_branch(const tyloi::cuda::weight_loader::Loader& weig
 }
 
 ::tyloi::DenseTensor TransformerWeightLoader::dense(const std::string& name) const {
-    return weights.tensor(name);
+    return dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
 }
 std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::linear(const std::string& name) const {
     return weights.weight(name);
@@ -120,10 +120,10 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
                 "dense fused Gate/Up expert banks require separate Gate and Up records at layer " +
                 std::to_string(layer));
         auto bank = weights.native(name);
-        if (bank.dim() != 3)
+        if (bank->dim() != 3)
             throw std::runtime_error(
                 "dense routed expert tensor must be [experts,out,in]: " + name);
-        *weight = std::make_shared<::tyloi::DenseTensor>(std::move(bank));
+        *weight = std::move(bank);
         return;
     }
 

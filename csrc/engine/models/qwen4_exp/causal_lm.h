@@ -9,7 +9,7 @@ namespace tyloi::models::qwen4_exp {
 
 template <class Loader>
 auto load_residual(Loader &ops, const Config &c, const std::string &p, bool combine) {
-    auto norm = ops.fp32(ops.dense(p + ".norm.weight"));
+    auto norm = ops.fp32(dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".norm.weight")));
     auto down = ops.residual_linear(p + ".down.weight"), up = ops.residual_linear(p + ".up.weight");
     decltype(down) injection{};
     if (combine)
@@ -46,8 +46,10 @@ auto load_ple(Loader &ops, const Config &c, const std::string &p) {
          sizes = ops.integers(p + ".ngram.head_vocab_sizes");
     typename Loader::PleWeights w{
         ops.weight(p + ".key.weight"), ops.weight(p + ".value.weight"),
-        ops.dense(p + ".key_norm.weight"), ops.dense(p + ".query_norm.weight"),
-        ops.dense(p + ".conv_norm.weight"), ops.dense(p + ".conv.weight")};
+        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".key_norm.weight")),
+        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".query_norm.weight")),
+        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".conv_norm.weight")),
+        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".conv.weight"))};
     return ops.ple(std::move(shards), rows, width, c, std::move(multipliers), std::move(offsets),
                    std::move(sizes), std::move(w));
 }
@@ -82,8 +84,8 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         return false;
     }
     result.config = c;
-    result.embedding_norm = ops.fp32(ops.dense("predictor.embedding_norm.weight"));
-    result.hidden_norm = ops.fp32(ops.dense("predictor.hidden_norm.weight"));
+    result.embedding_norm = ops.fp32(dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight")));
+    result.hidden_norm = ops.fp32(dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight")));
     result.embedding_fusion = ops.weight("predictor.fusion.embedding.weight");
     result.hidden_fusion = ops.weight("predictor.fusion.hidden.weight");
     result.final_mixer = ops.final_mixer(load_residual(ops, c, "predictor.mhc.pre", false));

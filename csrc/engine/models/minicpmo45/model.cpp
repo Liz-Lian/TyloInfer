@@ -71,7 +71,7 @@ void load(Model& model, const weight_loader::Loader& weights, const LayerPlaceme
         }
     const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
     model.embed = weights.embedding("model.token_embedding.weight", separate);
-    model.output_norm = weights.tensor("model.output_norm.weight");
+    model.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
     model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
         : weights.placement.tensor.enabled()
             ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output) : model.embed;

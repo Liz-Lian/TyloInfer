@@ -10,7 +10,7 @@ void CausalResources::adapter_configure_rope(RopeCache &, ::tyloi::Device) const
 
 void CausalResources::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
                                                ::tyloi::DenseTensor &output_norm) {
-    output_norm = weights.tensor("model.output_norm.weight");
+    output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
 }
 
 void CausalResources::adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights) {}

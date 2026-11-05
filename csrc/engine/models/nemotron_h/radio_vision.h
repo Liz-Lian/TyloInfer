@@ -63,12 +63,12 @@ class RadioEncoder {
                 "Nemotron-H RADIO patch projection is not [hidden, patch_width]");
         }
         const auto side = config.position_side();
-        if (result.position_embedding.sizes().vec() !=
+        if (dynamic_cast<const DenseTensor&>(*result.position_embedding).sizes().vec() !=
             std::vector<int64_t>{1, side * side, config.hidden_size}) {
             throw std::runtime_error(
                 "Nemotron-H RADIO position embedding does not match max_img_size");
         }
-        if (result.cls_register_token.sizes().vec() !=
+        if (dynamic_cast<const DenseTensor&>(*result.cls_register_token).sizes().vec() !=
             std::vector<int64_t>{config.summary_tokens(), config.hidden_size}) {
             throw std::runtime_error(
                 "Nemotron-H RADIO cls/register table disagrees with its config");
@@ -108,7 +108,7 @@ class RadioEncoder {
             cast_patches, tyloi::ops::transpose(dense, 0, 1)), dtype));
         hidden = tyloi::ops::add(hidden, tyloi::ops::cast(interpolated_positions(rows, columns), dtype));
         auto prefix = tyloi::ops::contiguous(tyloi::ops::expand(tyloi::ops::unsqueeze(
-            tyloi::ops::cast(cls_register_token, dtype), 0), {1, config.summary_tokens(), config.hidden_size}));
+            tyloi::ops::cast(*cls_register_token, dtype), 0), {1, config.summary_tokens(), config.hidden_size}));
         hidden = tyloi::ops::contiguous(tyloi::ops::cat({prefix, tyloi::ops::unsqueeze(hidden, 0)}, 1));
 #else
         auto hidden =
@@ -116,7 +116,7 @@ class RadioEncoder {
                 .to(dtype)
                 .contiguous();
         hidden = hidden + interpolated_positions(rows, columns).to(dtype);
-        auto prefix = cls_register_token.to(dtype)
+        auto prefix = dynamic_cast<const DenseTensor&>(*cls_register_token).to(dtype)
                           .unsqueeze(0)
                           .expand({1, config.summary_tokens(), config.hidden_size})
                           .contiguous();
@@ -144,10 +144,10 @@ class RadioEncoder {
         weights::BiasWeight key;
         weights::BiasWeight value;
         weights::BiasWeight output;
-        ::tyloi::DenseTensor norm1_weight;
-        ::tyloi::DenseTensor norm1_bias;
-        ::tyloi::DenseTensor norm2_weight;
-        ::tyloi::DenseTensor norm2_bias;
+        std::shared_ptr<const ::tyloi::Tensor> norm1_weight;
+        std::shared_ptr<const ::tyloi::Tensor> norm1_bias;
+        std::shared_ptr<const ::tyloi::Tensor> norm2_weight;
+        std::shared_ptr<const ::tyloi::Tensor> norm2_bias;
         weights::BiasWeight fc1;
         weights::BiasWeight fc2;
         int64_t heads = 0;
@@ -177,13 +177,13 @@ class RadioEncoder {
 #endif
             const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            const auto norm = [&](const DenseTensor& x, const DenseTensor& weight, const DenseTensor& bias) {
+            const auto norm = [&](const DenseTensor& x, const ::tyloi::Tensor& weight, const ::tyloi::Tensor& bias) {
                 const auto dtype = x.scalar_type();
                 return tyloi::ops::contiguous(tyloi::ops::cast(
                     tyloi::ops::layer_norm(x, tyloi::ops::cast(weight, dtype),
                                          tyloi::ops::cast(bias, dtype), layer_norm_eps), dtype));
             };
-            auto normalized = norm(input, norm1_weight, norm1_bias);
+            auto normalized = norm(input, *norm1_weight, *norm1_bias);
             auto q = split_heads(tyloi::ops::linear(normalized, *query.weight, query.bias.get()));
             auto k = split_heads(tyloi::ops::linear(normalized, *key.weight, key.bias.get()));
             auto v = split_heads(tyloi::ops::linear(normalized, *value.weight, value.bias.get()));
@@ -191,11 +191,12 @@ class RadioEncoder {
             auto branch = tyloi::ops::linear(tyloi::ops::reshape(tyloi::ops::transpose(attended, 1, 2),
                 {batch, tokens, heads * head_dim}), *output.weight, output.bias.get());
             input = tyloi::ops::contiguous(tyloi::ops::add(input, tyloi::ops::cast(branch, input.scalar_type())));
-            normalized = norm(input, norm2_weight, norm2_bias);
+            normalized = norm(input, *norm2_weight, *norm2_bias);
             branch = tyloi::ops::linear(tyloi::ops::gelu(
                 tyloi::ops::linear(normalized, *fc1.weight, fc1.bias.get())), *fc2.weight, fc2.bias.get());
 #else
-            auto normalized = vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
+            auto normalized = vision_layer_norm(input, dynamic_cast<const DenseTensor&>(*norm1_weight),
+                                                dynamic_cast<const DenseTensor&>(*norm1_bias), layer_norm_eps);
             auto q = split_heads(tyloi::cuda::biased(projector, query, normalized));
             auto k = split_heads(tyloi::cuda::biased(projector, key, normalized));
             auto v = split_heads(tyloi::cuda::biased(projector, value, normalized));
@@ -203,7 +204,8 @@ class RadioEncoder {
             auto branch = tyloi::cuda::biased(projector, output, attended.transpose(1, 2).reshape(
                 {batch, tokens, heads * head_dim}));
             input = (input + branch.to(input.scalar_type())).contiguous();
-            normalized = vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
+            normalized = vision_layer_norm(input, dynamic_cast<const DenseTensor&>(*norm2_weight),
+                                           dynamic_cast<const DenseTensor&>(*norm2_bias), layer_norm_eps);
             branch = tyloi::cuda::biased(projector, fc2,
                 ::tyloi::cuda::gelu(tyloi::cuda::biased(projector, fc1, normalized), "none"));
 #endif
@@ -264,7 +266,7 @@ class RadioEncoder {
             static_cast<std::int32_t>(rows), static_cast<std::int32_t>(columns),
             static_cast<std::int32_t>(config_.position_side()));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const auto table = tyloi::ops::reshape(position_embedding,
+        const auto table = tyloi::ops::reshape(*position_embedding,
             {config_.position_side() * config_.position_side(), config_.hidden_size});
         DenseTensor index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
         index = tyloi::ops::cast(index, ::tyloi::kInt32, table.device());
@@ -276,7 +278,7 @@ class RadioEncoder {
             tyloi::ops::index_select(table, 0, tyloi::ops::reshape(index, {-1})),
             {interpolation.patch_count, 4, config_.hidden_size}), weights), 1));
 #else
-        const auto table = position_embedding.reshape(
+        const auto table = dynamic_cast<const DenseTensor&>(*position_embedding).reshape(
             {config_.position_side() * config_.position_side(), config_.hidden_size});
         auto index =
             ::tyloi::cuda::tensor(interpolation.indices,
@@ -302,12 +304,12 @@ class RadioEncoder {
     }
 
     ::tyloi::ScalarType layer_dtype() const {
-        return position_embedding.scalar_type();
+        return position_embedding->scalar_type();
     }
 
     std::shared_ptr<const ::tyloi::Tensor> patch_projection;
-    DenseTensor position_embedding;
-    DenseTensor cls_register_token;
+    std::shared_ptr<const ::tyloi::Tensor> position_embedding;
+    std::shared_ptr<const ::tyloi::Tensor> cls_register_token;
     std::vector<Layer> layers;
     RadioVisionConfig config_;
 };
@@ -330,9 +332,9 @@ class RadioProjector {
             weights.native("vision.projector.mlp.norm.weight");
         result.up = weights.biased("vision.projector.mlp.up.weight");
         result.down = weights.biased("vision.projector.mlp.down.weight");
-        if (result.norm_weight.numel() != config.hidden_size ||
-            result.norm_bias.numel() != config.hidden_size ||
-            result.mlp_norm.numel() != config.shuffle_width() ||
+        if (result.norm_weight->numel() != config.hidden_size ||
+            result.norm_bias->numel() != config.hidden_size ||
+            result.mlp_norm->numel() != config.shuffle_width() ||
             result.up.weight->size(1) != config.shuffle_width() ||
             result.up.weight->size(0) != config.projector_intermediate_size ||
             result.down.weight->size(1) != config.projector_intermediate_size ||
@@ -366,10 +368,11 @@ class RadioProjector {
         const auto dtype = features.scalar_type();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto hidden = DenseTensor(tyloi::ops::contiguous(tyloi::ops::cast(
-            tyloi::ops::layer_norm(features, tyloi::ops::cast(norm_weight, dtype),
-                                 tyloi::ops::cast(norm_bias, dtype), config.layer_norm_eps), dtype)));
+            tyloi::ops::layer_norm(features, tyloi::ops::cast(*norm_weight, dtype),
+                                 tyloi::ops::cast(*norm_bias, dtype), config.layer_norm_eps), dtype)));
 #else
-        auto hidden = vision_layer_norm(features, norm_weight, norm_bias, config.layer_norm_eps);
+        auto hidden = vision_layer_norm(features, dynamic_cast<const DenseTensor&>(*norm_weight),
+                                        dynamic_cast<const DenseTensor&>(*norm_bias), config.layer_norm_eps);
 #endif
         // Pixel shuffle with `ps_version v2`: regroup each 2x2 patch block into
         // one token (4 * hidden features) in row-pair / column-pair order.  The
@@ -393,7 +396,7 @@ class RadioProjector {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto normalized = tyloi::ops::cast(tyloi::ops::reshape(tyloi::ops::rms_norm(
             tyloi::ops::reshape(tyloi::ops::cast(hidden, ::tyloi::kFloat32), {-1, config.shuffle_width()}),
-            tyloi::ops::cast(mlp_norm, ::tyloi::kFloat32), config.projector_norm_eps, 0.0),
+            tyloi::ops::cast(*mlp_norm, ::tyloi::kFloat32), config.projector_norm_eps, 0.0),
             hidden.sizes()), dtype);
         auto projected = tyloi::ops::relu_squared(tyloi::ops::linear(normalized, *up.weight, up.bias.get()));
         return tyloi::ops::contiguous(tyloi::ops::reshape(
@@ -402,7 +405,7 @@ class RadioProjector {
 #else
         auto normalized = qwen_rms_norm(hidden.to(::tyloi::kFloat32).reshape(
                                             {-1, config.shuffle_width()}),
-                                        mlp_norm.to(::tyloi::kFloat32),
+                                        dynamic_cast<const DenseTensor&>(*mlp_norm).to(::tyloi::kFloat32),
                                         config.projector_norm_eps, 0.0)
                               .reshape(hidden.sizes())
                               .to(dtype);
@@ -415,9 +418,9 @@ class RadioProjector {
     }
 
   private:
-    DenseTensor norm_weight;
-    DenseTensor norm_bias;
-    DenseTensor mlp_norm;
+    std::shared_ptr<const ::tyloi::Tensor> norm_weight;
+    std::shared_ptr<const ::tyloi::Tensor> norm_bias;
+    std::shared_ptr<const ::tyloi::Tensor> mlp_norm;
     weights::BiasWeight up;
     weights::BiasWeight down;
     RadioVisionConfig config_;

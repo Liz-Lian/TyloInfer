@@ -125,9 +125,9 @@ struct Tts {
         result.semantic_projector2 = weights.biased("tts.semantic_projector.output.weight", "tts.semantic_projector.output.bias");
         result.speaker_projector1 = weights.biased("tts.speaker_projector.input.weight", "tts.speaker_projector.input.bias");
         result.speaker_projector2 = weights.biased("tts.speaker_projector.output.weight", "tts.speaker_projector.output.bias");
-        result.output_norm = weights.native("tts.output_norm.weight");
-        auto head_g = weights.native("tts.code_output.0.weight_norm.magnitude");
-        auto head_v = weights.native("tts.code_output.0.weight_norm.direction");
+        result.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.output_norm.weight"));
+        auto head_g = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.code_output.0.weight_norm.magnitude"));
+        auto head_v = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.code_output.0.weight_norm.direction"));
         if (head_g.sizes().vec() != std::vector<int64_t>({6562, 1}) ||
                 head_v.sizes().vec() != std::vector<int64_t>({6562, 768}) ||
                 result.text_embedding->size(0) != 152064 ||

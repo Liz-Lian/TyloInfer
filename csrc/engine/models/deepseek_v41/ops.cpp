@@ -45,35 +45,35 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loa
                                       engram_cache_rows);
         shared->engram_prefetch.push_back(result->engram.get());
     }
-    result->attention_norm = weights.tensor(prefix + "attention.norm.weight")
+    result->attention_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.norm.weight"))
                                  .to(::tyloi::kFloat32).contiguous();
-    result->mlp_norm = weights.tensor(prefix + "mlp.norm.weight")
+    result->mlp_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.norm.weight"))
                            .to(::tyloi::kFloat32).contiguous();
     result->query_a_norm =
-        weights.tensor(prefix + "attention.query_a_norm.weight");
+        dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.query_a_norm.weight"));
     result->key_value_norm =
-        weights.tensor(prefix + "attention.key_value_norm.weight");
-    result->sinks = weights.tensor(prefix + "attention.sink")
+        dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.key_value_norm.weight"));
+    result->sinks = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.sink"))
                         .to(::tyloi::kFloat32)
                         .contiguous();
     result->attention_mhc_function =
-        weights.tensor(prefix + "attention.mhc.pre.function")
+        dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.function"))
             .to(::tyloi::kFloat32)
             .contiguous();
     result->attention_mhc_scale =
-        weights.tensor(prefix + "attention.mhc.pre.scale")
+        dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.scale"))
             .to(::tyloi::kFloat32)
             .contiguous();
-    result->attention_mhc_base = weights.tensor(prefix + "attention.mhc.pre.base")
+    result->attention_mhc_base = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.base"))
                                      .to(::tyloi::kFloat32)
                                      .contiguous();
-    result->mlp_mhc_function = weights.tensor(prefix + "mlp.mhc.pre.function")
+    result->mlp_mhc_function = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.function"))
                                    .to(::tyloi::kFloat32)
                                    .contiguous();
-    result->mlp_mhc_scale = weights.tensor(prefix + "mlp.mhc.pre.scale")
+    result->mlp_mhc_scale = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.scale"))
                                 .to(::tyloi::kFloat32)
                                 .contiguous();
-    result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base")
+    result->mlp_mhc_base = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.base"))
                                .to(::tyloi::kFloat32)
                                .contiguous();
     result->query_a = weights.weight(prefix + "attention.query_a.weight");
@@ -85,11 +85,11 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loa
         result->compressor_key_value =
             weights.weight(prefix + "attention.compressor.key_value.weight");
         result->compressor_norm =
-            weights.tensor(prefix + "attention.compressor.norm.weight");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.compressor.norm.weight"));
         result->index_key =
             weights.weight(prefix + "attention.indexer.key.weight");
         result->index_key_norm =
-            weights.tensor(prefix + "attention.indexer.key_norm.weight");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.indexer.key_norm.weight"));
         if (result->ratio > 1) {
             result->compressor_gate =
                 weights.weight(prefix + "attention.compressor.gate.weight");
@@ -103,7 +103,7 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loa
     }
     result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.", layer, config.top_k);
     if(weights.has(prefix+"mlp.router.vision_bias")) {
-        result->vision_router_bias=weights.tensor(prefix+"mlp.router.vision_bias")
+        result->vision_router_bias=dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix+"mlp.router.vision_bias"))
             .to(::tyloi::kFloat32).contiguous();
         TYLOINFER_RUNTIME_CHECK(result->vision_router_bias.dim()==1 && result->vision_router_bias.size(0)==config.n_experts,
                           "DeepSeek-V4.1 vision router bias shape mismatch");

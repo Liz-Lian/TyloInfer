@@ -78,12 +78,12 @@ struct MiniCPMO45WhisperLayer {
         MiniCPMO45WhisperLayer result;
         result.attention = MiniCPMO45WhisperAttention::load(weights, prefix + ".attention");
         result.attention_norm_weight =
-            weights.native(prefix + ".attention.norm.weight");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".attention.norm.weight"));
         result.attention_norm_bias =
-            weights.native(prefix + ".attention.norm.bias");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".attention.norm.bias"));
         result.final_norm_weight =
-            weights.native(prefix + ".mlp.norm.weight");
-        result.final_norm_bias = weights.native(prefix + ".mlp.norm.bias");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".mlp.norm.weight"));
+        result.final_norm_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".mlp.norm.bias"));
         result.fc1 = weights.biased(prefix + ".mlp.up.weight", prefix + ".mlp.up.bias");
         result.fc2 = weights.biased(prefix + ".mlp.down.weight", prefix + ".mlp.down.bias");
         return result;
@@ -133,18 +133,18 @@ struct MiniCPMO45AudioEncoder {
     static MiniCPMO45AudioEncoder load(const tyloi::cuda::weight_loader::Loader& weights) {
         MiniCPMO45AudioEncoder result;
         result.conv1_weight =
-            weights.native("audio.patch_embedding.conv1.weight");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv1.weight"));
         result.conv1_bias =
-            weights.native("audio.patch_embedding.conv1.bias");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv1.bias"));
         result.conv2_weight =
-            weights.native("audio.patch_embedding.conv2.weight");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv2.weight"));
         result.conv2_bias =
-            weights.native("audio.patch_embedding.conv2.bias");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv2.bias"));
         result.position_embedding =
-            weights.native("audio.position_embedding.weight");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.position_embedding.weight"));
         result.final_norm_weight =
-            weights.native("audio.output_norm.weight");
-        result.final_norm_bias = weights.native("audio.output_norm.bias");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.output_norm.weight"));
+        result.final_norm_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.output_norm.bias"));
         result.projector1 = weights.biased("audio.projector.input.weight", "audio.projector.input.bias");
         result.projector2 = weights.biased("audio.projector.output.weight", "audio.projector.output.bias");
         result.layers.reserve(24);

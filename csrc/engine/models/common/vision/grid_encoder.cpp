@@ -13,7 +13,7 @@ namespace {
 ::tyloi::DenseTensor required_vector(const weight_loader::Loader& weights,
                        GridVisionTensorRole role, int64_t width, size_t block = 0) {
     const auto name = grid_vision_canonical_name(role, block);
-    auto value = weights.tensor(name);
+    auto value = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
     if (value.dim() != 1 || value.size(0) != width) {
         throw std::runtime_error("grid-ViT vector shape mismatch: " + name);
     }
@@ -36,7 +36,8 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
                                                   const GridVisionConfig &config) {
     config.validate();
     const auto hidden = config.hidden_size;
-    auto patch_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::patch_weight));
+    auto patch_weight = dynamic_cast<const ::tyloi::DenseTensor&>(
+        *weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::patch_weight)));
     const std::vector<int64_t> expected_patch{hidden, config.in_channels,
                                               config.temporal_patch_size, config.patch_size,
                                               config.patch_size};
@@ -45,7 +46,8 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
     }
     auto patch_bias =
         required_vector(weights, GridVisionTensorRole::patch_bias, hidden);
-    auto position_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::position_weight));
+    auto position_weight = dynamic_cast<const ::tyloi::DenseTensor&>(
+        *weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::position_weight)));
     if (position_weight.dim() != 2 ||
         position_weight.size(0) != config.num_position_embeddings ||
         position_weight.size(1) != hidden) {

@@ -76,36 +76,36 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         result->layer = config.n_layers + stage;
         result->ratio = 0;
         result->max_context = config.max_position_embeddings;
-        result->attention_norm = weights.tensor(prefix + "attention.norm.weight")
+        result->attention_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.norm.weight"))
                                      .to(::tyloi::kFloat32).contiguous();
-        result->mlp_norm = weights.tensor(prefix + "mlp.norm.weight")
+        result->mlp_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.norm.weight"))
                                .to(::tyloi::kFloat32).contiguous();
         result->query_a_norm =
-            weights.tensor(prefix + "attention.query_a_norm.weight");
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.query_a_norm.weight"));
         result->key_value_norm =
-            weights.tensor(prefix + "attention.key_value_norm.weight");
-        result->sinks = weights.tensor(prefix + "attention.sink")
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.key_value_norm.weight"));
+        result->sinks = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.sink"))
                             .to(::tyloi::kFloat32)
                             .contiguous();
         result->attention_mhc_function =
-            weights.tensor(prefix + "attention.mhc.pre.function")
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.function"))
                 .to(::tyloi::kFloat32)
                 .contiguous();
         result->attention_mhc_scale =
-            weights.tensor(prefix + "attention.mhc.pre.scale")
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.scale"))
                 .to(::tyloi::kFloat32)
                 .contiguous();
         result->attention_mhc_base =
-            weights.tensor(prefix + "attention.mhc.pre.base")
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.base"))
                 .to(::tyloi::kFloat32)
                 .contiguous();
-        result->mlp_mhc_function = weights.tensor(prefix + "mlp.mhc.pre.function")
+        result->mlp_mhc_function = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.function"))
                                        .to(::tyloi::kFloat32)
                                        .contiguous();
-        result->mlp_mhc_scale = weights.tensor(prefix + "mlp.mhc.pre.scale")
+        result->mlp_mhc_scale = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.scale"))
                                     .to(::tyloi::kFloat32)
                                     .contiguous();
-        result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base")
+        result->mlp_mhc_base = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.base"))
                                    .to(::tyloi::kFloat32)
                                    .contiguous();
         result->query_a = weights.weight(prefix + "attention.query_a.weight");
@@ -185,8 +185,8 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         const auto last = "predictor.stage." + std::to_string(result.config.n_mtp_layers - 1) + ".";
         result.main_projection =
             weights.weight(first + "main_projection.weight");
-        result.main_norm = weights.tensor(first + "main_norm.weight");
-        result.output_norm = weights.tensor(last + "output_norm.weight");
+        result.main_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(first + "main_norm.weight"));
+        result.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(last + "output_norm.weight"));
         result.markov_embedding =
             weights.weight(last + "markov.embedding.weight");
         result.markov_output = weights.weight(last + "markov.output.weight");

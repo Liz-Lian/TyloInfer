@@ -27,7 +27,7 @@ weights::BiasWeight affine(const weight_loader::Loader& loader,
 
 RmsNorm norm(const weight_loader::Loader& loader,
              const std::string& name, std::int64_t width, double epsilon) {
-    return RmsNorm{loader.norm(name, width), epsilon};
+    return RmsNorm{dynamic_cast<const ::tyloi::DenseTensor&>(*loader.norm(name, width)), epsilon};
 }
 
 struct BlockWeights {

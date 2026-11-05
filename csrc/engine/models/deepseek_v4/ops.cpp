@@ -50,29 +50,29 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     layer.eps = c.rms_norm_eps;
     layer.hc_eps = c.hc_eps;
 
-    layer.attn_norm = weights.tensor(p + "attention.norm.weight");
-    layer.ffn_norm = weights.tensor(p + "mlp.norm.weight");
-    layer.q_a_norm = weights.tensor(p + "attention.query_a_norm.weight");
-    layer.kv_norm = weights.tensor(p + "attention.key_value_a_norm.weight");
-    layer.sinks = weights.tensor(p + "attention.sink")
+    layer.attn_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.norm.weight"));
+    layer.ffn_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "mlp.norm.weight"));
+    layer.q_a_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.query_a_norm.weight"));
+    layer.kv_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.key_value_a_norm.weight"));
+    layer.sinks = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.sink"))
                    .to(::tyloi::kFloat32)
                    .contiguous();
-    layer.hc_attn_fn = weights.tensor(p + "attention.mhc.pre.function")
+    layer.hc_attn_fn = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.mhc.pre.function"))
                         .to(::tyloi::kFloat32)
                         .contiguous();
-    layer.hc_attn_scale = weights.tensor(p + "attention.mhc.pre.scale")
+    layer.hc_attn_scale = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.mhc.pre.scale"))
                            .to(::tyloi::kFloat32)
                            .contiguous();
-    layer.hc_attn_base = weights.tensor(p + "attention.mhc.pre.base")
+    layer.hc_attn_base = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.mhc.pre.base"))
                           .to(::tyloi::kFloat32)
                           .contiguous();
-    layer.hc_ffn_fn = weights.tensor(p + "mlp.mhc.pre.function")
+    layer.hc_ffn_fn = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "mlp.mhc.pre.function"))
                        .to(::tyloi::kFloat32)
                        .contiguous();
-    layer.hc_ffn_scale = weights.tensor(p + "mlp.mhc.pre.scale")
+    layer.hc_ffn_scale = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "mlp.mhc.pre.scale"))
                           .to(::tyloi::kFloat32)
                           .contiguous();
-    layer.hc_ffn_base = weights.tensor(p + "mlp.mhc.pre.base")
+    layer.hc_ffn_base = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "mlp.mhc.pre.base"))
                          .to(::tyloi::kFloat32)
                          .contiguous();
     layer.q_a = weights.weight(p + "attention.query_a.weight");
@@ -94,10 +94,10 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
             collectives, primary,
             weights.group({p + "attention.compressor.key_value.weight",
                                          p + "attention.compressor.gate.weight"}));
-        layer.compressor.ape = weights.tensor(p + "attention.compressor.position")
+        layer.compressor.ape = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.compressor.position"))
                                 .to(::tyloi::kFloat32)
                                 .contiguous();
-        layer.compressor.norm = weights.tensor(p + "attention.compressor.norm.weight")
+        layer.compressor.norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.compressor.norm.weight"))
                                  .to(::tyloi::kFloat32)
                                  .contiguous();
     }
@@ -111,15 +111,15 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
             weights.group({p + "attention.indexer.compressor.key_value.weight",
                                          p + "attention.indexer.compressor.gate.weight"}));
         layer.indexer_compressor.ape =
-            weights.tensor(p + "attention.indexer.compressor.position")
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.indexer.compressor.position"))
                 .to(::tyloi::kFloat32)
                 .contiguous();
         layer.indexer_compressor.norm =
-            weights.tensor(p + "attention.indexer.compressor.norm.weight")
+            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.indexer.compressor.norm.weight"))
                 .to(::tyloi::kFloat32)
                 .contiguous();
         layer.indexer_q = weights.weight(p + "attention.indexer.query.weight");
-        layer.indexer_weight = weights.tensor(p + "attention.indexer.score.weight")
+        layer.indexer_weight = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "attention.indexer.score.weight"))
                                 .to(::tyloi::kFloat32)
                                 .contiguous();
     }
@@ -140,7 +140,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
                   << " total_host_bytes=" << host_bytes << std::endl;
     }
     if (i < config.hash_layer_count) {
-        layer.ffn.moe_hash_ids = std::make_shared<::tyloi::DenseTensor>(weights.tensor(p + "mlp.router.token_to_expert")
+        layer.ffn.moe_hash_ids = std::make_shared<::tyloi::DenseTensor>(dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(p + "mlp.router.token_to_expert"))
                                   .to(::tyloi::kInt32)
                                   .contiguous());
     }
@@ -209,13 +209,13 @@ void validate_offload(const Config &config, const std::unordered_set<int>& offlo
 
 OutputHeadWeights load_output_head(const weight_loader::Loader& weights) {
     return {
-        weights.tensor("model.mhc.output.function")
+        dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.mhc.output.function"))
             .to(::tyloi::kFloat32)
             .contiguous(),
-        weights.tensor("model.mhc.output.scale")
+        dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.mhc.output.scale"))
             .to(::tyloi::kFloat32)
             .contiguous(),
-        weights.tensor("model.mhc.output.base")
+        dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.mhc.output.base"))
             .to(::tyloi::kFloat32)
             .contiguous(),
     };
@@ -295,7 +295,7 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     MfqCudaGuard guard(placement.primary_device());
     const bool separate = !c.tie_word_embeddings && weights.has("model.output.weight");
     model.embed = weights.embedding("model.token_embedding.weight", separate);
-    model.output_norm = weights.tensor("model.output_norm.weight");
+    model.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
     model.output_head = load_output_head(weights);
     model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
         : weights.placement.tensor.enabled()

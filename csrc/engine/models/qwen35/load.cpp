@@ -62,15 +62,15 @@ struct LayerLoader : TransformerWeightLoader {
                     }
                 } else {
                     attention.ab_proj = make_dense_group({
-                        weights.tensor(names.alpha),
-                        weights.tensor(names.beta)});
+                        dynamic_cast<const DenseTensor&>(*weights.tensor(names.alpha)),
+                        dynamic_cast<const DenseTensor&>(*weights.tensor(names.beta))});
                 }
             } else {
                 attention.split_dense_zab = true;
                 attention.zab_proj = make_dense_group({
-                    weights.tensor(names.gate),
-                    weights.tensor(names.alpha),
-                    weights.tensor(names.beta)});
+                    dynamic_cast<const DenseTensor&>(*weights.tensor(names.gate)),
+                    dynamic_cast<const DenseTensor&>(*weights.tensor(names.alpha)),
+                    dynamic_cast<const DenseTensor&>(*weights.tensor(names.beta))});
             }
             return;
         }
@@ -86,8 +86,8 @@ struct LayerLoader : TransformerWeightLoader {
             attention.dense_ab_tail = true;
             attention.in_proj = weights.group({names.qkv, names.gate});
             attention.ab_proj = make_dense_group({
-                weights.tensor(names.alpha),
-                weights.tensor(names.beta)});
+                dynamic_cast<const DenseTensor&>(*weights.tensor(names.alpha)),
+                dynamic_cast<const DenseTensor&>(*weights.tensor(names.beta))});
         }
     }
 
@@ -96,7 +96,7 @@ struct LayerLoader : TransformerWeightLoader {
             attention.out_proj = weights.weight(name);
         } else {
             attention.dense_out_proj = true;
-            attention.out_proj_dense = weights.tensor(name);
+            attention.out_proj_dense = dynamic_cast<const DenseTensor&>(*weights.tensor(name));
             if (require_tensor(weights.source, name).dtype == "F16")
                 attention.out_proj_dense =
                     attention.out_proj_dense.to(::tyloi::kFloat16).contiguous();
@@ -241,7 +241,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
         const auto output_name = std::string("model.output.weight");
         const bool independent_output = !config.tie_word_embeddings && weights.has(output_name);
         model.embed = weights.embedding("model.token_embedding.weight", independent_output);
-        model.output_norm = weights.tensor("model.output_norm.weight");
+        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
         if (config.tie_word_embeddings || !weights.has(output_name)) {
             model.lm_head = weights.placement.tensor.enabled()
                 ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
@@ -265,7 +265,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     } else {
         if (options.load_layers)
             throw std::invalid_argument("streamed model setup requires deferred layers");
-        model.output_norm = weights.tensor("model.output_norm.weight");
+        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
     }
     return model;
 }

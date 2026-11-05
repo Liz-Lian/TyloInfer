@@ -22,7 +22,7 @@ auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, boo
     auto down = ops.routed(p + ".experts.down.weight", layer, c.experts, c.hidden, c.moe_intermediate);
     auto router = ops.weight(p + ".router.weight");
     auto shared = load_dense_ffn(ops, p + ".shared_expert", c.swiglu_limit);
-    auto bias = ops.fp32(ops.dense(p + ".router.bias"));
+    auto bias = ops.fp32(dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".router.bias")));
     return ops.moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
                    std::move(bias), c);
 }
@@ -38,16 +38,20 @@ auto load_mla(Loader &ops, const Config &c, int layer, const std::string &a) {
                      c.heads, c.latent),
         ops.headwise(ops.routed(a + ".latent.output_unembedding.weight", layer, c.heads, c.value_width, c.latent),
                      c.heads, c.value_width),
-        ops.dense(a + ".query_a_norm.weight"), ops.dense(a + ".key_value_a_norm.weight"),
-        ops.dense(a + ".indexer.key_norm.weight"), ops.dense(a + ".indexer.key_norm.bias"),
-        ops.dense(a + ".indexer.pool.gate"), ops.dense(a + ".indexer.pool.position")};
+        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".query_a_norm.weight")),
+        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".key_value_a_norm.weight")),
+        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.key_norm.weight")),
+        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.key_norm.bias")),
+        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.pool.gate")),
+        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.pool.position"))};
     return ops.mla(std::move(w), c);
 }
 
 template <class Loader>
 auto load_mhc(Loader &ops, const std::string &p) {
-    auto function = ops.dense(p + ".function"), base = ops.dense(p + ".base"),
-         scale = ops.dense(p + ".scale");
+    auto function = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".function"));
+    auto base = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".base"));
+    auto scale = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".scale"));
     return ops.mhc(std::move(function), std::move(base), std::move(scale));
 }
 
@@ -57,8 +61,8 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
     b.config = c;
     b.attention_hc = load_mhc(ops, p + ".attention.mhc.pre");
     b.ffn_hc = load_mhc(ops, p + ".mlp.mhc.pre");
-    b.attention_norm = ops.dense(p + ".attention.norm.weight");
-    b.ffn_norm = ops.dense(p + ".mlp.norm.weight");
+    b.attention_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".attention.norm.weight"));
+    b.ffn_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".mlp.norm.weight"));
     b.ffn = load_ffn(ops, c, layer, p + ".mlp", false);
     if (c.linear_layer(layer)) {
         const auto a = p + ".linear_attention";
@@ -67,10 +71,14 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
             ops.weight(a + ".value.weight"), ops.weight(a + ".beta.weight"),
             ops.weight(a + ".gate_a.weight"), ops.weight(a + ".gate_b.weight"),
             ops.weight(a + ".output.weight"),
-            ops.concat({ops.dense(a + ".query_conv.weight"), ops.dense(a + ".key_conv.weight"),
-                        ops.dense(a + ".value_conv.weight")}),
-            ops.dense(a + ".forget_a.weight"), ops.dense(a + ".forget_b.weight"),
-            ops.dense(a + ".dt_bias"), ops.dense(a + ".a"), ops.dense(a + ".output_norm.weight")};
+            ops.concat({dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".query_conv.weight")),
+                        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".key_conv.weight")),
+                        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".value_conv.weight"))}),
+            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".forget_a.weight")),
+            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".forget_b.weight")),
+            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".dt_bias")),
+            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".a")),
+            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".output_norm.weight"))};
         b.kda = ops.kda(std::move(w), c);
     } else {
         b.mla = load_mla(ops, c, layer, p + ".attention");
@@ -86,15 +94,15 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         return false;
     }
     result.config = c;
-    result.embedding_norm = ops.fp32(ops.dense("predictor.embedding_norm.weight"));
-    result.hidden_norm = ops.fp32(ops.dense("predictor.hidden_norm.weight"));
-    result.output_norm = ops.dense("predictor.output_norm.weight");
+    result.embedding_norm = ops.fp32(dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight")));
+    result.hidden_norm = ops.fp32(dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight")));
+    result.output_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.output_norm.weight"));
     result.fusion = ops.weight("predictor.fusion.weight");
     for (int64_t i = 0; i < count; ++i) {
         const auto p = "predictor.block." + std::to_string(i);
         typename Predictor::Layer layer;
-        layer.attention_norm = ops.dense(p + ".attention.norm.weight");
-        layer.ffn_norm = ops.dense(p + ".mlp.norm.weight");
+        layer.attention_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".attention.norm.weight"));
+        layer.ffn_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".mlp.norm.weight"));
         layer.ffn = load_ffn(ops, c, int(i), p + ".mlp", true);
         layer.attention = load_mla(ops, c, int(i), p + ".attention");
         result.layers.push_back(std::move(layer));

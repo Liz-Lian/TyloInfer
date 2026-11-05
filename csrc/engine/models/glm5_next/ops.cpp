@@ -165,7 +165,7 @@ void load(Model& model, const weight_loader::Loader& weights,
     if (load_input_output) {
         const bool separate = !model.config.tied_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
-        model.output_norm = weights.tensor("model.output_norm.weight");
+        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
         model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
                                  : model.embed;
         if (load_layers) {
@@ -176,7 +176,7 @@ void load(Model& model, const weight_loader::Loader& weights,
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
-        model.output_norm = weights.tensor("model.output_norm.weight");
+        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
     }
 }
 

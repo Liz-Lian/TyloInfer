@@ -318,10 +318,10 @@ class Engram {
         const auto hash_layer =
             static_cast<int>(std::distance(config.engram_layer_ids.begin(), found));
         const auto prefix = "model.block." + std::to_string(layer) + ".associative_memory.";
-        auto query = weights.tensor(prefix + "query.weight")
+        auto query = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "query.weight"))
                          .to(::tyloi::kFloat32)
                          .contiguous();
-        auto key = weights.tensor(prefix + "key.weight")
+        auto key = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "key.weight"))
                        .to(::tyloi::kFloat32)
                        .contiguous();
         if (query.dim() != 2 || query.size(0) != config.hc_mult || query.size(1) != config.hidden ||

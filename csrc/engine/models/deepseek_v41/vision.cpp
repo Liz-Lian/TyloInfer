@@ -12,7 +12,7 @@ namespace {
 
 DenseTensor vector_weight(const weight_loader::Loader& weights,
                      const std::string& name,int64_t width) {
-    auto value=weights.tensor(name);
+    auto value=dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
     TYLOINFER_RUNTIME_CHECK(value.dim()==1 && value.size(0)==width,"DeepSeek-V4.1 vision vector shape mismatch: "+name);
     return value;
 }
