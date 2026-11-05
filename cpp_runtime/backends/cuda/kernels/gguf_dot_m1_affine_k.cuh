@@ -9,12 +9,25 @@ template<int Format>struct M1PreparedAffineK {
         Weight w;
         if constexpr(Format==GGML_TYPE_Q6_K) {
             const auto* b=static_cast<const block_q6_K*>(data)+block;
-            // The 210-byte Q6_K block preserves halfword, not u32 alignment.
+            // Q6_K blocks are 210 bytes and preserve only halfword alignment.
+            // Read aligned words and reconstruct the two-byte-shifted words.
+            // The final shifted low/high read extends into qh/scales in this
+            // same block, so it needs neither padding nor a preceding block.
             const auto* low=b->ql+64*(part/4)+32*(part&1);
             const auto* high=b->qh+32*(part/4);
+            const unsigned skew=unsigned(reinterpret_cast<std::uintptr_t>(b)&2);
+            const unsigned shift=8*skew;
+            const auto* low_words=reinterpret_cast<const unsigned*>(low+skew);
+            const auto* high_words=reinterpret_cast<const unsigned*>(high+skew);
+            unsigned previous_low=unsigned(__ldcs(reinterpret_cast<const unsigned short*>(low)))<<16;
+            unsigned previous_high=unsigned(__ldcs(reinterpret_cast<const unsigned short*>(high)))<<16;
             #pragma unroll
             for(int j=0;j<8;++j) {
-                const unsigned code=((unsigned(iq_weight_word<true>(low,j))>>(4*((part/2)&1)))&0x0f0f0f0fu)|(((unsigned(iq_weight_word<true>(high,j))>>(2*(part&3)))<<4)&0x30303030u);
+                const unsigned next_low=__ldcs(low_words+j),next_high=__ldcs(high_words+j);
+                const unsigned lo=__funnelshift_l(previous_low,next_low,shift);
+                const unsigned hi=__funnelshift_l(previous_high,next_high,shift);
+                previous_low=next_low;previous_high=next_high;
+                const unsigned code=((lo>>(4*((part/2)&1)))&0x0f0f0f0fu)|(((hi>>(2*(part&3)))<<4)&0x30303030u);
                 w.codes[j]=int((code+0x60606060u)^0x80808080u);
             }
             w.scale0=__ldcs(b->scales+2*part);w.scale1=__ldcs(b->scales+2*part+1);

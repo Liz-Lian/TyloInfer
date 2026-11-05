@@ -15,6 +15,17 @@ inline int canonical_iq4_k_warps(std::int64_t columns) {
     return parts%96==0 && parts%128!=0?3:4;
 }
 
+// Minimize padded whole-Q8 fragments; ties expose more independent K warps.
+inline int whole_q8_k_warps(std::int64_t columns) {
+    const auto parts=columns/32;int warps=parts<=32?1:2;
+    auto work=((parts+32*warps-1)/(32*warps))*warps;
+    for(int candidate=warps+1;candidate<=4;++candidate) {
+        const auto cost=((parts+32*candidate-1)/(32*candidate))*candidate;
+        if(cost<=work){work=cost;warps=candidate;}
+    }
+    return warps;
+}
+
 template<class Dot>
 __device__ __forceinline__ auto load_dense_m1_weight(const void* packed,int block,int part) {
     if constexpr(requires {Dot::load_streaming(packed,block,part);})
@@ -146,14 +157,20 @@ template<class F>__device__ __forceinline__ typename F::Activation window_activa
     else return F::load_activation(input+token*(columns/32)+block*(F::qk/32),part);
 }
 
-template<int Format,int Tokens,int OutputRows,int Warps=4,class Prepared=PreparedDot<Format>,bool WarpFirst=false>
+template<int Format,int Tokens,int OutputRows,int Warps=4,class Prepared=PreparedDot<Format>,bool WarpFirst=false,int BlockWarps=Warps>
 __device__ __forceinline__ void project_dense_cooperative_q8_body(
         const std::uint8_t* packed,int stride,int rows,int columns,int tokens,
         const block_q8_1* input,void* output,bool half_output,unsigned tile,float* scratch) {
     using F=Prepared;
-    const int row0=int(tile)*OutputRows,lane=int(threadIdx.x),warp=int(threadIdx.y);
+    static_assert(BlockWarps>=Warps && (WarpFirst || BlockWarps==Warps));
+    constexpr int Groups=BlockWarps/Warps;
+    const int block_warp=int(threadIdx.y),lane=int(threadIdx.x);
+    const bool active=block_warp<Groups*Warps;
+    const int group=active?block_warp/Warps:0,warp=Groups>1?block_warp%Warps:block_warp;
+    const int row0=(int(tile)*Groups+group)*OutputRows;
+    if constexpr(Groups>1)scratch+=group*Warps*warp_sums::capacity(OutputRows*Tokens);
     float sums[OutputRows][Tokens]{};
-    for(int i=warp*32+lane;warp<Warps && i<columns/F::qk*F::parts;i+=32*Warps) {
+    for(int i=warp*32+lane;active && (Groups==1 || row0<rows) && i<columns/F::qk*F::parts;i+=32*Warps) {
         const int block=i/F::parts,part=F::step*(i%F::parts);
         if constexpr(OutputRows>2 && WarpFirst && requires {typename F::Activation;}) {
             // Load each weight fragment once for the complete token window.
@@ -219,9 +236,9 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
         const float value=warp_sums::reduce<Capacity>(values,lane);
         const int index=warp_sums::index<Capacity>(lane);
         const bool owner=lane==warp_sums::owner<Capacity>(index);
-        if(owner && index<Count)scratch[warp*Capacity+index]=value;
+        if(active && owner && index<Count)scratch[warp*Capacity+index]=value;
         __syncthreads();
-        if(warp || !owner || index>=Count)return;
+        if(!active || warp || !owner || index>=Count)return;
         float sum=scratch[index];
         #pragma unroll
         for(int w=1;w<Warps;++w)sum+=scratch[w*Capacity+index];
@@ -231,14 +248,14 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
         return;
     }
     auto& partial=*reinterpret_cast<float(*)[Warps>1?Warps-1:1][OutputRows][Tokens][32]>(scratch);
-    if(warp && warp<Warps) {
+    if(active && warp && warp<Warps) {
         #pragma unroll
         for(int r=0;r<OutputRows;++r)
             #pragma unroll
             for(int t=0;t<Tokens;++t)partial[warp-1][r][t][lane]=sums[r][t];
     }
     __syncthreads();
-    if(warp)return;
+    if(!active || warp)return;
     float values[Capacity]{};
     #pragma unroll
     for(int r=0;r<OutputRows;++r) {

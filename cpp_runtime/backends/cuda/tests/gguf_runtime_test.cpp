@@ -3147,9 +3147,16 @@ void run_dense_format_pairs() {
             const auto name=std::to_string(int(type));
             source.add("a"+name,{7,width},type);source.add("b"+name,{9,width},type);
             first.push_back(load_gguf_weight(source,"a"+name,0));second.push_back(load_gguf_weight(source,"b"+name,0));
-            // The second image becomes a possibly unaligned view into the
-            // same immutable allocation; the format's own alignment holds.
-            (void)combine_gguf_rows({&first.back(),&second.back()});
+            // This API consumes canonical GGUF rows. Loading/combining may
+            // repack low-bit weights; retain shared-allocation tail coverage
+            // without passing that internal layout to the canonical reader.
+            auto& a=first.back();auto& b=second.back();
+            const auto joined=tb::cat({a.canonical_packed(),b.canonical_packed()},0);
+            const auto split=std::int64_t(a.out*a.row_bytes);
+            a.packed=joined.narrow(0,0,split);
+            b.packed=joined.narrow(0,split,std::int64_t(b.out*b.row_bytes));
+            a.quad_storage_rows=b.quad_storage_rows=0;
+            a.quad_row_begin=b.quad_row_begin=0;
         }
         for(auto dtype:{tb::kFloat16,tb::kFloat32}) {
             auto host=tb::empty({1,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
@@ -3169,14 +3176,31 @@ void run_dense_format_pairs() {
                     {wb.packed.data_ptr(),wb.row_bytes,wb.out,b.data_ptr(),wb.type}};
                 gg::matvec_group(projections,2,width,q.data_ptr(),nullptr,1,dtype==tb::kFloat16,mfq_current_cuda_stream());
                 const auto ah=a.cpu(),bh=b.cpu();
-                require(std::memcmp(ah.data_ptr(),expected_first[i].data_ptr(),ah.nbytes())==0 &&
-                        std::memcmp(bh.data_ptr(),expected_second[j].data_ptr(),bh.nbytes())==0,
-                    "GGUF format-pair kernel changed ordinary projection bits or output row boundaries");
+                const auto matches=[&](const tb::Tensor& actual,const tb::Tensor& expected) {
+                    if(std::memcmp(actual.data_ptr(),expected.data_ptr(),actual.nbytes())==0)return true;
+                    // Homogeneous underfilled Q6 groups deliberately use more
+                    // K warps. Check their changed FP32 addition tree within
+                    // FP32 error / one final FP16 ULP; other pairs stay exact.
+                    if(wa.type!=GGML_TYPE_Q6_K || wb.type!=GGML_TYPE_Q6_K)return false;
+                    const auto av=actual.to(tb::kFloat32),ev=expected.to(tb::kFloat32);
+                    float scale=0,error=0;
+                    for(int64_t r=0;r<av.numel();++r) {
+                        const float value=av.data_ptr<float>()[r],reference=ev.data_ptr<float>()[r];
+                        if(!std::isfinite(value) || !std::isfinite(reference))return false;
+                        scale=std::max(scale,std::abs(reference));
+                        error=std::max(error,std::abs(value-reference));
+                    }
+                    return error<=scale*(dtype==tb::kFloat16?1.f/1024:2.e-6f)+1.e-7f;
+                };
+                require(matches(ah,expected_first[i]) && matches(bh,expected_second[j]),
+                    ("GGUF format-pair kernel changed projection bits/boundaries: K="+std::to_string(width)+
+                        " formats="+std::to_string(int(wa.type))+"/"+std::to_string(int(wb.type))+
+                        " half="+std::to_string(dtype==tb::kFloat16)).c_str());
                 ++cases;
             }
         }
     }
-    std::cout<<"GGUF format pairs, FP16/FP32, short/wide/long K and shared-allocation tails: "<<cases<<" exact cases PASS\n";
+    std::cout<<"GGUF format pairs, FP16/FP32, short/wide/long K and shared-allocation tails: "<<cases<<" cases PASS (Q6 homogeneous reductions tolerate roundoff)\n";
 }
 
 void run_long_dense_pairs() {

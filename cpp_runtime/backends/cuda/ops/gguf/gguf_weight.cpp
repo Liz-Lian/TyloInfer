@@ -870,8 +870,8 @@ bool GgufWeight::prefers_position_major_q8(std::int64_t tokens) const noexcept {
     // The two-query native packet retains its smaller register working set.
     if(tokens>=3 && tokens<=8 && quad_projection_ready() &&
             (type==GGML_TYPE_IQ2_XXS || type==GGML_TYPE_IQ2_XS || type==GGML_TYPE_IQ2_S))return true;
-    if(tokens==8 && (type==GGML_TYPE_Q5_K || type==GGML_TYPE_Q6_K) && packed.defined() && packed.is_cuda())
-        return mfq::cuda::gguf::supports_dense_split_window_q8(type,packed.data_ptr(),row_bytes,out,neuron_len,tokens);
+    if(tokens>=5 && tokens<=8 && packed.defined() && packed.is_cuda() &&
+            mfq::cuda::gguf::supports_dense_split_window_q8(type,packed.data_ptr(),row_bytes,out,neuron_len,tokens))return true;
     if(tokens>=5 && tokens<=8 && quad_projection_ready() &&
             (type==GGML_TYPE_IQ1_S || type==GGML_TYPE_IQ1_M || type==GGML_TYPE_Q2_K))return true;
     return mfq::cuda::gguf::supports_interleaved_activation(type,tokens) &&
@@ -907,7 +907,7 @@ tb::Tensor GgufWeight::forward_q8_base(const tb::Tensor& activation,std::int64_t
         return result;
     }
     const auto image=canonical_packed();mfq_cuda_record_stream(image,stream_handle);
-    if(position_major && tokens==8 && mfq::cuda::gguf::project_dense_split_window_q8(type,image.data_ptr(),row_bytes,out,neuron_len,
+    if(position_major && mfq::cuda::gguf::project_dense_split_window_q8(type,image.data_ptr(),row_bytes,out,neuron_len,
             activation.data_ptr(),tokens,result.data_ptr(),dtype==tb::kFloat16,stream))return result;
     if(position_major)mfq::cuda::gguf::matvec_interleaved(type,image.data_ptr(),row_bytes,out,neuron_len,
         activation.data_ptr(),tokens,result.data_ptr(),dtype==tb::kFloat16,stream);
@@ -1007,7 +1007,7 @@ tb::Tensor GgufWeight::forward_base(tb::Tensor input,bool allow_mmq,const tb::Te
         else mfq::cuda::gguf::quantize_input(source.data_ptr<float>(),tokens,neuron_len,activation.data_ptr(),mfq_current_cuda_stream());
         if(aligned_m1)mfq::cuda::gguf::matvec_m1_aligned(type,packed.data_ptr(),row_bytes,out,neuron_len,
             activation.data_ptr(),output.data_ptr(),output_dtype==tb::kFloat16,mfq_current_cuda_stream());
-        else if(interleaved && tokens==8 && mfq::cuda::gguf::project_dense_split_window_q8(type,packed.data_ptr(),row_bytes,out,neuron_len,
+        else if(interleaved && mfq::cuda::gguf::project_dense_split_window_q8(type,packed.data_ptr(),row_bytes,out,neuron_len,
                 activation.data_ptr(),tokens,output.data_ptr(),output_dtype==tb::kFloat16,mfq_current_cuda_stream())) {}
         else if(interleaved)
             mfq::cuda::gguf::matvec_interleaved(type,packed.data_ptr(),row_bytes,out,neuron_len,

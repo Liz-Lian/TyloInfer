@@ -7,7 +7,7 @@ struct DenseGroupEntry {
     DenseProjection projection;
     unsigned begin=0,end=0;
     int warps=1;
-    bool position_major=false,cooperative=false;
+    bool position_major=false,cooperative=false,whole_group=false;
 };
 struct DenseGroupPacket {DenseGroupEntry entries[DenseGroupCapacity];int count=0;};
 
@@ -85,8 +85,22 @@ __device__ __forceinline__ void project_dense_group_entry(const DenseGroupEntry&
             return;
         }
     }
-    if constexpr(Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K || Format==GGML_TYPE_IQ4_XS || dense_long_reduction<Format>) {
+    if constexpr(Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q4_K || Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K || Format==GGML_TYPE_IQ4_XS || dense_long_reduction<Format>) {
         if(entry.cooperative) {
+            if constexpr(M>1 && (Format==GGML_TYPE_Q4_K || Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K))if(entry.whole_group) {
+                // Grouped projections use the same whole-Q8 integer dot and
+                // compact warp reduction as standalone verification kernels.
+                using Prepared=std::conditional_t<Format==GGML_TYPE_Q5_K,DirectQ5Group,M1PreparedDot<Format>>;
+                const auto run=[&]<int Warps>() {
+                    if constexpr(Format==GGML_TYPE_Q5_K)project_dense_streamed_q5_body<M,Warps,4>(packed,int(p.stride),int(p.rows),columns,native,output,half_output,tile,scratch);
+                    else project_dense_cooperative_q8_body<Format,M,2,Warps,Prepared,true,4>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
+                };
+                if(entry.warps==1)run.template operator()<1>();
+                else if(entry.warps==2)run.template operator()<2>();
+                else if(entry.warps==3)run.template operator()<3>();
+                else run.template operator()<4>();
+                return;
+            }
             constexpr int Outputs=M==1 || (Format==GGML_TYPE_Q6_K && M==2)?1:2;
             if(entry.warps==2)project_dense_cooperative_q8_body<Format,M,Outputs,2,PreparedDot<Format>,Format==GGML_TYPE_IQ4_XS>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
             else if(entry.warps==3)project_dense_cooperative_q8_body<Format,M,Outputs,3,PreparedDot<Format>,Format==GGML_TYPE_IQ4_XS>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);

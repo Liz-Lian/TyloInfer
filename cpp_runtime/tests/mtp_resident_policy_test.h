@@ -69,6 +69,26 @@ static void check_resident_depth_policy() {
         }
         require(exit);cases+=5;
     }
+    for(bool blockwise:{false,true})for(bool periodic:{false,true}) {
+        DepthController policy(3,nullptr,7.0,1.03,true,0.0,blockwise,periodic);
+        for(int step=0;policy.warming_up() && step<160;++step) {
+            const int depth=policy.depth();policy.observe(depth,depth,elapsed(depth));
+        }
+        require(!policy.warming_up() && policy.depth()>0);
+        // A long response refreshes ordinary cost. Resident weights need
+        // one execution; streamed weights still sample an exchange period.
+        for(int step=0;policy.depth()>0 && step<300;++step) {
+            const int depth=policy.depth();policy.observe(depth,depth,elapsed(depth));
+        }
+        require(policy.depth()==0);
+        policy.observe(0,0,1000.0,false);
+        require(policy.depth()==0);
+        for(int sample=0;sample<(periodic?4:1);++sample) {
+            require(policy.depth()==0);
+            policy.observe(0,0,elapsed(0));
+        }
+        require(policy.depth()>0);++cases;
+    }
     std::cout<<"Resident/streamed MTP calibration, warm seeds, cost drift, caps and acceptance cases="
         <<cases<<" PASS\n";
 }

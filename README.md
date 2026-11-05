@@ -42,7 +42,7 @@ Apple M5 Max · 40-core GPU · 128 GiB · GGUF IQ3_XXS · 4,096-token input. Spe
 
 ### CUDA · Qwen3.8-27B
 
-NVIDIA RTX 3090 Ti · 24 GiB VRAM · 4K Python code continuation · hot API requests · greedy decoding · 256 output tokens · FP16/BF16 KV · prompt reuse disabled. Speeds in tokens/s; PP uses ordinary decoding, and generation excludes the first-token wait.
+NVIDIA RTX 3090 Ti · 4K input · 256 output
 
 **GSQ-RCO IQ2_XS**
 
@@ -57,8 +57,8 @@ NVIDIA RTX 3090 Ti · 24 GiB VRAM · 4K Python code continuation · hot API requ
 
 | Engine | Prompt processing | Generation | Native MTP | DFlash2 (fastest drafts) |
 | --- | ---: | ---: | ---: | ---: |
-| TyloInfer | **2,110** | 43.2 | 101.1 | 136.0 (≤6) |
-| NInfer-all | 2,008 | **46.9** | **110.5** | 136.3 (7) |
+| TyloInfer | **2,174** | 45.3 | **117.1** | 145.1 (≤6) |
+| NInfer-all | 2,008 | **46.9** | 110.5 | 136.3 (7) |
 | llama.cpp b12125 | 1,799 | 43.9 | 89.3 | 109.9 (5) |
 | ik_llama.cpp | 1,513 | 43.6 | 78.0 | 58.2 (7) |
 | OpenJet | 1,750 | 39.1 | 103.4 | — |

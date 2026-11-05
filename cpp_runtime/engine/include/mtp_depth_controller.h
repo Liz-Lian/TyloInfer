@@ -224,7 +224,10 @@ public:
             std::optional<int>{}:explore_due?most_stale():best_rival();
         if (!target) return;
         current_depth_ = *target;
-        probe_left_ = 4;
+        // Resident weights have no exchange cycle to average. Match their
+        // one-sample baseline calibration instead of discarding three extra
+        // speculative rounds during every ordinary-cost refresh.
+        probe_left_ = *target==0 && !periodic_cost_ ? 1 : 4;
         milliseconds_since_probe_ = 0.0;
         if (explore_due && !baseline_due) milliseconds_since_explore_ = 0.0;
     }

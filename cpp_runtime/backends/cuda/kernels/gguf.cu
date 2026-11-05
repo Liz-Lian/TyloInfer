@@ -15,6 +15,7 @@
 #include "gguf_quantize.cuh"
 #include "gguf_gate_up.cuh"
 #include "gguf_dense_rows.cuh"
+#include "gguf_dense_streamed_q5.cuh"
 #include "gguf_dense_interleaved.cuh"
 #include "../runtime/moe_pipeline.h"
 #include "kernel_dispatch_trace.h"
@@ -154,7 +155,12 @@ __global__ void project_q8(const std::uint8_t* packed, const std::uint64_t* addr
 // enough CTAs without a global partial-result buffer or another kernel.
 template<int Format>
 int dense_reuse_k_warps(std::int64_t rows,std::int64_t columns,std::uint64_t group_reused_blocks=0) {
-    if constexpr(Format==GGML_TYPE_IQ4_XS)return canonical_iq4_k_warps(columns);
+    if constexpr(Format==GGML_TYPE_IQ4_XS || Format==GGML_TYPE_Q6_K) {
+        // Both decoders cover complete Q8 groups. Keep their K partition
+        // independent of output-row count so wide row grids also benefit
+        // from coalesced cooperative reads rather than forcing one warp.
+        return canonical_iq4_k_warps(columns);
+    }
     else if constexpr(!dense_m1_row_reuse<Format> || Format==GGML_TYPE_IQ1_S || Format==GGML_TYPE_IQ1_M)return 1;
     else {
         const auto parts=columns/M1PreparedDot<Format>::qk*M1PreparedDot<Format>::parts;
@@ -508,7 +514,7 @@ void matvec_interleaved(ggml_type type,const void* packed,std::uint64_t stride,s
             if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
                 "gguf_dense_position_major",reinterpret_cast<const void*>(function),
                 "format="+std::to_string(Format)+" M="+std::to_string(Count)+" cooperative="+std::to_string(Cooperative)+
-                " warps="+std::to_string(Warps));
+                " warps="+std::to_string(Warps)+" streamed_iq4="+std::to_string(Format==GGML_TYPE_IQ4_XS && Cooperative));
         };
         if constexpr(Format==GGML_TYPE_IQ4_XS) {
             const int warps=canonical_iq4_k_warps(columns);
@@ -588,7 +594,11 @@ void matvec_group(const DenseProjection* projections,std::size_t count,std::int6
                 static_cast<const block_q8_1*>(native_input),interleaved_input,half_output);
             if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
                 "gguf_dense_group",reinterpret_cast<const void*>(function),
-                "M="+std::to_string(M)+" matrices="+std::to_string(packet.count));
+                "M="+std::to_string(M)+" matrices="+std::to_string(packet.count)+
+                " whole_q8_groups="+std::to_string(std::count_if(packet.entries,packet.entries+packet.count,
+                    [](const auto& entry){return entry.whole_group;}))+
+                " streamed_iq4="+std::to_string(std::count_if(packet.entries,packet.entries+packet.count,
+                    [](const auto& entry){return entry.position_major && entry.cooperative && entry.projection.type==GGML_TYPE_IQ4_XS;})));
         };
         if(tokens==1)launch.template operator()<1>();
         else if(tokens==2)launch.template operator()<2>();
@@ -623,9 +633,19 @@ void matvec_group(const DenseProjection* projections,std::size_t count,std::int6
                 entry.warps=canonical_iq4_k_warps(columns);
                 entry.cooperative=tokens>1 && entry.warps>1 && p.rows<=INT_MAX/tokens && p.stride<=INT_MAX;
             }
+            if constexpr(Format==GGML_TYPE_Q4_K || Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K) {
+                // Native 32-value groups require the decoder's actual source
+                // alignment. Other external views retain the scalar decoder.
+                if(tokens>1 && p.rows<=INT_MAX/tokens && p.stride<=INT_MAX &&
+                        !((reinterpret_cast<std::uintptr_t>(p.packed)|p.stride)&(Format==GGML_TYPE_Q5_K?15u:Format==GGML_TYPE_Q4_K?3u:1u))) {
+                    entry.whole_group=true;entry.cooperative=true;
+                    entry.warps=Format==GGML_TYPE_Q4_K?1:Format==GGML_TYPE_Q6_K?4:whole_q8_k_warps(columns);
+                }
+            }
             if(entry.position_major) {
                 if constexpr(Format==GGML_TYPE_IQ4_XS)if(entry.warps>1)outputs=2;
-            }else if(entry.cooperative)outputs=tokens==1 || (Format==GGML_TYPE_Q6_K && tokens==2)?1:2;
+            }else if(entry.whole_group)outputs=2*(4/entry.warps);
+            else if(entry.cooperative)outputs=tokens==1 || (Format==GGML_TYPE_Q6_K && tokens==2)?1:2;
             else if(tokens==1) {
                 if constexpr(dense_m1_row_reuse<Format>)outputs=entry.warps>1?2:8;
                 else outputs=8;
@@ -663,31 +683,36 @@ bool try_dense_cooperative(const void* packed,std::uint64_t stride,std::int64_t 
         if constexpr(Format!=GGML_TYPE_Q8_0 && Format!=GGML_TYPE_Q5_K &&
                 Format!=GGML_TYPE_Q6_K && Format!=GGML_TYPE_IQ4_XS)if(tokens!=1)return false;
         if(tokens<1 || tokens>8 || rows>INT_MAX/tokens || columns>INT_MAX || stride>INT_MAX)return false;
-        if constexpr(Format==GGML_TYPE_Q5_K)if(tokens>1 && columns%256==0 &&
-                ((reinterpret_cast<std::uintptr_t>(packed)|stride)&15u)==0) {
-            // The coalesced uint4 gathers require vector alignment. Canonical
-            // block rows retain it; external unaligned buffers use the reader below.
-            const auto parts=columns/256*8;
-            int warps=parts<=32?1:2;
-            auto work=((parts+32*warps-1)/(32*warps))*warps;
-            for(int candidate=warps+1;candidate<=4;++candidate) {
-                const auto cost=((parts+32*candidate-1)/(32*candidate))*candidate;
-                if(cost<=work){work=cost;warps=candidate;}
-            }
+        if constexpr(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K)if(tokens>1 && columns%256==0 &&
+                ((reinterpret_cast<std::uintptr_t>(packed)|stride)&(Format==GGML_TYPE_Q5_K?15u:1u))==0) {
+            // Whole 32-value groups amortize code decoding and normalization
+            // over the token window. Q5's uint4 gathers need vector alignment;
+            // Q6 reconstructs aligned words from its halfword-aligned blocks.
+            const int warps=Format==GGML_TYPE_Q6_K?4:whole_q8_k_warps(columns);
             const auto count=[&]<int Count>() {
-                constexpr int Outputs=Count<=4?2:1;
+                constexpr int Outputs=Format==GGML_TYPE_Q6_K || Count<=4?2:1;
                 const auto run=[&]<int Warps>() {
-                    const auto function=project_dense_cooperative_q8<Format,Count,Outputs,Warps,Q5Group32Prepared>;
+                    using Prepared=std::conditional_t<Format==GGML_TYPE_Q5_K,DirectQ5Group,M1PreparedDot<GGML_TYPE_Q6_K>>;
+                    // Exchange only each warp's reduced output values rather
+                    // than storing a full lane array for every token/row pair.
+                    constexpr bool WarpFirst=Format==GGML_TYPE_Q6_K || Count<=4;
+                    const auto function=[&] {
+                        if constexpr(Format==GGML_TYPE_Q5_K && Count<=4)return project_dense_streamed_q5<Count,Warps>;
+                        else return project_dense_cooperative_q8<Format,Count,Outputs,Warps,Prepared,WarpFirst>;
+                    }();
                     function<<<unsigned((rows+Outputs-1)/Outputs),dim3(32,Warps),0,stream>>>(
                         static_cast<const std::uint8_t*>(packed),int(stride),int(rows),int(columns),int(tokens),
                         static_cast<const block_q8_1*>(input),output,std::is_same_v<Output,half>);
                     if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
-                        "gguf_dense_q5_group32",reinterpret_cast<const void*>(function),
+                        Format==GGML_TYPE_Q5_K && Count<=4?"gguf_dense_streamed_q5":"gguf_dense_affine_group32",reinterpret_cast<const void*>(function),
                         "format="+std::to_string(Format)+" M="+std::to_string(tokens)+" outputs="+std::to_string(Outputs)+
-                        " warps="+std::to_string(Warps)+" affine_group=32");
+                        " warps="+std::to_string(Warps)+" affine_group=32 direct_weight_gather=1 warp_first="+std::to_string(WarpFirst));
                 };
-                if(warps==1)run.template operator()<1>();else if(warps==2)run.template operator()<2>();
-                else if(warps==3)run.template operator()<3>();else run.template operator()<4>();
+                if constexpr(Format==GGML_TYPE_Q6_K)run.template operator()<4>();
+                else {
+                    if(warps==1)run.template operator()<1>();else if(warps==2)run.template operator()<2>();
+                    else if(warps==3)run.template operator()<3>();else run.template operator()<4>();
+                }
             };
             if(tokens==2)count.template operator()<2>();else if(tokens==3)count.template operator()<3>();
             else if(tokens==4)count.template operator()<4>();else count.template operator()<8>();

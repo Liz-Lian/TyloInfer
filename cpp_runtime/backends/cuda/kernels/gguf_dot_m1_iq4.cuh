@@ -12,8 +12,23 @@ struct M1PreparedIq4Xs:PreparedDot<GGML_TYPE_IQ4_XS> {
         const auto* b=static_cast<const block_iq4_xs*>(data)+block;Weight w;w.block=part/4;
         w.scale=__half2float(__ushort_as_half(__ldcs(reinterpret_cast<const uint16_t*>(&b->d))));
         w.scale_code=(((__ldcs(b->scales_l+part/8)>>(part&4))&15)|(((__ldcs(&b->scales_h)>>(part/2))&3)<<4))-32;
-        #pragma unroll
-        for(int j=0;j<4;++j)w.codes[j]=get_int_from_table_16(__ldcs(reinterpret_cast<const int*>(b->qs)+part+j),kvalues_iq4nl);
+        const auto* codes=b->qs+part*4;
+        if((reinterpret_cast<std::uintptr_t>(codes)&7u)==0) {
+            // Each 136-byte block preserves eight-byte alignment. Retire
+            // one compressed pair before loading the next; scalar views
+            // still accept the original four-byte alignment.
+            const auto* pairs=reinterpret_cast<const uint2*>(codes);
+            const auto first=__ldcs(pairs);
+            w.codes[0]=get_int_from_table_16(first.x,kvalues_iq4nl);
+            w.codes[1]=get_int_from_table_16(first.y,kvalues_iq4nl);
+            const auto second=__ldcs(pairs+1);
+            w.codes[2]=get_int_from_table_16(second.x,kvalues_iq4nl);
+            w.codes[3]=get_int_from_table_16(second.y,kvalues_iq4nl);
+        }else {
+            #pragma unroll
+            for(int j=0;j<4;++j)
+                w.codes[j]=get_int_from_table_16(__ldcs(reinterpret_cast<const int*>(codes)+j),kvalues_iq4nl);
+        }
         return w;
     }
     __device__ static float apply_activation(const Weight& w,const Activation& a) {

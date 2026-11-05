@@ -37,77 +37,27 @@ struct Iq4WindowPrepared : PreparedDot<GGML_TYPE_IQ4_XS> {
     }
 };
 
-// Broadcast compressed words directly to the eight lanes sharing a Q5
-// block. This avoids peer shuffles while preserving canonical GGUF bytes.
-struct DirectQ5Group : Q5Group32Prepared {
-    __device__ static Weight load(const void* data,int block,int group) {
-        const auto* b=static_cast<const block_q5_K*>(data)+block;
-        const auto* low=b->qs+32*(group/2);
-        const auto a=__ldg(reinterpret_cast<const uint4*>(low));
-        const auto c=__ldg(reinterpret_cast<const uint4*>(low+16));
-        const auto h0=__ldg(reinterpret_cast<const uint4*>(b->qh));
-        const auto h1=__ldg(reinterpret_cast<const uint4*>(b->qh+16));
-        const unsigned lo[8]={a.x,a.y,a.z,a.w,c.x,c.y,c.z,c.w};
-        const unsigned hi[8]={h0.x,h0.y,h0.z,h0.w,h1.x,h1.y,h1.z,h1.w};
-        Weight w;w.group=group;
-        #pragma unroll
-        for(int j=0;j<8;++j)
-            w.codes[j]=int((lo[j]>>((group&1)*4))&0x0f0f0f0fu)|
-                int(((hi[j]>>group)<<4)&0x10101010u);
-        if(group<4){w.scale=b->scales[group]&63;w.minimum=b->scales[group+4]&63;}
-        else {
-            w.scale=(b->scales[group+4]&15)|((b->scales[group-4]>>6)<<4);
-            w.minimum=(b->scales[group+4]>>4)|((b->scales[group]>>6)<<4);
-        }
-        w.d=__half22float2(b->dm);
-        return w;
-    }
-};
-
-// Eight adjacent lanes consume one canonical 256-value Q6 block. Its
-// 210-byte stride only guarantees halfword alignment. Gather the compressed
-// words once per lane and exchange them within each eight-lane group.
-struct CooperativeQ6Group : M1PreparedDot<GGML_TYPE_Q6_K> {
-    __device__ static Weight load(const void* data,int block,int part) {
-        const auto* b=static_cast<const block_q6_K*>(data)+block;
-        const auto mask=__activemask();
-        const auto* low=b->ql+part*16;
-        const unsigned a=iq_weight_word<true>(low,0),c=iq_weight_word<true>(low,1);
-        const unsigned d=iq_weight_word<true>(low,2),e=iq_weight_word<true>(low,3);
-        const auto* high=b->qh+part*8;
-        const unsigned h0=iq_weight_word<true>(high,0),h1=iq_weight_word<true>(high,1);
-        const int low_owner=(part/4)*4+(part&1)*2,high_owner=(part/4)*4;
-        Weight w;
-        #pragma unroll
-        for(int j=0;j<8;++j) {
-            const unsigned own=j%4==0?a:j%4==1?c:j%4==2?d:e;
-            const unsigned lo=__shfl_sync(mask,own,low_owner+j/4,8);
-            const unsigned hi=__shfl_sync(mask,j%2?h1:h0,high_owner+j/2,8);
-            const unsigned code=((lo>>(4*((part/2)&1)))&0x0f0f0f0fu)|
-                (((hi>>(2*(part&3)))<<4)&0x30303030u);
-            w.codes[j]=int((code+0x60606060u)^0x80808080u);
-        }
-        const unsigned scales=__ldg(reinterpret_cast<const unsigned short*>(b->scales)+part);
-        w.scale0=int(static_cast<signed char>(scales));
-        w.scale1=int(static_cast<signed char>(scales>>8));
-        w.dm=make_float2(__half2float(__ldg(&b->d)),0.f);
-        return w;
-    }
-};
-template<int Format,class Base>struct SplitWindow:Base{
+// Q6 uses the M=1 aligned-word decoder for every window. Reconstructing
+// each lane's words avoids exchanging compressed payloads between lanes.
+template<int Format,class Base,int InputTokens=8>struct SplitWindow:Base{
  __device__ static typename Base::Activation load_window_activation(const block_q8_1* input,int columns,int token,int block,int part){
   typename Base::Activation a{};
   const unsigned groups=unsigned(columns/32),group=unsigned(block)*(Base::qk/32)+(Format==GGML_TYPE_IQ4_XS?unsigned(part/4):unsigned(part));
   const unsigned packet=unsigned(token)*groups+group;
   const auto* low=static_cast<const uint8_t*>(static_cast<const void*>(input));
-  const auto* high=low+uint64_t(columns)*8/2;uint4 x,y;
+  const auto* high=low+uint64_t(columns)*InputTokens/2;uint4 x,y;
   asm("{ .reg .u64 p; mad.wide.u32 p,%5,16,%4; ld.global.nc.v4.u32 {%0,%1,%2,%3},[p]; }":"=r"(x.x),"=r"(x.y),"=r"(x.z),"=r"(x.w):"l"(low),"r"(packet));
   asm("{ .reg .u64 p; mad.wide.u32 p,%5,16,%4; ld.global.nc.v4.u32 {%0,%1,%2,%3},[p]; }":"=r"(y.x),"=r"(y.y),"=r"(y.z),"=r"(y.w):"l"(high),"r"(packet));
   a.codes[0]=x.x;a.codes[1]=x.y;a.codes[2]=x.z;a.codes[3]=x.w;a.codes[4]=y.x;a.codes[5]=y.y;a.codes[6]=y.z;a.codes[7]=y.w;
-  if constexpr(Format==GGML_TYPE_Q5_K){
-   const auto helper=__ldg(reinterpret_cast<const uint2*>(low+uint64_t(groups)*8*36)+packet);
-   a.d=__half2float(__ushort_as_half(helper.x&65535));a.ones=int(int16_t(helper.y))+int(int16_t(helper.y>>16));
-  }else a.scale=__low2float(__ldg(reinterpret_cast<const half2*>(low+uint64_t(columns)*8)+packet));
+  if constexpr(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q4_K){
+   const auto helper=__ldg(reinterpret_cast<const uint2*>(low+uint64_t(groups)*InputTokens*36)+packet);
+   if constexpr(Format==GGML_TYPE_Q5_K) {
+    a.d=__half2float(__ushort_as_half(helper.x&65535));a.ones=int(int16_t(helper.y))+int(int16_t(helper.y>>16));
+   }else {
+    a.scale=__half2float(__ushort_as_half(helper.x&65535));
+    a.lo_sum=int(int16_t(helper.y));a.hi_sum=int(int16_t(helper.y>>16));
+   }
+  }else a.scale=__low2float(__ldg(reinterpret_cast<const half2*>(low+uint64_t(columns)*InputTokens)+packet));
   return a;
  }
 };
@@ -156,7 +106,7 @@ bool project_dense_window_q8(ggml_type type, const void* packed, std::uint64_t s
             reinterpret_cast<const void*>(function), "format=" + std::to_string(type) +
             " M=" + std::to_string(tokens) + " output_rows=" + std::to_string(Rows) +
             " activation_reuse=1 warp_first=" + std::to_string(WarpFirst) +
-            " cooperative_weight_gather=" + std::to_string(Format==GGML_TYPE_Q6_K) +
+            " direct_weight_gather=" + std::to_string(Format==GGML_TYPE_Q6_K) +
             " warps=" + std::to_string(Warps));
     };
     if (type == GGML_TYPE_IQ4_XS) {
@@ -168,15 +118,9 @@ bool project_dense_window_q8(ggml_type type, const void* packed, std::uint64_t s
     // Cover a whole Q8 group before applying scales, reusing the same
     // contiguous decoder as M=1. Eight-value fragments repeat metadata and
     // normalization four times across a full verification window.
-    else if (type == GGML_TYPE_Q6_K) launch.template operator()<GGML_TYPE_Q6_K,CooperativeQ6Group,4>();
+    else if (type == GGML_TYPE_Q6_K) launch.template operator()<GGML_TYPE_Q6_K,M1PreparedDot<GGML_TYPE_Q6_K>,4,2,true>();
     else {
-        const auto parts = columns / 32;
-        int warps = parts <= 32 ? 1 : 2;
-        auto work = ((parts + 32 * warps - 1) / (32 * warps)) * warps;
-        for (int candidate = warps + 1; candidate <= 4; ++candidate) {
-            const auto cost = ((parts + 32 * candidate - 1) / (32 * candidate)) * candidate;
-            if (cost <= work) { work = cost; warps = candidate; }
-        }
+        const int warps=whole_q8_k_warps(columns);
         const auto q5 = [&]<int Warps>() {
             if (tokens == 8) launch.template operator()<GGML_TYPE_Q5_K,DirectQ5Group,Warps,4,true>();
             else launch.template operator()<GGML_TYPE_Q5_K,Q5Group32Prepared,Warps>();
@@ -192,10 +136,12 @@ bool project_dense_window_q8(ggml_type type, const void* packed, std::uint64_t s
 }
 bool supports_dense_split_window_q8(ggml_type type,const void* packed,std::uint64_t stride,
         std::int64_t rows,std::int64_t columns,std::int64_t tokens) noexcept {
-    if((type!=GGML_TYPE_Q5_K && type!=GGML_TYPE_Q6_K) || tokens!=8 || !packed ||
-            rows<1 || rows>INT_MAX/8 || columns<256 || columns>INT_MAX || columns%256 ||
+    if((type!=GGML_TYPE_Q5_K && type!=GGML_TYPE_Q6_K && type!=GGML_TYPE_Q4_K && type!=GGML_TYPE_IQ4_XS) ||
+            tokens<5 || tokens>8 || !packed ||
+            rows<1 || rows>INT_MAX/tokens || columns<256 || columns>INT_MAX || columns%256 ||
             stride>INT_MAX || stride<mfq::gguf::row_bytes(type,columns))return false;
-    return type!=GGML_TYPE_Q5_K || !((reinterpret_cast<std::uintptr_t>(packed)|stride)&15u);
+    const auto alignment=type==GGML_TYPE_Q5_K?15u:(type==GGML_TYPE_Q4_K || type==GGML_TYPE_IQ4_XS)?3u:1u;
+    return !((reinterpret_cast<std::uintptr_t>(packed)|stride)&alignment);
 }
 
 bool project_dense_split_window_q8(ggml_type type,const void* packed,std::uint64_t stride,
@@ -203,22 +149,34 @@ bool project_dense_split_window_q8(ggml_type type,const void* packed,std::uint64
         void* output,bool half_output,cudaStream_t stream) {
     if(!supports_dense_split_window_q8(type,packed,stride,rows,columns,tokens))return false;
     if(!input || !output)throw std::invalid_argument("Dense split-window activation/output missing");
-    const auto launch=[&]<int Format,class Base,int Warps,int Rows,bool WarpFirst>() {
-        const auto function=project_dense_cooperative_q8<Format,8,Rows,Warps,SplitWindow<Format,Base>,WarpFirst>;
+    const auto launch=[&]<int Count,int Format,class Base,int Warps,int Rows,bool WarpFirst>() {
+        const auto function=project_dense_cooperative_q8<Format,Count,Rows,Warps,SplitWindow<Format,Base,Count>,WarpFirst>;
         function<<<unsigned((rows+Rows-1)/Rows),dim3(32,Warps),0,stream>>>(
             static_cast<const uint8_t*>(packed),int(stride),int(rows),int(columns),int(tokens),
             static_cast<const block_q8_1*>(input),output,half_output);
         if(dispatch_trace::enabled())dispatch_trace::record(stream,"gguf_dense_split_window",reinterpret_cast<const void*>(function),
-            "format="+std::to_string(type)+" M=8 split_q8_planes=1 cached_integer_sum="+std::to_string(Format==GGML_TYPE_Q5_K)+" warps="+std::to_string(Warps));
+            "format="+std::to_string(type)+" M="+std::to_string(tokens)+" split_q8_planes=1 exact_token_tile=1 cached_integer_sum="+
+            std::to_string(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q4_K)+" warps="+std::to_string(Warps));
     };
-    if(type==GGML_TYPE_Q6_K)launch.template operator()<GGML_TYPE_Q6_K,CooperativeQ6Group,4,2,false>();
-    else {
-        const auto parts=columns/32;int warps=parts<=32?1:2;
-        auto work=((parts+32*warps-1)/(32*warps))*warps;
-        for(int candidate=warps+1;candidate<=4;++candidate){const auto cost=((parts+32*candidate-1)/(32*candidate))*candidate;if(cost<=work){work=cost;warps=candidate;}}
-        const auto q5=[&]<int Warps>(){launch.template operator()<GGML_TYPE_Q5_K,DirectQ5Group,Warps,4,true>();};
+    const auto count=[&]<int Count>() {
+    if(type==GGML_TYPE_Q6_K)launch.template operator()<Count,GGML_TYPE_Q6_K,M1PreparedDot<GGML_TYPE_Q6_K>,4,2,true>();
+    else if(type==GGML_TYPE_Q4_K)launch.template operator()<Count,GGML_TYPE_Q4_K,M1PreparedDot<GGML_TYPE_Q4_K>,1,2,true>();
+    else if(type==GGML_TYPE_IQ4_XS) {
+        const int warps=canonical_iq4_k_warps(columns);
+        if(warps==3)launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared,3,4,true>();
+        else if(warps==4)launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared,4,4,true>();
+        else launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared,1,4,true>();
+    }else {
+        const int warps=whole_q8_k_warps(columns);
+        const auto q5=[&]<int Warps>(){
+            if constexpr(Count==8)launch.template operator()<Count,GGML_TYPE_Q5_K,DirectQ5Group,Warps,4,true>();
+            else launch.template operator()<Count,GGML_TYPE_Q5_K,DirectQ5Group,Warps,2,false>();
+        };
         if(warps==1)q5.template operator()<1>();else if(warps==2)q5.template operator()<2>();else if(warps==3)q5.template operator()<3>();else q5.template operator()<4>();
     }
+    };
+    if(tokens==5)count.template operator()<5>();else if(tokens==6)count.template operator()<6>();
+    else if(tokens==7)count.template operator()<7>();else count.template operator()<8>();
     const auto status=cudaGetLastError();if(status!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(status));return true;
 }
 }
