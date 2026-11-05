@@ -2,11 +2,9 @@
 #include "engine/impl.h"
 #include "engine/generation/step.h"
 #include "engine/generation/sampling.h"
-#include "engine/generation/prefill_budget.h"
 #include "engine/scheduler/request.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/source.h"
-#include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/weights/routed_cache.h"
@@ -118,55 +116,8 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
 
     const auto tokens = prompt.size() - restored.tokens;
     const auto limit = config.generation.prefill_chunk_size;
-    const bool short_streamed = state.position() > 0 && tokens <= 128 && moe_expert_cache_ssd_experts(weights.moe);
-    const auto reserve_workspace = [&](std::size_t bytes) {
-        reserve_moe_workspace(weights.moe, bytes);
-        auto context = default_context(mfq_current_cuda_device());
-        if (context->available_memory() >= bytes) return;
-        std::size_t hot = 0;
-        for (const auto& metric : cache.metrics())
-            if (metric.first == "prefix_cache_hot_bytes") hot = std::size_t(metric.second);
-        const auto shortage = bytes - context->available_memory();
-        const auto released = cache.trim_hot(hot > shortage ? hot - shortage : 0);
-        context->reclaim_idle_memory();
-        std::cerr << "runtime_workspace_budget requested_bytes=" << bytes
-                  << " available_bytes=" << context->available_memory()
-                  << " prefix_released_bytes=" << released << '\n';
-    };
-    if (short_streamed) {
-        std::cerr << "runtime_streamed_prefill retained_decode=1 tokens=" << tokens
-                  << " chunk=" << std::min<int64_t>(4, limit) << '\n';
-    } else {
-        const bool streamed = tokens > 8 && moe_expert_cache_ssd_experts(weights.moe);
-        if (streamed) lend_moe_decode_cache_for_prefill(weights.moe, runtime_options::workspace_reserve_bytes());
-        if (tokens > 1024 || moe_expert_cache_ssd_experts(weights.moe))
-            reserve_workspace(runtime_options::workspace_reserve_bytes());
-    }
-    int64_t chunk_size;
-    if (short_streamed) chunk_size = std::min<int64_t>(4, limit);
-    else if (tokens <= 128) chunk_size = std::min<int64_t>(std::max<std::size_t>(1, tokens), limit);
-    else {
-        auto budget = moe_prefill_workspace_budget(weights.moe, false);
-        auto context = default_context(mfq_current_cuda_device());
-        auto available = prefill_budget_add(prefill_budget_add(context->available_memory(), context->workspace_available()), budget.lendable_bytes);
-        const auto reserve = moe_expert_cache_ssd_experts(weights.moe)
-            ? std::max(std::size_t(1) << 30, runtime_options::workspace_reserve_bytes()) : std::size_t(1) << 30;
-        const auto fixed = prefill_budget_add(reserve, budget.transfer_bytes);
-        const auto wanted = std::min<int64_t>({int64_t(tokens), limit, max_prefill_compute_chunk});
-        const auto required = prefill_budget_add(fixed, std::size_t(wanted) * info.prefill_row_bytes);
-        if (required > available) {
-            reserve_workspace(required > budget.lendable_bytes ? required - budget.lendable_bytes : 0);
-            budget = moe_prefill_workspace_budget(weights.moe, false);
-            available = prefill_budget_add(context->available_memory() + context->workspace_available(), budget.lendable_bytes);
-        }
-        chunk_size = select_prefill_chunk(tokens, limit, available, fixed, info.prefill_row_bytes);
-        if (!chunk_size) throw InferenceInputError(InferenceInputErrorCode::ContextLength,
-            "insufficient CUDA workspace for prefill computation and expert transfer buffers");
-        std::cerr << "runtime_prefill_plan mode=" << (config.prefill_chunk_auto ? "auto" : "limited")
-                  << " tokens=" << tokens << " limit=" << limit << " compute_chunk=" << chunk_size
-                  << " available_bytes=" << available << " lendable_bytes=" << budget.lendable_bytes
-                  << " transfer_bytes=" << budget.transfer_bytes << '\n';
-    }
+    const auto chunk_size = impl_->budget_->prefill(tokens, limit, info.prefill_row_bytes,
+        state.position() > 0, config.prefill_chunk_auto);
 
     auto full_ids = ops::reshape(*ops::tensor(std::span<const int64_t>(prompt), Device(kCUDA, forward_options.primary)), {1, -1});
     graph.ensure_storage(info.vocab_size);
@@ -234,7 +185,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_return;
     }
     auto token = ops::item(*pending);
-    if (weights.moe) restore_graph_expert_space();
+    if (weights.moe) impl_->budget_->decode(impl_->expert_space_ ? &*impl_->expert_space_ : nullptr, impl_->source_.get());
     const bool graph_active = config.decode_graph.enabled &&
         impl_->load_.dsv4_cpu_offload_layers.empty() && impl_->load_.dense_cpu_layer_count == 0 &&
         impl_->graph_allowed_ &&

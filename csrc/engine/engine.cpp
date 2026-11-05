@@ -60,7 +60,7 @@ void Engine::install() {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
-        restore_graph_expert_space();
+        impl.budget_->decode(impl.expert_space_ ? &*impl.expert_space_ : nullptr, impl.source_.get());
         impl.info_ = {};
         impl.info_.max_requests = std::max<std::size_t>(1, impl.runtime_.continuous_batch.max_sequences);
         impl.info_.max_context = impl.model_info_.max_context;
@@ -202,13 +202,6 @@ bool Engine::can_batch(const EngineRequest&) const { return false; }
 bool Engine::exclusive() const { return false; }
 
 void Engine::execute(const std::vector<RequestId>&) {}
-
-void Engine::restore_graph_expert_space() {
-    if (impl_->weights_->tq) return;
-    prepare_moe_decode_residency(impl_->weights_->moe);
-    default_context(impl_->load_.layer_placement.primary_device())->reclaim_idle_memory();
-    if (impl_->expert_space_) impl_->expert_space_->restore(runtime_options::workspace_reserve_bytes(), impl_->source_.get());
-}
 
 void Engine::clear_bindings() noexcept {
     if (impl_->kv_) impl_->kv_->set_reservation({});

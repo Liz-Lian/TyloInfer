@@ -9,6 +9,7 @@
 
 class MoeExpertCache;
 
+namespace tyloi { class ModelSource; }
 namespace tyloi::engine {
 struct SessionCommand;
 struct SessionResult;
@@ -39,9 +40,15 @@ public:
 
     std::size_t resident() const noexcept { return resident_budget_; }
     std::size_t weights() const noexcept { return weight_budget_; }
+    // Call within the owner's execution scope.
     void reclaim(std::size_t bytes, ExpertSpace* space);
+    std::int64_t prefill(std::size_t tokens, std::int64_t limit,
+        std::size_t row_bytes, bool resumed, bool automatic);
+    void decode(ExpertSpace* space, const ModelSource* source);
 
 private:
+    std::size_t trim_prefix(std::size_t bytes);
+    void workspace(std::size_t bytes);
     WeightMemoryLedger& weight_memory_;
     RoutedCache& weights_;
     internal::TextSessionCache& cache_;

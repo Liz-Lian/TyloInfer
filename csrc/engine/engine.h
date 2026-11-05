@@ -130,7 +130,6 @@ private:
 
     SessionResult set_budget(const SessionCommand&);
     void drain();
-    void restore_graph_expert_space();
     void clear_bindings() noexcept;
     struct Impl;
     std::shared_ptr<models::CausalModel> model_;
