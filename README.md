@@ -46,7 +46,7 @@ NVIDIA RTX 3090 Ti · 24 GiB VRAM · 4K Python code continuation · hot API requ
 
 **GSQ-RCO IQ2_XS**
 
-| Engine | Prompt processing | Generation | Native MTP | DFlash2 (drafts) |
+| Engine | Prompt processing | Generation | Native MTP | DFlash2 (fastest drafts) |
 | --- | ---: | ---: | ---: | ---: |
 | TyloInfer | **2,237** | **83.5** | **171.4** | **206.8** (≤6) |
 | NInfer-all | 1,729 | 73.0 | 150.2 | 151.1 (6) |
@@ -55,7 +55,7 @@ NVIDIA RTX 3090 Ti · 24 GiB VRAM · 4K Python code continuation · hot API requ
 
 **UD-Q4_K_XL**
 
-| Engine | Prompt processing | Generation | Native MTP | DFlash2 (drafts) |
+| Engine | Prompt processing | Generation | Native MTP | DFlash2 (fastest drafts) |
 | --- | ---: | ---: | ---: | ---: |
 | TyloInfer | **2,110** | 43.2 | 101.1 | 136.0 (≤6) |
 | NInfer-all | 2,008 | **46.9** | **110.5** | 136.3 (7) |

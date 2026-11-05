@@ -46,7 +46,7 @@ NVIDIA RTX 3090 Ti · 24 GiB 显存 · 4K Python 代码续写 · API 热轮 · �
 
 **GSQ-RCO IQ2_XS**
 
-| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（草稿数） |
+| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（最快草稿数） |
 | --- | ---: | ---: | ---: | ---: |
 | TyloInfer | **2,237** | **83.5** | **171.4** | **206.8**（≤6） |
 | NInfer-all | 1,729 | 73.0 | 150.2 | 151.1（6） |
@@ -55,7 +55,7 @@ NVIDIA RTX 3090 Ti · 24 GiB 显存 · 4K Python 代码续写 · API 热轮 · �
 
 **UD-Q4_K_XL**
 
-| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（草稿数） |
+| 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（最快草稿数） |
 | --- | ---: | ---: | ---: | ---: |
 | TyloInfer | **2,110** | 43.2 | 101.1 | 136.0（≤6） |
 | NInfer-all | 2,008 | **46.9** | **110.5** | 136.3（7） |
