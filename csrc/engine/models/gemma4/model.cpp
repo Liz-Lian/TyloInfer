@@ -9,8 +9,18 @@
 namespace tyloi::cuda::gemma4 {
 
 tyloi::models::Info Model::info() const {
+    bool decode_graph = true;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    for (const auto& layer : layers) {
+        if (layer.gemma4_moe && (layer.gemma_moe_gate_up->device().is_cpu() ||
+                                 layer.gemma_moe_down->device().is_cpu())) {
+            decode_graph = false;
+            break;
+        }
+    }
+#endif
     return {config.vocab_size, config.max_position_embeddings, config.model_type,
-            std::size_t(config.hidden_size) * sizeof(float) * 8, true, true};
+            std::size_t(config.hidden_size) * sizeof(float) * 8, decode_graph, true};
 }
 
 MfqModelCapabilities Model::capabilities() const {

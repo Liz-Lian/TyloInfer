@@ -77,6 +77,13 @@ struct LayerLoader : TransformerWeightLoader {
 #endif
     }
     auto experts(const std::string &name, int layer, const char *projection) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if (weights.placement.experts.enabled()) {
+            const auto& dtype = tyloi::require_tensor(weights.source, name).dtype;
+            if (dtype == "TQ" || dtype == "F32" || dtype == "F16" || dtype == "BF16")
+                throw std::runtime_error("Gemma4 expert parallelism does not support " + dtype + " expert banks: " + name);
+        }
+#endif
         return weights.experts(name, true, layer, projection);
     }
     static auto expert_shape(const tyloi::Tensor& weight) {

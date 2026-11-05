@@ -113,7 +113,6 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
             result = normalize(*result, *weights.ffn_post_norm_1, "gemma.ffn_post_norm_1");
             trace_stage(mode, layer, "dense_output", *result);
         }
-#if TYLOINFER_ENABLE_MFQ_COMPAT
         auto router_logits = measure("gemma.router", [&] {
             auto transposed = ops::transpose(*weights.gemma_router, 0, 1);
             return ops::matmul(*router_input, *transposed);
@@ -154,9 +153,6 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
             auto normalized = normalize(*moe_output, *weights.ffn_post_norm_2, "gemma.ffn_post_norm_2");
             result = measure("gemma.ffn_combine", [&] { return ops::add(*result, *normalized); });
         }
-#else
-        throw std::runtime_error("Legacy Gemma MoE weights require a compatibility build");
-#endif
     }
     if (!fused_norms) {
         auto normalized = normalize(*result, *weights.ffn_post_norm, "gemma.ffn_post_norm");

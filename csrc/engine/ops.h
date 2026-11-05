@@ -244,6 +244,8 @@ SelectedExperts topk(const Tensor& logits, std::int64_t count, const MoeRouting&
 // Scale the selected weights in place.
 void expert_scale(Tensor& weights, const Tensor& ids, const Tensor& scales);
 std::shared_ptr<Tensor> weighted_reduce(const Tensor& pairs, const Tensor& weights);
+// Input is CUDA F16 [rows,in], ids are CUDA I32 [rows,routes], and banks are
+// [experts,2*hidden,in] and [experts,out,hidden]. Pairs are [rows,routes,out].
 // Traced intermediates are F32 snapshots taken before subsequent projections.
 struct RoutedGeglu { std::shared_ptr<Tensor> pairs, gate_up, hidden; };
 RoutedGeglu routed_geglu(const Tensor& input, const Tensor& ids,

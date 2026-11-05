@@ -291,6 +291,9 @@ RoutedGeglu routed_geglu(const Tensor& value_tensor, const Tensor& ids_tensor,
     compatible(value, ids);
     if (!gate_up.defined() || !down.defined() || gate_up.dim() != 3 || down.dim() != 3 ||
         value.dim() != 2 || ids.dim() != 2 || value.size(0) != ids.size(0) ||
+        value.scalar_type() != kFloat16 || ids.scalar_type() != kInt32 ||
+        value.size(0) <= 0 || value.size(1) <= 0 || ids.size(1) <= 0 ||
+        gate_up.size(0) <= 0 || gate_up.size(1) <= 0 || down.size(1) <= 0 ||
         gate_up.size(0) != down.size(0) || gate_up.size(2) != value.size(-1) ||
         gate_up.size(1) % 2 != 0 || gate_up.size(1) / 2 != down.size(2))
         throw std::invalid_argument("routed GEGLU input, routes, and expert banks are incompatible");
