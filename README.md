@@ -30,14 +30,14 @@ Apple M5 Max · 40-core GPU · 128 GiB · GGUF IQ3_XXS · 4,096-token input. Spe
 | Engine | Prompt processing | Generation | With DFlash2 |
 | --- | ---: | ---: | ---: |
 | TyloInfer | 2,572 | 73.7 | **162.4** |
-| [Strata 0.1.52](https://github.com/Niko1221/Strata/commit/5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d) | — | **76.3** | — |
+| [Strata 0.1.57](https://github.com/Niko1221/Strata/commit/9f7d977d220e9fdf2ec53cf2620cdadac1cfb24e) | 1,315 | **77.8** | 113.4 |
 | [Splash 1.4.1](https://github.com/incoai/splash/releases/tag/1.4.1) | **2,599** | — | 148.9 |
 
 ### Qwen3.8-27B
 
 | Engine | Prompt processing | Generation | With DFlash2 |
 | --- | ---: | ---: | ---: |
-| TyloInfer | 1,001 | 40.1 | 121.5 |
+| TyloInfer | 1,010 | 40.1 | 131.1 |
 | [Splash 1.5.0](https://github.com/incoai/splash/releases/tag/1.5.0) | **1,085** | — | **131.2** |
 
 ### CUDA · Qwen3.8-27B
