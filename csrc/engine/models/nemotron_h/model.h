@@ -25,9 +25,9 @@ struct Mamba {
     int64_t mamba_groups = 0, conv_kernel = 0;
     double rms_norm_eps = 1e-6, time_step_limit_lo = 0.0, time_step_limit_hi = 0.0;
     DenseTensor mixer_norm;
-    QuantLinear in_proj;
+    std::shared_ptr<const ::tyloi::Tensor> in_proj;
     DenseTensor conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
-    QuantLinear out_proj;
+    std::shared_ptr<const ::tyloi::Tensor> out_proj;
 };
 
 struct Moe {
@@ -48,7 +48,7 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-    QuantLinear embed, lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
     DenseTensor output_norm;
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

@@ -37,7 +37,7 @@ using attention_ops::select_pooled_blocks;
 
 struct GdnWeights {
     tyloi::cuda::Projections input_projection;
-    QuantLinear output;
+    std::shared_ptr<const ::tyloi::Tensor> output;
     DenseTensor conv, dt_bias, a_log, norm;
     std::size_t qkv_count = 1;
 };
@@ -557,7 +557,7 @@ class Gdn {
     }
 
   private:
-    DenseTensor project_weight(const tyloi::cuda::Projector& projector,const QuantLinear& weight,const DenseTensor& source) const;
+    DenseTensor project_weight(const tyloi::cuda::Projector& projector,const ::tyloi::Tensor& weight,const DenseTensor& source) const;
     DenseTensor project_qkv(const tyloi::cuda::Projector& projector,const DenseTensor& source) const;
     std::shared_ptr<const GdnWeights> w_;
     int64_t nk_, nv_, d_, kernel_;
@@ -943,7 +943,7 @@ class Ple {
 
 struct QsaWeights {
     tyloi::cuda::Projections input_projection;
-    QuantLinear output;
+    std::shared_ptr<const ::tyloi::Tensor> output;
     DenseTensor query_norm, key_norm, index_query_norm, index_key_norm;
     bool has_gate = false;
 };
@@ -1012,7 +1012,7 @@ class Qsa {
         return projected;
     }
     DenseTensor project_output(const tyloi::cuda::Projector& projector,const DenseTensor& x) const {
-        return projector.run(w_->output,x);
+        return projector.run(*w_->output,x);
     }
     DenseTensor project_query(const tyloi::cuda::Projector& projector,const DenseTensor& x) const {
         auto query=projector.run(*w_->input_projection.weights[0],x);

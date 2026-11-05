@@ -18,15 +18,15 @@ struct TransformerWeightLoader {
     bool preserve_projection_boundaries = false;
     bool cpu_offloaded = false;
     std::size_t shared_gate_up_compatible_prefix = 2;
-    mutable std::shared_ptr<const QuantLinear> router_projection;
+    mutable std::shared_ptr<const ::tyloi::Tensor> router_projection;
     bool keep_quantized_router = false;
 
     bool has(const std::string& name) const;
     ::tyloi::DenseTensor dense(const std::string& name) const;
     ::tyloi::DenseTensor router_parameter(const std::string& name) const;
-    QuantLinear linear(const std::string& name) const;
+    std::shared_ptr<const ::tyloi::Tensor> linear(const std::string& name) const;
     QuantLinearGroup projections(const std::vector<std::string>& names) const;
-    QuantLinearGroup gate_up(const std::vector<std::string>& names, const QuantLinear& down) const;
+    QuantLinearGroup gate_up(const std::vector<std::string>& names, const std::shared_ptr<const ::tyloi::Tensor>& down) const;
     void qkv(tyloi::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
     void output(tyloi::cuda::FullAttention& attention, const std::string& name) const;
     void important_neurons(int64_t hidden, int64_t intermediate, tyloi::cuda::Ffn& ffn,

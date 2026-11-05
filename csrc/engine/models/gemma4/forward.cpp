@@ -386,7 +386,7 @@ tyloi::DenseTensor Model::embedding(tyloi::DenseTensor ids, int primary) const {
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
     ids = normalize_ids(collectives, primary, std::move(ids));
-    const Task task{task::Embed{0, 0, as_quant_linear(*model.embed)}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {std::move(ids)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
@@ -438,7 +438,7 @@ tyloi::DenseTensor Model::logits(tyloi::DenseTensor hidden, bool capped) const {
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
-        Task{task::Project{0, 0, as_quant_linear(*model.lm_head)}, -1, {}, "model.lm_head"},
+        Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
         Task{task::Softcap{0, 0, model.config.final_logit_softcapping}}};
     Inputs inputs;
     inputs.values = {std::move(hidden)};

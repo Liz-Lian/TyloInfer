@@ -26,7 +26,7 @@ inline constexpr const char *MINICPMO45_RESAMPLER_POS_EMBED_ASSET =
 
 
 inline ::tyloi::DenseTensor
-minicpmo45_embedding(const QuantLinear &embedding, ::tyloi::DenseTensor ids,
+minicpmo45_embedding(const ::tyloi::Tensor &embedding, ::tyloi::DenseTensor ids,
                      ::tyloi::ScalarType output_dtype = ::tyloi::kBFloat16) {
     ids = ids.contiguous().to(::tyloi::kCUDA, ::tyloi::kInt64);
     auto output = quant_embedding_lookup(embedding, ids);

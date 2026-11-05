@@ -140,9 +140,9 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     RopeCache rope;
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
-    QuantLinear embed;
+    std::shared_ptr<const ::tyloi::Tensor> embed;
     ::tyloi::DenseTensor output_norm;
-    QuantLinear lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> lm_head;
     CausalConfig config;
     std::unique_ptr<GatedResidual> final_mixer;
     ::tyloi::DenseTensor positions;
@@ -170,7 +170,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     }
     ::tyloi::DenseTensor embed_tokens(::tyloi::DenseTensor ids) const {
         return execution->executor().profiler().measure(
-            "model.embed", [&] { return adapter_embed(quant_embedding_lookup(embed, ids)); });
+            "model.embed", [&] { return adapter_embed(quant_embedding_lookup(*embed, ids)); });
     }
     std::int64_t hidden_size() const noexcept { return metadata.hidden_size; }
     std::int64_t max_position_embeddings() const noexcept { return config.maximum; }
@@ -249,9 +249,9 @@ struct Model : CausalResources, tyloi::models::CausalModel {
                             const ::tyloi::DenseTensor& local_positions, int device) const;
     void adapter_finish_forward(const ::tyloi::DenseTensor& full_positions, int64_t batch,
                                 int64_t tokens);
-    ::tyloi::DenseTensor adapter_last_logits(const QuantLinear& lm_head,
+    ::tyloi::DenseTensor adapter_last_logits(const ::tyloi::Tensor& lm_head,
                                              ::tyloi::DenseTensor hidden) const;
-    ::tyloi::DenseTensor adapter_next_token(const QuantLinear& lm_head,
+    ::tyloi::DenseTensor adapter_next_token(const ::tyloi::Tensor& lm_head,
                                             ::tyloi::DenseTensor hidden) const;
     void adapter_rollback_speculative(int64_t keep);
     void adapter_commit_speculative() { speculative_prefix_retention=false; }

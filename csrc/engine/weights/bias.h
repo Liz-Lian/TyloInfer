@@ -7,7 +7,7 @@
 namespace tyloi::cuda {
 
 struct BiasWeight {
-    QuantLinearRef weight;
+    std::shared_ptr<const ::tyloi::Tensor> weight;
     ::tyloi::DenseTensor bias;
 };
 

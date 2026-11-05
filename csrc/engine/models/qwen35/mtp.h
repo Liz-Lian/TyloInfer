@@ -19,7 +19,7 @@ void restore_session(State&, Mtp*, const TextSessionState&, const std::function<
 
 class Mtp final : public MtpModule {
 public:
-    Mtp(Predictor model, QuantLinear embedding, RopeCache rope,
+    Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding, RopeCache rope,
         std::unique_ptr<Executor> executor, Collectives& copies,
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate);
@@ -50,7 +50,7 @@ private:
         ::tyloi::DenseTensor positions);
 
     Predictor model_;
-    QuantLinear embedding_;
+    std::shared_ptr<const ::tyloi::Tensor> embedding_;
     RopeCache rope_;
     MtpState state_;
     std::vector<Task> tasks_;

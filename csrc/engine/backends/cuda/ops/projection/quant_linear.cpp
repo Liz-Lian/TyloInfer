@@ -36,50 +36,51 @@ void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool ch
     }
 }
 
-int64_t shard_width(const QuantLinearShard& shard) { return shard.weight->size(1); }
-
 // NINT and NVQ pack input groups, so a narrower activation is accepted.
 bool width_is_padded(const ::tyloi::Tensor& weight) {
     return dynamic_cast<const tyloi::NintTensor*>(&weight) != nullptr ||
            dynamic_cast<const tyloi::NvqTensor*>(&weight) != nullptr;
 }
 
-void check_projection_width(const QuantLinear& linear, int64_t width) {
-    if (!linear.tensor_parallel()) {
-        check_width(width, linear.neuron_len(), width_is_padded(linear.payload()));
+void check_projection_width(const ::tyloi::Tensor& weight, int64_t width) {
+    const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&weight);
+    if (!sharded) {
+        check_width(width, weight.size(1), width_is_padded(weight));
         return;
     }
-    if (linear.tensor_parallel_axis == TensorParallelAxis::Input) {
-        check_width(width, linear.neuron_len(), false);
-        for (const auto& shard : linear.tensor_parallel_shards) {
+    if (sharded->axis == TensorParallelAxis::Input) {
+        check_width(width, weight.size(1), false);
+        for (const auto& shard : sharded->shards) {
             if (shard.input_begin < 0 || shard.input_end <= shard.input_begin || shard.input_end > width)
                 throw std::invalid_argument("projection input does not cover tensor-parallel shard");
-            check_width(shard.input_end - shard.input_begin, shard_width(shard),
+            check_width(shard.input_end - shard.input_begin, shard.weight->size(1),
                         width_is_padded(*shard.weight));
         }
-    } else if (linear.tensor_parallel_axis == TensorParallelAxis::Output) {
-        for (const auto& shard : linear.tensor_parallel_shards)
-            check_width(width, shard_width(shard), width_is_padded(*shard.weight));
+    } else if (sharded->axis == TensorParallelAxis::Output) {
+        for (const auto& shard : sharded->shards)
+            check_width(width, shard.weight->size(1), width_is_padded(*shard.weight));
     } else {
         throw std::invalid_argument("tensor-parallel linear has an invalid axis");
     }
 }
 
-void check_projection_device(const QuantLinear& linear, ::tyloi::Device device) {
-    if (!linear.tensor_parallel()) {
-        check_placement(linear.placement(), device);
-        check_fields(linear.payload(), device);
+void check_projection_device(const ::tyloi::Tensor& weight, ::tyloi::Device device) {
+    const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&weight);
+    if (!sharded) {
+        check_placement(projection_placement(weight), device);
+        const bool cpu_tq = dynamic_cast<const tyloi::encoding::TqTensor*>(&weight) && !weight.is_cuda();
+        check_fields(weight, device, !cpu_tq);
         return;
     }
-    for (const auto& shard : linear.tensor_parallel_shards) {
-        if (!shard.weight->defined() || !shard.weight->is_cuda() ||
+    for (const auto& shard : sharded->shards) {
+        if (!shard.weight || !shard.weight->defined() || !shard.weight->is_cuda() ||
             shard.weight->get_device() != shard.device)
             throw std::invalid_argument("tensor-parallel weight is not prepared on its device");
         check_fields(*shard.weight, ::tyloi::Device(::tyloi::kCUDA, shard.device));
     }
 }
 
-void check_projection(const QuantLinear& weight, const ::tyloi::DenseTensor& input) {
+void check_projection(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input) {
     input.require_dense();
     if (!input.defined() || input.dim() < 1)
         throw std::invalid_argument("projection input must have a last dimension");
@@ -130,15 +131,6 @@ void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& inp
 }
 
 
-void check_device(const QuantLinear& weight, const ::tyloi::DenseTensor& input) {
-    // TQ projections validate their own payload; tensor-parallel shards are
-    // checked per shard against the shard device.
-    if (weight.tensor_parallel() ||
-        dynamic_cast<const tyloi::encoding::TqTensor*>(&weight.payload()) != nullptr)
-        return;
-    check_device(weight.payload(), input);
-}
-
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "linear_dispatch.inc"
 
@@ -155,12 +147,11 @@ void check_device(const QuantLinear& weight, const ::tyloi::DenseTensor& input) 
 #endif
 
 ::tyloi::DenseTensor quant_embedding_lookup(
-        const QuantLinear & embedding,
+        const ::tyloi::Tensor & weight,
         ::tyloi::DenseTensor token_ids) {
     TYLOINFER_RUNTIME_CHECK(
-        !embedding.tensor_parallel(),
+        dynamic_cast<const tyloi::ShardedTensor*>(&weight) == nullptr,
         "quantized embedding does not support tensor-parallel shards");
-    const auto& weight = embedding.payload();
     if (const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&weight)) {
         auto output_shape = token_ids.sizes().vec();
         output_shape.push_back(dense->size(1));
@@ -200,44 +191,29 @@ void check_device(const QuantLinear& weight, const ::tyloi::DenseTensor& input) 
 }
 
 bool tensor_parallel_output_projections_compatible(
-        const QuantLinearProjectionRefs & projections) {
-    if (projections.size() < 2 ||
-            !std::all_of(
-                projections.begin(), projections.end(),
-                [](const QuantLinear * layer) {
-                    return layer != nullptr &&
-                        layer->tensor_parallel() &&
-                        layer->tensor_parallel_axis ==
-                            TensorParallelAxis::Output;
-                })) {
+        const std::vector<const ::tyloi::Tensor*>& projections) {
+    if (projections.size() < 2) return false;
+    const auto* first = dynamic_cast<const tyloi::ShardedTensor*>(projections.front());
+    if (!first || first->axis != TensorParallelAxis::Output || first->shards.size() < 2)
         return false;
-    }
-    const size_t shard_count =
-        projections.front()->tensor_parallel_shards.size();
-    if (shard_count < 2) return false;
-    for (const auto * layer : projections) {
-        if (layer->tensor_parallel_shards.size() != shard_count) {
-            return false;
-        }
-        for (size_t shard = 0; shard < shard_count; ++shard) {
-            const auto & candidate =
-                layer->tensor_parallel_shards[shard];
-            const auto & reference =
-                projections.front()->tensor_parallel_shards[shard];
+    for (const auto* projection : projections) {
+        const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(projection);
+        if (!sharded || sharded->axis != TensorParallelAxis::Output ||
+            sharded->shards.size() != first->shards.size()) return false;
+        for (size_t i = 0; i < first->shards.size(); ++i) {
+            const auto& candidate = sharded->shards[i];
+            const auto& reference = first->shards[i];
             if (candidate.device != reference.device ||
-                    candidate.input_begin != reference.input_begin ||
-                    candidate.input_end != reference.input_end) {
-                return false;
-            }
+                candidate.input_begin != reference.input_begin ||
+                candidate.input_end != reference.input_end) return false;
         }
     }
     return true;
 }
 
 ::tyloi::DenseTensor quant_linear_reference_weight(
-        const QuantLinear& linear) {
-    TYLOINFER_RUNTIME_CHECK(!linear.tensor_parallel(), "linear reference requires local weights");
-    const auto& weight = linear.payload();
+        const ::tyloi::Tensor& weight) {
+    TYLOINFER_RUNTIME_CHECK(dynamic_cast<const tyloi::ShardedTensor*>(&weight) == nullptr, "linear reference requires local weights");
     if (const auto* tq = dynamic_cast<const tyloi::encoding::TqTensor*>(&weight)) {
         const auto ids = ::tyloi::cuda::arange(tq->size(0),
             ::tyloi::TensorOptions{}.dtype(::tyloi::kInt64).device(tq->device()));
@@ -297,41 +273,24 @@ bool tensor_parallel_output_projections_compatible(
     return ::tyloi::cuda::matmul(input, weight.transpose(0, 1));
 }
 
-tyloi::weights::Placement QuantLinear::placement(std::size_t index) const {
+tyloi::weights::Placement projection_placement(const ::tyloi::Tensor& weight, std::size_t index) {
     if (index != 0) throw std::out_of_range("matrix index out of range");
     tyloi::weights::Placement result;
-    if (tensor_parallel()) {
-        for (const auto& shard : tensor_parallel_shards)
+    if (const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&weight)) {
+        for (const auto& shard : sharded->shards)
             result.devices.emplace_back(tyloi::DeviceType::cuda, shard.device);
-        return result;
+    } else {
+        result.devices.push_back(weight.device());
+        if (dynamic_cast<const tyloi::encoding::TqTensor*>(&weight) && !weight.is_cuda())
+            result.caller = tyloi::DeviceType::cuda;
     }
-    result.devices.push_back(weight->device());
     return result;
 }
 
-int64_t QuantLinear::out() const {
-    return tensor_parallel() ? logical_out : weight->size(0);
-}
-
-std::shared_ptr<const QuantLinear> QuantLinear::relocated(::tyloi::Device device) const {
-    auto moved = std::make_shared<QuantLinear>(*this);
-    if (moved->weight) moved->weight = weight->relocated(device);
-    for (auto& shard : moved->tensor_parallel_shards)
-        shard.weight = shard.weight->relocated(::tyloi::Device(::tyloi::kCUDA, shard.device));
-    return moved;
-}
-
-int64_t QuantLinear::neuron_len() const {
-    return tensor_parallel() ? logical_neuron_len : weight->size(1);
-}
-
-
-QuantLinearProjectionRefs QuantLinearGroup::tensor_parallel_output_projections() const {
-    QuantLinearProjectionRefs projections;
+std::vector<const ::tyloi::Tensor*> QuantLinearGroup::tensor_parallel_output_projections() const {
+    std::vector<const ::tyloi::Tensor*> projections;
     projections.reserve(layers.size());
-    for (const auto & layer : layers) {
-        projections.push_back(layer.get());
-    }
+    for (const auto& layer : layers) projections.push_back(layer.get());
     return projections;
 }
 

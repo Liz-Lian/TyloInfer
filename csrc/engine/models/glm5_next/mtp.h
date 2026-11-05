@@ -28,13 +28,13 @@ struct Mtp final : MtpModule {
     int64_t batch = 0;
 
     Mtp(Projector project, Collectives& copies, CudaProfiler& profiler,
-                QuantLinear embedding, int primary);
+                std::shared_ptr<const ::tyloi::Tensor> embedding, int primary);
     ~Mtp() override;
     Mtp(Mtp&&) noexcept;
 
     static std::optional<Mtp> load_if_present(const weight_loader::Loader& weights,
                                                       Projector projector, Collectives& copies,
-                                                      CudaProfiler& profiler, QuantLinear embedding,
+                                                      CudaProfiler& profiler, std::shared_ptr<const ::tyloi::Tensor> embedding,
                                                       const tyloi::models::glm5_next::Config &main);
 
     void reset(int64_t next_batch = 1) override;
@@ -62,7 +62,7 @@ struct Mtp final : MtpModule {
     Projector project_;
     Collectives& copies_;
     CudaProfiler& profiler_;
-    QuantLinear embedding_;
+    std::shared_ptr<const ::tyloi::Tensor> embedding_;
     int primary_;
 };
 

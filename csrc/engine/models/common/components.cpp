@@ -31,13 +31,13 @@ template <class Model> struct ModelLoader {
     Model &model;
     const tyloi::cuda::weight_loader::Loader& weights;
     auto embedding(const std::string& name) {
-        return weights.build_embedding(name,
+        return weights.embedding(name,
                               model.has_independent_output_weights(*this));
     }
     auto output(const std::string &name) {
-        return weights.projection(name, TensorParallelAxis::Output);
+        return weights.weight(name, TensorParallelAxis::Output);
     }
-    auto tied_output(const QuantLinear &embedding, const std::string &name) {
+    auto tied_output(const std::shared_ptr<const ::tyloi::Tensor> &embedding, const std::string &name) {
         return weights.placement.tensor.enabled() ? output(name) : embedding;
     }
     bool has_weight(const std::string &name) { return weights.has(name); }

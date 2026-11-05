@@ -12,10 +12,10 @@ std::vector<Task> Predictor::tasks() const {
     result.push_back({task::Norm{1, 1, embedding_norm, eps, offset}, 0, "mtp.embedding_norm"});
     result.push_back({task::Norm{0, 0, hidden_norm, eps, offset}, 0, "mtp.hidden_norm"});
     result.push_back({task::Concat{1, 0, 0}});
-    result.push_back({task::Project{0, 0, fusion}, 0, "mtp.fusion"});
+    result.push_back({task::Project{0, 0, *fusion}, 0, "mtp.fusion"});
     const auto dense = [](const Ffn& ffn) -> Mlp {
         TYLOINFER_RUNTIME_CHECK(!ffn.is_moe, "Qwen MTP requires dense predictor projections");
-        return {ffn.gate_up, ffn.down, ffn.activation, ffn.geglu, ffn.swiglu_limit};
+        return {ffn.gate_up, *ffn.down, ffn.activation, ffn.geglu, ffn.swiglu_limit};
     };
     for (size_t index = 0; index < layers.size(); ++index) {
         const auto& layer = layers[index];

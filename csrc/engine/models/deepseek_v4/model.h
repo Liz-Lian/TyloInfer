@@ -33,9 +33,9 @@ struct Layer {
     double eps = 1e-6, hc_eps = 1e-6;
     DenseTensor attn_norm, ffn_norm, q_a_norm, kv_norm, sinks;
     DenseTensor hc_attn_fn, hc_attn_scale, hc_attn_base, hc_ffn_fn, hc_ffn_scale, hc_ffn_base;
-    QuantLinear q_a, q_b, kv, output_a, output_b;
+    std::shared_ptr<const tyloi::Tensor> q_a, q_b, kv, output_a, output_b;
     Compressor compressor, indexer_compressor;
-    QuantLinear indexer_q;
+    std::shared_ptr<const tyloi::Tensor> indexer_q;
     DenseTensor indexer_weight;
     Ffn ffn;
     TailRope attention_rope;
@@ -49,7 +49,7 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-    QuantLinear embed, lm_head;
+    std::shared_ptr<const tyloi::Tensor> embed, lm_head;
     DenseTensor output_norm;
     OutputHeadWeights output_head;
     std::vector<Layer> layers;

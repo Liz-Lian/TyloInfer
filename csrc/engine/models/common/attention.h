@@ -59,17 +59,7 @@ struct FullAttention {
 #endif
     bool attention_output_gate = false;
     bool split_q_kv_projections = false;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::shared_ptr<const QuantLinear> q_projection;
-    std::shared_ptr<const QuantLinear> k_projection;
-    std::shared_ptr<const QuantLinear> v_projection;
-    std::shared_ptr<const QuantLinear> o;
-#else
-    QuantLinear q_projection;
-    QuantLinear k_projection;
-    QuantLinear v_projection;
-    QuantLinear o;
-#endif
+    std::shared_ptr<const ::tyloi::Tensor> q_projection, k_projection, v_projection, o;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     tyloi::state::KvQuantization kv_quantization;
     std::array<tyloi::DenseTensor, 2> forward(

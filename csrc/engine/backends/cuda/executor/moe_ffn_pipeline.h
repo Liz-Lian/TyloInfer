@@ -24,11 +24,10 @@ using MoeFfnShared=std::function<::tyloi::DenseTensor(const tyloi::cuda::Project
 using MoeFfnDispatchObserver=std::function<void(const tyloi::MoeDispatchPlan&)>;
 using MoeFfnPrefetch=std::function<tyloi::cuda::DecodeWindow::Task(const ::tyloi::DenseTensor&)>;
 class MoeFfnPipeline;
-struct QuantLinear;
 struct MoeFfnSharedWeights {
-    std::array<std::shared_ptr<const QuantLinear>,3> projections;
+    std::array<std::shared_ptr<const ::tyloi::Tensor>,3> projections;
     MoeFfnShared gate;
-    std::shared_ptr<const QuantLinear> scalar_gate;
+    std::shared_ptr<const ::tyloi::Tensor> scalar_gate;
 };
 namespace tyloi::cuda {
 

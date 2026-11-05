@@ -19,7 +19,7 @@ DenseTensor token_ids(Collectives& copies, int device, DenseTensor ids) {
 
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs input;
     input.values = {token_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), mode);
@@ -35,7 +35,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
-    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
+    const Task task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"};
     Inputs input;
     input.values = {std::move(hidden)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), mode);

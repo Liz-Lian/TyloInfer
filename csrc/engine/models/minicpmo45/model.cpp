@@ -70,11 +70,11 @@ void load(Model& model, const weight_loader::Loader& weights, const LayerPlaceme
             model.device_ropes.emplace(device, make_rope(::tyloi::Device(::tyloi::kCUDA, device)));
         }
     const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
-    model.embed = weights.build_embedding("model.token_embedding.weight", separate);
+    model.embed = weights.embedding("model.token_embedding.weight", separate);
     model.output_norm = weights.tensor("model.output_norm.weight");
-    model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+    model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
         : weights.placement.tensor.enabled()
-            ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output) : model.embed;
+            ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output) : model.embed;
     model.layers.reserve(config.num_hidden_layers);
     for (int index = 0; index < config.num_hidden_layers; ++index) {
         auto& layer = model.layers.emplace_back();

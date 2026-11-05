@@ -38,7 +38,7 @@ public:
     };
 
     QuantLinearGroup gate_up;
-    QuantLinear down;
+    std::shared_ptr<const ::tyloi::Tensor> down;
     std::unique_ptr<Ffn> important_neurons;
     bool geglu = false;
     // Dense Ffn and shared/routed experts share the explicit activation label.
@@ -62,10 +62,10 @@ public:
     ::tyloi::DenseTensor moe_dense_up;
     ::tyloi::DenseTensor moe_dense_down;
     // Optional latent projections around the routed branch only.
-    QuantLinear moe_latent_in;
-    QuantLinear moe_latent_out;
+    std::shared_ptr<const ::tyloi::Tensor> moe_latent_in;
+    std::shared_ptr<const ::tyloi::Tensor> moe_latent_out;
     ::tyloi::DenseTensor moe_router;
-    std::shared_ptr<const QuantLinear> moe_router_projection;
+    std::shared_ptr<const ::tyloi::Tensor> moe_router_projection;
     ::tyloi::DenseTensor moe_shared_gate;
     ::tyloi::DenseTensor moe_router_bias;
     ::tyloi::DenseTensor moe_hash_ids;
@@ -120,7 +120,7 @@ bool expert_parallel(const Ffn& ffn);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
 tyloi::DenseTensor mlp(tyloi::DenseTensor input, const ::QuantLinearGroup& gate_up,
-                const ::QuantLinear& down, tyloi::ops::MlpActivation activation,
+                const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,
                 double swiglu_limit);
 tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count, const tyloi::ops::MoeRouting& routing);
 tyloi::DenseTensor expert_scale(tyloi::DenseTensor weights, tyloi::DenseTensor ids, const tyloi::DenseTensor& scales);

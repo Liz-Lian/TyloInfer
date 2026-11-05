@@ -12,7 +12,7 @@
 
 namespace tyloi::cuda::attention_ops {
 using DenseTensor = ::tyloi::DenseTensor;
-using Linear = std::shared_ptr<const QuantLinear>;
+using Linear = std::shared_ptr<const ::tyloi::Tensor>;
 using Transform = std::function<DenseTensor(const Projector&, const DenseTensor&)>;
 using Embedding = std::function<DenseTensor(const DenseTensor&)>;
 

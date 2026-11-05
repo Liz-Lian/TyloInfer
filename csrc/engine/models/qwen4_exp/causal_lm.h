@@ -21,11 +21,11 @@ template <class Loader>
 auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p) {
     auto gate_up = ops.routed_gate_up(p, layer, c.experts, c.moe_width, c.hidden);
     auto down = ops.routed(p + ".experts.down.weight", layer, c.experts, c.hidden, c.moe_width);
-    auto router = ops.linear(p + ".router.weight");
-    auto shared_gate = ops.linear(p + ".shared_expert.router.weight");
-    auto sg = ops.linear(p + ".shared_expert.gate.weight"),
-         su = ops.linear(p + ".shared_expert.up.weight"),
-         sd = ops.linear(p + ".shared_expert.down.weight");
+    auto router = ops.weight(p + ".router.weight");
+    auto shared_gate = ops.weight(p + ".shared_expert.router.weight");
+    auto sg = ops.weight(p + ".shared_expert.gate.weight"),
+         su = ops.weight(p + ".shared_expert.up.weight"),
+         sd = ops.weight(p + ".shared_expert.down.weight");
     return ops.moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
                    std::move(sg), std::move(su), std::move(sd), c);
 }
@@ -45,7 +45,7 @@ auto load_ple(Loader &ops, const Config &c, const std::string &p) {
          offsets = ops.integers(p + ".ngram.head_offsets"),
          sizes = ops.integers(p + ".ngram.head_vocab_sizes");
     typename Loader::PleWeights w{
-        ops.linear(p + ".key.weight"), ops.linear(p + ".value.weight"),
+        ops.weight(p + ".key.weight"), ops.weight(p + ".value.weight"),
         ops.dense(p + ".key_norm.weight"), ops.dense(p + ".query_norm.weight"),
         ops.dense(p + ".conv_norm.weight"), ops.dense(p + ".conv.weight")};
     return ops.ple(std::move(shards), rows, width, c, std::move(multipliers), std::move(offsets),
@@ -84,8 +84,8 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     result.config = c;
     result.embedding_norm = ops.fp32(ops.dense("predictor.embedding_norm.weight"));
     result.hidden_norm = ops.fp32(ops.dense("predictor.hidden_norm.weight"));
-    result.embedding_fusion = ops.linear("predictor.fusion.embedding.weight");
-    result.hidden_fusion = ops.linear("predictor.fusion.hidden.weight");
+    result.embedding_fusion = ops.weight("predictor.fusion.embedding.weight");
+    result.hidden_fusion = ops.weight("predictor.fusion.hidden.weight");
     result.final_mixer = ops.final_mixer(load_residual(ops, c, "predictor.mhc.pre", false));
     for (int64_t i = 0; i < count; ++i)
         result.layers.push_back(ops.block(c, int(i), true));

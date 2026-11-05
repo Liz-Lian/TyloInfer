@@ -46,11 +46,11 @@ struct LinearAttention {
     QuantLinearGroup in_proj;
     QuantLinearGroup qkv_proj;
     QuantLinearGroup qkvz_proj;
-    QuantLinear z_proj;
+    std::shared_ptr<const ::tyloi::Tensor> z_proj;
     QuantLinearGroup ab_nint_proj;
     DenseLinearGroup ab_proj;
     DenseLinearGroup zab_proj;
-    QuantLinear out_proj;
+    std::shared_ptr<const ::tyloi::Tensor> out_proj;
     ::tyloi::DenseTensor out_proj_dense;
 
     std::array<::tyloi::DenseTensor, 2> forward(

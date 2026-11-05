@@ -301,25 +301,25 @@ DenseTensor scale(DenseTensor value, double factor) {
     require_cuda(value);
     return cuda::ops::scale(std::move(value), factor);
 }
-DenseTensor embedding(DenseTensor ids, const ::QuantLinear& weight) {
+DenseTensor embedding(DenseTensor ids, const ::tyloi::Tensor& weight) {
     input(ids);
     return cuda::ops::embedding(std::move(ids), weight);
 }
-DenseTensor project(DenseTensor value, const ::QuantLinear& weight) {
+DenseTensor project(DenseTensor value, const ::tyloi::Tensor& weight) {
     input(value);
     return cuda::ops::project(std::move(value), weight);
 }
-DenseTensor linear(DenseTensor value, const ::QuantLinear& weight, const DenseTensor& bias) {
+DenseTensor linear(DenseTensor value, const ::tyloi::Tensor& weight, const DenseTensor& bias) {
     input(value);
     if (bias.defined()) input(bias);
     return cuda::ops::linear(std::move(value), weight, bias);
 }
-DenseTensor affine(DenseTensor value, const ::QuantLinear& weight, const DenseTensor& bias) {
+DenseTensor affine(DenseTensor value, const ::tyloi::Tensor& weight, const DenseTensor& bias) {
     input(value);
     if (bias.defined()) input(bias);
     return cuda::ops::affine(std::move(value), weight, bias);
 }
-DenseTensor mlp(DenseTensor value, const ::QuantLinearGroup& gate_up, const ::QuantLinear& down,
+DenseTensor mlp(DenseTensor value, const ::QuantLinearGroup& gate_up, const ::tyloi::Tensor& down,
            MlpActivation activation, double swiglu_limit) {
     input(value);
     return cuda::ops::mlp(std::move(value), gate_up, down, activation, swiglu_limit);
@@ -328,7 +328,7 @@ std::vector<DenseTensor> project_group(DenseTensor value, const ::QuantLinearGro
     input(value);
     return cuda::ops::project_group(std::move(value), group);
 }
-DenseTensor sigmoid_project(DenseTensor value, DenseTensor gate, const ::QuantLinear& weight) {
+DenseTensor sigmoid_project(DenseTensor value, DenseTensor gate, const ::tyloi::Tensor& weight) {
     compatible(value, gate);
     return cuda::ops::sigmoid_project(std::move(value), std::move(gate), weight);
 }

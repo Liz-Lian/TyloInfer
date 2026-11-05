@@ -83,7 +83,7 @@ struct Model
     CudaModelPlan plan;
     Config config;
     double embed_scale = 1.0;
-    std::shared_ptr<const QuantLinear> embed, lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     tyloi::DenseTensor output_norm;
 #else

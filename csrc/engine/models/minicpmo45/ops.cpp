@@ -101,11 +101,11 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
         }
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
-        model.embed = weights.build_embedding("model.token_embedding.weight", separate);
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
         model.output_norm = weights.tensor("model.output_norm.weight");
-        model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+        model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
             : weights.placement.tensor.enabled()
-                ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output) : model.embed;
+                ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output) : model.embed;
         if (load_layers) {
             model.layers.reserve(config.num_hidden_layers);
             for (int index = 0; index < config.num_hidden_layers; ++index) {
@@ -213,7 +213,7 @@ DenseTensor token_ids(Collectives& copies, int primary, DenseTensor ids) {
 
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {token_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
@@ -229,7 +229,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 }
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
-    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
+    const Task task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)

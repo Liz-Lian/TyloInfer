@@ -75,11 +75,11 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     layer.hc_ffn_base = weights.tensor(p + "mlp.mhc.pre.base")
                          .to(::tyloi::kFloat32)
                          .contiguous();
-    layer.q_a = weights.projection(p + "attention.query_a.weight");
-    layer.q_b = weights.projection(p + "attention.query_b.weight");
-    layer.kv = weights.projection(p + "attention.key_value_a.weight");
-    layer.output_a = weights.projection(p + "attention.output_a.weight");
-    layer.output_b = weights.projection(p + "attention.output_b.weight");
+    layer.q_a = weights.weight(p + "attention.query_a.weight");
+    layer.q_b = weights.weight(p + "attention.query_b.weight");
+    layer.kv = weights.weight(p + "attention.key_value_a.weight");
+    layer.output_a = weights.weight(p + "attention.output_a.weight");
+    layer.output_b = weights.weight(p + "attention.output_b.weight");
     layer.attention_rope =
         TailRope(c.max_position_embeddings, c.rope_base, layer.compress_ratio,
                       config.compress_rope_base, config.rope_original_positions, config.rope_factor,
@@ -118,7 +118,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
             weights.tensor(p + "attention.indexer.compressor.norm.weight")
                 .to(::tyloi::kFloat32)
                 .contiguous();
-        layer.indexer_q = weights.projection(p + "attention.indexer.query.weight");
+        layer.indexer_q = weights.weight(p + "attention.indexer.query.weight");
         layer.indexer_weight = weights.tensor(p + "attention.indexer.score.weight")
                                 .to(::tyloi::kFloat32)
                                 .contiguous();
@@ -156,14 +156,14 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     const bool base_shapes =
         layer.attn_norm.numel() == c.hidden_size && layer.ffn_norm.numel() == c.hidden_size &&
         layer.q_a_norm.numel() == c.q_lora_rank && layer.kv_norm.numel() == c.head_dim &&
-        layer.sinks.numel() == c.num_attention_heads && layer.q_a.neuron_len() == c.hidden_size &&
-        layer.q_a.out() == c.q_lora_rank && layer.q_b.neuron_len() == c.q_lora_rank &&
-        layer.q_b.out() == c.num_attention_heads * c.head_dim && layer.kv.neuron_len() == c.hidden_size &&
-        layer.kv.out() == c.head_dim &&
-        layer.output_a.neuron_len() == c.num_attention_heads * c.head_dim / c.o_groups &&
-        layer.output_a.out() == c.o_groups * c.o_lora_rank &&
-        layer.output_b.neuron_len() == c.o_groups * c.o_lora_rank &&
-        layer.output_b.out() == c.hidden_size;
+        layer.sinks.numel() == c.num_attention_heads && layer.q_a->size(1) == c.hidden_size &&
+        layer.q_a->size(0) == c.q_lora_rank && layer.q_b->size(1) == c.q_lora_rank &&
+        layer.q_b->size(0) == c.num_attention_heads * c.head_dim && layer.kv->size(1) == c.hidden_size &&
+        layer.kv->size(0) == c.head_dim &&
+        layer.output_a->size(1) == c.num_attention_heads * c.head_dim / c.o_groups &&
+        layer.output_a->size(0) == c.o_groups * c.o_lora_rank &&
+        layer.output_b->size(1) == c.o_groups * c.o_lora_rank &&
+        layer.output_b->size(0) == c.hidden_size;
     const bool gate_up_shapes =
         layer.ffn.moe_split_gate_up
             ? layer.ffn.moe_gate.n_experts == c.num_experts &&
@@ -294,12 +294,12 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     }
     MfqCudaGuard guard(placement.primary_device());
     const bool separate = !c.tie_word_embeddings && weights.has("model.output.weight");
-    model.embed = weights.build_embedding("model.token_embedding.weight", separate);
+    model.embed = weights.embedding("model.token_embedding.weight", separate);
     model.output_norm = weights.tensor("model.output_norm.weight");
     model.output_head = load_output_head(weights);
-    model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+    model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
         : weights.placement.tensor.enabled()
-            ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output)
+            ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
             : model.embed;
     model.layers.reserve(static_cast<size_t>(c.num_hidden_layers));
     for (int index = 0; index < c.num_hidden_layers; ++index) {
@@ -324,7 +324,7 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
@@ -347,7 +347,7 @@ DenseTensor softcap(const Model& model, Executor&, DenseTensor value) {
 
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
-    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
+    const Task task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
     auto value = executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
@@ -867,19 +867,19 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
     const auto& heads = w.heads;
     const auto& head_dim = w.head_dim;
     const auto& eps = w.eps;
-    const auto& q_a = w.q_a;
+    const auto& q_a = *w.q_a;
     const auto& q_a_norm = w.q_a_norm;
-    const auto& q_b = w.q_b;
+    const auto& q_b = *w.q_b;
     const auto& attention_rope = w.attention_rope;
-    const auto& kv = w.kv;
+    const auto& kv = *w.kv;
     const auto& kv_norm = w.kv_norm;
     const auto& compressor = w.compressor;
     const auto& indexer_compressor = w.indexer_compressor;
     const auto& indexer_q = w.indexer_q;
     const auto& indexer_weight = w.indexer_weight;
     const auto& sinks = w.sinks;
-    const auto& output_a = w.output_a;
-    const auto& output_b = w.output_b;
+    const auto& output_a = *w.output_a;
+    const auto& output_b = *w.output_b;
     const auto& groups = w.groups;
 
     const int64_t batch = x.size(0);
@@ -984,7 +984,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                         [&] {
                             auto index_query =
                                 profiler.measure("dsv4.indexer_q_prefill", [&]() {
-                                    return project.run(indexer_q, qr)
+                                    return project.run(*indexer_q, qr)
                                         .reshape({batch, tokens, heads, 128})
                                         .transpose(1, 2)
                                         .contiguous();
@@ -1123,7 +1123,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                                 .reshape({batch, qr.size(-1)})
                                                 .contiguous();
                             auto index_query = profiler.measure("dsv4.indexer_q", [&]() {
-                                return project.run(indexer_q, qr_token)
+                                return project.run(*indexer_q, qr_token)
                                     .reshape({batch, 1, heads, 128})
                                     .transpose(1, 2)
                                     .contiguous();

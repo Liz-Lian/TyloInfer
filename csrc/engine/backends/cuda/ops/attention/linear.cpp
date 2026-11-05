@@ -43,6 +43,10 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         ::tyloi::DenseTensor input,
         LinearView state, LinearInputs* captured) const {
+    TYLOINFER_RUNTIME_CHECK(dense_ab_tail || !split_in_proj || split_dense_zab || z_proj,
+        "linear attention Z projection is missing");
+    TYLOINFER_RUNTIME_CHECK(dense_out_proj || out_proj,
+        "linear attention output projection is missing");
     return input.is_cuda() ? cuda(project, profiler, options, std::move(input), state, captured)
                            : cpu(project, std::move(input), state);
 }
@@ -88,7 +92,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                     auto qkv_parts = project.run(qkv_proj, xn);
                     qk_part = qkv_parts[0];
                     v_part = qkv_parts[1];
-                    z = project.run(z_proj, xn);
+                    z = project.run(*z_proj, xn);
                     auto ab = ab_is_nint ? project.run(ab_nint_proj, xn)
                                          : ab_proj.forward(xn);
                     alpha_raw = ab[0];
@@ -258,7 +262,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                           .reshape({B, T, H});
                 } else {
                   attention_output =
-                      project.gated(out_proj, yf, zf, InputGateMode::Silu);
+                      project.gated(*out_proj, yf, zf, InputGateMode::Silu);
                 }
                 return attention_output;
               });
@@ -307,15 +311,15 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                       ab_is_nint &&
                       options.shared_input &&
                       qkv_proj.layers.size() == 2) {
-                    QuantLinearProjectionRefs projections = {
+                    std::vector<const ::tyloi::Tensor*> projections = {
                         qkv_proj.layers[0].get(),
                         qkv_proj.layers[1].get(),
-                        &z_proj,
+                        z_proj.get(),
                     };
                     const bool shared_tp_ab =
                         ab_nint_proj.layers.size() == 2 &&
-                        ab_nint_proj.layers[0]->tensor_parallel() &&
-                        ab_nint_proj.layers[1]->tensor_parallel();
+                        dynamic_cast<const ::tyloi::ShardedTensor*>(ab_nint_proj.layers[0].get()) &&
+                        dynamic_cast<const ::tyloi::ShardedTensor*>(ab_nint_proj.layers[1].get());
                     if (shared_tp_ab) {
                       projections.push_back(ab_nint_proj.layers[0].get());
                       projections.push_back(ab_nint_proj.layers[1].get());
@@ -364,7 +368,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                       qk_part = qkv_parts[0];
                       v_part = qkv_parts[1];
                       z = profiler.measure("linear.z_proj", [&]() {
-                        return project.run(z_proj, xn);
+                        return project.run(*z_proj, xn);
                       });
                       auto ab = profiler.measure("linear.ab_proj", [&]() {
                         return ab_is_nint ? project.run(ab_nint_proj, xn)
@@ -586,7 +590,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                   });
                 } else {
                   oo = profiler.measure("linear.out_proj_gate", [&]() {
-                    return project.gated(out_proj, yf, zf, InputGateMode::Silu);
+                    return project.gated(*out_proj, yf, zf, InputGateMode::Silu);
                   });
                 }
                 return oo;

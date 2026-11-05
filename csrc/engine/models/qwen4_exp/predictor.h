@@ -19,7 +19,7 @@ struct Predictor final : MtpModule {
     using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::models::qwen4_exp::Config config;
-    QuantLinear embedding, output;
+    std::shared_ptr<const ::tyloi::Tensor> embedding, output;
     double softcap = 0;
     int primary = 0;
     DenseTensor embedding_norm, hidden_norm;
@@ -48,7 +48,7 @@ struct Predictor final : MtpModule {
     static std::optional<Predictor> load_if_present(CudaExecutionContext &execution,
                                                       const weight_loader::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
-                                                      QuantLinear embedding, QuantLinear output,
+                                                      std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                       double softcap);
 
     DenseTensor embed(DenseTensor ids) const;

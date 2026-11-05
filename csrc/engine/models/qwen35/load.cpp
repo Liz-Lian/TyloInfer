@@ -38,7 +38,7 @@ struct LayerLoader : TransformerWeightLoader {
             attention.split_in_proj = true;
             attention.qkv_proj = weights.build_group({names.qk, names.value});
             if (is_quant_dtype(require_tensor(weights.source, names.gate).dtype)) {
-                attention.z_proj = weights.projection(names.gate);
+                attention.z_proj = weights.weight(names.gate);
                 const bool alpha_quant = is_quant_dtype(require_tensor(weights.source, names.alpha).dtype);
                 const bool beta_quant = is_quant_dtype(require_tensor(weights.source, names.beta).dtype);
                 if (alpha_quant != beta_quant)
@@ -51,8 +51,8 @@ struct LayerLoader : TransformerWeightLoader {
                             ? std::optional<TensorParallelAxis>(TensorParallelAxis::Mirrored)
                             : std::nullopt;
                     attention.ab_nint_proj = make_quant_group(
-                        {std::make_shared<QuantLinear>(weights.projection(names.alpha, scalar_axis)),
-                         std::make_shared<QuantLinear>(weights.projection(names.beta, scalar_axis))},
+                        {weights.weight(names.alpha, scalar_axis),
+                         weights.weight(names.beta, scalar_axis)},
                         weights.options.grouped,
                         weights.placement.cpu);
                 } else {
@@ -88,7 +88,7 @@ struct LayerLoader : TransformerWeightLoader {
 
     void linear_output(LinearAttention& attention, const std::string& name) const {
         if (is_quant_dtype(require_tensor(weights.source, name).dtype)) {
-            attention.out_proj = weights.projection(name);
+            attention.out_proj = weights.weight(name);
         } else {
             attention.dense_out_proj = true;
             attention.out_proj_dense = weights.tensor(name);
@@ -235,14 +235,14 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     if (options.load_input_output) {
         const auto output_name = std::string("model.output.weight");
         const bool independent_output = !config.tie_word_embeddings && weights.has(output_name);
-        model.embed = weights.build_embedding("model.token_embedding.weight", independent_output);
+        model.embed = weights.embedding("model.token_embedding.weight", independent_output);
         model.output_norm = weights.tensor("model.output_norm.weight");
         if (config.tie_word_embeddings || !weights.has(output_name)) {
             model.lm_head = weights.placement.tensor.enabled()
-                ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output)
+                ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
                 : model.embed;
         } else {
-            model.lm_head = weights.projection(output_name, TensorParallelAxis::Output);
+            model.lm_head = weights.weight(output_name, TensorParallelAxis::Output);
         }
         if (options.load_layers) {
             model.layers.reserve(static_cast<std::size_t>(config.num_hidden_layers));
@@ -285,8 +285,8 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
     model.embedding_norm = loader.dense("predictor.embedding_norm.weight");
     model.output_norm = loader.dense("predictor.output_norm.weight");
     model.fusion = loader.linear("predictor.fusion.weight");
-    TYLOINFER_RUNTIME_CHECK(model.fusion.neuron_len() == 2 * config.hidden_size &&
-        model.fusion.out() == config.hidden_size &&
+    TYLOINFER_RUNTIME_CHECK(model.fusion->size(1) == 2 * config.hidden_size &&
+        model.fusion->size(0) == config.hidden_size &&
         model.hidden_norm.numel() == config.hidden_size &&
         model.embedding_norm.numel() == config.hidden_size &&
         model.output_norm.numel() == config.hidden_size,

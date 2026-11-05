@@ -164,9 +164,9 @@ void load(Model& model, const weight_loader::Loader& weights,
     MfqCudaGuard guard(placement.primary_device());
     if (load_input_output) {
         const bool separate = !model.config.tied_embeddings && weights.has("model.output.weight");
-        model.embed = weights.build_embedding("model.token_embedding.weight", separate);
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
         model.output_norm = weights.tensor("model.output_norm.weight");
-        model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+        model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
                                  : model.embed;
         if (load_layers) {
             model.layers.reserve(static_cast<size_t>(model.config.layers));
@@ -223,7 +223,7 @@ static DenseTensor normalize_ids(Collectives& copies, int primary, DenseTensor i
 
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
@@ -237,7 +237,7 @@ DenseTensor softcap(const Model&, Executor&, DenseTensor value) { return value; 
 
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
-    return executor.projector(mode.ffn).run(model.lm_head, hidden);
+    return executor.projector(mode.ffn).run(*model.lm_head, hidden);
 }
 
 bool supports_speculation(const Model& model) noexcept { return !model.layers.empty(); }
@@ -303,7 +303,7 @@ void replay(const Model& model, State& state, Executor&, int64_t accepted) {
 
 
 Mtp::Mtp(Projector project, Collectives& copies, CudaProfiler& profiler,
-                        QuantLinear embedding, int primary)
+                        std::shared_ptr<const ::tyloi::Tensor> embedding, int primary)
     : project_(std::move(project)), copies_(copies), profiler_(profiler),
       embedding_(std::move(embedding)), primary_(primary) {}
 Mtp::~Mtp() = default;
@@ -311,7 +311,7 @@ Mtp::Mtp(Mtp&&) noexcept = default;
 
 std::optional<Mtp> Mtp::load_if_present(const weight_loader::Loader& weights,
                                                       Projector projector, Collectives& copies,
-                                                      CudaProfiler& profiler, QuantLinear embedding,
+                                                      CudaProfiler& profiler, std::shared_ptr<const ::tyloi::Tensor> embedding,
                                                       const tyloi::models::glm5_next::Config &main) {
     Mtp result{std::move(projector), copies, profiler, std::move(embedding),
                        weights.placement.device};
@@ -348,7 +348,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
         *this, b, t, depth, cache, [&](int64_t next) { reset(next); },
         [&] {
             auto embeds =
-                supplied_embeddings.defined() ? supplied_embeddings : tyloi::cuda::embed(embedding_, ids, copies_, profiler_, primary_);
+                supplied_embeddings.defined() ? supplied_embeddings : tyloi::cuda::embed(*embedding_, ids, copies_, profiler_, primary_);
             TYLOINFER_RUNTIME_CHECK(embeds.sizes().vec() ==
                                   std::vector<int64_t>({b, t, config.hidden}),
                               "GLM5-Next MTP embedding shape mismatch");

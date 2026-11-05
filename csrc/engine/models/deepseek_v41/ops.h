@@ -415,16 +415,16 @@ struct Block final {
     DenseTensor compressor_norm;
     DenseTensor index_key_norm;
 
-    QuantLinear query_a;
-    QuantLinear query_b;
-    QuantLinear key_value;
-    QuantLinear output_a;
-    QuantLinear output_b;
-    QuantLinear compressor_key_value;
-    QuantLinear compressor_gate;
-    QuantLinear index_query;
-    QuantLinear index_key;
-    QuantLinear index_score;
+    std::shared_ptr<const ::tyloi::Tensor> query_a;
+    std::shared_ptr<const ::tyloi::Tensor> query_b;
+    std::shared_ptr<const ::tyloi::Tensor> key_value;
+    std::shared_ptr<const ::tyloi::Tensor> output_a;
+    std::shared_ptr<const ::tyloi::Tensor> output_b;
+    std::shared_ptr<const ::tyloi::Tensor> compressor_key_value;
+    std::shared_ptr<const ::tyloi::Tensor> compressor_gate;
+    std::shared_ptr<const ::tyloi::Tensor> index_query;
+    std::shared_ptr<const ::tyloi::Tensor> index_key;
+    std::shared_ptr<const ::tyloi::Tensor> index_score;
     tyloi::cuda::Ffn mlp;
     DenseTensor vision_router_bias;
     TailRope rope;
@@ -576,7 +576,7 @@ struct Block final {
     }
 
     DenseTensor output_projection(CudaExecutionContext &execution, DenseTensor attention) const {
-        return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).low_rank(attention, output_a, output_b,
+        return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).low_rank(attention, *output_a, *output_b,
                                                config.o_groups, true, false);
     }
 
@@ -588,14 +588,14 @@ struct Block final {
         return tyloi::models::deepseek_v41::compress(
             L(), tokens, position, ratio,
             [&] {
-                return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_key_value, input), compressor_norm,
+                return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*compressor_key_value, input), compressor_norm,
                                     config.rms_eps);
             },
             [&] {
-                projected_kv = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_key_value, input)
+                projected_kv = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*compressor_key_value, input)
                                    .to(::tyloi::kFloat32)
                                    .contiguous();
-                projected_score = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_gate, input)
+                projected_score = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*compressor_gate, input)
                                       .to(::tyloi::kFloat32)
                                       .contiguous();
                 if(L().speculative_pending) {
@@ -646,7 +646,7 @@ struct Block final {
                 ::tyloi::cuda::arange(begin * ratio, (begin + count) * ratio, ratio,
                                            latent->options().dtype(::tyloi::kInt64));
             auto index_values =
-                weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(index_key, *latent), index_key_norm, config.rms_eps);
+                weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*index_key, *latent), index_key_norm, config.rms_eps);
             index_values = rotate_token_major_tail(index_values, group_positions, rope);
             index_values = dsv4_fp4_sim_cuda(index_values.contiguous());
             auto compressed = rotate_token_major_tail(*latent, group_positions, rope);
@@ -682,7 +682,7 @@ struct Block final {
             },
             [&] {
                 auto query =
-                    execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(index_query, q_rank)
+                    execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*index_query, q_rank)
                         .reshape({batch, tokens, config.index_n_heads, config.index_head_dim})
                         .transpose(1, 2)
                         .contiguous();
@@ -690,7 +690,7 @@ struct Block final {
                             .transpose(1, 2)
                             .contiguous();
                 query = dsv4_fp4_sim_cuda(query.to(::tyloi::kFloat16).contiguous());
-                auto weights = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(index_score, input)
+                auto weights = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*index_score, input)
                                    .reshape({batch, tokens, config.index_n_heads})
                                    .to(::tyloi::kFloat16)
                                    .contiguous();
@@ -733,11 +733,11 @@ struct Block final {
         return tyloi::models::deepseek_v41::attention(
             kv_source(), ratio,
             [&] {
-                return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(query_a, input), query_a_norm,
+                return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*query_a, input), query_a_norm,
                                     config.rms_eps);
             },
             [&](DenseTensor q_rank) {
-                auto query = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(query_b, q_rank)
+                auto query = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*query_b, q_rank)
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
@@ -747,7 +747,7 @@ struct Block final {
                 return query;
             },
             [&] {
-                auto local = weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(key_value, input), key_value_norm,
+                auto local = weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*key_value, input), key_value_norm,
                                           config.rms_eps)
                                  .reshape({batch, tokens, config.head_dim});
                 local = rotate_token_major_tail(local, positions, rope);
@@ -1028,9 +1028,9 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     RopeCache rope;
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
-    QuantLinear embed;
+    std::shared_ptr<const ::tyloi::Tensor> embed;
     ::tyloi::DenseTensor output_norm;
-    QuantLinear lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> lm_head;
     CausalConfig config;
     std::vector<std::unique_ptr<deepseek_v41_runtime::Block>> blocks;
     // shortcut: scratch shared with the active request State; split into
@@ -1051,7 +1051,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     }
     ::tyloi::DenseTensor embed_tokens(::tyloi::DenseTensor ids) const {
         return execution->executor().profiler().measure(
-            "model.embed", [&] { return adapter_embed(quant_embedding_lookup(embed, ids)); });
+            "model.embed", [&] { return adapter_embed(quant_embedding_lookup(*embed, ids)); });
     }
     static ::tyloi::DenseTensor softcap_apply(::tyloi::DenseTensor logits, double cap) {
         return ::tyloi::cuda::tanh(logits / cap) * cap;

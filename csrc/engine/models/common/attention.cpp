@@ -152,9 +152,9 @@ std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
             }
             std::vector<::tyloi::DenseTensor> result;
             result.reserve(3);
-            result.push_back(project.run(q_projection, xn));
-            result.push_back(project.run(k_projection, xn));
-            result.push_back(project.run(v_projection, xn));
+            result.push_back(project.run(*q_projection, xn));
+            result.push_back(project.run(*k_projection, xn));
+            result.push_back(project.run(*v_projection, xn));
             return result;
 #endif
         });
@@ -447,7 +447,7 @@ std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             return tyloi::ops::sigmoid_project(af, gf, *o);
 #else
-            return project.gated(o, af, gf, InputGateMode::Sigmoid);
+            return project.gated(*o, af, gf, InputGateMode::Sigmoid);
 #endif
         });
     } else {
@@ -467,7 +467,7 @@ std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
             return official_bf16
                 ? tyloi::ops::contiguous(tyloi::ops::cast(output, tyloi::ScalarType::bfloat16)) : output;
 #else
-            auto output = project.run(o, af);
+            auto output = project.run(*o, af);
             return official_bf16 ? output.to(::tyloi::kBFloat16).contiguous()
                                  : output;
 #endif

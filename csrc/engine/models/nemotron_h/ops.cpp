@@ -85,7 +85,7 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                 true,
                 [&]() {
                     auto projected = profiler.measure("mamba.in_proj", [&] {
-                        return executor.projector(mode.ffn).run(in_proj, xn).to(::tyloi::kFloat32);
+                        return executor.projector(mode.ffn).run(*in_proj, xn).to(::tyloi::kFloat32);
                     });
                     TYLOINFER_RUNTIME_CHECK(projected.size(-1) == projection_width,
                                       "mamba fused projection width disagrees with config");
@@ -148,7 +148,7 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                 [&](DenseTensor normalized) {
                     return profiler.measure(
                         "mamba.out_proj",
-                        [&] { return executor.projector(mode.ffn).run(out_proj, normalized); });
+                        [&] { return executor.projector(mode.ffn).run(*out_proj, normalized); });
                 },
                 [&](const DenseTensor& final_state) {
                     if (final_state.defined())
@@ -282,14 +282,14 @@ tyloi::DenseTensor Model::embedding(tyloi::DenseTensor ids, int primary) const {
         tyloi::ops::cast(std::move(ids), tyloi::ScalarType::int64),
         tyloi::Device{tyloi::DeviceType::cuda, primary}));
     return tyloi::ops::measure("model.embed", normalized.device(), [&] {
-        return tyloi::ops::embedding(std::move(normalized), embed);
+        return tyloi::ops::embedding(std::move(normalized), *embed);
     });
 }
 #endif
 
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
@@ -316,7 +316,7 @@ DenseTensor softcap(const Model& model, Executor& executor, DenseTensor value) {
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
-        Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
+        Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
         Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
@@ -584,11 +584,11 @@ void load(Model& model, const weight_loader::Loader& weights, Pipelines& pipelin
     MfqCudaGuard guard(placement.primary_device());
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
-        model.embed = weights.build_embedding("model.token_embedding.weight", separate);
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
         model.output_norm = weights.tensor("model.output_norm.weight");
-        model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+        model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
             : weights.placement.tensor.enabled()
-                ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output)
+                ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
                 : model.embed;
         if (load_layers) {
             model.layers.reserve(static_cast<std::size_t>(config.num_hidden_layers));

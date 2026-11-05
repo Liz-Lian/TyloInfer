@@ -76,30 +76,30 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loa
     result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base")
                                .to(::tyloi::kFloat32)
                                .contiguous();
-    result->query_a = weights.projection(prefix + "attention.query_a.weight");
-    result->query_b = weights.projection(prefix + "attention.query_b.weight");
-    result->key_value = weights.projection(prefix + "attention.key_value.weight");
-    result->output_a = weights.projection(prefix + "attention.output_a.weight");
-    result->output_b = weights.projection(prefix + "attention.output_b.weight");
+    result->query_a = weights.weight(prefix + "attention.query_a.weight");
+    result->query_b = weights.weight(prefix + "attention.query_b.weight");
+    result->key_value = weights.weight(prefix + "attention.key_value.weight");
+    result->output_a = weights.weight(prefix + "attention.output_a.weight");
+    result->output_b = weights.weight(prefix + "attention.output_b.weight");
     if (result->kv_source()) {
         result->compressor_key_value =
-            weights.projection(prefix + "attention.compressor.key_value.weight");
+            weights.weight(prefix + "attention.compressor.key_value.weight");
         result->compressor_norm =
             weights.tensor(prefix + "attention.compressor.norm.weight");
         result->index_key =
-            weights.projection(prefix + "attention.indexer.key.weight");
+            weights.weight(prefix + "attention.indexer.key.weight");
         result->index_key_norm =
             weights.tensor(prefix + "attention.indexer.key_norm.weight");
         if (result->ratio > 1) {
             result->compressor_gate =
-                weights.projection(prefix + "attention.compressor.gate.weight");
+                weights.weight(prefix + "attention.compressor.gate.weight");
         }
     }
     if (result->index_source()) {
         result->index_query =
-            weights.projection(prefix + "attention.indexer.query.weight");
+            weights.weight(prefix + "attention.indexer.query.weight");
         result->index_score =
-            weights.projection(prefix + "attention.indexer.score.weight");
+            weights.weight(prefix + "attention.indexer.score.weight");
     }
     result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.", layer, config.top_k);
     if(weights.has(prefix+"mlp.router.vision_bias")) {
@@ -129,32 +129,32 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const weight_loader::Loa
                   result->mlp_norm) &&
         result->query_a_norm.numel() == config.q_lora_rank &&
         result->key_value_norm.numel() == config.head_dim &&
-        result->sinks.numel() == config.n_heads && result->query_a.neuron_len() == config.hidden &&
-        result->query_a.out() == config.q_lora_rank &&
-        result->query_b.neuron_len() == config.q_lora_rank &&
-        result->query_b.out() == config.n_heads * config.head_dim &&
-        result->key_value.neuron_len() == config.hidden &&
-        result->key_value.out() == config.head_dim &&
-        result->output_a.neuron_len() == config.n_heads * config.head_dim / config.o_groups &&
-        result->output_a.out() == config.o_groups * config.o_lora_rank &&
-        result->output_b.neuron_len() == config.o_groups * config.o_lora_rank &&
-        result->output_b.out() == config.hidden;
+        result->sinks.numel() == config.n_heads && result->query_a->size(1) == config.hidden &&
+        result->query_a->size(0) == config.q_lora_rank &&
+        result->query_b->size(1) == config.q_lora_rank &&
+        result->query_b->size(0) == config.n_heads * config.head_dim &&
+        result->key_value->size(1) == config.hidden &&
+        result->key_value->size(0) == config.head_dim &&
+        result->output_a->size(1) == config.n_heads * config.head_dim / config.o_groups &&
+        result->output_a->size(0) == config.o_groups * config.o_lora_rank &&
+        result->output_b->size(1) == config.o_groups * config.o_lora_rank &&
+        result->output_b->size(0) == config.hidden;
     const bool source_shapes =
         !result->kv_source() ||
-        (result->compressor_key_value.neuron_len() == config.hidden &&
-         result->compressor_key_value.out() == config.head_dim &&
+        (result->compressor_key_value->size(1) == config.hidden &&
+         result->compressor_key_value->size(0) == config.head_dim &&
          result->compressor_norm.numel() == config.head_dim &&
-         result->index_key.neuron_len() == config.head_dim &&
-         result->index_key.out() == config.index_head_dim &&
+         result->index_key->size(1) == config.head_dim &&
+         result->index_key->size(0) == config.index_head_dim &&
          result->index_key_norm.numel() == config.index_head_dim &&
-         (result->ratio == 1 || (result->compressor_gate.neuron_len() == config.hidden &&
-                                 result->compressor_gate.out() == config.head_dim)));
+         (result->ratio == 1 || (result->compressor_gate->size(1) == config.hidden &&
+                                 result->compressor_gate->size(0) == config.head_dim)));
     const bool index_shapes =
         !result->index_source() ||
-        (result->index_query.neuron_len() == config.q_lora_rank &&
-         result->index_query.out() == config.index_n_heads * config.index_head_dim &&
-         result->index_score.neuron_len() == config.hidden &&
-         result->index_score.out() == config.index_n_heads);
+        (result->index_query->size(1) == config.q_lora_rank &&
+         result->index_query->size(0) == config.index_n_heads * config.index_head_dim &&
+         result->index_score->size(1) == config.hidden &&
+         result->index_score->size(0) == config.index_n_heads);
     TYLOINFER_RUNTIME_CHECK(config.hc_mult == 4 && config.n_heads == 64 && config.head_dim == 512 &&
                           config.rope_head_dim == 64 && config.index_n_heads == 32 &&
                           config.index_head_dim == 128 && base_shapes && source_shapes &&
@@ -288,7 +288,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
 }
 
 ::tyloi::DenseTensor Model::logits(::tyloi::DenseTensor hidden, bool) const {
-    return adapter_logits(lm_head, std::move(hidden));
+    return adapter_logits(*lm_head, std::move(hidden));
 }
 
 bool Model::supports_speculation() const {

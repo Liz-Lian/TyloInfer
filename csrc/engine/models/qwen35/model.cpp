@@ -17,7 +17,7 @@ tyloi::DenseTensor Model::embedding(tyloi::DenseTensor ids, int primary) const {
         tyloi::ops::cast(std::move(ids), tyloi::ScalarType::int64),
         tyloi::Device{tyloi::DeviceType::cuda, primary}));
     auto result = tyloi::ops::measure("model.embed", normalized.device(), [&] {
-        return tyloi::ops::embedding(std::move(normalized), embed);
+        return tyloi::ops::embedding(std::move(normalized), *embed);
     });
     return tyloi::ops::contiguous(tyloi::ops::cast(std::move(result), tyloi::ScalarType::float16));
 }

@@ -280,7 +280,7 @@ struct Model {
     CudaModelPlan plan;
     tyloi::models::glm5_next::Config config;
     tyloi::models::CausalLmMetadata metadata;
-    QuantLinear embed, lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
     DenseTensor output_norm;
     std::vector<Layer> layers;
 };

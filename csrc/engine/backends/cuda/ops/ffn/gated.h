@@ -5,7 +5,6 @@
 #include <memory>
 #include <utility>
 
-struct QuantLinear;
 struct CudaProfiler;
 using GatedResidualMarker = std::function<void(const char*)>;
 
@@ -38,7 +37,7 @@ public:
         Forward forward;
         Mix mixed;
         Activation activated;
-        std::shared_ptr<const QuantLinear> weight;
+        std::shared_ptr<const ::tyloi::Tensor> weight;
         // F32 [column, stream], or vector layout [column/4, stream, 4].
         DenseTensor prepared_right;
         // Optional FP32 coefficients or packed row/group records.
@@ -47,7 +46,7 @@ public:
     };
     enum class Part { generic, final_down, final_up };
     // Borrowed execution resources and options outlive the prepared projections.
-    static Projection projection(std::shared_ptr<const QuantLinear>, Projector,
+    static Projection projection(std::shared_ptr<const ::tyloi::Tensor>, Projector,
                                  CudaProfiler&, const Options&, Part);
 
     GatedResidual() = default;

@@ -9,6 +9,7 @@
 #include "engine/weights/encoding/format_features.h"
 #include "engine/weights/encoding/tq.h"
 #include "engine/weights/weights.h"
+#include "engine/weights/sharded.h"
 
 #include "mmq.h"
 #include "parallel.h"
@@ -26,7 +27,6 @@
 
 enum class InputGateMode : int { None = 0, Sigmoid = 1, Silu = 2 };
 
-struct QuantLinear;
 struct QuantLinearGroup;
 struct DenseLinearGroup;
 
@@ -49,7 +49,7 @@ namespace tyloi::cuda { class Collectives; }
     CudaProfiler& profiler,
     KlMmqState& kl_mmq,
     TqExec& tq,
-    const struct QuantLinearShard& shard,
+    const tyloi::ShardedTensor::Shard& shard,
     ::tyloi::DenseTensor input,
     MfqOptional<::tyloi::DenseTensor> gate = mfq_nullopt,
     InputGateMode gate_mode = InputGateMode::None);
@@ -63,44 +63,6 @@ struct NintLinearGroup {
     std::vector<int64_t> outs;
 };
 
-// One tensor-parallel partition: a range of the logical matrix plus the
-// weight representation prepared for that partition on its own device.
-struct QuantLinearShard {
-    int device = 0;
-    int64_t input_begin = 0;
-    int64_t input_end = 0;
-    int64_t output_begin = 0;
-    int64_t output_end = 0;
-    std::shared_ptr<const ::tyloi::Tensor> weight;
-};
-
-// A projection weight: the prepared representation behind a read-only Tensor
-// pointer, plus where its tensor-parallel partitions live. The format is not
-// part of this interface; the backend selects it from the representation.
-struct QuantLinear {
-    std::shared_ptr<const ::tyloi::Tensor> weight;
-    TensorParallelAxis tensor_parallel_axis =
-        TensorParallelAxis::Mirrored;
-    std::vector<QuantLinearShard> tensor_parallel_shards;
-    int64_t logical_out = 0;
-    int64_t logical_neuron_len = 0;
-
-    bool tensor_parallel() const {
-        return !tensor_parallel_shards.empty();
-    }
-
-    // The weight itself. A sharded weight keeps one representation per shard,
-    // so payload_ptr() is null and payload() must not be used.
-    const ::tyloi::Tensor* payload_ptr() const { return weight.get(); }
-    const ::tyloi::Tensor& payload() const { return *weight; }
-    int64_t out() const;
-    int64_t neuron_len() const;
-    // A copy of this record with the weight, and every shard on its own
-    // device, resident where it is projected.
-    std::shared_ptr<const QuantLinear> relocated(::tyloi::Device device) const;
-    tyloi::weights::Placement placement(std::size_t index = 0) const;
-};
-
 // Reads the concrete representation a projection was prepared with, and
 // rejects a weight that is not one.
 template <class Format>
@@ -111,26 +73,22 @@ const Format& payload_as(const ::tyloi::Tensor& weight) {
 }
 
 
-void check_projection_width(const QuantLinear& weight, int64_t width);
-void check_projection_device(const QuantLinear& weight, ::tyloi::Device device);
-void check_projection(const QuantLinear& weight, const ::tyloi::DenseTensor& input);
+void check_projection_width(const ::tyloi::Tensor& weight, int64_t width);
+void check_projection_device(const ::tyloi::Tensor& weight, ::tyloi::Device device);
+void check_projection(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input);
 
 void check_device(const ::tyloi::DenseTensor& weight, const ::tyloi::DenseTensor& input);
 void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input);
+
+tyloi::weights::Placement projection_placement(const ::tyloi::Tensor& weight, std::size_t index = 0);
 
 // Where a weight's buffers actually live, matched against the running device.
 void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device device);
 // Every buffer of a representation is defined and resident on `device`.
 void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true);
 
-// One projection weight, shared by every record that projects it.
-using QuantLinearRef = std::shared_ptr<const QuantLinear>;
-
-using QuantLinearProjectionRefs =
-    std::vector<const QuantLinear*>;
-
 bool tensor_parallel_output_projections_compatible(
-    const QuantLinearProjectionRefs& projections);
+    const std::vector<const ::tyloi::Tensor*>& projections);
 
 struct QuantLinearGroup {
     bool nint_grouped = false;
@@ -138,7 +96,7 @@ struct QuantLinearGroup {
     bool decode_branch_parallel = true;
     NintLinearGroup nint;
     TqProjectionGroup tq;
-    std::vector<QuantLinearRef> layers;
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers;
     std::vector<int64_t> outs;
     std::vector<int64_t> cols;
     std::vector<tyloi::weights::Placement> placements;
@@ -149,7 +107,7 @@ struct QuantLinearGroup {
         return {outs.at(index), cols.at(index)};
     }
 
-    QuantLinearProjectionRefs tensor_parallel_output_projections() const;
+    std::vector<const ::tyloi::Tensor*> tensor_parallel_output_projections() const;
 
     bool tensor_parallel_output_compatible() const;
 };
@@ -164,11 +122,11 @@ struct DenseLinearGroup {
 };
 
 ::tyloi::DenseTensor nint_kld(
-    CudaProfiler& profiler, KlMmqState& mmq, const QuantLinear& weight,
+    CudaProfiler& profiler, KlMmqState& mmq, const ::tyloi::Tensor& weight,
     ::tyloi::DenseTensor input, ::tyloi::DenseTensor gate, InputGateMode mode);
 
 ::tyloi::DenseTensor quant_embedding_lookup(
-    const QuantLinear& weight, ::tyloi::DenseTensor token_ids);
+    const ::tyloi::Tensor& weight, ::tyloi::DenseTensor token_ids);
 
 ::tyloi::DenseTensor nvq_ffn_swiglu_down(
     CudaProfiler& profiler,
@@ -189,4 +147,4 @@ bool nvq_fused_residual_format(std::int64_t kernel_format);
 ::tyloi::DenseTensor dequant_nint_dense_f32(const tyloi::NintTensor& weight);
 
 ::tyloi::DenseTensor quant_linear_reference_weight(
-    const QuantLinear& linear);
+    const ::tyloi::Tensor& linear);

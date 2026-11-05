@@ -12,11 +12,11 @@ using DenseTensor = ::tyloi::DenseTensor;
 
 // Read-only enumeration of the buffers a record needs, for byte accounting.
 template <class Visitor>
-void tensors(const QuantLinearRef& weight, Visitor visit) {
+void tensors(const std::shared_ptr<const ::tyloi::Tensor>& weight, Visitor visit) {
     TYLOINFER_RUNTIME_CHECK(
-        !weight->tensor_parallel(),
+        dynamic_cast<const ::tyloi::ShardedTensor*>(weight.get()) == nullptr,
         "streamed vision weights require one CUDA device");
-    for (const auto* buffer : weight->weight->buffers()) visit(*buffer);
+    for (const auto* buffer : weight->buffers()) visit(*buffer);
 }
 
 template <class Visitor>
@@ -33,7 +33,7 @@ void tensors(const Weights& weights, Visitor visit) {
 }
 
 // Weight preparation: publish a copy of every tensor on `device`.
-inline void to_device(QuantLinearRef& weight, ::tyloi::Device device) {
+inline void to_device(std::shared_ptr<const ::tyloi::Tensor>& weight, ::tyloi::Device device) {
     weight = weight->relocated(device);
 }
 

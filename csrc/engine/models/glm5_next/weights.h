@@ -9,8 +9,8 @@ namespace tyloi::models::glm5_next {
 
 template <class Loader>
 auto load_dense_ffn(Loader &ops, const std::string &p, double limit) {
-    auto gate = ops.linear(p + ".gate.weight"), up = ops.linear(p + ".up.weight"),
-         down = ops.linear(p + ".down.weight");
+    auto gate = ops.weight(p + ".gate.weight"), up = ops.weight(p + ".up.weight"),
+         down = ops.weight(p + ".down.weight");
     return ops.gated_mlp(std::move(gate), std::move(up), std::move(down), limit);
 }
 
@@ -20,7 +20,7 @@ auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, boo
         return load_dense_ffn(ops, p, c.swiglu_limit);
     auto gate_up = ops.routed_gate_up(p, layer, c.experts, c.moe_intermediate, c.hidden);
     auto down = ops.routed(p + ".experts.down.weight", layer, c.experts, c.hidden, c.moe_intermediate);
-    auto router = ops.linear(p + ".router.weight");
+    auto router = ops.weight(p + ".router.weight");
     auto shared = load_dense_ffn(ops, p + ".shared_expert", c.swiglu_limit);
     auto bias = ops.fp32(ops.dense(p + ".router.bias"));
     return ops.moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
@@ -30,10 +30,10 @@ auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, boo
 template <class Loader>
 auto load_mla(Loader &ops, const Config &c, int layer, const std::string &a) {
     typename Loader::MlaWeights w{
-        ops.linear(a + ".query_a.weight"), ops.linear(a + ".key_value_a.weight"),
-        ops.linear(a + ".query_b.weight"), ops.linear(a + ".output.weight"),
-        ops.linear(a + ".indexer.query.weight"), ops.linear(a + ".indexer.key.weight"),
-        ops.linear(a + ".indexer.score.weight"),
+        ops.weight(a + ".query_a.weight"), ops.weight(a + ".key_value_a.weight"),
+        ops.weight(a + ".query_b.weight"), ops.weight(a + ".output.weight"),
+        ops.weight(a + ".indexer.query.weight"), ops.weight(a + ".indexer.key.weight"),
+        ops.weight(a + ".indexer.score.weight"),
         ops.headwise(ops.routed(a + ".latent.query_embedding.weight", layer, c.heads, c.latent, c.nope),
                      c.heads, c.latent),
         ops.headwise(ops.routed(a + ".latent.output_unembedding.weight", layer, c.heads, c.value_width, c.latent),
@@ -63,10 +63,10 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
     if (c.linear_layer(layer)) {
         const auto a = p + ".linear_attention";
         typename Loader::KdaWeights w{
-            ops.linear(a + ".query.weight"), ops.linear(a + ".key.weight"),
-            ops.linear(a + ".value.weight"), ops.linear(a + ".beta.weight"),
-            ops.linear(a + ".gate_a.weight"), ops.linear(a + ".gate_b.weight"),
-            ops.linear(a + ".output.weight"),
+            ops.weight(a + ".query.weight"), ops.weight(a + ".key.weight"),
+            ops.weight(a + ".value.weight"), ops.weight(a + ".beta.weight"),
+            ops.weight(a + ".gate_a.weight"), ops.weight(a + ".gate_b.weight"),
+            ops.weight(a + ".output.weight"),
             ops.concat({ops.dense(a + ".query_conv.weight"), ops.dense(a + ".key_conv.weight"),
                         ops.dense(a + ".value_conv.weight")}),
             ops.dense(a + ".forget_a.weight"), ops.dense(a + ".forget_b.weight"),
@@ -89,7 +89,7 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     result.embedding_norm = ops.fp32(ops.dense("predictor.embedding_norm.weight"));
     result.hidden_norm = ops.fp32(ops.dense("predictor.hidden_norm.weight"));
     result.output_norm = ops.dense("predictor.output_norm.weight");
-    result.fusion = ops.linear("predictor.fusion.weight");
+    result.fusion = ops.weight("predictor.fusion.weight");
     for (int64_t i = 0; i < count; ++i) {
         const auto p = "predictor.block." + std::to_string(i);
         typename Predictor::Layer layer;

@@ -55,8 +55,8 @@ struct Model {
     RopeCache rope;
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
-    QuantLinear embed;
-    QuantLinear lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> embed;
+    std::shared_ptr<const ::tyloi::Tensor> lm_head;
     DenseTensor output_norm;
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

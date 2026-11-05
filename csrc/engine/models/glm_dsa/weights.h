@@ -99,8 +99,8 @@ void load_layer_weights(Block& b, Loader& ops, const Config& c, int i, const std
                                b.unembed_out.n_experts == c.num_attention_heads &&
                                b.unembed_out.neuron_len == c.kv_lora_rank &&
                                b.unembed_out.out_per_expert == c.v_head_dim &&
-                               b.o_proj.neuron_len() == c.num_attention_heads * c.v_head_dim &&
-                               b.o_proj.out() == c.hidden_size;
+                               b.o_proj->size(1) == c.num_attention_heads * c.v_head_dim &&
+                               b.o_proj->size(0) == c.hidden_size;
     if (!input_shape_ok || !q_shape_ok || !head_shape_ok || ops.elements(b.attn_norm) != c.hidden_size ||
         ops.elements(b.ffn_norm) != c.hidden_size || ops.elements(b.q_a_norm) != c.q_lora_rank ||
         ops.elements(b.kv_a_norm) != c.kv_lora_rank ||

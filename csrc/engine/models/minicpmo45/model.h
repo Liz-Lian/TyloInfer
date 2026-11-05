@@ -30,7 +30,7 @@ struct Model {
     tyloi::models::CausalLmMetadata metadata;
     RopeCache rope, cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
-    QuantLinear embed, lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
     DenseTensor output_norm;
     std::vector<Layer> layers;
 };

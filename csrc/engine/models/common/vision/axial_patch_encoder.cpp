@@ -20,7 +20,7 @@ using vision::RmsNorm;
 BiasWeight affine(const weight_loader::Loader& loader,
               const std::string& prefix, std::int64_t input, std::int64_t output) {
     auto result = loader.affine(prefix + ".weight", prefix + ".bias");
-    TYLOINFER_RUNTIME_CHECK(result.weight->neuron_len() == input && result.weight->out() == output,
+    TYLOINFER_RUNTIME_CHECK(result.weight->size(1) == input && result.weight->size(0) == output,
                       "axial patch vision affine geometry mismatch: " + prefix);
     return result;
 }

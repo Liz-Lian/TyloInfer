@@ -31,9 +31,9 @@ struct Mtp final : MtpModule {
     using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::cuda::nemotron_h::Config config;
-    QuantLinear embedding;
+    std::shared_ptr<const ::tyloi::Tensor> embedding;
     int primary = 0;
-    QuantLinear fusion;
+    std::shared_ptr<const ::tyloi::Tensor> fusion;
     DenseTensor embedding_norm, hidden_norm, output_norm;
     std::vector<Layer> layers;
     std::vector<LayerState> states;
@@ -49,7 +49,7 @@ struct Mtp final : MtpModule {
     static std::optional<Mtp> load_if_present(CudaExecutionContext &execution,
                                               const weight_loader::Loader& weights,
                                               const tyloi::models::nemotron_h::Config &main,
-                                              QuantLinear embedding) {
+                                              std::shared_ptr<const ::tyloi::Tensor> embedding) {
         const bool fusion_present = weights.has("predictor.fusion.weight");
         if (!fusion_present) {
             TYLOINFER_RUNTIME_CHECK(!weights.has_prefix("predictor."),
@@ -67,9 +67,9 @@ struct Mtp final : MtpModule {
         result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
         result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
         result.output_norm = weights.tensor("predictor.output_norm.weight");
-        result.fusion = weights.projection("predictor.fusion.weight");
-        TYLOINFER_RUNTIME_CHECK(result.fusion.neuron_len() == 2 * main.hidden_size &&
-                              result.fusion.out() == main.hidden_size &&
+        result.fusion = weights.weight("predictor.fusion.weight");
+        TYLOINFER_RUNTIME_CHECK(result.fusion->size(1) == 2 * main.hidden_size &&
+                              result.fusion->size(0) == main.hidden_size &&
                               result.embedding_norm.numel() == main.hidden_size &&
                               result.hidden_norm.numel() == main.hidden_size &&
                               result.output_norm.numel() == main.hidden_size,
@@ -123,7 +123,7 @@ struct Mtp final : MtpModule {
             static int64_t elements(const DenseTensor &x) { return x.numel(); }
             static bool defined(const DenseTensor &x) { return x.defined(); }
             DenseTensor embed(DenseTensor ids, const DenseTensor &like) {
-                return tyloi::cuda::embed(model.embedding, std::move(ids),
+                return tyloi::cuda::embed(*model.embedding, std::move(ids),
                     model.execution->executor().collectives(), model.execution->executor().profiler(), model.primary)
                     .to(like.scalar_type());
             }
@@ -148,7 +148,7 @@ struct Mtp final : MtpModule {
             }
             DenseTensor fuse(DenseTensor e, DenseTensor h) {
                 return model.executor->projector(mode.ffn).run(
-                    model.fusion, ::tyloi::cuda::cat({e, h}, -1));
+                    *model.fusion, ::tyloi::cuda::cat({e, h}, -1));
             }
             static DenseTensor lengths(int64_t batch, int64_t end, const DenseTensor &positions) {
                 return ::tyloi::cuda::full({batch}, end, positions.options());

@@ -24,7 +24,7 @@ std::vector<MtpState::Layout> layout(const Predictor& model, int device) {
 
 } // namespace
 
-Mtp::Mtp(Predictor model, QuantLinear embedding, RopeCache rope,
+Mtp::Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding, RopeCache rope,
         std::unique_ptr<Executor> executor, Collectives& copies,
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate)
@@ -71,7 +71,7 @@ MtpStep Mtp::step_positioned(::tyloi::DenseTensor hidden,
 
     state_.prepare(batch, tokens, kv_capacity_);
     const auto kv = state_.views();
-    const Task embedding{task::Embed{0, 0, embedding_}, -1, {}, "model.embed"};
+    const Task embedding{task::Embed{0, 0, *embedding_}, -1, {}, "model.embed"};
     Inputs tokens_input;
     tokens_input.values = {copies_.copy(next_ids.to(::tyloi::kInt64), device_).contiguous()};
     auto embedded = executor_->run(std::span<const Task>{&embedding, 1}, std::move(tokens_input), {})

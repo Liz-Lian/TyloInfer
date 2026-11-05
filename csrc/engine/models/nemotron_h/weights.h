@@ -42,12 +42,12 @@ void load_linear_attention(Block& block, Loader& ops, const Config& config, int 
     const auto shape = [&](const auto& value) { return ops.shape(value); };
     const std::vector<int64_t> expected_convolution{config.mamba_conv_width(), 1,
                                                     config.conv_kernel};
-    if (block.in_proj.out() != config.mamba_projection_width() ||
-        block.in_proj.neuron_len() != config.hidden_size ||
+    if (block.in_proj->size(0) != config.mamba_projection_width() ||
+        block.in_proj->size(1) != config.hidden_size ||
         shape(block.conv_weight) != expected_convolution ||
         ops.elements(block.scan_norm) != config.mamba_inner_size() ||
-        block.out_proj.out() != config.hidden_size ||
-        block.out_proj.neuron_len() != config.mamba_inner_size() ||
+        block.out_proj->size(0) != config.hidden_size ||
+        block.out_proj->size(1) != config.mamba_inner_size() ||
         ops.elements(block.mixer_norm) != config.hidden_size ||
         ops.elements(block.a_log) != config.mamba_heads ||
         ops.elements(block.d) != config.mamba_heads ||
@@ -119,18 +119,18 @@ void load_moe(Block& block, Loader& ops, const Config& config, int layer,
         ffn.moe_router.size(0)==config.num_routed_experts &&
         ffn.moe_router.size(1)==config.hidden_size;
     if constexpr(requires { ffn.moe_router_projection; })
-        if(ffn.moe_router_projection)router_shape=ffn.moe_router_projection->out()==config.num_routed_experts &&
-            ffn.moe_router_projection->neuron_len()==config.hidden_size;
-    if (!expert_shapes || !router_shape ||
+        if(ffn.moe_router_projection)router_shape=ffn.moe_router_projection->size(0)==config.num_routed_experts &&
+            ffn.moe_router_projection->size(1)==config.hidden_size;
+    if (!expert_shapes || !router_shape || !ffn.moe_latent_in || !ffn.moe_latent_out ||
         ops.elements(ffn.moe_router_bias) != config.num_routed_experts ||
-        ffn.moe_latent_in.out() != config.moe_latent_size ||
-        ffn.moe_latent_in.neuron_len() != config.hidden_size ||
-        ffn.moe_latent_out.out() != config.hidden_size ||
-        ffn.moe_latent_out.neuron_len() != config.moe_latent_size ||
+        ffn.moe_latent_in->size(0) != config.moe_latent_size ||
+        ffn.moe_latent_in->size(1) != config.hidden_size ||
+        ffn.moe_latent_out->size(0) != config.hidden_size ||
+        ffn.moe_latent_out->size(1) != config.moe_latent_size ||
         ffn.shared->gate_up.outs.size() != 1 ||
         ffn.shared->gate_up.outs[0] != config.moe_shared_intermediate_size ||
-        ffn.shared->down.out() != config.hidden_size ||
-        ffn.shared->down.neuron_len() != config.moe_shared_intermediate_size ||
+        ffn.shared->down->size(0) != config.hidden_size ||
+        ffn.shared->down->size(1) != config.moe_shared_intermediate_size ||
         ops.elements(block.ffn_norm) != config.hidden_size) {
         throw std::runtime_error("Nemotron-H MoE tensor shapes disagree with config at layer " +
                                  std::to_string(layer));
@@ -152,8 +152,8 @@ void load_dense_mlp(Block& block, Loader& ops, const Config& config, int layer,
     ffn.gate_up = ops.gate_up({mlp + "up.weight"}, ffn.down);
     ffn.activation = tyloi::ops::MlpActivation::relu_squared;
     if (ffn.gate_up.outs.size() != 1 || ffn.gate_up.outs[0] != config.intermediate_size ||
-        ffn.down.out() != config.hidden_size ||
-        ffn.down.neuron_len() != config.intermediate_size) {
+        ffn.down->size(0) != config.hidden_size ||
+        ffn.down->size(1) != config.intermediate_size) {
         throw std::runtime_error("Nemotron-H dense MLP shapes disagree with config at layer " +
                                  std::to_string(layer));
     }

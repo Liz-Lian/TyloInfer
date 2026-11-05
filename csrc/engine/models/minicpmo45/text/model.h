@@ -20,7 +20,7 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-    QuantLinear embed, lm_head;
+    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
     DenseTensor output_norm;
     RopeCache rope, cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;

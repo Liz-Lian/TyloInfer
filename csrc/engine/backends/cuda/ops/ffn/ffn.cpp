@@ -110,7 +110,8 @@ void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, b
 }
 
 Mlp dense(const Ffn& f) {
-    return {f.gate_up, f.down, f.activation, f.geglu, f.swiglu_limit};
+    TYLOINFER_RUNTIME_CHECK(f.down, "FFN down projection is missing");
+    return {f.gate_up, *f.down, f.activation, f.geglu, f.swiglu_limit};
 }
 
 namespace {
@@ -136,10 +137,6 @@ DenseTensor local(const Mlp& mlp, DenseTensor x, Executor& executor, const Proje
                                    options.dense.mlp.gelu_fusion,
                                    options.dense.mlp.silu_fusion};
     return mlp.forward(project, executor.profiler(), mlp_options, x);
-}
-
-bool dense_linear_defined(const QuantLinear& linear) {
-    return linear.out() > 0 && linear.neuron_len() > 0;
 }
 
 } // namespace
@@ -473,16 +470,18 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
             // Only routed experts run in the latent space; the router and
             // the shared expert keep reading the original hidden state.
             const bool latent_routed =
-                !dense_routed && dense_linear_defined(f.moe_latent_in);
+                !dense_routed && f.moe_latent_in;
+            TYLOINFER_RUNTIME_CHECK(!latent_routed || f.moe_latent_out,
+                "MoE latent output projection is missing");
             auto routed_input = xf;
             if (latent_routed)
                 routed_input = profiler.measure("moe.latent_down", [&] {
-                    return project_.run(f.moe_latent_in, xf);
+                    return project_.run(*f.moe_latent_in, xf);
                 });
             const auto finish_latent = [&](DenseTensor reduced) {
                 if (latent_routed)
                     return profiler.measure("moe.latent_up", [&] {
-                        return project_.run(f.moe_latent_out, reduced);
+                        return project_.run(*f.moe_latent_out, reduced);
                     });
                 return reduced;
             };
@@ -521,9 +520,9 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 TYLOINFER_RUNTIME_CHECK(f.moe_dense_up.defined() && f.moe_dense_down.defined(),
                                   "dense routed MoE requires Up and Down banks");
                 auto expert_input = xf;
-                if (dense_linear_defined(f.moe_latent_in))
+                if (f.moe_latent_in)
                     expert_input = profiler.measure("moe.latent_down", [&] {
-                        return project_.run(f.moe_latent_in, xf);
+                        return project_.run(*f.moe_latent_in, xf);
                     });
                 auto up = profiler.measure("moe.dense_up", [&] {
                     return dense_routed_projection(f.moe_dense_up, expert_input,
@@ -548,9 +547,9 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 auto reduced = profiler.measure("moe.dense_reduce", [&] {
                     return moe_weighted_reduce_cuda(down_pair, selected.at(1));
                 });
-                if (dense_linear_defined(f.moe_latent_out))
+                if (f.moe_latent_out)
                     reduced = profiler.measure("moe.latent_up", [&] {
-                        return project_.run(f.moe_latent_out, reduced);
+                        return project_.run(*f.moe_latent_out, reduced);
                     });
                 stats.record(f.moe_layer, selected.at(0), selected.at(1),
                              down_pair, static_cast<int>(f.moe_dense_up.size(0)));
@@ -790,8 +789,8 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
     if (router_bias.has_value()) {
         const auto& bias = router_bias.value();
         TYLOINFER_RUNTIME_CHECK(f.is_moe && !f.moe_hash_ids.defined() && bias.defined() &&
-            ((bias.dim()==1 && bias.size(0)==(f.moe_router_projection?f.moe_router_projection->out():f.moe_router.size(0))) ||
-             (bias.dim()==2 && bias.size(0)==x.numel()/x.size(-1) && bias.size(1)==(f.moe_router_projection?f.moe_router_projection->out():f.moe_router.size(0)))),
+            ((bias.dim()==1 && bias.size(0)==(f.moe_router_projection?f.moe_router_projection->size(0):f.moe_router.size(0))) ||
+             (bias.dim()==2 && bias.size(0)==x.numel()/x.size(-1) && bias.size(1)==(f.moe_router_projection?f.moe_router_projection->size(0):f.moe_router.size(0)))),
                           "MoE router correction bias shape mismatch");
     }
     const auto project = executor.projector(mode);
@@ -805,7 +804,7 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
 namespace tyloi::cuda::ops {
 
 tyloi::DenseTensor mlp(tyloi::DenseTensor input, const ::QuantLinearGroup& gate_up,
-                const ::QuantLinear& down, tyloi::ops::MlpActivation activation,
+                const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,
                 double swiglu_limit) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);

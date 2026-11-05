@@ -50,16 +50,16 @@ dspark_full_attention_plan(std::int64_t batch, std::int64_t queries, std::int64_
 
 struct DeepseekV41Dspark final : MtpModule {
     CudaExecutionContext *execution = nullptr;
-    QuantLinear embedding, output;
+    std::shared_ptr<const ::tyloi::Tensor> embedding, output;
     double softcap = 0;
     int primary = 0;
     CommonConfig config;
-    QuantLinear main_projection;
+    std::shared_ptr<const ::tyloi::Tensor> main_projection;
     DenseTensor main_norm;
     DenseTensor output_norm;
-    QuantLinear markov_embedding;
-    QuantLinear markov_output;
-    QuantLinear confidence_projection;
+    std::shared_ptr<const ::tyloi::Tensor> markov_embedding;
+    std::shared_ptr<const ::tyloi::Tensor> markov_output;
+    std::shared_ptr<const ::tyloi::Tensor> confidence_projection;
     std::vector<std::unique_ptr<Block>> stages;
     std::vector<DenseTensor> rings;
     DenseTensor attention_meta;
@@ -108,14 +108,14 @@ struct DeepseekV41Dspark final : MtpModule {
         result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base")
                                    .to(::tyloi::kFloat32)
                                    .contiguous();
-        result->query_a = weights.projection(prefix + "attention.query_a.weight");
-        result->query_b = weights.projection(prefix + "attention.query_b.weight");
+        result->query_a = weights.weight(prefix + "attention.query_a.weight");
+        result->query_b = weights.weight(prefix + "attention.query_b.weight");
         result->key_value =
-            weights.projection(prefix + "attention.key_value.weight");
+            weights.weight(prefix + "attention.key_value.weight");
         result->output_a =
-            weights.projection(prefix + "attention.output_a.weight");
+            weights.weight(prefix + "attention.output_a.weight");
         result->output_b =
-            weights.projection(prefix + "attention.output_b.weight");
+            weights.weight(prefix + "attention.output_b.weight");
         // Predictor bundles must not extend the backbone's final-layer marker:
         // residency updates also run when ordinary decoding skips DSpark.
         result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.",
@@ -139,18 +139,18 @@ struct DeepseekV41Dspark final : MtpModule {
                                     result->attention_mhc_base, result->attention_norm) &&
                               valid_mhc(result->mlp_mhc_function, result->mlp_mhc_scale,
                                         result->mlp_mhc_base, result->mlp_norm) &&
-                              result->query_a.neuron_len() == config.hidden &&
-                              result->query_a.out() == config.q_lora_rank &&
-                              result->query_b.neuron_len() == config.q_lora_rank &&
-                              result->query_b.out() == config.n_heads * config.head_dim &&
-                              result->key_value.neuron_len() == config.hidden &&
-                              result->key_value.out() == config.head_dim &&
-                              result->output_a.neuron_len() ==
+                              result->query_a->size(1) == config.hidden &&
+                              result->query_a->size(0) == config.q_lora_rank &&
+                              result->query_b->size(1) == config.q_lora_rank &&
+                              result->query_b->size(0) == config.n_heads * config.head_dim &&
+                              result->key_value->size(1) == config.hidden &&
+                              result->key_value->size(0) == config.head_dim &&
+                              result->output_a->size(1) ==
                                   config.n_heads * config.head_dim / config.o_groups &&
-                              result->output_a.out() == config.o_groups * config.o_lora_rank &&
-                              result->output_b.neuron_len() ==
+                              result->output_a->size(0) == config.o_groups * config.o_lora_rank &&
+                              result->output_b->size(1) ==
                                   config.o_groups * config.o_lora_rank &&
-                              result->output_b.out() == config.hidden &&
+                              result->output_b->size(0) == config.hidden &&
                               result->query_a_norm.numel() == config.q_lora_rank &&
                               result->key_value_norm.numel() == config.head_dim &&
                               result->sinks.numel() == config.n_heads &&
@@ -164,7 +164,7 @@ struct DeepseekV41Dspark final : MtpModule {
     static std::optional<DeepseekV41Dspark> load_if_present(CudaExecutionContext &execution,
                                                             const weight_loader::Loader& weights,
                                                             const CommonConfig &config,
-                                                            QuantLinear embedding, QuantLinear output,
+                                                            std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                             double softcap) {
         const bool root = weights.has("predictor.stage.0.main_projection.weight");
         const bool any = root || weights.has("predictor.stage.0.attention.query_a.weight") ||
@@ -188,14 +188,14 @@ struct DeepseekV41Dspark final : MtpModule {
         const auto first = std::string("predictor.stage.0.");
         const auto last = "predictor.stage." + std::to_string(result.config.n_mtp_layers - 1) + ".";
         result.main_projection =
-            weights.projection(first + "main_projection.weight");
+            weights.weight(first + "main_projection.weight");
         result.main_norm = weights.tensor(first + "main_norm.weight");
         result.output_norm = weights.tensor(last + "output_norm.weight");
         result.markov_embedding =
-            weights.projection(last + "markov.embedding.weight");
-        result.markov_output = weights.projection(last + "markov.output.weight");
+            weights.weight(last + "markov.embedding.weight");
+        result.markov_output = weights.weight(last + "markov.output.weight");
         result.confidence_projection =
-            weights.projection(last + "confidence.projection.weight");
+            weights.weight(last + "confidence.projection.weight");
         result.stages.reserve(static_cast<std::size_t>(result.config.n_mtp_layers));
         for (std::int64_t stage = 0; stage < result.config.n_mtp_layers; ++stage) {
             result.stages.push_back(load_stage(execution.executor().pipelines(), weights, result.config, stage));
@@ -206,17 +206,17 @@ struct DeepseekV41Dspark final : MtpModule {
         TYLOINFER_RUNTIME_CHECK(
             result.config.hc_mult == 4 && result.config.n_heads == 64 &&
                 result.config.head_dim == 512 && result.config.rope_head_dim == 64 &&
-                result.main_projection.neuron_len() == target_width &&
-                result.main_projection.out() == result.config.hidden &&
+                result.main_projection->size(1) == target_width &&
+                result.main_projection->size(0) == result.config.hidden &&
                 result.main_norm.numel() == result.config.hidden &&
                 result.output_norm.numel() == result.config.hidden &&
-                result.markov_embedding.out() == result.config.vocab &&
-                result.markov_embedding.neuron_len() == result.config.dspark_markov_rank &&
-                result.markov_output.neuron_len() == result.config.dspark_markov_rank &&
-                result.markov_output.out() == result.config.vocab &&
-                result.confidence_projection.neuron_len() ==
+                result.markov_embedding->size(0) == result.config.vocab &&
+                result.markov_embedding->size(1) == result.config.dspark_markov_rank &&
+                result.markov_output->size(1) == result.config.dspark_markov_rank &&
+                result.markov_output->size(0) == result.config.vocab &&
+                result.confidence_projection->size(1) ==
                     result.config.hidden + result.config.dspark_markov_rank &&
-                result.confidence_projection.out() == 1,
+                result.confidence_projection->size(0) == 1,
             "DeepSeek-V4.1 DSpark top-level tensor geometry disagrees");
         return result;
     }
@@ -345,11 +345,11 @@ struct DeepseekV41Dspark final : MtpModule {
                 auto floating = target_hidden.to(::tyloi::kFloat32);
                 auto scale = (floating.abs().amax(-1, true) / 64.0).clamp_min(1.0);
                 return weighted_rms(
-                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(main_projection, (floating / scale).to(::tyloi::kFloat16).contiguous()),
+                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*main_projection, (floating / scale).to(::tyloi::kFloat16).contiguous()),
                     main_norm, config.rms_eps);
             },
             [&](size_t index, const DenseTensor &main_x) {
-                auto key_value = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stages[index]->key_value, main_x),
+                auto key_value = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stages[index]->key_value, main_x),
                                               stages[index]->key_value_norm, config.rms_eps);
                 key_value = rotate_token_major_tail(
                     key_value,
@@ -373,9 +373,9 @@ struct DeepseekV41Dspark final : MtpModule {
         return tyloi::models::deepseek_v41::dspark_attention(
             active,
             [&] {
-                auto q_rank = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.query_a, input),
+                auto q_rank = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stage.query_a, input),
                                            stage.query_a_norm, config.rms_eps);
-                auto query = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.query_b, q_rank)
+                auto query = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stage.query_b, q_rank)
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
@@ -384,7 +384,7 @@ struct DeepseekV41Dspark final : MtpModule {
                 return query;
             },
             [&] {
-                auto current_keys = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.key_value, input),
+                auto current_keys = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stage.key_value, input),
                                                  stage.key_value_norm, config.rms_eps);
                 current_keys = rotate_token_major_tail(current_keys, positions, stage.rope);
                 current_keys = deepseek_v41_mxfp8_e4m3_sim_cuda(current_keys.contiguous());
@@ -432,7 +432,7 @@ struct DeepseekV41Dspark final : MtpModule {
         return tyloi::models::deepseek_v41::dspark_draft(
             physical_width, requested, stages.size(),
             [&](int64_t) {
-                return tyloi::cuda::embed(embedding, draft_ids, execution->executor().collectives(),
+                return tyloi::cuda::embed(*embedding, draft_ids, execution->executor().collectives(),
                     execution->executor().profiler(), primary).to(::tyloi::kFloat16);
             },
             [&](DenseTensor embedded) {
@@ -492,7 +492,7 @@ struct DeepseekV41Dspark final : MtpModule {
                     .contiguous();
             },
             [&](DenseTensor head_hidden) {
-                return tyloi::cuda::logits(output, weighted_rms(head_hidden, output_norm, config.rms_eps),
+                return tyloi::cuda::logits(*output, weighted_rms(head_hidden, output_norm, config.rms_eps),
                     execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)), execution->executor().profiler(), softcap)
                     .to(::tyloi::kFloat32)
                     .contiguous();
@@ -501,17 +501,17 @@ struct DeepseekV41Dspark final : MtpModule {
     }
 
     DenseTensor draft_next(DenseTensor logits, DenseTensor previous) override {
-        auto markov = quant_embedding_lookup(markov_embedding, previous)
+        auto markov = quant_embedding_lookup(*markov_embedding, previous)
                           .to(::tyloi::kFloat16)
                           .contiguous();
-        return logits + execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(markov_output, markov).to(::tyloi::kFloat32);
+        return logits + execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*markov_output, markov).to(::tyloi::kFloat32);
     }
 };
 
 std::unique_ptr<::MtpModule> load_dspark_if_present(CudaExecutionContext &execution,
                                                     const weight_loader::Loader& weights,
                                                     const CommonConfig &config,
-                                                    QuantLinear embedding, QuantLinear output,
+                                                    std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                     double softcap) {
     auto predictor = DeepseekV41Dspark::load_if_present(execution, weights, config,
         std::move(embedding), std::move(output), softcap);

@@ -79,11 +79,11 @@ struct CausalResources {
     ::tyloi::DenseTensor
     adapter_raw_hidden(const ::tyloi::DenseTensor &hidden,
                        const ::tyloi::DenseTensor &finalized) const;
-    ::tyloi::DenseTensor adapter_logits(const QuantLinear &lm_head,
+    ::tyloi::DenseTensor adapter_logits(const ::tyloi::Tensor &lm_head,
                                               ::tyloi::DenseTensor hidden) const;
-    ::tyloi::DenseTensor adapter_last_logits(const QuantLinear &lm_head,
+    ::tyloi::DenseTensor adapter_last_logits(const ::tyloi::Tensor &lm_head,
                                                    ::tyloi::DenseTensor hidden) const;
-    ::tyloi::DenseTensor adapter_next_token(const QuantLinear &lm_head,
+    ::tyloi::DenseTensor adapter_next_token(const ::tyloi::Tensor &lm_head,
                                                   ::tyloi::DenseTensor hidden) const;
 
     bool adapter_supports_prepared_prompt() const noexcept;

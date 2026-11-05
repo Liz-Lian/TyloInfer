@@ -257,11 +257,11 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     }
     if (load_input_output) {
         const bool separate = !c.tie_word_embeddings && weights.has("model.output.weight");
-        model.embed = weights.build_embedding("model.token_embedding.weight", separate);
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
         model.output_norm = weights.tensor("model.output_norm.weight");
-        model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+        model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
             : weights.placement.tensor.enabled()
-                ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output)
+                ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
                 : model.embed;
         if (load_layers) {
             model.layers.reserve(static_cast<size_t>(c.num_hidden_layers));
@@ -281,7 +281,7 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
 
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
@@ -308,7 +308,7 @@ DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) 
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
-        Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
+        Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
         Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
@@ -500,7 +500,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     const auto& q_proj = layer.q_proj;
     const auto& embed_q = layer.embed_q;
     const auto& unembed_out = layer.unembed_out;
-    const auto& o_proj = layer.o_proj;
+    const auto& o_proj = *layer.o_proj;
     const auto& ffn = layer.ffn;
     const bool full_indexer = layer.full_indexer;
     auto& kv_cache = state.kv_cache;

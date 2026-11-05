@@ -59,25 +59,20 @@ inline ::tyloi::DenseTensor map_embedding_storage(const ::tyloi::DenseTensor& cp
 #endif
 }
 
-inline QuantLinear map_dense_embedding(const ::tyloi::DenseTensor& cpu,int device,
+inline std::shared_ptr<const ::tyloi::Tensor> map_dense_embedding(const ::tyloi::DenseTensor& cpu,int device,
         bool device_read_control=false) {
     TYLOINFER_RUNTIME_CHECK(cpu.dim()==2 &&
         (cpu.scalar_type()==::tyloi::kFloat16 || cpu.scalar_type()==::tyloi::kBFloat16 || cpu.scalar_type()==::tyloi::kFloat32),
         "mapped embedding requires a rank-2 floating table");
-    QuantLinear result;
-    result.tensor_parallel_axis=TensorParallelAxis::Mirrored;
-    result.logical_out=cpu.size(0);result.logical_neuron_len=cpu.size(1);
-    result.weight=std::make_shared<::tyloi::DenseTensor>(map_embedding_storage(cpu,device,device_read_control));
-    return result;
+    return std::make_shared<::tyloi::DenseTensor>(map_embedding_storage(cpu,device,device_read_control));
 }
 
-inline QuantLinear map_nint_embedding(QuantLinear result,int device,bool device_read_control=false) {
+inline std::shared_ptr<const ::tyloi::Tensor> map_nint_embedding(const std::shared_ptr<const ::tyloi::Tensor>& result,int device,bool device_read_control=false) {
     TYLOINFER_RUNTIME_CHECK(
-        dynamic_cast<const tyloi::NintTensor*>(result.weight.get()) != nullptr &&
-            !result.tensor_parallel(),
+        dynamic_cast<const tyloi::NintTensor*>(result.get()) != nullptr,
         "mapped NINT embedding requires an unsharded CPU table");
     auto mapped=std::make_shared<tyloi::NintTensor>(
-        static_cast<const tyloi::NintTensor&>(*result.weight));
+        static_cast<const tyloi::NintTensor&>(*result));
     auto* w=mapped.get();
     TYLOINFER_RUNTIME_CHECK(w->q_packed.is_cpu(),
         "mapped NINT embedding requires an unsharded CPU table");
@@ -87,6 +82,5 @@ inline QuantLinear map_nint_embedding(QuantLinear result,int device,bool device_
         if(field->defined())*field=map_embedding_storage(*field,device,device_read_control);
     for (auto* field : {&w->row_q_bits, &w->row_q_bit_offsets, &w->neuron_scale, &w->neuron_min})
         if(field->defined())*field=field->to(::tyloi::Device(::tyloi::kCUDA,device));
-    result.weight=std::move(mapped);
-    return result;
+    return mapped;
 }

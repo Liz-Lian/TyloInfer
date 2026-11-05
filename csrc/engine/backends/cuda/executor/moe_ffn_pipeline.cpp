@@ -47,8 +47,8 @@
 
 namespace {
 // The shared-expert fast paths need the NINT payload, if the weight has one.
-const tyloi::NintTensor* nint_payload(const QuantLinearRef& weight) {
-    return weight ? dynamic_cast<const tyloi::NintTensor*>(&weight->payload()) : nullptr;
+const tyloi::NintTensor* nint_payload(const std::shared_ptr<const ::tyloi::Tensor>& weight) {
+    return weight ? dynamic_cast<const tyloi::NintTensor*>(weight.get()) : nullptr;
 }
 
 inline void host_store_fence() {
@@ -1651,7 +1651,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             cell.two_stage=cell.two_stage && bool(shared_weights_.gate);
             for(const auto& weight:shared_weights_.projections) {
                 const auto* nint=nint_payload(weight);
-                cell.two_stage=cell.two_stage && nint && !weight->tensor_parallel() && !nint->q8_zero;
+                cell.two_stage=cell.two_stage && nint && !nint->q8_zero;
             }
         }
         const auto reuse=tyloi::cuda::runtime_options::moe_plan_reuse();
@@ -1710,7 +1710,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             const auto fused_gate=tyloi::cuda::runtime_options::shared_gate_fused();
             const auto* gate=nint_payload(shared_weights_.scalar_gate);
             if(cell.tokens<=6 && gate &&
-                    !shared_weights_.scalar_gate->tensor_parallel() && (!fused_gate || *fused_gate) &&
+                    (!fused_gate || *fused_gate) &&
                     (!nint_gate || nint_gate[0]!='0') && (!reuse_gate || reuse_gate[0]!='0')) {
                 const auto& w=*gate;
                 if(w.out==1 && w.aligned_q8 && !w.q8_zero && w.gs==48 && w.ng<=64 && w.neuron_len==width_)
@@ -4732,7 +4732,7 @@ std::shared_ptr<MoeFfnPipeline> tyloi::cuda::Pipelines::make(
         for(const auto& w:{gate_up[0],down[0]})if(!w->cached_source->two_stage_compatible())return {};
         if(shared)for(const auto& w:shared_weights.projections) {
             const auto* nint=nint_payload(w);
-            if(!nint || w->tensor_parallel() || nint->q8_zero)return {};
+            if(!nint || nint->q8_zero)return {};
         }
     }
     if(!gate_up[0]->cached_source->pipeline_enabled())return {};

@@ -328,10 +328,10 @@ class Engram {
             key.sizes() != query.sizes()) {
             throw std::runtime_error("DeepSeek-V4.1 Engram query/key geometry disagrees");
         }
-        auto projection = weights.projection(prefix + "projection.weight");
+        auto projection = weights.weight(prefix + "projection.weight");
         const auto hash_columns = (config.engram_max_ngram_size - 1) * config.engram_n_heads;
-        if (projection.neuron_len() != hash_columns * config.engram_head_dim ||
-            projection.out() != (config.hc_mult + 1) * config.hidden) {
+        if (projection->size(1) != hash_columns * config.engram_head_dim ||
+            projection->size(0) != (config.hc_mult + 1) * config.hidden) {
             throw std::runtime_error("DeepSeek-V4.1 Engram projection geometry disagrees");
         }
         return std::unique_ptr<Engram>(new Engram(
@@ -382,7 +382,7 @@ class Engram {
                                   hashes.columns, hidden.device());
         });
         auto projected = profiler.measure("deepseek_v41.engram.projection", [&] {
-            return projector.run(projection_, embeddings);
+            return projector.run(*projection_, embeddings);
         });
         return profiler.measure("deepseek_v41.engram.gate_add", [&] {
             return deepseek_v41_engram_gate_add_cuda(hidden, projected.contiguous(),
@@ -406,14 +406,14 @@ class Engram {
         return selected;
     }
     Engram(EngramConfig config, int hash_layer, std::shared_ptr<EngramTable> table,
-           QuantLinear projection, EngramTensor query_key_weight)
+           std::shared_ptr<const ::tyloi::Tensor> projection, EngramTensor query_key_weight)
         : config_(std::move(config)), hash_layer_(hash_layer), table_(std::move(table)),
           projection_(std::move(projection)), query_key_weight_(std::move(query_key_weight)) {}
 
     EngramConfig config_;
     int hash_layer_ = -1;
     std::shared_ptr<EngramTable> table_;
-    QuantLinear projection_;
+    std::shared_ptr<const ::tyloi::Tensor> projection_;
     EngramTensor query_key_weight_;
 };
 

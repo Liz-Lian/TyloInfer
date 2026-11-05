@@ -77,7 +77,7 @@ CausalResources::adapter_raw_hidden(const ::tyloi::DenseTensor &hidden,
 }
 
 ::tyloi::DenseTensor
-CausalResources::adapter_logits(const QuantLinear &lm_head,
+CausalResources::adapter_logits(const ::tyloi::Tensor &lm_head,
                                 ::tyloi::DenseTensor hidden) const {
     auto logits = execution->executor().profiler().measure(
         "model.lm_head", [&]() { return execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(lm_head, hidden); });
@@ -85,13 +85,13 @@ CausalResources::adapter_logits(const QuantLinear &lm_head,
 }
 
 ::tyloi::DenseTensor
-CausalResources::adapter_last_logits(const QuantLinear &lm_head,
+CausalResources::adapter_last_logits(const ::tyloi::Tensor &lm_head,
                                      ::tyloi::DenseTensor hidden) const {
     return execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(lm_head, hidden.to(::tyloi::kFloat16).contiguous());
 }
 
 ::tyloi::DenseTensor
-CausalResources::adapter_next_token(const QuantLinear &lm_head,
+CausalResources::adapter_next_token(const ::tyloi::Tensor &lm_head,
                                     ::tyloi::DenseTensor hidden) const {
     auto input = hidden.to(::tyloi::kFloat16).contiguous();
     auto logits = execution->executor().profiler().measure("model.lm_head",

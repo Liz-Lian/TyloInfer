@@ -17,7 +17,7 @@ struct Predictor {
     };
 
     tyloi::models::qwen35::Config config;
-    QuantLinear fusion;
+    std::shared_ptr<const ::tyloi::Tensor> fusion;
     ::tyloi::DenseTensor hidden_norm, embedding_norm, output_norm;
     std::vector<Layer> layers;
 

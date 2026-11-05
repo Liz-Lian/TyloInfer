@@ -58,12 +58,11 @@ void KlMmqState::reset() noexcept {
 }
 
 ::tyloi::DenseTensor nint_kld(
-        CudaProfiler& profiler, KlMmqState& mmq, const QuantLinear& weight,
+        CudaProfiler& profiler, KlMmqState& mmq, const ::tyloi::Tensor& weight,
         ::tyloi::DenseTensor x,
         ::tyloi::DenseTensor gate,
         InputGateMode mode) {
-    const auto* nint = weight.tensor_parallel()
-        ? nullptr : dynamic_cast<const tyloi::NintTensor*>(&weight.payload());
+    const auto* nint = dynamic_cast<const tyloi::NintTensor*>(&weight);
     TYLOINFER_RUNTIME_CHECK(
         nint != nullptr && tyloi::mfq_compat_enabled,
         "FP32-output KLD down projection requires a local NINT tensor");

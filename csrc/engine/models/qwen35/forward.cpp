@@ -76,7 +76,7 @@ void clear_linear_speculative(LinearState& state) noexcept {
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
     auto normalized = normalize_ids(collectives, primary, std::move(ids));
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {std::move(normalized)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
@@ -104,7 +104,7 @@ DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) 
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
-        Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
+        Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
         Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
     Inputs inputs;
     inputs.values = {std::move(hidden)};

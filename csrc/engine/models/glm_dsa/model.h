@@ -24,7 +24,7 @@ struct Layer {
     DenseTensor attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
     QuantLinearGroup input_proj, q_proj;
     Experts embed_q, unembed_out;
-    QuantLinear o_proj;
+    std::shared_ptr<const tyloi::Tensor> o_proj;
     Ffn ffn;
 };
 
@@ -34,7 +34,7 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-    QuantLinear embed, lm_head;
+    std::shared_ptr<const tyloi::Tensor> embed, lm_head;
     DenseTensor output_norm;
     RopeCache rope;
     std::unordered_map<int, RopeCache> device_ropes;

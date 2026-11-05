@@ -30,7 +30,7 @@ struct Norm {
 
 struct Embed {
     Slot input, output;
-    const QuantLinear& weight;
+    const ::tyloi::Tensor& weight;
 };
 
 struct Softcap {
@@ -45,7 +45,7 @@ struct Concat {
 
 struct Project {
     Slot input, output;
-    const QuantLinear& weight;
+    const ::tyloi::Tensor& weight;
 };
 
 struct Attention {

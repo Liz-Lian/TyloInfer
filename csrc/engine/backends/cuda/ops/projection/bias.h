@@ -9,11 +9,10 @@
 namespace tyloi::cuda {
 
 inline ::tyloi::DenseTensor biased(
-        const Projector& projector, const QuantLinear& weight,
+        const Projector& projector, const ::tyloi::Tensor& weight,
         const ::tyloi::DenseTensor& bias,
         ::tyloi::DenseTensor input) {
-    const auto* dense = weight.tensor_parallel()
-        ? nullptr : dynamic_cast<const ::tyloi::DenseTensor*>(&weight.payload());
+    const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&weight);
     if (dense != nullptr) {
         check_projection(weight, input);
         const auto output_dtype = input.scalar_type();

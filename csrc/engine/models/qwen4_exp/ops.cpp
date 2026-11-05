@@ -155,7 +155,7 @@ static DenseTensor qwen_gdn_project_rows(const DenseTensor& source,Project proje
     return output;
 }
 
-DenseTensor Gdn::project_weight(const tyloi::cuda::Projector& projector,const QuantLinear& weight,const DenseTensor& source) const {
+DenseTensor Gdn::project_weight(const tyloi::cuda::Projector& projector,const ::tyloi::Tensor& weight,const DenseTensor& source) const {
     return qwen_gdn_project_rows(source,[&](const DenseTensor& input){return projector.run(weight,input);});
 }
 
@@ -223,7 +223,7 @@ std::vector<DenseTensor> Gdn::project_inputs(const tyloi::cuda::Projector& proje
 DenseTensor Gdn::project_output(const tyloi::cuda::Projector& projector,const DenseTensor& source) const {
     auto* window=tyloi::cuda::DecodeWindow::recording();
     if(window)window->mark_current("gdn_output_begin");
-    auto output=project_weight(projector,w_->output,source);
+    auto output=project_weight(projector,*w_->output,source);
     if(window)window->mark_current("gdn_output_end");
     return output;
 }
@@ -237,8 +237,8 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
     TYLOINFER_RUNTIME_CHECK(shared_g && shared_u && shared_d && shared_gate_weight,
         "Qwen shared expert requires projection weights");
     std::shared_ptr<QuantLinearGroup> shared_tq;
-    const auto shared_g_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(&shared_g->payload());
-    const auto shared_u_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(&shared_u->payload());
+    const auto shared_g_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(shared_g.get());
+    const auto shared_u_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(shared_u.get());
     if(shared_g_tq && shared_u_tq &&
        shared_g_tq->image().device().is_cuda() && shared_u_tq->image().device().is_cuda())
         shared_tq=std::make_shared<QuantLinearGroup>(make_quant_group({shared_g,shared_u},false,false));
@@ -257,11 +257,11 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
         hidden={};
         return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,source))*output;
     };
-    const std::array<std::shared_ptr<const QuantLinear>,3> shared_projections{shared_g,shared_u,shared_d};
+    const std::array<std::shared_ptr<const ::tyloi::Tensor>,3> shared_projections{shared_g,shared_u,shared_d};
     const bool shared_row_parallel=std::all_of(shared_projections.begin(),shared_projections.end(),
         [](const auto& weight) {
-            const auto* nint=dynamic_cast<const tyloi::NintTensor*>(&weight->payload());
-            return nint && !weight->tensor_parallel() && !nint->q8_zero;
+            const auto* nint=dynamic_cast<const tyloi::NintTensor*>(weight.get());
+            return nint && !nint->q8_zero;
         });
     auto shared=[shared_raw,shared_projections,shared_gate_weight,shared_row_parallel](const tyloi::cuda::Projector& project,const DenseTensor& source) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -309,13 +309,12 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
     shared_weights.gate=[shared_gate_weight](const tyloi::cuda::Projector& project,const DenseTensor& input) {
         const auto option=tyloi::cuda::runtime_options::shared_gate_fused();
         const auto* nint_option=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
-        const auto* gate_nint=dynamic_cast<const tyloi::NintTensor*>(&shared_gate_weight->payload());
-        const auto* gate_dense=dynamic_cast<const tyloi::DenseTensor*>(&shared_gate_weight->payload());
+        const auto* gate_nint=dynamic_cast<const tyloi::NintTensor*>(shared_gate_weight.get());
+        const auto* gate_dense=dynamic_cast<const tyloi::DenseTensor*>(shared_gate_weight.get());
         if((!option || *option) && (!nint_option || nint_option[0]!='0') &&
-                gate_nint && !shared_gate_weight->tensor_parallel())
+                gate_nint)
             if(auto output=try_nint_shared_gate_sigmoid_cuda(input,*gate_nint))return *output;
-        if((!option || *option) && gate_dense &&
-            !shared_gate_weight->tensor_parallel())
+        if((!option || *option) && gate_dense)
             if(auto output=try_shared_gate_sigmoid_cuda(input,*gate_dense))return *output;
         return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,input));
     };
@@ -432,7 +431,7 @@ struct BlockLoader : weight_loader::Loader {
             ? GatedResidual::Part::final_down
             : name=="model.mhc.pre.up.weight" || name=="predictor.mhc.pre.up.weight"
                 ? GatedResidual::Part::final_up : GatedResidual::Part::generic;
-        return GatedResidual::projection(linear(name), execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(),
+        return GatedResidual::projection(weight(name), execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(),
                                           execution.executor().options().residual, part);
     }
     GatedResidual residual(DenseTensor norm, GatedResidual::Projection down,
@@ -452,7 +451,7 @@ struct BlockLoader : weight_loader::Loader {
         w.input_projection.weights.push_back(weight(p+".alpha.weight"));
         w.input_projection.weights.push_back(weight(p+".beta.weight"));
         w.qkv_count=independent?3:1;
-        w.output=projection(p+".output.weight");
+        w.output=weight(p+".output.weight");
         w.conv=dense(p+".conv.weight");w.dt_bias=dense(p+".dt_bias");w.a_log=dense(p+".a");w.norm=dense(p+".norm.weight");
         return w;
     }
@@ -461,7 +460,7 @@ struct BlockLoader : weight_loader::Loader {
         for(const auto* name:{"query","key","value"})
             w.input_projection.weights.push_back(weight(p+"."+name+".weight"));
         w.input_projection.weights.push_back(weight(p+".indexer.query_key.weight"));
-        w.output=projection(p+".output.weight");
+        w.output=weight(p+".output.weight");
         w.query_norm=dense(p+".query_norm.weight");w.key_norm=dense(p+".key_norm.weight");
         w.index_query_norm=dense(p+".indexer.query_norm.weight");w.index_key_norm=dense(p+".indexer.key_norm.weight");
         if(has(p+".gate.weight")) {
@@ -523,9 +522,9 @@ struct BlockLoader : weight_loader::Loader {
         }
 #endif
 
-        auto weight = std::make_shared<QuantLinear>(projection(name));
+        auto weight = this->weight(name);
         Embedding lookup{[weight](const DenseTensor &ids) { return quant_embedding_lookup(*weight, ids); },{}};
-        return std::pair{std::move(lookup), std::array<int64_t, 2>{weight->out(), weight->neuron_len()}};
+        return std::pair{std::move(lookup), std::array<int64_t, 2>{weight->size(0), weight->size(1)}};
     }
     std::vector<int64_t> integers(const std::string &name) const {
         const auto &type = require_tensor(source, name).dtype;
@@ -758,7 +757,7 @@ Predictor& Predictor::operator=(Predictor&&) noexcept = default;
 std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execution,
                                                       const weight_loader::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
-                                                      QuantLinear embedding, QuantLinear output,
+                                                      std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
                                                       double softcap) {
     Predictor result;
     result.execution = &execution;
@@ -774,12 +773,12 @@ std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execut
 }
 
 DenseTensor Predictor::embed(DenseTensor ids) const {
-    return tyloi::cuda::embed(embedding, std::move(ids), execution->executor().collectives(),
+    return tyloi::cuda::embed(*embedding, std::move(ids), execution->executor().collectives(),
                            execution->executor().profiler(), primary);
 }
 
 DenseTensor Predictor::logits(DenseTensor hidden) const {
-    return tyloi::cuda::logits(output, std::move(hidden), execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)),
+    return tyloi::cuda::logits(*output, std::move(hidden), execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)),
                             execution->executor().profiler(), softcap);
 }
 
@@ -1043,7 +1042,7 @@ namespace {
 }
 ::tyloi::DenseTensor qwen4_logits_from_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden) {
     const auto cap = model.metadata.final_logit_softcapping;
-    auto logits = model.adapter_logits(model.lm_head, std::move(hidden));
+    auto logits = model.adapter_logits(*model.lm_head, std::move(hidden));
     return cap > 0.0 ? ::tyloi::cuda::tanh(logits / cap) * cap : logits;
 }
 ::tyloi::DenseTensor qwen4_finalize_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden,
@@ -1440,8 +1439,8 @@ struct Qwen4DecodeGraph {
                                 cudaMemcpyDeviceToHost,stream.stream()));
                         }
                     }
-                    else if(kind==2)cell.output=model.adapter_next_token(model.lm_head,qwen4_last_hidden(std::move(hidden)));
-                    else if(kind==1)cell.output=model.adapter_last_logits(model.lm_head,qwen4_last_hidden(std::move(hidden)));
+                    else if(kind==2)cell.output=model.adapter_next_token(*model.lm_head,qwen4_last_hidden(std::move(hidden)));
+                    else if(kind==1)cell.output=model.adapter_last_logits(*model.lm_head,qwen4_last_hidden(std::move(hidden)));
                     else cell.output=qwen4_logits_from_hidden(model, std::move(hidden));
                     cell.window.mark(-1,"window_end");
                     auto audit=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks.front()).router_audit;
@@ -2205,7 +2204,7 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
                 graph.window->mark(static_cast<int>(i),"block_end");
             }
             auto finalized=qwen4_finalize_hidden(model, std::move(hidden),batch,1);
-            graph.logits = greedy ? model.adapter_next_token(model.lm_head,qwen4_last_hidden(std::move(finalized)))
+            graph.logits = greedy ? model.adapter_next_token(*model.lm_head,qwen4_last_hidden(std::move(finalized)))
                 .reshape({batch,1}) : qwen4_logits_from_hidden(model, std::move(finalized)).reshape({batch,-1});
             graph.window->mark(-1,"window_end");
         },[&] { for (const auto& saved : recurrent) saved.tensor->copy_(saved.snapshot); },
@@ -2852,12 +2851,12 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
 }
 
 ::tyloi::DenseTensor
-Model::adapter_last_logits(const QuantLinear &lm_head,
+Model::adapter_last_logits(const ::tyloi::Tensor &lm_head,
                                 ::tyloi::DenseTensor hidden) const {
     return adapter_logits(lm_head, std::move(hidden));
 }
 
-::tyloi::DenseTensor Model::adapter_next_token(const QuantLinear &lm_head,
+::tyloi::DenseTensor Model::adapter_next_token(const ::tyloi::Tensor &lm_head,
                                                           ::tyloi::DenseTensor hidden) const {
     auto* window=DecodeWindow::recording();
     if(window)window->mark(-1,"lm_head_begin");
@@ -2926,7 +2925,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
 }
 
 ::tyloi::DenseTensor Model::logits(::tyloi::DenseTensor hidden, bool) const {
-    return adapter_logits(lm_head, std::move(hidden));
+    return adapter_logits(*lm_head, std::move(hidden));
 }
 
 ::tyloi::DenseTensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
