@@ -4,6 +4,7 @@
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/blas.h"
+#include "engine/backends/cuda/ops/projection/tq.h"
 
 #include <cstdint>
 #include <memory>
@@ -42,6 +43,8 @@ public:
     cublasHandle_t get();
     std::vector<std::int64_t> routes(const ::tyloi::DenseTensor& ids);
     void prepare_graph();
+    std::shared_ptr<const TqProjectionGroup> group(std::vector<::tyloi::encoding::TqTensor> weights);
+    std::vector<::tyloi::DenseTensor> storage() const;
     tyloi::cuda::BlasResources& blas() noexcept { return blas_; }
 
 private:
@@ -54,10 +57,11 @@ private:
     bool indexed_mma_ = false;
     bool prefill_mma_ = false;
     bool host_register_ = false;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     tyloi::cuda::BlasResources blas_;
     std::vector<std::shared_ptr<TqPrefillPlan>> prefill_plans_;
     std::vector<std::shared_ptr<RouteReadback>> route_readbacks_;
+    std::vector<std::shared_ptr<const TqProjectionGroup>> groups_;
     std::unordered_map<cudaStream_t, GraphPool> graph_pools_;
 };
 
@@ -71,6 +75,7 @@ public:
 
     std::shared_ptr<TqGemmResources> get(int device);
     bool empty() const noexcept;
+    std::vector<::tyloi::DenseTensor> storage() const;
     void drain();
 
 private:

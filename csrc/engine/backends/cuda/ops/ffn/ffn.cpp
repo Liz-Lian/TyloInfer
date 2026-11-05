@@ -803,14 +803,15 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
 
-tyloi::DenseTensor mlp(tyloi::DenseTensor input, const ::QuantLinearGroup& gate_up,
+tyloi::DenseTensor mlp(tyloi::DenseTensor input, std::span<const std::shared_ptr<const tyloi::Tensor>> gate_up,
                 const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,
                 double swiglu_limit) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
     auto& executor = Executor::current();
     const auto project = executor.projector(Executor::current_ffn());
-    const Mlp weights{gate_up, down, activation,
+    const auto group = project.group(gate_up);
+    const Mlp weights{group, down, activation,
                       activation == tyloi::ops::MlpActivation::gelu_gated, swiglu_limit};
     weights.check(DenseTensor(input), project.primary_device());
     auto x = half(DenseTensor(input), executor.profiler());

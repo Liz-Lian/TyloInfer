@@ -411,13 +411,13 @@ std::shared_ptr<Tensor> affine(const Tensor& value_tensor, const ::tyloi::Tensor
     if (bias && bias->defined()) input(*bias);
     return owner(cuda::ops::affine(value, weight, bias));
 }
-std::shared_ptr<Tensor> mlp(const Tensor& value_tensor, const ::QuantLinearGroup& gate_up, const ::tyloi::Tensor& down,
+std::shared_ptr<Tensor> mlp(const Tensor& value_tensor, std::span<const std::shared_ptr<const Tensor>> gate_up, const ::tyloi::Tensor& down,
            MlpActivation activation, double swiglu_limit) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     return owner(cuda::ops::mlp(value, gate_up, down, activation, swiglu_limit));
 }
-std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& value_tensor, const ::QuantLinearGroup& group) {
+std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& value_tensor, std::span<const std::shared_ptr<const Tensor>> group) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     return owners(cuda::ops::project_group(value, group));

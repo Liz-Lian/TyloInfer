@@ -844,13 +844,39 @@ std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
 }
 
 namespace tyloi::cuda::weight_loader {
-std::shared_ptr<const QuantLinearGroup> Loader::group(const std::vector<std::string>& names,
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vector<std::string>& names,
     size_t prefix, const std::vector<tyloi::TensorParallelSlice>* slices, bool preserve_boundaries) const {
-    return std::make_shared<QuantLinearGroup>(build_group(names, prefix, slices, preserve_boundaries));
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers;
+    layers.reserve(names.size());
+    for (const auto& name : names)
+        layers.push_back(weight(name, slices ? std::optional<TensorParallelAxis>(TensorParallelAxis::Output)
+                                            : std::nullopt, slices));
+    if (prefix > layers.size()) throw std::runtime_error("invalid required quantized-group prefix length");
+    if (layers.empty()) throw std::runtime_error("empty quantized linear group");
+    std::vector<::tyloi::encoding::TqTensor> tq_weights;
+    for (const auto& layer : layers) {
+        const auto* tq = dynamic_cast<const ::tyloi::encoding::TqTensor*>(layer.get());
+        if (!tq || !tq->is_cuda()) { tq_weights.clear(); break; }
+        tq_weights.push_back(*tq);
+    }
+    if (!tq_weights.empty()) tyloi::cuda::tq::validate_group(tq_weights);
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    const bool all_nint = std::all_of(layers.begin(), layers.end(), [](const auto& layer) {
+        const auto* nint = dynamic_cast<const tyloi::NintTensor*>(layer.get());
+        return nint && nint->q_packed.is_cuda();
+    });
+    if (all_nint && options.grouped && !placement.cpu && !preserve_boundaries) {
+        auto group = make_quant_group(layers, true, false);
+        return nint_aliases(layers, group.nint);
+    }
+#endif
+    return layers;
 }
-std::shared_ptr<const QuantLinearGroup> Loader::gate_up(const std::vector<std::string>& names,
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::gate_up(const std::vector<std::string>& names,
     const ::tyloi::Tensor& down, size_t prefix, bool preserve_boundaries) const {
-    return std::make_shared<QuantLinearGroup>(build_gate_up(names, down, prefix, preserve_boundaries));
+    auto slices = tensor_parallel_output_slices_for_input(down);
+    return group(names, std::min(prefix, names.size()), slices.empty() ? nullptr : &slices,
+                 preserve_boundaries);
 }
 std::shared_ptr<const tyloi::cuda::Experts> Loader::experts(const std::string& name, bool cacheable,
     int layer, const std::string& role) const {

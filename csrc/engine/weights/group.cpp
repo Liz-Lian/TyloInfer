@@ -187,6 +187,53 @@ QuantLinearGroup make_quant_group(
 
 namespace tyloi::cuda {
 
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
+        const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& weights,
+        const NintLinearGroup& group) {
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> aliases;
+    aliases.reserve(weights.size());
+    size_t matrix_index = 0;
+    int64_t row = 0;
+    int64_t packed_bytes = 0;
+    for (const auto & original : weights) {
+        const auto & matrix = group.split_w.empty() ? group.w : group.split_w.at(matrix_index);
+        const auto* original_nint = dynamic_cast<const tyloi::NintTensor*>(original.get());
+        TYLOINFER_RUNTIME_CHECK(
+            original_nint != nullptr && row + original->size(0) <= matrix.out &&
+                original_nint->ng == matrix.ng && original_nint->gs == matrix.gs &&
+                original_nint->q8_zero == matrix.q8_zero,
+            "grouped projection storage geometry mismatch");
+        auto view = *original_nint;
+        view.q_packed = matrix.q_packed;
+        if (view.q8_zero) {
+            view.q_packed = matrix.q_packed.narrow(0, row, view.out);
+            view.q8_zero_scale = matrix.q8_zero_scale.narrow(0, row, view.out);
+        } else {
+            view.row_q_bits = matrix.row_q_bits.narrow(0, row, view.out);
+            view.row_q_bit_offsets = matrix.row_q_bit_offsets.narrow(0, row, view.out);
+            view.sub_scale = matrix.sub_scale.narrow(0, row, view.out);
+            view.sub_min = matrix.sub_min.narrow(0, row, view.out);
+            view.neuron_scale = matrix.neuron_scale.narrow(0, row, view.out);
+            view.neuron_min = matrix.neuron_min.narrow(0, row, view.out);
+            view.aligned_q8 = original_nint->aligned_q8 && (packed_bytes % 4 == 0);
+        }
+        aliases.push_back(std::make_shared<tyloi::NintTensor>(std::move(view)));
+        row += original->size(0);
+        packed_bytes += original_nint->q_packed.numel();
+        if (row == matrix.out) {
+            ++matrix_index;
+            row = 0;
+            packed_bytes = 0;
+        }
+    }
+    TYLOINFER_RUNTIME_CHECK(
+        row == 0 && matrix_index == (group.split_w.empty() ? 1 : group.split_w.size()),
+        "grouped projection storage is not fully covered");
+    return aliases;
+}
+#endif
+
 Projections make_projections(
         std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights,
         bool group_nint,
@@ -253,55 +300,7 @@ Projections make_projections(
     if (!group.nint_grouped) return result;
     result.group = std::move(group);
 
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> aliases;
-    aliases.reserve(result.weights.size());
-    size_t matrix_index = 0;
-    int64_t row = 0;
-    int64_t packed_bytes = 0;
-    for (const auto & original : result.weights) {
-        const auto & matrix = result.group.nint.split_w.empty()
-            ? result.group.nint.w
-            : result.group.nint.split_w.at(matrix_index);
-        const auto* original_nint =
-            dynamic_cast<const tyloi::NintTensor*>(original.get());
-        TYLOINFER_RUNTIME_CHECK(
-            original_nint != nullptr &&
-                row + original->size(0) <= matrix.out &&
-                original_nint->ng == matrix.ng &&
-                original_nint->gs == matrix.gs &&
-                original_nint->q8_zero == matrix.q8_zero,
-            "grouped projection storage geometry mismatch");
-        auto view = *original_nint;
-        view.q_packed = matrix.q_packed;
-        if (view.q8_zero) {
-            view.q_packed = matrix.q_packed.narrow(0, row, view.out);
-            view.q8_zero_scale = matrix.q8_zero_scale.narrow(0, row, view.out);
-        } else {
-            view.row_q_bits = matrix.row_q_bits.narrow(0, row, view.out);
-            view.row_q_bit_offsets =
-                matrix.row_q_bit_offsets.narrow(0, row, view.out);
-            view.sub_scale = matrix.sub_scale.narrow(0, row, view.out);
-            view.sub_min = matrix.sub_min.narrow(0, row, view.out);
-            view.neuron_scale = matrix.neuron_scale.narrow(0, row, view.out);
-            view.neuron_min = matrix.neuron_min.narrow(0, row, view.out);
-            view.aligned_q8 =
-                original_nint->aligned_q8 && (packed_bytes % 4 == 0);
-        }
-        aliases.push_back(std::make_shared<tyloi::NintTensor>(std::move(view)));
-        row += original->size(0);
-        packed_bytes += original_nint->q_packed.numel();
-        if (row == matrix.out) {
-            ++matrix_index;
-            row = 0;
-            packed_bytes = 0;
-        }
-    }
-    TYLOINFER_RUNTIME_CHECK(
-        row == 0 && matrix_index ==
-            (result.group.nint.split_w.empty()
-                ? 1 : result.group.nint.split_w.size()),
-        "grouped projection storage is not fully covered");
-    result.weights = std::move(aliases);
+    result.weights = nint_aliases(result.weights, result.group.nint);
 
     result.joined = prefix > 1 &&
         (result.group.nint.split_w.empty() ||

@@ -137,6 +137,7 @@ std::vector<DenseTensor> Executor::storage() const {
         }
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if (tq_) for (const auto& tensor : tq_->storage()) append(tensor);
     std::lock_guard lock(attention_scratch_mutex_);
     for (const auto& [key, geometries] : attention_scratch_) {
         (void)key;

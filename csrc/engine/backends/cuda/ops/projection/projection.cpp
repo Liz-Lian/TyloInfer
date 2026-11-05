@@ -16,6 +16,110 @@
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/ops.h"
 
+namespace {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+bool extend_rows(tyloi::DenseTensor& first, const tyloi::DenseTensor& next) {
+    if (!first.defined() || !next.defined() || !first.is_contiguous() || !next.is_contiguous() ||
+        first.dim() != next.dim() || first.dim() == 0 || first.scalar_type() != next.scalar_type() ||
+        first.device() != next.device() || first.storage().get() != next.storage().get() ||
+        first.storage().owner_before(next.storage()) || next.storage().owner_before(first.storage()) ||
+        first.byte_offset() > first.storage()->bytes || first.nbytes() > first.storage()->bytes - first.byte_offset() ||
+        next.byte_offset() > next.storage()->bytes ||
+        next.byte_offset() != first.byte_offset() + first.nbytes() ||
+        next.nbytes() > next.storage()->bytes - next.byte_offset()) return false;
+    for (int64_t i = 0; i < first.dim(); ++i)
+        if ((i && first.size(i) != next.size(i)) || first.stride(i) != next.stride(i)) return false;
+    auto view = first.view_descriptor();
+    view.sizes[0] += next.size(0);
+    first = first.alias(view, first.byte_offset());
+    return true;
+}
+
+bool extend_nint(tyloi::NintTensor& first, const tyloi::NintTensor& next) {
+    if (first.ng != next.ng || first.gs != next.gs || first.neuron_len != next.neuron_len ||
+        first.q8_zero != next.q8_zero) return false;
+    auto merged = first;
+    if (first.q8_zero) {
+        if (!extend_rows(merged.q_packed, next.q_packed) ||
+            !extend_rows(merged.q8_zero_scale, next.q8_zero_scale)) return false;
+    } else {
+        const auto& a = first.q_packed;
+        const auto& b = next.q_packed;
+        if (!a.defined() || !b.defined() || !a.is_contiguous() || !b.is_contiguous() ||
+            a.storage().get() != b.storage().get() || a.storage().owner_before(b.storage()) ||
+            b.storage().owner_before(a.storage()) || a.byte_offset() != b.byte_offset() ||
+            a.data_ptr() != b.data_ptr() || a.nbytes() != b.nbytes() ||
+            a.byte_offset() > a.storage()->bytes || a.nbytes() > a.storage()->bytes - a.byte_offset() ||
+            !extend_rows(merged.row_q_bits, next.row_q_bits) ||
+            !extend_rows(merged.row_q_bit_offsets, next.row_q_bit_offsets) ||
+            !extend_rows(merged.sub_scale, next.sub_scale) || !extend_rows(merged.sub_min, next.sub_min) ||
+            !extend_rows(merged.neuron_scale, next.neuron_scale) ||
+            !extend_rows(merged.neuron_min, next.neuron_min)) return false;
+    }
+    merged.out += next.out;
+    merged.shape[0] = merged.out;
+    merged.aligned_q8 = merged.aligned_q8 && next.aligned_q8;
+    if (merged.uniform_qbits != next.uniform_qbits) merged.uniform_qbits = 0;
+    first = std::move(merged);
+    return true;
+}
+#endif
+}
+
+QuantLinearGroup tyloi::cuda::Projector::group(
+        std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const {
+    TYLOINFER_RUNTIME_CHECK(!weights.empty(), "empty quantized linear group");
+    QuantLinearGroup result;
+    result.layers.assign(weights.begin(), weights.end());
+    std::vector<::tyloi::encoding::TqTensor> tq_weights;
+    bool all_tq = true;
+    for (const auto& weight : weights) {
+        TYLOINFER_RUNTIME_CHECK(weight != nullptr, "missing projection weight");
+        result.outs.push_back(weight->size(0));
+        result.cols.push_back(weight->size(1));
+        result.placements.push_back(projection_placement(*weight));
+        const auto* tq = dynamic_cast<const ::tyloi::encoding::TqTensor*>(weight.get());
+        if (!tq || !tq->is_cuda()) all_tq = false;
+        else tq_weights.push_back(*tq);
+    }
+    if (all_tq) result.tq = *tq_.get(tq_weights.front().get_device())->group(std::move(tq_weights));
+    const auto* nvq0 = weights.size() >= 2 ? dynamic_cast<const tyloi::NvqTensor*>(weights[0].get()) : nullptr;
+    const auto* nvq1 = weights.size() >= 2 ? dynamic_cast<const tyloi::NvqTensor*>(weights[1].get()) : nullptr;
+    result.nvq_prefix2 = tyloi::mfq_compat_enabled && nvq0 && nvq1 &&
+        nvq0->is_cuda() && nvq_pair_compatible(*nvq0, *nvq1);
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (options_.grouped && tyloi::mfq_compat_enabled) {
+        std::vector<tyloi::NintTensor> segments;
+        std::vector<std::vector<int64_t>> sizes;
+        bool all_nint = true;
+        for (const auto& weight : weights) {
+            const auto* nint = dynamic_cast<const tyloi::NintTensor*>(weight.get());
+            if (!nint || !nint->q_packed.is_cuda()) { all_nint = false; break; }
+            if (!segments.empty() && extend_nint(segments.back(), *nint)) {
+                sizes.back().push_back(nint->out);
+            } else {
+                segments.push_back(*nint);
+                sizes.push_back({nint->out});
+            }
+        }
+        if (all_nint) {
+            result.nint_grouped = true;
+            result.nint.outs = result.outs;
+            if (segments.size() == 1) {
+                result.nint.w = std::move(segments.front());
+                if (result.nint.w.q8_zero)
+                    for (const auto& weight : weights)
+                        result.nint.projection_w.push_back(static_cast<const tyloi::NintTensor&>(*weight));
+            } else {
+                result.nint.split_w = std::move(segments);
+                result.nint.split_outs = std::move(sizes);
+            }
+        }
+    }
+#endif
+    return result;
+}
+
 tyloi::DenseTensor tyloi::cuda::ops::embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight) {
     std::optional<MfqCudaGuard> guard;
     if (ids.is_cuda()) guard.emplace(ids.device().index);
@@ -50,11 +154,12 @@ tyloi::DenseTensor tyloi::cuda::ops::affine(tyloi::DenseTensor input, const ::ty
 }
 
 std::vector<tyloi::DenseTensor> tyloi::cuda::ops::project_group(tyloi::DenseTensor input,
-    const ::QuantLinearGroup& group) {
+    std::span<const std::shared_ptr<const tyloi::Tensor>> weights) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
-    auto parts = tyloi::cuda::Executor::current().projector(tyloi::cuda::Executor::current_ffn()).run(
-        group, input);
+    const auto project = tyloi::cuda::Executor::current().projector(tyloi::cuda::Executor::current_ffn());
+    const auto group = project.group(weights);
+    auto parts = project.run(group, input);
     if (parts.size() == group.size()) {
         for (std::size_t i = 0; i < parts.size(); ++i)
             if (parts[i].size(-1) != group.shape(i).rows)

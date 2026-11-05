@@ -168,20 +168,31 @@ void project_tokens(const TrellisProjectionView& view,tyloi::cuda::BlasResources
     return result;
 }
 
+void tyloi::cuda::tq::validate_group(const std::vector<::tyloi::encoding::TqTensor>& weights) {
+    if(weights.empty())throw std::invalid_argument("empty TQ projection group");
+    const auto input=weights[0].size(1);
+    if(input<1 || input>INT_MAX)throw std::invalid_argument("invalid TQ group input width");
+    const auto device=weights[0].device();
+    std::int64_t blocks=0, output=0;
+    for(const auto& weight:weights) {
+        if(weight.size(0)<1 ||
+           !weight.is_cuda() || weight.device()!=device || weight.size(1)!=input)
+            throw std::invalid_argument("TQ group input widths and CUDA devices must match");
+        blocks+=(weight.size(0)+TRELLIS_GROUP_ROWS-1)/TRELLIS_GROUP_ROWS;
+        if(blocks>INT_MAX || output>INT_MAX-weight.size(0))
+            throw std::overflow_error("TQ projection group exceeds CUDA index range");
+        output+=weight.size(0);
+    }
+}
+
 TqProjectionGroup::TqProjectionGroup(std::vector<::tyloi::encoding::TqTensor> weights):weights_(std::move(weights)) {
-    if(weights_.empty())throw std::invalid_argument("empty TQ projection group");
+    tyloi::cuda::tq::validate_group(weights_);
     input_=weights_[0].size(1);
-    if(input_<1 || input_>INT_MAX)throw std::invalid_argument("invalid TQ group input width");
     const auto device=weights_[0].device();
     std::vector<TrellisProjectionJob> jobs;jobs.reserve(weights_.size());
     std::int64_t blocks=0;
     for(const auto& weight:weights_) {
-        if(weight.size(0)<1 ||
-           !weight.is_cuda() || weight.device()!=device || weight.size(1)!=input_)
-            throw std::invalid_argument("TQ group input widths and CUDA devices must match");
         blocks+=(weight.size(0)+TRELLIS_GROUP_ROWS-1)/TRELLIS_GROUP_ROWS;
-        if(blocks>INT_MAX || output_>INT_MAX-weight.size(0))
-            throw std::overflow_error("TQ projection group exceeds CUDA index range");
         jobs.push_back({tyloi::cuda::tq::view(weight),output_,static_cast<int>(blocks)});
         output_+=weight.size(0);
     }
@@ -191,6 +202,32 @@ TqProjectionGroup::TqProjectionGroup(std::vector<::tyloi::encoding::TqTensor> we
     plan_=::tyloi::cuda::from_blob(jobs.data(),{bytes},::tyloi::TensorOptions().dtype(::tyloi::kUInt8))
         .clone().to(device,false,false).contiguous();
     host_plan_=std::move(jobs);
+}
+
+bool TqProjectionGroup::matches(const std::vector<::tyloi::encoding::TqTensor>& weights) const {
+    if (weights.size() != weights_.size()) return false;
+    for (std::size_t i = 0; i < weights.size(); ++i) {
+        const auto& a = weights_[i];
+        const auto& b = weights[i];
+        const auto& x = a.layout();
+        const auto& y = b.layout();
+        if (a.size(0) != b.size(0) || a.size(1) != b.size(1) || a.device() != b.device() ||
+            a.storage().get() != b.storage().get() ||
+            a.storage().owner_before(b.storage()) || b.storage().owner_before(a.storage()) ||
+            a.image().data_ptr() != b.image().data_ptr() || a.byte_offset() != b.byte_offset() ||
+            x.words != y.words || x.words_bytes != y.words_bytes || x.scales != y.scales ||
+            x.scales_bytes != y.scales_bytes || x.relative != y.relative || x.bytes != y.bytes ||
+            x.stored_columns != y.stored_columns || x.gslog != y.gslog || x.columns != y.columns)
+            return false;
+    }
+    return true;
+}
+
+std::vector<::tyloi::DenseTensor> TqProjectionGroup::buffers() const {
+    std::vector<::tyloi::DenseTensor> result;
+    if (plan_.defined()) result.push_back(plan_);
+    for (const auto& weight : weights_) result.push_back(weight.image());
+    return result;
 }
 
 void TqProjectionGroup::join_prefix(std::size_t count) {

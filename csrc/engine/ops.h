@@ -16,8 +16,6 @@
 #include <utility>
 #include <vector>
 
-// An ordered set of prepared projection weights.
-struct QuantLinearGroup;
 namespace tyloi::cuda { struct Experts; }
 
 namespace tyloi::ops {
@@ -126,7 +124,7 @@ std::shared_ptr<Tensor> project(const Tensor& input, const ::tyloi::Tensor& weig
 // affine adds bias in the projection result dtype without restoring input dtype.
 std::shared_ptr<Tensor> linear(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor* bias = nullptr);
 std::shared_ptr<Tensor> affine(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor* bias = nullptr);
-std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& input, const ::QuantLinearGroup& group);
+std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& input, std::span<const std::shared_ptr<const Tensor>> group);
 // Computes project(input * sigmoid(gate)).
 std::shared_ptr<Tensor> sigmoid_project(const Tensor& input, const Tensor& gate, const ::tyloi::Tensor& weight);
 // Copy, cast, views and allocation support CPU as well as CUDA, subject to dtype support.
@@ -228,7 +226,7 @@ std::shared_ptr<Tensor> add(const Tensor& input, std::int64_t offset);
 enum class MlpActivation { silu_gated, gelu_gated, relu_squared };
 
 // Prepared weights determine supported host and sharded MLP paths.
-std::shared_ptr<Tensor> mlp(const Tensor& input, const ::QuantLinearGroup& gate_up, const ::tyloi::Tensor& down,
+std::shared_ptr<Tensor> mlp(const Tensor& input, std::span<const std::shared_ptr<const Tensor>> gate_up, const ::tyloi::Tensor& down,
            MlpActivation activation, double swiglu_limit);
 
 enum class RouterActivation { softmax, sigmoid, sqrt_softplus };

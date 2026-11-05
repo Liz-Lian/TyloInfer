@@ -14,6 +14,7 @@ TrellisProjectionView view(const ::tyloi::encoding::TqTensor& weight);
 DenseTensor project(const ::tyloi::encoding::TqTensor& weight, BlasResources*, DenseTensor input);
 DenseTensor groupwise(const ::tyloi::encoding::TqTensor& weight, BlasResources*, DenseTensor input, std::int64_t groups);
 DenseTensor embedding(const ::tyloi::encoding::TqTensor& weight, DenseTensor ids);
+void validate_group(const std::vector<::tyloi::encoding::TqTensor>& weights);
 }
 // Device row plan only; compressed weights retain their original storage.
 class TqProjectionGroup {
@@ -27,6 +28,8 @@ class TqProjectionGroup {
 public:
     TqProjectionGroup()=default;
     explicit TqProjectionGroup(std::vector<::tyloi::encoding::TqTensor>);
+    bool matches(const std::vector<::tyloi::encoding::TqTensor>& weights) const;
+    std::vector<::tyloi::DenseTensor> buffers() const;
     void join_prefix(std::size_t count);
     bool defined()const noexcept{return !weights_.empty();}
     std::vector<::tyloi::DenseTensor> forward(tyloi::cuda::BlasResources*,::tyloi::DenseTensor)const;

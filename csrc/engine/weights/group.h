@@ -4,6 +4,12 @@
 
 namespace tyloi::cuda {
 
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
+    const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& weights,
+    const NintLinearGroup& group);
+#endif
+
 Projections make_projections(
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights,
     bool group_nint,

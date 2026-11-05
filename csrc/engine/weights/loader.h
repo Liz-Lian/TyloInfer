@@ -110,9 +110,10 @@ struct Loader {
     std::shared_ptr<const ::tyloi::Tensor> weight(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr) const;
-    std::shared_ptr<const QuantLinearGroup> group(const std::vector<std::string>& names, size_t prefix = 0,
+    // preserve_boundaries controls storage packing only.
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> group(const std::vector<std::string>& names, size_t prefix = 0,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr, bool preserve_boundaries = false) const;
-    std::shared_ptr<const QuantLinearGroup> gate_up(const std::vector<std::string>& names,
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up(const std::vector<std::string>& names,
         const ::tyloi::Tensor& down, size_t prefix = 2, bool preserve_boundaries = false) const;
     std::shared_ptr<const ::tyloi::Tensor> embedding(const std::string& name, bool independent_output) const;
     std::shared_ptr<const tyloi::cuda::Experts> experts(const std::string& name, bool cacheable = false,

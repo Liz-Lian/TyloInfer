@@ -70,7 +70,7 @@ std::array<std::shared_ptr<tyloi::Tensor>, 2> FullAttention::forward(
     const bool grid_mrope_positions = B == 1 && step.cache_positions && pos.dim() == 2 && pos.size(0) == 3;
     trace_qwen_stage("qwen.attn_norm", *xn);
     auto parts = measure("full.qkv", [&]() {
-        if (!split_q_kv_projections) return tyloi::ops::project_group(*xn, *qkv);
+        if (!split_q_kv_projections) return tyloi::ops::project_group(*xn, qkv);
         std::vector<std::shared_ptr<tyloi::Tensor>> result;
         result.emplace_back(tyloi::ops::project(*xn, *q_projection));
         result.emplace_back(tyloi::ops::project(*xn, *k_projection));

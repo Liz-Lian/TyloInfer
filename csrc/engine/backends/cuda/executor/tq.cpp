@@ -133,6 +133,25 @@ TqGemmResources::~TqGemmResources() noexcept {
 }
 
 bool TqGemmResources::indexed_mma() const noexcept { return indexed_mma_; }
+
+std::shared_ptr<const TqProjectionGroup> TqGemmResources::group(
+        std::vector<::tyloi::encoding::TqTensor> weights) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    for (const auto& group : groups_) if (group->matches(weights)) return group;
+    auto group = std::make_shared<TqProjectionGroup>(std::move(weights));
+    groups_.push_back(group);
+    return group;
+}
+
+std::vector<::tyloi::DenseTensor> TqGemmResources::storage() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    std::vector<::tyloi::DenseTensor> result;
+    for (const auto& group : groups_) {
+        auto buffers = group->buffers();
+        result.insert(result.end(), buffers.begin(), buffers.end());
+    }
+    return result;
+}
 bool TqGemmResources::prefill_mma() const noexcept { return prefill_mma_; }
 bool TqGemmResources::host_register() const noexcept { return host_register_; }
 int TqGemmResources::device() const noexcept { return device_; }
@@ -192,6 +211,17 @@ std::shared_ptr<TqGemmResources> TqExec::get(int device) {
 bool TqExec::empty() const noexcept {
     std::lock_guard<std::mutex> guard(mutex_);
     return resources_.empty();
+}
+
+std::vector<::tyloi::DenseTensor> TqExec::storage() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    std::vector<::tyloi::DenseTensor> result;
+    for (const auto& [device, resource] : resources_) {
+        (void)device;
+        auto buffers = resource->storage();
+        result.insert(result.end(), buffers.begin(), buffers.end());
+    }
+    return result;
 }
 
 void TqExec::drain() {
