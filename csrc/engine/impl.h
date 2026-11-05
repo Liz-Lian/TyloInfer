@@ -24,9 +24,7 @@ struct Engine::Impl {
     std::shared_ptr<cuda::WeightMemoryLedger> ledger_;
     std::unique_ptr<cuda::RoutedCache> weights_;
     std::shared_ptr<cuda::KvMemoryManager> kv_;
-    std::shared_ptr<cuda::KvOffloadStore> offload_;
     std::unique_ptr<models::State> idle_state_;
-    std::unique_ptr<tyloi::Executor> forward_;
     models::ForwardOptions forward_options_{};
     bool graph_allowed_ = false;
     models::Info model_info_{};

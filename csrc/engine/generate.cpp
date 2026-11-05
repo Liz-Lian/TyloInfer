@@ -1,6 +1,5 @@
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/impl.h"
-#include "engine/drain.h"
 #include "engine/generation/step.h"
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill_budget.h"
@@ -48,7 +47,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_yield PrefillProgress{{0, 0.0, elapsed, elapsed}};
     }
     if (output.stopped()) co_return;
-    auto& root = static_cast<cuda::Executor&>(*executor_);
     auto& weights = *impl_->weights_;
     auto& graph = *impl_->graph_;
     auto& cache = *impl_->cache_;
@@ -107,10 +105,8 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         (!prepared || !prepared->transformed() || !input_key.empty()) && plan.stable_prefix_tokens > 0 &&
         (!cache_plan.session_id.empty() || cache.persistent_prefix_enabled());
     cuda::internal::TextSessionRestore restored;
-    if (caching) restored = cache.restore_best(state, [&] {
-        drain_cuda(root, weights, impl_->offload_.get(), impl_->load_.layer_placement,
-                   impl_->load_.tensor_parallel, impl_->load_.expert_parallel);
-    }, static_cast<MtpModule*>(nullptr), cache_plan.session_id, prompt, plan.stable_prefix_tokens, input_key);
+    if (caching) restored = cache.restore_best(state, [&] { drain(); },
+        static_cast<MtpModule*>(nullptr), cache_plan.session_id, prompt, plan.stable_prefix_tokens, input_key);
     if (restored.tokens) graph.invalidate();
     else state.reset(1);
     std::size_t history_size = prompt.size();

@@ -7,7 +7,6 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/impl.h"
-#include "engine/drain.h"
 #include "engine/runtime_metrics.h"
 #include "engine/models/prepare.h"
 #include "engine/scheduler/request.h"
@@ -17,7 +16,6 @@
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
-#include "engine/state/kv_offload.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/workspace.h"
@@ -34,19 +32,17 @@ Engine::Engine(EngineParts&& parts)
 // Wiring that needs this Engine: caches, budget, expert space, reservations.
 void Engine::install() {
     auto& impl = *impl_;
-    auto& installed_root = static_cast<cuda::Executor&>(*executor_);
     try {
-        auto scope = installed_root.enter(impl.load_.layer_placement.primary_device());
+        auto scope = executor_->enter();
         cuda::WeightMemoryLoadScope memory_load(*impl.ledger_);
         impl.model_info_ = model_->info();
-        impl.graph_.emplace(impl.model_info_.max_context, Device(kCUDA, impl.forward_options_.primary), impl.forward_->graph());
+        impl.graph_.emplace(impl.model_info_.max_context, Device(kCUDA, impl.forward_options_.primary), executor_->graph());
         impl.cache_.emplace(impl.runtime_.session_cache, impl.runtime_.prefix_cache,
             cuda::internal::make_cuda_paged_prefix_cache(*impl.source_, impl.model_info_.max_context,
                 impl.idle_state_->supports_paged_text_session_state(), impl.runtime_.prefix_cache),
             impl.idle_state_->supports_text_session_state(), impl.idle_state_->supports_text_session_state() ? 0 : 1,
             cuda::internal::cuda_has_separate_memory());
         impl.budget_.emplace(*impl.ledger_, *impl.weights_, *impl.cache_, impl.load_.layer_placement.primary_device());
-        if (impl.offload_) impl.offload_->set_ram_reservation([this](std::size_t bytes) { impl_->cache_->reserve_ram(bytes); impl_->weights_->reserve(bytes); });
         if (impl.runtime_.continuous_batch.max_sequences)
             throw std::invalid_argument("continuous batching is unavailable for this model");
         if (impl.weights_->moe) {
@@ -112,21 +108,12 @@ void Engine::retire_request(Request& request) noexcept {
 }
 #else
 using namespace tyloi::cuda;
-namespace {
-cuda::Executor& cuda_root(tyloi::Executor& executor) { return static_cast<cuda::Executor&>(executor); }
-}
-
-template <class F> decltype(auto) Engine::with_cuda(F&& work) {
-    if (!impl_->ready_) throw std::runtime_error("CUDA engine is unloaded");
-    auto scope = impl_->forward_->enter();
-    return std::forward<F>(work)();
-}
 
 EngineInfo Engine::describe() const { return impl_->info_; }
 
 bool Engine::ready() const { return impl_->ready_; }
 
-std::unique_ptr<tyloi::Executor::Scope> Engine::enter() { return impl_->forward_->enter(); }
+std::unique_ptr<tyloi::Executor::Scope> Engine::enter() { return executor_->enter(); }
 
 void Engine::prepare_request(Request& request, bool batched) {
     engine::prepare_request(request, impl_->text_.get(), impl_->info_, batched, false);
@@ -145,10 +132,20 @@ void Engine::retire_request(Request& request) noexcept {
 }
 
 SessionResult Engine::session_command(const SessionCommand& command) {
-    return with_cuda([&] {
-        return command.kind == engine::SessionCommand::Kind::memory_budget
-            ? set_budget(command) : impl_->cache_->control(command);
-    });
+    if (!impl_->ready_) throw std::runtime_error("CUDA engine is unloaded");
+    auto scope = executor_->enter();
+    return command.kind == engine::SessionCommand::Kind::memory_budget
+        ? set_budget(command) : impl_->cache_->control(command);
+}
+
+void Engine::drain() {
+    auto scope = executor_->enter();
+    std::exception_ptr failure;
+    try { drain_moe_expert_cache(impl_->weights_->moe); }
+    catch (...) { failure = std::current_exception(); }
+    try { executor_->drain(); }
+    catch (...) { if (!failure) failure = std::current_exception(); }
+    if (failure) std::rethrow_exception(failure);
 }
 
 void Engine::unload_model() {
@@ -159,23 +156,19 @@ void Engine::unload_model() {
     const auto remember = [&](std::exception_ptr error) { if (!failure) failure = std::move(error); };
     impl_->text_.reset();
     if (executor_) {
-        try { drain_cuda(cuda_root(*executor_), *impl_->weights_, impl_->offload_.get(), impl_->load_.layer_placement, impl_->load_.tensor_parallel, impl_->load_.expert_parallel); }
+        try { drain(); }
         catch (...) { remember(std::current_exception()); }
-        const auto release = [&] {
-            impl_->expert_space_.reset();
-            clear_bindings();
-            impl_->budget_.reset(); impl_->cache_.reset(); impl_->graph_.reset();
-            impl_->forward_.reset(); impl_->idle_state_.reset(); model_.reset(); impl_->mtp_state_ = {};
-            cuda_root(*executor_).pipelines().clear();
-            impl_->offload_.reset(); impl_->kv_.reset(); impl_->weights_.reset();
-        };
-        try {
-            auto scope = cuda_root(*executor_).enter(impl_->load_.layer_placement.primary_device());
-            release();
-        } catch (...) {
-            remember(std::current_exception());
-            release();
-        }
+        std::unique_ptr<tyloi::Executor::Scope> scope;
+        try { scope = executor_->enter(); }
+        catch (...) { remember(std::current_exception()); }
+        impl_->expert_space_.reset();
+        clear_bindings();
+        impl_->budget_.reset(); impl_->cache_.reset(); impl_->graph_.reset();
+        try { executor_->clear(); }
+        catch (...) { remember(std::current_exception()); }
+        impl_->idle_state_.reset(); model_.reset(); impl_->mtp_state_ = {};
+        impl_->kv_.reset(); impl_->weights_.reset();
+        scope.reset();
         executor_.reset();
     }
     impl_->ledger_.reset(); impl_->source_.reset();
@@ -184,25 +177,24 @@ void Engine::unload_model() {
 
 ControlResult Engine::control_command(ControlRequest request) {
     if (!impl_->ready_) throw std::runtime_error("engine is unloaded");
-    return with_cuda([&]() -> engine::ControlResult {
-        return std::visit([&](auto&& value) -> engine::ControlResult {
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, engine::DecodeTokens> || std::is_same_v<T, engine::CountTokens> ||
-                          std::is_same_v<T, engine::PrepareDuplex> || std::is_same_v<T, engine::PrepareDuplexStep>) {
-                if (!impl_->text_) throw std::invalid_argument("text control requires a tokenizer");
-                if constexpr (std::is_same_v<T, engine::DecodeTokens>) return impl_->text_->decode_tokens(value.tokens, value.excluded);
-                else if constexpr (std::is_same_v<T, engine::CountTokens>) return engine::TokenCount{impl_->text_->count_tokens(value.prompt), impl_->info_.max_context};
-                else if constexpr (std::is_same_v<T, engine::PrepareDuplex>) {
-                    impl_->text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
-                } else { impl_->text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
-            } else if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
-                return engine_detail::runtime_metrics(model_->metrics(), {}, std::nullopt, false, nullptr,
-                    impl_->mtp_state_, 3, impl_->expert_space_ ? &*impl_->expert_space_ : nullptr, nullptr, impl_->source_.get(),
-                    *impl_->ledger_, *impl_->weights_, impl_->kv_.get(), impl_->offload_.get(), *impl_->cache_, *impl_->budget_,
-                    impl_->load_.layer_placement, impl_->load_.tensor_parallel, impl_->load_.expert_parallel);
-            } else throw std::invalid_argument("model has no duplex component");
-        }, std::move(request));
-    });
+    auto scope = executor_->enter();
+    return std::visit([&](auto&& value) -> engine::ControlResult {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, engine::DecodeTokens> || std::is_same_v<T, engine::CountTokens> ||
+                      std::is_same_v<T, engine::PrepareDuplex> || std::is_same_v<T, engine::PrepareDuplexStep>) {
+            if (!impl_->text_) throw std::invalid_argument("text control requires a tokenizer");
+            if constexpr (std::is_same_v<T, engine::DecodeTokens>) return impl_->text_->decode_tokens(value.tokens, value.excluded);
+            else if constexpr (std::is_same_v<T, engine::CountTokens>) return engine::TokenCount{impl_->text_->count_tokens(value.prompt), impl_->info_.max_context};
+            else if constexpr (std::is_same_v<T, engine::PrepareDuplex>) {
+                impl_->text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
+            } else { impl_->text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
+        } else if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
+            return engine_detail::runtime_metrics(model_->metrics(), {}, std::nullopt, false, nullptr,
+                impl_->mtp_state_, 3, impl_->expert_space_ ? &*impl_->expert_space_ : nullptr, nullptr, impl_->source_.get(),
+                *impl_->ledger_, *impl_->weights_, impl_->kv_.get(), nullptr, *impl_->cache_, *impl_->budget_,
+                impl_->load_.layer_placement, impl_->load_.tensor_parallel, impl_->load_.expert_parallel);
+        } else throw std::invalid_argument("model has no duplex component");
+    }, std::move(request));
 }
 
 bool Engine::can_batch(const EngineRequest&) const { return false; }
@@ -221,7 +213,6 @@ void Engine::restore_graph_expert_space() {
 void Engine::clear_bindings() noexcept {
     if (impl_->kv_) impl_->kv_->set_reservation({});
     set_moe_workspace_reservation(impl_->weights_->moe, {});
-    if (impl_->offload_) impl_->offload_->set_ram_reservation({});
 }
 
 SessionResult Engine::set_budget(const SessionCommand& command) {

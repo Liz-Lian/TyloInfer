@@ -288,6 +288,26 @@ void Executor::drain() {
     try { wait(); } catch (...) { if (!failure) failure = std::current_exception(); }
     if (failure) std::rethrow_exception(failure);
 }
+
+void Executor::clear() {
+    pipelines_.clear();
+    scratch_.clear();
+    {
+        std::lock_guard lock(attention_scratch_mutex_);
+        attention_scratch_.clear();
+    }
+    mla_scratch_.clear();
+    {
+        std::lock_guard lock(mfe_scratch_.mutex);
+        mfe_scratch_.values.clear();
+    }
+    {
+        std::lock_guard lock(moe_scratch_.mutex);
+        moe_scratch_.values.clear();
+    }
+    tq_->clear();
+    branches_.clear();
+}
 #endif
 
 void Executor::join() {

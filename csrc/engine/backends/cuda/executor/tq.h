@@ -77,6 +77,8 @@ public:
     bool empty() const noexcept;
     std::vector<::tyloi::DenseTensor> storage() const;
     void drain();
+    // The caller drains before clearing resources.
+    void clear();
 
 private:
     mutable std::mutex mutex_;

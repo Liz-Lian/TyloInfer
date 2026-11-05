@@ -174,7 +174,6 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
     std::unique_ptr<Executor> root;
     std::shared_ptr<models::CausalModel> model;
     std::unique_ptr<models::State> state;
-    std::unique_ptr<Executor> forward;
     try {
         const bool dump_env = env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
         env_freeze();
@@ -186,21 +185,15 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
         {
             auto outer_scope = root->enter(load.layer_placement.primary_device());
             internal::setup_cuda_load(options, load, *root, *weights, kv, offload);
+            root->set_primary(load.layer_placement.primary_device());
             root->profiler().enabled = false;
             ledger = std::make_shared<WeightMemoryLedger>();
             WeightMemoryLoadScope memory_load(*ledger);
             runtime = internal::resolve_cuda_runtime_config(options);
             const auto kv_options = runtime_options::qsa_kv_offload();
+            if (kv_options.gpu_budget_bytes)
+                throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             kv = std::make_shared<KvMemoryManager>();
-            if (kv_options.gpu_budget_bytes) {
-                kv.reset();
-                KvOffloadConfig config;
-                config.gpu_budget_bytes = kv_options.gpu_budget_bytes;
-                config.ram_budget_bytes = internal::cuda_has_separate_memory() ? kv_options.ram_budget_bytes : 0;
-                config.buffer_bytes = std::min<std::size_t>(config.buffer_bytes, config.gpu_budget_bytes / 4);
-                config.directory = kv_options.directory;
-                offload = std::make_shared<KvOffloadStore>(std::move(config));
-            }
             {
                 auto scope = root->enter(load.layer_placement.primary_device());
                 source = tyloi::open_model_source(options.model_path);
@@ -216,7 +209,6 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
                 gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
                 state = model->make_state();
                 if (runtime_options::kv_vram_preallocated()) state->preallocate();
-                forward = root->fork(load.layer_placement.primary_device());
                 if (owner->plan.vision != CudaVisionAdapter::none || owner->plan.predictor != CudaPredictorAdapter::none)
                     throw std::runtime_error("CUDA component adapter is unsupported for this model");
                 finalize_kv(kv.get(), *weights, offload);
@@ -235,9 +227,7 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
         impl->ledger_ = std::move(ledger);
         impl->weights_ = std::move(weights);
         impl->kv_ = std::move(kv);
-        impl->offload_ = std::move(offload);
         impl->idle_state_ = std::move(state);
-        impl->forward_ = std::move(forward);
         return engine::EngineParts{std::move(model), std::move(root), std::move(impl)};
     } catch (...) {
         const auto failure = std::current_exception();
@@ -245,20 +235,19 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
             try { drain_cuda(*root, *weights, offload.get(), load.layer_placement, load.tensor_parallel, load.expert_parallel); }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
             catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
-            const auto release = [&] {
-                forward.reset(); state.reset(); model.reset(); root->pipelines().clear();
-                offload.reset(); kv.reset(); weights.reset();
-            };
+            std::unique_ptr<tyloi::Executor::Scope> scope;
             try {
-                auto scope = root->enter(load.layer_placement.primary_device());
-                release();
+                scope = root->enter(load.layer_placement.primary_device());
             } catch (const std::exception& error) {
                 std::cerr << "runtime_load_cleanup error=" << error.what() << '\n';
-                release();
             } catch (...) {
                 std::cerr << "runtime_load_cleanup error=unknown\n";
-                release();
             }
+            try { root->clear(); }
+            catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
+            catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
+            state.reset(); model.reset(); offload.reset(); kv.reset(); weights.reset();
+            scope.reset();
             root.reset();
         }
         std::rethrow_exception(failure);

@@ -129,9 +129,9 @@ private:
     void rebuild(EngineParts&& parts);
 
     SessionResult set_budget(const SessionCommand&);
+    void drain();
     void restore_graph_expert_space();
     void clear_bindings() noexcept;
-    template <class F> decltype(auto) with_cuda(F&& work);
     struct Impl;
     std::shared_ptr<models::CausalModel> model_;
     std::unique_ptr<tyloi::Executor> executor_;

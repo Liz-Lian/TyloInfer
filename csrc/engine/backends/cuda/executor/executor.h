@@ -36,6 +36,9 @@ public:
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
     std::unique_ptr<tyloi::Executor::Graph> graph() override;
     void drain() override;
+    void clear() override;
+    // Set the default device during loading, before publication or concurrent submissions.
+    void set_primary(int primary) noexcept { primary_ = primary; }
 #else
     std::unique_ptr<tyloi::Executor::Scope> enter();
 #endif

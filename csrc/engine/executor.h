@@ -55,6 +55,8 @@ public:
     // Stop concurrent submissions and call within this executor's scope.
     // Wait for executor work; owners coordinate weights and offload separately.
     virtual void drain() = 0;
+    // After draining and destroying graphs, clear execution caches within the scope.
+    virtual void clear() = 0;
 };
 
 } // namespace tyloi

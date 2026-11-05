@@ -213,6 +213,11 @@ bool TqExec::empty() const noexcept {
     return resources_.empty();
 }
 
+void TqExec::clear() {
+    std::lock_guard<std::mutex> guard(mutex_);
+    resources_.clear();
+}
+
 std::vector<::tyloi::DenseTensor> TqExec::storage() const {
     std::lock_guard<std::mutex> guard(mutex_);
     std::vector<::tyloi::DenseTensor> result;
