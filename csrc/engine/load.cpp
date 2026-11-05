@@ -253,7 +253,6 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
         impl->source_ = std::move(source);
         impl->ledger_ = std::move(ledger);
         impl->weights_ = std::move(weights);
-        impl->kv_ = std::move(kv);
         impl->idle_state_ = std::move(state);
         return engine::EngineParts{std::move(model), std::move(root), std::move(impl)};
     } catch (...) {

@@ -3,6 +3,7 @@
 #include "engine/tensor.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -35,6 +36,10 @@ struct KvView {
             : physical_key && physical_key->defined() && physical_value && physical_value->defined();
     }
 };
+
+std::size_t kv_bytes(std::int64_t batch, std::int64_t heads, std::int64_t capacity,
+                     std::int64_t head_dim, bool ring, ScalarType dtype,
+                     KvQuantization settings = {});
 
 KvView allocate_kv(std::int64_t batch, std::int64_t heads, std::int64_t capacity,
                    std::int64_t head_dim, bool ring, Device device, ScalarType dtype,

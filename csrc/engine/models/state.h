@@ -2,11 +2,16 @@
 
 #include "engine/tensor.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace tyloi::models {
+
+struct ForwardOptions;
 
 class State {
 public:
@@ -16,6 +21,10 @@ public:
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;
+    virtual std::vector<std::pair<tyloi::Device, std::size_t>> growth(
+        std::int64_t, const ForwardOptions&) const {
+        throw std::logic_error("state allocation planning is not implemented");
+    }
     // Owners keep storage alive; deduplicate using backing identity, not object identity.
     virtual std::vector<std::shared_ptr<const tyloi::Tensor>> storage() const = 0;
     // Borrow writable objects from this state; their lifetime remains tied to it.

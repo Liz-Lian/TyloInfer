@@ -129,6 +129,7 @@ private:
     void rebuild(EngineParts&& parts);
 
     SessionResult set_budget(const SessionCommand&);
+    void reserve(models::State& state, std::int64_t tokens);
     void drain();
     void clear_bindings() noexcept;
     struct Impl;

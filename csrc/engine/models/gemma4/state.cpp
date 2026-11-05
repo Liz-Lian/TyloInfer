@@ -1,6 +1,7 @@
 #include "engine/models/gemma4/state.h"
 #include "engine/models/gemma4/model.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/models/options.h"
 #include "engine/ops.h"
 #else
 #include "engine/backends/cuda/executor/options.h"
@@ -8,6 +9,8 @@
 #include "engine/models/common/session/paged.h"
 #endif
 
+#include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -72,6 +75,35 @@ void State::reset(std::int64_t next_batch) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
+    std::int64_t tokens, const tyloi::models::ForwardOptions& options) const {
+    if (batch <= 0 || tokens <= 0 || cache_pos < 0)
+        throw std::invalid_argument("Gemma4 KV planning requires positive batch and tokens and a nonnegative position");
+    if (cache_pos > std::numeric_limits<std::int64_t>::max() - tokens)
+        throw std::overflow_error("Gemma4 KV planning position overflow");
+    const auto end = cache_pos + tokens;
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        if (layers[index].defined()) continue;
+        const auto& layout = layout_[index];
+        const auto capacity = layout.sliding ? layout.capacity
+            : (options.kv_capacity > 0 ? std::max(end, options.kv_capacity) : layout.capacity);
+        const auto bytes = tyloi::state::kv_bytes(batch, layout.heads, capacity, layout.head_dim,
+                                                  layout.sliding, layout.dtype, layout.quantization);
+        const tyloi::Device device(tyloi::DeviceType::cuda, layout.device);
+        auto entry = std::find_if(result.begin(), result.end(),
+                                  [device](const auto& item) { return item.first == device; });
+        if (entry == result.end()) {
+            result.emplace_back(device, bytes);
+        } else {
+            if (entry->second > std::numeric_limits<std::size_t>::max() - bytes)
+                throw std::overflow_error("Gemma4 KV planning byte count overflow");
+            entry->second += bytes;
+        }
+    }
+    return result;
+}
+
 std::vector<tyloi::Tensor*> State::graph_state() {
     if (cache_pos <= 0 || layers.empty())
         throw std::runtime_error("Gemma4 graph warmup requires a prefilled KV cache");

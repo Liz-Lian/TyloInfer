@@ -12,7 +12,6 @@
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/routed_cache.h"
-#include "engine/state/kv_memory.h"
 
 namespace tyloi::engine {
 
@@ -24,7 +23,6 @@ struct Engine::Impl {
     std::shared_ptr<const ModelSource> source_;
     std::shared_ptr<tyloi::weights::Memory> ledger_;
     std::unique_ptr<cuda::RoutedCache> weights_;
-    std::shared_ptr<cuda::KvMemoryManager> kv_;
     std::unique_ptr<models::State> idle_state_;
     models::ForwardOptions forward_options_{};
     bool graph_allowed_ = false;

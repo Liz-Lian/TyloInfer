@@ -135,6 +135,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
                 if (prepared->embeddings) model_input.embeddings = ops::contiguous(*ops::slice(*prepared->embeddings, 1, chunk.offset, chunk.offset + chunk.count));
                 if (prepared->positions) model_input.positions = ops::contiguous(*ops::slice(*prepared->positions, -1, chunk.offset, chunk.offset + chunk.count));
             }
+            reserve(state, chunk.count);
             auto hidden = model_->forward(std::move(model_input), state, forward_options);
             if (prepared && prepared->transformed()) state.set_position_delta(prepared->decode_position_delta);
             timer->stop();
@@ -173,6 +174,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         }
         co_yield std::move(delta);
         if (output.stopped()) break;
+        reserve(state, 1);
         if (!graph_active) {
             models::Input model_input;
             model_input.ids = ops::reshape(*pending, {1, 1});
