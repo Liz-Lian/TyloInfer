@@ -40,8 +40,6 @@ Apple M5 Max · 40-core GPU · 128 GiB · GGUF IQ3_XXS · 4,096-token input. Spe
 | TyloInfer | 1,001 | 40.1 | 121.5 |
 | [Splash 1.5.0](https://github.com/incoai/splash/releases/tag/1.5.0) | **1,085** | — | **131.2** |
 
-Strata's prompt-processing recording includes first-use shader compilation and is omitted here.
-
 ## Quick start
 
 ### Build and serve
