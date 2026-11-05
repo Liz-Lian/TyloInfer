@@ -96,7 +96,9 @@ DenseTensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
                              std::move(input), state, tyloi::cuda::forward_options(mode)); }) {
     const tyloi::models::CausalModel& causal = model;
     auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
-    return DenseTensor(causal.forward(std::move(input), state, tyloi::cuda::forward_options(mode)));
+    auto result = causal.forward(std::move(input), state, tyloi::cuda::forward_options(mode));
+    TYLOINFER_RUNTIME_CHECK(result != nullptr, "CUDA model forward returned no hidden tensor");
+    return dynamic_cast<const DenseTensor&>(*result);
   } else
 #endif
   {
@@ -296,8 +298,14 @@ template <class Model, class State> struct CudaMtpOps {
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
         weights(weights), info(info), source(source), mtp(mtp), mtp_state(mtp_state), prepared(prepared),
         transformed_prompt(prepared && prepared->transformed()),
-        position_axes(transformed_prompt && prepared->positions.defined() && prepared->positions.dim() == 2 &&
+        position_axes(transformed_prompt &&
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                              prepared->positions && prepared->positions->defined() && prepared->positions->dim() == 2 &&
+                              prepared->positions->size(0) == 3
+#else
+                              prepared->positions.defined() && prepared->positions.dim() == 2 &&
                               prepared->positions.size(0) == 3
+#endif
                           ? 3
                           : 1), prefill_compute_chunk(compute_chunk), output(output),
         restore(std::move(restore)) {
@@ -370,10 +378,19 @@ template <class Model, class State> struct CudaMtpOps {
     DenseTensor hidden;
     if constexpr (has_forward<Model, State>) {
       tyloi::cuda::Input input;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+      std::shared_ptr<tyloi::Tensor> raw_result;
+      input.ids = std::make_shared<DenseTensor>(std::move(ids));
+      input.raw_hidden = raw ? &raw_result : nullptr;
+#else
       input.ids = std::move(ids);
       input.raw_hidden = raw;
+#endif
       input.confirmed = confirmed;
       hidden = mtp_detail::hidden(model, state, executor, collectives, mode, std::move(input));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+      if (raw && raw_result) *raw = dynamic_cast<const DenseTensor&>(*raw_result);
+#endif
     } else {
       hidden = model.hidden_forward(ids, mfq_nullopt, mfq_nullopt, nullptr,
                                     mfq_nullopt, raw, confirmed);
@@ -438,20 +455,40 @@ template <class Model, class State> struct CudaMtpOps {
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     DenseTensor hidden;
     if (transformed_prompt) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+      auto embeddings = dynamic_cast<const DenseTensor&>(*prepared->embeddings).narrow(1, chunk.offset, chunk.count)
+                            .contiguous();
+      auto positions = prepared->positions && prepared->positions->defined()
+                           ? MfqOptional<DenseTensor>(dynamic_cast<const DenseTensor&>(*prepared->positions).narrow(
+                                 -1, chunk.offset, chunk.count).contiguous())
+                           : mfq_nullopt;
+#else
       auto embeddings = DenseTensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
                             .contiguous();
       auto positions = prepared->positions.defined()
                            ? MfqOptional<DenseTensor>(DenseTensor(prepared->positions).narrow(
                                  -1, chunk.offset, chunk.count).contiguous())
                            : mfq_nullopt;
+#endif
       if constexpr (has_forward<Model, State>) {
         tyloi::cuda::Input input;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        std::shared_ptr<tyloi::Tensor> raw_result;
+        input.ids = std::make_shared<DenseTensor>(std::move(ids));
+        input.embeddings = std::make_shared<DenseTensor>(std::move(embeddings));
+        if (positions) input.positions = std::make_shared<DenseTensor>(std::move(*positions));
+        input.raw_hidden = &raw_result;
+#else
         input.ids = std::move(ids);
         input.embeddings = std::move(embeddings);
         if (positions) input.positions = std::move(*positions);
-        input.advance = true;
         input.raw_hidden = &raw;
+#endif
+        input.advance = true;
         hidden = mtp_detail::hidden(model, state, executor, collectives, mode, std::move(input));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if (raw_result) raw = dynamic_cast<const DenseTensor&>(*raw_result);
+#endif
       } else {
         hidden = model.hidden_forward_inputs(
             ids, std::move(embeddings), std::move(positions), mfq_nullopt, nullptr,
@@ -655,7 +692,9 @@ template <class Model, class State> struct CudaMtpOps {
                        .contiguous();
       const tyloi::models::CausalModel& causal = model;
       auto scope = tyloi::cuda::Executor::current().enter(tyloi::cuda::Ffn::Mode{});
-      return DenseTensor(causal.logits(std::move(input), true));
+      auto result = causal.logits(input, true);
+      TYLOINFER_RUNTIME_CHECK(result != nullptr, "CUDA model logits returned no tensor");
+      return dynamic_cast<const DenseTensor&>(*result);
     } else
 #endif
     if constexpr (requires(Model& value, tyloi::cuda::Executor& value_executor, DenseTensor value_hidden) {

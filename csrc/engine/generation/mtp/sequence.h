@@ -41,11 +41,19 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     require_execution(
         reused_tokens < prompt.size(), "restored MTP prefix must be shorter than the prompt");
     const bool transformed_prompt = prepared != nullptr && prepared->transformed();
-    const bool positioned_prompt = transformed_prompt && ops.defined(DenseTensor(prepared->positions));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    const DenseTensor prepared_positions = transformed_prompt && prepared->positions
+        ? dynamic_cast<const DenseTensor&>(*prepared->positions) : DenseTensor{};
+    const bool prepared_embeddings = transformed_prompt && prepared->embeddings && prepared->embeddings->defined();
+#else
+    const DenseTensor prepared_positions = transformed_prompt ? DenseTensor(prepared->positions) : DenseTensor{};
+    const bool prepared_embeddings = transformed_prompt && ops.defined(DenseTensor(prepared->embeddings));
+#endif
+    const bool positioned_prompt = transformed_prompt && ops.defined(prepared_positions);
     require_execution(prepared == nullptr || prepared->token_ids == prompt,
         "prepared MTP prompt disagrees with rendered token IDs");
     require_execution(!transformed_prompt ||
-                          (ops.defined(DenseTensor(prepared->embeddings)) &&
+                          (prepared_embeddings &&
                            (positioned_prompt || prepared->decode_position_delta==0)),
         "prepared MTP prompt is missing embeddings or valid position metadata");
     require_execution(
@@ -148,7 +156,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 auto prime = ops.slice(prime_hidden, 1, chunk.offset, chunk.count);
                 auto ids = ops.slice(input_ids, 1, ids_offset + chunk.offset, chunk.count);
                 auto positions = positioned_prompt
-                    ? ops.slice(DenseTensor(prepared->positions), -1, ids_offset + chunk.offset, chunk.count) : DenseTensor{};
+                    ? ops.slice(prepared_positions, -1, ids_offset + chunk.offset, chunk.count) : DenseTensor{};
                 if constexpr (requires { ops.predictor_prefill(prime, ids, positions); }) {
                     const auto elapsed=ops.predictor_prefill(std::move(prime), std::move(ids), std::move(positions));
                     prefill_ms+=elapsed;predictor_prefill_ms+=elapsed;
@@ -261,7 +269,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 auto prime = ops.slice(prime_hidden, 1, chunk.offset, chunk.count);
                 auto ids = ops.slice(input_ids, 1, prime_ids_offset + chunk.offset, chunk.count);
                 auto positions = positioned_prompt
-                    ? ops.slice(DenseTensor(prepared->positions), -1, prime_ids_offset + chunk.offset, chunk.count)
+                    ? ops.slice(prepared_positions, -1, prime_ids_offset + chunk.offset, chunk.count)
                     : DenseTensor{};
                 if constexpr (requires { ops.predictor_prefill(prime, ids, positions); }) {
                     const auto elapsed=ops.predictor_prefill(std::move(prime), std::move(ids), std::move(positions));
