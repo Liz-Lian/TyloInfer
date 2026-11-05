@@ -17,6 +17,9 @@
 #include <numeric>
 #include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/weights/moe/expert_cache.h"
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/weights/moe/cached_source_internal.h"
+#endif
 #include "engine/weights/moe/expert_store.h"
 #include "engine/weights/moe/quant_range_source.h"
 #include "engine/weights/tq/load.h"
@@ -878,9 +881,29 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::gate_up(const std::v
     return group(names, std::min(prefix, names.size()), slices.empty() ? nullptr : &slices,
                  preserve_boundaries);
 }
-std::shared_ptr<const tyloi::cuda::Experts> Loader::experts(const std::string& name, bool cacheable,
+static std::shared_ptr<const ::tyloi::MfeTensor> expert_tensor(Experts weight, Device device) {
+    if (weight.resident) return weight.resident;
+    auto result = std::make_shared<::tyloi::MfeTensor>();
+    result->n_experts = weight.n_experts;
+    result->out_per_expert = weight.out_per_expert;
+    result->neuron_len = weight.neuron_len;
+    result->partial_experts = weight.partial_experts;
+    result->compact = std::move(weight.pools);
+    result->cached_source = std::move(weight.cached_source);
+    result->source_device = device;
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (result->cached_source) result->source_device = result->cached_source->placement().devices.front();
+#endif
+    for (auto& shard : weight.expert_parallel_shards) {
+        if (!shard.weight) throw std::runtime_error("expert-parallel MoE shard is missing");
+        result->shards.push_back({shard.device, shard.expert_begin, shard.expert_end,
+            expert_tensor(std::move(*shard.weight), Device{DeviceType::cuda, shard.device})});
+    }
+    return result;
+}
+std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, bool cacheable,
     int layer, const std::string& role) const {
-    return std::make_shared<Experts>(build_experts(name, cacheable, layer, role));
+    return expert_tensor(build_experts(name, cacheable, layer, role), Device{DeviceType::cuda, placement.device});
 }
 DenseTensor Loader::dense(const std::string& name) const {
     const auto& file = source;

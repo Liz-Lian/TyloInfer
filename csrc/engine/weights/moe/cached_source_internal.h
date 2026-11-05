@@ -25,6 +25,7 @@ struct MoeCachedCohort {
 
 class MoeCachedSource {
 public:
+    const ::tyloi::MfeTensor& source_tensor() const { return *cpu_; }
     tyloi::weights::Placement placement() const {
         tyloi::weights::Placement result;
         result.devices.emplace_back(tyloi::DeviceType::cuda, cache_->owner_device_);

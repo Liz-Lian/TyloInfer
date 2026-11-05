@@ -8,11 +8,17 @@
 
 struct MixedNvqDispatch;
 struct MixedNintDispatch;
+class MoeCachedSource;
 
 namespace tyloi {
 
 class MfeTensor final : public Tensor {
 public:
+    struct Shard {
+        int device = 0;
+        std::int64_t expert_begin = 0, expert_end = 0;
+        std::shared_ptr<const MfeTensor> weight;
+    };
     int n_experts = 0;
     int out_per_expert = 0;
     int neuron_len = 0;
@@ -22,6 +28,10 @@ public:
     std::vector<MixedMoePool> pools;
     std::shared_ptr<MixedNvqDispatch> nvq_dispatch;
     std::shared_ptr<MixedNintDispatch> nint_dispatch;
+    std::shared_ptr<const std::vector<MfePoolWeight>> compact;
+    std::shared_ptr<MoeCachedSource> cached_source;
+    std::vector<Shard> shards;
+    Device source_device;
 
     bool nint_only() const;
     bool defined() const noexcept override;

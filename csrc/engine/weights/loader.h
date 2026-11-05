@@ -116,7 +116,7 @@ struct Loader {
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up(const std::vector<std::string>& names,
         const ::tyloi::Tensor& down, size_t prefix = 2, bool preserve_boundaries = false) const;
     std::shared_ptr<const ::tyloi::Tensor> embedding(const std::string& name, bool independent_output) const;
-    std::shared_ptr<const tyloi::cuda::Experts> experts(const std::string& name, bool cacheable = false,
+    std::shared_ptr<const ::tyloi::Tensor> experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
     DenseTensor dense(const std::string& name) const;
     Routed routed(const std::string& name, int layer, int64_t experts, int64_t output,

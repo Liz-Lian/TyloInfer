@@ -89,6 +89,12 @@ public:
     ::tyloi::DenseTensor clamped(
         const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
         double limit) const;
+    ::tyloi::DenseTensor run(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
+        const MoeRoutePlan& route, int epilogue = 0) const;
+    ::tyloi::DenseTensor glu(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
+        const MoeRoutePlan& route, bool gelu) const;
+    ::tyloi::DenseTensor gated(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
+        const MoeRoutePlan& route, bool gelu) const;
     ::tyloi::DenseTensor run(
         const TqMoeBanks& banks, ::tyloi::DenseTensor input,
         ::tyloi::DenseTensor ids, ::tyloi::DenseTensor weights,

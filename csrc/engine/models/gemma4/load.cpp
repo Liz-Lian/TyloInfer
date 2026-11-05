@@ -90,8 +90,8 @@ struct LayerLoader : TransformerWeightLoader {
         return result;
     }
     static int64_t elements(const std::shared_ptr<const tyloi::Tensor>& value) { return value->numel(); }
-    static auto expert_shape(const tyloi::cuda::Experts& weight) {
-        return std::array<int64_t, 3>{weight.n_experts, weight.out_per_expert, weight.neuron_len};
+    static auto expert_shape(const tyloi::Tensor& weight) {
+        return std::array<int64_t, 3>{weight.size(0), weight.size(1), weight.size(2)};
     }
 #else
     static auto expert_shape(const tyloi::cuda::Experts &weight) {

@@ -278,14 +278,15 @@ std::shared_ptr<Tensor> weighted_reduce(const Tensor& pairs_tensor, const Tensor
     return owner(cuda::ops::weighted_reduce(pairs, weights));
 }
 RoutedGeglu routed_geglu(const Tensor& value_tensor, const Tensor& ids_tensor,
-                         const tyloi::cuda::Experts& gate_up, const tyloi::cuda::Experts& down,
+                         const Tensor& gate_up, const Tensor& down,
                          bool trace) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     const auto& ids = ::tyloi::ops::dense(ids_tensor);
     compatible(value, ids);
-    if (gate_up.size() == 0 || down.size() == 0 || value.dim() != 2 || ids.dim() != 2 || value.size(0) != ids.size(0) ||
-        gate_up.size() != down.size() || gate_up.shape().cols != value.size(-1) ||
-        gate_up.shape().rows % 2 != 0 || gate_up.shape().rows / 2 != down.shape().cols)
+    if (!gate_up.defined() || !down.defined() || gate_up.dim() != 3 || down.dim() != 3 ||
+        value.dim() != 2 || ids.dim() != 2 || value.size(0) != ids.size(0) ||
+        gate_up.size(0) != down.size(0) || gate_up.size(2) != value.size(-1) ||
+        gate_up.size(1) % 2 != 0 || gate_up.size(1) / 2 != down.size(2))
         throw std::invalid_argument("routed GEGLU input, routes, and expert banks are incompatible");
     require_cuda(value);
     return cuda::ops::routed_geglu(value, ids, gate_up, down, trace);

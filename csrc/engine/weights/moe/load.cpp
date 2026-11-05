@@ -5,6 +5,9 @@
 #include "engine/weights/quant.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/weights/moe/cached_source_internal.h"
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -18,7 +21,19 @@ bool tyloi::MfeTensor::nint_only() const {
 }
 
 bool tyloi::MfeTensor::defined() const noexcept {
-    if (n_experts <= 0 || out_per_expert <= 0 || neuron_len <= 0 || pools.empty()) return false;
+    if (n_experts <= 0 || out_per_expert <= 0 || neuron_len <= 0) return false;
+    if (cached_source) return true;
+    if (!shards.empty()) {
+        for (const auto& shard : shards) if (!shard.weight || !shard.weight->defined()) return false;
+        return true;
+    }
+    if (compact) {
+        if (compact->empty()) return false;
+        for (const auto& pool : *compact)
+            if (!pool.weight.defined() || !pool.expert_local.defined()) return false;
+        return true;
+    }
+    if (pools.empty()) return false;
     for (const auto& pool : pools) {
         const auto* payload = pool.payload();
         if (!(payload ? payload->defined() : pool.nepq.indices_packed.defined()) ||
@@ -58,6 +73,9 @@ std::int64_t tyloi::MfeTensor::size(std::int64_t dimension) const {
 }
 
 const tyloi::Device& tyloi::MfeTensor::device() const noexcept {
+    if (cached_source) return source_device;
+    if (!shards.empty() && shards.front().weight) return shards.front().weight->device();
+    if (compact && !compact->empty()) return compact->front().expert_local.device();
     for (const auto& pool : pools) {
         const auto* payload = pool.payload();
         if (payload && payload->defined()) return payload->device();
@@ -69,6 +87,21 @@ const tyloi::Device& tyloi::MfeTensor::device() const noexcept {
 
 std::vector<const tyloi::DenseTensor*> tyloi::MfeTensor::buffers() const {
     std::vector<const DenseTensor*> result;
+    if (compact) for (const auto& pool : *compact) {
+        auto values = pool.weight.buffers();
+        result.insert(result.end(), values.begin(), values.end());
+        result.push_back(&pool.expert_local);
+    }
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (cached_source) {
+        auto values = cached_source->source_tensor().buffers();
+        result.insert(result.end(), values.begin(), values.end());
+    }
+#endif
+    for (const auto& shard : shards) if (shard.weight) {
+        auto values = shard.weight->buffers();
+        result.insert(result.end(), values.begin(), values.end());
+    }
     for (const auto& pool : pools) {
         if (const auto* payload = pool.payload()) {
             auto values = payload->buffers();
@@ -94,6 +127,17 @@ std::vector<const tyloi::DenseTensor*> tyloi::MfeTensor::buffers() const {
 }
 
 void tyloi::MfeTensor::record_stream(std::uintptr_t stream) const {
+    int cuda_device = -1;
+    for (const auto& shard : shards) {
+        if (cuda_device >= 0 && cuda_device != shard.device)
+            throw std::invalid_argument("MFE stream recording across CUDA devices is unsupported");
+        cuda_device = shard.device;
+    }
+    for (const auto* buffer : buffers()) if (buffer && buffer->defined() && buffer->is_cuda()) {
+        if (cuda_device >= 0 && cuda_device != buffer->get_device())
+            throw std::invalid_argument("MFE stream recording across CUDA devices is unsupported");
+        cuda_device = buffer->get_device();
+    }
     for (const auto* buffer : buffers())
         if (buffer && buffer->defined()) buffer->record_stream(stream);
 }
@@ -103,8 +147,9 @@ std::shared_ptr<const tyloi::Tensor> tyloi::MfeTensor::relocated(Device target) 
         throw std::invalid_argument("MFE relocation before preparation is unsupported");
     auto moved = std::make_shared<MfeTensor>(*this);
     if (device() == target) return moved;
-    if (nvq_dispatch || nint_dispatch)
-        throw std::invalid_argument("MFE relocation with prepared dispatch is unsupported");
+    if (nvq_dispatch || nint_dispatch || cached_source || !shards.empty())
+        throw std::invalid_argument("MFE relocation with dispatch, cached source, or shards is unsupported");
+    if (compact) moved->compact = std::make_shared<std::vector<MfePoolWeight>>(*compact);
     for (const auto* buffer : moved->buffers()) {
         auto& writable = const_cast<DenseTensor&>(*buffer);
         if (writable.defined() && writable.device() != target) writable = writable.to(target);

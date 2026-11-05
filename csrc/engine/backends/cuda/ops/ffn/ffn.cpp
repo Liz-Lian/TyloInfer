@@ -6,6 +6,9 @@
 #include "diagnostics/route_stats.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/weights/moe/experts.h"
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/weights/moe/cached_source_internal.h"
+#endif
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/projection/parallel.h"
@@ -836,15 +839,44 @@ tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor 
     MfqCudaGuard guard(pairs.device().index);
     return moe_weighted_reduce_cuda(DenseTensor(pairs), DenseTensor(weights));
 }
-tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
-    const Experts& gate_bank, const Experts& down_bank, bool trace) {
-    // Expert banks are not projection weights, but the same rule applies: every
-    // buffer they keep alive must be resident where the tokens are.
-    check_placement(gate_bank.placement(), input.device());
-    check_placement(down_bank.placement(), input.device());
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    const auto* gate = &gate_bank;
-    const auto* down = &down_bank;
+static weights::Placement expert_placement(const MfeTensor& weight) {
+    weights::Placement result;
+    if (!weight.shards.empty()) {
+        for (const auto& shard : weight.shards) result.devices.emplace_back(DeviceType::cuda, shard.device);
+    } else if (weight.cached_source) return weight.cached_source->placement();
+    else {
+        const auto add_payload = [&](const Tensor& payload) {
+            for (const auto* buffer : payload.buffers()) {
+                if (!buffer || !buffer->defined()) continue;
+                if (!buffer->is_cuda()) throw std::invalid_argument("expert weight is not prepared for CUDA execution");
+                if (std::find(result.devices.begin(), result.devices.end(), buffer->device()) == result.devices.end())
+                    result.devices.push_back(buffer->device());
+            }
+        };
+        if (weight.compact) for (const auto& pool : *weight.compact) add_payload(pool.weight);
+        for (const auto& pool : weight.pools) if (const auto* payload = pool.payload()) add_payload(*payload);
+        if (result.devices.empty()) throw std::invalid_argument("expert weight is not prepared");
+    }
+    return result;
+}
+
+static bool supports_glu(const MfeTensor& weight) {
+    if (!weight.shards.empty()) return std::all_of(weight.shards.begin(), weight.shards.end(),
+        [](const auto& shard) { return shard.weight && supports_glu(*shard.weight); });
+    return (weight.compact && !weight.compact->empty()) ||
+        (weight.cached_source ? weight.cached_source->source_tensor().nint_only() : weight.nint_only());
+}
+#endif
+
+tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
+    const ::tyloi::Tensor& gate_bank, const ::tyloi::Tensor& down_bank, bool trace) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    const auto* gate = dynamic_cast<const MfeTensor*>(&gate_bank);
+    const auto* down = dynamic_cast<const MfeTensor*>(&down_bank);
+    if (!gate || !down) throw std::invalid_argument("routed GEGLU requires MFE expert weights");
+    check_placement(expert_placement(*gate), input.device());
+    check_placement(expert_placement(*down), input.device());
     MfqCudaGuard guard(input.device().index);
     auto& executor = Executor::current();
     const auto project = executor.projector(Executor::current_ffn());
@@ -852,10 +884,11 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
     auto route = profiler.measure("gemma.route_map", [&] {
         return build_moe_route_plan(DenseTensor(ids), gate->n_experts);
     });
-    const bool prefetched = prefetch_cached_moe_projection_bundle(*gate, *down, route);
-    auto prefetch_down = [&] { if (!prefetched) prefetch_experts(*down, route); };
+    const bool prefetched = gate->cached_source && down->cached_source &&
+        MoeCachedSource::prefetch_bundle({gate->cached_source, down->cached_source}, route);
+    auto prefetch_down = [&] { if (!prefetched && down->cached_source) down->cached_source->prefetch(route); };
     tyloi::ops::RoutedGeglu result;
-    if (!trace && gate->supports_projection_glu_epilogue()) {
+    if (!trace && supports_glu(*gate)) {
         auto hidden = profiler.measure("gemma.moe_gate_up_geglu", [&] {
             return project.glu(*gate, DenseTensor(input), route, true);
         });

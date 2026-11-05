@@ -16,7 +16,6 @@
 #include <utility>
 #include <vector>
 
-namespace tyloi::cuda { struct Experts; }
 
 namespace tyloi::ops {
 
@@ -245,7 +244,7 @@ std::shared_ptr<Tensor> weighted_reduce(const Tensor& pairs, const Tensor& weigh
 // Traced intermediates are F32 snapshots taken before subsequent projections.
 struct RoutedGeglu { std::shared_ptr<Tensor> pairs, gate_up, hidden; };
 RoutedGeglu routed_geglu(const Tensor& input, const Tensor& ids,
-                         const tyloi::cuda::Experts& gate_up, const tyloi::cuda::Experts& down,
+                         const Tensor& gate_up, const Tensor& down,
                          bool trace);
 
 struct YarnScaling {
