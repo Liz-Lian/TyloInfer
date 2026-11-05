@@ -20,6 +20,7 @@
 #include "runtime/kv_expert_loan.h"
 #include "runtime/dma_copy_batch.h"
 #include "mfe_cached_dispatch_test.h"
+#include "attention_mma_verify.h"
 
 #include <algorithm>
 #include <cmath>
@@ -36,6 +37,95 @@ using namespace mfq::cuda::internal;
 static void check(bool ok, const char *message) {
     if (!ok)
         throw std::runtime_error(message);
+}
+
+static void check_attention_logical_prefix() {
+    namespace tb = mfq_tensor_backend;
+    const auto context = default_context();
+    const auto stream = mfq_current_cuda_stream();
+    context->begin_graph_pool(stream);
+    int cases = 0, skipped = 0;
+    for (auto [width, capacity] : {std::pair{64, 1024}, std::pair{128, 1024},
+                                  std::pair{256, 32768}, std::pair{512, 1024}})
+    for (int ratio : {6, 10}) for (int tokens : {2, 3, 4})
+    for (auto query_type : {tb::kFloat16, tb::kFloat32}) {
+        constexpr int batch = 2, kv_heads = 2, initialized_rows = 160;
+        const int heads = kv_heads * ratio;
+        const auto cpu = tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32);
+        auto query_cpu = tb::empty({batch, heads, tokens, width}, cpu);
+        auto key_cpu = tb::empty({batch, kv_heads, initialized_rows, width}, cpu);
+        auto value_cpu = tb::empty({batch, kv_heads, initialized_rows, width}, cpu);
+        for (int64_t i = 0; i < query_cpu.numel(); ++i)
+            query_cpu.data_ptr<float>()[i] = .6f * std::sin(float(i % 1009) * .173f);
+        for (int64_t i = 0; i < key_cpu.numel(); ++i) {
+            key_cpu.data_ptr<float>()[i] = .7f * std::cos(float(i % 2003) * .079f);
+            value_cpu.data_ptr<float>()[i] = .8f * std::sin(float(i % 1019) * .053f);
+        }
+        query_cpu = query_cpu.to(query_type).to(tb::kFloat32);
+        key_cpu = key_cpu.to(tb::kFloat16).to(tb::kFloat32);
+        value_cpu = value_cpu.to(tb::kFloat16).to(tb::kFloat32);
+        auto query = query_cpu.to(query_type).to(tb::kCUDA);
+        auto cache_options = cpu.device(tb::kCUDA).dtype(tb::kFloat16);
+        auto keys = tb::full({batch, kv_heads, capacity, width}, NAN, cache_options);
+        auto values = tb::full({batch, kv_heads, capacity, width}, NAN, cache_options);
+        keys.narrow(2, 0, initialized_rows).copy_(key_cpu.to(tb::kFloat16).to(tb::kCUDA));
+        values.narrow(2, 0, initialized_rows).copy_(value_cpu.to(tb::kFloat16).to(tb::kCUDA));
+        auto lengths_cpu = tb::empty({batch}, cpu.dtype(tb::kInt64));
+        lengths_cpu.data_ptr<int64_t>()[0] = 19;
+        lengths_cpu.data_ptr<int64_t>()[1] = 11;
+        auto lengths = lengths_cpu.to(tb::kCUDA);
+        tb::Tensor output;
+        const double scale = 1. / std::sqrt(double(width));
+        const auto body = [&] {
+            output = {};
+            output = try_attention_mma_verify_cuda(query, keys, values, lengths, scale, capacity);
+        };
+        { GraphWarmupScope warmup(context, stream); body(); }
+        if (!output.defined()) { ++skipped; continue; }
+        TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));
+        output = {};
+        Graph graph;
+        graph.capture_begin_shared(); body(); graph.capture_end();
+        for (int length : {19, 129, 37}) {
+            lengths_cpu.data_ptr<int64_t>()[0] = length;
+            lengths_cpu.data_ptr<int64_t>()[1] = length - 7;
+            lengths.copy_(lengths_cpu.to(tb::kCUDA));
+            graph.replay();
+            auto actual = output.to(tb::kCPU, tb::kFloat32).contiguous();
+            const auto* q = query_cpu.data_ptr<float>();
+            const auto* k = key_cpu.data_ptr<float>();
+            const auto* v = value_cpu.data_ptr<float>();
+            for (int b = 0; b < batch; ++b) for (int t = 0; t < tokens; ++t)
+            for (int h = 0; h < heads; ++h) {
+                const int count = int(lengths_cpu.data_ptr<int64_t>()[b]) - tokens + t + 1;
+                std::vector<double> scores(count);
+                double maximum = -INFINITY;
+                for (int s = 0; s < count; ++s) {
+                    double score = 0;
+                    for (int d = 0; d < width; ++d)
+                        score += double(q[((b * heads + h) * tokens + t) * width + d]) *
+                            k[((int64_t(b) * kv_heads + h / ratio) * initialized_rows + s) * width + d];
+                    scores[s] = score * scale;
+                    maximum = std::max(maximum, scores[s]);
+                }
+                double total = 0;
+                for (auto& score : scores) { score = std::exp(score - maximum); total += score; }
+                for (int d = 0; d < width; ++d) {
+                    double reference = 0;
+                    for (int s = 0; s < count; ++s)
+                        reference += scores[s] *
+                            v[((int64_t(b) * kv_heads + h / ratio) * initialized_rows + s) * width + d];
+                    const float value = actual.data_ptr<float>()[((b * tokens + t) * heads + h) * width + d];
+                    check(std::isfinite(value) && std::abs(value - reference / total) < .002,
+                          "logical-prefix attention differs from independent causal reference");
+                }
+            }
+            ++cases;
+        }
+    }
+    context->end_graph_pool(stream);
+    std::cout << "Logical-prefix attention: " << cases << " changing Graph/reference cases passed; "
+              << skipped << " variants unavailable with current MMA resources\n";
 }
 
 struct MemoryTensorSource final : mfq::ModelSource {
@@ -921,12 +1011,13 @@ static void check_speculative_recurrent_input_reuse() {
         return cpu.to(tb::kCUDA);
     };
     int cases=0;
-    for(int batch:{1,2})for(int width:{32,128})for(int tokens:{2,3,4})
-    for(bool transposed:{false,true})for(int retained=1;retained<tokens;++retained) {
+    double largest_fused_relative_error=0;
+    for(int batch:{1,2})for(int width:{32,64,128})for(int tokens:{2,3,4,8})
+    for(bool transposed:{false,true})for(bool tiled:{false,true})for(int retained=1;retained<tokens;++retained) {
         const int nk=2,nv=4,channels=(2*nk+nv)*width;
         auto convolution=data({batch,3,channels},.1f,.2f);
         auto recurrent=data({batch,nv,width,width},.2f,.01f);
-        auto projected=data({batch,tokens,channels},.3f,.4f);
+        auto projected=data({batch,tokens,channels+7},.3f,.4f).narrow(2,0,channels);
         auto weight=data({channels,1,4},.4f,.3f);
         auto empty=tb::empty({0},convolution.options());
         auto conv=ssm_conv_silu_cuda(tb::cat({convolution,projected},1),weight,empty,tokens);
@@ -937,10 +1028,10 @@ static void check_speculative_recurrent_input_reuse() {
         k=l2_norm_cuda(k.contiguous().reshape({-1,width}),1e-6).reshape_as(k);
         qwen35::LinearRecurrentInputs inputs;
         inputs.batch=batch;inputs.tokens=tokens;inputs.qkv=projected;
-        inputs.gate=tb::full({batch,nv,tokens},-.1,convolution.options());
-        inputs.beta=tb::full({batch,nv,tokens},.4,convolution.options());
-        qwen35::LinearAttentionBlock reference,reused;
-        for(auto* block:{&reference,&reused}) {
+        inputs.gate=data({batch,nv,tokens},.5f,.1f);
+        inputs.beta=data({batch,nv,tokens},.6f,.2f)+.5f;
+        qwen35::LinearAttentionBlock reference,reused,fused;
+        for(auto* block:{&reference,&reused,&fused}) {
             block->qwen_config.linear_conv_kernel_dim=4;
             block->qwen_config.linear_num_key_heads=nk;
             block->qwen_config.linear_num_value_heads=nv;
@@ -948,11 +1039,18 @@ static void check_speculative_recurrent_input_reuse() {
             block->qwen_config.linear_value_head_dim=width;
             block->qwen_config.rms_norm_eps=1e-6;
             block->transposed_gdn_state=transposed;block->conv_weight=weight;
+            block->tiled_v_heads=tiled;
             block->mixer.convolution=convolution.clone();block->mixer.recurrent=recurrent.clone();
         }
         reference.replay_recurrent_cuda(inputs,retained);
-        inputs.normalized_q=q.contiguous();inputs.normalized_k=k.contiguous();inputs.convolved_v=v.contiguous();
+        inputs.normalized_q=q.contiguous();inputs.normalized_k=k.contiguous();inputs.convolved_v=v;
         reused.replay_recurrent_cuda(inputs,retained);
+        const auto* conv_address=fused.mixer.convolution.data_ptr();
+        const auto* state_address=fused.mixer.recurrent.data_ptr();
+        fused.mixer.convolution.fill_(-5);fused.mixer.recurrent.fill_(-7);
+        check(try_gdn_replay_state_cuda(inputs.normalized_k,inputs.convolved_v,inputs.gate,inputs.beta,
+            inputs.qkv,convolution,recurrent,fused.mixer.convolution,fused.mixer.recurrent,
+            retained,transposed,tiled),"fused GDN replay did not accept strided retained inputs");
         const auto exact=[](const auto& a,const auto& b) {
             auto x=a.cpu().contiguous(),y=b.cpu().contiguous();
             return x.nbytes()==y.nbytes() && std::memcmp(x.data_ptr(),y.data_ptr(),x.nbytes())==0;
@@ -961,9 +1059,37 @@ static void check_speculative_recurrent_input_reuse() {
             "reused recurrent inputs changed convolution rollback");
         check(exact(reference.mixer.recurrent,reused.mixer.recurrent),
             "reused recurrent inputs changed GDN rollback");
+        const bool same_convolution=exact(reference.mixer.convolution,fused.mixer.convolution);
+        bool same_recurrent=exact(reference.mixer.recurrent,fused.mixer.recurrent);
+        if(!same_recurrent) {
+            auto a=reference.mixer.recurrent.cpu().contiguous(),b=fused.mixer.recurrent.cpu().contiguous();
+            double error=0,norm=0,max_error=0;
+            for(int64_t i=0;i<a.numel();++i) {
+                const double d=double(a.data_ptr<float>()[i])-b.data_ptr<float>()[i];
+                error+=d*d;norm+=double(a.data_ptr<float>()[i])*a.data_ptr<float>()[i];
+                max_error=std::max(max_error,std::abs(d));
+            }
+            const double relative=std::sqrt(error/std::max(norm,1e-30));
+            largest_fused_relative_error=std::max(largest_fused_relative_error,relative);
+            // The state-only kernel explicitly contracts the rank-one update;
+            // existing readout kernels can contract either product instead.
+            same_recurrent=std::isfinite(relative) && relative<=1e-6 && max_error<=1e-6;
+            if(!same_recurrent)std::cerr<<"GDN state replay relative="<<relative<<" max="<<max_error<<'\n';
+        }
+        check(same_convolution && same_recurrent,
+            "fused GDN state replay differs from raw convolution/recurrent replay");
+        check(conv_address==fused.mixer.convolution.data_ptr() && state_address==fused.mixer.recurrent.data_ptr(),
+            "fused GDN replay replaced graph state storage");
+        auto alias_state=recurrent.clone(),alias_conv=tb::empty_like(convolution);
+        check(try_gdn_replay_state_cuda(inputs.normalized_k,inputs.convolved_v,inputs.gate,inputs.beta,
+            inputs.qkv,convolution,alias_state,alias_conv,alias_state,
+            retained,transposed,tiled),"in-place retained GDN commit rejected a safe column alias");
+        check(exact(alias_state,fused.mixer.recurrent) && exact(alias_conv,fused.mixer.convolution),
+            "in-place retained GDN commit differs from independent-output replay");
         ++cases;
     }
-    std::cout<<"Retained Q/K/V vs raw-projection GDN rollback: "<<cases<<" exact cases PASS\n";
+    std::cout<<"Retained Q/K/V and fused GDN rollback: "<<cases
+        <<" cases PASS, largest fused state relative error="<<largest_fused_relative_error<<'\n';
 }
 
 static void check_retained_recurrent_storage() {
@@ -1654,6 +1780,9 @@ void check_dma_copy_buckets() {
 int main(int argc, char** argv) try {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
+    if (argc == 2 && std::string(argv[1]) == "--attention-prefix-check") {
+        check_attention_logical_prefix(); return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--tq-tp-check") {check_tq_parallel();return 0;}
     if(argc==2 && std::string(argv[1])=="--workspace-loan-check") {
         check_workspace_loan();check_graph_workspace_reuse();
@@ -1700,6 +1829,7 @@ int main(int argc, char** argv) try {
     check_streamed_graph_segments();
     check_retained_recurrent_storage();
     check_speculative_recurrent_input_reuse();
+    check_attention_logical_prefix();
     check_sampling_storage();
     check_linear_execution();
     check_graph_warmup_state();

@@ -7,12 +7,26 @@ inline constexpr int kQ8TileRows=8;
 // Lossless Q8_0 tiles from Strata's DFlash2 GEMM: 8 weight rows by 512
 // columns. Padding permits arbitrary Q8_0 dimensions without model gates.
 struct Q8TiledMatrix { const void* weight; float* output; int rows, padded_rows; };
+enum class DraftEmbeddingType { Float32, Float16, BFloat16 };
+// Keep the mask IDs unchanged and update the anchor and absolute positions.
+void prepare_draft_inputs(const std::int64_t* anchor,std::int64_t* ids,std::int64_t* positions,
+    int rows,std::int64_t start,cudaStream_t stream);
+// With a mask embedding, input contains only the anchor row. Other rows use
+// the mask directly; embedding rows retain the adapter's BF16 rounding.
+void prepare_draft_hidden(const void* input,DraftEmbeddingType type,const float* mask,float* output,
+    int rows,int width,cudaStream_t stream);
 void q8_tile(const void* blocks, void* tiles, int rows, int columns, cudaStream_t stream);
 void q8_untile(const void* tiles, void* blocks, int rows, int columns, cudaStream_t stream);
 // Activations are row-major; reserve ceil(tokens/8)*8 padded rows of codes
 // (ceil(columns/512)*512 bytes each) and FP32 scales (one per 32 codes).
 void q8_quantize(const float* input, void* codes, float* scales, int tokens, int columns, cudaStream_t stream);
 void q8_gemm(const Q8TiledMatrix* matrices, int count, const void* codes, const float* scales,
+    int tokens, int columns, cudaStream_t stream);
+// The descriptor also supplies geometry for Q4_0 tiles. Activations retain
+// Q8 codes and FP32 scales; only the weight image differs between functions.
+void q4_tile(const void* blocks, void* tiles, int rows, int columns, cudaStream_t stream);
+void q4_untile(const void* tiles, void* blocks, int rows, int columns, cudaStream_t stream);
+void q4_gemm(const Q8TiledMatrix* matrices, int count, const void* codes, const float* scales,
     int tokens, int columns, cudaStream_t stream);
 void swiglu_float(const float* gate,const float* up,float* output,std::int64_t elements,cudaStream_t stream);
 void swiglu_float_q8(const float* gate,const float* up,float* output,void* codes,float* scales,
@@ -32,6 +46,7 @@ void norm_rope_tabled(const float* input,const float* norm,const float* table,fl
 void norm_rope(const float* input, const float* norm, const std::int64_t* positions,
     float* output, int rows, int heads, int dimension, float theta, float epsilon, cudaStream_t stream);
 // Normalize/rotate K and write K/V into token-major F32 or BF16 rings.
+// Negative positions mask padded rows without changing any ring cells.
 void store_context(const float* key,const float* value,const float* norm,
     const float* table,const std::int64_t* positions,void* ring_key,void* ring_value,
     int rows,int heads,int dimension,int window,float epsilon,cudaStream_t stream,bool history_bf16=false);

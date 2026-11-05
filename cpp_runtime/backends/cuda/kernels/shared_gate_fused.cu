@@ -4,18 +4,32 @@
 #include "kernel_dispatch_trace.h"
 #include "../ops/mfq/include/nint.h"
 #include <cstdlib>
+#include <algorithm>
+#include <stdexcept>
 
 namespace {
-template<class Input,class Output>
+template<class Input,class Output,int Threads,bool Staged>
 __global__ void shared_gate_multiply_f32(const Input* input,const float* weight,const Output* expert,
         float* output,int64_t width,int64_t output_width) {
+    // Preserve the original 128-lane FMA and reduction order. Extra lanes
+    // cooperate on the loads and output pass, without re-associating dots.
     __shared__ float partial[4];
     const int lane=threadIdx.x%32,warp=threadIdx.x/32;
     const auto* x=input+int64_t(blockIdx.x)*width;
+    const float* dot_weight=weight;const Input* dot_input=x;
+    if constexpr(Staged) {
+        extern __shared__ uint4 storage[];
+        auto* staged_weight=reinterpret_cast<float*>(storage);
+        auto* staged_input=reinterpret_cast<Input*>(staged_weight+width);
+        for(int64_t i=threadIdx.x;i<width;i+=Threads){staged_weight[i]=weight[i];staged_input[i]=x[i];}
+        __syncthreads();dot_weight=staged_weight;dot_input=staged_input;
+    }
     float sum=0.f;
-    for(int64_t i=threadIdx.x;i<width;i+=128)sum=__fmaf_rn(weight[i],float(x[i]),sum);
-    for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffffu,sum,offset);
-    if(!lane)partial[warp]=sum;
+    if(threadIdx.x<128) {
+        for(int64_t i=threadIdx.x;i<width;i+=128)sum=__fmaf_rn(dot_weight[i],float(dot_input[i]),sum);
+        for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffffu,sum,offset);
+        if(!lane)partial[warp]=sum;
+    }
     __syncthreads();
     if(!warp) {
         sum=lane<4?partial[lane]:0.f;
@@ -24,7 +38,7 @@ __global__ void shared_gate_multiply_f32(const Input* input,const float* weight,
     }
     __syncthreads();
     const auto first=int64_t(blockIdx.x)*output_width;
-    for(int64_t i=threadIdx.x;i<output_width;i+=128)
+    for(int64_t i=threadIdx.x;i<output_width;i+=Threads)
         output[first+i]=__fmul_rn(partial[0],float(expert[first+i]));
 }
 }
@@ -39,13 +53,16 @@ std::optional<mfq_tensor_backend::Tensor> try_shared_gate_multiply_cuda(
     if(!supported(input) || !supported(weight) || !supported(expert_output) ||
             input.device()!=weight.device() || input.device()!=expert_output.device() ||
             weight.scalar_type()!=tb::kFloat32 || weight.size(0)!=1 || input.size(1)<1 ||
-            weight.size(1)!=input.size(1) || input.size(0)<1 || input.size(0)>6 ||
+            weight.size(1)!=input.size(1) || input.size(0)<1 ||
             expert_output.size(0)!=input.size(0) || expert_output.size(1)<1 ||
             (input.scalar_type()!=tb::kFloat16 && input.scalar_type()!=tb::kFloat32) ||
             (expert_output.scalar_type()!=tb::kFloat16 && expert_output.scalar_type()!=tb::kFloat32))return std::nullopt;
-    // dense_projection executes independent FP32 dots for these short
-    // windows. Only the FP32 addition tree changes; all values stay FP32.
+    // Scalar gates retain FP32 dots and outputs. More lanes hide the
+    // dependent input loads and shorten the fused output pass.
     mfq::cuda::DeviceGuard guard(input.get_device());
+    int grid_limit=0;
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&grid_limit,cudaDevAttrMaxGridDimX,input.get_device()));
+    if(input.size(0)>grid_limit)return std::nullopt;
     auto output=tb::empty(expert_output.sizes(),expert_output.options().dtype(tb::kFloat32));
     const auto stream_handle=mfq::cuda::current_stream(input.get_device());
     const auto stream=stream_handle.stream();
@@ -53,12 +70,37 @@ std::optional<mfq_tensor_backend::Tensor> try_shared_gate_multiply_cuda(
     const auto launch=[&](auto* source,auto* expert) {
         using Input=std::remove_cv_t<std::remove_pointer_t<decltype(source)>>;
         using Expert=std::remove_cv_t<std::remove_pointer_t<decltype(expert)>>;
-        const auto function=shared_gate_multiply_f32<Input,Expert>;
-        function<<<unsigned(input.size(0)),128,0,stream>>>(source,weight.data_ptr<float>(),expert,
-            output.data_ptr<float>(),input.size(1),expert_output.size(1));
-        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,"shared_gate_multiply_f32",
-            reinterpret_cast<const void*>(function),"rows="+std::to_string(input.size(0))+" K="+
-            std::to_string(input.size(1))+" output_width="+std::to_string(expert_output.size(1))+" output_float=1");
+        const auto invoke=[&]<int Threads,bool Staged>() ->bool {
+            const auto function=shared_gate_multiply_f32<Input,Expert,Threads,Staged>;
+            cudaFuncAttributes attributes{};
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaFuncGetAttributes(&attributes,function));
+            if(attributes.maxThreadsPerBlock<Threads)return false;
+            size_t shared=0;
+            if constexpr(Staged) {
+                int regular=0,optin=0;
+                TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&regular,cudaDevAttrMaxSharedMemoryPerBlock,input.get_device()));
+                TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&optin,cudaDevAttrMaxSharedMemoryPerBlockOptin,input.get_device()));
+                const auto capacity=size_t(std::max(regular,optin));
+                if(uint64_t(input.size(1))>capacity/(sizeof(Input)+sizeof(float)))return false;
+                shared=size_t(input.size(1))*(sizeof(Input)+sizeof(float));
+                if(shared+attributes.sharedSizeBytes>capacity)return false;
+                if(shared>size_t(attributes.maxDynamicSharedSizeBytes))
+                    TYLOINFER_NATIVE_CUDA_CHECK(cudaFuncSetAttribute(function,cudaFuncAttributeMaxDynamicSharedMemorySize,int(shared)));
+            }
+            function<<<unsigned(input.size(0)),Threads,shared,stream>>>(source,weight.data_ptr<float>(),expert,
+                output.data_ptr<float>(),input.size(1),expert_output.size(1));
+            if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,"shared_gate_multiply_f32",
+                reinterpret_cast<const void*>(function),"rows="+std::to_string(input.size(0))+" K="+
+                std::to_string(input.size(1))+" output_width="+std::to_string(expert_output.size(1))+
+                " threads="+std::to_string(Threads)+" input_cache="+std::to_string(Staged)+" original_dot_threads=128 output_float=1");
+            return true;
+        };
+        // Roughly eight input/output coordinates per lane bound the serial
+        // work. This depends on work size, not a GPU or checkpoint identity.
+        const auto work=std::max(input.size(1),expert_output.size(1));
+        if(work>256*8 && invoke.template operator()<512,true>())return;
+        if(work>128*8 && invoke.template operator()<256,true>())return;
+        if(!invoke.template operator()<128,false>())throw std::runtime_error("Shared gate exceeds device block resources");
     };
     const auto choose_output=[&](auto* source) {
         if(expert_output.scalar_type()==tb::kFloat16)launch(source,static_cast<const __half*>(expert_output.data_ptr()));

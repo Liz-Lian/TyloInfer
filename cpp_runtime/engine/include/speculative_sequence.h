@@ -99,6 +99,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     };
     struct DraftChain {
         std::vector<int32_t> tokens;
+        Tensor queued_tokens;
+        Tensor queued_ids;
         std::vector<std::vector<float>> probabilities;
         std::vector<CompactDistribution> compact_probabilities;
         std::vector<float> greedy_probabilities;
@@ -126,6 +128,12 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if constexpr(requires {ops.fixed_mtp_draft_depth();})
                 return std::min(ops.fixed_mtp_draft_depth(),maximum_depth);
             return 0;
+        }(),[&] {
+            if constexpr(requires {ops.blockwise_mtp_cost();})return ops.blockwise_mtp_cost();
+            return false;
+        }(),[&] {
+            if constexpr(requires {ops.periodic_mtp_cost();})return ops.periodic_mtp_cost();
+            return true;
         }());
     policy::ProbabilityDepthPolicy probability_policy(maximum_depth);
     if(probability_options.enabled())std::fprintf(stderr,
@@ -552,6 +560,25 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             auto history_ids=ops.ids_for(std::move(shifted));
             auto history_positions=positioned_prompt
                 ? ops.decode_positions(predictor_history_position+1,history_rows) : Tensor{};
+            if constexpr(requires(Ops& value,Tensor tensor,Tensor* ids) {
+                value.enqueue_greedy_chain(tensor,tensor,tensor,int{},ids);
+                value.resolve_queued_greedy(tensor,tensor);}) {
+                if(greedy && !penalties && !probability_options.enabled() && requested_depth>1 &&
+                        !mtp.split_target_verification()) {
+                    auto proposals=ops.enqueue_greedy_chain(hidden_rows,history_ids,history_positions,requested_depth,&result.queued_ids);
+                    if(ops.defined(proposals)) {
+                        require_execution(ops.rank(proposals)==1 && ops.size(proposals,0)==requested_depth,
+                            "queued predictor returned an incomplete device chain");
+                        require_execution(ops.defined(result.queued_ids) && ops.rank(result.queued_ids)==2 &&
+                            ops.size(result.queued_ids,0)==1 && ops.size(result.queued_ids,1)==requested_depth+1,
+                            "queued predictor returned an incomplete verification window");
+                        predictor_history_position+=history_rows;
+                        require_execution(mtp.cache_position()==predictor_history_position+requested_depth-1,
+                            "queued predictor cache did not advance");
+                        result.queued_tokens=std::move(proposals);return result;
+                    }
+                }
+            }
             if constexpr(requires {ops.predictor_greedy_chain(hidden_rows,history_ids,history_positions,requested_depth,next_ids.back());}) {
                 // Queue only when every proposal can be decided on the device.
                 // Probability policies and penalties retain their per-step decisions.
@@ -649,13 +676,18 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 if(output.stopped()){finish();co_return;}
                 continue;
             }
-            const int draft_count = static_cast<int>(draft.tokens.size());
+            const bool queued_draft=ops.defined(draft.queued_tokens);
+            const int draft_count = queued_draft?static_cast<int>(ops.size(draft.queued_tokens,0)):
+                static_cast<int>(draft.tokens.size());
             // Depth selection pays for the draft prepared before verification
             // as well. Keep that complete cycle when comparing with depth zero.
             const auto verify_started=Clock::now();
             Tensor verified_raw;
-            std::vector<int64_t> verify_ids{pending};
-            verify_ids.insert(verify_ids.end(), draft.tokens.begin(), draft.tokens.end());
+            std::vector<int64_t> verify_ids;
+            if(!queued_draft) {
+                verify_ids.push_back(pending);
+                verify_ids.insert(verify_ids.end(), draft.tokens.begin(), draft.tokens.end());
+            }
             Tensor verified;
             const bool split_target=mtp.split_target_verification();
             if (split_target) {
@@ -680,12 +712,11 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             } else {
                 if constexpr(requires { ops.begin_target_routes(int{}); })
                     if(draft_count>0)ops.begin_target_routes(draft_count+1);
-                verified = ops.target_forward(
-                    ops.ids_for(std::move(verify_ids)), &verified_raw, draft_count > 0 ? 1 : 0);
+                auto ids=queued_draft?draft.queued_ids:ops.ids_for(std::move(verify_ids));
+                verified = ops.target_forward(std::move(ids), &verified_raw, draft_count > 0 ? 1 : 0);
             }
             auto targets =
                 ops.reshape(ops.logits_for(verified), {draft_count + 1, model.vocab_size()});
-            const auto verify_finished=Clock::now();
 
             ++mtp.last_stats.cycles;
             mtp.last_stats.drafted_tokens += static_cast<uint64_t>(draft_count);
@@ -702,8 +733,17 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 result = {0, ops.sample_normal(ops.slice(targets, 0, 0, 1), row_counts), true};
             } else if (greedy) {
                 std::vector<int32_t> target_tokens;
+                if constexpr(requires {ops.resolve_queued_greedy(draft.queued_tokens,targets);}) {
+                    if(queued_draft) {
+                        auto resolved=ops.resolve_queued_greedy(draft.queued_tokens,targets);
+                        draft.tokens=std::move(resolved.first);target_tokens=std::move(resolved.second);
+                        require_execution(draft.tokens.size()==static_cast<size_t>(draft_count) &&
+                            target_tokens.size()==static_cast<size_t>(draft_count+1),
+                            "queued MTP token packet has an invalid size");
+                    }
+                }
                 if constexpr (requires { ops.greedy_tokens(targets); }) {
-                    if (!penalties) target_tokens = ops.greedy_tokens(targets);
+                    if (!penalties && target_tokens.empty()) target_tokens = ops.greedy_tokens(targets);
                 }
                 if (target_tokens.empty()) {
                     target_tokens.reserve(static_cast<size_t>(draft_count + 1));
@@ -801,7 +841,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 constraint_cursor->accept(result.next_token);
                 result.accepted_drafts = static_cast<size_t>(accepted);
             }
-            mtp.last_stats.target_ms+=std::chrono::duration<double,std::milli>(Clock::now()-verify_started).count();
+            // Target submission may be asynchronous. Verification includes
+            // sampling and acceptance, which finish before state resolution.
+            const auto verify_finished=Clock::now();
+            mtp.last_stats.target_ms+=std::chrono::duration<double,std::milli>(verify_finished-verify_started).count();
             mtp.last_stats.accepted_tokens += static_cast<uint64_t>(accepted);
             for (int position = 0; position < accepted; ++position) {
                 ++mtp.last_stats.position_accepted.at(static_cast<size_t>(position));
@@ -819,7 +862,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             const auto resolve_started=Clock::now();
             if (draft_count > 0) {
                 if (emitted_accepted == draft_count) {
-                    model.commit_speculative();
+                    if constexpr(requires { ops.commit_target(); })ops.commit_target();
+                    else model.commit_speculative();
                     resolve_routes(emitted_accepted+1);
                 } else {
                     const bool retained = [&] {

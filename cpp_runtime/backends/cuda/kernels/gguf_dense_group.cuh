@@ -88,9 +88,9 @@ __device__ __forceinline__ void project_dense_group_entry(const DenseGroupEntry&
     if constexpr(Format==GGML_TYPE_Q8_0 || Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q6_K || Format==GGML_TYPE_IQ4_XS || dense_long_reduction<Format>) {
         if(entry.cooperative) {
             constexpr int Outputs=M==1 || (Format==GGML_TYPE_Q6_K && M==2)?1:2;
-            if(entry.warps==2)project_dense_cooperative_q8_body<Format,M,Outputs,2>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
-            else if(entry.warps==3)project_dense_cooperative_q8_body<Format,M,Outputs,3>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
-            else project_dense_cooperative_q8_body<Format,M,Outputs,4>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
+            if(entry.warps==2)project_dense_cooperative_q8_body<Format,M,Outputs,2,PreparedDot<Format>,Format==GGML_TYPE_IQ4_XS>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
+            else if(entry.warps==3)project_dense_cooperative_q8_body<Format,M,Outputs,3,PreparedDot<Format>,Format==GGML_TYPE_IQ4_XS>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
+            else project_dense_cooperative_q8_body<Format,M,Outputs,4,PreparedDot<Format>,Format==GGML_TYPE_IQ4_XS>(packed,int(p.stride),int(p.rows),columns,M,native,output,half_output,tile,scratch);
             return;
         }
     }

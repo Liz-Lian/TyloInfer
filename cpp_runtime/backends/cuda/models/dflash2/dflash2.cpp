@@ -2,6 +2,7 @@
 #include "weight_quant.h"
 #include "gguf_weight.h"
 #include "models/qwen4_exp/ops.h"
+#include "models/qwen35/ops.h"
 #include "../../kernels/dflash2.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "mfq_weight_memory.h"
@@ -64,25 +65,27 @@ PreparedActivation prepared_storage(Tensor values) {
     result.scales=tb::empty({8*(padded/32)},result.values.options());
     return result;
 }
-// Strata's Q8_0 tile image replaces the original packed allocation. Large
-// prompt seeding reconstructs a temporary GGUF view for the existing PP GEMM.
+// The tiled image replaces the original allocation. The selected weight
+// format is shared by each projection group; activation quantization is Q8.
 struct TiledLinear {
     Tensor tiles;
+    ggml_type type=GGML_TYPE_Q8_0;
     int64_t out=0,columns=0,padded_out=0,padded_in=0;
     TiledLinear()=default;
     TiledLinear(const GgufWeight& weight) {
-        if(weight.type!=GGML_TYPE_Q8_0 || !weight.packed.is_cuda() || weight.out<=0 ||
+        if((weight.type!=GGML_TYPE_Q8_0 && weight.type!=GGML_TYPE_Q4_0) || !weight.packed.is_cuda() || weight.out<=0 ||
                 weight.out>std::numeric_limits<int>::max()-31 || weight.neuron_len<=0 ||
                 weight.neuron_len>std::numeric_limits<int>::max()-511 || weight.neuron_len%32)
-            throw std::invalid_argument("DFlash2 tiled linear requires a valid Q8_0 matrix");
+            throw std::invalid_argument("DFlash2 tiled linear requires a valid Q8_0 or Q4_0 matrix");
         const WeightAllocationScope allocation;
-        out=weight.out;columns=weight.neuron_len;
+        out=weight.out;columns=weight.neuron_len;type=weight.type;
         padded_out=(out+31)/32*32;padded_in=(columns+511)/512*512;
-        tiles=tb::empty({padded_out*(padded_in/32)*34},weight.packed.options());
+        tiles=tb::empty({padded_out*int64_t(mfq::gguf::row_bytes(type,padded_in))},weight.packed.options());
         const auto stream=mfq_current_cuda_stream();
         weight.packed.record_stream(reinterpret_cast<std::uintptr_t>(stream));
         tiles.record_stream(reinterpret_cast<std::uintptr_t>(stream));
-        q8_tile(weight.packed.data_ptr(),tiles.data_ptr(),int(out),int(columns),stream);
+        if(type==GGML_TYPE_Q4_0)q4_tile(weight.packed.data_ptr(),tiles.data_ptr(),int(out),int(columns),stream);
+        else q8_tile(weight.packed.data_ptr(),tiles.data_ptr(),int(out),int(columns),stream);
     }
     static std::vector<Tensor> group(std::initializer_list<const TiledLinear*> weights,Tensor input,const PreparedActivation* prepared=nullptr) {
         if(weights.size()<1 || weights.size()>3)throw std::invalid_argument("DFlash2 projection group differs");
@@ -104,7 +107,7 @@ struct TiledLinear {
             q8_quantize(input.data_ptr<float>(),codes.data_ptr(),scales.data_ptr<float>(),int(tokens),int(first.columns),stream);
         Q8TiledMatrix matrices[3];int index=0;
         for(const auto* weight:weights) {
-            if(weight->columns!=first.columns || weight->tiles.device()!=first.tiles.device())
+            if(weight->type!=first.type || weight->columns!=first.columns || weight->tiles.device()!=first.tiles.device())
                 throw std::invalid_argument("DFlash2 projection group input differs");
             auto shape=input.sizes().vec();shape.back()=weight->out;
             outputs.push_back(tb::empty(shape,input.options()));
@@ -112,7 +115,9 @@ struct TiledLinear {
             matrices[index++]={weight->tiles.data_ptr(),outputs.back().data_ptr<float>(),int(weight->out),int(weight->padded_out)};
         }
         codes.record_stream(stream_id);scales.record_stream(stream_id);
-        q8_gemm(matrices,index,codes.data_ptr(),scales.data_ptr<float>(),int(tokens),int(first.columns),stream);
+        if(first.type==GGML_TYPE_Q4_0)
+            q4_gemm(matrices,index,codes.data_ptr(),scales.data_ptr<float>(),int(tokens),int(first.columns),stream);
+        else q8_gemm(matrices,index,codes.data_ptr(),scales.data_ptr<float>(),int(tokens),int(first.columns),stream);
         return outputs;
     }
     Tensor forward(Tensor input,const PreparedActivation* prepared=nullptr) const {return group({this},std::move(input),prepared).front();}
@@ -120,7 +125,17 @@ struct TiledLinear {
 struct Loader {
     mfq::HfSafetensorsSource source;
     int device;
-    explicit Loader(const std::filesystem::path& directory, int selected) : source(directory), device(selected) {}
+    ggml_type linear_type=GGML_TYPE_Q8_0;
+    explicit Loader(const std::filesystem::path& directory, int selected) : source(directory), device(selected) {
+        const auto* value=std::getenv("TYLOINFER_DFLASH2_WEIGHT_TYPE");
+        if(value && value[0]) {
+            if(std::strcmp(value,"q4_0")==0)linear_type=GGML_TYPE_Q4_0;
+            else if(std::strcmp(value,"q8_0")!=0)
+                throw std::invalid_argument("TYLOINFER_DFLASH2_WEIGHT_TYPE must be q4_0 or q8_0");
+        }
+        std::cerr<<"runtime_dflash2_linear_weights format="
+            <<(linear_type==GGML_TYPE_Q4_0?"Q4_0":"Q8_0")<<'\n';
+    }
     Tensor host(const std::string& name, const std::vector<int64_t>& shape) {
         const auto* record = source.find_tensor(name);
         if (!record || !record->shape || *record->shape != shape)
@@ -139,9 +154,9 @@ struct Loader {
     GgufWeight linear(const std::string& name, int64_t rows, int64_t columns) {
         const WeightAllocationScope weights;
         auto input = host(name + ".weight", {rows, columns});
-        const auto stride = mfq::gguf::row_bytes(GGML_TYPE_Q8_0, columns);
-        auto packed=pack_q8_weight_cpu(input);
-        return {packed.to(tb::Device(tb::kCUDA, device)), GGML_TYPE_Q8_0, rows, columns, stride};
+        const auto stride = mfq::gguf::row_bytes(linear_type, columns);
+        auto packed=linear_type==GGML_TYPE_Q4_0?pack_q4_weight_cpu(input):pack_q8_weight_cpu(input);
+        return {packed.to(tb::Device(tb::kCUDA, device)), linear_type, rows, columns, stride};
     }
 };
 Tensor normalized(const Tensor& input, const Tensor& norm, float epsilon) {
@@ -304,6 +319,7 @@ struct Draft final : MtpModule {
     std::shared_ptr<Context> draft_graph_context;
     cudaStream_t draft_graph_stream=nullptr;
     bool draft_graph_owns_pool=false;
+    bool graph_initialized=false;
     Tensor draft_ids,draft_positions,draft_hidden;
     int64_t position = 0;
     int selector_row = 0;
@@ -435,6 +451,7 @@ struct Draft final : MtpModule {
         return gguf_expert_cache_budget_bytes(execution.gguf_expert_cache)<before;
     }
     void finish_graph_preparation(bool returned) {
+        graph_initialized=true;
         if(decode_workspace_changed)decode_workspace_changed();
         else if(returned)restore_gguf_decode_workspace_after_capture(execution.gguf_expert_cache);
     }
@@ -463,6 +480,7 @@ struct Draft final : MtpModule {
     }
     void reset(int64_t batch = 1) override {
         if (batch != 1) throw std::invalid_argument("DFlash2 draft context requires a single sequence");
+        graph_initialized=false;
         pending_context=nullptr;
         order_context_access();
         const ResidentAllocationScope resident;
@@ -484,6 +502,7 @@ struct Draft final : MtpModule {
     bool target_bootstrap_decode() const noexcept override { return false; }
     bool preserve_output_dtype() const noexcept override { return true; }
     bool blockwise_drafting() const noexcept override { return true; }
+    bool take_graph_initialization() noexcept override {return std::exchange(graph_initialized,false);}
     int preferred_context_update_batch_size() const noexcept override {return kQ8TileRows;}
     bool retains_partial_target_prefix() const noexcept override { return true; }
     bool supports_session_state() const noexcept override { return true; }
@@ -635,21 +654,29 @@ struct Draft final : MtpModule {
         // The block GEMM's eight activation lanes cover ordinary/MTP commits.
         // Keep large prompt seeding transient instead of retaining PP workspaces
         // in a persistent graph for each possible prompt length.
-        if(retained<=8 && graphs_enabled(context)) {
+        if(retained<=kQ8TileRows && graphs_enabled(context)) {
             ensure_graph_pool(context,stream);
-            auto& stage=context_graphs[retained];
+            // Q8 projections already reserve eight activation lanes. Keep
+            // that shape for every short commit so a new acceptance count
+            // never captures another complete draft graph during decoding.
+            // Negative positions mask padding when committing the KV rings.
+            auto& stage=context_graphs[kQ8TileRows];
             if(!stage) {
                 const ResidentAllocationScope resident;
                 stage=std::make_unique<ContextGraph>();
-                stage->hidden=tb::empty(input.sizes(),input.options().dtype(tb::kFloat32));
-                stage->positions=tb::empty(positions.sizes(),positions.options());
+                stage->hidden=tb::empty({1,kQ8TileRows,input.size(2)},input.options().dtype(tb::kFloat32));
+                stage->positions=tb::empty({kQ8TileRows},positions.options());
                 stage->stream=mfq_get_current_cuda_stream();
                 stage->flush=[this,ptr=stage.get()] {
                     const MfqCudaStreamGuard selected(ptr->stream);
                     execute_context_stage(*ptr);finish_context_access();
                 };
             }
-            stage->hidden.copy_(input);stage->positions.copy_(positions);
+            if(retained<kQ8TileRows) {
+                stage->hidden.zero_();stage->positions.fill_(-1);
+            }
+            stage->hidden.narrow(1,0,retained).copy_(input);
+            stage->positions.narrow(0,0,retained).copy_(positions);
             if(context_overlap && for_draft)pending_context=stage.get();
             else execute_context_stage(*stage);
         }else append_context_rows(input,positions);
@@ -658,8 +685,22 @@ struct Draft final : MtpModule {
     }
     Tensor block_hidden(const MtpTarget& target,const Tensor& ids,const Tensor& positions) {
         stage_mark(0,"block.begin");
-        auto hidden = target.embed(ids).to(tb::kBFloat16).to(tb::kFloat32);
-        if (mask_embedding.defined()) hidden.narrow(1, 1, c.block - 1).copy_(mask_embedding.reshape({1,1,c.hidden}).expand({1,c.block-1,c.hidden}));
+        auto embedded=target.embed(mask_embedding.defined()?ids.narrow(1,0,1):ids).contiguous();
+        if(embedded.numel()!=int64_t(c.hidden)*(mask_embedding.defined()?1:c.block))
+            throw std::invalid_argument("DFlash2 target embedding shape differs");
+        auto hidden=tb::empty({1,c.block,c.hidden},embedded.options().dtype(tb::kFloat32));
+        DraftEmbeddingType embedding_type;
+        switch(embedded.scalar_type()) {
+            case tb::kFloat32:embedding_type=DraftEmbeddingType::Float32;break;
+            case tb::kFloat16:embedding_type=DraftEmbeddingType::Float16;break;
+            case tb::kBFloat16:embedding_type=DraftEmbeddingType::BFloat16;break;
+            default:throw std::invalid_argument("DFlash2 target embedding type differs");
+        }
+        const auto stream=mfq_current_cuda_stream();
+        embedded.record_stream(reinterpret_cast<std::uintptr_t>(stream));
+        prepare_draft_hidden(embedded.data_ptr(),embedding_type,
+            mask_embedding.defined()?mask_embedding.data_ptr<float>():nullptr,
+            hidden.data_ptr<float>(),c.block,c.hidden,stream);
         stage_mark(1,"block.embedding");
         const auto table=rotation_table(positions,c);
         stage_mark(2,"block.rotary_table");
@@ -775,8 +816,9 @@ struct Draft final : MtpModule {
                 draft_ids=tb::full({1,c.block},c.mask,anchor.options());
                 draft_positions=tb::empty({c.block},anchor.options());
             }
-            draft_ids.narrow(1,0,1).copy_(anchor);
-            draft_positions.copy_(tb::arange(position,position+c.block,anchor.options()));
+            anchor.record_stream(reinterpret_cast<std::uintptr_t>(stream));
+            prepare_draft_inputs(anchor.data_ptr<int64_t>(),draft_ids.data_ptr<int64_t>(),
+                draft_positions.data_ptr<int64_t>(),c.block,position,stream);
             if(update) {
                 try {
                     const bool preparing=!update->round || !update->round->valid();
@@ -898,6 +940,18 @@ std::unique_ptr<MtpModule> load(CudaExecutionContext& execution, Qwen4CausalLm& 
     Loader loader(directory, execution.layer_placement.primary_device());
     auto draft = std::make_unique<Draft>(execution, loader, config);
     qwen4_set_hidden_capture_layers(target, config.target_layers);
+    return draft;
+}
+std::unique_ptr<MtpModule> load(CudaExecutionContext& execution, Qwen35CausalLm& target, const std::filesystem::path& directory) {
+    auto config = Config::load(directory);
+    if (config.hidden != target.hidden_size() || config.vocabulary != target.vocab_size() ||
+            config.target_layers.back() >= target.num_hidden_layers() || !target.supports_speculation())
+        throw std::invalid_argument("DFlash2 checkpoint is incompatible with the target");
+    Loader loader(directory, execution.layer_placement.primary_device());
+    auto draft = std::make_unique<Draft>(execution, loader, config);
+    auto capture = std::make_shared<Qwen35HiddenCapture>();
+    capture->layers = config.target_layers;
+    target.hidden_capture = std::move(capture);
     return draft;
 }
 }

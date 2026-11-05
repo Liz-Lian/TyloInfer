@@ -1,6 +1,6 @@
 #pragma once
-// M=1 covers each whole Q8 block before scaling; original GGUF bytes are unchanged.
-// Multi-token projections retain PreparedDot. These loads read global weights.
+// Cover each whole Q8 block before scaling; original GGUF bytes are unchanged.
+// M=1 and high-M Q6 windows share this decoder. These loads read global weights.
 template<int Format>struct M1PreparedAffineK {
     static constexpr int qk=256,parts=8,step=1;
     struct Weight {int codes[8];int scale0,scale1;float2 dm;};

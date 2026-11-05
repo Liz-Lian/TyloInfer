@@ -1,5 +1,6 @@
 #pragma once
 #include "mfq_cuda_linear_attention_ops.h"
+#include "mfq_cuda_gdn_replay_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "models/common/transformer_layer.h"
 #include "core/recurrent_mixer_state.h"
@@ -25,6 +26,9 @@ struct LinearRecurrentInputs {
   int64_t batch = 0;
   int64_t tokens = 0;
   bool split = false;
+  // Fused windows retain rank-one update records in value and raw QKV for
+  // convolution history. Prefix replay needs no repeated convolution/norm.
+  bool fused = false;
 };
 
 struct LinearAttentionBlock final : ::Block {
@@ -69,7 +73,7 @@ struct LinearAttentionBlock final : ::Block {
                                              mfq_tensor_backend::Tensor input,
                                              const Block::Context &context,
                                              const RopeCache &rope) override;
-  void commit_speculative() noexcept override;
+  void commit_speculative() override;
   void rollback_speculative(int64_t keep_position) override;
 
   void reset(int64_t B) override {
@@ -563,9 +567,9 @@ struct LinearAttentionBlock final : ::Block {
           };
           const auto projected=project_inputs(xn);
           normalized_prefill_input.reset();
-          // This fused core owns the complete single-token mixer transaction.
-          // Snapshot/speculative inputs keep the retained-projection path below.
-          if(execution.kl_mmq.mode==KlMmqMode::Default && T==1 && !captured && !split_in_proj &&
+          // Decode and short verification share the fused mixer arithmetic.
+          // Verification keeps confirmed recurrence unchanged until commit.
+          const bool fused_core_inputs=execution.kl_mmq.mode==KlMmqMode::Default && !split_in_proj &&
               taps>1 && core_conv_layout && std::isfinite(qwen_config.rms_norm_eps) &&
               qwen_config.rms_norm_eps>0 && dk==dv && (dk==32 || dk==64 || dk==128) &&
               (!conv_bias.defined() || conv_bias.numel()==0) && !dense_out_proj &&
@@ -577,7 +581,29 @@ struct LinearAttentionBlock final : ::Block {
               conv_weight.scalar_type()==mfq_tensor_backend::kFloat32 && conv_weight.is_contiguous() &&
               dt_bias.scalar_type()==mfq_tensor_backend::kFloat32 && dt_bias.is_contiguous() &&
               a_log.scalar_type()==mfq_tensor_backend::kFloat32 && a_log.is_contiguous() &&
-              linear_norm.scalar_type()==mfq_tensor_backend::kFloat32 && linear_norm.is_contiguous()) {
+              linear_norm.scalar_type()==mfq_tensor_backend::kFloat32 && linear_norm.is_contiguous();
+          if(fused_core_inputs && captured && B==1 && T>=2 && T<=8 && taps==4 && dk==128) {
+            const auto& p=projected;
+            auto weight=conv_weight;
+            if(weight.dim()==2 && weight.size(0)==conv_dim && weight.size(1)==taps)
+              weight=weight.reshape({conv_dim,1,taps});
+            const bool quantized=!out_proj.gguf.prefers_original_input();
+            const bool position_major=quantized && out_proj.gguf.prefers_position_major_q8(T);
+            auto result=profiler.measure("linear.verify_core",[&] {
+              return gdn_verify_window_cuda(p.qkv,p.output_gate,p.alpha.reshape({B,T,nv}),p.beta.reshape({B,T,nv}),
+                mixer.convolution,mixer.recurrent,weight,dt_bias,a_log,linear_norm,nk,nv,
+                qwen_config.rms_norm_eps,qwen_config.rms_norm_eps,true,false,transposed_gdn_state,
+                tiled_v_heads,quantized,position_major);
+            });
+            captured->qkv=p.qkv;captured->value=result[3];
+            captured->batch=B;captured->tokens=T;captured->split=false;captured->fused=true;
+            mixer.convolution.copy_(result[1]);mixer.speculative_recurrent=result[2];
+            return profiler.measure("linear.out_proj_prepared",[&] {
+              if(!quantized)return out_proj.forward(execution,result[0].reshape({B,T,vsz}));
+              return out_proj.gguf.forward_q8(result[0],T,mfq_tensor_backend::kFloat32,position_major).reshape({B,T,H});
+            });
+          }
+          if(fused_core_inputs && T==1 && !captured) {
             const auto& p=projected;
             if(!decode_core_workspace.defined() || decode_core_workspace.sizes().vec()!=std::vector<int64_t>({B,nv,dv+1}))
               decode_core_workspace=mfq_tensor_backend::zeros({B,nv,dv+1},mixer.recurrent.options());
@@ -789,6 +815,16 @@ struct LinearAttentionBlock final : ::Block {
                                           mfq_tensor_backend::Tensor rg,
                                           mfq_tensor_backend::Tensor rb) {
                   const bool transposed = transposed_gdn_state;
+                  if(captured) {
+                    // Leave committed recurrence at a stable address for the
+                    // next graph replay and any rejected-prefix restoration.
+                    if(transposed) {
+                      if(tiled_v_heads)return gdn_transposed_tiled_cuda(rq,rk,rv,rg,rb,mixer.recurrent);
+                      return gdn_transposed_cuda(rq,rk,rv,rg,rb,mixer.recurrent);
+                    }
+                    if(tiled_v_heads)return gdn_tiled_cuda(rq,rk,rv,rg,rb,mixer.recurrent);
+                    return gdn_cuda(rq,rk,rv,rg,rb,mixer.recurrent);
+                  }
                   if (transposed) {
                     if (tiled_v_heads)
                       return gdn_inplace_transposed_tiled_cuda(
@@ -809,7 +845,8 @@ struct LinearAttentionBlock final : ::Block {
                   return recurrent_step(q, k, v, gate_t, beta_t);
                 });
                 auto y = gd[0];
-                mixer.recurrent = gd[1];
+                if(captured)mixer.speculative_recurrent=gd[1];
+                else mixer.recurrent = gd[1];
 
                 return y;
               },
@@ -905,7 +942,9 @@ struct LinearAttentionBlock final : ::Block {
   }
 
   void replay_recurrent_cuda(const LinearRecurrentInputs &inputs,
-                             int64_t retained_tokens) {
+                             int64_t retained_tokens,
+                             const mfq_tensor_backend::Tensor& initial_convolution={},
+                             const mfq_tensor_backend::Tensor& initial_recurrent={}) {
     TYLOINFER_RUNTIME_CHECK(retained_tokens > 0 && retained_tokens <= inputs.tokens &&
                           inputs.batch > 0 && inputs.split == split_in_proj,
                       "invalid linear-attention recurrent replay");
@@ -917,6 +956,22 @@ struct LinearAttentionBlock final : ::Block {
     const int64_t dv = qwen_config.linear_value_head_dim;
     const int64_t ksz = qwen_config.linear_k_size();
     const int64_t vsz = qwen_config.linear_v_size();
+    if(inputs.fused) {
+      TYLOINFER_RUNTIME_CHECK(try_gdn_replay_updates_cuda(inputs.qkv,inputs.value,
+        initial_convolution.defined()?initial_convolution:mixer.convolution,
+        initial_recurrent.defined()?initial_recurrent:mixer.recurrent,
+        mixer.convolution,mixer.recurrent,T,transposed_gdn_state),
+        "invalid fused GDN verification update records");
+      return;
+    }
+    if(initial_convolution.defined() && initial_recurrent.defined()) {
+      if(!inputs.split && try_gdn_replay_state_cuda(inputs.normalized_k,inputs.convolved_v,
+          inputs.gate,inputs.beta,inputs.qkv,initial_convolution,initial_recurrent,
+          mixer.convolution,mixer.recurrent,T,transposed_gdn_state,tiled_v_heads))return;
+      mixer.convolution.copy_(initial_convolution);
+      if(mixer.recurrent.data_ptr()!=initial_recurrent.data_ptr())
+        mixer.recurrent.copy_(initial_recurrent);
+    }
     auto bias = conv_bias.defined()
                     ? conv_bias
                     : mfq_tensor_backend::empty(

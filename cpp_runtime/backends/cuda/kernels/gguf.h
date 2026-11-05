@@ -113,6 +113,26 @@ void snapshot_direct_plan(const void* mapped,const std::uint32_t* cancelled,void
     std::uint64_t capacity,const std::int32_t* cpu_slots,std::int32_t* device_slots,
     std::int64_t slots,const RouteGroup* host_groups,RouteGroup* device_groups,
     std::int64_t group_capacity,cudaStream_t stream);
+// All mapped inputs are published by ready before the snapshot. Address
+// tables are optional; CPU slots and route groups retain independent limits.
+struct StreamPlanSnapshot {
+    const std::uint32_t* ready=nullptr;
+    const void* mapped=nullptr;
+    const std::uint32_t* cancelled=nullptr;
+    void* snapshot=nullptr;
+    std::uint64_t capacity=0;
+    const std::int32_t* cpu_slots=nullptr;
+    std::int32_t* device_slots=nullptr;
+    std::int64_t slots=0;
+    const RouteGroup* host_groups=nullptr;
+    RouteGroup* device_groups=nullptr;
+    std::int64_t group_capacity=0;
+    const std::uint64_t* mapped_addresses=nullptr;
+    std::uint64_t* addresses=nullptr;
+    const std::int64_t* ids=nullptr;
+    std::int64_t selected_slots=0,experts=0;
+};
+void snapshot_stream_plan(const StreamPlanSnapshot&,cudaStream_t stream);
 // Preserve the native per-expert FP16 rounding before summation. Optional
 // mapped CPU values replace their GPU slots in the same reduction kernel.
 void reduce_moe_output(const float* pairs,const float* weights,std::int64_t tokens,

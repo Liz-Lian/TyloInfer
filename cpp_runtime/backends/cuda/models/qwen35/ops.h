@@ -19,6 +19,7 @@ struct Block;
 namespace mfq::cuda::qwen35 {
 
 using Config = mfq::models::qwen35::Config;
+class MtpTargetGraphs;
 
 std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::ModelSource &source,
                                     const Config &config, int layer, const std::string &type,
@@ -37,9 +38,26 @@ void restore_text_session_state(std::vector<std::unique_ptr<::Block>> &blocks,
 
 namespace mfq::cuda {
 
+struct Qwen35HiddenCapture {
+    std::vector<int64_t> layers;
+    std::vector<mfq_tensor_backend::Tensor> values;
+    int64_t next_layer = 0;
+    bool active = false;
+    // A block predictor's target graphs share the configured hidden taps'
+    // lifetime. Individual requests must not discard already captured shapes.
+    std::shared_ptr<qwen35::MtpTargetGraphs> target_graphs;
+};
+
 struct Qwen35Model : CausalResources {
     template <class Backend> using CausalModel = mfq::models::qwen35::CausalLm<Backend>;
     mfq::models::qwen35::Config config;
+    std::shared_ptr<Qwen35HiddenCapture> hidden_capture;
+
+    void adapter_begin_forward(bool capture_raw_hidden);
+    void adapter_capture_hidden(const mfq_tensor_backend::Tensor& hidden);
+    mfq_tensor_backend::Tensor adapter_raw_hidden(
+        const mfq_tensor_backend::Tensor& hidden,
+        const mfq_tensor_backend::Tensor& finalized) const;
 
     void adapter_validate_components(const mfq::ModelGraph &graph) const;
     void adapter_configure_rope(RopeCache &rope, mfq_tensor_backend::Device device) const;

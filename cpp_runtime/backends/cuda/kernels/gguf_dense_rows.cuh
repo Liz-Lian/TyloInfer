@@ -6,6 +6,15 @@
 namespace mfq::cuda::gguf {
 namespace {
 
+// Choose one K partition and addition order for every IQ4_XS packet and M.
+// Four complete warps need at least 128 independent fragments. Three warps
+// avoid an incomplete second iteration when they divide the fragments evenly.
+inline int canonical_iq4_k_warps(std::int64_t columns) {
+    const auto parts=columns/32;
+    if(parts<128)return 1;
+    return parts%96==0 && parts%128!=0?3:4;
+}
+
 template<class Dot>
 __device__ __forceinline__ auto load_dense_m1_weight(const void* packed,int block,int part) {
     if constexpr(requires {Dot::load_streaming(packed,block,part);})
@@ -130,16 +139,37 @@ __global__ void __launch_bounds__(32*BlockWarps) project_dense_reused_q8(
     else if constexpr(Rows==2)project_dense_single_q8_body<Format>(packed,stride,rows,columns,input,output,half_output,blockIdx.x,scratch);
     else project_dense_reused_q8_body<Format,Rows>(packed,stride,rows,columns,input,output,half_output,blockIdx.x);
 }
-template<int Format,int Tokens,int OutputRows,int Warps=4>
+template<class F>__device__ __forceinline__ typename F::Activation window_activation(
+        const block_q8_1* input,int columns,int token,int block,int part){
+    if constexpr(requires {F::load_window_activation(input,columns,token,block,part);})
+        return F::load_window_activation(input,columns,token,block,part);
+    else return F::load_activation(input+token*(columns/32)+block*(F::qk/32),part);
+}
+
+template<int Format,int Tokens,int OutputRows,int Warps=4,class Prepared=PreparedDot<Format>,bool WarpFirst=false>
 __device__ __forceinline__ void project_dense_cooperative_q8_body(
         const std::uint8_t* packed,int stride,int rows,int columns,int tokens,
         const block_q8_1* input,void* output,bool half_output,unsigned tile,float* scratch) {
-    using F=PreparedDot<Format>;
+    using F=Prepared;
     const int row0=int(tile)*OutputRows,lane=int(threadIdx.x),warp=int(threadIdx.y);
     float sums[OutputRows][Tokens]{};
     for(int i=warp*32+lane;warp<Warps && i<columns/F::qk*F::parts;i+=32*Warps) {
         const int block=i/F::parts,part=F::step*(i%F::parts);
-        if constexpr(OutputRows==2 && requires {typename F::Activation;}) {
+        if constexpr(OutputRows>2 && WarpFirst && requires {typename F::Activation;}) {
+            // Load each weight fragment once for the complete token window.
+            // A token's activation is consumed by all rows before preparing
+            // the next token, keeping its live register interval short.
+            typename F::Weight weights[OutputRows];
+            #pragma unroll
+            for(int r=0;r<OutputRows;++r)
+                weights[r]=F::load(packed+std::uint64_t(min(row0+r,rows-1))*stride,block,part);
+            #pragma unroll
+            for(int t=0;t<Tokens;++t)if(t<tokens) {
+                const auto activation=window_activation<F>(input,columns,t,block,part);
+                #pragma unroll
+                for(int r=0;r<OutputRows;++r)sums[r][t]+=F::apply_activation(weights[r],activation);
+            }
+        }else if constexpr(OutputRows==2 && requires {typename F::Activation;}) {
             // Keep two decoded weight fragments and retire each token's
             // activation immediately. Keeping all token activations alive
             // across output rows raises register pressure at small M.
@@ -149,7 +179,7 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
             const auto second=F::load(packed+std::uint64_t(min(row0+1,rows-1))*stride,block,part);
             #pragma unroll
             for(int t=0;t<Tokens;++t)if(t<tokens) {
-                const auto activation=F::load_activation(input+t*(columns/32)+block*(F::qk/32),part);
+                const auto activation=window_activation<F>(input,columns,t,block,part);
                 sums[0][t]+=F::apply_activation(first,activation);
                 if(row0+1<rows)sums[1][t]+=F::apply_activation(second,activation);
             }
@@ -159,7 +189,7 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
             typename F::Activation activation[Tokens];
             #pragma unroll
             for(int t=0;t<Tokens;++t)if(t<tokens)
-                activation[t]=F::load_activation(input+t*(columns/32)+block*(F::qk/32),part);
+                activation[t]=window_activation<F>(input,columns,t,block,part);
             #pragma unroll
             for(int r=0;r<OutputRows;++r)if(row0+r<rows) {
                 const auto weight=F::load(packed+std::uint64_t(row0+r)*stride,block,part);
@@ -176,7 +206,31 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
         }
         }
     }
-    auto& partial=*reinterpret_cast<float(*)[Warps-1][OutputRows][Tokens][32]>(scratch);
+    constexpr int Count=OutputRows*Tokens,Capacity=warp_sums::capacity(Count);
+    if constexpr(WarpFirst) {
+        static_assert(Count<=32);
+        // Reduce each warp before exchanging its partial results. This
+        // needs one float per output and warp, instead of one per lane.
+        float values[Capacity]{};
+        #pragma unroll
+        for(int r=0;r<OutputRows;++r)
+            #pragma unroll
+            for(int t=0;t<Tokens;++t)values[r*Tokens+t]=sums[r][t];
+        const float value=warp_sums::reduce<Capacity>(values,lane);
+        const int index=warp_sums::index<Capacity>(lane);
+        const bool owner=lane==warp_sums::owner<Capacity>(index);
+        if(owner && index<Count)scratch[warp*Capacity+index]=value;
+        __syncthreads();
+        if(warp || !owner || index>=Count)return;
+        float sum=scratch[index];
+        #pragma unroll
+        for(int w=1;w<Warps;++w)sum+=scratch[w*Capacity+index];
+        const int row=row0+index/Tokens,token=index%Tokens;
+        if(row<rows && token<tokens)
+            store_projection(output,std::int64_t(token)*rows+row,sum,half_output);
+        return;
+    }
+    auto& partial=*reinterpret_cast<float(*)[Warps>1?Warps-1:1][OutputRows][Tokens][32]>(scratch);
     if(warp && warp<Warps) {
         #pragma unroll
         for(int r=0;r<OutputRows;++r)
@@ -185,7 +239,6 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
     }
     __syncthreads();
     if(warp)return;
-    constexpr int Count=OutputRows*Tokens,Capacity=warp_sums::capacity(Count);
     float values[Capacity]{};
     #pragma unroll
     for(int r=0;r<OutputRows;++r) {
@@ -202,12 +255,13 @@ __device__ __forceinline__ void project_dense_cooperative_q8_body(
     if(index<Count && row0+r<rows && t<tokens && lane==warp_sums::owner<Capacity>(index))
         store_projection(output,t*rows+row0+r,sum,half_output);
 }
-template<int Format,int Tokens,int OutputRows,int Warps=4>
+template<int Format,int Tokens,int OutputRows,int Warps=4,class Prepared=PreparedDot<Format>,bool WarpFirst=false>
 __global__ void __launch_bounds__(32*Warps) project_dense_cooperative_q8(
         const std::uint8_t* packed,int stride,int rows,int columns,int tokens,
         const block_q8_1* input,void* output,bool half_output) {
-    __shared__ float partial[(Warps-1)*OutputRows*Tokens*32];
-    project_dense_cooperative_q8_body<Format,Tokens,OutputRows,Warps>(packed,stride,rows,columns,tokens,
+    __shared__ float partial[WarpFirst?Warps*warp_sums::capacity(OutputRows*Tokens):
+        (Warps>1?Warps-1:1)*OutputRows*Tokens*32];
+    project_dense_cooperative_q8_body<Format,Tokens,OutputRows,Warps,Prepared,WarpFirst>(packed,stride,rows,columns,tokens,
         input,output,half_output,blockIdx.x,partial);
 }
 }

@@ -5,14 +5,26 @@
 #include <cstdint>
 #include <vector>
 
-// Single-token FP16/FP32 projections, FP32 Q/K normalization and table RoPE.
+// FP16/FP32 projections, FP32 Q/K normalization and table RoPE.
 // Accepts strided head views and writes contiguous FP16 KV caches directly.
+// Positions may be shared [tokens] or independent [batch,tokens].
 mfq_tensor_backend::Tensor qk_norm_rope_cache_cuda(
     mfq_tensor_backend::Tensor query,mfq_tensor_backend::Tensor key,mfq_tensor_backend::Tensor value,
     mfq_tensor_backend::Tensor query_weight,mfq_tensor_backend::Tensor key_weight,
     mfq_tensor_backend::Tensor positions,mfq_tensor_backend::Tensor write_positions,
     mfq_tensor_backend::Tensor cosine,mfq_tensor_backend::Tensor sine,
     mfq_tensor_backend::Tensor key_cache,mfq_tensor_backend::Tensor value_cache,
+    int64_t rotary_dim,double eps,double weight_offset);
+
+// Same normalization/RoPE arithmetic, writing FP16 physical pages directly.
+// Chunk pointer tables are int64[chunks]; pages is int32[batch,logical_pages].
+mfq_tensor_backend::Tensor qk_norm_rope_paged_cache_cuda(
+    mfq_tensor_backend::Tensor query,mfq_tensor_backend::Tensor key,mfq_tensor_backend::Tensor value,
+    mfq_tensor_backend::Tensor query_weight,mfq_tensor_backend::Tensor key_weight,
+    mfq_tensor_backend::Tensor positions,mfq_tensor_backend::Tensor write_positions,
+    mfq_tensor_backend::Tensor cosine,mfq_tensor_backend::Tensor sine,
+    mfq_tensor_backend::Tensor key_chunks,mfq_tensor_backend::Tensor value_chunks,
+    mfq_tensor_backend::Tensor pages,int64_t page_size,int64_t pages_per_chunk,
     int64_t rotary_dim,double eps,double weight_offset);
 
 void qsa_pool_rotary_cache_cuda(

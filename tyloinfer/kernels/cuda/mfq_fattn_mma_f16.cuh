@@ -2054,9 +2054,30 @@ static __global__ void flash_attn_ext_f16(
 
     const int stride_V = V_is_K_view ? stride_K : nb21 / sizeof(half2);
 
-    const int iter_k     = (ne11      + (nbatch_fa - 1)) / nbatch_fa;
     const int iter_j     = (ne01.z    + (ncols1    - 1)) / ncols1;
     const int iter_z_gqa = (gqa_ratio + (ncols2    - 1)) / ncols2;
+    int iter_k = (ne11 + nbatch_fa - 1) / nbatch_fa;
+    // Multi-query tiles use one request plan for every query, including
+    // singleton decode. A growing prefix cannot change the reduction tree.
+    if constexpr (logical_prefix && ncols1==1) {
+        const int destinations = iter_j * iter_z_gqa * ne12 * ne03;
+        // A uniform split assigns a fixed group of blocks to each output
+        // tile. Its sequence is known before splitting the reduction, so
+        // graph replays can distribute the current logical prefix instead
+        // of leaving most blocks beyond a short prefix in a large cache.
+        if (gridDim.x % destinations == 0) {
+            const int blocks_per_output = int(gridDim.x) / destinations;
+            const int output_tile = int(blockIdx.x) / blocks_per_output;
+            const int sequence = output_tile / (iter_j*iter_z_gqa*ne12);
+            int length = int(max(int64_t(0), min(int64_t(ne11), KV_max_ptr[sequence])));
+            if constexpr(ncols1==1)
+                length=max(0,length-int(ne01.z)+output_tile%iter_j+1);
+            // Every block must emit partial-result metadata, including
+            // empty tails. Keep at least one work tile per block.
+            iter_k = max((length + nbatch_fa - 1) / nbatch_fa,
+                         int(gridDim.x) / destinations);
+        }
+    }
 
     // kbc == k block continuous, current index in continuous ijk space.
     int       kbc      = int64_t(blockIdx.x + 0)*(iter_k*iter_j*iter_z_gqa*ne12*ne03) / gridDim.x;
@@ -2096,8 +2117,9 @@ static __global__ void flash_attn_ext_f16(
         if constexpr(logical_prefix){
             const int length=int(max(int64_t(0),min(int64_t(ne11),KV_max_ptr[sequence])));
             if constexpr(ncols1==1) {
-                prefix_input.logical_prefix_length=length;
-                prefix_input.causal_query_offset=length-1;
+                prefix_input.logical_prefix_length=max(0,length-int(ne01.z)+jt+1);
+                prefix_input.causal_query_offset=length-int(ne01.z);
+                prefix_input.causal_row_count=prefix_input.logical_prefix_length;
             }else {
                 prefix_input.logical_prefix_length=max(0,length-int(ne01.z)+1);
                 prefix_input.causal_query_offset=length-int(ne01.z);
@@ -2106,7 +2128,8 @@ static __global__ void flash_attn_ext_f16(
                 // probability multiplied by an unreadable/NaN V is unsafe.
                 prefix_input.causal_row_count=length;
             }
-            kb0_stop=min(kb0_stop,(length+nbatch_fa-1)/nbatch_fa);
+            const int visible=ncols1==1?prefix_input.logical_prefix_length:length;
+            kb0_stop=min(kb0_stop,(visible+nbatch_fa-1)/nbatch_fa);
         }
         if (KV_max) {
             if (implicit_causal && use_kv_range) {
@@ -2176,14 +2199,16 @@ static __global__ void flash_attn_ext_f16(
     if constexpr(logical_prefix){
         const int length=int(max(int64_t(0),min(int64_t(ne11),KV_max_ptr[sequence])));
         if constexpr(ncols1==1) {
-            prefix_input.logical_prefix_length=length;
-            prefix_input.causal_query_offset=length-1;
+            prefix_input.logical_prefix_length=max(0,length-int(ne01.z)+jt+1);
+            prefix_input.causal_query_offset=length-int(ne01.z);
+            prefix_input.causal_row_count=prefix_input.logical_prefix_length;
         }else {
             prefix_input.logical_prefix_length=max(0,length-int(ne01.z)+1);
             prefix_input.causal_query_offset=length-int(ne01.z);
             prefix_input.causal_row_count=length;
         }
-        kb0_stop=min(kb0_stop,(length+nbatch_fa-1)/nbatch_fa);
+        const int visible=ncols1==1?prefix_input.logical_prefix_length:length;
+            kb0_stop=min(kb0_stop,(visible+nbatch_fa-1)/nbatch_fa);
     }
     if (KV_max) {
         if (implicit_causal && use_kv_range) {

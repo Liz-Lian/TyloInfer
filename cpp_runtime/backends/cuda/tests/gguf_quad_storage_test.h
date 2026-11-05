@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gguf_split_activation_test.h"
+
 void run_quad_decode_views() {
     namespace gg=mfq::cuda::gguf;
     const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
@@ -71,6 +73,7 @@ void run_quad_decode_views() {
 // kernels, including small decode windows, prefill, aliases and graph replay.
 void run_quad_compute_storage() {
     namespace gg=mfq::cuda::gguf;
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const ggml_type formats[]={GGML_TYPE_IQ1_S,GGML_TYPE_IQ1_M,GGML_TYPE_IQ2_XXS,
         GGML_TYPE_IQ2_XS,GGML_TYPE_IQ2_S,GGML_TYPE_IQ3_XXS,GGML_TYPE_IQ3_S,GGML_TYPE_Q2_K};
     const auto cpu=tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32);
@@ -223,6 +226,7 @@ void run_quad_compute_storage() {
             "GGUF grouped in-place base skipped or repeated its neuron correction");
         ++cases;
     }
+    cases+=run_quad_split_activation_checks();
     std::cout<<"GGUF exact-size in-place storage, projections, prefill, views, neuron corrections and changing graphs: "
         <<cases<<" cases PASS\n";
 }

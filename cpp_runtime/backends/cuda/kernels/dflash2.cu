@@ -3,6 +3,7 @@
 #include "kernel_dispatch_trace.h"
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <algorithm>
 #include <cmath>
 #include <climits>
 #include <type_traits>
@@ -19,6 +20,23 @@ __device__ float warp_sum(float value) {
 void check() {
     const auto status = cudaGetLastError();
     if (status != cudaSuccess) throw std::runtime_error(cudaGetErrorString(status));
+}
+__global__ void draft_inputs(const int64_t* anchor,int64_t* ids,int64_t* positions,int rows,int64_t start) {
+    if(threadIdx.x==0)ids[0]=anchor[0];
+    for(int64_t row=threadIdx.x;row<rows;row+=blockDim.x)positions[row]=start+row;
+}
+template<class Input>
+__global__ void draft_hidden(const Input* input,const float* mask,float* output,int64_t elements,int width) {
+    for(int64_t i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;i<elements;i+=int64_t(gridDim.x)*blockDim.x) {
+        if(mask && i>=width)output[i]=mask[i%width];
+        else {
+            float value;
+            if constexpr(std::is_same_v<Input,float>)value=input[i];
+            else if constexpr(std::is_same_v<Input,half>)value=__half2float(input[i]);
+            else value=__bfloat162float(input[i]);
+            output[i]=rounded(value);
+        }
+    }
 }
 __global__ void normalized(const float* input,const float* norm,float* output,int rows,int width,float epsilon) {
     const int row=blockIdx.x*4+threadIdx.y,lane=threadIdx.x;
@@ -143,6 +161,9 @@ __global__ void pack_context(const float* key,const float* value,const float* no
     int rows,int heads,int dimension,int window,float epsilon) {
     const int item=blockIdx.x*4+threadIdx.y,lane=threadIdx.x;
     if(item>=rows*heads)return;
+    // A fixed-width context graph pads unused rows with a negative position.
+    // Keep every untouched ring cell intact, including at the wrap boundary.
+    if(positions[item/heads]<0)return;
     const auto* input=key+int64_t(item)*dimension;
     float square=0.f;for(int d=lane;d<dimension;d+=32)square+=input[d]*input[d];
     const float inverse=rsqrtf(warp_sum(square)/dimension+epsilon);
@@ -287,6 +308,32 @@ __global__ void select(const std::int64_t* compact, int count, const std::int64_
     edge = warp_sum(edge);
     if (!lane) output[token] = __uint_as_float(std::uint32_t(packed >> 32)) + edge;
 }
+}
+void prepare_draft_inputs(const int64_t* anchor,int64_t* ids,int64_t* positions,int rows,int64_t start,cudaStream_t stream) {
+    if(!anchor || !ids || !positions || rows<1 || start>INT64_MAX-(int64_t(rows)-1))
+        throw std::invalid_argument("DFlash2 draft input geometry differs");
+    draft_inputs<<<1,256,0,stream>>>(anchor,ids,positions,rows,start);check();
+    if(dispatch_trace::enabled())dispatch_trace::record(stream,"dflash2_prepare_inputs",
+        reinterpret_cast<const void*>(draft_inputs),"M="+std::to_string(rows)+" fused_range_anchor=1");
+}
+void prepare_draft_hidden(const void* input,DraftEmbeddingType type,const float* mask,float* output,int rows,int width,cudaStream_t stream) {
+    if(!input || !output || rows<1 || width<1 || input==output)
+        throw std::invalid_argument("DFlash2 draft embedding geometry differs");
+    const int64_t elements=int64_t(rows)*width;
+    const auto launch=[&]<class Input>() {
+        const auto function=draft_hidden<Input>;
+        const unsigned blocks=unsigned(std::min<int64_t>((elements+255)/256,65535));
+        function<<<blocks,256,0,stream>>>(static_cast<const Input*>(input),mask,output,elements,width);
+        if(dispatch_trace::enabled())dispatch_trace::record(stream,"dflash2_prepare_hidden",
+            reinterpret_cast<const void*>(function),"M="+std::to_string(rows)+" anchor_only="+std::to_string(mask!=nullptr));
+    };
+    switch(type) {
+        case DraftEmbeddingType::Float32:launch.template operator()<float>();break;
+        case DraftEmbeddingType::Float16:launch.template operator()<half>();break;
+        case DraftEmbeddingType::BFloat16:launch.template operator()<__nv_bfloat16>();break;
+        default:throw std::invalid_argument("DFlash2 draft embedding type differs");
+    }
+    check();
 }
 void rms_norm(const float* input,const float* weight,float* output,int rows,int width,float epsilon,cudaStream_t stream) {
     if(rows<=0 || width<=0)return;

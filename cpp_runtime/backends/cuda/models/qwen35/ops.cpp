@@ -2,6 +2,7 @@
 #include "ops.h"
 #include "storage/session_codec.h"
 #include "linear_attention.h"
+#include "runtime/recurrent_copy_batch.h"
 
 #include "storage/transformer_loader.h"
 
@@ -120,7 +121,7 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
                           mixer.convolution.defined() && mixer.recurrent.defined(),
                       "invalid Qwen3.5 speculative linear-attention transaction");
 
-    mixer.checkpoint();
+    mixer.checkpoint_convolution();
     speculative_start = context.cache_position;
     speculative_confirmed = context.confirmed_prefix;
     speculative_tokens = input.size(1);
@@ -138,13 +139,17 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
         ++speculative_ffn_batches;
         return result;
     } catch (...) {
-        mixer.restore();
+        mixer.convolution.copy_(mixer.speculative_convolution);
         clear_speculative();
         throw;
     }
 }
 
-void LinearAttentionBlock::commit_speculative() noexcept { clear_speculative(); }
+void LinearAttentionBlock::commit_speculative() {
+    if(mixer.speculative_pending && mixer.speculative_recurrent.defined())
+        copy_recurrent_state(mixer.recurrent,mixer.speculative_recurrent);
+    clear_speculative();
+}
 
 void LinearAttentionBlock::rollback_speculative(int64_t keep_position) {
     TYLOINFER_RUNTIME_CHECK(mixer.speculative_pending &&
@@ -152,11 +157,11 @@ void LinearAttentionBlock::rollback_speculative(int64_t keep_position) {
                           keep_position < speculative_start + speculative_tokens,
                       "invalid Qwen3.5 speculative rollback position");
     const int64_t retained = keep_position - speculative_start;
-    mixer.restore();
     try {
         // Restore only convolution/GDN state from the retained projected
         // rows; target projections, output projection and FFN are not rerun.
-        replay_recurrent_cuda(speculative_inputs, retained);
+        replay_recurrent_cuda(speculative_inputs, retained,
+            mixer.speculative_convolution,mixer.recurrent);
         clear_speculative();
     } catch (...) {
         clear_speculative();
@@ -263,6 +268,36 @@ void restore_text_session_state(std::vector<std::unique_ptr<::Block>> &blocks,
 } // namespace mfq::cuda::qwen35
 
 namespace mfq::cuda {
+
+void Qwen35Model::adapter_begin_forward(bool capture_raw_hidden) {
+    if (!hidden_capture) return;
+    auto& capture = *hidden_capture;
+    capture.active = capture_raw_hidden;
+    capture.next_layer = 0;
+    capture.values.clear();
+    if (capture.active) capture.values.resize(capture.layers.size());
+}
+
+void Qwen35Model::adapter_capture_hidden(const mfq_tensor_backend::Tensor& hidden) {
+    if (!hidden_capture || !hidden_capture->active) return;
+    auto& capture = *hidden_capture;
+    const auto layer = capture.next_layer++;
+    const auto selected = std::lower_bound(capture.layers.begin(), capture.layers.end(), layer);
+    if (selected != capture.layers.end() && *selected == layer)
+        capture.values[selected - capture.layers.begin()] =
+            hidden.to(mfq_tensor_backend::kFloat32).contiguous();
+}
+
+mfq_tensor_backend::Tensor Qwen35Model::adapter_raw_hidden(
+        const mfq_tensor_backend::Tensor& hidden,
+        const mfq_tensor_backend::Tensor&) const {
+    if (!hidden_capture || !hidden_capture->active) return hidden;
+    const auto& capture = *hidden_capture;
+    TYLOINFER_RUNTIME_CHECK(std::all_of(capture.values.begin(), capture.values.end(),
+        [](const auto& value) { return value.defined(); }),
+        "DFlash2 target hidden states were not fully captured");
+    return mfq_tensor_backend::cat(capture.values, -1).contiguous();
+}
 
 void Qwen35Model::adapter_validate_components(const mfq::ModelGraph &graph) const {
     if (graph.component("vision") != nullptr &&

@@ -119,7 +119,7 @@ __device__ __forceinline__ void project_compact_routed_staged_body(const std::ui
     const auto* book=storage;
     auto* words=storage+(Shared?2048:0);
     bool book_ready=false;
-    constexpr int Bytes=2+Bits*Steps/8,Threads=256,Lanes=Narrow?8:16,RowTile=Threads/Lanes,ActivationChunk=1024;
+    constexpr int Bytes=2+Bits*Steps/8,Threads=256,Lanes=Narrow?8:16,RowTile=(Narrow?2:1)*(Threads/Lanes),ActivationChunk=1024;
     const int tid=threadIdx.x,lane=tid%Lanes;
     const auto blocks=columns/32,words_per_row=blocks*9;
     if constexpr(Paired)if(blockIdx.z){addresses=second_addresses;stride=second_stride;output=second_output;}
@@ -157,16 +157,26 @@ __device__ __forceinline__ void project_compact_routed_staged_body(const std::ui
                 }
                 for(auto tile=std::int64_t(blockIdx.x);tile<(rows+RowTile-1)/RowTile;tile+=gridDim.x) {
                     const auto row=tile*RowTile+tid/Lanes;
-                    float sum[Count]{};
+                    const auto other_row=min(row+Threads/Lanes,rows-1);
+                    float sum[Count]{},sum2[Count]{};
                     const auto compute_block=[&](std::int64_t block,std::int64_t first,std::int64_t chunk) {
                         const auto* q=reinterpret_cast<const std::uint8_t*>(pointer)+row*stride+block*Bytes;
+                        const auto* q2=reinterpret_cast<const std::uint8_t*>(pointer)+other_row*stride+block*Bytes;
                         const float scale=scale_at(q);
+                        const float scale2=Narrow?scale_at(q2):0.f;
                         const auto window=[&] {if constexpr(Narrow)return compact_detail::sixteen_window<Bits,Steps>(q+2,lane);
                             else return compact_detail::eight_window<Bits,Steps>(q+2,lane);}();
+                        const auto window2=[&] {if constexpr(Narrow)return compact_detail::sixteen_window<Bits,Steps>(q2+2,lane);
+                            else return window;}();
                         const auto apply=[&]<int Part>() {
                             auto w=[&] {if constexpr(Narrow)return compact_detail::sixteen_part<Bits,Steps,Part,Shared>(window,book);
                                 else return compact_detail::eight_part<Bits,Steps,Part,Shared>(window,book);}();
+                            auto w2=[&] {if constexpr(Narrow)return compact_detail::sixteen_part<Bits,Steps,Part,Shared>(window2,book);
+                                else return w;}();
                             w.x=__fmul_rn(w.x,scale);w.y=__fmul_rn(w.y,scale);w.z=__fmul_rn(w.z,scale);w.w=__fmul_rn(w.w,scale);
+                            if constexpr(Narrow) {
+                                w2.x=__fmul_rn(w2.x,scale2);w2.y=__fmul_rn(w2.y,scale2);w2.z=__fmul_rn(w2.z,scale2);w2.w=__fmul_rn(w2.w,scale2);
+                            }
                             #pragma unroll
                             for(int m=0;m<Count;++m) {
                                 float4 value;
@@ -183,9 +193,13 @@ __device__ __forceinline__ void project_compact_routed_staged_body(const std::ui
                                         float(std::int8_t(codes>>16))*d,float(std::int8_t(codes>>24))*d);
                                 }
                                 sum[m]=__fmaf_rn(w.x,value.x,sum[m]);
+                                if constexpr(Narrow)sum2[m]=__fmaf_rn(w2.x,value.x,sum2[m]);
                                 sum[m]=__fmaf_rn(w.y,value.y,sum[m]);
+                                if constexpr(Narrow)sum2[m]=__fmaf_rn(w2.y,value.y,sum2[m]);
                                 sum[m]=__fmaf_rn(w.z,value.z,sum[m]);
+                                if constexpr(Narrow)sum2[m]=__fmaf_rn(w2.z,value.z,sum2[m]);
                                 sum[m]=__fmaf_rn(w.w,value.w,sum[m]);
+                                if constexpr(Narrow)sum2[m]=__fmaf_rn(w2.w,value.w,sum2[m]);
                             }
                         };
                         apply.template operator()<0>();apply.template operator()<1>();
@@ -226,9 +240,13 @@ __device__ __forceinline__ void project_compact_routed_staged_body(const std::ui
                         for(std::int64_t block=0;block<columns/128;++block)compute_block(block,0,0);
                     #pragma unroll
                     for(int m=0;m<Count;++m) {
-                        for(int offset=Lanes/2;offset;offset>>=1)sum[m]+=__shfl_down_sync(0xffffffffu,sum[m],offset,Lanes);
+                        for(int offset=Lanes/2;offset;offset>>=1) {
+                            sum[m]+=__shfl_down_sync(0xffffffffu,sum[m],offset,Lanes);
+                            if constexpr(Narrow)sum2[m]+=__shfl_down_sync(0xffffffffu,sum2[m],offset,Lanes);
+                        }
                         const auto slot=std::int64_t(group.slots[first+m]);
                         if(!lane && row<rows && slot>=0 && slot<slots)output[slot*rows+row]=sum[m];
+                        if constexpr(Narrow)if(!lane && row+Threads/Lanes<rows && slot>=0 && slot<slots)output[slot*rows+row+Threads/Lanes]=sum2[m];
                     }
                 }
             };
@@ -263,11 +281,11 @@ __global__ __launch_bounds__(256,4) void project_compact_routed_decoded(const st
         stride,second_stride,experts,rows,columns,groups,slots,routes,input,routed,output,second_output,preserve_missing);
 }
 
-// Eight lanes decode sixteen weights each. This increases independent output
-// rows per CTA, while retaining the original FP16 book and FP32 products.
-// The narrower reduction changes only the FP32 addition tree.
+// Eight lanes compute two independent output rows and reuse each decoded
+// activation fragment. Independent weight streams hide lookup/decode latency;
+// each row retains its original FP32 normalization, FMA and reduction order.
 template<int Bits,int Steps,int Tile,bool Paired,bool Shared,bool Decoded>
-__global__ __launch_bounds__(256,4) void project_compact_routed_narrow(const std::uint64_t* addresses,const std::uint64_t* second_addresses,
+__global__ __launch_bounds__(256,3) void project_compact_routed_narrow(const std::uint64_t* addresses,const std::uint64_t* second_addresses,
         std::uint64_t stride,std::uint64_t second_stride,std::int64_t experts,std::int64_t rows,std::int64_t columns,
         const RouteGroup* groups,std::int64_t slots,std::int64_t routes,const Q8* input,bool routed,
         float* output,float* second_output,bool preserve_missing) {
@@ -501,7 +519,7 @@ bool try_compact_routed_project(CompactFormat format,const std::uint64_t* addres
                 };
                 if(groups) {
                     const auto staged=[&]<bool Shared,bool Decoded>() {
-                        constexpr int Threads=256,RowTile=Threads/(Narrow?8:16);
+                        constexpr int Threads=256,RowTile=(Narrow?2:1)*Threads/(Narrow?8:16);
                         const auto function=[] {
                             if constexpr(Narrow)return project_compact_routed_narrow<Bits,Steps,Tile,Paired,Shared,Decoded>;
                             else if constexpr(Decoded)return project_compact_routed_decoded<Bits,Steps,Tile,Paired,Shared>;
@@ -521,21 +539,27 @@ bool try_compact_routed_project(CompactFormat format,const std::uint64_t* addres
                         int active=0;check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active,function,Threads,shared));
                         if(active<1)return false;
                         const auto x=std::min<std::int64_t>(65535,(rows+RowTile-1)/RowTile);
-                        const auto y=std::min<std::int64_t>(65535,std::min(slots,std::max<std::int64_t>(1,std::int64_t(active)*sms*2/(x*(Paired?2:1)))));
+                        // Each group has a different expert and reuse count. Expose every
+                        // group to the scheduler rather than serializing uneven work
+                        // behind an occupancy-sized group grid.
+                        const auto y=Narrow?std::min<std::int64_t>(65535,slots):
+                            std::min<std::int64_t>(65535,std::min(slots,std::max<std::int64_t>(1,std::int64_t(active)*sms*2/(x*(Paired?2:1)))));
                         function<<<dim3(unsigned(x),unsigned(y),Paired?2:1),Threads,shared,stream>>>(
                             addresses,second_addresses,stride,second_stride,experts,rows,columns,groups,slots,routes,
                             static_cast<const Q8*>(input),routed_input,output,second_output,preserve_missing);
                         check(cudaGetLastError());
                         if(dispatch_trace::enabled())dispatch_trace::record(stream,"gguf_compact_routed_staged",
                             reinterpret_cast<const void*>(function),"format="+std::to_string(int(format))+" token_tile="+std::to_string(Tile)+
-                            " codebook=fp16 row_lanes="+std::to_string(Narrow?8:16)+" paired="+std::to_string(Paired)+" shared_lookup="+std::to_string(Shared)+" decoded_input="+std::to_string(Decoded)+" shared_bytes="+std::to_string(shared));
+                            " codebook=fp16 rows_per_lane="+std::to_string(Narrow?2:1)+" row_lanes="+std::to_string(Narrow?8:16)+" paired="+std::to_string(Paired)+" shared_lookup="+std::to_string(Shared)+" decoded_input="+std::to_string(Decoded)+" shared_bytes="+std::to_string(shared));
                         return true;
                     };
+                    // Each staged narrow lane now owns two rows. Account for
+                    // both when amortizing the cooperative codebook copy.
                     if constexpr(Tile>=3)if(allow_decoded_input) {
-                        if(amortized(Narrow?32:16) && staged.template operator()<true,true>())return true;
+                        if(amortized((Narrow?2:1)*256/(Narrow?8:16)) && staged.template operator()<true,true>())return true;
                         if(staged.template operator()<false,true>())return true;
                     }
-                    if(amortized(Narrow?32:16) && staged.template operator()<true,false>())return true;
+                    if(amortized((Narrow?2:1)*256/(Narrow?8:16)) && staged.template operator()<true,false>())return true;
                     if(staged.template operator()<false,false>())return true;
                 }
                 const auto direct=[&]<bool Shared>() {

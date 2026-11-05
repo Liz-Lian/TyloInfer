@@ -12,14 +12,36 @@ __device__ __forceinline__ void finish_small_m(float (&sums)[Tokens][Rows],
     }
 }
 
-template<bool Medium,int Tokens,class Index>
-__global__ void __launch_bounds__(128) quad_small_m_iq1_kernel(
-        QuadProjection p,int columns,const void* input,bool half_output) {
+// Sequential nibbles avoid permuting every token's IQ1_S activation.
+// The 2^11-entry codebook occupies 8 KiB of CTA scratch; model weights
+// and the independently rounded Q8 scale/sum remain unchanged.
+constexpr unsigned Iq1SSequentialGridCount=2048;
+__device__ __forceinline__ void stage_iq1s_sequential_grid(unsigned tid) {
+    extern __shared__ __align__(16) unsigned iq1s_sequential_grid[];
+    for(unsigned i=tid*4;i<Iq1SSequentialGridCount;i+=128*4) {
+        // Source entries only promise scalar alignment. Widen the shared
+        // stores without imposing extra alignment on the bundled codebook.
+        const uint4 words=make_uint4(__ldg(iq1s_grid_gpu+i),__ldg(iq1s_grid_gpu+i+1),
+            __ldg(iq1s_grid_gpu+i+2),__ldg(iq1s_grid_gpu+i+3));
+        reinterpret_cast<uint4*>(iq1s_sequential_grid)[i/4]=words;
+    }
+}
+__device__ __forceinline__ int2 decode_iq1s_sequential_grid(unsigned index) {
+    extern __shared__ __align__(16) unsigned iq1s_sequential_grid[];
+    const unsigned value=iq1s_sequential_grid[index];
+    return make_int2(value&0x0f0f0f0fu,(value>>4)&0x0f0f0f0fu);
+}
+
+template<bool Medium,int Tokens,class Index,bool Split=false>
+__device__ __forceinline__ void quad_small_m_iq1_body(
+        QuadProjection p,int columns,const void* input,bool half_output,unsigned tile) {
     constexpr int Format=Medium?GGML_TYPE_IQ1_M:GGML_TYPE_IQ1_S;
-    constexpr int Rows=Tokens<=4?4:2;
+    constexpr int Rows=4;
     using Decoder=QuadIq1Dot<Medium,0>;
-    const unsigned lane=threadIdx.x,warp=threadIdx.y,row=(blockIdx.x*4+warp)*Rows;
-    stage_global_grid<Format,0>(warp*32+lane);__syncthreads();
+    const unsigned lane=threadIdx.x,warp=threadIdx.y,row=(tile*4+warp)*Rows;
+    if constexpr(!Medium)stage_iq1s_sequential_grid(warp*32+lane);
+    else stage_global_grid<Format,0>(warp*32+lane);
+    __syncthreads();
     const auto* packed=static_cast<const uint8_t*>(p.projection.packed);
     const auto* activations=static_cast<const block_q8_1*>(input);
     const Index blocks=Index(columns/256),groups=blocks*8;
@@ -40,6 +62,54 @@ __global__ void __launch_bounds__(128) quad_small_m_iq1_kernel(
             if constexpr(Rows==4)scales=load_two(packed,total*192+qb*8);
             else scales=make_uint2(load_one(packed,total*192+qb*8+pair*4),0);
         }
+        if constexpr(Split) {
+            static_assert(Tokens>=5 && Tokens<=8);
+        int2 decoded[Rows][4];float row_scale[Rows],row_delta[Rows];
+        #pragma unroll
+        for(int r=0;r<Rows;++r) {
+            unsigned code;
+            if(r==0)code=codes.x;else if(r==1)code=codes.y;else if(r==2)code=codes.z;else code=codes.w;
+            const unsigned hi=(r<2?high.x:high.y)>>(16*(r%2));
+            row_scale[r]=__half2float(__ushort_as_half((r<2?scales.x:scales.y)>>(16*(r%2))));
+            if constexpr(!Medium)row_scale[r]*=((hi>>11)&14)+1;
+            row_delta[r]=-1.f+IQ1S_DELTA-(hi&0x8000)*(2.f*IQ1S_DELTA/0x8000);
+            #pragma unroll
+            for(int j=0;j<4;++j) {
+                const unsigned selector=hi>>((Medium?4:3)*j);
+                const unsigned index=((code>>(8*j))&255)|((selector&7)<<8);
+                if constexpr(Medium)decoded[r][j]=Decoder::decode_grid(index,(selector&8)!=0);
+                else decoded[r][j]=decode_iq1s_sequential_grid(index);
+            }
+        }
+        #pragma unroll
+        for(int token=0;token<Tokens;++token) {
+            const auto codes=load_row_vector<Tokens,Index>(input,groups,token,i);
+            const auto input_scale=__half22float2(row_packet_scales<Tokens,Index>(input,groups,token,i));
+            int activation[8];
+            #pragma unroll
+            for(int j=0;j<4;++j) {
+                const int first=codes.value[2*j],second=codes.value[2*j+1];
+                if constexpr(Medium){activation[2*j]=first;activation[2*j+1]=second;}
+                else {activation[2*j]=first;activation[2*j+1]=second;}
+            }
+            #pragma unroll
+            for(int r=0;r<Rows;++r) {
+                int low_sum=ggml_cuda_dp4a(decoded[r][0].y,activation[1],ggml_cuda_dp4a(decoded[r][0].x,activation[0],0));
+                low_sum=ggml_cuda_dp4a(decoded[r][1].y,activation[3],ggml_cuda_dp4a(decoded[r][1].x,activation[2],low_sum));
+                if constexpr(Medium) {
+                    int high_sum=ggml_cuda_dp4a(decoded[r][2].y,activation[5],ggml_cuda_dp4a(decoded[r][2].x,activation[4],0));
+                    high_sum=ggml_cuda_dp4a(decoded[r][3].y,activation[7],ggml_cuda_dp4a(decoded[r][3].x,activation[6],high_sum));
+                    const unsigned sc=(local>>(6*r))&63;
+                    const int sum=low_sum*(2*(sc&7)+1)+high_sum*(2*((sc>>3)&7)+1);
+                    sums[token][r]+=(row_scale[r]*input_scale.x)*(float(sum)*.125f);
+                }else {
+                    low_sum=ggml_cuda_dp4a(decoded[r][2].y,activation[5],ggml_cuda_dp4a(decoded[r][2].x,activation[4],low_sum));
+                    low_sum=ggml_cuda_dp4a(decoded[r][3].y,activation[7],ggml_cuda_dp4a(decoded[r][3].x,activation[6],low_sum));
+                    sums[token][r]+=row_scale[r]*(input_scale.x*low_sum+input_scale.y*row_delta[r]);
+                }
+            }
+            asm volatile("" ::: "memory");
+        }        } else {
         float2 input_scale[Tokens];
         #pragma unroll
         for(int token=0;token<Tokens;++token)
@@ -54,16 +124,12 @@ __global__ void __launch_bounds__(128) quad_small_m_iq1_kernel(
                 const unsigned index=((code>>(8*J))&255)|((selector&7)<<8);
                 const int2 weight=[&] {
                     if constexpr(Medium)return Decoder::decode_grid(index,(selector&8)!=0);
-                    else return Decoder::decode_rank_planes(index);
+                    else return decode_iq1s_sequential_grid(index);
                 }();
                 #pragma unroll
                 for(int token=0;token<Tokens;++token) {
                     const auto* x=activations+Index(token)*groups+i;
                     int first=get_int_b4(x->qs,2*J),second=get_int_b4(x->qs,2*J+1);
-                    if constexpr(!Medium) {
-                        const int a=first,b=second;
-                        first=__byte_perm(a,b,0x6420);second=__byte_perm(a,b,0x7531);
-                    }
                     if constexpr(Medium && J>=2)
                         high_sum[token]=ggml_cuda_dp4a(weight.y,second,ggml_cuda_dp4a(weight.x,first,high_sum[token]));
                     else low_sum[token]=ggml_cuda_dp4a(weight.y,second,ggml_cuda_dp4a(weight.x,first,low_sum[token]));
@@ -85,16 +151,36 @@ __global__ void __launch_bounds__(128) quad_small_m_iq1_kernel(
             }
         };
         apply.template operator()<0>();apply.template operator()<1>();
-        if constexpr(Rows==4){apply.template operator()<2>();apply.template operator()<3>();}
+        if constexpr(Rows==4){apply.template operator()<2>();apply.template operator()<3>();}        }
+
     }
     finish_small_m<Tokens,Index>(sums,p,row,lane,half_output);
 }
 
-template<int Tokens,class Index>
-__global__ void __launch_bounds__(128) quad_small_m_q2_kernel(
+// The split Q8 packet already stores exact signed INT16 sums of both
+// 16-coordinate halves. Its positive Q2 minima fit in two INT8 bytes.
+// DP2A consumes both pairs directly without sign extraction or repacking.
+__device__ __forceinline__ int packed_q2_affine_sum(int sums,unsigned minima) {
+#if __CUDA_ARCH__>=610
+    // DP2A was introduced in compute capability 6.1.
+    return __dp2a_lo(sums,int(minima),0);
+#else
+    return int(int16_t(sums))*int(minima&255)+
+        int(int16_t(unsigned(sums)>>16))*int((minima>>8)&255);
+#endif
+}
+
+template<bool Medium,int Tokens,class Index,bool Split=false>
+__global__ void __launch_bounds__(128) quad_small_m_iq1_kernel(
         QuadProjection p,int columns,const void* input,bool half_output) {
-    constexpr int Rows=Tokens<=4?4:2;
-    const unsigned lane=threadIdx.x,warp=threadIdx.y,row=(blockIdx.x*4+warp)*Rows;
+    quad_small_m_iq1_body<Medium,Tokens,Index,Split>(p,columns,input,half_output,blockIdx.x);
+}
+
+template<int Tokens,class Index,bool Split=false>
+__device__ __forceinline__ void quad_small_m_q2_body(
+        QuadProjection p,int columns,const void* input,bool half_output,unsigned tile) {
+    constexpr int Rows=4;
+    const unsigned lane=threadIdx.x,warp=threadIdx.y,row=(tile*4+warp)*Rows;
     const auto* packed=static_cast<const uint8_t*>(p.projection.packed);
     const auto* activations=static_cast<const block_q8_1*>(input);
     const Index blocks=Index(columns/256),groups=blocks*8;
@@ -110,6 +196,67 @@ __global__ void __launch_bounds__(128) quad_small_m_q2_kernel(
             first=load_four(packed,entry*32+pair*16);scales=make_uint2(load_one(packed,total*256+entry*8+pair*4),0);
             const auto bits=load_two(packed,total*320+qb*16+pair*8);dm=make_uint4(bits.x,bits.y,0,0);
         }
+        // Wide token tiles amortize the local Q2 scales
+        // while unpacking weights: q is 0..3 and its scale is 0..15,
+        // so four byte products fit without carries (maximum 45).
+        // The integer dot is unchanged, including the separate affine
+        // minimum. Share one token activation across all output rows.
+        if constexpr(Split || Tokens>=6) {
+        int decoded[Rows][8];unsigned row_scales[Rows];float2 factors[Rows];
+        #pragma unroll
+        for(int r=0;r<Rows;++r) {
+            const auto codes=r<2?first:second;
+            const unsigned low=r%2?codes.z:codes.x,high=r%2?codes.w:codes.y;
+            row_scales[r]=((r<2?scales.x:scales.y)>>(16*(r%2)))&65535;
+            unsigned bits;
+            if(r==0)bits=dm.x;else if(r==1)bits=dm.y;else if(r==2)bits=dm.z;else bits=dm.w;
+            factors[r]=make_float2(__half2float(__ushort_as_half(bits)),__half2float(__ushort_as_half(bits>>16)));
+            #pragma unroll
+            for(int j=0;j<4;++j) {
+                decoded[r][j]=int(((low>>(2*j))&0x03030303)*(row_scales[r]&15));
+                decoded[r][j+4]=int(((high>>(2*j))&0x03030303)*((row_scales[r]>>8)&15));
+            }
+        }
+        #pragma unroll
+        for(int token=0;token<Tokens;++token) {
+            float input_scale;int activation[8],input_low=0,input_high=0;int input_halfsums=0;
+            if constexpr(Split) {
+                const auto packet=Index(token)*groups+i;
+                const auto meta=__ldg(reinterpret_cast<const uint2*>(static_cast<const uint8_t*>(input)+uint64_t(groups)*Tokens*36)+packet);
+                input_scale=__half2float(__ushort_as_half(meta.x&65535u));
+                input_halfsums=int(meta.y);
+                const auto codes=load_row_vector<Tokens,Index>(input,groups,token,i);
+                #pragma unroll
+                for(int j=0;j<8;++j)activation[j]=codes.value[j];
+            } else {
+            const auto* x=activations+Index(token)*groups+i;
+            input_scale=__low2float(x->ds);
+
+            #pragma unroll
+            for(int j=0;j<4;++j) {
+                activation[j]=get_int_b4(x->qs,j);activation[j+4]=get_int_b4(x->qs,j+4);
+                input_low=ggml_cuda_dp4a(0x01010101,activation[j],input_low);
+                input_high=ggml_cuda_dp4a(0x01010101,activation[j+4],input_high);
+            }
+            }
+            #pragma unroll
+            for(int r=0;r<Rows;++r) {
+                int dot=0;
+                #pragma unroll
+                for(int j=0;j<4;++j) {
+                    dot=ggml_cuda_dp4a(decoded[r][j],activation[j],dot);
+                    dot=ggml_cuda_dp4a(decoded[r][j+4],activation[j+4],dot);
+                }
+                const unsigned sc=row_scales[r];
+                const int minimum=[&] {
+                    if constexpr(Split)return packed_q2_affine_sum(input_halfsums,(sc>>4)&0x0f0fu);
+                    else return input_low*int((sc>>4)&15)+input_high*int(sc>>12);
+                }();
+                sums[token][r]+=factors[r].x*(input_scale*dot)-factors[r].y*(input_scale*minimum);
+            }
+            asm volatile("" ::: "memory");
+        }
+        } else {
         float input_scale[Tokens];int input_low[Tokens]{},input_high[Tokens]{};
         #pragma unroll
         for(int token=0;token<Tokens;++token) {
@@ -146,6 +293,28 @@ __global__ void __launch_bounds__(128) quad_small_m_q2_kernel(
         };
         apply.template operator()<0>();apply.template operator()<1>();
         if constexpr(Rows==4){apply.template operator()<2>();apply.template operator()<3>();}
+        }
     }
     finish_small_m<Tokens,Index>(sums,p,row,lane,half_output);
+}
+
+template<int Tokens,class Index>
+__global__ void __launch_bounds__(128) quad_small_m_q2_kernel(
+        QuadProjection p,int columns,const void* input,bool half_output) {
+    quad_small_m_q2_body<Tokens,Index>(p,columns,input,half_output,blockIdx.x);
+}
+
+// The four-row accumulator tile grows with the verification window. Bound
+// its register allocation together with the preweighted-code schedule;
+// shorter windows retain their original instruction and launch contract.
+template<int Tokens,class Index>
+__global__ void __launch_bounds__(128,4) quad_wide_q2_kernel(
+        QuadProjection p,int columns,const void* input,bool half_output) {
+    static_assert(Tokens>=6 && Tokens<=8);
+    quad_small_m_q2_body<Tokens,Index>(p,columns,input,half_output,blockIdx.x);
+}
+
+template<int Tokens,class Index>
+__global__ void __launch_bounds__(128,4) quad_split_q2_kernel(QuadProjection p,int columns,const void* input,bool half_output){
+    static_assert(Tokens>=5 && Tokens<=8);quad_small_m_q2_body<Tokens,Index,true>(p,columns,input,half_output,blockIdx.x);
 }

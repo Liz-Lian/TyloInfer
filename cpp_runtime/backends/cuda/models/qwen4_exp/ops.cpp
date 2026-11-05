@@ -401,7 +401,7 @@ static Linear qwen_moe(CudaExecutionContext& loading,weight_loader::Routed gate_
                     shared_d->gguf.packed.is_cuda() && shared_d->gguf.packed.device()==source.device()) {
                 const auto& down=shared_d->gguf;
                 const auto tokens=source.size(0);
-                const bool position_major=mfq::cuda::gguf::supports_interleaved_activation(down.type,tokens);
+                const bool position_major=down.prefers_position_major_q8(tokens);
                 const auto bytes=position_major?mfq::cuda::gguf::interleaved_activation_bytes(tokens,shared_width):
                     tokens*mfq::cuda::gguf::q8_row_bytes(shared_width);
                 auto quantized=tb::empty({int64_t(bytes)},source.options().dtype(tb::kUInt8));
@@ -640,7 +640,7 @@ struct BlockLoader : weight_loader::Loader {
         weights.beta=std::move(projections[start+2]);
         if(const auto weight=weight_loader::linear_weight(weights.output);weight && weight->is_gguf() &&
                 !weight->tensor_parallel() && weight->gguf.packed.is_cuda() && !weight->gguf.prefers_original_input()) {
-            weights.output_q8_position_major=mfq::cuda::gguf::supports_interleaved_activation(weight->gguf.type,2);
+            weights.output_q8_position_major=weight->gguf.prefers_position_major_q8(2);
             weights.output_q8=[weight](CudaExecutionContext&,const Tensor& input,int64_t tokens,tb::ScalarType dtype,bool position_major) {
                 return weight->gguf.forward_q8(input,tokens,dtype,position_major).reshape({1,tokens,weight->gguf.out});
             };

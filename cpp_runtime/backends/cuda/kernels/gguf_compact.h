@@ -27,4 +27,12 @@ bool try_compact_routed_project(CompactFormat format,const std::uint64_t* addres
     const void* input,bool routed_input,float* output,cudaStream_t stream,bool preserve_missing=false,
     const std::uint64_t* second_addresses=nullptr,std::uint64_t second_stride=0,float* second_output=nullptr,
     bool allow_shared_lookup=true,bool allow_decoded_input=true,bool allow_narrow_rows=true);
+// Cooperative original-byte weight tiles. Unsupported layouts/resources use
+// the ordinary compact entry; no persistent weight image is added.
+bool try_compact_routed_project_async(CompactFormat format,const std::uint64_t* addresses,
+    std::uint64_t row_stride,std::int64_t experts,std::int64_t rows,std::int64_t columns,
+    const std::int64_t* ids,const RouteGroup* groups,std::int64_t tokens,std::int64_t routes,
+    const void* input,bool routed_input,float* output,cudaStream_t stream,bool preserve_missing=false,
+    const std::uint64_t* second_addresses=nullptr,std::uint64_t second_stride=0,float* second_output=nullptr,
+    bool allow_shared_lookup=true,bool allow_decoded_input=true,bool allow_narrow_rows=true);
 }

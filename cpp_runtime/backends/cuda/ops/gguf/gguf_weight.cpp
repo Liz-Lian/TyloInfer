@@ -1,3 +1,4 @@
+#include "../../kernels/gguf_window.h"
 #include "gguf_weight.h"
 #include "gguf_prefill_fusion.h"
 #include "gguf_rotation.h"
@@ -628,7 +629,7 @@ GgufProjectionInput prepare_gguf_group_input(const std::vector<GgufWeight>& weig
     auto original=source;
     if(source.scalar_type()!=tb::kFloat16)source=source.to(tb::kFloat32);
     source=source.contiguous();
-    const auto supported=[&](const auto& weight){return !weight.base_prefers_original_input() && mfq::cuda::gguf::supports_interleaved_activation(weight.type,tokens);};
+    const auto supported=[&](const auto& weight){return !weight.base_prefers_original_input() && weight.prefers_position_major_q8(tokens);};
     const auto floating_codebook=[](const auto& weight){return weight.base_prefers_original_input();};
     const bool keep_original=std::any_of(weights.begin(),weights.end(),[](const auto& weight){return weight.prefers_original_input();});
     const bool interleaved=std::any_of(weights.begin(),weights.end(),supported);
@@ -652,7 +653,7 @@ GgufProjectionInput prepare_gguf_group_input(const std::vector<GgufWeight>& weig
 tb::Tensor GgufProjectionInput::project(const GgufWeight& weight) const {
     TYLOINFER_RUNTIME_CHECK(!shape.empty(),"GGUF projection input was not prepared");
     TYLOINFER_RUNTIME_CHECK(!aligned_m1 || tokens==1,"Aligned GGUF projection requires one token");
-    const bool use_interleaved=mfq::cuda::gguf::supports_interleaved_activation(weight.type,tokens);
+    const bool use_interleaved=weight.prefers_position_major_q8(tokens);
     auto output_shape=shape;output_shape.back()=weight.out;
     if(!tokens)return tb::empty(output_shape,weight.packed.options().dtype(dtype));
     if(weight.base_prefers_original_input()) {
@@ -676,6 +677,73 @@ std::vector<tb::Tensor> project_gguf_group(const std::vector<GgufWeight>& weight
 
 std::vector<tb::Tensor> GgufProjectionInput::project_all(const std::vector<GgufWeight>& weights) const {
     std::vector<tb::Tensor> output;output.reserve(weights.size());
+
+    const bool grouped_small_m=weights.size()>1 && tokens>=2 && tokens<=8 &&
+        std::all_of(weights.begin(),weights.end(),[&](const auto& weight) {
+            return weight.quad_projection_ready() && !weight.base_prefers_original_input() &&
+                mfq::cuda::gguf::supports_quad_small_m(weight.type,tokens);
+        });
+    if(grouped_small_m) {
+        const MfqCudaGuard guard(weights.front().packed.get_device());
+        const auto handle=mfq_get_current_cuda_stream(weights.front().packed.get_device());
+        const auto stream=handle.stream();
+        for(const auto& packet:{native,interleaved,original})
+            if(packet.defined())mfq_cuda_record_stream(packet,handle);
+        const auto result_type=dtype==tb::kFloat16?tb::kFloat16:tb::kFloat32;
+        std::vector<mfq::cuda::gguf::QuadProjection> quad;
+        std::vector<mfq::cuda::gguf::DenseProjection> descriptors;
+        std::vector<std::uint8_t> layouts;
+        quad.reserve(weights.size());descriptors.reserve(weights.size());layouts.reserve(weights.size());
+        for(const auto& weight:weights) {
+            auto result=tb::empty({tokens,weight.out},weight.packed.options().dtype(result_type));
+            mfq_cuda_record_stream(weight.packed,handle);mfq_cuda_record_stream(result,handle);
+            quad.push_back(quad_projection(weight,result.data_ptr()));
+            descriptors.push_back(quad.back().projection);
+            layouts.push_back(weight.prefers_position_major_q8(tokens));
+            output.push_back(std::move(result));
+        }
+        const auto separate=[&] {
+            for(std::size_t i=0;i<quad.size();++i)
+                mfq::cuda::gguf::matvec_quad_small_m(quad[i],weights.front().neuron_len,
+                    (layouts[i]?interleaved:native).data_ptr(),tokens,layouts[i]!=0,
+                    result_type==tb::kFloat16,stream);
+        };
+        const auto batch=[&] {
+            mfq::cuda::gguf::matvec_quad_group_small_m(quad.data(),quad.size(),weights.front().neuron_len,
+                native.defined()?native.data_ptr():nullptr,interleaved.defined()?interleaved.data_ptr():nullptr,
+                layouts.data(),tokens,result_type==tb::kFloat16,stream);
+        };
+        const auto pair=[&] {
+            mfq::cuda::gguf::matvec_quad_pair_small_m(quad.data(),quad.size(),weights.front().neuron_len,
+                native.defined()?native.data_ptr():nullptr,interleaved.defined()?interleaved.data_ptr():nullptr,
+                layouts.data(),tokens,result_type==tb::kFloat16,stream);
+        };
+        std::size_t selected=0;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if(tokens>=3 && quad.size()==2)
+            selected=mfq_gguf_dense_schedule::choose_group(descriptors,weights.front().packed.get_device(),
+                weights.front().neuron_len,tokens,result_type==tb::kFloat16,stream,separate,batch,pair);
+        else selected=mfq_gguf_dense_schedule::choose_batch(descriptors,weights.front().packed.get_device(),
+                weights.front().neuron_len,tokens,result_type==tb::kFloat16,stream,separate,batch)?1:0;
+#endif
+        if(selected==2)pair();else if(selected)batch();else separate();
+        if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+            cudaStreamCaptureStatus capture=cudaStreamCaptureStatusNone;
+            TYLOINFER_CUDA_CHECK(cudaStreamIsCapturing(stream,&capture));
+            if(capture==cudaStreamCaptureStatusActive)
+                std::fprintf(stderr,"native_gguf_quad_group_use actual_match=1 M=%lld matrices=%zu selected=%s captured=1\n",
+                    static_cast<long long>(tokens),weights.size(),selected==2?"pair":selected?"batch":"separate");
+        }
+        for(std::size_t i=0;i<weights.size();++i) {
+            auto output_shape=shape;output_shape.back()=weights[i].out;
+            output[i]=output[i].to(dtype).reshape(output_shape);
+            if(weights[i].projection_correction) {
+                TYLOINFER_RUNTIME_CHECK(original.defined(),"GGUF grouped neuron correction requires original activation");
+                output[i]=weights[i].projection_correction->apply(original,std::move(output[i]));
+            }
+        }
+        return output;
+    }
     const bool direct_small_m=std::any_of(weights.begin(),weights.end(),[&](const auto& weight){
         return weight.quad_projection_ready() && mfq::cuda::gguf::supports_quad_small_m(weight.type,tokens);
     });
@@ -797,6 +865,19 @@ tb::Tensor GgufWeight::forward_m1_aligned_base(const tb::Tensor& activation,tb::
     return output;
 }
 
+bool GgufWeight::prefers_position_major_q8(std::int64_t tokens) const noexcept {
+    // Three/four queries share coordinate words through aligned vector loads.
+    // The two-query native packet retains its smaller register working set.
+    if(tokens>=3 && tokens<=8 && quad_projection_ready() &&
+            (type==GGML_TYPE_IQ2_XXS || type==GGML_TYPE_IQ2_XS || type==GGML_TYPE_IQ2_S))return true;
+    if(tokens==8 && (type==GGML_TYPE_Q5_K || type==GGML_TYPE_Q6_K) && packed.defined() && packed.is_cuda())
+        return mfq::cuda::gguf::supports_dense_split_window_q8(type,packed.data_ptr(),row_bytes,out,neuron_len,tokens);
+    if(tokens>=5 && tokens<=8 && quad_projection_ready() &&
+            (type==GGML_TYPE_IQ1_S || type==GGML_TYPE_IQ1_M || type==GGML_TYPE_Q2_K))return true;
+    return mfq::cuda::gguf::supports_interleaved_activation(type,tokens) &&
+        !(quad_projection_ready() && mfq::cuda::gguf::supports_quad_small_m(type,tokens));
+}
+
 tb::Tensor GgufWeight::forward_q8(const tb::Tensor& activation,std::int64_t tokens,tb::ScalarType dtype,bool position_major) const {
     TYLOINFER_RUNTIME_CHECK(!projection_correction,"GGUF neuron correction requires its original activation");
     return forward_q8_base(activation,tokens,dtype,position_major);
@@ -810,7 +891,7 @@ tb::Tensor GgufWeight::forward_q8_base(const tb::Tensor& activation,std::int64_t
         activation.is_contiguous() && activation.scalar_type()==tb::kUInt8 && tokens>=1 &&
         std::uint64_t(tokens)<=std::numeric_limits<std::uint64_t>::max()/bytes_per_row &&
         (dtype==tb::kFloat16 || dtype==tb::kFloat32) &&
-        (!position_major || mfq::cuda::gguf::supports_interleaved_activation(type,tokens)) &&
+        (!position_major || mfq::cuda::gguf::supports_interleaved_activation(type,tokens) || prefers_position_major_q8(tokens)) &&
         activation.nbytes()==bytes,"GGUF prepared activation geometry/device/type differs");
     const MfqCudaGuard guard(packed.get_device());const auto stream_handle=mfq_get_current_cuda_stream(packed.get_device());
     const auto stream=stream_handle.stream();
@@ -826,6 +907,8 @@ tb::Tensor GgufWeight::forward_q8_base(const tb::Tensor& activation,std::int64_t
         return result;
     }
     const auto image=canonical_packed();mfq_cuda_record_stream(image,stream_handle);
+    if(position_major && tokens==8 && mfq::cuda::gguf::project_dense_split_window_q8(type,image.data_ptr(),row_bytes,out,neuron_len,
+            activation.data_ptr(),tokens,result.data_ptr(),dtype==tb::kFloat16,stream))return result;
     if(position_major)mfq::cuda::gguf::matvec_interleaved(type,image.data_ptr(),row_bytes,out,neuron_len,
         activation.data_ptr(),tokens,result.data_ptr(),dtype==tb::kFloat16,stream);
     else if(dtype==tb::kFloat16)mfq::cuda::gguf::matvec_q8_f16(type,image.data_ptr(),row_bytes,out,neuron_len,
@@ -907,7 +990,7 @@ tb::Tensor GgufWeight::forward_base(tb::Tensor input,bool allow_mmq,const tb::Te
     if (tokens <= 32) {
         auto source=x.scalar_type()==tb::kFloat16?x:x.to(tb::kFloat32).contiguous();
         mfq_cuda_record_stream(source,stream);
-        const bool interleaved=mfq::cuda::gguf::supports_interleaved_activation(type,tokens);
+        const bool interleaved=prefers_position_major_q8(tokens);
         const bool aligned_m1=tokens==1 && mfq::cuda::gguf::prefers_m1_aligned(type);
         auto activation = tb::empty({static_cast<std::int64_t>(interleaved
                 ?mfq::cuda::gguf::interleaved_activation_bytes(tokens,neuron_len)
@@ -924,6 +1007,8 @@ tb::Tensor GgufWeight::forward_base(tb::Tensor input,bool allow_mmq,const tb::Te
         else mfq::cuda::gguf::quantize_input(source.data_ptr<float>(),tokens,neuron_len,activation.data_ptr(),mfq_current_cuda_stream());
         if(aligned_m1)mfq::cuda::gguf::matvec_m1_aligned(type,packed.data_ptr(),row_bytes,out,neuron_len,
             activation.data_ptr(),output.data_ptr(),output_dtype==tb::kFloat16,mfq_current_cuda_stream());
+        else if(interleaved && tokens==8 && mfq::cuda::gguf::project_dense_split_window_q8(type,packed.data_ptr(),row_bytes,out,neuron_len,
+                activation.data_ptr(),tokens,output.data_ptr(),output_dtype==tb::kFloat16,mfq_current_cuda_stream())) {}
         else if(interleaved)
             mfq::cuda::gguf::matvec_interleaved(type,packed.data_ptr(),row_bytes,out,neuron_len,
                 activation.data_ptr(),tokens,output.data_ptr(),output_dtype==tb::kFloat16,mfq_current_cuda_stream());

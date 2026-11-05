@@ -258,6 +258,11 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
         finish_speculative(model(), true, 0,
                            [](const auto &block) { return Backend::block_scope(block); });
     }
+    template<class BeforeAdapter> void commit_speculative(BeforeAdapter before_adapter) {
+        finish_speculative(model(), true, 0,
+                           [](const auto &block) { return Backend::block_scope(block); },
+                           std::move(before_adapter));
+    }
     void rollback_speculative(int64_t accepted_suffix = 0) {
         finish_speculative(model(), false, accepted_suffix,
                            [](const auto &block) { return Backend::block_scope(block); });

@@ -4,6 +4,7 @@
 #include "storage/model_source.h"
 #include "tyloinfer/model_source.h"
 #include "transport.h"
+#include "mtp_limits.h"
 #include "nlohmann/json.hpp"
 
 #include <cstddef>
@@ -30,7 +31,7 @@ void print_help() {
            "--minicpmo-duplex-output-prefix PREFIX [OPTIONS]\n\n"
         << "Runtime options:\n"
         << "  --model PATH                    model or split-model shard\n"
-        << "  --dflash2-draft PATH            DFlash2 checkpoint for Flash-Next text\n"
+        << "  --dflash2-draft PATH            DFlash2 checkpoint for compatible Qwen text\n"
         << "  --inspect-model-json            inspect metadata without loading GPU weights\n"
         << "  --config PATH                   external model config\n"
         << "  --transport TYPE                stdio or http\n"
@@ -210,6 +211,11 @@ int run_transport_runtime(RuntimeOptions& options) {
             : embedded_profile->second,
         read_runtime_asset_text(runtime_assets, mfq::kModelConfigAsset),
         options.runtime_sampling_profile);
+
+    const auto* dflash2_environment=std::getenv("TYLOINFER_DFLASH2_DRAFT");
+    if (!options.dflash2_draft_path.empty() || (dflash2_environment && *dflash2_environment))
+        transport_config.runtime_profile.chat.mtp_max_draft_tokens =
+            mfq::engine::mtp::kMaximumBlockwiseDraftDepth;
 
     auto transport = options.stdio_mode
         ? make_mfq_stdio_transport(transport_config)

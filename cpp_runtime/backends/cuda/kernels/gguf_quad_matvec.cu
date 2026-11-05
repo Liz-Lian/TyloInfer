@@ -175,15 +175,15 @@ __device__ void compute_entry(QuadProjection p,int columns,const void* input,uns
 }
 template<int F,bool Aligned,bool Half,class Index,bool Typed=false>
 __device__ void pair_entry(QuadProjection p,int columns,const void* input,unsigned tile){
-    if constexpr(IsIq1<F>){if(columns/32>=64){compute_entry<F,4,2,Aligned,Half,Index>(p,columns,input,tile);return;}}
-    else if constexpr(Typed){if(columns/32>=128){compute_entry<F,2,2,Aligned,Half,Index>(p,columns,input,tile);return;}}
+    if constexpr(IsIq1<F>){if(columns/32>=64){compute_entry<F,4,1,Aligned,Half,Index>(p,columns,input,tile);return;}}
+    else if constexpr(Typed){if(columns/32>=128){compute_entry<F,2,1,Aligned,Half,Index>(p,columns,input,tile);return;}}
     compute_entry<F,2,1,Aligned,Half,Index>(p,columns,input,tile);
 }
 
 template<int F,bool Aligned,bool Half,class Index>
 __device__ void quad_pair_entry(QuadProjection p,int columns,const void* input,unsigned tile){
-    if constexpr(IsIq1<F>){if(columns/32>=64){quad_entry<F,4,2,Aligned,Half,Index>(p,columns,input,tile,M1ProjectionStore{});return;}}
-    else if(columns/32>=128){quad_entry<F,2,2,Aligned,Half,Index>(p,columns,input,tile,M1ProjectionStore{});return;}
+    if constexpr(IsIq1<F>){if(columns/32>=64){quad_entry<F,4,1,Aligned,Half,Index>(p,columns,input,tile,M1ProjectionStore{});return;}}
+    else if(columns/32>=128){quad_entry<F,2,1,Aligned,Half,Index>(p,columns,input,tile,M1ProjectionStore{});return;}
     quad_entry<F,2,1,Aligned,Half,Index>(p,columns,input,tile,M1ProjectionStore{});
 }
 template<int A,int B,bool Aligned,bool Half,class Index>
@@ -235,11 +235,8 @@ void validate_quad(const QuadProjection& p,int64_t columns){
 unsigned grid_words(int type){switch(type){case GGML_TYPE_IQ1_S:return 1024;case GGML_TYPE_IQ1_M:return 2048;case GGML_TYPE_IQ2_XXS:case GGML_TYPE_IQ3_XXS:return 256;case GGML_TYPE_IQ2_XS:case GGML_TYPE_IQ3_S:return 512;case GGML_TYPE_IQ2_S:return 1024;default:return 0;}}
 bool small_offsets(const QuadProjection& p,int64_t columns){return !p.quad||quad_storage_bytes(p.projection.type,p.storage_rows,columns)<=UINT32_MAX;}
 template<int F>int original_k_cooperation(int64_t rows,int64_t columns,uint64_t group_blocks=0){
-    if(columns/32<128)return 1;
-    int device=0;checked_quad(cudaGetDevice(&device));
-    static thread_local int previous=-1,sms=0,active=0;
-    if(device!=previous){checked_quad(cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,device));checked_quad(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active,project_dense_reused_q8<F,2,1>,128,0));previous=device;}
-    return active>0&&(group_blocks?group_blocks:uint64_t((rows+7)/8))<uint64_t(sms)*unsigned(active)?(columns/32%96==0&&columns/32%128!=0?3:4):1;
+    if constexpr(F==GGML_TYPE_IQ4_XS)return canonical_iq4_k_warps(columns);
+    return 1; // Other formats retain their canonical single K warp.
 }
 }
 void matvec_quad_m1(const QuadProjection& p,int64_t columns,const void* input,bool aligned,bool half_output,const void* residual,cudaStream_t stream){
@@ -266,7 +263,7 @@ void matvec_quad_m1(const QuadProjection& p,int64_t columns,const void* input,bo
                 const auto width=[&]<class Index>(){if(residual)format.template operator()<true,true,Index>();else if(half_output)format.template operator()<true,false,Index>();else format.template operator()<false,false,Index>();};
                 if(small_offsets(p,columns))width.template operator()<uint32_t>();else width.template operator()<uint64_t>();
             };
-            if constexpr(IsIq1<F>){if(columns/32>=64){geometry.template operator()<4,2>();return;}geometry.template operator()<2,1>();}
+            if constexpr(IsIq1<F>){if(columns/32>=64){geometry.template operator()<4,1>();return;}geometry.template operator()<2,1>();}
             else{const int warps=original_k_cooperation<F>(d.rows,columns);if(warps==3)geometry.template operator()<2,3>();else if(warps==4)geometry.template operator()<2,4>();else geometry.template operator()<2,1>();}
         };
         if(aligned)layout.template operator()<true>();else layout.template operator()<false>();
@@ -291,8 +288,8 @@ void matvec_quad_group_m1(const QuadProjection* projections,size_t count,int64_t
     if(pair && projections[0].quad && projections[1].quad){
         const auto launch=[&]<int A,int B,bool Aligned,bool Half,class Index>(){
             const auto fn=quad_pair<A,B,Aligned,Half,Index>;
-            constexpr unsigned ARows=IsIq1<A>?8:4,BRows=IsIq1<B>?8:4;
-            const unsigned a_rows=columns/32>=128?ARows:8,b_rows=columns/32>=128?BRows:8;
+            const unsigned a_rows=IsIq1<A> && columns/32>=64?16:8;
+            const unsigned b_rows=IsIq1<B> && columns/32>=64?16:8;
             const unsigned split=unsigned((projections[0].projection.rows+a_rows-1)/a_rows),end=unsigned((projections[1].projection.rows+b_rows-1)/b_rows);
             const unsigned words=std::max(projections[0].quad?GridCount<A>:0u,projections[1].quad?GridCount<B>:0u);
             fn<<<split+end,dim3(32,4),words*4,stream>>>(projections[0],projections[1],split,int(columns),input);
@@ -337,18 +334,19 @@ void matvec_quad_group_m1(const QuadProjection* projections,size_t count,int64_t
     if(pair){
         for(size_t i=0;i<count;++i)
             if(projections[i].projection.type!=GGML_TYPE_IQ1_S&&projections[i].projection.type!=GGML_TYPE_IQ1_M)
-                warps[i]=columns/32>=128?2:1;
+                warps[i]=1;
     }else if(count==2&&!cooperative&&columns/32>=128){
         for(size_t i=0;i<count;++i)
-            if(projections[i].projection.type!=GGML_TYPE_IQ1_S&&projections[i].projection.type!=GGML_TYPE_IQ1_M)warps[i]=2;
+            if(projections[i].projection.type!=GGML_TYPE_IQ1_S&&projections[i].projection.type!=GGML_TYPE_IQ1_M)warps[i]=1;
     }
     for(size_t first=0;first<count;first+=8){
         QuadGroupPacket packet{};unsigned blocks=0,words=0;bool small=true;
         for(size_t i=first;i<std::min(first+8,count);++i){
             if(!projections[i].projection.rows)continue;
             auto& e=packet.entries[packet.count++];e.p=projections[i];e.warps=warps[i];e.begin=blocks;
-            const unsigned outputs=e.warps>1?4/e.warps*2:8;
-            blocks+=unsigned((e.p.projection.rows+outputs-1)/outputs);e.end=blocks;
+            const unsigned outputs=(e.p.projection.type==GGML_TYPE_IQ1_S || e.p.projection.type==GGML_TYPE_IQ1_M) && columns/32>=64?16:8;
+            const unsigned active_outputs=e.warps>1?2:outputs;
+            blocks+=unsigned((e.p.projection.rows+active_outputs-1)/active_outputs);e.end=blocks;
             if(e.p.quad)words=std::max(words,grid_words(e.p.projection.type));small&=small_offsets(e.p,columns);
         }
         if(!blocks)continue;

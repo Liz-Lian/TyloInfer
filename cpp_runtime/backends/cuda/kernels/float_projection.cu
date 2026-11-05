@@ -30,43 +30,67 @@
 
 namespace {
 template<bool Vectorized,int Rows=1>
-__global__ void dense_f32_projection_kernel(const float* __restrict__ input,
-        const float* __restrict__ weight,float* __restrict__ output,int width,int outputs) {
-    const auto* row=weight+std::int64_t(blockIdx.x)*width;
-    float sums[Rows]{};
-    if constexpr(Vectorized) {
-        for(int i=threadIdx.x;i<width/4;i+=256) {
-            const auto w=reinterpret_cast<const float4*>(row)[i];
-            #pragma unroll
-            for(int m=0;m<Rows;++m) {
-                const auto x=reinterpret_cast<const float4*>(input+std::int64_t(m)*width)[i];
-                sums[m]=fmaf(w.x,x.x,sums[m]);sums[m]=fmaf(w.y,x.y,sums[m]);
-                sums[m]=fmaf(w.z,x.z,sums[m]);sums[m]=fmaf(w.w,x.w,sums[m]);
-            }
-        }
-    }else for(int i=threadIdx.x;i<width;i+=256) {
-        const float w=row[i];
-        #pragma unroll
-        for(int m=0;m<Rows;++m)sums[m]=fmaf(w,input[std::int64_t(m)*width+i],sums[m]);
-    }
-    __shared__ float partial[Rows][8];
-    const int lane=threadIdx.x&31,warp=threadIdx.x>>5;
+__global__ __launch_bounds__(256) void dense_f32_projection_kernel(
+        const float* __restrict__ input,const float* __restrict__ weight,float* output,int width,int outputs) {
+ // Share each activation load across two output rows. Two query tiles retain
+ // enough independent CTAs without changing a query's FMA or reduction order.
+ constexpr int Tile=2,QueryTiles=2;
+ constexpr int Columns=(Rows+QueryTiles-1)/QueryTiles;
+ const int row0=(blockIdx.x/QueryTiles)*Tile,first=(blockIdx.x%QueryTiles)*Columns;
+ if(first>=Rows)return;
+ const int lane=threadIdx.x&31,warp=threadIdx.x>>5;
+ float sums[Tile][Columns]{};
+ if constexpr(Vectorized) {
+  for(int i=threadIdx.x;i<width/4;i+=256) {
+   float4 w[Tile]{};
+   #pragma unroll
+   for(int r=0;r<Tile;++r)if(row0+r<outputs)w[r]=reinterpret_cast<const float4*>(weight+int64_t(row0+r)*width)[i];
+   #pragma unroll
+   for(int m=0;m<Columns;++m)if(first+m<Rows) {
+    const auto x=reinterpret_cast<const float4*>(input+int64_t(first+m)*width)[i];
     #pragma unroll
-    for(int m=0;m<Rows;++m) {
-        #pragma unroll
-        for(int offset=16;offset;offset>>=1)sums[m]+=__shfl_xor_sync(0xffffffffu,sums[m],offset);
-        if(!lane)partial[m][warp]=sums[m];
+    for(int r=0;r<Tile;++r) {
+     sums[r][m]=fmaf(w[r].x,x.x,sums[r][m]);sums[r][m]=fmaf(w[r].y,x.y,sums[r][m]);
+     sums[r][m]=fmaf(w[r].z,x.z,sums[r][m]);sums[r][m]=fmaf(w[r].w,x.w,sums[r][m]);
     }
-    __syncthreads();
-    if(!warp) {
-        #pragma unroll
-        for(int m=0;m<Rows;++m) {
-            float sum=lane<8?partial[m][lane]:0.f;
-            #pragma unroll
-            for(int offset=16;offset;offset>>=1)sum+=__shfl_xor_sync(0xffffffffu,sum,offset);
-            if(!lane)output[std::int64_t(m)*outputs+blockIdx.x]=sum;
-        }
-    }
+   }
+  }
+ } else {
+  for(int i=threadIdx.x;i<width;i+=256) {
+   float w[Tile]{};
+   #pragma unroll
+   for(int r=0;r<Tile;++r)if(row0+r<outputs)w[r]=weight[int64_t(row0+r)*width+i];
+   #pragma unroll
+   for(int m=0;m<Columns;++m)if(first+m<Rows) {
+    const float x=input[int64_t(first+m)*width+i];
+    #pragma unroll
+    for(int r=0;r<Tile;++r)sums[r][m]=fmaf(w[r],x,sums[r][m]);
+   }
+  }
+ }
+ __shared__ float partial[Tile][Columns][8];
+ #pragma unroll
+ for(int r=0;r<Tile;++r) {
+  #pragma unroll
+  for(int m=0;m<Columns;++m) {
+   #pragma unroll
+   for(int step=16;step;step>>=1)sums[r][m]+=__shfl_xor_sync(0xffffffffu,sums[r][m],step);
+   if(lane==0)partial[r][m][warp]=sums[r][m];
+  }
+ }
+ __syncthreads();
+ if(warp==0) {
+  #pragma unroll
+  for(int r=0;r<Tile;++r) {
+   #pragma unroll
+   for(int m=0;m<Columns;++m) {
+    float sum=lane<8?partial[r][m][lane]:0.f;
+    #pragma unroll
+    for(int step=16;step;step>>=1)sum+=__shfl_xor_sync(0xffffffffu,sum,step);
+    if(lane==0&&row0+r<outputs&&first+m<Rows)output[int64_t(first+m)*outputs+row0+r]=sum;
+   }
+  }
+ }
 }
 
 template<class Input>
@@ -605,14 +629,14 @@ mfq_tensor_backend::Tensor try_dense_f32_projection_cuda(const mfq_tensor_backen
     const auto rows=input.numel()/input.size(-1);
     // Fuse the existing short-window singleton calls with the same FMA and
     // reduction order. Larger windows retain the GEMM path below the adapter.
-    if(rows<1 || rows>6)return {};
+    if(rows<1 || rows>8)return {};
     static thread_local int cached_device=-1,sms=0;
     if(cached_device!=input.get_device()) {
         TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,input.get_device()));
         cached_device=input.get_device();
     }
-    // A four-row CTA layout has fewer CTAs than SMs in this range. Give each
-    // output a complete CTA; larger matrices retain their cuBLAS schedule.
+    // Two output rows and two query tiles keep about one CTA per output.
+    // Larger matrices retain their cuBLAS schedule.
     if(weight.size(0)>=int64_t(sms)*4)return {};
     const MfqCudaGuard guard(input.get_device());
     const auto stream=mfq_get_current_cuda_stream(input.get_device());
@@ -623,15 +647,16 @@ mfq_tensor_backend::Tensor try_dense_f32_projection_cuda(const mfq_tensor_backen
         (reinterpret_cast<std::uintptr_t>(input.data_ptr())|reinterpret_cast<std::uintptr_t>(weight.data_ptr()))%16==0;
     const auto launch=[&]<int M>() {
         const auto kernel=vectorized?dense_f32_projection_kernel<true,M>:dense_f32_projection_kernel<false,M>;
-        kernel<<<unsigned(weight.size(0)),256,0,stream.stream()>>>(input.data_ptr<float>(),weight.data_ptr<float>(),
+        kernel<<<unsigned(((weight.size(0)+1)/2)*2),256,0,stream.stream()>>>(input.data_ptr<float>(),weight.data_ptr<float>(),
             output.data_ptr<float>(),int(weight.size(1)),int(weight.size(0)));
         if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream.stream(),"dense_f32_projection",
-            reinterpret_cast<const void*>(kernel),"M="+std::to_string(M)+" N="+std::to_string(weight.size(0))+" K="+std::to_string(weight.size(1)));
+            reinterpret_cast<const void*>(kernel),"M="+std::to_string(M)+" N="+std::to_string(weight.size(0))+" K="+std::to_string(weight.size(1))+" output_tile=2 query_tiles=2");
     };
     switch(rows) {
         case 1:launch.template operator()<1>();break;case 2:launch.template operator()<2>();break;
         case 3:launch.template operator()<3>();break;case 4:launch.template operator()<4>();break;
-        case 5:launch.template operator()<5>();break;default:launch.template operator()<6>();break;
+        case 5:launch.template operator()<5>();break;case 6:launch.template operator()<6>();break;
+        case 7:launch.template operator()<7>();break;default:launch.template operator()<8>();break;
     }
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
 }

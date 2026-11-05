@@ -64,6 +64,7 @@ template <class Model> struct CudaMtpOps {
   // Destroy after local/result tensors, including cancellation of priming.
   std::unique_ptr<MoePrefillWorkspaceLoan> predictor_loan;
   std::shared_ptr<mfq::cuda::qwen35::MtpTargetGraphs> dense_target_graphs;
+  int64_t target_planned_kv_length=0;
   const mfq_tensor_backend::TensorOptions options =
       mfq_tensor_backend::TensorOptions()
           .device(mfq_tensor_backend::kCUDA)
@@ -73,7 +74,7 @@ template <class Model> struct CudaMtpOps {
   Tensor early_ple_ids_host;
   Tensor projected_target_hidden, projected_target_logits;
   Tensor projected_predictor_hidden, projected_predictor_logits;
-  Tensor projected_target_compact,projected_predictor_compact;
+  Tensor projected_target_compact,projected_predictor_compact,projected_target_packet;
   int graph_sampling_reuses=0;
   int32_t projected_predictor_greedy=-1;
   float projected_predictor_probability=-1.f;
@@ -183,7 +184,17 @@ template <class Model> struct CudaMtpOps {
     const auto captures=moe_expert_graph_captures(model.execution->moe_expert_cache);
     const bool initialized=captures!=target_graph_captures;
     target_graph_captures=captures;
-    return std::exchange(target_maintenance,false) || initialized;
+    const bool predictor_initialized=mtp.take_graph_initialization();
+    return std::exchange(target_maintenance,false) || initialized || predictor_initialized;
+  }
+  bool blockwise_mtp_cost() const {return mtp.blockwise_drafting();}
+  bool periodic_mtp_cost() const {
+    // Cache-backed weights may exchange residency between windows. CPU
+    // layers and explicit layer placement can also add transfer costs.
+    const auto& execution=*model.execution;
+    return (execution.moe_expert_cache && moe_expert_cache_has_sources(execution.moe_expert_cache)) ||
+        execution.tq_expert_cache || execution.gguf_expert_cache ||
+        execution.dense_cpu_layer_count>0 || execution.layer_placement.enabled();
   }
   bool gradual_mtp_warmup() const {
     // Both Qwen paths time complete draft/verification/rollback windows.
@@ -329,6 +340,12 @@ template <class Model> struct CudaMtpOps {
   void initialize(const std::vector<int64_t> &prompt,
                   const MfqSamplingParams &sampling) {
     input_ids = ids_for(prompt);
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>) {
+      const auto capacity=model.max_position_embeddings();
+      const auto requested=std::min<int64_t>(capacity,
+          int64_t(prompt.size())+std::max<int64_t>(0,sampling.max_tokens));
+      target_planned_kv_length=decode_graph_bucket(requested,capacity);
+    }
     sampler_.emplace(sampling);
     penalties = sampler().has_penalties();
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
@@ -339,6 +356,12 @@ template <class Model> struct CudaMtpOps {
     }
   }
   auto &sampler() { return *sampler_; }
+  void commit_target() {
+    mfq::cuda::RecurrentCopyBatch copies;
+    // Retain independent state copies across layers and publish them before
+    // the model adapter can consume the committed state.
+    model.commit_speculative([&] { copies.flush(); });
+  }
   bool captured_compact_requested() const {
     const auto* option=std::getenv("TYLOINFER_MTP_CONDITIONAL_TOPK");
     if(option && option[0]=='0')return true;
@@ -374,7 +397,7 @@ template <class Model> struct CudaMtpOps {
   Tensor target_forward(Tensor ids, Tensor *raw = nullptr,
                         int64_t confirmed = 0) {
     projected_target_hidden = {}; projected_target_logits = {};
-    projected_target_compact={};
+    projected_target_compact={};projected_target_packet={};
     projected_target_greedy.clear();
     target_transfer_bytes = 0;
     const auto transfer_before=mfq::cuda::routed_expert_streamed_bytes(*model.execution);
@@ -392,11 +415,18 @@ template <class Model> struct CudaMtpOps {
             if(!predictor->target_graphs || !predictor->target_graphs->compatible(model))
               predictor->target_graphs=std::make_shared<mfq::cuda::qwen35::MtpTargetGraphs>(model);
             dense_target_graphs=predictor->target_graphs;
+          } else if(model.hidden_capture) {
+            auto& graphs=model.hidden_capture->target_graphs;
+            if(!graphs || !graphs->compatible(model))
+              graphs=std::make_shared<mfq::cuda::qwen35::MtpTargetGraphs>(model);
+            dense_target_graphs=graphs;
           } else dense_target_graphs=std::make_shared<mfq::cuda::qwen35::MtpTargetGraphs>(model);
         }
-        bool initialized=false;Tensor logits;
-        if(auto hidden=dense_target_graphs->run(ids,confirmed,raw,&logits,&initialized)) {
+        bool initialized=false;Tensor logits,packet;
+        if(auto hidden=dense_target_graphs->run(ids,confirmed,raw,&logits,&initialized,target_planned_kv_length,
+            sampler().greedy() && !penalties?&packet:nullptr)) {
           projected_target_hidden=*hidden;projected_target_logits=std::move(logits);
+          projected_target_packet=std::move(packet);
           target_maintenance=target_maintenance || initialized;finish_profile();return std::move(*hidden);
         }
       }
@@ -426,7 +456,7 @@ template <class Model> struct CudaMtpOps {
   }
   Tensor target_suffix(Tensor ids, Tensor *raw) {
     projected_target_hidden = {}; projected_target_logits = {};
-    projected_target_compact={};
+    projected_target_compact={};projected_target_packet={};
     projected_target_greedy.clear();
     const auto transfer_before=mfq::cuda::routed_expert_streamed_bytes(*model.execution);
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
@@ -476,7 +506,7 @@ template <class Model> struct CudaMtpOps {
           Tensor part;
           hidden_rows.push_back(target_forward(ids.narrow(1,offset,rows),&part,rows>1?1:0).clone());
           raw_rows.push_back(std::move(part));
-          if(rows>1)model.commit_speculative();
+          if(rows>1)commit_target();
           offset+=rows;
         }
         auto hidden=hidden_rows.size()==1?std::move(hidden_rows.front()):concatenate(hidden_rows,1);
@@ -551,7 +581,63 @@ template <class Model> struct CudaMtpOps {
                ? result.reshape({1, tokens}).expand({3, tokens}).contiguous()
                : result;
   }
+  Tensor enqueue_greedy_chain(Tensor hidden,Tensor ids,Tensor positions,int depth,Tensor* verification_ids) {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>) {
+      if(auto* predictor=dynamic_cast<Qwen35Mtp*>(&mtp);
+          predictor && mfq::cuda::qwen35::MtpTargetGraphs::eligible(model,ids)) {
+        auto proposals=predictor->enqueue_greedy_chain(target,std::move(hidden),std::move(ids),std::move(positions),depth,verification_ids);
+        if(proposals) {
+          projected_predictor_hidden={};projected_predictor_logits={};projected_predictor_compact={};
+          projected_predictor_greedy=-1;projected_predictor_probability=-1.f;
+          const bool initialized=mtp.take_graph_initialization();
+          target_maintenance=target_maintenance || initialized;
+          return std::move(*proposals);
+        }
+      }
+    }
+    return {};
+  }
+  std::pair<std::vector<int32_t>,std::vector<int32_t>> resolve_queued_greedy(
+      const Tensor& proposals,Tensor logits) {
+    TYLOINFER_RUNTIME_CHECK(sampler().greedy() && !penalties && logits.dim()==2 &&
+        logits.size(0)==proposals.numel()+1,"invalid queued greedy verification");
+    const bool captured=projected_target_packet.defined() && projected_target_logits.defined() &&
+        logits.data_ptr()==projected_target_logits.data_ptr() && logits.numel()==projected_target_logits.numel();
+    auto packet=projected_target_packet;
+    if(!captured) {
+      auto samples=sampler().ops().sample_greedy(logits.contiguous()).reshape({-1});
+      packet=mfq_tensor_backend::cat({proposals,samples},0);
+    }
+    auto host=packet.cpu().contiguous();
+    const auto* tokens=host.template data_ptr<int64_t>();
+    const auto count=proposals.numel();
+    static thread_local bool reported=false;
+    if(!reported) {
+      std::cerr<<"runtime_qwen35_queued_verification actual_match=1 draft_host_reads=0 combined_host_reads=1"
+          <<" captured_target_greedy="<<captured<<'\n';
+      reported=true;
+    }
+    return {std::vector<int32_t>(tokens,tokens+count),
+        std::vector<int32_t>(tokens+count,tokens+host.numel())};
+  }
   std::optional<std::vector<int32_t>> predictor_greedy_chain(Tensor hidden,Tensor ids,Tensor positions,int depth,int32_t anchor) {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>) {
+      if(auto* predictor=dynamic_cast<Qwen35Mtp*>(&mtp)) {
+        auto result=predictor->queued_greedy_chain(target,std::move(hidden),std::move(ids),std::move(positions),depth);
+        if(result) {
+          static thread_local bool reported=false;
+          if(!reported) {
+            std::cerr<<"runtime_qwen35_queued_greedy actual_match=1 depth="<<depth<<" host_reads=1\n";
+            reported=true;
+          }
+          projected_predictor_hidden={};projected_predictor_logits={};projected_predictor_compact={};
+          projected_predictor_greedy=-1;projected_predictor_probability=-1.f;
+          const bool initialized=mtp.take_graph_initialization();
+          target_maintenance=target_maintenance || initialized;
+        }
+        return result;
+      }
+    }
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
           predictor && predictor->layers.size()==1 && model.reuse_decode_graphs && model.graph_registry) {
@@ -789,6 +875,10 @@ template <class Model> struct CudaMtpOps {
       if(projected_target_greedy.size()==1 && projected_target_logits.defined() &&
           logits.data_ptr()==projected_target_logits.data_ptr() && logits.numel()==projected_target_logits.numel())
         return projected_target_greedy.front();
+      if(projected_target_packet.defined() && projected_target_packet.numel()==1 && projected_target_logits.defined() &&
+          logits.data_ptr()==projected_target_logits.data_ptr() && logits.numel()==projected_target_logits.numel()) {
+        auto host=projected_target_packet.cpu();return int32_t(*host.template data_ptr<int64_t>());
+      }
     }
     if (penalties)
       logits = logits.clone();
@@ -802,6 +892,12 @@ template <class Model> struct CudaMtpOps {
     if(!projected_target_greedy.empty() && projected_target_logits.defined() &&
         logits.data_ptr()==projected_target_logits.data_ptr() && logits.numel()==projected_target_logits.numel())
       return projected_target_greedy;
+    if(projected_target_packet.defined() && projected_target_logits.defined() &&
+        logits.data_ptr()==projected_target_logits.data_ptr() && logits.numel()==projected_target_logits.numel()) {
+      auto host=projected_target_packet.cpu().contiguous();
+      const auto* tokens=host.template data_ptr<int64_t>()+logits.size(0)-1;
+      return std::vector<int32_t>(tokens,tokens+logits.size(0));
+    }
     auto host = sampler().ops().sample_greedy(logits.contiguous()).cpu().contiguous();
     const auto* tokens = host.template data_ptr<int64_t>();
     return std::vector<int32_t>(tokens, tokens + host.numel());
