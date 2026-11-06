@@ -154,15 +154,23 @@ struct CpuTqBlockFitter::Impl {
         :canonical(source),rows(count),workers(worker_count),state_bits(profile),allocation(policy) {
         if(!rows || rows%4 || rows>std::numeric_limits<std::size_t>::max()/520 ||
            workers<1 || profile<8 || profile>16 || source.key_state_bits!=16 || source.value_state_bits!=16 || source.key_bits!=source.value_bits ||
-           (source.key_bits!=8 && source.key_bits!=affine8_tag))
-            throw std::invalid_argument("CPU QSA re-quantization requires a canonical 8-bit image");
+           (source.key_bits!=0 && source.key_bits!=8 && source.key_bits!=affine8_tag))
+            throw std::invalid_argument("CPU QSA re-quantization requires FP16, Affine8 or canonical TQ8 modes");
+        const bool fp16=source.key_bits==0;
         const bool affine=source.key_bits==affine8_tag;
-        const auto metadata=affine?((3*rows+3)&~std::size_t(3)):((2*rows+(rows+1)/2+3)&~std::size_t(3));
+        const auto metadata=fp16?0:affine?((3*rows+3)&~std::size_t(3)):((2*rows+(rows+1)/2+3)&~std::size_t(3));
         for(int kind=0;kind<2;++kind) {
             const auto& input=kind?source.value:source.key;
-            if(input.size()!=metadata+rows*256)throw std::invalid_argument("invalid canonical microblock geometry");
+            if(input.size()!=metadata+rows*(fp16?512:256))throw std::invalid_argument("invalid canonical microblock geometry");
             decoded[kind].reserve(rows*256);
             for(std::size_t row=0;row<rows;++row) {
+                if(fp16) {
+                    for(std::size_t d=0;d<256;++d) {
+                        const auto at=2*(row*256+d);
+                        decoded[kind].push_back(ggml_fp16_to_fp32(input[at]|std::uint16_t(input[at+1])<<8));
+                    }
+                    continue;
+                }
                 if(affine) {
                     const float scale=ggml_fp16_to_fp32(input[row*2]|std::uint16_t(input[row*2+1])<<8);
                     const auto zero=std::int8_t(input[rows*2+row]);
@@ -177,11 +185,34 @@ struct CpuTqBlockFitter::Impl {
             }
             energy[kind].resize(rows);
             for(std::size_t row=0;row<rows;++row)for(std::size_t d=0;d<256;++d) {
-                const auto x=double(decoded[kind][row*256+d]);energy[kind][row]+=x*x;
+                const auto x=double(decoded[kind][row*256+d]);
+                if(!std::isfinite(x))throw std::invalid_argument("non-finite canonical QSA modes");
+                energy[kind][row]+=x*x;
             }
         }
     }
     std::vector<std::uint8_t> pack(int kind,int budget_bits) {
+        if(budget_bits==8 && canonical.key_bits==0) {
+            // Affine8 uses the GPU encoder's upward-rounded FP16 step and
+            // includes zero in each row's range. No trellis fit is needed.
+            const auto header=(3*rows+3)&~std::size_t(3);
+            std::vector<std::uint8_t> output(header+rows*256);
+            for(std::size_t row=0;row<rows;++row) {
+                const auto* x=decoded[kind].data()+row*256;
+                float lo=0,hi=0;
+                for(int d=0;d<256;++d){lo=std::min(lo,x[d]);hi=std::max(hi,x[d]);}
+                const float step=std::max((hi-lo)/255.f,0x1p-24f);
+                auto encoded=ggml_fp32_to_fp16(step);
+                if(ggml_fp16_to_fp32(encoded)<step)++encoded;
+                const float scale=ggml_fp16_to_fp32(encoded);
+                const int zero=std::max(-128,std::min(127,-128-int(std::nearbyint(lo/scale))));
+                output[2*row]=std::uint8_t(encoded);output[2*row+1]=std::uint8_t(encoded>>8);
+                output[2*rows+row]=std::uint8_t(std::int8_t(zero));
+                for(int d=0;d<256;++d)output[header+row*256+d]=std::uint8_t(std::int8_t(
+                    std::max(-128,std::min(127,int(std::nearbyint(x[d]/scale))+zero))));
+            }
+            packed_tags[kind]=affine8_tag;return output;
+        }
         if(budget_bits==8){packed_tags[kind]=kind?canonical.value_bits:canonical.key_bits;return kind?canonical.value:canonical.key;}
         if(budget_bits<1 || budget_bits>7)throw std::invalid_argument("invalid CPU QSA target precision");
         auto bits=allocation==RowPrecisionAllocation::Energy?allocate_energy_bits(energy[kind],budget_bits):

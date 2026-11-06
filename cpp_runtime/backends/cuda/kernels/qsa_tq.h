@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cuda_runtime_api.h>
 #include <cstdint>
 
@@ -69,6 +70,10 @@ int tq_commit_tail(const float* keys,const float* values,const float* index,floa
 // One contiguous D2H image contains K, V and FP16 raw index rows for rollback.
 int tq_pack_archive(const std::uint8_t* keys,const std::uint8_t* values,const float* raw_index,
     std::uint8_t* archive,int blocks,int image_bytes,int index_width,cudaStream_t stream);
+// Copy the exact pooled INT16 Affine index beside its immutable raw archive.
+int tq_archive_indexer(const std::int16_t* codes,const std::uint16_t* scales,
+    const std::int16_t* zero,std::uint8_t* archive,std::size_t offset,int blocks,int width,
+    std::int64_t start,const std::int64_t* position,cudaStream_t stream);
 // Single-token incomplete block: append raw tails, H4/RHT, and publish FP16
 // modes on device. The logical position remains live across graph replays.
 // Optional query rotation shares the append launch. The result uses the
@@ -93,6 +98,7 @@ int tq_finalize_pending(const float* key_modes,const float* value_modes,const fl
     const TqBlockView* destination,TqBlockView* views,const std::int64_t* position,
     std::uint8_t* archive,int rows,int index_width,int destination_slots,cudaStream_t stream);
 int tq_initialize_destinations(std::uint8_t* payload,TqBlockView* destinations,int image_bytes,int slots,cudaStream_t stream);
+int tq_initialize_fp16_destinations(std::uint8_t* payload,TqBlockView* destinations,int image_bytes,int slots,cudaStream_t stream);
 
 int indexer_affine16_encode(const float* input, std::int16_t* output,
     std::uint16_t* scales, std::int16_t* zero, int rows, int width, cudaStream_t stream);

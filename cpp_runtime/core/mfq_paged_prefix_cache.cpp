@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -26,6 +27,10 @@
 #endif
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <fcntl.h>
 #include <io.h>
 #else
@@ -43,6 +48,65 @@ constexpr std::uint64_t kHeaderBytes =
     8 + 4 + 32 + 32 + 32 + 4 + 4 + 8 + 32;
 constexpr std::string_view kHashDomain = "mfq-paged-prefix-v1";
 constexpr std::uint64_t kDiskSafeDenominator = 10;
+
+class PrefixFileLease {
+public:
+    explicit PrefixFileLease(const std::filesystem::path& path) {
+#if defined(_WIN32)
+        file_=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        LARGE_INTEGER bytes{};
+        if(file_==INVALID_HANDLE_VALUE)
+            throw std::runtime_error("cannot open borrowed SSD prefix");
+        if(!GetFileSizeEx(file_,&bytes) || bytes.QuadPart<0) {
+            CloseHandle(file_);file_=INVALID_HANDLE_VALUE;throw std::runtime_error("cannot size borrowed SSD prefix");
+        }
+        bytes_=std::uint64_t(bytes.QuadPart);
+#else
+        file_=::open(path.c_str(),O_RDONLY);
+        if(file_<0)throw std::runtime_error("cannot open borrowed SSD prefix");
+        const auto bytes=::lseek(file_,0,SEEK_END);
+        if(bytes<0){::close(file_);file_=-1;throw std::runtime_error("cannot size borrowed SSD prefix");}
+        bytes_=std::uint64_t(bytes);
+#endif
+    }
+    ~PrefixFileLease(){
+#if defined(_WIN32)
+        if(file_!=INVALID_HANDLE_VALUE)CloseHandle(file_);
+#else
+        if(file_>=0)::close(file_);
+#endif
+    }
+    std::uint64_t size()const{return bytes_;}
+    void read(std::uint64_t offset,void* destination,std::size_t bytes) {
+        if(offset>bytes_ || bytes>bytes_-offset)throw std::out_of_range("borrowed SSD prefix byte range");
+        auto* output=static_cast<std::uint8_t*>(destination);
+#if defined(_WIN32)
+        std::lock_guard<std::mutex> guard(mutex_);LARGE_INTEGER position{};position.QuadPart=static_cast<LONGLONG>(offset);
+        if(!SetFilePointerEx(file_,position,nullptr,FILE_BEGIN))throw std::runtime_error("cannot seek borrowed SSD prefix");
+#endif
+        std::size_t done=0;
+        while(done<bytes) {
+#if defined(_WIN32)
+            DWORD count=0;const auto chunk=static_cast<DWORD>(std::min<std::size_t>(bytes-done,1ULL<<30));
+            if(!ReadFile(file_,output+done,chunk,&count,nullptr) || !count)
+                throw std::runtime_error("cannot read borrowed SSD prefix");
+#else
+            const auto count=::pread(file_,output+done,bytes-done,static_cast<off_t>(offset+done));
+            if(count<0 && errno==EINTR)continue;
+            if(count<=0)throw std::runtime_error("cannot read borrowed SSD prefix");
+#endif
+            done+=static_cast<std::size_t>(count);
+        }
+    }
+private:
+    std::uint64_t bytes_=0;
+#if defined(_WIN32)
+    HANDLE file_=INVALID_HANDLE_VALUE;std::mutex mutex_;
+#else
+    int file_=-1;
+#endif
+};
 
 constexpr std::array<std::uint32_t, 64> kShaConstants{
     0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U,
@@ -657,6 +721,36 @@ public:
         const auto payloads = load_prefix({hash});
         if (payloads.empty()) return std::nullopt;
         return *payloads.front();
+    }
+
+    std::shared_ptr<const PagedPrefixReadLease> borrow(const BlockHash& hash) {
+        std::shared_ptr<PrefixFileLease> file;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            writes_finished_.wait(lock,[&]{return pending_.count(hash)==0;});
+            const auto found=disk_.find(hash);if(found==disk_.end())return {};
+            try {file=std::make_shared<PrefixFileLease>(found->second.path);}catch(...){return {};}
+            found->second.last_used=++clock_;
+        }
+        try {
+            std::string bytes(std::size_t(kHeaderBytes),'\0');file->read(0,bytes.data(),bytes.size());
+            std::istringstream input(bytes,std::ios::in|std::ios::binary);ParsedHeader header;
+            if(!read_header(input,header) || header.hash!=hash ||
+                header.payload_bytes>std::numeric_limits<std::size_t>::max() ||
+                file->size()<kHeaderBytes || header.payload_bytes!=file->size()-kHeaderBytes)return {};
+            Sha256State checksum;std::array<std::uint8_t,64*1024> buffer;
+            for(std::uint64_t at=0;at<header.payload_bytes;) {
+                const auto count=std::size_t(std::min<std::uint64_t>(buffer.size(),header.payload_bytes-at));
+                file->read(kHeaderBytes+at,buffer.data(),count);checksum.update(buffer.data(),count);at+=count;
+            }
+            if(checksum.finish()!=header.payload_hash)return {};
+            auto result=std::make_shared<PagedPrefixReadLease>();result->payload_bytes=std::size_t(header.payload_bytes);
+            result->read_range=[file,size=result->payload_bytes](std::size_t offset,std::size_t count) {
+                if(offset>size || count>size-offset)throw std::out_of_range("borrowed SSD prefix payload range");
+                std::vector<std::uint8_t> bytes(count);file->read(kHeaderBytes+offset,bytes.data(),count);return bytes;
+            };
+            return result;
+        }catch(...){return {};}
     }
 
     std::vector<PagedPrefixPayload> load_prefix(
@@ -1770,6 +1864,10 @@ std::vector<PagedPrefixPayload> PagedPrefixCache::load_prefix(
     return implementation_->load_prefix(blocks);
 }
 
+std::shared_ptr<const PagedPrefixReadLease> PagedPrefixCache::borrow(const BlockHash& block) {
+    return implementation_->borrow(block);
+}
+
 bool PagedPrefixCache::invalidate(const BlockHash& block) {
     return implementation_->invalidate(block);
 }
@@ -1812,6 +1910,18 @@ std::size_t PagedPrefixCache::clear() {
 
 PagedPrefixCacheMetrics PagedPrefixCache::metrics() const {
     return implementation_->metrics();
+}
+
+std::function<std::uint64_t(std::uint64_t)> make_ram_prefix_reclaimer(
+        std::weak_ptr<PagedPrefixCache> cache) {
+    if (cache.expired()) return {};
+    return [cache=std::move(cache)](std::uint64_t bytes) -> std::uint64_t {
+        if (!bytes) return 0;
+        const auto owner=cache.lock();
+        if (!owner) return 0;
+        const auto hot=owner->metrics().hot_bytes;
+        return hot ? owner->trim_hot(hot>bytes ? hot-bytes : 0) : 0;
+    };
 }
 
 } // namespace mfq::cache

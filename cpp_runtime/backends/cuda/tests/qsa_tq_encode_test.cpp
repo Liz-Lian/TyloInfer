@@ -22,10 +22,17 @@ struct Buffer {
     Buffer(const Buffer&)=delete;Buffer& operator=(const Buffer&)=delete;
     template<class T>T* as(){return static_cast<T*>(data);}
 };
-void run(TqEncodeProfile profile,int rows) {
+void run(TqEncodeProfile profile,int rows,bool limited=false) {
     constexpr int blocks=4;
     TqEncodePlan plan;
     check(tq_make_encode_plan(&plan,blocks,rows,profile));
+    if(limited) {
+        const auto previous=plan.workspace_bytes;const auto waves=plan.waves;
+        require(tq_limit_encode_waves(&plan,0)==int(cudaErrorInvalidValue),"zero background wave limit accepted");
+        check(tq_limit_encode_waves(&plan,2));
+        require(plan.workspace_bytes<=previous,"background wave limit increased workspace");
+        for(int i=0;i<8;++i)require(plan.waves[i]==std::min(waves[i],2),"background row CTA limit differs");
+    }
     const std::size_t stride=std::size_t(rows)*260+32;
     std::vector<float> input(blocks*rows*256);
     for(int b=0;b<blocks;++b)for(int r=0;r<rows;++r)for(int d=0;d<256;++d)
@@ -108,8 +115,9 @@ int main() try {
     if(available==cudaErrorNoDevice || available==cudaErrorInsufficientDriver || !devices){std::cout<<"SKIP: CUDA device unavailable\n";return 77;}
     check(available);
     run(TqEncodeProfile::Fast,4);run(TqEncodeProfile::Fast,12);
+    run(TqEncodeProfile::Fast,4,true);
     TqEncodePlan quality;const int support=tq_make_encode_plan(&quality,4,8,TqEncodeProfile::Quality);
-    if(!support)run(TqEncodeProfile::Quality,8);
+    if(!support){run(TqEncodeProfile::Quality,8);run(TqEncodeProfile::Quality,8,true);}
     else if(support==int(cudaErrorNotSupported))
         std::cout<<"SKIP TQ16: full-state kernel resources unavailable\n";
     else check(support);

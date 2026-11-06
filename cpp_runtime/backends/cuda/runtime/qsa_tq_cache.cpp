@@ -1,4 +1,6 @@
 #include "qsa_tq_cache.h"
+#include "qsa_ram_cache.h"
+#include "qsa_tq_session.h"
 #include "kernels/qsa_tq_fa.h"
 #include "mfq_cuda_context.h"
 #include "decode_window.h"
@@ -14,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <map>
 #include <numeric>
 #include <unordered_map>
 
@@ -36,10 +39,40 @@ struct TqCodecBuffer {
         check(cudaMalloc(&pointer,n));bytes=n;}
     template<class T> T* as(std::size_t offset=0)const{return reinterpret_cast<T*>(static_cast<std::uint8_t*>(pointer)+offset);}
 };
+struct TqCodecHostBuffer {
+    void* pointer=nullptr;std::size_t bytes=0;
+    TqCodecHostBuffer()=default;TqCodecHostBuffer(const TqCodecHostBuffer&)=delete;
+    TqCodecHostBuffer& operator=(const TqCodecHostBuffer&)=delete;
+    ~TqCodecHostBuffer(){if(pointer)(void)cudaFreeHost(pointer);}
+    void reserve(std::size_t n) {
+        if(n<=bytes)return;
+        void* replacement=nullptr;check(cudaHostAlloc(&replacement,n,cudaHostAllocDefault));
+        if(pointer)check(cudaFreeHost(pointer));pointer=replacement;bytes=n;
+    }
+    template<class T>T* as(std::size_t offset=0)const{return reinterpret_cast<T*>(static_cast<std::uint8_t*>(pointer)+offset);}
+};
 struct TqEncoderStream {
     cudaStream_t value=nullptr;
     ~TqEncoderStream(){if(value)(void)cudaStreamDestroy(value);}
 };
+struct TqCodecArena {
+    std::mutex mutex;std::once_flag initialized;
+    TqEncoderStream owner;cudaStream_t stream=nullptr;
+    TqCodecBuffer source,source_views,decoded,encoded,sizes,flags,status,targets,workspace;
+    TqCodecHostBuffer input,output;
+    std::size_t reported_bytes=0;
+    std::size_t device_bytes()const {
+        return source.bytes+source_views.bytes+decoded.bytes+encoded.bytes+sizes.bytes+flags.bytes+status.bytes+targets.bytes+workspace.bytes;
+    }
+};
+std::shared_ptr<TqCodecArena> shared_codec_arena(int device,cudaStream_t stream) {
+    // Foreground imports and the background worker can run on different host
+    // threads. Both must find the same arena for this model execution stream.
+    static std::mutex mutex;
+    static std::map<std::pair<int,cudaStream_t>,std::weak_ptr<TqCodecArena>> arenas;
+    std::lock_guard<std::mutex> lock(mutex);auto& slot=arenas[{device,stream}];auto arena=slot.lock();
+    if(!arena){arena=std::make_shared<TqCodecArena>();slot=arena;}return arena;
+}
 tb::Tensor upload(const void* data,std::size_t bytes,const tb::TensorOptions& options) {
     auto host=tb::empty({int64_t(bytes)},options.device(tb::kCPU).dtype(tb::kUInt8));
     if(bytes)std::memcpy(host.data_ptr(),data,bytes);return host.to(options.dtype(tb::kUInt8));
@@ -51,7 +84,7 @@ tb::Tensor signs(int width,bool value,const tb::TensorOptions& options) {
     return host.to(options.dtype(tb::kFloat32));
 }
 }
-bool qsa_tq_cache_enabled() {const auto* s=std::getenv("TYLOINFER_QSA_ADAPTIVE_TQ");return s && std::string(s)=="1";}
+bool qsa_tq_cache_enabled() {const auto* s=std::getenv("TYLOINFER_QSA_ADAPTIVE_TQ");return (s && std::string(s)=="1") || option("TYLOINFER_QSA_RAM_KV_BITS",0)!=0;}
 
 struct QsaTqCache::Impl {
     // Adjacent layers share one pinned transfer image on their worker thread.
@@ -117,9 +150,10 @@ struct QsaTqCache::Impl {
     } decode_attention,prefill_attention,pending_attention;
     std::unique_ptr<tq::TqPrefillGraph> prefill_graph;
     std::unique_ptr<tq::AdaptiveCache> cache;
+    std::unique_ptr<QsaRamCache> ram;
+    int ram_bits=0;
     std::shared_ptr<mfq::cache::QsaKvStore> raw_index_store;
-    std::vector<mfq::cache::QsaKvStore::BlockPtr> raw_index_blocks;
-    std::vector<std::vector<std::uint8_t>> ram_index_blocks;
+    std::vector<std::shared_ptr<QsaIndexArchive>> index_archive;
     std::vector<std::shared_ptr<ImageBatch>> owners;
     std::vector<Retired> retired;
     std::vector<Upload> uploads;
@@ -138,8 +172,8 @@ struct QsaTqCache::Impl {
         }
     };
     std::string directory;
-    TqEncoderStream encoder_owner;cudaStream_t encoder_stream=nullptr;std::once_flag encoder_once;
-    TqCodecBuffer source,source_views,decoded,encoded,sizes,flags,status,targets,workspace;
+    cudaStream_t codec_stream_key=nullptr;std::once_flag bind_encoder;
+    std::shared_ptr<TqCodecArena> encoder;
 
     Impl(int64_t max,int h,int kh,int w,int ih,int iw,int b,const tb::TensorOptions& opts,bool ssd)
         :maximum(max),heads(h),kv_heads(kh),width(w),padded(w<=256?256:w<=512?512:1024),index_heads(ih),
@@ -150,7 +184,9 @@ struct QsaTqCache::Impl {
         // Native compact images have 32-bit lengths and integer row strides.
         if(row_count>(INT_MAX-16)/259)throw std::invalid_argument("adaptive QSA image stride exceeds 32 bits");
         rows=int(row_count);capacity=int((max+3)/4);
-        check(cudaGetDevice(&device));
+        ram_bits=int(option("TYLOINFER_QSA_RAM_KV_BITS",0));
+        if(ram_bits && ram_bits!=16 && ram_bits!=8 && ram_bits!=4)throw std::invalid_argument("QSA RAM KV bits must be 16, 8 or 4");
+        check(cudaGetDevice(&device));codec_stream_key=mfq_current_cuda_stream();
         const auto update=option("TYLOINFER_QSA_TQ_UPDATE_TOKENS",128);
         if(update!=128 && update!=256)throw std::invalid_argument("adaptive QSA update interval must be 128 or 256");
         interval=unsigned(update);
@@ -166,7 +202,7 @@ struct QsaTqCache::Impl {
         index_codes=tb::empty({capacity,index_width},options.dtype(tb::kInt16));
         index_scales=tb::empty({capacity},options.dtype(tb::kFloat16));index_zero=tb::empty({capacity},options.dtype(tb::kInt16));
         hits=tb::zeros({capacity},options.dtype(tb::kFloat32));mass=tb::zeros({capacity},options.dtype(tb::kFloat32));
-        owners.resize(capacity);canonical_bytes=((3*rows+3)&~3)+256*rows;
+        owners.resize(capacity);canonical_bytes=ram_bits==16?std::size_t(rows)*512:((3*rows+3)&~3)+256*rows;
         tail_storage_k=tb::empty({1,4,kv_heads,width},options.dtype(tb::kFloat32));tail_storage_v=tb::empty_like(tail_storage_k);
         tail_storage_index=tb::empty({1,4,index_width},options.dtype(tb::kFloat32));
         rotated_tail_k=tb::empty({4,kv_heads,padded},options.dtype(tb::kFloat32));rotated_tail_v=tb::empty_like(rotated_tail_k);
@@ -177,11 +213,18 @@ struct QsaTqCache::Impl {
     ~Impl() {
         (void)cudaSetDevice(device);
         if(history_transfer.pending){(void)cudaEventSynchronize(history_transfer.done);history_transfer.pending=false;}
-        cache.reset();(void)cudaStreamSynchronize(mfq_current_cuda_stream());
+        ram.reset();cache.reset();(void)cudaStreamSynchronize(mfq_current_cuda_stream());
         for(auto& old:retired)if(old.done)(void)cudaEventDestroy(old.done);
         for(auto& upload:uploads)if(upload.done)(void)cudaEventDestroy(upload.done);
     }
     void initialize_cache() {
+        if(ram_bits) {
+            ram=std::make_unique<QsaRamCache>(capacity,rows,(budget+6)/4,ram_bits,options,views,ssd_cache,directory+"/ram-kv",
+                [this](const auto& images,const auto& precision){return reencode(images,precision);});
+            mfq::cache::QsaKvStoreConfig index;index.budget_bytes=index.buffer_bytes=4ULL<<20;index.directory=directory+"/index-tail";
+            if(ssd_cache)raw_index_store=std::make_shared<mfq::cache::QsaKvStore>(index);
+            return;
+        }
         tq::AdaptiveCacheConfig config;config.directory=directory+"/kv";config.rows_per_kind=rows;
         config.ssd_cache=ssd_cache;
         config.tq_state_bits=14;config.policy.update_tokens=interval;
@@ -197,49 +240,123 @@ struct QsaTqCache::Impl {
         mfq::cache::QsaKvStoreConfig index;index.budget_bytes=index.buffer_bytes=4ULL<<20;index.directory=directory+"/index-tail";
         if(ssd_cache)raw_index_store=std::make_shared<mfq::cache::QsaKvStore>(index);
     }
+    std::size_t index_archive_bytes()const {return std::size_t(index_width)*8+(ram?std::size_t(index_width+2)*2:0);}
+    void save_index(std::vector<std::uint8_t> bytes) {
+        auto image=std::make_shared<QsaIndexArchive>();
+        if(ssd_cache){image->store=raw_index_store;image->block=raw_index_store->write(std::move(bytes));}
+        else image->resident=std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+        index_archive.push_back(std::move(image));
+    }
     std::vector<tq::MicroblockImage> reencode(const std::vector<tq::MicroblockImage>& input,const std::vector<tq::Precision>& precision) {
+        if(input.size()!=precision.size() || input.size()>std::size_t(INT_MAX/2))
+            throw std::invalid_argument("QSA encoder precision count mismatch");
+        if(input.empty())return {};
+        check(cudaSetDevice(device));
+        const auto encoder_budget=option("TYLOINFER_QSA_TQ_WORKSPACE_BYTES",32ULL<<20);
+        // Keep fitting at the policy's2048-token transaction granularity.
+        // Larger head counts may require smaller chunks to respect the actual
+        // encoder workspace; no model geometry or device whitelist is used.
+        auto batch=std::min(input.size(),std::size_t(2048/4));
+        tq::TqEncodePlan checked_plan;
+        for(;;) {
+            const auto error=tq::tq_make_encode_plan(&checked_plan,int(2*batch),rows,tq::TqEncodeProfile::Fast,encoder_budget);
+            if(error==int(cudaErrorMemoryAllocation) && batch>1){batch=(batch+1)/2;continue;}
+            check(error);break;
+        }
+        if(batch<input.size()) {
+            std::vector<tq::MicroblockImage> result;result.reserve(input.size());
+            for(std::size_t begin=0;begin<input.size();begin+=batch) {
+                const auto end=std::min(input.size(),begin+batch);
+                auto part=reencode({input.begin()+begin,input.begin()+end},{precision.begin()+begin,precision.begin()+end});
+                for(auto& image:part)result.push_back(std::move(image));
+            }
+            return result;
+        }
+        std::call_once(bind_encoder,[this]{encoder=ram_bits?shared_codec_arena(device,codec_stream_key):std::make_shared<TqCodecArena>();});
+        auto& arena=*encoder;std::lock_guard<std::mutex> encoder_guard(arena.mutex);
+        auto& encoder_stream=arena.stream;auto& encoder_owner=arena.owner;
+        auto& source=arena.source;auto& source_views=arena.source_views;auto& decoded=arena.decoded;
+        auto& encoded=arena.encoded;auto& sizes=arena.sizes;auto& flags=arena.flags;
+        auto& status=arena.status;auto& targets=arena.targets;auto& workspace=arena.workspace;
+        auto& encoder_input=arena.input;auto& encoder_output=arena.output;
         check(cudaSetDevice(device));
         // Short contexts use only canonical Q8. Create an encoder stream when
         // the background worker first needs secondary quantization.
-        std::call_once(encoder_once,[this]{
-            check(cudaStreamCreateWithFlags(&encoder_stream,cudaStreamNonBlocking));
+        std::call_once(arena.initialized,[&]{
+            int least=0,greatest=0;check(cudaDeviceGetStreamPriorityRange(&least,&greatest));
+            check(cudaStreamCreateWithPriority(&encoder_stream,cudaStreamNonBlocking,least));
             encoder_owner.value=encoder_stream;
         });
         const int n=int(input.size()),count=2*n;
         const auto stride=(3*rows+7)/8+3*rows+256*rows+16;
-        std::vector<std::uint8_t> bytes;std::vector<std::size_t> offsets;
+        std::size_t bytes=0;std::vector<std::size_t> offsets;
         for(int kind=0;kind<2;++kind)for(const auto& image:input) {
-            const auto& src=kind?image.value:image.key;offsets.push_back(bytes.size());bytes.insert(bytes.end(),src.begin(),src.end());
+            const auto& src=kind?image.value:image.key;offsets.push_back(bytes);bytes+=src.size();
         }
-        source.reserve(bytes.size());source_views.reserve(n*sizeof(tq::TqBlockView));
+        source.reserve(bytes);source_views.reserve(n*sizeof(tq::TqBlockView));
         decoded.reserve(std::size_t(count)*rows*256*sizeof(float));encoded.reserve(std::size_t(count)*stride);
         sizes.reserve(count*4);flags.reserve(count*4);status.reserve(4);targets.reserve(count*4);
-        std::vector<tq::TqBlockView> records(n);std::vector<int> budgets(count);
+        const auto records_at=(bytes+15)&~std::size_t(15),budgets_at=records_at+n*sizeof(tq::TqBlockView);
+        encoder_input.reserve(budgets_at+count*4);
+        auto* records=encoder_input.as<tq::TqBlockView>(records_at);auto* budgets=encoder_input.as<int>(budgets_at);
+        for(int kind=0;kind<2;++kind)for(int i=0;i<n;++i) {
+            const auto& image=kind?input[i].value:input[i].key;
+            std::memcpy(encoder_input.as<std::uint8_t>(offsets[kind*n+i]),image.data(),image.size());
+        }
         for(int i=0;i<n;++i) {
             records[i]={source.as<std::uint8_t>(offsets[i]),source.as<std::uint8_t>(offsets[n+i]),
                 tq::tq_precision_flags(input[i].key_bits,input[i].key_state_bits),tq::tq_precision_flags(input[i].value_bits,input[i].value_state_bits)};
             budgets[i]=rows*precision[i].key_bits;budgets[n+i]=rows*precision[i].value_bits;
         }
-        check(cudaMemcpyAsync(source.pointer,bytes.data(),bytes.size(),cudaMemcpyHostToDevice,encoder_stream));
-        check(cudaMemcpyAsync(source_views.pointer,records.data(),records.size()*sizeof(records[0]),cudaMemcpyHostToDevice,encoder_stream));
-        check(cudaMemcpyAsync(targets.pointer,budgets.data(),count*4,cudaMemcpyHostToDevice,encoder_stream));
+        check(cudaMemcpyAsync(source.pointer,encoder_input.pointer,bytes,cudaMemcpyHostToDevice,encoder_stream));
+        check(cudaMemcpyAsync(source_views.pointer,records,n*sizeof(records[0]),cudaMemcpyHostToDevice,encoder_stream));
+        check(cudaMemcpyAsync(targets.pointer,budgets,count*4,cudaMemcpyHostToDevice,encoder_stream));
         check(tq::tq_decode_modes(source_views.as<tq::TqBlockView>(),decoded.as<float>(),decoded.as<float>(std::size_t(n)*rows*256*4),
             relative.data_ptr<std::uint16_t>(),n,kv_heads,padded,encoder_stream));
-        tq::TqEncodePlan plan;
-        check(tq::tq_make_encode_plan(&plan,count,rows,tq::TqEncodeProfile::Fast,option("TYLOINFER_QSA_TQ_WORKSPACE_BYTES",32ULL<<20)));
+        auto plan=checked_plan;
+        if(ram) {
+            const auto* explicit_limit=std::getenv("TYLOINFER_QSA_BACKGROUND_ROWS");
+            // The low-priority stream and actual workspace/kernel resources
+            // bound asynchronous fitting. Artificially limiting it to a few
+            // persistent CTAs leaves codecs queued until speculative rollback.
+            const bool urgent=ram->encoding_urgent();
+            const auto limit=option("TYLOINFER_QSA_BACKGROUND_ROWS",0);
+            if(limit>INT_MAX)throw std::invalid_argument("QSA encoder row limit exceeds 32 bits");
+            if(limit)check(tq::tq_limit_encode_waves(&plan,int(limit)));
+            if(std::getenv("TYLOINFER_TRACE_QSA_TQ")) {
+                static thread_local unsigned reported=0;const auto category=urgent?1u:2u;
+                if(!(reported&category)){reported|=category;
+                    std::fprintf(stderr,"native_qsa_ram_codec actual_match=1 urgent=%d active_row_limit=%zu explicit_limit=%d\n",
+                        int(urgent),limit,int(explicit_limit && *explicit_limit));}
+            }
+        }
         workspace.reserve(plan.workspace_bytes);
         check(tq::tq_encode_modes(plan,decoded.as<float>(),targets.as<int>(),0,1.1f,encoded.as<std::uint8_t>(),stride,
             sizes.as<std::uint32_t>(),flags.as<std::uint32_t>(),status.as<int>(),workspace.pointer,workspace.bytes,encoder_stream));
-        std::vector<std::uint8_t> packed(std::size_t(count)*stride);std::vector<std::uint32_t> lengths(count),tags(count);int error=0;
-        check(cudaMemcpyAsync(packed.data(),encoded.pointer,packed.size(),cudaMemcpyDeviceToHost,encoder_stream));
-        check(cudaMemcpyAsync(lengths.data(),sizes.pointer,count*4,cudaMemcpyDeviceToHost,encoder_stream));
-        check(cudaMemcpyAsync(tags.data(),flags.pointer,count*4,cudaMemcpyDeviceToHost,encoder_stream));
-        check(cudaMemcpyAsync(&error,status.pointer,4,cudaMemcpyDeviceToHost,encoder_stream));
-        check(cudaStreamSynchronize(encoder_stream));check(error);
+        const auto packed_bytes=std::size_t(count)*stride,lengths_at=(packed_bytes+15)&~std::size_t(15);
+        const auto tags_at=lengths_at+count*4,error_at=tags_at+count*4;
+        encoder_output.reserve(error_at+4);
+        if(std::getenv("TYLOINFER_TRACE_QSA_TQ") && arena.reported_bytes!=arena.device_bytes()) {
+            arena.reported_bytes=arena.device_bytes();
+            std::fprintf(stderr,"native_qsa_codec_workspace actual_match=1 shared_stream_arena=%d device_bytes=%zu host_bytes=%zu\n",
+                int(ram_bits!=0),arena.reported_bytes,encoder_input.bytes+encoder_output.bytes);
+        }
+        auto* packed=encoder_output.as<std::uint8_t>();auto* lengths=encoder_output.as<std::uint32_t>(lengths_at);
+        auto* tags=encoder_output.as<std::uint32_t>(tags_at);auto* error=encoder_output.as<int>(error_at);
+        // Pageable D2H may wait inside the driver's context lock. A model
+        // graph can meanwhile wait for a host-served expert DMA that needs
+        // that same lock. Pinned endpoints let every copy submit before the
+        // encoder waits, preserving progress on both streams.
+        check(cudaMemcpyAsync(packed,encoded.pointer,packed_bytes,cudaMemcpyDeviceToHost,encoder_stream));
+        check(cudaMemcpyAsync(lengths,sizes.pointer,count*4,cudaMemcpyDeviceToHost,encoder_stream));
+        check(cudaMemcpyAsync(tags,flags.pointer,count*4,cudaMemcpyDeviceToHost,encoder_stream));
+        check(cudaMemcpyAsync(error,status.pointer,4,cudaMemcpyDeviceToHost,encoder_stream));
+        check(cudaStreamSynchronize(encoder_stream));check(*error);
         std::vector<tq::MicroblockImage> result(n);
         for(int i=0;i<n;++i) {
-            auto& dst=result[i];dst.key.assign(packed.begin()+std::size_t(i)*stride,packed.begin()+std::size_t(i)*stride+lengths[i]);
-            dst.value.assign(packed.begin()+std::size_t(n+i)*stride,packed.begin()+std::size_t(n+i)*stride+lengths[n+i]);
+            if(lengths[i]>stride || lengths[n+i]>stride)throw std::runtime_error("QSA encoder returned an invalid packed length");
+            auto& dst=result[i];dst.key.assign(packed+std::size_t(i)*stride,packed+std::size_t(i)*stride+lengths[i]);
+            dst.value.assign(packed+std::size_t(n+i)*stride,packed+std::size_t(n+i)*stride+lengths[n+i]);
             dst.key_bits=std::uint8_t(tags[i]);dst.value_bits=std::uint8_t(tags[n+i]);dst.key_state_bits=dst.value_state_bits=14;
         }
         return result;
@@ -298,6 +415,7 @@ struct QsaTqCache::Impl {
             if(result==cudaSuccess){check(cudaEventDestroy(it->done));it=retired.erase(it);}
             else {if(result!=cudaErrorNotReady)check(result);++it;}
         }
+        if(ram){ram->drain();return;}
         std::vector<tq::BlockReplacement> batch;
         {std::lock_guard<std::mutex> lock(queue_mutex);batch.swap(queued);}
         if(batch.empty())return;
@@ -351,6 +469,9 @@ struct QsaTqCache::Impl {
             auto pooled=pool(tail_storage_index,starts).to(tb::kFloat32).contiguous();
             check(tq::indexer_affine16_append(pooled.data_ptr<float>(),index_codes.data_ptr<std::int16_t>(),index_scales.data_ptr<std::uint16_t>(),
                 index_zero.data_ptr<std::int16_t>(),positions.data_ptr<int64_t>(),index_width,mfq_current_cuda_stream()));
+            if(ram)check(tq::tq_archive_indexer(index_codes.data_ptr<std::int16_t>(),index_scales.data_ptr<std::uint16_t>(),index_zero.data_ptr<std::int16_t>(),
+                graph_archive_mapped?graph_archive_mapped:graph_archive.data_ptr<std::uint8_t>(),2*canonical_bytes+8*index_width,
+                1,index_width,0,positions.data_ptr<int64_t>(),mfq_current_cuda_stream()));
             if(!graph_archive_mapped)check(cudaMemcpyAsync(graph_archive_host.data_ptr(),graph_archive.data_ptr(),graph_archive.numel(),cudaMemcpyDeviceToHost,mfq_current_cuda_stream()));
         }
         const int columns=budget+3,count=(columns+3)/4,parts=a.parts;
@@ -366,10 +487,12 @@ struct QsaTqCache::Impl {
         cudaStreamCaptureStatus capture_status;
         check(cudaStreamIsCapturing(mfq_current_cuda_stream(),&capture_status));
         const bool observe=capture_status!=cudaStreamCaptureStatusNone;
-        check(tq::tq_sparse_attention(q.data_ptr(),ks.data_ptr<float>(),vs.data_ptr<float>(),relative.data_ptr<std::uint16_t>(),views.data_ptr<tq::TqBlockView>(),
+        const auto operands=ram?ram->stage(blocks,1,count,views,positions,0,1):views;
+        if(ram)mark("qsa_cache_ram_staging_end");
+        check(tq::tq_sparse_attention(q.data_ptr(),ks.data_ptr<float>(),vs.data_ptr<float>(),relative.data_ptr<std::uint16_t>(),operands.data_ptr<tq::TqBlockView>(),
             blocks.data_ptr<tq::SelectedBlock>(),positions.data_ptr<int64_t>(),output.data_ptr(),a.rotated.data_ptr<float>(),a.partial.data_ptr<float>(),a.stats.data_ptr<float>(),
             a.logmass.data_ptr<float>(),a.norm.data_ptr<float>(),observe?hits.data_ptr<float>():nullptr,observe?mass.data_ptr<float>():nullptr,1,heads,kv_heads,width,padded,count,parts,
-            q.stride(2),q.stride(1),mfq_current_cuda_stream(),false,g.data_ptr(),g.scalar_type()==tb::kFloat16,output.scalar_type()==tb::kFloat16,
+            q.stride(2),q.stride(1),mfq_current_cuda_stream(),bool(ram),g.data_ptr(),g.scalar_type()==tb::kFloat16,output.scalar_type()==tb::kFloat16,
             g.stride(1),g.stride(2),q.scalar_type()==tb::kFloat16,true,true));
         mark("qsa_cache_attention_end");
         return output;
@@ -379,15 +502,15 @@ struct QsaTqCache::Impl {
         const auto id=std::size_t(tokens/4);
         // DecodeWindow has completed the entire model, including this pinned
         // archive copy. No layer boundary or additional GPU wait is required.
-        owners[id]=std::move(graph_image);
+        if(!ram)owners[id]=std::move(graph_image);
         const auto* bytes=graph_archive_host.data_ptr<std::uint8_t>();
         tq::MicroblockImage image;image.key.assign(bytes,bytes+canonical_bytes);
         image.value.assign(bytes+canonical_bytes,bytes+2*canonical_bytes);
-        {ResidentAppendScope publication(*this,id,1);cache->append(std::move(image),std::uint64_t(id)*4);}
+        if(ram_bits==16)image.key_bits=image.value_bits=0;
+        if(ram){ram->append({std::move(image)},std::uint64_t(id)*4,true);graph_image.reset();}
+        else {ResidentAppendScope publication(*this,id,1);cache->append(std::move(image),std::uint64_t(id)*4);}
         const auto* raw=bytes+2*canonical_bytes;
-        auto index=std::vector<std::uint8_t>(raw,raw+4*index_width*2);
-        if(ssd_cache)raw_index_blocks.push_back(raw_index_store->write(std::move(index)));
-        else ram_index_blocks.push_back(std::move(index));
+        save_index(std::vector<std::uint8_t>(raw,raw+index_archive_bytes()));
     }
     void finish_history(bool wait=true) {
         auto& h=history_transfer;
@@ -398,11 +521,12 @@ struct QsaTqCache::Impl {
         std::vector<double> hits(h.pools),attention(h.pools);
         const auto* source=h.host.data_ptr<float>();
         for(int i=0;i<h.pools;++i){hits[i]=source[i];attention[i]=source[h.pools+i];}
-        cache->update(h.tokens,h.budget,std::move(hits),std::move(attention));
+        if(ram)ram->observe(hits,h.tokens);
+        else cache->update(h.tokens,h.budget,std::move(hits),std::move(attention));
         h.pending=false;
     }
     void update_history(int64_t start) {
-        if(byte_budget && tokens/interval!=start/interval) {
+        if((byte_budget || ram) && tokens/interval!=start/interval) {
             finish_history();
             auto& h=history_transfer;const int pools=int(tokens/4);
             if(!h.host.defined() || h.host.numel()<int64_t(2)*pools)
@@ -453,11 +577,24 @@ struct QsaTqCache::Impl {
             auto group=std::make_shared<ImageBatch>();
             group->payload=tb::empty({int64_t(2*complete*canonical_bytes)},options.dtype(tb::kUInt8));
             auto* canonical_k=group->payload.data_ptr<std::uint8_t>();auto* canonical_v=canonical_k+complete*canonical_bytes;
-            check(tq::tq_prepare_affine8(k.data_ptr(),v.data_ptr(),false,ks.data_ptr<float>(),vs.data_ptr<float>(),
+            if(ram_bits==16) {
+                auto modes=tb::empty({2*complete*rows*256},options.dtype(tb::kFloat32));
+                check(tq::tq_prepare_modes(k.data_ptr(),v.data_ptr(),false,ks.data_ptr<float>(),vs.data_ptr<float>(),
+                    modes.data_ptr<float>(),modes.data_ptr<float>()+complete*rows*256,
+                    reinterpret_cast<std::uint16_t*>(canonical_k),reinterpret_cast<std::uint16_t*>(canonical_v),
+                    int(span),kv_heads,width,padded,mfq_current_cuda_stream()));
+            }else check(tq::tq_prepare_affine8(k.data_ptr(),v.data_ptr(),false,ks.data_ptr<float>(),vs.data_ptr<float>(),
                 canonical_k,canonical_v,int(span),kv_heads,width,padded,mfq_current_cuda_stream()));
-            const auto archive_bytes=2*complete*canonical_bytes+complete*4*index_width*2;
+            const auto archive_bytes=2*complete*canonical_bytes+complete*index_archive_bytes();
             if(!archive.defined() || archive.numel()<archive_bytes)archive=tb::empty({int64_t(archive_bytes)},options.dtype(tb::kUInt8));
             check(tq::tq_pack_archive(canonical_k,canonical_v,r.data_ptr<float>(),archive.data_ptr<std::uint8_t>(),int(complete),int(canonical_bytes),index_width,mfq_current_cuda_stream()));
+            auto block_positions=(tb::arange(complete,positions.options().dtype(tb::kInt64))*4+base*4+
+                (positions.reshape({-1}).narrow(0,0,1)-start)).reshape({1,complete});
+            auto pooled=pool(r.narrow(1,0,span),block_positions).to(tb::kFloat32).contiguous();
+            check(tq::indexer_affine16_encode(pooled.data_ptr<float>(),index_codes.data_ptr<std::int16_t>()+base*index_width,
+                index_scales.data_ptr<std::uint16_t>()+base,index_zero.data_ptr<std::int16_t>()+base,int(complete),index_width,mfq_current_cuda_stream()));
+            if(ram)check(tq::tq_archive_indexer(index_codes.data_ptr<std::int16_t>(),index_scales.data_ptr<std::uint16_t>(),index_zero.data_ptr<std::int16_t>(),
+                archive.data_ptr<std::uint8_t>(),2*complete*canonical_bytes+8*complete*index_width,int(complete),index_width,base,nullptr,mfq_current_cuda_stream()));
             if(t>8) {
                 archive_lease=lease_archive();auto& arena=*archive_lease->arena;
                 if(!arena.host.defined() || arena.host.numel()<archive_bytes)
@@ -475,14 +612,10 @@ struct QsaTqCache::Impl {
             } else cpu_archive=archive.narrow(0,0,archive_bytes).to(tb::kCPU).contiguous();
             group->records.resize(complete);std::vector<std::size_t> ids;
             for(int64_t i=0;i<complete;++i) {
-                group->records[i]={canonical_k+i*canonical_bytes,canonical_v+i*canonical_bytes,254,254};ids.push_back(std::size_t(base+i));
+                const unsigned tag=ram_bits==16?0:254;
+                group->records[i]={canonical_k+i*canonical_bytes,canonical_v+i*canonical_bytes,tag,tag};ids.push_back(std::size_t(base+i));
             }
             publish_images(group,ids);
-            auto block_positions=(tb::arange(complete,positions.options().dtype(tb::kInt64))*4+base*4+
-                (positions.reshape({-1}).narrow(0,0,1)-start)).reshape({1,complete});
-            auto pooled=pool(r.narrow(1,0,span),block_positions).to(tb::kFloat32).contiguous();
-            check(tq::indexer_affine16_encode(pooled.data_ptr<float>(),index_codes.data_ptr<std::int16_t>()+base*index_width,
-                index_scales.data_ptr<std::uint16_t>()+base,index_zero.data_ptr<std::int16_t>()+base,int(complete),index_width,mfq_current_cuda_stream()));
         }
         const auto commit_archive=[&] {
             if(archive_lease)archive_lease->wait();
@@ -497,15 +630,25 @@ struct QsaTqCache::Impl {
                 tq::MicroblockImage image;
                 const auto* a=cpu_archive.data_ptr<std::uint8_t>()+i*canonical_bytes;const auto* b=cpu_archive.data_ptr<std::uint8_t>()+(complete+i)*canonical_bytes;
                 image.key.assign(a,a+canonical_bytes);image.value.assign(b,b+canonical_bytes);
+                if(ram_bits==16)image.key_bits=image.value_bits=0;
                 images.push_back(std::move(image));
                 const auto* index=cpu_archive.data_ptr<std::uint8_t>()+2*complete*canonical_bytes+i*4*index_width*2;
                 auto bytes=std::vector<std::uint8_t>(index,index+4*index_width*2);
-                if(ssd_cache)raw_index_blocks.push_back(raw_index_store->write(std::move(bytes)));
-                else ram_index_blocks.push_back(std::move(bytes));
+                if(ram) {
+                    const auto* codes=cpu_archive.data_ptr<std::uint8_t>()+2*complete*canonical_bytes+8*complete*index_width+i*(index_width+2)*2;
+                    bytes.insert(bytes.end(),codes,codes+(index_width+2)*2);
+                }
+                save_index(std::move(bytes));
                 if(images.size()==batch_blocks || i+1==complete) {
                     const auto first=std::size_t(base+i+1)-images.size();
-                    ResidentAppendScope publication(*this,first,images.size());
-                    cache->append_batch(std::move(images),std::uint64_t(first)*4);
+                    if(ram) {
+                        const auto n=images.size();ram->append(std::move(images),std::uint64_t(first)*4,t<=8);
+                        std::vector<std::shared_ptr<ImageBatch>> previous;
+                        for(std::size_t id=first;id<first+n;++id)if(owners[id])previous.push_back(std::move(owners[id]));
+                        retire(std::move(previous));
+                    }else {
+                        ResidentAppendScope publication(*this,first,images.size());cache->append_batch(std::move(images),std::uint64_t(first)*4);
+                    }
                     if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
                         static std::atomic<bool> printed{false};
                         if(!printed.exchange(true))std::fprintf(stderr,"native_qsa_cpu_archive_batch actual_match=1 blocks=%lld ssd=%d prepublished_range=1\n",
@@ -534,7 +677,7 @@ struct QsaTqCache::Impl {
         auto absolute=tb::arange(start,tokens,options.dtype(tb::kInt64));
         tb::Tensor blocks;
         const int pools=int(tokens/4),columns=budget+3,count=(columns+3)/4;
-        const int parts=tq::tq_attention_partitions(int(t),heads,kv_heads,padded,count,q.scalar_type()==tb::kFloat16,fp16_math);
+        const int parts=tq::tq_attention_partitions(int(t),heads,kv_heads,padded,count,q.scalar_type()==tb::kFloat16,fp16_math,bool(ram && t<=8));
         auto& scratch=prepare_workspace(int(t),pools,parts);
         if(pools) {
             auto ranked=scratch.ranked.narrow(0,0,t*pools).reshape({1,t,pools});auto index_query=iq.to(tb::kFloat32).contiguous();
@@ -554,6 +697,36 @@ struct QsaTqCache::Impl {
         if(g.defined() && (g.dim()!=4 || g.size(0)!=1 || g.size(1)!=t || g.size(2)!=heads || g.size(3)!=width))
             throw std::invalid_argument("adaptive QSA gate geometry mismatch");
         if(g.defined() && g.stride(3)!=1)g=g.contiguous();
+        if(ram && t>8 && start>0) {
+            // Existing logical views can refer to evicted SSD images. Keep
+            // batched indexer/append work, and hydrate only each query tile's
+            // selected union through the same bounded RAM staging arena.
+            commit_archive();drain();
+            const auto grouped=blocks.reshape({t,-1});
+            for(int64_t begin=0;begin<t;begin+=8) {
+                const int n=int(std::min<int64_t>(8,t-begin));
+                auto selected=grouped.narrow(0,begin,n);
+                auto operands=ram->stage(selected,n,count,views,{},tokens-remainder,int(remainder));
+                const int split=tq::tq_attention_partitions(n,heads,kv_heads,padded,count,
+                    q.scalar_type()==tb::kFloat16,fp16_math,true);
+                auto& tile=prepare_workspace(n,pools,split);
+                auto tile_query=q.narrow(2,begin,n),tile_positions=absolute.narrow(0,begin,n);
+                auto tile_output=output.reshape({t,heads,width}).narrow(0,begin,n);
+                auto tile_gate=g.defined()?g.narrow(1,begin,n):tb::Tensor{};
+                check(tq::tq_sparse_attention_staged(nullptr,nullptr,tile_query.data_ptr(),ks.data_ptr<float>(),vs.data_ptr<float>(),
+                    relative.data_ptr<std::uint16_t>(),operands.data_ptr<tq::TqBlockView>(),selected.data_ptr<tq::SelectedBlock>(),
+                    tile_positions.data_ptr<int64_t>(),tile_output.data_ptr(),tile.rotated.data_ptr<float>(),tile.partial.data_ptr<float>(),
+                    tile.stats.data_ptr<float>(),tile.logmass.data_ptr<float>(),tile.norm.data_ptr<float>(),hits.data_ptr<float>(),mass.data_ptr<float>(),
+                    n,heads,kv_heads,width,padded,count,split,tile_query.stride(2),tile_query.stride(1),mfq_current_cuda_stream(),true,
+                    tile_gate.defined()?tile_gate.data_ptr():nullptr,tile_gate.defined() && tile_gate.scalar_type()==tb::kFloat16,
+                    tile_output.scalar_type()==tb::kFloat16,tile_gate.defined()?tile_gate.stride(1):0,tile_gate.defined()?tile_gate.stride(2):0,
+                    tile_query.scalar_type()==tb::kFloat16,fp16_math));
+            }
+            update_history(start);
+            if(std::getenv("TYLOINFER_TRACE_QSA_TQ"))
+                std::fprintf(stderr,"native_qsa_ram_continuation actual_match=1 queries=%lld selected_union_tiles=1\n",static_cast<long long>(t));
+            return output;
+        }
         // Reuse one decoded operand tile across many queries. The cap is the
         // same 32 MiB attention-workspace budget used by the QSA batch planner;
         // long contexts keep the existing compressed streaming path.
@@ -595,16 +768,17 @@ struct QsaTqCache::Impl {
             const auto status=prefill_graph->run(a);
             if(status!=int(cudaErrorNotSupported)){check(status);fa_used=true;}
         }
+        const auto operands=ram && t<=8?ram->stage(blocks,int(t),count,views,{},start,int(t)):views;
         if(!fa_used)check(tq::tq_sparse_attention_staged(decoded_operands.defined()?static_cast<const std::uint16_t*>(decoded_operands.data_ptr()):nullptr,
-            decoded_operands.defined()?static_cast<const std::uint16_t*>(decoded_operands.data_ptr())+staged_elements/2:nullptr,q.data_ptr(),ks.data_ptr<float>(),vs.data_ptr<float>(),relative.data_ptr<std::uint16_t>(),views.data_ptr<tq::TqBlockView>(),
+            decoded_operands.defined()?static_cast<const std::uint16_t*>(decoded_operands.data_ptr())+staged_elements/2:nullptr,q.data_ptr(),ks.data_ptr<float>(),vs.data_ptr<float>(),relative.data_ptr<std::uint16_t>(),operands.data_ptr<tq::TqBlockView>(),
             blocks.data_ptr<tq::SelectedBlock>(),absolute.data_ptr<int64_t>(),output.data_ptr(),scratch.rotated.data_ptr<float>(),scratch.partial.data_ptr<float>(),scratch.stats.data_ptr<float>(),
             scratch.logmass.data_ptr<float>(),scratch.norm.data_ptr<float>(),hits.data_ptr<float>(),mass.data_ptr<float>(),int(t),heads,kv_heads,width,padded,count,parts,
-            q.stride(2),q.stride(1),mfq_current_cuda_stream(),false,g.defined()?g.data_ptr():nullptr,g.defined() && g.scalar_type()==tb::kFloat16,
+            q.stride(2),q.stride(1),mfq_current_cuda_stream(),bool(ram && t<=8),g.defined()?g.data_ptr():nullptr,g.defined() && g.scalar_type()==tb::kFloat16,
             output.scalar_type()==tb::kFloat16,g.defined()?g.stride(1):0,g.defined()?g.stride(2):0,q.scalar_type()==tb::kFloat16,fp16_math));
         commit_archive();drain();
         update_history(start);
         if(const auto* trace=std::getenv("TYLOINFER_TRACE_QSA_TQ");trace && trace[0]=='1' && (start==0 || tokens/interval!=start/interval)) {
-            const auto s=cache->stats();std::fprintf(stderr,"qsa_adaptive_tq tokens=%lld resident=%zu demotions=%llu promotions=%llu ssd_read=%llu state_bits=14 actual_match=1 workspace_reuse=1 direct_canonical=1 fused_gate=%d gqa_group=%d\n",
+            const auto s=ram?ram->stats():cache->stats();std::fprintf(stderr,"qsa_adaptive_tq tokens=%lld resident=%zu demotions=%llu promotions=%llu ssd_read=%llu state_bits=14 actual_match=1 workspace_reuse=1 direct_canonical=1 fused_gate=%d gqa_group=%d\n",
                 static_cast<long long>(tokens),s.resident_bytes,static_cast<unsigned long long>(s.demotions),static_cast<unsigned long long>(s.promotions),static_cast<unsigned long long>(s.canonical_read_bytes),int(g.defined()),heads/kv_heads>4?8:4);
         }
         return output;
@@ -613,7 +787,7 @@ struct QsaTqCache::Impl {
         if(keep<0 || keep>tokens)throw std::invalid_argument("invalid adaptive QSA truncation");
         if(keep==tokens)return;
         finish_history();
-        cache->wait();drain();
+        if(ram)ram->wait();else cache->wait();drain();
         // Empty reset only retires owners and enqueues zeroes on this stream.
         // Reconstruction retains the existing completion barrier.
         if(keep)check(cudaStreamSynchronize(mfq_current_cuda_stream()));
@@ -621,7 +795,7 @@ struct QsaTqCache::Impl {
         if(remainder && keep/4==tokens/4 && tail_k.defined()) {
             tail_k=tail_k.narrow(1,0,remainder).contiguous();tail_v=tail_v.narrow(1,0,remainder).contiguous();tail_index=tail_index.narrow(1,0,remainder).contiguous();
         }else if(remainder) {
-            const auto image=cache->reconstruction_image(complete);
+            const auto image=ram?ram->reconstruction_image(complete):cache->reconstruction_image(complete);
             std::vector<std::uint8_t> data=image.key;data.insert(data.end(),image.value.begin(),image.value.end());
             auto bytes=upload(data.data(),data.size(),options);
             tq::TqBlockView record{bytes.data_ptr<std::uint8_t>(),bytes.data_ptr<std::uint8_t>()+image.key.size(),
@@ -632,13 +806,13 @@ struct QsaTqCache::Impl {
             check(tq::tq_decode_modes(view.data_ptr<tq::TqBlockView>(),km.data_ptr<float>(),vm.data_ptr<float>(),relative.data_ptr<std::uint16_t>(),1,kv_heads,padded,mfq_current_cuda_stream()));
             check(tq::tq_restore_modes(km.data_ptr<float>(),vm.data_ptr<float>(),ks.data_ptr<float>(),vs.data_ptr<float>(),k.data_ptr<float>(),v.data_ptr<float>(),1,kv_heads,width,padded,mfq_current_cuda_stream()));
             tail_k=k.narrow(1,0,remainder).contiguous();tail_v=v.narrow(1,0,remainder).contiguous();
-            auto index=ssd_cache?raw_index_store->read(raw_index_blocks.at(complete)):
-                std::make_shared<const std::vector<std::uint8_t>>(ram_index_blocks.at(complete));
+            auto index=index_archive.at(complete)->read();
             auto host=tb::empty({1,4,index_width},options.device(tb::kCPU).dtype(tb::kFloat16));
-            std::memcpy(host.data_ptr(),index->data(),index->size());tail_index=host.to(options.dtype(tb::kFloat32)).narrow(1,0,remainder).contiguous();
+            if(index->size()!=index_archive_bytes())throw std::runtime_error("QSA raw index archive length changed");
+            std::memcpy(host.data_ptr(),index->data(),8*index_width);tail_index=host.to(options.dtype(tb::kFloat32)).narrow(1,0,remainder).contiguous();
         }else {tail_k={};tail_v={};tail_index={};}
-        cache->truncate(complete);
-        if(ssd_cache)raw_index_blocks.resize(complete);else ram_index_blocks.resize(complete);
+        if(ram)ram->truncate(complete);else cache->truncate(complete);
+        index_archive.resize(complete);
         {std::lock_guard<std::mutex> lock(queue_mutex);queued.clear();resident_append_begin=resident_append_end=0;}
         for(std::size_t i=std::size_t(complete);i<owners.size();++i)owners[i].reset();
         tokens=keep;hits.zero_();mass.zero_();
@@ -656,7 +830,7 @@ QsaTqCache::~QsaTqCache()=default;
 int64_t QsaTqCache::position()const{return impl_->tokens;}
 void QsaTqCache::reset(){impl_->truncate(0);}
 void QsaTqCache::truncate(int64_t keep){impl_->truncate(keep);}
-void QsaTqCache::wait(){impl_->finish_history();impl_->cache->wait();impl_->drain();}
+void QsaTqCache::wait(){impl_->finish_history();if(impl_->ram)impl_->ram->wait();else impl_->cache->wait();impl_->drain();}
 void QsaTqCache::set_budget(std::size_t bytes){impl_->byte_budget=bytes;}
 int64_t QsaTqCache::prefill_rows(int64_t requested)const {
     if(requested<=8)return requested;
@@ -691,7 +865,7 @@ void QsaTqCache::release_prefill_workspace() {
     }
 }
 
-int QsaTqCache::device_graph_kind(int64_t tokens)const{return tokens!=1 || impl_->tokens>=impl_->maximum?0:impl_->tokens%4==3?2:1;}
+int QsaTqCache::device_graph_kind(int64_t tokens)const{return tokens!=1 || impl_->tokens>=impl_->maximum || (impl_->ram && !impl_->ram->graph_safe())?0:impl_->tokens%4==3?2:1;}
 bool QsaTqCache::pending_graph_enabled()const{return impl_->pending_graph;}
 void QsaTqCache::prepare_decode(bool allow_pending){
     impl_->finish_history();
@@ -699,6 +873,7 @@ void QsaTqCache::prepare_decode(bool allow_pending){
     impl_->prefill_attention=Impl::AttentionWorkspace{};
     if(prefill){impl_->append_k={};impl_->append_v={};impl_->append_index={};impl_->append_capacity=0;impl_->append_small=true;}
     impl_->drain();impl_->pending_graph=allow_pending && device_graph_kind(1);
+    if(impl_->ram)impl_->ram->prepare();
     impl_->graph_complete=impl_->pending_graph && device_graph_kind(1)==2;
     if(impl_->pending_graph) {
         ResidentAllocationScope resident;
@@ -710,7 +885,7 @@ void QsaTqCache::prepare_decode(bool allow_pending){
         if(impl_->graph_complete) {
             if(!impl_->graph_destination.defined()) {
                 impl_->graph_destination=tb::empty({int64_t(sizeof(tq::TqBlockView)*(impl_->interval/4))},impl_->options.dtype(tb::kUInt8));
-                const int64_t bytes=2*impl_->canonical_bytes+8*impl_->index_width;
+                const int64_t bytes=2*impl_->canonical_bytes+impl_->index_archive_bytes();
                 impl_->graph_archive=tb::empty({bytes},impl_->options.dtype(tb::kUInt8));
                 impl_->graph_archive_host=tb::empty({bytes},impl_->options.device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true));
                 // Coalesced encoder stores avoid a tiny copy-engine transfer
@@ -728,7 +903,8 @@ void QsaTqCache::prepare_decode(bool allow_pending){
             // the small pageable H2D descriptor copy from each fourth step.
             if(!impl_->canonical_slab.defined() || !slot) {
                 impl_->canonical_slab=tb::empty({int64_t(2*impl_->canonical_bytes*slots)},impl_->options.dtype(tb::kUInt8));
-                check(tq::tq_initialize_destinations(impl_->canonical_slab.data_ptr<std::uint8_t>(),impl_->graph_destination.data_ptr<tq::TqBlockView>(),
+                const auto initialize=impl_->ram_bits==16?tq::tq_initialize_fp16_destinations:tq::tq_initialize_destinations;
+                check(initialize(impl_->canonical_slab.data_ptr<std::uint8_t>(),impl_->graph_destination.data_ptr<tq::TqBlockView>(),
                     int(impl_->canonical_bytes),slots,mfq_current_cuda_stream()));
             }
             impl_->graph_image=std::make_shared<Impl::ImageBatch>();
@@ -758,5 +934,80 @@ QsaTqCache::Tensor QsaTqCache::forward_pending_graph(const Tensor& q,const Tenso
     return impl_->forward_pending_graph(q,k,v,iq,raw,positions,gate,std::move(output),pool,absolute);}
 QsaTqCache::Tensor QsaTqCache::forward(const Tensor& q,const Tensor& k,const Tensor& v,const Tensor& iq,const Tensor& raw,
     const Tensor& positions,const Pool& pool,bool history_only,const Tensor& gate,Tensor output,bool fp16_math){return impl_->forward(q,k,v,iq,raw,positions,pool,history_only,gate,std::move(output),fp16_math);}
-tq::AdaptiveCacheStats QsaTqCache::stats()const{impl_->finish_history(false);return impl_->cache->stats();}
+tq::AdaptiveCacheStats QsaTqCache::stats()const{impl_->finish_history(false);return impl_->ram?impl_->ram->stats():impl_->cache->stats();}
+bool QsaTqCache::supports_session()const{return bool(impl_->ram);}
+std::shared_ptr<QsaTqSession> QsaTqCache::capture_session(std::int64_t count) {
+    auto& s=*impl_;
+    if(!s.ram || count<=0 || count>s.tokens)throw std::invalid_argument("Invalid RAM QSA session boundary");
+    wait();const auto complete=std::size_t(count/4);const auto remainder=count%4;
+    auto state=std::make_shared<QsaTqSession>();state->tokens=count;state->heads=s.heads;state->kv_heads=s.kv_heads;
+    state->width=s.width;state->padded=s.padded;state->index_width=s.index_width;state->ram_bits=s.ram_bits;
+    state->kv=s.ram->snapshot(complete);state->index.assign(s.index_archive.begin(),s.index_archive.begin()+complete);
+    const auto host=[](const Tensor& input){return input.to(tb::kCPU).contiguous();};
+    if(!remainder)return state;
+    if(count/4==s.tokens/4 && s.tail_k.defined()) {
+        state->tail_keys=host(s.tail_k.narrow(1,0,remainder));state->tail_values=host(s.tail_v.narrow(1,0,remainder));
+        state->tail_index=host(s.tail_index.narrow(1,0,remainder));return state;
+    }
+    const auto image=s.ram->reconstruction_image(complete);
+    std::vector<std::uint8_t> data=image.key;data.insert(data.end(),image.value.begin(),image.value.end());
+    auto bytes=upload(data.data(),data.size(),s.options);
+    tq::TqBlockView record{bytes.data_ptr<std::uint8_t>(),bytes.data_ptr<std::uint8_t>()+image.key.size(),
+        tq::tq_precision_flags(image.key_bits,image.key_state_bits),tq::tq_precision_flags(image.value_bits,image.value_state_bits)};
+    auto view=upload(&record,sizeof(record),s.options);
+    auto km=tb::empty({s.rows,256},s.options.dtype(tb::kFloat32)),vm=tb::empty_like(km);
+    auto k=tb::empty({1,4,s.kv_heads,s.width},s.options.dtype(tb::kFloat32)),v=tb::empty_like(k);
+    check(tq::tq_decode_modes(view.data_ptr<tq::TqBlockView>(),km.data_ptr<float>(),vm.data_ptr<float>(),s.relative.data_ptr<std::uint16_t>(),1,s.kv_heads,s.padded,mfq_current_cuda_stream()));
+    check(tq::tq_restore_modes(km.data_ptr<float>(),vm.data_ptr<float>(),s.ks.data_ptr<float>(),s.vs.data_ptr<float>(),k.data_ptr<float>(),v.data_ptr<float>(),1,s.kv_heads,s.width,s.padded,mfq_current_cuda_stream()));
+    state->tail_keys=host(k.narrow(1,0,remainder));state->tail_values=host(v.narrow(1,0,remainder));
+    const auto index=s.index_archive.at(complete)->read();
+    if(index->size()!=s.index_archive_bytes())throw std::runtime_error("QSA snapshot raw index length changed");
+    auto raw=tb::empty({1,4,s.index_width},s.options.device(tb::kCPU).dtype(tb::kFloat16));
+    std::memcpy(raw.data_ptr(),index->data(),8*s.index_width);
+    state->tail_index=raw.to(tb::kFloat32).narrow(1,0,remainder).contiguous();return state;
+}
+void QsaTqCache::restore_session(const QsaTqSession& state,bool borrow_prefix) {
+    auto& s=*impl_;const auto count=state.tokens,remainder=count%4;
+    if(!s.ram || count<=0 || count>s.maximum || state.heads!=s.heads || state.kv_heads!=s.kv_heads ||
+            state.width!=s.width || state.padded!=s.padded || state.index_width!=s.index_width || state.ram_bits!=s.ram_bits ||
+            !state.kv || state.kv->blocks.size()!=std::size_t(count/4) || state.index.size()!=state.kv->blocks.size())
+        throw std::invalid_argument("Incompatible RAM QSA session geometry");
+    if(remainder)for(const auto* tail:{&state.tail_keys,&state.tail_values,&state.tail_index})
+        if(!tail->defined() || tail->size(0)!=1 || tail->size(1)!=remainder || tail->scalar_type()!=tb::kFloat32)
+            throw std::invalid_argument("Incompatible RAM QSA session tail");
+    if(remainder && (state.tail_keys.dim()!=4 || state.tail_keys.size(2)!=s.kv_heads || state.tail_keys.size(3)!=s.width ||
+            state.tail_values.sizes()!=state.tail_keys.sizes() || state.tail_index.dim()!=3 || state.tail_index.size(2)!=s.index_width))
+        throw std::invalid_argument("Incompatible RAM QSA session tail width");
+    s.truncate(0);s.ram->restore(*state.kv,borrow_prefix);
+    const auto step=std::size_t(512),stride=std::size_t(s.index_width+2)*2;
+    auto staging=tb::empty({int64_t(step*stride)},s.options.device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true));
+    for(std::size_t begin=0;begin<state.index.size();begin+=step) {
+        const auto end=std::min(begin+step,state.index.size());
+        for(auto id=begin;id<end;++id) {
+            if(!state.index[id])throw std::runtime_error("Missing QSA snapshot index archive");
+            const auto bytes=state.index[id]->read();
+            if(bytes->size()!=s.index_archive_bytes())throw std::runtime_error("Incompatible QSA snapshot index archive length");
+            std::memcpy(staging.data_ptr<std::uint8_t>()+(id-begin)*stride,bytes->data()+8*s.index_width,stride);
+            if(borrow_prefix)s.index_archive.push_back(state.index[id]);else s.save_index(std::vector<std::uint8_t>(*bytes));
+        }
+        const auto* input=staging.data_ptr<std::uint8_t>();const auto n=end-begin;
+        check(cudaMemcpy2DAsync(s.index_codes.data_ptr<std::int16_t>()+begin*s.index_width,s.index_width*2,
+            input,stride,s.index_width*2,n,cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
+        check(cudaMemcpy2DAsync(s.index_scales.data_ptr<std::uint16_t>()+begin,2,
+            input+2*s.index_width,stride,2,n,cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
+        check(cudaMemcpy2DAsync(s.index_zero.data_ptr<std::int16_t>()+begin,2,
+            input+2*s.index_width+2,stride,2,n,cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
+        check(cudaStreamSynchronize(mfq_current_cuda_stream()));
+    }
+    s.tokens=count;s.pending_graph=false;s.graph_image.reset();s.hits.zero_();s.mass.zero_();
+    if(remainder) {
+        s.tail_k=state.tail_keys.to(s.options.dtype(tb::kFloat32)).contiguous();
+        s.tail_v=state.tail_values.to(s.options.dtype(tb::kFloat32)).contiguous();
+        s.tail_index=state.tail_index.to(s.options.dtype(tb::kFloat32)).contiguous();
+        check(tq::tq_prepare_modes(s.tail_k.data_ptr(),s.tail_v.data_ptr(),false,s.ks.data_ptr<float>(),s.vs.data_ptr<float>(),
+            s.pending_modes_k.data_ptr<float>(),s.pending_modes_v.data_ptr<float>(),s.pending_k.data_ptr<std::uint16_t>(),s.pending_v.data_ptr<std::uint16_t>(),
+            int(remainder),s.kv_heads,s.width,s.padded,mfq_current_cuda_stream(),s.rotated_tail_k.data_ptr<float>(),s.rotated_tail_v.data_ptr<float>()));
+        s.publish_pending(s.pending_k,s.pending_v,count/4);
+    }
+}
 } // namespace mfq::cuda

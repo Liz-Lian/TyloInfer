@@ -5,6 +5,7 @@
 #include <memory>
 
 namespace mfq::cuda {
+struct QsaTqSession;
 // Experimental adaptive QSA placement. Ordinary cache modes remain unchanged.
 bool qsa_tq_cache_enabled();
 class QsaTqCache {
@@ -33,6 +34,9 @@ public:
                    const Tensor& raw_index,const Tensor& positions,const Pool& pool,bool history_only=false,
                    const Tensor& gate={},Tensor output={},bool fp16_math=true);
     tyloinfer::qsa::AdaptiveCacheStats stats() const;
+    bool supports_session()const;
+    std::shared_ptr<QsaTqSession> capture_session(std::int64_t tokens);
+    void restore_session(const QsaTqSession& state,bool borrow_prefix);
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
 };

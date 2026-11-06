@@ -1609,7 +1609,9 @@ void restore_block_session(Qwen4Block& block,const Qwen4BlockSessionState& state
 }
 
 bool Qwen4ExpMtp::supports_session_state() const noexcept {
-    return execution && !execution->qsa_kv_store && !layers.empty();
+    if(!execution || layers.empty())return false;
+    for(const auto& layer:layers)if(!layer || (layer->qsa && !layer->qsa->supports_session()))return false;
+    return true;
 }
 
 MtpSessionState Qwen4ExpMtp::capture_session_state(int64_t target_position,const Tensor& hidden) const {
@@ -3692,8 +3694,12 @@ void Qwen4Model::adapter_rollback_speculative(int64_t keep) {
 namespace mfq::cuda {
 
 TextSessionStateKind CudaSessionCodec<Qwen4Model>::kind(const Qwen4CausalLm& model) {
-    return model.execution && !model.execution->qsa_kv_store && !model.blocks.empty()
-        ? TextSessionStateKind::Qwen4 : TextSessionStateKind::Unsupported;
+    if(!model.execution || model.blocks.empty())return TextSessionStateKind::Unsupported;
+    for(const auto& base:model.blocks) {
+        const auto& block=static_cast<const qwen4_exp::Qwen4Block&>(*base);
+        if(block.qsa && !block.qsa->supports_session())return TextSessionStateKind::Unsupported;
+    }
+    return TextSessionStateKind::Qwen4;
 }
 bool CudaSessionCodec<Qwen4Model>::supports_paged(const Qwen4CausalLm& model) { return kind(model)==TextSessionStateKind::Qwen4; }
 

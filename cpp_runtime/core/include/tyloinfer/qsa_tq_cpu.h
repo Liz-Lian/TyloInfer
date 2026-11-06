@@ -19,7 +19,8 @@ std::vector<float> decode_cpu_tq_row(const CpuTqRow& row);
 
 class CpuTqBlockFitter {
 public:
-    // Decode canonical modes, allocate each block's budget by row energy,
+    // Accept FP16 H4 modes, Affine8, or canonical TQ8. Decode once,
+    // allocate each block's budget by row energy,
     // then fit only the selected precision of each row.
     CpuTqBlockFitter(const MicroblockImage& canonical,std::size_t rows_per_kind,int workers,
         RowPrecisionAllocation allocation=RowPrecisionAllocation::Energy,int state_bits=16);

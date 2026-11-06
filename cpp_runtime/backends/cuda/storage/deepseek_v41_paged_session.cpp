@@ -100,6 +100,8 @@ bool cuda_deepseek_v41_paged_exact(const CudaPagedPayload& payload) {
     CudaPagedReader reader(*payload);return (header(reader).flags&1)!=0;
 }
 bool cuda_paged_checkpoint_needs_update(const CudaPagedPayload& payload,const TextSessionState& state) {
+    if(state.kind()==TextSessionStateKind::Qwen4)
+        return !payload || cuda_paged_decodable_blocks({payload})==0 || state.mtp.has_value();
     if(state.kind()!=TextSessionStateKind::DeepseekV41)return false;
     if(!payload)return true;
     CudaPagedReader reader(*payload);const auto flags=header(reader).flags;

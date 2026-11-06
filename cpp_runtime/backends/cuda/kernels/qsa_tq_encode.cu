@@ -210,6 +210,21 @@ int tq_make_encode_plan(TqEncodePlan* output,int blocks,int rows,TqEncodeProfile
     plan.workspace_bytes=cursor+trace_size;*output=plan;return 0;
 }
 
+int tq_limit_encode_waves(TqEncodePlan* plan,int active_rows) {
+    if(!plan || active_rows<=0 || plan->blocks<=0 || plan->rows_per_block<=0 ||
+        (plan->state_bits!=14 && plan->state_bits!=16))return int(cudaErrorInvalidValue);
+    auto waves=plan->waves;std::size_t trace_bytes=0;
+    for(int bits=1;bits<=8;++bits) {
+        if(waves[bits-1]<=0)return int(cudaErrorInvalidValue);
+        waves[bits-1]=std::min(waves[bits-1],active_rows);
+        const auto row_bytes=(std::size_t(256)<<(plan->state_bits-bits))/(bits==1?8:(bits==2 || bits==3)?2:1);
+        if(std::size_t(waves[bits-1])>(std::numeric_limits<std::size_t>::max()-plan->trace)/row_bytes)
+            return int(cudaErrorInvalidValue);
+        trace_bytes=std::max(trace_bytes,row_bytes*waves[bits-1]);
+    }
+    plan->waves=waves;plan->workspace_bytes=plan->trace+trace_bytes;return int(cudaSuccess);
+}
+
 int tq_encode_modes(const TqEncodePlan& plan,const float* input,const std::int32_t* budgets,int fallback,
     float factor,std::uint8_t* images,std::size_t stride,std::uint32_t* sizes,std::uint32_t* flags,
     int* status,void* workspace,std::size_t workspace_bytes,cudaStream_t stream) {

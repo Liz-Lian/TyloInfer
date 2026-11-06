@@ -23,6 +23,11 @@ struct TqEncodePlan {
 int tq_make_encode_plan(TqEncodePlan* plan,int blocks,int rows_per_block,
     TqEncodeProfile profile,std::size_t workspace_budget=0);
 
+// Limit background fitting to at most this many row CTAs per bit width.
+// This also shrinks traceback storage. Fitted values and serialized layouts
+// stay unchanged; call before allocating workspace or graph capture.
+int tq_limit_encode_waves(TqEncodePlan* plan,int active_rows);
+
 // Input: immutable [blocks,rows_per_block,256] H4/RHT modes. Budgets count
 // payload bits per value summed over one block's rows, independently of scale
 // metadata. Per-block budgets are optional; otherwise use default_budget.

@@ -110,6 +110,13 @@ __global__ void pack_archive(const uint8_t* k,const uint8_t* v,const float* raw,
     else if(at<2*bytes)output[at]=v[at-bytes];
     else if(at-2*bytes<values)reinterpret_cast<half*>(output+2*bytes)[at-2*bytes]=__float2half_rn(raw[at-2*bytes]);
 }
+__global__ void archive_indexer(const int16_t* codes,const uint16_t* scales,const int16_t* zero,
+        uint16_t* output,int width,int64_t start,const int64_t* position) {
+    const auto block=position?*position/4:start+blockIdx.x;
+    auto* destination=output+int64_t(blockIdx.x)*(width+2);
+    for(int d=threadIdx.x;d<width;d+=blockDim.x)destination[d]=uint16_t(codes[block*width+d]);
+    if(!threadIdx.x){destination[width]=scales[block];destination[width+1]=uint16_t(zero[block]);}
+}
 template<int W,bool Query=false> __global__ void append_pending(const void* keys,const void* values,const void* index,bool key_half,bool value_half,bool index_half,
     const int64_t* position,float* tail_k,float* tail_v,float* tail_i,float* rotated_k,float* rotated_v,const float* ks,const float* vs,
     half* pending_k,half* pending_v,TqBlockView* views,int heads,int width,int iw,int64_t khs,int64_t vhs,float* km,float* vm,const void* query,float* rotated_query,int query_heads,int64_t qhs,bool query_half) {
@@ -167,6 +174,17 @@ __global__ void finalize_pending(const float* km,const float* vm,const float* ra
     TqBlockView* views,const int64_t* position,uint8_t* archive,int rows,int iw,int slots) {
     const int row=blockIdx.x,kind=blockIdx.y,d=threadIdx.x,lane=d&31,warp=d/32;
     const auto view=destination[(*position/4)%slots];
+    if((view.key_bits&255u)==0 && (view.value_bits&255u)==0) {
+        const int bytes=rows*512;
+        auto* image=reinterpret_cast<half*>(const_cast<uint8_t*>(kind?view.value:view.key));
+        auto* saved=reinterpret_cast<half*>(archive+kind*bytes);
+        const auto at=int64_t(row)*256+d;const auto x=__float2half_rn((kind?vm:km)[at]);image[at]=x;saved[at]=x;
+        if(!row && !kind) {
+            for(int i=d;i<4*iw;i+=256)reinterpret_cast<half*>(archive+2*bytes)[i]=__float2half_rn(raw[i]);
+            if(!d)views[*position/4]=view;
+        }
+        return;
+    }
     const int meta=(3*rows+3)&~3,bytes=meta+256*rows;
     auto* image=const_cast<uint8_t*>(kind?view.value:view.key);auto* saved=archive+kind*bytes;
     const float x=(kind?vm:km)[int64_t(row)*256+d];
@@ -191,9 +209,9 @@ __global__ void finalize_pending(const float* km,const float* vm,const float* ra
         }
     }
 }
-__global__ void initialize_destinations(uint8_t* payload,TqBlockView* output,int bytes,int slots) {
+__global__ void initialize_destinations(uint8_t* payload,TqBlockView* output,int bytes,int slots,unsigned tag=254) {
     const int id=blockIdx.x*blockDim.x+threadIdx.x;if(id>=slots)return;
-    output[id]={payload+int64_t(2*id)*bytes,payload+int64_t(2*id+1)*bytes,254,254};
+    output[id]={payload+int64_t(2*id)*bytes,payload+int64_t(2*id+1)*bytes,tag,tag};
 }
 
 template<int W,bool F16> __global__ void prepare_modes(const void* keys,const void* values,
@@ -1064,6 +1082,13 @@ int tq_pack_archive(const uint8_t* k,const uint8_t* v,const float* raw,uint8_t* 
     pack_archive<<<unsigned((total+255)/256),256,0,stream>>>(k,v,raw,output,bytes,values);
     return int(cudaGetLastError());
 }
+int tq_archive_indexer(const int16_t* codes,const uint16_t* scales,const int16_t* zero,
+        uint8_t* archive,std::size_t offset,int blocks,int width,int64_t start,const int64_t* position,cudaStream_t stream) {
+    if(!codes || !scales || !zero || !archive || (offset&1) || blocks<=0 || width<=0 ||
+            (!position && (start<0 || start>INT64_MAX-blocks)) || (position && blocks!=1))return int(cudaErrorInvalidValue);
+    archive_indexer<<<blocks,128,0,stream>>>(codes,scales,zero,reinterpret_cast<uint16_t*>(archive+offset),width,start,position);
+    return int(cudaGetLastError());
+}
 int tq_append_pending(const void* key,const void* value,const void* index,bool kh,bool vh,bool ih,
     const int64_t* position,float* tail_k,float* tail_v,float* tail_i,float* rotated_k,float* rotated_v,const float* ks,const float* vs,
     uint16_t* pk,uint16_t* pv,TqBlockView* views,int heads,int width,int padded,int iw,int64_t khs,int64_t vhs,cudaStream_t stream,float* km,float* vm,const PendingQuery* query) {
@@ -1088,6 +1113,10 @@ int tq_finalize_pending(const float* km,const float* vm,const float* raw,const T
 int tq_initialize_destinations(uint8_t* payload,TqBlockView* output,int bytes,int slots,cudaStream_t stream) {
     if(!payload || !output || bytes<=0 || slots<=0)return int(cudaErrorInvalidValue);
     initialize_destinations<<<(slots+127)/128,128,0,stream>>>(payload,output,bytes,slots);return int(cudaGetLastError());
+}
+int tq_initialize_fp16_destinations(uint8_t* payload,TqBlockView* output,int bytes,int slots,cudaStream_t stream) {
+    if(!payload || !output || bytes<=0 || slots<=0)return int(cudaErrorInvalidValue);
+    initialize_destinations<<<(slots+127)/128,128,0,stream>>>(payload,output,bytes,slots,0);return int(cudaGetLastError());
 }
 int tq_sparse_attention_staged(const uint16_t* staged_keys,const uint16_t* staged_values,const void* query,const float* ks,const float* vs,const uint16_t* relative,
     const TqBlockView* blocks,const SelectedBlock* selected,const int64_t* positions,void* output,

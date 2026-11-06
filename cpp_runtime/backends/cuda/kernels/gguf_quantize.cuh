@@ -87,8 +87,12 @@ __device__ __forceinline__ void store_q8_position_major(float value,std::int64_t
         if(!lane) {
             const auto ds=__floats2half2_rn(scale,finite_half(sum));
             reinterpret_cast<half2*>(static_cast<std::uint8_t*>(output)+count)[packet]=ds;
-            reinterpret_cast<uint2*>(static_cast<std::uint8_t*>(output)+count+count/8)[packet]
-                =make_uint2(*reinterpret_cast<const unsigned*>(&ds),unsigned(uint16_t(int16_t(low)))|(unsigned(uint16_t(int16_t(high)))<<16));
+            // An odd number of 32-value packets leaves this plane only
+            // four-byte aligned. Preserve its layout without an aligned
+            // uint2 store, including five- and seven-token tail windows.
+            auto* helper=reinterpret_cast<unsigned*>(static_cast<std::uint8_t*>(output)+count+count/8);
+            helper[2*packet]=*reinterpret_cast<const unsigned*>(&ds);
+            helper[2*packet+1]=unsigned(uint16_t(int16_t(low)))|(unsigned(uint16_t(int16_t(high)))<<16);
         }
         if(native) {
             native[packet].qs[lane]=code;

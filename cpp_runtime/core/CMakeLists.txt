@@ -91,8 +91,10 @@ add_library(mfq-qsa-kv-store STATIC
     qsa_kv_store.cpp include/tyloinfer/qsa_kv_store.h
     qsa_adaptive_cache.cpp include/tyloinfer/qsa_adaptive_cache.h
     qsa_tq_cpu.cpp include/tyloinfer/qsa_tq_cpu.h
+    qsa_ram_store.cpp include/tyloinfer/qsa_ram_store.h
     include/tyloinfer/qsa_energy_allocation.h
-    include/tyloinfer/qsa_precision_policy.h)
+    include/tyloinfer/qsa_precision_policy.h
+    include/tyloinfer/qsa_ram_policy.h)
 target_include_directories(mfq-qsa-kv-store PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mfq-qsa-kv-store PUBLIC Threads::Threads)
 target_link_libraries(mfq-qsa-kv-store PRIVATE mfq-ggml mfq-host-parallel)

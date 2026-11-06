@@ -88,6 +88,7 @@ set_target_properties(mfq-cuda-core PROPERTIES
 )
 
 set(TYLOINFER_CUDA_KERNEL_SOURCES
+    ${TYLOINFER_CUDA_ROOT}/kernels/qsa_ram.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/qsa_tq.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/qsa_tq_fa.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/qsa_tq_encode.cu
@@ -509,6 +510,7 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/dflash2/dflash2.cpp
     ${TYLOINFER_CUDA_ROOT}/runtime/kv_offload.cpp
     ${TYLOINFER_CUDA_ROOT}/runtime/qsa_tq_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/runtime/qsa_ram_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/runtime/kv_memory.cpp
     ${TYLOINFER_CUDA_ROOT}/runtime/kv_vmm.cpp
     ${TYLOINFER_CUDA_ROOT}/models/glm5_next/ops.cpp
@@ -599,6 +601,7 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_engine.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/generation.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/text_session_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/qsa_ram_session.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/deepseek_v41_paged_session.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_batching.cpp
@@ -1029,7 +1032,25 @@ if(BUILD_TESTING)
     add_test(NAME tyloinfer-cuda-gguf-small-window-fusion-test COMMAND tyloinfer-cuda-gguf-small-window-fusion-test)
     set_tests_properties(tyloinfer-cuda-gguf-small-window-fusion-test PROPERTIES SKIP_RETURN_CODE 77)
 
+    add_executable(tyloinfer-cuda-qsa-ram-test ${TYLOINFER_CUDA_ROOT}/tests/qsa_ram_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-qsa-ram-test)
+    target_link_libraries(tyloinfer-cuda-qsa-ram-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-qsa-ram-test COMMAND tyloinfer-cuda-qsa-ram-test)
+    set_tests_properties(tyloinfer-cuda-qsa-ram-test PROPERTIES SKIP_RETURN_CODE 77)
+
     add_executable(tyloinfer-cuda-qsa-tq-cache-test ${TYLOINFER_CUDA_ROOT}/tests/qsa_tq_cache_test.cpp)
+    add_executable(tyloinfer-cuda-qsa-ram-runtime-test ${TYLOINFER_CUDA_ROOT}/tests/qsa_ram_runtime_test.cpp)
+    add_executable(tyloinfer-cuda-qsa-ram-prefix-test ${TYLOINFER_CUDA_ROOT}/tests/qsa_ram_prefix_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-qsa-ram-prefix-test)
+    target_compile_definitions(tyloinfer-cuda-qsa-ram-prefix-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-qsa-ram-prefix-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-qsa-ram-prefix-test COMMAND tyloinfer-cuda-qsa-ram-prefix-test)
+    set_tests_properties(tyloinfer-cuda-qsa-ram-prefix-test PROPERTIES SKIP_RETURN_CODE 77)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-qsa-ram-runtime-test)
+    target_compile_definitions(tyloinfer-cuda-qsa-ram-runtime-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-qsa-ram-runtime-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-qsa-ram-runtime-test COMMAND tyloinfer-cuda-qsa-ram-runtime-test ${CMAKE_CURRENT_BINARY_DIR}/qsa-ram-runtime-ssd-test-data)
+    set_tests_properties(tyloinfer-cuda-qsa-ram-runtime-test PROPERTIES SKIP_RETURN_CODE 77)
     mfq_configure_cuda_runtime_target(tyloinfer-cuda-qsa-tq-cache-test)
     target_compile_definitions(tyloinfer-cuda-qsa-tq-cache-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
     target_link_libraries(tyloinfer-cuda-qsa-tq-cache-test PRIVATE mfq-cuda-runtime)

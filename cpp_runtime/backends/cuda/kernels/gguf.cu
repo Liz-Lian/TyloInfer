@@ -865,8 +865,13 @@ void quantize_moe_hidden(const float* gate,const float* up,std::int64_t rows,std
 void gate_up_swiglu_q8_f16(const void* gate_up,int64_t tokens,int64_t width,
         void* quantized,bool position_major,cudaStream_t stream) {
     q8_row_bytes(width);
-    if(tokens<0 || (position_major && (tokens<2 || (tokens>4 && tokens!=8))))
+    if(tokens<0)
         throw std::invalid_argument("GGUF shared SwiGLU Q8 row geometry invalid");
+    if(position_major) {
+        interleaved_activation_bytes(tokens,width);
+        if(tokens>=5 && (reinterpret_cast<std::uintptr_t>(quantized)&15))
+            throw std::invalid_argument("GGUF split Q8 code planes require 16-byte alignment");
+    }
     if(!tokens)return;
     const auto launch=[&](auto interleaved) {
         swiglu_paired_half_q8<decltype(interleaved)::value><<<unsigned((tokens*width+255)/256),256,0,stream>>>(

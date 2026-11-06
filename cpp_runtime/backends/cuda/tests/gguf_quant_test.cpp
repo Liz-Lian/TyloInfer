@@ -458,20 +458,57 @@ void check_type(ggml_type type, int columns, int rows=5) {
 
 void check_shared_swiglu_q8() {
     namespace g=mfq::cuda::gguf;
-    for(int tokens:{1,2,3,4,8,32})for(int width:{32,96,640}) {
+    for(int tokens:{1,2,3,4,5,6,7,8,32})for(int width:{32,96,640}) {
         std::vector<half> source(2*tokens*width);
         for(std::size_t i=0;i<source.size();++i)source[i]=__float2half_rn(std::sin(float(i)*.173f)*4.f);
         DeviceArray<half> input(source.size()),hidden(tokens*width);
         check(cudaMemcpy(input.data,source.data(),source.size()*sizeof(half),cudaMemcpyHostToDevice));
         for(bool interleaved:{false,true}) {
-            if(interleaved && (tokens<2 || tokens>4))continue;
+            if(interleaved && (tokens<2 || tokens>8))continue;
             const auto bytes=interleaved?g::interleaved_activation_bytes(tokens,width):tokens*g::q8_row_bytes(width);
             DeviceArray<uint8_t> actual(bytes+32),expected(bytes);
             check(cudaMemset(actual.data,0xcd,bytes+32));
             const auto reference=[&] {
                 g::gate_up_swiglu_f16(input.data,tokens,width,hidden.data,0.f,nullptr);
-                if(interleaved)g::quantize_input_interleaved(hidden.data,true,tokens,width,expected.data,nullptr,nullptr);
-                else g::quantize_input_f16(hidden.data,tokens,width,expected.data,nullptr);
+                const auto packet=g::q8_row_bytes(32);
+                const auto native_bytes=tokens*g::q8_row_bytes(width);
+                DeviceArray<uint8_t> native(native_bytes);
+                g::quantize_input_f16(hidden.data,tokens,width,native.data,nullptr);
+                std::vector<uint8_t> packets(native_bytes),packed(bytes,0);
+                check(cudaMemcpy(packets.data(),native.data,native_bytes,cudaMemcpyDeviceToHost));
+                if(!interleaved)packed=packets;
+                else if(tokens>=5) {
+                    const auto count=tokens*width;
+                    for(int p=0;p<count/32;++p) {
+                        int16_t sums[2]{};
+                        for(int lane=0;lane<32;++lane) {
+                            const auto code=packets[p*packet+4+lane];
+                            packed[(lane/16)*(count/2)+p*16+lane%16]=code;
+                            sums[lane/16]+=int8_t(code);
+                        }
+                        std::memcpy(packed.data()+count+p*4,packets.data()+p*packet,4);
+                        auto* helper=packed.data()+count+count/8+p*8;
+                        std::memcpy(helper,packets.data()+p*packet,4);
+                        std::memcpy(helper+4,sums,4);
+                    }
+                } else {
+                    const auto capacity=tokens==2?2:4,blocks=width/32;
+                    for(int t=0;t<tokens;++t)for(int b=0;b<blocks;++b) {
+                        const auto* source=packets.data()+(t*blocks+b)*packet;
+                        for(int lane=0;lane<32;++lane)
+                            packed[((lane/4*blocks+b)*capacity+t)*4+lane%4]=source[4+lane];
+                        half scale;std::memcpy(&scale,source,2);
+                        const auto value=__half2float(scale);
+                        std::memcpy(packed.data()+width*capacity+(b*capacity+t)*4,&value,4);
+                    }
+                }
+                check(cudaMemcpy(expected.data,packed.data(),bytes,cudaMemcpyHostToDevice));
+                if(interleaved) {
+                    g::quantize_input_interleaved(hidden.data,true,tokens,width,actual.data+16,nullptr,nullptr);
+                    std::vector<uint8_t> produced(bytes);
+                    check(cudaMemcpy(produced.data(),actual.data+16,bytes,cudaMemcpyDeviceToHost));
+                    if(produced!=packed)throw std::runtime_error("interleaved Q8 disagrees with native packet reference");
+                }
             };
             reference();g::gate_up_swiglu_q8_f16(input.data,tokens,width,actual.data+16,interleaved,nullptr);
             cudaStream_t stream=nullptr;cudaGraph_t graph=nullptr;cudaGraphExec_t replay=nullptr;

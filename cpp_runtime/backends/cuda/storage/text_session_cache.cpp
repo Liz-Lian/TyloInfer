@@ -1,4 +1,5 @@
 #include "storage/text_session_cache.h"
+#include "storage/qsa_ram_session.h"
 #include "core/full_block.h"
 #include <array>
 #include <cstring>
@@ -53,6 +54,8 @@ static std::string cuda_prefix_cache_compatibility_key(
         << "architecture=" << source.architecture() << '\n';
     const auto quantization=mfq::cuda::cuda_kv_quantization_tag();
     if(!quantization.empty())key<<"kv="<<quantization<<'\n';
+    if(const auto* bits=std::getenv("TYLOINFER_QSA_RAM_KV_BITS");bits && *bits)
+        key<<"qsa-ram-session-v2="<<bits<<'\n';
     for (std::size_t index = 0; index < source.source_paths().size(); ++index) {
         const auto &path = source.source_paths()[index];
         std::error_code error;
@@ -136,6 +139,31 @@ struct CudaSessionOps {
         if(state.kind()==TextSessionStateKind::DeepseekV41)return encode_cuda_deepseek_v41_paged_block(state,block_size,index);
         return encode_cuda_paged_block(state, block_size, index);
     }
+    static Snapshot decode_paged(mfq::cache::PagedPrefixCache& cache,mfq::cache::PrefixMatch& match,
+        const std::vector<int64_t>& prompt,size_t limit) {
+        auto first=cache.load_prefix({match.blocks.front()});
+        if(first.empty()){match.blocks.clear();match.matched_tokens=0;return {};}
+        if(first[0]->size()>=12 && (*first[0])[6]=='2' && (*first[0])[8]==2) {
+            auto state=decode_cuda_qwen4_paged_prefix(cache,match.blocks,prompt,cache.block_size_tokens());
+            match.matched_tokens=state.tokens.size();
+            if(match.matched_tokens>limit)throw StateError("QSA prefix exceeds requested tokens");
+            return state;
+        }
+        auto payloads=cache.load_prefix(match.blocks);
+        payloads.resize(decodable_blocks(payloads));match.blocks.resize(payloads.size());match.matched_tokens=0;
+        for(const auto& payload:payloads) {
+            const auto n=token_count(payload);
+            if(!n || n>cache.block_size_tokens() || n>limit-match.matched_tokens)
+                throw StateError("invalid paged prefix token count");
+            match.matched_tokens+=n;
+        }
+        if(payloads.empty())return {};
+        return decode(payloads,std::vector<int64_t>(prompt.begin(),prompt.begin()+match.matched_tokens),cache.block_size_tokens());
+    }
+    static void bind_paged(const Snapshot& state,mfq::cache::PagedPrefixCache& cache,
+        const std::vector<mfq::cache::BlockHash>& blocks) {bind_cuda_qwen4_paged_prefix(state,cache,blocks);}
+    static void refresh_bytes(Snapshot& state) {refresh_cuda_qwen4_session_bytes(state);}
+    static void prepare_restore(const Snapshot& state,bool disk) {prepare_cuda_qwen4_session_restore(state,disk);}
     static bool paged_mtp(const Snapshot& state) {
         return state.kind()==TextSessionStateKind::Qwen4 || state.kind()==TextSessionStateKind::DeepseekV41;
     }
@@ -248,6 +276,7 @@ uint64_t TextSessionCache::trim_hot(uint64_t target_bytes) { return impl_->trim_
 uint64_t TextSessionCache::set_hot_limit(uint64_t max_bytes) { return impl_->set_hot_limit(max_bytes); }
 uint64_t TextSessionCache::set_ram_limit(uint64_t max_bytes) { return impl_->set_ram_limit(max_bytes); }
 void TextSessionCache::reserve_ram(uint64_t bytes) { impl_->reserve_ram(bytes); }
+std::function<uint64_t(uint64_t)> TextSessionCache::ram_reclaimer() const { return impl_->ram_reclaimer(); }
 uint64_t TextSessionCache::set_disk_limit(uint64_t max_bytes) { return impl_->set_disk_limit(max_bytes); }
 uint64_t TextSessionCache::refresh_disk_index() { return impl_->refresh_disk_index(); }
 
@@ -273,6 +302,9 @@ TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::NemotronHCausalLm)
 #undef TYLOINFER_INSTANTIATE_SESSION_CACHE
 
 } // namespace mfq::cuda::internal
+
+using mfq::cuda::internal::read_ram_qsa_page;
+using mfq::cuda::internal::write_ram_qsa_page;
 
 void CudaPagedWriter::raw(const void *data, size_t size) {
     const auto *begin = static_cast<const uint8_t *>(data);
@@ -358,13 +390,14 @@ void CudaPagedReader::expect_end() const {
 
 namespace {
 constexpr std::array<uint8_t,8> qwen4_magic{'M','F','Q','C','U','D','2',0};
-struct Qwen4PagedHeader { uint32_t start,count,layers;bool exact; };
+struct Qwen4PagedHeader { uint32_t start,count,layers;bool exact;uint32_t version; };
 Qwen4PagedHeader read_qwen4_header(CudaPagedReader& reader) {
     std::array<uint8_t,8> magic{};reader.raw(magic.data(),magic.size(),"magic");
-    if(magic!=qwen4_magic || reader.scalar<uint32_t>("version")!=1)
+    const auto version=reader.scalar<uint32_t>("version");
+    if(magic!=qwen4_magic || (version!=1 && version!=2))
         throw CudaSessionStateError("unsupported Qwen4 prefix cache payload");
     Qwen4PagedHeader header{reader.scalar<uint32_t>("start"),reader.scalar<uint32_t>("count"),
-        reader.scalar<uint32_t>("layers"),reader.scalar<uint32_t>("exact boundary")!=0};
+        reader.scalar<uint32_t>("layers"),reader.scalar<uint32_t>("exact boundary")!=0,version};
     if(!header.count || !header.layers || header.layers>4096)throw CudaSessionStateError("invalid Qwen4 prefix geometry");
     return header;
 }
@@ -388,32 +421,50 @@ void read_recurrent(CudaPagedReader& reader,Qwen4BlockSessionState& layer) {
     if(count>65536)throw CudaSessionStateError("invalid Qwen4 PLE history");
     for(uint32_t i=0;i<count;++i)layer.ple_tokens.push_back(reader.scalar<int64_t>("PLE token"));
 }
-void write_qwen4_mtp(CudaPagedWriter& writer,const MtpSessionState& state) {
+void write_qwen4_mtp(CudaPagedWriter& writer,const MtpSessionState& state,bool packed=false) {
+    if(state.qwen4_blocks.size()!=state.qwen4_positions.size() || state.qwen4_blocks.size()!=state.qwen4_lengths.size())
+        throw CudaSessionStateError("incomplete Qwen4 MTP prefix state");
     writer.scalar<int64_t>(state.cache_pos);write_optional(writer,state.last_target_hidden);
     writer.scalar<uint32_t>(uint32_t(state.qwen4_blocks.size()));
     for(std::size_t i=0;i<state.qwen4_blocks.size();++i) {
         const auto& layer=state.qwen4_blocks[i];
-        write_optional(writer,layer.keys);write_optional(writer,layer.values);write_optional(writer,layer.index);
+        if(packed)writer.scalar<uint32_t>(layer.adaptive_qsa?1:0);
+        if(packed && layer.adaptive_qsa) {
+            const auto count=layer.adaptive_qsa->tokens;
+            if(count<=0 || count!=state.qwen4_lengths[i])throw CudaSessionStateError("incompatible packed MTP position");
+            writer.scalar<int64_t>(count);write_ram_qsa_page(writer,*layer.adaptive_qsa,0,size_t(count),true);
+        }else {write_optional(writer,layer.keys);write_optional(writer,layer.values);write_optional(writer,layer.index);}
         write_recurrent(writer,layer);write_optional(writer,state.qwen4_positions[i]);
         writer.scalar<int64_t>(state.qwen4_lengths[i]);
     }
 }
 std::size_t qwen4_layer_bytes(const Qwen4BlockSessionState& layer) {
     std::size_t bytes=layer.ple_tokens.size()*sizeof(int64_t);
+    if(layer.adaptive_qsa)bytes+=layer.adaptive_qsa->resident_bytes();
     for(const auto* tensor:{&layer.keys,&layer.values,&layer.index,&layer.convolution,&layer.recurrent,&layer.ple_convolution})
         bytes+=session_tensor_bytes(*tensor);
     return bytes;
 }
-MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
+MtpSessionState read_qwen4_mtp(CudaPagedReader& reader,const CudaPagedPayload& payload,
+    const std::shared_ptr<const mfq::cache::PagedPrefixReadLease>& lease,bool packed) {
     MtpSessionState state;state.cache_pos=reader.scalar<int64_t>("MTP position");state.last_target_hidden=read_optional(reader);
     const auto count=reader.scalar<uint32_t>("MTP layers");
     if(!count || count>64)throw CudaSessionStateError("invalid Qwen4 MTP layers");
     state.bytes=session_tensor_bytes(state.last_target_hidden);
     for(uint32_t i=0;i<count;++i) {
-        Qwen4BlockSessionState layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
+        Qwen4BlockSessionState layer;
+        const auto kind=packed?reader.scalar<uint32_t>("MTP QSA page kind"):0;
+        if(kind>1)throw CudaSessionStateError("invalid MTP QSA page kind");
+        if(kind) {
+            const auto count=reader.scalar<int64_t>("MTP compressed position");
+            if(count<=0 || count>state.cache_pos)throw CudaSessionStateError("invalid MTP compressed position");
+            read_ram_qsa_page(reader,payload,lease,0,size_t(count),true,layer.adaptive_qsa);
+        }else {layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);}
         read_recurrent(reader,layer);state.bytes+=qwen4_layer_bytes(layer);state.qwen4_blocks.push_back(std::move(layer));
         auto positions=read_optional(reader);state.bytes+=session_tensor_bytes(positions);state.qwen4_positions.push_back(std::move(positions));
         state.qwen4_lengths.push_back(reader.scalar<int64_t>("MTP layer position"));
+        if(state.qwen4_blocks.back().adaptive_qsa && state.qwen4_blocks.back().adaptive_qsa->tokens!=state.qwen4_lengths.back())
+            throw CudaSessionStateError("inconsistent MTP compressed position");
     }
     return state;
 }
@@ -426,17 +477,20 @@ CudaPagedPayload encode_cuda_qwen4_paged_block(const TextSessionState& state,siz
         throw std::runtime_error("invalid Qwen4 prefix block boundary");
     const auto start=index*block_size,count=std::min(block_size,state.tokens.size()-start);
     const bool exact=start+count==state.tokens.size();
-    CudaPagedWriter writer;writer.raw(qwen4_magic.data(),qwen4_magic.size());writer.scalar<uint32_t>(1);
+    const bool packed=std::any_of(layers->begin(),layers->end(),[](const auto& l){return bool(l.adaptive_qsa);});
+    CudaPagedWriter writer;writer.raw(qwen4_magic.data(),qwen4_magic.size());writer.scalar<uint32_t>(packed?2:1);
     writer.scalar<uint32_t>(uint32_t(start));writer.scalar<uint32_t>(uint32_t(count));
     writer.scalar<uint32_t>(uint32_t(layers->size()));writer.scalar<uint32_t>(exact?1:0);
     for(const auto& layer:*layers) {
-        for(const auto* tensor:{&layer.keys,&layer.values,&layer.index})
+        if(packed)writer.scalar<uint32_t>(layer.adaptive_qsa?1:0);
+        if(layer.adaptive_qsa)write_ram_qsa_page(writer,*layer.adaptive_qsa,start,count,exact);
+        else for(const auto* tensor:{&layer.keys,&layer.values,&layer.index})
             write_optional(writer,tensor->defined()?tensor->narrow(1,int64_t(start),int64_t(count)):mfq_tensor_backend::Tensor{});
         if(exact)write_recurrent(writer,layer);
     }
     if(exact) {
         write_optional(writer,state.qwen4_positions);writer.scalar<uint32_t>(state.mtp?1:0);
-        if(state.mtp)write_qwen4_mtp(writer,*state.mtp);
+        if(state.mtp)write_qwen4_mtp(writer,*state.mtp,packed);
     }
     return std::move(writer).finish();
 }
@@ -446,7 +500,9 @@ size_t cuda_paged_payload_tokens(const CudaPagedPayload& payload) {
     CudaPagedReader reader(*payload);std::array<uint8_t,8> magic{};reader.raw(magic.data(),magic.size(),"magic");
     constexpr std::array<uint8_t,8> full_magic{'M','F','Q','C','U','D','1',0};
     constexpr std::array<uint8_t,8> deepseek_magic{'M','F','Q','C','U','D','3',0};
-    if((magic!=qwen4_magic && magic!=full_magic && magic!=deepseek_magic) || reader.scalar<uint32_t>("version")!=1)
+    const auto version=reader.scalar<uint32_t>("version");
+    if((magic!=qwen4_magic && magic!=full_magic && magic!=deepseek_magic) ||
+        (version!=1 && !(magic==qwen4_magic && version==2)))
         throw CudaSessionStateError("invalid CUDA prefix block header");
     (void)reader.scalar<uint32_t>("start");return reader.scalar<uint32_t>("count");
 }
@@ -464,22 +520,30 @@ size_t cuda_paged_decodable_blocks(const std::vector<CudaPagedPayload>& payloads
     return 0;
 }
 
-TextSessionState decode_cuda_qwen4_paged_session(const std::vector<CudaPagedPayload>& payloads,
-    const std::vector<int64_t>& tokens,size_t block_size) {
+namespace {
+template<class Load>
+TextSessionState decode_qwen4_pages(size_t pages,Load load,
+    const std::vector<int64_t>& tokens,size_t block_size,
+    const std::vector<std::shared_ptr<const mfq::cache::PagedPrefixReadLease>>& leases={}) {
     namespace tb=mfq_tensor_backend;
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
     std::vector<Qwen4BlockSessionState> layers;
     std::vector<std::array<std::vector<tb::Tensor>,3>> fragments;
     size_t position=0;
-    for(size_t i=0;i<payloads.size();++i) {
-        if(!payloads[i])throw CudaSessionStateError("null Qwen4 prefix payload");
-        CudaPagedReader reader(*payloads[i]);const auto header=read_qwen4_header(reader);
-        if(header.start!=position || header.count>block_size || (i+1<payloads.size() && header.count!=block_size) ||
+    for(size_t i=0;i<pages;++i) {
+        const auto payload=load(i);
+        if(!payload)throw CudaSessionStateError("null Qwen4 prefix payload");
+        CudaPagedReader reader(*payload);const auto header=read_qwen4_header(reader);
+        if(header.start!=position || header.count>block_size || (i+1<pages && header.count!=block_size) ||
             (i && header.layers!=layers.size()))throw CudaSessionStateError("incompatible Qwen4 prefix chain");
         if(!i){layers.resize(header.layers);fragments.resize(header.layers);}
         position+=header.count;
         for(size_t layer=0;layer<layers.size();++layer) {
-            for(size_t field=0;field<3;++field) {
+            const auto packed=header.version==2?reader.scalar<uint32_t>("QSA page kind"):0;
+            if(packed>1)throw CudaSessionStateError("invalid QSA page kind");
+            if(packed)read_ram_qsa_page(reader,payload,leases.empty()?nullptr:leases.at(i),
+                header.start,header.count,header.exact,layers[layer].adaptive_qsa);
+            else for(size_t field=0;field<3;++field) {
                 auto tensor=read_optional(reader);
                 if(tensor.defined()) {
                     if(tensor.dim()!=3 || tensor.size(0)!=1 || tensor.size(1)!=header.count)
@@ -494,23 +558,125 @@ TextSessionState decode_cuda_qwen4_paged_session(const std::vector<CudaPagedPayl
         }
         if(header.exact) {
             state.qwen4_positions=read_optional(reader);
-            state.mtp.reset();if(reader.scalar<uint32_t>("MTP presence"))state.mtp=read_qwen4_mtp(reader);
+            state.mtp.reset();if(reader.scalar<uint32_t>("MTP presence"))
+                state.mtp=read_qwen4_mtp(reader,payload,leases.empty()?nullptr:leases.at(i),header.version==2);
         }
-        if(i+1==payloads.size() && !header.exact)throw CudaSessionStateError("Qwen4 prefix has no exact recurrent checkpoint");
+        if(i+1==pages && !header.exact)throw CudaSessionStateError("Qwen4 prefix has no exact recurrent checkpoint");
         reader.expect_end();
     }
-    if(payloads.empty() || position!=tokens.size() || !state.qwen4_positions.defined() || state.qwen4_positions.size(-1)!=int64_t(position))
+    if(!pages || position!=tokens.size() || !state.qwen4_positions.defined() || state.qwen4_positions.size(-1)!=int64_t(position))
         throw CudaSessionStateError("Qwen4 prefix boundary mismatch");
     for(size_t i=0;i<layers.size();++i) {
         auto& layer=layers[i];std::array<tb::Tensor*,3> fields{&layer.keys,&layer.values,&layer.index};
         for(size_t j=0;j<3;++j)if(!fragments[i][j].empty()) {
-            if(fragments[i][j].size()!=payloads.size())throw CudaSessionStateError("incomplete Qwen4 QSA prefix chain");
+            if(fragments[i][j].size()!=pages)throw CudaSessionStateError("incomplete Qwen4 QSA prefix chain");
             *fields[j]=fragments[i][j].size()==1?fragments[i][j].front():tb::cat(fragments[i][j],1);
         }
         state.bytes+=qwen4_layer_bytes(layer);
     }
     state.bytes+=session_tensor_bytes(state.qwen4_positions)+(state.mtp?state.mtp->bytes:0);
     state.payload=std::move(layers);return state;
+}
+}
+
+TextSessionState decode_cuda_qwen4_paged_session(const std::vector<CudaPagedPayload>& payloads,
+    const std::vector<int64_t>& tokens,size_t block_size) {
+    return decode_qwen4_pages(payloads.size(),[&](size_t i){return payloads[i];},tokens,block_size);
+}
+
+TextSessionState decode_cuda_qwen4_paged_prefix(mfq::cache::PagedPrefixCache& cache,
+    std::vector<mfq::cache::BlockHash>& blocks,const std::vector<int64_t>& prompt,size_t block_size) {
+    std::vector<std::shared_ptr<const mfq::cache::PagedPrefixReadLease>> leases;
+    std::vector<CudaPagedPayload> hot_only;
+    size_t position=0,exact_pages=0,exact_tokens=0;
+    // Check small headers first. The decoder then holds only one full page
+    // at a time; retained file ranges never expand the context to FP16.
+    for(const auto& block:blocks) {
+        auto lease=cache.borrow(block);
+        CudaPagedPayload header;
+        if(lease)header=std::make_shared<const std::vector<uint8_t>>(lease->read_range(0,std::min(size_t(28),lease->payload_bytes)));
+        else {
+            auto loaded=cache.load_prefix({block});if(loaded.empty())break;
+            header=loaded.front();
+        }
+        CudaPagedReader reader(*header);const auto h=read_qwen4_header(reader);
+        if(h.version!=2 || h.start!=position || h.count>block_size || h.count>prompt.size()-position)
+            throw CudaSessionStateError("invalid compressed QSA prefix chain");
+        position+=h.count;leases.push_back(lease);hot_only.push_back(lease?nullptr:header);
+        if(h.exact){exact_pages=leases.size();exact_tokens=position;}
+        if(h.count!=block_size)break;
+    }
+    blocks.resize(exact_pages);leases.resize(exact_pages);hot_only.resize(exact_pages);
+    if(!exact_pages)return {};
+    std::vector<int64_t> tokens(prompt.begin(),prompt.begin()+exact_tokens);
+    return decode_qwen4_pages(exact_pages,[&](size_t i) {
+        return leases[i]?std::make_shared<const std::vector<uint8_t>>(leases[i]->read_range(0,leases[i]->payload_bytes)):hot_only[i];
+    },tokens,block_size,leases);
+}
+
+void refresh_cuda_qwen4_session_bytes(TextSessionState& state) {
+    const auto* layers=std::get_if<std::vector<Qwen4BlockSessionState>>(&state.payload);if(!layers)return;
+    if(state.mtp && !state.mtp->qwen4_blocks.empty()) {
+        auto& head=*state.mtp;head.bytes=session_tensor_bytes(head.last_target_hidden);
+        for(const auto& layer:head.qwen4_blocks)head.bytes+=qwen4_layer_bytes(layer);
+        for(const auto& positions:head.qwen4_positions)head.bytes+=session_tensor_bytes(positions);
+    }
+    state.bytes=session_tensor_bytes(state.qwen4_positions)+(state.mtp?state.mtp->bytes:0);
+    for(const auto& layer:*layers)state.bytes+=qwen4_layer_bytes(layer);
+}
+void prepare_cuda_qwen4_session_restore(const TextSessionState& state,bool enabled) {
+    const auto* layers=std::get_if<std::vector<Qwen4BlockSessionState>>(&state.payload);if(!layers)return;
+    for(const auto& layer:*layers)if(layer.adaptive_qsa)
+        layer.adaptive_qsa->borrow_prefix=enabled && layer.adaptive_qsa->durable_prefix;
+    if(state.mtp)for(const auto& layer:state.mtp->qwen4_blocks)if(layer.adaptive_qsa)
+        layer.adaptive_qsa->borrow_prefix=enabled && layer.adaptive_qsa->durable_prefix;
+}
+
+void bind_cuda_qwen4_paged_prefix(const TextSessionState& state,mfq::cache::PagedPrefixCache& cache,
+    const std::vector<mfq::cache::BlockHash>& blocks) {
+    const auto* layers=std::get_if<std::vector<Qwen4BlockSessionState>>(&state.payload);
+    if(!layers || std::none_of(layers->begin(),layers->end(),[](const auto& b){return bool(b.adaptive_qsa);}))return;
+    const auto skip_optional=[](CudaPagedReader& r){if(r.scalar<uint32_t>("tensor presence"))(void)r.tensor();};
+    for(const auto& hash:blocks) {
+        auto lease=cache.borrow(hash);if(!lease)continue;
+        auto payload=std::make_shared<const std::vector<uint8_t>>(lease->read_range(0,lease->payload_bytes));
+        CudaPagedReader reader(*payload);const auto h=read_qwen4_header(reader);
+        if(h.version!=2 || h.layers!=layers->size())continue;
+        for(const auto& layer:*layers) {
+            const auto kind=reader.scalar<uint32_t>("QSA page kind");
+            if(kind>1)throw CudaSessionStateError("invalid QSA page kind");
+            if(kind) {
+                auto snapshot=layer.adaptive_qsa;
+                read_ram_qsa_page(reader,payload,lease,h.start,h.count,h.exact,snapshot,true);
+            }else for(int field=0;field<3;++field)skip_optional(reader);
+            if(h.exact) {
+                for(int field=0;field<3;++field)skip_optional(reader);
+                (void)reader.scalar<int64_t>("PLE batch");const auto n=reader.scalar<uint32_t>("PLE history length");
+                if(n>65536)throw CudaSessionStateError("invalid Qwen4 PLE history");reader.skip(size_t(n)*8);
+            }
+        }
+        if(h.exact && state.mtp) {
+            skip_optional(reader);
+            if(!reader.scalar<uint32_t>("MTP presence"))continue;
+            (void)reader.scalar<int64_t>("MTP position");skip_optional(reader);
+            const auto n=reader.scalar<uint32_t>("MTP layers");
+            if(n!=state.mtp->qwen4_blocks.size())throw CudaSessionStateError("incompatible MTP prefix layers");
+            for(const auto& layer:state.mtp->qwen4_blocks) {
+                const auto kind=reader.scalar<uint32_t>("MTP QSA page kind");
+                if(kind>1)throw CudaSessionStateError("invalid MTP QSA page kind");
+                if(kind) {
+                    const auto count=reader.scalar<int64_t>("MTP compressed position");
+                    if(count<=0 || count>state.cache_pos)throw CudaSessionStateError("invalid MTP compressed position");
+                    auto snapshot=layer.adaptive_qsa;
+                    read_ram_qsa_page(reader,payload,lease,0,size_t(count),true,snapshot,true);
+                }else for(int field=0;field<3;++field)skip_optional(reader);
+                for(int field=0;field<3;++field)skip_optional(reader);
+                (void)reader.scalar<int64_t>("PLE batch");const auto history=reader.scalar<uint32_t>("PLE history length");
+                if(history>65536)throw CudaSessionStateError("invalid Qwen4 PLE history");reader.skip(size_t(history)*8);
+                skip_optional(reader);(void)reader.scalar<int64_t>("MTP layer position");
+            }
+        }
+    }
 }
 
 size_t CudaPagedReader::remaining() const { return static_cast<size_t>(end_ - cursor_); }

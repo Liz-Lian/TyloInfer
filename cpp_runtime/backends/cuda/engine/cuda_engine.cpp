@@ -6,6 +6,7 @@
 #include "storage/weight_loader.h"
 #include "storage/moe_expert_cache.h"
 #include "runtime/kv_offload.h"
+#include "runtime/qsa_ram_cache.h"
 #include "runtime/kv_expert_loan.h"
 #include "mfq_cuda_resident_allocations.h"
 #include "mfq_cuda_process_memory.h"
@@ -40,6 +41,7 @@ struct CudaEngineState {
     Model& language;
     DecodeGraphCache graph;
     TextSessionCache cache;
+    std::shared_ptr<void> ram_prefix_reclaimer;
     std::unique_ptr<ContinuousBatch<CudaBatchOperations<Model>>> batching;
     bool duplex_active = false;
     std::size_t resident_budget=0, weight_budget=0, initial_expert_budget=0, allocation_ceiling=0;
@@ -274,6 +276,8 @@ struct CudaEngineState {
                   language.supports_paged_text_session_state(), config.prefix_cache),
                 language.supports_text_session_state(), language.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
+        ram_prefix_reclaimer=register_qsa_ram_reclaimer(execution->layer_placement.primary_device(),
+            mfq_current_cuda_stream(),cache.ram_reclaimer());
         initial_expert_budget=routed_expert_cache_budget_bytes(*execution);
         if (execution->qsa_kv_store)
             execution->qsa_kv_store->set_ram_reservation([this](std::size_t bytes) {
@@ -401,6 +405,7 @@ struct CudaEngineState {
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), bool(components.mtp));
     }
     ~CudaEngineState() {
+        ram_prefix_reclaimer.reset();
         language.restore_decode_workspace={};
         if(components.mtp)components.mtp->decode_workspace_changed={};
         try {release_graph_expert_space();}

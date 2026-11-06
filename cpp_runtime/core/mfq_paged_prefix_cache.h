@@ -17,6 +17,13 @@ using BlockHash = std::array<std::uint8_t, 32>;
 using PagedPrefixPayload =
     std::shared_ptr<const std::vector<std::uint8_t>>;
 
+// Retains the existing SSD file, without retaining its full payload in RAM.
+// Byte ranges remain readable after cache eviction, replacement or clear().
+struct PagedPrefixReadLease {
+    std::size_t payload_bytes=0;
+    std::function<std::vector<std::uint8_t>(std::size_t,std::size_t)> read_range;
+};
+
 BlockHash sha256(const void* data, std::size_t size);
 BlockHash sha256(std::string_view value);
 std::string block_hash_hex(const BlockHash& hash);
@@ -128,6 +135,8 @@ public:
     std::vector<PagedPrefixPayload> load_prefix(
         const std::vector<BlockHash>& blocks);
 
+    std::shared_ptr<const PagedPrefixReadLease> borrow(const BlockHash& block);
+
     // Remove a block that passed file-integrity checks but failed the
     // runtime codec's semantic validation. This rare path waits for an
     // in-flight write of the same content-addressed block to settle first.
@@ -150,5 +159,10 @@ private:
     class Implementation;
     std::unique_ptr<Implementation> implementation_;
 };
+
+// Disposable RAM payloads yield to active KV before its precision is reduced.
+// The callback does not extend the cache's lifetime or capture its engine.
+std::function<std::uint64_t(std::uint64_t)> make_ram_prefix_reclaimer(
+    std::weak_ptr<PagedPrefixCache> cache);
 
 } // namespace mfq::cache

@@ -16,6 +16,7 @@
 #include "runtime/kv_offload.h"
 #include "runtime/kv_memory.h"
 #include "runtime/qsa_tq_cache.h"
+#include "runtime/qsa_tq_session.h"
 #include "runtime/decode_window.h"
 #include "runtime/recurrent_copy_batch.h"
 #include "mfq_cuda_kv_quantization.h"
@@ -1203,13 +1204,19 @@ class Qsa {
         bytes += std::size_t((capacity+c_.pool-1)/c_.pool) * c_.index_width * 2;
         return bytes;
     }
-    bool supports_session() const { return !adaptive_ && !offload_ && !(memory_ && memory_->offload); }
+    bool supports_session() const { return adaptive_?adaptive_->supports_session():!offload_ && !(memory_ && memory_->offload); }
     std::size_t session_bytes(int64_t count) const {
         if(count<=0)return 0;
+        // The caller reserves device workspace for a checkpoint. Packed RAM
+        // snapshots retain host images/file leases and need no KV GPU copy.
+        if(adaptive_ && adaptive_->supports_session())return 0;
         return std::size_t(count)*(c_.kv_heads*(key_width()+value_width())*(quantization_.enabled()?4:2)+
             c_.index_width*index_.storage().element_size());
     }
     void capture_session(Qwen4BlockSessionState& state,int64_t count,std::size_t& bytes) const {
+        if(adaptive_) {
+            state.adaptive_qsa=adaptive_->capture_session(count);bytes+=state.adaptive_qsa->resident_bytes();return;
+        }
         TYLOINFER_RUNTIME_CHECK(!offload_ && count>0 && count<=position(),"invalid Qwen4 QSA session boundary");
         const auto save=[&](const Tensor& tensor) {
             auto saved=tensor.contiguous().clone();bytes+=session_tensor_bytes(saved);return saved;
@@ -1228,6 +1235,10 @@ class Qsa {
         state.index=save(index_.storage().narrow(1,0,count));
     }
     void restore_session(const Qwen4BlockSessionState& state,int64_t count) {
+        if(adaptive_) {
+            TYLOINFER_RUNTIME_CHECK(state.adaptive_qsa && state.adaptive_qsa->tokens==count,"incompatible adaptive QSA session");
+            adaptive_->restore_session(*state.adaptive_qsa,state.adaptive_qsa->borrow_prefix);return;
+        }
         TYLOINFER_RUNTIME_CHECK(!offload_ && state.keys.defined() && state.values.defined() && state.index.defined() &&
             state.keys.dim()==3 && state.keys.size(0)==1 && state.keys.size(1)==count &&
             state.keys.size(2)==c_.kv_heads*key_width() && state.keys.scalar_type()==cache_dtype() &&

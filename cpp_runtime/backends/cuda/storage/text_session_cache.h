@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <map>
 #include <string>
@@ -79,6 +80,7 @@ public:
     std::uint64_t set_hot_limit(std::uint64_t max_bytes);
     std::uint64_t set_ram_limit(std::uint64_t max_bytes);
     void reserve_ram(std::uint64_t bytes);
+    std::function<std::uint64_t(std::uint64_t)> ram_reclaimer() const;
     std::uint64_t set_disk_limit(std::uint64_t max_bytes);
     std::uint64_t refresh_disk_index();
 
