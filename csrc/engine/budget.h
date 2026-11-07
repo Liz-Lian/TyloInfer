@@ -1,34 +1,29 @@
 #pragma once
 
 #include "engine/requests/policy.h"
+#include "engine/tensor.h"
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 
-class MoeExpertCache;
-
-namespace tyloi { class ModelSource; }
+namespace tyloi::source { class Source; }
+namespace tyloi::state { class Sessions; }
 namespace tyloi::weights { class Cache; class Memory; }
 namespace tyloi::engine {
 struct SessionCommand;
 struct SessionResult;
-}
-
-namespace tyloi::cuda {
-namespace internal {
-class TextSessionCache;
-}
-
-tyloi::engine::PrefillChunk budget_batch_prefill(
-        std::int64_t hidden_size, std::int64_t hc_mult, int device,
-        const std::shared_ptr<MoeExpertCache>&,
-        tyloi::engine::PrefillChunk, std::size_t growth = 0);
 
 class Budget {
 public:
-    Budget(tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
-        internal::TextSessionCache& cache, int primary_device);
+    Budget(::tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
+        state::Sessions& cache, Device primary);
+    ~Budget();
+    Budget(const Budget&) = delete;
+    Budget& operator=(const Budget&) = delete;
+
+    // Referenced owners outlive Budget; bind within their execution scope and unbind before retirement.
+    void bind();
+    void unbind() noexcept;
 
     class Change {
     public:
@@ -56,14 +51,14 @@ public:
     void reserve_ram(std::size_t bytes);
     std::int64_t prefill(std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic);
-    void decode(const ModelSource* source);
+    void decode(const source::Source* source);
 
 private:
     std::size_t trim_prefix(std::size_t bytes);
     void workspace(std::size_t bytes);
-    tyloi::weights::Memory& weight_memory_;
+    ::tyloi::weights::Memory& weight_memory_;
     ::tyloi::weights::Cache& weights_;
-    internal::TextSessionCache& cache_;
+    state::Sessions& cache_;
     int primary_device_;
     std::size_t resident_budget_ = 0;
     std::size_t weight_budget_ = 0;
@@ -71,4 +66,4 @@ private:
     std::size_t allocation_ceiling_ = 0;
 };
 
-} // namespace tyloi::cuda
+} // namespace tyloi::engine

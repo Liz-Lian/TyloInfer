@@ -57,7 +57,7 @@ struct KvOffloadStore::Block {
 };
 
 struct KvOffloadStore::Impl {
-    Budget* budget = nullptr;
+    tyloi::engine::Budget* budget = nullptr;
     explicit Impl(KvOffloadConfig value) : config(std::move(value)) {
         if (config.buffer_bytes < 4096 || config.gpu_budget_bytes < config.buffer_bytes)
             throw std::invalid_argument("CUDA KV budget cannot hold its I/O staging buffer");
@@ -296,7 +296,7 @@ KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows)
 }
 
 void KvOffloadStore::flush() { if(impl_->ram)impl_->ram->flush(); }
-void KvOffloadStore::bind_budget(Budget* budget) {
+void KvOffloadStore::bind_budget(tyloi::engine::Budget* budget) {
     impl_->budget = budget;
 }
 void KvOffloadStore::set_expert_loan(std::shared_ptr<KvExpertLoan> loan) {

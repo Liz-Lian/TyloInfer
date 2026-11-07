@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/options.h"
-#include "engine/budget.h"
+#include "engine/budget_internal.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "components/error.h"
 

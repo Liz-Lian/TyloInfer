@@ -98,62 +98,10 @@ make_cuda_paged_prefix_cache(
     bool supports_paged_text_session_state,
     const tyloi::engine::PrefixCacheConfig& config);
 
-class TextSessionCache {
-public:
-    explicit TextSessionCache(
-        const tyloi::engine::SessionCacheConfig& session_config,
-        const tyloi::engine::PrefixCacheConfig& prefix_config,
-        std::shared_ptr<tyloi::cache::PagedPrefixCache> paged_cache = {},
-        bool supported = true,
-        int disabled_reason = 0,
-        bool native_hot_snapshots = false);
-    ~TextSessionCache();
-
-    TextSessionCache(const TextSessionCache&) = delete;
-    TextSessionCache& operator=(const TextSessionCache&) = delete;
-
-    bool persistent_prefix_enabled() const noexcept;
-
-    template <typename State, typename Predictor>
-    TextSessionRestore restore_best(
-        State& state,
-        const std::function<void()>& drain,
-        Predictor* mtp,
-        const std::string& requested_session,
-        const std::vector<std::int64_t>& prompt,
-        std::size_t maximum_prefix_tokens,
-        const std::string& input_key = {});
-
-    void store(const std::string& session_id, TextSessionState state);
-    tyloi::engine::SessionResult control(const tyloi::engine::SessionCommand& command);
-    std::vector<std::pair<std::string, double>> metrics() const;
-    std::map<int, std::size_t> device_hot_bytes() const;
-    std::size_t clear_live_sessions() noexcept;
-    std::size_t clear();
-    std::uint64_t trim_hot(std::uint64_t target_bytes);
-    std::uint64_t set_hot_limit(std::uint64_t max_bytes);
-    std::uint64_t set_ram_limit(std::uint64_t max_bytes);
-    void reserve_ram(std::uint64_t bytes);
-    std::uint64_t set_disk_limit(std::uint64_t max_bytes);
-
-private:
-    struct Impl : tyloi::engine::SessionCache<CudaSessionOps> {
-        using SessionCache::SessionCache;
-    };
-    std::unique_ptr<Impl> impl_;
-};
-
-template <typename State, typename Predictor>
-TextSessionRestore TextSessionCache::restore_best(
-    State& state,
-    const std::function<void()>& drain,
-    Predictor* mtp,
-    const std::string& requested_session,
-    const std::vector<std::int64_t>& prompt,
-    std::size_t maximum_prefix_tokens,
-    const std::string& input_key) {
-    return impl_->restore_best(
-        state, drain, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
-}
+std::unique_ptr<tyloi::state::Sessions> make_sessions(
+    const tyloi::ModelSource& source,
+    const tyloi::engine::SessionCacheConfig& session_config,
+    const tyloi::engine::PrefixCacheConfig& prefix_config,
+    std::int64_t maximum_context, bool supported, bool paged);
 
 } // namespace tyloi::cuda::internal

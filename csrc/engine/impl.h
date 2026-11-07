@@ -6,8 +6,8 @@
 #include "engine/budget.h"
 #include "engine/generation/decode.h"
 #include "engine/models/causal_model.h"
-#include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
+#include "engine/state/session/sessions.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/cache.h"
 
@@ -26,8 +26,8 @@ struct Engine::Impl {
     bool graph_allowed_ = false;
     models::Info model_info_{};
     std::optional<Decode> graph_;
-    std::optional<cuda::internal::TextSessionCache> cache_;
-    std::optional<cuda::Budget> budget_;
+    std::unique_ptr<state::Sessions> cache_;
+    std::optional<Budget> budget_;
     std::unique_ptr<TextProcessor> text_;
     EngineInfo info_;
     bool ready_ = false;

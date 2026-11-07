@@ -66,7 +66,7 @@ struct Text {
     std::shared_ptr<KvOffloadStore>& offload;
     tyloi::engine::RuntimeConfig config;
     std::shared_ptr<const tyloi::ModelSource> source;
-    std::optional<Budget> budget;
+    std::optional<tyloi::engine::Budget> budget;
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
@@ -77,7 +77,7 @@ struct Text {
     const tyloi::models::Info info;
     std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
-    TextSessionCache cache;
+    tyloi::engine::SessionCache<CudaSessionOps> cache;
     tyloi::engine::mtp::State mtp_state;
     std::unique_ptr<tyloi::engine::Batch> batching;
     bool duplex_active = false;
@@ -181,7 +181,7 @@ struct Text {
                 cuda_has_separate_memory()) {
         try {
         budget.emplace(*weight_memory, weights, cache,
-            execution->config.layer_placement.primary_device());
+            tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()));
         if (offload) offload->bind_budget(&*budget);
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model,qwen4_exp::Model>)

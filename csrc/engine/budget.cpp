@@ -1,13 +1,14 @@
 #include "engine/budget.h"
+#include "engine/budget_internal.h"
 
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/prefill_budget.h"
-#include "engine/models/common/session/cache.h"
-#include "engine/models/source.h"
+#include "engine/state/session/sessions.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/cache_internal.h"
 #include "engine/engine.h"
 #include "engine/weights/memory.h"
@@ -15,7 +16,9 @@
 
 #include <algorithm>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace tyloi::cuda {
 
@@ -36,11 +39,37 @@ tyloi::engine::PrefillChunk budget_batch_prefill(
     return chunk;
 }
 
-Budget::Budget(tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
-        internal::TextSessionCache& cache, int primary_device)
+} // namespace tyloi::cuda
+
+namespace tyloi::engine {
+using namespace tyloi::cuda;
+
+Budget::Budget(::tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
+        state::Sessions& cache, Device primary)
     : weight_memory_(weight_memory), weights_(weights), cache_(cache),
-      primary_device_(primary_device), initial_expert_budget_(weights.budget()),
-      allocation_ceiling_(default_context(primary_device)->memory_stats().limit) {}
+      primary_device_(primary.index), initial_expert_budget_(weights.budget()) {
+    if (!primary.is_cuda() || primary.index < 0)
+        throw std::invalid_argument("budget requires a CUDA device");
+    allocation_ceiling_ = default_context(primary_device_)->memory_stats().limit;
+}
+
+Budget::~Budget() { unbind(); }
+
+void Budget::bind() {
+    auto& moe = ::tyloi::weights::detail::cache(weights_).moe;
+    if (moe) {
+        if (moe_expert_cache_ssd_experts(moe)) {
+            auto loan = std::make_shared<KvExpertLoan>();
+            set_moe_kv_expert_loan(moe, loan);
+            ::tyloi::weights::detail::init_workspace(weights_, primary_device_, std::move(loan));
+        }
+        bind_moe_budget(moe, this);
+    }
+}
+
+void Budget::unbind() noexcept {
+    bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, nullptr);
+}
 
 void Budget::reclaim(std::size_t bytes) {
     auto context=default_context(primary_device_);
@@ -129,7 +158,7 @@ std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
     return chunk_size;
 }
 
-void Budget::decode(const ModelSource* source) {
+void Budget::decode(const source::Source* source) {
     const auto& data = tyloi::weights::detail::cache(weights_);
     if (data.tq) return;
     prepare_moe_decode_residency(data.moe);
@@ -205,4 +234,4 @@ engine::SessionResult Budget::Change::apply() {
     return {before > after ? before - after : 0, {}};
 }
 
-} // namespace tyloi::cuda
+} // namespace tyloi::engine

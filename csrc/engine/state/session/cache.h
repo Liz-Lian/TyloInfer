@@ -3,10 +3,13 @@
 #include "prefix_cache.h"
 #include "paged.h"
 #include "snapshot.h"
+#include "sessions.h"
 #include "../../requests/result.h"
+#include "engine/tensor.h"
 
 #include <algorithm>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -16,13 +19,13 @@ namespace tyloi::engine {
 
 // Matching, eviction and restore/store ordering are shared. Backend supplies
 // native snapshot/predictor types and the paged payload codec.
-template <class Backend> class SessionCache {
+template <class Backend> class SessionCache : public tyloi::state::Sessions {
     using Snapshot = typename Backend::Snapshot;
     using Restore = typename Backend::Restore;
     using StateError = typename Backend::StateError;
 
   public:
-    SessionResult control(const SessionCommand &command) {
+    SessionResult control(const SessionCommand &command) override {
         switch (command.kind) {
         case SessionCommand::Kind::fork:
             return {fork_session(command.source, command.target), {}};
@@ -48,9 +51,6 @@ template <class Backend> class SessionCache {
         throw std::invalid_argument("unknown session command");
     }
 
-    template <class Visitor> void visit_snapshots(Visitor&& visitor) const {
-        snapshots_.visit_states(std::forward<Visitor>(visitor));
-    }
     template <class SessionConfig, class PrefixConfig>
     explicit SessionCache(const SessionConfig &session_config, const PrefixConfig &prefix_config,
         std::shared_ptr<tyloi::cache::PagedPrefixCache> paged_cache = {}, bool supported = true,
@@ -123,6 +123,7 @@ template <class Backend> class SessionCache {
     }
 
     void store(const std::string &session_id, Snapshot state) {
+        reserve_ram(state.bytes);
         if (!supported_)
             return;
         bool paged_mtp=false;
@@ -179,7 +180,7 @@ template <class Backend> class SessionCache {
         return released.snapshots + released_paged;
     }
 
-    std::vector<std::pair<std::string, double>> metrics() const {
+    std::vector<std::pair<std::string, double>> metrics() const override {
         if (paged_cache_) {
             const auto value = paged_cache_->metrics();
             const auto native = snapshots_.metrics();
@@ -252,6 +253,23 @@ template <class Backend> class SessionCache {
         return result;
     }
 
+    std::map<int, std::size_t> device_hot_bytes() const override {
+        std::map<std::pair<int, std::uintptr_t>, std::size_t> allocations;
+        const auto tensor = [&](const ::tyloi::Tensor& value) {
+            for (const auto& storage : value.backings()) {
+                if (!storage->device.is_cuda()) continue;
+                const void* identity = storage->owner ? storage->owner.get() : storage->base;
+                if (!identity) continue;
+                auto& bytes = allocations[{storage->device.index, reinterpret_cast<std::uintptr_t>(identity)}];
+                bytes = std::max(bytes, storage->bytes);
+            }
+        };
+        snapshots_.visit_states([&](const Snapshot& state) { state.tensors(tensor); });
+        std::map<int, std::size_t> result;
+        for (const auto& [address, bytes] : allocations) result[address.first] += bytes;
+        return result;
+    }
+
     size_t clear_live_sessions() noexcept { return snapshots_.clear() + paged_bindings_.clear(); }
 
     size_t clear() {
@@ -260,7 +278,7 @@ template <class Backend> class SessionCache {
         return snapshots + (paged_cache_ ? paged_cache_->blocks.clear() : 0);
     }
 
-    uint64_t trim_hot(uint64_t target_bytes) {
+    uint64_t trim_hot(uint64_t target_bytes) override {
         if (native_hot_snapshots_) return snapshots_.trim(target_bytes);
         if (!paged_cache_)
             return 0;
@@ -296,7 +314,7 @@ template <class Backend> class SessionCache {
         return released;
     }
 
-    void reserve_ram(uint64_t bytes) {
+    void reserve_ram(uint64_t bytes) override {
         if (paged_cache_ && native_hot_snapshots_ && paged_cache_->blocks.reserve_ram(bytes))
             Backend::release_host_cache();
     }

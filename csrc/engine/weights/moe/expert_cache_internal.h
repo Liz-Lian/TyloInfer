@@ -51,7 +51,7 @@ public:
     std::optional<std::size_t> available_host_ram() const;
     std::size_t reclaim_optional_host(std::size_t allocation_bytes);
     void reserve_workspace(std::size_t bytes);
-    tyloi::cuda::Budget* budget_ = nullptr;
+    tyloi::engine::Budget* budget_ = nullptr;
     bool layer_prefill_ready() const { return pipeline_prefill_layer_layout_ && pipeline_ram_registered_bytes_>0; }
     std::uint64_t streamed_bytes() const {return stats_.ram_pcie_bytes;}
     ::tyloi::Device device() const {return ::tyloi::Device(::tyloi::kCUDA, owner_device_);}

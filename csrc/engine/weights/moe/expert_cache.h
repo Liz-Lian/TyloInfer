@@ -35,7 +35,8 @@ inline std::string moe_packed_transfer_prefix(int projection,bool predictor) {
     return std::string("decodepacked:")+(predictor && moe_predictor_transfer_cache_enabled()?"mtp:":"")+
         std::to_string(projection)+":";
 }
-namespace tyloi::cuda {class Budget; class KvExpertLoan;}
+namespace tyloi::engine { class Budget; }
+namespace tyloi::cuda { class KvExpertLoan; }
 void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<tyloi::cuda::KvExpertLoan> loan);
 
 // The owner outlives every temporary tensor allocated from the borrowed tails.
@@ -96,7 +97,7 @@ std::size_t moe_expert_cache_budget_bytes(const std::shared_ptr<MoeExpertCache>&
 void resize_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache, std::size_t bytes);
 // Reclaim lower-priority cache storage before reducing prefill transfer overlap.
 void bind_moe_budget(const std::shared_ptr<MoeExpertCache>& cache,
-    tyloi::cuda::Budget* budget);
+    tyloi::engine::Budget* budget);
 void reserve_moe_workspace(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes);
 std::size_t reclaim_moe_optional_host(const std::shared_ptr<MoeExpertCache>& cache,
     std::size_t allocation_bytes=0);

@@ -2506,7 +2506,7 @@ void MoeExpertCache::reserve_workspace(std::size_t bytes) {
     if(budget_)budget_->reclaim(bytes);
 }
 void bind_moe_budget(const std::shared_ptr<MoeExpertCache>& cache,
-        tyloi::cuda::Budget* budget) {
+        tyloi::engine::Budget* budget) {
     if(cache) cache->budget_=budget;
 }
 void reserve_moe_workspace(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes) {

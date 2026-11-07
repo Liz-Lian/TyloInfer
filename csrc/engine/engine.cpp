@@ -18,9 +18,6 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
-#include "engine/weights/cache_internal.h"
-#include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/moe/kv_expert_loan.h"
 #include <stdexcept>
 #include <type_traits>
 #endif
@@ -51,21 +48,13 @@ void Engine::install() {
         auto scope = executor_->enter();
         tyloi::weights::LoadScope memory_load(*impl.ledger_);
         impl.graph_.emplace(impl.model_info_.max_context, Device(kCUDA, impl.forward_options_.primary), executor_->graph());
-        impl.cache_.emplace(impl.runtime_.session_cache, impl.runtime_.prefix_cache,
-            cuda::internal::make_cuda_paged_prefix_cache(*impl.source_, impl.model_info_.max_context,
-                impl.idle_state_->supports_paged_text_session_state(), impl.runtime_.prefix_cache),
-            impl.idle_state_->supports_text_session_state(), impl.idle_state_->supports_text_session_state() ? 0 : 1,
-            cuda::internal::cuda_has_separate_memory());
-        impl.budget_.emplace(*impl.ledger_, *impl.weights_, *impl.cache_, impl.forward_options_.primary);
-        auto& moe = weights::detail::cache(*impl.weights_).moe;
-        if (moe) {
-            if (moe_expert_cache_ssd_experts(moe)) {
-                auto loan = std::make_shared<cuda::KvExpertLoan>();
-                set_moe_kv_expert_loan(moe, loan);
-                weights::detail::init_workspace(*impl.weights_, impl.forward_options_.primary, std::move(loan));
-            }
-            bind_moe_budget(moe, &*impl.budget_);
-        }
+        impl.cache_ = cuda::internal::make_sessions(*impl.source_, impl.runtime_.session_cache,
+            impl.runtime_.prefix_cache, impl.model_info_.max_context,
+            impl.idle_state_->supports_text_session_state(),
+            impl.idle_state_->supports_paged_text_session_state());
+        impl.budget_.emplace(*impl.ledger_, *impl.weights_, *impl.cache_,
+            Device(kCUDA, impl.forward_options_.primary));
+        impl.budget_->bind();
         if (const auto bytes = cuda::runtime_options::resident_budget_bytes()) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
@@ -203,7 +192,7 @@ bool Engine::exclusive() const { return false; }
 void Engine::execute(const std::vector<RequestId>&) {}
 
 void Engine::clear_bindings() noexcept {
-    bind_moe_budget(weights::detail::cache(*impl_->weights_).moe, nullptr);
+    if (impl_->budget_) impl_->budget_->unbind();
 }
 
 void Engine::reserve(models::State& state, std::int64_t tokens) {

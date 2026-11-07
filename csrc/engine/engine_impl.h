@@ -260,8 +260,8 @@ private:
     tyloi::models::Info model_info_{};
     tyloi::engine::mtp::State mtp_state_;
     std::optional<DecodeGraphCache> graph_;
-    std::optional<internal::TextSessionCache> cache_;
-    std::optional<Budget> budget_;
+    std::optional<engine::SessionCache<internal::CudaSessionOps>> cache_;
+    std::optional<engine::Budget> budget_;
     std::unique_ptr<engine::Batch> batching_;
     std::function<void()> restore_decode_workspace_;
     std::unique_ptr<engine::TextProcessor> text_;
@@ -413,7 +413,7 @@ private:
             internal::cuda_has_separate_memory());
         budget_.emplace(
             *weight_memory_, weights_, *cache_,
-            execution_->config.layer_placement.primary_device());
+            tyloi::Device(tyloi::kCUDA, execution_->config.layer_placement.primary_device()));
         if (offload_) offload_->bind_budget(&*budget_);
         if (config_.continuous_batch.max_sequences) {
             auto batch_config = config_.continuous_batch;

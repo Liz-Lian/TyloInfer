@@ -46,7 +46,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     const tyloi::models::Info &info;
     const tyloi::ModelSource* source;
     DecodeGraphCache &graph;
-    TextSessionCache &cache;
+    tyloi::engine::SessionCache<CudaSessionOps> &cache;
     const tyloi::engine::RuntimeConfig &config;
     tyloi::engine::mtp::State &mtp_state;
     Predictor *mtp;
@@ -271,7 +271,7 @@ Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
     const tyloi::models::Info &info, const tyloi::ModelSource* source,
-    DecodeGraphCache &graph, TextSessionCache &cache,
+    DecodeGraphCache &graph, tyloi::engine::SessionCache<CudaSessionOps> &cache,
     const tyloi::engine::RuntimeConfig &config, tyloi::engine::InferenceRequest &request,
     tyloi::engine::InferenceOutput &output, tyloi::engine::mtp::State &mtp_state,
     Predictor *mtp,

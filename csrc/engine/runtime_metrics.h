@@ -3,7 +3,7 @@
 #include "engine/executor.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
-#include "engine/models/common/session/cache.h"
+#include "engine/state/session/sessions.h"
 #include "engine/models/common/mtp.h"
 #include "engine/weights/cache.h"
 #include "engine/generation/batch.h"
@@ -32,8 +32,8 @@ inline tyloi::engine::Metrics runtime_metrics(
         tyloi::engine::Batch* batching,
         const tyloi::ModelSource* source, tyloi::weights::Memory& ledger,
         const tyloi::weights::Cache& weights, KvMemoryManager* kv,
-        KvOffloadStore* offload, const internal::TextSessionCache& cache,
-        const Budget& budget, std::span<const tyloi::Executor::Memory> devices,
+        KvOffloadStore* offload, const tyloi::state::Sessions& cache,
+        const tyloi::engine::Budget& budget, std::span<const tyloi::Executor::Memory> devices,
         tyloi::Device primary, bool online_budget_supported) {
     using tyloi::engine::Metrics;
 

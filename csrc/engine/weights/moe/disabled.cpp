@@ -29,7 +29,7 @@ std::size_t moe_expert_cache_budget_bytes(const std::shared_ptr<MoeExpertCache>&
 
 void resize_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache, std::size_t bytes) {}
 
-void bind_moe_budget(const std::shared_ptr<MoeExpertCache>& cache, tyloi::cuda::Budget* budget) {}
+void bind_moe_budget(const std::shared_ptr<MoeExpertCache>& cache, tyloi::engine::Budget* budget) {}
 
 void reserve_moe_workspace(const std::shared_ptr<MoeExpertCache>& cache, std::size_t bytes) {}
 

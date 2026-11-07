@@ -11,7 +11,7 @@ template Generation generate( \
     tyloi::cuda::Collectives&, tyloi::cuda::Executor::Mode, CudaProfiler&, \
     ::tyloi::weights::Cache&, bool&, bool, bool, std::function<void()>, \
     const tyloi::models::Info &, const tyloi::ModelSource*, \
-    DecodeGraphCache &, TextSessionCache &, const tyloi::engine::RuntimeConfig &, \
+    DecodeGraphCache &, tyloi::engine::SessionCache<CudaSessionOps> &, const tyloi::engine::RuntimeConfig &, \
     tyloi::engine::InferenceRequest &, tyloi::engine::InferenceOutput &, \
     tyloi::engine::mtp::State &, PREDICTOR *, \
     std::optional<PreparedPrompt>, tyloi::engine::Batch*, std::string, \

@@ -251,7 +251,7 @@ namespace tyloi::cuda::internal {
         std::function<void()>,                                                                      \
         const tyloi::models::Info &, const tyloi::ModelSource*,                                          \
         DecodeGraphCache &,                                                                        \
-        TextSessionCache &,                                                                        \
+        tyloi::engine::SessionCache<tyloi::cuda::internal::CudaSessionOps> &,                       \
         const tyloi::engine::RuntimeConfig &,                                                      \
         tyloi::engine::InferenceRequest &,                                                           \
         tyloi::engine::InferenceOutput &,                                                            \

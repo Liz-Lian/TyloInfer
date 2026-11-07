@@ -14,9 +14,8 @@
 #include <optional>
 #include <utility>
 
-namespace tyloi::cuda::internal {
-class TextSessionCache;
-}
+namespace tyloi::engine { template <class Backend> class SessionCache; }
+namespace tyloi::cuda::internal { struct CudaSessionOps; }
 
 namespace tyloi::cuda {
 class Collectives;
@@ -38,7 +37,7 @@ tyloi::engine::Generation generate(
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
     const tyloi::models::Info& info, const tyloi::ModelSource* source,
-    DecodeGraphCache& graph, TextSessionCache& cache,
+    DecodeGraphCache& graph, tyloi::engine::SessionCache<CudaSessionOps>& cache,
     const tyloi::engine::RuntimeConfig& config, tyloi::engine::InferenceRequest& request,
     tyloi::engine::InferenceOutput& output, tyloi::engine::mtp::State& mtp_state,
     Predictor* mtp = nullptr,

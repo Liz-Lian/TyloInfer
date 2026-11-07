@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 
+namespace tyloi::engine { class Budget; }
 namespace tyloi::cuda {
-class Budget;
 class KvExpertLoan;
 // Placement applies to raw K/V. Indexer and kernel scratch remain GPU-local.
 struct KvMemoryOptions {
@@ -51,7 +51,7 @@ public:
     // Called after dense weights and predictor load, before expert arenas.
     void finalize(std::size_t minimum_experts = 0);
     void ensure(int64_t tokens);
-    void bind_budget(Budget* budget) { budget_ = budget; }
+    void bind_budget(tyloi::engine::Budget* budget) { budget_ = budget; }
     std::shared_ptr<KvOffloadStore> offload() const { return offload_; }
     bool dynamic() const { return options_.dynamic; }
     std::shared_ptr<KvExpertLoan> expert_loan() const { return expert_loan_; }
@@ -62,7 +62,7 @@ private:
     KvMemoryOptions options_;
     std::vector<std::weak_ptr<KvMemoryAllocation>> allocations_;
     std::shared_ptr<KvOffloadStore> offload_;
-    Budget* budget_ = nullptr;
+    tyloi::engine::Budget* budget_ = nullptr;
     bool ready_ = false;
     bool automatic_ram_ = false;
     std::shared_ptr<KvExpertLoan> expert_loan_;
