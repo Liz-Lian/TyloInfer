@@ -104,7 +104,7 @@ if(TYLOINFER_BUILD_METAL_RUNTIME)
 endif()
 
 if(TYLOINFER_BUILD_CUDA_RUNTIME)
-    add_subdirectory(backends/cuda cuda)
+    add_subdirectory(engine/backends/cuda cuda)
 endif()
 
 if(TYLOINFER_BUILD_HIP_RUNTIME)

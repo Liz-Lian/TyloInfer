@@ -148,7 +148,10 @@ std::array<std::int64_t, 2> tq_projection_shape(
     }
     const auto* record = source.find_tensor(name);
     if (!record) {
-        throw std::invalid_argument("missing TQ projection: " + std::string(name));
+        if (!is_tq_table(source, name))
+            throw std::invalid_argument("missing TQ projection: " + std::string(name));
+        (void)tq_table(source, name);
+        return {shape[0], shape[1]};
     }
     (void)tyloi::tq_tensor_shape(
         record->nbytes, source.tensor_reader(name), shape);

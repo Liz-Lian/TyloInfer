@@ -1,7 +1,7 @@
 # Native CUDA backend. Compute, execution and loading targets do not require
 # the optional service transport; only the runtime service below does.
 
-set(TYLOINFER_CUDA_ROOT "${PROJECT_SOURCE_DIR}/backends/cuda")
+set(TYLOINFER_CUDA_ROOT "${PROJECT_SOURCE_DIR}/engine/backends/cuda")
 # Single source of the shared CUDA kernels; the Python extension builds the same files.
 set(TYLOINFER_CUDA_KERNEL_ROOT "${PROJECT_SOURCE_DIR}/engine/backends/cuda/kernels")
 
@@ -58,6 +58,7 @@ target_include_directories(mfq-cuda-core PRIVATE
     ${PROJECT_SOURCE_DIR}
 )
 target_link_libraries(mfq-cuda-core PUBLIC CUDA::cudart CUDA::cublas mfq-host-parallel)
+target_link_libraries(mfq-cuda-core PUBLIC mfq-tensor)
 if(WIN32)
     target_link_libraries(mfq-cuda-core PUBLIC dxgi)
 endif()
@@ -250,6 +251,9 @@ function(mfq_configure_cuda_backend_target target)
 endfunction()
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
+    ${PROJECT_SOURCE_DIR}/engine/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mlp.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/dense.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/residual.cpp
@@ -258,7 +262,6 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/diagnostics/route_stats.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/collectives.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/attention.cpp
-    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/full.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/kv.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/rms.cpp

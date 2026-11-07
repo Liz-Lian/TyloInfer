@@ -567,9 +567,9 @@ static int run_gemma_moe_check(
     mfq_tensor_backend::Tensor dense_down;
     if (dense_reference_enabled) {
         dense_gate_up = materialize_mfe_dense(
-            mfq, prefix + "gate_up.weight");
+            mfq, prefix + "gate_up.weight", mfq_current_cuda_device());
         dense_down = materialize_mfe_dense(
-            mfq, prefix + "down.weight");
+            mfq, prefix + "down.weight", mfq_current_cuda_device());
     }
     std::cout << "gemma_moe_bench_config"
               << " layer=" << layer

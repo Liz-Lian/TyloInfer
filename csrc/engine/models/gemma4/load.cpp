@@ -6,6 +6,7 @@
 #include "engine/backends/cuda/ops/rope/rope.h"
 #endif
 #include "engine/weights/loader.h"
+#include "engine/weights/tq/source.h"
 
 #include <algorithm>
 #include <array>
@@ -109,8 +110,10 @@ struct LayerLoader {
     auto experts(const std::string &name, int layer, const char *projection) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if (weights.placement.experts.enabled()) {
+            if (tyloi::is_tq_table(weights.source, name))
+                throw std::runtime_error("Gemma4 expert parallelism does not support TQ expert banks: " + name);
             const auto& dtype = tyloi::require_tensor(weights.source, name).dtype;
-            if (dtype == "TQ" || dtype == "F32" || dtype == "F16" || dtype == "BF16")
+            if (dtype == "F32" || dtype == "F16" || dtype == "BF16")
                 throw std::runtime_error("Gemma4 expert parallelism does not support " + dtype + " expert banks: " + name);
         }
 #endif
@@ -151,7 +154,8 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
     MfqCudaGuard guard(placement.primary_device());
 #endif
     if (load_input_output) {
-        const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
+        const bool separate = !config.tie_word_embeddings &&
+            (weights.has("model.output.weight") || tyloi::is_tq_table(weights.source, "model.output.weight"));
         model.embed = weights.embedding("model.token_embedding.weight", separate);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         model.output_norm = weights.tensor("model.output_norm.weight");

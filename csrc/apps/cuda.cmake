@@ -2,6 +2,8 @@ if(TARGET mfq-runtime-communication)
     add_executable(mfq-runtime
         ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
         ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
+        ${PROJECT_SOURCE_DIR}/commands/reference.cpp
+        ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     )
     target_link_libraries(mfq-runtime PRIVATE
         mfq-cuda-runtime mfq-runtime-communication)
@@ -17,6 +19,7 @@ endif()
 add_executable(mfq-diagnostics
     ${PROJECT_SOURCE_DIR}/apps/diagnostics_main.cpp
     ${PROJECT_SOURCE_DIR}/commands/diagnostics.cpp
+    ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
 )
 mfq_configure_cuda_runtime_target(mfq-diagnostics)
 target_compile_definitions(mfq-diagnostics PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
@@ -55,6 +58,7 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
     add_executable(mfq-runtime-torch
         ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
         ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
+        ${PROJECT_SOURCE_DIR}/commands/reference.cpp
         ${TYLOINFER_CUDA_RUNTIME_OP_SOURCES}
         ${TYLOINFER_CUDA_EXECUTION_SOURCES}
         ${TYLOINFER_CUDA_LOADING_SOURCES}

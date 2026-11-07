@@ -22,6 +22,8 @@ endif()
 # ops have no Engine, model-family, scheduler or transport link.
 function(mfq_configure_cuda_runtime_target target)
     mfq_configure_cuda_backend_target(${target})
+    # Consumers compile against headers that include cublas/cuda headers directly.
+    target_include_directories(${target} INTERFACE ${CUDAToolkit_INCLUDE_DIRS})
     target_link_libraries(${target} PRIVATE
         mfq-model-source
         mfq-quant-readers
@@ -81,7 +83,9 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}
 # Concrete Engine selection is compiled from engine/load.cpp.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/generate.cpp
+    ${PROJECT_SOURCE_DIR}/engine/generation/decode.cpp
     ${PROJECT_SOURCE_DIR}/engine/mtp.cpp
+    ${PROJECT_SOURCE_DIR}/engine/engine.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/paged.cpp
@@ -91,8 +95,6 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
     ${PROJECT_SOURCE_DIR}/commands/cli.cpp
-    ${PROJECT_SOURCE_DIR}/commands/reference.cpp
-    ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     ${TYLOINFER_CUDA_MODEL_SOURCES}
 )
 add_library(mfq-cuda-runtime STATIC
@@ -111,11 +113,10 @@ target_link_libraries(mfq-cuda-runtime PRIVATE
     mfq-cuda-core
     mfq-cuda-native-kernels
     mfq-cuda-storage
+    mfq-runtime-scheduler
 )
-target_compile_definitions(mfq-cuda-runtime PRIVATE
-    TYLOINFER_NATIVE_CUDA_RUNTIME=1
-    NOMINMAX
-)
+target_compile_definitions(mfq-cuda-runtime PUBLIC TYLOINFER_NATIVE_CUDA_RUNTIME=1)
+target_compile_definitions(mfq-cuda-runtime PRIVATE NOMINMAX)
 if(MSVC)
     foreach(target mfq-cuda-ops mfq-cuda-execution mfq-cuda-loading mfq-cuda-models mfq-cuda-runtime)
         target_compile_options(${target} PRIVATE
@@ -133,5 +134,11 @@ set_target_properties(mfq-cuda-runtime PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-include(${PROJECT_SOURCE_DIR}/diagnostics/cuda.cmake)
-include(${PROJECT_SOURCE_DIR}/apps/cuda.cmake)
+# The CLI tools carry legacy code that still targets the pre-Tensor-unification
+# APIs; keep them out of library and test builds until they are ported.
+option(TYLOINFER_BUILD_CLI_TOOLS
+    "Build the native CLI tools (mfq-runtime, mfq-diagnostics, mfq-eval)" OFF)
+if(TYLOINFER_BUILD_CLI_TOOLS)
+    include(${PROJECT_SOURCE_DIR}/diagnostics/cuda.cmake)
+    include(${PROJECT_SOURCE_DIR}/apps/cuda.cmake)
+endif()

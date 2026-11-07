@@ -206,7 +206,8 @@ struct Text {
         }
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
-                budget->reserve_kv(bytes);
+                budget->reserve_kv(tyloi::Device(tyloi::kCUDA,
+                    execution->config.layer_placement.primary_device()), bytes);
             };
             if(kv)kv->bind_budget(&*budget);
         }

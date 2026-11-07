@@ -228,12 +228,8 @@ void Engine::clear_bindings() noexcept {
 }
 
 void Engine::reserve(models::State& state, std::int64_t tokens) {
-    std::size_t bytes = 0;
-    const Device primary(kCUDA, forward_options_.primary);
     for (const auto& [device, growth] : state.growth(tokens, forward_options_))
-        if (device == primary) bytes = prefill_budget_add(bytes, growth);
-    if (bytes)
-        budget_->reserve_kv(prefill_budget_add(bytes, std::size_t(64) << 20));
+        if (growth) budget_->reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
 }
 
 SessionResult Engine::set_budget(const SessionCommand& command) {

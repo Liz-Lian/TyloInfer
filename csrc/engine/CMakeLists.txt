@@ -1,3 +1,11 @@
+# DenseTensor lives outside mfq-engine so native-backend targets can link the
+# tensor implementation without the whole engine.
+add_library(mfq-tensor STATIC tensor.cpp)
+add_library(mfq::tensor ALIAS mfq-tensor)
+target_include_directories(mfq-tensor PUBLIC ${PROJECT_SOURCE_DIR})
+target_compile_features(mfq-tensor PUBLIC cxx_std_20)
+set_target_properties(mfq-tensor PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(mfq-engine STATIC
     config.cpp
     generation/mtp/metrics.cpp
@@ -19,7 +27,6 @@ add_library(mfq-engine STATIC
     requests/policy.cpp
     requests/processor.cpp
     requests/tokenizer.cpp
-    scheduler/table.cpp
     state/session/paged.cpp
     state/session/prefix_cache.cpp
     state/qsa_sequence.cpp
@@ -37,6 +44,7 @@ target_include_directories(mfq-engine
 )
 target_compile_features(mfq-engine PUBLIC cxx_std_20)
 target_link_libraries(mfq-engine PUBLIC
+    mfq-tensor
     mfq-model-source
     mfq-model-graph
     mfq-formats

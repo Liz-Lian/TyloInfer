@@ -204,6 +204,8 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         {
             auto outer_scope = root->enter(load.layer_placement.primary_device());
             internal::setup_cuda_load(options, load, *root, *weights, kv, offload);
+            if (!load.dsv4_cpu_offload_layers.empty())
+                throw std::invalid_argument("Gemma4 does not support --cpu-offload-layers");
             root->set_primary(load.layer_placement.primary_device());
             root->profiler().enabled = false;
             ledger = std::make_shared<tyloi::weights::Memory>();
@@ -245,7 +247,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         runtime.devices = cuda_devices(load);
         runtime.online_budget = load.layer_placement.devices.size() <= 1 &&
             !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
-        const bool graph_allowed = load.dsv4_cpu_offload_layers.empty() && load.dense_cpu_layer_count == 0 &&
+        const bool graph_allowed = !root->attention_options().kernels.decode_aten && load.dense_cpu_layer_count == 0 &&
             model_parallel_cuda_graph_enabled(load, *root, *weights) &&
             weights->graph_safe(tyloi::weights::Cache::Graph::native, moe_parallel_config(load).enabled());
         const auto model_info = model->info();

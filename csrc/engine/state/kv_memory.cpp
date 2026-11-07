@@ -1,6 +1,7 @@
 #include "env.h"
 #include "engine/state/kv_memory.h"
 #include "engine/budget.h"
+#include "engine/generation/prefill_budget.h"
 #include "engine/backends/cuda/native/vmm.h"
 #include "engine/state/kv_budget.h"
 #include "engine/weights/moe/kv_expert_loan.h"
@@ -343,9 +344,17 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
 }
 void KvMemoryManager::ensure(int64_t tokens) {
     if(expert_loan_)expert_loan_->ensure(tokens);
-    std::size_t growth=0;
-    for(auto& weak:allocations_)if(auto a=weak.lock())growth+=a->growth_bytes(std::min(a->maximum,tokens));
-    if(growth && budget_)budget_->reserve_kv(growth+(64ULL<<20));
+    std::vector<std::pair<tyloi::Device, std::size_t>> growth;
+    for(auto& weak:allocations_)if(auto a=weak.lock()) {
+        const auto bytes=a->growth_bytes(std::min(a->maximum,tokens));
+        if(!bytes)continue;
+        const auto device=a->options.target_device();
+        auto entry=std::find_if(growth.begin(),growth.end(),[&](const auto& item){return item.first==device;});
+        if(entry==growth.end())growth.emplace_back(device,bytes);
+        else entry->second=engine::prefill_budget_add(entry->second,bytes);
+    }
+    if(budget_)for(const auto& [device,bytes]:growth)
+        budget_->reserve_kv(device,engine::prefill_budget_add(bytes,64ULL<<20));
     for(auto& weak:allocations_)if(auto a=weak.lock())a->ensure(std::min(a->maximum,tokens));
 }
 std::size_t KvMemoryManager::growth_reserve() const {

@@ -14,9 +14,15 @@
 ::tyloi::encoding::TqTensor load_tq_weight(const tyloi::source::Source& source,
                          const std::string& name, int device, bool cuda) {
     const auto shape = tyloi::tq_projection_shape(source, name);
-    const auto bytes = source.read(name);
-    std::vector<std::uint8_t> blob(bytes.size());
-    std::memcpy(blob.data(), bytes.data(), bytes.size());
+    std::vector<std::uint8_t> blob;
+    if (source.find_tensor(name)) {
+        const auto bytes = source.read(name);
+        blob.resize(bytes.size());
+        std::memcpy(blob.data(), bytes.data(), bytes.size());
+    } else {
+        const auto table = tyloi::tq_table(source, name);
+        blob = table->slice_rows(0, table->rows());
+    }
     auto result = to_device_tq(blob, shape[1], device, cuda);
     if (result.size(0) != shape[0]) {
         throw std::invalid_argument("TQ projection output shape differs: " + name);

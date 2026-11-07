@@ -20,7 +20,7 @@ std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
     ::tyloi::DenseTensor input, const std::vector<std::int32_t>& expert_ids,
     int tokens, int routes, bool routed_input);
 ::tyloi::DenseTensor materialize_mfe_dense(
-    const tyloi::source::Source& source, const std::string& name);
+    const tyloi::source::Source& source, const std::string& name, int device);
 std::shared_ptr<const tyloi::MfeTensor> to_gpu_mfe(const tyloi::mfe::Data& source);
 std::shared_ptr<::tyloi::MfeTensor> make_mfe(
     const tyloi::mfe::Data& source,
