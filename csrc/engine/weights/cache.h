@@ -103,6 +103,7 @@ public:
     std::size_t minimum() const;
     bool empty() const;
     bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;
+    bool prepare_graph(Device device);
     bool needs_finalize() const;
     void finalize(std::size_t reserve = 0, std::size_t kv_charge = 0);
     void resize(std::size_t bytes);

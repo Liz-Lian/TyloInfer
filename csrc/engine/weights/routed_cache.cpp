@@ -3,6 +3,7 @@
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/source/source.h"
 #include "engine/weights/tq/cache.h"
@@ -122,6 +123,15 @@ bool Cache::empty() const {
 bool Cache::graph_safe(Graph kind, bool parallel) const {
     if (kind == Graph::model_parallel) return !(data_->tq && parallel);
     return !data_->moe && !(data_->tq && (parallel || kind == Graph::legacy));
+}
+
+bool Cache::prepare_graph(Device device) {
+    if (!device.is_cuda() || device.index < 0)
+        throw std::invalid_argument("graph requires a CUDA device");
+    if (prepare_moe_graph_pool(data_->moe)) return true;
+    if (!data_->tq) return false;
+    data_->exec->get(device.index)->prepare_graph();
+    return true;
 }
 
 Cache::Prefill Cache::prefill_mode(std::size_t tokens, bool resumed) const {

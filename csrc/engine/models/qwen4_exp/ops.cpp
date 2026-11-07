@@ -1386,9 +1386,7 @@ struct Qwen4DecodeGraph {
             // storage; refresh pooled keys even when this graph is already valid.
             for(auto* attention:qsa)attention->prepare_graph(model.positions,kv_capacity);
             if(!cell.window.valid()) {
-                if(!prepare_moe_graph_pool(::tyloi::weights::detail::cache(model.execution->weights).moe) &&
-                   ::tyloi::weights::detail::cache(model.execution->weights).tq)
-                    model.execution->executor().tq()->get(mfq_current_cuda_device())->prepare_graph();
+                model.execution->weights.prepare_graph(::tyloi::Device{::tyloi::kCUDA,mfq_current_cuda_device()});
                 DecodeGraphBranchScope branch_scope(
                     model.execution->executor().mode().ffn.serial);
                 const auto capture_started=std::chrono::steady_clock::now();
@@ -2108,14 +2106,10 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
             }
         // Cached MFE owns its graph pool and initializes it during preparation.
         // Dense fixtures need a pool owned by this decoder instead.
-        if (!prepare_moe_graph_pool(::tyloi::weights::detail::cache(model.execution->weights).moe)) {
-            if (::tyloi::weights::detail::cache(model.execution->weights).tq) {
-                model.execution->executor().tq()->get(mfq_current_cuda_device())->prepare_graph();
-            } else {
-                graph.memory_pool = std::make_unique<Graph>();
-                graph.memory_pool->prepare_memory();
-                default_context(mfq_current_cuda_device())->end_graph_warmup(mfq_current_cuda_stream());
-            }
+        if (!model.execution->weights.prepare_graph(::tyloi::Device{::tyloi::kCUDA,mfq_current_cuda_device()})) {
+            graph.memory_pool = std::make_unique<Graph>();
+            graph.memory_pool->prepare_memory();
+            default_context(mfq_current_cuda_device())->end_graph_warmup(mfq_current_cuda_stream());
         }
         graph.window = std::make_unique<DecodeWindow>(
             mfq_current_cuda_stream(),::tyloi::cuda::options::layer_timings(),true);
