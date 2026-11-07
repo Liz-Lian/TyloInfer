@@ -113,7 +113,6 @@ target_link_libraries(mfq-cuda-engine PRIVATE
     mfq-cuda-core
     mfq-cuda-native-kernels
     mfq-cuda-storage
-    mfq-scheduler
 )
 target_compile_definitions(mfq-cuda-engine PUBLIC TYLOINFER_NATIVE_CUDA=1)
 target_compile_definitions(mfq-cuda-engine PRIVATE NOMINMAX)

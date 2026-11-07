@@ -89,9 +89,6 @@ if(TYLOINFER_BUILD_TRANSPORT)
 endif()
 
 add_subdirectory(engine)
-if(TARGET mfq-tokenizer)
-    add_subdirectory(engine/scheduler)
-endif()
 
 if(TYLOINFER_BUILD_TRANSPORT)
     add_subdirectory(transport)

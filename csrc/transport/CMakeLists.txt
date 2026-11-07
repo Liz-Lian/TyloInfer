@@ -18,7 +18,7 @@ target_include_directories(mfq-transport PRIVATE
 )
 target_link_libraries(mfq-transport
     PUBLIC
-        mfq-scheduler
+        mfq-engine
     PRIVATE
         mfq-http
         mfq-json
