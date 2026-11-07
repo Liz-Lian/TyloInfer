@@ -1,6 +1,10 @@
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/weights.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/ops.h"
+#else
 #include "engine/backends/cuda/ops/rope/rope.h"
+#endif
 #include "engine/weights/loader.h"
 
 #include <algorithm>
@@ -40,11 +44,12 @@ struct LayerLoader {
     static int64_t elements(const tyloi::DenseTensor& value) { return value.numel(); }
 #endif
     auto rope(int64_t capacity, const tyloi::models::gemma4::LayerSpec &spec) {
-        auto cache = RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return cache.view();
+        return tyloi::ops::rope_table(capacity, spec.head_dim, spec.rope_base,
+            tyloi::Device(tyloi::kCUDA, weights.placement.device),
+            spec.head_dim, spec.rotary_pairs);
 #else
-        return cache;
+        return RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
 #endif
     }
     auto ones(int64_t width) {
@@ -79,8 +84,8 @@ struct LayerLoader {
     auto normalized_router_parameter(const std::string &name, double divisor) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto value = router_parameter(name);
-        const auto& dense = dynamic_cast<const tyloi::DenseTensor&>(*value);
-        return std::make_shared<tyloi::DenseTensor>((dense / divisor).contiguous());
+        auto divided = tyloi::ops::divide(*value, divisor);
+        return tyloi::ops::contiguous(*divided);
 #else
         return (router_parameter(name) / divisor).contiguous();
 #endif
@@ -118,7 +123,9 @@ struct LayerLoader {
 
 Layer load_layer(const tyloi::weights::Loader& weights, const Config &config,
                  int layer, const std::string &type) {
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     MfqCudaGuard guard(weights.placement.device);
+#endif
     Layer result;
     result.device = weights.placement.device;
     LayerLoader loader{weights};
@@ -140,7 +147,9 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
                 "--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
         throw std::runtime_error("--n-gpu-layers currently supports dense Qwen-style blocks only");
     }
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     MfqCudaGuard guard(placement.primary_device());
+#endif
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
@@ -160,7 +169,9 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
             model.layers.reserve(static_cast<std::size_t>(config.num_hidden_layers));
             for (int index = 0; index < config.num_hidden_layers; ++index) {
                 const int device = placement.device_for_layer(index);
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                 MfqCudaGuard layer_guard(device);
+#endif
                 const auto& type = config.layer_types.at(static_cast<std::size_t>(index));
                 std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
                 model.layers.push_back(load_layer(weights.for_layer(device, false), config, index, type));

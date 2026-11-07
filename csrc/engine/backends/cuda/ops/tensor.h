@@ -16,6 +16,7 @@ tyloi::DenseTensor silu(tyloi::DenseTensor input);
 tyloi::DenseTensor relu_squared(tyloi::DenseTensor input);
 tyloi::DenseTensor softcap(tyloi::DenseTensor input, double cap);
 tyloi::DenseTensor scale(tyloi::DenseTensor input, double factor);
+tyloi::DenseTensor divide(tyloi::DenseTensor input, double divisor);
 tyloi::DenseTensor copy(tyloi::DenseTensor input, Device target);
 void copy_into(tyloi::DenseTensor destination, tyloi::DenseTensor source);
 tyloi::DenseTensor cast(tyloi::DenseTensor input, ScalarType type);

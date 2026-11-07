@@ -10,6 +10,8 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace tyloi::cuda::ops {
+tyloi::ops::RopeTable rope_table(int64_t positions, int64_t dimension, double base, Device device,
+                                 int64_t frequency_dim, int64_t active_pairs);
 tyloi::DenseTensor rope(tyloi::DenseTensor input, tyloi::DenseTensor positions, const tyloi::ops::RopeTable& table,
                  bool bf16, bool grid_mrope_positions);
 }

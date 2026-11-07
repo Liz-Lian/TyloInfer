@@ -15,6 +15,7 @@
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/device.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
+#include <cmath>
 #endif
 
 namespace tyloi::ops {
@@ -120,6 +121,16 @@ std::shared_ptr<Tensor> attention(const Tensor& query_tensor, const Tensor& key_
     require_cuda(query);
     const std::optional<DenseTensor> dense_mask = mask ? std::optional<DenseTensor>(dense(*mask)) : std::nullopt;
     return owner(cuda::ops::attention(query, key, value, dense_mask, scale));
+}
+
+RopeTable rope_table(std::int64_t positions, std::int64_t dimension, double base, Device target,
+                     std::int64_t frequency_dim, std::int64_t active_pairs) {
+    device(target);
+    if (!target.is_cuda()) throw std::invalid_argument("RoPE table requires a CUDA device");
+    if (positions <= 0 || dimension <= 0 || dimension % 2 != 0 ||
+        !std::isfinite(base) || base <= 0.0 || active_pairs > dimension / 2)
+        throw std::invalid_argument("invalid RoPE table parameters");
+    return cuda::ops::rope_table(positions, dimension, base, target, frequency_dim, active_pairs);
 }
 
 std::shared_ptr<Tensor> rope(const Tensor& value_tensor, const Tensor& positions_tensor, const RopeTable& table, bool bf16, bool grid) {
@@ -396,6 +407,11 @@ std::shared_ptr<Tensor> scale(const Tensor& value_tensor, double factor) {
     input(value);
     require_cuda(value);
     return owner(cuda::ops::scale(value, factor));
+}
+std::shared_ptr<Tensor> divide(const Tensor& value_tensor, double divisor) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    input(value);
+    return owner(cuda::ops::divide(value, divisor));
 }
 std::shared_ptr<Tensor> embedding(const Tensor& ids_tensor, const ::tyloi::Tensor& weight) {
     const auto& ids = ::tyloi::ops::dense(ids_tensor);

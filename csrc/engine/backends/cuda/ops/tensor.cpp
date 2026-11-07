@@ -51,6 +51,11 @@ tyloi::DenseTensor scale(tyloi::DenseTensor input, double factor) {
     MfqCudaGuard guard(input.device().index);
     return ::tyloi::cuda::scalar_binary_cuda(input, factor, 2);
 }
+tyloi::DenseTensor divide(tyloi::DenseTensor input, double divisor) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.device().is_cuda()) guard.emplace(input.device().index);
+    return input / divisor;
+}
 tyloi::DenseTensor copy(tyloi::DenseTensor input, Device target) {
     return target.is_cuda() ? Executor::current().collectives().copy(input, target.index)
                             : ::tyloi::cuda::copy(input, target);

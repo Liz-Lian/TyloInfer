@@ -53,6 +53,10 @@ struct RopeTable {
     std::int64_t rotary_dim = 0;
 };
 
+// CUDA table with [positions, dimension / 2] FP32 cosine and sine tensors.
+// Nonpositive frequency_dim uses dimension; negative active_pairs uses all pairs.
+RopeTable rope_table(std::int64_t positions, std::int64_t dimension, double base, Device device,
+                     std::int64_t frequency_dim = 0, std::int64_t active_pairs = -1);
 std::shared_ptr<Tensor> rope(const Tensor& input, const Tensor& positions, const RopeTable& table, bool bf16 = false,
             bool grid_mrope_positions = false);
 // Unsupported fusions return nullptr without writing; success writes the original KV and returns query.
@@ -116,6 +120,8 @@ auto measure(const char* name, Fn&& operation) -> decltype(operation()) {
 // Preserve dtype; a cap that is not positive returns the input handle.
 std::shared_ptr<Tensor> softcap(const Tensor& input, double cap);
 std::shared_ptr<Tensor> scale(const Tensor& input, double factor);
+// Scalar division preserves shape and dtype.
+std::shared_ptr<Tensor> divide(const Tensor& input, double divisor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
 std::shared_ptr<Tensor> embedding(const Tensor& ids, const ::tyloi::Tensor& weight);
 std::shared_ptr<Tensor> project(const Tensor& input, const ::tyloi::Tensor& weight);

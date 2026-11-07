@@ -679,6 +679,7 @@ std::shared_ptr<const tyloi::MfeTensor> tyloi::weights::Loader::build_experts(co
     const auto& mfq = source;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
+    MfqCudaGuard guard(placement.device);
     const auto& quant = options.quant;
     const tyloi::cuda::AllocationScope weight_memory;
     auto& cache = impl_->cache.moe;
@@ -828,6 +829,7 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vec
         return nint && nint->q_packed.is_cuda();
     });
     if (all_nint && options.grouped && !placement.cpu && !preserve_boundaries) {
+        MfqCudaGuard guard(placement.device);
         auto group = make_quant_group(layers, true, false);
         return cuda::nint_aliases(layers, group.nint);
     }
@@ -850,6 +852,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, 
         return bank;
     }
     if (dtype == "TQ") {
+        MfqCudaGuard guard(placement.device);
         auto bank = load_tq_routed_weight(impl_->cache, impl_->tq, source, name);
         if (placement.experts.enabled())
             bank->slices = plan_moe_expert_parallel_slices(placement.experts, bank->experts, name);
@@ -868,6 +871,8 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::dense(const std::string& name) co
         "expected a dense parameter: ",name);
     auto value=tensor(name);
     if (!dense_storage) return value;
+    std::optional<MfqCudaGuard> guard;
+    if (value->device().is_cuda()) guard.emplace(placement.device);
     return std::make_shared<DenseTensor>(static_cast<const DenseTensor&>(*value).to(
         dtype=="F16" ? ::tyloi::kFloat16 : dtype=="BF16" ? ::tyloi::kBFloat16 : ::tyloi::kFloat32));
 }
@@ -877,6 +882,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::routed(const std::string& name, i
     const auto& file = source;
     const auto& dtype=tyloi::require_tensor(file, name).dtype;
     if(dtype=="TQ") {
+        MfqCudaGuard guard(placement.device);
         auto weight=load_tq_routed_weight(impl_->cache,impl_->tq,file,name,experts,output,input);
         if (placement.experts.enabled())
             weight->slices = plan_moe_expert_parallel_slices(placement.experts, weight->experts, name);
@@ -964,6 +970,7 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::embedding(const s
     if(use_mapped && independent_output &&
             !placement.tensor.enabled() && !placement.cpu &&
             (dtype=="BF16" || dtype=="F16" || dtype=="F32" || nint)) {
+        MfqCudaGuard guard(placement.device);
         try {
             const tyloi::cuda::AllocationScope weight_memory;
             if(nint) {
@@ -1042,6 +1049,8 @@ BiasWeight Loader::affine(const std::string& weight_name,
 
 std::shared_ptr<const ::tyloi::Tensor> Loader::norm(const std::string& name, std::int64_t width) const {
     auto value = tensor(name);
+    std::optional<MfqCudaGuard> guard;
+    if (value->device().is_cuda()) guard.emplace(placement.device);
     auto weight = static_cast<const DenseTensor&>(*value).to(::tyloi::kFloat32).contiguous();
     if (weight.dim() != 1 || weight.size(0) != width) {
         throw std::runtime_error("vision RMSNorm width mismatch: " + name);
