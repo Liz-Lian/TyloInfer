@@ -601,11 +601,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
                 check_nemotron_h_vision ||
                 !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile),
-            [&](auto& runtime, auto t0, auto t1) -> int {
-        auto& model = *runtime.model;
-        auto& state = runtime.state();
-        auto& executor = runtime.executor;
-        auto& runtime_components = runtime.components;
+            [&](auto& owner, auto& owned_state, auto& executor, auto& parts, auto t0, auto t1, auto&) -> int {
+        auto& model = *owner;
+        auto& state = *owned_state;
         using Model = std::remove_cvref_t<decltype(model)>;
         if (check_continuous_batching) {
             if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model> ||
@@ -625,8 +623,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
                 const auto* variants=mfq::cuda::env_lookup("TYLOINFER_MTP_GENERATION_VARIANTS");
                 if(profile && variants && variants[0]=='1') {
-                    TYLOINFER_RUNTIME_CHECK(runtime_components.mtp,"MTP variants require a loaded predictor");
-                    return run_qwen4_mtp_generation_variants(model,*runtime_components.mtp,
+                    auto* predictor = tyloi::cuda::component_predictor(parts);
+                    TYLOINFER_RUNTIME_CHECK(predictor,"MTP variants require a loaded predictor");
+                    return run_qwen4_mtp_generation_variants(model,*predictor,
                         ids_file.empty()?parse_ids(ids_arg):load_ids_file(ids_file));
                 }
             }
@@ -653,9 +652,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         if (check_nemotron_h_vision) {
             if constexpr (std::is_same_v<Model, mfq::cuda::NemotronHCausalLm>) {
-                TYLOINFER_RUNTIME_CHECK(runtime_components.radio_vision.has_value(),
+                TYLOINFER_RUNTIME_CHECK(parts.radio_vision.has_value(),
                     "--check-nemotron-h-vision requires a model containing RADIO vision weights");
-                return run_nemotron_h_vision_check(model, *runtime_components.radio_vision);
+                return run_nemotron_h_vision_check(model, *parts.radio_vision);
             }
             throw std::runtime_error(
                 "--check-nemotron-h-vision requires a Nemotron-H causal LM");
@@ -663,7 +662,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (check_nemotron_h_mtp) {
             if constexpr (std::is_same_v<Model, mfq::cuda::NemotronHCausalLm>) {
                 auto* predictor = dynamic_cast<mfq::cuda::nemotron_h::NemotronHMtp*>(
-                    runtime_components.mtp.get());
+                    tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--check-nemotron-h-mtp requires a model containing MTP weights");
                 return run_nemotron_h_mtp_check(model, *predictor);
@@ -679,7 +678,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>,
                     mfq::cuda::qwen4_exp::Predictor,
                     mfq::cuda::glm5_next::Glm5NextMtp>;
-                auto* predictor=dynamic_cast<Predictor*>(runtime_components.mtp.get());
+                auto* predictor=dynamic_cast<Predictor*>(tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "Flash-Next MTP diagnostic requires a loaded predictor component");
                 return run_flash_next_mtp_check(model,*predictor);
@@ -690,7 +689,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (check_qwen35_mtp) {
             if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
                 auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
-                    runtime_components.mtp.get());
+                    tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--check-qwen35-mtp requires a supported model containing MTP weights");
                 return run_qwen35_mtp_check(
@@ -702,7 +701,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (!bench_qwen35_mtp.empty()) {
             if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
                 auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
-                    runtime_components.mtp.get());
+                    tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--bench-qwen35-mtp requires a supported model containing MTP weights");
                 return run_qwen35_mtp_bench(

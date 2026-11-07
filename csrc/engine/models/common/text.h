@@ -4,6 +4,9 @@
 #include "engine/load.h"
 #include "engine/drain.h"
 #include "engine/models/common/components.h"
+#include "engine/models/qwen4_exp/components.h"
+#include "engine/models/qwen4_exp/ops.h"
+#include "engine/models/nemotron_h/components.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/common/causal_metadata.h"
@@ -55,7 +58,7 @@ std::unique_ptr<engine::Batch> make_batch(
     throw std::invalid_argument("continuous batching is unavailable for this model");
 }
 
-template <class M, class S = M, class P = RuntimeComponents<M>>
+template <class M, class S, class P>
 struct Text {
     using Model = M;
     using State = S;
@@ -195,7 +198,7 @@ struct Text {
 #ifdef TYLOINFER_NATIVE_CUDA
         if(::tyloi::weights::detail::cache(weights).moe) {
             auto expert_loan=kv?kv->expert_loan():nullptr;
-            if(!expert_loan && (components.mtp || moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe))) {
+            if(!expert_loan && (component_predictor(components) || moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe))) {
                 expert_loan=std::make_shared<KvExpertLoan>();
                 set_moe_kv_expert_loan(::tyloi::weights::detail::cache(weights).moe,expert_loan);
             }
@@ -277,7 +280,7 @@ struct Text {
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
             return batching && !request.input.media && request.input.cache_plan.session_id.empty() &&
                 !(request.input.sampling.enable_mtp && components.mtp);
-        return batching && batch_compatible(request, cache.persistent_prefix_enabled(), bool(components.mtp));
+        return batching && batch_compatible(request, cache.persistent_prefix_enabled(), mtp_available());
     }
     void clear_bindings() noexcept {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
@@ -299,25 +302,23 @@ struct Text {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             qwen4_release_decode_graphs(language,components.mtp.get());
         if(batching)batching->release_idle_buffers();
-        if(components.mtp)components.mtp->reset(1);
+        if(auto* mtp=component_predictor(components))mtp->reset(1);
         state.reset(1);
         return change.apply();
     }
     bool exclusive() const { return duplex_active; }
-    bool mtp_available() const { return bool(components.mtp); }
+    bool mtp_available() const { return component_predictor(components) != nullptr; }
     void execute(const std::vector<RequestId>& eligible) {
         if (batching) batching->step(eligible);
     }
     using Prepared = PreparedPrompt;
     tyloi::StepSequence<Prepared> prepare(InferenceRequest& input, State& state) {
-#ifdef TYLOINFER_NATIVE_CUDA
-        if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language).prepare(
-                                   input.prompt, *input.vision, state); }) {
-            const tyloi::models::CausalModel& causal = language;
-            return causal.prepare(input.prompt, *input.vision, state);
-        } else
-#endif
-        return components.prepare(language, images,
+        if constexpr (std::is_same_v<Parts, std::unique_ptr<tyloi::cuda::minicpmo45::Components>>) {
+            if (!components) throw std::invalid_argument("model has no multimodal component");
+            return components->prepare(input.prompt, *input.vision);
+        } else if constexpr (std::is_same_v<Model, qwen4_exp::Model> ||
+                             std::is_same_v<Model, nemotron_h::Model>) {
+            return components.prepare(language, images,
 #ifndef TYLOINFER_NATIVE_CUDA
             execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)),
             execution->executor().collectives(),
@@ -327,6 +328,14 @@ struct Text {
             executor.get(),
 #endif
             input.prompt, *input.vision);
+        }
+#ifdef TYLOINFER_NATIVE_CUDA
+        else if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language); }) {
+            const tyloi::models::CausalModel& causal = language;
+            return causal.prepare(input.prompt, *input.vision, state);
+        }
+#endif
+        else throw std::invalid_argument("model has no multimodal component");
     }
     auto advance_preparation(tyloi::StepSequence<Prepared>& preparation) {
         PrefillCudaTimer timer;
@@ -354,7 +363,7 @@ struct Text {
             },
             info, source.get(), graph, cache, config, input, output,
             mtp_state,
-            batched ? nullptr : components.mtp.get(), std::move(prepared),
+            batched ? nullptr : component_predictor(components), std::move(prepared),
             batched ? batching.get() : nullptr, id, decode_ready);
     }
     Generation generate(const RequestId& id, InferenceRequest& input, InferenceOutput& output, bool batched) {
@@ -373,20 +382,18 @@ struct Text {
         if constexpr (std::is_same_v<T, GetMetrics>) {
             const auto& model = std::as_const(language);
             const auto& parts = std::as_const(components);
-            const auto component_metrics = [&] {
-                if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model); })
-                    return static_cast<const tyloi::models::CausalModel&>(model).metrics();
-                else
-                    return parts.metrics();
-            }();
+            const auto component_values = tyloi::cuda::component_metrics(model, parts);
             Metrics profile_metrics;
             if constexpr (requires { parts.profile_metrics(model); })
                 profile_metrics = parts.profile_metrics(model);
             std::optional<Metrics> memory;
             if constexpr (requires { parts.memory_metrics(model); })
                 memory = parts.memory_metrics(model);
-            const bool streamed_kv = parts.streamed_kv();
-            const auto* mtp = parts.mtp.get();
+            const bool streamed_kv = [] {
+                if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
+                else return false;
+            }();
+            const auto* mtp = component_predictor(parts);
             const auto batch_metrics = batching ? batching->metrics() : Metrics{};
             const auto kv_metrics = kv ? kv->metrics() : Metrics{};
             const auto offload_metrics = offload ? std::optional<Metrics>{offload->metrics()} : std::nullopt;
@@ -395,7 +402,7 @@ struct Text {
                 tyloi::engine::mtp::append_generation_metrics(predictor_metrics, mtp_state.stats);
                 predictor_metrics.emplace_back("mtp_predictor_graph_replays", double(mtp->graph_replay_count()));
             }
-            return tyloi::engine::resource_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,
+            return tyloi::engine::resource_metrics(component_values,profile_metrics,std::move(memory),streamed_kv,
                 graph_draft_depth,batch_metrics,kv_metrics,offload_metrics,predictor_metrics,source.get(),
                 *weight_memory,weights,cache,*budget,
                 execution->executor().memory(cuda_devices(execution->config)),
@@ -403,12 +410,24 @@ struct Text {
                 execution->config.layer_placement.devices.size() <= 1 &&
                     !execution->config.tensor_parallel.enabled() && !execution->config.expert_parallel.enabled());
         } else {
-            auto result = components.control(value);
-            if constexpr (std::is_same_v<T, MfqDuplexSessionParams>)
-                duplex_active = true;
-            else if constexpr (!std::is_same_v<T, MfqDuplexStepInput>)
-                duplex_active = false;
-            return result;
+            if constexpr (std::is_same_v<Parts, std::unique_ptr<tyloi::cuda::minicpmo45::Components>>) {
+                if (!components) throw std::invalid_argument("model has no duplex component");
+                ControlResult result;
+                if constexpr (std::is_same_v<T, MfqDuplexSessionParams>) {
+                    components->start(value);
+                    result = std::monostate{};
+                } else if constexpr (std::is_same_v<T, MfqDuplexStepInput>) {
+                    result = components->step(value);
+                } else {
+                    components->stop();
+                    result = std::monostate{};
+                }
+                if constexpr (std::is_same_v<T, MfqDuplexSessionParams>) duplex_active = true;
+                else if constexpr (!std::is_same_v<T, MfqDuplexStepInput>) duplex_active = false;
+                return result;
+            } else {
+                throw std::invalid_argument("model has no duplex component");
+            }
         }
     }
 };

@@ -55,17 +55,17 @@
 namespace tyloi::cuda::engine_detail {
 
 using State = std::variant<
-    std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State>>,
-    std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State>>,
+    std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State, std::unique_ptr<minicpmo45::Components>>>,
+    std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>,
 #ifndef TYLOINFER_NATIVE_CUDA
-    std::unique_ptr<Text<gemma4::Model, gemma4::State>>,
+    std::unique_ptr<Text<gemma4::Model, gemma4::State, std::monostate>>,
 #endif
-    std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State>>,
-    std::unique_ptr<Text<glm5_next::Model, glm5_next::State>>,
-    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State>>,
-    std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State>>,
-    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State>>,
-    std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State>>>;
+    std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
+    std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
+    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
+    std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State, std::monostate>>,
+    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>,
+    std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, nemotron_h::Components>>>;
 
 } // namespace tyloi::cuda::engine_detail
 

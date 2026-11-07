@@ -170,7 +170,11 @@ class EngineInstance final : public Engine {
                         using Model = typename std::remove_reference_t<decltype(model)>::element_type;
                         using ModelState = typename std::remove_reference_t<decltype(model_state)>::element_type;
                         using Parts = std::remove_cvref_t<decltype(components)>;
-                        if (offload && !components.streamed_kv())
+                        const bool streamed_kv = [] {
+                            if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
+                            else return false;
+                        }();
+                        if (offload && !streamed_kv)
                             throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                         return std::make_unique<Text<Model, ModelState, Parts>>(
                             *execution, weights, kv, offload, std::move(model),

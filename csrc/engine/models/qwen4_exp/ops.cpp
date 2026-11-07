@@ -3002,7 +3002,6 @@ void Model::load_config(std::string_view payload) {
     metadata.layer_types = config.layer_types;
 }
 
-// read/load live in common/components.cpp next to ModelLoader.
 
 } // namespace qwen4_exp
 } // namespace tyloi::cuda

@@ -31,5 +31,9 @@ class Components {
     struct State;
     std::unique_ptr<State> state_;
 };
+
+std::unique_ptr<Components> load_components(text::Model& model, text::State& state,
+    Executor& executor, const tyloi::weights::Loader& weights,
+    bool load_optional_components, CudaExecutionContext& execution);
 } // namespace minicpmo45
 } // namespace tyloi::cuda

@@ -187,10 +187,9 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 kl_score_count, kl_reference_contract);
         }
         return mfq::cuda::with_model<>(execution, *this, false,
-            [&](auto& runtime, auto, auto) -> int {
-        auto& model = *runtime.model;
-        auto& state = runtime.state();
-        auto& executor = runtime.executor;
+            [&](auto& owner, auto& owned_state, auto& executor, auto&, auto, auto, auto&) -> int {
+        auto& model = *owner;
+        auto& state = *owned_state;
         if (!kl_base.empty()) {
             if (!kl_mmq_sequence.empty()) {
                 if (!kl_chunks_sequence.empty()) {

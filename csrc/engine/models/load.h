@@ -4,6 +4,11 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/common/components.h"
+#include "engine/models/qwen4_exp/components.h"
+#include "engine/models/qwen4_exp/ops.h"
+#include "engine/models/glm5_next/components.h"
+#include "engine/models/deepseek_v41/components.h"
+#include "engine/models/nemotron_h/components.h"
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
@@ -37,6 +42,7 @@
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace tyloi::cuda {
 
@@ -48,7 +54,7 @@ inline constexpr auto with_model = []<typename F>(
         F&& run) -> auto {
     CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
     auto source = tyloi::open_model_source(options.model_path);
-    auto finish = [&](auto& owner, auto& state, auto& executor, auto& runtime_components, auto started) {
+    auto finish = [&](auto& owner, auto& state, auto& executor, auto& components, auto started) {
         auto& model = *owner;
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
@@ -60,16 +66,16 @@ inline constexpr auto with_model = []<typename F>(
             const auto& moe = tyloi::weights::detail::cache(execution.weights).moe;
             if (moe_expert_cache_has_sources(moe) &&
                     !moe_expert_cache_finalized(moe)) {
-                graph_reserve=qwen4_mtp_graph_reserve(model,runtime_components.mtp.get());
+                graph_reserve=qwen4_mtp_graph_reserve(model,components.mtp.get());
                 if(graph_reserve)std::cerr<<"runtime_mtp_flexible_budget maximum_depth="
-                    <<runtime_components.mtp->maximum_draft_depth()<<" bytes="<<graph_reserve
+                    <<components.mtp->maximum_draft_depth()<<" bytes="<<graph_reserve
                     <<" initial_depth=3 lend_unused_to_experts=1\n";
             }
         }
         const auto loaded_at = tyloi::cuda::finish_load(
             execution.kv.get(), execution.weights,
             graph_reserve, execution.config.report_cuda_memory);
-        return run(owner, state, executor, runtime_components, started, loaded_at, source);
+        return run(owner, state, executor, components, started, loaded_at, source);
     };
     auto load_tts = [&] {
         auto started = std::chrono::steady_clock::now();
@@ -100,7 +106,7 @@ inline constexpr auto with_model = []<typename F>(
         if (::tyloi::cuda::options::kv_vram_preallocated()) state.preallocate();
         std::unique_ptr<minicpmo45::State> owned_state;
         auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-        auto components = load_runtime_components(model, weights, load_optional_components);
+        std::monostate components;
         owned_state = std::make_unique<minicpmo45::State>(std::move(state));
         return finish(owner, owned_state, executor, components, started);
     };
@@ -155,7 +161,7 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<minicpmo45::text::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = load_runtime_components(*owner, *state, *executor, weights,
+            auto components = minicpmo45::load_components(*owner, *state, *executor, weights,
                 load_optional_components, execution);
             return finish(owner, state, executor, components, started);
         }
@@ -180,7 +186,10 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<gemma4::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = load_runtime_components(*owner, weights, load_optional_components);
+            if (load_optional_components && (owner->plan.vision != CudaVisionAdapter::none ||
+                    owner->plan.predictor != CudaPredictorAdapter::none))
+                throw std::runtime_error("CUDA component adapter is unsupported for this model");
+            std::monostate components;
             return finish(owner, state, executor, components, started);
 #endif
         }
@@ -200,7 +209,10 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<glm_dsa::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = load_runtime_components(*owner, weights, load_optional_components);
+            if (load_optional_components && (owner->plan.vision != CudaVisionAdapter::none ||
+                    owner->plan.predictor != CudaPredictorAdapter::none))
+                throw std::runtime_error("CUDA component adapter is unsupported for this model");
+            std::monostate components;
             return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::glm5_next: {
@@ -218,7 +230,7 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<glm5_next::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = load_runtime_components(*owner, weights, load_optional_components,
+            auto components = glm5_next::load_components(*owner, weights, load_optional_components,
                 execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().collectives(), execution.executor().profiler());
             return finish(owner, state, executor, components, started);
         }
@@ -232,11 +244,11 @@ inline constexpr auto with_model = []<typename F>(
             auto weights = execution.weights.loader(*owner->source, execution.config.weights,
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
-            auto runtime_components = load_runtime_components(*owner, weights, load_optional_components);
+            auto components = qwen4_exp::load_components(*owner, weights, load_optional_components);
             auto state = std::unique_ptr<qwen4_exp::State>(static_cast<qwen4_exp::State*>(
                 owner->make_state().release()));
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            return finish(owner, state, executor, runtime_components, started);
+            return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::deepseek_v4: {
             auto started = std::chrono::steady_clock::now();
@@ -260,7 +272,10 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<deepseek_v4::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = load_runtime_components(*owner, weights, load_optional_components);
+            if (load_optional_components && (owner->plan.vision != CudaVisionAdapter::none ||
+                    owner->plan.predictor != CudaPredictorAdapter::none))
+                throw std::runtime_error("CUDA component adapter is unsupported for this model");
+            std::monostate components;
             return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::deepseek_v41: {
@@ -272,11 +287,11 @@ inline constexpr auto with_model = []<typename F>(
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
             deepseek_v41::load(*owner, execution, options.context_size, false, true, false);
-            auto runtime_components = load_runtime_components(*owner, weights, load_optional_components);
+            auto components = deepseek_v41::load_components(*owner, weights, load_optional_components);
             auto state = std::unique_ptr<deepseek_v41::State>(static_cast<deepseek_v41::State*>(
                 owner->make_state().release()));
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            return finish(owner, state, executor, runtime_components, started);
+            return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::nemotron_h: {
             auto started = std::chrono::steady_clock::now();
@@ -294,7 +309,7 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<nemotron_h::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = load_runtime_components(*owner, weights, load_optional_components, execution);
+            auto components = nemotron_h::load_components(*owner, weights, load_optional_components, execution);
             return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::unsupported:

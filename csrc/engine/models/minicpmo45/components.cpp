@@ -34,6 +34,16 @@ MiniCPMO45Runtime MiniCPMO45Runtime::load(
 
 namespace tyloi::cuda::minicpmo45 {
 
+std::unique_ptr<Components> load_components(text::Model& model, text::State& state,
+        Executor& executor, const tyloi::weights::Loader& weights,
+        bool load_optional_components, CudaExecutionContext& execution) {
+    if (!load_optional_components || model.plan.vision == CudaVisionAdapter::none)
+        return nullptr;
+    if (model.plan.vision != CudaVisionAdapter::minicpmo45)
+        throw std::runtime_error("unsupported MiniCPM-o CUDA vision adapter");
+    return std::make_unique<Components>(model, state, executor, weights, execution);
+}
+
 struct Components::State {
     MiniCPMO45Runtime runtime;
     std::optional<MiniCPMO45DuplexSession> duplex_session;
