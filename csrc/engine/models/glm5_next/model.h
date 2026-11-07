@@ -18,9 +18,15 @@ using attention_ops::rms_norm;
 using attention_ops::SequenceCache;
 using attention_ops::select_pooled_blocks;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+using Parameter = std::shared_ptr<const ::tyloi::Tensor>;
+#else
+using Parameter = DenseTensor;
+#endif
+
 struct KdaWeights {
     Linear query, key, value, beta, gate_a, gate_b, output;
-    DenseTensor conv, forget_a, forget_b, dt_bias, a_log, output_norm;
+    Parameter conv, forget_a, forget_b, dt_bias, a_log, output_norm;
 };
 
 class Kda {
@@ -72,7 +78,12 @@ class Kda {
             },
             [&](DenseTensor projected) {
                 auto joined = ::tyloi::cuda::cat({previous, projected}, 1).contiguous();
-                auto convolved = ssm_conv_silu_cuda(joined, w_.conv.to(::tyloi::kFloat32).contiguous(),
+                auto convolved = ssm_conv_silu_cuda(joined,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                    dynamic_cast<const DenseTensor&>(*w_.conv).to(::tyloi::kFloat32).contiguous(),
+#else
+                                                    w_.conv.to(::tyloi::kFloat32).contiguous(),
+#endif
                                                     ::tyloi::cuda::empty({0}, options), t);
                 auto next_conv = joined.narrow(1, t, kernel_ - 1).contiguous();
                 const auto heads = [&](int64_t begin) {
@@ -89,8 +100,16 @@ class Kda {
             },
             [&] {
                 auto forget =
-                    mfq_glm5_next::kda_forget_gate(hidden, w_.forget_a, w_.forget_b, w_.dt_bias,
-                                                   w_.a_log, heads_, width_, lower_bound_)
+                    mfq_glm5_next::kda_forget_gate(hidden,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                   dynamic_cast<const DenseTensor&>(*w_.forget_a),
+                                                   dynamic_cast<const DenseTensor&>(*w_.forget_b),
+                                                   dynamic_cast<const DenseTensor&>(*w_.dt_bias),
+                                                   dynamic_cast<const DenseTensor&>(*w_.a_log),
+#else
+                                                   w_.forget_a, w_.forget_b, w_.dt_bias, w_.a_log,
+#endif
+                                                   heads_, width_, lower_bound_)
                         .permute({0, 2, 1, 3})
                         .contiguous();
                 auto beta = ::tyloi::cuda::sigmoid(project.run(*w_.beta, hidden).to(::tyloi::kFloat32))
@@ -135,7 +154,13 @@ class Kda {
                 auto gate = project.run(*w_.gate_b, project.run(*w_.gate_a, hidden))
                                 .reshape({b, t, heads_, width_})
                                 .permute({0, 2, 1, 3});
-                return rms_norm(attended, w_.output_norm, eps_) *
+                return rms_norm(attended,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                *w_.output_norm,
+#else
+                                w_.output_norm,
+#endif
+                                eps_) *
                        ::tyloi::cuda::sigmoid(gate.to(::tyloi::kFloat32));
             },
             [&](DenseTensor normalized) {
@@ -160,7 +185,7 @@ struct MlaWeights {
     Linear query_a, key_value_a, query_b, output, index_query, index_key, index_score;
     // Head-wise absorbed projections accept/return [B,T,heads,width].
     attention_ops::Transform embed_query, unembed_output;
-    DenseTensor query_norm, latent_norm, index_norm, index_bias, index_gate, index_position;
+    Parameter query_norm, latent_norm, index_norm, index_bias, index_gate, index_position;
 };
 
 struct MlaConfig {
@@ -191,13 +216,34 @@ class SparseMla {
         return tyloi::models::glm5_next::sparse_mla(
             offset + t, c_.budget, use_cache,
             [&] {
-                auto qr = rms_norm(project.run(*w_.query_a, hidden), w_.query_norm, c_.eps);
+                auto qr = rms_norm(project.run(*w_.query_a, hidden),
+#ifdef TYLOINFER_NATIVE_CUDA
+                                   *w_.query_norm,
+#else
+                                   w_.query_norm,
+#endif
+                                   c_.eps);
                 auto query = project.run(*w_.query_b, qr).reshape({b, t, c_.heads, c_.nope});
                 auto latent = rms_norm(project.run(*w_.key_value_a, hidden).narrow(-1, 0, c_.latent),
+#ifdef TYLOINFER_NATIVE_CUDA
+                                       *w_.latent_norm, c_.eps);
+#else
                                        w_.latent_norm, c_.eps);
+#endif
                 // Metal's indexer LayerNorm explicitly casts the source/output to F16.
                 auto ik = project.run(*w_.index_key, hidden).to(::tyloi::kFloat16).to(::tyloi::kFloat32);
                 auto centered = ik - ik.mean(-1, true);
+#ifdef TYLOINFER_NATIVE_CUDA
+                ik = (centered * ::tyloi::cuda::rsqrt((centered * centered).mean(-1, true) + 1e-6) *
+                          dynamic_cast<const DenseTensor&>(*w_.index_norm).to(::tyloi::kFloat32) +
+                      dynamic_cast<const DenseTensor&>(*w_.index_bias).to(::tyloi::kFloat32))
+                         .to(::tyloi::kFloat16);
+                auto gate_dtype = hidden.scalar_type() == w_.index_gate->scalar_type()
+                                      ? hidden.scalar_type()
+                                      : ::tyloi::kFloat32;
+                auto gates = ::tyloi::cuda::matmul(hidden.to(gate_dtype),
+                    dynamic_cast<const DenseTensor&>(*w_.index_gate).to(gate_dtype).transpose(-1, -2));
+#else
                 ik = (centered * ::tyloi::cuda::rsqrt((centered * centered).mean(-1, true) + 1e-6) *
                           w_.index_norm.to(::tyloi::kFloat32) +
                       w_.index_bias.to(::tyloi::kFloat32))
@@ -207,6 +253,7 @@ class SparseMla {
                                       : ::tyloi::kFloat32;
                 auto gates = ::tyloi::cuda::matmul(hidden.to(gate_dtype),
                                         w_.index_gate.to(gate_dtype).transpose(-1, -2));
+#endif
                 auto packed = ::tyloi::cuda::cat({ik.to(gates.scalar_type()), gates}, -1);
                 return Projection{qr, query, latent, packed};
             },
@@ -223,7 +270,12 @@ class SparseMla {
             [&](const Projection &p) {
                 return mfq_glm5_next::kpool_states(
                     p.index.narrow(-1, 0, c_.index_width),
-                    p.index.narrow(-1, c_.index_width, c_.index_width), w_.index_position, c_.pool);
+                    p.index.narrow(-1, c_.index_width, c_.index_width),
+#ifdef TYLOINFER_NATIVE_CUDA
+                    dynamic_cast<const DenseTensor&>(*w_.index_position), c_.pool);
+#else
+                    w_.index_position, c_.pool);
+#endif
             },
             [&](const Projection &p) {
                 return project.run(*w_.index_query, p.rank)
@@ -258,16 +310,22 @@ class SparseMla {
 };
 
 struct Mhc {
-    DenseTensor function, base, scale;
+    Parameter function, base, scale;
     std::vector<DenseTensor> pre(const DenseTensor& x, const tyloi::models::glm5_next::Config& c) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return mfq_glm5_next::mhc_pre(x, dynamic_cast<const DenseTensor&>(*function),
+            dynamic_cast<const DenseTensor&>(*base), dynamic_cast<const DenseTensor&>(*scale),
+            c.sinkhorn, c.hc_eps, c.eps);
+#else
         return mfq_glm5_next::mhc_pre(x, function, base, scale, c.sinkhorn, c.hc_eps, c.eps);
+#endif
     }
 };
 
 struct Layer {
     tyloi::models::glm5_next::Config config;
     Mhc attention_hc, ffn_hc;
-    DenseTensor attention_norm, ffn_norm;
+    Parameter attention_norm, ffn_norm;
     attention_ops::Transform ffn;
     std::unique_ptr<Kda> kda;
     std::unique_ptr<SparseMla> mla;
@@ -281,7 +339,7 @@ struct Model {
     tyloi::models::glm5_next::Config config;
     tyloi::models::CausalLmMetadata metadata;
     std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
-    DenseTensor output_norm;
+    Parameter output_norm;
     std::vector<Layer> layers;
 };
 } // namespace tyloi::cuda::glm5_next

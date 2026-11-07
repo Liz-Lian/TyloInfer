@@ -34,7 +34,11 @@ struct Mtp final : tyloi::models::Mtp {
     std::shared_ptr<const ::tyloi::Tensor> embedding;
     int primary = 0;
     std::shared_ptr<const ::tyloi::Tensor> fusion;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> embedding_norm, hidden_norm, output_norm;
+#else
     DenseTensor embedding_norm, hidden_norm, output_norm;
+#endif
     std::vector<Layer> layers;
     std::vector<LayerState> states;
     std::vector<int64_t> lengths;
@@ -64,16 +68,31 @@ struct Mtp final : tyloi::models::Mtp {
         result.executor = execution.executor().fork(model_parallel_primary_device(execution.config));
         result.embedding = std::move(embedding);
         result.primary = weights.placement.device;
+#ifdef TYLOINFER_NATIVE_CUDA
+        result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
+        result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
+        result.output_norm = weights.tensor("predictor.output_norm.weight");
+#else
         result.embedding_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.embedding_norm.weight"));
         result.hidden_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.hidden_norm.weight"));
         result.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.output_norm.weight"));
+#endif
         result.fusion = weights.weight("predictor.fusion.weight");
+#ifdef TYLOINFER_NATIVE_CUDA
+        TYLOINFER_RUNTIME_CHECK(result.fusion->size(1) == 2 * main.hidden_size &&
+                              result.fusion->size(0) == main.hidden_size &&
+                              result.embedding_norm->numel() == main.hidden_size &&
+                              result.hidden_norm->numel() == main.hidden_size &&
+                              result.output_norm->numel() == main.hidden_size,
+                          "Nemotron-H MTP fusion/norm dimensions disagree with the backbone");
+#else
         TYLOINFER_RUNTIME_CHECK(result.fusion->size(1) == 2 * main.hidden_size &&
                               result.fusion->size(0) == main.hidden_size &&
                               result.embedding_norm.numel() == main.hidden_size &&
                               result.hidden_norm.numel() == main.hidden_size &&
                               result.output_norm.numel() == main.hidden_size,
                           "Nemotron-H MTP fusion/norm dimensions disagree with the backbone");
+#endif
         for (std::size_t index = 0; index < main.mtp_mixers.size(); ++index) {
             const auto type =
                 std::string(tyloi::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
@@ -134,7 +153,11 @@ struct Mtp final : tyloi::models::Mtp {
                                                              : model.output_norm;
                 return qwen_rms_norm(x.reshape({-1, model.config.hidden_size})
                                          .to(::tyloi::kFloat32),
+#ifdef TYLOINFER_NATIVE_CUDA
+                                     *weight, model.config.rms_norm_eps, 0.0)
+#else
                                      weight, model.config.rms_norm_eps, 0.0)
+#endif
                     .reshape(x.sizes());
             }
             DenseTensor positions(DenseTensor explicit_positions, int64_t start, int64_t tokens) {

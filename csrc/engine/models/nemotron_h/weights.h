@@ -29,8 +29,21 @@ void load_linear_attention(Block& block, Loader& ops, const Config& config, int 
     block.conv_kernel = config.conv_kernel;
     block.time_step_limit_lo = config.time_step_limit_lo;
     block.time_step_limit_hi = config.time_step_limit_hi;
+#ifdef TYLOINFER_NATIVE_CUDA
+    block.mixer_norm = ops.weights.tensor(layer_prefix + "attention.norm.weight");
+#else
     block.mixer_norm = ops.dense(layer_prefix + "attention.norm.weight");
+#endif
     block.in_proj = ops.linear(linear + "in_projection.weight");
+#ifdef TYLOINFER_NATIVE_CUDA
+    block.conv_weight = ops.weights.tensor(linear + "conv.weight");
+    if (ops.has(linear + "conv.bias"))
+        block.conv_bias = ops.weights.tensor(linear + "conv.bias");
+    block.a_log = ops.weights.tensor(linear + "a");
+    block.d = ops.weights.tensor(linear + "d");
+    block.dt_bias = ops.weights.tensor(linear + "dt_bias");
+    block.scan_norm = ops.weights.tensor(linear + "norm.weight");
+#else
     block.conv_weight = ops.dense(linear + "conv.weight");
     if (ops.has(linear + "conv.bias"))
         block.conv_bias = ops.dense(linear + "conv.bias");
@@ -38,6 +51,7 @@ void load_linear_attention(Block& block, Loader& ops, const Config& config, int 
     block.d = ops.dense(linear + "d");
     block.dt_bias = ops.dense(linear + "dt_bias");
     block.scan_norm = ops.dense(linear + "norm.weight");
+#endif
     block.out_proj = ops.linear(linear + "output.weight");
     const auto shape = [&](const auto& value) { return ops.shape(value); };
     const std::vector<int64_t> expected_convolution{config.mamba_conv_width(), 1,
@@ -79,7 +93,11 @@ void load_moe(Block& block, Loader& ops, const Config& config, int layer,
     const auto mlp = layer_prefix + "mlp.";
     block.layer = layer;
     block.rms_norm_eps = config.rms_norm_eps;
+#ifdef TYLOINFER_NATIVE_CUDA
+    block.ffn_norm = ops.weights.tensor(layer_prefix + "attention.norm.weight");
+#else
     block.ffn_norm = ops.dense(layer_prefix + "attention.norm.weight");
+#endif
     auto& ffn = block.ffn;
     ffn = models::load_moe_weights<typename Loader::Ffn>(ops, mlp, layer, true, true, true);
     ffn.moe_top_k = static_cast<int>(config.num_experts_per_tok);
@@ -124,7 +142,11 @@ void load_dense_mlp(Block& block, Loader& ops, const Config& config, int layer,
     const auto mlp = layer_prefix + "mlp.";
     block.layer = layer;
     block.rms_norm_eps = config.rms_norm_eps;
+#ifdef TYLOINFER_NATIVE_CUDA
+    block.ffn_norm = ops.weights.tensor(layer_prefix + "attention.norm.weight");
+#else
     block.ffn_norm = ops.dense(layer_prefix + "attention.norm.weight");
+#endif
     auto& ffn = block.ffn;
     ffn.down = ops.linear(mlp + "down.weight");
     ffn.gate_up = ops.gate_up({mlp + "up.weight"}, ffn.down);

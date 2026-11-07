@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -46,7 +48,7 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                             DenseTensor x, const Executor::Mode& mode) {
     const auto& [layer, mamba_heads, mamba_head_dim, ssm_state_size, mamba_groups, conv_kernel,
                  rms_norm_eps, time_step_limit_lo, time_step_limit_hi, mixer_norm, in_proj,
-                 conv_weight, conv_bias, a_log, d, dt_bias, scan_norm, out_proj] = weights;
+                 conv_weight_value, conv_bias_value, a_log_value, d_value, dt_bias_value, scan_norm_value, out_proj] = weights;
     auto& [mixer, speculative_xbc, speculative_dt] = activity;
     auto& profiler = executor.profiler();
     auto& state = mixer.view();
@@ -73,12 +75,23 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                           state.recurrent.size(2) == head_dim &&
                           state.recurrent.size(3) == state_width,
                       "mamba state geometry changed");
-    const auto bias = conv_bias.defined()
-                          ? conv_bias
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::optional<DenseTensor> empty_bias;
+    const auto& bias = conv_bias_value && conv_bias_value->defined()
+                          ? dynamic_cast<const DenseTensor&>(*conv_bias_value)
+                          : empty_bias.emplace(::tyloi::cuda::empty({0}, f32));
+#else
+    const auto bias = conv_bias_value.defined()
+                          ? conv_bias_value
                           : ::tyloi::cuda::empty({0}, f32);
+#endif
     auto xn = profiler.measure("mamba.norm", [&] {
         return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
+#ifdef TYLOINFER_NATIVE_CUDA
+                             *mixer_norm, rms_norm_eps, 0.0)
+#else
                              mixer_norm, rms_norm_eps, 0.0)
+#endif
             .reshape({B, T, H});
     });
     auto mixed = tyloi::models::selective_state_attention<DenseTensor>(
@@ -101,6 +114,11 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                 [&](const std::array<DenseTensor, 3>& projected) {
                     const auto& xbc = projected[1];
                     auto convolved = profiler.measure("mamba.conv", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& conv_weight = dynamic_cast<const DenseTensor&>(*conv_weight_value);
+#else
+                        const auto& conv_weight = conv_weight_value;
+#endif
                         if (T == 1)
                             return ssm_conv_silu_decode_cuda(state.convolution, xbc, conv_weight,
                                                              bias);
@@ -121,6 +139,15 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                 },
                 [&](const std::array<DenseTensor, 3>& signals, const DenseTensor& dt) {
                     return profiler.measure("mamba.scan", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& dt_bias = dynamic_cast<const DenseTensor&>(*dt_bias_value);
+                        const auto& a_log = dynamic_cast<const DenseTensor&>(*a_log_value);
+                        const auto& d = dynamic_cast<const DenseTensor&>(*d_value);
+#else
+                        const auto& dt_bias = dt_bias_value;
+                        const auto& a_log = a_log_value;
+                        const auto& d = d_value;
+#endif
                         if (T == 1) {
                             auto y = selective_state_scan_decode_cuda(
                                 state.recurrent, signals[0].select(1, 0).contiguous(),
@@ -138,6 +165,11 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                 },
                 [&](DenseTensor scanned, DenseTensor gate) {
                     return profiler.measure("mamba.gated_norm", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& scan_norm = dynamic_cast<const DenseTensor&>(*scan_norm_value);
+#else
+                        const auto& scan_norm = scan_norm_value;
+#endif
                         return grouped_gated_rms_norm_cuda(
                                    scanned.reshape({B * T, inner}),
                                    gate.reshape({B * T, inner}), scan_norm,
@@ -171,7 +203,7 @@ static void clear_speculative(MambaState& activity) noexcept {
 static void replay_recurrent(const Mamba& weights, MambaState& activity, int64_t retained_tokens) {
     const auto& [layer, mamba_heads, mamba_head_dim, ssm_state_size, mamba_groups, conv_kernel,
                  rms_norm_eps, time_step_limit_lo, time_step_limit_hi, mixer_norm, in_proj,
-                 conv_weight, conv_bias, a_log, d, dt_bias, scan_norm, out_proj] = weights;
+                 conv_weight_value, conv_bias_value, a_log_value, d_value, dt_bias_value, scan_norm, out_proj] = weights;
     auto& [mixer, speculative_xbc, speculative_dt] = activity;
     TYLOINFER_RUNTIME_CHECK(retained_tokens > 0 &&
                           speculative_xbc.defined() && speculative_dt.defined() &&
@@ -185,13 +217,28 @@ static void replay_recurrent(const Mamba& weights, MambaState& activity, int64_t
     const int64_t state_width = ssm_state_size;
     const auto xbc = speculative_xbc.narrow(1, 0, retained_tokens).contiguous();
     const auto dt = speculative_dt.narrow(1, 0, retained_tokens).contiguous();
-    auto bias = conv_bias.defined() ? conv_bias
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::optional<DenseTensor> empty_bias;
+    const auto& bias = conv_bias_value && conv_bias_value->defined()
+                          ? dynamic_cast<const DenseTensor&>(*conv_bias_value)
+                          : empty_bias.emplace(::tyloi::cuda::empty(
+                                {0}, ::tyloi::TensorOptions()
+                                         .device(::tyloi::kCUDA)
+                                         .dtype(::tyloi::kFloat32)));
+#else
+    auto bias = conv_bias_value.defined() ? conv_bias_value
                                     : ::tyloi::cuda::empty(
                                           {0}, ::tyloi::TensorOptions()
                                                    .device(::tyloi::kCUDA)
                                                    .dtype(::tyloi::kFloat32));
+#endif
     auto conv_input = ::tyloi::cuda::cat({state.convolution, xbc}, 1);
     state.convolution.copy_(next_convolution_state(conv_input, conv_kernel));
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto& conv_weight = dynamic_cast<const DenseTensor&>(*conv_weight_value);
+#else
+    const auto& conv_weight = conv_weight_value;
+#endif
     auto convolved = ssm_conv_silu_cuda(conv_input, conv_weight, bias, retained_tokens);
     auto x = convolved.narrow(2, 0, inner)
                  .reshape({B, retained_tokens, mamba_heads, mamba_head_dim})
@@ -202,6 +249,15 @@ static void replay_recurrent(const Mamba& weights, MambaState& activity, int64_t
     auto c = convolved.narrow(2, inner + groups * state_width, groups * state_width)
                  .reshape({B, retained_tokens, groups, state_width})
                  .contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto& dt_bias = dynamic_cast<const DenseTensor&>(*dt_bias_value);
+    const auto& a_log = dynamic_cast<const DenseTensor&>(*a_log_value);
+    const auto& d = dynamic_cast<const DenseTensor&>(*d_value);
+#else
+    const auto& dt_bias = dt_bias_value;
+    const auto& a_log = a_log_value;
+    const auto& d = d_value;
+#endif
     auto scanned = selective_state_scan_prefill_cuda(x, dt, dt_bias, a_log, b, c, d,
                                                      state.recurrent, time_step_limit_lo,
                                                      time_step_limit_hi);
@@ -229,7 +285,11 @@ static DenseTensor moe_forward(const Moe& weights, Executor& executor, DenseTens
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     auto xn = executor.profiler().measure("moe.norm", [&] {
         return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
+#ifdef TYLOINFER_NATIVE_CUDA
+                             *ffn_norm, rms_norm_eps, 0.0)
+#else
                              ffn_norm, rms_norm_eps, 0.0)
+#endif
             .reshape({B, T, H});
     });
     auto mixed = executor.profiler().measure("moe.ffn", [&] {
@@ -489,6 +549,15 @@ struct LayerLoader : TransformerWeightLoader {
 };
 
 template <class MambaWeights> void convert_mamba_weights(MambaWeights& block) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    block.conv_weight = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*block.conv_weight).to(::tyloi::kFloat32).contiguous());
+    block.a_log = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*block.a_log).to(::tyloi::kFloat32).contiguous());
+    block.d = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*block.d).to(::tyloi::kFloat32).contiguous());
+    block.dt_bias = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*block.dt_bias).to(::tyloi::kFloat32).contiguous());
+    block.scan_norm = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*block.scan_norm).to(::tyloi::kFloat32).contiguous());
+    if (block.conv_bias && block.conv_bias->defined())
+        block.conv_bias = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*block.conv_bias).to(::tyloi::kFloat32).contiguous());
+#else
     block.conv_weight = block.conv_weight.to(::tyloi::kFloat32).contiguous();
     block.a_log = block.a_log.to(::tyloi::kFloat32).contiguous();
     block.d = block.d.to(::tyloi::kFloat32).contiguous();
@@ -496,6 +565,7 @@ template <class MambaWeights> void convert_mamba_weights(MambaWeights& block) {
     block.scan_norm = block.scan_norm.to(::tyloi::kFloat32).contiguous();
     if (block.conv_bias.defined())
         block.conv_bias = block.conv_bias.to(::tyloi::kFloat32).contiguous();
+#endif
 }
 
 void validate_components(const tyloi::ModelGraph& graph) {

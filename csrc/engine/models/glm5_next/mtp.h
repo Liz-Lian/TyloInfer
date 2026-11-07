@@ -13,14 +13,19 @@ class SparseMla;
 
 struct Mtp final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
+#ifdef TYLOINFER_NATIVE_CUDA
+    using Parameter = std::shared_ptr<const ::tyloi::Tensor>;
+#else
+    using Parameter = DenseTensor;
+#endif
     struct Layer {
-        DenseTensor attention_norm, ffn_norm;
+        Parameter attention_norm, ffn_norm;
         std::unique_ptr<SparseMla> attention;
         attention_ops::Transform ffn;
     };
 
     tyloi::models::glm5_next::Config config;
-    DenseTensor embedding_norm, hidden_norm, output_norm;
+    Parameter embedding_norm, hidden_norm, output_norm;
     Linear fusion;
     std::vector<Layer> layers;
     std::vector<MlaState> states;

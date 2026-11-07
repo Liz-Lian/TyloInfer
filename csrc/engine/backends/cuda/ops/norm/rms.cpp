@@ -106,16 +106,26 @@ tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
 #endif
 
 ::tyloi::DenseTensor qwen_rms_norm(::tyloi::DenseTensor x,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                         const ::tyloi::Tensor& weight_tensor, double eps,
+#else
                                          ::tyloi::DenseTensor weight, double eps,
+#endif
                                          double weight_offset) {
     if (!x.is_cuda()) {
         auto xf = x.contiguous().to(::tyloi::kFloat32);
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(weight_tensor);
+#endif
         auto wf = weight.contiguous().to(::tyloi::kFloat32);
         if (weight_offset != 0.0)
             wf = wf + weight_offset;
         auto inverse = ::tyloi::cuda::rsqrt(xf.square().mean(-1, true) + eps);
         return (xf * inverse * wf).contiguous();
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(weight_tensor);
+#endif
     return rms_norm_offset_cuda(x, weight, eps, weight_offset);
 }
 

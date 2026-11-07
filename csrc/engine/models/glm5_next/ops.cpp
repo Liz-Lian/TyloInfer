@@ -41,7 +41,7 @@ static Transform dense_ffn(Linear gate, Linear up, Linear down, double limit) {
 }
 
 static Transform glm_moe(std::vector<Linear> gate_up, Linear down,
-                      Linear router, Transform shared, DenseTensor bias, const Config &c) {
+                      Linear router, Transform shared, Parameter bias, const Config &c) {
     return [gate_up, down, router, shared, bias, c](const Projector& project,
                                                     const DenseTensor &x) {
         auto source = x.reshape({-1, c.hidden}).to(::tyloi::kFloat16);
@@ -50,7 +50,13 @@ static Transform glm_moe(std::vector<Linear> gate_up, Linear down,
             project.run(*router, source.to(::tyloi::kFloat32)).to(::tyloi::kFloat32).contiguous(),
             c.topk, routing.activation == tyloi::ops::RouterActivation::sigmoid,
             routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
-            routing.normalize, routing.delayed_softmax, bias, 1e-20, routing.scale);
+            routing.normalize, routing.delayed_softmax,
+#ifdef TYLOINFER_NATIVE_CUDA
+            dynamic_cast<const DenseTensor&>(*bias),
+#else
+            bias,
+#endif
+            1e-20, routing.scale);
         auto shared_output = shared(project, source);
         DenseTensor routed;
         {
@@ -83,10 +89,19 @@ struct LayerLoader : ::tyloi::weights::Loader {
     using KdaWeights = glm5_next::KdaWeights;
     using MlaWeights = glm5_next::MlaWeights;
 
-    static Mhc mhc(DenseTensor function, DenseTensor base, DenseTensor scale) {
+    static Mhc mhc(Parameter function, Parameter base, Parameter scale) {
         return {std::move(function), std::move(base), std::move(scale)};
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    static Parameter concat(const std::vector<Parameter> &parts) {
+        std::vector<DenseTensor> dense;
+        dense.reserve(parts.size());
+        for (const auto& part : parts) dense.push_back(dynamic_cast<const DenseTensor&>(*part));
+        return std::make_shared<DenseTensor>(::tyloi::cuda::cat(dense, 0));
+    }
+#else
     static DenseTensor concat(const std::vector<DenseTensor> &parts) { return ::tyloi::cuda::cat(parts, 0); }
+#endif
     static auto headwise(Linear projection, int64_t heads, int64_t output) {
         return glm5_next::headwise(std::move(projection), heads, output);
     }
@@ -103,7 +118,7 @@ struct LayerLoader : ::tyloi::weights::Loader {
         return dense_ffn(std::move(gate), std::move(up), std::move(down), limit);
     }
     static auto moe(std::vector<Linear> gate_up, Linear down, Linear router,
-                    Transform shared, DenseTensor bias, const Config &c) {
+                    Transform shared, Parameter bias, const Config &c) {
         return glm_moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
                        std::move(bias), c);
     }
@@ -118,7 +133,11 @@ static DenseTensor execute(const Layer& layer, LayerState& activity, const Proje
     return tyloi::models::glm5_next::decoder_layer(
         x, bool(kda), [&](const DenseTensor &hidden) { return attention_hc.pre(hidden, config); },
         [&](DenseTensor branch, int role) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            return rms_norm(branch, *(role == 0 ? attention_norm : ffn_norm), config.eps);
+#else
             return rms_norm(branch, role == 0 ? attention_norm : ffn_norm, config.eps);
+#endif
         },
         [&](DenseTensor branch) { return kda->forward(project, std::get<KdaState>(activity), branch, true, confirmed); },
         [&](DenseTensor branch) { return mla->forward(project, std::get<MlaState>(activity), branch, true); },
@@ -169,7 +188,11 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
     if (load_input_output) {
         const bool separate = !model.config.tied_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
         model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
                                  : model.embed;
         if (load_layers) {
@@ -180,7 +203,11 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
     }
 }
 
@@ -234,7 +261,11 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, i
 }
 
 DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t, int64_t) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return rms_norm(hidden.mean(2), *model.output_norm, model.metadata.rms_norm_eps);
+#else
     return rms_norm(hidden.mean(2), model.output_norm, model.metadata.rms_norm_eps);
+#endif
 }
 
 DenseTensor softcap(const Model&, Executor&, DenseTensor value) { return value; }
@@ -341,11 +372,17 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
                                        const DenseTensor &ids, int64_t depth, bool cache,
                                        const DenseTensor &supplied_positions,
                                        const DenseTensor &supplied_embeddings) {
+#ifdef TYLOINFER_NATIVE_CUDA
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
                           hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
-                          hidden.size(1) == ids.size(1) &&
-                          hidden.size(2) == hidden_norm.numel(),
+                          hidden.size(1) == ids.size(1) && hidden.size(2) == hidden_norm->numel(),
                       "GLM5-Next MTP input geometry mismatch");
+#else
+    TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
+                          hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
+                          hidden.size(1) == ids.size(1) && hidden.size(2) == hidden_norm.numel(),
+                      "GLM5-Next MTP input geometry mismatch");
+#endif
     const auto b = ids.size(0), t = ids.size(1);
     auto dtype = ::tyloi::kFloat16;
     return tyloi::models::projected_predictor(
@@ -373,9 +410,17 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
         [&](DenseTensor embeds, const auto &current) {
             auto mask = (current == 0).reshape({current.dim() == 1 ? 1 : b, t, 1});
             auto masked = ::tyloi::cuda::where(mask, ::tyloi::cuda::zeros_like(embeds), embeds);
+#ifdef TYLOINFER_NATIVE_CUDA
+            return rms_norm(masked, *embedding_norm, config.eps);
+#else
             return rms_norm(masked, embedding_norm, config.eps);
+#endif
         },
+#ifdef TYLOINFER_NATIVE_CUDA
+        [&] { return rms_norm(hidden, *hidden_norm, config.eps); },
+#else
         [&] { return rms_norm(hidden, hidden_norm, config.eps); },
+#endif
         [&](DenseTensor e, DenseTensor streams) { return project_.run(*fusion, ::tyloi::cuda::cat({e, streams}, -1)); },
         [&](DenseTensor x, int64_t layer, const auto &pos) {
             auto &block = layers[layer];
@@ -383,8 +428,12 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
             return tyloi::models::pre_norm_layer(
                 std::move(x),
                 [&](const DenseTensor &value, int stage) {
-                    auto normalized = rms_norm(
-                        value, stage == 0 ? block.attention_norm : block.ffn_norm, config.eps);
+                    auto normalized = rms_norm(value,
+#ifdef TYLOINFER_NATIVE_CUDA
+                        *(stage == 0 ? block.attention_norm : block.ffn_norm), config.eps);
+#else
+                        stage == 0 ? block.attention_norm : block.ffn_norm, config.eps);
+#endif
                     return stage == 0 ? normalized : normalized.to(dtype);
                 },
                 [&](DenseTensor value) {
@@ -395,7 +444,11 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
                     return residual.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
                 });
         },
+#ifdef TYLOINFER_NATIVE_CUDA
+        [&](const DenseTensor &multi) { return rms_norm(multi, *output_norm, config.eps).to(dtype); },
+#else
         [&](const DenseTensor &multi) { return rms_norm(multi, output_norm, config.eps).to(dtype); },
+#endif
         [&](int64_t layer, const auto &pos) {});
 }
 
