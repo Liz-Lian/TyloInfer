@@ -19,7 +19,6 @@ struct Input {
     std::optional<DenseTensor> embeddings;
     std::optional<DenseTensor> positions;
     std::optional<DenseTensor> lengths;
-    std::optional<DenseTensor> attention_mask;
     std::optional<DenseTensor> cache_positions;
     Trace* trace = nullptr;
     DenseTensor* raw_hidden = nullptr;

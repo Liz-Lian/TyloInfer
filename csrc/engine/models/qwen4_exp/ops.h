@@ -206,10 +206,10 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     }
     bool adapter_force_cache_advance() const noexcept { return true; }
     void adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
-                                  bool, bool has_cache_position_override, bool has_attention_mask) const {
+                                  bool, bool has_cache_position_override) const {
         tyloi::models::require_model(tokens > 0 &&
                               cache_position + tokens <= metadata.max_position_embeddings &&
-                                  !has_cache_position_override && !has_attention_mask,
+                                  !has_cache_position_override,
                               "Qwen4 requires unpadded causal cache positions");
     }
     void adapter_validate_positions(const ::tyloi::DenseTensor& positions, std::int64_t batch,

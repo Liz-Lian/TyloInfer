@@ -262,13 +262,6 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     tyloi::models::require_model((positions.dim() == 1 && positions.size(0) == T) ||
         (positions.dim() == 2 && positions.size(0) == B && positions.size(1) == T),
         "position_ids must have shape [tokens] or [batch,tokens]");
-    if (input.attention_mask) {
-        const auto mask = DenseTensor(*input.attention_mask);
-        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B && mask.size(1) >= state.cache_pos + T,
-            "attention_mask must cover [batch,cached_plus_current_tokens]");
-        if ((T == 1 || state.cache_pos == 0) && mask.eq(1).all().item<bool>())
-            input.attention_mask.reset();
-    }
     hidden = copies.copy(std::move(hidden), mode.primary).to(::tyloi::kBFloat16).contiguous();
     const auto trace = [&] {
         if (input.trace) input.trace->push_back(copies.copy(hidden, mode.primary).to(::tyloi::kFloat32).clone());
@@ -282,10 +275,9 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
             return layer.cpu ? value.to(::tyloi::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
         };
         hidden = local(std::move(hidden));
-        AttentionStep step{local(positions), {}, local(physical), {}, state.cache_pos,
+        AttentionStep step{local(positions), {}, local(physical), state.cache_pos,
                            input.kv_length, input.attention_parts};
         if (input.lengths) step.sequence_lengths = local(DenseTensor(*input.lengths));
-        if (input.attention_mask) step.attention_mask = local(DenseTensor(*input.attention_mask));
         auto& cache = state.layers[i];
         const auto capacity = attention.sliding ? attention.attention_window :
             (mode.kv_capacity > 0 ? std::max(state.cache_pos + T, mode.kv_capacity)

@@ -526,8 +526,6 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
     const auto& model = *this;
     tyloi::models::require_model(input.ids != nullptr,
                                "token IDs must have shape [tokens] or [batch,tokens]");
-    tyloi::models::require_model(!input.attention_mask,
-                               "Gemma4 does not support attention masks");
     auto ids = normalize_ids(mode.primary, *input.ids);
     std::shared_ptr<const tyloi::Tensor> embeddings = input.embeddings
         ? input.embeddings : embedding(*ids, mode.primary);
@@ -562,7 +560,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
         input.lengths = tyloi::ops::full(shape, state.cache_pos + 1, primary);
     }
     AttentionStep step{semantic, input.lengths, input.cache_positions ? physical : nullptr,
-                       {}, state.cache_pos, input.kv_length, input.attention_parts};
+                       state.cache_pos, input.kv_length, input.attention_parts};
     auto copied = tyloi::ops::copy(*embeddings, primary);
     auto hidden = tyloi::ops::contiguous(*copied);
     hidden = tyloi::ops::measure("model.embed_scale", hidden->device(), [&] {
@@ -625,18 +623,12 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     tyloi::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
                                    (semantic.dim() == 2 && semantic.size(0) == B && semantic.size(1) == T),
                                "position_ids must have shape [tokens] or [batch,tokens]");
-    if (input.attention_mask.has_value()) {
-        const auto& mask = *input.attention_mask;
-        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
-                                       mask.size(1) >= state.cache_pos + T,
-                                   "attention_mask must cover [batch,cached_plus_current_tokens]");
-    }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1) {
         input.lengths = ::tyloi::cuda::full({B}, state.cache_pos + 1, options);
     }
     AttentionStep step{semantic, input.lengths ? MfqOptional<DenseTensor>(DenseTensor(*input.lengths)) : mfq_nullopt,
                        input.cache_positions.has_value() ? MfqOptional<DenseTensor>(physical) : mfq_nullopt,
-                       {}, state.cache_pos, input.kv_length, input.attention_parts};
+                       state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
     hidden = executor.profiler().measure("model.embed_scale", [&] {
         return hidden * model.embed_scale;

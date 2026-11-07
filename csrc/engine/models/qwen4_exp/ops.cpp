@@ -1101,7 +1101,7 @@ namespace {
                                      embeddings.size(1) == T && embeddings.size(2) == model.hidden_size(),
                                  "inputs_embeds shape must match [batch,tokens,hidden_size]");
     model.adapter_validate_forward(B, T, state.cache_pos, bool(input.positions),
-                                   bool(input.cache_positions), bool(input.attention_mask));
+                                   bool(input.cache_positions));
     tyloi::models::require_model(state.speculative_start < 0 || state.speculative_suffix_forward,
                                  "commit or roll back the pending speculative pass before forwarding");
     const auto confirmed = input.confirmed;
@@ -1109,7 +1109,7 @@ namespace {
         confirmed >= 0 && (confirmed == 0 ||
             (confirmed < T && B == 1 && state.cache_pos > 0 &&
              (!input.positions || model.adapter_allows_speculative_position_override()) &&
-             !input.cache_positions && !input.attention_mask &&
+             !input.cache_positions &&
              model.supports_speculation())),
         "unsupported speculative backbone geometry");
     if (confirmed > 0) {
@@ -2567,7 +2567,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
             <<" compute="<<compute_chunk<<" available_bytes="<<available<<'\n';
     }
     tyloi::cuda::ResidentAllocationScope persistent_preamble;
-    model.adapter_validate_forward(1,tokens,cache_start,false,false,false);
+    model.adapter_validate_forward(1,tokens,cache_start,false,false);
     if(cache_start==0)model.active->reset(1);
     model.adapter_begin_forward(raw_hidden!=nullptr);
     auto current=::tyloi::cuda::arange(cache_start,cache_start+tokens,ids.options());
@@ -2955,7 +2955,7 @@ std::shared_ptr<::tyloi::Tensor> Model::forward(tyloi::models::Input input, tylo
     try {
         std::shared_ptr<::tyloi::Tensor> raw;
         auto result = qwen4_forward(*this, state,
-                                    tyloi::models::Input{std::make_shared<::tyloi::DenseTensor>(std::move(ids)), {}, {}, {}, {}, {}, nullptr,
+                                    tyloi::models::Input{std::make_shared<::tyloi::DenseTensor>(std::move(ids)), {}, {}, {}, {}, nullptr,
                                                          raw_hidden ? &raw : nullptr, false, 0, 0, 0});
         if (raw_hidden) *raw_hidden = dynamic_cast<const ::tyloi::DenseTensor&>(*raw);
         state.speculative_suffix_forward = false;

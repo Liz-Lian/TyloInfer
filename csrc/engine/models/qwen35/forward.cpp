@@ -47,8 +47,6 @@ AttentionStep layer_step(Collectives& collectives, const Layer& layer,
         local.sequence_lengths = copy_to_layer(collectives, DenseTensor(*step.sequence_lengths), layer);
     if (step.cache_positions.has_value())
         local.cache_positions = copy_to_layer(collectives, DenseTensor(*step.cache_positions), layer);
-    if (step.attention_mask.has_value())
-        local.attention_mask = copy_to_layer(collectives, DenseTensor(*step.attention_mask), layer);
     return local;
 }
 
@@ -118,7 +116,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
                     Collectives& collectives, const Executor::Mode& options, DenseTensor ids,
                     DenseTensor embeddings, std::optional<Input::DenseTensor> positions,
                     std::optional<Input::DenseTensor> lengths, Input::Trace* trace,
-                    std::optional<Input::DenseTensor> attention_mask, bool advance,
+                    bool advance,
                     std::optional<Input::DenseTensor> cache_positions, Input::DenseTensor* raw_hidden,
                     std::int64_t confirmed, std::int64_t kv_length,
                     std::int64_t attention_parts) {
@@ -133,7 +131,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
         confirmed >= 0 &&
             (confirmed == 0 ||
              (confirmed < T && B == 1 && state.cache_pos > 0 && !positions.has_value() &&
-              !cache_positions.has_value() && !attention_mask.has_value() &&
+              !cache_positions.has_value() &&
               supports_speculation(model))),
         "unsupported speculative backbone geometry");
     require_forward(state.speculative_start < 0,
@@ -148,11 +146,6 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
     if (lengths.has_value())
         require_forward(lengths->dim() == 1 && lengths->size(0) == B,
                         "sequence lengths must have shape [batch]");
-    if (attention_mask.has_value())
-        require_forward(attention_mask->dim() == 2 && attention_mask->size(0) == B &&
-                            attention_mask->size(1) >= state.cache_pos + T,
-                        "attention_mask must cover [batch,cached_plus_current_tokens]");
-
     auto physical = cache_positions.has_value()
                         ? collectives.copy(DenseTensor(*cache_positions).to(::tyloi::kInt64),
                                            options.primary)
@@ -191,7 +184,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
     if (model.rope.sections.numel() > 0 || positions.has_value() || cache_positions.has_value())
         physical_for_layers = physical;
     AttentionStep step{semantic, lengths ? MfqOptional<DenseTensor>(DenseTensor(*lengths)) : mfq_nullopt,
-                       physical_for_layers, {}, state.cache_pos, kv_length,
+                       physical_for_layers, state.cache_pos, kv_length,
                        attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), options.primary).contiguous();
     if (trace)
@@ -242,8 +235,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
                           : embed(model, executor, collectives, options.primary, ids, options);
     return forward_impl(model, state, executor, collectives, options, std::move(ids),
                         std::move(embeddings), std::move(input.positions),
-                        std::move(input.lengths), input.trace,
-                        std::move(input.attention_mask), input.advance,
+                        std::move(input.lengths), input.trace, input.advance,
                         std::move(input.cache_positions), input.raw_hidden,
                         input.confirmed, input.kv_length, input.attention_parts);
 }

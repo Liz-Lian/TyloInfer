@@ -11,7 +11,7 @@ namespace tyloi::models {
 struct Input {
     using Trace = std::vector<std::shared_ptr<Tensor>>;
 
-    std::shared_ptr<const Tensor> ids, embeddings, positions, lengths, attention_mask, cache_positions;
+    std::shared_ptr<const Tensor> ids, embeddings, positions, lengths, cache_positions;
     Trace* trace = nullptr;
     std::shared_ptr<Tensor>* raw_hidden = nullptr;
     bool advance = false;

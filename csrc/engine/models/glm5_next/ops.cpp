@@ -257,8 +257,8 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
         "inputs_embeds shape must match [batch,tokens,hidden_size]");
     tyloi::models::require_model(T > 0 && state.cache_pos + T <= model.metadata.max_position_embeddings &&
-        !input.positions.has_value() && !input.cache_positions.has_value() && !input.attention_mask.has_value(),
-        "GLM Flash-Next currently requires contiguous causal cache positions without an external mask");
+        !input.positions.has_value() && !input.cache_positions.has_value(),
+        "GLM Flash-Next currently requires contiguous causal cache positions");
     tyloi::models::require_model(state.speculative_start < 0,
         "commit or roll back the pending speculative pass before forwarding");
     tyloi::models::require_model(input.confirmed >= 0 &&

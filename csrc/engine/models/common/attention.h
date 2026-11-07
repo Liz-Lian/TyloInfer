@@ -20,12 +20,10 @@ struct AttentionStep {
     std::shared_ptr<const tyloi::Tensor> positions;
     std::shared_ptr<const tyloi::Tensor> sequence_lengths;
     std::shared_ptr<const tyloi::Tensor> cache_positions;
-    std::shared_ptr<const tyloi::Tensor> attention_mask;
 #else
     ::tyloi::DenseTensor positions;
     MfqOptional<::tyloi::DenseTensor> sequence_lengths = mfq_nullopt;
     MfqOptional<::tyloi::DenseTensor> cache_positions = mfq_nullopt;
-    MfqOptional<::tyloi::DenseTensor> attention_mask = mfq_nullopt;
 #endif
     std::int64_t cache_position = 0;
     std::int64_t planned_kv_length = 0;

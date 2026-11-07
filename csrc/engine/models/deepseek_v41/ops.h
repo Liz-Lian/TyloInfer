@@ -860,19 +860,17 @@ struct Block final {
         TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
                               "block does not support speculative verification");
         return forward(execution, std::move(hidden), context.positions, context.cache_position,
-                       context.sequence_lengths, rope, context.cache_positions,
-                       context.attention_mask);
+                       context.sequence_lengths, rope, context.cache_positions);
     }
 
     DenseTensor forward(CudaExecutionContext &execution, DenseTensor hidden, DenseTensor positions,
                    std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
-                   const RopeCache &, const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt,
-                   const MfqOptional<DenseTensor> &attention_mask = mfq_nullopt) {
+                   const RopeCache &, const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt) {
         auto &profiler = execution.executor().profiler();
         TYLOINFER_RUNTIME_CHECK(L().current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
                               positions.dim() == 1 && positions.numel() == hidden.size(1) &&
-                              !cache_positions.has_value() && !attention_mask.has_value() &&
+                              !cache_positions.has_value() &&
                               L().position == cache_position,
                           "DeepSeek-V4.1 block input/cache mismatch");
         shared->enter_layer(layer, config.n_layers, hidden.size(0), hidden.size(1), cache_position,
@@ -1106,8 +1104,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     ::tyloi::DenseTensor adapter_raw_hidden(const ::tyloi::DenseTensor& hidden,
                                             const ::tyloi::DenseTensor& finalized) const;
     void adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
-                                  bool has_position_override, bool has_cache_position_override,
-                                  bool has_attention_mask) const;
+                                  bool has_position_override, bool has_cache_position_override) const;
     void adapter_begin_speculative();
     void adapter_commit_speculative();
     void adapter_rollback_speculative(std::int64_t keep);

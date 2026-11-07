@@ -347,17 +347,11 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     tyloi::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
                                    (semantic.dim() == 2 && semantic.size(0) == B && semantic.size(1) == T),
                                "position_ids must have shape [tokens] or [batch,tokens]");
-    if (input.attention_mask.has_value()) {
-        const auto& mask = *input.attention_mask;
-        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
-                                       mask.size(1) >= state.cache_pos + T,
-                                   "attention_mask must cover [batch,cached_plus_current_tokens]");
-    }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
         input.lengths = ::tyloi::cuda::full({B}, state.cache_pos + 1, options);
     AttentionStep step{semantic, input.lengths ? MfqOptional<DenseTensor>(DenseTensor(*input.lengths)) : mfq_nullopt,
                        input.cache_positions.has_value() ? MfqOptional<DenseTensor>(physical) : mfq_nullopt,
-                       {}, state.cache_pos, input.kv_length, input.attention_parts};
+                       state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
     const auto trace = [&](const DenseTensor& value) {
         if (input.trace)

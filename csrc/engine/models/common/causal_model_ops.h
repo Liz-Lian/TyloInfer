@@ -38,7 +38,6 @@ struct BlockContext {
     std::int64_t decode_attention_parts = 0;
     MfqOptional<::tyloi::DenseTensor> sequence_lengths = mfq_nullopt;
     MfqOptional<::tyloi::DenseTensor> cache_positions = mfq_nullopt;
-    MfqOptional<::tyloi::DenseTensor> attention_mask = mfq_nullopt;
 };
 
 struct CausalResources {

@@ -351,13 +351,11 @@ void Model::adapter_begin_forward(bool capture_raw_hidden) const {
 }
 
 void Model::adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
-                                     bool has_position_override, bool has_cache_position_override,
-                                     bool has_attention_mask) const {
+                                     bool has_position_override, bool has_cache_position_override) const {
     require_model(
         tokens > 0 && cache_position + tokens <= metadata.max_position_embeddings &&
-            !has_position_override && !has_cache_position_override && !has_attention_mask,
-        "DeepSeek-V4.1 currently requires contiguous causal cache positions "
-        "without an external mask");
+            !has_position_override && !has_cache_position_override,
+        "DeepSeek-V4.1 currently requires contiguous causal cache positions");
 }
 
 void Model::adapter_begin_speculative() {
@@ -384,7 +382,7 @@ void Model::adapter_rollback_speculative(std::int64_t position) {
     state.speculative_suffix_forward = true;
     try {
         std::shared_ptr<tyloi::Tensor> raw;
-        auto result = forward(tyloi::models::Input{std::make_shared<DenseTensor>(std::move(ids)), {}, {}, {}, {}, {}, nullptr,
+        auto result = forward(tyloi::models::Input{std::make_shared<DenseTensor>(std::move(ids)), {}, {}, {}, {}, nullptr,
                                                    raw_hidden ? &raw : nullptr, false, 0, 0, 0},
                               state);
         if (raw_hidden) *raw_hidden = dynamic_cast<const DenseTensor&>(*raw);
@@ -426,7 +424,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
                       embeddings.size(2) == hidden_size(),
                   "inputs_embeds shape must match [batch,tokens,hidden_size]");
     adapter_validate_forward(B, T, state.cache_pos, bool(input.positions),
-                             bool(input.cache_positions), bool(input.attention_mask));
+                             bool(input.cache_positions));
     require_model(state.speculative_start < 0 || state.speculative_suffix_forward,
                   "commit or roll back the pending speculative pass before forwarding");
     const auto confirmed = input.confirmed;

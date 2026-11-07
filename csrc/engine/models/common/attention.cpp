@@ -171,7 +171,7 @@ std::array<std::shared_ptr<tyloi::Tensor>, 2> FullAttention::forward(
     cache.visible_value = kv.second;
     auto result = tyloi::ops::attention(
         tyloi::ops::AttentionInput{*q, *k, *v, pos, *write_positions,
-            step.sequence_lengths.get(), step.attention_mask.get(), cache_pos,
+            step.sequence_lengths.get(), nullptr, cache_pos,
             step.planned_kv_length, step.decode_attention_parts}, cache,
         tyloi::ops::AttentionConfig{official_bf16, sliding, attention_window, attention_scale});
     auto a = result.value;
@@ -218,7 +218,6 @@ std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
     const auto& pos = step.positions;
     const auto& seq_len = step.sequence_lengths;
     const auto& cache_positions = step.cache_positions;
-    const auto& attention_mask = step.attention_mask;
     const auto cache_pos = step.cache_position;
     const auto planned_kv_length = step.planned_kv_length;
     const auto decode_attention_parts = step.decode_attention_parts;
@@ -452,7 +451,7 @@ std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
             pos,
             write_positions,
             seq_len,
-            attention_mask,
+            mfq_nullopt,
             cache_pos,
             planned_kv_length,
             decode_attention_parts},

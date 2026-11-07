@@ -75,10 +75,6 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     } else if (state.cache_pos > 0 && tokens == 1) {
         input.lengths = ::tyloi::cuda::full({batch}, state.cache_pos + 1, physical.options());
     }
-    if (input.attention_mask)
-        TYLOINFER_RUNTIME_CHECK(input.attention_mask->dim() == 2 && input.attention_mask->size(0) == batch &&
-            input.attention_mask->size(1) >= state.cache_pos + tokens,
-            "attention_mask must cover [batch,cached_plus_current_tokens]");
     hidden = copies.copy(std::move(hidden), mode.primary).contiguous();
     const auto trace = [&] {
         if (input.trace) input.trace->push_back(copies.copy(hidden, mode.primary).to(::tyloi::kFloat32).contiguous().clone());
@@ -92,7 +88,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
             return layer.cpu ? value.to(::tyloi::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
         };
         hidden = local(std::move(hidden));
-        AttentionStep step{local(positions), {}, {}, {}, state.cache_pos, input.kv_length, input.attention_parts};
+        AttentionStep step{local(positions), {}, {}, state.cache_pos, input.kv_length, input.attention_parts};
         if (input.lengths) step.sequence_lengths = local(DenseTensor(*input.lengths));
         if (input.cache_positions) step.cache_positions = local(physical);
         auto& cache = state.layers[index];

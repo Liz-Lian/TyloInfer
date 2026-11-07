@@ -160,7 +160,7 @@ struct Mtp final : tyloi::models::Mtp {
                 std::optional<DenseTensor> sequence_lengths;
                 if (tokens == 1 && model.lengths[stage] > 0)
                     sequence_lengths = lengths(x.size(0), model.lengths[stage] + 1, pos);
-                AttentionStep step{pos, sequence_lengths, mfq_nullopt, mfq_nullopt,
+                AttentionStep step{pos, sequence_lengths, mfq_nullopt,
                                    model.lengths[stage], 0, 0};
                 for (std::size_t index = 0; index < model.layers.size(); ++index)
                     x = forward_layer(model.layers[index], model.states[index], *model.executor,
