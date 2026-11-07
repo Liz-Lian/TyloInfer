@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/weights/loader.h"
+#include "engine/weights/moe/options.h"
 #include "engine/weights/workspace.h"
 
 #include <cstddef>
@@ -93,6 +94,9 @@ public:
     Cache& operator=(const Cache&) = delete;
 
     Loader loader(const source::Source& source, Loader::Options options, Loader::Placement placement);
+    void begin_load();
+    void configure(std::size_t bytes, const CachePolicy& policy, bool preload,
+        const std::string& profile_path);
     std::vector<std::pair<std::string, double>> metrics() const;
     Activity activity() const;
     std::size_t budget() const;

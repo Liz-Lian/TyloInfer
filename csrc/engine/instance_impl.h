@@ -146,12 +146,11 @@ class EngineInstance final : public Engine {
                 executor = std::make_unique<Executor>(std::move(numeric_options), 0);
                 execution = std::make_unique<CudaExecutionContext>(
                     *executor, std::move(execution_config), weights, kv, offload);
-                CudaScope scope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
+                auto scope = executor->enter(execution->config.layer_placement.primary_device());
                 setup_cuda_load(options, execution->config, *executor, weights, kv, offload);
                 execution->executor().profiler().enabled = false;
                 auto weight_memory=std::make_shared<tyloi::weights::Memory>();
                 const tyloi::weights::LoadScope memory_load(*weight_memory);
-                ::tyloi::cuda::NoGradGuard no_grad;
                 auto config = resolve_cuda_config(options);
                 const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
                 kv=std::make_shared<KvMemoryManager>();

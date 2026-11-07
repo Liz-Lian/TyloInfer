@@ -26,12 +26,10 @@
 
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/collectives.h"
-#include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
-#include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"
 
 #include <algorithm>
@@ -657,11 +655,7 @@ void setup_cuda_load(
     executor.mode().trace = nullptr;
     offload.reset();
     kv.reset();
-    weights.reset();
-    auto& data = tyloi::weights::detail::cache(weights);
-    data.exec = executor.tq();
-    data.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
-    data.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
+    weights.begin_load();
     if (options.n_gpu_layers_set) config.n_gpu_layers = options.n_gpu_layers;
     if (options.cpu_threads_set && options.cpu_threads <= 0) {
         throw std::runtime_error("--threads must be positive");
@@ -734,30 +728,8 @@ void setup_cuda_load(
             throw std::runtime_error(
                 "--moe-gpu-cache-gb is outside the supported range");
         }
-        data.device_bytes = static_cast<std::size_t>(bytes);
-        data.moe =
-            make_moe_expert_cache(
-                static_cast<int64_t>(bytes), MoeCacheOptions{
-                .host_bytes = data.host_bytes,
-                .host_limit = data.host_limit,
-                .mapped = config.moe_mapped_gather,
-                .copy_blocks = config.moe_mapped_copy_blocks,
-                .io_workers = config.moe_ssd_io_workers,
-                .overlap = config.moe_ssd_overlap,
-                .pipeline = config.moe_pipeline,
-                .hybrid_cpu = config.moe_hybrid_cpu,
-                .preload = config.weights.preload,
-                .assert_resident = config.moe_assert_resident,
-                .ram_pcie = config.moe_ram_pcie,
-                .direct_ram = config.moe_direct_ram,
-                .adapt = config.moe_residency_adapt,
-                .warm = config.moe_residency_warm,
-                .projection_heat = config.moe_residency_projection_heat,
-                .ram_fraction = config.moe_ram_pcie_fraction,
-                .two_stage = executor.options().moe_ffn.two_stage,
-                .heterogeneous = executor.options().projection.moe.heterogeneous});
-        if (!profile_path.empty() && data.moe) {
-            set_moe_expert_cache_profile(*data.moe,tyloi::load_moe_cache_profile(profile_path));
+        weights.configure(static_cast<std::size_t>(bytes), config.cache, config.weights.preload, profile_path);
+        if (!profile_path.empty() && !weights.empty()) {
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")
                 <<" path="<<profile_path<<std::endl;
         }

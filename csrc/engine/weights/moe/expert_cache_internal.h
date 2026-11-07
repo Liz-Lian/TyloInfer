@@ -81,12 +81,12 @@ public:
             TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
                 &stage.done, cudaEventDisableTiming));
         }
-        mapped_gather_enabled_ = options.mapped;
-        mapped_copy_blocks_ = options.copy_blocks;
+        mapped_gather_enabled_ = options.policy.mapped;
+        mapped_copy_blocks_ = options.policy.copy_blocks;
         range_read_pool_ =
             std::make_unique<tyloi::cuda::MfeMxfp4ReadPool>(
-                options.io_workers);
-        range_overlap_enabled_ = options.overlap;
+                options.policy.io_workers);
+        range_overlap_enabled_ = options.policy.overlap;
         const auto diagnostics=::tyloi::cuda::options::moe_diagnostics();
         pipeline_cpu_profile_enabled_=diagnostics.cpu_rows;
         pipeline_cpu_profile_fail_alloc_=diagnostics.cpu_rows_fail_alloc;
@@ -892,9 +892,9 @@ public:
                << " pipeline_sigmoid_table_bytes=" << tensor_nbytes(pipeline_sigmoid_table_)
                << " pipeline_wire_route_bytes=" << pipeline_wire_route_bytes_
                << " pipeline_wire_route_fields=" << pipeline_wire_route_fields_
-               << " residency_adapt=" << options_.adapt
-               << " residency_warm=" << options_.warm
-               << " residency_projection_heat=" << (options_.warm && options_.projection_heat)
+               << " residency_adapt=" << options_.policy.adapt
+               << " residency_warm=" << options_.policy.warm
+               << " residency_projection_heat=" << (options_.policy.warm && options_.policy.projection_heat)
                << " residency_observed_routes=" << (moe_residency_?moe_residency_->stats().observed_routes:0)
                << " residency_rounds=" << (moe_residency_?moe_residency_->stats().scheduled_rounds:0)
                << " residency_candidates=" << (moe_residency_?moe_residency_->stats().candidate_bundles:0)
@@ -965,7 +965,7 @@ public:
                << " residency_async_publish_ns=" << (moe_residency_?moe_residency_->stats().async_publish_ns:0)
                << " residency_decode_async_publish_ns=" << (moe_residency_?moe_residency_->stats().decode_async_publish_ns:0)
                << " residency_window_prepares=" << (moe_residency_?moe_residency_->stats().window_prepares:0)
-               << " pipeline_adaptive=" << !options_.ram_fraction.has_value()
+               << " pipeline_adaptive=" << !options_.policy.ram_fraction.has_value()
                << " pipeline_dispatch_replay_used=" << pipeline_dispatch_replay_cursor_
                << " pipeline_dispatch_replay_total=" << pipeline_dispatch_replay_.size()
                << " h2d_submissions="
@@ -1045,7 +1045,7 @@ public:
         }
         const auto cold=ssd_expert_total_bytes_>gpu_weights?ssd_expert_total_bytes_-gpu_weights:0;
         std::vector<std::pair<std::string,double>> result{{"ssd_expert_enabled", ssd_experts_ ? 1.0 : 0.0},
-            {"ssd_io_workers",double(options_.io_workers)},
+            {"ssd_io_workers",double(options_.policy.io_workers)},
             {"host_tensor_bytes",double(tyloi::cuda::tensor_host_bytes.load())},
             {"ssd_expert_payload_bytes",double(ssd_experts_ && cold>host.resident_bytes?cold-host.resident_bytes:0)},
             {"ssd_expert_bytes_read",double(disk_read_bytes)},

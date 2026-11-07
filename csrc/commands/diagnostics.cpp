@@ -265,10 +265,10 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 "runtime comparison requires TYLOINFER_MOE_TRANSFER_CACHE=1 and TYLOINFER_MOE_MAPPED_COPY=0");
             const bool free_gpu_comparison=decode_inputs.empty() &&
                 (compare_route_spin || compare_moe_plan_reuse || compare_shared_gate_fusion || compare_graph_optimizations || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_gdn_fixed_geometry || compare_gdn_inplace_state || compare_qsa_fusion) &&
-                execution.config.moe_ram_pcie_fraction && *execution.config.moe_ram_pcie_fraction==1.0;
+                execution.config.cache.ram_fraction && *execution.config.cache.ram_fraction==1.0;
             TYLOINFER_RUNTIME_CHECK(gen>1 && (!decode_inputs.empty() || free_gpu_comparison) && !profile &&
                 runtime_comparison_modes() == 1 && router_lookahead_audit.empty() &&
-                !execution.config.moe_mapped_gather && execution.config.weights.preload &&
+                !execution.config.cache.mapped && execution.config.weights.preload &&
                 execution.config.moe_ffn.two_stage && moe_gpu_cache_gb>0,
                 "runtime comparison requires fixed inputs or an eligible GPU-only free-decode comparison, complete preload, two-stage FFN and profiling disabled");
             TYLOINFER_RUNTIME_CHECK(!compare_attention_grouping ||
@@ -277,10 +277,10 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             TYLOINFER_RUNTIME_CHECK(!compare_mhc_fusion || (execution.config.residual.fused_projections &&
                 execution.config.residual.native_input),
                 "residual fusion comparison requires native packed projections");
-            TYLOINFER_RUNTIME_CHECK(!(compare_gpu_only_cpu_wait || compare_fixed_gpu_timing || compare_graph_optimizations) || (execution.config.moe_ram_pcie_fraction &&
-                *execution.config.moe_ram_pcie_fraction==1.0),
+            TYLOINFER_RUNTIME_CHECK(!(compare_gpu_only_cpu_wait || compare_fixed_gpu_timing || compare_graph_optimizations) || (execution.config.cache.ram_fraction &&
+                *execution.config.cache.ram_fraction==1.0),
                 "fixed GPU comparison requires TYLOINFER_MOE_RAM_PCIE_FRACTION=1");
-            execution.config.moe_residency_adapt=false;
+            execution.config.cache.adapt=false;
             std::cout<<std::unitbuf;
         }
         setup_cuda_load(*this, execution);

@@ -41,9 +41,9 @@ struct tyloi::weights::Loader::Impl {
 };
 
 tyloi::weights::Loader::Loader(const tyloi::source::Source& source, Options options,
-        Placement placement, Cache& cache, std::shared_ptr<TqExec> tq)
+        Placement placement, Cache& cache)
     : source(source), options(std::move(options)), placement(std::move(placement)),
-      impl_(std::make_shared<Impl>(Impl{cache, std::move(tq)})) {}
+      impl_(std::make_shared<Impl>(Impl{cache, detail::cache(cache).exec})) {}
 
 void LayerPlacementConfig::prepare(int64_t layers) {
     layer_devices.assign(static_cast<size_t>(layers), primary_device());

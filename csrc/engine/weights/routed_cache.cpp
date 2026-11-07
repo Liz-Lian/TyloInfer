@@ -1,10 +1,12 @@
 #include "engine/weights/cache_internal.h"
 
 #include "engine/backends/cuda/native/context.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/source/source.h"
 #include "engine/weights/tq/cache.h"
+#include "env.h"
 
 #include <algorithm>
 #include <iostream>
@@ -69,7 +71,30 @@ void Cache::Warmup::release(Device device, bool decode) {
 
 Loader Cache::loader(const source::Source& source, Loader::Options options,
         Loader::Placement placement) {
-    return Loader(source, std::move(options), std::move(placement), *this, data_->exec);
+    return Loader(source, std::move(options), std::move(placement), *this);
+}
+
+void Cache::begin_load() {
+    reset();
+    auto& executor = cuda::Executor::current();
+    data_->exec = executor.tq();
+    data_->host_bytes = cuda::env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
+    data_->host_limit = cuda::env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
+}
+
+void Cache::configure(std::size_t bytes, const CachePolicy& policy, bool preload,
+        const std::string& profile_path) {
+    data_->device_bytes = bytes;
+    const auto& options = cuda::Executor::current().options();
+    data_->moe = make_moe_expert_cache(static_cast<std::int64_t>(bytes), MoeCacheOptions{
+        .policy = policy,
+        .host_bytes = data_->host_bytes,
+        .host_limit = data_->host_limit,
+        .preload = preload,
+        .two_stage = options.moe_ffn.two_stage,
+        .heterogeneous = options.projection.moe.heterogeneous});
+    if (!profile_path.empty() && data_->moe)
+        set_moe_expert_cache_profile(*data_->moe, tyloi::load_moe_cache_profile(profile_path));
 }
 
 std::vector<std::pair<std::string, double>> Cache::metrics() const {

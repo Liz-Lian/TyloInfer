@@ -915,7 +915,7 @@ tyloi::models::MtpStep Predictor::step(const tyloi::Tensor& input_hidden, const 
         positions=positions.to(::tyloi::kInt32).contiguous();
     }
     const auto graph=::tyloi::cuda::options::mtp_predictor_graph();
-    if((!graph || *graph) && execution->config.moe_pipeline && execution->executor().options().moe_ffn.two_stage &&
+    if((!graph || *graph) && execution->config.cache.pipeline && execution->executor().options().moe_ffn.two_stage &&
         execution->executor().mmq().mode==KlMmqMode::Default && ::tyloi::weights::detail::cache(execution->weights).moe &&
         streamed_decode_graphs(*execution) && batch==1 && ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
         hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) && hidden.size(2)==hidden_norm.numel() &&
@@ -939,7 +939,7 @@ void Predictor::history_step(DenseTensor hidden,DenseTensor ids,DenseTensor posi
         positions=positions.to(::tyloi::kInt32).contiguous();
     }
     const auto graph=::tyloi::cuda::options::mtp_predictor_graph();
-    if(reuse_decode_graphs && (!graph || *graph) && execution->config.moe_pipeline &&
+    if(reuse_decode_graphs && (!graph || *graph) && execution->config.cache.pipeline &&
             execution->executor().options().moe_ffn.two_stage && execution->executor().mmq().mode==KlMmqMode::Default &&
             ::tyloi::weights::detail::cache(execution->weights).moe && streamed_decode_graphs(*execution) && layers.size()==1 && batch==1 &&
             ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
@@ -1138,7 +1138,7 @@ namespace {
                                      current.size(-1) == T,
                                  "Qwen4 positions require [T], [3,T], [4,T], [3,B,T] or [4,B,T]");
     DenseTensor host_ids, cpu_positions, cpu_cache_positions;
-    const bool pinned = model.execution->config.moe_pipeline ||
+    const bool pinned = model.execution->config.cache.pipeline ||
                         model.execution->config.dense_cpu_layer_count > 0;
     if (pinned) {
         host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
@@ -1534,7 +1534,7 @@ std::optional<::tyloi::DenseTensor> qwen4_decode_graph_logits(qwen4_exp::Model& 
         const ::tyloi::DenseTensor& host_ids) {
     if (!streamed_decode_graphs(*model.execution)) return {};
     const bool tq=bool(::tyloi::weights::detail::cache(model.execution->weights).tq);
-    if((!tq && (!model.execution->config.moe_pipeline || !::tyloi::weights::detail::cache(model.execution->weights).moe)) ||
+    if((!tq && (!model.execution->config.cache.pipeline || !::tyloi::weights::detail::cache(model.execution->weights).moe)) ||
             model.active->cache_pos==0 || model.active->speculative_start>=0)return {};
     if(ids.dim()==1)ids=ids.unsqueeze(0);
     if(ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<1 || ids.size(1)>8 || model.positions.dim()!=1)return {};
@@ -1602,7 +1602,7 @@ std::optional<::tyloi::DenseTensor> qwen4_decode_graph_hidden(
     if(initialized)*initialized=false;
     const bool tq=bool(::tyloi::weights::detail::cache(model.execution->weights).tq);
     if(!streamed_decode_graphs(*model.execution) ||
-            (!tq && (!model.execution->config.moe_pipeline || !::tyloi::weights::detail::cache(model.execution->weights).moe)) ||
+            (!tq && (!model.execution->config.cache.pipeline || !::tyloi::weights::detail::cache(model.execution->weights).moe)) ||
             model.active->speculative_start>=0)return {};
     // Retained windows own initialized, reset recurrent/KV storage. The
     // first row of a new prompt can replay them without an eager FFN copy.
@@ -1639,7 +1639,7 @@ std::size_t qwen4_mtp_graph_reserve(const qwen4_exp::Model& model,const tyloi::m
     const auto* reuse=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
     if(!predictor || (reuse && reuse[0]=='0') || (warmup && warmup[0]=='0') ||
-            !model.execution->config.moe_pipeline || !streamed_decode_graphs(*model.execution))return 0;
+            !model.execution->config.cache.pipeline || !streamed_decode_graphs(*model.execution))return 0;
     // The common decode allowance covers verification through four rows.
     // Wider windows retain extra shared recurrent checkpoints and per-shape
     // graph/staging allocations. Price those before admitting expert arenas.
@@ -1664,7 +1664,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
     const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
     if(!model.reuse_decode_graphs || (warmup && warmup[0]=='0') ||
         model.max_position_embeddings()<32 || !streamed_decode_graphs(*model.execution) ||
-        (!tq && (!model.execution->config.moe_pipeline || !::tyloi::weights::detail::cache(model.execution->weights).moe)))return;
+        (!tq && (!model.execution->config.cache.pipeline || !::tyloi::weights::detail::cache(model.execution->weights).moe)))return;
     for(const auto& block:model.blocks) {
         const auto& b=static_cast<const qwen4_exp::Qwen4Block&>(*block);
         if((!b.prefetch && !b.tq_graph_ffn) || (b.qsa && !b.qsa->graph_capacity()) || (b.ple && !b.ple->graph_supported()))return;
@@ -2274,7 +2274,7 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             model.reserve_kv_workspace(requests.front()->state_->growth_bytes(tokens)+(std::size_t(256)<<20));
     }
     model.adapter_begin_forward(false);
-    if(!packed && execution.config.moe_pipeline) {
+    if(!packed && execution.config.cache.pipeline) {
         for(std::size_t row=0;row<requests.size();++row) {
             const auto row_ids=host_ids.narrow(1,offsets[row],chunks[row].size(1));
             for(auto& layer:requests[row]->state_->layers)
@@ -2473,7 +2473,7 @@ bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model& model, int64_t t
     // Keep explicit user overrides and the existing legacy selection policy.
     if((enabled && *enabled==0) || (whole && *whole==0) || (!tq && !whole) || tokens<=128 ||
        tokens>16384 || model.active->speculative_start>=0 || !model.execution ||
-       (!tq && !model.execution->config.moe_pipeline) || !::tyloi::weights::detail::cache(model.execution->weights).moe ||
+       (!tq && !model.execution->config.cache.pipeline) || !::tyloi::weights::detail::cache(model.execution->weights).moe ||
        model.execution->config.dense_cpu_layer_count || model.execution->config.tensor_parallel.enabled() ||
        model.execution->config.expert_parallel.enabled())return false;
     const auto primary=model.execution->config.layer_placement.primary_device();

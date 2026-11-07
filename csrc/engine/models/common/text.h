@@ -104,7 +104,7 @@ struct Text {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             if(!components.mtp)return;
             const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
-            if(!language.reuse_decode_graphs || !execution->config.moe_pipeline || (warmup && warmup[0]=='0'))return;
+            if(!language.reuse_decode_graphs || !execution->config.cache.pipeline || (warmup && warmup[0]=='0'))return;
             const auto& sampling=input.sampling;
             const bool wide=sampling.temperature<=0 || sampling.top_k==1 ||
                 (sampling.top_k>0 && sampling.top_k<=64);

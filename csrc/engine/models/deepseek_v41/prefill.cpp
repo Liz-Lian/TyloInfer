@@ -123,7 +123,7 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
                                                    .device(::tyloi::kCUDA)
                                                    .dtype(::tyloi::kInt64));
         DenseTensor host_ids;
-        if (model.execution->config.moe_pipeline || model.execution->config.dense_cpu_layer_count > 0)
+        if (model.execution->config.cache.pipeline || model.execution->config.dense_cpu_layer_count > 0)
             host_ids = chunk_ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         auto hidden = model.adapter_prepare_hidden(model.embed_tokens(chunk_ids), batch, count);
         model.adapter_begin_forward(raw_hidden != nullptr);
@@ -166,7 +166,7 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
                                                       .device(::tyloi::kCUDA)
                                                       .dtype(::tyloi::kInt64));
     DenseTensor replay_host_ids;
-    if (model.execution->config.moe_pipeline || model.execution->config.dense_cpu_layer_count > 0)
+    if (model.execution->config.cache.pipeline || model.execution->config.dense_cpu_layer_count > 0)
         replay_host_ids = tail_ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
     for (int64_t layer = split; layer < model.num_hidden_layers(); ++layer) {
         if (cancelled()) return {};

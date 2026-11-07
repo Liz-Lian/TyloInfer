@@ -329,13 +329,12 @@ private:
             root_executor_ = std::make_unique<Executor>(std::move(numeric_options), 0);
             execution_ = std::make_unique<CudaExecutionContext>(
                 *root_executor_, std::move(execution_config), weights_, kv_, offload_);
-            CudaScope outer_scope(
-                execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
+            auto outer_scope = root_executor_->enter(
+                execution_->config.layer_placement.primary_device());
             internal::setup_cuda_load(options_, execution_->config, *root_executor_, weights_, kv_, offload_);
             execution_->executor().profiler().enabled = false;
             weight_memory_ = std::make_shared<tyloi::weights::Memory>();
             tyloi::weights::LoadScope memory_load(*weight_memory_);
-            ::tyloi::cuda::NoGradGuard no_grad;
             config_ = internal::resolve_cuda_config(options_);
 
             const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();

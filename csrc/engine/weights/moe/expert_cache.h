@@ -2,6 +2,7 @@
 #include "env.h"
 
 #include "engine/weights/profile.h"
+#include "engine/weights/moe/options.h"
 
 #include <cstdint>
 #include <cstddef>
@@ -42,22 +43,10 @@ void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::sh
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor=false);
 class MoeQuantRangeSource;
 struct MoeCacheOptions {
+    tyloi::weights::CachePolicy policy;
     std::size_t host_bytes = 0;
     std::size_t host_limit = 0;
-    bool mapped = false;
-    int copy_blocks = 64;
-    int io_workers = 8;
-    bool overlap = true;
-    bool pipeline = false;
-    bool hybrid_cpu = false;
     bool preload = false;
-    bool assert_resident = false;
-    bool ram_pcie = false;
-    bool direct_ram = true;
-    bool adapt = true;
-    bool warm = true;
-    bool projection_heat = true;
-    std::optional<double> ram_fraction;
     bool two_stage = false;
     bool heterogeneous = true;
 };

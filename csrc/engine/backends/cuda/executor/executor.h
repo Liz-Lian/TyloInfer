@@ -46,9 +46,9 @@ public:
 #endif
     std::unique_ptr<tyloi::Executor::Scope> enter(int device);
     void join();
+    static Executor& current();
 #ifdef TYLOINFER_NATIVE_CUDA
     void wait();
-    static Executor& current();
     static const Ffn::Mode& current_ffn();
     std::unique_ptr<tyloi::Executor::Scope> enter(int device, const Ffn::Mode& mode);
     // Override only the policy on this active executor; retain its device and stream.

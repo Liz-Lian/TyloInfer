@@ -14,7 +14,6 @@
 #include <string>
 #include <vector>
 
-class TqExec;
 namespace tyloi { class MfeTensor; class NintRows; }
 namespace tyloi::weights { class Cache; }
 
@@ -96,7 +95,7 @@ private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
     Loader(const tyloi::source::Source& source, Options options, Placement placement,
-           Cache& cache, std::shared_ptr<TqExec> tq);
+           Cache& cache);
     friend class Cache;
     DenseTensor host_value(const std::string& name) const;
     std::shared_ptr<const ::tyloi::MfeTensor> build_experts(

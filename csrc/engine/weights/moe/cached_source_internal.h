@@ -34,7 +34,7 @@ public:
         else result.caller = tyloi::DeviceType::cuda;
         return result;
     }
-    bool pipeline_enabled() const { return cache_->options_.pipeline; }
+    bool pipeline_enabled() const { return cache_->options_.policy.pipeline; }
     bool two_stage_compatible() const {
         return std::all_of(cohorts_.begin(),cohorts_.end(),[](const auto& cohort) {
             const auto& p=*cohort.cpu;
@@ -626,7 +626,7 @@ private:
             const ::tyloi::DenseTensor& x, const MoeRoutePlan& route) {
         // This adapter preserves decode's one-token kernel dispatch. Prefill
         // keeps its grouped GPU execution until a multi-token adapter is ready.
-        if ((!cache_->complete_residency() && (!cache_->options_.hybrid_cpu)) || !quant_source_ ||
+        if ((!cache_->complete_residency() && (!cache_->options_.policy.hybrid_cpu)) || !quant_source_ ||
                 !quant_source_->host_cache() || !x.is_cuda()) return {};
         if (route.ids.size(0)!=1) {
             if (!cache_->complete_residency()) return {};

@@ -429,13 +429,14 @@ private:
     std::string name_;
     std::optional<CudaProfiler::Range> range_;
 };
+#endif
 
 class ExecutorScope;
 thread_local ExecutorScope* active_scope = nullptr;
-#endif
 
 class ExecutorScope final : public tyloi::Executor::Scope {
 public:
+    Executor& owner;
 #ifdef TYLOINFER_NATIVE_CUDA
     ExecutorScope(Executor& executor, int primary, ContextSet& contexts, const Ffn::Mode& mode)
         : owner(executor), ffn(mode), native_(std::in_place, primary, contexts),
@@ -448,18 +449,15 @@ public:
             throw std::logic_error("CUDA executor is not active");
         active_scope = this;
     }
-    Executor& owner;
     Ffn::Mode ffn;
 #else
     ExecutorScope(Executor& executor, int primary, ContextSet& contexts)
-        : native_(primary, contexts) {
-        (void)executor;
+        : owner(executor), native_(primary, contexts), previous_(active_scope) {
+        active_scope = this;
     }
 #endif
     ~ExecutorScope() override {
-#ifdef TYLOINFER_NATIVE_CUDA
         active_scope = previous_;
-#endif
     }
 
 private:
@@ -470,9 +468,7 @@ private:
     CudaScope native_;
     ::tyloi::cuda::NoGradGuard no_grad_;
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA
     ExecutorScope* previous_;
-#endif
 };
 } // namespace
 
@@ -505,16 +501,16 @@ std::unique_ptr<tyloi::Executor::Scope> Executor::enter(const Ffn::Mode& mode) {
     return std::make_unique<ExecutorScope>(*this, mode);
 }
 
-Executor& Executor::current() {
-    if (!active_scope) throw std::runtime_error("no active CUDA executor scope");
-    return active_scope->owner;
-}
-
 const Ffn::Mode& Executor::current_ffn() {
     if (!active_scope) throw std::runtime_error("no active CUDA executor scope");
     return active_scope->ffn;
 }
 #endif
+
+Executor& Executor::current() {
+    if (!active_scope) throw std::runtime_error("no active CUDA executor scope");
+    return active_scope->owner;
+}
 
 DenseTensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
 #ifdef TYLOINFER_NATIVE_CUDA

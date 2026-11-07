@@ -446,7 +446,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
     if (state.decode_position_delta != 0)
         positions = positions + state.decode_position_delta;
     DenseTensor host_ids, cpu_positions;
-    if (execution->config.moe_pipeline || execution->config.dense_cpu_layer_count > 0) {
+    if (execution->config.cache.pipeline || execution->config.dense_cpu_layer_count > 0) {
         host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         cpu_positions = positions.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
     }

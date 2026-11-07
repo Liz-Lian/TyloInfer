@@ -670,24 +670,24 @@ std::pair<tyloi::cuda::CudaLoadConfig, tyloi::cuda::Executor::Options> tyloi::cu
         "TYLOINFER_ATTENTION_DECODE_SPLITK", true);
     result.deepseek_v41_engram_cache_rows = tyloi::cuda::env_size(
         "TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_ROWS", 16'384);
-    result.moe_mapped_gather = tyloi::cuda::env_flag("TYLOINFER_MOE_MAPPED_GATHER", false);
-    result.moe_mapped_copy_blocks = tyloi::cuda::env_int(
+    result.cache.mapped = tyloi::cuda::env_flag("TYLOINFER_MOE_MAPPED_GATHER", false);
+    result.cache.copy_blocks = tyloi::cuda::env_int(
         "TYLOINFER_MOE_MAPPED_COPY_BLOCKS", 64, 4, 128);
-    result.moe_ssd_io_workers = tyloi::cuda::env_int(
+    result.cache.io_workers = tyloi::cuda::env_int(
         "TYLOINFER_MOE_SSD_IO_WORKERS", 8, 1, 64);
-    result.moe_ssd_overlap = enabled_unless_disabled(
+    result.cache.overlap = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SSD_OVERLAP");
     result.weights.ranges = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SSD_RANGES");
-    result.moe_pipeline = tyloi::cuda::env_flag("TYLOINFER_MOE_PIPELINE",false);
-    result.moe_hybrid_cpu = tyloi::cuda::env_flag("TYLOINFER_MOE_HYBRID_CPU",false);
+    result.cache.pipeline = tyloi::cuda::env_flag("TYLOINFER_MOE_PIPELINE",false);
+    result.cache.hybrid_cpu = tyloi::cuda::env_flag("TYLOINFER_MOE_HYBRID_CPU",false);
     result.weights.preload = tyloi::cuda::env_flag("TYLOINFER_MOE_PRELOAD_ALL",false);
-    result.moe_assert_resident = tyloi::cuda::env_flag("TYLOINFER_MOE_ASSERT_RESIDENT",false);
-    result.moe_ram_pcie = tyloi::cuda::env_flag("TYLOINFER_MOE_RAM_PCIE",false);
-    result.moe_direct_ram = tyloi::cuda::env_flag("TYLOINFER_MOE_DIRECT_RAM",true);
-    result.moe_residency_adapt = tyloi::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_ADAPT",true);
-    result.moe_residency_warm = tyloi::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_WARM",true);
-    result.moe_residency_projection_heat = tyloi::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_PROJECTION_HEAT",true);
+    result.cache.assert_resident = tyloi::cuda::env_flag("TYLOINFER_MOE_ASSERT_RESIDENT",false);
+    result.cache.ram_pcie = tyloi::cuda::env_flag("TYLOINFER_MOE_RAM_PCIE",false);
+    result.cache.direct_ram = tyloi::cuda::env_flag("TYLOINFER_MOE_DIRECT_RAM",true);
+    result.cache.adapt = tyloi::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_ADAPT",true);
+    result.cache.warm = tyloi::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_WARM",true);
+    result.cache.projection_heat = tyloi::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_PROJECTION_HEAT",true);
     numeric.residual.fused_projections = tyloi::cuda::env_flag("TYLOINFER_GR_FUSED_PROJECTIONS",true);
     numeric.residual.fused_activation = tyloi::cuda::env_flag("TYLOINFER_GR_FUSED_PROJECTION_ACTIVATION",true);
     numeric.residual.fused_post_norm = tyloi::cuda::env_flag("TYLOINFER_GR_FUSED_POST_NORM",true);
@@ -705,9 +705,9 @@ std::pair<tyloi::cuda::CudaLoadConfig, tyloi::cuda::Executor::Options> tyloi::cu
         const auto fraction = std::stod(*value,&end);
         if (end != value->size() || !std::isfinite(fraction) || fraction < 0 || fraction > 1)
             throw std::invalid_argument("TYLOINFER_MOE_RAM_PCIE_FRACTION must be in [0,1]");
-        result.moe_ram_pcie_fraction = fraction;
+        result.cache.ram_fraction = fraction;
     }
     result.weights.quant.heterogeneous = numeric.projection.moe.heterogeneous;
-    result.weights.mapped_embedding = result.moe_pipeline && result.moe_ram_pcie;
+    result.weights.mapped_embedding = result.cache.pipeline && result.cache.ram_pcie;
     return {std::move(result), std::move(numeric)};
 }

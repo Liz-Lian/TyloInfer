@@ -1665,7 +1665,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // A fixed full PCIe quota schedules every cold expert on the GPU.
         // CPU dispatch replays retain their original wait, even with that quota.
         cell.skip_cpu_wait=cell.two_stage && ::tyloi::cuda::options::skip_gpu_only_cpu_wait() &&
-            cache_->options_.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
+            cache_->options_.policy.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
             std::all_of(cache_->pipeline_dispatch_replay_.begin(),cache_->pipeline_dispatch_replay_.end(),
                 [](const auto& record){return record.cpu.empty();});
         // The same fixed-quota proof also excludes CPU calibration and CPU
@@ -1678,7 +1678,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // arithmetic rate. Keep timing whenever detailed DMA profiling needs
         // these event origins, or a dispatch replay can contain CPU work.
         cell.skip_gpu_timing=cell.two_stage && ::tyloi::cuda::options::skip_fixed_gpu_timing() &&
-            cache_->options_.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
+            cache_->options_.policy.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
             !::tyloi::cuda::options::moe_diagnostics().dma &&
             std::all_of(cache_->pipeline_dispatch_replay_.begin(),cache_->pipeline_dispatch_replay_.end(),
                 [](const auto& record){return record.cpu.empty();});
@@ -2409,7 +2409,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 }
             }
         }
-        if(!cell.batch_decode || cache_->options_.ram_fraction) {
+        if(!cell.batch_decode || cache_->options_.policy.ram_fraction) {
             const auto quota=!cell.batch_decode ? misses : static_cast<std::size_t>(misses*cache_->ram_pcie_fraction_);
             if(cell.reuse_plan)tyloi::assign_moe_transfer_quota(cell.plan,quota,[](int){return true;});
             else cell.plan=tyloi::plan_moe_dispatch(ids,experts_,quota,resident,[](int){return true;});
