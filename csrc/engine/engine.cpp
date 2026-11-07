@@ -63,7 +63,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
-        budget_->prepare(Budget::Stage::loaded, source_.get());
+        weights_->prepare(::tyloi::weights::Cache::Stage::loaded, Device(kCUDA, forward_options_.primary), source_.get());
         ready_ = true;
     } catch (...) {
         const auto failure = std::current_exception();

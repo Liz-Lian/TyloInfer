@@ -97,7 +97,7 @@ struct Text {
             }
         }
 #endif
-        budget->configure_decode(spare,graph_draft_depth);
+        weights.configure_decode(spare,graph_draft_depth);
     }
 
     void prepare_graph_depth(const InferenceRequest& input) {
@@ -129,7 +129,8 @@ struct Text {
                 graph_draft_depth=depth;
                 preparing_graph_depth=false;
                 configure_decode_budget();
-                budget->prepare(tyloi::engine::Budget::Stage::loaded, source.get());
+                weights.prepare(::tyloi::weights::Cache::Stage::loaded,
+                    tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()), source.get());
             } catch(...) {
                 graph_draft_depth=0;preparing_graph_depth=false;
                 throw;
@@ -250,7 +251,8 @@ struct Text {
         }
         preparing_graph_depth=false;
         configure_decode_budget();
-        budget->prepare(tyloi::engine::Budget::Stage::loaded, source.get());
+        weights.prepare(::tyloi::weights::Cache::Stage::loaded,
+            tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()), source.get());
         } catch (...) {
             const auto failure = std::current_exception();
             try {

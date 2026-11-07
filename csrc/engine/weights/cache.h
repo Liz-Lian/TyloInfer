@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,13 @@ const CacheData& cache(const Cache& value);
 class Cache {
 public:
     enum class Graph { native, legacy };
+    enum class Prefill { regular, streamed, retained };
+    enum class Stage { loaded, decode, snapshot };
+    struct PrefillBudget {
+        std::size_t reserve_bytes = 0;
+        std::size_t lendable_bytes = 0;
+        std::size_t transfer_bytes = 0;
+    };
     struct Activity {
         std::uint64_t streamed_bytes = 0;
         std::uint64_t graph_captures = 0;
@@ -76,6 +84,8 @@ public:
     std::size_t budget() const;
     std::size_t minimum() const;
     bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;
+    bool needs_finalize() const;
+    void finalize(std::size_t reserve = 0, std::size_t kv_charge = 0);
     void resize(std::size_t bytes);
     std::size_t reserve(std::size_t bytes);
     void drain() const;
@@ -84,8 +94,14 @@ public:
     void release_workspace(std::size_t required_available =
         std::numeric_limits<std::size_t>::max(), const char* reason = nullptr);
     void clear_workspace() noexcept;
-    std::size_t lend_decode(std::size_t maximum_minus_active);
-    void restore_workspace(std::size_t reserve_bytes, const source::Source* source);
+    Prefill prefill_mode(std::size_t tokens, bool resumed) const;
+    PrefillBudget prefill_budget(bool allow_borrow) const;
+    void workspace(std::size_t bytes);
+    void request(bool retire_decode);
+    std::optional<std::size_t> prepare_prefill(Device device, std::size_t tokens,
+        std::int64_t limit, Prefill mode, bool retire_decode);
+    void configure_decode(std::size_t lendable_bytes, int graph_depth);
+    void prepare(Stage stage, Device device, const source::Source* source);
     void prepare_kv();
     KvRegion lend_kv(const Tensor& backing, std::int64_t capacity, std::size_t row_bytes,
         bool prefix, std::int64_t ratio = 1);
@@ -102,6 +118,8 @@ private:
     friend detail::CacheData& detail::cache(Cache& value);
     friend const detail::CacheData& detail::cache(const Cache& value);
     std::unique_ptr<detail::CacheData> data_;
+    std::size_t lend_decode(std::size_t maximum_minus_active);
+    void restore_workspace(std::size_t reserve_bytes, const source::Source* source);
     std::size_t prefill_workspace_capacity() const noexcept;
     void append_workspace_metrics(std::vector<std::pair<std::string, double>>& metrics) const;
 };

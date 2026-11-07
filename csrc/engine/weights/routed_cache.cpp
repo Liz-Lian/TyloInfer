@@ -1,10 +1,12 @@
 #include "engine/weights/cache_internal.h"
 
 #include "engine/backends/cuda/native/context.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/source/source.h"
 #include "engine/weights/tq/cache.h"
 
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 
@@ -92,6 +94,74 @@ bool Cache::graph_safe(Graph kind, bool parallel) const {
     return !data_->moe && !(data_->tq && (parallel || kind == Graph::legacy));
 }
 
+Cache::Prefill Cache::prefill_mode(std::size_t tokens, bool resumed) const {
+    if (resumed && tokens <= 128 && moe_expert_cache_ssd_experts(data_->moe)) return Prefill::retained;
+    if (tokens > 8 && moe_expert_cache_ssd_experts(data_->moe)) return Prefill::streamed;
+    return Prefill::regular;
+}
+
+Cache::PrefillBudget Cache::prefill_budget(bool allow_borrow) const {
+    const auto budget = moe_prefill_workspace_budget(data_->moe, allow_borrow);
+    const auto reserve = moe_expert_cache_ssd_experts(data_->moe)
+        ? std::max(std::size_t(1) << 30, cuda::options::workspace_reserve_bytes())
+        : std::size_t(1) << 30;
+    return {reserve, budget.lendable_bytes, budget.transfer_bytes};
+}
+
+void Cache::workspace(std::size_t bytes) {
+    reserve_moe_workspace(data_->moe, bytes);
+}
+
+void Cache::request(bool retire_decode) {
+    finish_moe_expert_exchanges(data_->moe);
+    if (retire_decode) release_moe_decode_buffers(data_->moe);
+    else release_moe_prefill_buffers(data_->moe);
+}
+
+std::optional<std::size_t> Cache::prepare_prefill(Device device, std::size_t tokens,
+        std::int64_t limit, Prefill mode, bool retire_decode) {
+    if (!device.is_cuda() || device.index < 0)
+        throw std::invalid_argument("budget requires a CUDA device");
+    if (mode == Prefill::retained) {
+        std::cerr << "runtime_streamed_prefill retained_decode=1 tokens=" << tokens
+                  << " chunk=" << std::min<std::int64_t>(4, limit) << '\n';
+        return std::nullopt;
+    }
+    if (mode == Prefill::streamed) {
+        const bool retained = lend_moe_decode_cache_for_prefill(data_->moe, cuda::options::workspace_reserve_bytes());
+        if (!retained && retire_decode) {
+            release_moe_decode_buffers(data_->moe);
+            cuda::default_context(device.index)->reclaim_idle_memory();
+        }
+    }
+    if (tokens > 1024 || moe_expert_cache_ssd_experts(data_->moe))
+        return cuda::options::workspace_reserve_bytes();
+    return std::nullopt;
+}
+
+void Cache::configure_decode(std::size_t lendable_bytes, int graph_depth) {
+    data_->decode_lendable_bytes = lendable_bytes;
+    data_->decode_graph_depth = graph_depth;
+}
+
+void Cache::prepare(Stage stage, Device device, const source::Source* source) {
+    if (stage == Stage::snapshot) {
+        release_moe_prefill_buffers(data_->moe);
+        return;
+    }
+    if (data_->tq || (stage == Stage::decode && !data_->moe)) return;
+    if (!device.is_cuda() || device.index < 0)
+        throw std::invalid_argument("budget requires a CUDA device");
+    prepare_moe_decode_residency(data_->moe);
+    cuda::default_context(device.index)->reclaim_idle_memory();
+    if (data_->moe && data_->decode_lendable_bytes) {
+        const auto bytes = lend_decode(data_->decode_lendable_bytes);
+        if (bytes) std::cerr << "runtime_mtp_workspace_cache action=lend depth="
+            << data_->decode_graph_depth << " bytes=" << bytes << '\n';
+    }
+    restore_workspace(cuda::options::workspace_reserve_bytes(), source);
+}
+
 void Cache::resize(std::size_t bytes) {
     if (data_->tq) data_->tq->resize(bytes);
     else resize_moe_expert_cache(data_->moe, bytes);
@@ -137,6 +207,8 @@ void Cache::reset() noexcept {
     data_->device_bytes.reset();
     data_->exec.reset();
     data_->kv.reset();
+    data_->decode_lendable_bytes = 0;
+    data_->decode_graph_depth = 0;
 }
 
 } // namespace tyloi::weights

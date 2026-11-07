@@ -86,6 +86,7 @@ tyloi::weights::Loan::Loan(Cache&) : impl_(std::make_unique<Impl>()) {}
 tyloi::weights::Loan::~Loan() = default;
 std::size_t tyloi::weights::Loan::begin(std::size_t) { return 0; }
 std::size_t tyloi::weights::Loan::predictor(std::size_t) { return 0; }
+std::size_t tyloi::weights::Loan::transfer_bytes() const { return 0; }
 void tyloi::weights::Loan::suspend() {}
 void tyloi::weights::Loan::finish() {}
 MoePrefillLayerPriority::MoePrefillLayerPriority(std::shared_ptr<MoeExpertCache> cache, int, int)

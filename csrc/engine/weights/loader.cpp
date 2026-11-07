@@ -812,6 +812,16 @@ std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
 }
 
 namespace tyloi::weights {
+bool Cache::needs_finalize() const {
+    const auto& moe = detail::cache(*this).moe;
+    return moe_expert_cache_has_sources(moe) && !moe_expert_cache_finalized(moe);
+}
+
+void Cache::finalize(std::size_t reserve, std::size_t kv_charge) {
+    if (needs_finalize())
+        finalize_moe_expert_cache(detail::cache(*this).moe, reserve, kv_charge);
+}
+
 std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vector<std::string>& names,
     size_t prefix, const std::vector<tyloi::TensorParallelSlice>* slices, bool preserve_boundaries) const {
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers;

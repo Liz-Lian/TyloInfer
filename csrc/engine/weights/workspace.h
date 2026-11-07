@@ -38,6 +38,7 @@ public:
     Loan& operator=(Loan&&) = delete;
     std::size_t begin(std::size_t bytes);
     std::size_t predictor(std::size_t bytes);
+    std::size_t transfer_bytes() const;
     void suspend();
     void finish();
     // Move the output out of borrowed storage before returning it to the cache.

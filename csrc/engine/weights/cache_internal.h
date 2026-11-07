@@ -21,6 +21,8 @@ struct CacheData {
     std::size_t host_limit = 0;
     std::shared_ptr<TqExec> exec;
     std::unique_ptr<Workspace> workspace;
+    std::size_t decode_lendable_bytes = 0;
+    int decode_graph_depth = 0;
 };
 
 } // namespace tyloi::weights::detail

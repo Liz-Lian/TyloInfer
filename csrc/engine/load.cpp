@@ -780,10 +780,8 @@ void finalize_kv(KvMemoryManager* kv, tyloi::weights::Cache& weights,
 std::chrono::steady_clock::time_point finish_load(
         KvMemoryManager* kv, tyloi::weights::Cache& weights, std::size_t graph_reserve,
         bool report_memory) {
-    auto& moe = tyloi::weights::detail::cache(weights).moe;
-    if (moe_expert_cache_has_sources(moe) &&
-            !moe_expert_cache_finalized(moe)) {
-        finalize_moe_expert_cache(moe,
+    if (weights.needs_finalize()) {
+        weights.finalize(
             (kv ? kv->growth_reserve() : 0) + graph_reserve,
             kv ? kv->expert_budget_charge() : 0);
     }

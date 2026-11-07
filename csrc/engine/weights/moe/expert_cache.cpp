@@ -1294,6 +1294,9 @@ std::size_t tyloi::weights::Loan::predictor(std::size_t bytes) {
     prepare_moe_decode_residency(impl_->cache);
     return begin(bytes + moe_prefill_transfer_bytes(impl_->cache, true));
 }
+std::size_t tyloi::weights::Loan::transfer_bytes() const {
+    return moe_prefill_transfer_bytes(impl_->cache, false);
+}
 void tyloi::weights::Loan::suspend(){if(active_)impl_->cache->suspend_prefill_loan();}
 void tyloi::weights::Loan::finish(){if(active_){impl_->cache->end_prefill_loan();active_=false;}}
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor) {

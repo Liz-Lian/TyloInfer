@@ -242,7 +242,7 @@ template <class Model, class State> struct CudaMtpOps {
     // Block predictors seed only their bounded target window and skip the
     // teacher-forced priming hook that restores workspace for chain predictors.
     if(!mtp.teacher_forced_prompt_prime() && budget)
-      budget->prepare(tyloi::engine::Budget::Stage::decode, source);
+      weights.prepare(::tyloi::weights::Cache::Stage::decode, tyloi::Device(tyloi::kCUDA, mode.primary), source);
     std::cerr<<"runtime_mtp_prefill target_ms="<<target_ms<<" predictor_ms="<<predictor_ms
         <<" predictor_workspace_ms="<<workspace_ms<<" streamed="<<stream_prompt_history(input_ids.size(1))<<std::endl;
   }
@@ -552,7 +552,7 @@ template <class Model, class State> struct CudaMtpOps {
   }
   double end_predictor_prefill() {
     if(predictor_loan){predictor_loan->finish();predictor_loan.reset();}
-    if (budget) budget->prepare(tyloi::engine::Budget::Stage::decode, source);
+    if (budget) weights.prepare(::tyloi::weights::Cache::Stage::decode, tyloi::Device(tyloi::kCUDA, mode.primary), source);
     // Every predictor tile has already synchronized its compute-end event.
     // Returning the expert loan is TTFT maintenance, not prompt computation.
     return 0;

@@ -653,7 +653,7 @@ struct Qwen4MtpGraph {
                const DenseTensor& positions = {},bool history_only=false,bool scalar_history=false) {
         using ProfileTime=std::chrono::steady_clock;
         const auto profile_started=ProfileTime::now();
-        const auto profile_transfer_before=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(predictor.execution->weights).moe);
+        const auto profile_transfer_before=predictor.execution->weights.activity().streamed_bytes;
         TYLOINFER_RUNTIME_CHECK(!failed && stream.stream()==mfq_current_cuda_stream(),"MTP predictor graph is unavailable");
         auto& execution=*predictor.execution;auto& block=*predictor.layers[0];
         last_compact={};
@@ -755,7 +755,7 @@ struct Qwen4MtpGraph {
                     ms(profile_started,profile_released),ms(profile_released,profile_exchange_begin),
                     ms(profile_exchange_begin,profile_exchange_end),ms(profile_exchange_end,profile_run_begin),
                     ms(profile_run_begin,profile_run_end),ms(profile_run_end,ProfileTime::now()),
-                    (moe_expert_streamed_bytes(::tyloi::weights::detail::cache(execution.weights).moe)-profile_transfer_before)/1048576.0);
+                    (execution.weights.activity().streamed_bytes-profile_transfer_before)/1048576.0);
             }
             if(history_only)return {};
             if(predictor.compact_graph_sampling && cell.logits.size(-1)>=64)last_compact=cell.compact_host;
@@ -2268,7 +2268,7 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(qwen4_exp::Model& model,
     auto ids=::tyloi::cuda::cat(chunks,1);
     auto host_ids=ids.to(::tyloi::kCPU);
     const auto tokens=offsets.back();
-    if(tokens>1024)reserve_moe_workspace(::tyloi::weights::detail::cache(model.execution->weights).moe,::tyloi::cuda::options::workspace_reserve_bytes());
+    if(tokens>1024)model.execution->weights.workspace(::tyloi::cuda::options::workspace_reserve_bytes());
     if(!packed) {
         if(model.reserve_kv_workspace)
             model.reserve_kv_workspace(requests.front()->state_->growth_bytes(tokens)+(std::size_t(256)<<20));
@@ -2551,7 +2551,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
         // Their previous hidden input and the assembled FFN output can overlap
         // them at a layer boundary. Include that third sequence-sized buffer.
         const auto sequence_reserve=std::size_t(tokens)*model.config.hidden*model.config.streams*sizeof(float)*3;
-        const auto budget=moe_prefill_workspace_budget(::tyloi::weights::detail::cache(model.execution->weights).moe,true);
+        const auto budget=model.execution->weights.prefill_budget(true);
         const auto planned_fixed=tyloi::engine::prefill_budget_add(reserve+sequence_reserve,budget.transfer_bytes);
         const auto planned_available=tyloi::engine::prefill_budget_add(
             context->available_memory()+context->workspace_available(),budget.lendable_bytes);
@@ -2560,7 +2560,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
         borrowed_workspace=workspace_loan.begin(planned_fixed+std::size_t(compute_chunk)*row_bytes)>0;
         const auto available=context->available_memory()+context->workspace_available();
         const auto requested=compute_chunk;
-        const auto fixed=reserve+sequence_reserve+moe_prefill_transfer_bytes(::tyloi::weights::detail::cache(model.execution->weights).moe);
+        const auto fixed=reserve+sequence_reserve+workspace_loan.transfer_bytes();
         compute_chunk=tyloi::engine::select_prefill_chunk(tokens,compute_chunk,available,fixed,row_bytes);
         TYLOINFER_RUNTIME_CHECK(compute_chunk>0,"insufficient CUDA prefill workspace after expert loan");
         if(compute_chunk!=requested)std::cerr<<"runtime_prefill_chunk_budget requested="<<requested

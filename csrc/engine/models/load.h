@@ -29,8 +29,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
-#include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/state.h"
 #include "engine/models/minicpmo45/state.h"
@@ -63,9 +62,7 @@ inline constexpr auto with_model = []<typename F>(
             execution.weights, execution.offload);
         std::size_t graph_reserve=0;
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            const auto& moe = tyloi::weights::detail::cache(execution.weights).moe;
-            if (moe_expert_cache_has_sources(moe) &&
-                    !moe_expert_cache_finalized(moe)) {
+            if (execution.weights.needs_finalize()) {
                 graph_reserve=qwen4_mtp_graph_reserve(model,components.mtp.get());
                 if(graph_reserve)std::cerr<<"runtime_mtp_flexible_budget maximum_depth="
                     <<components.mtp->maximum_draft_depth()<<" bytes="<<graph_reserve

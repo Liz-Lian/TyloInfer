@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/weights/cache.h"
 #include "engine/weights/workspace.h"
 #include "engine/config.h"
 #include "engine/budget.h"
@@ -320,7 +321,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         const auto token=pending.template item<int64_t>();
         // Prefill temporaries have retired; expert-cache maintenance remains
         // before token publication, inside TTFT for every CUDA model family.
-        if (budget) budget->prepare(tyloi::engine::Budget::Stage::decode, source);
+        if (budget) weights.prepare(::tyloi::weights::Cache::Stage::decode, tyloi::Device(tyloi::kCUDA, mode.primary), source);
         return token;
     }
 

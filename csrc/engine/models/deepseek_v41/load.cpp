@@ -8,8 +8,7 @@
 #include "engine/models/common/model_graph.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/deepseek_v41/components.h"
-#include "engine/weights/cache_internal.h"
-#include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/cache.h"
 
 #include <stdexcept>
 #include <utility>
@@ -58,9 +57,8 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
          execution.config.tensor_parallel, moe_parallel_config(execution.config)});
     detail::ModelLoader<Model> weights{model, tensors};
     model.load_weights(weights, load_blocks);
-    if (moe_expert_cache_has_sources(::tyloi::weights::detail::cache(execution.weights).moe) &&
-        !moe_expert_cache_finalized(::tyloi::weights::detail::cache(execution.weights).moe) && !defer_moe_cache_finalize)
-        finalize_moe_expert_cache(::tyloi::weights::detail::cache(execution.weights).moe);
+    if (!defer_moe_cache_finalize)
+        execution.weights.finalize();
     if (load_optional_components)
         load_components(model, tensors, true);
 }

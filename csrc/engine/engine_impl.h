@@ -432,7 +432,8 @@ private:
         }
 
         preparing_ = false;
-        budget_->prepare(engine::Budget::Stage::loaded, source_.get());
+        weights_.prepare(::tyloi::weights::Cache::Stage::loaded,
+            tyloi::Device(tyloi::kCUDA, execution_->config.layer_placement.primary_device()), source_.get());
 
         info_ = {};
         info_.max_requests = std::max<std::size_t>(

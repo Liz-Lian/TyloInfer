@@ -140,7 +140,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_return;
     }
     auto token = ops::item(*pending);
-    budget_->prepare(Budget::Stage::decode, source_.get());
+    weights.prepare(::tyloi::weights::Cache::Stage::decode, Device(kCUDA, forward_options.primary), source_.get());
     const bool graph_active = config.decode_graph.enabled &&
         (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
         graph.graph &&
