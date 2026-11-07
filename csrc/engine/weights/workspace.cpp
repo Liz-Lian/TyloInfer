@@ -10,6 +10,7 @@
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -33,60 +34,98 @@ bool is_memory_pressure(const std::exception& error) {
 
 } // namespace
 
-ExpertSpace::ExpertSpace(RoutedCache& weights, int device,
-        std::shared_ptr<KvExpertLoan> loan)
-    : weights_(weights), device_(device), loan_(std::move(loan)) {}
+struct RoutedCache::Workspace {
+    struct PrefillRegion {
+        ::tyloi::DenseTensor storage;
+        std::size_t region = 0;
+    };
 
-ExpertSpace::~ExpertSpace() noexcept {
+    int device = 0;
+    std::shared_ptr<KvExpertLoan> loan;
+    ::tyloi::DenseTensor decode_storage;
+    std::optional<std::size_t> decode_region;
+    std::vector<PrefillRegion> prefill_regions;
+    std::uint64_t prefill_reclaimed_used_bytes = 0;
+};
+
+RoutedCache::RoutedCache() = default;
+RoutedCache::~RoutedCache() { clear_workspace(); }
+
+void RoutedCache::workspace(int device, std::shared_ptr<KvExpertLoan> loan) {
+    clear_workspace();
+    workspace_ = std::make_unique<Workspace>();
+    workspace_->device = device;
+    workspace_->loan = std::move(loan);
+}
+
+void RoutedCache::clear_workspace() noexcept {
+    if (!workspace_) return;
     try {
-        release();
+        release_workspace();
     } catch (const std::exception& error) {
         std::cerr << "runtime_mtp_workspace_cache cleanup_error="
             << error.what() << '\n';
     } catch (...) {
         std::cerr << "runtime_mtp_workspace_cache cleanup_error=unknown\n";
     }
+    workspace_.reset();
 }
 
-bool ExpertSpace::empty() const noexcept {
-    return !decode_region_ && prefill_regions_.empty();
+bool RoutedCache::has_decode_workspace() const noexcept {
+    return workspace_ && workspace_->decode_region.has_value();
 }
 
-void ExpertSpace::release(std::size_t required_available) {
-    if (empty()) return;
+std::size_t RoutedCache::prefill_workspace_capacity() const noexcept {
+    std::size_t bytes = 0;
+    if (workspace_)
+        for (const auto& part : workspace_->prefill_regions) bytes += part.storage.nbytes();
+    return bytes;
+}
 
-    finish_moe_expert_exchanges(weights_.moe);
+void RoutedCache::release_workspace(std::size_t required_available, const char* reason) {
+    if (!workspace_ || (!workspace_->decode_region && workspace_->prefill_regions.empty())) return;
+    auto& w = *workspace_;
+    if (reason) {
+        const auto context = default_context(w.device);
+        std::cerr << "runtime_workspace_cache_reclaim reason=" << reason
+            << " requested_bytes=" << required_available
+            << " available_bytes=" << context->available_memory() << '\n';
+    }
+
+    finish_moe_expert_exchanges(moe);
     TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
-    const auto context = default_context(device_);
+    const auto context = default_context(w.device);
     const bool all = required_available == std::numeric_limits<std::size_t>::max();
-    while (!prefill_regions_.empty() &&
+    while (!w.prefill_regions.empty() &&
             (all || context->available_memory() < required_available)) {
-        const auto& part = prefill_regions_.back();
+        const auto& part = w.prefill_regions.back();
         const auto bytes = part.storage.nbytes();
-        const auto used = loan_->region_bytes(part.region);
-        loan_->remove(part.region);
-        prefill_reclaimed_used_bytes_ += used;
-        prefill_regions_.pop_back();
+        const auto used = w.loan->region_bytes(part.region);
+        w.loan->remove(part.region);
+        w.prefill_reclaimed_used_bytes += used;
+        w.prefill_regions.pop_back();
         context->reclaim_idle_memory();
         std::cerr << "runtime_prefill_workspace_cache action=reclaim bytes="
             << bytes << " used_bytes=" << used << '\n';
     }
-    if (decode_region_ &&
+    if (w.decode_region &&
             (all || context->available_memory() < required_available)) {
-        const auto bytes = decode_storage_.nbytes();
-        loan_->remove(*decode_region_);
-        decode_region_.reset();
-        decode_storage_ = {};
+        const auto bytes = w.decode_storage.nbytes();
+        w.loan->remove(*w.decode_region);
+        w.decode_region.reset();
+        w.decode_storage = {};
         std::cerr << "runtime_mtp_workspace_cache action=reclaim bytes="
             << bytes << '\n';
     }
     context->reclaim_idle_memory();
 }
 
-std::size_t ExpertSpace::lend_decode(std::size_t maximum_minus_active) {
-    if (decode_region_ || !loan_ || !maximum_minus_active) return 0;
+std::size_t RoutedCache::lend_decode(std::size_t maximum_minus_active) {
+    if (!workspace_) return 0;
+    auto& w = *workspace_;
+    if (w.decode_region || !w.loan || !maximum_minus_active) return 0;
 
-    const auto context = default_context(device_);
+    const auto context = default_context(w.device);
     const auto available = context->available_memory();
     constexpr auto headroom = std::size_t(256) << 20;
     auto bytes = std::min(maximum_minus_active,
@@ -96,24 +135,26 @@ std::size_t ExpertSpace::lend_decode(std::size_t maximum_minus_active) {
 
     ResidentAllocationScope resident;
     try {
-        decode_storage_ = make_storage(bytes);
+        w.decode_storage = make_storage(bytes);
     } catch (const std::exception& error) {
         if (!is_memory_pressure(error)) throw;
         std::cerr << "runtime_mtp_workspace_cache action=skip reason=memory_pressure\n";
         return 0;
     }
-    decode_region_ = loan_->add(decode_storage_, static_cast<std::int64_t>(bytes),
+    w.decode_region = w.loan->add(w.decode_storage, static_cast<std::int64_t>(bytes),
         1, true, 1, true, true);
     return bytes;
 }
 
-void ExpertSpace::restore(std::size_t reserve_bytes, const tyloi::source::Source* source) {
-    if (!loan_) return;
+void RoutedCache::restore_workspace(std::size_t reserve_bytes, const tyloi::source::Source* source) {
+    if (!workspace_) return;
+    auto& w = *workspace_;
+    if (!w.loan) return;
 
     bool ssd = false;
     std::size_t transfer = 0;
     std::size_t streamed = 0;
-    const auto expert_metrics = weights_.metrics();
+    const auto expert_metrics = metrics();
     for (const auto& [name, value] : expert_metrics) {
         if (name == "ssd_expert_enabled") ssd = value != 0;
         if (name == "expert_decode_stage_budget_bytes") transfer = std::size_t(value);
@@ -139,13 +180,13 @@ void ExpertSpace::restore(std::size_t reserve_bytes, const tyloi::source::Source
         std::cerr << '\n';
     }
 
-    const auto existing = prefill_capacity();
+    const auto existing = prefill_workspace_capacity();
     const auto decode = (std::size_t(1280) << 20) + transfer;
     const auto target = std::max(streamed,
         reserve_bytes > decode ? reserve_bytes - decode : std::size_t(0));
     if (existing >= target) return;
 
-    const auto context = default_context(device_);
+    const auto context = default_context(w.device);
     const auto available = context->available_memory();
     constexpr auto headroom = std::size_t(256) << 20;
     auto bytes = std::min(target - existing,
@@ -163,30 +204,37 @@ void ExpertSpace::restore(std::size_t reserve_bytes, const tyloi::source::Source
             if (!is_memory_pressure(error)) throw;
             break;
         }
-        prefill_regions_.reserve(prefill_regions_.size() + 1);
-        const auto region = loan_->add(storage, static_cast<std::int64_t>(chunk),
+        w.prefill_regions.reserve(w.prefill_regions.size() + 1);
+        const auto region = w.loan->add(storage, static_cast<std::int64_t>(chunk),
             1, true, 1, true, true);
-        prefill_regions_.push_back({std::move(storage), region});
+        w.prefill_regions.push_back({std::move(storage), region});
         bytes -= chunk;
     }
-    const auto capacity = prefill_capacity();
+    const auto capacity = prefill_workspace_capacity();
     std::cerr << "runtime_prefill_workspace_cache action=lend bytes="
         << capacity - existing
         << " capacity_bytes=" << capacity
         << " reserve_bytes=" << reserve_bytes << '\n';
 }
 
-ExpertSpace::Metrics ExpertSpace::metrics() const {
-    Metrics result;
-    result.decode_capacity = decode_storage_.defined() ? decode_storage_.nbytes() : 0;
-    result.decode_used = decode_region_ && loan_
-        ? loan_->region_bytes(*decode_region_) : 0;
-    result.prefill_capacity = prefill_capacity();
-    for (const auto& part : prefill_regions_) {
-        if (loan_) result.prefill_used += loan_->region_bytes(part.region);
+void RoutedCache::append_workspace_metrics(
+        std::vector<std::pair<std::string, double>>& metrics) const {
+    std::size_t decode_capacity = 0, decode_used = 0, prefill_used = 0;
+    std::uint64_t prefill_reclaimed_used = 0;
+    if (workspace_) {
+        const auto& w = *workspace_;
+        decode_capacity = w.decode_storage.defined() ? w.decode_storage.nbytes() : 0;
+        decode_used = w.decode_region && w.loan ? w.loan->region_bytes(*w.decode_region) : 0;
+        for (const auto& part : w.prefill_regions)
+            if (w.loan) prefill_used += w.loan->region_bytes(part.region);
+        prefill_reclaimed_used = w.prefill_reclaimed_used_bytes;
     }
-    result.prefill_reclaimed_used = prefill_reclaimed_used_bytes_;
-    return result;
+    metrics.insert(metrics.end(), {
+        {"mtp_flexible_expert_capacity_bytes", double(decode_capacity)},
+        {"mtp_flexible_expert_used_bytes", double(decode_used)},
+        {"prefill_workspace_expert_capacity_bytes", double(prefill_workspace_capacity())},
+        {"prefill_workspace_expert_used_bytes", double(prefill_used)},
+        {"prefill_workspace_expert_reclaimed_used_bytes", double(prefill_reclaimed_used)}});
 }
 
 } // namespace tyloi::cuda

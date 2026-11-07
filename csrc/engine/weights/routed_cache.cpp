@@ -22,7 +22,9 @@ std::shared_ptr<TqCache> RoutedCache::ensure_tq(const std::shared_ptr<TqExec>& e
 }
 
 std::vector<std::pair<std::string, double>> RoutedCache::metrics() const {
-    return tq ? tq->metrics() : moe_expert_memory_metrics(moe);
+    auto result = tq ? tq->metrics() : moe_expert_memory_metrics(moe);
+    append_workspace_metrics(result);
+    return result;
 }
 
 std::size_t RoutedCache::budget() const {
@@ -43,6 +45,7 @@ WeightLoan RoutedCache::borrow(std::size_t bytes) {
 }
 
 void RoutedCache::reset() noexcept {
+    clear_workspace();
     moe.reset();
     tq.reset();
     device_bytes.reset();

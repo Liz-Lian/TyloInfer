@@ -345,7 +345,7 @@ void KvMemoryManager::ensure(int64_t tokens) {
     if(expert_loan_)expert_loan_->ensure(tokens);
     std::size_t growth=0;
     for(auto& weak:allocations_)if(auto a=weak.lock())growth+=a->growth_bytes(std::min(a->maximum,tokens));
-    if(growth && budget_)budget_->reserve_kv(growth+(64ULL<<20), expert_space_);
+    if(growth && budget_)budget_->reserve_kv(growth+(64ULL<<20));
     for(auto& weak:allocations_)if(auto a=weak.lock())a->ensure(std::min(a->maximum,tokens));
 }
 std::size_t KvMemoryManager::growth_reserve() const {

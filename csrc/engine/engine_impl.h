@@ -16,7 +16,6 @@
 #include "engine/models/common/components.h"
 #include "engine/models/common/prompt.h"
 #include "engine/scheduler/request.h"
-#include "engine/weights/workspace.h"
 #include "engine/generation/batch.h"
 #include "engine/generate.h"
 #include "engine/backends/cuda/executor/options.h"
@@ -127,7 +126,7 @@ protected:
                 execution_->executor().pipelines().clear();
                 offload_.reset();
                 kv_.reset();
-                expert_space_.reset();
+                weights_.clear_workspace();
                 budget_.reset();
                 cache_.reset();
                 weights_.reset();
@@ -264,7 +263,6 @@ private:
     std::optional<internal::TextSessionCache> cache_;
     std::optional<Budget> budget_;
     std::unique_ptr<engine::Batch> batching_;
-    std::optional<ExpertSpace> expert_space_;
     std::function<void()> restore_decode_workspace_;
     std::unique_ptr<engine::TextProcessor> text_;
     engine::EngineInfo info_;
@@ -300,13 +298,12 @@ private:
         if (weights_.tq || preparing_) return;
         prepare_moe_decode_residency(weights_.moe);
         default_context(execution_->config.layer_placement.primary_device())->reclaim_idle_memory();
-        if (expert_space_)
-            expert_space_->restore(runtime_options::workspace_reserve_bytes(), source_.get());
+        weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source_.get());
     }
 
     void clear_bindings() noexcept {
         restore_decode_workspace_ = {};
-        if (kv_) kv_->bind_budget(nullptr, nullptr);
+        if (kv_) kv_->bind_budget(nullptr);
         bind_moe_budget(weights_.moe, nullptr);
         if (offload_) offload_->bind_budget(nullptr);
     }
@@ -316,7 +313,7 @@ private:
             throw std::invalid_argument(
                 "online memory budgeting requires a single-device CUDA worker");
         auto change = budget_->change(command);
-        if (expert_space_) expert_space_->release();
+        weights_.release_workspace();
         finish_moe_expert_exchanges(weights_.moe);
         graph_->invalidate();
         if (batching_) batching_->release_idle_buffers();
@@ -441,13 +438,12 @@ private:
                 set_moe_kv_expert_loan(weights_.moe, expert_loan);
             }
             if (expert_loan) {
-                expert_space_.emplace(
-                    weights_, execution_->config.layer_placement.primary_device(),
+                weights_.workspace(
+                    execution_->config.layer_placement.primary_device(),
                     std::move(expert_loan));
             }
             restore_decode_workspace_ = [this] { restore_graph_expert_space(); };
-            bind_moe_budget(weights_.moe, &*budget_,
-                expert_space_ ? &*expert_space_ : nullptr);
+            bind_moe_budget(weights_.moe, &*budget_);
         }
 #endif
         if (const auto bytes = runtime_options::resident_budget_bytes()) {
@@ -497,7 +493,7 @@ private:
             return engine_detail::runtime_metrics(
                 component_metrics, profile_metrics, std::move(memory), streamed_kv, mtp,
                 &mtp_state_, 3,
-                expert_space_ ? &*expert_space_ : nullptr, batching_.get(),
+                batching_.get(),
                 source_.get(), *weight_memory_, weights_, kv_.get(),
                 offload_.get(), *cache_, *budget_,
                 execution_->executor().memory(cuda_devices(execution_->config)),

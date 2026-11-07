@@ -10,7 +10,6 @@
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/engine.h"
-#include "engine/weights/workspace.h"
 #include "engine/weights/memory.h"
 #include "components/error.h"
 
@@ -43,15 +42,11 @@ Budget::Budget(tyloi::weights::Memory& weight_memory, RoutedCache& weights,
       primary_device_(primary_device), initial_expert_budget_(weights.budget()),
       allocation_ceiling_(default_context(primary_device)->memory_stats().limit) {}
 
-void Budget::reclaim(std::size_t bytes, ExpertSpace* space) {
+void Budget::reclaim(std::size_t bytes) {
     auto context=default_context(primary_device_);
     const auto available=context->available_memory();
     if(available>=bytes)return;
-    if(space && !space->empty()) {
-        std::cerr<<"runtime_workspace_cache_reclaim reason=workspace requested_bytes="<<bytes
-            <<" available_bytes="<<available<<'\n';
-        space->release(bytes);
-    }
+    weights_.release_workspace(bytes, "workspace");
     if(context->available_memory()>=bytes)return;
     const auto released=trim_prefix(bytes);
     context->reclaim_idle_memory();
@@ -59,14 +54,10 @@ void Budget::reclaim(std::size_t bytes, ExpertSpace* space) {
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
 }
 
-void Budget::reserve_kv(std::size_t bytes, ExpertSpace* space) {
+void Budget::reserve_kv(std::size_t bytes) {
     auto context = default_context(primary_device_);
     if (context->available_memory() >= bytes) return;
-    if (space && !space->empty()) {
-        std::cerr<<"runtime_workspace_cache_reclaim reason=kv_growth requested_bytes="<<bytes
-            <<" available_bytes="<<context->available_memory()<<'\n';
-        space->release(bytes);
-    }
+    weights_.release_workspace(bytes, "kv_growth");
     if (context->available_memory() >= bytes) return;
     trim_prefix(bytes);
     context->reclaim_idle_memory();
@@ -137,11 +128,11 @@ std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
     return chunk_size;
 }
 
-void Budget::decode(ExpertSpace* space, const ModelSource* source) {
+void Budget::decode(const ModelSource* source) {
     if (weights_.tq) return;
     prepare_moe_decode_residency(weights_.moe);
     default_context(primary_device_)->reclaim_idle_memory();
-    if (space) space->restore(runtime_options::workspace_reserve_bytes(), source);
+    weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source);
 }
 
 Budget::Change Budget::change(const engine::SessionCommand& command) {

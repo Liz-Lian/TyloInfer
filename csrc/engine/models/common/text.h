@@ -17,7 +17,6 @@
 #include "engine/state/kv_offload.h"
 #include "engine/state/kv_memory.h"
 #include "engine/weights/moe/kv_expert_loan.h"
-#include "engine/weights/workspace.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
@@ -68,7 +67,6 @@ struct Text {
     tyloi::engine::RuntimeConfig config;
     std::shared_ptr<const tyloi::ModelSource> source;
     std::optional<Budget> budget;
-    std::optional<ExpertSpace> expert_space;
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
@@ -90,16 +88,18 @@ struct Text {
         // These regions hold legacy paged expert fields. TQ retains ordinary
         // compressed tensor images and cannot consume those page addresses.
         if(weights.tq)return;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            if(preparing_graph_depth || !expert_space || expert_space->has_decode() || !components.mtp)return;
+            if(preparing_graph_depth || !weights.moe || weights.has_decode_workspace() || !components.mtp)return;
             const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
             const auto active=qwen4_mtp_graph_reserve(language,components.mtp.get(),graph_draft_depth);
             if(active>=maximum)return;
-            const auto bytes=expert_space->lend_decode(maximum-active);
+            const auto bytes=weights.lend_decode(maximum-active);
             if(bytes)
                 std::cerr<<"runtime_mtp_workspace_cache action=lend depth="
                     <<graph_draft_depth<<" bytes="<<bytes<<'\n';
         }
+#endif
     }
 
     void restore_graph_expert_space() {
@@ -108,8 +108,7 @@ struct Text {
         prepare_moe_decode_residency(weights.moe);
         tyloi::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
         restore_mtp_expert_space();
-        if(expert_space)
-            expert_space->restore(runtime_options::workspace_reserve_bytes(), source.get());
+        weights.restore_workspace(runtime_options::workspace_reserve_bytes(), source.get());
     }
 
     void prepare_graph_depth(const InferenceRequest& input) {
@@ -129,15 +128,14 @@ struct Text {
             const auto started=std::chrono::steady_clock::now();
             preparing_graph_depth=true;
             try {
-                if(expert_space) expert_space->release();
+                weights.release_workspace();
                 graph.invalidate();
                 qwen4_release_decode_graphs(language,components.mtp.get());
                 release_moe_decode_buffers(weights.moe);
                 state.reset(1);components.mtp->reset(1);
                 auto context=tyloi::cuda::default_context(execution->config.layer_placement.primary_device());
                 context->reclaim_idle_memory();
-                budget->reclaim((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth),
-                    expert_space ? &*expert_space : nullptr);
+                budget->reclaim((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth));
                 qwen4_warmup_decode_graphs(language,components.mtp.get(),depth);
                 graph_draft_depth=depth;
                 preparing_graph_depth=false;
@@ -211,17 +209,16 @@ struct Text {
                 set_moe_kv_expert_loan(weights.moe,expert_loan);
             }
             if(expert_loan)
-                expert_space.emplace(weights,
+                weights.workspace(
                     execution->config.layer_placement.primary_device(), std::move(expert_loan));
             restore_decode_workspace=[this]{restore_graph_expert_space();};
-            bind_moe_budget(weights.moe, &*budget,
-                expert_space ? &*expert_space : nullptr);
+            bind_moe_budget(weights.moe, &*budget);
         }
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
-                budget->reserve_kv(bytes, expert_space ? &*expert_space : nullptr);
+                budget->reserve_kv(bytes);
             };
-            if(kv)kv->bind_budget(&*budget, expert_space ? &*expert_space : nullptr);
+            if(kv)kv->bind_budget(&*budget);
         }
 #endif
         if(const auto bytes=runtime_options::resident_budget_bytes()) {
@@ -299,7 +296,7 @@ struct Text {
     void clear_bindings() noexcept {
         restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
-        if(kv)kv->bind_budget(nullptr, nullptr);
+        if(kv)kv->bind_budget(nullptr);
         bind_moe_budget(weights.moe, nullptr);
         if (offload) offload->bind_budget(nullptr);
     }
@@ -311,7 +308,7 @@ struct Text {
         if(command.kind!=SessionCommand::Kind::memory_budget)return cache.control(command);
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
         auto change = budget->change(command);
-        if(expert_space) expert_space->release();
+        weights.release_workspace();
         finish_moe_expert_exchanges(weights.moe);
         graph.invalidate();
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
@@ -401,8 +398,7 @@ struct Text {
             const bool streamed_kv = parts.streamed_kv();
             const auto* mtp = parts.mtp.get();
             return runtime_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,mtp,
-                &mtp_state,graph_draft_depth,
-                expert_space ? &*expert_space : nullptr,batching.get(),source.get(),
+                &mtp_state,graph_draft_depth,batching.get(),source.get(),
                 *weight_memory,weights,kv.get(),offload.get(),cache,*budget,
                 execution->executor().memory(cuda_devices(execution->config)),
                 tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()),

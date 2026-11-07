@@ -19,7 +19,7 @@
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/workspace.h"
+#include "engine/weights/moe/kv_expert_loan.h"
 #include <stdexcept>
 #include <type_traits>
 #endif
@@ -60,16 +60,15 @@ void Engine::install() {
             if (moe_expert_cache_ssd_experts(impl.weights_->moe)) {
                 auto loan = std::make_shared<cuda::KvExpertLoan>();
                 set_moe_kv_expert_loan(impl.weights_->moe, loan);
-                impl.expert_space_.emplace(*impl.weights_, impl.forward_options_.primary, std::move(loan));
+                impl.weights_->workspace(impl.forward_options_.primary, std::move(loan));
             }
-            bind_moe_budget(impl.weights_->moe, &*impl.budget_,
-                impl.expert_space_ ? &*impl.expert_space_ : nullptr);
+            bind_moe_budget(impl.weights_->moe, &*impl.budget_);
         }
         if (const auto bytes = cuda::runtime_options::resident_budget_bytes()) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
-        impl.budget_->decode(impl.expert_space_ ? &*impl.expert_space_ : nullptr, impl.source_.get());
+        impl.budget_->decode(impl.source_.get());
         impl.ready_ = true;
     } catch (...) {
         const auto failure = std::current_exception();
@@ -163,7 +162,7 @@ void Engine::unload_model() {
         try { executor_->clear(); }
         catch (...) { remember(std::current_exception()); }
         impl_->idle_state_.reset(); model_.reset();
-        impl_->expert_space_.reset();
+        impl_->weights_->clear_workspace();
         impl_->budget_.reset(); impl_->cache_.reset();
         impl_->weights_.reset();
         scope.reset();
@@ -188,7 +187,7 @@ ControlResult Engine::control_command(ControlRequest request) {
             } else { impl_->text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
         } else if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
             return engine_detail::runtime_metrics(model_->metrics(), {}, std::nullopt, false, nullptr,
-                nullptr, 3, impl_->expert_space_ ? &*impl_->expert_space_ : nullptr, nullptr, impl_->source_.get(),
+                nullptr, 3, nullptr, impl_->source_.get(),
                 *impl_->ledger_, *impl_->weights_, nullptr, nullptr, *impl_->cache_, *impl_->budget_,
                 executor_->memory(impl_->devices_), Device(kCUDA, impl_->forward_options_.primary), impl_->budget_supported_);
         } else throw std::invalid_argument("model has no duplex component");
@@ -211,15 +210,14 @@ void Engine::reserve(models::State& state, std::int64_t tokens) {
     for (const auto& [device, growth] : state.growth(tokens, impl_->forward_options_))
         if (device == primary) bytes = prefill_budget_add(bytes, growth);
     if (bytes)
-        impl_->budget_->reserve_kv(prefill_budget_add(bytes, std::size_t(64) << 20),
-            impl_->expert_space_ ? &*impl_->expert_space_ : nullptr);
+        impl_->budget_->reserve_kv(prefill_budget_add(bytes, std::size_t(64) << 20));
 }
 
 SessionResult Engine::set_budget(const SessionCommand& command) {
     if (!impl_->budget_supported_)
         throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
     auto change = impl_->budget_->change(command);
-    if (impl_->expert_space_) impl_->expert_space_->release();
+    impl_->weights_->release_workspace();
     finish_moe_expert_exchanges(impl_->weights_->moe);
     impl_->graph_->invalidate();
     if (impl_->ready_) reset_states(1);

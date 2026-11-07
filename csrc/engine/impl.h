@@ -8,8 +8,6 @@
 #include "engine/models/causal_model.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
-#include "engine/weights/workspace.h"
-#include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/routed_cache.h"
 
@@ -30,7 +28,6 @@ struct Engine::Impl {
     std::optional<Decode> graph_;
     std::optional<cuda::internal::TextSessionCache> cache_;
     std::optional<cuda::Budget> budget_;
-    std::optional<cuda::ExpertSpace> expert_space_;
     std::unique_ptr<TextProcessor> text_;
     EngineInfo info_;
     bool ready_ = false;

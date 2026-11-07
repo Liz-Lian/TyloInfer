@@ -12,7 +12,6 @@
 #include "engine/engine.h"
 #include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
-#include "engine/weights/workspace.h"
 #include "engine/weights/memory.h"
 #include "engine/models/source.h"
 
@@ -31,7 +30,7 @@ inline tyloi::engine::Metrics runtime_metrics(
         std::optional<tyloi::engine::Metrics> memory, bool streamed_kv,
         const tyloi::models::Mtp* mtp,
         const tyloi::engine::mtp::State* mtp_state, int graph_depth,
-        const ExpertSpace* space, tyloi::engine::Batch* batching,
+        tyloi::engine::Batch* batching,
         const tyloi::ModelSource* source, tyloi::weights::Memory& ledger,
         const RoutedCache& weights, KvMemoryManager* kv,
         KvOffloadStore* offload, const internal::TextSessionCache& cache,
@@ -40,14 +39,7 @@ inline tyloi::engine::Metrics runtime_metrics(
     using tyloi::engine::Metrics;
 
     const auto batch_metrics = batching ? batching->metrics() : Metrics{};
-    const auto workspace_metrics = space ? space->metrics() : ExpertSpace::Metrics{};
-    Metrics metrics{
-        {"mtp_graph_prepared_depth", double(graph_depth)},
-        {"mtp_flexible_expert_capacity_bytes", double(workspace_metrics.decode_capacity)},
-        {"mtp_flexible_expert_used_bytes", double(workspace_metrics.decode_used)},
-        {"prefill_workspace_expert_capacity_bytes", double(workspace_metrics.prefill_capacity)},
-        {"prefill_workspace_expert_used_bytes", double(workspace_metrics.prefill_used)},
-        {"prefill_workspace_expert_reclaimed_used_bytes", double(workspace_metrics.prefill_reclaimed_used)}};
+    Metrics metrics{{"mtp_graph_prepared_depth", double(graph_depth)}};
     metrics.insert(metrics.end(), component_metrics.begin(), component_metrics.end());
     auto experts = weights.metrics();
     metrics.insert(metrics.end(), experts.begin(), experts.end());
