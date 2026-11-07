@@ -103,7 +103,11 @@ struct Tts {
 
     tyloi::models::ModelConfig config;
     int device = 0;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::RopeTable rope;
+#else
     RopeCache rope;
+#endif
     std::shared_ptr<const ::tyloi::Tensor> text_embedding;
     std::shared_ptr<const ::tyloi::Tensor> code_embedding;
     tyloi::weights::BiasWeight semantic_projector1;
@@ -122,11 +126,16 @@ struct Tts {
         Tts result;
         result.device = weights.placement.device;
         result.config = tyloi::models::minicpmo45::tts_decoder_config();
-        result.rope = RopeCache(
+        RopeCache rope(
             result.config.max_position_embeddings,
             result.config.rotary_dim,
             result.config.rope_base, 0, -1,
             ::tyloi::Device(::tyloi::kCUDA, result.device));
+#ifdef TYLOINFER_NATIVE_CUDA
+        result.rope = rope.view();
+#else
+        result.rope = std::move(rope);
+#endif
         result.text_embedding = weights.weight("tts.text_embedding.weight");
         result.code_embedding = weights.weight("tts.code_embedding.0.weight");
         result.semantic_projector1 = weights.biased("tts.semantic_projector.input.weight", "tts.semantic_projector.input.bias");
@@ -325,7 +334,7 @@ struct Tts {
                 inputs.attention.sequence_lengths = positions.second;
                 inputs.attention.cache_position = state.position;
 #ifdef TYLOINFER_NATIVE_CUDA
-                inputs.rope = rope.view();
+                inputs.rope = rope;
 #else
                 inputs.rope = &rope;
 #endif

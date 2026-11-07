@@ -24,7 +24,12 @@ std::vector<MtpState::Layout> layout(const Predictor& model, int device) {
 
 } // namespace
 
-Mtp::Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding, RopeCache rope,
+Mtp::Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding,
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::RopeTable rope,
+#else
+        RopeCache rope,
+#endif
         std::unique_ptr<Executor> executor, Collectives& copies,
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate)
@@ -81,7 +86,7 @@ tyloi::models::MtpStep Mtp::step(const ::tyloi::Tensor& hidden,
     inputs.values = {std::move(hidden), std::move(embedded), {}};
     inputs.kv = kv;
 #ifdef TYLOINFER_NATIVE_CUDA
-    inputs.rope = rope_.view();
+    inputs.rope = rope_;
 #else
     inputs.rope = &rope_;
 #endif

@@ -19,7 +19,12 @@ void restore_session(State&, Mtp*, const TextSessionState&, const std::function<
 
 class Mtp final : public tyloi::models::Mtp {
 public:
-    Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding, RopeCache rope,
+    Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding,
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::RopeTable rope,
+#else
+        RopeCache rope,
+#endif
         std::unique_ptr<Executor> executor, Collectives& copies,
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate);
@@ -49,7 +54,11 @@ private:
 
     Predictor model_;
     std::shared_ptr<const ::tyloi::Tensor> embedding_;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::RopeTable rope_;
+#else
     RopeCache rope_;
+#endif
     MtpState state_;
     std::vector<Task> tasks_;
     std::unique_ptr<Executor> executor_;

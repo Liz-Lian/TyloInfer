@@ -93,8 +93,14 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     MfqCudaGuard guard(placement.primary_device());
     const auto make_rope = [&](::tyloi::Device device) {
-        return RopeCache(config.max_position_embeddings, config.rotary_dim, config.rope_base,
+        RopeCache rope(config.max_position_embeddings, config.rotary_dim, config.rope_base,
                          0, -1, device, true, yarn);
+
+#ifdef TYLOINFER_NATIVE_CUDA
+        return rope.view();
+#else
+        return rope;
+#endif
     };
     model.rope = make_rope(::tyloi::Device(::tyloi::kCUDA, placement.primary_device()));
     if (cpu_layers > 0) model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));
@@ -106,7 +112,11 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
         model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
             : weights.placement.tensor.enabled()
                 ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output) : model.embed;
@@ -123,7 +133,11 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
     }
 }
 
@@ -226,7 +240,12 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, i
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
     return executor.profiler().measure("model.output_norm", [&] {
         return qwen_rms_norm_bf16(executor.attention_options().fused_norm,
-            hidden.reshape({batch * tokens, model.metadata.hidden_size}), model.output_norm,
+            hidden.reshape({batch * tokens, model.metadata.hidden_size}),
+#ifdef TYLOINFER_NATIVE_CUDA
+            *model.output_norm,
+#else
+            model.output_norm,
+#endif
             model.metadata.rms_norm_eps, model.metadata.norm_weight_offset)
             .reshape({batch, tokens, model.metadata.hidden_size});
     });
@@ -291,14 +310,14 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
                             attention.sliding, hidden.device(), ::tyloi::kBFloat16, attention.kv_quantization);
         cache.quantization = attention.kv_quantization;
         const AttentionKvView kv = cache.view();
-        const RopeCache* rope = layer.cpu ? &model.cpu_rope : &model.rope;
+        const auto* rope = layer.cpu ? &model.cpu_rope : &model.rope;
         if (!layer.cpu && !model.device_ropes.empty()) rope = &model.device_ropes.at(layer.device);
         Inputs values;
         values.values = {std::move(hidden), {}, {}};
         values.kv = std::span<const AttentionKvView>{&kv, 1};
         values.attention = std::move(step);
 #ifdef TYLOINFER_NATIVE_CUDA
-        values.rope = rope->view();
+        values.rope = *rope;
 #else
         values.rope = rope;
 #endif

@@ -32,6 +32,10 @@ tyloi::DenseTensor merge_norms(tyloi::DenseTensor dense, tyloi::DenseTensor expe
 ::tyloi::DenseTensor qwen_rms_norm_bf16(
     bool fused,
     ::tyloi::DenseTensor x,
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& weight,
+#else
     ::tyloi::DenseTensor weight,
+#endif
     double eps,
     double weight_offset);

@@ -174,10 +174,15 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
                                : physical + state.decode_position_delta);
     semantic = semantic.contiguous();
     const auto rank = semantic.dim();
+#ifdef TYLOINFER_NATIVE_CUDA
+    const bool has_mrope = model.rope.sections && model.rope.sections->numel() > 0;
+#else
+    const bool has_mrope = model.rope.sections.numel() > 0;
+#endif
     require_forward(
         Config::valid_positions(rank, rank > 1 ? semantic.size(0) : 0,
                                 semantic.size(-1), B, T,
-                                model.rope.sections.numel() > 0),
+                                has_mrope),
         "position_ids must have shape [tokens], [batch,tokens], or configured grid-MRoPE [3,tokens]");
     if (lengths.has_value()) {
         lengths = collectives.copy(DenseTensor(*lengths).to(::tyloi::kInt64), options.primary)
@@ -187,7 +192,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
     }
 
     std::optional<DenseTensor> physical_for_layers;
-    if (model.rope.sections.numel() > 0 || positions.has_value() || cache_positions.has_value())
+    if (has_mrope || positions.has_value() || cache_positions.has_value())
         physical_for_layers = physical;
     AttentionStep step{semantic, lengths ? MfqOptional<DenseTensor>(DenseTensor(*lengths)) : mfq_nullopt,
                        physical_for_layers, state.cache_pos, kv_length,
@@ -205,7 +210,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
     try {
         for (std::size_t index = 0; index < model.layers.size(); ++index) {
             const auto& layer = model.layers[index];
-            const RopeCache* active_rope = layer.cpu ? &model.cpu_rope : &model.rope;
+            const auto* active_rope = layer.cpu ? &model.cpu_rope : &model.rope;
             if (!layer.cpu && !model.device_ropes.empty()) {
                 const auto it = model.device_ropes.find(layer.device);
                 if (it != model.device_ropes.end()) active_rope = &it->second;
@@ -287,7 +292,12 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
 DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& state,
                      tyloi::cuda::Executor& executor, std::size_t scratch_offset, DenseTensor input,
                      const AttentionStep& step, std::int64_t confirmed_prefix,
-                     const RopeCache& rope, const Executor::Mode& options) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                     const tyloi::ops::RopeTable& rope,
+#else
+                     const RopeCache& rope,
+#endif
+                     const Executor::Mode& options) {
     MfqCudaGuard guard(layer.device);
     auto local_step = layer_step(collectives, layer, step);
     input = layer.cpu ? input.to(::tyloi::kCPU).contiguous()
@@ -301,7 +311,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
                              LinearAttention::Options linear_options) {
         Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step,
 #ifdef TYLOINFER_NATIVE_CUDA
-                      rope.view(),
+                      rope,
 #else
                       &rope,
 #endif

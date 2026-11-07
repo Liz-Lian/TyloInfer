@@ -131,9 +131,16 @@ tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
 
 ::tyloi::DenseTensor qwen_rms_norm_bf16(bool fused,
                                               ::tyloi::DenseTensor x,
-                                              ::tyloi::DenseTensor weight, double eps,
-                                              double weight_offset) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                                              const ::tyloi::Tensor& weight_tensor,
+#else
+                                              ::tyloi::DenseTensor weight,
+#endif
+                                              double eps, double weight_offset) {
     auto input = x.contiguous().to(::tyloi::kBFloat16);
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(weight_tensor);
+#endif
     if (input.is_cuda() && fused) {
         return qwen_rms_norm_bf16_cuda(input, weight.contiguous(), eps, weight_offset);
     }

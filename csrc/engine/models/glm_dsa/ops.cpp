@@ -247,9 +247,15 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, LayerPlacementC
     }
     MfqCudaGuard guard(placement.primary_device());
     const auto make_rope = [&](int device) {
-        return RopeCache(c.max_position_embeddings, c.rotary_dim, c.rope_base, 0, -1,
+        RopeCache rope(c.max_position_embeddings, c.rotary_dim, c.rope_base, 0, -1,
                          ::tyloi::Device(::tyloi::kCUDA, device),
                          model.metadata.rope_interleaved, yarn);
+
+#ifdef TYLOINFER_NATIVE_CUDA
+        return rope.view();
+#else
+        return rope;
+#endif
     };
     model.rope = make_rope(placement.primary_device());
     if (placement.enabled()) {
@@ -496,7 +502,12 @@ void update_indexer(const Config& c, Selection& selection, const DenseTensor& in
 
 DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& selection,
                      Executor& executor, DenseTensor x, const AttentionStep& step,
-                     const RopeCache& rope, const Executor::Mode& mode) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                     const tyloi::ops::RopeTable& rope,
+#else
+                     const RopeCache& rope,
+#endif
+                     const Executor::Mode& mode) {
     auto& profiler = executor.profiler();
     auto& scratch = executor.mla_scratch(layer.device);
     const auto project = executor.projector(mode.ffn);
@@ -599,8 +610,15 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
                             .permute({0, 2, 1, 3})
                             .contiguous();
                     q_pe = profiler.measure("glm.q_rope", [&]() {
-                        return glm_interleaved_rope_cuda(q_pe, pos.contiguous(), rope.cos,
-                                                         rope.sin, kRope);
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& rope_cos = dynamic_cast<const DenseTensor&>(*rope.cos);
+                        const auto& rope_sin = dynamic_cast<const DenseTensor&>(*rope.sin);
+#else
+                        const auto& rope_cos = rope.cos;
+                        const auto& rope_sin = rope.sin;
+#endif
+                        return glm_interleaved_rope_cuda(q_pe, pos.contiguous(), rope_cos,
+                                                         rope_sin, kRope);
                     });
 
                     auto compressed = key_value.to(::tyloi::kFloat16)
@@ -621,8 +639,15 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
                             .permute({0, 2, 1, 3})
                             .contiguous();
                     k_pe = profiler.measure("glm.k_rope", [&]() {
-                        return glm_interleaved_rope_cuda(k_pe, pos.contiguous(), rope.cos,
-                                                         rope.sin, kRope);
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& rope_cos = dynamic_cast<const DenseTensor&>(*rope.cos);
+                        const auto& rope_sin = dynamic_cast<const DenseTensor&>(*rope.sin);
+#else
+                        const auto& rope_cos = rope.cos;
+                        const auto& rope_sin = rope.sin;
+#endif
+                        return glm_interleaved_rope_cuda(k_pe, pos.contiguous(), rope_cos,
+                                                         rope_sin, kRope);
                     });
                     auto kv_rows =
                         ::tyloi::cuda::cat(
@@ -649,11 +674,18 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
                                 .contiguous(),
                             index_k_norm, index_k_bias, 1e-5);
                     });
+#ifdef TYLOINFER_NATIVE_CUDA
+                    const auto& rope_cos = dynamic_cast<const DenseTensor&>(*rope.cos);
+                    const auto& rope_sin = dynamic_cast<const DenseTensor&>(*rope.sin);
+#else
+                    const auto& rope_cos = rope.cos;
+                    const auto& rope_sin = rope.sin;
+#endif
                     index_k =
                         glm_interleaved_rope_cuda(index_k.reshape({B, T, 1, c.index_head_dim})
                                                       .permute({0, 2, 1, 3})
                                                       .contiguous(),
-                                                  pos.contiguous(), rope.cos, rope.sin, kRope)
+                                                  pos.contiguous(), rope_cos, rope_sin, kRope)
                             .permute({0, 2, 1, 3})
                             .reshape({B, T, c.index_head_dim})
                             .contiguous();
@@ -664,8 +696,8 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
                                        .reshape({B, T, c.index_n_heads, c.index_head_dim})
                                        .permute({0, 2, 1, 3})
                                        .contiguous();
-                    index_q = glm_interleaved_rope_cuda(index_q, pos.contiguous(), rope.cos,
-                                                        rope.sin, kRope)
+                    index_q = glm_interleaved_rope_cuda(index_q, pos.contiguous(), rope_cos,
+                                                        rope_sin, kRope)
                                   .permute({0, 2, 1, 3})
                                   .contiguous();
                     auto index_weights = index_weight.reshape({B, T, c.index_n_heads})

@@ -105,7 +105,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
                 false, hidden.device(), ::tyloi::kFloat16);
         }
         const AttentionKvView kv = cache.view();
-        const RopeCache* rope = layer.cpu ? &model.cpu_rope : &model.rope;
+        const auto* rope = layer.cpu ? &model.cpu_rope : &model.rope;
         if (!layer.cpu) {
             const auto found = model.device_ropes.find(layer.device);
             if (found != model.device_ropes.end()) rope = &found->second;
@@ -115,7 +115,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         values.kv = std::span<const AttentionKvView>{&kv, 1};
         values.attention = std::move(step);
 #ifdef TYLOINFER_NATIVE_CUDA
-        values.rope = rope->view();
+        values.rope = *rope;
 #else
         values.rope = rope;
 #endif

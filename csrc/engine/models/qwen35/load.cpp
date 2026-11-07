@@ -271,7 +271,11 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
                            model.metadata.rope_interleaved, yarn);
             rope.configure_mrope(config.mrope_sections, config.mrope_interleaved,
                                  config.rotary_dim, device);
+#ifdef TYLOINFER_NATIVE_CUDA
+            return rope.view();
+#else
             return rope;
+#endif
         };
         const auto primary = ::tyloi::Device(
             ::tyloi::kCUDA, weights.placement.device);

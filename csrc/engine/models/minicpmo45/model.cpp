@@ -63,8 +63,14 @@ void load(Model& model, const tyloi::weights::Loader& weights, const LayerPlacem
     const auto& config = model.config;
     MfqCudaGuard guard(weights.placement.device);
     const auto make_rope = [&](::tyloi::Device device) {
-        return RopeCache(config.max_position_embeddings, config.rotary_dim, config.rope_base,
+        RopeCache rope(config.max_position_embeddings, config.rotary_dim, config.rope_base,
             0, -1, device, false, yarn);
+
+#ifdef TYLOINFER_NATIVE_CUDA
+        return rope.view();
+#else
+        return rope;
+#endif
     };
     model.rope = make_rope(::tyloi::Device(::tyloi::kCUDA, weights.placement.device));
     if (cpu_layers > 0) model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));

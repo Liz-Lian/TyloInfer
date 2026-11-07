@@ -21,9 +21,18 @@ struct Model {
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+#else
     DenseTensor output_norm;
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::RopeTable rope, cpu_rope;
+    std::unordered_map<int, tyloi::ops::RopeTable> device_ropes;
+#else
     RopeCache rope, cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
+#endif
     std::vector<Layer> layers;
 };
 } // namespace tyloi::cuda::minicpmo45::text

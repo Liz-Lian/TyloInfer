@@ -60,9 +60,14 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::RopeTable rope, cpu_rope;
+    std::unordered_map<int, tyloi::ops::RopeTable> device_ropes;
+#else
     RopeCache rope;
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
+#endif
     std::shared_ptr<const ::tyloi::Tensor> embed;
     std::shared_ptr<const ::tyloi::Tensor> lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA
