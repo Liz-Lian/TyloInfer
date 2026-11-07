@@ -73,6 +73,20 @@ public:
         std::unique_ptr<Impl> impl_;
     };
 
+    class Priority {
+    public:
+        Priority(Cache& cache, int first, int last);
+        ~Priority();
+        Priority(const Priority&) = delete;
+        Priority& operator=(const Priority&) = delete;
+        Priority(Priority&&) = delete;
+        Priority& operator=(Priority&&) = delete;
+        void finish();
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+
     Cache();
     ~Cache();
     Cache(const Cache&) = delete;
@@ -89,6 +103,9 @@ public:
     void resize(std::size_t bytes);
     std::size_t reserve(std::size_t bytes);
     void drain() const;
+    void finish_exchange() const;
+    void retire_prefill();
+    void prepare_predictor();
     void settle();
     void trace(const char* boundary, bool wait, const source::Source* source);
     void release_workspace(std::size_t required_available =

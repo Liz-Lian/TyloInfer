@@ -1,4 +1,4 @@
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/models/qwen4_exp/batch.h"
 #include "engine/models/batch.h"
 
@@ -7,7 +7,6 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/budget.h"
-#include "engine/weights/moe/expert_cache.h"
 #include "components/error.h"
 
 #include <algorithm>
@@ -303,7 +302,7 @@ void BatchOps::activate(const std::shared_ptr<Request>& request, const Sample& s
 void BatchOps::discard_prefill(const std::shared_ptr<Request>& request) {
     if (graph_)
         graph_->clear();
-    finish_moe_expert_exchanges(::tyloi::weights::detail::cache(execution_.weights).moe);
+    execution_.weights.finish_exchange();
     request->cache.reset();
     request->prefill_ids = {};
     request->prefill_timers.clear();

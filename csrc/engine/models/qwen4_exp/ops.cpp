@@ -659,7 +659,7 @@ struct Qwen4MtpGraph {
         last_compact={};
         // Predictor prefill may retain a multi-GiB expert image. Retire it
         // before graph replay so the first draft does not page graph buffers.
-        release_moe_prefill_buffers(::tyloi::weights::detail::cache(execution.weights).moe);
+        execution.weights.retire_prefill();
         const auto profile_released=ProfileTime::now();
         const int64_t tokens=ids.size(1),start=predictor.lengths[0],required=start+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=predictor.config.maximum,"MTP predictor exceeds context capacity");
@@ -668,7 +668,7 @@ struct Qwen4MtpGraph {
             capacity=block.qsa->graph_capacity();
         }
         if(required>capacity) {
-            finish_moe_expert_exchanges(::tyloi::weights::detail::cache(execution.weights).moe);restore_legacy(predictor);
+            execution.weights.finish_exchange();restore_legacy(predictor);
             capacity=std::min<int64_t>(predictor.config.maximum,std::max<int64_t>(2048,capacity));
             while(capacity<required)capacity=std::min(predictor.config.maximum,capacity*2);
         }
@@ -686,8 +686,8 @@ struct Qwen4MtpGraph {
             // A warmed history graph touches attention KV and dense weights
             // only. Let the expert exchange proceed until the full draft.
             if(!cell.window.valid())
-                finish_moe_expert_exchanges(::tyloi::weights::detail::cache(execution.weights).moe);
-            else if(!history_only)prepare_moe_predictor_exchange(::tyloi::weights::detail::cache(execution.weights).moe);
+                execution.weights.finish_exchange();
+            else if(!history_only)execution.weights.prepare_predictor();
             const auto profile_exchange_end=ProfileTime::now();
             block.qsa->prepare_graph(predictor.positions[0],capacity);
             if(!cell.window.valid()) {
@@ -1332,7 +1332,7 @@ struct Qwen4DecodeGraph {
         // a complete set of layer buffers for each output representation.
         const int result_kind=kind;
         if(tokens==1 && kind>=1 && kind<=4)kind=4;
-        release_moe_prefill_buffers(::tyloi::weights::detail::cache(model.execution->weights).moe);
+        model.execution->weights.retire_prefill();
         const auto required=model.active->cache_pos+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=model.max_position_embeddings(),"Qwen4 graph exceeds context capacity");
         if(!qsa.empty() && qsa.front()->graph_capacity()) {
@@ -1340,7 +1340,7 @@ struct Qwen4DecodeGraph {
             kv_capacity=qsa.front()->graph_capacity();
         }
         if(required>kv_capacity) {
-            finish_moe_expert_exchanges(::tyloi::weights::detail::cache(model.execution->weights).moe);
+            model.execution->weights.finish_exchange();
             restore_legacy();
             // Small growing chunks preserve dynamic KV allocation without
             // recapturing all MTP batch shapes at every few decode tokens.
@@ -1381,7 +1381,7 @@ struct Qwen4DecodeGraph {
             const auto* early_ple=tyloi::cuda::env_lookup("TYLOINFER_PLE_EARLY_ISSUE");
             if(!early_ple || early_ple[0]!='0')
                 for(const auto& stage:cell.ple)stage->ple->prefetch_tokens(cell.host_ids);
-            finish_moe_expert_exchanges(::tyloi::weights::detail::cache(model.execution->weights).moe);
+            model.execution->weights.finish_exchange();
             // Prefix restoration and eager prefill update the same KV/index
             // storage; refresh pooled keys even when this graph is already valid.
             for(auto* attention:qsa)attention->prepare_graph(model.positions,kv_capacity);
@@ -1623,7 +1623,7 @@ std::optional<::tyloi::DenseTensor> qwen4_decode_graph_hidden(
 }
 
 void qwen4_release_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp) {
-    finish_moe_expert_exchanges(::tyloi::weights::detail::cache(model.execution->weights).moe);
+    model.execution->weights.finish_exchange();
     if(model.graph_registry)model.graph_registry->restore_legacy();
     model.graph_registry.reset();
     for(auto& block:model.blocks)static_cast<qwen4_exp::Qwen4Block&>(*block).retain_graph_storage=false;
@@ -2004,14 +2004,14 @@ struct Qwen4BatchDecodeGraph::Impl {
     explicit Impl(qwen4_exp::Model& owner) : model(owner), stream(mfq_get_current_cuda_stream()) {}
     void clear() {
         if (requests.empty() && !window) return;
-        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(model.execution->weights).moe);
+        model.execution->weights.finish_exchange();
         window.reset();
         memory_pool.reset();
         if(!model.graph_registry) {
             // Membership changes retire every batch graph consumer. Release
             // its scratch before converting caches or capturing a new width.
             // Otherwise arrivals retain scratch for every previous row count.
-            release_moe_decode_buffers(::tyloi::weights::detail::cache(model.execution->weights).moe);
+            model.execution->weights.retire_decode();
             default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
         }
         for (auto* request : requests)
@@ -2037,7 +2037,7 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
     // Whole-layer prefill snapshots the GPU/RAM expert maps. Adaptive decode
     // can exchange those experts, so retire the snapshots before replay just
     // as the single-request window does.
-    release_moe_prefill_buffers(::tyloi::weights::detail::cache(model.execution->weights).moe);
+    model.execution->weights.retire_prefill();
     const auto batch = static_cast<int64_t>(requests.size());
     if(model.execution->kv) {
         int64_t required=0;
@@ -2054,7 +2054,7 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
         graph.clear();
         // Prefill and previous widths leave asynchronously freed pool pages
         // charged to WDDM. Retire transfers and trim before preparing a graph.
-        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(model.execution->weights).moe);
+        model.execution->weights.finish_exchange();
         default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
     }
     graph.greedy = greedy;
@@ -2427,7 +2427,7 @@ std::unique_ptr<qwen4_exp::Qwen4Block> Model::adapter_load_block(const tyloi::we
 
 void Model::adapter_reset(int64_t new_batch) {
     speculative_prefix_retention=false;
-    if(execution && ::tyloi::weights::detail::cache(execution->weights).moe)finish_moe_expert_exchanges(::tyloi::weights::detail::cache(execution->weights).moe);
+    if(execution)execution->weights.finish_exchange();
     const bool retain=reuse_decode_graphs && new_batch==1 && graph_registry && graph_registry->reusable();
     if(graph_registry)for(auto* block:graph_registry->blocks)block->retain_graph_storage=retain;
     if(!retain)graph_registry.reset();

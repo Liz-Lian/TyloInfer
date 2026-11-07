@@ -113,9 +113,9 @@ void Cache::workspace(std::size_t bytes) {
 }
 
 void Cache::request(bool retire_decode) {
-    finish_moe_expert_exchanges(data_->moe);
+    finish_exchange();
     if (retire_decode) release_moe_decode_buffers(data_->moe);
-    else release_moe_prefill_buffers(data_->moe);
+    else retire_prefill();
 }
 
 std::optional<std::size_t> Cache::prepare_prefill(Device device, std::size_t tokens,
@@ -146,7 +146,7 @@ void Cache::configure_decode(std::size_t lendable_bytes, int graph_depth) {
 
 void Cache::prepare(Stage stage, Device device, const source::Source* source) {
     if (stage == Stage::snapshot) {
-        release_moe_prefill_buffers(data_->moe);
+        retire_prefill();
         return;
     }
     if (data_->tq || (stage == Stage::decode && !data_->moe)) return;
@@ -175,9 +175,21 @@ void Cache::drain() const {
     drain_moe_expert_cache(data_->moe);
 }
 
+void Cache::finish_exchange() const {
+    finish_moe_expert_exchanges(data_->moe);
+}
+
+void Cache::retire_prefill() {
+    release_moe_prefill_buffers(data_->moe);
+}
+
+void Cache::prepare_predictor() {
+    prepare_moe_predictor_exchange(data_->moe);
+}
+
 void Cache::settle() {
     release_workspace();
-    finish_moe_expert_exchanges(data_->moe);
+    finish_exchange();
 }
 
 void Cache::trace(const char* boundary, bool wait, const source::Source* source) {

@@ -2928,15 +2928,23 @@ std::vector<int> MoeExpertCache::prioritize_prefill_layers(int first,int last) {
     return set_prefill_low_priority_sources(std::move(inactive));
 }
 
-MoePrefillLayerPriority::MoePrefillLayerPriority(std::shared_ptr<MoeExpertCache> cache,int first,int last) {
+struct tyloi::weights::Cache::Priority::Impl {
+    std::shared_ptr<MoeExpertCache> cache;
+    std::vector<int> previous;
+};
+
+tyloi::weights::Cache::Priority::Priority(Cache& owner, int first, int last) {
+    auto cache = detail::cache(owner).moe;
     if(!cache || !cache->ssd_experts())return;
-    previous_=cache->prioritize_prefill_layers(first,last);cache_=std::move(cache);
+    auto impl = std::make_unique<Impl>();
+    impl->previous=cache->prioritize_prefill_layers(first,last);impl->cache=std::move(cache);
+    impl_ = std::move(impl);
     std::cerr<<"runtime_moe_prefill_priority first_layer="<<first<<" last_layer="<<last<<'\n';
 }
-MoePrefillLayerPriority::~MoePrefillLayerPriority() {
+tyloi::weights::Cache::Priority::~Priority() {
     try {finish();}catch(...) {}
 }
-void MoePrefillLayerPriority::finish() {
-    if(!cache_)return;
-    cache_->set_prefill_low_priority_sources(std::move(previous_));cache_.reset();
+void tyloi::weights::Cache::Priority::finish() {
+    if(!impl_ || !impl_->cache)return;
+    impl_->cache->set_prefill_low_priority_sources(std::move(impl_->previous));impl_->cache.reset();
 }

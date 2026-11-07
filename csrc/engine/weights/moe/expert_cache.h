@@ -39,21 +39,6 @@ namespace tyloi::engine { class Budget; }
 namespace tyloi::cuda { class KvExpertLoan; }
 void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<tyloi::cuda::KvExpertLoan> loan);
 
-// The owner outlives every temporary tensor allocated from the borrowed tails.
-// Destruction restores experts on cancellation/exception as well as success.
-// A phase can prefer experts from [first,last). Scope exit restores normal
-// eviction on success, cancellation and exceptions, without moving weights.
-class MoePrefillLayerPriority {
-public:
-    MoePrefillLayerPriority(std::shared_ptr<MoeExpertCache> cache,int first,int last);
-    ~MoePrefillLayerPriority();
-    void finish();
-    MoePrefillLayerPriority(const MoePrefillLayerPriority&)=delete;
-    MoePrefillLayerPriority& operator=(const MoePrefillLayerPriority&)=delete;
-private:
-    std::shared_ptr<MoeExpertCache> cache_;
-    std::vector<int> previous_;
-};
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor=false);
 class MoeQuantRangeSource;
 struct MoeCacheOptions {
