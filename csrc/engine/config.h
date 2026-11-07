@@ -2,9 +2,12 @@
 
 #include "requests/policy.h"
 #include "state/session/snapshot.h"
+#include "tensor.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <unordered_set>
+#include <vector>
 
 namespace tyloi::engine {
 
@@ -40,6 +43,10 @@ struct GraphConfig {
 };
 
 struct RuntimeConfig {
+    std::vector<Device> devices;
+    std::unordered_set<std::int64_t> stop_token_ids;
+    std::uint64_t resident_budget_bytes = 0;
+    bool online_budget = true;
     GenerationConfig generation;
     SessionCacheConfig session_cache;
     PrefixCacheConfig prefix_cache;

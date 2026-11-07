@@ -304,6 +304,8 @@ void Executor::drain() {
 }
 
 void Executor::clear() {
+    if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
+        std::cerr << "cuda knobs in use:\n" << env_dump();
     pipelines_.clear();
     scratch_.clear();
     {

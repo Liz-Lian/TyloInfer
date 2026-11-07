@@ -1,7 +1,10 @@
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "engine/impl.h"
+#include "engine/engine.h"
+#include "engine/budget.h"
+#include "engine/generation/decode.h"
 #include "engine/generation/step.h"
 #include "engine/generation/sampling.h"
+#include "engine/models/causal_model.h"
 #include "engine/scheduler/request.h"
 #include "engine/models/source.h"
 #include "engine/weights/cache_internal.h"
@@ -41,11 +44,11 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_yield PrefillProgress{{0, 0.0, elapsed, elapsed}};
     }
     if (output.stopped()) co_return;
-    auto& weights = *impl_->weights_;
-    auto& graph = *impl_->graph_;
-    const auto& info = impl_->model_info_;
-    const auto& config = impl_->runtime_;
-    const auto& forward_options = impl_->forward_options_;
+    auto& weights = *weights_;
+    auto& graph = *graph_;
+    const auto& info = model_info_;
+    const auto& config = runtime_;
+    const auto& forward_options = forward_options_;
     const auto& prompt = input.prompt;
     const auto& cache_plan = input.cache_plan;
     if (config.generation.prefill_chunk_size <= 0)
@@ -64,7 +67,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
 
     const auto trace = [&](const char* boundary, bool wait = true) {
         if (!config.trace_moe || std::uncaught_exceptions()) return;
-        weights.trace(boundary, wait, impl_->source_.get());
+        weights.trace(boundary, wait, source_.get());
     };
     ExecutionCleanup cleanup{output.cleanup_failure, [&] {
         trace("end");
@@ -77,7 +80,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
 
     const auto tokens = prompt.size();
     const auto limit = config.generation.prefill_chunk_size;
-    const auto chunk_size = impl_->budget_->prefill(tokens, limit, info.prefill_row_bytes,
+    const auto chunk_size = budget_->prefill(tokens, limit, info.prefill_row_bytes,
         state.position() > 0, config.prefill_chunk_auto);
 
     auto full_ids = ops::reshape(*ops::tensor(std::span<const int64_t>(prompt), Device(kCUDA, forward_options.primary)), {1, -1});
@@ -139,9 +142,8 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_return;
     }
     auto token = ops::item(*pending);
-    if (tyloi::weights::detail::cache(weights).moe) impl_->budget_->decode(impl_->source_.get());
+    if (tyloi::weights::detail::cache(weights).moe) budget_->decode(source_.get());
     const bool graph_active = config.decode_graph.enabled &&
-        impl_->graph_allowed_ &&
         (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
         graph.graph &&
         input.sampling.max_tokens >= config.decode_graph.minimum_generation_tokens &&

@@ -7,17 +7,15 @@
 #include <utility>
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "engine/impl.h"
 #include "engine/runtime_metrics.h"
 #include "engine/models/prepare.h"
 #include "engine/scheduler/request.h"
-#include "engine/backends/cuda/native/env.h"
-#include "engine/backends/cuda/executor/options.h"
 #include "engine/budget.h"
 #include "engine/generation/prefill_budget.h"
-#include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
+#include "engine/weights/cache.h"
+#include "engine/state/session/sessions.h"
 #include <stdexcept>
 #include <type_traits>
 #endif
@@ -26,43 +24,54 @@ namespace tyloi::engine {
 
 Engine::Engine() = default;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Engine::Engine(EngineParts&& parts)
-    : model_(std::move(parts.model)), executor_(std::move(parts.executor)), impl_(std::move(parts.impl)) {}
+Engine::Engine(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
+        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
+        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
+        std::unique_ptr<tyloi::Executor::Graph> graph) {
+    rebind(std::move(model), std::move(executor), std::move(config), std::move(source),
+        std::move(memory), std::move(weights), std::move(model_state), std::move(sessions),
+        std::move(text), std::move(forward), std::move(graph));
+    start();
+}
 
 // Wiring that needs this Engine: caches, budget, expert space, reservations.
-void Engine::install() {
-    auto& impl = *impl_;
+void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
     try {
-        impl.model_info_ = model_->info();
-        auto& info = impl.info_;
-        info.max_requests = std::max<std::size_t>(1, impl.runtime_.continuous_batch.max_sequences);
-        info.max_context = impl.model_info_.max_context;
-        info.vocab_size = static_cast<std::int32_t>(impl.model_info_.vocab_size);
-        info.model_type = impl.model_info_.model_type;
+        model_info_ = model_->info();
+        info_ = {};
+        auto& info = info_;
+        info.max_requests = std::max<std::size_t>(1, runtime_.continuous_batch.max_sequences);
+        info.max_context = model_info_.max_context;
+        info.vocab_size = static_cast<std::int32_t>(model_info_.vocab_size);
+        info.model_type = model_info_.model_type;
+        info.stop_token_ids = runtime_.stop_token_ids;
         info.capabilities = model_->capabilities();
         const auto& caps = info.capabilities;
         info.duplex = caps.full_duplex;
         info.multimodal = caps.image_input || caps.video_input || caps.audio_input || caps.audio_output || caps.full_duplex;
         info.reload = true;
-        if (impl.text_) info.chat = impl.text_->chat_template_capabilities();
+        if (text_) info.chat = text_->chat_template_capabilities();
         auto scope = executor_->enter();
-        tyloi::weights::LoadScope memory_load(*impl.ledger_);
-        impl.graph_.emplace(impl.model_info_.max_context, Device(kCUDA, impl.forward_options_.primary), executor_->graph());
-        impl.cache_ = cuda::internal::make_sessions(*impl.source_, impl.runtime_.session_cache,
-            impl.runtime_.prefix_cache, impl.model_info_.max_context,
-            impl.idle_state_->supports_text_session_state(),
-            impl.idle_state_->supports_paged_text_session_state());
-        impl.budget_.emplace(*impl.ledger_, *impl.weights_, *impl.cache_,
-            Device(kCUDA, impl.forward_options_.primary));
-        impl.budget_->bind();
-        if (const auto bytes = cuda::runtime_options::resident_budget_bytes()) {
+        tyloi::weights::LoadScope memory_load(*ledger_);
+        graph_.emplace(model_info_.max_context, Device(kCUDA, forward_options_.primary), std::move(graph));
+        budget_.emplace(*ledger_, *weights_, *cache_, Device(kCUDA, forward_options_.primary));
+        budget_->bind();
+        if (const auto bytes = runtime_.resident_budget_bytes) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
-        impl.budget_->decode(impl.source_.get());
-        impl.ready_ = true;
+        budget_->decode(source_.get());
+        ready_ = true;
     } catch (...) {
         const auto failure = std::current_exception();
+        if (graph) {
+            try {
+                auto scope = executor_->enter();
+                graph_.emplace(0, Device(kCUDA, forward_options_.primary), std::move(graph));
+            } catch (...) { graph.reset(); }
+        }
         try { unload_model(); }
         catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
         catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
@@ -70,12 +79,38 @@ void Engine::install() {
     }
 }
 
-void Engine::rebuild(EngineParts&& parts) {
-    unload_model();
-    model_ = std::move(parts.model);
-    executor_ = std::move(parts.executor);
-    impl_ = std::move(parts.impl);
-    install();
+void Engine::rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
+        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
+        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
+        std::unique_ptr<tyloi::Executor::Graph> graph) {
+    std::exception_ptr failure;
+    if (executor_) {
+        try { unload_model(); }
+        catch (...) { failure = std::current_exception(); }
+    }
+    model_ = std::move(model);
+    executor_ = std::move(executor);
+    runtime_ = std::move(config);
+    source_ = std::move(source);
+    ledger_ = std::move(memory);
+    weights_ = std::move(weights);
+    idle_state_ = std::move(model_state);
+    cache_ = std::move(sessions);
+    text_ = std::move(text);
+    forward_options_ = std::move(forward);
+    if (failure) {
+        try {
+            auto scope = executor_->enter();
+            graph_.emplace(0, Device(kCUDA, forward_options_.primary), std::move(graph));
+        } catch (...) { graph.reset(); }
+        try { unload_model(); }
+        catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
+        std::rethrow_exception(failure);
+    }
+    install(std::move(graph));
 }
 #endif
 Engine::~Engine() {
@@ -96,39 +131,39 @@ void Engine::retire_request(Request& request) noexcept {
 #else
 using namespace tyloi::cuda;
 
-EngineInfo Engine::describe() const { return impl_->info_; }
+EngineInfo Engine::describe() const { return info_; }
 
-bool Engine::ready() const { return impl_->ready_; }
+bool Engine::ready() const { return ready_; }
 
 std::unique_ptr<tyloi::Executor::Scope> Engine::enter() { return executor_->enter(); }
 
 void Engine::prepare_request(Request& request, bool batched) {
-    engine::prepare_request(request, impl_->text_.get(), impl_->info_, batched, false);
-    if (!impl_->idle_state_) {
+    engine::prepare_request(request, text_.get(), info_, batched, false);
+    if (!idle_state_) {
         request.output.reset();
         request.input = {};
         throw std::logic_error("native engine state is already in use");
     }
-    request.state = std::move(impl_->idle_state_);
+    request.state = std::move(idle_state_);
 }
 
 void Engine::retire_request(Request& request) noexcept {
     request.generation = {};
-    if (impl_ && request.state) impl_->idle_state_ = std::move(request.state);
+    if (model_ && request.state) idle_state_ = std::move(request.state);
     else request.state.reset();
 }
 
 SessionResult Engine::session_command(const SessionCommand& command) {
-    if (!impl_->ready_) throw std::runtime_error("CUDA engine is unloaded");
+    if (!ready_) throw std::runtime_error("CUDA engine is unloaded");
     auto scope = executor_->enter();
     return command.kind == engine::SessionCommand::Kind::memory_budget
-        ? set_budget(command) : impl_->cache_->control(command);
+        ? set_budget(command) : cache_->control(command);
 }
 
 void Engine::drain() {
     auto scope = executor_->enter();
     std::exception_ptr failure;
-    try { impl_->weights_->drain(); }
+    try { weights_->drain(); }
     catch (...) { failure = std::current_exception(); }
     try { executor_->drain(); }
     catch (...) { if (!failure) failure = std::current_exception(); }
@@ -136,12 +171,10 @@ void Engine::drain() {
 }
 
 void Engine::unload_model() {
-    if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
-        std::cerr << "cuda knobs in use:\n" << env_dump();
-    impl_->ready_ = false;
+    ready_ = false;
     std::exception_ptr failure;
     const auto remember = [&](std::exception_ptr error) { if (!failure) failure = std::move(error); };
-    impl_->text_.reset();
+    text_.reset();
     if (executor_) {
         try { drain(); }
         catch (...) { remember(std::current_exception()); }
@@ -149,38 +182,38 @@ void Engine::unload_model() {
         try { scope = executor_->enter(); }
         catch (...) { remember(std::current_exception()); }
         clear_bindings();
-        impl_->graph_.reset();
+        graph_.reset();
         try { executor_->clear(); }
         catch (...) { remember(std::current_exception()); }
-        impl_->idle_state_.reset(); model_.reset();
-        impl_->weights_->clear_workspace();
-        impl_->budget_.reset(); impl_->cache_.reset();
-        impl_->weights_.reset();
+        idle_state_.reset(); model_.reset();
+        weights_->clear_workspace();
+        budget_.reset(); cache_.reset();
+        weights_.reset();
         scope.reset();
         executor_.reset();
     }
-    impl_->ledger_.reset(); impl_->source_.reset();
+    ledger_.reset(); source_.reset();
     if (failure) std::rethrow_exception(failure);
 }
 
 ControlResult Engine::control_command(ControlRequest request) {
-    if (!impl_->ready_) throw std::runtime_error("engine is unloaded");
+    if (!ready_) throw std::runtime_error("engine is unloaded");
     auto scope = executor_->enter();
     return std::visit([&](auto&& value) -> engine::ControlResult {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, engine::DecodeTokens> || std::is_same_v<T, engine::CountTokens> ||
                       std::is_same_v<T, engine::PrepareDuplex> || std::is_same_v<T, engine::PrepareDuplexStep>) {
-            if (!impl_->text_) throw std::invalid_argument("text control requires a tokenizer");
-            if constexpr (std::is_same_v<T, engine::DecodeTokens>) return impl_->text_->decode_tokens(value.tokens, value.excluded);
-            else if constexpr (std::is_same_v<T, engine::CountTokens>) return engine::TokenCount{impl_->text_->count_tokens(value.prompt), impl_->info_.max_context};
+            if (!text_) throw std::invalid_argument("text control requires a tokenizer");
+            if constexpr (std::is_same_v<T, engine::DecodeTokens>) return text_->decode_tokens(value.tokens, value.excluded);
+            else if constexpr (std::is_same_v<T, engine::CountTokens>) return engine::TokenCount{text_->count_tokens(value.prompt), info_.max_context};
             else if constexpr (std::is_same_v<T, engine::PrepareDuplex>) {
-                impl_->text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
-            } else { impl_->text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
+                text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
+            } else { text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
         } else if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
             return engine_detail::runtime_metrics(model_->metrics(), {}, std::nullopt, false, nullptr,
-                nullptr, 3, nullptr, impl_->source_.get(),
-                *impl_->ledger_, *impl_->weights_, nullptr, nullptr, *impl_->cache_, *impl_->budget_,
-                executor_->memory(impl_->devices_), Device(kCUDA, impl_->forward_options_.primary), impl_->budget_supported_);
+                nullptr, 3, nullptr, source_.get(),
+                *ledger_, *weights_, nullptr, nullptr, *cache_, *budget_,
+                executor_->memory(runtime_.devices), Device(kCUDA, forward_options_.primary), runtime_.online_budget);
         } else throw std::invalid_argument("model has no duplex component");
     }, std::move(request));
 }
@@ -192,26 +225,26 @@ bool Engine::exclusive() const { return false; }
 void Engine::execute(const std::vector<RequestId>&) {}
 
 void Engine::clear_bindings() noexcept {
-    if (impl_->budget_) impl_->budget_->unbind();
+    if (budget_) budget_->unbind();
 }
 
 void Engine::reserve(models::State& state, std::int64_t tokens) {
     std::size_t bytes = 0;
-    const Device primary(kCUDA, impl_->forward_options_.primary);
-    for (const auto& [device, growth] : state.growth(tokens, impl_->forward_options_))
+    const Device primary(kCUDA, forward_options_.primary);
+    for (const auto& [device, growth] : state.growth(tokens, forward_options_))
         if (device == primary) bytes = prefill_budget_add(bytes, growth);
     if (bytes)
-        impl_->budget_->reserve_kv(prefill_budget_add(bytes, std::size_t(64) << 20));
+        budget_->reserve_kv(prefill_budget_add(bytes, std::size_t(64) << 20));
 }
 
 SessionResult Engine::set_budget(const SessionCommand& command) {
-    if (!impl_->budget_supported_)
+    if (!runtime_.online_budget)
         throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
-    auto change = impl_->budget_->change(command);
-    impl_->weights_->settle();
-    impl_->graph_->invalidate();
-    if (impl_->ready_) reset_states(1);
-    if (impl_->idle_state_) impl_->idle_state_->reset(1);
+    auto change = budget_->change(command);
+    weights_->settle();
+    graph_->invalidate();
+    if (ready_) reset_states(1);
+    if (idle_state_) idle_state_->reset(1);
     return change.apply();
 }
 

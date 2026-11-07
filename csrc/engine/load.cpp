@@ -16,9 +16,12 @@
 #include "engine/instance_impl.h"
 #include "engine/drain.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "engine/impl.h"
 #include "engine/models/common/model_config.h"
+#include "engine/models/common/session/cache.h"
 #include "engine/models/gemma4/load.h"
+#include "engine/models/options.h"
+#include "engine/requests/processor.h"
+#include "engine/state/session/sessions.h"
 #endif
 
 #include "engine/backends/cuda/native/env.h"
@@ -130,6 +133,10 @@ auto load_qwen(
             .mirror_scalars = mirror_scalars}));
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target);
+#endif
+
 } // namespace
 
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
@@ -143,11 +150,7 @@ std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     source.reset();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (backbone == CudaBackbone::gemma4) {
-        auto target = std::unique_ptr<engine::Engine>(
-            new engine::Engine(internal::build_engine_parts(std::move(options))));
-        target->install();
-        target->start();
-        return target;
+        return load_native_engine(std::move(options), nullptr);
     }
 #endif
     return std::make_unique<engine_detail::EngineInstance<
@@ -168,7 +171,7 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (typeid(engine) == typeid(tyloi::engine::Engine)) {
-        engine.rebuild(internal::build_engine_parts(std::move(options)));
+        load_native_engine(std::move(options), &engine);
         return;
     }
 #endif
@@ -176,7 +179,8 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
+namespace {
+std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target) {
     std::shared_ptr<const ModelSource> source;
     std::shared_ptr<tyloi::weights::Memory> ledger;
     auto weights = std::make_unique<tyloi::weights::Cache>();
@@ -187,6 +191,8 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
     std::unique_ptr<Executor> root;
     std::shared_ptr<models::CausalModel> model;
     std::unique_ptr<models::State> state;
+    std::unique_ptr<tyloi::state::Sessions> sessions;
+    std::unique_ptr<tyloi::Executor::Graph> graph;
     try {
         const bool dump_env = env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
         env_freeze();
@@ -230,10 +236,14 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
                 finish_load(kv.get(), *weights, 0, load.report_cuda_memory);
                 if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             }
+            graph = root->graph();
+            sessions = internal::make_sessions(*source, runtime.session_cache, runtime.prefix_cache,
+                model->info().max_context, state->supports_text_session_state(),
+                state->supports_paged_text_session_state());
         }
         const auto mode = root->forward_mode(load.layer_placement.primary_device());
-        auto devices = cuda_devices(load);
-        const bool budget_supported = load.layer_placement.devices.size() <= 1 &&
+        runtime.devices = cuda_devices(load);
+        runtime.online_budget = load.layer_placement.devices.size() <= 1 &&
             !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
         const bool graph_allowed = load.dsv4_cpu_offload_layers.empty() && load.dense_cpu_layer_count == 0 &&
             model_parallel_cuda_graph_enabled(load, *root, *weights) &&
@@ -241,25 +251,23 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
         const auto model_info = model->info();
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
         auto text = engine::TextProcessor::load(*source, options.tokenizer_model, vocab_size, model_info.model_type);
-        auto stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
-
-        auto impl = std::make_unique<engine::Engine::Impl>();
-        impl->forward_options_ = {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
-        impl->graph_allowed_ = graph_allowed;
-        impl->budget_supported_ = budget_supported;
-        impl->devices_ = std::move(devices);
-        impl->info_.stop_token_ids = std::move(stop_token_ids);
-        impl->text_ = std::move(text);
-        impl->runtime_ = std::move(runtime);
-        impl->source_ = std::move(source);
-        impl->ledger_ = std::move(ledger);
-        impl->weights_ = std::move(weights);
-        impl->idle_state_ = std::move(state);
-        return engine::EngineParts{std::move(model), std::move(root), std::move(impl)};
+        runtime.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
+        runtime.resident_budget_bytes = runtime_options::resident_budget_bytes();
+        runtime.decode_graph.enabled &= graph_allowed;
+        models::ForwardOptions forward{mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
+        if (target) {
+            target->rebind(std::move(model), std::move(root), std::move(runtime), std::move(source),
+                std::move(ledger), std::move(weights), std::move(state), std::move(sessions),
+                std::move(text), forward, std::move(graph));
+            return {};
+        }
+        return std::make_unique<engine::Engine>(std::move(model), std::move(root), std::move(runtime),
+            std::move(source), std::move(ledger), std::move(weights), std::move(state),
+            std::move(sessions), std::move(text), forward, std::move(graph));
     } catch (...) {
         const auto failure = std::current_exception();
         if (root) {
-            try { drain_cuda(*root, *weights, offload.get(), load.layer_placement, load.tensor_parallel, load.expert_parallel); }
+            try { if (weights) drain_cuda(*root, *weights, offload.get(), load.layer_placement, load.tensor_parallel, load.expert_parallel); }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
             catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
             std::unique_ptr<tyloi::Executor::Scope> scope;
@@ -270,16 +278,18 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
             } catch (...) {
                 std::cerr << "runtime_load_cleanup error=unknown\n";
             }
+            graph.reset();
             try { root->clear(); }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
             catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
-            state.reset(); model.reset(); offload.reset(); kv.reset(); weights.reset();
+            state.reset(); model.reset(); sessions.reset(); offload.reset(); kv.reset(); weights.reset();
             scope.reset();
             root.reset();
         }
         std::rethrow_exception(failure);
     }
 }
+} // namespace
 #endif
 
 } // namespace tyloi::cuda

@@ -5,6 +5,12 @@
 #include "requests/result.h"
 #include "executor.h"
 #include "generation/sequence.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "config.h"
+#include "budget.h"
+#include "generation/decode.h"
+#include "models/causal_model.h"
+#endif
 
 #include <chrono>
 #include <future>
@@ -14,19 +20,15 @@
 #include <variant>
 
 namespace tyloi::models { class CausalModel; class State; }
-namespace tyloi::engine { class Engine; struct EngineParts; }
-namespace tyloi::cuda {
-struct CudaEngineOptions;
-std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions);
-void reload_cuda_engine(engine::Engine&, CudaEngineOptions);
-// Assembles everything an Engine needs without touching the Engine itself.
-namespace internal { engine::EngineParts build_engine_parts(CudaEngineOptions); }
-}
+namespace tyloi { class ModelSource; }
+namespace tyloi::weights { class Memory; class Cache; }
+namespace tyloi::state { class Sessions; }
 
 namespace tyloi::engine {
 
 class Scheduler;
 class InferenceOutput;
+class TextProcessor;
 struct Request;
 
 struct EngineInfo {
@@ -46,6 +48,21 @@ struct EngineStatus {
 };
 class Engine {
 public:
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    Engine(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
+        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
+        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
+        std::unique_ptr<tyloi::Executor::Graph> graph);
+    // Retire active requests before replacing dependencies; the Scheduler remains attached.
+    void rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
+        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
+        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
+        std::unique_ptr<tyloi::Executor::Graph> graph);
+#endif
     // Start one consumer before enable_reload(); next_reload() delivers posted work before shutdown.
     // Complete reply only after binding and its execution scopes have exited.
     struct Reload { std::int64_t context; std::promise<void> reply; };
@@ -116,26 +133,27 @@ protected:
 private:
     friend class Scheduler;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    friend struct EngineParts;
-    // Builds the parts only; it never touches an Engine.
-    friend EngineParts tyloi::cuda::internal::build_engine_parts(tyloi::cuda::CudaEngineOptions);
-    friend std::unique_ptr<Engine> tyloi::cuda::load_cuda_engine(tyloi::cuda::CudaEngineOptions);
-    friend void tyloi::cuda::reload_cuda_engine(Engine&, tyloi::cuda::CudaEngineOptions);
-    // The model and executor enter through the constructor; nothing writes
-    // Engine fields from outside.
-    explicit Engine(EngineParts&& parts);
-    // Device-side wiring that needs this Engine: caches, budget, reservations.
-    void install();
-    void rebuild(EngineParts&& parts);
+    void install(std::unique_ptr<tyloi::Executor::Graph> graph);
 
     SessionResult set_budget(const SessionCommand&);
     void reserve(models::State& state, std::int64_t tokens);
     void drain();
     void clear_bindings() noexcept;
-    struct Impl;
     std::shared_ptr<models::CausalModel> model_;
     std::unique_ptr<tyloi::Executor> executor_;
-    std::unique_ptr<Impl> impl_;
+    RuntimeConfig runtime_;
+    std::shared_ptr<const ModelSource> source_;
+    std::shared_ptr<weights::Memory> ledger_;
+    std::unique_ptr<weights::Cache> weights_;
+    std::unique_ptr<models::State> idle_state_;
+    models::ForwardOptions forward_options_{};
+    models::Info model_info_{};
+    std::optional<Decode> graph_;
+    std::unique_ptr<state::Sessions> cache_;
+    std::optional<Budget> budget_;
+    std::unique_ptr<TextProcessor> text_;
+    EngineInfo info_;
+    bool ready_ = false;
 #endif
     std::unique_ptr<Scheduler> scheduler_;
 };
