@@ -27,6 +27,7 @@ const CacheData& cache(const Cache& value);
 class Cache {
 public:
     enum class Graph { native, legacy, model_parallel };
+    enum class Lookahead { link, capture, warmup, neighbor };
     enum class Prefill { regular, streamed, retained };
     enum class Stage { loaded, decode, snapshot };
     struct PrefillBudget {
@@ -42,6 +43,10 @@ public:
         std::size_t bytes = 0;
         std::uint64_t hit_bytes = 0;
         double lookup_us = 0;
+    };
+    struct Prefetch {
+        int candidates;
+        bool early;
     };
 
     class Routes {
@@ -104,6 +109,8 @@ public:
     bool empty() const;
     bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;
     bool prepare_graph(Device device);
+    Prefetch prefetch() const;
+    bool lookahead(Lookahead purpose, std::optional<bool> model_override = std::nullopt) const;
     bool needs_finalize() const;
     void finalize(std::size_t reserve = 0, std::size_t kv_charge = 0);
     void resize(std::size_t bytes);

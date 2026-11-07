@@ -1,11 +1,10 @@
 #pragma once
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/rope/tail.h"
-#include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 
@@ -934,8 +933,7 @@ struct Block final {
 #else
                                 value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
 #endif
-                                moe_expert_cache_ssd_router_prefetch(
-                                    ::tyloi::weights::detail::cache(execution.weights).moe),
+                                execution.weights.lookahead(::tyloi::weights::Cache::Lookahead::neighbor),
                                 L().current_ids);
                         }
 #ifdef TYLOINFER_NATIVE_CUDA

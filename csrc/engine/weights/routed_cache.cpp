@@ -134,6 +134,27 @@ bool Cache::prepare_graph(Device device) {
     return true;
 }
 
+Cache::Prefetch Cache::prefetch() const {
+    return moe_expert_cache_ssd_experts(data_->moe) ? Prefetch{4, true} : Prefetch{2, false};
+}
+
+bool Cache::lookahead(Lookahead purpose, std::optional<bool> model_override) const {
+    switch (purpose) {
+    case Lookahead::link:
+        return model_override.value_or(cuda::options::router_lookahead_override().value_or(
+            moe_expert_cache_ssd_experts(data_->moe)));
+    case Lookahead::capture:
+        return !data_->tq && model_override.value_or(cuda::options::router_lookahead_override().value_or(
+            moe_expert_cache_ssd_router_prefetch(data_->moe)));
+    case Lookahead::warmup:
+        return moe_expert_cache_ssd_experts(data_->moe) && !model_override.has_value() &&
+            !cuda::options::router_lookahead_override().has_value();
+    case Lookahead::neighbor:
+        return moe_expert_cache_ssd_router_prefetch(data_->moe);
+    }
+    return false;
+}
+
 Cache::Prefill Cache::prefill_mode(std::size_t tokens, bool resumed) const {
     if (resumed && tokens <= 128 && moe_expert_cache_ssd_experts(data_->moe)) return Prefill::retained;
     if (tokens > 8 && moe_expert_cache_ssd_experts(data_->moe)) return Prefill::streamed;

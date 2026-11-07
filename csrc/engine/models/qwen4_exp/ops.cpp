@@ -1294,8 +1294,8 @@ struct Qwen4DecodeGraph {
     bool failed=false;
     ::tyloi::DenseTensor last_compact;
     explicit Qwen4DecodeGraph(qwen4_exp::Model& model):stream(mfq_get_current_cuda_stream()),ple_stream(mfq_get_stream_from_pool()) {
-        const bool enabled=model.router_lookahead.value_or(::tyloi::cuda::options::router_lookahead_override().value_or(
-            moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(model.execution->weights).moe)));
+        const bool enabled=model.execution->weights.lookahead(
+            ::tyloi::weights::Cache::Lookahead::link,model.router_lookahead);
         for(std::size_t i=0;i<model.blocks.size();++i) {
             auto& current=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]);
             blocks.push_back(&current);
@@ -1354,9 +1354,8 @@ struct Qwen4DecodeGraph {
                 std::cerr<<"runtime_qwen4_graph_capacity position="<<model.active->cache_pos
                     <<" required="<<required<<" planned="<<planned<<" capacity="<<kv_capacity<<'\n';
         }
-        const bool prediction=tokens==1 && !::tyloi::weights::detail::cache(model.execution->weights).tq && model.router_lookahead.value_or(
-            ::tyloi::cuda::options::router_lookahead_override().value_or(
-                moe_expert_cache_ssd_router_prefetch(::tyloi::weights::detail::cache(model.execution->weights).moe)));
+        const bool prediction=tokens==1 && model.execution->weights.lookahead(
+            ::tyloi::weights::Cache::Lookahead::capture,model.router_lookahead);
         auto& owner=cells[{tokens,kind,confirmed,prediction}];
         if(!owner)owner=std::make_unique<Cell>(tokens,model.config.hidden,model.blocks,stream.stream(),confirmed,shared_checkpoints,prediction);
         owner->window.set_profile_geometry(raw_hidden?"mtp_target":"target_decode",tokens);
@@ -1789,8 +1788,8 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
     }
     (void)qwen4_decode_graph_logits(model,ids.narrow(1,0,1),2);
     (void)qwen4_decode_graph_logits(model,ids.narrow(1,0,1),1);
-    if(moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(model.execution->weights).moe) &&
-            !model.router_lookahead.has_value() && !::tyloi::cuda::options::router_lookahead_override().has_value()) {
+    if(model.execution->weights.lookahead(
+            ::tyloi::weights::Cache::Lookahead::warmup,model.router_lookahead)) {
         struct Restore {
             qwen4_exp::Model& model;std::optional<bool> previous;
             ~Restore(){model.router_lookahead=previous;}

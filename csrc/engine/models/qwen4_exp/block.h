@@ -5,7 +5,7 @@
 // into the request State; the definition is public so the shared layer loop
 // can iterate typed blocks without a virtual interface.
 
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/models/qwen4_exp/model.h"
 #include "engine/models/qwen4_exp/config.h"
 #include "engine/models/common/causal_model_ops.h"
@@ -14,7 +14,6 @@
 #include "engine/backends/cuda/ops/ffn/gated.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "diagnostics/router_lookahead.h"
-#include "engine/weights/moe/expert_cache.h"
 
 #include <functional>
 #include <memory>
@@ -192,7 +191,7 @@ struct Qwen4Block final {
             const auto routing=config.routing();
             auto logits=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*next_router,ffn_input.reshape({1,config.hidden}).to(::tyloi::kFloat16)).to(::tyloi::kFloat32).contiguous();
             const int prediction_count=std::min<int64_t>(logits.size(-1),
-                moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(execution.weights).moe)?4:2);
+                execution.weights.prefetch().candidates);
             auto selected=moe_topk_cuda(logits,prediction_count,
                 routing.activation==tyloi::ops::RouterActivation::sigmoid,
                 routing.activation==tyloi::ops::RouterActivation::sqrt_softplus,
@@ -200,7 +199,7 @@ struct Qwen4Block final {
             prediction=next_prefetch(selected[0].to(::tyloi::kInt32).contiguous());
         }
         if(router_audit)router_audit->input(layer,ffn_input);
-        const bool early_prediction=prediction.identity && moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(execution.weights).moe);
+        const bool early_prediction=prediction.identity && execution.weights.prefetch().early;
         if(early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
         auto ffn_output=ffn(execution,ffn_input);
         // Reserve current-layer readers before selecting speculative
