@@ -8,7 +8,7 @@
 #include "engine/models/source.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/engine.h"
 #include "engine/weights/memory.h"
 #include "components/error.h"
@@ -36,7 +36,7 @@ tyloi::engine::PrefillChunk budget_batch_prefill(
     return chunk;
 }
 
-Budget::Budget(tyloi::weights::Memory& weight_memory, RoutedCache& weights,
+Budget::Budget(tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
         internal::TextSessionCache& cache, int primary_device)
     : weight_memory_(weight_memory), weights_(weights), cache_(cache),
       primary_device_(primary_device), initial_expert_budget_(weights.budget()),
@@ -81,7 +81,7 @@ std::size_t Budget::trim_prefix(std::size_t bytes) {
 }
 
 void Budget::workspace(std::size_t bytes) {
-    reserve_moe_workspace(weights_.moe, bytes);
+    reserve_moe_workspace(tyloi::weights::detail::cache(weights_).moe, bytes);
     const auto context=default_context(primary_device_);
     if(context->available_memory()>=bytes)return;
     const auto released=trim_prefix(bytes);
@@ -92,30 +92,31 @@ void Budget::workspace(std::size_t bytes) {
 
 std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic) {
-    const bool short_streamed = resumed && tokens <= 128 && moe_expert_cache_ssd_experts(weights_.moe);
+    const auto& moe = tyloi::weights::detail::cache(weights_).moe;
+    const bool short_streamed = resumed && tokens <= 128 && moe_expert_cache_ssd_experts(moe);
     if (short_streamed) {
         std::cerr << "runtime_streamed_prefill retained_decode=1 tokens=" << tokens
                   << " chunk=" << std::min<int64_t>(4, limit) << '\n';
     } else {
-        const bool streamed = tokens > 8 && moe_expert_cache_ssd_experts(weights_.moe);
-        if (streamed) lend_moe_decode_cache_for_prefill(weights_.moe, runtime_options::workspace_reserve_bytes());
-        if (tokens > 1024 || moe_expert_cache_ssd_experts(weights_.moe))
+        const bool streamed = tokens > 8 && moe_expert_cache_ssd_experts(moe);
+        if (streamed) lend_moe_decode_cache_for_prefill(moe, runtime_options::workspace_reserve_bytes());
+        if (tokens > 1024 || moe_expert_cache_ssd_experts(moe))
             workspace(runtime_options::workspace_reserve_bytes());
     }
     if (short_streamed) return std::min<int64_t>(4, limit);
     if (tokens <= 128) return std::min<int64_t>(std::max<std::size_t>(1, tokens), limit);
 
-    auto budget = moe_prefill_workspace_budget(weights_.moe, false);
+    auto budget = moe_prefill_workspace_budget(moe, false);
     auto context = default_context(primary_device_);
     auto available = engine::prefill_budget_add(engine::prefill_budget_add(context->available_memory(), context->workspace_available()), budget.lendable_bytes);
-    const auto reserve = moe_expert_cache_ssd_experts(weights_.moe)
+    const auto reserve = moe_expert_cache_ssd_experts(moe)
         ? std::max(std::size_t(1) << 30, runtime_options::workspace_reserve_bytes()) : std::size_t(1) << 30;
     const auto fixed = engine::prefill_budget_add(reserve, budget.transfer_bytes);
     const auto wanted = std::min<int64_t>({int64_t(tokens), limit, engine::max_prefill_compute_chunk});
     const auto required = engine::prefill_budget_add(fixed, std::size_t(wanted) * row_bytes);
     if (required > available) {
         workspace(required > budget.lendable_bytes ? required - budget.lendable_bytes : 0);
-        budget = moe_prefill_workspace_budget(weights_.moe, false);
+        budget = moe_prefill_workspace_budget(moe, false);
         available = engine::prefill_budget_add(context->available_memory() + context->workspace_available(), budget.lendable_bytes);
     }
     const auto chunk_size = engine::select_prefill_chunk(tokens, limit, available, fixed, row_bytes);
@@ -129,8 +130,9 @@ std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
 }
 
 void Budget::decode(const ModelSource* source) {
-    if (weights_.tq) return;
-    prepare_moe_decode_residency(weights_.moe);
+    const auto& data = tyloi::weights::detail::cache(weights_);
+    if (data.tq || !data.moe) return;
+    prepare_moe_decode_residency(data.moe);
     default_context(primary_device_)->reclaim_idle_memory();
     weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source);
 }
@@ -143,7 +145,7 @@ Budget::Change::Change(Budget& budget, const engine::SessionCommand& command)
     : budget_(budget), bytes(command.bytes) {
     const auto context = default_context(budget.primary_device_);
     dense = budget.weight_memory_.resident_bytes();
-    minimum = moe_expert_cache_minimum_bytes(budget.weights_.moe);
+    minimum = budget.weights_.minimum();
     requested_weights = command.weight_bytes.value_or(budget.weight_budget_);
     if (requested_weights && requested_weights < dense + minimum)
         throw std::invalid_argument("weight budget is below dense weights and minimum expert working set");
@@ -167,7 +169,7 @@ engine::SessionResult Budget::Change::apply() {
     auto& weights_ = budget_.weights_;
     auto& cache_ = budget_.cache_;
     const auto context = default_context(budget_.primary_device_);
-    release_moe_decode_buffers(weights_.moe);
+    release_moe_decode_buffers(tyloi::weights::detail::cache(weights_).moe);
     context->reclaim_idle_memory();
     auto target = requested_weights ? requested_weights - dense : budget_.initial_expert_budget_;
     std::size_t hot = 0, expert_bytes = 0;

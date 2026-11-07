@@ -1,3 +1,4 @@
+#include "engine/weights/cache_internal.h"
 #include "engine/models/qwen4_exp/batch.h"
 #include "engine/models/batch.h"
 
@@ -92,7 +93,7 @@ tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
     initialize_prefill(request, chunk);
     return tyloi::cuda::budget_batch_prefill(
         model_.metadata.hidden_size, model_.metadata.hc_mult, execution_.config.layer_placement.primary_device(),
-        execution_.weights.moe, chunk,
+        ::tyloi::weights::detail::cache(execution_.weights).moe, chunk,
         request->cache->prefill_growth_bytes(chunk.count));
 }
 
@@ -127,7 +128,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
             // unused while independent batch rows own their own context.
             qwen4_release_decode_graphs(model_, nullptr);
             model_.active->reset(1);
-            release_moe_decode_buffers(execution_.weights.moe);
+            release_moe_decode_buffers(::tyloi::weights::detail::cache(execution_.weights).moe);
             default_context(execution_.config.layer_placement.primary_device())->reclaim_idle_memory();
         }
         requests_.push_back(request);
@@ -203,7 +204,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
     CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     qwen4_release_decode_graphs(model_, nullptr);
     model_.adapter_begin_forward(false);
-    release_moe_decode_buffers(execution_.weights.moe);
+    release_moe_decode_buffers(::tyloi::weights::detail::cache(execution_.weights).moe);
     std::vector<tyloi::engine::PrefillBatchResult<Sample>> result(items.size());
     std::vector<std::size_t> ready;
     for (std::size_t row = 0; row < items.size(); ++row) {
@@ -303,7 +304,7 @@ void BatchOps::activate(const std::shared_ptr<Request>& request, const Sample& s
 void BatchOps::discard_prefill(const std::shared_ptr<Request>& request) {
     if (graph_)
         graph_->clear();
-    finish_moe_expert_exchanges(execution_.weights.moe);
+    finish_moe_expert_exchanges(::tyloi::weights::detail::cache(execution_.weights).moe);
     request->cache.reset();
     request->prefill_ids = {};
     request->prefill_timers.clear();
@@ -320,7 +321,7 @@ void BatchOps::retire(const std::vector<std::shared_ptr<Request>>& retired, int6
     if (!active && !model_.graph_registry) {
         // Batch widths have distinct transfer arenas and graph scratch. Return
         // them at idle while preserving resident experts and adaptation heat.
-        release_moe_decode_buffers(execution_.weights.moe);
+        release_moe_decode_buffers(::tyloi::weights::detail::cache(execution_.weights).moe);
         default_context(execution_.config.layer_placement.primary_device())->reclaim_idle_memory();
     }
 }

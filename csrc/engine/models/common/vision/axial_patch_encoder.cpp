@@ -6,7 +6,7 @@
 #include "engine/ops.h"
 #include "engine/weights/fields.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/weights/workspace.h"
 #include "engine/generation/sequence.h"
 
@@ -65,7 +65,7 @@ struct AlignerWeights {
 struct CudaAxialPatchVisionTower::Impl {
     // The model owns the source for the lifetime of its vision component.
     ::tyloi::weights::Loader loader;
-    RoutedCache& cache;
+    ::tyloi::weights::Cache& cache;
     Config config;
 
     tyloi::StepSequence<DenseTensor> encode_steps(
@@ -96,7 +96,7 @@ struct CudaAxialPatchVisionTower::Impl {
         DenseTensor value;
         {
             auto patch = affine(host, "vision.patch_embedding", config.patch_width(), hidden);
-            auto loan = cache.borrow(fields::bytes(patch) + activations);
+            auto loan = WeightLoan(::tyloi::weights::detail::cache(cache).moe, fields::bytes(patch) + activations);
             DenseTensor output;
             {
                 auto staged = std::move(patch);
@@ -129,7 +129,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, prefix + ".attention.output", hidden, hidden),
                 affine(host, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate),
                 affine(host, prefix + ".mlp.down", config.intermediate, hidden)};
-            auto loan = cache.borrow(fields::bytes(block) + activations);
+            auto loan = WeightLoan(::tyloi::weights::detail::cache(cache).moe, fields::bytes(block) + activations);
             DenseTensor output;
             {
                 auto weights = std::move(block);
@@ -180,7 +180,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 norm(host, "vision.output_norm.weight", hidden, config.rms_eps),
                 affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
                 affine(host, "vision.aligner.output", config.output_hidden, config.output_hidden)};
-            auto loan = cache.borrow(fields::bytes(weights) + activations);
+            auto loan = WeightLoan(::tyloi::weights::detail::cache(cache).moe, fields::bytes(weights) + activations);
             DenseTensor output;
             {
                 auto staged = std::move(weights);
@@ -220,7 +220,7 @@ struct CudaAxialPatchVisionTower::Impl {
 };
 
 CudaAxialPatchVisionTower CudaAxialPatchVisionTower::load(
-    const ::tyloi::weights::Loader& loader, RoutedCache& cache, const Config& config) {
+    const ::tyloi::weights::Loader& loader, ::tyloi::weights::Cache& cache, const Config& config) {
     config.validate();
     for (const auto* name : {"vision.patch_embedding.weight", "vision.output_norm.weight",
                             "vision.aligner.input.weight", "vision.aligner.output.weight"})

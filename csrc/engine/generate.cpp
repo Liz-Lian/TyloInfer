@@ -4,8 +4,7 @@
 #include "engine/generation/sampling.h"
 #include "engine/scheduler/request.h"
 #include "engine/models/source.h"
-#include "engine/weights/routed_cache.h"
-#include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/cache.h"
 
 #include <algorithm>
 #include <exception>
@@ -65,23 +64,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
 
     const auto trace = [&](const char* boundary, bool wait = true) {
         if (!config.trace_moe || std::uncaught_exceptions()) return;
-        std::cerr << "moe_request_cache_stats boundary=" << boundary << '\n';
-        if (wait) print_moe_expert_cache_stats(weights.moe, std::cerr);
-        std::cerr << "moe_phase_metrics boundary=" << boundary;
-        for (const auto& [name, value] : weights.metrics())
-            if (name == "ssd_expert_read_wait_ms" || name == "expert_route_wait_ms" ||
-                name == "expert_host_fetch_ms" || name == "expert_host_copy_ms" ||
-                name == "expert_transfer_cache_prepare_ms" || name == "ssd_expert_bytes_read" ||
-                name == "ssd_expert_read_count" || name == "ram_expert_cache_hits" ||
-                name == "ram_expert_cache_misses" || name == "ram_expert_pcie_read_bytes" ||
-                name == "expert_logical_transfer_bytes") std::cerr << ' ' << name << '=' << value;
-        std::cerr << '\n';
-        if (impl_->source_) {
-            const auto io = impl_->source_->file_read_stats();
-            std::cerr << "runtime_model_io_stats boundary=" << boundary << " calls=" << io.calls
-                      << " logical_bytes=" << io.logical_bytes << " physical_bytes=" << io.physical_bytes
-                      << " read_ms=" << double(io.read_nanoseconds) / 1e6 << '\n';
-        }
+        weights.trace(boundary, wait, impl_->source_.get());
     };
     ExecutionCleanup cleanup{output.cleanup_failure, [&] {
         trace("end");
@@ -156,11 +139,11 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_return;
     }
     auto token = ops::item(*pending);
-    if (weights.moe) impl_->budget_->decode(impl_->source_.get());
+    impl_->budget_->decode(impl_->source_.get());
     const bool graph_active = config.decode_graph.enabled &&
         impl_->graph_allowed_ &&
         (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
-        graph.graph && !weights.moe &&
+        graph.graph &&
         input.sampling.max_tokens >= config.decode_graph.minimum_generation_tokens &&
         input.sampling.max_tokens <= graph.generated_capacity;
     bool graph_prepared = false;
@@ -264,7 +247,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
 namespace tyloi::cuda::internal {
 #define TYLOINFER_INSTANTIATE_FLOW(MODEL, STATE)                                                                \
     template Generation generate(MODEL &, STATE &, tyloi::cuda::Executor*, tyloi::cuda::Collectives&, \
-        tyloi::cuda::Executor::Mode, CudaProfiler&, tyloi::cuda::RoutedCache&, bool&, bool, bool,       \
+        tyloi::cuda::Executor::Mode, CudaProfiler&, tyloi::weights::Cache&, bool&, bool, bool,       \
         std::function<void()>,                                                                      \
         const tyloi::models::Info &, const tyloi::ModelSource*,                                          \
         DecodeGraphCache &,                                                                        \

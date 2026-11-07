@@ -18,7 +18,7 @@
 #include "engine/scheduler/request.h"
 #include "engine/models/prepare.h"
 #include "engine/weights/memory.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache.h"
 
 #include <algorithm>
 #include <exception>
@@ -124,7 +124,7 @@ class EngineInstance final : public Engine {
     friend void ::tyloi::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
     CudaEngineOptions options;
     std::shared_ptr<KvMemoryManager> kv;
-    RoutedCache weights;
+    ::tyloi::weights::Cache weights;
     std::shared_ptr<KvOffloadStore> offload;
     std::unique_ptr<Executor> executor;
     std::unique_ptr<CudaExecutionContext> execution;

@@ -2,7 +2,7 @@
 
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/kv_expert_loan.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "env.h"
 #include "resident_allocations.h"
 #include "engine/weights/source/source.h"
@@ -17,7 +17,8 @@
 #include <string>
 #include <utility>
 
-namespace tyloi::cuda {
+namespace tyloi::weights {
+using namespace tyloi::cuda;
 namespace {
 
 bool is_memory_pressure(const std::exception& error) {
@@ -34,7 +35,7 @@ bool is_memory_pressure(const std::exception& error) {
 
 } // namespace
 
-struct RoutedCache::Workspace {
+struct detail::Workspace {
     struct PrefillRegion {
         ::tyloi::DenseTensor storage;
         std::size_t region = 0;
@@ -48,18 +49,24 @@ struct RoutedCache::Workspace {
     std::uint64_t prefill_reclaimed_used_bytes = 0;
 };
 
-RoutedCache::RoutedCache() = default;
-RoutedCache::~RoutedCache() { clear_workspace(); }
+detail::CacheData::CacheData() = default;
+detail::CacheData::~CacheData() = default;
+Cache::Cache() : data_(std::make_unique<detail::CacheData>()) {}
+Cache::~Cache() { clear_workspace(); }
 
-void RoutedCache::workspace(int device, std::shared_ptr<KvExpertLoan> loan) {
-    clear_workspace();
-    workspace_ = std::make_unique<Workspace>();
-    workspace_->device = device;
-    workspace_->loan = std::move(loan);
+detail::CacheData& detail::cache(Cache& value) { return *value.data_; }
+const detail::CacheData& detail::cache(const Cache& value) { return *value.data_; }
+
+void detail::init_workspace(Cache& owner, int device, std::shared_ptr<KvExpertLoan> loan) {
+    owner.clear_workspace();
+    auto& workspace = detail::cache(owner).workspace;
+    workspace = std::make_unique<detail::Workspace>();
+    workspace->device = device;
+    workspace->loan = std::move(loan);
 }
 
-void RoutedCache::clear_workspace() noexcept {
-    if (!workspace_) return;
+void Cache::clear_workspace() noexcept {
+    if (!data_->workspace) return;
     try {
         release_workspace();
     } catch (const std::exception& error) {
@@ -68,23 +75,23 @@ void RoutedCache::clear_workspace() noexcept {
     } catch (...) {
         std::cerr << "runtime_mtp_workspace_cache cleanup_error=unknown\n";
     }
-    workspace_.reset();
+    data_->workspace.reset();
 }
 
-bool RoutedCache::has_decode_workspace() const noexcept {
-    return workspace_ && workspace_->decode_region.has_value();
+bool Cache::has_decode_workspace() const noexcept {
+    return data_->workspace && data_->workspace->decode_region.has_value();
 }
 
-std::size_t RoutedCache::prefill_workspace_capacity() const noexcept {
+std::size_t Cache::prefill_workspace_capacity() const noexcept {
     std::size_t bytes = 0;
-    if (workspace_)
-        for (const auto& part : workspace_->prefill_regions) bytes += part.storage.nbytes();
+    if (data_->workspace)
+        for (const auto& part : data_->workspace->prefill_regions) bytes += part.storage.nbytes();
     return bytes;
 }
 
-void RoutedCache::release_workspace(std::size_t required_available, const char* reason) {
-    if (!workspace_ || (!workspace_->decode_region && workspace_->prefill_regions.empty())) return;
-    auto& w = *workspace_;
+void Cache::release_workspace(std::size_t required_available, const char* reason) {
+    if (!data_->workspace || (!data_->workspace->decode_region && data_->workspace->prefill_regions.empty())) return;
+    auto& w = *data_->workspace;
     if (reason) {
         const auto context = default_context(w.device);
         std::cerr << "runtime_workspace_cache_reclaim reason=" << reason
@@ -92,7 +99,7 @@ void RoutedCache::release_workspace(std::size_t required_available, const char* 
             << " available_bytes=" << context->available_memory() << '\n';
     }
 
-    finish_moe_expert_exchanges(moe);
+    finish_moe_expert_exchanges(data_->moe);
     TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     const auto context = default_context(w.device);
     const bool all = required_available == std::numeric_limits<std::size_t>::max();
@@ -120,9 +127,9 @@ void RoutedCache::release_workspace(std::size_t required_available, const char* 
     context->reclaim_idle_memory();
 }
 
-std::size_t RoutedCache::lend_decode(std::size_t maximum_minus_active) {
-    if (!workspace_) return 0;
-    auto& w = *workspace_;
+std::size_t Cache::lend_decode(std::size_t maximum_minus_active) {
+    if (!data_->workspace) return 0;
+    auto& w = *data_->workspace;
     if (w.decode_region || !w.loan || !maximum_minus_active) return 0;
 
     const auto context = default_context(w.device);
@@ -146,9 +153,9 @@ std::size_t RoutedCache::lend_decode(std::size_t maximum_minus_active) {
     return bytes;
 }
 
-void RoutedCache::restore_workspace(std::size_t reserve_bytes, const tyloi::source::Source* source) {
-    if (!workspace_) return;
-    auto& w = *workspace_;
+void Cache::restore_workspace(std::size_t reserve_bytes, const tyloi::source::Source* source) {
+    if (!data_->workspace) return;
+    auto& w = *data_->workspace;
     if (!w.loan) return;
 
     bool ssd = false;
@@ -217,12 +224,12 @@ void RoutedCache::restore_workspace(std::size_t reserve_bytes, const tyloi::sour
         << " reserve_bytes=" << reserve_bytes << '\n';
 }
 
-void RoutedCache::append_workspace_metrics(
+void Cache::append_workspace_metrics(
         std::vector<std::pair<std::string, double>>& metrics) const {
     std::size_t decode_capacity = 0, decode_used = 0, prefill_used = 0;
     std::uint64_t prefill_reclaimed_used = 0;
-    if (workspace_) {
-        const auto& w = *workspace_;
+    if (data_->workspace) {
+        const auto& w = *data_->workspace;
         decode_capacity = w.decode_storage.defined() ? w.decode_storage.nbytes() : 0;
         decode_used = w.decode_region && w.loan ? w.loan->region_bytes(*w.decode_region) : 0;
         for (const auto& part : w.prefill_regions)
@@ -237,7 +244,7 @@ void RoutedCache::append_workspace_metrics(
         {"prefill_workspace_expert_reclaimed_used_bytes", double(prefill_reclaimed_used)}});
 }
 
-} // namespace tyloi::cuda
+} // namespace tyloi::weights
 
 ::tyloi::DenseTensor tyloi::cuda::WeightLoan::finish(::tyloi::DenseTensor output) {
     if (active_) {

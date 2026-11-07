@@ -16,7 +16,7 @@
 
 class TqExec;
 namespace tyloi { class MfeTensor; class NintRows; }
-namespace tyloi::cuda { struct RoutedCache; }
+namespace tyloi::weights { class Cache; }
 
 struct MfqDropFileCacheGuard {
     bool& setting;
@@ -96,8 +96,8 @@ private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
     Loader(const tyloi::source::Source& source, Options options, Placement placement,
-           cuda::RoutedCache& cache, std::shared_ptr<TqExec> tq);
-    friend struct cuda::RoutedCache;
+           Cache& cache, std::shared_ptr<TqExec> tq);
+    friend class Cache;
     DenseTensor host_value(const std::string& name) const;
     std::shared_ptr<const ::tyloi::MfeTensor> build_experts(
         const std::string& name, bool cacheable, int layer, const std::string& role) const;

@@ -15,6 +15,7 @@
 #include <vector>
 
 namespace tyloi::weights {
+class Cache;
 struct Loader;
 }
 
@@ -34,7 +35,7 @@ struct Components {
         grid_vision;
     std::unique_ptr<Mtp> mtp;
 
-    static Components load(Model& model, const ::tyloi::weights::Loader& weights, RoutedCache& cache,
+    static Components load(Model& model, const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
         LayerPlacementConfig& placement, int& cpu_layers, Executor& executor,
         Collectives& copies, const int64_t& kv_capacity, Trace* const& trace,
         const int& trace_scope, bool optional, bool cpu_offload, bool preallocate);

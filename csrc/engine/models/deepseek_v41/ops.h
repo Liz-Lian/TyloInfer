@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
@@ -936,7 +937,7 @@ struct Block final {
                                 value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
 #endif
                                 moe_expert_cache_ssd_router_prefetch(
-                                    execution.weights.moe),
+                                    ::tyloi::weights::detail::cache(execution.weights).moe),
                                 L().current_ids);
                         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

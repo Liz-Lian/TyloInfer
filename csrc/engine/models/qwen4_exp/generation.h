@@ -5,7 +5,7 @@
 #include "engine/generation/sampling.h"
 #include "engine/requests/output.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 
 #include <algorithm>
 #include <utility>
@@ -26,7 +26,7 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
     // TQ groups all prompt rows by expert without expanding an entire
     // layer. Splitting these batches into verification windows would
     // repeatedly transfer the same expert when it is not resident.
-    const bool verification_windows=!weights.tq || chunk.count<=8;
+    const bool verification_windows=!::tyloi::weights::detail::cache(weights).tq || chunk.count<=8;
     if(verification_windows && (!prepared || !prepared->transformed()) && model.reuse_decode_graphs &&
             model.graph_registry && chunk.count<=128) {
         // The same bounded prompt windows as MTP avoid materializing
@@ -81,10 +81,10 @@ void generation_request(qwen4_exp::Model& model, Ops& ops, const tyloi::engine::
     model.decode_reserve_until=std::min<int64_t>(ops.info.max_context,
         int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
     if(!ops.batching && input.prompt.size()>1024) {
-        finish_moe_expert_exchanges(ops.weights.moe);
+        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(ops.weights).moe);
         if(ops.state.cache_pos==0 && !model.graph_registry)
-            release_moe_decode_buffers(ops.weights.moe);
-        else release_moe_prefill_buffers(ops.weights.moe);
+            release_moe_decode_buffers(::tyloi::weights::detail::cache(ops.weights).moe);
+        else release_moe_prefill_buffers(::tyloi::weights::detail::cache(ops.weights).moe);
         tyloi::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
     }
 #endif

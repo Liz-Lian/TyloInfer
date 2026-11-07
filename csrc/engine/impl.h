@@ -9,7 +9,7 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache.h"
 
 namespace tyloi::engine {
 
@@ -20,7 +20,7 @@ struct Engine::Impl {
     bool budget_supported_ = false;
     std::shared_ptr<const ModelSource> source_;
     std::shared_ptr<tyloi::weights::Memory> ledger_;
-    std::unique_ptr<cuda::RoutedCache> weights_;
+    std::unique_ptr<weights::Cache> weights_;
     std::unique_ptr<models::State> idle_state_;
     models::ForwardOptions forward_options_{};
     bool graph_allowed_ = false;

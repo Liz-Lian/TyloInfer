@@ -8,7 +8,7 @@
 #define TYLOINFER_INSTANTIATE_MTP(MODEL, STATE)                                      \
   template Generation run_mtp_generation<MODEL, STATE>(                         \
       MODEL &, STATE &, tyloi::cuda::Executor*, tyloi::cuda::Collectives&,           \
-      tyloi::cuda::Executor::Mode, tyloi::cuda::RoutedCache&,                        \
+      tyloi::cuda::Executor::Mode, ::tyloi::weights::Cache&,                        \
       const tyloi::models::Info &, const tyloi::ModelSource*, tyloi::models::Mtp &,  \
       tyloi::engine::mtp::State &,                                                \
       InferenceRequest &, InferenceOutput &, int64_t,                            \

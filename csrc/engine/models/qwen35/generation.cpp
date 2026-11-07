@@ -1,3 +1,4 @@
+#include "engine/weights/cache.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/qwen35/mtp.h"
 #include "engine/generate_impl.h"
@@ -8,7 +9,7 @@ namespace tyloi::cuda::internal {
 template Generation generate( \
     tyloi::cuda::qwen35::Model &, tyloi::cuda::qwen35::State &, tyloi::cuda::Executor*, \
     tyloi::cuda::Collectives&, tyloi::cuda::Executor::Mode, CudaProfiler&, \
-    tyloi::cuda::RoutedCache&, bool&, bool, bool, std::function<void()>, \
+    ::tyloi::weights::Cache&, bool&, bool, bool, std::function<void()>, \
     const tyloi::models::Info &, const tyloi::ModelSource*, \
     DecodeGraphCache &, TextSessionCache &, const tyloi::engine::RuntimeConfig &, \
     tyloi::engine::InferenceRequest &, tyloi::engine::InferenceOutput &, \
@@ -26,7 +27,7 @@ using namespace tyloi::engine;
 template Generation run_mtp_generation<tyloi::cuda::qwen35::Model, tyloi::cuda::qwen35::State>(
     tyloi::cuda::qwen35::Model &, tyloi::cuda::qwen35::State &,
     tyloi::cuda::Executor*, tyloi::cuda::Collectives&, tyloi::cuda::Executor::Mode,
-    tyloi::cuda::RoutedCache&, const tyloi::models::Info &, const tyloi::ModelSource*,
+    ::tyloi::weights::Cache&, const tyloi::models::Info &, const tyloi::ModelSource*,
     tyloi::models::Mtp &, tyloi::engine::mtp::State &, InferenceRequest &, InferenceOutput &, int64_t,
     const tyloi::cuda::PreparedPrompt *, std::size_t, std::shared_ptr<const tyloi::Tensor>,
     std::shared_ptr<tyloi::Tensor> *, std::size_t, std::function<void()>);

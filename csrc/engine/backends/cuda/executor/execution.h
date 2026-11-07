@@ -1,12 +1,12 @@
 #pragma once
 #include "engine/weights/encoding/format_features.h"
 #include "engine/load.h"
-#include "engine/weights/routed_cache.h"
 #include "engine/weights/placement.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/scope.h"
 namespace tyloi::cuda { class KvOffloadStore; class KvMemoryManager; }
+namespace tyloi::weights { class Cache; }
 
 #include "backend.h"
 #include "engine/backends/cuda/native/branches.h"
@@ -30,14 +30,14 @@ struct CudaExecutionContext {
     CudaExecutionContext(
         tyloi::cuda::Executor& executor,
         tyloi::cuda::CudaLoadConfig config,
-        tyloi::cuda::RoutedCache& weights,
+        ::tyloi::weights::Cache& weights,
         std::shared_ptr<tyloi::cuda::KvMemoryManager>& kv,
         std::shared_ptr<tyloi::cuda::KvOffloadStore>& offload);
     ~CudaExecutionContext();
     CudaExecutionContext(const CudaExecutionContext&) = delete;
     CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
     tyloi::cuda::CudaLoadConfig config;
-    tyloi::cuda::RoutedCache& weights;
+    ::tyloi::weights::Cache& weights;
     std::shared_ptr<tyloi::cuda::KvMemoryManager>& kv;
     std::shared_ptr<tyloi::cuda::KvOffloadStore>& offload;
     tyloi::cuda::Executor& executor() { return executor_; }

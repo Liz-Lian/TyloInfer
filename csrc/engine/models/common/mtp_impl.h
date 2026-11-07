@@ -2,7 +2,7 @@
 #include "engine/weights/workspace.h"
 
 #include "env.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -123,7 +123,7 @@ template <class Model, class State> struct CudaMtpOps {
   tyloi::cuda::Executor* executor;
   tyloi::cuda::Collectives& collectives;
   const tyloi::cuda::Executor::Mode mode;
-  tyloi::cuda::RoutedCache& weights;
+  ::tyloi::weights::Cache& weights;
   const tyloi::models::Info &info;
   const tyloi::ModelSource* source;
   tyloi::models::Mtp &mtp;
@@ -183,8 +183,8 @@ template <class Model, class State> struct CudaMtpOps {
     if(target_route_cache)discard_moe_speculative_routes(target_route_cache);
   }
   void begin_target_routes(int rows) {
-    begin_moe_speculative_routes(weights.moe,rows);
-    target_route_cache=weights.moe;
+    begin_moe_speculative_routes(::tyloi::weights::detail::cache(weights).moe,rows);
+    target_route_cache=::tyloi::weights::detail::cache(weights).moe;
   }
   void resolve_target_routes(int rows,bool cancelled) {
     if(!target_route_cache)return;
@@ -193,7 +193,7 @@ template <class Model, class State> struct CudaMtpOps {
     target_route_cache.reset();
   }
   bool take_target_maintenance() {
-    const auto captures=moe_expert_graph_captures(weights.moe);
+    const auto captures=moe_expert_graph_captures(::tyloi::weights::detail::cache(weights).moe);
     const bool initialized=captures!=target_graph_captures;
     target_graph_captures=captures;
     return std::exchange(target_maintenance,false) || initialized;
@@ -289,7 +289,7 @@ template <class Model, class State> struct CudaMtpOps {
 
   CudaMtpOps(Model &model, State &state, tyloi::cuda::Executor* executor,
              tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
-             tyloi::cuda::RoutedCache& weights,
+             ::tyloi::weights::Cache& weights,
              const tyloi::models::Info &info, const tyloi::ModelSource* source,
              tyloi::models::Mtp &mtp, tyloi::engine::mtp::State &mtp_state,
              const tyloi::cuda::PreparedPrompt *prepared,
@@ -309,7 +309,7 @@ template <class Model, class State> struct CudaMtpOps {
                           ? 3
                           : 1), prefill_compute_chunk(compute_chunk), output(output),
         restore(std::move(restore)) {
-    target_graph_captures=moe_expert_graph_captures(weights.moe);
+    target_graph_captures=moe_expert_graph_captures(::tyloi::weights::detail::cache(weights).moe);
   }
   void rollback_target(std::int64_t accepted) {
     if constexpr (has_replay<Model, State>)
@@ -366,7 +366,7 @@ template <class Model, class State> struct CudaMtpOps {
     projected_target_compact={};
     projected_target_greedy.clear();
     target_transfer_bytes = 0;
-    const auto transfer_before=moe_expert_streamed_bytes(weights.moe);
+    const auto transfer_before=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe);
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
     const auto finish_profile=[&] {
       if(!profile_target())return;
@@ -395,7 +395,7 @@ template <class Model, class State> struct CudaMtpOps {
       hidden = model.hidden_forward(ids, mfq_nullopt, mfq_nullopt, nullptr,
                                     mfq_nullopt, raw, confirmed);
     }
-    target_transfer_bytes=moe_expert_streamed_bytes(weights.moe)-transfer_before;
+    target_transfer_bytes=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe)-transfer_before;
     finish_profile();
     return hidden;
   }
@@ -410,10 +410,10 @@ template <class Model, class State> struct CudaMtpOps {
       projected_target_hidden = {}; projected_target_logits = {};
       projected_target_compact={};
       projected_target_greedy.clear();
-      const auto transfer_before=moe_expert_streamed_bytes(weights.moe);
+      const auto transfer_before=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe);
       const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
       auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
-      target_transfer_bytes+=moe_expert_streamed_bytes(weights.moe)-transfer_before;
+      target_transfer_bytes+=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe)-transfer_before;
       if(profile_target()) {
         const auto costs_after=target_costs();
         for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]+=costs_after[i]-costs_before[i];
@@ -450,7 +450,7 @@ template <class Model, class State> struct CudaMtpOps {
     tyloi::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
     if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
       return std::move(*result);
-    tyloi::cuda::WeightLoan workspace(weights.moe);
+    tyloi::cuda::WeightLoan workspace(::tyloi::weights::detail::cache(weights).moe);
     const bool host_history=host_prompt_history(chunk.count);
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     DenseTensor hidden;

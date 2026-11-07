@@ -7,7 +7,7 @@
 #include "engine/models/common/prompt.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/causal_model.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/budget.h"
 #include "engine/backends/cuda/executor/tq.h"
@@ -61,7 +61,7 @@ struct Text {
     std::shared_ptr<tyloi::weights::Memory> weight_memory;
     CudaExecutionContext* execution;
     Executor& root_executor;
-    RoutedCache& weights;
+    ::tyloi::weights::Cache& weights;
     std::shared_ptr<KvMemoryManager>& kv;
     std::shared_ptr<KvOffloadStore>& offload;
     tyloi::engine::RuntimeConfig config;
@@ -87,10 +87,10 @@ struct Text {
     void restore_mtp_expert_space() {
         // These regions hold legacy paged expert fields. TQ retains ordinary
         // compressed tensor images and cannot consume those page addresses.
-        if(weights.tq)return;
+        if(::tyloi::weights::detail::cache(weights).tq)return;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            if(preparing_graph_depth || !weights.moe || weights.has_decode_workspace() || !components.mtp)return;
+            if(preparing_graph_depth || !::tyloi::weights::detail::cache(weights).moe || weights.has_decode_workspace() || !components.mtp)return;
             const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
             const auto active=qwen4_mtp_graph_reserve(language,components.mtp.get(),graph_draft_depth);
             if(active>=maximum)return;
@@ -103,9 +103,9 @@ struct Text {
     }
 
     void restore_graph_expert_space() {
-        if(weights.tq)return;
+        if(::tyloi::weights::detail::cache(weights).tq)return;
         if(preparing_graph_depth)return;
-        prepare_moe_decode_residency(weights.moe);
+        prepare_moe_decode_residency(::tyloi::weights::detail::cache(weights).moe);
         tyloi::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
         restore_mtp_expert_space();
         weights.restore_workspace(runtime_options::workspace_reserve_bytes(), source.get());
@@ -131,7 +131,7 @@ struct Text {
                 weights.release_workspace();
                 graph.invalidate();
                 qwen4_release_decode_graphs(language,components.mtp.get());
-                release_moe_decode_buffers(weights.moe);
+                release_moe_decode_buffers(::tyloi::weights::detail::cache(weights).moe);
                 state.reset(1);components.mtp->reset(1);
                 auto context=tyloi::cuda::default_context(execution->config.layer_placement.primary_device());
                 context->reclaim_idle_memory();
@@ -154,7 +154,7 @@ struct Text {
             && !execution->config.expert_parallel.enabled();
     }
 
-    Text(CudaExecutionContext& borrowed, RoutedCache& borrowed_weights,
+    Text(CudaExecutionContext& borrowed, ::tyloi::weights::Cache& borrowed_weights,
             std::shared_ptr<KvMemoryManager>& borrowed_kv,
             std::shared_ptr<KvOffloadStore>& borrowed_offload,
             std::shared_ptr<Model> model_owner, std::unique_ptr<State> state_owner,
@@ -193,7 +193,7 @@ struct Text {
                 batching = make_batch(
                     std::shared_ptr<const Model>(model), &state, execution->executor().fork(model_parallel_primary_device(execution->config)),
                     execution->executor().collectives(), execution->executor().forward_mode(execution->config.layer_placement.primary_device()),
-                    weights.moe, std::move(batch_config),
+                    ::tyloi::weights::detail::cache(weights).moe, std::move(batch_config),
                     config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
                     execution->config.dense_cpu_layer_count != 0 ||
@@ -202,17 +202,17 @@ struct Text {
             }
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if(weights.moe) {
+        if(::tyloi::weights::detail::cache(weights).moe) {
             auto expert_loan=kv?kv->expert_loan():nullptr;
-            if(!expert_loan && (components.mtp || moe_expert_cache_ssd_experts(weights.moe))) {
+            if(!expert_loan && (components.mtp || moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe))) {
                 expert_loan=std::make_shared<KvExpertLoan>();
-                set_moe_kv_expert_loan(weights.moe,expert_loan);
+                set_moe_kv_expert_loan(::tyloi::weights::detail::cache(weights).moe,expert_loan);
             }
             if(expert_loan)
-                weights.workspace(
+                ::tyloi::weights::detail::init_workspace(weights,
                     execution->config.layer_placement.primary_device(), std::move(expert_loan));
             restore_decode_workspace=[this]{restore_graph_expert_space();};
-            bind_moe_budget(weights.moe, &*budget);
+            bind_moe_budget(::tyloi::weights::detail::cache(weights).moe, &*budget);
         }
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
@@ -240,7 +240,7 @@ struct Text {
                     explicit CacheLearningScope(std::shared_ptr<MoeExpertCache> value):cache(std::move(value)),
                         previous(set_moe_reuse_learning(cache,false)) {}
                     ~CacheLearningScope(){set_moe_reuse_learning(cache,previous);}
-                } learning(weights.moe);
+                } learning(::tyloi::weights::detail::cache(weights).moe);
                 auto& predictor=*components.mtp;
                 const auto saved_policy=mtp_state.policy;
                 const auto start=std::chrono::steady_clock::now();
@@ -260,7 +260,7 @@ struct Text {
                                                    execution->executor().forward_mode(execution->config.layer_placement.primary_device()),weights,info,source.get(),predictor,mtp_state,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
-                finish_moe_expert_exchanges(weights.moe);
+                finish_moe_expert_exchanges(::tyloi::weights::detail::cache(weights).moe);
                 predictor.reset(1);
                 state.reset(1);
                 mtp_state.policy=saved_policy;
@@ -270,7 +270,7 @@ struct Text {
                 std::cerr<<"runtime_qwen4_mtp_warmup tokens="<<output.result.completion_tokens
                     <<" ms="<<std::chrono::duration<double,std::milli>(
                         std::chrono::steady_clock::now()-start).count()<<'\n';
-                release_moe_prefill_buffers(weights.moe);
+                release_moe_prefill_buffers(::tyloi::weights::detail::cache(weights).moe);
                 tyloi::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
             }
         }
@@ -297,7 +297,7 @@ struct Text {
         restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
         if(kv)kv->bind_budget(nullptr);
-        bind_moe_budget(weights.moe, nullptr);
+        bind_moe_budget(::tyloi::weights::detail::cache(weights).moe, nullptr);
         if (offload) offload->bind_budget(nullptr);
     }
     ~Text() {
@@ -309,7 +309,7 @@ struct Text {
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
         auto change = budget->change(command);
         weights.release_workspace();
-        finish_moe_expert_exchanges(weights.moe);
+        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(weights).moe);
         graph.invalidate();
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             qwen4_release_decode_graphs(language,components.mtp.get());

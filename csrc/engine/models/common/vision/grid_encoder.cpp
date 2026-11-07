@@ -1,4 +1,5 @@
 #include "engine/models/common/vision/grid_encoder.h"
+#include "engine/weights/cache_internal.h"
 
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/models/common/model_graph.h"
@@ -32,7 +33,7 @@ vision::LayerNorm load_norm(const ::tyloi::weights::Loader& weights,
 
 } // namespace
 
-CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader& weights, RoutedCache& cache,
+CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
                                                   const GridVisionConfig &config) {
     config.validate();
     const auto hidden = config.hidden_size;
@@ -138,7 +139,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 #endif
             };
             if (!host_weights()) return run();
-            auto loan = weights_.borrow(patch_weight_.nbytes() + patch_bias_.nbytes() +
+            auto loan = WeightLoan(::tyloi::weights::detail::cache(weights_).moe, patch_weight_.nbytes() + patch_bias_.nbytes() +
                        std::size_t(count * config_.hidden_size) * 16);
             return loan.finish(run());
         },
@@ -179,7 +180,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 #endif
             };
             if (!host_weights()) return run();
-            auto loan = weights_.borrow(position_weight_.nbytes() +
+            auto loan = WeightLoan(::tyloi::weights::detail::cache(weights_).moe, position_weight_.nbytes() +
                        std::size_t(interpolation.patch_count * config_.hidden_size) * 48);
             return loan.finish(run());
         },
@@ -202,7 +203,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                 std::size_t(2) * config_.hidden_size *
                 std::max<int64_t>(3 * config_.hidden_size, config_.intermediate_size);
             if (host_weights()) {
-                auto loan = weights_.borrow(fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
+                auto loan = WeightLoan(::tyloi::weights::detail::cache(weights_).moe, fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
                            std::size_t(value.size(0) * config_.intermediate_size) * 12 +
                            (std::size_t(16) << 20));
                 DenseTensor output;
@@ -227,7 +228,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 }
 
 CudaGridVisionEncoder::CudaGridVisionEncoder(
-    RoutedCache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias, DenseTensor position_weight,
+    ::tyloi::weights::Cache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias, DenseTensor position_weight,
     std::vector<Layer> blocks)
     : weights_(weights),
       config_(std::move(config)),
@@ -237,7 +238,7 @@ CudaGridVisionEncoder::CudaGridVisionEncoder(
       blocks_(std::move(blocks)) {}
 
 CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
-    const ::tyloi::weights::Loader& weights, RoutedCache& cache, const GridVisionConfig &vision,
+    const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache, const GridVisionConfig &vision,
     int64_t image_token_id, int64_t video_token_id, std::string input_contract,
     std::string position_policy) {
     if (input_contract != kGridVisionInputContract) {
@@ -274,7 +275,7 @@ CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
 }
 
 CudaGridVisionPromptComponent::CudaGridVisionPromptComponent(
-    RoutedCache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm, tyloi::weights::BiasWeight merger_up,
+    ::tyloi::weights::Cache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm, tyloi::weights::BiasWeight merger_up,
     tyloi::weights::BiasWeight merger_down, int64_t image_token_id, int64_t video_token_id,
     std::string input_contract, std::string position_policy)
     : weights_(weights),

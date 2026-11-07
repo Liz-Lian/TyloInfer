@@ -24,7 +24,7 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
@@ -98,8 +98,8 @@ int model_parallel_primary_device(const CudaLoadConfig& config) {
 }
 
 bool model_parallel_cuda_graph_enabled(const CudaLoadConfig& config,
-        const Executor& executor, const RoutedCache& weights) {
-    if (weights.tq && moe_parallel_config(config).enabled()) return false;
+        const Executor& executor, const tyloi::weights::Cache& weights) {
+    if (tyloi::weights::detail::cache(weights).tq && moe_parallel_config(config).enabled()) return false;
     if (!config.tensor_parallel.enabled() && !config.expert_parallel.enabled()) return true;
     const bool enabled = config.expert_parallel.enabled() && !config.tensor_parallel.enabled()
         ? config.expert_parallel_cuda_graph : config.tensor_parallel_cuda_graph;
@@ -179,7 +179,7 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
 engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
     std::shared_ptr<const ModelSource> source;
     std::shared_ptr<tyloi::weights::Memory> ledger;
-    auto weights = std::make_unique<RoutedCache>();
+    auto weights = std::make_unique<tyloi::weights::Cache>();
     std::shared_ptr<KvMemoryManager> kv;
     std::shared_ptr<KvOffloadStore> offload;
     CudaLoadConfig load;
@@ -219,7 +219,7 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
                 model = owner;
                 auto loader = weights->loader(*source, load.weights,
                     {load.layer_placement.primary_device(), false, load.drop_file_cache,
-                     load.tensor_parallel, moe_parallel_config(load)}, root->tq());
+                     load.tensor_parallel, moe_parallel_config(load)});
                 load.dense_cpu_layer_count = 0;
                 gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
                 state = model->make_state();
@@ -236,7 +236,8 @@ engine::EngineParts internal::build_engine_parts(CudaEngineOptions options) {
         const bool budget_supported = load.layer_placement.devices.size() <= 1 &&
             !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
         const bool graph_allowed = load.dsv4_cpu_offload_layers.empty() && load.dense_cpu_layer_count == 0 &&
-            model_parallel_cuda_graph_enabled(load, *root, *weights);
+            model_parallel_cuda_graph_enabled(load, *root, *weights) &&
+            weights->graph_safe(moe_parallel_config(load).enabled());
         const auto model_info = model->info();
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
         auto text = engine::TextProcessor::load(*source, options.tokenizer_model, vocab_size, model_info.model_type);
@@ -612,7 +613,7 @@ static std::unordered_set<int> parse_layer_ranges(
 
 void setup_cuda_load(
         const tyloi::cuda::CudaLoadOptions& options,
-        CudaLoadConfig& config, Executor& executor, RoutedCache& weights,
+        CudaLoadConfig& config, Executor& executor, tyloi::weights::Cache& weights,
         std::shared_ptr<KvMemoryManager>& kv, std::shared_ptr<KvOffloadStore>& offload) {
     drain_cuda(executor, weights, offload.get(),
                config.layer_placement, config.tensor_parallel, config.expert_parallel);
@@ -644,8 +645,10 @@ void setup_cuda_load(
     offload.reset();
     kv.reset();
     weights.reset();
-    weights.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
-    weights.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
+    auto& data = tyloi::weights::detail::cache(weights);
+    data.exec = executor.tq();
+    data.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
+    data.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
     if (options.n_gpu_layers_set) config.n_gpu_layers = options.n_gpu_layers;
     if (options.cpu_threads_set && options.cpu_threads <= 0) {
         throw std::runtime_error("--threads must be positive");
@@ -718,12 +721,12 @@ void setup_cuda_load(
             throw std::runtime_error(
                 "--moe-gpu-cache-gb is outside the supported range");
         }
-        weights.device_bytes = static_cast<std::size_t>(bytes);
-        weights.moe =
+        data.device_bytes = static_cast<std::size_t>(bytes);
+        data.moe =
             make_moe_expert_cache(
                 static_cast<int64_t>(bytes), MoeCacheOptions{
-                .host_bytes = weights.host_bytes,
-                .host_limit = weights.host_limit,
+                .host_bytes = data.host_bytes,
+                .host_limit = data.host_limit,
                 .mapped = config.moe_mapped_gather,
                 .copy_blocks = config.moe_mapped_copy_blocks,
                 .io_workers = config.moe_ssd_io_workers,
@@ -740,8 +743,8 @@ void setup_cuda_load(
                 .ram_fraction = config.moe_ram_pcie_fraction,
                 .two_stage = executor.options().moe_ffn.two_stage,
                 .heterogeneous = executor.options().projection.moe.heterogeneous});
-        if (!profile_path.empty() && weights.moe) {
-            set_moe_expert_cache_profile(*weights.moe,tyloi::load_moe_cache_profile(profile_path));
+        if (!profile_path.empty() && data.moe) {
+            set_moe_expert_cache_profile(*data.moe,tyloi::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")
                 <<" path="<<profile_path<<std::endl;
         }
@@ -753,21 +756,23 @@ void setup_cuda_load(
 
 namespace tyloi::cuda {
 
-void finalize_kv(KvMemoryManager* kv, RoutedCache& weights,
+void finalize_kv(KvMemoryManager* kv, tyloi::weights::Cache& weights,
         std::shared_ptr<KvOffloadStore>& offload) {
     if (kv) {
-        kv->finalize(moe_expert_cache_minimum_bytes(weights.moe));
-        set_moe_kv_expert_loan(weights.moe, kv->expert_loan());
+        auto& moe = tyloi::weights::detail::cache(weights).moe;
+        kv->finalize(moe_expert_cache_minimum_bytes(moe));
+        set_moe_kv_expert_loan(moe, kv->expert_loan());
         if (auto store = kv->offload()) offload = std::move(store);
     }
 }
 
 std::chrono::steady_clock::time_point finish_load(
-        KvMemoryManager* kv, RoutedCache& weights, std::size_t graph_reserve,
+        KvMemoryManager* kv, tyloi::weights::Cache& weights, std::size_t graph_reserve,
         bool report_memory) {
-    if (moe_expert_cache_has_sources(weights.moe) &&
-            !moe_expert_cache_finalized(weights.moe)) {
-        finalize_moe_expert_cache(weights.moe,
+    auto& moe = tyloi::weights::detail::cache(weights).moe;
+    if (moe_expert_cache_has_sources(moe) &&
+            !moe_expert_cache_finalized(moe)) {
+        finalize_moe_expert_cache(moe,
             (kv ? kv->growth_reserve() : 0) + graph_reserve,
             kv ? kv->expert_budget_charge() : 0);
     }

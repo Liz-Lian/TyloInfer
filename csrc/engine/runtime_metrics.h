@@ -5,8 +5,7 @@
 #include "engine/state/kv_offload.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/models/common/mtp.h"
-#include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache.h"
 #include "engine/generation/batch.h"
 #include "engine/budget.h"
 #include "engine/engine.h"
@@ -32,7 +31,7 @@ inline tyloi::engine::Metrics runtime_metrics(
         const tyloi::engine::mtp::State* mtp_state, int graph_depth,
         tyloi::engine::Batch* batching,
         const tyloi::ModelSource* source, tyloi::weights::Memory& ledger,
-        const RoutedCache& weights, KvMemoryManager* kv,
+        const tyloi::weights::Cache& weights, KvMemoryManager* kv,
         KvOffloadStore* offload, const internal::TextSessionCache& cache,
         const Budget& budget, std::span<const tyloi::Executor::Memory> devices,
         tyloi::Device primary, bool online_budget_supported) {
@@ -127,7 +126,7 @@ inline tyloi::engine::Metrics runtime_metrics(
     if (memory)
         metrics.emplace_back("resident_buffer_bytes", double(buffers));
     const auto expert_bytes = metric_bytes("resident_expert_cache_bytes");
-    const auto minimum = moe_expert_cache_minimum_bytes(weights.moe);
+    const auto minimum = weights.minimum();
     metrics.insert(metrics.end(), {
         {"resident_memory_dynamic_budget", online_budget_supported ? 1.0 : 0.0},
         {"resident_weight_dynamic_budget", online_budget_supported ? 1.0 : 0.0},

@@ -1,5 +1,6 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/drain.h"
+#include "engine/weights/cache.h"
 
 #include <exception>
 #include <iostream>
@@ -7,7 +8,7 @@
 CudaExecutionContext::CudaExecutionContext(
         tyloi::cuda::Executor& executor,
         tyloi::cuda::CudaLoadConfig execution_config,
-        tyloi::cuda::RoutedCache& borrowed_weights,
+        ::tyloi::weights::Cache& borrowed_weights,
         std::shared_ptr<tyloi::cuda::KvMemoryManager>& borrowed_kv,
         std::shared_ptr<tyloi::cuda::KvOffloadStore>& borrowed_offload)
     : config(std::move(execution_config)), weights(borrowed_weights),

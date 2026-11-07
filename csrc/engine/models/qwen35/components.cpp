@@ -14,7 +14,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/weights/placement.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -73,7 +73,7 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
 
 Components Components::load(
     Model& model,
-    const ::tyloi::weights::Loader& weights, RoutedCache& cache,
+    const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
     LayerPlacementConfig& placement,
     int& cpu_layers,
     Executor& executor,
@@ -88,7 +88,7 @@ Components Components::load(
     if (!optional) return components;
     const bool mtp_allowed =
         !placement.enabled() && cpu_layers == 0 && !cpu_offload &&
-        !cache.moe;
+        !::tyloi::weights::detail::cache(cache).moe;
 
     if (components.plan.vision == CudaVisionAdapter::grid_vit) {
         const auto* component = components.graph.component("vision");

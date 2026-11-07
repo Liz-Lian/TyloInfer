@@ -54,7 +54,7 @@ std::vector<Span> validate_media(const CommonConfig& config,const std::vector<in
 }
 } // namespace
 
-Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,RoutedCache& cache,const CommonConfig& config) {
+Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,const CommonConfig& config) {
     TYLOINFER_RUNTIME_CHECK(source && config.has_vision() && config.image_token_id>=0 &&
         config.image_token_id<config.vocab && config.vision.hidden%config.vision.n_heads==0 &&
         (config.vision.hidden/config.vision.n_heads)%4==0,"invalid DeepSeek-V4.1 CUDA vision config");

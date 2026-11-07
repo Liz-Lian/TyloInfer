@@ -7,7 +7,7 @@
 #include "engine/generation/prefill_budget.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/models/source.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/weights/workspace.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/executor/options.h"
@@ -38,7 +38,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     tyloi::cuda::Collectives& collectives;
     const Executor::Mode mode;
     CudaProfiler& profiler;
-    RoutedCache& weights;
+    ::tyloi::weights::Cache& weights;
     bool& serial_branches;
     bool report_memory;
     bool graph_allowed;
@@ -65,7 +65,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         }();
         if (!enabled || batching || std::uncaught_exceptions()) return;
         std::cerr << "moe_request_cache_stats boundary=" << boundary << '\n';
-        if(wait)print_moe_expert_cache_stats(weights.moe,std::cerr);
+        if(wait)print_moe_expert_cache_stats(::tyloi::weights::detail::cache(weights).moe,std::cerr);
         // The first-token snapshot must not wait for exchanges or introduce
         // CUDA synchronization. Subtract it from the end snapshot to isolate
         // steady decode I/O from the much larger prefill scan.
@@ -94,7 +94,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     void reserve_workspace(std::size_t bytes) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         {
-            reserve_moe_workspace(weights.moe,bytes);
+            reserve_moe_workspace(::tyloi::weights::detail::cache(weights).moe,bytes);
             auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
             auto available=context->available_memory();
             if(available>=bytes)return;
@@ -114,7 +114,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         // A short continuation can reuse the bounded MFE path without
         // returning its expert images and captured graphs for a large PP arena.
         return state.position()>0 && tokens<=128 &&
-            moe_expert_cache_ssd_experts(weights.moe);
+            moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe);
     }
     int64_t prefill_chunk(std::size_t tokens) {
         // Reuse ordinary/MTP widths before allocating wider temporary graphs
@@ -124,7 +124,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         if(tokens<=128)return std::min<int64_t>(std::max<std::size_t>(1,tokens),limit);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         const bool allow_borrow=generation_borrow(model,tokens,prepared?&*prepared:nullptr);
-        auto budget=moe_prefill_workspace_budget(weights.moe,allow_borrow);
+        auto budget=moe_prefill_workspace_budget(::tyloi::weights::detail::cache(weights).moe,allow_borrow);
         const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
         auto available=tyloi::engine::prefill_budget_add(
             tyloi::engine::prefill_budget_add(context->available_memory(),context->workspace_available()),
@@ -132,7 +132,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         const auto row_bytes=info.prefill_row_bytes;
         const auto sequence_bytes=allow_borrow
             ? std::size_t(tokens<=16384?tokens:std::min<std::size_t>(tokens,limit))*row_bytes*3/8 : 0;
-        const auto reserve=moe_expert_cache_ssd_experts(weights.moe)
+        const auto reserve=moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe)
             ? std::max(std::size_t(1)<<30,tyloi::cuda::runtime_options::workspace_reserve_bytes())
             : std::size_t(1)<<30;
         const auto fixed=tyloi::engine::prefill_budget_add(reserve+sequence_bytes,budget.transfer_bytes);
@@ -142,7 +142,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
             // Expert overflow in the unused KV budget is revocable too. Ask
             // its existing owner to return pages before reducing the tile.
             reserve_workspace(required>budget.lendable_bytes?required-budget.lendable_bytes:0);
-            budget=moe_prefill_workspace_budget(weights.moe,allow_borrow);
+            budget=moe_prefill_workspace_budget(::tyloi::weights::detail::cache(weights).moe,allow_borrow);
             available=tyloi::engine::prefill_budget_add(
                 context->available_memory()+context->workspace_available(),budget.lendable_bytes);
         }
@@ -166,13 +166,13 @@ template <class Model, class State, class Predictor> struct RequestOps {
             return;
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const bool streamed=tokens>8 && moe_expert_cache_ssd_experts(weights.moe);
+        const bool streamed=tokens>8 && moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe);
         generation_prefill_begin(model,graph,streamed);
-        const bool retained=streamed && lend_moe_decode_cache_for_prefill(weights.moe,
+        const bool retained=streamed && lend_moe_decode_cache_for_prefill(::tyloi::weights::detail::cache(weights).moe,
             tyloi::cuda::runtime_options::workspace_reserve_bytes());
         generation_prefill_end(model,*this,streamed,retained);
 #endif
-        if(tokens>1024 || moe_expert_cache_ssd_experts(weights.moe))
+        if(tokens>1024 || moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe))
             reserve_workspace(tyloi::cuda::runtime_options::workspace_reserve_bytes());
     }
     bool prepare_snapshot() {
@@ -180,7 +180,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         if constexpr(requires { snapshot_size(state, mtp); }) {
             // Retire prefill buffers before copying KV/recurrent state. Evict
             // old hot entries before allocating the incoming checkpoint.
-            release_moe_prefill_buffers(weights.moe);
+            release_moe_prefill_buffers(::tyloi::weights::detail::cache(weights).moe);
             // A prefix stores occupied rows, not the full preallocated context
             // or graph-owned speculative checkpoints.
             const auto size=snapshot_size(state,mtp);
@@ -267,7 +267,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
 template <typename Model, typename State, typename Predictor>
 Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
     tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
-    CudaProfiler& profiler, tyloi::cuda::RoutedCache& weights,
+    CudaProfiler& profiler, ::tyloi::weights::Cache& weights,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
     const tyloi::models::Info &info, const tyloi::ModelSource* source,

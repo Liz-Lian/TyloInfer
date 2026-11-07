@@ -1,3 +1,4 @@
+#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "env.h"
 #include "ops.h"
@@ -70,7 +71,7 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
     TYLOINFER_RUNTIME_CHECK(split > 0 && split < model.num_hidden_layers(), "invalid CED encoder boundary");
     compute_chunk = std::min<int64_t>(compute_chunk, 8192);
     std::optional<MoePrefillLayerPriority> priority;
-    if(tokens > config.sliding_window)priority.emplace(model.execution->weights.moe,0,static_cast<int>(split));
+    if(tokens > config.sliding_window)priority.emplace(::tyloi::weights::detail::cache(model.execution->weights).moe,0,static_cast<int>(split));
     DenseTensor tail_hidden, tail_pre, tail_ids;
     HashBatch tail_hashes;
     const auto cancelled = [&] {

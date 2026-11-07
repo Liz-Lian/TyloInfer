@@ -3,7 +3,7 @@
 #include "engine/config.h"
 
 #include "env.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
@@ -157,7 +157,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     Collectives& collectives;
     const Executor::Mode mode;
     CudaProfiler& profiler;
-    RoutedCache& weights;
+    ::tyloi::weights::Cache& weights;
     bool& serial_branches;
     bool report_memory;
     const tyloi::models::Info &info;
@@ -179,7 +179,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 
     CudaGenerationOps(Model &model, State &state, tyloi::cuda::Executor* executor,
         Collectives& collectives, Executor::Mode mode, CudaProfiler& profiler,
-        RoutedCache& weights, bool& serial_branches, bool report_memory,
+        ::tyloi::weights::Cache& weights, bool& serial_branches, bool report_memory,
         const tyloi::models::Info &info, DecodeGraphCache &graph,
         const tyloi::engine::InferenceRequest &request, const PreparedPrompt *prepared,
         const tyloi::engine::GraphConfig &graph_config,int64_t compute_chunk=1024,
@@ -228,7 +228,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         if (hidden.defined()) {
             // The layer-major path has already advanced every physical cache.
         } else if (prepared && prepared->transformed()) {
-            WeightLoan workspace(weights.moe);
+            WeightLoan workspace(::tyloi::weights::detail::cache(weights).moe);
             const bool borrowed=generation_workspace(model,workspace,chunk.count);
             if constexpr (has_forward<Model, State>) {
                 tyloi::cuda::Input input;
@@ -327,7 +327,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     bool graph_eligible() const {
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
                info.decode_graph && mfq_cuda_graph_capture_supported() &&
-               !weights.moe && !weights.tq &&
+               !::tyloi::weights::detail::cache(weights).moe && !::tyloi::weights::detail::cache(weights).tq &&
                generation_limit >= graph_config.minimum_generation_tokens &&
                generation_limit <= graph.generated_capacity;
     }

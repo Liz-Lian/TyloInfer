@@ -7,7 +7,7 @@
 #include "engine/state/kv_offload.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/placement.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 
 #include <exception>
 #include <unordered_set>
@@ -15,13 +15,13 @@
 namespace tyloi::cuda {
 
 inline void drain_cuda(
-        Executor& executor, const RoutedCache& weights, KvOffloadStore* offload,
+        Executor& executor, const ::tyloi::weights::Cache& weights, KvOffloadStore* offload,
         const LayerPlacementConfig& layer_placement,
         [[maybe_unused]] const ParallelConfig& tensor_parallel,
         [[maybe_unused]] const ParallelConfig& expert_parallel) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (executor.contexts().empty() && !weights.moe &&
-        !weights.tq && !offload &&
+    if (executor.contexts().empty() && !::tyloi::weights::detail::cache(weights).moe &&
+        !::tyloi::weights::detail::cache(weights).tq && !offload &&
         executor.tq()->empty() && executor.pipelines().empty() && executor.branches().empty() &&
         executor.collectives().streams().empty()) return;
 #endif
@@ -30,7 +30,7 @@ inline void drain_cuda(
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
-    finish([&] { drain_moe_expert_cache(weights.moe); });
+    finish([&] { weights.drain(); });
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (!offload) {
         finish([&] { static_cast<tyloi::Executor&>(executor).drain(); });

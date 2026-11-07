@@ -20,9 +20,9 @@ class TextSessionCache;
 
 namespace tyloi::cuda {
 class Collectives;
-struct RoutedCache;
 }
 
+namespace tyloi::weights { class Cache; }
 namespace tyloi { class ModelSource; }
 
 struct CudaProfiler;
@@ -34,7 +34,7 @@ template <typename Model, typename State, typename Predictor = tyloi::models::Mt
 tyloi::engine::Generation generate(
     Model& model, State& state, tyloi::cuda::Executor* executor,
     tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
-    CudaProfiler& profiler, tyloi::cuda::RoutedCache& weights,
+    CudaProfiler& profiler, ::tyloi::weights::Cache& weights,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
     const tyloi::models::Info& info, const tyloi::ModelSource* source,
@@ -52,7 +52,7 @@ template <typename Model, typename State>
 tyloi::engine::Generation run_mtp_generation(
     Model& model, State& state, tyloi::cuda::Executor* executor,
     tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
-    tyloi::cuda::RoutedCache& weights,
+    ::tyloi::weights::Cache& weights,
     const tyloi::models::Info& info, const tyloi::ModelSource* source,
     tyloi::models::Mtp& mtp, tyloi::engine::mtp::State& mtp_state,
     tyloi::engine::InferenceRequest& request,

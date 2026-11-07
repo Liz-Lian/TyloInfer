@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/weights/cache_internal.h"
 #include "engine/models/common/mtp_ops.h"
 #include "engine/models/qwen4_exp/generation.h"
 #include "engine/models/qwen4_exp/predictor.h"
@@ -61,7 +62,7 @@ std::optional<DenseTensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops,
             ? ops.known_ids_host : DenseTensor{};
         DenseTensor logits;
         if(auto hidden=qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&ops.projected_target_greedy,ops.captured_compact_requested())) {
-            ops.target_transfer_bytes=moe_expert_streamed_bytes(ops.weights.moe)-transfer_before;
+            ops.target_transfer_bytes=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(ops.weights).moe)-transfer_before;
             ops.target_maintenance=ops.target_maintenance || initialized;
             ops.projected_target_hidden = *hidden; ops.projected_target_logits = std::move(logits);
             ops.projected_target_compact=qwen4_decode_graph_compact_topk(model);
@@ -217,11 +218,11 @@ template<class Ops, class Started>
 double mtp_begin_predictor_prefill(qwen4_exp::Model& model, Ops& ops, int64_t pairs, Started started) {
     if(ops.cache_only_prompt_history())return 0;
     if(pairs<=128 || !model.reuse_decode_graphs || !model.graph_registry)return 0;
-    prepare_moe_decode_residency(ops.weights.moe);
+    prepare_moe_decode_residency(::tyloi::weights::detail::cache(ops.weights).moe);
     const auto rows=std::min<int64_t>(1024,pairs);
     const auto bytes=(std::size_t(1)<<30)+std::size_t(rows)*model.config.hidden*
-        model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(ops.weights.moe,true);
-    auto loan=std::make_unique<WeightLoan>(ops.weights.moe);
+        model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(::tyloi::weights::detail::cache(ops.weights).moe,true);
+    auto loan=std::make_unique<WeightLoan>(::tyloi::weights::detail::cache(ops.weights).moe);
     if(loan->begin(bytes))ops.predictor_loan=std::move(loan);
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
@@ -237,7 +238,7 @@ void mtp_predictor_prefill(qwen4_exp::Model& model, Ops& ops, DenseTensor& hidde
                            Timer& timer, bool& prefill_finished) {
     if(ops.cache_only_prompt_history()) {
         auto& predictor=static_cast<qwen4_exp::Predictor&>(ops.mtp);
-        WeightLoan workspace(ops.weights.moe);
+        WeightLoan workspace(::tyloi::weights::detail::cache(ops.weights).moe);
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
             std::size_t(ids.size(1))*model.metadata.hidden_size*model.metadata.hc_mult*sizeof(float)*12);
         {

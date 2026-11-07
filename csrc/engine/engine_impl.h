@@ -27,7 +27,7 @@
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/kv_expert_loan.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/memory.h"
 #include "engine/models/source.h"
@@ -245,7 +245,7 @@ private:
     friend void ::tyloi::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
     Options options_;
     std::shared_ptr<KvMemoryManager> kv_;
-    RoutedCache weights_;
+    ::tyloi::weights::Cache weights_;
     std::shared_ptr<KvOffloadStore> offload_;
     std::unique_ptr<Executor> root_executor_;
     std::unique_ptr<CudaExecutionContext> execution_;
@@ -295,8 +295,8 @@ private:
     }
 
     void restore_graph_expert_space() {
-        if (weights_.tq || preparing_) return;
-        prepare_moe_decode_residency(weights_.moe);
+        if (::tyloi::weights::detail::cache(weights_).tq || preparing_) return;
+        prepare_moe_decode_residency(::tyloi::weights::detail::cache(weights_).moe);
         default_context(execution_->config.layer_placement.primary_device())->reclaim_idle_memory();
         weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source_.get());
     }
@@ -304,7 +304,7 @@ private:
     void clear_bindings() noexcept {
         restore_decode_workspace_ = {};
         if (kv_) kv_->bind_budget(nullptr);
-        bind_moe_budget(weights_.moe, nullptr);
+        bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, nullptr);
         if (offload_) offload_->bind_budget(nullptr);
     }
 
@@ -314,7 +314,7 @@ private:
                 "online memory budgeting requires a single-device CUDA worker");
         auto change = budget_->change(command);
         weights_.release_workspace();
-        finish_moe_expert_exchanges(weights_.moe);
+        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(weights_).moe);
         graph_->invalidate();
         if (batching_) batching_->release_idle_buffers();
         if (components().mtp) components().mtp->reset(1);
@@ -365,8 +365,7 @@ private:
                 *source_, execution_->config.weights,
                 {execution_->config.layer_placement.primary_device(), false,
                  execution_->config.drop_file_cache, execution_->config.tensor_parallel,
-                 moe_parallel_config(execution_->config)},
-                execution_->executor().tq());
+                 moe_parallel_config(execution_->config)});
             executor_ = execution_->executor().fork(model_parallel_primary_device(execution_->config));
             const bool preallocate = runtime_options::kv_vram_preallocated();
             model_ = Load(
@@ -422,7 +421,7 @@ private:
             batching_ = make_batch(
                 std::shared_ptr<const Model>(model_), &state(),
                 execution_->executor().fork(model_parallel_primary_device(execution_->config)), execution_->executor().collectives(),
-                execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), weights_.moe, std::move(batch_config),
+                execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), ::tyloi::weights::detail::cache(weights_).moe, std::move(batch_config),
                 config_.generation.prefill_chunk_size,
                 runtime_options::kv_vram_preallocated(),
                 execution_->config.dense_cpu_layer_count != 0 ||
@@ -430,20 +429,20 @@ private:
                 execution_->config.weights.min_slots);
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if (weights_.moe) {
+        if (::tyloi::weights::detail::cache(weights_).moe) {
             auto expert_loan = kv_ ? kv_->expert_loan() : nullptr;
             if (!expert_loan && (components().mtp ||
-                                 moe_expert_cache_ssd_experts(weights_.moe))) {
+                                 moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights_).moe))) {
                 expert_loan = std::make_shared<KvExpertLoan>();
-                set_moe_kv_expert_loan(weights_.moe, expert_loan);
+                set_moe_kv_expert_loan(::tyloi::weights::detail::cache(weights_).moe, expert_loan);
             }
             if (expert_loan) {
-                weights_.workspace(
+                ::tyloi::weights::detail::init_workspace(weights_,
                     execution_->config.layer_placement.primary_device(),
                     std::move(expert_loan));
             }
             restore_decode_workspace_ = [this] { restore_graph_expert_space(); };
-            bind_moe_budget(weights_.moe, &*budget_);
+            bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, &*budget_);
         }
 #endif
         if (const auto bytes = runtime_options::resident_budget_bytes()) {

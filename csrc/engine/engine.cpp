@@ -18,6 +18,7 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include <stdexcept>
@@ -56,13 +57,14 @@ void Engine::install() {
             impl.idle_state_->supports_text_session_state(), impl.idle_state_->supports_text_session_state() ? 0 : 1,
             cuda::internal::cuda_has_separate_memory());
         impl.budget_.emplace(*impl.ledger_, *impl.weights_, *impl.cache_, impl.forward_options_.primary);
-        if (impl.weights_->moe) {
-            if (moe_expert_cache_ssd_experts(impl.weights_->moe)) {
+        auto& moe = weights::detail::cache(*impl.weights_).moe;
+        if (moe) {
+            if (moe_expert_cache_ssd_experts(moe)) {
                 auto loan = std::make_shared<cuda::KvExpertLoan>();
-                set_moe_kv_expert_loan(impl.weights_->moe, loan);
-                impl.weights_->workspace(impl.forward_options_.primary, std::move(loan));
+                set_moe_kv_expert_loan(moe, loan);
+                weights::detail::init_workspace(*impl.weights_, impl.forward_options_.primary, std::move(loan));
             }
-            bind_moe_budget(impl.weights_->moe, &*impl.budget_);
+            bind_moe_budget(moe, &*impl.budget_);
         }
         if (const auto bytes = cuda::runtime_options::resident_budget_bytes()) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
@@ -137,7 +139,7 @@ SessionResult Engine::session_command(const SessionCommand& command) {
 void Engine::drain() {
     auto scope = executor_->enter();
     std::exception_ptr failure;
-    try { drain_moe_expert_cache(impl_->weights_->moe); }
+    try { impl_->weights_->drain(); }
     catch (...) { failure = std::current_exception(); }
     try { executor_->drain(); }
     catch (...) { if (!failure) failure = std::current_exception(); }
@@ -201,7 +203,7 @@ bool Engine::exclusive() const { return false; }
 void Engine::execute(const std::vector<RequestId>&) {}
 
 void Engine::clear_bindings() noexcept {
-    bind_moe_budget(impl_->weights_->moe, nullptr);
+    bind_moe_budget(weights::detail::cache(*impl_->weights_).moe, nullptr);
 }
 
 void Engine::reserve(models::State& state, std::int64_t tokens) {
@@ -217,8 +219,7 @@ SessionResult Engine::set_budget(const SessionCommand& command) {
     if (!impl_->budget_supported_)
         throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
     auto change = impl_->budget_->change(command);
-    impl_->weights_->release_workspace();
-    finish_moe_expert_exchanges(impl_->weights_->moe);
+    impl_->weights_->settle();
     impl_->graph_->invalidate();
     if (impl_->ready_) reset_states(1);
     if (impl_->idle_state_) impl_->idle_state_->reset(1);

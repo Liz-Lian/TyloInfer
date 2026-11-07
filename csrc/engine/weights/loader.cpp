@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/native/allocation.h"
 #include <iostream>
 #include "engine/weights/moe/load.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/weights/tq/routed.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "env.h"
@@ -36,12 +36,12 @@
 #include <atomic>
 
 struct tyloi::weights::Loader::Impl {
-    tyloi::cuda::RoutedCache& cache;
+    tyloi::weights::Cache& cache;
     std::shared_ptr<TqExec> tq;
 };
 
 tyloi::weights::Loader::Loader(const tyloi::source::Source& source, Options options,
-        Placement placement, cuda::RoutedCache& cache, std::shared_ptr<TqExec> tq)
+        Placement placement, Cache& cache, std::shared_ptr<TqExec> tq)
     : source(source), options(std::move(options)), placement(std::move(placement)),
       impl_(std::make_shared<Impl>(Impl{cache, std::move(tq)})) {}
 
@@ -682,7 +682,7 @@ std::shared_ptr<const tyloi::MfeTensor> tyloi::weights::Loader::build_experts(co
     MfqCudaGuard guard(placement.device);
     const auto& quant = options.quant;
     const tyloi::cuda::AllocationScope weight_memory;
-    auto& cache = impl_->cache.moe;
+    auto& cache = tyloi::weights::detail::cache(impl_->cache).moe;
     if (cache && cacheable &&
             !placement.experts.enabled() &&
             options.ranges) {

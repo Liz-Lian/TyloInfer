@@ -11,10 +11,9 @@
 #include <cstdint>
 #include <memory>
 
-namespace tyloi::weights { struct Loader; }
+namespace tyloi::weights { class Cache; struct Loader; }
 namespace tyloi::cuda {
 class Projector;
-struct RoutedCache;
 }
 
 namespace tyloi::cuda::axial_patch_vision {
@@ -32,7 +31,7 @@ using DenseTensor = ::tyloi::DenseTensor;
 class CudaAxialPatchVisionTower {
   public:
     static CudaAxialPatchVisionTower load(
-        const ::tyloi::weights::Loader& loader, RoutedCache& cache,
+        const ::tyloi::weights::Loader& loader, ::tyloi::weights::Cache& cache,
         const Config& config);
 
     CudaAxialPatchVisionTower(CudaAxialPatchVisionTower&&) noexcept;

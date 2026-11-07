@@ -5,6 +5,8 @@
 #include "engine/requests/media.h"
 #include "engine/generation/sequence.h"
 
+namespace tyloi::weights { class Cache; }
+
 namespace tyloi::cuda::deepseek_v41_runtime {
 
 class Vision {
@@ -14,14 +16,14 @@ public:
 #else
     using DenseTensor = ::tyloi::DenseTensor;
 #endif
-    static Vision load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,RoutedCache& cache,const CommonConfig& config);
+    static Vision load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,const CommonConfig& config);
     tyloi::StepSequence<PreparedPrompt> prepare(deepseek_v41::Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const;
 private:
-    Vision(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,RoutedCache& cache,CommonConfig config)
+    Vision(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,CommonConfig config)
         :source_(std::move(source)),weights_(std::move(weights)),cache_(cache),config_(std::move(config)) {}
     tyloi::StepSequence<DenseTensor> encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -30,7 +32,7 @@ private:
         DenseTensor patches,int height,int width) const;
     std::shared_ptr<const tyloi::ModelSource> source_;
     tyloi::weights::Loader weights_;
-    RoutedCache& cache_;
+    ::tyloi::weights::Cache& cache_;
     CommonConfig config_;
 };
 

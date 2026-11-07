@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/models/glm5_next/mtp.h"
@@ -216,13 +216,12 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
     CudaScope model_guard(execution.config.layer_placement.primary_device(), execution.executor().contexts());
     auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
-         execution.config.tensor_parallel, moe_parallel_config(execution.config)},
-        execution.executor().tq());
+         execution.config.tensor_parallel, moe_parallel_config(execution.config)});
     ModelLoader<Model> weights{model, tensors};
     model.load_weights(weights, load_blocks);
-    if (moe_expert_cache_has_sources(execution.weights.moe) &&
-        !moe_expert_cache_finalized(execution.weights.moe) && !defer_moe_cache_finalize)
-        finalize_moe_expert_cache(execution.weights.moe);
+    if (moe_expert_cache_has_sources(::tyloi::weights::detail::cache(execution.weights).moe) &&
+        !moe_expert_cache_finalized(::tyloi::weights::detail::cache(execution.weights).moe) && !defer_moe_cache_finalize)
+        finalize_moe_expert_cache(::tyloi::weights::detail::cache(execution.weights).moe);
     if (load_optional_components)
         load_runtime_components(model, tensors, true);
 }
@@ -303,13 +302,12 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
     }
     auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
-         execution.config.tensor_parallel, moe_parallel_config(execution.config)},
-        execution.executor().tq());
+         execution.config.tensor_parallel, moe_parallel_config(execution.config)});
     ModelLoader<Model> weights{model, tensors};
     model.load_weights(weights, load_blocks);
-    if (moe_expert_cache_has_sources(execution.weights.moe) &&
-        !moe_expert_cache_finalized(execution.weights.moe) && !defer_moe_cache_finalize)
-        finalize_moe_expert_cache(execution.weights.moe);
+    if (moe_expert_cache_has_sources(::tyloi::weights::detail::cache(execution.weights).moe) &&
+        !moe_expert_cache_finalized(::tyloi::weights::detail::cache(execution.weights).moe) && !defer_moe_cache_finalize)
+        finalize_moe_expert_cache(::tyloi::weights::detail::cache(execution.weights).moe);
 }
 
 } // namespace tyloi::cuda::qwen4_exp

@@ -2,7 +2,7 @@
 #include "engine/models/common/prompt.h"
 
 #include "engine/weights/fields.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/weights/workspace.h"
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
@@ -40,7 +40,7 @@ using DenseTensor = ::tyloi::DenseTensor;
 
 class CudaGridVisionEncoder {
   public:
-    static CudaGridVisionEncoder load(const ::tyloi::weights::Loader& weights, RoutedCache& cache,
+    static CudaGridVisionEncoder load(const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
                                       const GridVisionConfig &config);
 
     tyloi::StepSequence<DenseTensor> encode(
@@ -147,10 +147,10 @@ class CudaGridVisionEncoder {
         }
     };
 
-    CudaGridVisionEncoder(RoutedCache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias,
+    CudaGridVisionEncoder(::tyloi::weights::Cache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias,
                           DenseTensor position_weight, std::vector<Layer> blocks);
 
-    RoutedCache& weights_;
+    ::tyloi::weights::Cache& weights_;
     GridVisionConfig config_;
     DenseTensor patch_weight_;
     DenseTensor patch_bias_;
@@ -161,7 +161,7 @@ class CudaGridVisionEncoder {
 class CudaGridVisionPromptComponent {
   public:
     static CudaGridVisionPromptComponent
-    load(const ::tyloi::weights::Loader& weights, RoutedCache& cache,
+    load(const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
          const GridVisionConfig &vision, int64_t image_token_id, int64_t video_token_id,
          std::string input_contract, std::string position_policy);
 
@@ -263,7 +263,7 @@ class CudaGridVisionPromptComponent {
                 const auto bytes = fields::bytes(merger_norm_) +
                                    fields::bytes(merger_up_) +
                                    fields::bytes(merger_down_);
-                auto loan = weights_.borrow(bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
+                auto loan = WeightLoan(::tyloi::weights::detail::cache(weights_).moe, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
                 DenseTensor output;
                 {
                     // Stage copies of the merger weights on the primary device.
@@ -368,12 +368,12 @@ class CudaGridVisionPromptComponent {
     const std::string &position_policy() const noexcept { return position_policy_; }
 
   private:
-    CudaGridVisionPromptComponent(RoutedCache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm,
+    CudaGridVisionPromptComponent(::tyloi::weights::Cache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm,
                                   tyloi::weights::BiasWeight merger_up, tyloi::weights::BiasWeight merger_down,
                                   int64_t image_token_id, int64_t video_token_id,
                                   std::string input_contract, std::string position_policy);
 
-    RoutedCache& weights_;
+    ::tyloi::weights::Cache& weights_;
     CudaGridVisionEncoder encoder_;
     vision::LayerNorm merger_norm_;
     weights::BiasWeight merger_up_;

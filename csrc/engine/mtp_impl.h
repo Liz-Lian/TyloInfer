@@ -10,7 +10,7 @@ template <typename Model, typename State>
 Generation
 run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
                    tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
-                   tyloi::cuda::RoutedCache& weights,
+                   ::tyloi::weights::Cache& weights,
                    const tyloi::models::Info &info, const tyloi::ModelSource* source,
                    tyloi::models::Mtp &mtp, tyloi::engine::mtp::State &mtp_state,
                    InferenceRequest &request,

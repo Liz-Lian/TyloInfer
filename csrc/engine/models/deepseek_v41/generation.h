@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/weights/cache_internal.h"
 #include "engine/models/common/generation_ops.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
@@ -33,7 +34,7 @@ void generation_prefill_end(Model&, Ops& ops, bool streamed, bool retained) {
         // Private FFN graphs retain their transfer arenas after a
         // request. Retire consumers before a new grouped prefill;
         // otherwise these arenas can reduce its ring to one expert.
-        release_moe_decode_buffers(ops.weights.moe);
+        release_moe_decode_buffers(::tyloi::weights::detail::cache(ops.weights).moe);
         tyloi::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
     }
 #endif

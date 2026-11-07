@@ -18,6 +18,7 @@
 #include <vector>
 
 namespace tyloi::engine { class Engine; }
+namespace tyloi::weights { class Cache; }
 
 namespace tyloi::cuda {
 
@@ -58,7 +59,6 @@ struct CudaLoadConfig {
 
 class KvMemoryManager;
 class KvOffloadStore;
-struct RoutedCache;
 
 std::pair<CudaLoadConfig, Executor::Options> load_cuda_execution_config();
 std::vector<tyloi::Device> cuda_devices(const CudaLoadConfig& config);
@@ -67,7 +67,7 @@ const ParallelConfig& model_parallel_config(const CudaLoadConfig& config);
 const ParallelConfig& moe_parallel_config(const CudaLoadConfig& config);
 int model_parallel_primary_device(const CudaLoadConfig& config);
 bool model_parallel_cuda_graph_enabled(const CudaLoadConfig& config,
-    const Executor& executor, const RoutedCache& weights);
+    const Executor& executor, const tyloi::weights::Cache& weights);
 
 struct CudaLoadOptions {
     std::string model_path, config_path, tokenizer_model;
@@ -101,17 +101,17 @@ namespace tyloi::cuda::internal {
 tyloi::engine::RuntimeConfig resolve_cuda_runtime_config(const CudaEngineOptions& options);
 void setup_cuda_load(
     const CudaLoadOptions& options,
-    CudaLoadConfig& config, Executor& executor, RoutedCache& weights,
+    CudaLoadConfig& config, Executor& executor, tyloi::weights::Cache& weights,
     std::shared_ptr<KvMemoryManager>& kv, std::shared_ptr<KvOffloadStore>& offload);
 
 } // namespace tyloi::cuda::internal
 
 namespace tyloi::cuda {
 
-void finalize_kv(KvMemoryManager* kv, RoutedCache& weights,
+void finalize_kv(KvMemoryManager* kv, tyloi::weights::Cache& weights,
     std::shared_ptr<KvOffloadStore>& offload);
 std::chrono::steady_clock::time_point finish_load(
-    KvMemoryManager* kv, RoutedCache& weights, std::size_t graph_reserve,
+    KvMemoryManager* kv, tyloi::weights::Cache& weights, std::size_t graph_reserve,
     bool report_memory);
 
 } // namespace tyloi::cuda

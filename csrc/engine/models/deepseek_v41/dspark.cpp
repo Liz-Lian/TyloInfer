@@ -2,7 +2,7 @@
 #include "engine/models/session.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "dspark.h"
@@ -528,7 +528,7 @@ void run_dspark_self_check() {
     // Seeding only the final window must address the same absolute RoPE and
     // ring slots as a complete target history.
     std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
-    tyloi::cuda::RoutedCache weights;
+    ::tyloi::weights::Cache weights;
     std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
     auto [execution_config, numeric_options] = tyloi::cuda::load_cuda_execution_config();
     auto executor = std::make_unique<tyloi::cuda::Executor>(std::move(numeric_options), 0);

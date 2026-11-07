@@ -1,7 +1,8 @@
 #include "engine/weights/tq/load.h"
 
 #include "engine/weights/tq/source.h"
-#include "engine/weights/routed_cache.h"
+#include "engine/weights/cache_internal.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/tq/cache.h"
 #include "engine/weights/tq/image.h"
 
@@ -24,7 +25,7 @@
 }
 
 std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
-        tyloi::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
+        tyloi::weights::Cache& weights, const std::shared_ptr<TqExec>& exec,
         const tyloi::source::Source& source,
         const std::string& name) {
     const auto shape = tyloi::tq_shape(source, name);
@@ -36,7 +37,7 @@ std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
 }
 
 std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
-        tyloi::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
+        tyloi::weights::Cache& weights, const std::shared_ptr<TqExec>& exec,
         const tyloi::source::Source& source,
         const std::string& name, std::int64_t experts, std::int64_t output,
         std::int64_t input) {
@@ -46,7 +47,13 @@ std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
         table->width() != input) {
         throw std::invalid_argument("TQ routed projection shape differs: " + name);
     }
-    auto cache = weights.ensure_tq(exec);
+    auto& data = tyloi::weights::detail::cache(weights);
+    if (!data.tq) {
+        const auto bytes = data.device_bytes.value_or(moe_expert_cache_budget_bytes(data.moe));
+        const bool explicit_budget = data.device_bytes.has_value() || bool(data.moe);
+        data.tq = std::make_shared<TqCache>(bytes, data.host_bytes, data.host_limit, !explicit_budget, exec);
+    }
+    auto cache = data.tq;
     auto result = std::make_shared<tyloi::TqBank>();
     result->cache = cache;
     result->experts = experts;

@@ -9,14 +9,13 @@
 class MoeExpertCache;
 
 namespace tyloi { class ModelSource; }
-namespace tyloi::weights { class Memory; }
+namespace tyloi::weights { class Cache; class Memory; }
 namespace tyloi::engine {
 struct SessionCommand;
 struct SessionResult;
 }
 
 namespace tyloi::cuda {
-struct RoutedCache;
 namespace internal {
 class TextSessionCache;
 }
@@ -28,7 +27,7 @@ tyloi::engine::PrefillChunk budget_batch_prefill(
 
 class Budget {
 public:
-    Budget(tyloi::weights::Memory& weight_memory, RoutedCache& weights,
+    Budget(tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
         internal::TextSessionCache& cache, int primary_device);
 
     class Change {
@@ -63,7 +62,7 @@ private:
     std::size_t trim_prefix(std::size_t bytes);
     void workspace(std::size_t bytes);
     tyloi::weights::Memory& weight_memory_;
-    RoutedCache& weights_;
+    ::tyloi::weights::Cache& weights_;
     internal::TextSessionCache& cache_;
     int primary_device_;
     std::size_t resident_budget_ = 0;
