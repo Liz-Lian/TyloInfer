@@ -218,6 +218,10 @@ public:
     engine::Generation generate_text(
         engine::InferenceRequest& input, engine::InferenceOutput& output, State& state,
         std::optional<Prepared> prepared, const engine::RequestId& id, bool batched) {
+        engine::Budget* decode_budget = nullptr;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if (!preparing_) decode_budget = &*budget_;
+#endif
         return internal::generate(
             language(), state, executor_.get(), execution_->executor().collectives(),
             execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), execution_->executor().profiler(), weights_,
@@ -234,7 +238,7 @@ public:
             *cache_, config_, input, output,
             mtp_state_,
             batched ? nullptr : components().mtp.get(), std::move(prepared),
-            batched ? batching_.get() : nullptr, id, restore_decode_workspace_);
+            batched ? batching_.get() : nullptr, id, decode_budget);
     }
 
     engine::Generation generate(
@@ -265,7 +269,6 @@ private:
     std::optional<engine::SessionCache<internal::CudaSessionOps>> cache_;
     std::optional<engine::Budget> budget_;
     std::unique_ptr<engine::Batch> batching_;
-    std::function<void()> restore_decode_workspace_;
     std::unique_ptr<engine::TextProcessor> text_;
     engine::EngineInfo info_;
     bool ready_ = false;
@@ -296,15 +299,7 @@ private:
             !execution_->config.expert_parallel.enabled();
     }
 
-    void restore_graph_expert_space() {
-        if (::tyloi::weights::detail::cache(weights_).tq || preparing_) return;
-        prepare_moe_decode_residency(::tyloi::weights::detail::cache(weights_).moe);
-        default_context(execution_->config.layer_placement.primary_device())->reclaim_idle_memory();
-        weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source_.get());
-    }
-
     void clear_bindings() noexcept {
-        restore_decode_workspace_ = {};
         if (kv_) kv_->bind_budget(nullptr);
         bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, nullptr);
         if (offload_) offload_->bind_budget(nullptr);
@@ -443,7 +438,6 @@ private:
                     execution_->config.layer_placement.primary_device(),
                     std::move(expert_loan));
             }
-            restore_decode_workspace_ = [this] { restore_graph_expert_space(); };
             bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, &*budget_);
         }
 #endif
@@ -455,7 +449,7 @@ private:
         }
 
         preparing_ = false;
-        restore_graph_expert_space();
+        budget_->prepare(engine::Budget::Stage::loaded, source_.get());
 
         info_ = {};
         info_.max_requests = std::max<std::size_t>(

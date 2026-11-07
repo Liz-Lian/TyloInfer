@@ -53,6 +53,7 @@ public:
     void reserve_ram(std::size_t bytes);
     std::int64_t prefill(std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic);
+    void configure_decode(std::size_t lendable_bytes, int graph_depth);
     void prepare(Stage stage, const source::Source* source);
 
 private:
@@ -66,6 +67,8 @@ private:
     std::size_t weight_budget_ = 0;
     std::size_t initial_expert_budget_ = 0;
     std::size_t allocation_ceiling_ = 0;
+    std::size_t decode_lendable_bytes_ = 0;
+    int decode_graph_depth_ = 0;
 };
 
 } // namespace tyloi::engine

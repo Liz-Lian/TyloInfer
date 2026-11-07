@@ -38,7 +38,6 @@ public:
     void release_workspace(std::size_t required_available =
         std::numeric_limits<std::size_t>::max(), const char* reason = nullptr);
     void clear_workspace() noexcept;
-    bool has_decode_workspace() const noexcept;
     std::size_t lend_decode(std::size_t maximum_minus_active);
     void restore_workspace(std::size_t reserve_bytes, const source::Source* source);
     void reset() noexcept;

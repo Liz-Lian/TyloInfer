@@ -15,7 +15,7 @@ template Generation generate( \
     tyloi::engine::InferenceRequest &, tyloi::engine::InferenceOutput &, \
     tyloi::engine::mtp::State &, PREDICTOR *, \
     std::optional<PreparedPrompt>, tyloi::engine::Batch*, std::string, \
-    std::function<void()>);
+    tyloi::engine::Budget*);
 TYLOINFER_INSTANTIATE_QWEN35_GENERATION(tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_QWEN35_GENERATION(tyloi::cuda::qwen35::Mtp)
 #undef TYLOINFER_INSTANTIATE_QWEN35_GENERATION
@@ -30,4 +30,4 @@ template Generation run_mtp_generation<tyloi::cuda::qwen35::Model, tyloi::cuda::
     ::tyloi::weights::Cache&, const tyloi::models::Info &, const tyloi::ModelSource*,
     tyloi::models::Mtp &, tyloi::engine::mtp::State &, InferenceRequest &, InferenceOutput &, int64_t,
     const tyloi::cuda::PreparedPrompt *, std::size_t, std::shared_ptr<const tyloi::Tensor>,
-    std::shared_ptr<tyloi::Tensor> *, std::size_t, std::function<void()>);
+    std::shared_ptr<tyloi::Tensor> *, std::size_t, tyloi::engine::Budget*);

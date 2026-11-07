@@ -78,10 +78,6 @@ void Cache::clear_workspace() noexcept {
     data_->workspace.reset();
 }
 
-bool Cache::has_decode_workspace() const noexcept {
-    return data_->workspace && data_->workspace->decode_region.has_value();
-}
-
 std::size_t Cache::prefill_workspace_capacity() const noexcept {
     std::size_t bytes = 0;
     if (data_->workspace)

@@ -78,7 +78,6 @@ struct Text {
     Model& language;
     State& state;
     const tyloi::models::Info info;
-    std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
     tyloi::engine::SessionCache<CudaSessionOps> cache;
     tyloi::engine::mtp::State mtp_state;
@@ -87,31 +86,19 @@ struct Text {
     int graph_draft_depth=3;
     bool preparing_graph_depth=true;
 
-    void restore_mtp_expert_space() {
-        // These regions hold legacy paged expert fields. TQ retains ordinary
-        // compressed tensor images and cannot consume those page addresses.
-        if(::tyloi::weights::detail::cache(weights).tq)return;
+    void configure_decode_budget() {
+        std::size_t spare = 0;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            if(preparing_graph_depth || !::tyloi::weights::detail::cache(weights).moe || weights.has_decode_workspace() || !components.mtp)return;
-            const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
-            const auto active=qwen4_mtp_graph_reserve(language,components.mtp.get(),graph_draft_depth);
-            if(active>=maximum)return;
-            const auto bytes=weights.lend_decode(maximum-active);
-            if(bytes)
-                std::cerr<<"runtime_mtp_workspace_cache action=lend depth="
-                    <<graph_draft_depth<<" bytes="<<bytes<<'\n';
+            const auto& cache = ::tyloi::weights::detail::cache(weights);
+            if (!cache.tq && cache.moe && components.mtp) {
+                const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
+                const auto active=qwen4_mtp_graph_reserve(language,components.mtp.get(),graph_draft_depth);
+                if(active<maximum)spare=maximum-active;
+            }
         }
 #endif
-    }
-
-    void restore_graph_expert_space() {
-        if(::tyloi::weights::detail::cache(weights).tq)return;
-        if(preparing_graph_depth)return;
-        prepare_moe_decode_residency(::tyloi::weights::detail::cache(weights).moe);
-        tyloi::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
-        restore_mtp_expert_space();
-        weights.restore_workspace(runtime_options::workspace_reserve_bytes(), source.get());
+        budget->configure_decode(spare,graph_draft_depth);
     }
 
     void prepare_graph_depth(const InferenceRequest& input) {
@@ -142,7 +129,8 @@ struct Text {
                 qwen4_warmup_decode_graphs(language,components.mtp.get(),depth);
                 graph_draft_depth=depth;
                 preparing_graph_depth=false;
-                restore_graph_expert_space();
+                configure_decode_budget();
+                budget->prepare(tyloi::engine::Budget::Stage::loaded, source.get());
             } catch(...) {
                 graph_draft_depth=0;preparing_graph_depth=false;
                 throw;
@@ -214,7 +202,6 @@ struct Text {
             if(expert_loan)
                 ::tyloi::weights::detail::init_workspace(weights,
                     execution->config.layer_placement.primary_device(), std::move(expert_loan));
-            restore_decode_workspace=[this]{restore_graph_expert_space();};
             bind_moe_budget(::tyloi::weights::detail::cache(weights).moe, &*budget);
         }
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
@@ -261,7 +248,7 @@ struct Text {
                 auto scope=language.execution_scope();
                 auto generation=run_mtp_generation(language,state,executor.get(),execution->executor().collectives(),
                                                    execution->executor().forward_mode(execution->config.layer_placement.primary_device()),weights,info,source.get(),predictor,mtp_state,request,output,16,
-                                                   nullptr,0,{},nullptr,0,restore_decode_workspace);
+                                                   nullptr,0,{},nullptr,0,nullptr);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(::tyloi::weights::detail::cache(weights).moe);
                 predictor.reset(1);
@@ -278,7 +265,8 @@ struct Text {
             }
         }
         preparing_graph_depth=false;
-        restore_graph_expert_space();
+        configure_decode_budget();
+        budget->prepare(tyloi::engine::Budget::Stage::loaded, source.get());
         } catch (...) {
             const auto failure = std::current_exception();
             try {
@@ -297,7 +285,6 @@ struct Text {
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), bool(components.mtp));
     }
     void clear_bindings() noexcept {
-        restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
         if(kv)kv->bind_budget(nullptr);
         bind_moe_budget(::tyloi::weights::detail::cache(weights).moe, nullptr);
@@ -355,6 +342,11 @@ struct Text {
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, State& state,
                              std::optional<Prepared> prepared, const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
+        engine::Budget* decode_budget = nullptr;
+        if (!preparing_graph_depth) configure_decode_budget();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if (!preparing_graph_depth) decode_budget = &*budget;
+#endif
         return internal::generate(
             language, state, executor.get(), execution->executor().collectives(),
             execution->executor().forward_mode(execution->config.layer_placement.primary_device()), execution->executor().profiler(), weights,
@@ -368,7 +360,7 @@ struct Text {
             info, source.get(), graph, cache, config, input, output,
             mtp_state,
             batched ? nullptr : components.mtp.get(), std::move(prepared),
-            batched ? batching.get() : nullptr, id, restore_decode_workspace);
+            batched ? batching.get() : nullptr, id, decode_budget);
     }
     Generation generate(const RequestId& id, InferenceRequest& input, InferenceOutput& output, bool batched) {
         if (batched) {

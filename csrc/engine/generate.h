@@ -14,7 +14,7 @@
 #include <optional>
 #include <utility>
 
-namespace tyloi::engine { template <class Backend> class SessionCache; }
+namespace tyloi::engine { class Budget; template <class Backend> class SessionCache; }
 namespace tyloi::cuda::internal { struct CudaSessionOps; }
 
 namespace tyloi::cuda {
@@ -29,6 +29,7 @@ struct CudaProfiler;
 namespace tyloi::cuda::internal {
 
 // Creation and every resume run inside the owner's CUDA device/context scope.
+// A supplied budget is borrowed until the sequence is destroyed.
 template <typename Model, typename State, typename Predictor = tyloi::models::Mtp>
 tyloi::engine::Generation generate(
     Model& model, State& state, tyloi::cuda::Executor* executor,
@@ -43,10 +44,11 @@ tyloi::engine::Generation generate(
     Predictor* mtp = nullptr,
     std::optional<PreparedPrompt> prepared = {},
     tyloi::engine::Batch* batching = nullptr,
-    std::string request_id = {}, std::function<void()> restore = {});
+    std::string request_id = {}, tyloi::engine::Budget* budget = nullptr);
 } // namespace tyloi::cuda::internal
 
 // Creation and every resume run inside the owner's CUDA device/context scope.
+// A supplied budget is borrowed until the sequence is destroyed.
 template <typename Model, typename State>
 tyloi::engine::Generation run_mtp_generation(
     Model& model, State& state, tyloi::cuda::Executor* executor,
@@ -60,4 +62,4 @@ tyloi::engine::Generation run_mtp_generation(
     std::shared_ptr<const tyloi::Tensor> restored_last_hidden = {},
     std::shared_ptr<tyloi::Tensor>* session_last_hidden = nullptr,
     std::size_t stable_prefix_tokens = 0,
-    std::function<void()> restore = {});
+    tyloi::engine::Budget* budget = nullptr);

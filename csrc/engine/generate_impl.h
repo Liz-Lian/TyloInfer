@@ -53,7 +53,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     std::optional<PreparedPrompt> prepared;
     tyloi::engine::Batch* batching;
     std::string request_id;
-    std::function<void()> restore;
+    tyloi::engine::Budget* budget;
 
     bool batched() const { return batching != nullptr; }
     void trace_expert_cache(const char* boundary, bool wait = true) {
@@ -237,7 +237,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
             CudaGenerationOps<Model, State>(model, state, executor, collectives,
                 mode, profiler, weights, serial_branches, report_memory, info, graph, input,
                 prepared ? &*prepared : nullptr,
-                graph_options,compute_chunk,&output,restore),
+                graph_options,compute_chunk,&output,budget,source),
             output, input.prompt.size(), reused, stable,logical_chunk);
     }
     Generation speculate(tyloi::engine::InferenceRequest &input, tyloi::engine::InferenceOutput &output,
@@ -257,7 +257,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
                 prepared ? &*prepared : nullptr,
                 reused,
                 restored,
-                committed,prefix_boundary,restore);
+                committed,prefix_boundary,budget);
         }
     }
 };
@@ -277,14 +277,14 @@ Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
     Predictor *mtp,
     std::optional<PreparedPrompt> prepared,
     tyloi::engine::Batch* batching, std::string request_id,
-    std::function<void()> restore) {
+    tyloi::engine::Budget* budget) {
     return tyloi::engine::generate_request(
         generation_detail::RequestOps<Model, State, Predictor>{model, state, executor, collectives, mode,
                                      profiler, weights, serial_branches, report_memory, graph_allowed,
                                      std::move(drain), info, source, graph, cache, config, mtp_state,
                                      mtp,
                                      std::move(prepared), batching,
-                                     std::move(request_id), std::move(restore)},
+                                     std::move(request_id), budget},
         request,
         output);
 }

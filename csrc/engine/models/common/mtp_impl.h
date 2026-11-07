@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/weights/workspace.h"
+#include "engine/budget.h"
 
 #include "env.h"
 #include "engine/weights/cache_internal.h"
@@ -31,7 +32,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -133,7 +133,7 @@ template <class Model, class State> struct CudaMtpOps {
   int position_axes;
   int64_t prefill_compute_chunk;
   InferenceOutput* output;
-  std::function<void()> restore;
+  tyloi::engine::Budget* budget=nullptr;
   // Destroy after local/result tensors, including cancellation of priming.
   std::unique_ptr<tyloi::cuda::WeightLoan> predictor_loan;
   const ::tyloi::TensorOptions options =
@@ -249,8 +249,8 @@ template <class Model, class State> struct CudaMtpOps {
   void trace_prompt_prefill(double target_ms,double predictor_ms,double workspace_ms) const {
     // Block predictors seed only their bounded target window and skip the
     // teacher-forced priming hook that restores workspace for chain predictors.
-    if(!mtp.teacher_forced_prompt_prime() && restore)
-      restore();
+    if(!mtp.teacher_forced_prompt_prime() && budget)
+      budget->prepare(tyloi::engine::Budget::Stage::decode, source);
     std::cerr<<"runtime_mtp_prefill target_ms="<<target_ms<<" predictor_ms="<<predictor_ms
         <<" predictor_workspace_ms="<<workspace_ms<<" streamed="<<stream_prompt_history(input_ids.size(1))<<std::endl;
   }
@@ -294,7 +294,7 @@ template <class Model, class State> struct CudaMtpOps {
              tyloi::models::Mtp &mtp, tyloi::engine::mtp::State &mtp_state,
              const tyloi::cuda::PreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output,
-             std::function<void()> restore = {})
+             tyloi::engine::Budget* budget = nullptr)
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
         weights(weights), info(info), source(source), mtp(mtp), mtp_state(mtp_state), prepared(prepared),
         transformed_prompt(prepared && prepared->transformed()),
@@ -308,7 +308,7 @@ template <class Model, class State> struct CudaMtpOps {
 #endif
                           ? 3
                           : 1), prefill_compute_chunk(compute_chunk), output(output),
-        restore(std::move(restore)) {
+        budget(budget) {
     target_graph_captures=moe_expert_graph_captures(::tyloi::weights::detail::cache(weights).moe);
   }
   void rollback_target(std::int64_t accepted) {
@@ -560,7 +560,7 @@ template <class Model, class State> struct CudaMtpOps {
   }
   double end_predictor_prefill() {
     if(predictor_loan){predictor_loan->finish();predictor_loan.reset();}
-    if (restore) restore();
+    if (budget) budget->prepare(tyloi::engine::Budget::Stage::decode, source);
     // Every predictor tile has already synchronized its compute-end event.
     // Returning the expert loan is TTFT maintenance, not prompt computation.
     return 0;

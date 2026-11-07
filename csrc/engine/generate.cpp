@@ -259,7 +259,7 @@ namespace tyloi::cuda::internal {
         tyloi::models::Mtp *,                                                                      \
         std::optional<PreparedPrompt>,                                                         \
         tyloi::engine::Batch*, std::string,                    \
-        std::function<void()>);
+        tyloi::engine::Budget*);
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::Model, tyloi::cuda::minicpmo45::State)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::text::Model, tyloi::cuda::minicpmo45::text::State)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::gemma4::Model, tyloi::cuda::gemma4::State)

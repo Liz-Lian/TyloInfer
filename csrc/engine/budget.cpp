@@ -158,11 +158,21 @@ std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
     return chunk_size;
 }
 
+void Budget::configure_decode(std::size_t lendable_bytes, int graph_depth) {
+    decode_lendable_bytes_ = lendable_bytes;
+    decode_graph_depth_ = graph_depth;
+}
+
 void Budget::prepare(Stage stage, const source::Source* source) {
     const auto& data = tyloi::weights::detail::cache(weights_);
     if (data.tq || (stage == Stage::decode && !data.moe)) return;
     prepare_moe_decode_residency(data.moe);
     default_context(primary_device_)->reclaim_idle_memory();
+    if (decode_lendable_bytes_) {
+        const auto bytes = weights_.lend_decode(decode_lendable_bytes_);
+        if (bytes) std::cerr << "runtime_mtp_workspace_cache action=lend depth="
+            << decode_graph_depth_ << " bytes=" << bytes << '\n';
+    }
     weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source);
 }
 

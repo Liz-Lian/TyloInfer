@@ -1,6 +1,7 @@
 #pragma once
 #include "engine/weights/workspace.h"
 #include "engine/config.h"
+#include "engine/budget.h"
 
 #include "env.h"
 #include "engine/weights/cache_internal.h"
@@ -8,6 +9,7 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
 #include "engine/models/info.h"
+#include "engine/models/source.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/requests/output.h"
 #include "engine/requests/policy.h"
@@ -24,7 +26,6 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <functional>
 #include <iostream>
 #include <optional>
 #include <type_traits>
@@ -175,7 +176,8 @@ template <typename Model, typename State> struct CudaGenerationOps {
     bool graph_prepared = false;
     int64_t prefill_compute_chunk=1024;
     tyloi::engine::InferenceOutput* output=nullptr;
-    std::function<void()> restore;
+    tyloi::engine::Budget* budget=nullptr;
+    const tyloi::ModelSource* source=nullptr;
 
     CudaGenerationOps(Model &model, State &state, tyloi::cuda::Executor* executor,
         Collectives& collectives, Executor::Mode mode, CudaProfiler& profiler,
@@ -184,13 +186,13 @@ template <typename Model, typename State> struct CudaGenerationOps {
         const tyloi::engine::InferenceRequest &request, const PreparedPrompt *prepared,
         const tyloi::engine::GraphConfig &graph_config,int64_t compute_chunk=1024,
         tyloi::engine::InferenceOutput* inference_output=nullptr,
-        std::function<void()> restore = {})
+        tyloi::engine::Budget* budget=nullptr, const tyloi::ModelSource* source=nullptr)
         : model(model), state(state), executor(executor), collectives(collectives), mode(mode), profiler(profiler),
           weights(weights), serial_branches(serial_branches), report_memory(report_memory),
           info(info), graph(graph), constraint(request.token_constraint),
           sampler(request.sampling),
           has_penalties(sampler.has_penalties()), prepared(prepared), graph_config(graph_config),
-          prefill_compute_chunk(compute_chunk),output(inference_output),restore(std::move(restore)) {
+          prefill_compute_chunk(compute_chunk),output(inference_output),budget(budget),source(source) {
         full_ids = ::tyloi::cuda::tensor(request.prompt,
             ::tyloi::TensorOptions()
                 .dtype(::tyloi::kInt64)
@@ -320,7 +322,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         const auto token=pending.template item<int64_t>();
         // Prefill temporaries have retired; expert-cache maintenance remains
         // before token publication, inside TTFT for every CUDA model family.
-        if (restore) restore();
+        if (budget) budget->prepare(tyloi::engine::Budget::Stage::decode, source);
         return token;
     }
 
