@@ -1,12 +1,12 @@
 #pragma once
-#include "backend.h"
+#include "engine/tensor.h"
 #include "engine/weights/encoding/quant/nint_rows.h"
 #include <memory>
 namespace tyloi {class NintRowCache;}
 class NintRowStage {
 public:
     ~NintRowStage();
-    ::tyloi::DenseTensor output() const;
+    const ::tyloi::Tensor& output() const;
     bool mapped_rows() const;
     void decode();
 private:
@@ -21,7 +21,7 @@ public:
         std::shared_ptr<tyloi::NintRowCache> cache={});
     ~NintRowPipeline();
     void issue(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,bool early_prefix=false);
-    ::tyloi::DenseTensor collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,
+    std::shared_ptr<::tyloi::Tensor> collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,
         const ::tyloi::Device& device);
     std::shared_ptr<NintRowStage> make_stage(const std::vector<int64_t>& shape,
         const ::tyloi::Device& device);

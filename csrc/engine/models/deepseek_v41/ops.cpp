@@ -160,10 +160,18 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Lo
     }
     if(shared->router_prefetch.empty())shared->router_prefetch.resize(config.n_layers,nullptr);
     shared->router_prefetch.at(static_cast<std::size_t>(layer))=&result->mlp;
+#ifdef TYLOINFER_NATIVE_CUDA
+    result->rope = ::tyloi::ops::tail_rope_table(
+        config.max_position_embeddings, config.rope_theta, result->ratio,
+        ::tyloi::Device(::tyloi::kCUDA, weights.placement.device),
+        config.compress_rope_theta, config.rope_scaling.original_max_position_embeddings,
+        config.rope_scaling.factor, config.rope_scaling.beta_fast, config.rope_scaling.beta_slow);
+#else
     result->rope = TailRope(
         config.max_position_embeddings, config.rope_theta, result->ratio,
         config.compress_rope_theta, config.rope_scaling.original_max_position_embeddings,
         config.rope_scaling.factor, config.rope_scaling.beta_fast, config.rope_scaling.beta_slow);
+#endif
 
     const auto function_width = config.hc_mult * config.hidden;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -567,9 +575,6 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
             ? cpu_positions
             : execution->executor().collectives().copy(positions, block->cuda_device);
         block->set_token_ids(local_ids);
-        const RopeCache& active_rope = block->cpu_offloaded
-            ? cpu_rope
-            : (device_ropes.empty() ? rope : device_ropes.at(block->cuda_device));
         BlockContext context;
         context.token_ids = local_ids;
         context.host_token_ids = host_ids;
@@ -583,7 +588,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
             hidden = hidden.to(::tyloi::kCPU).contiguous();
         else
             hidden = execution->executor().collectives().copy(hidden, block->cuda_device);
-        hidden = block->forward_context(*execution, std::move(hidden), context, active_rope);
+        hidden = block->forward_context(*execution, std::move(hidden), context);
         trace_layer();
     }
     // finish hook is the CausalResources no-op for this family

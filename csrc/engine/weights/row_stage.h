@@ -1,5 +1,5 @@
 #pragma once
-#include "backend.h"
+#include "engine/tensor.h"
 #include <cstdint>
 #include <vector>
 
@@ -8,7 +8,7 @@
 class RowStage {
 public:
     virtual ~RowStage()=default;
-    virtual ::tyloi::DenseTensor output()const=0;
+    virtual const ::tyloi::Tensor& output()const=0;
     virtual bool mapped_rows()const=0;
     virtual void upload(const std::vector<std::int64_t>& ids,const std::vector<std::int64_t>& shape)=0;
     virtual void decode()=0;

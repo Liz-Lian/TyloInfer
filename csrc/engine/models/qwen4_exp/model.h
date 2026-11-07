@@ -660,7 +660,7 @@ class Gdn {
 class NgramEmbedding {
   public:
     using Context = tyloi::models::qwen4_exp::NgramContext;
-    using RowLookup = std::function<DenseTensor(const std::vector<int64_t>&,const ::tyloi::Device&)>;
+    using RowLookup = std::function<std::shared_ptr<::tyloi::Tensor>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
     using StageFactory = std::function<std::shared_ptr<RowStage>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
     NgramEmbedding(std::vector<Embedding> shards, int64_t rows, int64_t dimension, int64_t ngram,
                    int64_t heads_per_ngram, int64_t eos, std::vector<int64_t> multipliers,
@@ -745,14 +745,14 @@ class NgramEmbedding {
             auto result=row_lookup_(global,ids.device());
             if(hashed_ids)*hashed_ids=::tyloi::cuda::tensor(global).reshape({b,t,nh}).to(ids.device());
             if(cache)restore(std::move(hashes.next));
-            return result.reshape({b,t,nh*dimension_});
+            return dynamic_cast<const DenseTensor&>(*result).reshape({b,t,nh*dimension_});
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         if(pipeline_) {
             auto result=pipeline_->collect(global,{b,t,nh},ids.device());
             if(hashed_ids)*hashed_ids=::tyloi::cuda::tensor(global).reshape({b,t,nh}).to(ids.device());
             if(cache)restore(std::move(hashes.next));
-            return result.reshape({b,t,nh*dimension_});
+            return dynamic_cast<const DenseTensor&>(*result).reshape({b,t,nh*dimension_});
         }
 #endif
 
@@ -788,7 +788,7 @@ class NgramEmbedding {
         std::shared_ptr<NintRowStage> stage;
         NintStage(std::shared_ptr<NintRowPipeline> p,const std::vector<int64_t>& shape,const ::tyloi::Device& device)
             :pipeline(std::move(p)),stage(pipeline->make_stage(shape,device)) {}
-        DenseTensor output()const override{return stage->output();}
+        const ::tyloi::Tensor& output()const override{return stage->output();}
         bool mapped_rows()const override{return stage->mapped_rows();}
         void decode()override{stage->decode();}
         void upload(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape)override {
@@ -1740,8 +1740,9 @@ class Qsa {
                     cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
             } catch(...) {offloaded_kv_->truncate(start);throw;}
         });
-        const auto rows=stage->gather->rows.size(0);
-        auto flat=stage->gather->rows.reshape({-1});
+        const auto rows=stage->gather->rows->size(0);
+        const auto& gathered=dynamic_cast<const DenseTensor&>(*stage->gather->rows);
+        auto flat=gathered.reshape({-1});
         auto keys=flat.narrow(0,0,rows*key_row).reshape({1,c_.kv_heads,rows,key_width()});
         auto values=flat.narrow(0,rows*key_row,rows*value_row).reshape({1,c_.kv_heads,rows,value_width()});
         if(!quantization_.enabled() && fused_projection_ && rotary_->fused() && (output_type==::tyloi::kFloat16 || output_type==::tyloi::kFloat32))
@@ -1754,8 +1755,11 @@ class Qsa {
         std::vector<DenseTensor> projections={},bool project_output=true,bool history_only=false) {
         const auto offset = position(), tokens = hidden.size(1), length = offset + tokens;
         const auto pool_position=[&]{return managed_memory()?index_.position()/c_.pool:offloaded_pooled_->position();};
-        const auto pool_range=[&](int64_t start,int64_t count){return managed_memory()
-            ? graph_pooled_.narrow(1,start,count).reshape({count,c_.index_width}) : offloaded_pooled_->range(start,count);};
+        const auto pool_range=[&](int64_t start,int64_t count,std::shared_ptr<::tyloi::Tensor>& owner) -> DenseTensor {
+            if(managed_memory()) return graph_pooled_.narrow(1,start,count).reshape({count,c_.index_width});
+            owner=offloaded_pooled_->range(start,count);
+            return dynamic_cast<const DenseTensor&>(*owner);
+        };
         TYLOINFER_RUNTIME_CHECK(hidden.size(0) == 1 && length <= c_.maximum && full_positions.size(-1) == length,
             "streamed QSA requires one sequence within its configured context");
         const auto key_row = c_.kv_heads * key_width(), value_row = c_.kv_heads * value_width();
@@ -1772,8 +1776,14 @@ class Qsa {
             else offloaded_index_->append(p.raw.reshape({tokens,c_.index_width}));
             const auto new_pools = length / c_.pool - first_pool;
             if (new_pools) {
-                auto raw = managed_memory()?index_.storage().narrow(1,first_pool*c_.pool,new_pools*c_.pool).reshape({new_pools*c_.pool,c_.index_width})
-                    : offloaded_index_->range(first_pool * c_.pool, new_pools * c_.pool);
+                std::shared_ptr<::tyloi::Tensor> raw_owner;
+                DenseTensor raw;
+                if(managed_memory())
+                    raw=index_.storage().narrow(1,first_pool*c_.pool,new_pools*c_.pool).reshape({new_pools*c_.pool,c_.index_width});
+                else {
+                    raw_owner=offloaded_index_->range(first_pool * c_.pool, new_pools * c_.pool);
+                    raw=dynamic_cast<const DenseTensor&>(*raw_owner);
+                }
                 auto pooled = raw.reshape({1, new_pools, c_.pool, c_.index_width}).to(::tyloi::kFloat32).mean(2).to(::tyloi::kFloat16);
 #ifdef TYLOINFER_NATIVE_CUDA
                 pooled = rms_norm(pooled, dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32) + 1, c_.eps);
@@ -1791,12 +1801,14 @@ class Qsa {
             // Other layers remain under the GPU/RAM/SSD eviction policy.
             if (tokens > 8 && std::size_t(length) * row_bytes <= offload_->config().buffer_bytes / 2 &&
                     std::size_t(length / c_.pool) * c_.index_width * 2 <= offload_->config().buffer_bytes / 4) {
-                auto packed = offloaded_kv_->range(0, length);
+                auto packed_owner = offloaded_kv_->range(0, length);
+                const auto& packed = dynamic_cast<const DenseTensor&>(*packed_owner);
                 auto key = packed.narrow(1,0,key_row).reshape({1,length,c_.kv_heads,key_width()}).permute({0,2,1,3});
                 auto value = packed.narrow(1,key_row,value_row).reshape({1,length,c_.kv_heads,value_width()}).permute({0,2,1,3});
                 DenseTensor ids;
                 if (length > c_.budget) {
-                    auto pooled = pool_range(0,length / c_.pool).reshape({1,length / c_.pool,c_.index_width});
+                    std::shared_ptr<::tyloi::Tensor> pooled_owner;
+                    auto pooled = pool_range(0,length / c_.pool,pooled_owner).reshape({1,length / c_.pool,c_.index_width});
                     auto scores = mfq_qwen4_exp::block_scores(p.iq, pooled);
                     ids = select_pooled_blocks(scores, offset, length, c_.pool, c_.budget, true);
                     if (trace) *trace = {scores,ids,p.iq,pooled};
@@ -1824,7 +1836,8 @@ class Qsa {
                         offload_->config().buffer_bytes / 8 / (c_.index_width * 2 + count * 4)));
                     for (int64_t start = 0; start < pools; start += pool_chunk) {
                         const auto n = std::min(pool_chunk, pools - start);
-                        auto pooled = pool_range(start, n).reshape({1, n, c_.index_width});
+                        std::shared_ptr<::tyloi::Tensor> pooled_owner;
+                        auto pooled = pool_range(start, n, pooled_owner).reshape({1, n, c_.index_width});
                         auto scores = mfq_qwen4_exp::block_scores(p.iq.narrow(1, begin, count), pooled);
                         auto ids = ::tyloi::cuda::arange(start, start + n, cache_positions.options());
                         auto visible = (ids * c_.pool + c_.pool - 1).reshape({1, 1, n}) <= cache_positions.reshape({1, count, 1});
@@ -1852,7 +1865,8 @@ class Qsa {
                     if (added) requested.push_back(mapping[index]);
                     mapping[index] = found->second;
                 }
-                auto packed = offloaded_kv_->gather(requested);
+                auto packed_owner = offloaded_kv_->gather(requested);
+                const auto& packed = dynamic_cast<const DenseTensor&>(*packed_owner);
                 const auto n = static_cast<int64_t>(requested.size());
                 auto key = packed.narrow(1,0,key_row).reshape({1,n,c_.kv_heads,key_width()}).permute({0,2,1,3}).contiguous();
                 auto value = packed.narrow(1,key_row,value_row).reshape({1,n,c_.kv_heads,value_width()}).permute({0,2,1,3}).contiguous();

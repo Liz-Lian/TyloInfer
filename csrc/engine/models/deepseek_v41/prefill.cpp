@@ -95,10 +95,6 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
                 ? positions
                 : model.execution->executor().collectives().copy(positions, block.cuda_device);
             block.set_token_ids(local_ids);
-            const RopeCache& active_rope = block.cpu_offloaded
-                ? model.cpu_rope
-                : (model.device_ropes.empty() ? model.rope
-                                              : model.device_ropes.at(block.cuda_device));
             BlockContext context;
             context.token_ids=local_ids;
             context.host_token_ids=host_ids;
@@ -108,7 +104,7 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
             hidden = block.cpu_offloaded
                 ? hidden.to(::tyloi::kCPU).contiguous()
                 : model.execution->executor().collectives().copy(hidden, block.cuda_device);
-            hidden = block.forward_context(*model.execution, std::move(hidden), context, active_rope);
+            hidden = block.forward_context(*model.execution, std::move(hidden), context);
             if(selected)profiler.report("deepseek_v41.layer."+std::to_string(layer));
         } catch(...) {profiler.enabled=previous;throw;}
         profiler.enabled=previous;

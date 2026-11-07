@@ -1,4 +1,5 @@
 #include "engine/weights/tq/rows.h"
+#include "backend.h"
 
 #include "env.h"
 #include "engine/backends/cuda/ops/projection/tq.h"
@@ -132,22 +133,23 @@ std::size_t segment_for(const tyloi::TqTable& table, std::uint64_t row) {
 
 } // namespace
 
-::tyloi::DenseTensor lookup_tq_table(const tyloi::TqTable& table,
+std::shared_ptr<::tyloi::Tensor> lookup_tq_table(const tyloi::TqTable& table,
                            const std::int64_t* ids, std::size_t count,
                            const ::tyloi::Device& device) {
-    return lookup_tq_rows(table, ids, count, device);
+    return std::make_shared<::tyloi::DenseTensor>(lookup_tq_rows(table, ids, count, device));
 }
 
-::tyloi::DenseTensor lookup_tq_table(const tyloi::TqTable& table, ::tyloi::DenseTensor ids) {
+std::shared_ptr<::tyloi::Tensor> lookup_tq_table(const tyloi::TqTable& table, const ::tyloi::Tensor& input) {
+    const auto& ids = dynamic_cast<const ::tyloi::DenseTensor&>(input);
     auto host = ids.contiguous().cpu().to(::tyloi::kInt64);
     auto shape = ids.sizes().vec();
     shape.push_back(table.width());
-    if (!ids.numel()) return ::tyloi::cuda::empty(shape, ids.options().dtype(::tyloi::kFloat16));
-    return lookup_tq_rows(
-        table, host.data_ptr<std::int64_t>(), host.numel(), ids.device()).reshape(shape);
+    if (!ids.numel()) return std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty(shape, ids.options().dtype(::tyloi::kFloat16)));
+    return std::make_shared<::tyloi::DenseTensor>(lookup_tq_rows(
+        table, host.data_ptr<std::int64_t>(), host.numel(), ids.device()).reshape(shape));
 }
 
-::tyloi::DenseTensor lookup_tq_shards(
+std::shared_ptr<::tyloi::Tensor> lookup_tq_shards(
         const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
         std::int64_t rows_per_shard, const std::vector<std::int64_t>& ids,
         const ::tyloi::Device& device) {
@@ -190,7 +192,7 @@ std::size_t segment_for(const tyloi::TqTable& table, std::uint64_t row) {
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(device, false, false);
         result.index_copy_(0, index, values);
     }
-    return result;
+    return std::make_shared<::tyloi::DenseTensor>(std::move(result));
 }
 
 namespace {
@@ -337,7 +339,7 @@ public:
         if (charged_) tyloi::cuda::tensor_host_bytes.fetch_sub(bytes_);
         if (restore) (void)cudaSetDevice(previous);
     }
-    ::tyloi::DenseTensor output() const override { return output_; }
+    const ::tyloi::Tensor& output() const override { return output_; }
     bool mapped_rows() const override { return mapped_; }
     void upload(const std::vector<std::int64_t>& ids,
                 const std::vector<std::int64_t>& shape) override {

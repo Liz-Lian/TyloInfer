@@ -136,9 +136,6 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;
-    RopeCache rope;
-    RopeCache cpu_rope;
-    std::unordered_map<int, RopeCache> device_ropes;
     std::shared_ptr<const ::tyloi::Tensor> embed;
     std::shared_ptr<const ::tyloi::Tensor> lm_head;
     CausalConfig config;

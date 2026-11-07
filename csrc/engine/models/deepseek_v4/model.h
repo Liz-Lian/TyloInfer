@@ -1,7 +1,11 @@
 #pragma once
 
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops.h"
+#else
 #include "engine/backends/cuda/ops/rope/tail.h"
+#endif
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/deepseek_v4/config.h"
@@ -26,8 +30,13 @@ struct Compressor {
 #endif
 
     std::vector<DenseTensor> project(DenseTensor x, int64_t batch, int64_t tokens) const;
+#ifdef TYLOINFER_NATIVE_CUDA
+    void update(PoolState&, DenseTensor kv, DenseTensor gate, DenseTensor length, const tyloi::ops::TailRopeTable&) const;
+    int64_t prefill(PoolState&, const DenseTensor& kv, const DenseTensor& gate, const tyloi::ops::TailRopeTable&) const;
+#else
     void update(PoolState&, DenseTensor kv, DenseTensor gate, DenseTensor length, const TailRope&) const;
     int64_t prefill(PoolState&, const DenseTensor& kv, const DenseTensor& gate, const TailRope&) const;
+#endif
 };
 
 struct Layer {
@@ -51,7 +60,11 @@ struct Layer {
     DenseTensor indexer_weight;
 #endif
     Ffn ffn;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::TailRopeTable attention_rope;
+#else
     TailRope attention_rope;
+#endif
 };
 
 struct OutputHeadWeights {

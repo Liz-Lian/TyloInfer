@@ -14,7 +14,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/weights/placement.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -88,7 +88,7 @@ Components Components::load(
     if (!optional) return components;
     const bool mtp_allowed =
         !placement.enabled() && cpu_layers == 0 && !cpu_offload &&
-        !::tyloi::weights::detail::cache(cache).moe;
+        cache.transfer() == ::tyloi::weights::Cache::Transfer::automatic;
 
     if (components.plan.vision == CudaVisionAdapter::grid_vit) {
         const auto* component = components.graph.component("vision");

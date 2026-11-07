@@ -229,8 +229,11 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
         throw std::invalid_argument("DeepSeek-V4.1 Engram lookup geometry disagrees");
     auto& s = *impl_;
     const auto count = std::size_t(batch) * tokens * columns;
-    if(s.tq_table)return lookup_tq_table(*s.tq_table,rows,count,device)
-        .reshape({batch,tokens,static_cast<int64_t>(columns)*s.width});
+    if(s.tq_table) {
+        auto result=lookup_tq_table(*s.tq_table,rows,count,device);
+        return dynamic_cast<const ::tyloi::DenseTensor&>(*result)
+            .reshape({batch,tokens,static_cast<int64_t>(columns)*s.width});
+    }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         if(s.nint_pipeline) {
         if(!rows)throw std::invalid_argument("DeepSeek-V4.1 Engram row IDs are missing");
@@ -244,7 +247,8 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
         s.nint_pipeline->upload(*s.nint_stage,std::vector<int64_t>(rows,rows+count),shape);
         s.nint_stage->decode();
         s.nint_done->record(mfq_current_cuda_stream());s.nint_pending=true;
-        return s.nint_stage->output().reshape({batch,tokens,static_cast<int64_t>(columns)*s.width});
+        return dynamic_cast<const ::tyloi::DenseTensor&>(s.nint_stage->output())
+            .reshape({batch,tokens,static_cast<int64_t>(columns)*s.width});
     }
 #endif
 

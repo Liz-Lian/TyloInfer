@@ -1,4 +1,6 @@
 #include "engine/state/kv_offload.h"
+#include "backend.h"
+#include "engine/state/qsa_blocks.h"
 #include "engine/budget.h"
 #include "engine/weights/cache.h"
 #include "engine/weights/workspace.h"
@@ -216,12 +218,12 @@ std::shared_ptr<KvOffloadStore::GatherWorkspace> KvOffloadStore::gather_workspac
         auto fresh=std::make_shared<GatherWorkspace>();
         fresh->heads=heads;fresh->key_width=key_width;
         const auto options=::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(dtype);
-        fresh->rows=::tyloi::cuda::zeros({rows,width},options);
-        fresh->upload=::tyloi::cuda::empty({rows,width},options);
-        fresh->host=::tyloi::cuda::empty({rows,width},options.device(::tyloi::kCPU).pinned_memory(true));
+        fresh->rows=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({rows,width},options));
+        fresh->upload=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({rows,width},options));
+        fresh->host=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({rows,width},options.device(::tyloi::kCPU).pinned_memory(true)));
         const auto fields=key_width?2*heads:1;
-        fresh->descriptors=::tyloi::cuda::zeros({4+rows*fields*4},options.device(::tyloi::kCPU).dtype(::tyloi::kInt64).pinned_memory(true));
-        fresh->device_descriptors=::tyloi::cuda::zeros({4+rows*fields*4},options.dtype(::tyloi::kInt64));
+        fresh->descriptors=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({4+rows*fields*4},options.device(::tyloi::kCPU).dtype(::tyloi::kInt64).pinned_memory(true)));
+        fresh->device_descriptors=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({4+rows*fields*4},options.dtype(::tyloi::kInt64)));
         workspace=std::move(fresh);
     }
     return workspace;
@@ -229,17 +231,18 @@ std::shared_ptr<KvOffloadStore::GatherWorkspace> KvOffloadStore::gather_workspac
 std::size_t KvOffloadStore::graph_workspace_bytes() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
     std::size_t bytes=0;
-    for(const auto& [key,work]:impl_->gather_workspaces)bytes+=work->rows.nbytes()+work->upload.nbytes()+work->device_descriptors.nbytes();
+    for(const auto& [key,work]:impl_->gather_workspaces)bytes+=work->rows->nbytes()+work->upload->nbytes()+work->device_descriptors->nbytes();
     return bytes;
 }
 const KvOffloadConfig& KvOffloadStore::config() const { return impl_->config; }
 
-KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows) {
-    if (!rows.is_cuda() || rows.dim() != 2 || !rows.numel() || (rows.scalar_type() != ::tyloi::kFloat16 && rows.scalar_type() != ::tyloi::kInt32))
+KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::Tensor& input) {
+    if (!input.is_cuda() || input.dim() != 2 || !input.numel() || (input.scalar_type() != ::tyloi::kFloat16 && input.scalar_type() != ::tyloi::kInt32))
         throw std::invalid_argument("CUDA KV microblock must contain nonempty FP16 or packed GPU rows");
-    const auto bytes = static_cast<std::size_t>(rows.numel()) * rows.element_size();
+    const auto bytes = static_cast<std::size_t>(input.numel()) * input.element_size();
     if (bytes > impl_->config.buffer_bytes / 2)
         throw std::invalid_argument("CUDA KV microblock exceeds its write staging buffer");
+    const auto& rows = dynamic_cast<const ::tyloi::DenseTensor&>(input);
     std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
     std::weak_ptr<Impl> owner = impl_;
     auto block = BlockPtr(new Block, [owner](Block* value) {
@@ -261,10 +264,10 @@ KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows)
     return block;
 }
 
-::tyloi::DenseTensor KvOffloadStore::read(const BlockPtr& block) {
+std::shared_ptr<::tyloi::Tensor> KvOffloadStore::read(const BlockPtr& block) {
     if (!block) throw std::invalid_argument("missing CUDA KV block");
     std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-    if (block->gpu.defined()) { ++impl_->hits; impl_->touch(block); return block->gpu; }
+    if (block->gpu.defined()) { ++impl_->hits; impl_->touch(block); return std::make_shared<::tyloi::DenseTensor>(block->gpu); }
     if(impl_->config.preallocate) {
         // Keep read results outside the eviction arena: a gather may retain
         // this tensor while subsequent reads recycle other arena slots.
@@ -280,7 +283,7 @@ KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows)
             TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(result.data_ptr(),payload->data(),block->bytes,cudaMemcpyHostToDevice,current_stream().stream()));
             TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(current_stream().stream()));
         }
-        impl_->h2d_bytes+=block->bytes;return result;
+        impl_->h2d_bytes+=block->bytes;return std::make_shared<::tyloi::DenseTensor>(std::move(result));
     }
     if (impl_->budget) impl_->budget->reserve_ram(block->bytes * 2);
     auto payload = impl_->ram->read(block->cold);
@@ -292,7 +295,7 @@ KvOffloadStore::BlockPtr KvOffloadStore::write(const ::tyloi::DenseTensor& rows)
     if (block->bytes <= impl_->hot_limit()) {
         block->gpu = gpu; impl_->touch(block); impl_->evict();
     }
-    return gpu;
+    return std::make_shared<::tyloi::DenseTensor>(std::move(gpu));
 }
 
 void KvOffloadStore::flush() { if(impl_->ram)impl_->ram->flush(); }
@@ -333,16 +336,17 @@ KvOffloadSequence::KvOffloadSequence(std::shared_ptr<KvOffloadStore> store, int6
         throw std::invalid_argument("invalid CUDA KV sequence geometry");
 }
 void KvOffloadSequence::reset() { blocks_.clear(); position_ = 0; }
-void KvOffloadSequence::append(const ::tyloi::DenseTensor& source) {
+void KvOffloadSequence::append(const ::tyloi::Tensor& source) {
     if (!source.is_cuda() || source.dim() != 2 || source.size(1) != width_ || source.size(0) <= 0)
         throw std::invalid_argument("invalid CUDA KV rows");
     const auto offset = position_;
     const auto previous_count = blocks_.size();
     const auto previous_tail = position_ % block_rows_ ? blocks_.back() : KvOffloadStore::BlockPtr{};
     try {
-        auto rows = source.to(dtype_);
+        auto rows = dynamic_cast<const ::tyloi::DenseTensor&>(source).to(dtype_);
         if (position_ % block_rows_) {
-            rows = ::tyloi::cuda::cat({store_->read(blocks_.back()), rows}, 0);
+            auto previous = store_->read(blocks_.back());
+            rows = ::tyloi::cuda::cat({dynamic_cast<const ::tyloi::DenseTensor&>(*previous), rows}, 0);
             blocks_.pop_back();
         }
         for (int64_t begin = 0; begin < rows.size(0); begin += block_rows_)
@@ -359,12 +363,15 @@ void KvOffloadSequence::truncate(int64_t position) {
     if (position == position_) return;
     const auto full = position / block_rows_, tail = position % block_rows_;
     KvOffloadStore::BlockPtr remainder;
-    if (tail) remainder = store_->write(store_->read(blocks_.at(full)).narrow(0, 0, tail));
+    if (tail) {
+        auto source = store_->read(blocks_.at(full));
+        remainder = store_->write(dynamic_cast<const ::tyloi::DenseTensor&>(*source).narrow(0, 0, tail));
+    }
     blocks_.resize(full);
     if (remainder) blocks_.push_back(std::move(remainder));
     position_ = position;
 }
-::tyloi::DenseTensor KvOffloadSequence::gather(const std::vector<int64_t>& rows) const {
+std::shared_ptr<::tyloi::Tensor> KvOffloadSequence::gather(const std::vector<int64_t>& rows) const {
     if (rows.empty() || blocks_.empty()) throw std::invalid_argument("empty CUDA KV selection");
     std::map<int64_t, std::pair<std::vector<int64_t>, std::vector<int64_t>>> groups;
     for (std::size_t output = 0; output < rows.size(); ++output) {
@@ -376,21 +383,26 @@ void KvOffloadSequence::truncate(int64_t position) {
     auto result = ::tyloi::cuda::empty({static_cast<int64_t>(rows.size()), width_}, options);
     for (const auto& [block, group] : groups) {
         auto payload = store_->read(blocks_.at(block));
-        auto selected = payload.index_select(0, indices(group.first, options));
+        auto selected = dynamic_cast<const ::tyloi::DenseTensor&>(*payload).index_select(0, indices(group.first, options));
         result.index_copy_(0, indices(group.second, options), selected);
     }
-    return result;
+    return std::make_shared<::tyloi::DenseTensor>(std::move(result));
 }
 void KvOffloadSequence::gather_into(const std::vector<int64_t>& rows,const KvOffloadStore::GatherWorkspace& work) const {
-    if(rows.empty() || int64_t(rows.size())>work.rows.size(0) || work.rows.size(1)!=width_ || work.rows.scalar_type()!=dtype_)
+    if(rows.empty() || int64_t(rows.size())>work.rows->size(0) || work.rows->size(1)!=width_ || work.rows->scalar_type()!=dtype_)
         throw std::invalid_argument("invalid fixed CUDA KV gather workspace");
     auto& impl=*store_->impl_;
     std::lock_guard<std::recursive_mutex> lock(impl.mutex);
-    const auto row_bytes=std::size_t(width_)*work.rows.element_size();
-    auto* host=static_cast<uint8_t*>(work.host.data_ptr());
-    auto* upload=static_cast<uint8_t*>(work.upload.data_ptr());
-    auto* destination=static_cast<uint8_t*>(work.rows.data_ptr());
-    auto* header=work.descriptors.data_ptr<int64_t>();
+    const auto row_bytes=std::size_t(width_)*work.rows->element_size();
+    auto& host_tensor=dynamic_cast<::tyloi::DenseTensor&>(*work.host);
+    auto& upload_tensor=dynamic_cast<::tyloi::DenseTensor&>(*work.upload);
+    auto& rows_tensor=dynamic_cast<::tyloi::DenseTensor&>(*work.rows);
+    auto& descriptors=dynamic_cast<::tyloi::DenseTensor&>(*work.descriptors);
+    auto& device_descriptors=dynamic_cast<::tyloi::DenseTensor&>(*work.device_descriptors);
+    auto* host=static_cast<uint8_t*>(host_tensor.data_ptr());
+    auto* upload=static_cast<uint8_t*>(upload_tensor.data_ptr());
+    auto* destination=static_cast<uint8_t*>(rows_tensor.data_ptr());
+    auto* header=descriptors.data_ptr<int64_t>();
     auto* copies=reinterpret_cast<MoeMappedCopyDescriptor*>(header+4);
     std::map<int64_t,std::vector<std::pair<int64_t,std::size_t>>> groups;
     for(std::size_t i=0;i<rows.size();++i) {
@@ -421,8 +433,8 @@ void KvOffloadSequence::gather_into(const std::vector<int64_t>& rows,const KvOff
             };
             if(!work.key_width)add(destination+output*row_bytes,input,row_bytes);
             else {
-                const auto keys=std::size_t(work.key_width)*work.rows.element_size();
-                const auto values=row_bytes/work.heads-keys,capacity=std::size_t(work.rows.size(0));
+                const auto keys=std::size_t(work.key_width)*work.rows->element_size();
+                const auto values=row_bytes/work.heads-keys,capacity=std::size_t(work.rows->size(0));
                 for(int64_t head=0;head<work.heads;++head) {
                     add(destination+(head*capacity+output)*keys,input+head*keys,keys);
                     add(destination+capacity*work.heads*keys+(head*capacity+output)*values,
@@ -435,22 +447,23 @@ void KvOffloadSequence::gather_into(const std::vector<int64_t>& rows,const KvOff
     const auto stream=current_stream().stream();
     if(cold_bytes)TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(upload,host,cold_bytes,cudaMemcpyHostToDevice,stream));
     impl.h2d_bytes+=cold_bytes;
-    TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(work.device_descriptors.data_ptr(),header,(4+count*4)*sizeof(int64_t),cudaMemcpyHostToDevice,stream));
-    moe_copy_mapped(work.device_descriptors.data_ptr(),reinterpret_cast<const uint32_t*>(work.device_descriptors.data_ptr<int64_t>()+2),
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(device_descriptors.data_ptr(),header,(4+count*4)*sizeof(int64_t),cudaMemcpyHostToDevice,stream));
+    moe_copy_mapped(device_descriptors.data_ptr(),reinterpret_cast<const uint32_t*>(device_descriptors.data_ptr<int64_t>()+2),
         int(std::min<std::size_t>(256,(total+4095)/4096)),256,stream);
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
 }
-::tyloi::DenseTensor KvOffloadSequence::range(int64_t start, int64_t count) const {
+std::shared_ptr<::tyloi::Tensor> KvOffloadSequence::range(int64_t start, int64_t count) const {
     if (start < 0 || count <= 0 || start > position_ || count > position_ - start)
         throw std::out_of_range("CUDA KV range exceeds its sequence");
     auto result = ::tyloi::cuda::empty({count, width_}, blocks_.front()->options);
     for (int64_t written = 0; written < count;) {
         const auto row = start + written, block = row / block_rows_, offset = row % block_rows_;
         auto source = store_->read(blocks_.at(block));
-        const auto n = std::min(count-written,source.size(0)-offset);
-        result.narrow(0,written,n).copy_(source.narrow(0,offset,n));
+        const auto& dense_source = dynamic_cast<const ::tyloi::DenseTensor&>(*source);
+        const auto n = std::min(count-written,dense_source.size(0)-offset);
+        result.narrow(0,written,n).copy_(dense_source.narrow(0,offset,n));
         written += n;
     }
-    return result;
+    return std::make_shared<::tyloi::DenseTensor>(std::move(result));
 }
 }

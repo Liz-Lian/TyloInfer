@@ -4,7 +4,11 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops.h"
+#else
 #include "engine/backends/cuda/ops/rope/tail.h"
+#endif
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 
@@ -284,11 +288,21 @@ inline DenseTensor weighted_rms(const DenseTensor &input,
 }
 
 inline DenseTensor rotate_token_major_tail(DenseTensor input, const DenseTensor &positions,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                      const ::tyloi::ops::TailRopeTable &rope, bool inverse = false) {
+#else
                                       const TailRope &rope, bool inverse = false) {
+#endif
     TYLOINFER_RUNTIME_CHECK(input.dim() == 3, "DeepSeek-V4.1 RoPE input must be [B,T,D]");
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto value = input.unsqueeze(1).contiguous();
+    auto rotated = ::tyloi::ops::tail_rope(value, positions, rope, inverse);
+    return dynamic_cast<const DenseTensor&>(*rotated).squeeze(1).contiguous();
+#else
     return rope.forward(input.unsqueeze(1).contiguous(), positions, inverse)
         .squeeze(1)
         .contiguous();
+#endif
 }
 
 inline DenseTensor empty_topk(std::int64_t batch, std::int64_t tokens,
@@ -442,7 +456,11 @@ struct Block final {
     std::shared_ptr<const ::tyloi::Tensor> index_score;
     tyloi::cuda::Ffn mlp;
     Parameter vision_router_bias;
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::ops::TailRopeTable rope;
+#else
     TailRope rope;
+#endif
     std::unique_ptr<Engram> engram;
 
     bool kv_source() const noexcept { return config.is_kv_source(layer); }
@@ -732,7 +750,12 @@ struct Block final {
                         .reshape({batch, tokens, config.index_n_heads, config.index_head_dim})
                         .transpose(1, 2)
                         .contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto rotated = ::tyloi::ops::tail_rope(query, positions, rope);
+                query = dynamic_cast<const DenseTensor&>(*rotated)
+#else
                 query = rope.forward(query, positions, false)
+#endif
                             .transpose(1, 2)
                             .contiguous();
                 query = dsv4_fp4_sim_cuda(query.to(::tyloi::kFloat16).contiguous());
@@ -793,7 +816,12 @@ struct Block final {
                                  .transpose(1, 2)
                                  .contiguous()
                                  .to(::tyloi::kFloat32);
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto rotated = ::tyloi::ops::tail_rope(query, positions, rope);
+                query = dynamic_cast<const DenseTensor&>(*rotated);
+#else
                 query = rope.forward(query, positions, false);
+#endif
 
                 return query;
             },
@@ -901,7 +929,13 @@ struct Block final {
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
             },
             [&](DenseTensor attended) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto value = attended.transpose(1, 2).contiguous();
+                auto rotated = ::tyloi::ops::tail_rope(value, positions, rope, true);
+                return dynamic_cast<const DenseTensor&>(*rotated)
+#else
                 return rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
+#endif
                     .transpose(1, 2)
                     .contiguous();
             },
@@ -910,7 +944,7 @@ struct Block final {
     }
 
     DenseTensor forward_context(CudaExecutionContext& execution,DenseTensor hidden,
-            const BlockContext& context,const RopeCache& rope) {
+            const BlockContext& context) {
         if(context.confirmed_prefix>0) {
             // A joint pass writes pending and draft rows. Protect their whole
             // physical window; rollback retains the confirmed prefix as well.
@@ -920,12 +954,12 @@ struct Block final {
         TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
                               "block does not support speculative verification");
         return forward(execution, std::move(hidden), context.positions, context.cache_position,
-                       context.sequence_lengths, rope, context.cache_positions);
+                       context.sequence_lengths, context.cache_positions);
     }
 
     DenseTensor forward(CudaExecutionContext &execution, DenseTensor hidden, DenseTensor positions,
                    std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
-                   const RopeCache &, const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt) {
+                   const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt) {
         auto &profiler = execution.executor().profiler();
         TYLOINFER_RUNTIME_CHECK(L().current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
@@ -1096,9 +1130,6 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;
-    RopeCache rope;
-    RopeCache cpu_rope;
-    std::unordered_map<int, RopeCache> device_ropes;
     std::shared_ptr<const ::tyloi::Tensor> embed;
 #ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const ::tyloi::Tensor> output_norm;

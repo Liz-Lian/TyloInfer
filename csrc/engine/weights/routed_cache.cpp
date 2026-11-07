@@ -125,6 +125,24 @@ bool Cache::graph_safe(Graph kind, bool parallel) const {
     return !data_->moe && !(data_->tq && (parallel || kind == Graph::legacy));
 }
 
+Cache::Transfer Cache::transfer() const {
+    return data_->moe ? Transfer::coordinated : Transfer::automatic;
+}
+
+Cache::Decode Cache::decode(bool pipeline) const {
+    if (data_->tq) return Decode::routed;
+    return pipeline && data_->moe ? Decode::streamed : Decode::none;
+}
+
+bool Cache::prefill_ready(std::optional<bool> hint) const {
+    return (hint && *hint && moe_expert_cache_layer_prefill_ready(data_->moe)) ||
+        moe_expert_cache_ssd_experts(data_->moe);
+}
+
+bool Cache::split_prefill(std::int64_t rows) const {
+    return !data_->tq || rows <= 8;
+}
+
 bool Cache::prepare_graph(Device device) {
     if (!device.is_cuda() || device.index < 0)
         throw std::invalid_argument("graph requires a CUDA device");

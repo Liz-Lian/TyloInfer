@@ -306,16 +306,27 @@ void RopeCache::configure_mrope(
 
 namespace tyloi::cuda {
 
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::ops::TailRopeTable ops::tail_rope_table(int64_t max_position_embeddings, double rope_base,
+                   int64_t compress_ratio, Device device, double compress_rope_base,
+                   int64_t original_positions, double rope_factor, double beta_fast, double beta_slow) {
+    MfqCudaGuard guard(device.index);
+#else
 TailRope::TailRope(int64_t max_position_embeddings, double rope_base, int64_t compress_ratio,
                    double compress_rope_base, int64_t original_positions, double rope_factor,
                    double beta_fast, double beta_slow) {
+#endif
     constexpr int64_t rotary_dim = 64;
     const int64_t half = rotary_dim / 2;
     const int64_t positions = std::max<int64_t>(1, max_position_embeddings);
     const double base =
         compress_ratio > 0 && compress_rope_base > 0.0 ? compress_rope_base : rope_base;
     auto opts = ::tyloi::TensorOptions()
+#ifdef TYLOINFER_NATIVE_CUDA
+                    .device(device)
+#else
                     .device(::tyloi::kCUDA)
+#endif
                     .dtype(::tyloi::kFloat32);
     auto dims = ::tyloi::cuda::arange(0, rotary_dim, 2, opts);
     auto freqs = ::tyloi::cuda::pow(::tyloi::cuda::full({half}, base, opts),
@@ -337,11 +348,33 @@ TailRope::TailRope(int64_t max_position_embeddings, double rope_base, int64_t co
         freqs = freqs / rope_factor * (1.0 - smooth) + freqs * smooth;
     }
     auto angles = ::tyloi::cuda::arange(positions, opts).unsqueeze(1) * freqs.unsqueeze(0);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto cos = ::tyloi::cuda::cos(angles).contiguous();
+    auto sin = ::tyloi::cuda::sin(angles).contiguous();
+    auto negative_sin = (-sin).contiguous();
+    return {std::make_shared<DenseTensor>(std::move(cos)),
+        std::make_shared<DenseTensor>(std::move(sin)),
+        std::make_shared<DenseTensor>(std::move(negative_sin))};
+#else
     cos_ = ::tyloi::cuda::cos(angles).contiguous();
     sin_ = ::tyloi::cuda::sin(angles).contiguous();
     negative_sin_ = (-sin_).contiguous();
+#endif
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+DenseTensor ops::tail_rope(DenseTensor x, DenseTensor positions,
+        const tyloi::ops::TailRopeTable& table, bool inverse) {
+    if (x.dim() != 4 || x.size(-1) < 64) {
+        throw std::runtime_error("DeepSeek V4 RoPE expects contiguous [B,H,T,D>=64]");
+    }
+    MfqCudaGuard guard(x.device().index);
+    const auto& cos = dynamic_cast<const DenseTensor&>(*table.cos);
+    const auto& sin = dynamic_cast<const DenseTensor&>(*(inverse ? table.negative_sin : table.sin));
+    return dsv4_tail_rope_cuda(
+        x, positions.contiguous().to(x.device(), ::tyloi::kInt64), cos, sin, 64);
+}
+#else
 DenseTensor TailRope::forward(DenseTensor x, DenseTensor positions, bool inverse) const {
     if (x.dim() != 4 || x.size(-1) < 64) {
         throw std::runtime_error("DeepSeek V4 RoPE expects contiguous [B,H,T,D>=64]");
@@ -350,6 +383,7 @@ DenseTensor TailRope::forward(DenseTensor x, DenseTensor positions, bool inverse
         x, positions.contiguous().to(::tyloi::kCUDA, ::tyloi::kInt64),
         cos_, inverse ? negative_sin_ : sin_, 64);
 }
+#endif
 
 RotaryEmbedding::RotaryEmbedding(int64_t dimension, int64_t maximum, double base,
                                std::vector<int64_t> sections, bool interleaved,

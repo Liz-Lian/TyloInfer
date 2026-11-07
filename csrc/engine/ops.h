@@ -53,6 +53,16 @@ struct RopeTable {
     std::int64_t rotary_dim = 0;
 };
 
+struct TailRopeTable {
+    std::shared_ptr<const Tensor> cos, sin, negative_sin;
+};
+
+TailRopeTable tail_rope_table(std::int64_t max_positions, double base, std::int64_t compress_ratio,
+    Device device, double compress_base = 0.0, std::int64_t original_positions = 0,
+    double factor = 1.0, double beta_fast = 32.0, double beta_slow = 1.0);
+std::shared_ptr<Tensor> tail_rope(const Tensor& input, const Tensor& positions,
+    const TailRopeTable& table, bool inverse = false);
+
 // CUDA table with [positions, dimension / 2] FP32 cosine and sine tensors.
 // Nonpositive frequency_dim uses dimension; negative active_pairs uses all pairs.
 RopeTable rope_table(std::int64_t positions, std::int64_t dimension, double base, Device device,

@@ -1,7 +1,8 @@
 #pragma once
 
-#include "backend.h"
-#include "engine/state/qsa_blocks.h"
+#include "engine/tensor.h"
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,15 +28,15 @@ public:
     struct Block;
     using BlockPtr = std::shared_ptr<Block>;
     struct GatherWorkspace {
-        ::tyloi::DenseTensor rows, upload, host, descriptors, device_descriptors;
+        std::shared_ptr<::tyloi::Tensor> rows, upload, host, descriptors, device_descriptors;
         int64_t heads=1,key_width=0;
     };
     std::shared_ptr<GatherWorkspace> gather_workspace(int64_t rows,int64_t width,::tyloi::ScalarType dtype,int64_t heads=1,int64_t key_width=0);
     std::size_t graph_workspace_bytes() const;
     explicit KvOffloadStore(KvOffloadConfig config);
     ~KvOffloadStore();
-    BlockPtr write(const ::tyloi::DenseTensor& rows);
-    ::tyloi::DenseTensor read(const BlockPtr& block);
+    BlockPtr write(const ::tyloi::Tensor& rows);
+    std::shared_ptr<::tyloi::Tensor> read(const BlockPtr& block);
     const KvOffloadConfig& config() const;
     std::vector<std::pair<std::string, double>> metrics() const;
     void flush();
@@ -55,15 +56,15 @@ public:
     int64_t position() const { return position_; }
     void reset();
     void truncate(int64_t position);
-    void append(const ::tyloi::DenseTensor& rows);
-    ::tyloi::DenseTensor gather(const std::vector<int64_t>& rows) const;
+    void append(const ::tyloi::Tensor& rows);
+    std::shared_ptr<::tyloi::Tensor> gather(const std::vector<int64_t>& rows) const;
     // Shared staging is reused between completed decode graph segments. The
     // prior consumer must finish before the next call overwrites these buffers.
     void gather_into(const std::vector<int64_t>& rows,const KvOffloadStore::GatherWorkspace& workspace) const;
     std::shared_ptr<KvOffloadStore::GatherWorkspace> gather_workspace(int64_t rows,int64_t heads=1,int64_t key_width=0) const {
         return store_->gather_workspace(rows,width_,dtype_,heads,key_width);
     }
-    ::tyloi::DenseTensor range(int64_t start, int64_t count) const;
+    std::shared_ptr<::tyloi::Tensor> range(int64_t start, int64_t count) const;
 private:
     std::shared_ptr<KvOffloadStore> store_;
     int64_t width_, block_rows_, position_ = 0;

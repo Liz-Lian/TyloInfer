@@ -1,4 +1,5 @@
 #include "env.h"
+#include "backend.h"
 #include "engine/weights/nint_row_pipeline.h"
 #include "engine/weights/nint_row_cache.h"
 #include "engine/weights/source/mapped.h"
@@ -106,7 +107,7 @@ struct NintRowStage::Impl {
 };
 NintRowStage::NintRowStage(std::unique_ptr<Impl> impl):impl_(std::move(impl)){}
 NintRowStage::~NintRowStage()=default;
-::tyloi::DenseTensor NintRowStage::output() const {return impl_->shaped;}
+const ::tyloi::Tensor& NintRowStage::output() const {return impl_->shaped;}
 bool NintRowStage::mapped_rows() const {return impl_->mapped;}
 void NintRowStage::decode() {
     auto& s=*impl_;nint_selected_rows_into_cuda(s.packed,s.descriptors,s.inverse,s.flat);
@@ -267,7 +268,7 @@ void NintRowPipeline::issue(const std::vector<int64_t>& ids,const std::vector<in
     const auto sequence=++s.serial;
     s.pending=s.submit(ids,sequence,issued,carried);
 }
-::tyloi::DenseTensor NintRowPipeline::collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
+std::shared_ptr<::tyloi::Tensor> NintRowPipeline::collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
     auto& s=*impl_;
     const auto started=s.profile?RowClock::now():RowClock::time_point{};
     issue(ids,shape);
@@ -277,7 +278,7 @@ void NintRowPipeline::issue(const std::vector<int64_t>& ids,const std::vector<in
     const auto n=shape_rows(shape);
     if(n!=static_cast<int64_t>(ids.size()) || !device.is_cuda())throw std::invalid_argument("PLE pipeline input shape/device mismatch");
     const MfqCudaGuard guard(device);
-    if(ids.empty())return ::tyloi::cuda::empty(out_shape,::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat16));
+    if(ids.empty())return std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty(out_shape,::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat16)));
     result.batch.validate();auto packed=::tyloi::cuda::tensor(result.batch.packed()).to(device);
     std::vector<int32_t> words(result.batch.descriptors().size());std::memcpy(words.data(),result.batch.descriptors().data(),words.size()*4);
     auto descriptors=::tyloi::cuda::tensor(words).reshape({static_cast<int64_t>(result.batch.rows()),6}).to(device);
@@ -286,7 +287,7 @@ void NintRowPipeline::issue(const std::vector<int64_t>& ids,const std::vector<in
         ids.size(),result.batch.rows(),static_cast<unsigned long long>(result.misses),
         static_cast<unsigned long long>(result.source_bytes),result.batch.packed_nbytes(),
         result.queue_ns/1e6,result.gather_ns/1e6,result.read_ns/1e6,row_elapsed(started)/1e6);
-    return nint_selected_rows_cuda(packed,descriptors,s.width).index_select(0,::tyloi::cuda::tensor(result.inverse).to(device)).reshape(out_shape);
+    return std::make_shared<::tyloi::DenseTensor>(nint_selected_rows_cuda(packed,descriptors,s.width).index_select(0,::tyloi::cuda::tensor(result.inverse).to(device)).reshape(out_shape));
 }
 std::shared_ptr<NintRowStage> NintRowPipeline::make_stage(const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
     const auto& s=*impl_;const auto n=shape_rows(shape);

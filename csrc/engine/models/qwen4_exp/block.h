@@ -120,14 +120,7 @@ struct Qwen4Block final {
         auto ffn_output=profiler.measure("prefill.ffn",[&] {return ffn(execution,ffn_input);});
         return profiler.measure("prefill.gr_ffn_post",[&] {return ffn_gr.post(ffn_output,ffn_residual,ffn_gate);});
     }
-    DenseTensor forward(CudaExecutionContext &, DenseTensor, DenseTensor, int64_t, const MfqOptional<DenseTensor> &,
-                   const RopeCache &, const MfqOptional<DenseTensor> & = mfq_nullopt,
-                   const MfqOptional<DenseTensor> & = mfq_nullopt) {
-        throw std::runtime_error(
-            "Qwen4 block requires the unified model position/PLE input lifecycle");
-    }
-    DenseTensor forward_context(CudaExecutionContext &execution, DenseTensor x, const BlockContext &context,
-                           const RopeCache &) {
+    DenseTensor forward_context(CudaExecutionContext &execution, DenseTensor x, const BlockContext &context) {
         return execute(execution, std::move(x), context.token_ids, context.positions,
                        context.full_positions, context.confirmed_prefix,context.host_token_ids);
     }

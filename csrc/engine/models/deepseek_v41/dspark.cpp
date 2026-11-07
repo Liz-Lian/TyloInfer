@@ -154,7 +154,12 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         // residency updates also run when ordinary decoding skips DSpark.
         result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.",
                                   -1 - stage, config.dspark_top_k);
+#ifdef TYLOINFER_NATIVE_CUDA
+        result->rope = ::tyloi::ops::tail_rope_table(config.max_position_embeddings,
+            config.rope_theta, 0, ::tyloi::Device(::tyloi::kCUDA, weights.placement.device));
+#else
         result->rope = TailRope(config.max_position_embeddings, config.rope_theta, 0);
+#endif
         result->cuda_device = weights.placement.device;
 
         const auto function_width = config.hc_mult * config.hidden;
@@ -484,7 +489,12 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                                  .transpose(1, 2)
                                  .contiguous()
                                  .to(::tyloi::kFloat32);
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto rotated = ::tyloi::ops::tail_rope(query, positions, stage.rope);
+                query = dynamic_cast<const DenseTensor&>(*rotated);
+#else
                 query = stage.rope.forward(query, positions, false);
+#endif
                 return query;
             },
             [&] {
@@ -516,7 +526,13 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
             },
             [&](DenseTensor attended) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto value = attended.transpose(1, 2).contiguous();
+                auto rotated = ::tyloi::ops::tail_rope(value, positions, stage.rope, true);
+                return dynamic_cast<const DenseTensor&>(*rotated)
+#else
                 return stage.rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
+#endif
                     .transpose(1, 2)
                     .contiguous();
             },

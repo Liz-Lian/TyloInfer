@@ -94,10 +94,17 @@ Layer load_layer(const tyloi::weights::Loader& weights, const Config &c, int i,
     layer.kv = weights.weight(p + "attention.key_value_a.weight");
     layer.output_a = weights.weight(p + "attention.output_a.weight");
     layer.output_b = weights.weight(p + "attention.output_b.weight");
+#ifdef TYLOINFER_NATIVE_CUDA
+    layer.attention_rope = tyloi::ops::tail_rope_table(
+        c.max_position_embeddings, c.rope_base, layer.compress_ratio,
+        tyloi::Device(tyloi::kCUDA, weights.placement.device), config.compress_rope_base,
+        config.rope_original_positions, config.rope_factor, config.rope_beta_fast, config.rope_beta_slow);
+#else
     layer.attention_rope =
         TailRope(c.max_position_embeddings, c.rope_base, layer.compress_ratio,
                       config.compress_rope_base, config.rope_original_positions, config.rope_factor,
                       config.rope_beta_fast, config.rope_beta_slow);
+#endif
 
     if (layer.compress_ratio > 0) {
         layer.compressor.ratio = layer.compress_ratio;
@@ -681,18 +688,31 @@ std::vector<::tyloi::DenseTensor> Compressor::project(::tyloi::DenseTensor x, in
 }
 
 void Compressor::update(PoolState& state, ::tyloi::DenseTensor kv, ::tyloi::DenseTensor gate,
+#ifdef TYLOINFER_NATIVE_CUDA
+            ::tyloi::DenseTensor length, const tyloi::ops::TailRopeTable &rope) const {
+#else
             ::tyloi::DenseTensor length, const tyloi::cuda::TailRope &rope) const {
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
     const auto& ape = dynamic_cast<const DenseTensor&>(*this->ape);
     const auto& norm = dynamic_cast<const DenseTensor&>(*this->norm);
+    const auto& cos = dynamic_cast<const DenseTensor&>(*rope.cos);
+    const auto& sin = dynamic_cast<const DenseTensor&>(*rope.sin);
+#else
+    const auto& cos = rope.cos();
+    const auto& sin = rope.sin();
 #endif
     dsv4_decode_pool_update_cuda(kv, gate, ape, norm, state.state_kv, state.state_gate, state.previous_kv,
-                                 state.previous_gate, state.pool, length, rope.cos(), rope.sin(), ratio,
+                                 state.previous_gate, state.pool, length, cos, sin, ratio,
                                  overlap, cache_quant_mode, 1e-6);
 }
 
 int64_t Compressor::prefill(PoolState& state, const ::tyloi::DenseTensor &kv, const ::tyloi::DenseTensor &gate,
+#ifdef TYLOINFER_NATIVE_CUDA
+                const tyloi::ops::TailRopeTable &rope) const {
+#else
                 const tyloi::cuda::TailRope &rope) const {
+#endif
     if (ratio <= 0)
         return 0;
     if (kv.dim() != 3 || gate.sizes() != kv.sizes()) {
@@ -723,10 +743,15 @@ int64_t Compressor::prefill(PoolState& state, const ::tyloi::DenseTensor &kv, co
 #ifdef TYLOINFER_NATIVE_CUDA
         const auto& ape = dynamic_cast<const DenseTensor&>(*this->ape);
         const auto& norm = dynamic_cast<const DenseTensor&>(*this->norm);
+        const auto& cos = dynamic_cast<const DenseTensor&>(*rope.cos);
+        const auto& sin = dynamic_cast<const DenseTensor&>(*rope.sin);
+#else
+        const auto& cos = rope.cos();
+        const auto& sin = rope.sin();
 #endif
         auto compressed =
             dsv4_compress_cuda(grouped_kv, grouped_gate, ape, norm, empty, empty, positions,
-                               rope.cos(), rope.sin(), ratio, overlap, cache_quant_mode, 1e-6);
+                               cos, sin, ratio, overlap, cache_quant_mode, 1e-6);
         state.pool.narrow(1, 0, windows).copy_(compressed);
 
         state.state_kv.copy_(kv.narrow(1, cutoff - ratio, ratio).contiguous());
@@ -992,7 +1017,12 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
             queries = profiler.measure("dsv4.q_norm_rope", [&]() {
                 auto normalized =
                     queries * ::tyloi::cuda::rsqrt(queries.square().mean(-1, true) + eps);
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto rotated = tyloi::ops::tail_rope(normalized, positions, attention_rope, false);
+                return dynamic_cast<const DenseTensor&>(*rotated);
+#else
                 return attention_rope.forward(normalized, positions, false);
+#endif
             });
 
             return std::array<DenseTensor, 2>{qr, queries};
@@ -1012,8 +1042,13 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                         .reshape({batch, tokens, head_dim})
                         .to(::tyloi::kFloat16);
                 auto values_heads = normalized.unsqueeze(1).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto rotated = tyloi::ops::tail_rope(values_heads, positions, attention_rope, false);
+                values_heads = dynamic_cast<const DenseTensor&>(*rotated);
+#else
                 values_heads =
                     attention_rope.forward(values_heads, positions, false);
+#endif
                 return values_heads.squeeze(1).contiguous();
             });
 
@@ -1074,9 +1109,16 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                         .transpose(1, 2)
                                         .contiguous();
                                 });
+#ifdef TYLOINFER_NATIVE_CUDA
+                            auto rotated = tyloi::ops::tail_rope(index_query, positions, attention_rope, false);
+                            index_query = dynamic_cast<const DenseTensor&>(*rotated)
+                                              .transpose(1, 2)
+                                              .contiguous();
+#else
                             index_query = attention_rope.forward(index_query, positions, false)
                                               .transpose(1, 2)
                                               .contiguous();
+#endif
                             index_query = nepq_hadamard_input_cuda(
                                               index_query.reshape({batch * tokens * heads, 128})
                                                   .to(::tyloi::kFloat16)
@@ -1149,8 +1191,13 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                 [&](DenseTensor attention) {
                     return profiler.measure("dsv4.attention_inverse_rope_prefill", [&]() {
                         auto transposed = attention.transpose(1, 2).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+                        auto rotated = tyloi::ops::tail_rope(transposed, positions, attention_rope, true);
+                        transposed = dynamic_cast<const DenseTensor&>(*rotated);
+#else
                         transposed =
                             attention_rope.forward(transposed, positions, true);
+#endif
                         return transposed.transpose(1, 2).contiguous();
                     });
                 },
@@ -1219,9 +1266,16 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                     .transpose(1, 2)
                                     .contiguous();
                             });
+#ifdef TYLOINFER_NATIVE_CUDA
+                            auto rotated = tyloi::ops::tail_rope(index_query, position, attention_rope, false);
+                            index_query = dynamic_cast<const DenseTensor&>(*rotated)
+                                              .transpose(1, 2)
+                                              .contiguous();
+#else
                             index_query = attention_rope.forward(index_query, position, false)
                                               .transpose(1, 2)
                                               .contiguous();
+#endif
                             index_query = nepq_hadamard_input_cuda(
                                               index_query.reshape({batch * heads, 128})
                                                   .to(::tyloi::kFloat16)
@@ -1297,8 +1351,13 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                 [&](DenseTensor attention) {
                     return profiler.measure("dsv4.attention_inverse_rope", [&]() {
                         auto transposed = attention.transpose(1, 2).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+                        auto rotated = tyloi::ops::tail_rope(transposed, position, attention_rope, true);
+                        transposed = dynamic_cast<const DenseTensor&>(*rotated);
+#else
                         transposed =
                             attention_rope.forward(transposed, position, true);
+#endif
                         return transposed.transpose(1, 2).contiguous();
                     });
                 },

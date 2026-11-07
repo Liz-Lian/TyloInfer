@@ -5,7 +5,7 @@
 #include "engine/budget.h"
 #include "engine/generation/sampling.h"
 #include "engine/requests/output.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 
 #include <algorithm>
 #include <utility>
@@ -26,7 +26,7 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
     // TQ groups all prompt rows by expert without expanding an entire
     // layer. Splitting these batches into verification windows would
     // repeatedly transfer the same expert when it is not resident.
-    const bool verification_windows=!::tyloi::weights::detail::cache(weights).tq || chunk.count<=8;
+    const bool verification_windows=weights.split_prefill(chunk.count);
     if(verification_windows && (!prepared || !prepared->transformed()) && model.reuse_decode_graphs &&
             model.graph_registry && chunk.count<=128) {
         // The same bounded prompt windows as MTP avoid materializing

@@ -27,6 +27,8 @@ const CacheData& cache(const Cache& value);
 class Cache {
 public:
     enum class Graph { native, legacy, model_parallel };
+    enum class Transfer { automatic, coordinated };
+    enum class Decode { none, streamed, routed };
     enum class Lookahead { link, capture, warmup, neighbor };
     enum class Prefill { regular, streamed, retained };
     enum class Stage { loaded, decode, snapshot };
@@ -108,6 +110,10 @@ public:
     std::size_t minimum() const;
     bool empty() const;
     bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;
+    Transfer transfer() const;
+    Decode decode(bool pipeline) const;
+    bool prefill_ready(std::optional<bool> hint) const;
+    bool split_prefill(std::int64_t rows) const;
     bool prepare_graph(Device device);
     Prefetch prefetch() const;
     bool lookahead(Lookahead purpose, std::optional<bool> model_override = std::nullopt) const;
