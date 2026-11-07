@@ -7,7 +7,7 @@
 #include "engine/models/causal_model.h"
 #include "engine/scheduler/request.h"
 #include "engine/models/source.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 
 #include <algorithm>
 #include <exception>
@@ -15,8 +15,6 @@
 #include <stdexcept>
 
 namespace tyloi::engine {
-using namespace tyloi::cuda;
-
 StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     auto& input = request.input;
     auto& output = *request.output;
@@ -142,7 +140,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_return;
     }
     auto token = ops::item(*pending);
-    if (tyloi::weights::detail::cache(weights).moe) budget_->decode(source_.get());
+    budget_->prepare(Budget::Stage::decode, source_.get());
     const bool graph_active = config.decode_graph.enabled &&
         (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
         graph.graph &&

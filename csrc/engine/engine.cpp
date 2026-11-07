@@ -9,6 +9,7 @@
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/runtime_metrics.h"
 #include "engine/models/prepare.h"
+#include "engine/models/source.h"
 #include "engine/scheduler/request.h"
 #include "engine/budget.h"
 #include "engine/generation/prefill_budget.h"
@@ -62,7 +63,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
-        budget_->decode(source_.get());
+        budget_->prepare(Budget::Stage::loaded, source_.get());
         ready_ = true;
     } catch (...) {
         const auto failure = std::current_exception();
@@ -129,8 +130,6 @@ void Engine::retire_request(Request& request) noexcept {
     request.state.reset();
 }
 #else
-using namespace tyloi::cuda;
-
 EngineInfo Engine::describe() const { return info_; }
 
 bool Engine::ready() const { return ready_; }
@@ -210,9 +209,9 @@ ControlResult Engine::control_command(ControlRequest request) {
                 text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
             } else { text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
         } else if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
-            return engine_detail::runtime_metrics(model_->metrics(), {}, std::nullopt, false, nullptr,
-                nullptr, 3, nullptr, source_.get(),
-                *ledger_, *weights_, nullptr, nullptr, *cache_, *budget_,
+            return runtime_metrics(model_->metrics(), {}, std::nullopt, false, 3,
+                {}, {}, std::nullopt, {}, source_.get(),
+                *ledger_, *weights_, *cache_, *budget_,
                 executor_->memory(runtime_.devices), Device(kCUDA, forward_options_.primary), runtime_.online_budget);
         } else throw std::invalid_argument("model has no duplex component");
     }, std::move(request));

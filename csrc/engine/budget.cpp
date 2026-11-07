@@ -158,9 +158,9 @@ std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
     return chunk_size;
 }
 
-void Budget::decode(const source::Source* source) {
+void Budget::prepare(Stage stage, const source::Source* source) {
     const auto& data = tyloi::weights::detail::cache(weights_);
-    if (data.tq) return;
+    if (data.tq || (stage == Stage::decode && !data.moe)) return;
     prepare_moe_decode_residency(data.moe);
     default_context(primary_device_)->reclaim_idle_memory();
     weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source);

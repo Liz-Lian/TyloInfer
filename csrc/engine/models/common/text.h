@@ -4,6 +4,7 @@
 #include "engine/load.h"
 #include "engine/drain.h"
 #include "engine/models/common/components.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/causal_model.h"
@@ -22,7 +23,9 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/runtime_metrics.h"
 #include "engine/generation/generation.h"
+#include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
+#include "engine/models/source.h"
 #include "engine/weights/memory.h"
 
 #include <cuda_runtime_api.h>
@@ -397,9 +400,17 @@ struct Text {
                 memory = parts.memory_metrics(model);
             const bool streamed_kv = parts.streamed_kv();
             const auto* mtp = parts.mtp.get();
-            return runtime_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,mtp,
-                &mtp_state,graph_draft_depth,batching.get(),source.get(),
-                *weight_memory,weights,kv.get(),offload.get(),cache,*budget,
+            const auto batch_metrics = batching ? batching->metrics() : Metrics{};
+            const auto kv_metrics = kv ? kv->metrics() : Metrics{};
+            const auto offload_metrics = offload ? std::optional<Metrics>{offload->metrics()} : std::nullopt;
+            Metrics predictor_metrics;
+            if (mtp) {
+                tyloi::engine::mtp::append_generation_metrics(predictor_metrics, mtp_state.stats);
+                predictor_metrics.emplace_back("mtp_predictor_graph_replays", double(mtp->graph_replay_count()));
+            }
+            return tyloi::engine::runtime_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,
+                graph_draft_depth,batch_metrics,kv_metrics,offload_metrics,predictor_metrics,source.get(),
+                *weight_memory,weights,cache,*budget,
                 execution->executor().memory(cuda_devices(execution->config)),
                 tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()),
                 execution->config.layer_placement.devices.size() <= 1 &&

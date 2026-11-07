@@ -1,18 +1,12 @@
 #pragma once
 
+#include "engine/metrics.h"
 #include "engine/executor.h"
-#include "engine/state/kv_memory.h"
-#include "engine/state/kv_offload.h"
-#include "engine/state/session/sessions.h"
-#include "engine/models/common/mtp.h"
-#include "engine/weights/cache.h"
-#include "engine/generation/batch.h"
 #include "engine/budget.h"
-#include "engine/engine.h"
-#include "engine/generation/mtp/metrics.h"
-#include "engine/generation/mtp/state.h"
+#include "engine/state/session/sessions.h"
+#include "engine/weights/cache.h"
 #include "engine/weights/memory.h"
-#include "engine/models/source.h"
+#include "engine/weights/source/source.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -21,23 +15,17 @@
 #include <string>
 #include <utility>
 
-namespace tyloi::cuda::engine_detail {
+namespace tyloi::engine {
 
-inline tyloi::engine::Metrics runtime_metrics(
-        const tyloi::engine::Metrics& component_metrics,
-        const tyloi::engine::Metrics& profile_metrics,
-        std::optional<tyloi::engine::Metrics> memory, bool streamed_kv,
-        const tyloi::models::Mtp* mtp,
-        const tyloi::engine::mtp::State* mtp_state, int graph_depth,
-        tyloi::engine::Batch* batching,
-        const tyloi::ModelSource* source, tyloi::weights::Memory& ledger,
-        const tyloi::weights::Cache& weights, KvMemoryManager* kv,
-        KvOffloadStore* offload, const tyloi::state::Sessions& cache,
-        const tyloi::engine::Budget& budget, std::span<const tyloi::Executor::Memory> devices,
-        tyloi::Device primary, bool online_budget_supported) {
-    using tyloi::engine::Metrics;
-
-    const auto batch_metrics = batching ? batching->metrics() : Metrics{};
+inline Metrics runtime_metrics(
+        const Metrics& component_metrics, const Metrics& profile_metrics,
+        std::optional<Metrics> memory, bool streamed_kv, int graph_depth,
+        const Metrics& batch_metrics, const Metrics& kv_metrics,
+        std::optional<Metrics> offload_metrics, const Metrics& predictor_metrics,
+        const source::Source* source, const weights::Memory& ledger,
+        const weights::Cache& weights, const state::Sessions& cache,
+        const Budget& budget, std::span<const tyloi::Executor::Memory> devices,
+        Device primary, bool online_budget_supported) {
     Metrics metrics{{"mtp_graph_prepared_depth", double(graph_depth)}};
     metrics.insert(metrics.end(), component_metrics.begin(), component_metrics.end());
     auto experts = weights.metrics();
@@ -55,10 +43,7 @@ inline tyloi::engine::Metrics runtime_metrics(
             {"model_io_cached_staging_bytes", double(io.staging_cached_bytes)},
             {"model_io_staging_allocations", double(io.staging_allocations)}});
     }
-    if (kv) {
-        auto kv_metrics = kv->metrics();
-        metrics.insert(metrics.end(), kv_metrics.begin(), kv_metrics.end());
-    }
+    metrics.insert(metrics.end(), kv_metrics.begin(), kv_metrics.end());
     std::size_t resident_weights = ledger.resident_bytes();
     for (const auto& metric : experts)
         if (metric.first == "resident_expert_cache_bytes")
@@ -135,22 +120,16 @@ inline tyloi::engine::Metrics runtime_metrics(
         {"resident_memory_used_bytes", double(std::max(allocated, reserved))},
         {"resident_reclaimable_weight_bytes", double(expert_bytes > minimum ? expert_bytes - minimum : 0)}});
     metrics.emplace_back("qsa_kv_offload_supported", streamed_kv ? 1.0 : 0.0);
-    if (offload) {
-        auto offload_metrics = offload->metrics();
-        metrics.insert(metrics.end(), offload_metrics.begin(), offload_metrics.end());
+    if (offload_metrics) {
+        metrics.insert(metrics.end(), offload_metrics->begin(), offload_metrics->end());
     } else {
         metrics.insert(metrics.end(), {{"qsa_kv_offload_enabled", 0.0},
             {"qsa_kv_ram_enabled", 0.0}, {"qsa_kv_ram_bytes", 0.0},
             {"qsa_kv_ssd_bytes", 0.0}});
     }
-    if (mtp) {
-        tyloi::engine::mtp::append_generation_metrics(metrics, mtp_state->stats);
-        metrics.emplace_back("mtp_predictor_graph_replays",
-            double(mtp->graph_replay_count()));
-    }
-    if (batching)
-        metrics.insert(metrics.end(), batch_metrics.begin(), batch_metrics.end());
+    metrics.insert(metrics.end(), predictor_metrics.begin(), predictor_metrics.end());
+    metrics.insert(metrics.end(), batch_metrics.begin(), batch_metrics.end());
     return metrics;
 }
 
-} // namespace tyloi::cuda::engine_detail
+} // namespace tyloi::engine

@@ -15,6 +15,8 @@ struct SessionResult;
 
 class Budget {
 public:
+    enum class Stage { loaded, decode };
+
     Budget(::tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
         state::Sessions& cache, Device primary);
     ~Budget();
@@ -51,7 +53,7 @@ public:
     void reserve_ram(std::size_t bytes);
     std::int64_t prefill(std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic);
-    void decode(const source::Source* source);
+    void prepare(Stage stage, const source::Source* source);
 
 private:
     std::size_t trim_prefix(std::size_t bytes);

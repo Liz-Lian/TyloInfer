@@ -3,6 +3,7 @@
 #include "engine/engine.h"
 #include "engine/drain.h"
 #include "engine/generation/generation.h"
+#include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/load.h"
 #include "engine/runtime_metrics.h"
@@ -14,6 +15,7 @@
 #include "engine/models/causal_model.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/components.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/scheduler/request.h"
 #include "engine/generation/batch.h"
@@ -489,12 +491,19 @@ private:
                 memory = parts.memory_metrics(model);
             const bool streamed_kv = parts.streamed_kv();
             const auto* mtp = parts.mtp.get();
-            return engine_detail::runtime_metrics(
-                component_metrics, profile_metrics, std::move(memory), streamed_kv, mtp,
-                &mtp_state_, 3,
-                batching_.get(),
-                source_.get(), *weight_memory_, weights_, kv_.get(),
-                offload_.get(), *cache_, *budget_,
+            const auto batch_metrics = batching_ ? batching_->metrics() : engine::Metrics{};
+            const auto kv_metrics = kv_ ? kv_->metrics() : engine::Metrics{};
+            const auto offload_metrics = offload_
+                ? std::optional<engine::Metrics>{offload_->metrics()} : std::nullopt;
+            engine::Metrics predictor_metrics;
+            if (mtp) {
+                engine::mtp::append_generation_metrics(predictor_metrics, mtp_state_.stats);
+                predictor_metrics.emplace_back("mtp_predictor_graph_replays", double(mtp->graph_replay_count()));
+            }
+            return engine::runtime_metrics(
+                component_metrics, profile_metrics, std::move(memory), streamed_kv, 3,
+                batch_metrics, kv_metrics, offload_metrics, predictor_metrics,
+                source_.get(), *weight_memory_, weights_, *cache_, *budget_,
                 execution_->executor().memory(cuda_devices(execution_->config)),
                 tyloi::Device(tyloi::kCUDA, execution_->config.layer_placement.primary_device()), online_budget_supported());
         } else {
