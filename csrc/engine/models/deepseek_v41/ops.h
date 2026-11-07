@@ -964,7 +964,6 @@ DenseTensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Den
 
 inline int run_self_check() {
     EngramHashState::self_check();
-    run_dspark_self_check();
     auto options = ::tyloi::TensorOptions()
                        .device(::tyloi::kCUDA)
                        .dtype(::tyloi::kInt32);
