@@ -51,14 +51,16 @@ public:
     void reclaim(std::size_t bytes);
     void reserve_kv(std::size_t bytes);
     void reserve_ram(std::size_t bytes);
+    void workspace(Device device, std::size_t bytes);
     std::int64_t prefill(std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic);
+    std::int64_t chunk(Device device, std::size_t tokens, std::int64_t limit,
+        std::size_t row_bytes, bool resumed, bool automatic, bool allow_borrow = false);
     void configure_decode(std::size_t lendable_bytes, int graph_depth);
     void prepare(Stage stage, const source::Source* source);
 
 private:
-    std::size_t trim_prefix(std::size_t bytes);
-    void workspace(std::size_t bytes);
+    std::size_t trim_prefix(std::size_t bytes, int device);
     ::tyloi::weights::Memory& weight_memory_;
     ::tyloi::weights::Cache& weights_;
     state::Sessions& cache_;

@@ -218,13 +218,13 @@ public:
     engine::Generation generate_text(
         engine::InferenceRequest& input, engine::InferenceOutput& output, State& state,
         std::optional<Prepared> prepared, const engine::RequestId& id, bool batched) {
-        engine::Budget* decode_budget = nullptr;
+        bool decode_ready = false;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if (!preparing_) decode_budget = &*budget_;
+        decode_ready = !preparing_;
 #endif
         return internal::generate(
             language(), state, executor_.get(), execution_->executor().collectives(),
-            execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), execution_->executor().profiler(), weights_,
+            execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), execution_->executor().profiler(), weights_, *budget_,
             execution_->executor().mode().ffn.serial,
             execution_->config.report_cuda_memory,
             execution_->config.dsv4_cpu_offload_layers.empty() &&
@@ -238,7 +238,7 @@ public:
             *cache_, config_, input, output,
             mtp_state_,
             batched ? nullptr : components().mtp.get(), std::move(prepared),
-            batched ? batching_.get() : nullptr, id, decode_budget);
+            batched ? batching_.get() : nullptr, id, decode_ready);
     }
 
     engine::Generation generate(

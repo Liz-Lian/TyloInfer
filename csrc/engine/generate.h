@@ -29,12 +29,12 @@ struct CudaProfiler;
 namespace tyloi::cuda::internal {
 
 // Creation and every resume run inside the owner's CUDA device/context scope.
-// A supplied budget is borrowed until the sequence is destroyed.
+// The budget is borrowed until the sequence is destroyed.
 template <typename Model, typename State, typename Predictor = tyloi::models::Mtp>
 tyloi::engine::Generation generate(
     Model& model, State& state, tyloi::cuda::Executor* executor,
     tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
-    CudaProfiler& profiler, ::tyloi::weights::Cache& weights,
+    CudaProfiler& profiler, ::tyloi::weights::Cache& weights, tyloi::engine::Budget& budget,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
     const tyloi::models::Info& info, const tyloi::ModelSource* source,
@@ -44,7 +44,7 @@ tyloi::engine::Generation generate(
     Predictor* mtp = nullptr,
     std::optional<PreparedPrompt> prepared = {},
     tyloi::engine::Batch* batching = nullptr,
-    std::string request_id = {}, tyloi::engine::Budget* budget = nullptr);
+    std::string request_id = {}, bool decode_ready = false);
 } // namespace tyloi::cuda::internal
 
 // Creation and every resume run inside the owner's CUDA device/context scope.

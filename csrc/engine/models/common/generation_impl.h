@@ -329,7 +329,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     bool graph_eligible() const {
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
                info.decode_graph && mfq_cuda_graph_capture_supported() &&
-               !::tyloi::weights::detail::cache(weights).moe && !::tyloi::weights::detail::cache(weights).tq &&
+               weights.graph_safe(::tyloi::weights::Cache::Graph::legacy) &&
                generation_limit >= graph_config.minimum_generation_tokens &&
                generation_limit <= graph.generated_capacity;
     }

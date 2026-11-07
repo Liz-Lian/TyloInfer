@@ -247,7 +247,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
 namespace tyloi::cuda::internal {
 #define TYLOINFER_INSTANTIATE_FLOW(MODEL, STATE)                                                                \
     template Generation generate(MODEL &, STATE &, tyloi::cuda::Executor*, tyloi::cuda::Collectives&, \
-        tyloi::cuda::Executor::Mode, CudaProfiler&, tyloi::weights::Cache&, bool&, bool, bool,       \
+        tyloi::cuda::Executor::Mode, CudaProfiler&, tyloi::weights::Cache&, tyloi::engine::Budget&, bool&, bool, bool, \
         std::function<void()>,                                                                      \
         const tyloi::models::Info &, const tyloi::ModelSource*,                                          \
         DecodeGraphCache &,                                                                        \
@@ -259,7 +259,7 @@ namespace tyloi::cuda::internal {
         tyloi::models::Mtp *,                                                                      \
         std::optional<PreparedPrompt>,                                                         \
         tyloi::engine::Batch*, std::string,                    \
-        tyloi::engine::Budget*);
+        bool);
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::Model, tyloi::cuda::minicpmo45::State)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::text::Model, tyloi::cuda::minicpmo45::text::State)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::gemma4::Model, tyloi::cuda::gemma4::State)

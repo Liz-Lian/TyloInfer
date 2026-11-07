@@ -20,6 +20,8 @@ const CacheData& cache(const Cache& value);
 // The owner drains consumers and enters the CUDA scope before workspace operations.
 class Cache {
 public:
+    enum class Graph { native, legacy };
+
     Cache();
     ~Cache();
     Cache(const Cache&) = delete;
@@ -29,7 +31,7 @@ public:
     std::vector<std::pair<std::string, double>> metrics() const;
     std::size_t budget() const;
     std::size_t minimum() const;
-    bool graph_safe(bool parallel = false) const;
+    bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;
     void resize(std::size_t bytes);
     std::size_t reserve(std::size_t bytes);
     void drain() const;

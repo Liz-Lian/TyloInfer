@@ -342,14 +342,14 @@ struct Text {
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, State& state,
                              std::optional<Prepared> prepared, const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
-        engine::Budget* decode_budget = nullptr;
+        bool decode_ready = false;
         if (!preparing_graph_depth) configure_decode_budget();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if (!preparing_graph_depth) decode_budget = &*budget;
+        decode_ready = !preparing_graph_depth;
 #endif
         return internal::generate(
             language, state, executor.get(), execution->executor().collectives(),
-            execution->executor().forward_mode(execution->config.layer_placement.primary_device()), execution->executor().profiler(), weights,
+            execution->executor().forward_mode(execution->config.layer_placement.primary_device()), execution->executor().profiler(), weights, *budget,
             execution->executor().mode().ffn.serial, execution->config.report_cuda_memory,
             execution->config.dsv4_cpu_offload_layers.empty() && execution->config.dense_cpu_layer_count == 0 &&
                 model_parallel_cuda_graph_enabled(execution->config, execution->executor(), execution->weights),
@@ -360,7 +360,7 @@ struct Text {
             info, source.get(), graph, cache, config, input, output,
             mtp_state,
             batched ? nullptr : components.mtp.get(), std::move(prepared),
-            batched ? batching.get() : nullptr, id, decode_budget);
+            batched ? batching.get() : nullptr, id, decode_ready);
     }
     Generation generate(const RequestId& id, InferenceRequest& input, InferenceOutput& output, bool batched) {
         if (batched) {

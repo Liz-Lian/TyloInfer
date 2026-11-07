@@ -44,12 +44,16 @@ tyloi::engine::PrefillChunk budget_batch_prefill(
 namespace tyloi::engine {
 using namespace tyloi::cuda;
 
+static void require_cuda_device(Device device) {
+    if (!device.is_cuda() || device.index < 0)
+        throw std::invalid_argument("budget requires a CUDA device");
+}
+
 Budget::Budget(::tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
         state::Sessions& cache, Device primary)
     : weight_memory_(weight_memory), weights_(weights), cache_(cache),
       primary_device_(primary.index), initial_expert_budget_(weights.budget()) {
-    if (!primary.is_cuda() || primary.index < 0)
-        throw std::invalid_argument("budget requires a CUDA device");
+    require_cuda_device(primary);
     allocation_ceiling_ = default_context(primary_device_)->memory_stats().limit;
 }
 
@@ -77,7 +81,7 @@ void Budget::reclaim(std::size_t bytes) {
     if(available>=bytes)return;
     weights_.release_workspace(bytes, "workspace");
     if(context->available_memory()>=bytes)return;
-    const auto released=trim_prefix(bytes);
+    const auto released=trim_prefix(bytes, primary_device_);
     context->reclaim_idle_memory();
     if(released)std::cerr<<"runtime_workspace_reclaim requested_bytes="<<bytes
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
@@ -88,7 +92,7 @@ void Budget::reserve_kv(std::size_t bytes) {
     if (context->available_memory() >= bytes) return;
     weights_.release_workspace(bytes, "kv_growth");
     if (context->available_memory() >= bytes) return;
-    trim_prefix(bytes);
+    trim_prefix(bytes, primary_device_);
     context->reclaim_idle_memory();
     if (context->available_memory() < bytes)
         throw engine::InferenceInputError(engine::InferenceInputErrorCode::ContextLength,
@@ -100,8 +104,8 @@ void Budget::reserve_ram(std::size_t bytes) {
     weights_.reserve(bytes);
 }
 
-std::size_t Budget::trim_prefix(std::size_t bytes) {
-    const auto context=default_context(primary_device_);
+std::size_t Budget::trim_prefix(std::size_t bytes, int device) {
+    const auto context=default_context(device);
     std::size_t hot=0;
     for(const auto& [name,value]:cache_.metrics())
         if(name=="prefix_cache_hot_bytes")hot=std::size_t(value);
@@ -109,11 +113,12 @@ std::size_t Budget::trim_prefix(std::size_t bytes) {
     return cache_.trim_hot(hot>shortage?hot-shortage:0);
 }
 
-void Budget::workspace(std::size_t bytes) {
+void Budget::workspace(Device device, std::size_t bytes) {
+    require_cuda_device(device);
     reserve_moe_workspace(tyloi::weights::detail::cache(weights_).moe, bytes);
-    const auto context=default_context(primary_device_);
+    const auto context=default_context(device.index);
     if(context->available_memory()>=bytes)return;
-    const auto released=trim_prefix(bytes);
+    const auto released=trim_prefix(bytes, device.index);
     context->reclaim_idle_memory();
     std::cerr<<"runtime_workspace_budget requested_bytes="<<bytes
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
@@ -130,22 +135,32 @@ std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
         const bool streamed = tokens > 8 && moe_expert_cache_ssd_experts(moe);
         if (streamed) lend_moe_decode_cache_for_prefill(moe, runtime_options::workspace_reserve_bytes());
         if (tokens > 1024 || moe_expert_cache_ssd_experts(moe))
-            workspace(runtime_options::workspace_reserve_bytes());
+            workspace(Device(kCUDA, primary_device_), runtime_options::workspace_reserve_bytes());
     }
-    if (short_streamed) return std::min<int64_t>(4, limit);
+    return chunk(Device(kCUDA, primary_device_), tokens, limit, row_bytes, resumed, automatic);
+}
+
+std::int64_t Budget::chunk(Device device, std::size_t tokens, std::int64_t limit,
+        std::size_t row_bytes, bool resumed, bool automatic, bool allow_borrow) {
+    require_cuda_device(device);
+    const auto& moe = tyloi::weights::detail::cache(weights_).moe;
+    if (resumed && tokens <= 128 && moe_expert_cache_ssd_experts(moe))
+        return std::min<int64_t>(4, limit);
     if (tokens <= 128) return std::min<int64_t>(std::max<std::size_t>(1, tokens), limit);
 
-    auto budget = moe_prefill_workspace_budget(moe, false);
-    auto context = default_context(primary_device_);
+    auto budget = moe_prefill_workspace_budget(moe, allow_borrow);
+    auto context = default_context(device.index);
     auto available = engine::prefill_budget_add(engine::prefill_budget_add(context->available_memory(), context->workspace_available()), budget.lendable_bytes);
+    const auto sequence_bytes = allow_borrow
+        ? std::size_t(tokens <= 16384 ? tokens : std::min<std::size_t>(tokens, limit)) * row_bytes * 3 / 8 : 0;
     const auto reserve = moe_expert_cache_ssd_experts(moe)
         ? std::max(std::size_t(1) << 30, runtime_options::workspace_reserve_bytes()) : std::size_t(1) << 30;
-    const auto fixed = engine::prefill_budget_add(reserve, budget.transfer_bytes);
+    const auto fixed = engine::prefill_budget_add(reserve + sequence_bytes, budget.transfer_bytes);
     const auto wanted = std::min<int64_t>({int64_t(tokens), limit, engine::max_prefill_compute_chunk});
     const auto required = engine::prefill_budget_add(fixed, std::size_t(wanted) * row_bytes);
     if (required > available) {
-        workspace(required > budget.lendable_bytes ? required - budget.lendable_bytes : 0);
-        budget = moe_prefill_workspace_budget(moe, false);
+        workspace(device, required > budget.lendable_bytes ? required - budget.lendable_bytes : 0);
+        budget = moe_prefill_workspace_budget(moe, allow_borrow);
         available = engine::prefill_budget_add(context->available_memory() + context->workspace_available(), budget.lendable_bytes);
     }
     const auto chunk_size = engine::select_prefill_chunk(tokens, limit, available, fixed, row_bytes);

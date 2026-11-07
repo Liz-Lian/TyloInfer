@@ -247,7 +247,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
         const bool graph_allowed = load.dsv4_cpu_offload_layers.empty() && load.dense_cpu_layer_count == 0 &&
             model_parallel_cuda_graph_enabled(load, *root, *weights) &&
-            weights->graph_safe(moe_parallel_config(load).enabled());
+            weights->graph_safe(tyloi::weights::Cache::Graph::native, moe_parallel_config(load).enabled());
         const auto model_info = model->info();
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
         auto text = engine::TextProcessor::load(*source, options.tokenizer_model, vocab_size, model_info.model_type);
