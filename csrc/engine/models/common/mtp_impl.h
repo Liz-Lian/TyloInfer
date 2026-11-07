@@ -3,7 +3,7 @@
 #include "engine/budget.h"
 
 #include "env.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -19,7 +19,6 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/models/common/mtp_ops.h"
 #include "engine/models/common/generation_ops.h"
-#include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/models/common/input.h"
 #include "engine/models/causal_model.h"
@@ -155,7 +154,7 @@ template <class Model, class State> struct CudaMtpOps {
   std::uint64_t target_graph_captures = 0;
   std::uint64_t target_transfer_bytes=0;
   std::array<double,6> target_profile{};
-  std::shared_ptr<MoeExpertCache> target_route_cache;
+  tyloi::weights::Cache::Routes target_routes;
   static bool profile_target() {
     static const bool enabled=[] {
       const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
@@ -179,21 +178,14 @@ template <class Model, class State> struct CudaMtpOps {
     return result;
   }
   CudaMtpOps(CudaMtpOps&&)=default;
-  ~CudaMtpOps() {
-    if(target_route_cache)discard_moe_speculative_routes(target_route_cache);
-  }
   void begin_target_routes(int rows) {
-    begin_moe_speculative_routes(::tyloi::weights::detail::cache(weights).moe,rows);
-    target_route_cache=::tyloi::weights::detail::cache(weights).moe;
+    target_routes.begin(weights,rows);
   }
   void resolve_target_routes(int rows,bool cancelled) {
-    if(!target_route_cache)return;
-    if(cancelled)discard_moe_speculative_routes(target_route_cache);
-    else commit_moe_speculative_routes(target_route_cache,rows);
-    target_route_cache.reset();
+    target_routes.resolve(rows,cancelled);
   }
   bool take_target_maintenance() {
-    const auto captures=moe_expert_graph_captures(::tyloi::weights::detail::cache(weights).moe);
+    const auto captures=weights.activity().graph_captures;
     const bool initialized=captures!=target_graph_captures;
     target_graph_captures=captures;
     return std::exchange(target_maintenance,false) || initialized;
@@ -309,7 +301,7 @@ template <class Model, class State> struct CudaMtpOps {
                           ? 3
                           : 1), prefill_compute_chunk(compute_chunk), output(output),
         budget(budget) {
-    target_graph_captures=moe_expert_graph_captures(::tyloi::weights::detail::cache(weights).moe);
+    target_graph_captures=weights.activity().graph_captures;
   }
   void rollback_target(std::int64_t accepted) {
     if constexpr (has_replay<Model, State>)
@@ -366,7 +358,7 @@ template <class Model, class State> struct CudaMtpOps {
     projected_target_compact={};
     projected_target_greedy.clear();
     target_transfer_bytes = 0;
-    const auto transfer_before=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe);
+    const auto transfer_before=weights.activity().streamed_bytes;
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
     const auto finish_profile=[&] {
       if(!profile_target())return;
@@ -395,7 +387,7 @@ template <class Model, class State> struct CudaMtpOps {
       hidden = model.hidden_forward(ids, mfq_nullopt, mfq_nullopt, nullptr,
                                     mfq_nullopt, raw, confirmed);
     }
-    target_transfer_bytes=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe)-transfer_before;
+    target_transfer_bytes=weights.activity().streamed_bytes-transfer_before;
     finish_profile();
     return hidden;
   }
@@ -410,10 +402,10 @@ template <class Model, class State> struct CudaMtpOps {
       projected_target_hidden = {}; projected_target_logits = {};
       projected_target_compact={};
       projected_target_greedy.clear();
-      const auto transfer_before=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe);
+      const auto transfer_before=weights.activity().streamed_bytes;
       const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
       auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
-      target_transfer_bytes+=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(weights).moe)-transfer_before;
+      target_transfer_bytes+=weights.activity().streamed_bytes-transfer_before;
       if(profile_target()) {
         const auto costs_after=target_costs();
         for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]+=costs_after[i]-costs_before[i];

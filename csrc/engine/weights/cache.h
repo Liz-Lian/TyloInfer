@@ -3,6 +3,7 @@
 #include "engine/weights/loader.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -21,6 +22,40 @@ const CacheData& cache(const Cache& value);
 class Cache {
 public:
     enum class Graph { native, legacy };
+    struct Activity {
+        std::uint64_t streamed_bytes = 0;
+        std::uint64_t graph_captures = 0;
+    };
+
+    class Routes {
+    public:
+        Routes() noexcept;
+        Routes(Routes&&) noexcept;
+        ~Routes();
+        Routes(const Routes&) = delete;
+        Routes& operator=(const Routes&) = delete;
+        Routes& operator=(Routes&&) = delete;
+        void begin(Cache& cache, int rows);
+        void resolve(int rows, bool cancelled);
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+
+    class Warmup {
+    public:
+        Warmup(Cache& cache, bool suspend_residency);
+        ~Warmup();
+        Warmup(const Warmup&) = delete;
+        Warmup& operator=(const Warmup&) = delete;
+        Warmup(Warmup&&) = delete;
+        Warmup& operator=(Warmup&&) = delete;
+        void drain();
+        void release(Device device, bool decode);
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
 
     Cache();
     ~Cache();
@@ -29,6 +64,7 @@ public:
 
     Loader loader(const source::Source& source, Loader::Options options, Loader::Placement placement);
     std::vector<std::pair<std::string, double>> metrics() const;
+    Activity activity() const;
     std::size_t budget() const;
     std::size_t minimum() const;
     bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;

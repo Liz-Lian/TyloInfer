@@ -1,12 +1,69 @@
 #include "engine/weights/cache_internal.h"
 
+#include "engine/backends/cuda/native/context.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/source/source.h"
 #include "engine/weights/tq/cache.h"
 
 #include <iostream>
+#include <stdexcept>
 
 namespace tyloi::weights {
+
+struct Cache::Routes::Impl {
+    std::shared_ptr<MoeExpertCache> cache;
+};
+
+Cache::Routes::Routes() noexcept = default;
+Cache::Routes::Routes(Routes&&) noexcept = default;
+Cache::Routes::~Routes() {
+    if (impl_ && impl_->cache) discard_moe_speculative_routes(impl_->cache);
+}
+
+void Cache::Routes::begin(Cache& owner, int rows) {
+    if (!impl_) impl_ = std::make_unique<Impl>();
+    auto cache = detail::cache(owner).moe;
+    begin_moe_speculative_routes(cache, rows);
+    impl_->cache = std::move(cache);
+}
+
+void Cache::Routes::resolve(int rows, bool cancelled) {
+    if (!impl_ || !impl_->cache) return;
+    if (cancelled) discard_moe_speculative_routes(impl_->cache);
+    else commit_moe_speculative_routes(impl_->cache, rows);
+    impl_->cache.reset();
+}
+
+struct Cache::Warmup::Impl {
+    std::shared_ptr<MoeExpertCache> cache;
+    bool suspended = false;
+    bool previous_residency = false;
+    bool previous_learning = false;
+};
+
+Cache::Warmup::Warmup(Cache& owner, bool suspend_residency) : impl_(std::make_unique<Impl>()) {
+    impl_->cache = detail::cache(owner).moe;
+    impl_->suspended = suspend_residency;
+    if (suspend_residency) impl_->previous_residency = suspend_moe_residency(impl_->cache, true);
+    impl_->previous_learning = set_moe_reuse_learning(impl_->cache, false);
+}
+
+Cache::Warmup::~Warmup() {
+    set_moe_reuse_learning(impl_->cache, impl_->previous_learning);
+    if (impl_->suspended) suspend_moe_residency(impl_->cache, impl_->previous_residency);
+}
+
+void Cache::Warmup::drain() {
+    finish_moe_expert_exchanges(impl_->cache);
+}
+
+void Cache::Warmup::release(Device device, bool decode) {
+    if (!device.is_cuda() || device.index < 0)
+        throw std::invalid_argument("warmup requires a CUDA device");
+    if (decode) release_moe_decode_buffers(impl_->cache);
+    else release_moe_prefill_buffers(impl_->cache);
+    cuda::default_context(device.index)->reclaim_idle_memory();
+}
 
 Loader Cache::loader(const source::Source& source, Loader::Options options,
         Loader::Placement placement) {
@@ -17,6 +74,10 @@ std::vector<std::pair<std::string, double>> Cache::metrics() const {
     auto result = data_->tq ? data_->tq->metrics() : moe_expert_memory_metrics(data_->moe);
     append_workspace_metrics(result);
     return result;
+}
+
+Cache::Activity Cache::activity() const {
+    return {moe_expert_streamed_bytes(data_->moe), moe_expert_graph_captures(data_->moe)};
 }
 
 std::size_t Cache::budget() const {

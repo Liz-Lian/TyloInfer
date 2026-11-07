@@ -1672,15 +1672,11 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
     // Startup state contains synthetic tokens and is discarded before serving.
     // Saving every recurrent state during each capture needlessly doubles its
     // transient footprint. Request-time captures still restore their real state.
-    struct WarmupScope {
-        std::shared_ptr<MoeExpertCache> cache;
-        bool previous,previous_learning;
-        explicit WarmupScope(std::shared_ptr<MoeExpertCache> value):cache(std::move(value)),
-            previous(suspend_moe_residency(cache,true)),previous_learning(set_moe_reuse_learning(cache,false))
-            {Qwen4DecodeGraph::startup_warmup=true;}
-        ~WarmupScope(){Qwen4DecodeGraph::startup_warmup=false;
-            set_moe_reuse_learning(cache,previous_learning);suspend_moe_residency(cache,previous);}
-    } startup_scope(::tyloi::weights::detail::cache(model.execution->weights).moe);
+    tyloi::weights::Cache::Warmup cache_warmup(model.execution->weights, true);
+    struct StartupWarmup {
+        StartupWarmup(){Qwen4DecodeGraph::startup_warmup=true;}
+        ~StartupWarmup(){Qwen4DecodeGraph::startup_warmup=false;}
+    } startup_scope;
     const auto start=std::chrono::steady_clock::now();
     auto scope=model.execution_scope();
     const auto options=::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64);
@@ -1712,8 +1708,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
     raw_rows.clear();
     // Bootstrap cells are not the retained whole-model windows. Retire their
     // staging and captured scratch before preparing predictor windows.
-    release_moe_decode_buffers(::tyloi::weights::detail::cache(model.execution->weights).moe);
-    default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+    cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), true);
     if(tyloi::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=predictor\n";
     // Capture the normal greedy path and the common MTP verification widths.
     // Synthetic state is cleared afterwards; no prompt or sampling history is saved.
@@ -1723,8 +1718,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
         // startup does not retain multi-row expert and pinned transfer arenas.
         for(int row=0;row<16;++row)
             (void)predictor->evaluate(raw.narrow(1,row,1),ids.narrow(1,row,1));
-        release_moe_decode_buffers(::tyloi::weights::detail::cache(model.execution->weights).moe);
-        default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+        cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), true);
         // Production drafts run one full predictor row. Committed history
         // appends KV without an FFN/head; multi-row full-predictor graphs
         // retain scratch and driver metadata with no production consumer.
@@ -1813,8 +1807,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
         <<" maximum_draft_depth="<<(predictor?maximum_draft_depth:0)
         <<" predictor_captures="<<(predictor?predictor->graph_captures:0)<<" ms="
         <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
-    release_moe_prefill_buffers(::tyloi::weights::detail::cache(model.execution->weights).moe);
-    default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+    cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), false);
 }
 
 void qwen4_set_rotary_fusion(qwen4_exp::Model& model, bool enabled) {

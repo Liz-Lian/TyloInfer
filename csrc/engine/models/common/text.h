@@ -225,12 +225,7 @@ struct Text {
             const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_MTP");
             if(language.graph_registry && components.mtp &&
                     language.max_position_embeddings()>=48 && (!warmup || warmup[0]!='0')) {
-                struct CacheLearningScope {
-                    std::shared_ptr<MoeExpertCache> cache;bool previous;
-                    explicit CacheLearningScope(std::shared_ptr<MoeExpertCache> value):cache(std::move(value)),
-                        previous(set_moe_reuse_learning(cache,false)) {}
-                    ~CacheLearningScope(){set_moe_reuse_learning(cache,previous);}
-                } learning(::tyloi::weights::detail::cache(weights).moe);
+                tyloi::weights::Cache::Warmup learning(weights, false);
                 auto& predictor=*components.mtp;
                 const auto saved_policy=mtp_state.policy;
                 const auto start=std::chrono::steady_clock::now();
@@ -250,7 +245,7 @@ struct Text {
                                                    execution->executor().forward_mode(execution->config.layer_placement.primary_device()),weights,info,source.get(),predictor,mtp_state,request,output,16,
                                                    nullptr,0,{},nullptr,0,nullptr);
                 while(generation.next()) {}
-                finish_moe_expert_exchanges(::tyloi::weights::detail::cache(weights).moe);
+                learning.drain();
                 predictor.reset(1);
                 state.reset(1);
                 mtp_state.policy=saved_policy;
@@ -260,8 +255,7 @@ struct Text {
                 std::cerr<<"runtime_qwen4_mtp_warmup tokens="<<output.result.completion_tokens
                     <<" ms="<<std::chrono::duration<double,std::milli>(
                         std::chrono::steady_clock::now()-start).count()<<'\n';
-                release_moe_prefill_buffers(::tyloi::weights::detail::cache(weights).moe);
-                tyloi::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+                learning.release(tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()), false);
             }
         }
         preparing_graph_depth=false;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/models/common/mtp_ops.h"
 #include "engine/models/qwen4_exp/generation.h"
 #include "engine/models/qwen4_exp/predictor.h"
@@ -62,7 +62,7 @@ std::optional<DenseTensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops,
             ? ops.known_ids_host : DenseTensor{};
         DenseTensor logits;
         if(auto hidden=qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&ops.projected_target_greedy,ops.captured_compact_requested())) {
-            ops.target_transfer_bytes=moe_expert_streamed_bytes(::tyloi::weights::detail::cache(ops.weights).moe)-transfer_before;
+            ops.target_transfer_bytes=ops.weights.activity().streamed_bytes-transfer_before;
             ops.target_maintenance=ops.target_maintenance || initialized;
             ops.projected_target_hidden = *hidden; ops.projected_target_logits = std::move(logits);
             ops.projected_target_compact=qwen4_decode_graph_compact_topk(model);
