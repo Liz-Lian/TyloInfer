@@ -15,7 +15,8 @@ struct SessionResult;
 
 class Budget {
 public:
-    enum class Stage { loaded, decode };
+    enum class Stage { loaded, decode, snapshot };
+    enum class Prefill { regular, streamed, retained };
 
     Budget(::tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
         state::Sessions& cache, Device primary);
@@ -52,12 +53,16 @@ public:
     void reserve_kv(std::size_t bytes);
     void reserve_ram(std::size_t bytes);
     void workspace(Device device, std::size_t bytes);
+    Prefill prefill_mode(std::size_t tokens, bool resumed) const;
+    void prepare_prefill(Device device, std::size_t tokens, std::int64_t limit,
+        Prefill mode, bool retire_decode = false);
     std::int64_t prefill(std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic);
     std::int64_t chunk(Device device, std::size_t tokens, std::int64_t limit,
         std::size_t row_bytes, bool resumed, bool automatic, bool allow_borrow = false);
     void configure_decode(std::size_t lendable_bytes, int graph_depth);
     void prepare(Stage stage, const source::Source* source);
+    bool snapshot(Device device, std::size_t bytes, std::size_t peak);
 
 private:
     std::size_t trim_prefix(std::size_t bytes, int device);

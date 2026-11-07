@@ -195,25 +195,6 @@ namespace tyloi::cuda::deepseek_v41 {
 using deepseek_v41_runtime::Block;
 using tyloi::models::require_model;
 
-tyloi::models::SnapshotSize snapshot_size(const Model& model,const tyloi::models::Mtp* mtp) {
-    std::size_t incoming=256; // Rolling Engram history and scalar metadata.
-    const auto prefix_bytes=[](const auto& tensor,int64_t rows) -> std::size_t {
-        return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
-    };
-    for(const auto& item:model.blocks) {
-        const auto& state=item->L();
-        incoming+=session_tensor_bytes(state.local_kv)+session_tensor_bytes(state.partial_kv)+
-            session_tensor_bytes(state.partial_score)+prefix_bytes(state.compressed_kv,state.compressed_length)+
-            prefix_bytes(state.index_k,state.compressed_length);
-    }
-    if(mtp) {
-        const auto& c=model.config;
-        incoming+=std::size_t(c.sliding_window)*sizeof(mfq_half)*
-            (c.n_mtp_layers*c.head_dim+c.hidden*c.dspark_target_layer_ids.size());
-    }
-    return {incoming,incoming};
-}
-
 void Model::load_config(std::string_view payload) {
     auto& config = this->config;
     auto& metadata = this->metadata;

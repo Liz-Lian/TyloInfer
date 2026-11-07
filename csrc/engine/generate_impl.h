@@ -7,10 +7,7 @@
 #include "engine/generation/generation.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/models/source.h"
-#include "engine/weights/cache_internal.h"
-#include "engine/weights/workspace.h"
-#include "engine/weights/moe/expert_cache.h"
-#include "engine/backends/cuda/executor/options.h"
+#include "engine/weights/cache.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/profile.h"
 
@@ -73,17 +70,12 @@ template <class Model, class State, class Predictor> struct RequestOps {
         generation_request(model,*this,input);
 #endif
     }
-    bool short_streamed_prefill(std::size_t tokens) const {
-        // A short continuation can reuse the bounded MFE path without
-        // returning its expert images and captured graphs for a large PP arena.
-        return state.position()>0 && tokens<=128 &&
-            moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe);
-    }
     int64_t prefill_chunk(std::size_t tokens) {
         // Reuse ordinary/MTP widths before allocating wider temporary graphs
         // whose activation storage would displace persistent expert images.
         const auto limit=config.generation.prefill_chunk_size;
-        if(short_streamed_prefill(tokens))return std::min<int64_t>(4,limit);
+        if(budget.prefill_mode(tokens, state.position() > 0) == tyloi::engine::Budget::Prefill::retained)
+            return std::min<int64_t>(4,limit);
         if(tokens<=128)return std::min<int64_t>(std::max<std::size_t>(1,tokens),limit);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         return budget.chunk(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
@@ -94,47 +86,26 @@ template <class Model, class State, class Predictor> struct RequestOps {
 #endif
     }
     void prepare_prefill_workspace(std::size_t tokens) {
-        if(short_streamed_prefill(tokens)) {
-            std::cerr<<"runtime_streamed_prefill retained_decode=1 tokens="<<tokens
-                <<" chunk="<<prefill_chunk(tokens)<<'\n';
+        const auto mode = budget.prefill_mode(tokens, state.position() > 0);
+        const auto limit = config.generation.prefill_chunk_size;
+        if(mode == tyloi::engine::Budget::Prefill::retained) {
+            budget.prepare_prefill(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()), tokens, limit, mode);
             return;
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const bool streamed=tokens>8 && moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe);
-        generation_prefill_begin(model,graph,streamed);
-        const bool retained=streamed && lend_moe_decode_cache_for_prefill(::tyloi::weights::detail::cache(weights).moe,
-            tyloi::cuda::runtime_options::workspace_reserve_bytes());
-        generation_prefill_end(model,*this,streamed,retained);
-        if(tokens>1024 || moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe))
-            budget.workspace(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
-                tyloi::cuda::runtime_options::workspace_reserve_bytes());
+        const bool streamed = mode == tyloi::engine::Budget::Prefill::streamed;
+        const bool retire_decode = generation_prefill_begin(model, graph, streamed);
+        budget.prepare_prefill(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
+            tokens, limit, mode, retire_decode);
 #endif
     }
     bool prepare_snapshot() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if constexpr(requires { snapshot_size(state, mtp); }) {
-            // Retire prefill buffers before copying KV/recurrent state. Evict
-            // old hot entries before allocating the incoming checkpoint.
-            release_moe_prefill_buffers(::tyloi::weights::detail::cache(weights).moe);
-            // A prefix stores occupied rows, not the full preallocated context
-            // or graph-owned speculative checkpoints.
+            budget.prepare(tyloi::engine::Budget::Stage::snapshot, nullptr);
             const auto size=snapshot_size(state,mtp);
-            const auto incoming=size.bytes;
-            std::size_t hot=0,limit=0;
-            for(const auto& metric:cache.metrics()) {
-                if(metric.first=="prefix_cache_hot_bytes")hot=std::size_t(metric.second);
-                if(metric.first=="prefix_cache_max_bytes")limit=std::size_t(metric.second);
-            }
-            const auto target=limit>incoming?limit-incoming:0;
-            if(hot>target)cache.trim_hot(target);
-            const auto needed=size.peak+(std::size_t(64)<<20);
-            budget.workspace(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()), needed);
-            const auto available=tyloi::cuda::default_context(mfq_current_cuda_device())->available_memory();
-            if(available<needed) {
-                std::cerr<<"runtime_session_cache action=skip reason=workspace_pressure"
-                    <<" requested_bytes="<<needed<<" available_bytes="<<available<<'\n';
-                return false;
-            }
+            return budget.snapshot(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
+                size.bytes, size.peak);
         }
 #endif
         return true;
@@ -164,7 +135,8 @@ template <class Model, class State, class Predictor> struct RequestOps {
         auto logical_chunk=compute_chunk;
         if constexpr(requires { prefill_span(model,input.prompt.size(),compute_chunk,reused,stable,false,false); }) {
             logical_chunk=prefill_span(model,input.prompt.size(),compute_chunk,reused,stable,
-                prepared && prepared->transformed(),short_streamed_prefill(input.prompt.size()-reused));
+                prepared && prepared->transformed(),
+                budget.prefill_mode(input.prompt.size()-reused, state.position() > 0) == tyloi::engine::Budget::Prefill::retained);
         }
         auto graph_options = config.decode_graph;
         graph_options.enabled &= graph_allowed;

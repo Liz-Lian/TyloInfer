@@ -2,10 +2,12 @@
 
 #include "engine/models/state.h"
 #include "engine/models/session.h"
+#include "engine/models/common/session/size.h"
 
 #include <memory>
 #include <vector>
 
+namespace tyloi::models { struct Mtp; }
 namespace tyloi::cuda::qwen4_exp {
 
 struct Model;
@@ -48,7 +50,10 @@ public:
     bool speculative_suffix_forward = false;
 
 private:
+    friend tyloi::models::SnapshotSize snapshot_size(const State&, const tyloi::models::Mtp*);
     Model& model_;
 };
+
+tyloi::models::SnapshotSize snapshot_size(const State&, const tyloi::models::Mtp*);
 
 } // namespace tyloi::cuda::qwen4_exp

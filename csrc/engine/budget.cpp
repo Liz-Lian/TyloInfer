@@ -124,19 +124,36 @@ void Budget::workspace(Device device, std::size_t bytes) {
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
 }
 
-std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
-        std::size_t row_bytes, bool resumed, bool automatic) {
+Budget::Prefill Budget::prefill_mode(std::size_t tokens, bool resumed) const {
     const auto& moe = tyloi::weights::detail::cache(weights_).moe;
-    const bool short_streamed = resumed && tokens <= 128 && moe_expert_cache_ssd_experts(moe);
-    if (short_streamed) {
+    if (resumed && tokens <= 128 && moe_expert_cache_ssd_experts(moe)) return Prefill::retained;
+    if (tokens > 8 && moe_expert_cache_ssd_experts(moe)) return Prefill::streamed;
+    return Prefill::regular;
+}
+
+void Budget::prepare_prefill(Device device, std::size_t tokens, std::int64_t limit,
+        Prefill mode, bool retire_decode) {
+    require_cuda_device(device);
+    const auto& moe = tyloi::weights::detail::cache(weights_).moe;
+    if (mode == Prefill::retained) {
         std::cerr << "runtime_streamed_prefill retained_decode=1 tokens=" << tokens
                   << " chunk=" << std::min<int64_t>(4, limit) << '\n';
-    } else {
-        const bool streamed = tokens > 8 && moe_expert_cache_ssd_experts(moe);
-        if (streamed) lend_moe_decode_cache_for_prefill(moe, runtime_options::workspace_reserve_bytes());
-        if (tokens > 1024 || moe_expert_cache_ssd_experts(moe))
-            workspace(Device(kCUDA, primary_device_), runtime_options::workspace_reserve_bytes());
+        return;
     }
+    if (mode == Prefill::streamed) {
+        const bool retained = lend_moe_decode_cache_for_prefill(moe, runtime_options::workspace_reserve_bytes());
+        if (!retained && retire_decode) {
+            release_moe_decode_buffers(moe);
+            default_context(device.index)->reclaim_idle_memory();
+        }
+    }
+    if (tokens > 1024 || moe_expert_cache_ssd_experts(moe))
+        workspace(device, runtime_options::workspace_reserve_bytes());
+}
+
+std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
+        std::size_t row_bytes, bool resumed, bool automatic) {
+    prepare_prefill(Device(kCUDA, primary_device_), tokens, limit, prefill_mode(tokens, resumed));
     return chunk(Device(kCUDA, primary_device_), tokens, limit, row_bytes, resumed, automatic);
 }
 
@@ -144,7 +161,7 @@ std::int64_t Budget::chunk(Device device, std::size_t tokens, std::int64_t limit
         std::size_t row_bytes, bool resumed, bool automatic, bool allow_borrow) {
     require_cuda_device(device);
     const auto& moe = tyloi::weights::detail::cache(weights_).moe;
-    if (resumed && tokens <= 128 && moe_expert_cache_ssd_experts(moe))
+    if (prefill_mode(tokens, resumed) == Prefill::retained)
         return std::min<int64_t>(4, limit);
     if (tokens <= 128) return std::min<int64_t>(std::max<std::size_t>(1, tokens), limit);
 
@@ -180,6 +197,10 @@ void Budget::configure_decode(std::size_t lendable_bytes, int graph_depth) {
 
 void Budget::prepare(Stage stage, const source::Source* source) {
     const auto& data = tyloi::weights::detail::cache(weights_);
+    if (stage == Stage::snapshot) {
+        release_moe_prefill_buffers(data.moe);
+        return;
+    }
     if (data.tq || (stage == Stage::decode && !data.moe)) return;
     prepare_moe_decode_residency(data.moe);
     default_context(primary_device_)->reclaim_idle_memory();
@@ -189,6 +210,26 @@ void Budget::prepare(Stage stage, const source::Source* source) {
             << decode_graph_depth_ << " bytes=" << bytes << '\n';
     }
     weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source);
+}
+
+bool Budget::snapshot(Device device, std::size_t bytes, std::size_t peak) {
+    require_cuda_device(device);
+    std::size_t hot = 0, limit = 0;
+    for (const auto& metric : cache_.metrics()) {
+        if (metric.first == "prefix_cache_hot_bytes") hot = std::size_t(metric.second);
+        if (metric.first == "prefix_cache_max_bytes") limit = std::size_t(metric.second);
+    }
+    const auto target = limit > bytes ? limit - bytes : 0;
+    if (hot > target) cache_.trim_hot(target);
+    const auto needed = peak + (std::size_t(64) << 20);
+    workspace(device, needed);
+    const auto available = default_context(device.index)->available_memory();
+    if (available < needed) {
+        std::cerr << "runtime_session_cache action=skip reason=workspace_pressure"
+            << " requested_bytes=" << needed << " available_bytes=" << available << '\n';
+        return false;
+    }
+    return true;
 }
 
 Budget::Change Budget::change(const engine::SessionCommand& command) {

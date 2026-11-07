@@ -82,7 +82,6 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(co
 void qwen4_release_decode_graphs(qwen4_exp::Model&,tyloi::models::Mtp*);
 void qwen4_warmup_decode_graphs(qwen4_exp::Model&,tyloi::models::Mtp*,int maximum_draft_depth=3);
 std::size_t qwen4_mtp_graph_reserve(const qwen4_exp::Model&,const tyloi::models::Mtp*,int maximum_draft_depth=5);
-tyloi::models::SnapshotSize snapshot_size(const qwen4_exp::Model&,const tyloi::models::Mtp*);
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const tyloi::models::Mtp*);
 bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, int64_t tokens);
 std::int64_t prefill_span(const qwen4_exp::Model&, std::size_t tokens,

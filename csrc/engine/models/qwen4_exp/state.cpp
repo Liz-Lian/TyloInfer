@@ -2,10 +2,35 @@
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/session.h"
 #include "engine/models/qwen4_exp/snapshot.h"
+#include "engine/models/qwen4_exp/predictor.h"
+#include "engine/models/common/session/state.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace tyloi::cuda::qwen4_exp {
+
+tyloi::models::SnapshotSize snapshot_size(const State& state,const tyloi::models::Mtp* mtp) {
+    const auto& model = state.model_;
+    std::size_t bytes=session_tensor_bytes(model.positions);
+    const auto count_block=[&](const Qwen4Block& block,int64_t count) {
+        if(count<=0)return;
+        if(block.qsa)bytes+=block.qsa->session_bytes(count);
+        if(block.gdn)for(const auto* tensor:block.gdn->graph_state())bytes+=session_tensor_bytes(*tensor);
+        if(block.ple)bytes+=session_tensor_bytes(block.ple->conv_state());
+    };
+    for(const auto& block:model.blocks)count_block(static_cast<const Qwen4Block&>(*block),state.cache_pos);
+    if(const auto* predictor=dynamic_cast<const Predictor*>(mtp)) {
+        for(std::size_t i=0;i<predictor->layers.size();++i) {
+            const auto count=std::min(state.cache_pos-1,predictor->lengths[i]);
+            count_block(*predictor->layers[i],count);
+            if(count>0)bytes+=std::size_t(count)*3*predictor->positions[i].element_size();
+        }
+        bytes+=std::size_t(model.config.hidden)*model.config.streams*sizeof(float);
+    }
+    // Transposed graph KV can temporarily require a contiguous copy of the checkpoint.
+    return {bytes, bytes * 2};
+}
 
 State::State(Model& model) : model_(model) {
     model_.active = this;

@@ -43,9 +43,6 @@ template<class Model>
 bool generation_borrow(Model&, std::size_t, const PreparedPrompt*) { return false; }
 
 template<class Model>
-void generation_prefill_begin(Model&, DecodeGraphCache&, bool) {}
-
-template<class Model, class Ops>
-void generation_prefill_end(Model&, Ops&, bool, bool) {}
+bool generation_prefill_begin(Model&, DecodeGraphCache&, bool) { return false; }
 
 } // namespace tyloi::cuda

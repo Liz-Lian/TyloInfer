@@ -3,6 +3,7 @@
 #include "engine/models/session.h"
 #include "engine/models/deepseek_v41/snapshot.h"
 #include "engine/models/common/check.h"
+#include "engine/models/common/session/state.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -42,6 +43,28 @@ void validate_layer(const Block& block,const tyloi::models::deepseek_v41::BlockS
     }
     if(!local || !global)throw CudaSessionStateError("DeepSeek-V4.1 session layer geometry is incompatible");
 }
+}
+
+tyloi::models::SnapshotSize snapshot_size(const State& state,const tyloi::models::Mtp* mtp) {
+    std::size_t incoming=256; // Rolling Engram history and scalar metadata.
+    const auto prefix_bytes=[](const auto& tensor,int64_t rows) -> std::size_t {
+        return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
+    };
+    for(const auto& item:state.model_.blocks) {
+        TYLOINFER_RUNTIME_CHECK(state.shared && item->layer >= 0 &&
+                                  item->layer < std::int64_t(state.shared->layers.size()),
+                              "DeepSeek-V4.1 layer state is not allocated");
+        const auto& layer=state.shared->layers[static_cast<std::size_t>(item->layer)];
+        incoming+=session_tensor_bytes(layer.local_kv)+session_tensor_bytes(layer.partial_kv)+
+            session_tensor_bytes(layer.partial_score)+prefix_bytes(layer.compressed_kv,layer.compressed_length)+
+            prefix_bytes(layer.index_k,layer.compressed_length);
+    }
+    if(mtp) {
+        const auto& c=state.shared->config;
+        incoming+=std::size_t(c.sliding_window)*sizeof(mfq_half)*
+            (c.n_mtp_layers*c.head_dim+c.hidden*c.dspark_target_layer_ids.size());
+    }
+    return {incoming,incoming};
 }
 
 State::State(Model& model) : shared(model.shared), model_(model) {
