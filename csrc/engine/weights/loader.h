@@ -15,8 +15,8 @@
 #include <vector>
 
 class TqExec;
-namespace tyloi { class NintRows; }
-namespace tyloi::cuda { struct Experts; struct RoutedCache; }
+namespace tyloi { class MfeTensor; class NintRows; }
+namespace tyloi::cuda { struct RoutedCache; }
 
 struct MfqDropFileCacheGuard {
     bool& setting;
@@ -99,7 +99,7 @@ private:
            cuda::RoutedCache& cache, std::shared_ptr<TqExec> tq);
     friend struct cuda::RoutedCache;
     DenseTensor host_value(const std::string& name) const;
-    cuda::Experts build_experts(const std::string& name, bool cacheable, int layer,
-                                const std::string& role) const;
+    std::shared_ptr<const ::tyloi::MfeTensor> build_experts(
+        const std::string& name, bool cacheable, int layer, const std::string& role) const;
 };
 } // namespace tyloi::weights

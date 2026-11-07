@@ -143,11 +143,10 @@ void set_moe_expert_cache_profile(
     MoeExpertCache& cache,
     tyloi::MoeCacheProfile profile);
 
-namespace tyloi::cuda { struct Experts; }
 namespace tyloi { class MfeTensor; }
 namespace tyloi::cuda { class MfeMxfp4ExpertStore; }
 
-tyloi::cuda::Experts cache_moe_weight(
+std::shared_ptr<const tyloi::MfeTensor> cache_moe_weight(
     const std::shared_ptr<MoeExpertCache>& cache,
     const std::string& name,
     const std::shared_ptr<::tyloi::MfeTensor>& runtime,
@@ -156,6 +155,6 @@ tyloi::cuda::Experts cache_moe_weight(
     const std::string& projection_role,
     std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> range_store = {});
 
-tyloi::cuda::Experts cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
+std::shared_ptr<const tyloi::MfeTensor> cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
     const std::string& name,std::shared_ptr<MoeQuantRangeSource> source,
     int minimum_slots,int layer_id,const std::string& projection_role);

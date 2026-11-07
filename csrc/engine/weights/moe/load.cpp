@@ -13,7 +13,6 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
-#include <unordered_set>
 
 bool tyloi::MfeTensor::nint_only() const {
     return !pools.empty() && std::all_of(pools.begin(), pools.end(),
@@ -157,38 +156,24 @@ std::shared_ptr<const tyloi::Tensor> tyloi::MfeTensor::relocated(Device target) 
     return moved;
 }
 
-static void initialize_mfe_nint_runtime(tyloi::cuda::Experts & result) {
-    if (!result.pools || result.pools->empty()) {
+static void validate_mfe_nint_pools(const std::vector<MfePoolWeight>& pools) {
+    if (pools.empty()) {
         throw std::runtime_error("MFE NINT runtime requires at least one pool");
     }
-    result.activation_geometries.clear();
-    result.activation_workspace_domain = 1;
-    std::unordered_set<int64_t> quantized_shapes;
-    const auto target = result.pools->front().weight.q_packed.device();
-    for (const auto & pool : *result.pools) {
+    const auto target = pools.front().weight.q_packed.device();
+    for (const auto & pool : pools) {
         TYLOINFER_RUNTIME_CHECK(
             pool.weight.q_packed.is_cuda() &&
             pool.weight.q_packed.device() == target,
             "MFE NINT pools must share one CUDA device");
-        const int64_t activation_key =
-            (pool.weight.gs << 32) ^ pool.weight.ng;
-        if (quantized_shapes.insert(activation_key).second) {
-            result.activation_geometries.push_back({
-                static_cast<int>(pool.weight.ng),
-                static_cast<int>(pool.weight.gs),
-                0,
-                0,
-            });
-        }
     }
 }
 
-tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data & cpu) {
-    tyloi::cuda::Experts result;
-    result.unified_nint_projection = true;
-    result.n_experts = cpu.n_experts;
-    result.out_per_expert = cpu.out_per_expert;
-    result.neuron_len = cpu.neuron_len;
+std::shared_ptr<const tyloi::MfeTensor> to_gpu_mfe(const tyloi::mfe::Data & cpu) {
+    auto result = std::make_shared<tyloi::MfeTensor>();
+    result->n_experts = cpu.n_experts;
+    result->out_per_expert = cpu.out_per_expert;
+    result->neuron_len = cpu.neuron_len;
     std::vector<MfePoolWeight> pools;
     pools.reserve(cpu.pools.size());
     for (const auto & source_pool : cpu.pools) {
@@ -210,8 +195,8 @@ tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data & cpu) {
             .clone().to(pool.weight.q_packed.device()).contiguous();
         pools.push_back(std::move(pool));
     }
-    result.pools = std::make_shared<const std::vector<MfePoolWeight>>(std::move(pools));
-    initialize_mfe_nint_runtime(result);
+    validate_mfe_nint_pools(pools);
+    result->compact = std::make_shared<const std::vector<MfePoolWeight>>(std::move(pools));
     return result;
 }
 
@@ -350,29 +335,13 @@ std::shared_ptr<::tyloi::MfeTensor> make_mfe(
     return runtime;
 }
 
-static tyloi::cuda::Experts wrap_mixed_moe_runtime(
-        const std::shared_ptr<::tyloi::MfeTensor> & runtime) {
-    tyloi::cuda::Experts result;
-    result.unified_nint_projection = runtime->nint_only();
-    result.n_experts = runtime->n_experts;
-    result.out_per_expert = runtime->out_per_expert;
-    result.neuron_len = runtime->neuron_len;
-    result.partial_experts = runtime->partial_experts;
-    result.mixed_weight_bytes = mixed_moe_storage_bytes(*runtime);
-    result.activation_geometries = moe_activation_geometry(runtime->pools);
-    result.activation_workspace_domain = 2;
-    result.resident = runtime;
-    return result;
-}
-
-tyloi::cuda::Experts to_gpu_mixed_moe(
+std::shared_ptr<const tyloi::MfeTensor> to_gpu_mixed_moe(
         const tyloi::mfe::Data & cpu,
         const MoeLoadOptions& options) {
-    return wrap_mixed_moe_runtime(
-        make_mfe(cpu, true, options));
+    return make_mfe(cpu, true, options);
 }
 
-tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
+std::shared_ptr<const tyloi::MfeTensor> to_cuda_device_moe_expert_slice(
         const tyloi::mfe::Data & cpu,
         int64_t expert_begin,
         int64_t expert_end,
@@ -411,8 +380,8 @@ tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
                 source.weight, rows);
             sliced.pools.push_back(std::move(destination));
         }
-        auto result = to_gpu_mfe(sliced);
-        result.partial_experts = true;
+        auto result = std::make_shared<tyloi::MfeTensor>(*to_gpu_mfe(sliced));
+        result->partial_experts = true;
         return result;
     }
 
@@ -499,7 +468,7 @@ tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
             "expert-parallel MoE shard has no owned experts");
     }
     prepare_moe(*runtime, options.heterogeneous);
-    return wrap_mixed_moe_runtime(runtime);
+    return runtime;
 }
 
 
@@ -591,7 +560,7 @@ static NepqWeight copy_cpu_nepq_to_cuda(const NepqWeight & source) {
     return result;
 }
 
-tyloi::cuda::Experts stage_cpu_mixed_moe(
+std::shared_ptr<const tyloi::MfeTensor> stage_cpu_mixed_moe(
         const std::shared_ptr<const ::tyloi::MfeTensor> & cpu,
         bool heterogeneous) {
     if (!cpu) throw std::runtime_error("missing CPU-offloaded MoE state");
@@ -625,20 +594,7 @@ tyloi::cuda::Experts stage_cpu_mixed_moe(
         runtime->pools.push_back(std::move(pool));
     }
     prepare_moe(*runtime, heterogeneous);
-    return wrap_mixed_moe_runtime(runtime);
-}
-
-tyloi::cuda::Experts cpu_mixed_moe_metadata(
-        const std::shared_ptr<::tyloi::MfeTensor> & runtime) {
-    tyloi::cuda::Experts result;
-    result.unified_nint_projection = runtime->nint_only();
-    result.n_experts = runtime->n_experts;
-    result.out_per_expert = runtime->out_per_expert;
-    result.neuron_len = runtime->neuron_len;
-    result.mixed_weight_bytes = mixed_moe_storage_bytes(*runtime);
-    result.activation_geometries = moe_activation_geometry(runtime->pools);
-    result.activation_workspace_domain = 2;
-    return result;
+    return runtime;
 }
 
 tyloi::mfe::Data load_mfe_cpu(

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/weights/moe/experts.h"
+#include "engine/weights/encoding/mfe.h"
 #include "engine/weights/moe/options.h"
 #include "engine/weights/encoding/quant/mfe_blob.h"
 
@@ -21,7 +21,7 @@ std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
     int tokens, int routes, bool routed_input);
 ::tyloi::DenseTensor materialize_mfe_dense(
     const tyloi::source::Source& source, const std::string& name);
-tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data& source);
+std::shared_ptr<const tyloi::MfeTensor> to_gpu_mfe(const tyloi::mfe::Data& source);
 std::shared_ptr<::tyloi::MfeTensor> make_mfe(
     const tyloi::mfe::Data& source,
     bool cuda,
@@ -29,14 +29,12 @@ std::shared_ptr<::tyloi::MfeTensor> make_mfe(
 int64_t mixed_moe_storage_bytes(const ::tyloi::MfeTensor& runtime);
 ::tyloi::DenseTensor copy_cpu_weight_to_cuda(
     const ::tyloi::DenseTensor& source);
-tyloi::cuda::Experts to_gpu_mixed_moe(
+std::shared_ptr<const tyloi::MfeTensor> to_gpu_mixed_moe(
     const tyloi::mfe::Data& source,
     const MoeLoadOptions& options = {});
-tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
+std::shared_ptr<const tyloi::MfeTensor> to_cuda_device_moe_expert_slice(
     const tyloi::mfe::Data& source,
     int64_t expert_begin,
     int64_t expert_end,
     int device,
     const MoeLoadOptions& options = {});
-tyloi::cuda::Experts cpu_mixed_moe_metadata(
-    const std::shared_ptr<::tyloi::MfeTensor>& runtime);

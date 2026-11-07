@@ -19,7 +19,6 @@ struct TqMoeBanks;
 namespace tyloi::cuda {
 
 class Branches;
-struct Experts;
 
 // Bound resources and options must outlive this object; drain before resetting them.
 class Projector {
@@ -70,24 +69,14 @@ public:
     std::vector<::tyloi::DenseTensor> grouped(
         const std::vector<const ::tyloi::Tensor*>& projections, ::tyloi::DenseTensor input) const;
 
-    ::tyloi::DenseTensor run(
-        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
-        bool prequantized = false, int epilogue = 0) const;
-    ::tyloi::DenseTensor glu(
-        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
-        bool gelu) const;
-    ::tyloi::DenseTensor gated(
-        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
-        bool gelu) const;
-    ::tyloi::DenseTensor clamped(
-        const Experts& weight, ::tyloi::DenseTensor input, const MoeRoutePlan& route,
-        double limit) const;
     ::tyloi::DenseTensor run(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
-        const MoeRoutePlan& route, int epilogue = 0) const;
+        const MoeRoutePlan& route, bool prequantized = false, int epilogue = 0) const;
     ::tyloi::DenseTensor glu(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
         const MoeRoutePlan& route, bool gelu) const;
     ::tyloi::DenseTensor gated(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
         const MoeRoutePlan& route, bool gelu) const;
+    ::tyloi::DenseTensor clamped(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
+        const MoeRoutePlan& route, double limit) const;
     ::tyloi::DenseTensor run(
         const TqMoeBanks& banks, ::tyloi::DenseTensor input,
         ::tyloi::DenseTensor ids, ::tyloi::DenseTensor weights,

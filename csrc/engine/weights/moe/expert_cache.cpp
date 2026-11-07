@@ -2389,20 +2389,23 @@ bool MoeExpertCache::prepare_bundle_deferred(
     return begin_deferred_range_read(deferred_source, experts);
 }
 
-static tyloi::cuda::Experts wrap_cached_moe_source(
+static std::shared_ptr<const tyloi::MfeTensor> wrap_cached_moe_source(
         const std::shared_ptr<MoeCachedSource> & source,
         const std::shared_ptr<::tyloi::MfeTensor> & cpu) {
-    tyloi::cuda::Experts result =
-        cpu_mixed_moe_metadata(cpu);
-    result.mixed_weight_bytes = source->logical_weight_bytes();
-    result.cached_source = source;
+    auto result = std::make_shared<tyloi::MfeTensor>();
+    result->n_experts = cpu->n_experts;
+    result->out_per_expert = cpu->out_per_expert;
+    result->neuron_len = cpu->neuron_len;
+    result->partial_experts = cpu->partial_experts;
+    result->source_device = source->placement().devices.front();
+    result->cached_source = source;
     return result;
 }
 
 bool tyloi::cuda::prefetch_cached_moe_projection_bundle(
-        const tyloi::cuda::Experts & gate,
-        const tyloi::cuda::Experts & up,
-        const tyloi::cuda::Experts & down,
+        const tyloi::MfeTensor & gate,
+        const tyloi::MfeTensor & up,
+        const tyloi::MfeTensor & down,
         const MoeRoutePlan & route) {
     if (!gate.cached_source ||
             !up.cached_source ||
@@ -2415,8 +2418,8 @@ bool tyloi::cuda::prefetch_cached_moe_projection_bundle(
 }
 
 bool tyloi::cuda::prefetch_cached_moe_projection_bundle(
-        const tyloi::cuda::Experts & gate_up,
-        const tyloi::cuda::Experts & down,
+        const tyloi::MfeTensor & gate_up,
+        const tyloi::MfeTensor & down,
         const MoeRoutePlan & route) {
     if (!gate_up.cached_source || !down.cached_source) {
         return false;
@@ -2425,7 +2428,7 @@ bool tyloi::cuda::prefetch_cached_moe_projection_bundle(
         {gate_up.cached_source, down.cached_source}, route);
 }
 
-tyloi::cuda::Experts cache_moe_weight(
+std::shared_ptr<const tyloi::MfeTensor> cache_moe_weight(
         const std::shared_ptr<MoeExpertCache>& cache,
         const std::string& name,
         const std::shared_ptr<::tyloi::MfeTensor>& runtime,
@@ -2449,7 +2452,7 @@ std::shared_ptr<MoeExpertCache> make_moe_expert_cache(
     return std::make_shared<MoeExpertCache>(bytes, options);
 }
 
-tyloi::cuda::Experts cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
+std::shared_ptr<const tyloi::MfeTensor> cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
         const std::string& name,std::shared_ptr<MoeQuantRangeSource> range,
         int minimum_slots,int layer_id,const std::string& role) {
     auto runtime=range->metadata();

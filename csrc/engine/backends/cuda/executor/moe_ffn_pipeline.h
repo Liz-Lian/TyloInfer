@@ -10,7 +10,7 @@ struct CudaProfiler;
 struct KlMmqState;
 struct MoeOptions;
 namespace tyloi { struct MoeDispatchPlan; }
-namespace tyloi::cuda { class Projector; class RouteStats; struct Experts; class Ffn; }
+namespace tyloi::cuda { class Projector; class RouteStats; class Ffn; }
 
 struct MoeFfnOptions {
     bool fused_activation = true;

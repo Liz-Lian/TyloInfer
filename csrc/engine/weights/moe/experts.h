@@ -1,115 +1,24 @@
 #pragma once
 
-#include "engine/weights/weights.h"
-#include "engine/weights/moe/pool.h"
-
-#include <algorithm>
-#include <cstdint>
 #include <memory>
-#include <stdexcept>
-#include <vector>
 
-class MoeCachedSource;
 namespace tyloi { class MfeTensor; }
 struct MoeRoutePlan;
 
 namespace tyloi::cuda {
 
-struct Experts {
-    struct Shard {
-        int device = 0;
-        int64_t expert_begin = 0;
-        int64_t expert_end = 0;
-        std::shared_ptr<Experts> weight;
-    };
-
-    int n_experts = 0;
-    int out_per_expert = 0;
-    int neuron_len = 0;
-    std::shared_ptr<const std::vector<MfePoolWeight>> pools;
-    int64_t mixed_weight_bytes = 0;
-    bool partial_experts = false;
-    bool unified_nint_projection = false;
-    std::vector<Shard> expert_parallel_shards;
-    std::shared_ptr<const ::tyloi::MfeTensor> resident;
-    std::shared_ptr<MoeCachedSource> cached_source;
-    std::vector<MoeActivationGeometry> activation_geometries;
-    int activation_workspace_domain = 0;
-
-    std::size_t size() const { return static_cast<std::size_t>(n_experts); }
-    // One expert's output width and input width.
-    weights::Shape shape() const { return {out_per_expert, neuron_len}; }
-    weights::Placement placement(std::size_t index = 0) const;
-
-    bool expert_parallel() const { return !expert_parallel_shards.empty(); }
-    // Owned expert buffers, for byte accounting. `resident` and `cached_source`
-    // are caches of the same storage, so they stay out of the traversal.
-    template <class Visitor>
-    void visit_tensors(Visitor visit) const {
-        if (pools)
-            for (const auto& pool : *pools) pool.visit_tensors(visit);
-        for (const auto& shard : expert_parallel_shards)
-            if (shard.weight) shard.weight->visit_tensors(visit);
-    }
-    bool supports_projection_glu_epilogue() const {
-        if (!expert_parallel()) {
-            return unified_nint_projection || (pools && !pools->empty());
-        }
-        return std::all_of(
-            expert_parallel_shards.begin(),
-            expert_parallel_shards.end(),
-            [](const Shard & shard) {
-                return shard.weight &&
-                    shard.weight->supports_projection_glu_epilogue();
-            });
-    }
-    bool supports_prequantized_input() const {
-        return !expert_parallel() && ((pools && !pools->empty()) || resident || cached_source);
-    }
-    bool can_reuse_activation_for(const Experts& consumer) const {
-        if (!supports_prequantized_input() ||
-                !consumer.supports_prequantized_input() ||
-                neuron_len != consumer.neuron_len ||
-                activation_workspace_domain == 0 ||
-                activation_workspace_domain !=
-                    consumer.activation_workspace_domain) {
-            return false;
-        }
-        // Equal geometry cannot share quantization without a common backing.
-        const bool shared = (cached_source && cached_source == consumer.cached_source) ||
-                            (resident && resident == consumer.resident) ||
-                            (!cached_source && !resident && !consumer.cached_source &&
-                             !consumer.resident && pools && pools == consumer.pools);
-        if (!shared)
-            return false;
-        if (activation_geometries.empty() ||
-                consumer.activation_geometries.empty()) {
-            return false;
-        }
-        return std::all_of(
-            consumer.activation_geometries.begin(),
-            consumer.activation_geometries.end(),
-            [&](const MoeActivationGeometry & required) {
-                return std::find(
-                    activation_geometries.begin(),
-                    activation_geometries.end(),
-                    required) != activation_geometries.end();
-            });
-    }
-    bool supports_clamped_swiglu() const;
-};
-
-Experts expert_runtime(const std::shared_ptr<const ::tyloi::Tensor>& weight);
-
-void prefetch_experts(const Experts& weight, const MoeRoutePlan& route, bool begin = false);
+bool supports_projection_glu_epilogue(const MfeTensor& weight);
+bool can_reuse_activation_for(const MfeTensor& producer, const MfeTensor& consumer);
+bool supports_clamped_swiglu(const MfeTensor& weight);
+void prefetch_experts(const MfeTensor& weight, const MoeRoutePlan& route, bool begin = false);
 
 bool prefetch_cached_moe_projection_bundle(
-    const Experts& gate, const Experts& up, const Experts& down, const MoeRoutePlan& route);
+    const MfeTensor& gate, const MfeTensor& up, const MfeTensor& down, const MoeRoutePlan& route);
 bool prefetch_cached_moe_projection_bundle(
-    const Experts& gate_up, const Experts& down, const MoeRoutePlan& route);
+    const MfeTensor& gate_up, const MfeTensor& down, const MoeRoutePlan& route);
 
 } // namespace tyloi::cuda
 
-tyloi::cuda::Experts stage_cpu_mixed_moe(
-    const std::shared_ptr<const ::tyloi::MfeTensor>& runtime,
+std::shared_ptr<const tyloi::MfeTensor> stage_cpu_mixed_moe(
+    const std::shared_ptr<const tyloi::MfeTensor>& runtime,
     bool heterogeneous);

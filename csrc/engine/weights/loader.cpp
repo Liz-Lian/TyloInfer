@@ -1,7 +1,6 @@
 #include "engine/weights/mapped_embedding.h"
 #include "engine/backends/cuda/native/device.h"
 #include "engine/backends/cuda/native/allocation.h"
-#include "engine/weights/moe/experts.h"
 #include <iostream>
 #include "engine/weights/moe/load.h"
 #include "engine/weights/routed_cache.h"
@@ -673,7 +672,7 @@ std::shared_ptr<tyloi::NintRows> load_nint_row_table(
 #endif
 }
 
-tyloi::cuda::Experts tyloi::weights::Loader::build_experts(const std::string & name,
+std::shared_ptr<const tyloi::MfeTensor> tyloi::weights::Loader::build_experts(const std::string & name,
         bool cacheable,
         int layer_id,
         const std::string & projection_role) const {
@@ -752,21 +751,16 @@ tyloi::cuda::Experts tyloi::weights::Loader::build_experts(const std::string & n
     if (placement.experts.enabled()) {
         auto slices = plan_moe_expert_parallel_slices(
             placement.experts, cpu.n_experts, name);
-        tyloi::cuda::Experts result;
-        result.n_experts = cpu.n_experts;
-        result.out_per_expert =
+        auto result = std::make_shared<tyloi::MfeTensor>();
+        result->n_experts = cpu.n_experts;
+        result->out_per_expert =
             cpu.out_per_expert;
-        result.neuron_len =
+        result->neuron_len =
             cpu.neuron_len;
         for (const auto & slice : slices) {
-            auto shard =
-                std::make_shared<tyloi::cuda::Experts>(
-                    to_cuda_device_moe_expert_slice(
-                        cpu, slice.begin,
-                        slice.end,
-                        slice.device,
-                        quant));
-            result.expert_parallel_shards.push_back({
+            auto shard = to_cuda_device_moe_expert_slice(
+                cpu, slice.begin, slice.end, slice.device, quant);
+            result->shards.push_back({
                 slice.device,
                 slice.begin,
                 slice.end,
@@ -846,26 +840,6 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::gate_up(const std::v
     return group(names, std::min(prefix, names.size()), slices.empty() ? nullptr : &slices,
                  preserve_boundaries);
 }
-static std::shared_ptr<const ::tyloi::MfeTensor> expert_tensor(cuda::Experts weight, Device device) {
-    if (weight.resident) return weight.resident;
-    auto result = std::make_shared<::tyloi::MfeTensor>();
-    result->n_experts = weight.n_experts;
-    result->out_per_expert = weight.out_per_expert;
-    result->neuron_len = weight.neuron_len;
-    result->partial_experts = weight.partial_experts;
-    result->compact = std::move(weight.pools);
-    result->cached_source = std::move(weight.cached_source);
-    result->source_device = device;
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (result->cached_source) result->source_device = result->cached_source->placement().devices.front();
-#endif
-    for (auto& shard : weight.expert_parallel_shards) {
-        if (!shard.weight) throw std::runtime_error("expert-parallel MoE shard is missing");
-        result->shards.push_back({shard.device, shard.expert_begin, shard.expert_end,
-            expert_tensor(std::move(*shard.weight), Device{DeviceType::cuda, shard.device})});
-    }
-    return result;
-}
 std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, bool cacheable,
     int layer, const std::string& role) const {
     const auto& dtype = tyloi::require_tensor(source, name).dtype;
@@ -881,7 +855,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, 
             bank->slices = plan_moe_expert_parallel_slices(placement.experts, bank->experts, name);
         return bank;
     }
-    return expert_tensor(build_experts(name, cacheable, layer, role), Device{DeviceType::cuda, placement.device});
+    return build_experts(name, cacheable, layer, role);
 }
 std::shared_ptr<const ::tyloi::Tensor> Loader::dense(const std::string& name) const {
     const auto& file = source;

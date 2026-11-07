@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
+#include "engine/weights/encoding/mfe.h"
 #endif
 
 #include <algorithm>
@@ -186,8 +187,6 @@ static DenseTensor forward_ffn(const Layer& weights, Executor& executor, const E
     const auto& ffn_pre_norm_2 = weights.ffn_pre_norm_2;
     const auto& ffn_post_norm_2 = weights.ffn_post_norm_2;
     const auto& layer_scale = weights.layer_scale;
-    const auto gemma_moe_gate_up = expert_runtime(weights.gemma_moe_gate_up);
-    const auto gemma_moe_down = expert_runtime(weights.gemma_moe_down);
     const auto& gemma_router = weights.gemma_router;
     const auto& gemma_router_norm_scale = weights.gemma_router_norm_scale;
     const auto& gemma_expert_scale = weights.gemma_expert_scale;
@@ -261,6 +260,11 @@ static DenseTensor forward_ffn(const Layer& weights, Executor& executor, const E
             trace_stage(mode, layer, "dense_output", result);
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+        const auto gate_up_owner = std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(weights.gemma_moe_gate_up);
+        const auto down_owner = std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(weights.gemma_moe_down);
+        if (!gate_up_owner || !down_owner) throw std::invalid_argument("expected MFE expert tensor");
+        const auto& gemma_moe_gate_up = *gate_up_owner;
+        const auto& gemma_moe_down = *down_owner;
         DenseTensor moe_output;
         {
             struct SelectedExperts { DenseTensor ids, weights; } selected;
@@ -289,7 +293,7 @@ static DenseTensor forward_ffn(const Layer& weights, Executor& executor, const E
                     gemma_moe_gate_up, gemma_moe_down, route);
                 const bool tracing = mode.trace != nullptr && layer == mode.trace_layer;
                 DenseTensor packed;
-                if (!tracing && gemma_moe_gate_up.supports_projection_glu_epilogue()) {
+                if (!tracing && supports_projection_glu_epilogue(gemma_moe_gate_up)) {
                     auto hidden = measure("gemma.moe_gate_up_geglu", [&] {
                         return executor.projector(mode.ffn).glu(gemma_moe_gate_up, moe_input, route, true);
                     });

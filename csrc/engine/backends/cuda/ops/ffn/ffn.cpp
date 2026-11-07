@@ -43,8 +43,8 @@ std::shared_ptr<const ::tyloi::MfeTensor> cpu_expert(const std::shared_ptr<const
     return mfe && !mfe->cached_source && mfe->device().is_cpu() ? mfe : nullptr;
 }
 
-static Experts mfe_runtime(const std::shared_ptr<const ::tyloi::Tensor>& weight) {
-    return std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(weight) ? expert_runtime(weight) : Experts{};
+static std::shared_ptr<const ::tyloi::MfeTensor> mfe_runtime(const std::shared_ptr<const ::tyloi::Tensor>& weight) {
+    return std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(weight);
 }
 
 bool uses_expert_cache(const Ffn& f) {
@@ -56,9 +56,10 @@ bool uses_expert_cache(const Ffn& f) {
     if (!f.is_moe)
         return false;
     if (f.moe_split_gate_up) {
-        return moe_gate.cached_source || moe_up.cached_source || moe_down.cached_source;
+        return (moe_gate && moe_gate->cached_source) || (moe_up && moe_up->cached_source) ||
+            (moe_down && moe_down->cached_source);
     }
-    return moe_gate_up.cached_source || moe_down.cached_source;
+    return (moe_gate_up && moe_gate_up->cached_source) || (moe_down && moe_down->cached_source);
 #else
     return false;
 #endif
@@ -68,14 +69,14 @@ bool expert_parallel(const Ffn& f) {
     const auto moe_gate_up = mfe_runtime(f.moe_gate_up);
     const auto moe_down = mfe_runtime(f.moe_down);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (!f.is_moe || f.moe_split_gate_up ||
-        moe_gate_up.expert_parallel_shards.size() != moe_down.expert_parallel_shards.size() ||
-        moe_gate_up.expert_parallel_shards.empty()) {
+    if (!f.is_moe || f.moe_split_gate_up || !moe_gate_up || !moe_down ||
+        moe_gate_up->shards.size() != moe_down->shards.size() ||
+        moe_gate_up->shards.empty()) {
         return false;
     }
-    for (size_t index = 0; index < moe_gate_up.expert_parallel_shards.size(); ++index) {
-        const auto &gate = moe_gate_up.expert_parallel_shards[index];
-        const auto &down = moe_down.expert_parallel_shards[index];
+    for (size_t index = 0; index < moe_gate_up->shards.size(); ++index) {
+        const auto &gate = moe_gate_up->shards[index];
+        const auto &down = moe_down->shards[index];
         if (!gate.weight || !down.weight || gate.device != down.device ||
             gate.expert_begin != down.expert_begin || gate.expert_end != down.expert_end) {
             return false;
@@ -182,7 +183,7 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& 
     auto& collectives_ = executor.collectives_;
     const auto& projection_ = executor.options_.projection;
     const auto& options_ = executor.options_.ffn;
-    const size_t shard_count = moe_gate_up.expert_parallel_shards.size();
+    const size_t shard_count = moe_gate_up->shards.size();
     std::vector<::tyloi::DenseTensor> routed_partials(shard_count);
     std::vector<::tyloi::DenseTensor> down_partials;
     const bool collect_output_energy = stats.energy();
@@ -193,8 +194,8 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& 
         const size_t index =
             parallel_index(
             projection_.peer_first, launch_position, shard_count);
-        const auto &gate_shard = moe_gate_up.expert_parallel_shards[index];
-        const auto &down_shard = moe_down.expert_parallel_shards[index];
+        const auto &gate_shard = moe_gate_up->shards[index];
+        const auto &down_shard = moe_down->shards[index];
         MfqCudaGuard guard(gate_shard.device);
         auto local_x =
             collectives_.copy(x, gate_shard.device);
@@ -206,7 +207,7 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& 
         DenseTensor down_pair;
         const double limit = f.swiglu_limit;
         if (limit <= 0.0 && !mode_.materialized &&
-            gate_shard.weight->supports_projection_glu_epilogue()) {
+            supports_projection_glu_epilogue(*gate_shard.weight)) {
             auto hidden = project_.glu(*gate_shard.weight, local_x, local_route, false);
             down_pair = project_.run(*down_shard.weight, hidden, local_route);
         } else {
@@ -220,7 +221,7 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& 
                  (gate_up_pair.size(0) <= 4 && options_.small_heterogeneous));
             if (allow_fusion && limit <= 0.0) {
                 down_pair = project_.gated(*down_shard.weight, gate_up_pair, local_route, false);
-            } else if (allow_fusion && down_shard.weight->supports_clamped_swiglu()) {
+            } else if (allow_fusion && supports_clamped_swiglu(*down_shard.weight)) {
                 down_pair = project_.clamped(*down_shard.weight, gate_up_pair, local_route, limit);
             } else {
                 DenseTensor hidden;
@@ -246,7 +247,7 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& 
             projection_.reduce_to_primary, projection_.fp16_reduce);
         }
         stats.record(f.moe_layer, route.ids, route_weights, complete_down,
-                     moe_gate_up.n_experts);
+                     moe_gate_up->n_experts);
     }
     return collectives_.sum(std::move(routed_partials), project_.primary_device(),
             projection_.reduce_to_primary, projection_.fp16_reduce);
@@ -388,18 +389,18 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 return false;
             }
             if (f.moe_ungated_experts) {
-                if (cpu_moe_up || cpu_moe_down)
+                if (cpu_moe_up || cpu_moe_down || !moe_up || !moe_down)
                     return false;
-                return prefetch_cached_moe_projection_bundle(moe_up, moe_down, route);
+                return prefetch_cached_moe_projection_bundle(*moe_up, *moe_down, route);
             }
             if (f.moe_split_gate_up) {
-                if (cpu_moe_gate || cpu_moe_up)
+                if (cpu_moe_gate || cpu_moe_up || !moe_gate || !moe_up || !moe_down)
                     return false;
-                return prefetch_cached_moe_projection_bundle(moe_gate, moe_up, moe_down, route);
+                return prefetch_cached_moe_projection_bundle(*moe_gate, *moe_up, *moe_down, route);
             }
-            if (cpu_moe_gate_up)
+            if (cpu_moe_gate_up || !moe_gate_up || !moe_down)
                 return false;
-            return prefetch_cached_moe_projection_bundle(moe_gate_up, moe_down, route);
+            return prefetch_cached_moe_projection_bundle(*moe_gate_up, *moe_down, route);
         #else
     return false;
 #endif
@@ -453,9 +454,9 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                     bool(dense_up)
                         ? static_cast<int>(dense_up->size(0))
                         : (f.moe_ungated_experts
-                               ? moe_up.n_experts
-                               : (f.moe_split_gate_up ? moe_gate.n_experts
-                                                    : moe_gate_up.n_experts));
+                               ? (moe_up ? moe_up->n_experts : 0)
+                               : (f.moe_split_gate_up ? (moe_gate ? moe_gate->n_experts : 0)
+                                                    : (moe_gate_up ? moe_gate_up->n_experts : 0)));
                 route = profiler.measure("moe.route_map", [&]() {
                     return build_moe_route_plan(selected.at(0), routed_experts);
                 });
@@ -466,20 +467,20 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
             if (tyloi::mfq_compat_enabled && !sharded_experts && !use_pipeline && !tq_routed) {
                 if (f.moe_split_gate_up) {
                     if (options_.delayed_readback) {
-                        tyloi::cuda::prefetch_experts(moe_gate, route, true);
+                        if (moe_gate) tyloi::cuda::prefetch_experts(*moe_gate, route, true);
                     } else {
                         projection_bundle_prefetched = prefetch_projection_bundle();
                         if (!projection_bundle_prefetched) {
-                            tyloi::cuda::prefetch_experts(moe_gate, route);
+                            if (moe_gate) tyloi::cuda::prefetch_experts(*moe_gate, route);
                         }
                     }
                 } else {
                     if (options_.delayed_readback) {
-                        tyloi::cuda::prefetch_experts(moe_gate_up, route, true);
+                        if (moe_gate_up) tyloi::cuda::prefetch_experts(*moe_gate_up, route, true);
                     } else {
                         projection_bundle_prefetched = prefetch_projection_bundle();
                         if (!projection_bundle_prefetched) {
-                            tyloi::cuda::prefetch_experts(moe_gate_up, route);
+                            if (moe_gate_up) tyloi::cuda::prefetch_experts(*moe_gate_up, route);
                         }
                     }
                 }
@@ -499,9 +500,9 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 projection_bundle_prefetched = prefetch_projection_bundle();
                 if (!projection_bundle_prefetched) {
                     if (f.moe_split_gate_up) {
-                        tyloi::cuda::prefetch_experts(moe_gate, route);
+                        if (moe_gate) tyloi::cuda::prefetch_experts(*moe_gate, route);
                     } else {
-                        tyloi::cuda::prefetch_experts(moe_gate_up, route);
+                        if (moe_gate_up) tyloi::cuda::prefetch_experts(*moe_gate_up, route);
                     }
                 }
             }
@@ -559,9 +560,9 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 }
             } else if (dense_routed) {
                 if (f.moe_ungated_experts &&
-                    (bool(dense_gate) || moe_gate_up.n_experts > 0 ||
-                     moe_gate.n_experts > 0 || moe_up.n_experts > 0 ||
-                     moe_gate_up.cached_source || moe_up.cached_source))
+                    (bool(dense_gate) || (moe_gate_up && (moe_gate_up->n_experts > 0 || moe_gate_up->cached_source)) ||
+                     (moe_gate && moe_gate->n_experts > 0) ||
+                     (moe_up && (moe_up->n_experts > 0 || moe_up->cached_source))))
                     throw std::runtime_error(
                         "ungated routed MoE cannot mix a gate with a dense expert bank");
                 TYLOINFER_RUNTIME_CHECK(bool(dense_up) && bool(dense_down),
@@ -607,23 +608,21 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 // relu-squared experts store Up and Down only: one Up matmul,
                 // no gate projection, and the shared expert stays outside
                 // the routed latent space.
-                if (moe_gate.n_experts > 0 || moe_gate_up.n_experts > 0 ||
-                    moe_gate.cached_source || moe_gate_up.cached_source)
+                if ((moe_gate && (moe_gate->n_experts > 0 || moe_gate->cached_source)) ||
+                    (moe_gate_up && (moe_gate_up->n_experts > 0 || moe_gate_up->cached_source)))
                     throw std::runtime_error(
                         "ungated routed MoE cannot carry a gate projection");
-                TYLOINFER_RUNTIME_CHECK(moe_up.n_experts > 0,
+                TYLOINFER_RUNTIME_CHECK(moe_up && moe_up->n_experts > 0,
                                   "ungated routed MoE requires an Up bank");
                 if (!projection_bundle_prefetched) {
-                    tyloi::cuda::prefetch_experts(moe_up, route);
-                    tyloi::cuda::prefetch_experts(moe_down, route);
+                    tyloi::cuda::prefetch_experts(*moe_up, route);
+                    if (moe_down) tyloi::cuda::prefetch_experts(*moe_down, route);
                 }
-                std::optional<tyloi::cuda::Experts> staged_up;
-                const tyloi::cuda::Experts *active_up = &moe_up;
+                auto active_up = moe_up;
                 if (cpu_moe_up) {
-                    staged_up.emplace(profiler.measure("moe.cpu_offload_up_h2d", [&]() {
+                    active_up = profiler.measure("moe.cpu_offload_up_h2d", [&]() {
                         return stage_cpu_mixed_moe(cpu_moe_up, projection_.moe.heterogeneous);
-                    }));
-                    active_up = &staged_up.value();
+                    });
                 }
                 auto up = profiler.measure("moe.up", [&]() {
                     return project_.run(*active_up, routed_input, route);
@@ -631,21 +630,20 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 auto hidden = profiler.measure("moe.relu_squared", [&]() {
                     return relu_squared_cuda(up.contiguous());
                 });
-                staged_up.reset();
-                std::optional<tyloi::cuda::Experts> staged_down;
-                const tyloi::cuda::Experts *active_down = &moe_down;
+                active_up.reset();
+                auto active_down = moe_down;
                 if (cpu_moe_down) {
-                    staged_down.emplace(profiler.measure("moe.cpu_offload_down_h2d", [&]() {
+                    active_down = profiler.measure("moe.cpu_offload_down_h2d", [&]() {
                         return stage_cpu_mixed_moe(cpu_moe_down, projection_.moe.heterogeneous);
-                    }));
-                    active_down = &staged_down.value();
+                    });
                 }
                 auto down_pair = profiler.measure("moe.down", [&] {
+                    TYLOINFER_RUNTIME_CHECK(active_down, "MFE input must be contiguous CUDA f16 with exact K");
                     return project_.run(*active_down, hidden, route);
                 });
                 stats.record(f.moe_layer, selected.at(0),
-                             selected.at(1), down_pair, moe_up.n_experts);
-                staged_down.reset();
+                             selected.at(1), down_pair, moe_up->n_experts);
+                active_down.reset();
                 if (latent_routed)
                     experts = {finish_latent(profiler.measure("moe.reduce", [&] {
                                 return moe_weighted_reduce_cuda(down_pair, selected.at(1));
@@ -670,34 +668,30 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 experts = {finish_latent(result), true};
             }
             else {
-                std::optional<tyloi::cuda::Experts> staged_gate_up;
-                std::optional<tyloi::cuda::Experts> staged_gate;
-                std::optional<tyloi::cuda::Experts> staged_up;
-                const tyloi::cuda::Experts *active_gate_up = &moe_gate_up;
-                const tyloi::cuda::Experts *active_gate = &moe_gate;
-                const tyloi::cuda::Experts *active_up = &moe_up;
+                auto active_gate_up = moe_gate_up;
+                auto active_gate = moe_gate;
+                auto active_up = moe_up;
                 ::tyloi::DenseTensor gate_up_pair;
                 ::tyloi::DenseTensor projected_hidden;
                 if (f.moe_split_gate_up) {
                     if (cpu_moe_gate) {
-                        staged_gate.emplace(profiler.measure("moe.cpu_offload_gate_h2d", [&]() {
+                        active_gate = profiler.measure("moe.cpu_offload_gate_h2d", [&]() {
                             return stage_cpu_mixed_moe(cpu_moe_gate, projection_.moe.heterogeneous);
-                        }));
-                        active_gate = &staged_gate.value();
+                        });
                     }
                     if (cpu_moe_up) {
-                        staged_up.emplace(profiler.measure("moe.cpu_offload_up_h2d", [&]() {
+                        active_up = profiler.measure("moe.cpu_offload_up_h2d", [&]() {
                             return stage_cpu_mixed_moe(cpu_moe_up, projection_.moe.heterogeneous);
-                        }));
-                        active_up = &staged_up.value();
+                        });
                     }
                     gate_up_pair = profiler.measure("moe.gate_up_split", [&]() {
                         const bool reuse_gate_activation =
                             mode_.reuse_input && mmq_.mode == KlMmqMode::Default && xf.size(0) <= 8 &&
-                            active_gate->can_reuse_activation_for(*active_up);
+                            active_gate && active_up && can_reuse_activation_for(*active_gate, *active_up);
+                        TYLOINFER_RUNTIME_CHECK(active_gate, "MFE input must be contiguous CUDA f16 with exact K");
                         auto gate = project_.run(*active_gate, xf, route);
                         if (!projection_bundle_prefetched) {
-                            tyloi::cuda::prefetch_experts(*active_up, route);
+                            if (active_up) tyloi::cuda::prefetch_experts(*active_up, route);
                         }
                         if (!f.moe_shared_ungated && !shared_gate_logits.defined()) {
                             shared_gate_logits = profiler.measure("moe.shared_gate", [&]() {
@@ -706,6 +700,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                                     .contiguous();
                             });
                         }
+                        TYLOINFER_RUNTIME_CHECK(active_up, "MFE input must be contiguous CUDA f16 with exact K");
                         auto up = reuse_gate_activation
                                       ? project_.run(*active_up, xf, route, true)
                                       : project_.run(*active_up, xf, route);
@@ -713,42 +708,40 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                     });
                 } else {
                     if (cpu_moe_gate_up) {
-                        staged_gate_up.emplace(
-                            profiler.measure("moe.cpu_offload_gate_up_h2d", [&]() {
-                                return stage_cpu_mixed_moe(cpu_moe_gate_up, projection_.moe.heterogeneous);
-                            }));
-                        active_gate_up = &staged_gate_up.value();
+                        active_gate_up = profiler.measure("moe.cpu_offload_gate_up_h2d", [&]() {
+                            return stage_cpu_mixed_moe(cpu_moe_gate_up, projection_.moe.heterogeneous);
+                        });
                     }
                     const bool fuse_projection_glu =
-                        f.swiglu_limit <= 0.0 && !mode_.materialized &&
-                        active_gate_up->supports_projection_glu_epilogue();
+                        f.swiglu_limit <= 0.0 && !mode_.materialized && active_gate_up &&
+                        supports_projection_glu_epilogue(*active_gate_up);
                     if (fuse_projection_glu) {
                         projected_hidden = profiler.measure("moe.gate_up_swiglu", [&]() {
                             return project_.glu(*active_gate_up, xf, route, false);
                         });
                     } else {
                         gate_up_pair = profiler.measure("moe.gate_up", [&]() {
+                            TYLOINFER_RUNTIME_CHECK(active_gate_up, "MFE input must be contiguous CUDA f16 with exact K");
                             return project_.run(*active_gate_up, xf, route);
                         });
                     }
                 }
-                staged_gate_up.reset();
-                staged_gate.reset();
-                staged_up.reset();
+                active_gate_up.reset();
+                active_gate.reset();
+                active_up.reset();
                 if (!projection_bundle_prefetched) {
-                    tyloi::cuda::prefetch_experts(moe_down, route);
+                    if (moe_down) tyloi::cuda::prefetch_experts(*moe_down, route);
                 }
-                std::optional<tyloi::cuda::Experts> staged_down;
-                const tyloi::cuda::Experts *active_down = &moe_down;
+                auto active_down = moe_down;
                 if (cpu_moe_down) {
-                    staged_down.emplace(profiler.measure("moe.cpu_offload_down_h2d", [&]() {
+                    active_down = profiler.measure("moe.cpu_offload_down_h2d", [&]() {
                         return stage_cpu_mixed_moe(cpu_moe_down, projection_.moe.heterogeneous);
-                    }));
-                    active_down = &staged_down.value();
+                    });
                 }
                 DenseTensor down_pair;
                 if (projected_hidden.defined()) {
                     down_pair = profiler.measure("moe.down", [&] {
+                        TYLOINFER_RUNTIME_CHECK(active_down, "MFE input must be contiguous CUDA f16 with exact K");
                         return project_.run(*active_down, projected_hidden, route);
                     });
                 } else {
@@ -758,9 +751,10 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                          (gate_up_pair.size(0) <= 4 && options_.small_heterogeneous));
                     if (allow_fusion && limit <= 0.0) {
                         down_pair = profiler.measure("moe.swiglu_down", [&] {
+                            TYLOINFER_RUNTIME_CHECK(active_down, "fused MFE GLU input has an unsupported layout");
                             return project_.gated(*active_down, gate_up_pair, route, false);
                         });
-                    } else if (allow_fusion && active_down->supports_clamped_swiglu()) {
+                    } else if (allow_fusion && active_down && supports_clamped_swiglu(*active_down)) {
                         down_pair = profiler.measure("moe.swiglu_down", [&] {
                             return project_.clamped(*active_down, gate_up_pair, route, limit);
                         });
@@ -777,13 +771,14 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                             return (::tyloi::cuda::silu(gate) * up).to(::tyloi::kFloat16).contiguous();
                         });
                         down_pair = profiler.measure("moe.down", [&] {
+                            TYLOINFER_RUNTIME_CHECK(active_down, "MFE input must be contiguous CUDA f16 with exact K");
                             return project_.run(*active_down, hidden, route);
                         });
                     }
                 }
                 stats.record(f.moe_layer, selected.at(0), selected.at(1), down_pair,
-                    f.moe_split_gate_up ? moe_gate.n_experts : moe_gate_up.n_experts);
-                staged_down.reset();
+                    f.moe_split_gate_up ? moe_gate->n_experts : moe_gate_up->n_experts);
+                active_down.reset();
                 experts = {down_pair, false};
             }
 #else
@@ -883,7 +878,7 @@ tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor 
     return moe_weighted_reduce_cuda(DenseTensor(pairs), DenseTensor(weights));
 }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-static weights::Placement expert_placement(const MfeTensor& weight) {
+static weights::Placement geglu_placement(const MfeTensor& weight) {
     weights::Placement result;
     if (!weight.shards.empty()) {
         std::int64_t end = 0;
@@ -893,7 +888,7 @@ static weights::Placement expert_placement(const MfeTensor& weight) {
                 shard.weight->size(0) != weight.size(0) || shard.weight->size(1) != weight.size(1) ||
                 shard.weight->size(2) != weight.size(2))
                 throw std::invalid_argument("invalid expert-parallel MFE shard");
-            check_placement(expert_placement(*shard.weight), Device(DeviceType::cuda, shard.device));
+            check_placement(geglu_placement(*shard.weight), Device(DeviceType::cuda, shard.device));
             result.devices.emplace_back(DeviceType::cuda, shard.device);
             end = shard.expert_end;
         }
@@ -933,8 +928,8 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto* gate = dynamic_cast<const MfeTensor*>(&gate_bank);
     const auto* down = dynamic_cast<const MfeTensor*>(&down_bank);
-    if (gate) check_placement(expert_placement(*gate), input.device());
-    if (down) check_placement(expert_placement(*down), input.device());
+    if (gate) check_placement(geglu_placement(*gate), input.device());
+    if (down) check_placement(geglu_placement(*down), input.device());
 #else
     constexpr const MfeTensor* gate = nullptr;
     constexpr const MfeTensor* down = nullptr;

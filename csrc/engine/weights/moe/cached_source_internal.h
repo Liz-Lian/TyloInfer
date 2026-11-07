@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/weights/moe/load.h"
+#include "engine/weights/moe/experts.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/weights/moe/expert_cache_internal.h"
@@ -271,15 +272,6 @@ public:
         return mixed_moe_storage_bytes(*cpu_)+(quant_source_ ? quant_source_->store().index_nbytes() : 0);
     }
 
-    int64_t logical_weight_bytes() const {
-        if (quant_source_) return static_cast<int64_t>(quant_source_->store().payload_nbytes());
-        if (!range_store_) return host_bytes();
-        return range_store_->record().nbytes >
-                static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
-            ? std::numeric_limits<int64_t>::max()
-            : static_cast<int64_t>(range_store_->record().nbytes);
-    }
-
     void finalize() {
         const MfqCudaGuard guard(cache_->device());
         if (active_) return;
@@ -427,7 +419,7 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return tyloi::cuda::mixed_project(*staged.resident, temporary, options, mmq, x, route);
+            return tyloi::cuda::mixed_project(*staged, temporary, options, mmq, x, route);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
@@ -435,7 +427,7 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return tyloi::cuda::mixed_project(*staged.resident, temporary, options, mmq, x, route);
+            return tyloi::cuda::mixed_project(*staged, temporary, options, mmq, x, route);
         }
         require_cache_device(x);
         const MfqCudaGuard guard(cache_->device());
@@ -468,7 +460,7 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return tyloi::cuda::mixed_project(*staged.resident, temporary, options, mmq, x, route);
+            return tyloi::cuda::mixed_project(*staged, temporary, options, mmq, x, route);
         }
         require_cache_device(x);
         const MfqCudaGuard guard(cache_->device());
@@ -498,7 +490,7 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return tyloi::cuda::mixed_glu(*staged.resident, temporary, options, mmq, x, route, gelu);
+            return tyloi::cuda::mixed_glu(*staged, temporary, options, mmq, x, route, gelu);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
@@ -509,7 +501,7 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
             MoeScratch temporary;
-            return tyloi::cuda::mixed_glu(*staged.resident, temporary, options, mmq, x, route, gelu);
+            return tyloi::cuda::mixed_glu(*staged, temporary, options, mmq, x, route, gelu);
         }
         require_cache_device(x);
         const MfqCudaGuard guard(cache_->device());
@@ -546,14 +538,14 @@ public:
             cache_->count_full_projection_fallback();
             auto staged = stage_cpu_mixed_moe(cpu_, heterogeneous);
             MoeScratch temporary;
-            return tyloi::cuda::mixed_clamp(*staged.resident, temporary, options, mmq, gate_up, route, limit);
+            return tyloi::cuda::mixed_clamp(*staged, temporary, options, mmq, gate_up, route, limit);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
             cache_->count_full_projection_fallback();
             auto staged = stage_cpu_mixed_moe(cpu_, heterogeneous);
             MoeScratch temporary;
-            return tyloi::cuda::mixed_clamp(*staged.resident, temporary, options, mmq, gate_up, route, limit);
+            return tyloi::cuda::mixed_clamp(*staged, temporary, options, mmq, gate_up, route, limit);
         }
         require_cache_device(gate_up);
         const MfqCudaGuard guard(cache_->device());
@@ -624,7 +616,7 @@ private:
         return fallback_cpu_;
     }
 
-    tyloi::cuda::Experts stage_fallback_runtime(
+    std::shared_ptr<const tyloi::MfeTensor> stage_fallback_runtime(
             bool heterogeneous) {
         auto runtime = fallback_runtime();
         return stage_cpu_mixed_moe(runtime, heterogeneous);
