@@ -9,7 +9,13 @@ namespace tyloi::cuda {
 
 
 DenseTensor Executor::full_ffn(
-    const Ffn& ffn, const DenseTensor& ffn_norm, const FullAttention& attention,
+    const Ffn& ffn,
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& ffn_norm,
+#else
+    const DenseTensor& ffn_norm,
+#endif
+    const FullAttention& attention,
     DenseTensor residual, DenseTensor output, const Ffn::Mode& mode, Trace* trace_output) {
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope = enter(mfq_current_cuda_device());
@@ -62,7 +68,13 @@ DenseTensor Executor::full_ffn(
 }
 
 DenseTensor Executor::linear_ffn(
-    const Ffn& ffn, const DenseTensor& ffn_norm, const LinearAttention& attention,
+    const Ffn& ffn,
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& ffn_norm,
+#else
+    const DenseTensor& ffn_norm,
+#endif
+    const LinearAttention& attention,
     DenseTensor residual, DenseTensor output, const Ffn::Mode& mode) {
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope = enter(mfq_current_cuda_device());

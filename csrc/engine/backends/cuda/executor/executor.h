@@ -113,11 +113,21 @@ public:
     Projector projector(const Ffn::Mode& mode);
     Projector projector(const Ffn::Mode& mode, int primary);
     ::tyloi::DenseTensor full_ffn(
-        const Ffn& ffn, const ::tyloi::DenseTensor& ffn_norm,
+        const Ffn& ffn,
+#ifdef TYLOINFER_NATIVE_CUDA
+        const ::tyloi::Tensor& ffn_norm,
+#else
+        const ::tyloi::DenseTensor& ffn_norm,
+#endif
         const FullAttention& attention, ::tyloi::DenseTensor residual,
         ::tyloi::DenseTensor output, const Ffn::Mode& mode, Trace* trace = nullptr);
     ::tyloi::DenseTensor linear_ffn(
-        const Ffn& ffn, const ::tyloi::DenseTensor& ffn_norm,
+        const Ffn& ffn,
+#ifdef TYLOINFER_NATIVE_CUDA
+        const ::tyloi::Tensor& ffn_norm,
+#else
+        const ::tyloi::DenseTensor& ffn_norm,
+#endif
         const LinearAttention& attention, ::tyloi::DenseTensor residual,
         ::tyloi::DenseTensor output, const Ffn::Mode& mode);
     CudaProfiler& profiler() noexcept { return profiler_; }

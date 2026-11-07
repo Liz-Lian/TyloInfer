@@ -69,7 +69,11 @@ Layer load_layer(const tyloi::weights::Loader& weights, const Config& config, in
     loader.preserve_projection_boundaries = true;
     const auto prefix = "model.block." + std::to_string(index) + ".";
     tyloi::models::load_attention_mixer(layer.attention, loader, config, index, prefix, 0.0);
+#ifdef TYLOINFER_NATIVE_CUDA
+    layer.ffn_norm = weights.tensor(prefix + "mlp.norm.weight");
+#else
     layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
+#endif
     layer.ffn = tyloi::models::load_dense_ffn<Ffn>(loader, config, prefix + "mlp.");
     return layer;
 }

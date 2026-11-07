@@ -81,7 +81,11 @@ namespace tyloi::cuda::minicpmo45 {
 struct Tts {
     struct Layer {
         FullAttention attention;
+#ifdef TYLOINFER_NATIVE_CUDA
+        std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+#else
         ::tyloi::DenseTensor ffn_norm;
+#endif
         Ffn ffn;
     };
 
@@ -151,7 +155,11 @@ struct Tts {
             const auto prefix = "tts.block." + std::to_string(index) + ".";
             tyloi::models::load_attention_mixer(layer.attention, loader, result.config, index,
                                              prefix, 0.0);
+#ifdef TYLOINFER_NATIVE_CUDA
+            layer.ffn_norm = weights.tensor(prefix + "mlp.norm.weight");
+#else
             layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
+#endif
             layer.ffn = tyloi::models::load_dense_ffn<Ffn>(loader, result.config, prefix + "mlp.");
         }
         return result;
@@ -283,7 +291,11 @@ struct Tts {
                 const std::array<AttentionKvView, 1> kv{cache.view()};
                 const std::array<Task, 2> tasks{{
                     {task::Attention{0, 1, 2, attention, 0}, attention.layer},
+#ifdef TYLOINFER_NATIVE_CUDA
+                    {task::FullFfn{1, 2, 0, layer.ffn, *layer.ffn_norm, attention}, attention.layer},
+#else
                     {task::FullFfn{1, 2, 0, layer.ffn, layer.ffn_norm, attention}, attention.layer},
+#endif
                 }};
                 Inputs inputs;
                 inputs.values = {std::move(hidden), {}, {}};

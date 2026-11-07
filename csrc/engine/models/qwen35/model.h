@@ -26,13 +26,21 @@ using Config = tyloi::models::qwen35::Config;
 
 struct Full {
     FullAttention attention;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+#else
     DenseTensor ffn_norm;
+#endif
     Ffn ffn;
 };
 
 struct Linear {
     LinearAttention attention;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+#else
     DenseTensor ffn_norm;
+#endif
     Ffn ffn;
 
     Task replay(std::int64_t tokens) const;

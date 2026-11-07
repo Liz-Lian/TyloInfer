@@ -90,7 +90,12 @@ std::size_t Cache::minimum() const {
     return moe_expert_cache_minimum_bytes(data_->moe);
 }
 
+bool Cache::empty() const {
+    return !data_->moe && !data_->tq;
+}
+
 bool Cache::graph_safe(Graph kind, bool parallel) const {
+    if (kind == Graph::model_parallel) return !(data_->tq && parallel);
     return !data_->moe && !(data_->tq && (parallel || kind == Graph::legacy));
 }
 

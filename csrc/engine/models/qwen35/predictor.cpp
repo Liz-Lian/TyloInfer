@@ -25,7 +25,11 @@ std::vector<Task> Predictor::tasks() const {
             (!layer.ffn.important_neurons || !layer.ffn.important_neurons->is_moe),
             "Qwen MTP requires dense predictor projections");
         result.push_back({task::Attention{0, 1, 2, attention, index}, attention.layer});
+#ifdef TYLOINFER_NATIVE_CUDA
+        task::Dense ffn{1, 2, 0, layer.ffn, *layer.ffn_norm,
+#else
         task::Dense ffn{1, 2, 0, layer.ffn, layer.ffn_norm,
+#endif
             attention.rms_norm_eps, attention.norm_weight_offset,
             attention.official_bf16, attention.attention_output_gate};
         result.push_back({std::move(ffn), attention.layer});

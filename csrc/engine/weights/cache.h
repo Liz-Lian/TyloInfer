@@ -25,7 +25,7 @@ const CacheData& cache(const Cache& value);
 // The owner drains consumers and enters the CUDA scope before workspace operations.
 class Cache {
 public:
-    enum class Graph { native, legacy };
+    enum class Graph { native, legacy, model_parallel };
     enum class Prefill { regular, streamed, retained };
     enum class Stage { loaded, decode, snapshot };
     struct PrefillBudget {
@@ -97,6 +97,7 @@ public:
     Activity activity() const;
     std::size_t budget() const;
     std::size_t minimum() const;
+    bool empty() const;
     bool graph_safe(Graph kind = Graph::native, bool parallel = false) const;
     bool needs_finalize() const;
     void finalize(std::size_t reserve = 0, std::size_t kv_charge = 0);

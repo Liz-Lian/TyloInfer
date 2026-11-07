@@ -102,7 +102,8 @@ int model_parallel_primary_device(const CudaLoadConfig& config) {
 
 bool model_parallel_cuda_graph_enabled(const CudaLoadConfig& config,
         const Executor& executor, const tyloi::weights::Cache& weights) {
-    if (tyloi::weights::detail::cache(weights).tq && moe_parallel_config(config).enabled()) return false;
+    if (!weights.graph_safe(tyloi::weights::Cache::Graph::model_parallel,
+            moe_parallel_config(config).enabled())) return false;
     if (!config.tensor_parallel.enabled() && !config.expert_parallel.enabled()) return true;
     const bool enabled = config.expert_parallel.enabled() && !config.tensor_parallel.enabled()
         ? config.expert_parallel_cuda_graph : config.tensor_parallel_cuda_graph;

@@ -5,9 +5,8 @@
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/state/kv_offload.h"
-#include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/cache.h"
 #include "engine/weights/placement.h"
-#include "engine/weights/cache_internal.h"
 
 #include <exception>
 #include <unordered_set>
@@ -20,8 +19,7 @@ inline void drain_cuda(
         [[maybe_unused]] const ParallelConfig& tensor_parallel,
         [[maybe_unused]] const ParallelConfig& expert_parallel) {
 #ifdef TYLOINFER_NATIVE_CUDA
-    if (executor.contexts().empty() && !::tyloi::weights::detail::cache(weights).moe &&
-        !::tyloi::weights::detail::cache(weights).tq && !offload &&
+    if (executor.contexts().empty() && weights.empty() && !offload &&
         executor.tq()->empty() && executor.pipelines().empty() && executor.branches().empty() &&
         executor.collectives().streams().empty()) return;
 #endif

@@ -133,8 +133,13 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
             config.attention_output_gate);
         full.attention.attention_rotary_dim = config.rotary_dim;
         full.attention.no_rope = config.positional_encoding == tyloi::models::PositionalEncoding::none;
+#ifdef TYLOINFER_NATIVE_CUDA
+        full.ffn_norm = weights.tensor(std::string(tensor_root) + ".block." +
+                                       std::to_string(index) + ".mlp.norm.weight");
+#else
         full.ffn_norm = loader.dense(std::string(tensor_root) + ".block." +
                                      std::to_string(index) + ".mlp.norm.weight");
+#endif
         full.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, tensor_root);
         result.weights = std::move(full);
     } else {
@@ -149,7 +154,11 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
         linear.attention.tiled_v_heads = config.legacy_tensor_layout.qwen_gdn_gguf_layout;
         const auto prefix = std::string(tensor_root) + ".block." + std::to_string(index) + ".";
         linear.attention.attn_norm = loader.dense(prefix + "attention.norm.weight");
+#ifdef TYLOINFER_NATIVE_CUDA
+        linear.ffn_norm = weights.tensor(prefix + "mlp.norm.weight");
+#else
         linear.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
+#endif
         tyloi::models::qwen35::load_linear_attention(
             linear.attention, loader, config, index, tensor_root);
         linear.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, tensor_root);
@@ -324,7 +333,11 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
         layer.attention.kv_quantization = quantization;
         tyloi::models::load_attention_mixer(layer.attention, loader, config, index, prefix,
             config.legacy_tensor_layout.norm_weight_offset, config.attention_output_gate);
+#ifdef TYLOINFER_NATIVE_CUDA
+        layer.ffn_norm = loader.weights.tensor(prefix + "mlp.norm.weight");
+#else
         layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
+#endif
         layer.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, "predictor");
         model.layers.push_back(std::move(layer));
     }

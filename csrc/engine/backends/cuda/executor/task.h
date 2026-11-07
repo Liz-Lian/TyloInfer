@@ -74,7 +74,11 @@ struct Replay {
 struct Dense {
     Slot residual, input, output;
     const Ffn& weights;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& norm;
+#else
     ::tyloi::DenseTensor norm;
+#endif
     double eps, offset;
     bool bf16, trace;
 };
@@ -82,14 +86,22 @@ struct Dense {
 struct FullFfn {
     Slot residual, input, output;
     const Ffn& weights;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& norm;
+#else
     ::tyloi::DenseTensor norm;
+#endif
     const FullAttention& attention;
 };
 
 struct LinearFfn {
     Slot residual, input, output;
     const Ffn& weights;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& norm;
+#else
     ::tyloi::DenseTensor norm;
+#endif
     const LinearAttention& attention;
 };
 

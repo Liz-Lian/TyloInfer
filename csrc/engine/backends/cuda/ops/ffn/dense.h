@@ -21,7 +21,11 @@ struct Dense {
 
     Mlp mlp;
     std::optional<Mlp> important;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& norm;
+#else
     ::tyloi::DenseTensor norm;
+#endif
     double eps, offset;
     bool bf16 = false;
     bool trace = false;
