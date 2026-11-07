@@ -47,5 +47,5 @@ add_library(mfq-cuda-models OBJECT ${TYLOINFER_MODELS_CUDA_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-models)
 target_link_libraries(mfq-cuda-models PRIVATE mfq-engine)
 target_compile_definitions(mfq-cuda-models PRIVATE
-    TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
 set_target_properties(mfq-cuda-models PROPERTIES POSITION_INDEPENDENT_CODE ON)

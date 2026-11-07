@@ -22,7 +22,7 @@ CudaExecutionContext::~CudaExecutionContext() {
     }
     // Release pipelines while their borrowed branch streams still exist.
     executor().pipelines().clear();
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
     executor().attention_scratch().clear();
 #endif
 }

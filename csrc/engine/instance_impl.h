@@ -41,7 +41,7 @@ class EngineInstance final : public Engine {
         if (!state) throw std::runtime_error("CUDA engine is unloaded");
         return std::visit([&](auto& value) -> decltype(auto) {
             if (!value) throw std::runtime_error("CUDA engine is unloaded");
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             auto guard = value->executor->enter();
 #else
             CudaScope guard(value->execution->config.layer_placement.primary_device(), value->execution->executor().contexts());
@@ -69,7 +69,7 @@ class EngineInstance final : public Engine {
     }
     std::unique_ptr<tyloi::Executor::Scope> enter() override {
         return std::visit([](auto& ops) -> std::unique_ptr<tyloi::Executor::Scope> {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             return ops->executor->enter();
 #else
             return ops->executor->enter(ops->execution->config.layer_placement.primary_device());
@@ -152,8 +152,8 @@ class EngineInstance final : public Engine {
                 auto weight_memory=std::make_shared<tyloi::weights::Memory>();
                 const tyloi::weights::LoadScope memory_load(*weight_memory);
                 ::tyloi::cuda::NoGradGuard no_grad;
-                auto config = resolve_cuda_runtime_config(options);
-                const auto kv_options = runtime_options::qsa_kv_offload();
+                auto config = resolve_cuda_config(options);
+                const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
                 kv=std::make_shared<KvMemoryManager>();
                 if (kv_options.gpu_budget_bytes) {
                     kv.reset();

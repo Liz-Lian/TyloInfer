@@ -849,7 +849,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
     auto project = executor.projector(mode.ffn);
     auto& scratch = executor.mla_scratch(w.device);
     scratch.ensure_compressed();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const ::tyloi::DenseTensor positions(step.positions);
     const MfqOptional<::tyloi::DenseTensor> seq_len = step.sequence_lengths
         ? MfqOptional<::tyloi::DenseTensor>(::tyloi::DenseTensor(*step.sequence_lengths)) : mfq_nullopt;
@@ -1267,7 +1267,7 @@ DenseTensor forward_layer(const Layer& w, LayerState& state, Executor& executor,
             return std::make_pair(normalized, pre);
         },
         [&](const auto &mix) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             auto feed_forward = ffn.forward(
                 mix.first.reshape({batch * tokens, hidden_size}), mode.ffn, current_ids);
 #else

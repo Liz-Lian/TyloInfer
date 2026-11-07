@@ -14,7 +14,7 @@
 #include <stdexcept>
 #include <vector>
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 
 tyloi::ops::RopeTable RopeCache::view() const {
@@ -77,7 +77,7 @@ RopeCache::RopeCache(
     if (official_reciprocal_frequencies) {
         auto cpu_opts = ::tyloi::TensorOptions()
             .device(::tyloi::kCPU).dtype(::tyloi::kFloat32);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         std::vector<float> official_values(static_cast<size_t>(half));
         const float official_base = static_cast<float>(base);
         const float official_denominator = static_cast<float>(denominator);

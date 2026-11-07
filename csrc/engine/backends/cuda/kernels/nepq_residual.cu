@@ -202,7 +202,7 @@ __global__ void nepq_sparse_residual_grouped_kernel(
     }
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 __global__ void nepq_sparse_residual_backward_input_kernel(
     const __half * dictionary,
     const int16_t * first,
@@ -570,7 +570,7 @@ void validate_residual(
 }
 
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::DenseTensor nepq_sparse_residual_backward_input_cuda(
     ::tyloi::DenseTensor dictionary,
     ::tyloi::DenseTensor first,

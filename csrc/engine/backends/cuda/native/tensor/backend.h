@@ -17,7 +17,7 @@
 #include <vector>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 
 #include "engine/backends/cpu/native/host_parallel.h"
 #include "engine/backends/cuda/native/device.h"
@@ -360,7 +360,7 @@ using MfqOptional = std::optional<Value>;
 
 inline constexpr std::nullopt_t mfq_nullopt = std::nullopt;
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 inline ::tyloi::DenseTensor mfq_linear(
     const ::tyloi::DenseTensor& input,
     const ::tyloi::DenseTensor& weight,

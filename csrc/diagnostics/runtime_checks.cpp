@@ -37,7 +37,7 @@ int run_qwen35_mtp_bench(
             diagnostic_max_position_embeddings(model) >= generated_tokens + 17,
         "MTP benchmark requires gen>=2, reps1-100 and context>=gen+17");
     DecodeGraphCache graph_cache(diagnostic_max_position_embeddings(model));
-    const auto runtime_config = resolve_cuda_runtime_config({});
+    const auto runtime_config = resolve_cuda_config({});
     TextSessionCache session_cache(
         runtime_config.session_cache, runtime_config.prefix_cache);
     MfqSamplingParams params;
@@ -213,7 +213,7 @@ int run_qwen_continuous_batching_check(Model& model,
                         owner, nullptr, execution.make_executor(), execution.collectives,
                         execution.forward_mode(), execution.weights.moe,
                         std::move(batch_config), 64,
-                        runtime_options::kv_vram_preallocated(),
+                        ::tyloi::cuda::options::kv_vram_preallocated(),
                         execution.dense_cpu_layer_count != 0 ||
                             !execution.dsv4_cpu_offload_layers.empty(),
                         execution.config.weights.min_slots);
@@ -376,12 +376,12 @@ int run_cuda_continuous_batching_check(
     auto owner = std::make_shared<mfq::cuda::qwen35::Model>(std::move(model));
     return run_qwen_continuous_batching_check(
         *owner, state, executor, execution, owner->metadata,
-        resolve_cuda_runtime_config({}), requests, owner);
+        resolve_cuda_config({}), requests, owner);
 }
 int run_cuda_continuous_batching_check(mfq::cuda::Qwen4CausalLm& model,int requests) {
     return run_qwen_continuous_batching_check(
         model, model, nullptr, *model.execution, model.metadata,
-        resolve_cuda_runtime_config({}),requests);
+        resolve_cuda_config({}),requests);
 }
 
 int run_cuda_engine_isolation_check(CudaEngineOptions options) {
@@ -479,8 +479,8 @@ int run_cuda_engine_isolation_check(CudaEngineOptions options) {
         first->info().model_type == second->info().model_type &&
         first->info().max_context == options.context_size &&
         second->info().max_context == options.context_size &&
-        !std::get<mfq::engine::Metrics>(first->control(mfq::engine::RuntimeMetrics{})).empty() &&
-        !std::get<mfq::engine::Metrics>(second->control(mfq::engine::RuntimeMetrics{})).empty(),
+        !std::get<mfq::engine::Metrics>(first->control(mfq::engine::GetMetrics{})).empty() &&
+        !std::get<mfq::engine::Metrics>(second->control(mfq::engine::GetMetrics{})).empty(),
         "concurrent CUDA engines did not remain isolated");
     std::cout << "cuda_engine_isolation_check PASS engines=2 generated="
               << first_produced + second_produced

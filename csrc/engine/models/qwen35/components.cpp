@@ -50,21 +50,21 @@ void Components::describe(tyloi::engine::EngineInfo& info) const {
 
 tyloi::StepSequence<PreparedPrompt> Components::prepare(
     Model& language, MediaCache& images,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
     Projector projector, Collectives& collectives,
 #endif
     int primary,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
     Executor* executor,
 #endif
     const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
     if (grid_vision)
         return grid_vision->prepare(language, images,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
             projector, collectives,
 #endif
             primary,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
             executor,
 #endif
             tokens, media);

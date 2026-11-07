@@ -169,7 +169,7 @@ private:
     DenseTensor random_cuda_;
 };
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 using Sampler = tyloi::engine::Sampler;
 #else
 using Sampler = tyloi::engine::Sampler<SamplingOps>;

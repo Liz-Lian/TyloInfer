@@ -424,7 +424,7 @@ load_runtime_components(
 #define TYLOINFER_INSTANTIATE_COMPONENTS(TYPE)                                  \
     template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const tyloi::weights::Loader&, bool)
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 TYLOINFER_INSTANTIATE_COMPONENTS(tyloi::cuda::gemma4::Model);
 #endif
 TYLOINFER_INSTANTIATE_COMPONENTS(tyloi::cuda::glm_dsa::Model);

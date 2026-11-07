@@ -283,7 +283,7 @@ def create_build_plan(
         str(output),
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DTYLOINFER_ENABLE_MFQ_COMPAT=OFF",
-        "-DTYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON",
+        "-DTYLOINFER_BUILD_TRANSPORT=ON",
     ]
     selected_generator = generator
     if selected_generator is None and shutil.which("ninja"):
@@ -294,7 +294,7 @@ def create_build_plan(
         configure.extend(
             [
                 "-DTYLOINFER_BUILD_METAL_RUNTIME=ON",
-                "-DTYLOINFER_BUILD_CUDA_RUNTIME=OFF",
+                "-DTYLOINFER_BUILD_CUDA_ENGINE=OFF",
                 "-DTYLOINFER_BUILD_HIP_RUNTIME=OFF",
                 f"-DTYLOINFER_MLX_ROOT={_mlx_root()}",
             ]
@@ -310,7 +310,7 @@ def create_build_plan(
         configure.extend(
             [
                 "-DTYLOINFER_BUILD_HIP_RUNTIME=ON",
-                "-DTYLOINFER_BUILD_CUDA_RUNTIME=OFF",
+                "-DTYLOINFER_BUILD_CUDA_ENGINE=OFF",
             ]
         )
         rocm = os.environ.get("ROCM_PATH") or os.environ.get("ROCM_HOME")
@@ -326,7 +326,7 @@ def create_build_plan(
         if rocm:
             configure.append(f"-DROCM_PATH={rocm}")
     elif selected == "cuda":
-        configure.extend(["-DTYLOINFER_BUILD_CUDA_RUNTIME=ON", "-DTYLOINFER_BUILD_HIP_RUNTIME=OFF"])
+        configure.extend(["-DTYLOINFER_BUILD_CUDA_ENGINE=ON", "-DTYLOINFER_BUILD_HIP_RUNTIME=OFF"])
     configure.extend(str(value) for value in cmake_args)
     parallelism = jobs if jobs is not None else max(1, os.cpu_count() or 1)
     if parallelism < 1:

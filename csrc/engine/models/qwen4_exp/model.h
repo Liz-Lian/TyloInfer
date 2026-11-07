@@ -90,7 +90,7 @@ class Gdn {
         // Recurrence is allocated on first use, outside temporary pool pages.
         // Keep the reusable decode counters out of graph scratch as well.
         request_state_storage_=true;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         ResidentAllocationScope resident;
 #endif
         auto options=w_->norm.options().dtype(::tyloi::kFloat32);
@@ -123,7 +123,7 @@ class Gdn {
     DenseTensor project_output(const tyloi::cuda::Projector& projector,const DenseTensor& x) const;
     static DenseTensor prepare_independent_batch(const std::vector<Gdn*>& rows) {
         if(rows.size()<2 || rows.size()>32)return {};
-        const auto inplace=tyloi::cuda::runtime_options::gdn_inplace_state();
+        const auto inplace=::tyloi::cuda::options::gdn_inplace_state();
         if(inplace && !*inplace)return {};
         const auto& first=*rows.front();
         const auto eligible=[](const Gdn& row) {
@@ -139,7 +139,7 @@ class Gdn {
                 row.state_.sizes().vec()==std::vector<int64_t>({1,row.nv_,row.d_,row.d_}) &&
                 row.core_workspace_.sizes().vec()==std::vector<int64_t>({1,row.nv_,row.d_+1});
         };
-        if(tyloi::cuda::runtime_options::gdn_independent_batch_trace())
+        if(::tyloi::cuda::options::gdn_independent_batch_trace())
             std::fprintf(stderr,"gdn_batch_state eligible=%d flags=%d%d%d%d%d conv=%d state=%d counters=%d geometry=%lld/%lld/%lld/%lld\n",
                 int(eligible(first)),int(first.fused_core_),int(first.fused_decode_),int(first.fused_preparation_),
                 int(first.fused_output_),int(first.transposed_state_),int(first.conv_.defined()),int(first.state_.defined()),
@@ -162,7 +162,7 @@ class Gdn {
     }
     DenseTensor forward_independent_batch(const DenseTensor& x,const std::vector<DenseTensor>& projections,
                                      const DenseTensor& addresses) {
-        if(tyloi::cuda::runtime_options::gdn_independent_batch_trace() && projections.size()==4)
+        if(::tyloi::cuda::options::gdn_independent_batch_trace() && projections.size()==4)
             std::fprintf(stderr,"gdn_batch_projection input=%d qkv=%d gate=%d alpha=%d beta=%d rows=%lld\n",
                 int(x.scalar_type()),int(projections[0].scalar_type()),int(projections[1].scalar_type()),
                 int(projections[2].scalar_type()),int(projections[3].scalar_type()),(long long)x.size(0));
@@ -172,12 +172,12 @@ class Gdn {
             projections[1].scalar_type()!=projections[2].scalar_type() ||
             projections[2].scalar_type()!=projections[3].scalar_type() ||
             (projections[1].scalar_type()!=::tyloi::kFloat16 && projections[1].scalar_type()!=::tyloi::kFloat32))return {};
-        if(tyloi::cuda::runtime_options::gdn_independent_batch_trace())
+        if(::tyloi::cuda::options::gdn_independent_batch_trace())
             std::fprintf(stderr,"gdn_batch_core rows=%lld\n",(long long)x.size(0));
         auto weight=w_->conv.to(::tyloi::kFloat32).contiguous();
         if(weight.dim()==2 && weight.size(0)==(2*nk_+nv_)*d_ && weight.size(1)==kernel_)
             weight=weight.reshape({(2*nk_+nv_)*d_,1,kernel_});
-        const auto stride_setting=tyloi::cuda::runtime_options::gdn_strided_projections();
+        const auto stride_setting=::tyloi::cuda::options::gdn_strided_projections();
         const auto direct=[&](const DenseTensor& value){return !stride_setting || *stride_setting?value:value.contiguous();};
         auto result=gdn_decode_core_cuda(direct(projections[0]),direct(projections[1]),
             projections[2].reshape({x.size(0),1,nv_}),projections[3].reshape({x.size(0),1,nv_}),
@@ -189,13 +189,13 @@ class Gdn {
     DenseTensor forward_graph(const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor& x,int64_t confirmed,
                          std::vector<DenseTensor>& checkpoint_conv,std::vector<DenseTensor>& checkpoint_state) {
         if(!confirmed)return forward_chunk(project,profiler,x,true);
-        const auto batch=tyloi::cuda::runtime_options::gdn_batch_projection();
+        const auto batch=::tyloi::cuda::options::gdn_batch_projection();
         const bool grouped=grouped_projection_ && project.grouped(w_->input_projection) && x.size(1)<=8 && (!batch || *batch);
         // Only recurrence is split at the confirmation boundary. Both parts
         // share the input projections and one output projection.
         std::vector<DenseTensor> projected;if(grouped)projected=project_inputs(project,x);
         const auto* window_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_GDN_REGISTER_WINDOW");
-        const auto inplace_option=tyloi::cuda::runtime_options::gdn_inplace_state();
+        const auto inplace_option=::tyloi::cuda::options::gdn_inplace_state();
         const auto* checkpoint_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
         if(grouped && confirmed==1 && x.size(0)==1 && x.size(1)>=2 && x.size(1)<=8 &&
             (!window_option || window_option[0]!='0') && nv_<=65535 &&
@@ -268,7 +268,7 @@ class Gdn {
             bind_graph_checkpoint(conv,state,cache_position+confirmed);
             return result;
         }
-        const auto batch=tyloi::cuda::runtime_options::gdn_batch_projection();
+        const auto batch=::tyloi::cuda::options::gdn_batch_projection();
         const bool grouped=cache && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8 &&
             grouped_projection_ && project.grouped(w_->input_projection) && (!batch || *batch);
         std::vector<DenseTensor> projected;
@@ -310,7 +310,7 @@ class Gdn {
         auto previous =
             cache && conv_.defined() ? conv_ : ::tyloi::cuda::zeros({b, kernel_ - 1, channels}, options);
         std::array<DenseTensor,2> prepared_gates;
-        const auto prefill_option=tyloi::cuda::runtime_options::gdn_prefill_fused();
+        const auto prefill_option=::tyloi::cuda::options::gdn_prefill_fused();
         const bool prefill_fused=t>1 && fused_preparation_ && d_<=256 && kernel_<=8 &&
             (!prefill_option || *prefill_option!=0);
         if(cache && conv_.defined() && state_.defined() && fused_core_ && fused_decode_ &&
@@ -329,7 +329,7 @@ class Gdn {
                 if(weight.dim()==2 && weight.size(0)==channels && weight.size(1)==kernel_)
                     weight=weight.reshape({channels,1,kernel_});
                 if(!core_workspace_.defined())core_workspace_=::tyloi::cuda::zeros({b,nv_,d_+1},options);
-                const auto stride_setting=tyloi::cuda::runtime_options::gdn_strided_projections();
+                const auto stride_setting=::tyloi::cuda::options::gdn_strided_projections();
                 const auto direct=[&](const DenseTensor& value){return !stride_setting || *stride_setting?value:value.contiguous();};
                 const auto decode=[&](bool checkpoint) {
                   auto qkv=direct(projections[0]),gate=direct(projections[1]);
@@ -343,12 +343,12 @@ class Gdn {
                     weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
                     w_->norm.to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
                     x.scalar_type()==::tyloi::kFloat16,true,core_workspace_,
-                    [] {const auto value=tyloi::cuda::runtime_options::gdn_inplace_state();return !value || *value;}());
+                    [] {const auto value=::tyloi::cuda::options::gdn_inplace_state();return !value || *value;}());
                 };
                 const auto* checkpoint_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
                 const bool fused_snapshot=checkpoint_conv.defined() && checkpoint_state.defined() &&
                     (!checkpoint_option || checkpoint_option[0]!='0') &&
-                    [] {const auto value=tyloi::cuda::runtime_options::gdn_inplace_state();return !value || *value;}();
+                    [] {const auto value=::tyloi::cuda::options::gdn_inplace_state();return !value || *value;}();
                 auto decoded=decode(fused_snapshot);
                 if(snapshot_written)*snapshot_written=fused_snapshot;
                 if(fused_snapshot) {
@@ -385,11 +385,11 @@ class Gdn {
                         auto weight=w_->conv.to(::tyloi::kFloat32).contiguous();
                         if(weight.dim()==2 && weight.size(0)==channels && weight.size(1)==kernel_)
                             weight=weight.reshape({channels,1,kernel_});
-                        const auto short_option=tyloi::cuda::runtime_options::gdn_short_fusion();
+                        const auto short_option=::tyloi::cuda::options::gdn_short_fusion();
                         if(t<=8 && (!short_option || *short_option) && projections.size()==4 &&
                             projections[2].scalar_type()==projections[3].scalar_type() &&
                             (projections[2].scalar_type()==::tyloi::kFloat16 || projections[2].scalar_type()==::tyloi::kFloat32)) {
-                            const auto stride_setting=tyloi::cuda::runtime_options::gdn_strided_projections();
+                            const auto stride_setting=::tyloi::cuda::options::gdn_strided_projections();
                             const auto direct=[&](const DenseTensor& value){return !stride_setting || *stride_setting?value:value.contiguous();};
                             auto qkv=linear_conv_qkv_gate_short_cuda(previous,direct(projected),weight,
                                 direct(projections[2].reshape({b,t,nv_})),direct(projections[3].reshape({b,t,nv_})),
@@ -479,8 +479,8 @@ class Gdn {
                 DenseTensor attended, next_state;
                 if (d_ == 32 || d_ == 64 || d_ == 128) {
                     auto result = profiler.measure("prefill.gdn_recurrence",[&] {
-                        const auto short_option=tyloi::cuda::runtime_options::gdn_short_inplace();
-                        const auto inplace=tyloi::cuda::runtime_options::gdn_inplace_state();
+                        const auto short_option=::tyloi::cuda::options::gdn_short_inplace();
+                        const auto inplace=::tyloi::cuda::options::gdn_inplace_state();
                         if(cache && initial.defined() && t<=8 && (!short_option || *short_option) && (!inplace || *inplace))
                             return (transposed_state_?gdn_inplace_transposed_cuda:gdn_inplace_cuda)(q,k,v,decay,beta,initial);
                         return (transposed_state_ ? gdn_transposed_cuda : gdn_cuda)(
@@ -510,7 +510,7 @@ class Gdn {
                 return std::array<DenseTensor, 2>{attended, next_state};
             },
             [&](DenseTensor attended) {
-                const auto stride_setting=tyloi::cuda::runtime_options::gdn_strided_projections();
+                const auto stride_setting=::tyloi::cuda::options::gdn_strided_projections();
                 const bool strided=!stride_setting || *stride_setting;
                 auto projected_gate=projections.empty()
                     ?project_weight(project,*w_->input_projection[w_->qkv_count],x)
@@ -541,14 +541,14 @@ class Gdn {
             [&](const auto &convolution, const DenseTensor &next) {
                 if(conv_.defined())conv_.copy_(convolution[3]);
                 else {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                     ResidentAllocationScope resident(request_state_storage_);
 #endif
                     conv_=request_state_storage_?convolution[3].clone():convolution[3];
                 }
                 if(state_.defined()) {if(state_.data_ptr()!=next.data_ptr())state_.copy_(next);}
                 else {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                     ResidentAllocationScope resident(request_state_storage_);
 #endif
                     state_=request_state_storage_?next.clone():next;
@@ -869,8 +869,8 @@ class Ple {
                 }
             }
         };
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const auto native=tyloi::cuda::runtime_options::ple_native_fusion();
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto native=::tyloi::cuda::options::ple_native_fusion();
         if((!native || *native) && x.is_contiguous() && t<=32 && hidden_>128 && hidden_<=8192 &&
             (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32)) {
             try {
@@ -1279,7 +1279,7 @@ class Qsa {
         auto indices=mfq_qwen4_exp::live_topk_blocks(ranked,cache_positions,c_.pool,count);
         mark("qsa_topk_end");
         DenseTensor selected;
-        const auto fused_selection=tyloi::cuda::runtime_options::qsa_select_fused();
+        const auto fused_selection=::tyloi::cuda::options::qsa_select_fused();
         if(!fused_selection || *fused_selection) {
             selected=mfq_qwen4_exp::qsa_selected_tokens(indices,cache_positions,c_.pool,c_.budget);
         } else {
@@ -1313,7 +1313,7 @@ class Qsa {
             gated=(attended*::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32))).to(hidden.scalar_type());
         } else if(fused_projection_ && rotary_->fused() &&
             (hidden.scalar_type()==::tyloi::kFloat16 || hidden.scalar_type()==::tyloi::kFloat32)) {
-            const auto sparse_gate=tyloi::cuda::runtime_options::qsa_sparse_gate_fused();
+            const auto sparse_gate=::tyloi::cuda::options::qsa_sparse_gate_fused();
             if(!sparse_gate || *sparse_gate)
                 gated=mfq_qwen4_exp::sparse_gqa_attention_gate(p.query,graph_keys_,graph_values_,selected,
                     p.gate,hidden.scalar_type()==::tyloi::kFloat16,hot);
@@ -1383,7 +1383,7 @@ class Qsa {
                                      std::move(projections),project_output,history_only);
         }
         const auto b = hidden.size(0), t = hidden.size(1), offset = use_cache ? position() : 0;
-        const auto prefill_option=tyloi::cuda::runtime_options::qsa_prefill_fused();
+        const auto prefill_option=::tyloi::cuda::options::qsa_prefill_fused();
         // Scalar decode and verification use the same grouped projections and
         // normalization/RoPE preparation as captured execution. Keeping short
         // eager calls on separate norms introduces extra FP16 rounding steps.

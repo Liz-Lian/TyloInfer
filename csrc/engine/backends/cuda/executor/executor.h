@@ -25,12 +25,12 @@ class Pipelines;
 class RouteStats;
 
 class Executor
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::Executor
 #endif
 {
 public:
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<tyloi::Executor::Scope> enter() override;
     std::unique_ptr<tyloi::Executor::Timer> timer() override;
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
@@ -46,7 +46,7 @@ public:
 #endif
     std::unique_ptr<tyloi::Executor::Scope> enter(int device);
     void join();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     void wait();
     static Executor& current();
     static const Ffn::Mode& current_ffn();
@@ -105,7 +105,7 @@ public:
 
     ::tyloi::DenseTensor run(std::span<const Task> tasks, Inputs inputs,
                                    const Mode& mode);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> storage() const;
 #else
     std::vector<::tyloi::DenseTensor> storage() const;
@@ -135,7 +135,7 @@ public:
     const AttentionOptions& attention_options() const noexcept { return options_.attention; }
     bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     using AttentionGeometry = std::tuple<std::int64_t, std::int64_t, std::int64_t, std::int64_t>;
     AttentionScratch& attention_scratch(tyloi::Device device, AttentionGeometry geometry);
 #else
@@ -171,7 +171,7 @@ private:
     std::vector<AttentionScratch> scratch_;
     MfeScratch mfe_scratch_;
     MoeScratchCache moe_scratch_;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     mutable std::mutex attention_scratch_mutex_;
     std::map<std::pair<int, std::uintptr_t>, std::map<AttentionGeometry, AttentionScratch>> attention_scratch_;
 #else

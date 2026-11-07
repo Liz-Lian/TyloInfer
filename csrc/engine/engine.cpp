@@ -6,8 +6,8 @@
 #include <iostream>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "engine/runtime_metrics.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/resource_metrics.h"
 #include "engine/models/prepare.h"
 #include "engine/models/source.h"
 #include "engine/scheduler/request.h"
@@ -24,9 +24,9 @@
 namespace tyloi::engine {
 
 Engine::Engine() = default;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 Engine::Engine(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
         std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
@@ -43,11 +43,11 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         model_info_ = model_->info();
         info_ = {};
         auto& info = info_;
-        info.max_requests = std::max<std::size_t>(1, runtime_.continuous_batch.max_sequences);
+        info.max_requests = std::max<std::size_t>(1, config_.continuous_batch.max_sequences);
         info.max_context = model_info_.max_context;
         info.vocab_size = static_cast<std::int32_t>(model_info_.vocab_size);
         info.model_type = model_info_.model_type;
-        info.stop_token_ids = runtime_.stop_token_ids;
+        info.stop_token_ids = config_.stop_token_ids;
         info.capabilities = model_->capabilities();
         const auto& caps = info.capabilities;
         info.duplex = caps.full_duplex;
@@ -59,7 +59,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         graph_.emplace(model_info_.max_context, Device(kCUDA, forward_options_.primary), std::move(graph));
         budget_.emplace(*ledger_, *weights_, *cache_, Device(kCUDA, forward_options_.primary));
         budget_->bind();
-        if (const auto bytes = runtime_.resident_budget_bytes) {
+        if (const auto bytes = config_.resident_budget_bytes) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
@@ -81,7 +81,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
 }
 
 void Engine::rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
         std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
@@ -93,7 +93,7 @@ void Engine::rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<
     }
     model_ = std::move(model);
     executor_ = std::move(executor);
-    runtime_ = std::move(config);
+    config_ = std::move(config);
     source_ = std::move(source);
     ledger_ = std::move(memory);
     weights_ = std::move(weights);
@@ -115,7 +115,7 @@ void Engine::rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<
 }
 #endif
 Engine::~Engine() {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if (scheduler_ || executor_) {
         try { shutdown(); }
         catch (const std::exception& error) { std::cerr << "runtime_unload_cleanup error=" << error.what() << '\n'; }
@@ -124,7 +124,7 @@ Engine::~Engine() {
 #endif
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 void Engine::retire_request(Request& request) noexcept {
     request.generation = {};
     request.state.reset();
@@ -208,11 +208,11 @@ ControlResult Engine::control_command(ControlRequest request) {
             else if constexpr (std::is_same_v<T, engine::PrepareDuplex>) {
                 text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
             } else { text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
-        } else if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
-            return runtime_metrics(model_->metrics(), {}, std::nullopt, false, 3,
+        } else if constexpr (std::is_same_v<T, engine::GetMetrics>) {
+            return resource_metrics(model_->metrics(), {}, std::nullopt, false, 3,
                 {}, {}, std::nullopt, {}, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
-                executor_->memory(runtime_.devices), Device(kCUDA, forward_options_.primary), runtime_.online_budget);
+                executor_->memory(config_.devices), Device(kCUDA, forward_options_.primary), config_.online_budget);
         } else throw std::invalid_argument("model has no duplex component");
     }, std::move(request));
 }
@@ -233,7 +233,7 @@ void Engine::reserve(models::State& state, std::int64_t tokens) {
 }
 
 SessionResult Engine::set_budget(const SessionCommand& command) {
-    if (!runtime_.online_budget)
+    if (!config_.online_budget)
         throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
     auto change = budget_->change(command);
     weights_->settle();

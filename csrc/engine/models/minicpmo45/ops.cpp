@@ -131,7 +131,7 @@ State::State(const Model& model) : layers(model.layers.size()) {
     }
 }
 void State::preallocate() {
-    if (!runtime_options::kv_vram_preallocated()) return;
+    if (!::tyloi::cuda::options::kv_vram_preallocated()) return;
     for (size_t i = 0; i < layers.size(); ++i) {
         const auto& l = layout_[i];
         if (l.cpu || layers[i].defined()) continue;
@@ -293,7 +293,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         values.values = {std::move(hidden), {}, {}};
         values.kv = std::span<const AttentionKvView>{&kv, 1};
         values.attention = std::move(step);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         values.rope = rope->view();
 #else
         values.rope = rope;

@@ -171,7 +171,7 @@ if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
         PROPERTY COMPILE_OPTIONS "--split-compile=0")
 endif()
 target_compile_definitions(mfq-cuda-native-kernels PRIVATE
-    TYLOINFER_NATIVE_CUDA_RUNTIME=1
+    TYLOINFER_NATIVE_CUDA=1
 )
 target_include_directories(mfq-cuda-native-kernels PRIVATE
     ${PROJECT_SOURCE_DIR}
@@ -250,7 +250,7 @@ function(mfq_configure_cuda_backend_target target)
     endif()
 endfunction()
 
-set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
+set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/ops.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/tensor.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/ffn.cpp
@@ -277,7 +277,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mmq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
-    list(APPEND TYLOINFER_CUDA_RUNTIME_OP_SOURCES
+    list(APPEND TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/fp8_sq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mxfp4_sq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/moe.cpp
@@ -287,11 +287,11 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     )
 endif()
 
-add_library(mfq-cuda-ops OBJECT ${TYLOINFER_CUDA_RUNTIME_OP_SOURCES})
+add_library(mfq-cuda-ops OBJECT ${TYLOINFER_CUDA_OP_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-ops)
 target_link_libraries(mfq-cuda-ops PRIVATE mfq-quant-readers)
 target_compile_definitions(mfq-cuda-ops PRIVATE
-    TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
 set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
@@ -317,7 +317,7 @@ add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)
 target_link_libraries(mfq-cuda-execution PRIVATE mfq-cpu-execution mfq-engine)
 target_compile_definitions(mfq-cuda-execution PRIVATE
-    TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
 set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set_source_files_properties(

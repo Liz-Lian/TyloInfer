@@ -147,9 +147,9 @@ void Scheduler::refresh_snapshot(bool healthy, bool blocked, bool metrics) {
     auto status = execution_status();
     status.healthy &= healthy;
     if (blocked || !status.healthy) status.available = 0;
-    std::optional<Metrics> runtime, session;
+    std::optional<Metrics> engine_metrics, session;
     if (metrics) {
-        try { runtime = std::get<Metrics>(engine_.control_command(RuntimeMetrics{})); } catch (...) {}
+        try { engine_metrics = std::get<Metrics>(engine_.control_command(GetMetrics{})); } catch (...) {}
         try { session = engine_.session_command({SessionCommand::Kind::metrics}).metrics; } catch (...) {}
     }
     std::lock_guard lock(mutex_);
@@ -164,9 +164,9 @@ void Scheduler::refresh_snapshot(bool healthy, bool blocked, bool metrics) {
             else found->second = value.second;
         }
     };
-    if (runtime) merge(snapshot_.runtime, *runtime);
+    if (engine_metrics) merge(snapshot_.engine, *engine_metrics);
     if (session) merge(snapshot_.session, *session);
-    if (runtime && session) snapshot_.captured = Clock::now();
+    if (engine_metrics && session) snapshot_.captured = Clock::now();
 }
 std::shared_ptr<Output> Scheduler::submit(EngineRequest input) const {
     if (input.id.empty() || input.id.size() > 128)

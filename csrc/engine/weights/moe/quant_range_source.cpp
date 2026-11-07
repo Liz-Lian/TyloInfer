@@ -29,7 +29,7 @@ void copy_neuron_anchors(std::vector<uint16_t>& anchors,const ::tyloi::DenseTens
     output.copy_(::tyloi::cuda::from_blob(anchors.data(),{count},
         ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat16)));
 }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 struct NvqFieldOwner {
     tyloi::NvqRows::Fields fields;
     explicit NvqFieldOwner(tyloi::NvqRows::Fields value):fields(std::move(value)) {
@@ -67,9 +67,9 @@ MoeQuantRangeSource::MoeQuantRangeSource(std::shared_ptr<tyloi::MfeQuantExpertSt
     if (!store_) throw std::invalid_argument("missing quantized expert range source");
     const auto* profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     profile_ssd_=profile && profile[0]=='1';
-    const auto dense=tyloi::cuda::runtime_options::moe_nvq_dense();
-    const auto preload=tyloi::cuda::runtime_options::moe_preload_all();
-    const auto sealed=tyloi::cuda::runtime_options::moe_assert_resident();
+    const auto dense=::tyloi::cuda::options::moe_nvq_dense();
+    const auto preload=::tyloi::cuda::options::moe_preload_all();
+    const auto sealed=::tyloi::cuda::options::moe_assert_resident();
     const bool complete=preload && *preload && sealed && *sealed;
     dense_groups_=dense ? *dense : complete;
     if(dense_groups_ && !complete)
@@ -110,7 +110,7 @@ MoeQuantRangeSource::MoeQuantRangeSource(std::shared_ptr<tyloi::MfeQuantExpertSt
 }
 
 MixedMoePool MoeQuantRangeSource::read_expert(int expert) const {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if(pinned_arena_) {
         auto pool=allocate_expert(expert);
         copy_expert_fields(expert,expert_field_tensors(pool));
@@ -123,7 +123,7 @@ MixedMoePool MoeQuantRangeSource::read_expert(int expert) const {
 MixedMoePool MoeQuantRangeSource::allocate_expert(int expert) const {
     const auto index=store_->expert_pool(expert);
     std::vector<::tyloi::DenseTensor> fields;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     {
         auto block=pinned_arena_?pinned_arena_->allocate(arena_bytes_.at(index)):nullptr;
         const auto& layouts=field_layouts_.at(index);
@@ -208,7 +208,7 @@ MixedMoePool MoeQuantRangeSource::read_expert_canonical(int expert) const {
         result=metadata_->pools[index];result.local_experts=1;result.expert_local={};
         auto& w=result.nvq;
         w.neuron_scale=cpu_f16_to_f32_tensor(fields->neuron_scale,store_->out_per_expert());
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         // Tensor owners retain the actual read buffers through every DMA
         // consumer. Avoid copying each packed stream into another CPU tensor.
         fields->neuron_scale=std::vector<uint16_t>{};

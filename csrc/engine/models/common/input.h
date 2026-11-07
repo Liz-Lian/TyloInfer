@@ -2,13 +2,13 @@
 
 #include "engine/models/input.h"
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/tensor/backend.h"
 #endif
 
 namespace tyloi::cuda {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 using Input = tyloi::models::Input;
 #else
 struct Input {

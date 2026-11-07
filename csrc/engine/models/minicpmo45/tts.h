@@ -291,7 +291,7 @@ struct Tts {
                 inputs.attention.positions = positions.first;
                 inputs.attention.sequence_lengths = positions.second;
                 inputs.attention.cache_position = state.position;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                 inputs.rope = rope.view();
 #else
                 inputs.rope = &rope;

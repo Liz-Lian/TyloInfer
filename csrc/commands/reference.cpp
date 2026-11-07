@@ -92,7 +92,7 @@ template <typename Model> struct ReferenceLayers {
     using Layer = typename std::remove_reference_t<decltype(model.layers)>::value_type;
     using LayerState = std::conditional_t<std::is_same_v<Model, tyloi::cuda::qwen35::Model>,
                                           tyloi::cuda::qwen35::LayerState,
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                                           tyloi::state::KvView>;
 #else
                                           KVCache>;
@@ -141,7 +141,7 @@ template <typename Model> struct ReferenceLayers {
     }
 
     ::tyloi::DenseTensor forward(int index, ::tyloi::DenseTensor input, const ::tyloi::DenseTensor& positions) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         auto scope = executor->enter();
 #endif
         if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {
@@ -165,7 +165,7 @@ template <typename Model> struct ReferenceLayers {
             const tyloi::cuda::AttentionStep step{
                 execution.executor().collectives().copy(positions, layer.device), mfq_nullopt, mfq_nullopt,
                 mfq_nullopt, 0, 0, 0};
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             auto hidden = tyloi::cuda::gemma4::forward_layer(layer, state,
                 execution.executor().collectives().copy(std::move(input), layer.device), step,
                 tyloi::cuda::forward_options(execution.executor().forward_mode(execution.config.layer_placement.primary_device())));
@@ -189,14 +189,14 @@ template <typename Model> struct ReferenceLayers {
     }
 
     ::tyloi::DenseTensor finalize(::tyloi::DenseTensor hidden, std::int64_t batch, std::int64_t tokens) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         auto scope = executor->enter();
 #endif
         if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
             return tyloi::cuda::qwen35::normalize(model, *executor,
                                                 std::move(hidden), batch, tokens);
         else
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             return ::tyloi::DenseTensor(model.normalize(std::move(hidden), batch, tokens));
 #else
             return tyloi::cuda::gemma4::normalize(model, *executor, std::move(hidden), batch, tokens);
@@ -204,13 +204,13 @@ template <typename Model> struct ReferenceLayers {
     }
 
     ::tyloi::DenseTensor softcap(::tyloi::DenseTensor logits) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         auto scope = executor->enter();
 #endif
         if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
             return tyloi::cuda::qwen35::softcap(model, *executor, std::move(logits));
         else
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             return ::tyloi::DenseTensor(model.softcap(std::move(logits)));
 #else
             return tyloi::cuda::gemma4::softcap(model, *executor, std::move(logits));

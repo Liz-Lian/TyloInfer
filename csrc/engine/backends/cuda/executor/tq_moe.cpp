@@ -249,7 +249,7 @@ struct TqMoeGraphStage {
        stage->routes!=ids.size(1) || stage->input.sizes()!=source.sizes() || stage->input.scalar_type()!=source.scalar_type() ||
        stage->route_dtype!=ids.scalar_type())
         throw std::invalid_argument("TQ graph stage geometry changed");
-    const bool views=tyloi::cuda::runtime_options::window_input_views() && source.is_contiguous() &&
+    const bool views=::tyloi::cuda::options::window_input_views() && source.is_contiguous() &&
         ids.is_contiguous() && weights.is_contiguous() && weights.scalar_type()==::tyloi::kFloat32;
     if(tyloi::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")) {
         const unsigned mode=(stage->mapped_routes?(stage->route_dtype==::tyloi::kInt32?1u:2u):4u)|(views?8u:0u);

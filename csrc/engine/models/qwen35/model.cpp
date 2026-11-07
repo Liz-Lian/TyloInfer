@@ -6,7 +6,7 @@
 
 namespace tyloi::cuda::qwen35 {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int primary) const {
     if (ids.dim() != 1 && ids.dim() != 2)
         throw std::runtime_error("token IDs must have shape [tokens] or [batch,tokens]");

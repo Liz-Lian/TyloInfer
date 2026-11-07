@@ -1,4 +1,4 @@
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/engine.h"
 #include "engine/budget.h"
 #include "engine/generation/decode.h"
@@ -45,7 +45,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     auto& weights = *weights_;
     auto& graph = *graph_;
     const auto& info = model_info_;
-    const auto& config = runtime_;
+    const auto& config = config_;
     const auto& forward_options = forward_options_;
     const auto& prompt = input.prompt;
     const auto& cache_plan = input.cache_plan;
@@ -252,7 +252,7 @@ namespace tyloi::cuda::internal {
         const tyloi::models::Info &, const tyloi::ModelSource*,                                          \
         DecodeGraphCache &,                                                                        \
         tyloi::engine::SessionCache<tyloi::cuda::internal::CudaSessionOps> &,                       \
-        const tyloi::engine::RuntimeConfig &,                                                      \
+        const tyloi::engine::Config &,                                                      \
         tyloi::engine::InferenceRequest &,                                                           \
         tyloi::engine::InferenceOutput &,                                                            \
         tyloi::engine::mtp::State &,                                                                  \

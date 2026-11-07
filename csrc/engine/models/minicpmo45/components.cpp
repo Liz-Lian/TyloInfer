@@ -116,7 +116,7 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
     }
     PreparedPrompt prepared;
     prepared.token_ids = prompt;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     prepared.embeddings = std::make_shared<::tyloi::DenseTensor>(std::move(result.input_embeddings));
     prepared.positions = std::make_shared<::tyloi::DenseTensor>(
         ::tyloi::cuda::arange(static_cast<int64_t>(prompt.size()), cuda_i64));

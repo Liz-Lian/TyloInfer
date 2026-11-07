@@ -61,7 +61,7 @@ DenseTensor Projector::run(const MfeTensor& weight, DenseTensor input,
     if (epilogue) throw std::runtime_error(prequantized
         ? "mixed prequantized MFE GLU epilogue is unavailable"
         : "mixed MFE GLU epilogue must use its native dispatch");
-    const auto options = runtime_options::moe(options_.moe);
+    const auto options = ::tyloi::cuda::options::moe(options_.moe);
     if (weight.cached_source) {
         auto scratch = moe_scratch_.get(weight.cached_source, input);
         if (prequantized)
@@ -92,7 +92,7 @@ DenseTensor Projector::glu(const MfeTensor& weight, DenseTensor input,
         return collectives_.sum(std::move(outputs), primary_, options_.reduce_to_primary, options_.fp16_reduce);
     }
     if (!weight.cached_source && (weight.compact || weight.pools.empty())) return run(weight, input, route, false, gelu ? 2 : 1);
-    const auto options = runtime_options::moe(options_.moe);
+    const auto options = ::tyloi::cuda::options::moe(options_.moe);
     if (weight.cached_source)
         return weight.cached_source->forward_glu_output(*moe_scratch_.get(weight.cached_source, input),
             options, mmq_, options.heterogeneous, input, route, gelu);
@@ -119,7 +119,7 @@ DenseTensor Projector::gated(const MfeTensor& weight, DenseTensor input,
         return collectives_.sum(std::move(outputs), primary_, options_.reduce_to_primary, options_.fp16_reduce);
     }
     if (weight.cached_source) {
-        const auto options = runtime_options::moe(options_.moe);
+        const auto options = ::tyloi::cuda::options::moe(options_.moe);
         return weight.cached_source->forward_glu(*moe_scratch_.get(weight.cached_source, input),
             options, mmq_, options.heterogeneous, input, route, gelu);
     }
@@ -150,12 +150,12 @@ DenseTensor Projector::clamped(const MfeTensor& weight, DenseTensor input,
         return collectives_.sum(std::move(outputs), primary_, options_.reduce_to_primary, options_.fp16_reduce);
     }
     if (weight.cached_source && weight.cached_source->supports_clamped_swiglu()) {
-        const auto options = runtime_options::moe(options_.moe);
+        const auto options = ::tyloi::cuda::options::moe(options_.moe);
         return weight.cached_source->forward_clamped_swiglu(
             *moe_scratch_.get(weight.cached_source, input), options, mmq_, options.heterogeneous, input, route, limit);
     }
     if (!weight.compact && !weight.cached_source && supports_clamp(weight)) {
-        const auto options = runtime_options::moe(options_.moe);
+        const auto options = ::tyloi::cuda::options::moe(options_.moe);
         return mixed_clamp(weight, *moe_scratch_.get(mixed_source(weight), input), options, mmq_, input, route, limit);
     }
     return Mfe{weight.n_experts, weight.out_per_expert, weight.neuron_len,

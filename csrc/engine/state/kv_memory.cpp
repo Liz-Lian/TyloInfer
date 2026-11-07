@@ -193,7 +193,7 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
     if (!raw) {ready_=true;return;}
     auto context=default_context();context->reclaim_idle_memory();
     const auto free=context->available_memory();
-    const auto reserve=(options_.additional_request?std::size_t(256)<<20:runtime_options::workspace_reserve_bytes())+minimum_experts;
+    const auto reserve=(options_.additional_request?std::size_t(256)<<20 : ::tyloi::cuda::options::workspace_reserve_bytes())+minimum_experts;
     if (free<reserve || index>free-reserve) throw std::runtime_error(insufficient);
     auto gpu=free-reserve-index;
     if(options_.gpu_limit)gpu=std::min(gpu,options_.gpu_limit);

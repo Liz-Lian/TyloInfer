@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/models/prepared.h"
 #include "engine/state/media.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #endif
 
@@ -15,7 +15,7 @@
 
 namespace tyloi::cuda {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 using MediaCache = tyloi::cache::Media<std::shared_ptr<tyloi::Tensor>>;
 using PreparedPrompt = tyloi::models::Prepared;
 #else
@@ -40,13 +40,13 @@ struct PreparedPrompt {
 template<class Model> class ImageMaskScope {
     Model& model_;
     bool active_=false;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const Tensor> mask_;
 #endif
 public:
     ImageMaskScope(Model& model,const PreparedPrompt* prepared,
                    int64_t offset,int64_t count):model_(model) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if(!prepared || !prepared->image_mask || !prepared->image_mask->defined())return;
         if constexpr(requires {model_.adapter_set_image_mask(mask_);}) {
             auto slice=tyloi::ops::slice(*prepared->image_mask,1,offset,offset+count);
@@ -63,7 +63,7 @@ public:
 #endif
     }
     ~ImageMaskScope() {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if constexpr(requires {model_.adapter_set_image_mask(mask_);})
             if(active_)model_.adapter_set_image_mask(std::shared_ptr<const Tensor>{});
 #else

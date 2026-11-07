@@ -476,7 +476,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     },
                     [&](DenseTensor value) {
                         const auto rows = value.size(1);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                         return stage.mlp.forward(value.reshape({-1, config.hidden}),
 #else
                         auto executor = execution->executor().fork(model_parallel_primary_device(execution->config));

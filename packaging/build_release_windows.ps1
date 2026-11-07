@@ -485,7 +485,7 @@ function Build-NativeSidecar {
         "-DCMAKE_CUDA_COMPILER=$([System.IO.Path]::Combine($Context.CudaRoot, 'bin', 'nvcc.exe'))",
         "-DCMAKE_CUDA_ARCHITECTURES=$Architectures",
         "-DTYLOINFER_CUDA_ARCHITECTURES=$Architectures",
-        "-DTYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON",
+        "-DTYLOINFER_BUILD_TRANSPORT=ON",
         "-DTYLOINFER_BUILD_METAL_RUNTIME=OFF",
         "-DTYLOINFER_ENABLE_MFQ_COMPAT=$(if ($env:TYLOINFER_ENABLE_MFQ_COMPAT) { $env:TYLOINFER_ENABLE_MFQ_COMPAT } else { 'OFF' })",
         "-DTYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME=OFF"

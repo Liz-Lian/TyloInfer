@@ -5,7 +5,7 @@
 #include "requests/result.h"
 #include "executor.h"
 #include "generation/sequence.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "config.h"
 #include "budget.h"
 #include "generation/decode.h"
@@ -48,16 +48,16 @@ struct EngineStatus {
 };
 class Engine {
 public:
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     Engine(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
         std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
         std::unique_ptr<tyloi::Executor::Graph> graph);
     // Retire active requests before replacing dependencies; the Scheduler remains attached.
     void rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        RuntimeConfig config, std::shared_ptr<const ModelSource> source,
+        Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
         std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
@@ -68,7 +68,7 @@ public:
     struct Reload { std::int64_t context; std::promise<void> reply; };
     struct Snapshot {
         EngineStatus status;
-        Metrics runtime, session;
+        Metrics engine, session;
         Clock::time_point captured;
     };
     virtual ~Engine();
@@ -99,7 +99,7 @@ protected:
     Engine();
     // Start after loading; shut down before derived members are destroyed.
     void start();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     virtual EngineInfo describe() const;
     virtual bool ready() const;
     virtual bool can_batch(const EngineRequest& request) const;
@@ -118,7 +118,7 @@ protected:
 #endif
     virtual void retire_request(Request& request) noexcept;
     void reset_states(std::int64_t batch);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     virtual void execute(const std::vector<RequestId>& eligible);
     virtual SessionResult session_command(const SessionCommand& command);
     virtual void unload_model();
@@ -132,7 +132,7 @@ protected:
 
 private:
     friend class Scheduler;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     void install(std::unique_ptr<tyloi::Executor::Graph> graph);
 
     SessionResult set_budget(const SessionCommand&);
@@ -141,7 +141,7 @@ private:
     void clear_bindings() noexcept;
     std::shared_ptr<models::CausalModel> model_;
     std::unique_ptr<tyloi::Executor> executor_;
-    RuntimeConfig runtime_;
+    Config config_;
     std::shared_ptr<const ModelSource> source_;
     std::shared_ptr<weights::Memory> ledger_;
     std::unique_ptr<weights::Cache> weights_;

@@ -87,7 +87,7 @@ public:
             std::make_unique<tyloi::cuda::MfeMxfp4ReadPool>(
                 options.io_workers);
         range_overlap_enabled_ = options.overlap;
-        const auto diagnostics=tyloi::cuda::runtime_options::moe_diagnostics();
+        const auto diagnostics=::tyloi::cuda::options::moe_diagnostics();
         pipeline_cpu_profile_enabled_=diagnostics.cpu_rows;
         pipeline_cpu_profile_fail_alloc_=diagnostics.cpu_rows_fail_alloc;
         pipeline_dma_profile_enabled_=diagnostics.dma;
@@ -756,7 +756,7 @@ public:
                << " pipeline_cpu_calibration_observations=" << pipeline_cpu_calibration_.observations()
                << " pipeline_cpu_calibration_ns=" << uint64_t(pipeline_cpu_calibration_.work_ns())
                << " expert_disk_reads_after_preload=" << expert_disk_reads_after_preload()
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                << " tensor_host_bytes=" << tyloi::cuda::tensor_host_bytes.load()
                << " tensor_host_peak_bytes=" << tyloi::cuda::tensor_host_peak_bytes.load()
 #endif
@@ -1195,7 +1195,7 @@ public:
               {"small_window_hot_groups_3",double(stats_.pipeline_small_window_hot_groups[3])},
               {"small_window_hot_groups_4",double(stats_.pipeline_small_window_hot_groups[4])},
               {"prefill_cpu_copy_join_ms",double(stats_.pipeline_prefill_cpu_copy_join_ns)/1e6},
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             {"host_tensor_allocated_bytes",double(tyloi::cuda::tensor_host_bytes.load())},
 #endif
             {"ram_expert_pcie_read_bytes", double(stats_.ram_pcie_bytes)}};
@@ -1346,7 +1346,7 @@ private:
     MoeCacheOptions options_;
     double ram_pcie_fraction_=0;
     double pipeline_pcie_gbps_=0;
-    bool pipeline_cpu_transfer_budget_=tyloi::cuda::runtime_options::cpu_transfer_budget();
+    bool pipeline_cpu_transfer_budget_=::tyloi::cuda::options::cpu_transfer_budget();
     bool pipeline_comparison_cpu_policy_=false;
     std::uint64_t pipeline_cpu_policy_changed_routes_=0;
     bool pipeline_shared_cpu_cost_=false;
@@ -1411,8 +1411,8 @@ private:
     uint64_t pipeline_prefill_pool_previous_threshold_=0;
     std::vector<std::function<void()>> pipeline_prefill_release_;
     std::unordered_map<std::string,std::shared_ptr<MoeFfnPrefillHostWorkspace>> pipeline_prefill_host_workspaces_;
-    bool pipeline_transfer_cache_=tyloi::cuda::runtime_options::transfer_cache();
-    bool pipeline_mapped_copy_=tyloi::cuda::runtime_options::mapped_copy();
+    bool pipeline_transfer_cache_=::tyloi::cuda::options::transfer_cache();
+    bool pipeline_mapped_copy_=::tyloi::cuda::options::mapped_copy();
     std::vector<MoeCacheNewLease> pipeline_transfer_slots_;
     ::tyloi::DenseTensor pipeline_host_stage_;
     ::tyloi::DenseTensor pipeline_wire_gpu_;

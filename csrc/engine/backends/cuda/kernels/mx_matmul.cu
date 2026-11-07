@@ -10,7 +10,7 @@
 #include <limits>
 #include <type_traits>
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "packed_backward.cuh"
 #endif
 #include "mx_float_decode.cuh"
@@ -1235,7 +1235,7 @@ void validate_mxfp4_moe(
     return output;
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 namespace {
 
 template <int Rows, int Columns>
@@ -1714,7 +1714,7 @@ void launch_mxfp8_backward_vec4_small_m(
 }  // namespace
 #endif
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::DenseTensor mx_backward_input_cuda(
         ::tyloi::DenseTensor values,
         ::tyloi::DenseTensor scales,

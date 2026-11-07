@@ -70,7 +70,7 @@ public:
     int moe_layer = -1;
     std::weak_ptr<MoeFfnPipeline> moe_pipeline;
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::DenseTensor forward(
         ::tyloi::DenseTensor input, const Mode& mode,
         MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt,
@@ -107,7 +107,7 @@ bool expert_parallel(const Ffn& ffn);
 
 } // namespace tyloi::cuda
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 tyloi::DenseTensor mlp(tyloi::DenseTensor input, std::span<const std::shared_ptr<const tyloi::Tensor>> gate_up,
                 const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,

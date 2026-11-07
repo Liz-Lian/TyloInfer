@@ -3,7 +3,7 @@
 #include "engine/models/gemma4/model.h"
 #include "engine/models/gemma4/state.h"
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/models/common/input.h"
 #endif
@@ -13,7 +13,7 @@
 
 namespace tyloi::cuda::gemma4 {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> forward_layer(const Layer&, tyloi::state::KvView&, const tyloi::Tensor&, const AttentionStep&,
                      const Model::Options&);
 #else

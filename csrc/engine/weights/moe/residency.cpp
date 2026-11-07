@@ -93,8 +93,8 @@ struct MoeResidencyManager::Impl {
     int pending_tokens=0;
     std::unique_ptr<tyloi::engine::RouteHistory> route_history;
     std::vector<std::vector<uint8_t>> projection_marks;
-    const float heat_retention=tyloi::cuda::runtime_options::residency_heat_retention();
-    const int interval=tyloi::cuda::runtime_options::residency_interval();
+    const float heat_retention=::tyloi::cuda::options::residency_heat_retention();
+    const int interval=::tyloi::cuda::options::residency_interval();
     const bool exchange_defaults=[this] {
         // The measured combination needs fixed GPU routing, registered RAM,
         // transfer-cache reuse and no background CPU calibration. Keep it a
@@ -1702,7 +1702,7 @@ void MoeResidencyManager::prepare_batched(std::int64_t bytes) {
     auto& s=*impl_;auto& cache=*s.cache;
     // cudaMallocAsync must be ordered with the copy kernels using its storage,
     // independently of a model stream that may still be executing its tail.
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const MfqCudaStreamGuard stream_guard(MfqCudaStream(mfq_current_cuda_device(),s.stream));
 #else
     const MfqCudaStreamGuard stream_guard(at::cuda::getStreamFromExternal(s.stream,mfq_current_cuda_device()));

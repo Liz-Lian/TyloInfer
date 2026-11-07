@@ -45,7 +45,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     const tyloi::ModelSource* source;
     DecodeGraphCache &graph;
     tyloi::engine::SessionCache<CudaSessionOps> &cache;
-    const tyloi::engine::RuntimeConfig &config;
+    const tyloi::engine::Config &config;
     tyloi::engine::mtp::State &mtp_state;
     Predictor *mtp;
     std::optional<PreparedPrompt> prepared;
@@ -66,7 +66,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     }
     void prepare_request(const tyloi::engine::InferenceRequest& input) {
         trace_expert_cache("begin");
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         generation_request(model,*this,input);
 #endif
     }
@@ -77,7 +77,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         if(budget.prefill_mode(tokens, state.position() > 0) == tyloi::engine::Budget::Prefill::retained)
             return std::min<int64_t>(4,limit);
         if(tokens<=128)return std::min<int64_t>(std::max<std::size_t>(1,tokens),limit);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         return budget.chunk(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
             tokens, limit, info.prefill_row_bytes, state.position() > 0,
             config.prefill_chunk_auto, generation_borrow(model, tokens, prepared ? &*prepared : nullptr));
@@ -92,7 +92,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
             budget.prepare_prefill(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()), tokens, limit, mode);
             return;
         }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         const bool streamed = mode == tyloi::engine::Budget::Prefill::streamed;
         const bool retire_decode = generation_prefill_begin(model, graph, streamed);
         budget.prepare_prefill(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
@@ -100,7 +100,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
 #endif
     }
     bool prepare_snapshot() {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if constexpr(requires { snapshot_size(state, mtp); }) {
             budget.prepare(tyloi::engine::Budget::Stage::snapshot, nullptr);
             const auto size=snapshot_size(state,mtp);
@@ -179,7 +179,7 @@ Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
     std::function<void()> drain,
     const tyloi::models::Info &info, const tyloi::ModelSource* source,
     DecodeGraphCache &graph, tyloi::engine::SessionCache<CudaSessionOps> &cache,
-    const tyloi::engine::RuntimeConfig &config, tyloi::engine::InferenceRequest &request,
+    const tyloi::engine::Config &config, tyloi::engine::InferenceRequest &request,
     tyloi::engine::InferenceOutput &output, tyloi::engine::mtp::State &mtp_state,
     Predictor *mtp,
     std::optional<PreparedPrompt> prepared,

@@ -44,7 +44,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     require_execution(
         reused_tokens < prompt.size(), "restored MTP prefix must be shorter than the prompt");
     const bool transformed_prompt = prepared != nullptr && prepared->transformed();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const DenseTensor prepared_positions = transformed_prompt && prepared->positions
         ? dynamic_cast<const DenseTensor&>(*prepared->positions) : DenseTensor{};
     const bool prepared_embeddings = transformed_prompt && prepared->embeddings && prepared->embeddings->defined();

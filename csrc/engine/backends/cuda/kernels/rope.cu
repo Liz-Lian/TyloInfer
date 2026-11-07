@@ -59,7 +59,7 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
     int axis=selected_axes[column];if(axis>=axes)axis=0;
     const int64_t raw=rotary_position(positions,wide_positions,int64_t(axis)*tokens+token)-cache[token]+start;
     int position;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     position=wide_positions?__double2int_rz(double(raw)):int(raw);
 #else
     position=int(raw);
@@ -154,7 +154,7 @@ __device__ __forceinline__ void rotary_normalized_row(
         if (axis >= axes) axis = 0;
         const int64_t position_index = (int64_t(axis) * batches + (batches == 1 ? 0 : batch)) * tokens + token;
         const int64_t raw_position = rotary_position(positions, wide_positions, position_index);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         // Preserve native tensor conversion through double, including overflow.
         int position = wide_positions ? __double2int_rz(double(raw_position)) : int(raw_position);
 #else

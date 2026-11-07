@@ -1,6 +1,6 @@
 #include "engine/models/common/attention.h"
 #include "engine/ops.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/group.h"
 #include "engine/backends/cuda/ops/attention/kv.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
@@ -13,13 +13,13 @@
 #include <utility>
 #include <vector>
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 using ::tyloi::indexing::Slice;
 #endif
 
 namespace tyloi::cuda {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::array<std::shared_ptr<tyloi::Tensor>, 2> FullAttention::forward(
         const tyloi::Tensor& input, const AttentionStep& step, tyloi::state::KvView cache,
         const tyloi::ops::RopeTable& rope, tyloi::ops::Trace* trace) const {

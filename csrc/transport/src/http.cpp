@@ -534,7 +534,7 @@ int run_mfq_http_transport(
     const auto add_runtime_metrics = [&](json & value) {
 
         const auto snapshot = engine.snapshot();
-        const auto& metrics = snapshot.runtime;
+        const auto& metrics = snapshot.engine;
         value["runtime_metrics_age_ms"] = std::chrono::duration<double, std::milli>(
             tyloi::engine::Clock::now() - snapshot.captured).count();
 

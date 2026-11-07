@@ -1,6 +1,6 @@
 #include "engine/generation/decode.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include <algorithm>
 #include <utility>
 

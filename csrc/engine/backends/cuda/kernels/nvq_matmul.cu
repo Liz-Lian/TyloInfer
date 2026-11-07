@@ -21,7 +21,7 @@
 #include <map>
 #include <type_traits>
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "packed_backward.cuh"
 #endif
 #include "packed_nvq.cuh"
@@ -6954,7 +6954,7 @@ static ::tyloi::DenseTensor nvq_moe_grouped_matmul_hetero_impl(
     return output;
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 namespace {
 
 template <int FORMAT, int Rows>

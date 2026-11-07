@@ -91,7 +91,7 @@ struct AttentionEpilogue {
 };
 
 __device__ float apply_attention_gate(float value, float gate, bool double_sigmoid) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const float sigmoid = double_sigmoid
         ? float(__ddiv_rn(1.0, __dadd_rn(1.0, ::exp(-double(gate)))))
         : __fdiv_rn(1.f, __fadd_rn(1.f, expf(-gate)));

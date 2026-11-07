@@ -260,8 +260,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         TYLOINFER_RUNTIME_CHECK(!comparison_phase_timings || runtime_comparison_modes(),
             "comparison phase timings require a runtime comparison");
         if(runtime_comparison_modes()) {
-            TYLOINFER_RUNTIME_CHECK(mfq::cuda::runtime_options::transfer_cache() &&
-                !mfq::cuda::runtime_options::mapped_copy(),
+            TYLOINFER_RUNTIME_CHECK(mfq::cuda:: ::tyloi::cuda::options::transfer_cache() &&
+                !mfq::cuda:: ::tyloi::cuda::options::mapped_copy(),
                 "runtime comparison requires TYLOINFER_MOE_TRANSFER_CACHE=1 and TYLOINFER_MOE_MAPPED_COPY=0");
             const bool free_gpu_comparison=decode_inputs.empty() &&
                 (compare_route_spin || compare_moe_plan_reuse || compare_shared_gate_fusion || compare_graph_optimizations || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_gdn_fixed_geometry || compare_gdn_inplace_state || compare_qsa_fusion) &&

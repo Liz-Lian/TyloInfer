@@ -2,7 +2,7 @@
 
 #include "backend.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/tensor.h"
 #include "engine/ops.h"
 namespace tyloi::cuda::ops {

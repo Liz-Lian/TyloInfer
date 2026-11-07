@@ -112,7 +112,7 @@ struct DecodeTokens {
 struct PrepareDuplex { std::string prompt; MfqDuplexSessionParams parameters; };
 struct PrepareDuplexStep { std::string text; MfqDuplexStepInput input; };
 struct StopDuplex {};
-struct RuntimeMetrics {};
+struct GetMetrics {};
 struct CountTokens { std::string prompt; };
 struct ScoreText {
     std::string prompt;
@@ -127,6 +127,6 @@ struct ScoreTokens {
 };
 using ControlRequest = std::variant<DecodeTokens, PrepareDuplex,
     PrepareDuplexStep, MfqDuplexSessionParams, MfqDuplexStepInput, StopDuplex,
-    RuntimeMetrics, CountTokens, ScoreText, ScoreTokens>;
+    GetMetrics, CountTokens, ScoreText, ScoreTokens>;
 
 } // namespace tyloi::engine

@@ -10,7 +10,7 @@
 #include <type_traits>
 #include <utility>
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "packed_backward.cuh"
 #endif
 
@@ -717,7 +717,7 @@ void routed_matmul(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 template <bool MXFP8>
 ::tyloi::DenseTensor backward_input(
         ::tyloi::DenseTensor blob,
@@ -824,7 +824,7 @@ template <bool MXFP8>
                     scale_kind, palettes_offset, symbols_offset, scales_offset));
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::DenseTensor mxfp8_sq_backward_input_cuda(
         ::tyloi::DenseTensor blob,
         ::tyloi::DenseTensor row_q,

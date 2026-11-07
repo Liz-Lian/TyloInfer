@@ -1,7 +1,7 @@
 #include "engine/models/session.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/group.h"
 #endif
 #include "engine/models/glm_dsa/snapshot.h"
@@ -493,7 +493,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     const auto& kv_a_norm = layer.kv_a_norm;
     const auto& index_k_norm = layer.index_k_norm;
     const auto& index_k_bias = layer.index_k_bias;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const auto input_proj = project.group(layer.input_proj);
     const auto q_proj = project.group(layer.q_proj);
 #else
@@ -507,7 +507,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     const bool full_indexer = layer.full_indexer;
     auto& kv_cache = state.kv_cache;
     auto& index_cache = state.index_cache;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const DenseTensor pos(step.positions);
     const MfqOptional<DenseTensor> seq_len = step.sequence_lengths
         ? MfqOptional<DenseTensor>(DenseTensor(*step.sequence_lengths)) : mfq_nullopt;
@@ -725,7 +725,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     attn_out = {};
     auto hidden = std::move(prepared[0]);
     auto ffn_input = std::move(prepared[1]);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto ffn_out = ffn.forward(ffn_input, mode.ffn).reshape({B * T, H});
 #else
     auto ffn_out = ffn.forward(ffn_input, executor, mode.ffn).reshape({B * T, H});

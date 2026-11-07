@@ -121,7 +121,7 @@ void load_attention_mixer(Block& block, Loader& ops, const ModelConfig& config, 
     block.attention_output_gate = output_gate;
     if constexpr (requires { block.no_rope = false; })
         block.no_rope = config.positional_encoding == PositionalEncoding::none;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     block.attn_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(prefix + "attention.norm.weight"));
 #else
     block.attn_norm = ops.dense(prefix + "attention.norm.weight");
@@ -130,13 +130,13 @@ void load_attention_mixer(Block& block, Loader& ops, const ModelConfig& config, 
     ops.qkv(block, {attention + "query.weight", attention + "key.weight", attention + "value.weight"});
     ops.output(block, attention + "output.weight");
     if (ops.has(attention + "query_norm.weight"))
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         block.q_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(attention + "query_norm.weight"));
 #else
         block.q_norm = ops.dense(attention + "query_norm.weight");
 #endif
     if (ops.has(attention + "key_norm.weight"))
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         block.k_norm = std::make_shared<tyloi::DenseTensor>(ops.dense(attention + "key_norm.weight"));
 #else
         block.k_norm = ops.dense(attention + "key_norm.weight");

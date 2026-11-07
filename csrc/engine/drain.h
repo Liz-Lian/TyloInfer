@@ -19,7 +19,7 @@ inline void drain_cuda(
         const LayerPlacementConfig& layer_placement,
         [[maybe_unused]] const ParallelConfig& tensor_parallel,
         [[maybe_unused]] const ParallelConfig& expert_parallel) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if (executor.contexts().empty() && !::tyloi::weights::detail::cache(weights).moe &&
         !::tyloi::weights::detail::cache(weights).tq && !offload &&
         executor.tq()->empty() && executor.pipelines().empty() && executor.branches().empty() &&
@@ -31,7 +31,7 @@ inline void drain_cuda(
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
     finish([&] { weights.drain(); });
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if (!offload) {
         finish([&] { static_cast<tyloi::Executor&>(executor).drain(); });
     } else
@@ -39,7 +39,7 @@ inline void drain_cuda(
     {
         finish([&] { executor.join(); });
         if (offload) finish([&] { offload->flush(); });
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         finish([&] { executor.wait(); });
 #else
         std::unordered_set<int> devices{layer_placement.primary_device()};

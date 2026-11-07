@@ -5,7 +5,7 @@
 #include <limits>
 #include <cstdlib>
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "packed_backward.cuh"
 #endif
 #include <mma.h>
@@ -320,7 +320,7 @@ __global__ void sq_mmq(
     }
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 template<int Rows>
 __global__ void __launch_bounds__(128) sq_backward_matrix(
         const std::uint8_t* blob,
@@ -502,7 +502,7 @@ void dispatch_mmq(
 #undef TYLOINFER_SQ_M_CASE
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 template<int Rows>
 void launch_backward_matrix(
         const std::uint8_t* blob,
@@ -712,7 +712,7 @@ void mxfp4_sq_moe_matmul_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::DenseTensor mxfp4_sq_backward_input_cuda(
         ::tyloi::DenseTensor blob,
         ::tyloi::DenseTensor row_q,

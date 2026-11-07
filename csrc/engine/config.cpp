@@ -70,10 +70,10 @@ static std::size_t checked_size(std::uint64_t value, const char* name) {
     return static_cast<std::size_t>(value);
 }
 
-RuntimeConfig resolve_runtime_config(std::int64_t prefill_chunk_size) {
+Config resolve_config(std::int64_t prefill_chunk_size) {
     if (prefill_chunk_size <= 0)
         throw std::invalid_argument("prefill chunk size must be positive");
-    RuntimeConfig config;
+    Config config;
     config.generation.prefill_chunk_size = prefill_chunk_size;
     auto& sessions = config.session_cache;
     sessions.snapshots.max_sessions = checked_size(environment_uint64(

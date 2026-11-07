@@ -35,7 +35,7 @@ struct LayerLoader : TransformerWeightLoader {
     void linear_projections(LinearAttention& attention,
                             const tyloi::models::qwen35::LinearWeightNames& names,
                             bool split_qkv) const {
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
         attention.grouped_weights = weights.options.grouped;
 #endif
         if (split_qkv) {

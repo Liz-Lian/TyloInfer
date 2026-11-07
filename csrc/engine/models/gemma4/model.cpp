@@ -10,7 +10,7 @@ namespace tyloi::cuda::gemma4 {
 
 tyloi::models::Info Model::info() const {
     bool decode_graph = true;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     for (const auto& layer : layers) {
         if (layer.gemma4_moe && (layer.gemma_moe_gate_up->device().is_cpu() ||
                                  layer.gemma_moe_down->device().is_cpu())) {

@@ -178,7 +178,7 @@ void Collectives::configure(
     if (value.numel() == 0) {
         return destination_tensor();
     }
-#if defined(TYLOINFER_NATIVE_CUDA_RUNTIME) && defined(TYLOINFER_HAVE_NCCL)
+#if defined(TYLOINFER_NATIVE_CUDA) && defined(TYLOINFER_HAVE_NCCL)
     auto& runtime = *this;
     if (value.is_cuda() && runtime.collectives_enabled_) {
         const int source_device = value.get_device();

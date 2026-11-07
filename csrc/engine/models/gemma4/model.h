@@ -3,7 +3,7 @@
 #include "engine/models/gemma4/config.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/common/attention.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/common/mlp.h"
 #else
 #include "engine/backends/cuda/ops/ffn/ffn.h"
@@ -21,7 +21,7 @@
 
 namespace tyloi::cuda::gemma4 {
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 using DenseTensor = ::tyloi::DenseTensor;
 #endif
 using Config = tyloi::models::gemma4::Config;
@@ -30,7 +30,7 @@ class State;
 
 struct Layer {
     FullAttention attention;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const tyloi::Tensor> ffn_norm;
     tyloi::models::Mlp ffn;
     std::shared_ptr<const tyloi::Tensor> attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
@@ -50,11 +50,11 @@ struct Layer {
 };
 
 struct Model
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::models::CausalModel
 #endif
 {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::models::Info info() const override;
     MfqModelCapabilities capabilities() const override;
     tyloi::engine::Metrics metrics() const override;
@@ -63,7 +63,7 @@ struct Model
     MfqModelCapabilities capabilities() const;
     tyloi::engine::Metrics metrics() const;
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     using Options = tyloi::models::ForwardOptions;
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
@@ -81,7 +81,7 @@ struct Model
     Config config;
     double embed_scale = 1.0;
     std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const tyloi::Tensor> output_norm;
 #else
     DenseTensor output_norm;

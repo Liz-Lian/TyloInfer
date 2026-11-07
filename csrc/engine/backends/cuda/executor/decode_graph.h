@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/requests/sampling.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #endif
 
@@ -13,7 +13,7 @@
 
 namespace tyloi::cuda { class Collectives; }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace decode_graph_detail {
 struct Layout {
     bool defined = false;
@@ -53,14 +53,14 @@ struct DecodeGraphBranchScope {
 struct DecodeGraphCache {
     decltype(mfq_get_stream_from_pool(false)) stream;
     std::vector<MfqCudaStream> compute_streams;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> storage;
     std::vector<std::optional<decode_graph_detail::Layout>> storage_layout;
 #else
     std::vector<::tyloi::DenseTensor> storage;
 #endif
     std::unique_ptr<MfqCudaGraph> graph;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<::tyloi::Tensor> static_input, static_pos, static_len, static_step;
     std::shared_ptr<::tyloi::Tensor> generated, random, counts, static_next;
 #else
@@ -90,7 +90,7 @@ struct DecodeGraphCache {
     void ensure_compute_streams(const tyloi::cuda::Collectives& collectives);
     std::vector<MfqCudaStream> graph_participant_streams(
         const tyloi::cuda::Collectives& collectives) const;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
                  const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& candidate_storage) const;
@@ -128,7 +128,7 @@ void prepare_decode_graph_memory(
         const std::vector<MfqCudaStream>& participant_streams = {}) {
     struct SavedRecurrentState {
         StateTensor* target;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         std::shared_ptr<::tyloi::Tensor> value;
         decode_graph_detail::Layout layout;
 #else
@@ -142,7 +142,7 @@ void prepare_decode_graph_memory(
     std::vector<SavedRecurrentState> saved;
     saved.reserve(states.size());
     for (auto* state : states) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         saved.push_back({state, ::tyloi::ops::clone(*state),
                          decode_graph_detail::snapshot_layout(*state)});
 #else
@@ -152,7 +152,7 @@ void prepare_decode_graph_memory(
     const int64_t saved_position = position_state.position();
     auto restore = [&]() {
         for (const auto& state : saved) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             TYLOINFER_RUNTIME_CHECK(decode_graph_detail::same_layout(state.layout, *state.target),
                 "decode warmup changed recurrent storage addresses");
             ::tyloi::ops::copy_into(*state.target, *state.value);

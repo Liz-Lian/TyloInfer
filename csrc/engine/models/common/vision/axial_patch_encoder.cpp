@@ -28,7 +28,7 @@ weights::BiasWeight affine(const ::tyloi::weights::Loader& loader,
 
 RmsNorm norm(const ::tyloi::weights::Loader& loader,
              const std::string& name, std::int64_t width, double epsilon) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     return RmsNorm{loader.norm(name, width), epsilon};
 #else
     return RmsNorm{dynamic_cast<const ::tyloi::DenseTensor&>(*loader.norm(name, width)), epsilon};
@@ -71,7 +71,7 @@ struct CudaAxialPatchVisionTower::Impl {
     ::tyloi::weights::Cache& cache;
     Config config;
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> encode_steps(
         std::shared_ptr<const tyloi::Tensor> patches, int height, int width) const {
 #else
@@ -82,28 +82,28 @@ struct CudaAxialPatchVisionTower::Impl {
             throw std::invalid_argument("invalid axial patch vision grid");
         const std::int64_t count = std::int64_t(height) * width;
         const auto hidden = config.hidden, heads = config.heads, dim = config.head_dim();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (!patches || !patches->defined())
             throw std::invalid_argument("axial patch vision patch geometry mismatch");
         if (patches->dim() == 4) patches = tyloi::ops::reshape(*patches, {count, config.patch_width()});
 #else
         if (patches.dim() == 4) patches = patches.reshape({count, config.patch_width()});
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (patches->dim() != 2 || patches->size(0) != count || patches->size(1) != config.patch_width())
 #else
         if (patches.dim() != 2 || patches.size(0) != count || patches.size(1) != config.patch_width())
 #endif
             throw std::invalid_argument("axial patch vision patch geometry mismatch");
         const auto host = loader.for_layer(loader.placement.device, true);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         patches = tyloi::ops::cast(*patches, ::tyloi::kFloat16);
 #else
         patches = patches.to(::tyloi::kFloat16);
 #endif
         const auto activations = std::size_t(count) * std::size_t(std::max(6 * hidden, 2 * config.intermediate)) * sizeof(float)
             + (std::size_t(32) << 20);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         std::shared_ptr<tyloi::Tensor> value;
 #else
         DenseTensor value;
@@ -111,14 +111,14 @@ struct CudaAxialPatchVisionTower::Impl {
         {
             auto patch = affine(host, "vision.patch_embedding", config.patch_width(), hidden);
             auto loan = ::tyloi::weights::Loan(cache, fields::bytes(patch) + activations);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             std::shared_ptr<tyloi::Tensor> output;
 #else
             DenseTensor output;
 #endif
             {
                 auto staged = std::move(patch);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                 fields::to_device(staged, patches->device());
                 output = tyloi::ops::affine(*patches, *staged.weight, staged.bias.get());
 #else
@@ -126,7 +126,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 output = tyloi::cuda::affine(projector, staged, patches);
 #endif
             }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             value = loan.finish(std::move(output));
 #else
             value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))));
@@ -149,14 +149,14 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate),
                 affine(host, prefix + ".mlp.down", config.intermediate, hidden)};
             auto loan = ::tyloi::weights::Loan(cache, fields::bytes(block) + activations);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             std::shared_ptr<tyloi::Tensor> output;
 #else
             DenseTensor output;
 #endif
             {
                 auto weights = std::move(block);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                 fields::to_device(weights, value->device());
                 auto normalized = weights.norm1(*value);
                 auto qkv = tyloi::ops::affine(*normalized, *weights.qkv.weight, weights.qkv.bias.get());
@@ -197,7 +197,7 @@ struct CudaAxialPatchVisionTower::Impl {
                     gate_up.narrow(-1, config.intermediate, config.intermediate));
 #endif
             }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             value = loan.finish(std::move(output));
 #else
             value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))));
@@ -213,14 +213,14 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
                 affine(host, "vision.aligner.output", config.output_hidden, config.output_hidden)};
             auto loan = ::tyloi::weights::Loan(cache, fields::bytes(weights) + activations);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             std::shared_ptr<tyloi::Tensor> output;
 #else
             DenseTensor output;
 #endif
             {
                 auto staged = std::move(weights);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                 fields::to_device(staged, value->device());
                 auto normalized = staged.norm(*value);
                 auto zero = tyloi::ops::zeros({1, hidden}, value->options());
@@ -242,7 +242,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto gathered = padded.index_select(0, index).reshape({grid.count(), ratio * ratio, hidden})
                     .transpose(1, 2).contiguous().reshape({grid.count(), hidden * ratio * ratio});
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                 auto projected = tyloi::ops::affine(*gathered, *staged.input.weight, staged.input.bias.get());
                 auto activated = tyloi::ops::gelu(*projected);
                 output = tyloi::ops::affine(*activated, *staged.output.weight, staged.output.bias.get());
@@ -251,7 +251,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 output = tyloi::cuda::affine(projector, staged.output, ::tyloi::cuda::gelu(projected, "none"));
 #endif
             }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             value = loan.finish(std::move(output));
 #else
             value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))));
@@ -275,7 +275,7 @@ CudaAxialPatchVisionTower::CudaAxialPatchVisionTower(CudaAxialPatchVisionTower&&
 CudaAxialPatchVisionTower& CudaAxialPatchVisionTower::operator=(CudaAxialPatchVisionTower&&) noexcept = default;
 CudaAxialPatchVisionTower::~CudaAxialPatchVisionTower() = default;
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> CudaAxialPatchVisionTower::encode_steps(
     std::shared_ptr<const tyloi::Tensor> patches, int height, int width) const {
 #else
@@ -283,13 +283,13 @@ tyloi::StepSequence<DenseTensor> CudaAxialPatchVisionTower::encode_steps(
     Projector projector, DenseTensor patches, int height, int width) const {
 #endif
     return impl_->encode_steps(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
         projector,
 #endif
         std::move(patches), height, width);
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> CudaAxialPatchVisionTower::encode(
     std::shared_ptr<const tyloi::Tensor> patches, int height, int width) const {
 #else
@@ -297,11 +297,11 @@ DenseTensor CudaAxialPatchVisionTower::encode(
     Projector projector, DenseTensor patches, int height, int width) const {
 #endif
     auto steps = encode_steps(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
         projector,
 #endif
         std::move(patches), height, width);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<tyloi::Tensor> output;
 #else
     DenseTensor output;

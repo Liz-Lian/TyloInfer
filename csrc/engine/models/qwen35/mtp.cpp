@@ -80,7 +80,7 @@ tyloi::models::MtpStep Mtp::step(const ::tyloi::Tensor& hidden,
     Inputs inputs;
     inputs.values = {std::move(hidden), std::move(embedded), {}};
     inputs.kv = kv;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     inputs.rope = rope_.view();
 #else
     inputs.rope = &rope_;

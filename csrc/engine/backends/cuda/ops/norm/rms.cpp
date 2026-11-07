@@ -4,7 +4,7 @@
 #include <initializer_list>
 #include <stdexcept>
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 tyloi::DenseTensor tyloi::cuda::ops::rms_norm(tyloi::DenseTensor input, const tyloi::DenseTensor& weight,
                                      double eps, double offset, tyloi::ScalarType output_type) {

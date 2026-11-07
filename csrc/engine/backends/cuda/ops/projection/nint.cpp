@@ -429,8 +429,8 @@ bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
     // prefill's GEMM path and its layer decode cache.
     return !w.q8_zero && (rows <= 8 || (rows <= 32 && w.gs>=4 && w.gs<=64 &&
         !NintCache::active() && tyloi::cuda::DecodeWindow::recording() &&
-        (tyloi::cuda::runtime_options::nint_compressed_decode_batch() ||
-         (rows>16 && tyloi::cuda::runtime_options::nint_compressed_large_batch(w.out>=65536)))));
+        (::tyloi::cuda::options::nint_compressed_decode_batch() ||
+         (rows>16 && ::tyloi::cuda::options::nint_compressed_large_batch(w.out>=65536)))));
 }
 }
 ::tyloi::DenseTensor nint_matmul(
@@ -441,7 +441,7 @@ bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
     x = x.contiguous();
     const bool packed_rows=nint_packed_decode_rows(w,x.size(0));
     if (!packed_rows && !w.q8_zero && w.out>=65536 && x.size(0)>8 && x.size(0)<=32 &&
-        !NintCache::active() && tyloi::cuda::runtime_options::nint_large_output_tiling()) {
+        !NintCache::active() && ::tyloi::cuda::options::nint_large_output_tiling()) {
         // Large vocabulary heads otherwise materialize over a GiB of FP16
         // weights. Reuse compressed GEMV across up to eight activation rows.
         x=x.to(::tyloi::kFloat16);
@@ -630,7 +630,7 @@ static ::tyloi::DenseTensor nint_matmul_f32(
                     w.sub_scale, w.sub_min, w.neuron_scale, w.neuron_min,
                     x, gate, mode, w.gs, ws.qx, ws.xscale);
             }
-            const auto fixed_setting=tyloi::cuda::runtime_options::nint_fused_fixed_bits();
+            const auto fixed_setting=::tyloi::cuda::options::nint_fused_fixed_bits();
             if((!fixed_setting || *fixed_setting) &&
                     ((w.uniform_qbits==5 && w.gs==28) || (w.uniform_qbits==6 && (w.gs==24 || w.gs==28)))) {
                 return nint_matmul_input_mul_fixed_bits_ws_cuda(

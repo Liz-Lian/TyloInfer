@@ -15,7 +15,7 @@
 #include <numeric>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/ops.h"
@@ -126,7 +126,7 @@ QuantLinearGroup tyloi::cuda::Projector::group(
     return result;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 tyloi::DenseTensor tyloi::cuda::ops::embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight) {
     std::optional<MfqCudaGuard> guard;
     if (ids.is_cuda()) guard.emplace(ids.device().index);
@@ -992,7 +992,7 @@ std::vector<::tyloi::DenseTensor> Projector::run(
         for (const auto& weight : group.split_w) check_device(weight, xf);
         parts.reserve(group.outs.size());
         std::vector<int> shared_groups;
-        if(serial_ && runtime_options::nint_group_quantize().value_or(true) &&
+        if(serial_ && ::tyloi::cuda::options::nint_group_quantize().value_or(true) &&
                 mmq_.mode==KlMmqMode::Default && xf.is_contiguous() &&
                 xf.size(0)>=1 && xf.size(0)<=6 &&
                 (xf.scalar_type()==::tyloi::kFloat16 || xf.scalar_type()==::tyloi::kFloat32)) {

@@ -24,19 +24,19 @@ option(
 include(CheckLanguage)
 check_language(CUDA)
 if(NOT APPLE AND CMAKE_CUDA_COMPILER AND NOT TYLOINFER_BUILD_HIP_RUNTIME)
-    set(_TYLOINFER_BUILD_CUDA_RUNTIME_DEFAULT ON)
+    set(_TYLOINFER_BUILD_CUDA_ENGINE_DEFAULT ON)
 else()
-    set(_TYLOINFER_BUILD_CUDA_RUNTIME_DEFAULT OFF)
+    set(_TYLOINFER_BUILD_CUDA_ENGINE_DEFAULT OFF)
 endif()
 option(
-    TYLOINFER_BUILD_CUDA_RUNTIME
-    "Build the native CUDA runtime (requires the CUDA toolkit)"
-    ${_TYLOINFER_BUILD_CUDA_RUNTIME_DEFAULT}
+    TYLOINFER_BUILD_CUDA_ENGINE
+    "Build the native CUDA Engine (requires the CUDA toolkit)"
+    ${_TYLOINFER_BUILD_CUDA_ENGINE_DEFAULT}
 )
-unset(_TYLOINFER_BUILD_CUDA_RUNTIME_DEFAULT)
+unset(_TYLOINFER_BUILD_CUDA_ENGINE_DEFAULT)
 
 check_language(HIP)
-if(NOT APPLE AND CMAKE_HIP_COMPILER AND NOT TYLOINFER_BUILD_CUDA_RUNTIME)
+if(NOT APPLE AND CMAKE_HIP_COMPILER AND NOT TYLOINFER_BUILD_CUDA_ENGINE)
     set(_TYLOINFER_BUILD_HIP_RUNTIME_DEFAULT ON)
 else()
     set(_TYLOINFER_BUILD_HIP_RUNTIME_DEFAULT OFF)
@@ -48,22 +48,22 @@ option(
 )
 unset(_TYLOINFER_BUILD_HIP_RUNTIME_DEFAULT)
 
-if(TYLOINFER_BUILD_CUDA_RUNTIME AND TYLOINFER_BUILD_HIP_RUNTIME)
+if(TYLOINFER_BUILD_CUDA_ENGINE AND TYLOINFER_BUILD_HIP_RUNTIME)
     message(FATAL_ERROR
-        "Select either TYLOINFER_BUILD_CUDA_RUNTIME or TYLOINFER_BUILD_HIP_RUNTIME; use separate build directories for both backends")
+        "Select either TYLOINFER_BUILD_CUDA_ENGINE or TYLOINFER_BUILD_HIP_RUNTIME; use separate build directories for both backends")
 endif()
 
 if(APPLE)
-    set(_TYLOINFER_BUILD_RUNTIME_COMMUNICATION_DEFAULT OFF)
+    set(_TYLOINFER_BUILD_TRANSPORT_DEFAULT OFF)
 else()
-    set(_TYLOINFER_BUILD_RUNTIME_COMMUNICATION_DEFAULT ON)
+    set(_TYLOINFER_BUILD_TRANSPORT_DEFAULT ON)
 endif()
 option(
-    TYLOINFER_BUILD_RUNTIME_COMMUNICATION
-    "Build private HTTP/stdio communication modules for native runtimes"
-    ${_TYLOINFER_BUILD_RUNTIME_COMMUNICATION_DEFAULT}
+    TYLOINFER_BUILD_TRANSPORT
+    "Build private HTTP/stdio transport for Engine applications"
+    ${_TYLOINFER_BUILD_TRANSPORT_DEFAULT}
 )
-unset(_TYLOINFER_BUILD_RUNTIME_COMMUNICATION_DEFAULT)
+unset(_TYLOINFER_BUILD_TRANSPORT_DEFAULT)
 
 if(TYLOINFER_BUILD_METAL_RUNTIME AND NOT APPLE)
     message(FATAL_ERROR "TYLOINFER_BUILD_METAL_RUNTIME requires macOS")
@@ -84,7 +84,7 @@ add_subdirectory(engine/weights/source)
 add_subdirectory(components/ggml)
 add_subdirectory(components/tokenizer)
 
-if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
+if(TYLOINFER_BUILD_TRANSPORT)
     add_subdirectory(components/http)
 endif()
 
@@ -93,7 +93,7 @@ if(TARGET mfq-tokenizer)
     add_subdirectory(engine/scheduler)
 endif()
 
-if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
+if(TYLOINFER_BUILD_TRANSPORT)
     add_subdirectory(transport)
 endif()
 
@@ -103,7 +103,7 @@ if(TYLOINFER_BUILD_METAL_RUNTIME)
     add_subdirectory(backends/metal metal)
 endif()
 
-if(TYLOINFER_BUILD_CUDA_RUNTIME)
+if(TYLOINFER_BUILD_CUDA_ENGINE)
     add_subdirectory(engine/backends/cuda cuda)
 endif()
 

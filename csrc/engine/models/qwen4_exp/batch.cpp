@@ -191,11 +191,11 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
 }
 
 std::size_t BatchOps::prefill_batch_limit() const {
-    return runtime_options::batch_packed_prefill() ? config_.max_sequences : 1;
+    return ::tyloi::cuda::options::batch_packed_prefill() ? config_.max_sequences : 1;
 }
 
 int64_t BatchOps::prefill_batch_token_budget() const {
-    return runtime_options::batch_packed_prefill_token_budget();
+    return ::tyloi::cuda::options::batch_packed_prefill_token_budget();
 }
 
 std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill_batch(

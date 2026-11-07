@@ -27,7 +27,7 @@ inline ::tyloi::DenseTensor biased(
     }
     auto output = projector.run(weight, input);
     const auto output_dtype = input.scalar_type();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::optional<MfqCudaGuard> guard;
     if (output.is_cuda()) guard.emplace(output.device().index);
 #endif

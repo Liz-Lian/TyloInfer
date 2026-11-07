@@ -21,7 +21,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
-#include "engine/runtime_metrics.h"
+#include "engine/resource_metrics.h"
 #include "engine/generation/generation.h"
 #include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
@@ -67,7 +67,7 @@ struct Text {
     ::tyloi::weights::Cache& weights;
     std::shared_ptr<KvMemoryManager>& kv;
     std::shared_ptr<KvOffloadStore>& offload;
-    tyloi::engine::RuntimeConfig config;
+    tyloi::engine::Config config;
     std::shared_ptr<const tyloi::ModelSource> source;
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
@@ -88,7 +88,7 @@ struct Text {
 
     void configure_decode_budget() {
         std::size_t spare = 0;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             const auto& cache = ::tyloi::weights::detail::cache(weights);
             if (!cache.tq && cache.moe && components.mtp) {
@@ -150,7 +150,7 @@ struct Text {
             std::shared_ptr<KvOffloadStore>& borrowed_offload,
             std::shared_ptr<Model> model_owner, std::unique_ptr<State> state_owner,
             std::unique_ptr<Executor> executor_owner, Parts model_components,
-            tyloi::engine::RuntimeConfig runtime_config,
+            tyloi::engine::Config runtime_config,
             std::shared_ptr<const tyloi::ModelSource> model_source,
             std::shared_ptr<tyloi::weights::Memory> ledger)
         : weight_memory(std::move(ledger)), execution(&borrowed), root_executor(borrowed.executor()),
@@ -186,13 +186,13 @@ struct Text {
                     execution->executor().collectives(), execution->executor().forward_mode(execution->config.layer_placement.primary_device()),
                     *budget, std::move(batch_config),
                     config.generation.prefill_chunk_size,
-                    runtime_options::kv_vram_preallocated(),
+                    ::tyloi::cuda::options::kv_vram_preallocated(),
                     execution->config.dense_cpu_layer_count != 0 ||
                         !execution->config.dsv4_cpu_offload_layers.empty(),
                     execution->config.weights.min_slots);
             }
         }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if(::tyloi::weights::detail::cache(weights).moe) {
             auto expert_loan=kv?kv->expert_loan():nullptr;
             if(!expert_loan && (components.mtp || moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe))) {
@@ -212,7 +212,7 @@ struct Text {
             if(kv)kv->bind_budget(&*budget);
         }
 #endif
-        if(const auto bytes=runtime_options::resident_budget_bytes()) {
+        if(const auto bytes=::tyloi::cuda::options::resident_budget_bytes()) {
             SessionCommand command;
             command.kind=SessionCommand::Kind::memory_budget;
             command.bytes=bytes;
@@ -310,7 +310,7 @@ struct Text {
     }
     using Prepared = PreparedPrompt;
     tyloi::StepSequence<Prepared> prepare(InferenceRequest& input, State& state) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language).prepare(
                                    input.prompt, *input.vision, state); }) {
             const tyloi::models::CausalModel& causal = language;
@@ -318,12 +318,12 @@ struct Text {
         } else
 #endif
         return components.prepare(language, images,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
             execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)),
             execution->executor().collectives(),
 #endif
             execution->config.layer_placement.primary_device(),
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
             executor.get(),
 #endif
             input.prompt, *input.vision);
@@ -339,7 +339,7 @@ struct Text {
         if(!batched)prepare_graph_depth(input);
         bool decode_ready = false;
         if (!preparing_graph_depth) configure_decode_budget();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         decode_ready = !preparing_graph_depth;
 #endif
         return internal::generate(
@@ -370,7 +370,7 @@ struct Text {
         return generate_prepared(*this, state, input, output, id, batched);
     }
     template <class T> ControlResult control(T value) {
-        if constexpr (std::is_same_v<T, RuntimeMetrics>) {
+        if constexpr (std::is_same_v<T, GetMetrics>) {
             const auto& model = std::as_const(language);
             const auto& parts = std::as_const(components);
             const auto component_metrics = [&] {
@@ -395,7 +395,7 @@ struct Text {
                 tyloi::engine::mtp::append_generation_metrics(predictor_metrics, mtp_state.stats);
                 predictor_metrics.emplace_back("mtp_predictor_graph_replays", double(mtp->graph_replay_count()));
             }
-            return tyloi::engine::runtime_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,
+            return tyloi::engine::resource_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,
                 graph_draft_depth,batch_metrics,kv_metrics,offload_metrics,predictor_metrics,source.get(),
                 *weight_memory,weights,cache,*budget,
                 execution->executor().memory(cuda_devices(execution->config)),

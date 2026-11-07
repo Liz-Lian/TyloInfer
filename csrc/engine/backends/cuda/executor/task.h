@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/rope/rope.h"
 #endif
 
@@ -111,7 +111,7 @@ struct Inputs {
     std::optional<size_t> output = 0;
     std::span<const AttentionKvView> kv;
     AttentionStep attention;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::optional<tyloi::ops::RopeTable> rope;
 #else
     const RopeCache* rope = nullptr;

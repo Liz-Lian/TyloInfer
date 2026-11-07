@@ -7,7 +7,7 @@
 
 namespace tyloi::cuda {
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
     AttentionKvView cache, bool aten_write,
     ::tyloi::DenseTensor key, ::tyloi::DenseTensor value,

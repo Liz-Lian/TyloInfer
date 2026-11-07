@@ -2,7 +2,7 @@
 
 #include "backend.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #include "engine/weights/fields.h"
 #endif
@@ -24,7 +24,7 @@ inline ::tyloi::DenseTensor vision_layer_norm(
 
 } // namespace tyloi::cuda
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 inline tyloi::DenseTensor layer_norm(tyloi::DenseTensor input, const tyloi::DenseTensor& weight,
                               const tyloi::DenseTensor& bias, double epsilon) {
@@ -40,7 +40,7 @@ namespace tyloi::cuda::vision {
 using DenseTensor = ::tyloi::DenseTensor;
 
 struct RmsNorm {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const ::tyloi::Tensor> weight;
 #else
     DenseTensor weight;
@@ -49,21 +49,21 @@ struct RmsNorm {
 
     template <class Visitor>
     void visit_tensors(Visitor visit) const {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (weight && weight->defined()) fields::tensors(weight, visit);
 #else
         visit(weight);
 #endif
     }
     void to_device(::tyloi::Device device) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (weight && weight->defined()) fields::to_device(weight, device);
 #else
         if (weight.defined()) weight = weight.to(device);
 #endif
     }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<::tyloi::Tensor> operator()(const ::tyloi::Tensor& input) const {
         if (input.dim() == 0 || !weight || !weight->defined() || input.size(-1) != weight->size(0)) {
             throw std::runtime_error("vision RMSNorm input width mismatch");
@@ -88,7 +88,7 @@ struct RmsNorm {
 };
 
 struct LayerNorm {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const ::tyloi::Tensor> weight, bias;
 #else
     DenseTensor weight, bias;
@@ -97,7 +97,7 @@ struct LayerNorm {
 
     template <class Visitor>
     void visit_tensors(Visitor visit) const {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (weight && weight->defined()) fields::tensors(weight, visit);
         if (bias && bias->defined()) fields::tensors(bias, visit);
 #else
@@ -106,7 +106,7 @@ struct LayerNorm {
 #endif
     }
     void to_device(::tyloi::Device device) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (weight && weight->defined()) fields::to_device(weight, device);
         if (bias && bias->defined()) fields::to_device(bias, device);
 #else
@@ -115,7 +115,7 @@ struct LayerNorm {
 #endif
     }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<::tyloi::Tensor> operator()(const ::tyloi::Tensor& input) const {
         if (input.dim() == 0 || !weight || !weight->defined() || input.size(-1) != weight->size(0))
             throw std::runtime_error("grid-ViT LayerNorm input width mismatch");

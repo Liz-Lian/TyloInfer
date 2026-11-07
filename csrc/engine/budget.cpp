@@ -146,14 +146,14 @@ void Budget::prepare_prefill(Device device, std::size_t tokens, std::int64_t lim
         return;
     }
     if (mode == Prefill::streamed) {
-        const bool retained = lend_moe_decode_cache_for_prefill(moe, runtime_options::workspace_reserve_bytes());
+        const bool retained = lend_moe_decode_cache_for_prefill(moe, ::tyloi::cuda::options::workspace_reserve_bytes());
         if (!retained && retire_decode) {
             release_moe_decode_buffers(moe);
             default_context(device.index)->reclaim_idle_memory();
         }
     }
     if (tokens > 1024 || moe_expert_cache_ssd_experts(moe))
-        workspace(device, runtime_options::workspace_reserve_bytes());
+        workspace(device, ::tyloi::cuda::options::workspace_reserve_bytes());
 }
 
 std::int64_t Budget::prefill(std::size_t tokens, std::int64_t limit,
@@ -176,7 +176,7 @@ std::int64_t Budget::chunk(Device device, std::size_t tokens, std::int64_t limit
     const auto sequence_bytes = allow_borrow
         ? std::size_t(tokens <= 16384 ? tokens : std::min<std::size_t>(tokens, limit)) * row_bytes * 3 / 8 : 0;
     const auto reserve = moe_expert_cache_ssd_experts(moe)
-        ? std::max(std::size_t(1) << 30, runtime_options::workspace_reserve_bytes()) : std::size_t(1) << 30;
+        ? std::max(std::size_t(1) << 30, ::tyloi::cuda::options::workspace_reserve_bytes()) : std::size_t(1) << 30;
     const auto fixed = engine::prefill_budget_add(reserve + sequence_bytes, budget.transfer_bytes);
     const auto wanted = std::min<int64_t>({int64_t(tokens), limit, engine::max_prefill_compute_chunk});
     const auto required = engine::prefill_budget_add(fixed, std::size_t(wanted) * row_bytes);
@@ -214,7 +214,7 @@ void Budget::prepare(Stage stage, const source::Source* source) {
         if (bytes) std::cerr << "runtime_mtp_workspace_cache action=lend depth="
             << decode_graph_depth_ << " bytes=" << bytes << '\n';
     }
-    weights_.restore_workspace(runtime_options::workspace_reserve_bytes(), source);
+    weights_.restore_workspace(::tyloi::cuda::options::workspace_reserve_bytes(), source);
 }
 
 bool Budget::snapshot(Device device, std::size_t bytes, std::size_t peak) {

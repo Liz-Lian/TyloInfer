@@ -9,7 +9,7 @@
 // references/strata/src/core/native_head.cpp, MIT license in
 // LICENSES/Strata-MIT.txt. Preserve MFQ's native floating dtype
 // and gather kernel; only the read-only embedding table changes placement.
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda {
 inline std::atomic<std::uint64_t> mapped_embedding_host_bytes{0};
 }
@@ -25,13 +25,13 @@ inline ::tyloi::DenseTensor map_embedding_storage(const ::tyloi::DenseTensor& cp
         ::tyloi::DenseTensor device_copy;
         std::size_t bytes;
         explicit Owner(std::size_t count):host(count,true),bytes(count) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             tyloi::cuda::charge_tensor_host_bytes(bytes);
             tyloi::cuda::mapped_embedding_host_bytes.fetch_add(bytes,std::memory_order_relaxed);
 #endif
         }
         ~Owner() {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             tyloi::cuda::tensor_host_bytes.fetch_sub(bytes);
             tyloi::cuda::mapped_embedding_host_bytes.fetch_sub(bytes,std::memory_order_relaxed);
 #endif
@@ -50,7 +50,7 @@ inline ::tyloi::DenseTensor map_embedding_storage(const ::tyloi::DenseTensor& cp
         owner->device_copy=cpu.to(gpu_device);
         alias=owner->device_copy.data_ptr();
     }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto storage=std::make_shared<::tyloi::TensorStorage>();
     storage->owner=std::move(owner);storage->base=alias;storage->bytes=bytes;storage->device=gpu_device;
     return ::tyloi::DenseTensor(storage,::tyloi::make_contiguous_view(alias,cpu.sizes(),cpu.scalar_type(),gpu_device));

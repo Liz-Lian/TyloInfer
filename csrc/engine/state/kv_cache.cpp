@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 namespace {
@@ -85,7 +85,7 @@ KVCache::KVCache(
         ::tyloi::ScalarType dtype, tyloi::cuda::KvQuantization settings)
     : ring(use_ring), quantization(settings), paged_batch(B), paged_heads(H),
       paged_head_dim(D), paged_dtype(dtype) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto allocated = tyloi::state::allocate_kv(B, H, max_seq, D, use_ring, device, dtype, settings);
     k = dynamic_cast<const ::tyloi::DenseTensor&>(*allocated.physical_key);
     v = dynamic_cast<const ::tyloi::DenseTensor&>(*allocated.physical_value);

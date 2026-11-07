@@ -11,7 +11,7 @@ namespace tyloi::cuda {
 namespace {
 void record(Trace* trace, const char* name, const DenseTensor& value) {
     if (trace) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         trace->emplace_back(name, std::make_shared<DenseTensor>(value.to(::tyloi::kFloat32).contiguous().clone()));
 #else
         trace->emplace_back(name, value.to(::tyloi::kFloat32).contiguous().clone());

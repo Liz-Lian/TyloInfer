@@ -60,7 +60,7 @@ void publish_mapped_flag(uint32_t* flag) noexcept {
 void wait_route_publication(const uint32_t* flag,cudaStream_t stream,int timeout_ms) {
     using Clock=std::chrono::steady_clock;
     const auto start=Clock::now();auto flush=start;
-    const auto poll_interval=std::chrono::microseconds(runtime_options::route_poll_interval_us());
+    const auto poll_interval=std::chrono::microseconds(::tyloi::cuda::options::route_poll_interval_us());
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_ROUTE_SPIN");
     const bool spin=!option || option[0]!='0';
     uint32_t spins=0;
@@ -327,7 +327,7 @@ void DecodeWindow::capture(const std::function<void()>& body,const std::function
 void DecodeWindow::run() {
     if(failed_ || !valid())throw std::runtime_error("MFQ window is unavailable after a failed execution");
     const HostRegistrationBlock registration;
-    const tyloi::cpu::ScopedHostAffinity placement(runtime_options::decode_host_pin()
+    const tyloi::cpu::ScopedHostAffinity placement(::tyloi::cuda::options::decode_host_pin()
         ?tyloi::cpu::planned_host_core():-1);
     const auto* trace_option=tyloi::cuda::env_lookup("TYLOINFER_TRACE_MOE_SERVE");
     const bool trace=trace_option && trace_option[0] && trace_option[0]!='0' && (replays_<2 || replays_%64==0);
@@ -362,7 +362,7 @@ void DecodeWindow::run() {
             checkpoint("launch");
             if(!graph->launch(stream_,error))throw std::runtime_error(error);
             checkpoint("submit");
-            if(runtime_options::single_window_flush()) {
+            if(::tyloi::cuda::options::single_window_flush()) {
                 check_stream_progress(stream_);
                 flushed_window_stream=stream_;has_flushed_window=true;
             }

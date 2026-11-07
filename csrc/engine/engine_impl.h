@@ -6,7 +6,7 @@
 #include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/load.h"
-#include "engine/runtime_metrics.h"
+#include "engine/resource_metrics.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/budget.h"
 #include "engine/requests/processor.h"
@@ -76,7 +76,7 @@ protected:
 
     bool ready() const override { return ready_; }
     std::unique_ptr<tyloi::Executor::Scope> enter() override {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         return executor_->enter();
 #else
         return executor_->enter(execution_->config.layer_placement.primary_device());
@@ -187,7 +187,7 @@ public:
     }
 
     tyloi::StepSequence<Prepared> prepare(engine::InferenceRequest& input, State& state) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language()).prepare(
                                    input.prompt, *input.vision, state); }) {
             const tyloi::models::CausalModel& causal = language();
@@ -196,12 +196,12 @@ public:
 #endif
         return components().prepare(
             language(), images_,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
             execution_->executor().projector(execution_->executor().mode().ffn, model_parallel_primary_device(execution_->config)),
             execution_->executor().collectives(),
 #endif
             execution_->config.layer_placement.primary_device(),
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
             executor_.get(),
 #endif
             input.prompt, *input.vision);
@@ -219,7 +219,7 @@ public:
         engine::InferenceRequest& input, engine::InferenceOutput& output, State& state,
         std::optional<Prepared> prepared, const engine::RequestId& id, bool batched) {
         bool decode_ready = false;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         decode_ready = !preparing_;
 #endif
         return internal::generate(
@@ -257,7 +257,7 @@ private:
     std::unique_ptr<CudaExecutionContext> execution_;
     std::shared_ptr<tyloi::weights::Memory> weight_memory_;
     std::shared_ptr<const tyloi::ModelSource> source_;
-    tyloi::engine::RuntimeConfig config_;
+    tyloi::engine::Config config_;
     std::shared_ptr<Model> model_;
     std::unique_ptr<State> state_;
     std::unique_ptr<Executor> executor_;
@@ -279,7 +279,7 @@ private:
     decltype(auto) with_cuda(F&& function) {
         if (!ready_ || !execution_ || !model_)
             throw std::runtime_error("CUDA engine is unloaded");
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         auto scope = executor_->enter();
 #else
         CudaScope scope(execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
@@ -340,9 +340,9 @@ private:
             weight_memory_ = std::make_shared<tyloi::weights::Memory>();
             tyloi::weights::LoadScope memory_load(*weight_memory_);
             ::tyloi::cuda::NoGradGuard no_grad;
-            config_ = internal::resolve_cuda_runtime_config(options_);
+            config_ = internal::resolve_cuda_config(options_);
 
-            const auto kv_options = runtime_options::qsa_kv_offload();
+            const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
             kv_ = std::make_shared<KvMemoryManager>();
             if (kv_options.gpu_budget_bytes) {
                 kv_.reset();
@@ -364,7 +364,7 @@ private:
                  execution_->config.drop_file_cache, execution_->config.tensor_parallel,
                  moe_parallel_config(execution_->config)});
             executor_ = execution_->executor().fork(model_parallel_primary_device(execution_->config));
-            const bool preallocate = runtime_options::kv_vram_preallocated();
+            const bool preallocate = ::tyloi::cuda::options::kv_vram_preallocated();
             model_ = Load(
                 source_, loader, execution_->config.layer_placement, execution_->config.yarn,
                 execution_->config.dense_cpu_layer_count, options_,
@@ -420,12 +420,12 @@ private:
                 execution_->executor().fork(model_parallel_primary_device(execution_->config)), execution_->executor().collectives(),
                 execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), *budget_, std::move(batch_config),
                 config_.generation.prefill_chunk_size,
-                runtime_options::kv_vram_preallocated(),
+                ::tyloi::cuda::options::kv_vram_preallocated(),
                 execution_->config.dense_cpu_layer_count != 0 ||
                     !execution_->config.dsv4_cpu_offload_layers.empty(),
                 execution_->config.weights.min_slots);
         }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (::tyloi::weights::detail::cache(weights_).moe) {
             auto expert_loan = kv_ ? kv_->expert_loan() : nullptr;
             if (!expert_loan && (components().mtp ||
@@ -441,7 +441,7 @@ private:
             bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, &*budget_);
         }
 #endif
-        if (const auto bytes = runtime_options::resident_budget_bytes()) {
+        if (const auto bytes = ::tyloi::cuda::options::resident_budget_bytes()) {
             engine::SessionCommand command;
             command.kind = engine::SessionCommand::Kind::memory_budget;
             command.bytes = bytes;
@@ -468,7 +468,7 @@ private:
 
     template <class T>
     engine::ControlResult control_model(T value) {
-        if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
+        if constexpr (std::is_same_v<T, engine::GetMetrics>) {
             const auto& model = std::as_const(language());
             const auto& parts = std::as_const(components());
             const auto component_metrics = [&] {
@@ -494,7 +494,7 @@ private:
                 engine::mtp::append_generation_metrics(predictor_metrics, mtp_state_.stats);
                 predictor_metrics.emplace_back("mtp_predictor_graph_replays", double(mtp->graph_replay_count()));
             }
-            return engine::runtime_metrics(
+            return engine::resource_metrics(
                 component_metrics, profile_metrics, std::move(memory), streamed_kv, 3,
                 batch_metrics, kv_metrics, offload_metrics, predictor_metrics,
                 source_.get(), *weight_memory_, weights_, *cache_, *budget_,

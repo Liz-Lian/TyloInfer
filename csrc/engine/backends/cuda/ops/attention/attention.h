@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "scratch.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #endif
 
@@ -17,7 +17,7 @@ namespace tyloi::cuda {
 // The visible pair is the logical KV view returned by a cache append.  The
 // physical pair and page metadata are kept separate because decode kernels
 // consume the cache storage directly.
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 using AttentionKvView = tyloi::state::KvView;
 using AttentionInput = tyloi::ops::AttentionInput;
 using AttentionResult = tyloi::ops::AttentionResult;
@@ -57,7 +57,7 @@ struct AttentionInput {
 };
 #endif
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 inline ::tyloi::DenseTensor dense_kv_buffer(const std::shared_ptr<::tyloi::Tensor>& tensor) {
     if (!tensor || !tensor->defined()) return {};
     const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(tensor.get());
@@ -67,7 +67,7 @@ inline ::tyloi::DenseTensor dense_kv_buffer(const std::shared_ptr<::tyloi::Tenso
 #endif
 
 inline QuantizedKvPages quantized_pages(const AttentionKvView& kv) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     return kv.paged() ? QuantizedKvPages{dense_kv_buffer(kv.key_chunk_ptrs), dense_kv_buffer(kv.value_chunk_ptrs),
                                         dense_kv_buffer(kv.page_table), static_cast<int>(kv.page_size),
                                         static_cast<int>(kv.pages_per_chunk), static_cast<int>(kv.heads)}
@@ -108,7 +108,7 @@ struct AttentionConfig {
     AttentionKernels kernels;
 };
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 struct AttentionResult {
     ::tyloi::DenseTensor value;
     bool token_major = false;

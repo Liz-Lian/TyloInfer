@@ -1,5 +1,5 @@
 #pragma once
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/memory.h"
 #include "tensor.h"
 #include <map>

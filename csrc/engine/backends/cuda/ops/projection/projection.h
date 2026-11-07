@@ -3,7 +3,7 @@
 #include "quant_linear.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight);
 tyloi::DenseTensor project(tyloi::DenseTensor input, const ::tyloi::Tensor& weight);

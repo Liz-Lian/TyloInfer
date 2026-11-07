@@ -11,7 +11,7 @@ namespace tyloi::cuda {
 DenseTensor Executor::full_ffn(
     const Ffn& ffn, const DenseTensor& ffn_norm, const FullAttention& attention,
     DenseTensor residual, DenseTensor output, const Ffn::Mode& mode, Trace* trace_output) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto scope = enter(mfq_current_cuda_device());
 #endif
     const auto project_ = projector(mode);
@@ -33,7 +33,7 @@ DenseTensor Executor::full_ffn(
     auto& profiler = profiler_;
     auto record_trace = [&](const char* name, const DenseTensor& value) {
         if (attention.attention_output_gate && trace_output) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             trace_output->emplace_back(name, std::make_shared<DenseTensor>(value.reshape({B, T, -1})
                 .to(::tyloi::kFloat32).contiguous().clone()));
 #else
@@ -51,7 +51,7 @@ DenseTensor Executor::full_ffn(
     auto ff = attention.official_bf16
         ? dense(ffn, project_).bf16(project_, profiler, dense_.bf16_swiglu, input)
               .reshape({B, T, H}).to(::tyloi::kBFloat16).contiguous()
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         : ffn.forward(input, mode).reshape({B, T, H});
 #else
         : ffn.forward(input, *this, mode).reshape({B, T, H});
@@ -64,7 +64,7 @@ DenseTensor Executor::full_ffn(
 DenseTensor Executor::linear_ffn(
     const Ffn& ffn, const DenseTensor& ffn_norm, const LinearAttention& attention,
     DenseTensor residual, DenseTensor output, const Ffn::Mode& mode) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto scope = enter(mfq_current_cuda_device());
 #endif
     const auto project_ = projector(mode);
@@ -86,7 +86,7 @@ DenseTensor Executor::linear_ffn(
                             dense_.fp32_residual, std::move(residual), std::move(output));
     residual = pair[0];
     auto input = pair[1].reshape({B * T, H});
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto ff = ffn.forward(input, mode).reshape({B, T, H});
 #else
     auto ff = ffn.forward(input, *this, mode).reshape({B, T, H});

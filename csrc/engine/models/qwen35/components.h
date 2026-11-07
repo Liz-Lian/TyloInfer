@@ -53,11 +53,11 @@ struct Components {
 
     tyloi::StepSequence<PreparedPrompt> prepare(
         Model& language, MediaCache& images,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif
         int primary,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
         Executor* executor,
 #endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media);

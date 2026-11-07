@@ -233,7 +233,7 @@ static DenseTensor moe_forward(const Moe& weights, Executor& executor, DenseTens
             .reshape({B, T, H});
     });
     auto mixed = executor.profiler().measure("moe.ffn", [&] {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         return ffn.forward(xn.reshape({B * T, H}), mode.ffn).reshape({B, T, H});
 #else
         return ffn.forward(xn.reshape({B * T, H}), executor, mode.ffn).reshape({B, T, H});
@@ -271,7 +271,7 @@ static DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTen
     return collectives.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int primary) const {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
@@ -370,7 +370,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
                                                  ::tyloi::kFloat16,
                         attention.kv_quantization);
     cache.quantization = attention.kv_quantization;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     (void)scratch_index;
     DenseTensor residual;
     const Task task{task::Attention{0, 1, 2, attention, 0, &residual}, 0};
@@ -623,7 +623,7 @@ State::State(const Model& model) : layers(model.layers.size()) {
 }
 
 void State::preallocate() {
-    if (!runtime_options::kv_vram_preallocated()) return;
+    if (!::tyloi::cuda::options::kv_vram_preallocated()) return;
     for (std::size_t index = 0; index < layers.size(); ++index) {
         auto* cache = std::get_if<KVCache>(&layers[index]);
         if (cache == nullptr || cache->defined()) continue;

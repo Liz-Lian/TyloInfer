@@ -1,6 +1,6 @@
 #pragma once
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/state.h"
 #include "engine/state/kv_view.h"
 #else
@@ -16,7 +16,7 @@ namespace tyloi::cuda::gemma4 {
 struct Model;
 
 class State
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::models::State
 #endif
 {
@@ -27,7 +27,7 @@ public:
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     void preallocate() override;
     void reset(std::int64_t batch) override;
     std::int64_t position() const noexcept override { return cache_pos; }
@@ -47,7 +47,7 @@ public:
     std::vector<::tyloi::DenseTensor*> graph_state() { return {}; }
 #endif
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     bool supports_text_session_state() const override;
     bool supports_paged_text_session_state() const override;
 #else
@@ -62,7 +62,7 @@ public:
         int device;
         std::int64_t heads, head_dim, capacity;
         bool sliding;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         tyloi::ScalarType dtype;
         tyloi::state::KvQuantization quantization;
 #else
@@ -72,7 +72,7 @@ public:
     };
     const std::vector<Layout>& layout() const noexcept { return layout_; }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<tyloi::state::KvView> layers;
 #else
     std::vector<KVCache> layers;
@@ -83,7 +83,7 @@ public:
 
 private:
     std::vector<Layout> layout_;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<std::shared_ptr<tyloi::Tensor>> graph_views_;
 #endif
 };

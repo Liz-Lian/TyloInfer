@@ -42,7 +42,7 @@ struct GraphConfig {
     std::int32_t minimum_generation_tokens = 16;
 };
 
-struct RuntimeConfig {
+struct Config {
     std::vector<Device> devices;
     std::unordered_set<std::int64_t> stop_token_ids;
     std::uint64_t resident_budget_bytes = 0;
@@ -59,7 +59,7 @@ struct RuntimeConfig {
 
 std::uint64_t environment_uint64(const char* name, std::uint64_t fallback);
 bool environment_enabled(const char* name, bool fallback = true);
-RuntimeConfig resolve_runtime_config(std::int64_t prefill_chunk_size);
+Config resolve_config(std::int64_t prefill_chunk_size);
 ContinuousBatchConfig resolve_batch_config(int capacity, std::int64_t prefill_chunk_size);
 
 } // namespace tyloi::engine

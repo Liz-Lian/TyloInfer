@@ -90,7 +90,7 @@ void MlaScratch::ensure_decode_workspace(int64_t B, int64_t planned_len) {
     ensure_meta();
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::vector<std::shared_ptr<const ::tyloi::Tensor>> Executor::storage() const {
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> result;
     const auto append = [&](const DenseTensor& tensor) {
@@ -150,7 +150,7 @@ std::vector<DenseTensor> Executor::storage() const {
             }
         }
     }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if (tq_) for (const auto& tensor : tq_->storage()) append(tensor);
     std::lock_guard lock(attention_scratch_mutex_);
     for (const auto& [key, geometries] : attention_scratch_) {
@@ -177,7 +177,7 @@ namespace {
 
 void record(Trace* trace, std::string_view name, const DenseTensor& value) {
     if (trace && !name.empty()) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         trace->emplace_back(std::string(name), std::make_shared<DenseTensor>(value.to(::tyloi::kFloat32).contiguous().clone()));
 #else
         trace->emplace_back(std::string(name), value.to(::tyloi::kFloat32).contiguous().clone());
@@ -295,7 +295,7 @@ Executor::Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq
 
 Executor::~Executor() = default;
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 void Executor::drain() {
     std::exception_ptr failure;
     try { join(); } catch (...) { failure = std::current_exception(); }
@@ -336,7 +336,7 @@ void Executor::join() {
     if (failure) std::rethrow_exception(failure);
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 void Executor::wait() {
 #else
 void Executor::wait(const std::unordered_set<int>& devices) {
@@ -346,7 +346,7 @@ void Executor::wait(const std::unordered_set<int>& devices) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
     // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     for (const auto& [device, context] : contexts_) finish([&] {
 #else
     for (int device : devices) finish([&] {
@@ -389,7 +389,7 @@ AttentionScratch& Executor::attention_scratch(std::size_t index) {
     return scratch_[index];
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 AttentionScratch& Executor::attention_scratch(tyloi::Device device, AttentionGeometry geometry) {
     const auto stream = device.is_cuda()
         ? reinterpret_cast<std::uintptr_t>(current_stream(device.index).stream()) : 0;
@@ -399,7 +399,7 @@ AttentionScratch& Executor::attention_scratch(tyloi::Device device, AttentionGeo
 #endif
 
 namespace {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 class ExecutorProfile final : public tyloi::Executor::Profile {
 public:
     ExecutorProfile(CudaProfiler& profiler, const char* name)
@@ -436,7 +436,7 @@ thread_local ExecutorScope* active_scope = nullptr;
 
 class ExecutorScope final : public tyloi::Executor::Scope {
 public:
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     ExecutorScope(Executor& executor, int primary, ContextSet& contexts, const Ffn::Mode& mode)
         : owner(executor), ffn(mode), native_(std::in_place, primary, contexts),
           no_grad_(std::in_place), previous_(active_scope) {
@@ -457,20 +457,20 @@ public:
     }
 #endif
     ~ExecutorScope() override {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         active_scope = previous_;
 #endif
     }
 
 private:
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::optional<CudaScope> native_;
     std::optional<::tyloi::cuda::NoGradGuard> no_grad_;
 #else
     CudaScope native_;
     ::tyloi::cuda::NoGradGuard no_grad_;
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     ExecutorScope* previous_;
 #endif
 };
@@ -481,14 +481,14 @@ std::unique_ptr<tyloi::Executor::Scope> Executor::enter() {
 }
 
 std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     return enter(device, active_scope && &active_scope->owner == this ? active_scope->ffn : mode_.ffn);
 #else
     return std::make_unique<ExecutorScope>(*this, device, contexts_);
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<tyloi::Executor::Timer> Executor::timer() {
     return std::make_unique<internal::PrefillCudaTimer>();
 }
@@ -517,7 +517,7 @@ const Ffn::Mode& Executor::current_ffn() {
 #endif
 
 DenseTensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto scope = enter(mfq_current_cuda_device(), mode.ffn);
 #endif
     const auto release = releases(tasks, inputs);
@@ -561,7 +561,7 @@ DenseTensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode
                     } else if constexpr (std::is_same_v<Op, task::Project>) {
                         return project.run(op.weight, std::move(input));
                     } else if constexpr (std::is_same_v<Op, task::Attention>) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                         auto output = op.weights.forward(std::move(input), inputs.attention,
                             inputs.kv[op.state], *inputs.rope, trace);
 #else
@@ -570,7 +570,7 @@ DenseTensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode
                             scratch_[inputs.scratch_offset + index],
                             *inputs.rope, trace);
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                         if (op.residual_out) *op.residual_out = output[0];
                         values[op.residual] = std::move(output[0]);
                         return std::move(output[1]);

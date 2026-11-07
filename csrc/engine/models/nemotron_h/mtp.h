@@ -85,7 +85,7 @@ struct Mtp final : tyloi::models::Mtp {
             const auto &layer = result.layers[index];
             if (const auto *full = std::get_if<FullAttention>(&layer.weights)) {
                 auto &cache = result.states[index].emplace<KVCache>();
-                if (runtime_options::kv_vram_preallocated()) {
+                if (::tyloi::cuda::options::kv_vram_preallocated()) {
                     MfqCudaGuard guard(layer.device);
                     cache = KVCache(1, full->kv_heads,
                         full->sliding ? full->attention_window : full->max_position_embeddings,

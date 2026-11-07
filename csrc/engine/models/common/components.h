@@ -106,32 +106,32 @@ struct RuntimeComponents {
 
     tyloi::StepSequence<tyloi::cuda::PreparedPrompt> prepare(
         Model& language, tyloi::cuda::MediaCache& images,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
         tyloi::cuda::Projector projector, tyloi::cuda::Collectives& collectives,
 #endif
         int primary,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
         tyloi::cuda::Executor* executor,
 #endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
         if (composite) return composite->prepare(tokens, media);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if constexpr (std::is_same_v<Model, tyloi::cuda::qwen4_exp::Model>)
 #endif
         if (grid_vision)
             return grid_vision->prepare(language, images,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
                 projector, collectives,
 #endif
                 primary,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
                 executor,
 #endif
                 tokens, media);
         if constexpr (std::is_same_v<Model, tyloi::cuda::nemotron_h::Model>)
             if (radio_vision)
                 return radio_vision->prepare(language,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
                                              projector, *executor, collectives,
 #endif
                                              primary, tokens, media);

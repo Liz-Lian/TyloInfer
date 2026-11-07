@@ -8,7 +8,7 @@
 #include <sstream>
 #include <string_view>
 
-#if defined(TYLOINFER_NATIVE_CUDA_RUNTIME) && defined(_WIN32)
+#if defined(TYLOINFER_NATIVE_CUDA) && defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -145,7 +145,7 @@ void report_cuda_memory(
               << " segments=" << stats.segments
               << " retries=" << stats.retries
               << " ooms=" << stats.ooms << "\n";
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     // cudaMemGetInfo does not describe this process's allocation ownership or
     // WDDM budget. Report those separately when diagnosing residency pressure.
     const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());

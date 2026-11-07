@@ -46,7 +46,7 @@ struct Qwen4Block final {
     std::unique_ptr<Ple> ple;
     DenseTensor batch_ffn(CudaExecutionContext& execution,const DenseTensor& input) {
         if(input.size(0)<=8)return ffn(execution,input);
-        const auto option=tyloi::cuda::runtime_options::continuous_ffn_tile();
+        const auto option=::tyloi::cuda::options::continuous_ffn_tile();
         const int64_t rows=option?*option:8;
         TYLOINFER_RUNTIME_CHECK(rows==8 || rows==16,"continuous FFN tile must be 8 or 16 rows");
         auto* window=DecodeWindow::recording();
@@ -164,7 +164,7 @@ struct Qwen4Block final {
                          std::optional<GatedResidual::Result>* deferred_residual=nullptr) {
         if(auto* window=DecodeWindow::recording())window->set_profile_layer_kind(layer,gdn?"gdn":"qsa");
         const auto mark=[&](const char* phase){if(auto* window=DecodeWindow::recording())window->mark(layer,phase);};
-        const bool detailed=tyloi::cuda::runtime_options::mhc_timings();
+        const bool detailed=::tyloi::cuda::options::mhc_timings();
         const auto marker=[&](const char* role)->GatedResidualMarker {
             if(!detailed || !DecodeWindow::recording())return {};
             return [&,role](const char* phase) {

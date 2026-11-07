@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/native/tensor/backend.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/executor.h"
 #include "engine/ops.h"
 #endif
@@ -14,7 +14,7 @@
 #include <vector>
 
 namespace tyloi::cuda {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 using Trace = tyloi::ops::Trace;
 #else
 using Trace = std::vector<std::pair<std::string, ::tyloi::DenseTensor>>;
@@ -101,7 +101,7 @@ struct CudaProfiler {
 namespace tyloi::cuda::internal {
 
 class PrefillCudaTimer
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::Executor::Timer
 #endif
 {
@@ -113,7 +113,7 @@ public:
     PrefillCudaTimer& operator=(const PrefillCudaTimer&) = delete;
 
     cudaEvent_t finished_event() const;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     void stop() override;
     double elapsed_ms() const override;
 #else

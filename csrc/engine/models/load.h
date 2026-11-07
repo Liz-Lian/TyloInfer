@@ -8,7 +8,7 @@
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/models/qwen35/load.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/state.h"
 #endif
@@ -97,7 +97,7 @@ inline constexpr auto with_model = []<typename F>(
         minicpmo45::load(model, weights, execution.config.layer_placement,
             execution.config.dense_cpu_layer_count, execution.config.yarn);
         minicpmo45::State state(model);
-        if (runtime_options::kv_vram_preallocated()) state.preallocate();
+        if (::tyloi::cuda::options::kv_vram_preallocated()) state.preallocate();
         std::unique_ptr<minicpmo45::State> owned_state;
         auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
         auto components = load_runtime_components(model, weights, load_optional_components);
@@ -115,7 +115,7 @@ inline constexpr auto with_model = []<typename F>(
                 std::shared_ptr<qwen35::Model> owner;
                 std::unique_ptr<qwen35::State> state;
                 auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-                const bool preallocate = runtime_options::kv_vram_preallocated();
+                const bool preallocate = ::tyloi::cuda::options::kv_vram_preallocated();
                 owner = std::make_shared<qwen35::Model>(qwen35::load(
                     source, weights, execution.config.layer_placement, execution.config.yarn,
                     execution.config.dense_cpu_layer_count,
@@ -162,7 +162,7 @@ inline constexpr auto with_model = []<typename F>(
         case CudaBackbone::minicpmo_tts:
             return load_tts();
         case CudaBackbone::gemma4: {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             throw std::runtime_error("unsupported CUDA model backbone");
 #else
             auto started = std::chrono::steady_clock::now();

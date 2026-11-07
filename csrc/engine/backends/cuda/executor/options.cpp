@@ -15,7 +15,7 @@
 #include <string>
 #include <string_view>
 
-namespace tyloi::cuda::runtime_options {
+namespace tyloi::cuda::options {
 
 MoeOptions moe(MoeOptions options) {
     options.row_workspace = nint_route_row_workspace();
@@ -357,9 +357,9 @@ int moe_prefill_group_size() {
     const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE");
     return value ? std::atoi(value) : 16;
 }
-} // namespace tyloi::cuda::runtime_options
+} // namespace tyloi::cuda::options
 
-namespace tyloi::cuda::runtime_options {
+namespace tyloi::cuda::options {
 std::optional<bool> mfe_token_groups() {
     if (const auto* value = tyloi::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS")) return value[0] != '0';
     return std::nullopt;
@@ -527,7 +527,7 @@ std::optional<std::int64_t> moe_ram_pin_reserve_bytes() {
     }
     return std::nullopt;
 }
-} // namespace tyloi::cuda::runtime_options
+} // namespace tyloi::cuda::options
 
 namespace {
 

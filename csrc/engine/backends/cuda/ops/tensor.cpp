@@ -1,6 +1,6 @@
 #include "engine/backends/cuda/ops/tensor.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/collectives.h"

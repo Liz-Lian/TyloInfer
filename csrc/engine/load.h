@@ -98,7 +98,7 @@ void reload_cuda_engine(tyloi::engine::Engine& engine, CudaEngineOptions options
 
 namespace tyloi::cuda::internal {
 
-tyloi::engine::RuntimeConfig resolve_cuda_runtime_config(const CudaEngineOptions& options);
+tyloi::engine::Config resolve_cuda_config(const CudaEngineOptions& options);
 void setup_cuda_load(
     const CudaLoadOptions& options,
     CudaLoadConfig& config, Executor& executor, tyloi::weights::Cache& weights,

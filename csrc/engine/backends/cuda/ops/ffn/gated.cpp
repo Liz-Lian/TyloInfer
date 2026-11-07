@@ -44,7 +44,7 @@ GatedResidual::Projection GatedResidual::projection(
             dense.scalar_type()==::tyloi::kBFloat16 && dense.is_contiguous() &&
             dense.dim()==2 && dense.size(0)>0 && dense.size(0)<=4;
         auto prepared_right=prepare_injection?(promoted.defined()?promoted:right.to(::tyloi::kFloat32)):DenseTensor{};
-        const auto vector_setting=tyloi::cuda::runtime_options::gr_dense_vector();
+        const auto vector_setting=::tyloi::cuda::options::gr_dense_vector();
         if(prepare_injection && (!vector_setting || *vector_setting) &&
                 !promoted.defined() && right.size(0)%4==0)
             prepared_right=prepare_gr_dense_vector_right(prepared_right);
@@ -60,7 +60,7 @@ GatedResidual::Projection GatedResidual::projection(
         if(dense.scalar_type()==::tyloi::kBFloat16 && dense.is_contiguous() &&
                 part==Part::final_down)
             activated=[weight,forward](const DenseTensor& input,int64_t streams,bool injection) {
-                const auto option=tyloi::cuda::runtime_options::gr_dense_bf16_direct();
+                const auto option=::tyloi::cuda::options::gr_dense_bf16_direct();
                 if(!injection && (!option || *option))
                     if(auto output=try_gr_bf16_down_cuda(input,payload_as<::tyloi::DenseTensor>(*weight),streams);output.defined())return output;
                 auto projected=forward(input);
@@ -70,7 +70,7 @@ GatedResidual::Projection GatedResidual::projection(
         if(dense.scalar_type()==::tyloi::kBFloat16 && dense.is_contiguous() &&
                 part==Part::final_up)
             mixed=[weight,forward](const DenseTensor& input,const DenseTensor& normalized,int64_t streams) {
-                const auto option=tyloi::cuda::runtime_options::gr_dense_bf16_direct();
+                const auto option=::tyloi::cuda::options::gr_dense_bf16_direct();
                 if(!option || *option)
                     if(auto output=try_gr_bf16_up_mix_cuda(input,normalized,payload_as<::tyloi::DenseTensor>(*weight),streams);output.defined())return output;
                 return mfq_qwen4_exp::gated_residual_mix(forward(input),normalized,streams);
@@ -104,7 +104,7 @@ GatedResidual::Projection GatedResidual::projection(
         });
     };
     DenseTensor group_coefficients;
-    const auto group_option=tyloi::cuda::runtime_options::gr_up_group_coefficients();
+    const auto group_option=::tyloi::cuda::options::gr_up_group_coefficients();
     if(group_option && *group_option!='0' && payload_as<tyloi::NintTensor>(*weight).aligned_q8 && !payload_as<tyloi::NintTensor>(*weight).q8_zero &&
             payload_as<tyloi::NintTensor>(*weight).gs==48 && payload_as<tyloi::NintTensor>(*weight).out==10240 && payload_as<tyloi::NintTensor>(*weight).neuron_len==320)
         group_coefficients=*group_option=='2'?prepare_gr_up_packed_metadata(payload_as<tyloi::NintTensor>(*weight)):
@@ -118,8 +118,8 @@ GatedResidual::Projection GatedResidual::projection(
 
 int64_t GatedResidual::prefill_work_chunk(const DenseTensor& input)const {
     if(input.dim()!=3 || input.size(0)!=1)return 0;
-    const auto option=tyloi::cuda::runtime_options::gr_prefill_work_chunk();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    const auto option=::tyloi::cuda::options::gr_prefill_work_chunk();
+#ifdef TYLOINFER_NATIVE_CUDA
     const int64_t chunk=option?*option:8192;
     // Chat framing just beyond 8k needs no large temporary-memory cut.
     // Avoid extra concatenation there; longer inputs use 8k work tiles.
@@ -179,13 +179,13 @@ bool GatedResidual::can_fuse(const DenseTensor& input)const {
         injection_dense->scalar_type()==::tyloi::kBFloat16))return false;
     const auto& w=*up_nint;
     const auto rows=input.numel()/(hidden*streams);
-    const auto continuous=tyloi::cuda::runtime_options::gr_continuous_two_stage();
+    const auto continuous=::tyloi::cuda::options::gr_continuous_two_stage();
     if(rows>8 && (!*cache_serial_ || (continuous && !*continuous)))
         return false;
-    const auto batch=tyloi::cuda::runtime_options::gr_batch_two_stage();
+    const auto batch=::tyloi::cuda::options::gr_batch_two_stage();
     if(rows>1 && batch && !*batch)return false;
     const bool selected=w.ng==1 || ((w.out+3)/4)*rows>=nint_float_projection_resident_blocks(input.get_device());
-    const auto trace=tyloi::cuda::runtime_options::trace_gr_dispatch();
+    const auto trace=::tyloi::cuda::options::trace_gr_dispatch();
     if(selected && trace && *trace) {
         static thread_local uint64_t seen[2]{};
         const int kind=input.scalar_type()==::tyloi::kFloat16?0:1;

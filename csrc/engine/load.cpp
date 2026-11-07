@@ -15,7 +15,7 @@
 #include "engine/engine_impl.h"
 #include "engine/instance_impl.h"
 #include "engine/drain.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/models/gemma4/load.h"
@@ -57,7 +57,7 @@ namespace tyloi::cuda::engine_detail {
 using State = std::variant<
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State>>,
     std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State>>,
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<gemma4::Model, gemma4::State>>,
 #endif
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State>>,
@@ -133,7 +133,7 @@ auto load_qwen(
             .mirror_scalars = mirror_scalars}));
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target);
 #endif
 
@@ -148,7 +148,7 @@ std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
             load_qwen>>(std::move(options), std::move(source));
     }
     source.reset();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if (backbone == CudaBackbone::gemma4) {
         return load_native_engine(std::move(options), nullptr);
     }
@@ -169,7 +169,7 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
         target->load();
         return;
     }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if (typeid(engine) == typeid(tyloi::engine::Engine)) {
         load_native_engine(std::move(options), &engine);
         return;
@@ -178,7 +178,7 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
     throw std::invalid_argument("unsupported CUDA engine for reload");
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target) {
     std::shared_ptr<const ModelSource> source;
@@ -187,7 +187,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
     std::shared_ptr<KvMemoryManager> kv;
     std::shared_ptr<KvOffloadStore> offload;
     CudaLoadConfig load;
-    tyloi::engine::RuntimeConfig runtime;
+    tyloi::engine::Config config;
     std::unique_ptr<Executor> root;
     std::shared_ptr<models::CausalModel> model;
     std::unique_ptr<models::State> state;
@@ -210,10 +210,10 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             root->profiler().enabled = false;
             ledger = std::make_shared<tyloi::weights::Memory>();
             tyloi::weights::LoadScope memory_load(*ledger);
-            runtime = internal::resolve_cuda_runtime_config(options);
-            if (runtime.continuous_batch.max_sequences)
+            config = internal::resolve_cuda_config(options);
+            if (config.continuous_batch.max_sequences)
                 throw std::invalid_argument("continuous batching is unavailable for this model");
-            const auto kv_options = runtime_options::qsa_kv_offload();
+            const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
             if (kv_options.gpu_budget_bytes)
                 throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             kv = std::make_shared<KvMemoryManager>();
@@ -231,7 +231,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 load.dense_cpu_layer_count = 0;
                 gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
                 state = model->make_state();
-                if (runtime_options::kv_vram_preallocated()) state->preallocate();
+                if (::tyloi::cuda::options::kv_vram_preallocated()) state->preallocate();
                 if (owner->plan.vision != CudaVisionAdapter::none || owner->plan.predictor != CudaPredictorAdapter::none)
                     throw std::runtime_error("CUDA component adapter is unsupported for this model");
                 finalize_kv(kv.get(), *weights, offload);
@@ -239,13 +239,13 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             }
             graph = root->graph();
-            sessions = internal::make_sessions(*source, runtime.session_cache, runtime.prefix_cache,
+            sessions = internal::make_sessions(*source, config.session_cache, config.prefix_cache,
                 model->info().max_context, state->supports_text_session_state(),
                 state->supports_paged_text_session_state());
         }
         const auto mode = root->forward_mode(load.layer_placement.primary_device());
-        runtime.devices = cuda_devices(load);
-        runtime.online_budget = load.layer_placement.devices.size() <= 1 &&
+        config.devices = cuda_devices(load);
+        config.online_budget = load.layer_placement.devices.size() <= 1 &&
             !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
         const bool graph_allowed = !root->attention_options().kernels.decode_aten && load.dense_cpu_layer_count == 0 &&
             model_parallel_cuda_graph_enabled(load, *root, *weights) &&
@@ -253,17 +253,17 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         const auto model_info = model->info();
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
         auto text = engine::TextProcessor::load(*source, options.tokenizer_model, vocab_size, model_info.model_type);
-        runtime.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
-        runtime.resident_budget_bytes = runtime_options::resident_budget_bytes();
-        runtime.decode_graph.enabled &= graph_allowed;
+        config.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
+        config.resident_budget_bytes = ::tyloi::cuda::options::resident_budget_bytes();
+        config.decode_graph.enabled &= graph_allowed;
         models::ForwardOptions forward{mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
         if (target) {
-            target->rebind(std::move(model), std::move(root), std::move(runtime), std::move(source),
+            target->rebind(std::move(model), std::move(root), std::move(config), std::move(source),
                 std::move(ledger), std::move(weights), std::move(state), std::move(sessions),
                 std::move(text), forward, std::move(graph));
             return {};
         }
-        return std::make_unique<engine::Engine>(std::move(model), std::move(root), std::move(runtime),
+        return std::make_unique<engine::Engine>(std::move(model), std::move(root), std::move(config),
             std::move(source), std::move(ledger), std::move(weights), std::move(state),
             std::move(sessions), std::move(text), forward, std::move(graph));
     } catch (...) {
@@ -336,7 +336,7 @@ std::int32_t graph_minimum(const char* name) {
 
 } // namespace
 
-tyloi::engine::RuntimeConfig resolve_cuda_runtime_config(
+tyloi::engine::Config resolve_cuda_config(
         const CudaEngineOptions& options) {
     const auto* profile_decode = env_lookup("TYLOINFER_PROFILE_DECODE");
     const bool profile_decode_enabled = profile_decode && profile_decode[0] == '1';
@@ -346,7 +346,7 @@ tyloi::engine::RuntimeConfig resolve_cuda_runtime_config(
         throw std::invalid_argument("prefill chunk size must be Auto (0) or in [1, 8192]");
     const bool prefill_chunk_auto = options.prefill_chunk_size == 0;
     const auto chunk_limit = prefill_chunk_auto ? int64_t(8192) : options.prefill_chunk_size;
-    auto config = tyloi::engine::resolve_runtime_config(chunk_limit);
+    auto config = tyloi::engine::resolve_config(chunk_limit);
     config.prefill_chunk_auto = prefill_chunk_auto;
     config.profile_decode = profile_decode_enabled;
     config.trace_moe = trace_moe_enabled;
@@ -630,7 +630,7 @@ void setup_cuda_load(
     drain_cuda(executor, weights, offload.get(),
                config.layer_placement, config.tensor_parallel, config.expert_parallel);
     executor.pipelines().clear();
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
     executor.attention_scratch().clear();
 #endif
     executor.branches().clear();

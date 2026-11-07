@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/requests/constraint.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #include "engine/requests/sampling.h"
 #endif
@@ -73,7 +73,7 @@ std::int64_t sample_top_k_top_p(std::span<const float> logits, std::int64_t top_
     return kept_indices.back();
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 class Sampler {
 public:
     using Params = MfqSamplingParams;

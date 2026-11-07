@@ -77,7 +77,7 @@ std::optional<int64_t> generation_decode(qwen4_exp::Model& model, Ops& ops) {
 
 template<class Ops>
 void generation_request(qwen4_exp::Model& model, Ops& ops, const tyloi::engine::InferenceRequest& input) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     model.decode_reserve_until=std::min<int64_t>(ops.info.max_context,
         int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
     if(!ops.batching && input.prompt.size()>1024) {

@@ -16,7 +16,7 @@
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/group.h"
 #endif
 #include "engine/ops.h"
@@ -88,7 +88,7 @@ bool expert_parallel(const Ffn& f) {
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 void Ffn::prefetch(const DenseTensor& x, const Mode& mode, bool enabled,
         MfqOptional<DenseTensor> input_ids) const {
 #else
@@ -96,7 +96,7 @@ void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, b
         MfqOptional<DenseTensor> input_ids) const {
 #endif
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto& executor = Executor::current();
 #endif
     const auto& f = *this;
@@ -138,7 +138,7 @@ void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, b
 
 Mlp dense(const Ffn& f, const Projector& project) {
     TYLOINFER_RUNTIME_CHECK(f.down, "FFN down projection is missing");
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     return {project.group(f.gate_up), *f.down, f.activation, f.geglu, f.swiglu_limit};
 #else
     return {make_quant_group(f.gate_up, true, false), *f.down, f.activation, f.geglu, f.swiglu_limit};
@@ -818,7 +818,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
     return local(*mlp, xh, executor, project_);
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 DenseTensor Ffn::forward(DenseTensor x, const Mode& mode, MfqOptional<DenseTensor> input_ids,
                     MfqOptional<DenseTensor> router_bias) const {
     auto& executor = Executor::current();
@@ -842,7 +842,7 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
 
 } // namespace tyloi::cuda
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 
 tyloi::DenseTensor mlp(tyloi::DenseTensor input, std::span<const std::shared_ptr<const tyloi::Tensor>> gate_up,

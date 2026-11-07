@@ -294,7 +294,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
                              std::span<const LinearStateView> linear,
                              LinearAttention::Options linear_options) {
         Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step,
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                       rope.view(),
 #else
                       &rope,

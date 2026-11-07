@@ -492,7 +492,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         auto prepared=std::make_unique<PrefillStream>();
         int capacity=cache_->pipeline_prefill_group_capacity_;
         if(!cache_->pipeline_prefill_ring_.defined()) {
-            capacity=std::clamp(tyloi::cuda::runtime_options::moe_prefill_group_size(),1,prefill_group_capacity);
+            capacity=std::clamp(::tyloi::cuda::options::moe_prefill_group_size(),1,prefill_group_capacity);
             if(cache_->ssd_experts()) {
                 if(!tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE"))capacity=64;
                 std::unordered_map<int,std::size_t> layer_expert_bytes;
@@ -539,12 +539,12 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 int64_t bytes=0;for(const auto& layer:layers)bytes=std::max(bytes,layer.second);
                 return bytes;
             };
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             const auto context=tyloi::cuda::default_context(ids.get_device());
             // SSD rings are additional to attention/hidden-state scratch.
             // Consuming half that budget here can prevent the next layer from
             // allocating its FP32 query and attention output.
-            const auto reserve=tyloi::cuda::runtime_options::workspace_reserve_bytes()/(cache_->ssd_experts()?1:2);
+            const auto reserve=::tyloi::cuda::options::workspace_reserve_bytes()/(cache_->ssd_experts()?1:2);
             auto available=context->available_memory()+context->workspace_available();
             const auto requested=std::size_t(ring_bytes(capacity))+reserve;
             if(cache_->ssd_experts() && available<requested && cache_->budget_) {
@@ -615,7 +615,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 cold.expert_local=buffer.maps.narrow(0,map_base+(2*cohort_index+1)*prefill_group_size,prefill_group_size);
                 runtime.pools.push_back(std::move(hot));runtime.pools.push_back(std::move(cold));++cohort_index;
             }
-            const auto mma=tyloi::cuda::runtime_options::moe_prefill_compact_mma();
+            const auto mma=::tyloi::cuda::options::moe_prefill_compact_mma();
             // These maps were just initialized to -1. Supplying their known
             // host values avoids reading each one back from the GPU, which
             // otherwise serializes construction with preceding layer work.
@@ -1075,7 +1075,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                         shared_scratch->prefill_activation_workspace(
                             x,group.rows,geometry.groups,geometry.gs,transform));
                 }
-                auto output=tyloi::cuda::mixed_project(runtime, scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route);
+                auto output=tyloi::cuda::mixed_project(runtime, scratch, ::tyloi::cuda::options::moe(kernels_), mmq_, x, route);
                 // Variable group densities must not retain one q8 scratch
                 // allocation per row count across all prompt chunks.
                 scratch.nint_input_plans.clear();scratch.nvq_active_plans.clear();
@@ -1128,21 +1128,21 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     std::unique_ptr<LayerPrefill> prefill_layer_;
     bool prefill_async_reported_=false;
     bool prefill_layer_flush() const {
-        const auto option=tyloi::cuda::runtime_options::moe_prefill_layer_flush();
+        const auto option=::tyloi::cuda::options::moe_prefill_layer_flush();
         return !option || *option!=0;
     }
     bool prefill_layer_async() const {
-        const auto option=tyloi::cuda::runtime_options::moe_prefill_layer_async();
+        const auto option=::tyloi::cuda::options::moe_prefill_layer_async();
         return !option || *option!=0;
     }
     bool prefill_layer_phased() const {
-        const auto option=tyloi::cuda::runtime_options::moe_prefill_layer_phased();
+        const auto option=::tyloi::cuda::options::moe_prefill_layer_phased();
         return !option || *option!=0;
     }
 
     void retain_prefill_pool(const ::tyloi::DenseTensor& ids) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const auto retain=tyloi::cuda::runtime_options::moe_prefill_pool_retain();
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto retain=::tyloi::cuda::options::moe_prefill_pool_retain();
         if((retain && *retain==0) || cache_->pipeline_prefill_pool_)return;
         int supported=0;
         TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&supported,cudaDevAttrMemoryPoolsSupported,ids.get_device()));
@@ -1160,7 +1160,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     }
 
     void handle_prefill_failure() {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         // A quota rejection does not invalidate CUDA execution. Retire the
         // partial prefill's scratch; its request state is discarded by the
         // scheduler. Driver and numerical failures still poison the session.
@@ -1208,13 +1208,13 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                     ++layer_count;
                     maximum=std::max(maximum,layer_bytes(layer.first));
                 }
-            const auto overlap=tyloi::cuda::runtime_options::moe_prefill_layer_overlap();
+            const auto overlap=::tyloi::cuda::options::moe_prefill_layer_overlap();
             cache_->pipeline_prefill_layer_overlap_=layer_count>1 && (!overlap || *overlap!=0);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
             // Strata sizes its transfer ring together with the compute
             // workspace. A second layer image is optional under pressure.
             const auto context=tyloi::cuda::default_context(ids.get_device());
-            const auto reserve=tyloi::cuda::runtime_options::workspace_reserve_bytes()/2;
+            const auto reserve=::tyloi::cuda::options::workspace_reserve_bytes()/2;
             auto available=context->available_memory()+context->workspace_available();
             const auto requested=std::size_t(maximum)*2+reserve;
             if(cache_->pipeline_prefill_layer_overlap_ && available<requested && cache_->budget_) {
@@ -1323,8 +1323,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 cold.expert_local=::tyloi::cuda::tensor(cold_map).to(cache_->device());runtime.pools.push_back(std::move(cold));
                 host_maps.push_back(std::move(cold_map));
             }
-            const auto compact=tyloi::cuda::runtime_options::moe_prefill_compact_mma();
-            const auto host_maps_option=tyloi::cuda::runtime_options::moe_prefill_host_maps();
+            const auto compact=::tyloi::cuda::options::moe_prefill_compact_mma();
+            const auto host_maps_option=::tyloi::cuda::options::moe_prefill_host_maps();
             prepare_moe(runtime, kernels_.heterogeneous, !compact || *compact!=0, !host_maps_option || *host_maps_option?&host_maps:nullptr);
         }
         if(swiglu_limit_<=0 && options_.fused_activation && !cache_->pipeline_sigmoid_table_.defined())
@@ -1360,7 +1360,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(copy_stream,cache_->pipeline_prefill_layer_read_done_[slot],0));
         int copies=0,direct_copies=0;int64_t direct_bytes=0,loan_bytes=0;
         {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         MfqCudaStreamGuard guard(MfqCudaStream(mfq_current_cuda_device(),copy_stream));
 #else
         MfqCudaStreamGuard guard(at::cuda::getStreamFromExternal(copy_stream,mfq_current_cuda_device()));
@@ -1468,7 +1468,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // Bound submission to two layers of lookahead. The CPU only waits for
         // the old reader of this slot, while current GR/attention remain queued.
         // Copy-stream fences protect the other slot until its reader retires.
-        const auto reuse_option=tyloi::cuda::runtime_options::moe_prefill_layer_reuse_async();
+        const auto reuse_option=::tyloi::cuda::options::moe_prefill_layer_reuse_async();
         const bool same_layer=cache_->pipeline_prefill_layer_last_served_==sources_[0]->layer_id_ &&
             (!reuse_option || *reuse_option!=0);
         if(!cache_->pipeline_prefill_layer_buffer_.defined() || !cache_->pipeline_prefill_layer_overlap_ ||
@@ -1522,7 +1522,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                         x,rows,geometry.groups,geometry.gs,transform));
             }
             auto output=profiler_.measure(p==0?"prefill.expert_gate":p==1?"prefill.expert_up":"prefill.expert_down",[&] {
-                return tyloi::cuda::mixed_project(runtime, scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route);
+                return tyloi::cuda::mixed_project(runtime, scratch, ::tyloi::cuda::options::moe(kernels_), mmq_, x, route);
             });
             scratch.activation_workspaces.clear();return output;
         };
@@ -1625,7 +1625,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     }
     void initialize(Cell& cell,const tyloi::cuda::Projector& project,bool batch_serial,int tiles,bool window=false) {
         cell.in_window=window;
-        const auto prefill_graph=tyloi::cuda::runtime_options::moe_prefill_graph();
+        const auto prefill_graph=::tyloi::cuda::options::moe_prefill_graph();
         cell.batch_decode=cell.tokens<=8 || (cell.tokens<=32 && batch_serial);
         // SSD payloads are leased per demand. Eager prefill must bind this
         // call's fields, rather than retain a graph over an evicted payload.
@@ -1654,17 +1654,17 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 cell.two_stage=cell.two_stage && nint && !nint->q8_zero;
             }
         }
-        const auto reuse=tyloi::cuda::runtime_options::moe_plan_reuse();
+        const auto reuse=::tyloi::cuda::options::moe_plan_reuse();
         cell.reuse_plan=cell.two_stage && (!reuse || *reuse!=0);
-        const auto check=tyloi::cuda::runtime_options::moe_plan_reuse_check();
+        const auto check=::tyloi::cuda::options::moe_plan_reuse_check();
         cell.check_reused_views=cell.reuse_plan && check && *check!=0;
-        const auto trace=tyloi::cuda::runtime_options::trace_mfe_dispatch();
+        const auto trace=::tyloi::cuda::options::trace_mfe_dispatch();
         if(trace && *trace!=0)
             std::fprintf(stderr,"moe_plan_reuse_runtime tokens=%d routes=%d reuse=%d check=%d\n",
                 cell.tokens,cell.routes,int(cell.reuse_plan),int(cell.check_reused_views));
         // A fixed full PCIe quota schedules every cold expert on the GPU.
         // CPU dispatch replays retain their original wait, even with that quota.
-        cell.skip_cpu_wait=cell.two_stage && tyloi::cuda::runtime_options::skip_gpu_only_cpu_wait() &&
+        cell.skip_cpu_wait=cell.two_stage && ::tyloi::cuda::options::skip_gpu_only_cpu_wait() &&
             cache_->options_.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
             std::all_of(cache_->pipeline_dispatch_replay_.begin(),cache_->pipeline_dispatch_replay_.end(),
                 [](const auto& record){return record.cpu.empty();});
@@ -1677,9 +1677,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // With a fixed GPU quota no dispatch decision consumes the measured
         // arithmetic rate. Keep timing whenever detailed DMA profiling needs
         // these event origins, or a dispatch replay can contain CPU work.
-        cell.skip_gpu_timing=cell.two_stage && tyloi::cuda::runtime_options::skip_fixed_gpu_timing() &&
+        cell.skip_gpu_timing=cell.two_stage && ::tyloi::cuda::options::skip_fixed_gpu_timing() &&
             cache_->options_.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
-            !tyloi::cuda::runtime_options::moe_diagnostics().dma &&
+            !::tyloi::cuda::options::moe_diagnostics().dma &&
             std::all_of(cache_->pipeline_dispatch_replay_.begin(),cache_->pipeline_dispatch_replay_.end(),
                 [](const auto& record){return record.cpu.empty();});
         if(!cell.skip_gpu_timing)cell.timing.initialize();
@@ -1707,7 +1707,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 batch_serial && cell.tokens==8?8:0,swiglu_limit_,up_only_,false);
             const auto* nint_gate=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
             const auto* reuse_gate=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_REUSE");
-            const auto fused_gate=tyloi::cuda::runtime_options::shared_gate_fused();
+            const auto fused_gate=::tyloi::cuda::options::shared_gate_fused();
             const auto* gate=nint_payload(shared_weights_.scalar_gate);
             if(cell.tokens<=6 && gate &&
                     (!fused_gate || *fused_gate) &&
@@ -1746,8 +1746,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             (cache_->pipeline_ram_registered_bytes_>0 || cache_->ssd_experts());
         cell.mapped_copy=cell.transfer_cache && cache_->pipeline_mapped_copy_;
         cell.phased_transfer=cell.transfer_cache && !cell.mapped_copy &&
-            options_.transfer_phases.value_or(tyloi::cuda::runtime_options::phased_transfer());
-        cell.mapped_overlap=cell.mapped_copy && tyloi::cuda::runtime_options::mapped_copy_overlap();
+            options_.transfer_phases.value_or(::tyloi::cuda::options::phased_transfer());
+        cell.mapped_overlap=cell.mapped_copy && ::tyloi::cuda::options::mapped_copy_overlap();
         const auto* native_dma=tyloi::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_BATCH");
 #if defined(_WIN32)
         const int native_default=1;
@@ -1782,7 +1782,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             (!packet_option || packet_option[0]!='0') &&
             (!host_packet_option || host_packet_option[0]=='1') &&
             (!fused_copy_option || fused_copy_option[0]!='0') &&
-            (!tyloi::cuda::runtime_options::router_lookahead() || cache_->ssd_experts()) && !cache_->pipeline_prefetch_host_stage_.defined();
+            (!::tyloi::cuda::options::router_lookahead() || cache_->ssd_experts()) && !cache_->pipeline_prefetch_host_stage_.defined();
         if(cell.wire_fallback)cache_->prepare_direct_transfer_cache();
         if(cell.transfer_cache)for(int p=0;p<3;++p)for(auto& cohort:sources_[p]->cohorts_) {
             // Share one capacity across M=9..32; changing concurrency must not
@@ -1809,7 +1809,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 binding.transfer.pools.push_back(std::move(retained));
                 binding.owner.push_back(::tyloi::cuda::tensor(cohort.expert_to_local).to(cell.input.device()));
             }
-            const auto compact_mma=tyloi::cuda::runtime_options::moe_prefill_compact_mma();
+            const auto compact_mma=::tyloi::cuda::options::moe_prefill_compact_mma();
             const bool dense_prefill=cell.tokens>8 && compact_mma && *compact_mma!=0;
             prepare_moe(binding.hot, kernels_.heterogeneous, dense_prefill);
             prepare_moe(binding.transfer, kernels_.heterogeneous, dense_prefill);
@@ -1900,14 +1900,14 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         const auto host_routes=std::min(experts_,cell.batch_decode?cell.entries:std::max(cell.entries,8*cell.routes));
         const auto host_header=(32+24*host_routes*route_fields+15)&~int64_t(15);
         int64_t host_payload=host_routes*route_bytes;
-        const auto compact_host=tyloi::cuda::runtime_options::moe_compact_host_stage();
+        const auto compact_host=::tyloi::cuda::options::moe_compact_host_stage();
         if(cell.transfer_cache && cache_->pipeline_prefill_layer_layout_ && compact_host && *compact_host) {
             // RAM expert leases are stable after full preload. Inspect their
             // actual fields once: retained warm copies may live outside the
             // registered cold arena. Only pageable fields and packed metadata
             // need a second pinned copy; direct payloads leave no host holes.
             std::vector<int64_t> staged(experts_);
-            const bool pack_small=tyloi::cuda::runtime_options::ram_field_packing();
+            const bool pack_small=::tyloi::cuda::options::ram_field_packing();
             const auto ram_begin=reinterpret_cast<uintptr_t>(cache_->pipeline_ram_complement_->data_ptr());
             const auto ram_bytes=uint64_t(cache_->pipeline_ram_registered_bytes_);
             for(int p=0;p<3;++p) {
@@ -1973,7 +1973,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             // descriptor table. Their captured kernels never embed the wire
             // address; only the serialized host/DMA producer uses this buffer.
             cell.indirect_wire=cell.two_stage && cell.direct_packet && cell.wire_fallback &&
-                !window && !tyloi::cuda::runtime_options::dma_graph_batch();
+                !window && !::tyloi::cuda::options::dma_graph_batch();
             bind_wire(cell);
             if(cell.wire_fallback && !cache_->pipeline_wire_fallback_cells_++)
                 std::fprintf(stderr,"moe_wire_fallback_dispatch scope=first_cell tokens=%d cache_bytes=%zu wire_bytes=%lld\n",
@@ -2060,7 +2060,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         } else if(cache_->pipeline_pool_stream_!=stream_)throw std::runtime_error("MFQ graph buffers cannot cross execution streams");
         for(int flag=0;flag<4;++flag)publish(cell.flags.h<uint32_t>()+16*flag);
         if(cell.phased_transfer)publish(cell.flags.h<uint32_t>()+80);
-        if(cell.phased_transfer && tyloi::cuda::runtime_options::dma_graph_batch() &&
+        if(cell.phased_transfer && ::tyloi::cuda::options::dma_graph_batch() &&
                 !cache_->pipeline_dma_batches_[0]) {
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream_));
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(cache_->weight_stream_));
@@ -2109,7 +2109,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         auto projection=[&](int i,const ::tyloi::DenseTensor& x) {
             auto& binding=cell.binding[i];auto& runtime=transfer ? binding.transfer : binding.hot;
             auto& scratch=transfer ? binding.transfer_scratch : binding.hot_scratch;
-            return tyloi::cuda::mixed_project(runtime, scratch, tyloi::cuda::runtime_options::moe(kernels_), mmq_, x, route, cell.shared_input && i<2);
+            return tyloi::cuda::mixed_project(runtime, scratch, ::tyloi::cuda::options::moe(kernels_), mmq_, x, route, cell.shared_input && i<2);
         };
         auto gate_output=projection(0,cell.input);
         // An ungated bank publishes Up in the Gate slot and has no activation
@@ -2226,7 +2226,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                                 cell.shared_gate_quantized,cell.shared_gate_scales))gate=*value;
                 if(!cell.shared_gate_trace_reported) {
                     cell.shared_gate_trace_reported=true;
-                    const auto trace=tyloi::cuda::runtime_options::trace_mfe_dispatch_requested();
+                    const auto trace=::tyloi::cuda::options::trace_mfe_dispatch_requested();
                     if(trace && *trace)std::fprintf(stderr,
                         "mfe_shared_gate_dispatch cell=%p scope=first_launch tokens=%d prepared=%d window=%d\n",
                         static_cast<void*>(&cell),cell.tokens,int(gate.defined()),int(cell.in_window));
@@ -2333,7 +2333,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     void wait_publication(Cell& cell) {
         const auto* flag=cell.flags.h<uint32_t>();
         auto flush=std::chrono::steady_clock::now();const auto start=flush;uint32_t spins=0;
-        const auto poll_interval=std::chrono::microseconds(tyloi::cuda::runtime_options::route_poll_interval_us());
+        const auto poll_interval=std::chrono::microseconds(::tyloi::cuda::options::route_poll_interval_us());
         if(*(volatile const uint32_t*)flag<1)tyloi::cuda::check_route_submission(stream_);
         while(*(volatile const uint32_t*)flag<1) {
             host_pause();if((++spins&1023u)!=0)continue;
@@ -2354,7 +2354,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         const bool calibration_busy=tyloi::collect_moe_cpu_calibration(
             cache_->pipeline_cpu_calibration_, cache_->pipeline_cpu_cost_, must_drain);
         const bool shadow=cell.in_window && cache_->pipeline_shared_cpu_cost_ &&
-            cache_->pipeline_cpu_transfer_budget_ && tyloi::cuda::runtime_options::background_calibration() && cache_->pipeline_dispatch_replay_.empty();
+            cache_->pipeline_cpu_transfer_budget_ && ::tyloi::cuda::options::background_calibration() && cache_->pipeline_dispatch_replay_.empty();
         cell.calibration_expert=-1;
         std::vector<int32_t> legacy_ids;
         auto& ids=cell.reuse_plan?cell.plan_ids:legacy_ids;
@@ -2495,7 +2495,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // Only the unfused dispatch map consumes local cohort ordinals.
         if(!cell.reuse_plan)std::memset(cell.local.host,0xff,cell.local.bytes);
         const bool early_gu=cell.two_stage && cell.fused->batch().resident_plan_overlap &&
-            tyloi::cuda::runtime_options::early_gate_up() && tyloi::cuda::runtime_options::parallel_gate_up();
+            ::tyloi::cuda::options::early_gate_up() && ::tyloi::cuda::options::parallel_gate_up();
         cache_->stats_.pipeline_early_gate_up_enabled=early_gu;
         for(auto& group:cell.plan.groups) {
             // Mixed formats have projection-granular residency. A partial
@@ -2591,7 +2591,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // GPU-only routes consume no CPU pair buffer. Their CPU completion
         // is independent of DMA submission and can be published with the plan.
         // Every graph replay resets this flag before receiving its new routes.
-        if(tyloi::cuda::runtime_options::early_no_cpu_ready() &&
+        if(::tyloi::cuda::options::early_no_cpu_ready() &&
             std::none_of(cell.plan.groups.begin(),cell.plan.groups.end(),[](const auto& group) {
                 return group.kind==tyloi::MoeDispatchKind::Cpu;
             })) {
@@ -2913,7 +2913,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // wire stage rather than submitting a DMA operation for every field.
         // Expert-major storage keeps its contiguous direct-copy intervals.
         const bool pack_small_fields=cache_->pipeline_prefill_layer_layout_ &&
-            tyloi::cuda::runtime_options::ram_field_packing();
+            ::tyloi::cuda::options::ram_field_packing();
         const auto registered_field=[&](const Field& field) {
             const auto address=reinterpret_cast<uintptr_t>(field.source);
             return address>=begin && address-begin<=size && uint64_t(field.bytes)<=size-(address-begin);
@@ -2939,7 +2939,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             auto& loan_copies=scratch.loan_copies;
             int64_t loan_hits=early_hit_bytes;
             auto& direct_to_cache=scratch.direct_to_cache;direct_to_cache.assign(fields.size(),false);
-            const auto direct_option=tyloi::cuda::runtime_options::moe_direct_cache_dma();
+            const auto direct_option=::tyloi::cuda::options::moe_direct_cache_dma();
             const bool direct_cache=cell.transfer_cache && direct_option && *direct_option;
             std::array<int64_t,2> staged_begin{},staged_end{},staged_host_begin{};
             int64_t offset=cell.wire_header_bytes,direct_bytes=0,staged_bytes=0,gate_up_end=0;
@@ -3173,7 +3173,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 words[5+i*3]=field.wire_offset;words[6+i*3]=field.bytes;
             }
             auto* wire=cell.wire.data_ptr<uint8_t>();
-            const bool batched=tyloi::cuda::runtime_options::dma_graph_batch() || cell.native_dma_mode;
+            const bool batched=::tyloi::cuda::options::dma_graph_batch() || cell.native_dma_mode;
             auto& batches=projection_copies;
             const auto projection_copy_count=submitted_projection_copies+batches[0].size()+batches[1].size();
             int64_t copies=1+projection_field_count,wire_bytes=cell.wire_header_bytes+projection_field_bytes;
@@ -3817,7 +3817,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         auto* packed=cache_->pipeline_host_stage_.data_ptr<uint8_t>();int64_t offset=cell.wire_header_bytes;
         struct Copy {void* dst;const void* src;int64_t bytes;std::size_t pitch=0,rows=1;};
         std::vector<Copy> copies;
-        const auto direct_option=tyloi::cuda::runtime_options::moe_prefill_direct_ram();
+        const auto direct_option=::tyloi::cuda::options::moe_prefill_direct_ram();
         const bool direct_prefill=cell.tokens>8 && !cell.two_stage && !cell.wire.defined() &&
             cache_->pipeline_ram_registered_bytes_>0 && (!direct_option || *direct_option!=0);
         const auto ram_begin=cache_->pipeline_ram_complement_
@@ -4535,7 +4535,7 @@ public:
         up_only_(sources_[0]==sources_[1] && sources_[0]->cpu_->out_per_expert==sources_[2]->cpu_->neuron_len),
         stream_device_(mfq_current_cuda_device()) {
         swiglu_limit_=swiglu_limit;
-        const auto trace=tyloi::cuda::runtime_options::trace_moe_serve();
+        const auto trace=::tyloi::cuda::options::trace_moe_serve();
         trace_serve_=trace && *trace;
         for(const auto& s:sources_)if(!s->quant_source_ || s->cache_!=cache_ || s->n_experts()!=experts_)
             throw std::invalid_argument("MFQ FFN sources must share one expert cache");
@@ -4574,7 +4574,7 @@ public:
         // Keep temporary pages reusable across every prefill path. The existing
         // allocation limits still apply, and decode restores the old threshold.
         if(!window && !batch_decode)retain_prefill_pool(ids);
-        const auto layer_prefill=tyloi::cuda::runtime_options::moe_prefill_layer();
+        const auto layer_prefill=::tyloi::cuda::options::moe_prefill_layer();
         if(!window && !batch_decode && layer_prefill && *layer_prefill!=0 && cache_->pipeline_prefill_layer_layout_ &&
                 cache_->pipeline_ram_registered_bytes_>0 && mmq_.mode==KlMmqMode::Default) {
             if(!cache_->moe_residency_)cache_->moe_residency_=std::make_unique<MoeResidencyManager>(cache_);
@@ -4584,7 +4584,7 @@ public:
         }
         if(!cache_->moe_residency_)cache_->moe_residency_=std::make_unique<MoeResidencyManager>(cache_);
         if(!window)cache_->moe_residency_->before_layer(sources_[0]->layer_id_);
-        const auto prefill_groups=tyloi::cuda::runtime_options::moe_prefill_groups();
+        const auto prefill_groups=::tyloi::cuda::options::moe_prefill_groups();
         if(!window && !batch_decode && prefill_groups.value_or(cache_->ssd_experts()) &&
                 (cache_->pipeline_ram_registered_bytes_>0 || cache_->ssd_experts()) && cache_->pipeline_dispatch_replay_.empty() &&
                 mmq_.mode==KlMmqMode::Default) {
@@ -4594,7 +4594,7 @@ public:
         const bool final_tile=tile+1==tiles;
         auto& cell=cells_[{tokens,routes,window,batch_decode,tile}];
         if(!cell) {
-            const auto prefill_graph=tyloi::cuda::runtime_options::moe_prefill_graph();
+            const auto prefill_graph=::tyloi::cuda::options::moe_prefill_graph();
             const bool eager=!window && !batch_decode &&
                 (cache_->ssd_experts() || (prefill_graph && *prefill_graph==0));
             cell=std::make_unique<Cell>(tokens,routes,width_,experts_,stream_,eager,input.device());
@@ -4668,7 +4668,7 @@ public:
                     (void)cudaStreamSynchronize(cache_->weight_stream_);cells_.erase(key);
                     if(final_tile)window_routes_.erase(window);
                 },[captured] {captured->output={};}});
-            cell->window_input_views=cell->two_stage && tyloi::cuda::runtime_options::window_input_views() &&
+            cell->window_input_views=cell->two_stage && ::tyloi::cuda::options::window_input_views() &&
                 input.is_contiguous() && ids.is_contiguous() && weights.is_contiguous() && weights.is_cuda() &&
                 weights.scalar_type()==::tyloi::kFloat32 && ids.device()==input.device() && weights.device()==input.device();
             if(cell->window_input_views)launch_body(*cell,project,&input,&ids,&weights);

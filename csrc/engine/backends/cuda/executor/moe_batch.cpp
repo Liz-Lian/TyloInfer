@@ -42,7 +42,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::DenseTenso
     if(pool.family==MixedMoeFamily::Nint)result=nint_view(pool.nint,rows,pool.local_experts,owners);
     else if(pool.family==MixedMoeFamily::Nvq) {
         const auto& w=pool.nvq;result.family=2;result.output_rows=rows;result.local_experts=pool.local_experts;
-        const auto word_signs=tyloi::cuda::runtime_options::mfe_nvq_word_signs();
+        const auto word_signs=::tyloi::cuda::options::mfe_nvq_word_signs();
         result.nvq_word_signs=!word_signs || *word_signs;
         result.input_width=int(w.neuron_len);result.groups=int(w.ng);result.group_size=int(w.gs);
         result.format=int(w.kernel_format);result.sub_bits=int(w.sub_bits);result.sign_mode=int(w.sign_mode);
@@ -50,7 +50,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::DenseTenso
             result.format==12 || result.format==15 || result.format==17;
         result.e8_dense_groups=w.dense_groups && !d4;
         result.d4_dense_groups=w.dense_groups && d4;
-        const auto bank_map_option=tyloi::cuda::runtime_options::mfe_nvq_bank_map();
+        const auto bank_map_option=::tyloi::cuda::options::mfe_nvq_bank_map();
         result.nvq_bank_map=bank_map_option && !*bank_map_option?0:w.bank_map;
         if(d4 && result.nvq_bank_map) {
             static std::atomic<uint32_t> reported{0};
@@ -113,7 +113,7 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
     batch_.shared_activation=ungated_shared?1:0;
     batch_.tokens=int(input.size(0));batch_.routes=int(ids.size(1));batch_.experts=projections[first_projection]->n_experts;
     batch_.input_width=int(input.size(1));
-    batch_.warp_multi_sum=tyloi::cuda::runtime_options::warp_multi_sum();
+    batch_.warp_multi_sum=::tyloi::cuda::options::warp_multi_sum();
     batch_.intermediate=intermediate_columns?intermediate_columns:projections[first_projection]->out_per_expert;
     batch_.output_width=output_columns?output_columns:projections[2]->out_per_expert;
     if(batch_.tokens<=0 || batch_.routes<=0 || batch_.experts<=0 || batch_.intermediate<=0 || batch_.output_width<=0 ||
@@ -137,10 +137,10 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
         }
         d.fields[7]=it->second.first.data_ptr();d.fields[8]=it->second.second.data_ptr();
     };
-    const auto late_option=tyloi::cuda::runtime_options::mfe_nint_late_scale();
-    const auto grouped_option=tyloi::cuda::runtime_options::nint_group_dot();
-    const auto hint_option=tyloi::cuda::runtime_options::nint_route_hint();
-    const auto warp_option=tyloi::cuda::runtime_options::nint_route_warps();
+    const auto late_option=::tyloi::cuda::options::mfe_nint_late_scale();
+    const auto grouped_option=::tyloi::cuda::options::nint_group_dot();
+    const auto hint_option=::tyloi::cuda::options::nint_route_hint();
+    const auto warp_option=::tyloi::cuda::options::nint_route_warps();
     const bool align_late=late_option && *late_option && batch_.tokens<=8 &&
         (!grouped_option || *grouped_option) && (!hint_option || *hint_option) &&
         (!warp_option || *warp_option!=4);
@@ -164,7 +164,7 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
                 d.nint_late_bits=-1; // The ordinary routed kernel uses four-value chunks here.
             else if(align_late && d.family==1 && nint_pools==1 && (d.group_size==24 || d.group_size==28)) {
                 const auto& w=runtime.pools[p].nint;
-                const auto direct_option=tyloi::cuda::runtime_options::nint_direct_pool();
+                const auto direct_option=::tyloi::cuda::options::nint_direct_pool();
                 const int width=direct_option && !*direct_option?d.input_width:d.groups*d.group_size;
                 if(w.bits>=4 && w.bits<=6 && nint_late_scale_enabled(width,int(w.bits),input.get_device()))
                     d.nint_late_bits=int(w.bits);
@@ -192,7 +192,7 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
         mapping.insert(mapping.end(),indices.begin(),indices.end());
     }
     if(shared[0] || shared[1] || shared[2]) {
-        const auto dense_math_option=tyloi::cuda::runtime_options::mfe_shared_dense_math();
+        const auto dense_math_option=::tyloi::cuda::options::mfe_shared_dense_math();
         batch_.shared_dense_math=dense_math_option && *dense_math_option;
         const int shared_input_projection=ungated_shared?1:0;
         if(!shared[shared_input_projection] || !shared[1] || !shared[2] ||
@@ -211,15 +211,15 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
             // packed layout stays three slots while the kernel reads one bank.
             const tyloi::NintTensor& source=*shared[p?p:(ungated_shared?1:0)];
             auto d=nint_view(source,int(source.out),1,owners_);d.expert_local=nullptr;
-            const auto small_whole=tyloi::cuda::runtime_options::mfe_shared_small_whole();
+            const auto small_whole=::tyloi::cuda::options::mfe_shared_small_whole();
             const bool small_down=p==2 && d.group_size==24 && d.groups<=32 &&
                 (small_whole?*small_whole:(batch_.tokens==1 || batch_.tokens==5 || batch_.tokens==6));
             d.nint_whole=nint_whole && (d.group_size==28 || (p<2 && d.group_size==24) || small_down);
-            const auto grouped=tyloi::cuda::runtime_options::nint_group_dot();
+            const auto grouped=::tyloi::cuda::options::nint_group_dot();
             if(batch_.shared_dense_math && source.aligned_q8)
                 d.dense_reduction_warps=-1; // Dense q8 uses four-value chunk accumulation.
             else if(batch_.shared_dense_math && (!grouped || *grouped) &&
-                !tyloi::cuda::runtime_options::nint_dense_reference() && !source.aligned_q8 &&
+                !::tyloi::cuda::options::nint_dense_reference() && !source.aligned_q8 &&
                 (d.group_size==24 || d.group_size==28) &&
                 (reinterpret_cast<std::uintptr_t>(d.fields[0])&3u)==0)
                 d.dense_reduction_warps=d.groups<=32?1:4;
@@ -315,7 +315,7 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
         batch_.token_group_capacity=batch_.tokens<=8?(wide_default?4:2):8;
         if(token_group_capacity_hint==4 || token_group_capacity_hint==8)
             batch_.token_group_capacity=token_group_capacity_hint;
-        if(const auto capacity=tyloi::cuda::runtime_options::mfe_token_group_capacity()) {
+        if(const auto capacity=::tyloi::cuda::options::mfe_token_group_capacity()) {
             if(*capacity>tyloi::cuda::kMfeSharedGroupEncoding)
                 batch_.token_group_capacity=shared[0] && batch_.tokens>=3 && batch_.tokens<=8?*capacity:2;
             else if(*capacity>0)batch_.token_group_capacity=*capacity;
@@ -333,7 +333,7 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
         token_group_slots_=::tyloi::cuda::empty({batch_.token_groups,8},input.options().dtype(::tyloi::kInt32));
         batch_.token_group_counts=token_group_counts_.data_ptr<int32_t>();
         batch_.token_group_slots=token_group_slots_.data_ptr<int32_t>();
-        const auto aligned_gu=tyloi::cuda::runtime_options::mfe_token_aligned_gu();
+        const auto aligned_gu=::tyloi::cuda::options::mfe_token_aligned_gu();
         // Short grouped mixed batches are dominated by singleton/pair groups.
         // Their smaller independent Gate/Up CTAs outperform the aligned CTA,
         // including its fused quantizer. Keep the existing explicit override.
@@ -361,7 +361,7 @@ MoeBatch::MoeBatch(const std::array<const ::tyloi::MfeTensor*,3>& projections,
                 "mfe_shared_group_dispatch scope=first_encoded_batch enabled=1 tokens=%d routed_capacity=2 shared_capacity=%d\n",
                 batch_.tokens,batch_.token_group_capacity-tyloi::cuda::kMfeSharedGroupEncoding);
         }
-        const auto compact_plan=tyloi::cuda::runtime_options::mfe_token_compact_plan();
+        const auto compact_plan=::tyloi::cuda::options::mfe_token_compact_plan();
         if(!compact_plan || *compact_plan) {
             token_group_buckets_=::tyloi::cuda::empty({4,batch_.token_groups+1},input.options().dtype(::tyloi::kInt32));
             batch_.token_group_buckets=token_group_buckets_.data_ptr<int32_t>();
@@ -436,7 +436,7 @@ void MoeBatch::asynchronous(const int32_t* kinds,const uint32_t* plan,const uint
     batch_.plan_ready=plan;batch_.transfer_ready=transfer;batch_.cpu_ready=cpu_ready;
     batch_.aborted=reinterpret_cast<uint32_t*>(aborted_.data_ptr<int32_t>());batch_.host_aborted=abort;
     batch_.cpu_pairs=reinterpret_cast<const __half*>(cpu_pairs);
-    batch_.resident_plan_overlap=tyloi::cuda::runtime_options::resident_plan_overlap();
+    batch_.resident_plan_overlap=::tyloi::cuda::options::resident_plan_overlap();
 }
 tyloi::cuda::MfePackedProjection MoeBatch::projection_view(int p,View view)const {
     if(!combined_gate_up_ || p!=1)return view;
@@ -496,9 +496,9 @@ tyloi::cuda::MfePackedProjection MoeBatch::expert_view(int p,int expert,
 void MoeBatch::trace_dispatch() {
     if(dispatch_trace_reported_)return;
     dispatch_trace_reported_=true;
-    const auto trace=tyloi::cuda::runtime_options::trace_mfe_dispatch_requested();
+    const auto trace=::tyloi::cuda::options::trace_mfe_dispatch_requested();
     if(!trace || !*trace)return;
-    const auto grouped=tyloi::cuda::runtime_options::mfe_group_dot();
+    const auto grouped=::tyloi::cuda::options::mfe_group_dot();
     const bool group_dot=!grouped || *grouped;
     const bool gu_requested=tyloi::cuda::mfe_ffn_e8_narrow_requested(batch_,false);
     const bool down_requested=tyloi::cuda::mfe_ffn_e8_narrow_requested(batch_,true);
@@ -612,7 +612,7 @@ void MoeBatch::prepare(int32_t* published_ids,uint32_t* ready){
     auto prepared=batch_;
     const bool shared_plan=batch_.token_group_capacity>tyloi::cuda::kMfeSharedGroupEncoding;
     if(shared_plan)prepared.token_group_capacity=2;
-    if(const auto setting=tyloi::cuda::runtime_options::mfe_token_groups())
+    if(const auto setting=::tyloi::cuda::options::mfe_token_groups())
         if(!*setting)prepared.token_group_counts=nullptr;
     const auto* warp_prepare=tyloi::cuda::env_lookup("TYLOINFER_MFE_PREPARE_WARP");
     const auto prepare=!warp_prepare || warp_prepare[0]!='0'?tyloi::cuda::mfe_ffn_prepare_warp:tyloi::cuda::mfe_ffn_prepare;
@@ -671,8 +671,8 @@ void MoeBatch::start_shared(bool early){
         if(batch_.tokens!=1 || !batch_.plan_ready || (setting && setting[0]=='0'))return;
     }
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_SHARED_STREAM");
-    const auto grouped=tyloi::cuda::runtime_options::mfe_group_dot();
-    const auto token_groups=tyloi::cuda::runtime_options::mfe_token_groups();
+    const auto grouped=::tyloi::cuda::options::mfe_group_dot();
+    const auto token_groups=::tyloi::cuda::options::mfe_token_groups();
     const int shared_capacity=split_shared_groups_?2:batch_.token_group_capacity>tyloi::cuda::kMfeSharedGroupEncoding?
         batch_.token_group_capacity-tyloi::cuda::kMfeSharedGroupEncoding:batch_.token_group_capacity;
     const bool grouped_shared=batch_.token_group_counts && shared_capacity>0 && shared_capacity<=8 &&

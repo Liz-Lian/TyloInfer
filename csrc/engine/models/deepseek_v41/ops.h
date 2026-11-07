@@ -913,7 +913,7 @@ struct Block final {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
                         TYLOINFER_RUNTIME_CHECK(mlp.moe_router_bias, "DeepSeek-V4.1 router bias is missing");
                         auto bias=::tyloi::cuda::where(shared->routing_mask,vision_router_bias,dynamic_cast<const ::tyloi::DenseTensor&>(*mlp.moe_router_bias)).contiguous();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                         return mlp.forward(
                             value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, L().current_ids, bias)
 #else
@@ -925,11 +925,11 @@ struct Block final {
                     }
                     if(layer+1<static_cast<int64_t>(shared->router_prefetch.size()))
                         if(const auto* next=shared->router_prefetch[layer+1]) {
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
                             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
 #endif
                             next->prefetch(
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                                 value, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
 #else
                                 value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
@@ -938,7 +938,7 @@ struct Block final {
                                     ::tyloi::weights::detail::cache(execution.weights).moe),
                                 L().current_ids);
                         }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                     return mlp.forward(
                             value.reshape({-1, config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, L().current_ids)
 #else

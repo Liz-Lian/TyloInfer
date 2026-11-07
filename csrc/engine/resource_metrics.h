@@ -17,7 +17,7 @@
 
 namespace tyloi::engine {
 
-inline Metrics runtime_metrics(
+inline Metrics resource_metrics(
         const Metrics& component_metrics, const Metrics& profile_metrics,
         std::optional<Metrics> memory, bool streamed_kv, int graph_depth,
         const Metrics& batch_metrics, const Metrics& kv_metrics,

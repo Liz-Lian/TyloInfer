@@ -57,7 +57,7 @@ struct KVCache {
         return is_paged() || quantization.enabled() ? paged_dtype : k.scalar_type();
     }
     tyloi::cuda::AttentionKvView view() const {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         const auto owner = [](const ::tyloi::DenseTensor& value) -> std::shared_ptr<::tyloi::Tensor> {
             return value.defined() ? std::make_shared<::tyloi::DenseTensor>(value) : nullptr;
         };

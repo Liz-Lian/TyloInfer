@@ -38,7 +38,7 @@ static NvqMatmulPath select_nvq_matmul_path(const tyloi::NvqTensor & w, int M) {
     // Short batches of small expert matrices use vector decode followed by
     // FP32-accumulating GEMM. The decision depends on matrix geometry.
     if (M >= 9 && M <= 16 && w.out <= 4096 && w.neuron_len <= 4096 &&
-            !tyloi::cuda::runtime_options::nvq_dense_reference()) {
+            !::tyloi::cuda::options::nvq_dense_reference()) {
         return NvqMatmulPath::DequantGemm;
     }
     const bool e8_family =

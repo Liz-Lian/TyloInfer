@@ -59,7 +59,7 @@ struct Model {
     std::shared_ptr<const ::tyloi::Tensor> lm_head;
     DenseTensor output_norm;
     std::vector<Layer> layers;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const;
 #endif
 };

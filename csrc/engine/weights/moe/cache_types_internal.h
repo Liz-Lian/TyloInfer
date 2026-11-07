@@ -152,7 +152,7 @@ static ::tyloi::DenseTensor moe_owned_host_view(
         count>static_cast<std::size_t>(arena->numel())-offset)
         throw std::out_of_range("RAM complement field exceeds its owned arena");
     auto* ptr=arena->data_ptr<uint8_t>()+offset;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto storage=std::make_shared<::tyloi::TensorStorage>();
     storage->owner=arena;storage->base=ptr;storage->bytes=count;storage->device=field.device();
     return ::tyloi::DenseTensor(storage,::tyloi::make_contiguous_view(ptr,field.sizes(),field.scalar_type(),field.device()));

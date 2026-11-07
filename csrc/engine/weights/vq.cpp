@@ -52,7 +52,7 @@ bool prepare_nvq_dense_groups(tyloi::NvqTensor& w) {
 }
 
 void prepare_nvq_integer_codebook(tyloi::NvqTensor& w) {
-    const auto enabled=tyloi::cuda::runtime_options::nvq1_integer_delta();
+    const auto enabled=::tyloi::cuda::options::nvq1_integer_delta();
     if(!enabled || !*enabled || w.integer_codebook.defined() ||
        (w.kernel_format!=1 && w.kernel_format!=8) || !w.codebook.is_cuda())return;
     const auto canonical=w.codebook.to(::tyloi::kCPU).contiguous();
@@ -70,7 +70,7 @@ void prepare_nvq_integer_codebook(tyloi::NvqTensor& w) {
     w.integer_codebook=::tyloi::cuda::tensor(digits).to(w.codebook.device()).contiguous();
 }
 void prepare_nvq_decode_records(tyloi::NvqTensor& w) {
-    const auto enabled=tyloi::cuda::runtime_options::nvq1_group_records();
+    const auto enabled=::tyloi::cuda::options::nvq1_group_records();
     if(!enabled || !*enabled || w.decode_records.defined() ||
        (w.kernel_format!=1 && w.kernel_format!=8) || !w.indices_packed.is_cuda() || w.gs!=24 ||
        w.sub_bits!=(w.kernel_format==8?4:3))return;

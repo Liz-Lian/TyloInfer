@@ -1,7 +1,7 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/profile.h"
 #endif
@@ -11,7 +11,7 @@
 
 namespace {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 const ::tyloi::DenseTensor& dense(const ::tyloi::Tensor& tensor) {
     const auto* result = dynamic_cast<const ::tyloi::DenseTensor*>(&tensor);
     TYLOINFER_RUNTIME_CHECK(result, "decode graph requires a dense tensor");
@@ -59,7 +59,7 @@ bool same_tensor_layout(const ::tyloi::DenseTensor& expected,
 }
 #endif
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 bool same_storage(const std::vector<::tyloi::DenseTensor>& expected,
                   const std::vector<::tyloi::DenseTensor>& candidate) {
     if (expected.size() != candidate.size()) return false;
@@ -71,7 +71,7 @@ bool same_storage(const std::vector<::tyloi::DenseTensor>& expected,
 
 } // namespace
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 decode_graph_detail::Layout decode_graph_detail::snapshot_layout(
         const ::tyloi::Tensor& tensor) {
     Layout result;
@@ -161,7 +161,7 @@ activate_cuda_graph_compute_streams(
     return guards;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 class ExecutionGraph final : public tyloi::Executor::Graph {
     struct Scope final : tyloi::Executor::Scope {
@@ -285,13 +285,13 @@ std::vector<MfqCudaStream> DecodeGraphCache::graph_participant_streams(
 bool DecodeGraphCache::matches(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& candidate_storage) const {
 #else
         const std::vector<::tyloi::DenseTensor>& candidate_storage) const {
 #endif
     return valid && planned_len == candidate_len && greedy == candidate_greedy &&
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
            same_storage(storage_layout, candidate_storage) &&
 #else
            same_storage(storage, candidate_storage) &&
@@ -306,7 +306,7 @@ bool DecodeGraphCache::matches(
 
 void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
     auto i64 = ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if (!static_input || !static_input->defined()) static_input = std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({1, 1}, i64));
     if (!static_pos || !static_pos->defined()) static_pos = std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({1}, i64));
     if (!static_len || !static_len->defined()) static_len = std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({1}, i64));
@@ -333,7 +333,7 @@ void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 void DecodeGraphCache::initialize_inputs(
         const ::tyloi::Tensor& pending, int64_t position,
         ::tyloi::Tensor& random_host) {
@@ -415,7 +415,7 @@ void DecodeGraphCache::invalidate() {
     if (graph) graph->reset();
     graph.reset();
     storage.clear();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     storage_layout.clear();
     static_next.reset();
 #else
@@ -427,7 +427,7 @@ void DecodeGraphCache::invalidate() {
 void DecodeGraphCache::set_key(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& candidate_storage) {
 #else
         const std::vector<::tyloi::DenseTensor>& candidate_storage) {
@@ -440,7 +440,7 @@ void DecodeGraphCache::set_key(
     presence_penalty = sampling.presence_penalty;
     frequency_penalty = sampling.frequency_penalty;
     repetition_penalty = sampling.repetition_penalty;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     std::vector<std::optional<decode_graph_detail::Layout>> layouts;
     layouts.reserve(candidate_storage.size());
     for (const auto& tensor : candidate_storage) {

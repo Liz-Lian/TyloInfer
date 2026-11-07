@@ -1,7 +1,7 @@
 #include "engine/models/gemma4/forward.h"
 #include "engine/models/common/check.h"
 #include "engine/ops.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
@@ -19,7 +19,7 @@
 
 namespace tyloi::cuda::gemma4 {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 static void trace_stage(const Model::Options& mode, int layer, const char* name,
                         const tyloi::Tensor& value) {
 #else
@@ -27,7 +27,7 @@ static void trace_stage(const Executor::Mode& mode, int layer, const char* name,
                         const DenseTensor& value) {
 #endif
     if (mode.trace != nullptr && layer == mode.trace_layer) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         auto converted = tyloi::ops::cast(value, tyloi::ScalarType::float32);
         auto contiguous = tyloi::ops::contiguous(*converted);
         mode.trace->emplace_back(name, tyloi::ops::clone(*contiguous));
@@ -37,7 +37,7 @@ static void trace_stage(const Executor::Mode& mode, int layer, const char* name,
     }
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 static std::shared_ptr<tyloi::Tensor> gemma_rms_norm_f16(
     const tyloi::Tensor& x, const tyloi::Tensor& weight, double eps, double weight_offset) {
     tyloi::models::require_model(x.scalar_type() == tyloi::ScalarType::float16,
@@ -366,7 +366,7 @@ static DenseTensor forward_ffn(const Layer& weights, Executor& executor, const E
 
 namespace {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> normalize_ids(int primary, const tyloi::Tensor& ids) {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
@@ -393,7 +393,7 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 
 } // namespace
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int primary) const {
     auto normalized = normalize_ids(primary, ids);
     return tyloi::ops::measure("model.embed", normalized->device(), [&] {
@@ -410,7 +410,7 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> Model::normalize(const tyloi::Tensor& hidden, std::int64_t batch, std::int64_t tokens) const {
     const auto& model = *this;
     const std::array<std::int64_t, 3> shape{batch, tokens, model.config.hidden_size};
@@ -431,7 +431,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> Model::softcap(const tyloi::Tensor& logits) const {
     return tyloi::ops::softcap(logits, config.final_logit_softcapping);
 #else
@@ -443,7 +443,7 @@ DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) 
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> Model::logits(const tyloi::Tensor& hidden, bool capped) const {
     const auto& model = *this;
     auto result = tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
@@ -464,7 +464,7 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::shared_ptr<tyloi::Tensor> forward_layer(const Layer& layer, tyloi::state::KvView& cache, const tyloi::Tensor& input, const AttentionStep& step,
                      const Model::Options& mode) {
 #else
@@ -472,7 +472,7 @@ DenseTensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor
                      std::size_t scratch_index, DenseTensor input, const AttentionStep& step,
                      const Executor::Mode& mode) {
 #endif
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
     MfqCudaGuard guard(layer.device);
 #endif
     const auto B = input.size(0), T = input.size(1), H = input.size(2);
@@ -481,7 +481,7 @@ DenseTensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor
         : (mode.kv_capacity > 0 ? std::max<std::int64_t>(step.cache_position + T, mode.kv_capacity)
                                 : attention.max_position_embeddings);
     if (!cache.defined()) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         cache = tyloi::state::allocate_kv(B, attention.kv_heads, capacity, attention.attention_head_dim,
                         attention.sliding, input.device(),
                         attention.official_bf16 ? tyloi::ScalarType::bfloat16 : tyloi::ScalarType::float16,
@@ -495,7 +495,7 @@ DenseTensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor
 #endif
     }
     cache.quantization = attention.kv_quantization;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     auto result = attention.forward(input, step,
         cache, attention.attention_rope,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
@@ -505,7 +505,7 @@ DenseTensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor
         executor.attention_scratch(scratch_index), attention.attention_rope,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     return forward_ffn(layer, mode,
                        *result[0], *result[1], B, T, H);
 #else
@@ -514,7 +514,7 @@ DenseTensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     const std::vector<std::int64_t>&, const MfqMultimodalInput&, tyloi::models::State&) const {
     throw std::invalid_argument("model has no multimodal component");

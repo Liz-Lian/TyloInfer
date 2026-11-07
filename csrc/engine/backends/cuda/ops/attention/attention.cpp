@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
 #endif
@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace tyloi::cuda {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 std::int64_t ops::attention_parts(std::int64_t planned_len) {
     return std::min<std::int64_t>(planned_len >= 192 ? (planned_len + 127) / 128 : 1,
                                   AttentionScratch::kMaxParts);
@@ -26,7 +26,7 @@ namespace {
 
 using ::tyloi::indexing::Slice;
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 struct NativeAttentionInput {
     ::tyloi::DenseTensor query, key, value, positions, write_positions;
     MfqOptional<::tyloi::DenseTensor> sequence_lengths, attention_mask;
@@ -97,7 +97,7 @@ MfqOptional<::tyloi::DenseTensor> minicpmo45_attention_mask(
 
 } // namespace
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 const tyloi::DenseTensor& dense(const tyloi::Tensor& tensor) {
     const auto* result = dynamic_cast<const tyloi::DenseTensor*>(&tensor);
@@ -481,7 +481,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                     kv.visible_value.contiguous(), attn_scale, true);
     });
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     return AttentionResult{std::make_shared<::tyloi::DenseTensor>(std::move(attention)), attention_token_major};
 #else
     return AttentionResult{std::move(attention), attention_token_major};

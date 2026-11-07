@@ -1,6 +1,6 @@
 #include "engine/ops.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/norm/layer.h"
@@ -19,7 +19,7 @@
 #endif
 
 namespace tyloi::ops {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 const DenseTensor& dense(const Tensor& value) {
     const auto* result = dynamic_cast<const DenseTensor*>(&value);

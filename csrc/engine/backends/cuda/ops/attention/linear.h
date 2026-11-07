@@ -47,7 +47,7 @@ struct LinearAttention {
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> qkv_proj;
     std::shared_ptr<const ::tyloi::Tensor> z_proj;
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> ab_nint_proj;
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
     bool grouped_weights = true;
 #endif
     DenseLinearGroup ab_proj;

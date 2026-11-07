@@ -29,7 +29,7 @@
 #include "glu.cuh"
 #include "backend.h"
 #include "mfq_cuda_nint_route_hint.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "packed_backward.cuh"
 #endif
 #include "packed_nint.cuh"
@@ -1686,7 +1686,7 @@ __global__ void __launch_bounds__(128) nint_matmul_aligned_q8_kernel(
 }
 
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 // One metadata-driven packed input-gradient kernel covers every NINT q/k
 // allocation.  Each warp owns four adjacent input columns and reduces over
 // output neurons; q is read from row metadata and k is already represented by
@@ -3223,7 +3223,7 @@ __global__ void nint_online_reduce_kernel(const float* partial,__half* output,in
 }
 
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::DenseTensor nint_backward_input_cuda(
         ::tyloi::DenseTensor bitstream,
         ::tyloi::DenseTensor row_q_bits,
@@ -3492,7 +3492,7 @@ static ::tyloi::DenseTensor nint8_zero_dequant_impl(
 }
 
 
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::DenseTensor nint8_zero_backward_input_cuda(
         ::tyloi::DenseTensor quantized,
         ::tyloi::DenseTensor scale,

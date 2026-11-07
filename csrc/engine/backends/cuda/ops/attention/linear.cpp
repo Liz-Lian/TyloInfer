@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/group.h"
 #endif
 
@@ -57,7 +57,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::forward(
 std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
         const Projector& project, ::tyloi::DenseTensor x,
         LinearView state) const {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const auto in_group = !split_in_proj ? project.group(in_proj) : QuantLinearGroup{};
     const auto qkv_group = split_in_proj ? project.group(qkv_proj) : QuantLinearGroup{};
     const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint
@@ -287,7 +287,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         ::tyloi::DenseTensor x,
         LinearView state, LinearInputs* captured) const {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     const auto in_group = !split_in_proj ? project.group(in_proj) : QuantLinearGroup{};
     const auto qkv_group = split_in_proj ? project.group(qkv_proj) : QuantLinearGroup{};
     const auto ab_group = split_in_proj && !split_dense_zab && ab_is_nint

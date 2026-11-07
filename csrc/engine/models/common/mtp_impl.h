@@ -66,7 +66,7 @@ using DenseTensor = ::tyloi::DenseTensor;
 
 template <typename Model, typename State>
 constexpr bool has_forward =
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
   requires(Model& model, State& state, tyloi::cuda::Input input,
            const tyloi::models::ForwardOptions& options) {
     static_cast<const tyloi::models::CausalModel&>(model).forward(std::move(input), state, options);
@@ -90,7 +90,7 @@ DenseTensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
               tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
               tyloi::cuda::Input input) {
   static_assert(has_forward<Model, State>);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
   if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).forward(
                              std::move(input), state, tyloi::cuda::forward_options(mode)); }) {
     const tyloi::models::CausalModel& causal = model;
@@ -291,7 +291,7 @@ template <class Model, class State> struct CudaMtpOps {
         weights(weights), info(info), source(source), mtp(mtp), mtp_state(mtp_state), prepared(prepared),
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt &&
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
                               prepared->positions && prepared->positions->defined() && prepared->positions->dim() == 2 &&
                               prepared->positions->size(0) == 3
 #else
@@ -370,7 +370,7 @@ template <class Model, class State> struct CudaMtpOps {
     DenseTensor hidden;
     if constexpr (has_forward<Model, State>) {
       tyloi::cuda::Input input;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
       std::shared_ptr<tyloi::Tensor> raw_result;
       input.ids = std::make_shared<DenseTensor>(std::move(ids));
       input.raw_hidden = raw ? &raw_result : nullptr;
@@ -380,7 +380,7 @@ template <class Model, class State> struct CudaMtpOps {
 #endif
       input.confirmed = confirmed;
       hidden = mtp_detail::hidden(model, state, executor, collectives, mode, std::move(input));
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
       if (raw && raw_result) *raw = dynamic_cast<const DenseTensor&>(*raw_result);
 #endif
     } else {
@@ -447,7 +447,7 @@ template <class Model, class State> struct CudaMtpOps {
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     DenseTensor hidden;
     if (transformed_prompt) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
       auto embeddings = dynamic_cast<const DenseTensor&>(*prepared->embeddings).narrow(1, chunk.offset, chunk.count)
                             .contiguous();
       auto positions = prepared->positions && prepared->positions->defined()
@@ -464,7 +464,7 @@ template <class Model, class State> struct CudaMtpOps {
 #endif
       if constexpr (has_forward<Model, State>) {
         tyloi::cuda::Input input;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         std::shared_ptr<tyloi::Tensor> raw_result;
         input.ids = std::make_shared<DenseTensor>(std::move(ids));
         input.embeddings = std::make_shared<DenseTensor>(std::move(embeddings));
@@ -478,7 +478,7 @@ template <class Model, class State> struct CudaMtpOps {
 #endif
         input.advance = true;
         hidden = mtp_detail::hidden(model, state, executor, collectives, mode, std::move(input));
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
         if (raw_result) raw = dynamic_cast<const DenseTensor&>(*raw_result);
 #endif
       } else {
@@ -674,7 +674,7 @@ template <class Model, class State> struct CudaMtpOps {
     };
     if(matches(projected_predictor_hidden)) return projected_predictor_logits;
     if(matches(projected_target_hidden)) return projected_target_logits;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#ifdef TYLOINFER_NATIVE_CUDA
     if constexpr (requires(Model& value, DenseTensor value_hidden) {
                     static_cast<const tyloi::models::CausalModel&>(value).logits(std::move(value_hidden), true);
                   }) {
