@@ -294,13 +294,13 @@ class CudaGridVisionPromptComponent {
             [&](const auto &tokens) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 auto ids = tyloi::ops::tensor(tokens, tyloi::Device{tyloi::kCUDA, primary});
-                DenseTensor shaped = tyloi::ops::reshape(std::move(ids), {1, -1});
-                if constexpr (requires(const Model &value, DenseTensor value_ids, int device) {
-                                  value.embedding(std::move(value_ids), device);
+                auto shaped = tyloi::ops::reshape(*ids, {1, -1});
+                if constexpr (requires(const Model &value, const tyloi::Tensor& value_ids, int device) {
+                                  value.embedding(value_ids, device);
                               }) {
-                    return tyloi::ops::contiguous(language.embedding(std::move(shaped), primary));
+                    return tyloi::ops::contiguous(*language.embedding(*shaped, primary));
                 } else {
-                    return tyloi::ops::contiguous(language.embed_forward(shaped));
+                    return tyloi::ops::contiguous(*language.embed_forward(*shaped));
                 }
 #else
                 auto ids =

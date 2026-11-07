@@ -7,19 +7,20 @@
 namespace tyloi::cuda::qwen35 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-tyloi::DenseTensor Model::embedding(tyloi::DenseTensor ids, int primary) const {
+std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int primary) const {
     if (ids.dim() != 1 && ids.dim() != 2)
         throw std::runtime_error("token IDs must have shape [tokens] or [batch,tokens]");
-    if (ids.dim() == 1) ids = DenseTensor(std::move(ids)).unsqueeze(0);
-    if (ids.size(0) <= 0 || ids.size(1) <= 0)
+    auto shaped = ids.dim() == 1 ? tyloi::ops::unsqueeze(ids, 0) : nullptr;
+    const auto& input = shaped ? *shaped : ids;
+    if (input.size(0) <= 0 || input.size(1) <= 0)
         throw std::runtime_error("token IDs must not be empty");
-    auto normalized = tyloi::ops::contiguous(tyloi::ops::copy(
-        tyloi::ops::cast(std::move(ids), tyloi::ScalarType::int64),
+    auto normalized = tyloi::ops::contiguous(*tyloi::ops::copy(
+        *tyloi::ops::cast(input, tyloi::ScalarType::int64),
         tyloi::Device{tyloi::DeviceType::cuda, primary}));
-    auto result = tyloi::ops::measure("model.embed", normalized.device(), [&] {
-        return tyloi::ops::embedding(std::move(normalized), *embed);
+    auto result = tyloi::ops::measure("model.embed", normalized->device(), [&] {
+        return tyloi::ops::embedding(*normalized, *embed);
     });
-    return tyloi::ops::contiguous(tyloi::ops::cast(std::move(result), tyloi::ScalarType::float16));
+    return tyloi::ops::contiguous(*tyloi::ops::cast(*result, tyloi::ScalarType::float16));
 }
 #endif
 
