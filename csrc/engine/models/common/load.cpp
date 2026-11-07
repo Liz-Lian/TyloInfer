@@ -61,7 +61,13 @@ bool TransformerWeightLoader::has(const std::string& name) const { return tyloi:
 std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::router_parameter(const std::string& name) const {
     if(keep_quantized_router && name.ends_with("router.weight") && tyloi::require_tensor(weights.source,name).dtype=="TQ")
         return linear(name);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto value = weights.tensor(name);
+    auto converted = tyloi::ops::cast(*value, ::tyloi::kFloat32);
+    return tyloi::ops::contiguous(*converted);
+#else
     return std::make_shared<::tyloi::DenseTensor>(dense(name).to(::tyloi::kFloat32).contiguous());
+#endif
 }
 std::vector<std::shared_ptr<const ::tyloi::Tensor>> TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
     return weights.group(names);

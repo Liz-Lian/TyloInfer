@@ -57,7 +57,11 @@ struct Model {
     std::unordered_map<int, RopeCache> device_ropes;
     std::shared_ptr<const ::tyloi::Tensor> embed;
     std::shared_ptr<const ::tyloi::Tensor> lm_head;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+#else
     DenseTensor output_norm;
+#endif
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const;

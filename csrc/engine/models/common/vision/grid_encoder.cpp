@@ -19,8 +19,7 @@ std::shared_ptr<const tyloi::Tensor> required_vector(const ::tyloi::weights::Loa
     const auto name = grid_vision_canonical_name(role, block);
 #ifdef TYLOINFER_NATIVE_CUDA
     auto value = weights.tensor(name);
-    const auto& dense = dynamic_cast<const ::tyloi::DenseTensor&>(*value);
-    if (dense.dim() != 1 || dense.size(0) != width) {
+    if (value->dim() != 1 || value->size(0) != width) {
 #else
     auto value = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
     if (value.dim() != 1 || value.size(0) != width) {
@@ -48,7 +47,6 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader
     const auto hidden = config.hidden_size;
 #ifdef TYLOINFER_NATIVE_CUDA
     auto patch_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::patch_weight));
-    const auto& patch_dense = dynamic_cast<const ::tyloi::DenseTensor&>(*patch_weight);
 #else
     auto patch_weight = dynamic_cast<const ::tyloi::DenseTensor&>(
         *weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::patch_weight)));
@@ -57,7 +55,9 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader
                                               config.temporal_patch_size, config.patch_size,
                                               config.patch_size};
 #ifdef TYLOINFER_NATIVE_CUDA
-    if (patch_dense.sizes().vec() != expected_patch) {
+    if (patch_weight->dim() != 5 || patch_weight->size(0) != expected_patch[0] ||
+        patch_weight->size(1) != expected_patch[1] || patch_weight->size(2) != expected_patch[2] ||
+        patch_weight->size(3) != expected_patch[3] || patch_weight->size(4) != expected_patch[4]) {
 #else
     if (patch_weight.sizes().vec() != expected_patch) {
 #endif
@@ -67,10 +67,9 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader
         required_vector(weights, GridVisionTensorRole::patch_bias, hidden);
 #ifdef TYLOINFER_NATIVE_CUDA
     auto position_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::position_weight));
-    const auto& position_dense = dynamic_cast<const ::tyloi::DenseTensor&>(*position_weight);
-    if (position_dense.dim() != 2 ||
-        position_dense.size(0) != config.num_position_embeddings ||
-        position_dense.size(1) != hidden) {
+    if (position_weight->dim() != 2 ||
+        position_weight->size(0) != config.num_position_embeddings ||
+        position_weight->size(1) != hidden) {
 #else
     auto position_weight = dynamic_cast<const ::tyloi::DenseTensor&>(
         *weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::position_weight)));

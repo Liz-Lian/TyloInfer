@@ -84,7 +84,13 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
-    const Task task{task::Norm{0, 0, model.output_norm, model.metadata.rms_norm_eps,
+    const Task task{task::Norm{0, 0,
+#ifdef TYLOINFER_NATIVE_CUDA
+                               *model.output_norm,
+#else
+                               model.output_norm,
+#endif
+                               model.metadata.rms_norm_eps,
                                model.metadata.norm_weight_offset},
                     -1, {}, "model.output_norm"};
     Inputs inputs;

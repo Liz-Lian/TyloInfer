@@ -551,7 +551,11 @@ DenseTensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode
                 auto compute = [&]() -> DenseTensor {
                     if constexpr (std::is_same_v<Op, task::Norm>) {
                         return qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(::tyloi::kFloat32),
+#ifdef TYLOINFER_NATIVE_CUDA
+                            dynamic_cast<const ::tyloi::DenseTensor&>(op.weight), op.eps, op.offset).reshape(input.sizes());
+#else
                             op.weight, op.eps, op.offset).reshape(input.sizes());
+#endif
                     } else if constexpr (std::is_same_v<Op, task::Embed>) {
                         return quant_embedding_lookup(op.weight, std::move(input));
                     } else if constexpr (std::is_same_v<Op, task::Softcap>) {

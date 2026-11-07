@@ -24,7 +24,11 @@ using Slot = size_t;
 
 struct Norm {
     Slot input, output;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& weight;
+#else
     ::tyloi::DenseTensor weight;
+#endif
     double eps, offset;
 };
 

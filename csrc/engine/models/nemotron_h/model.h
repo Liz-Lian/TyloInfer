@@ -49,7 +49,11 @@ struct Model {
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+#else
     DenseTensor output_norm;
+#endif
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const;

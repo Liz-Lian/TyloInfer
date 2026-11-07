@@ -18,7 +18,11 @@ struct Predictor {
 
     tyloi::models::qwen35::Config config;
     std::shared_ptr<const ::tyloi::Tensor> fusion;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> hidden_norm, embedding_norm, output_norm;
+#else
     ::tyloi::DenseTensor hidden_norm, embedding_norm, output_norm;
+#endif
     std::vector<Layer> layers;
 
     std::vector<Task> tasks() const;

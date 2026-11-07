@@ -61,13 +61,15 @@ class RadioEncoder {
                 "Nemotron-H RADIO patch projection is not [hidden, patch_width]");
         }
         const auto side = config.position_side();
-        if (dynamic_cast<const DenseTensor&>(*result.position_embedding).sizes().vec() !=
-            std::vector<int64_t>{1, side * side, config.hidden_size}) {
+        if (result.position_embedding->dim() != 3 || result.position_embedding->size(0) != 1 ||
+            result.position_embedding->size(1) != side * side ||
+            result.position_embedding->size(2) != config.hidden_size) {
             throw std::runtime_error(
                 "Nemotron-H RADIO position embedding does not match max_img_size");
         }
-        if (dynamic_cast<const DenseTensor&>(*result.cls_register_token).sizes().vec() !=
-            std::vector<int64_t>{config.summary_tokens(), config.hidden_size}) {
+        if (result.cls_register_token->dim() != 2 ||
+            result.cls_register_token->size(0) != config.summary_tokens() ||
+            result.cls_register_token->size(1) != config.hidden_size) {
             throw std::runtime_error(
                 "Nemotron-H RADIO cls/register table disagrees with its config");
         }

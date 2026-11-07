@@ -35,7 +35,11 @@ struct Model {
     Config config;
     tyloi::models::CausalLmMetadata metadata;
     std::shared_ptr<const tyloi::Tensor> embed, lm_head;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+#else
     DenseTensor output_norm;
+#endif
     RopeCache rope;
     std::unordered_map<int, RopeCache> device_ropes;
     std::vector<Layer> layers;

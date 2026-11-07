@@ -299,7 +299,13 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
-    const Task task{task::Norm{0, 0, model.output_norm, model.metadata.rms_norm_eps,
+    const Task task{task::Norm{0, 0,
+#ifdef TYLOINFER_NATIVE_CUDA
+                               *model.output_norm,
+#else
+                               model.output_norm,
+#endif
+                               model.metadata.rms_norm_eps,
                                model.metadata.norm_weight_offset},
                     -1, {}, "model.output_norm"};
     Inputs inputs;
@@ -580,7 +586,11 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, Pipelines& pipe
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
         model.embed = weights.embedding("model.token_embedding.weight", separate);
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
         model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
             : weights.placement.tensor.enabled()
                 ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
@@ -598,7 +608,11 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, Pipelines& pipe
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
     }
 }
 

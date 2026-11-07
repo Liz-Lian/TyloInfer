@@ -242,7 +242,11 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
         const auto output_name = std::string("model.output.weight");
         const bool independent_output = !config.tie_word_embeddings && weights.has(output_name);
         model.embed = weights.embedding("model.token_embedding.weight", independent_output);
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
         if (config.tie_word_embeddings || !weights.has(output_name)) {
             model.lm_head = weights.placement.tensor.enabled()
                 ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
@@ -266,7 +270,11 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     } else {
         if (options.load_layers)
             throw std::invalid_argument("streamed model setup requires deferred layers");
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.output_norm = weights.tensor("model.output_norm.weight");
+#else
         model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+#endif
     }
     return model;
 }
@@ -287,15 +295,27 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
         "Qwen MTP requires declared predictor layers and shared embeddings");
     Predictor model;
     model.config = config;
+#ifdef TYLOINFER_NATIVE_CUDA
+    model.hidden_norm = loader.weights.tensor("predictor.hidden_norm.weight");
+    model.embedding_norm = loader.weights.tensor("predictor.embedding_norm.weight");
+    model.output_norm = loader.weights.tensor("predictor.output_norm.weight");
+#else
     model.hidden_norm = loader.dense("predictor.hidden_norm.weight");
     model.embedding_norm = loader.dense("predictor.embedding_norm.weight");
     model.output_norm = loader.dense("predictor.output_norm.weight");
+#endif
     model.fusion = loader.linear("predictor.fusion.weight");
     TYLOINFER_RUNTIME_CHECK(model.fusion->size(1) == 2 * config.hidden_size &&
         model.fusion->size(0) == config.hidden_size &&
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.hidden_norm->numel() == config.hidden_size &&
+        model.embedding_norm->numel() == config.hidden_size &&
+        model.output_norm->numel() == config.hidden_size,
+#else
         model.hidden_norm.numel() == config.hidden_size &&
         model.embedding_norm.numel() == config.hidden_size &&
         model.output_norm.numel() == config.hidden_size,
+#endif
         "Qwen MTP component dimensions disagree with the backbone");
     model.layers.reserve(config.mtp_num_hidden_layers);
     for (int index = 0; index < config.mtp_num_hidden_layers; ++index) {
