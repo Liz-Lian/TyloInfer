@@ -340,7 +340,12 @@ class Engram {
                               config.engram_num_embeddings[static_cast<std::size_t>(hash_layer)],
                               static_cast<int>(config.engram_head_dim),
                               cache_rows),
-            std::move(projection), (query * key).contiguous()));
+            std::move(projection),
+#ifdef TYLOINFER_NATIVE_CUDA
+            std::make_shared<EngramTensor>((query * key).contiguous())));
+#else
+            (query * key).contiguous()));
+#endif
     }
 
     int64_t layer_id() const { return config_.engram_layer_ids[hash_layer_]; }
@@ -386,7 +391,11 @@ class Engram {
         });
         return profiler.measure("deepseek_v41.engram.gate_add", [&] {
             return deepseek_v41_engram_gate_add_cuda(hidden, projected.contiguous(),
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                       dynamic_cast<const EngramTensor&>(*query_key_weight_), config_.rms_eps);
+#else
                                                        query_key_weight_, config_.rms_eps);
+#endif
         });
     }
 
@@ -406,7 +415,11 @@ class Engram {
         return selected;
     }
     Engram(EngramConfig config, int hash_layer, std::shared_ptr<EngramTable> table,
+#ifdef TYLOINFER_NATIVE_CUDA
+           std::shared_ptr<const ::tyloi::Tensor> projection, std::shared_ptr<const ::tyloi::Tensor> query_key_weight)
+#else
            std::shared_ptr<const ::tyloi::Tensor> projection, EngramTensor query_key_weight)
+#endif
         : config_(std::move(config)), hash_layer_(hash_layer), table_(std::move(table)),
           projection_(std::move(projection)), query_key_weight_(std::move(query_key_weight)) {}
 
@@ -414,7 +427,11 @@ class Engram {
     int hash_layer_ = -1;
     std::shared_ptr<EngramTable> table_;
     std::shared_ptr<const ::tyloi::Tensor> projection_;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> query_key_weight_;
+#else
     EngramTensor query_key_weight_;
+#endif
 };
 
 } // namespace tyloi::cuda::deepseek_v41_runtime

@@ -111,8 +111,12 @@ struct Tts {
     tyloi::weights::BiasWeight speaker_projector1;
     tyloi::weights::BiasWeight speaker_projector2;
     std::vector<Layer> layers;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> output_norm, code_head;
+#else
     ::tyloi::DenseTensor output_norm;
     ::tyloi::DenseTensor code_head;
+#endif
     static Tts load(const tyloi::weights::Loader& weights) {
         MfqCudaGuard guard(weights.placement.device);
         Tts result;
@@ -129,11 +133,19 @@ struct Tts {
         result.semantic_projector2 = weights.biased("tts.semantic_projector.output.weight", "tts.semantic_projector.output.bias");
         result.speaker_projector1 = weights.biased("tts.speaker_projector.input.weight", "tts.speaker_projector.input.bias");
         result.speaker_projector2 = weights.biased("tts.speaker_projector.output.weight", "tts.speaker_projector.output.bias");
+#ifdef TYLOINFER_NATIVE_CUDA
+        result.output_norm = weights.native("tts.output_norm.weight");
+        auto head_g_tensor = weights.native("tts.code_output.0.weight_norm.magnitude");
+        auto head_v_tensor = weights.native("tts.code_output.0.weight_norm.direction");
+        if (head_g_tensor->dim() != 2 || head_g_tensor->size(0) != 6562 || head_g_tensor->size(1) != 1 ||
+                head_v_tensor->dim() != 2 || head_v_tensor->size(0) != 6562 || head_v_tensor->size(1) != 768 ||
+#else
         result.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.output_norm.weight"));
         auto head_g = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.code_output.0.weight_norm.magnitude"));
         auto head_v = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.code_output.0.weight_norm.direction"));
         if (head_g.sizes().vec() != std::vector<int64_t>({6562, 1}) ||
                 head_v.sizes().vec() != std::vector<int64_t>({6562, 768}) ||
+#endif
                 result.text_embedding->size(0) != 152064 ||
                 result.text_embedding->size(1) != 768 ||
                 result.code_embedding->size(0) != 6562 ||
@@ -141,13 +153,22 @@ struct Tts {
             throw std::runtime_error(
                 "MiniCPM-o TTS tensor shapes disagree with version 4.5");
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& head_g = dynamic_cast<const ::tyloi::DenseTensor&>(*head_g_tensor);
+        const auto& head_v = dynamic_cast<const ::tyloi::DenseTensor&>(*head_v_tensor);
+#endif
         auto head_v_f32 = head_v.to(::tyloi::kFloat32);
         auto row_norm = ::tyloi::cuda::sqrt(
             ::tyloi::cuda::sum(head_v_f32.square(), -1, true))
             .clamp_min(1e-12);
-        result.code_head = (
+        auto code_head = (
             head_g.to(::tyloi::kFloat32) * head_v_f32 /
             row_norm).to(head_v.scalar_type()).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+        result.code_head = std::make_shared<::tyloi::DenseTensor>(std::move(code_head));
+#else
+        result.code_head = std::move(code_head);
+#endif
         result.layers.reserve(20);
         TransformerWeightLoader loader{weights};
         for (int index = 0; index < 20; ++index) {
@@ -320,18 +341,28 @@ struct Tts {
                 normalized_f32 = normalized_f32 * ::tyloi::cuda::rsqrt(
                     ::tyloi::cuda::mean(normalized_f32.square(), -1, true) +
                     config.rms_norm_eps);
+#ifdef TYLOINFER_NATIVE_CUDA
+                const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(*output_norm);
+#else
+                const auto& weight = output_norm;
+#endif
                 return (
                     normalized_f32.to(flat.scalar_type()) *
-                    output_norm.to(flat.scalar_type()))
+                    weight.to(flat.scalar_type()))
                     .reshape({batch, tokens, config.hidden_size})
                     .contiguous();
             });
     }
 
     ::tyloi::DenseTensor logits(::tyloi::DenseTensor hidden) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(*code_head);
+#else
+        const auto& weight = code_head;
+#endif
         return ::tyloi::cuda::matmul(
-            hidden.to(code_head.scalar_type()),
-            code_head.transpose(0, 1));
+            hidden.to(weight.scalar_type()),
+            weight.transpose(0, 1));
     }
 
     struct ChunkResult {

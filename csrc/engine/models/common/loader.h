@@ -23,8 +23,8 @@ template <class Model> struct ModelLoader {
         return weights.placement.tensor.enabled() ? output(name) : embedding;
     }
     bool has_weight(const std::string &name) { return weights.has(name); }
-    void final_state(::tyloi::DenseTensor &norm) {
-        model.adapter_load_final_state(weights, norm);
+    void final_state() {
+        model.adapter_load_final_state(weights);
     }
     void prepare_blocks() { model.adapter_prepare_blocks(weights); }
     auto block(int layer, const std::string &type) {

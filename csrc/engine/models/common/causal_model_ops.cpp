@@ -4,15 +4,6 @@
 
 namespace tyloi::cuda {
 
-bool CausalResources::adapter_uses_common_rope() const noexcept { return false; }
-
-void CausalResources::adapter_configure_rope(RopeCache &, ::tyloi::Device) const {}
-
-void CausalResources::adapter_load_final_state(const tyloi::weights::Loader& weights,
-                                               ::tyloi::DenseTensor &output_norm) {
-    output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
-}
-
 void CausalResources::adapter_prepare_blocks(const tyloi::weights::Loader& weights) {}
 
 ::tyloi::DenseTensor CausalResources::adapter_embed(::tyloi::DenseTensor output) const {

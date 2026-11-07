@@ -169,7 +169,11 @@ bool GatedResidual::can_fuse(const DenseTensor& input)const {
         input.dim()<1 || input.size(-1)!=hidden*streams || input.numel()<hidden*streams ||
         input.numel()/(hidden*streams)>32 || !input.is_cuda() || !input.is_contiguous() ||
         (input.scalar_type()!=::tyloi::kFloat16 && input.scalar_type()!=::tyloi::kFloat32) ||
+#ifdef TYLOINFER_NATIVE_CUDA
+        !norm->is_contiguous() || norm->scalar_type()!=::tyloi::kFloat32)return false;
+#else
         !norm.is_contiguous() || norm.scalar_type()!=::tyloi::kFloat32)return false;
+#endif
     const auto* injection_nint = injection.weight
         ? dynamic_cast<const tyloi::NintTensor*>(injection.weight.get()) : nullptr;
     const auto* injection_dense = injection.weight
@@ -206,7 +210,11 @@ GatedResidual::Result GatedResidual::fused(const DenseTensor& input,const DenseT
     const auto& injection_payload = *injection.weight;
     const auto* injection_nint = dynamic_cast<const tyloi::NintTensor*>(&injection_payload);
     const auto* injection_dense = dynamic_cast<const DenseTensor*>(&injection_payload);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto result=gated_residual_two_stage_cuda(input,residual,gate,payload_as<DenseTensor>(*norm),
+#else
     auto result=gated_residual_two_stage_cuda(input,residual,gate,norm,
+#endif
         payload_as<tyloi::NintTensor>(*down.weight),
         payload_as<tyloi::NintTensor>(*up.weight),
         injection_nint,streams,eps,after,
@@ -245,7 +253,11 @@ GatedResidual::Result GatedResidual::pre_after(const DenseTensor& input,
     }
     TYLOINFER_RUNTIME_CHECK(input.size(-1)==hidden,"gated-residual chained hidden width disagrees");
     if(marker)marker("begin");
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto prepared=mfq_qwen4_exp::gated_residual_post_norm(input,residual,gate,payload_as<DenseTensor>(*norm),streams,eps);
+#else
     auto prepared=mfq_qwen4_exp::gated_residual_post_norm(input,residual,gate,norm,streams,eps);
+#endif
     return prepare(prepared[0],prepared[1],marker);
 }
 
@@ -256,7 +268,11 @@ GatedResidual::Result GatedResidual::prepare(
         "gated-residual projection input dimensions disagree");
     if(marker && !prepared_norm.defined())marker("begin");
     auto normalized = prepared_norm.defined()?prepared_norm:
+#ifdef TYLOINFER_NATIVE_CUDA
+        mfq_qwen4_exp::grouped_rms_norm(input, payload_as<DenseTensor>(*norm), hidden, eps);
+#else
         mfq_qwen4_exp::grouped_rms_norm(input, norm, hidden, eps);
+#endif
     if(marker)marker("norm");
     const bool fused=options_->fused_projections;
     const bool epilogue=fused && options_->fused_activation;

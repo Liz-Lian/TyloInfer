@@ -21,7 +21,11 @@ struct Layer {
     int layer = -1;
     bool full_indexer = false;
     int device = 0;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const tyloi::Tensor> attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
+#else
     DenseTensor attn_norm, ffn_norm, q_a_norm, kv_a_norm, index_k_norm, index_k_bias;
+#endif
     std::vector<std::shared_ptr<const tyloi::Tensor>> input_proj, q_proj;
     std::shared_ptr<const tyloi::Tensor> embed_q, unembed_out;
     std::shared_ptr<const tyloi::Tensor> o_proj;

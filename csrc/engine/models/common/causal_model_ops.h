@@ -43,10 +43,6 @@ struct BlockContext {
 struct CausalResources {
     tyloi::models::CausalLmMetadata metadata;
     CudaExecutionContext *execution = nullptr;
-    bool adapter_uses_common_rope() const noexcept;
-    void adapter_configure_rope(RopeCache &rope, ::tyloi::Device device) const;
-    void adapter_load_final_state(const tyloi::weights::Loader& weights,
-                                  ::tyloi::DenseTensor &output_norm);
     void adapter_prepare_blocks(const tyloi::weights::Loader& weights);
     ::tyloi::DenseTensor adapter_embed(::tyloi::DenseTensor output) const;
     ::tyloi::DenseTensor

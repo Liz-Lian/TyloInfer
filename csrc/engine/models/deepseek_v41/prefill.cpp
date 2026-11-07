@@ -138,7 +138,11 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
             auto& block = *model.blocks.at(layer);
             if (!block.kv_source()) continue;
             auto source = deepseek_v41_hc_input_cuda(hidden, model.shared->previous_pre,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                     dynamic_cast<const DenseTensor&>(*block.attention_norm), config.rms_eps);
+#else
                                                      block.attention_norm, config.rms_eps);
+#endif
             model.execution->executor().profiler().measure("deepseek_v41.ced.global_kv", [&] {
                 block.publish_compressed_source(*model.execution, source, state.cache_pos);
                 return source;
@@ -182,7 +186,7 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
     auto finalized = model.adapter_finalize_hidden(
         model.execution->executor().collectives().copy(tail_hidden,
             model.execution->config.layer_placement.primary_device()),
-        model.output_norm, batch, replay_tokens);
+        batch, replay_tokens);
     if (raw_hidden)
         *raw_hidden = model.adapter_raw_hidden(DenseTensor(), finalized);
     return finalized;

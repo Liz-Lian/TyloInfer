@@ -22,7 +22,11 @@ struct Predictor final : tyloi::models::Mtp {
     std::shared_ptr<const ::tyloi::Tensor> embedding, output;
     double softcap = 0;
     int primary = 0;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> embedding_norm, hidden_norm;
+#else
     DenseTensor embedding_norm, hidden_norm;
+#endif
     Linear embedding_fusion, hidden_fusion;
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<Qwen4Block>> layers;

@@ -446,7 +446,11 @@ struct BlockLoader : tyloi::weights::Loader {
         return GatedResidual::projection(weight(name), execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(),
                                           execution.executor().options().residual, part);
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    GatedResidual residual(std::shared_ptr<const ::tyloi::Tensor> norm, GatedResidual::Projection down,
+#else
     GatedResidual residual(DenseTensor norm, GatedResidual::Projection down,
+#endif
         GatedResidual::Projection up, GatedResidual::Projection injection, const Config &c) const {
         return {std::move(norm), std::move(down), std::move(up), std::move(injection),
                 c.hidden, c.streams, c.eps, execution.executor().options().residual, execution.executor().mode().ffn.batch_serial};
@@ -464,10 +468,17 @@ struct BlockLoader : tyloi::weights::Loader {
         w.input_projection.push_back(weight(p+".beta.weight"));
         w.qkv_count=independent?3:1;
         w.output=weight(p+".output.weight");
+#ifdef TYLOINFER_NATIVE_CUDA
+        w.conv=dense(p+".conv.weight");
+        w.dt_bias=dense(p+".dt_bias");
+        w.a_log=dense(p+".a");
+        w.norm=dense(p+".norm.weight");
+#else
         w.conv=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".conv.weight"));
         w.dt_bias=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".dt_bias"));
         w.a_log=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".a"));
         w.norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".norm.weight"));
+#endif
         return w;
     }
     auto qsa_weights(const std::string &p) const {
@@ -476,10 +487,17 @@ struct BlockLoader : tyloi::weights::Loader {
             w.input_projection.push_back(weight(p+"."+name+".weight"));
         w.input_projection.push_back(weight(p+".indexer.query_key.weight"));
         w.output=weight(p+".output.weight");
+#ifdef TYLOINFER_NATIVE_CUDA
+        w.query_norm=dense(p+".query_norm.weight");
+        w.key_norm=dense(p+".key_norm.weight");
+        w.index_query_norm=dense(p+".indexer.query_norm.weight");
+        w.index_key_norm=dense(p+".indexer.key_norm.weight");
+#else
         w.query_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".query_norm.weight"));
         w.key_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".key_norm.weight"));
         w.index_query_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".indexer.query_norm.weight"));
         w.index_key_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".indexer.key_norm.weight"));
+#endif
         if(has(p+".gate.weight")) {
             w.input_projection.push_back(weight(p+".gate.weight"));
             w.has_gate=true;
@@ -509,7 +527,12 @@ struct BlockLoader : tyloi::weights::Loader {
             c.sections, c.interleaved,
             ::tyloi::cuda::options::rotary_fusion().value_or(default_rotary_fusion), execution.config.yarn);
         for(auto* norm:{&weights.query_norm,&weights.key_norm,&weights.index_query_norm,&weights.index_key_norm})
+#ifdef TYLOINFER_NATIVE_CUDA
+            if((*norm)->defined())*norm=std::make_shared<DenseTensor>(
+                dynamic_cast<const DenseTensor&>(**norm).to(::tyloi::kFloat32).contiguous());
+#else
             if(norm->defined())*norm=norm->to(::tyloi::kFloat32).contiguous();
+#endif
         auto shared=std::make_shared<const QsaWeights>(std::move(weights));
         return std::make_unique<Qsa>(std::move(shared), geometry, std::move(rotary), true, true, execution.offload, execution.kv);
     }
@@ -698,8 +721,13 @@ struct Qwen4MtpGraph {
                     cell.window.mark(-1,"window_begin");
                     const auto make_input=[&](const DenseTensor& hidden_rows,const DenseTensor& token_rows,int64_t rows) {
                         auto embeddings=predictor.embed(token_rows);
+#ifdef TYLOINFER_NATIVE_CUDA
+                        auto e=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.embedding_fusion,rms_norm(embeddings,dynamic_cast<const DenseTensor&>(*predictor.embedding_norm)+1,predictor.config.eps));
+                        auto h=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.hidden_fusion,rms_norm(hidden_rows,dynamic_cast<const DenseTensor&>(*predictor.hidden_norm)+1,predictor.config.eps)
+#else
                         auto e=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.embedding_fusion,rms_norm(embeddings,predictor.embedding_norm+1,predictor.config.eps));
                         auto h=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.hidden_fusion,rms_norm(hidden_rows,predictor.hidden_norm+1,predictor.config.eps)
+#endif
                             .reshape({1,rows,predictor.config.streams,predictor.config.hidden}));
                         return (h+e.unsqueeze(-2)).reshape({1,rows,predictor.config.streams*predictor.config.hidden});
                     };
@@ -828,11 +856,19 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
         if(graph_registry->reusable(*this) && ids.size(0)==1 && cache)layers[0]->qsa->leave_graph();
         else {graph_registry->restore_legacy(*this);graph_registry.reset();}
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
+                          hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
+                          hidden.size(1) == ids.size(1) &&
+                          hidden.size(2) == hidden_norm->numel(),
+                      "Qwen4-Exp MTP input geometry mismatch");
+#else
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
                           hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
                           hidden.size(1) == ids.size(1) &&
                           hidden.size(2) == hidden_norm.numel(),
                       "Qwen4-Exp MTP input geometry mismatch");
+#endif
     const auto b = ids.size(0), t = ids.size(1);
     return tyloi::models::projected_predictor(
         *this, b, t, depth, cache, [&](int64_t next) { reset(next); },
@@ -870,11 +906,19 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
         },
         [&](DenseTensor embeds, const auto &pos) {
             return execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*embedding_fusion,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                    rms_norm(embeds, dynamic_cast<const DenseTensor&>(*embedding_norm) + 1, config.eps));
+#else
                                     rms_norm(embeds, embedding_norm + 1, config.eps));
+#endif
         },
         [&] {
             return execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*hidden_fusion,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                 rms_norm(hidden, dynamic_cast<const DenseTensor&>(*hidden_norm) + 1, config.eps)
+#else
                                  rms_norm(hidden, hidden_norm + 1, config.eps)
+#endif
                                      .reshape({b, t, config.streams, config.hidden}));
         },
         [&](DenseTensor e, DenseTensor streams) {
@@ -918,7 +962,11 @@ tyloi::models::MtpStep Predictor::step(const tyloi::Tensor& input_hidden, const 
     if((!graph || *graph) && execution->config.cache.pipeline && execution->executor().options().moe_ffn.two_stage &&
         execution->executor().mmq().mode==KlMmqMode::Default && ::tyloi::weights::detail::cache(execution->weights).moe &&
         streamed_decode_graphs(*execution) && batch==1 && ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
+#ifdef TYLOINFER_NATIVE_CUDA
+        hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) && hidden.size(2)==hidden_norm->numel() &&
+#else
         hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) && hidden.size(2)==hidden_norm.numel() &&
+#endif
         ids.is_cuda() && hidden.is_cuda() && !lengths.empty() && lengths[0]>0 &&
         layers[0]->qsa && layers[0]->prefetch && this->positions[0].dim()==3 && this->positions[0].size(1)==1) {
         if(!graph_registry)graph_registry=std::make_unique<Qwen4MtpGraph>();
@@ -944,7 +992,11 @@ void Predictor::history_step(DenseTensor hidden,DenseTensor ids,DenseTensor posi
             ::tyloi::weights::detail::cache(execution->weights).moe && streamed_decode_graphs(*execution) && layers.size()==1 && batch==1 &&
             ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
             hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) &&
+#ifdef TYLOINFER_NATIVE_CUDA
+            hidden.size(2)==hidden_norm->numel() && ids.is_cuda() && hidden.is_cuda() &&
+#else
             hidden.size(2)==hidden_norm.numel() && ids.is_cuda() && hidden.is_cuda() &&
+#endif
             !lengths.empty() && lengths[0]>0 && layers[0]->qsa && layers[0]->prefetch &&
             this->positions[0].dim()==3 && this->positions[0].size(1)==1) {
         if(!graph_registry)graph_registry=std::make_unique<Qwen4MtpGraph>();
@@ -1029,9 +1081,15 @@ bool Predictor::supports_session_state() const noexcept {
 MtpSessionState Predictor::capture_session_state(int64_t target_position,const tyloi::Tensor& input_hidden) const {
     const auto& hidden=dynamic_cast<const DenseTensor&>(input_hidden);
     const auto position=target_position-1;
+#ifdef TYLOINFER_NATIVE_CUDA
+    TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=cache_position() &&
+        hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm->numel(),
+        "Qwen4 MTP session boundary is unavailable");
+#else
     TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=cache_position() &&
         hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm.numel(),
         "Qwen4 MTP session boundary is unavailable");
+#endif
     MtpSessionState state;state.cache_pos=position;
     auto& snapshot=state.payload.emplace<tyloi::models::qwen4_exp::MtpSnapshot>();
     for(std::size_t i=0;i<layers.size();++i) {
@@ -1053,12 +1111,21 @@ MtpSessionState Predictor::capture_session_state(int64_t target_position,const t
 void Predictor::restore_session_state(const MtpSessionState& state) {
     const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::MtpSnapshot>(&state.payload);
     const auto* hidden=dynamic_cast<const DenseTensor*>(state.last_target_hidden.get());
+#ifdef TYLOINFER_NATIVE_CUDA
+    TYLOINFER_RUNTIME_CHECK(supports_session_state() && state.cache_pos>0 &&
+        snapshot && snapshot->blocks.size()==layers.size() && snapshot->positions.size()==layers.size() &&
+        snapshot->lengths.size()==layers.size() && snapshot->lengths.front()==state.cache_pos &&
+        hidden && hidden->defined() && hidden->dim()==3 &&
+        hidden->size(0)==1 && hidden->size(1)==1 &&
+        hidden->size(2)==hidden_norm->numel(),"incompatible Qwen4 MTP session state");
+#else
     TYLOINFER_RUNTIME_CHECK(supports_session_state() && state.cache_pos>0 &&
         snapshot && snapshot->blocks.size()==layers.size() && snapshot->positions.size()==layers.size() &&
         snapshot->lengths.size()==layers.size() && snapshot->lengths.front()==state.cache_pos &&
         hidden && hidden->defined() && hidden->dim()==3 &&
         hidden->size(0)==1 && hidden->size(1)==1 &&
         hidden->size(2)==hidden_norm.numel(),"incompatible Qwen4 MTP session state");
+#endif
     reset(1);
     for(std::size_t i=0;i<layers.size();++i)if(snapshot->lengths[i]) {
         restore_block_session(*layers[i],snapshot->blocks[i],snapshot->lengths[i]);
@@ -1084,7 +1151,7 @@ namespace {
 }
 ::tyloi::DenseTensor qwen4_finalize_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden,
                                            std::int64_t batch, std::int64_t tokens) {
-    return model.adapter_finalize_hidden(std::move(hidden), model.output_norm, batch, tokens);
+    return model.adapter_finalize_hidden(std::move(hidden), batch, tokens);
 }
 
 ::tyloi::DenseTensor qwen4_forward(qwen4_exp::Model& model, qwen4_exp::State& state,
@@ -1191,7 +1258,7 @@ namespace {
     model.adapter_finish_forward(full_positions, B, T);
     state.cache_pos += T;
     hidden = model.execution->executor().collectives().copy(hidden, primary);
-    auto finalized = model.adapter_finalize_hidden(std::move(hidden), model.output_norm, B, T);
+    auto finalized = model.adapter_finalize_hidden(std::move(hidden), B, T);
     if (input.raw_hidden)
         *input.raw_hidden = std::make_shared<DenseTensor>(model.adapter_raw_hidden(DenseTensor(), finalized));
     return finalized;
@@ -1458,7 +1525,7 @@ struct Qwen4DecodeGraph {
                         cell.window.mark(layer++,"block_end");
                     }
                     if(kind>=3)cell.raw_hidden=hidden.clone();
-                    hidden=model.adapter_finalize_hidden(std::move(hidden),model.output_norm,1,tokens);
+                    hidden=model.adapter_finalize_hidden(std::move(hidden),1,tokens);
                     if(kind>=3) {
                         cell.output=std::move(hidden);
                         if(kind==4) {
@@ -2404,13 +2471,11 @@ void Model::adapter_validate_load_options() const {
                               execution->config.n_gpu_layers);
 }
 
-void Model::adapter_load_final_state(const tyloi::weights::Loader& weights,
-                                          ::tyloi::DenseTensor &output_norm) {
+void Model::adapter_load_final_state(const tyloi::weights::Loader& weights) {
     qwen4_exp::BlockLoader loader{weights,*execution};
     loader.role = "qwen4_exp";
     final_mixer = loader.final_mixer(
         tyloi::models::qwen4_exp::load_residual(loader, config, "model.mhc.pre", false));
-    output_norm = ::tyloi::DenseTensor();
 }
 
 std::unique_ptr<qwen4_exp::Qwen4Block> Model::adapter_load_block(const tyloi::weights::Loader& weights, int layer,
@@ -2843,7 +2908,6 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
 }
 
 ::tyloi::DenseTensor Model::adapter_finalize_hidden(::tyloi::DenseTensor hidden,
-                                                               const ::tyloi::DenseTensor &,
                                                                int64_t, int64_t) const {
     auto* window=DecodeWindow::recording();
     GatedResidualMarker marker;

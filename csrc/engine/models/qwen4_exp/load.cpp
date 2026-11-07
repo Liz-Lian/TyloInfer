@@ -66,26 +66,6 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
     CudaScope model_guard(execution.config.layer_placement.primary_device(), execution.executor().contexts());
     if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.config.dense_cpu_layer_count > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
-    if (model.adapter_uses_common_rope() && !model.metadata.no_rope) {
-        auto make_rope = [&](::tyloi::Device device) {
-            RopeCache rope(model.max_position_embeddings(), model.metadata.rotary_dim,
-                           model.metadata.rope_base, 0, -1, device, model.metadata.rope_interleaved,
-                           execution.config.yarn);
-            model.adapter_configure_rope(rope, device);
-            return rope;
-        };
-        const auto primary = ::tyloi::Device(::tyloi::kCUDA,
-            execution.config.layer_placement.primary_device());
-        model.rope = make_rope(primary);
-        if (execution.config.dense_cpu_layer_count > 0)
-            model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));
-        if (execution.config.layer_placement.enabled()) {
-            for (int device : execution.config.layer_placement.devices) {
-                MfqCudaGuard rope_guard(device);
-                model.device_ropes.emplace(device, make_rope(::tyloi::Device(::tyloi::kCUDA, device)));
-            }
-        }
-    }
     auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
          execution.config.tensor_parallel, moe_parallel_config(execution.config)});

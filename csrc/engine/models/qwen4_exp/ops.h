@@ -140,7 +140,6 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
     std::shared_ptr<const ::tyloi::Tensor> embed;
-    ::tyloi::DenseTensor output_norm;
     std::shared_ptr<const ::tyloi::Tensor> lm_head;
     CausalConfig config;
     std::unique_ptr<GatedResidual> final_mixer;
@@ -182,7 +181,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
         constexpr auto embedding = "model.token_embedding.weight";
         constexpr auto output = "model.output.weight";
         this->embed = loader.embedding(embedding);
-        loader.final_state(this->output_norm);
+        loader.final_state();
         this->lm_head = tie_word_embeddings() || !loader.has_weight(output)
                             ? loader.tied_output(this->embed, embedding)
                             : loader.output(output);
@@ -227,7 +226,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     }
     bool adapter_allows_speculative_position_override() const noexcept { return true; }
     ::tyloi::DenseTensor
-    adapter_finalize_hidden(::tyloi::DenseTensor hidden, const ::tyloi::DenseTensor &output_norm,
+    adapter_finalize_hidden(::tyloi::DenseTensor hidden,
                             std::int64_t batch, std::int64_t tokens) const;
 
     // ---- family adapters (implementations in ops.cpp)
@@ -236,8 +235,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     Model(Model&&) noexcept;
     Model& operator=(Model&&) noexcept;
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const tyloi::weights::Loader& weights,
-                                  ::tyloi::DenseTensor& output_norm);
+    void adapter_load_final_state(const tyloi::weights::Loader& weights);
     std::unique_ptr<qwen4_exp::Qwen4Block> adapter_load_block(
         const tyloi::weights::Loader& weights, int layer, int device,
         const std::string& type);

@@ -50,7 +50,11 @@ public:
                                  CudaProfiler&, const Options&, Part);
 
     GatedResidual() = default;
+#ifdef TYLOINFER_NATIVE_CUDA
+    GatedResidual(std::shared_ptr<const ::tyloi::Tensor> norm, Projection down, Projection up, Projection injection,
+#else
     GatedResidual(DenseTensor norm, Projection down, Projection up, Projection injection,
+#endif
                   int64_t hidden, int64_t streams, double eps,
                   const Options& options, const bool& cache_serial)
         : norm(std::move(norm)), down(std::move(down)), up(std::move(up)),
@@ -64,7 +68,11 @@ public:
     bool can_fuse(const DenseTensor& input) const;
 
 private:
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> norm;
+#else
     DenseTensor norm;
+#endif
     Projection down, up, injection;
     int64_t hidden = 0, streams = 0;
     double eps = 0;

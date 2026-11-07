@@ -501,12 +501,14 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     auto& scratch = executor.mla_scratch(layer.device);
     const auto project = executor.projector(mode.ffn);
     const auto& c = layer.config;
+#ifndef TYLOINFER_NATIVE_CUDA
     const auto& attn_norm = layer.attn_norm;
     const auto& ffn_norm = layer.ffn_norm;
     const auto& q_a_norm = layer.q_a_norm;
     const auto& kv_a_norm = layer.kv_a_norm;
     const auto& index_k_norm = layer.index_k_norm;
     const auto& index_k_bias = layer.index_k_bias;
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
     const auto input_proj = project.group(layer.input_proj);
     const auto q_proj = project.group(layer.q_proj);
@@ -555,6 +557,9 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
 
     x = x.to(::tyloi::kFloat16).contiguous();
     auto xn = profiler.measure("glm.attn_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& attn_norm = dynamic_cast<const DenseTensor&>(*layer.attn_norm);
+#endif
         return rms_norm_f16_cuda(x.reshape({B * T, H}), attn_norm, c.rms_norm_eps, 0.0)
             .reshape({B, T, H});
     });
@@ -570,6 +575,9 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
                 },
                 [&](DenseTensor projected) {
                     return profiler.measure("glm.q_a_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& q_a_norm = dynamic_cast<const DenseTensor&>(*layer.q_a_norm);
+#endif
                         return rms_norm_f16_cuda(projected.reshape({B * T, c.q_lora_rank})
                                                      .to(::tyloi::kFloat16)
                                                      .contiguous(),
@@ -598,6 +606,9 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
                     auto compressed = key_value.to(::tyloi::kFloat16)
                                           .reshape({B, T, kLatent + kRope});
                     auto kv_latent = profiler.measure("glm.kv_a_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& kv_a_norm = dynamic_cast<const DenseTensor&>(*layer.kv_a_norm);
+#endif
                         auto raw = compressed.index({Slice(), Slice(), Slice(0, kLatent)})
                                        .contiguous();
                         return rms_norm_f16_cuda(raw.reshape({B * T, kLatent}), kv_a_norm, 1e-6,
@@ -628,6 +639,10 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
                 },
                 [&](DenseTensor index_key, DenseTensor index_weight, DenseTensor index_query) {
                     auto index_k = profiler.measure("glm.indexer_k_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto& index_k_norm = dynamic_cast<const DenseTensor&>(*layer.index_k_norm);
+                        const auto& index_k_bias = dynamic_cast<const DenseTensor&>(*layer.index_k_bias);
+#endif
                         return glm_dsa_indexer_layer_norm_cuda(
                             index_key.to(::tyloi::kFloat16)
                                 .reshape({B, T, c.index_head_dim})
@@ -726,6 +741,9 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     std::array<DenseTensor, 2> prepared;
     {
         auto attn_pair = profiler.measure("glm.attn_residual_ffn_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto& ffn_norm = dynamic_cast<const DenseTensor&>(*layer.ffn_norm);
+#endif
             return acc_rms_norm_f16_cuda(x.reshape({B * T, H}),
                                          attn_out.reshape({B * T, H})
                                              .to(::tyloi::kFloat16)
