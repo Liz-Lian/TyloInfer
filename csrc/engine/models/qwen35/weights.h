@@ -56,23 +56,4 @@ Ffn load_ffn(Loader& ops, const Config& config, int layer, std::string_view tens
     return ffn;
 }
 
-template <class Attention, class Loader>
-void load_linear_attention(Attention& attention, Loader& ops, const Config& config,
-                           int layer, std::string_view tensor_root = "model") {
-    const auto prefix = std::string(tensor_root) + ".block." + std::to_string(layer) + ".";
-    const auto linear = prefix + "linear_attention.";
-    LinearWeightNames names{linear + "qkv.weight", linear + "qk.weight", linear + "value.weight",
-                            linear + "gate.weight", linear + "alpha.weight", linear + "beta.weight"};
-    ops.linear_projections(attention, names, ops.has(names.qk) && ops.has(names.value));
-    attention.conv_weight = ops.dense(linear + "conv.weight");
-    if (ops.has(linear + "conv.bias")) attention.conv_bias = ops.dense(linear + "conv.bias");
-    attention.dt_bias = ops.dense(linear + "dt_bias");
-    auto a = ops.dense(linear + "a");
-    attention.a_log = config.legacy_tensor_layout.linear_attention_a_is_log
-        ? a : ops.log_negative(a);
-    attention.linear_norm = ops.dense(linear + "norm.weight");
-    ops.linear_output(attention, linear + "output.weight");
-}
-
-
 } // namespace tyloi::models::qwen35

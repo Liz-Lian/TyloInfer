@@ -77,6 +77,9 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
     const int64_t vsz = (value_heads * value_dim);
     const int64_t conv_dim = 2 * ksz + vsz;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto& attn_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*this->attn_norm);
+#endif
     auto xn = qwen_rms_norm(
                   x.reshape({B * T, H}).to(::tyloi::kFloat32),
                   attn_norm, rms_norm_eps, norm_weight_offset)
@@ -136,9 +139,15 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                         .reshape({B, T, nv}));
                 auto alpha = alpha_raw.to(::tyloi::kFloat32)
                                  .reshape({B, T, nv});
+#ifdef TYLOINFER_NATIVE_CUDA
+                const auto& dt_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*this->dt_bias);
+#endif
                 auto gate = ::tyloi::cuda::softplus(
                     alpha + dt_bias.to(::tyloi::kFloat32)
                                 .reshape({1, 1, nv}));
+#ifdef TYLOINFER_NATIVE_CUDA
+                const auto& a_log = dynamic_cast<const ::tyloi::DenseTensor&>(*this->a_log);
+#endif
                 auto coefficient = -::tyloi::cuda::exp(
                     a_log.to(::tyloi::kFloat32));
                 gate = gate * coefficient.reshape({1, 1, nv});
@@ -158,6 +167,9 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                     conv_input.size(1) -
                         (conv_kernel - 1),
                     conv_kernel - 1));
+#ifdef TYLOINFER_NATIVE_CUDA
+                const auto& conv_weight = dynamic_cast<const ::tyloi::DenseTensor&>(*this->conv_weight);
+#endif
                 auto weight = conv_weight.to(::tyloi::kFloat32);
                 if (weight.dim() == 3)
                   weight = weight.squeeze(1);
@@ -179,7 +191,16 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                      weight.reshape(
                          {1, 1, conv_dim, conv_kernel}))
                         .sum(-1);
-                if (conv_bias.defined()) {
+                if (
+#ifdef TYLOINFER_NATIVE_CUDA
+                    conv_bias && conv_bias->defined()
+#else
+                    conv_bias.defined()
+#endif
+                ) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                  const auto& conv_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*this->conv_bias);
+#endif
                   conv = conv + conv_bias.to(::tyloi::kFloat32)
                                     .reshape({1, 1, conv_dim});
                 }
@@ -254,6 +275,9 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                     y.reshape({-1, dv}).to(::tyloi::kFloat32);
                 auto inverse = ::tyloi::cuda::rsqrt(
                     y_flat.square().mean(-1, true) + rms_norm_eps);
+#ifdef TYLOINFER_NATIVE_CUDA
+                const auto& linear_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*this->linear_norm);
+#endif
                 auto y_norm = (y_flat * inverse *
                                linear_norm.to(::tyloi::kFloat32))
                                   .reshape_as(y);
@@ -267,6 +291,9 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
                 auto zf = z.transpose(1, 2).contiguous().reshape({B, T, vsz});
                 ::tyloi::DenseTensor attention_output;
                 if (dense_out_proj) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                  const auto& out_proj_dense = dynamic_cast<const ::tyloi::DenseTensor&>(*this->out_proj_dense);
+#endif
                   auto dtype = out_proj_dense.scalar_type();
                   auto gated =
                       yf.to(dtype) * ::tyloi::cuda::silu(zf.to(dtype));
@@ -307,6 +334,9 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
             vsz = (value_heads * value_dim);
 
     auto xn = profiler.measure("linear.attn_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto& attn_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*this->attn_norm);
+#endif
             return qwen_rms_norm(
                        x.reshape({B * T, H}).to(::tyloi::kFloat32),
                        attn_norm, rms_norm_eps,
@@ -424,6 +454,10 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
                 auto gates = profiler.measure("linear.gates_fused", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+                  const auto& dt_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*this->dt_bias);
+                  const auto& a_log = dynamic_cast<const ::tyloi::DenseTensor&>(*this->a_log);
+#endif
                   return linear_gate_beta_cuda(alpha_raw.reshape({B, T, nv}),
                                                beta_raw.reshape({B, T, nv}),
                                                dt_bias, a_log);
@@ -447,6 +481,16 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
               [&](const LinearProjections<
                   ::tyloi::DenseTensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
+#ifdef TYLOINFER_NATIVE_CUDA
+                std::optional<::tyloi::DenseTensor> empty_bias;
+                const auto& bias = conv_bias && conv_bias->defined()
+                        ? dynamic_cast<const ::tyloi::DenseTensor&>(*conv_bias)
+                        : empty_bias.emplace(::tyloi::cuda::empty(
+                              {0}, ::tyloi::TensorOptions()
+                                       .device(::tyloi::kCUDA)
+                                       .dtype(::tyloi::kFloat32)));
+                const auto& conv_weight = dynamic_cast<const ::tyloi::DenseTensor&>(*this->conv_weight);
+#else
                 auto bias =
                     conv_bias.defined()
                         ? conv_bias
@@ -454,6 +498,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                               {0}, ::tyloi::TensorOptions()
                                        .device(::tyloi::kCUDA)
                                        .dtype(::tyloi::kFloat32));
+#endif
                 ::tyloi::DenseTensor q, k, v;
                 bool fused_prefill =
                     T >= 256 && options.fused_conv;
@@ -584,6 +629,9 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
               },
               [&](::tyloi::DenseTensor y) {
                 auto y_norm = profiler.measure("linear.out_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+                  const auto& linear_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*this->linear_norm);
+#endif
                   return rms_norm_cuda(y.reshape({-1, dv}).to(
                                            ::tyloi::kFloat32),
                                        linear_norm, rms_norm_eps)
@@ -606,6 +654,9 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
                 });
                 if (dense_out_proj) {
                   oo = profiler.measure("linear.out_proj_gate_dense", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+                    const auto& out_proj_dense = dynamic_cast<const ::tyloi::DenseTensor&>(*this->out_proj_dense);
+#endif
                     auto dtype = out_proj_dense.scalar_type();
                     auto gated =
                         yf.to(dtype) * ::tyloi::cuda::silu(zf.to(dtype));
@@ -636,12 +687,22 @@ void LinearAttention::replay(
     const int64_t dv = value_dim;
     const int64_t ksz = (key_heads * key_dim);
     const int64_t vsz = (value_heads * value_dim);
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::optional<::tyloi::DenseTensor> empty_bias;
+    const auto& bias = conv_bias && conv_bias->defined()
+                    ? dynamic_cast<const ::tyloi::DenseTensor&>(*conv_bias)
+                    : empty_bias.emplace(::tyloi::cuda::empty(
+                          {0}, ::tyloi::TensorOptions()
+                                   .device(::tyloi::kCUDA)
+                                   .dtype(::tyloi::kFloat32)));
+#else
     auto bias = conv_bias.defined()
                     ? conv_bias
                     : ::tyloi::cuda::empty(
                           {0}, ::tyloi::TensorOptions()
                                    .device(::tyloi::kCUDA)
                                    .dtype(::tyloi::kFloat32));
+#endif
     auto qkv =
         inputs.split
             ? ::tyloi::cuda::cat(
@@ -654,6 +715,9 @@ void LinearAttention::replay(
     state.convolution.copy_(conv_input.narrow(
         1, conv_input.size(1) - (conv_kernel - 1),
         conv_kernel - 1));
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto& conv_weight = dynamic_cast<const ::tyloi::DenseTensor&>(*this->conv_weight);
+#endif
     auto conv = ssm_conv_silu_cuda(conv_input, conv_weight, bias, T);
     auto q = conv.narrow(2, 0, ksz).reshape({B, T, nk, dk}).transpose(1, 2);
     auto k = conv.narrow(2, ksz, ksz).reshape({B, T, nk, dk}).transpose(1, 2);

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 
 namespace tyloi::cuda {
 
@@ -35,8 +36,13 @@ struct LinearAttention {
     int64_t conv_kernel = 0;
     double rms_norm_eps = 1e-6;
     double norm_weight_offset = 1.0;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> attn_norm, conv_weight, conv_bias,
+        dt_bias, a_log, linear_norm;
+#else
     ::tyloi::DenseTensor attn_norm, conv_weight, conv_bias,
         dt_bias, a_log, linear_norm;
+#endif
     bool split_in_proj = false;
     bool split_dense_zab = false;
     bool dense_ab_tail = false;
@@ -53,7 +59,11 @@ struct LinearAttention {
     DenseLinearGroup ab_proj;
     DenseLinearGroup zab_proj;
     std::shared_ptr<const ::tyloi::Tensor> out_proj;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<const ::tyloi::Tensor> out_proj_dense;
+#else
     ::tyloi::DenseTensor out_proj_dense;
+#endif
 
     std::array<::tyloi::DenseTensor, 2> forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,

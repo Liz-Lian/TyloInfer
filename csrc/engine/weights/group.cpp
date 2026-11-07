@@ -268,12 +268,13 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_projections(
 
 } // namespace tyloi::cuda
 
-DenseLinearGroup make_dense_group(const std::vector<::tyloi::DenseTensor> & ws) {
+DenseLinearGroup make_dense_group(const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& ws) {
     if (ws.empty()) throw std::runtime_error("empty dense group");
     DenseLinearGroup g;
     std::vector<::tyloi::DenseTensor> parts;
     parts.reserve(ws.size());
-    for (const auto & w : ws) {
+    for (const auto& weight : ws) {
+        const auto& w = dynamic_cast<const ::tyloi::DenseTensor&>(*weight);
         if (w.dim() != 2) throw std::runtime_error("dense linear group expects 2D weights");
         if (!parts.empty() && w.size(1) != parts[0].size(1)) {
             throw std::runtime_error("cannot group dense tensors with different input width");
@@ -281,7 +282,12 @@ DenseLinearGroup make_dense_group(const std::vector<::tyloi::DenseTensor> & ws) 
         g.outs.push_back(w.size(0));
         parts.push_back(w.to(::tyloi::kFloat32));
     }
-    g.w = ::tyloi::cuda::cat(parts, 0).contiguous();
+    auto joined = ::tyloi::cuda::cat(parts, 0).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+    g.w = std::make_shared<::tyloi::DenseTensor>(std::move(joined));
+#else
+    g.w = std::move(joined);
+#endif
     return g;
 }
 
@@ -390,10 +396,17 @@ DenseLinearGroup make_fp32_quant_group(
         dense.outs.push_back(weight->size(0));
         parts.push_back(dequant_quant_linear_f32(collectives, primary, *weight));
     }
-    dense.w = ::tyloi::cuda::cat(parts, 0).contiguous();
+    auto joined = ::tyloi::cuda::cat(parts, 0).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+    dense.w = std::make_shared<::tyloi::DenseTensor>(std::move(joined));
+    const auto& grouped = *dense.w;
+#else
+    dense.w = std::move(joined);
+    const auto& grouped = dense.w;
+#endif
     TYLOINFER_RUNTIME_CHECK(
-        dense.w.dim() == 2 &&
-            dense.w.size(0) ==
+        grouped.dim() == 2 &&
+            grouped.size(0) ==
                 std::accumulate(
                     dense.outs.begin(), dense.outs.end(), int64_t{0}),
         "FP32 compressor projection shape mismatch");
