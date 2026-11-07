@@ -31,7 +31,7 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
 }
 
 template<class Model>
-bool generation_workspace(Model&, WeightLoan&, int64_t) { return false; }
+bool generation_workspace(Model&, tyloi::weights::Loan&, int64_t) { return false; }
 
 template<class Model, class Ops>
 std::optional<int64_t> generation_decode(Model&, Ops&) { return std::nullopt; }

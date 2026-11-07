@@ -19,9 +19,7 @@ class Projector;
 namespace tyloi::cuda::axial_patch_vision {
 
 using Config = tyloi::models::axial_patch_vision::Config;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using DenseTensor = tyloi::DenseTensor;
-#else
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 using DenseTensor = ::tyloi::DenseTensor;
 #endif
 
@@ -45,21 +43,21 @@ class CudaAxialPatchVisionTower {
 
     // Patches accept [H*W,3,P,P] or [H*W,3*P*P]. The output is the
     // row-major, ceil(H/R)*ceil(W/R) aligned embedding grid.
-    DenseTensor encode(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-        Projector projector,
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::shared_ptr<tyloi::Tensor> encode(std::shared_ptr<const tyloi::Tensor> patches,
+#else
+    DenseTensor encode(Projector projector, DenseTensor patches,
 #endif
-        DenseTensor patches,
         int height,
         int width) const;
 
     // Load one block at a time and restore borrowed expert storage before
     // yielding, so image preparation can share the request scheduler.
-    tyloi::StepSequence<DenseTensor> encode_steps(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-        Projector projector,
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> encode_steps(std::shared_ptr<const tyloi::Tensor> patches,
+#else
+    tyloi::StepSequence<DenseTensor> encode_steps(Projector projector, DenseTensor patches,
 #endif
-        DenseTensor patches,
         int height,
         int width) const;
 

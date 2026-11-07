@@ -2545,7 +2545,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
         }
     } restore{profiler,profiler.enabled,previous_profile,collect};
     compute_chunk=std::min(compute_chunk,tokens);
-    WeightLoan workspace_loan(::tyloi::weights::detail::cache(model.execution->weights).moe);
+    tyloi::weights::Loan workspace_loan(model.execution->weights);
     bool borrowed_workspace=false;
     {
         // Persistent decode graphs and prefill now coexist. Bound the compute

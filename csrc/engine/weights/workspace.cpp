@@ -1,5 +1,6 @@
 #include "engine/weights/workspace.h"
 
+#include "engine/ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/cache_internal.h"
@@ -242,10 +243,12 @@ void Cache::append_workspace_metrics(
 
 } // namespace tyloi::weights
 
-::tyloi::DenseTensor tyloi::cuda::WeightLoan::finish(::tyloi::DenseTensor output) {
+tyloi::weights::Loan::Loan(Cache& cache, std::size_t bytes) : Loan(cache) { begin(bytes); }
+
+std::shared_ptr<tyloi::Tensor> tyloi::weights::Loan::finish(std::shared_ptr<Tensor> output) {
     if (active_) {
         suspend();
-        output = output.clone();
+        output = ops::clone(*output);
         finish();
     }
     return output;

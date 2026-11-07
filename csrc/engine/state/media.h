@@ -7,26 +7,26 @@
 namespace tyloi::cache {
 
 // Preserve the existing single-image cache capacity.
-template <class DenseTensor>
+template <class Value>
 class Media {
 public:
-    DenseTensor find(std::string_view key) const {
-        return key_ == key && value_.defined() ? value_ : DenseTensor{};
+    Value find(std::string_view key) const {
+        return key_ == key ? value_ : Value{};
     }
 
-    void store(std::string key, DenseTensor value) {
+    void store(std::string key, Value value) {
         key_ = std::move(key);
         value_ = std::move(value);
     }
 
     void clear() {
         key_.clear();
-        value_ = DenseTensor{};
+        value_ = Value{};
     }
 
 private:
     std::string key_;
-    DenseTensor value_;
+    Value value_;
 };
 
 } // namespace tyloi::cache

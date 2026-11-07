@@ -135,7 +135,7 @@ template <class Model, class State> struct CudaMtpOps {
   InferenceOutput* output;
   tyloi::engine::Budget* budget=nullptr;
   // Destroy after local/result tensors, including cancellation of priming.
-  std::unique_ptr<tyloi::cuda::WeightLoan> predictor_loan;
+  std::unique_ptr<tyloi::weights::Loan> predictor_loan;
   const ::tyloi::TensorOptions options =
       ::tyloi::TensorOptions()
           .device(::tyloi::kCUDA)
@@ -450,7 +450,7 @@ template <class Model, class State> struct CudaMtpOps {
     tyloi::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
     if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
       return std::move(*result);
-    tyloi::cuda::WeightLoan workspace(::tyloi::weights::detail::cache(weights).moe);
+    tyloi::weights::Loan workspace(weights);
     const bool host_history=host_prompt_history(chunk.count);
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     DenseTensor hidden;

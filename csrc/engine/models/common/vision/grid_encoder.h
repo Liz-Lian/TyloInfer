@@ -2,7 +2,7 @@
 #include "engine/models/common/prompt.h"
 
 #include "engine/weights/fields.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache.h"
 #include "engine/weights/workspace.h"
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
@@ -32,9 +32,7 @@ class Executor;
 
 namespace tyloi::cuda::grid_vision_runtime {
 
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using DenseTensor = tyloi::DenseTensor;
-#else
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 using DenseTensor = ::tyloi::DenseTensor;
 #endif
 
@@ -43,14 +41,23 @@ class CudaGridVisionEncoder {
     static CudaGridVisionEncoder load(const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
                                       const GridVisionConfig &config);
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> encode(
+                                   std::shared_ptr<tyloi::Tensor> pixels, const std::vector<GridShape> &grids) const;
+#else
     tyloi::StepSequence<DenseTensor> encode(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                                    Projector projector,
-#endif
                                    DenseTensor pixels, const std::vector<GridShape> &grids) const;
+#endif
 
     const GridVisionConfig &config() const noexcept { return config_; }
-    bool host_weights() const noexcept { return !patch_weight_.is_cuda(); }
+    bool host_weights() const noexcept {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return !patch_weight_->device().is_cuda();
+#else
+        return !patch_weight_.is_cuda();
+#endif
+    }
 
   private:
     struct Attention {
@@ -61,21 +68,23 @@ class CudaGridVisionEncoder {
         std::int64_t head_dim = 0;
         double theta = 10'000.0;
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        std::shared_ptr<tyloi::Tensor> operator()(const tyloi::Tensor& input,
+#else
         DenseTensor operator()(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
             const Projector& projector,
-#endif
             const DenseTensor& input,
+#endif
             const std::vector<std::int32_t>& positions,
             const std::vector<std::int32_t>& segment_lengths) const {
             const std::int64_t tokens = input.size(0);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto projected = tyloi::ops::reshape(tyloi::ops::affine(input, *qkv.weight, qkv.bias.get()), {tokens, 3, heads, head_dim});
-            auto query = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 0), positions, theta);
-            auto key = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 1), positions, theta);
-            auto value = tyloi::ops::select(projected, 1, 2);
-            auto attended = tyloi::ops::segmented_attention(query, key, value, segment_lengths);
-            return tyloi::ops::affine(tyloi::ops::reshape(attended, {tokens, hidden}), *output.weight, output.bias.get());
+            auto projected = tyloi::ops::reshape(*tyloi::ops::affine(input, *qkv.weight, qkv.bias.get()), {tokens, 3, heads, head_dim});
+            auto query = tyloi::ops::axial_rope(*tyloi::ops::select(*projected, 1, 0), positions, theta);
+            auto key = tyloi::ops::axial_rope(*tyloi::ops::select(*projected, 1, 1), positions, theta);
+            auto value = tyloi::ops::select(*projected, 1, 2);
+            auto attended = tyloi::ops::segmented_attention(*query, *key, *value, segment_lengths);
+            return tyloi::ops::affine(*tyloi::ops::reshape(*attended, {tokens, hidden}), *output.weight, output.bias.get());
 #else
             auto projected = tyloi::cuda::affine(projector, qkv, input).reshape({tokens, 3, heads, head_dim});
             auto query = vision::apply_axial_rope(projected.select(1, 0), positions, theta);
@@ -112,49 +121,57 @@ class CudaGridVisionEncoder {
             fields::to_device(mlp_down, device);
         }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        std::shared_ptr<tyloi::Tensor> operator()(std::shared_ptr<tyloi::Tensor> input,
+#else
         DenseTensor operator()(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                           const Projector& projector,
-#endif
                           const DenseTensor& input,
+#endif
                           const std::vector<std::int32_t>& positions,
                           const std::vector<std::int32_t>& segment_lengths) const {
             return tyloi::models::pre_norm_layer(
-                input, [&](const DenseTensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
-                [&](DenseTensor x) { return attention(
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    projector,
-#endif
-                    x, positions, segment_lengths); },
-                [&](DenseTensor x) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    return tyloi::ops::affine(tyloi::ops::gelu(
-                        tyloi::ops::affine(std::move(x), *mlp_up.weight, mlp_up.bias.get()), true),
+                std::move(input), [&](const std::shared_ptr<tyloi::Tensor>& x, int stage) { return stage == 0 ? norm1(*x) : norm2(*x); },
+                [&](std::shared_ptr<tyloi::Tensor> x) { return attention(*x, positions, segment_lengths); },
+                [&](std::shared_ptr<tyloi::Tensor> x) {
+                    return tyloi::ops::affine(*tyloi::ops::gelu(
+                        *tyloi::ops::affine(*x, *mlp_up.weight, mlp_up.bias.get()), true),
                         *mlp_down.weight, mlp_down.bias.get());
+                },
+                [](std::shared_ptr<tyloi::Tensor> residual, std::shared_ptr<tyloi::Tensor> branch) {
+                    return tyloi::ops::add(*residual, *tyloi::ops::cast(*branch, residual->scalar_type()));
+                });
 #else
+                input, [&](const DenseTensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
+                [&](DenseTensor x) { return attention(projector, x, positions, segment_lengths); },
+                [&](DenseTensor x) {
                     return tyloi::cuda::affine(projector, mlp_down, ::tyloi::cuda::gelu(
                         tyloi::cuda::affine(projector, mlp_up, std::move(x)), "tanh"));
-#endif
                 },
                 [](DenseTensor residual, DenseTensor branch) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    auto dtype = residual.scalar_type();
-                    return tyloi::ops::add(std::move(residual), tyloi::ops::cast(std::move(branch), dtype));
-#else
                     return residual + branch.to(residual.scalar_type());
-#endif
                 });
+#endif
         }
     };
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    CudaGridVisionEncoder(::tyloi::weights::Cache& weights, GridVisionConfig config,
+                          std::shared_ptr<const tyloi::Tensor> patch_weight, std::shared_ptr<const tyloi::Tensor> patch_bias,
+                          std::shared_ptr<const tyloi::Tensor> position_weight, std::vector<Layer> blocks);
+#else
     CudaGridVisionEncoder(::tyloi::weights::Cache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias,
                           DenseTensor position_weight, std::vector<Layer> blocks);
+#endif
 
     ::tyloi::weights::Cache& weights_;
     GridVisionConfig config_;
-    DenseTensor patch_weight_;
-    DenseTensor patch_bias_;
-    DenseTensor position_weight_;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::shared_ptr<const tyloi::Tensor> patch_weight_, patch_bias_, position_weight_;
+#else
+    DenseTensor patch_weight_, patch_bias_, position_weight_;
+#endif
     std::vector<Layer> blocks_;
 };
 
@@ -208,14 +225,19 @@ class CudaGridVisionPromptComponent {
             cache_key += std::to_string(value);
         }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        auto merged = images.find(cache_key);
+        if (!merged) {
+#else
         DenseTensor merged = images.find(cache_key);
         if (!merged.defined()) {
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             auto pixels = tyloi::ops::from_blob(
                 const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
                 tyloi::TensorOptions().dtype(tyloi::ScalarType::float32).device(tyloi::DeviceType::cpu));
-            pixels = tyloi::ops::clone(std::move(pixels));
-            pixels = tyloi::ops::cast(std::move(pixels), tyloi::ScalarType::float32, tyloi::Device{tyloi::kCUDA, primary});
+            pixels = tyloi::ops::clone(*pixels);
+            pixels = tyloi::ops::cast(*pixels, tyloi::ScalarType::float32, tyloi::Device{tyloi::kCUDA, primary});
 #else
             auto pixels = ::tyloi::cuda::from_blob(
                               const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
@@ -231,7 +253,11 @@ class CudaGridVisionPromptComponent {
                 projector,
 #endif
                 std::move(pixels), {grid});
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            std::shared_ptr<tyloi::Tensor> patches;
+#else
             DenseTensor patches;
+#endif
             while (auto step = encoding.next()) {
                 if (step.value)
                     patches = std::move(*step.value);
@@ -240,20 +266,21 @@ class CudaGridVisionPromptComponent {
             }
             const auto merge = [&](const auto &norm, const auto &up, const auto &down) {
                 return tyloi::models::grid_vision::merge(
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                    patches, patches->size(0), encoder_.config(),
+                    [&](std::shared_ptr<tyloi::Tensor> value) { return norm(*value); },
+                    [](std::shared_ptr<tyloi::Tensor> value, int64_t rows, int64_t width) {
+                        return tyloi::ops::reshape(*value, {rows, width});
+                    },
+                    [&](std::shared_ptr<tyloi::Tensor> value) { return tyloi::ops::affine(*value, *up.weight, up.bias.get()); },
+                    [](std::shared_ptr<tyloi::Tensor> value) { return tyloi::ops::gelu(*value); },
+                    [&](std::shared_ptr<tyloi::Tensor> value) { return tyloi::ops::affine(*value, *down.weight, down.bias.get()); });
+#else
                     patches, patches.size(0), encoder_.config(),
                     [&](DenseTensor value) { return norm(value); },
                     [](DenseTensor value, int64_t rows, int64_t width) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                        return tyloi::ops::reshape(std::move(value), {rows, width});
-#else
                         return value.reshape({rows, width});
-#endif
                     },
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    [&](DenseTensor value) { return tyloi::ops::affine(std::move(value), *up.weight, up.bias.get()); },
-                    [](DenseTensor value) { return tyloi::ops::gelu(std::move(value)); },
-                    [&](DenseTensor value) { return tyloi::ops::affine(std::move(value), *down.weight, down.bias.get()); });
-#else
                     [&](DenseTensor value) { return tyloi::cuda::affine(projector, up, std::move(value)); },
                     [](DenseTensor value) { return ::tyloi::cuda::gelu(value, "none"); },
                     [&](DenseTensor value) { return tyloi::cuda::affine(projector, down, std::move(value)); });
@@ -263,8 +290,13 @@ class CudaGridVisionPromptComponent {
                 const auto bytes = fields::bytes(merger_norm_) +
                                    fields::bytes(merger_up_) +
                                    fields::bytes(merger_down_);
-                auto loan = WeightLoan(::tyloi::weights::detail::cache(weights_).moe, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                tyloi::weights::Loan loan(weights_, bytes + patches->nbytes() * 12 + (std::size_t(16) << 20));
+                std::shared_ptr<tyloi::Tensor> output;
+#else
+                tyloi::weights::Loan loan(weights_, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
                 DenseTensor output;
+#endif
                 {
                     // Stage copies of the merger weights on the primary device.
                     auto norm = merger_norm_;
@@ -279,7 +311,7 @@ class CudaGridVisionPromptComponent {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 merged = loan.finish(std::move(output));
 #else
-                merged = loan.finish(std::move(output));
+                merged = dynamic_cast<const DenseTensor&>(*loan.finish(std::make_shared<DenseTensor>(std::move(output))));
 #endif
             } else {
                 merged = merge(merger_norm_, merger_up_, merger_down_);
@@ -289,19 +321,17 @@ class CudaGridVisionPromptComponent {
         }
 
         auto prepared = tyloi::models::grid_vision::prepare(
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            token_ids, merged, merged->size(0), image_token_id_, video_token_id_, encoder_.config(),
+#else
             token_ids, merged, merged.size(0), image_token_id_, video_token_id_, encoder_.config(),
+#endif
             {grid},
             [&](const auto &tokens) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 auto ids = tyloi::ops::tensor(tokens, tyloi::Device{tyloi::kCUDA, primary});
                 auto shaped = tyloi::ops::reshape(*ids, {1, -1});
-                if constexpr (requires(const Model &value, const tyloi::Tensor& value_ids, int device) {
-                                  value.embedding(value_ids, device);
-                              }) {
-                    return tyloi::ops::contiguous(*language.embedding(*shaped, primary));
-                } else {
-                    return tyloi::ops::contiguous(*language.embed_forward(*shaped));
-                }
+                return tyloi::ops::contiguous(*language.embedding(*shaped, primary));
 #else
                 auto ids =
                     ::tyloi::cuda::tensor(tokens, ::tyloi::TensorOptions()
@@ -324,12 +354,13 @@ class CudaGridVisionPromptComponent {
                 }
 #endif
             },
-            [](DenseTensor &embeddings, const DenseTensor &vision, const std::vector<int64_t> &indices) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto index = tyloi::ops::tensor(indices, embeddings.device());
-                tyloi::ops::index_copy(embeddings, 1, std::move(index),
-                    tyloi::ops::unsqueeze(tyloi::ops::cast(vision, embeddings.scalar_type()), 0));
+            [](std::shared_ptr<tyloi::Tensor>& embeddings, const std::shared_ptr<tyloi::Tensor>& vision, const std::vector<int64_t> &indices) {
+                auto index = tyloi::ops::tensor(indices, embeddings->device());
+                tyloi::ops::index_copy(*embeddings, 1, *index,
+                    *tyloi::ops::unsqueeze(*tyloi::ops::cast(*vision, embeddings->scalar_type()), 0));
 #else
+            [](DenseTensor &embeddings, const DenseTensor &vision, const std::vector<int64_t> &indices) {
                 auto index =
                     ::tyloi::cuda::tensor(indices, ::tyloi::TensorOptions()
                                                             .dtype(::tyloi::kInt64)
@@ -339,10 +370,10 @@ class CudaGridVisionPromptComponent {
             },
             [primary](const GridMropePositions &positions) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                DenseTensor values = tyloi::ops::tensor(positions.values, tyloi::Device{tyloi::DeviceType::cpu, 0});
-                values = tyloi::ops::reshape(std::move(values), {3, positions.token_count});
-                values = tyloi::ops::cast(std::move(values), ::tyloi::kInt32, tyloi::Device{tyloi::kCUDA, primary});
-                return tyloi::ops::cast(std::move(values), ::tyloi::kInt64);
+                auto values = tyloi::ops::tensor(positions.values, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                values = tyloi::ops::reshape(*values, {3, positions.token_count});
+                values = tyloi::ops::cast(*values, ::tyloi::kInt32, tyloi::Device{tyloi::kCUDA, primary});
+                return tyloi::ops::cast(*values, ::tyloi::kInt64);
 #else
                 return ::tyloi::cuda::tensor(positions.values,
                                                   ::tyloi::TensorOptions()
@@ -353,15 +384,9 @@ class CudaGridVisionPromptComponent {
                     .to(::tyloi::kInt64);
 #endif
             });
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        co_yield PreparedPrompt{token_ids, std::make_shared<DenseTensor>(std::move(prepared.embeddings)),
-                                    std::make_shared<DenseTensor>(std::move(prepared.positions)), prepared.decode_delta,
-                                    std::move(cache_key)};
-#else
         co_yield PreparedPrompt{token_ids, std::move(prepared.embeddings),
                                     std::move(prepared.positions), prepared.decode_delta,
                                     std::move(cache_key)};
-#endif
     }
 
     const std::string &input_contract() const noexcept { return input_contract_; }

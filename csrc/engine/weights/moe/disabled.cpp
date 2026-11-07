@@ -81,10 +81,12 @@ void print_moe_expert_cache_stats(const std::shared_ptr<MoeExpertCache>& cache, 
 
 void set_moe_expert_cache_profile(MoeExpertCache& cache, tyloi::MoeCacheProfile profile) {}
 
-tyloi::cuda::WeightLoan::~WeightLoan() = default;
-std::size_t tyloi::cuda::WeightLoan::begin(std::size_t) { return 0; }
-void tyloi::cuda::WeightLoan::suspend() {}
-void tyloi::cuda::WeightLoan::finish() {}
+struct tyloi::weights::Loan::Impl {};
+tyloi::weights::Loan::Loan(Cache&) : impl_(std::make_unique<Impl>()) {}
+tyloi::weights::Loan::~Loan() = default;
+std::size_t tyloi::weights::Loan::begin(std::size_t) { return 0; }
+void tyloi::weights::Loan::suspend() {}
+void tyloi::weights::Loan::finish() {}
 MoePrefillLayerPriority::MoePrefillLayerPriority(std::shared_ptr<MoeExpertCache> cache, int, int)
     : cache_(std::move(cache)) {}
 MoePrefillLayerPriority::~MoePrefillLayerPriority() = default;

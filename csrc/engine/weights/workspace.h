@@ -1,33 +1,31 @@
 #pragma once
 
-#include "backend.h"
+#include "engine/tensor.h"
 
 #include <cstddef>
 #include <memory>
-#include <utility>
 
-class MoeExpertCache;
+namespace tyloi::weights {
+class Cache;
 
-namespace tyloi::cuda {
-
-class WeightLoan {
+class Loan {
 public:
-    explicit WeightLoan(std::shared_ptr<MoeExpertCache> cache):cache_(std::move(cache)){}
-    WeightLoan(std::shared_ptr<MoeExpertCache> cache, std::size_t bytes)
-        : WeightLoan(std::move(cache)) { begin(bytes); }
-    ~WeightLoan();
-    WeightLoan(const WeightLoan&) = delete;
-    WeightLoan& operator=(const WeightLoan&) = delete;
-    WeightLoan(WeightLoan&&) = delete;
-    WeightLoan& operator=(WeightLoan&&) = delete;
+    explicit Loan(Cache& cache);
+    Loan(Cache& cache, std::size_t bytes);
+    ~Loan();
+    Loan(const Loan&) = delete;
+    Loan& operator=(const Loan&) = delete;
+    Loan(Loan&&) = delete;
+    Loan& operator=(Loan&&) = delete;
     std::size_t begin(std::size_t bytes);
     void suspend();
     void finish();
     // Move the output out of borrowed storage before returning it to the cache.
-    ::tyloi::DenseTensor finish(::tyloi::DenseTensor output);
+    std::shared_ptr<Tensor> finish(std::shared_ptr<Tensor> output);
 private:
-    std::shared_ptr<MoeExpertCache> cache_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
     bool active_=false;
 };
 
-} // namespace tyloi::cuda
+} // namespace tyloi::weights

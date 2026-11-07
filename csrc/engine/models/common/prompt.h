@@ -8,6 +8,7 @@
 #endif
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <stdexcept>
 #include <vector>
@@ -15,7 +16,7 @@
 namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using MediaCache = tyloi::cache::Media<tyloi::DenseTensor>;
+using MediaCache = tyloi::cache::Media<std::shared_ptr<tyloi::Tensor>>;
 using PreparedPrompt = tyloi::models::Prepared;
 #else
 using MediaCache = tyloi::cache::Media<::tyloi::DenseTensor>;

@@ -56,7 +56,7 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
     return {std::move(hidden),layer_major,short_windows};
 }
 
-inline bool generation_workspace(qwen4_exp::Model& model, WeightLoan& workspace,
+inline bool generation_workspace(qwen4_exp::Model& model, tyloi::weights::Loan& workspace,
                                  int64_t rows) {
     return workspace.begin((std::size_t(4)<<30)+
         std::size_t(rows)*model.metadata.hidden_size*model.metadata.hc_mult*sizeof(float)*4)>0;

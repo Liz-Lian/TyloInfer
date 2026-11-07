@@ -4,7 +4,6 @@
 #include "engine/budget.h"
 
 #include "env.h"
-#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
@@ -20,7 +19,6 @@
 #include "engine/models/common/prompt.h"
 #include "engine/backends/cuda/executor/sampling.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/input.h"
 #include "engine/models/causal_model.h"
 
@@ -230,7 +228,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         if (hidden.defined()) {
             // The layer-major path has already advanced every physical cache.
         } else if (prepared && prepared->transformed()) {
-            WeightLoan workspace(::tyloi::weights::detail::cache(weights).moe);
+            tyloi::weights::Loan workspace(weights);
             const bool borrowed=generation_workspace(model,workspace,chunk.count);
             if constexpr (has_forward<Model, State>) {
                 tyloi::cuda::Input input;

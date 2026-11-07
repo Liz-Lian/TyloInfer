@@ -1,4 +1,5 @@
 #include "engine/weights/workspace.h"
+#include "engine/weights/cache_internal.h"
 #include "engine/budget.h"
 #include "engine/weights/moe/prepare.h"
 #include "engine/weights/moe/load.h"
@@ -1274,16 +1275,23 @@ void MoeExpertCache::end_prefill_loan() {
 #endif
 }
 
-tyloi::cuda::WeightLoan::~WeightLoan() {
+struct tyloi::weights::Loan::Impl {
+    explicit Impl(Cache& owner) : cache(detail::cache(owner).moe) {}
+    std::shared_ptr<MoeExpertCache> cache;
+};
+
+tyloi::weights::Loan::Loan(Cache& cache) : impl_(std::make_unique<Impl>(cache)) {}
+
+tyloi::weights::Loan::~Loan() {
     if(active_)try{finish();}catch(const std::exception& e) {
         std::cerr<<"runtime_prefill_loan cleanup_error="<<e.what()<<'\n';
     }
 }
-std::size_t tyloi::cuda::WeightLoan::begin(std::size_t bytes) {
-    const auto borrowed=cache_?cache_->begin_prefill_loan(bytes):0;active_=borrowed>0;return borrowed;
+std::size_t tyloi::weights::Loan::begin(std::size_t bytes) {
+    const auto borrowed=impl_->cache?impl_->cache->begin_prefill_loan(bytes):0;active_=borrowed>0;return borrowed;
 }
-void tyloi::cuda::WeightLoan::suspend(){if(active_)cache_->suspend_prefill_loan();}
-void tyloi::cuda::WeightLoan::finish(){if(active_){cache_->end_prefill_loan();active_=false;}}
+void tyloi::weights::Loan::suspend(){if(active_)impl_->cache->suspend_prefill_loan();}
+void tyloi::weights::Loan::finish(){if(active_){impl_->cache->end_prefill_loan();active_=false;}}
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor) {
     return cache?cache->prefill_transfer_bytes(predictor):0;
 }
