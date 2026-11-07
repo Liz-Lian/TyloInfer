@@ -771,9 +771,8 @@ namespace tyloi::cuda {
 void finalize_kv(KvMemoryManager* kv, tyloi::weights::Cache& weights,
         std::shared_ptr<KvOffloadStore>& offload) {
     if (kv) {
-        auto& moe = tyloi::weights::detail::cache(weights).moe;
-        kv->finalize(moe_expert_cache_minimum_bytes(moe));
-        set_moe_kv_expert_loan(moe, kv->expert_loan());
+        kv->finalize(weights, weights.minimum());
+        weights.commit_kv();
         if (auto store = kv->offload()) offload = std::move(store);
     }
 }

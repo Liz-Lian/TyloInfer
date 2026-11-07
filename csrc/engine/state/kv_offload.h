@@ -8,8 +8,8 @@
 #include <utility>
 
 namespace tyloi::engine { class Budget; }
+namespace tyloi::weights { class Cache; }
 namespace tyloi::cuda {
-class KvExpertLoan;
 struct KvOffloadConfig {
     std::size_t gpu_budget_bytes = 0;
     std::size_t ram_budget_bytes = 0;
@@ -40,8 +40,8 @@ public:
     std::vector<std::pair<std::string, double>> metrics() const;
     void flush();
     void bind_budget(tyloi::engine::Budget* budget);
-    void set_expert_loan(std::shared_ptr<KvExpertLoan> loan);
-    std::size_t expert_loan_bytes() const;
+    void lend(tyloi::weights::Cache& cache);
+    std::size_t lent_bytes() const;
 private:
     friend class KvOffloadSequence;
     struct Impl;

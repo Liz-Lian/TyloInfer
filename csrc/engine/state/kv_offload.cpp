@@ -1,6 +1,7 @@
 #include "engine/state/kv_offload.h"
 #include "engine/budget.h"
-#include "engine/weights/moe/kv_expert_loan.h"
+#include "engine/weights/cache.h"
+#include "engine/weights/workspace.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 
 #include <algorithm>
@@ -133,7 +134,7 @@ struct KvOffloadStore::Impl {
         auto offset=gpu_slots.take(block->bytes);
         while(offset==no_offset && evict_one())offset=gpu_slots.take(block->bytes);
         if(offset==no_offset)throw std::runtime_error("CUDA KV arena cannot hold one block");
-        if(expert_loan)expert_loan->protect(loan_region,int64_t(offset+block->bytes));
+        loan_region.protect(int64_t(offset+block->bytes));
         block->gpu_offset=offset;
         auto* data=static_cast<std::uint8_t*>(gpu_arena.data_ptr())+offset;
         auto storage=std::make_shared<TensorStorage>();
@@ -189,8 +190,7 @@ struct KvOffloadStore::Impl {
     KvOffloadConfig config;
     std::shared_ptr<cache::QsaKvStore> ram;
     ::tyloi::DenseTensor gpu_arena;
-    std::shared_ptr<KvExpertLoan> expert_loan;
-    std::size_t loan_region=0;
+    ::tyloi::weights::KvRegion loan_region;
     std::vector<std::uint8_t> ram_arena;
     Slots gpu_slots,ram_slots;
     std::list<std::weak_ptr<Block>> ram_lru;
@@ -299,21 +299,22 @@ void KvOffloadStore::flush() { if(impl_->ram)impl_->ram->flush(); }
 void KvOffloadStore::bind_budget(tyloi::engine::Budget* budget) {
     impl_->budget = budget;
 }
-void KvOffloadStore::set_expert_loan(std::shared_ptr<KvExpertLoan> loan) {
+void KvOffloadStore::lend(tyloi::weights::Cache& cache) {
     std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-    if(!loan || !impl_->gpu_arena.defined() || !impl_->gpu_arena.nbytes())return;
-    impl_->loan_region=loan->add(impl_->gpu_arena,int64_t(impl_->gpu_arena.nbytes()),1,false,1,true);
-    impl_->expert_loan=std::move(loan);
+    impl_->loan_region.reset();
+    if(!impl_->gpu_arena.defined() || !impl_->gpu_arena.nbytes())return;
+    impl_->loan_region=cache.lend_kv(impl_->gpu_arena);
 }
-std::size_t KvOffloadStore::expert_loan_bytes() const {
-    return impl_->expert_loan?impl_->expert_loan->region_bytes(impl_->loan_region):0;
+std::size_t KvOffloadStore::lent_bytes() const {
+    std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+    return impl_->loan_region.bytes();
 }
 std::vector<std::pair<std::string, double>> KvOffloadStore::metrics() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
     const auto cold = impl_->ram ? impl_->ram->stats() : cache::QsaKvStoreStats{};
     return {{"qsa_kv_offload_enabled", 1.0}, {"qsa_kv_ssd_enabled",impl_->config.ssd_enabled?1.0:0.0},
         {"qsa_kv_graph_workspace_bytes",double(graph_workspace_bytes())},
-        {"qsa_kv_resident_bytes", double((impl_->config.preallocate?impl_->hot_limit():impl_->gpu_bytes)-expert_loan_bytes())},
+        {"qsa_kv_resident_bytes", double((impl_->config.preallocate?impl_->hot_limit():impl_->gpu_bytes)-lent_bytes())},
         {"qsa_kv_budget_bytes", double(impl_->config.gpu_budget_bytes)},
         {"qsa_kv_ram_enabled", impl_->config.ram_budget_bytes ? 1.0 : 0.0},
         {"qsa_kv_ram_bytes", double(impl_->config.preallocate && impl_->config.ram_preallocated?impl_->ram_arena.size():cold.hot_bytes)}, {"qsa_kv_ram_limit_bytes", double(impl_->config.ram_budget_bytes)},

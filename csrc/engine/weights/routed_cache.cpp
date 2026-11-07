@@ -136,6 +136,7 @@ void Cache::reset() noexcept {
     data_->tq.reset();
     data_->device_bytes.reset();
     data_->exec.reset();
+    data_->kv.reset();
 }
 
 } // namespace tyloi::weights

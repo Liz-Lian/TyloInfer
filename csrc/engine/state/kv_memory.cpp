@@ -4,7 +4,7 @@
 #include "engine/generation/prefill_budget.h"
 #include "engine/backends/cuda/native/vmm.h"
 #include "engine/state/kv_budget.h"
-#include "engine/weights/moe/kv_expert_loan.h"
+#include "engine/weights/cache.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "context.h"
 #include "engine/backends/cuda/native/device.h"
@@ -158,7 +158,7 @@ std::size_t KvMemoryAllocation::growth_bytes(int64_t tokens) const {
 }
 void KvMemoryAllocation::ensure(int64_t tokens) {
     if (tokens<0 || tokens>maximum) throw std::invalid_argument("KV growth exceeds configured context");
-    if(auto loan=expert_loan.lock())loan->ensure(tokens+pool-1);
+    if(!expert_regions.empty())expert_regions.front().advance(tokens+pool-1);
     if (virtual_keys) {virtual_keys->ensure(tokens); virtual_values->ensure(tokens);}
 }
 KvMemoryManager::KvMemoryManager(KvMemoryOptions options):options_(std::move(options)) {}
@@ -178,15 +178,16 @@ std::shared_ptr<KvMemoryAllocation> KvMemoryManager::add(int64_t maximum,int64_t
         if(!automatic_ram_ && !policy.budget_policy && (policy.placement=="auto" || policy.placement=="auto_ssd"))policy.placement="vram";
         KvMemoryManager child(policy);
         auto a=child.add(maximum,heads,kw,vw,iw,pool,options,selected_columns);
-        child.finalize();allocations_.push_back(a);return a;
+        child.finalize(*cache_);allocations_.push_back(a);return a;
     }
     auto a=std::make_shared<KvMemoryAllocation>();
     a->maximum=maximum;a->heads=heads;a->key_width=kw;a->value_width=vw;a->index_width=iw;a->pool=pool;a->options=options;
     a->selected_columns=selected_columns;
     allocations_.push_back(a);return a;
 }
-void KvMemoryManager::finalize(std::size_t minimum_experts) {
+void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum_experts) {
     if (ready_) return;
+    cache_=&cache;
     if(!options_.ram_preallocated && options_.placement!="auto_ssd")throw std::invalid_argument("kv_ssd_required: disabling RAM preallocation requires SSD KV");
     std::size_t raw=0,index=0;
     for (auto& weak:allocations_) if(auto a=weak.lock()){raw+=a->raw_bytes();index+=a->index_bytes();}
@@ -285,7 +286,10 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
         offload_=std::make_shared<KvOffloadStore>(config);
     }
     ResidentAllocationScope resident;
-    if(tiered_budget && !options_.additional_request && !options_.dynamic && setting("TYLOINFER_KV_EXPERT_LOAN",1))expert_loan_=std::make_shared<KvExpertLoan>();
+    if(tiered_budget && !options_.additional_request && !options_.dynamic && setting("TYLOINFER_KV_EXPERT_LOAN",1)) {
+        cache_->prepare_kv();
+        lending_=true;
+    }
     for(auto& weak:allocations_)if(auto a=weak.lock()) {
         const auto shape=[&](int64_t w){return std::vector<int64_t>{1,a->heads,a->maximum,w};};
         auto index_options=a->options;index_options.dtype(::tyloi::kFloat16);
@@ -314,19 +318,18 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
             a->keys=::tyloi::cuda::zeros(shape(a->key_width),a->options);a->values=::tyloi::cuda::zeros(shape(a->value_width),a->options);
         }
         a->ready=true;
-        if(expert_loan_) {
-            a->expert_loan=expert_loan_;
-            expert_loan_->add(a->index,a->maximum,std::size_t(a->index_width)*2,false);
-            expert_loan_->add(a->pooled,(a->maximum+a->pool-1)/a->pool,std::size_t(a->index_width)*2,false,a->pool);
+        if(lending_) {
+            a->expert_regions.push_back(cache_->lend_kv(a->index,a->maximum,std::size_t(a->index_width)*2,false));
+            a->expert_regions.push_back(cache_->lend_kv(a->pooled,(a->maximum+a->pool-1)/a->pool,std::size_t(a->index_width)*2,false,a->pool));
             const auto& k=a->hot.exclusive()?a->hot.keys:a->keys;
             const auto& v=a->hot.exclusive()?a->hot.values:a->values;
             if(a->hot.exclusive() || (!a->host && !a->offload))for(int64_t h=0;h<a->heads;++h) {
-                expert_loan_->add(k.narrow(1,h,1),k.size(2),std::size_t(a->key_width)*width_bytes(a->options),a->hot.exclusive());
-                expert_loan_->add(v.narrow(1,h,1),v.size(2),std::size_t(a->value_width)*width_bytes(a->options),a->hot.exclusive());
+                a->expert_regions.push_back(cache_->lend_kv(k.narrow(1,h,1),k.size(2),std::size_t(a->key_width)*width_bytes(a->options),a->hot.exclusive()));
+                a->expert_regions.push_back(cache_->lend_kv(v.narrow(1,h,1),v.size(2),std::size_t(a->value_width)*width_bytes(a->options),a->hot.exclusive()));
             }
         }
     }
-    if(offload_ && expert_loan_)offload_->set_expert_loan(expert_loan_);
+    if(offload_ && lending_)offload_->lend(*cache_);
     // Reserve shared decode I/O buffers before sizing the expert arenas.
     // Graph capture must not discover a large workspace after admission.
     const auto* stream_graphs=tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
@@ -343,7 +346,7 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
         <<" ram_preallocated="<<options_.ram_preallocated<<" exclusive="<<exclusive<<"\n";
 }
 void KvMemoryManager::ensure(int64_t tokens) {
-    if(expert_loan_)expert_loan_->ensure(tokens);
+    if(lending_)cache_->protect_kv(tokens);
     std::vector<std::pair<tyloi::Device, std::size_t>> growth;
     for(auto& weak:allocations_)if(auto a=weak.lock()) {
         const auto bytes=a->growth_bytes(std::min(a->maximum,tokens));
@@ -372,6 +375,7 @@ std::size_t KvMemoryManager::expert_budget_charge() const {
 std::vector<std::pair<std::string,double>> KvMemoryManager::metrics() const {
     std::size_t gpu=0,ram=0,capacity=0,vmm=0;
     int64_t resident_cells=0;
+    const auto loan=lending_?cache_->kv_metrics():tyloi::weights::Cache::KvMetrics{};
     for(auto& weak:allocations_)if(auto a=weak.lock()){
         gpu+=a->gpu_bytes();ram+=a->ram_bytes();capacity+=a->raw_bytes()+a->index_bytes();
         if(a->virtual_keys)vmm+=a->gpu_bytes()-a->index_bytes();
@@ -379,10 +383,10 @@ std::vector<std::pair<std::string,double>> KvMemoryManager::metrics() const {
     }
     return {{"kv_memory_supported",capacity?1.0:0.0},{"kv_memory_dynamic",options_.dynamic?1.0:0.0},
         {"kv_memory_preallocated",options_.dynamic?0.0:1.0},{"kv_memory_capacity_bytes",double(capacity)},
-        {"kv_memory_gpu_bytes",double(gpu+(offload_?offload_->expert_loan_bytes():0)-(expert_loan_?expert_loan_->bytes()-expert_loan_->external_bytes():0))},{"kv_memory_ram_bytes",double(ram)},
-        {"kv_memory_expert_loan_bytes",double(expert_loan_?expert_loan_->bytes()-expert_loan_->external_bytes():0)},
-        {"kv_memory_expert_loan_hit_bytes",double(expert_loan_?expert_loan_->hits():0)},
-        {"kv_memory_expert_loan_lookup_us",expert_loan_?expert_loan_->lookup_us():0},
+        {"kv_memory_gpu_bytes",double(gpu+(offload_?offload_->lent_bytes():0)-loan.bytes)},{"kv_memory_ram_bytes",double(ram)},
+        {"kv_memory_expert_loan_bytes",double(loan.bytes)},
+        {"kv_memory_expert_loan_hit_bytes",double(loan.hit_bytes)},
+        {"kv_memory_expert_loan_lookup_us",loan.lookup_us},
         {"kv_memory_gpu_budget_bytes",double(gpu_budget_)},{"kv_memory_cold_required_bytes",double(ram_required_)},
         {"kv_memory_ram_preallocated",options_.ram_preallocated?1.0:0.0},
         {"kv_memory_vmm_bytes",double(vmm)}, {"kv_memory_auto_ram",automatic_ram_?1.0:0.0},

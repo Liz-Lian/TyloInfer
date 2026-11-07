@@ -7,7 +7,6 @@
 #include "engine/state/session/sessions.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/cache_internal.h"
 #include "engine/engine.h"
 #include "engine/weights/memory.h"
@@ -37,20 +36,12 @@ Budget::Budget(::tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache&
 
 Budget::~Budget() { unbind(); }
 
-void Budget::bind() {
-    auto& moe = ::tyloi::weights::detail::cache(weights_).moe;
-    if (moe) {
-        if (moe_expert_cache_ssd_experts(moe)) {
-            auto loan = std::make_shared<KvExpertLoan>();
-            set_moe_kv_expert_loan(moe, loan);
-            ::tyloi::weights::detail::init_workspace(weights_, primary_device_, std::move(loan));
-        }
-        bind_moe_budget(moe, this);
-    }
+void Budget::bind(bool predictor) {
+    weights_.bind(*this, Device(kCUDA, primary_device_), predictor);
 }
 
 void Budget::unbind() noexcept {
-    bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, nullptr);
+    weights_.unbind();
 }
 
 void Budget::reclaim(std::size_t bytes) {
@@ -209,7 +200,7 @@ void Budget::prepare(Stage stage, const source::Source* source) {
     if (data.tq || (stage == Stage::decode && !data.moe)) return;
     prepare_moe_decode_residency(data.moe);
     default_context(primary_device_)->reclaim_idle_memory();
-    if (decode_lendable_bytes_) {
+    if (data.moe && decode_lendable_bytes_) {
         const auto bytes = weights_.lend_decode(decode_lendable_bytes_);
         if (bytes) std::cerr << "runtime_mtp_workspace_cache action=lend depth="
             << decode_graph_depth_ << " bytes=" << bytes << '\n';

@@ -3,13 +3,14 @@
 #include "backend.h"
 #include "engine/state/kv_offload.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_hot_cache.h"
+#include "engine/weights/workspace.h"
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace tyloi::engine { class Budget; }
+namespace tyloi::weights { class Cache; }
 namespace tyloi::cuda {
-class KvExpertLoan;
 // Placement applies to raw K/V. Indexer and kernel scratch remain GPU-local.
 struct KvMemoryOptions {
     std::string placement = "auto";
@@ -33,7 +34,7 @@ struct KvMemoryAllocation {
     ::tyloi::TensorOptions options;
     bool host = false, ready = false;
     HotKvCache hot;
-    std::weak_ptr<KvExpertLoan> expert_loan;
+    std::vector<tyloi::weights::KvRegion> expert_regions;
     std::size_t raw_bytes() const;
     std::size_t index_bytes() const;
     std::size_t gpu_bytes() const;
@@ -48,13 +49,12 @@ public:
     std::shared_ptr<KvMemoryAllocation> add(int64_t maximum, int64_t heads,
         int64_t key_width, int64_t value_width, int64_t index_width, int64_t pool,
         const ::tyloi::TensorOptions& options,int64_t selected_columns=0);
-    // Called after dense weights and predictor load, before expert arenas.
-    void finalize(std::size_t minimum_experts = 0);
+    // Cache outlives the manager and its allocations; call before expert arenas.
+    void finalize(tyloi::weights::Cache& cache, std::size_t minimum_experts = 0);
     void ensure(int64_t tokens);
     void bind_budget(tyloi::engine::Budget* budget) { budget_ = budget; }
     std::shared_ptr<KvOffloadStore> offload() const { return offload_; }
     bool dynamic() const { return options_.dynamic; }
-    std::shared_ptr<KvExpertLoan> expert_loan() const { return expert_loan_; }
     std::size_t growth_reserve() const;
     std::size_t expert_budget_charge() const;
     std::vector<std::pair<std::string,double>> metrics() const;
@@ -65,7 +65,8 @@ private:
     tyloi::engine::Budget* budget_ = nullptr;
     bool ready_ = false;
     bool automatic_ram_ = false;
-    std::shared_ptr<KvExpertLoan> expert_loan_;
+    tyloi::weights::Cache* cache_ = nullptr;
+    bool lending_ = false;
     std::size_t gpu_budget_=0,ram_required_=0;
 };
 }

@@ -11,16 +11,13 @@
 #include "engine/models/common/prompt.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/causal_model.h"
-#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/budget.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/generate.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/moe/expert_cache.h"
 #include "engine/state/kv_offload.h"
 #include "engine/state/kv_memory.h"
-#include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
@@ -93,8 +90,7 @@ struct Text {
         std::size_t spare = 0;
 #ifdef TYLOINFER_NATIVE_CUDA
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            const auto& cache = ::tyloi::weights::detail::cache(weights);
-            if (!cache.tq && cache.moe && components.mtp) {
+            if (components.mtp) {
                 const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
                 const auto active=qwen4_mtp_graph_reserve(language,components.mtp.get(),graph_draft_depth);
                 if(active<maximum)spare=maximum-active;
@@ -124,7 +120,7 @@ struct Text {
                 weights.release_workspace();
                 graph.invalidate();
                 qwen4_release_decode_graphs(language,components.mtp.get());
-                release_moe_decode_buffers(::tyloi::weights::detail::cache(weights).moe);
+                weights.retire_decode();
                 state.reset(1);components.mtp->reset(1);
                 auto context=tyloi::cuda::default_context(execution->config.layer_placement.primary_device());
                 context->reclaim_idle_memory();
@@ -196,17 +192,7 @@ struct Text {
             }
         }
 #ifdef TYLOINFER_NATIVE_CUDA
-        if(::tyloi::weights::detail::cache(weights).moe) {
-            auto expert_loan=kv?kv->expert_loan():nullptr;
-            if(!expert_loan && (component_predictor(components) || moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights).moe))) {
-                expert_loan=std::make_shared<KvExpertLoan>();
-                set_moe_kv_expert_loan(::tyloi::weights::detail::cache(weights).moe,expert_loan);
-            }
-            if(expert_loan)
-                ::tyloi::weights::detail::init_workspace(weights,
-                    execution->config.layer_placement.primary_device(), std::move(expert_loan));
-            bind_moe_budget(::tyloi::weights::detail::cache(weights).moe, &*budget);
-        }
+        budget->bind(component_predictor(components) != nullptr);
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
                 budget->reserve_kv(tyloi::Device(tyloi::kCUDA,
@@ -285,7 +271,7 @@ struct Text {
     void clear_bindings() noexcept {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
         if(kv)kv->bind_budget(nullptr);
-        bind_moe_budget(::tyloi::weights::detail::cache(weights).moe, nullptr);
+        if (budget) budget->unbind();
         if (offload) offload->bind_budget(nullptr);
     }
     ~Text() {
@@ -296,8 +282,7 @@ struct Text {
         if(command.kind!=SessionCommand::Kind::memory_budget)return cache.control(command);
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
         auto change = budget->change(command);
-        weights.release_workspace();
-        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(weights).moe);
+        weights.settle();
         graph.invalidate();
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             qwen4_release_decode_graphs(language,components.mtp.get());

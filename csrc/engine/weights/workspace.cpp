@@ -43,27 +43,126 @@ struct detail::Workspace {
     };
 
     int device = 0;
-    std::shared_ptr<KvExpertLoan> loan;
     ::tyloi::DenseTensor decode_storage;
     std::optional<std::size_t> decode_region;
     std::vector<PrefillRegion> prefill_regions;
     std::uint64_t prefill_reclaimed_used_bytes = 0;
 };
 
+struct detail::KvOwner {
+    std::shared_ptr<KvExpertLoan> loan = std::make_shared<KvExpertLoan>();
+    std::weak_ptr<MoeExpertCache> moe;
+};
+
+struct KvRegion::Impl {
+    std::weak_ptr<detail::KvOwner> owner;
+    std::size_t region = 0;
+};
+
+KvRegion::KvRegion() noexcept = default;
+KvRegion::KvRegion(KvRegion&&) noexcept = default;
+KvRegion& KvRegion::operator=(KvRegion&& other) {
+    if (this != &other) {
+        reset();
+        impl_ = std::move(other.impl_);
+    }
+    return *this;
+}
+KvRegion::~KvRegion() noexcept {
+    try {
+        reset();
+    } catch (const std::exception& error) {
+        std::cerr << "kv_region cleanup_error=" << error.what() << '\n';
+    } catch (...) {
+        std::cerr << "kv_region cleanup_error=unknown\n";
+    }
+}
+void KvRegion::reset() {
+    if (!impl_) return;
+    if (auto owner = impl_->owner.lock()) {
+        finish_moe_expert_exchanges(owner->moe.lock());
+        owner->loan->remove(impl_->region);
+    }
+    impl_.reset();
+}
+void KvRegion::advance(std::int64_t end) {
+    if (impl_) if (auto owner = impl_->owner.lock()) owner->loan->ensure(end);
+}
+void KvRegion::protect(std::int64_t end) {
+    if (impl_) if (auto owner = impl_->owner.lock()) owner->loan->protect(impl_->region, end);
+}
+std::size_t KvRegion::bytes() const {
+    if (impl_) if (auto owner = impl_->owner.lock()) return owner->loan->region_bytes(impl_->region);
+    return 0;
+}
+
 detail::CacheData::CacheData() = default;
 detail::CacheData::~CacheData() = default;
 Cache::Cache() : data_(std::make_unique<detail::CacheData>()) {}
-Cache::~Cache() { clear_workspace(); }
+Cache::~Cache() { reset(); }
 
 detail::CacheData& detail::cache(Cache& value) { return *value.data_; }
 const detail::CacheData& detail::cache(const Cache& value) { return *value.data_; }
 
-void detail::init_workspace(Cache& owner, int device, std::shared_ptr<KvExpertLoan> loan) {
-    owner.clear_workspace();
-    auto& workspace = detail::cache(owner).workspace;
-    workspace = std::make_unique<detail::Workspace>();
-    workspace->device = device;
-    workspace->loan = std::move(loan);
+void Cache::prepare_kv() {
+    if (!data_->kv) data_->kv = std::make_shared<detail::KvOwner>();
+    data_->kv->moe = data_->moe;
+}
+
+KvRegion Cache::lend_kv(const Tensor& backing, std::int64_t capacity,
+        std::size_t row_bytes, bool prefix, std::int64_t ratio) {
+    KvRegion result;
+    if (!data_->kv) return result;
+    auto impl = std::make_unique<KvRegion::Impl>();
+    impl->owner = data_->kv;
+    impl->region = data_->kv->loan->add(dynamic_cast<const DenseTensor&>(backing),
+        capacity, row_bytes, prefix, ratio);
+    result.impl_ = std::move(impl);
+    return result;
+}
+
+KvRegion Cache::lend_kv(const Tensor& arena) {
+    KvRegion result;
+    if (!data_->kv) return result;
+    auto impl = std::make_unique<KvRegion::Impl>();
+    impl->owner = data_->kv;
+    const auto& dense = dynamic_cast<const DenseTensor&>(arena);
+    impl->region = data_->kv->loan->add(dense, static_cast<std::int64_t>(dense.nbytes()),
+        1, false, 1, true);
+    result.impl_ = std::move(impl);
+    return result;
+}
+
+void Cache::commit_kv() {
+    if (data_->kv) data_->kv->moe = data_->moe;
+    set_moe_kv_expert_loan(data_->moe, data_->kv ? data_->kv->loan : nullptr);
+}
+void Cache::protect_kv(std::int64_t end) {
+    if (data_->kv) data_->kv->loan->ensure(end);
+}
+Cache::KvMetrics Cache::kv_metrics() const {
+    if (!data_->kv) return {};
+    const auto& loan = *data_->kv->loan;
+    return {loan.bytes() - loan.external_bytes(), loan.hits(), loan.lookup_us()};
+}
+void Cache::bind(engine::Budget& budget, Device device, bool predictor) {
+    if (!data_->moe) return;
+    if (!data_->kv && (predictor || moe_expert_cache_ssd_experts(data_->moe))) {
+        prepare_kv();
+        commit_kv();
+    }
+    if (data_->kv) {
+        clear_workspace();
+        data_->workspace = std::make_unique<detail::Workspace>();
+        data_->workspace->device = device.index;
+    }
+    bind_moe_budget(data_->moe, &budget);
+}
+void Cache::unbind() noexcept {
+    bind_moe_budget(data_->moe, nullptr);
+}
+void Cache::retire_decode() {
+    release_moe_decode_buffers(data_->moe);
 }
 
 void Cache::clear_workspace() noexcept {
@@ -89,6 +188,7 @@ std::size_t Cache::prefill_workspace_capacity() const noexcept {
 void Cache::release_workspace(std::size_t required_available, const char* reason) {
     if (!data_->workspace || (!data_->workspace->decode_region && data_->workspace->prefill_regions.empty())) return;
     auto& w = *data_->workspace;
+    auto& loan = *data_->kv->loan;
     if (reason) {
         const auto context = default_context(w.device);
         std::cerr << "runtime_workspace_cache_reclaim reason=" << reason
@@ -104,8 +204,8 @@ void Cache::release_workspace(std::size_t required_available, const char* reason
             (all || context->available_memory() < required_available)) {
         const auto& part = w.prefill_regions.back();
         const auto bytes = part.storage.nbytes();
-        const auto used = w.loan->region_bytes(part.region);
-        w.loan->remove(part.region);
+        const auto used = loan.region_bytes(part.region);
+        loan.remove(part.region);
         w.prefill_reclaimed_used_bytes += used;
         w.prefill_regions.pop_back();
         context->reclaim_idle_memory();
@@ -115,7 +215,7 @@ void Cache::release_workspace(std::size_t required_available, const char* reason
     if (w.decode_region &&
             (all || context->available_memory() < required_available)) {
         const auto bytes = w.decode_storage.nbytes();
-        w.loan->remove(*w.decode_region);
+        loan.remove(*w.decode_region);
         w.decode_region.reset();
         w.decode_storage = {};
         std::cerr << "runtime_mtp_workspace_cache action=reclaim bytes="
@@ -127,7 +227,7 @@ void Cache::release_workspace(std::size_t required_available, const char* reason
 std::size_t Cache::lend_decode(std::size_t maximum_minus_active) {
     if (!data_->workspace) return 0;
     auto& w = *data_->workspace;
-    if (w.decode_region || !w.loan || !maximum_minus_active) return 0;
+    if (w.decode_region || !data_->kv || !maximum_minus_active) return 0;
 
     const auto context = default_context(w.device);
     const auto available = context->available_memory();
@@ -145,7 +245,7 @@ std::size_t Cache::lend_decode(std::size_t maximum_minus_active) {
         std::cerr << "runtime_mtp_workspace_cache action=skip reason=memory_pressure\n";
         return 0;
     }
-    w.decode_region = w.loan->add(w.decode_storage, static_cast<std::int64_t>(bytes),
+    w.decode_region = data_->kv->loan->add(w.decode_storage, static_cast<std::int64_t>(bytes),
         1, true, 1, true, true);
     return bytes;
 }
@@ -153,7 +253,7 @@ std::size_t Cache::lend_decode(std::size_t maximum_minus_active) {
 void Cache::restore_workspace(std::size_t reserve_bytes, const tyloi::source::Source* source) {
     if (!data_->workspace) return;
     auto& w = *data_->workspace;
-    if (!w.loan) return;
+    if (!data_->kv) return;
 
     bool ssd = false;
     std::size_t transfer = 0;
@@ -209,7 +309,7 @@ void Cache::restore_workspace(std::size_t reserve_bytes, const tyloi::source::So
             break;
         }
         w.prefill_regions.reserve(w.prefill_regions.size() + 1);
-        const auto region = w.loan->add(storage, static_cast<std::int64_t>(chunk),
+        const auto region = data_->kv->loan->add(storage, static_cast<std::int64_t>(chunk),
             1, true, 1, true, true);
         w.prefill_regions.push_back({std::move(storage), region});
         bytes -= chunk;
@@ -228,9 +328,9 @@ void Cache::append_workspace_metrics(
     if (data_->workspace) {
         const auto& w = *data_->workspace;
         decode_capacity = w.decode_storage.defined() ? w.decode_storage.nbytes() : 0;
-        decode_used = w.decode_region && w.loan ? w.loan->region_bytes(*w.decode_region) : 0;
+        decode_used = w.decode_region && data_->kv ? data_->kv->loan->region_bytes(*w.decode_region) : 0;
         for (const auto& part : w.prefill_regions)
-            if (w.loan) prefill_used += w.loan->region_bytes(part.region);
+            if (data_->kv) prefill_used += data_->kv->loan->region_bytes(part.region);
         prefill_reclaimed_used = w.prefill_reclaimed_used_bytes;
     }
     metrics.insert(metrics.end(), {

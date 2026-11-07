@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/weights/loader.h"
+#include "engine/weights/workspace.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +10,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace tyloi::engine { class Budget; }
 
 namespace tyloi::weights {
 class Cache;
@@ -25,6 +28,11 @@ public:
     struct Activity {
         std::uint64_t streamed_bytes = 0;
         std::uint64_t graph_captures = 0;
+    };
+    struct KvMetrics {
+        std::size_t bytes = 0;
+        std::uint64_t hit_bytes = 0;
+        double lookup_us = 0;
     };
 
     class Routes {
@@ -78,6 +86,16 @@ public:
     void clear_workspace() noexcept;
     std::size_t lend_decode(std::size_t maximum_minus_active);
     void restore_workspace(std::size_t reserve_bytes, const source::Source* source);
+    void prepare_kv();
+    KvRegion lend_kv(const Tensor& backing, std::int64_t capacity, std::size_t row_bytes,
+        bool prefix, std::int64_t ratio = 1);
+    KvRegion lend_kv(const Tensor& arena);
+    void commit_kv();
+    void protect_kv(std::int64_t end);
+    KvMetrics kv_metrics() const;
+    void bind(engine::Budget& budget, Device device, bool predictor);
+    void unbind() noexcept;
+    void retire_decode();
     void reset() noexcept;
 
 private:

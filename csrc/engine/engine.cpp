@@ -58,7 +58,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         tyloi::weights::LoadScope memory_load(*ledger_);
         graph_.emplace(model_info_.max_context, Device(kCUDA, forward_options_.primary), std::move(graph));
         budget_.emplace(*ledger_, *weights_, *cache_, Device(kCUDA, forward_options_.primary));
-        budget_->bind();
+        budget_->bind(false);
         if (const auto bytes = config_.resident_budget_bytes) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);

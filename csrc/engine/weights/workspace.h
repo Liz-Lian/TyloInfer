@@ -3,10 +3,29 @@
 #include "engine/tensor.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 
 namespace tyloi::weights {
 class Cache;
+
+class KvRegion {
+public:
+    KvRegion() noexcept;
+    KvRegion(KvRegion&&) noexcept;
+    KvRegion& operator=(KvRegion&&);
+    ~KvRegion() noexcept;
+    KvRegion(const KvRegion&) = delete;
+    KvRegion& operator=(const KvRegion&) = delete;
+    void reset();
+    void advance(std::int64_t end);
+    void protect(std::int64_t end);
+    std::size_t bytes() const;
+private:
+    friend class Cache;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 class Loan {
 public:

@@ -225,12 +225,16 @@ class EngineInstance final : public Engine {
                 CudaScope scope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
                 state.reset();
                 execution->executor().pipelines().clear();
+                offload.reset();
+                kv.reset();
                 weights.clear_workspace();
+                weights.reset();
             }
+        } else {
+            offload.reset();
+            kv.reset();
+            weights.reset();
         }
-        offload.reset();
-        kv.reset();
-        weights.reset();
         execution.reset();
         executor.reset();
         if (failure) std::rethrow_exception(failure);

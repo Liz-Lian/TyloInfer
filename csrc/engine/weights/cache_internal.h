@@ -7,13 +7,13 @@
 class MoeExpertCache;
 class TqCache;
 class TqExec;
-namespace tyloi::cuda { class KvExpertLoan; }
-
 namespace tyloi::weights::detail {
 struct Workspace;
+struct KvOwner;
 struct CacheData {
     CacheData();
     ~CacheData();
+    std::shared_ptr<KvOwner> kv;
     std::shared_ptr<MoeExpertCache> moe;
     std::shared_ptr<TqCache> tq;
     std::optional<std::size_t> device_bytes;
@@ -23,5 +23,4 @@ struct CacheData {
     std::unique_ptr<Workspace> workspace;
 };
 
-void init_workspace(Cache& cache, int device, std::shared_ptr<cuda::KvExpertLoan> loan);
 } // namespace tyloi::weights::detail

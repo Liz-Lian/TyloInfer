@@ -25,7 +25,7 @@ public:
     Budget& operator=(const Budget&) = delete;
 
     // Referenced owners outlive Budget; bind within their execution scope and unbind before retirement.
-    void bind();
+    void bind(bool predictor);
     void unbind() noexcept;
 
     class Change {

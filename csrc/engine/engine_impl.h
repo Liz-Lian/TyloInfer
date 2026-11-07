@@ -27,9 +27,6 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/models/common/model_config.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/moe/expert_cache.h"
-#include "engine/weights/moe/kv_expert_loan.h"
-#include "engine/weights/cache_internal.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/memory.h"
 #include "engine/models/source.h"
@@ -301,7 +298,7 @@ private:
 
     void clear_bindings() noexcept {
         if (kv_) kv_->bind_budget(nullptr);
-        bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, nullptr);
+        if (budget_) budget_->unbind();
         if (offload_) offload_->bind_budget(nullptr);
     }
 
@@ -310,8 +307,7 @@ private:
             throw std::invalid_argument(
                 "online memory budgeting requires a single-device CUDA worker");
         auto change = budget_->change(command);
-        weights_.release_workspace();
-        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(weights_).moe);
+        weights_.settle();
         graph_->invalidate();
         if (batching_) batching_->release_idle_buffers();
         if (components().mtp) components().mtp->reset(1);
@@ -426,20 +422,7 @@ private:
                 execution_->config.weights.min_slots);
         }
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (::tyloi::weights::detail::cache(weights_).moe) {
-            auto expert_loan = kv_ ? kv_->expert_loan() : nullptr;
-            if (!expert_loan && (components().mtp ||
-                                 moe_expert_cache_ssd_experts(::tyloi::weights::detail::cache(weights_).moe))) {
-                expert_loan = std::make_shared<KvExpertLoan>();
-                set_moe_kv_expert_loan(::tyloi::weights::detail::cache(weights_).moe, expert_loan);
-            }
-            if (expert_loan) {
-                ::tyloi::weights::detail::init_workspace(weights_,
-                    execution_->config.layer_placement.primary_device(),
-                    std::move(expert_loan));
-            }
-            bind_moe_budget(::tyloi::weights::detail::cache(weights_).moe, &*budget_);
-        }
+        budget_->bind(bool(components().mtp));
 #endif
         if (const auto bytes = ::tyloi::cuda::options::resident_budget_bytes()) {
             engine::SessionCommand command;
