@@ -4,7 +4,7 @@
 #include "engine/generation/sampling.h"
 #include "engine/scheduler/request.h"
 #include "engine/models/source.h"
-#include "engine/weights/cache.h"
+#include "engine/weights/cache_internal.h"
 
 #include <algorithm>
 #include <exception>
@@ -139,7 +139,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
         co_return;
     }
     auto token = ops::item(*pending);
-    impl_->budget_->decode(impl_->source_.get());
+    if (tyloi::weights::detail::cache(weights).moe) impl_->budget_->decode(impl_->source_.get());
     const bool graph_active = config.decode_graph.enabled &&
         impl_->graph_allowed_ &&
         (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
