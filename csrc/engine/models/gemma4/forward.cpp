@@ -526,6 +526,8 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
     const auto& model = *this;
     tyloi::models::require_model(input.ids != nullptr,
                                "token IDs must have shape [tokens] or [batch,tokens]");
+    tyloi::models::require_model(!input.attention_mask,
+                               "Gemma4 does not support attention masks");
     auto ids = normalize_ids(mode.primary, *input.ids);
     std::shared_ptr<const tyloi::Tensor> embeddings = input.embeddings
         ? input.embeddings : embedding(*ids, mode.primary);
@@ -555,12 +557,6 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
     tyloi::models::require_model((semantic->dim() == 1 && semantic->size(0) == T) ||
                                    (semantic->dim() == 2 && semantic->size(0) == B && semantic->size(1) == T),
                                "position_ids must have shape [tokens] or [batch,tokens]");
-    if (input.attention_mask) {
-        const auto& mask = *input.attention_mask;
-        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
-                                       mask.size(1) >= state.cache_pos + T,
-                                   "attention_mask must cover [batch,cached_plus_current_tokens]");
-    }
     if (!input.lengths && state.cache_pos > 0 && T == 1) {
         const std::array<std::int64_t, 1> shape{B};
         input.lengths = tyloi::ops::full(shape, state.cache_pos + 1, primary);
