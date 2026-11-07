@@ -5,8 +5,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
-#include "engine/budget_internal.h"
-#include "engine/weights/moe/expert_cache.h"
+#include "engine/budget.h"
 #include "components/error.h"
 
 #include <algorithm>
@@ -25,8 +24,8 @@ using DenseTensor = ::tyloi::DenseTensor;
 
 tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
         const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk chunk) {
-    return tyloi::cuda::budget_batch_prefill(
-        model_->metadata.hidden_size, model_->metadata.hc_mult, mode_.primary, moe_cache_, chunk);
+    const auto row_bytes = std::size_t(model_->metadata.hidden_size) * model_->metadata.hc_mult * sizeof(float) * 8;
+    return budget_.batch(tyloi::Device{tyloi::DeviceType::cuda, mode_.primary}, row_bytes, chunk);
 }
 
 bool batch_graph_enabled(const Model& model, const tyloi::engine::ContinuousBatchConfig& config) {
@@ -36,11 +35,11 @@ bool batch_graph_enabled(const Model& model, const tyloi::engine::ContinuousBatc
 
 BatchOps::BatchOps(std::shared_ptr<const Model> model, std::unique_ptr<Executor> executor,
                    Collectives& collectives, Executor::Mode mode, Batch::Options options,
-                   std::shared_ptr<MoeExpertCache> moe_cache,
+                   tyloi::engine::Budget& budget,
                    tyloi::engine::ContinuousBatchConfig config)
     : model_(std::move(model)), collectives_(collectives), mode_(mode),
       state_(model_, std::move(executor), mode_.transposed, options),
-      moe_cache_(std::move(moe_cache)), config_(std::move(config)),
+      budget_(budget), config_(std::move(config)),
       max_sequences_(static_cast<int32_t>(config_.max_sequences)),
       moe_enabled_(state_.has_moe()),
       cached_moe_enabled_(state_.has_cached_moe()) {}
@@ -401,7 +400,7 @@ namespace tyloi::cuda {
 std::unique_ptr<tyloi::engine::Batch> make_batch(
     std::shared_ptr<const qwen35::Model> model, qwen35::State* serial,
     std::unique_ptr<Executor> executor, Collectives& copies, Executor::Mode mode,
-    std::shared_ptr<MoeExpertCache> cache, tyloi::engine::ContinuousBatchConfig config,
+    tyloi::engine::Budget& budget, tyloi::engine::ContinuousBatchConfig config,
     std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots) {
     if (serial && preallocate) {
         for (auto& layer_state : serial->layers)
@@ -412,7 +411,7 @@ std::unique_ptr<tyloi::engine::Batch> make_batch(
     const auto token_budget = config.prefill_token_budget;
     return std::make_unique<tyloi::engine::ContinuousBatch<qwen35::BatchOps>>(
         chunk_size, token_budget, std::move(model), std::move(executor), copies, mode, options,
-        std::move(cache), std::move(config));
+        budget, std::move(config));
 }
 
 } // namespace tyloi::cuda

@@ -2,9 +2,9 @@
 
 #include "engine/models/common/generation_ops.h"
 #include "engine/models/qwen4_exp/ops.h"
+#include "engine/budget.h"
 #include "engine/generation/sampling.h"
 #include "engine/requests/output.h"
-#include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/cache_internal.h"
 
 #include <algorithm>
@@ -81,11 +81,8 @@ void generation_request(qwen4_exp::Model& model, Ops& ops, const tyloi::engine::
     model.decode_reserve_until=std::min<int64_t>(ops.info.max_context,
         int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
     if(!ops.batching && input.prompt.size()>1024) {
-        finish_moe_expert_exchanges(::tyloi::weights::detail::cache(ops.weights).moe);
-        if(ops.state.cache_pos==0 && !model.graph_registry)
-            release_moe_decode_buffers(::tyloi::weights::detail::cache(ops.weights).moe);
-        else release_moe_prefill_buffers(::tyloi::weights::detail::cache(ops.weights).moe);
-        tyloi::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
+        ops.budget.request(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
+            ops.state.position()==0 && !model.graph_registry);
     }
 #endif
 }

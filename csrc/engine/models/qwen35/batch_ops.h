@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+namespace tyloi::engine { class Budget; }
 namespace tyloi::cuda::qwen35 {
 
 bool batch_graph_enabled(const Model&, const tyloi::engine::ContinuousBatchConfig&);
@@ -41,7 +42,7 @@ class BatchOps {
 
     // Calls run inside the owner's CUDA device/context scope.
     BatchOps(std::shared_ptr<const Model>, std::unique_ptr<Executor>, Collectives&,
-             Executor::Mode, Batch::Options, std::shared_ptr<MoeExpertCache>,
+             Executor::Mode, Batch::Options, tyloi::engine::Budget&,
              tyloi::engine::ContinuousBatchConfig);
     ~BatchOps();
     BatchOps(const BatchOps&) = delete;
@@ -71,7 +72,7 @@ class BatchOps {
     Collectives& collectives_;
     const Executor::Mode mode_;
     Batch state_;
-    std::shared_ptr<MoeExpertCache> moe_cache_;
+    tyloi::engine::Budget& budget_; // The owner keeps the budget alive until batch destruction.
     const tyloi::engine::ContinuousBatchConfig config_;
     int32_t max_sequences_ = 0;
     bool moe_enabled_ = false;

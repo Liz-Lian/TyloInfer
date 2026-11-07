@@ -1,5 +1,4 @@
 #include "engine/budget.h"
-#include "engine/budget_internal.h"
 
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
@@ -19,27 +18,6 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
-
-namespace tyloi::cuda {
-
-tyloi::engine::PrefillChunk budget_batch_prefill(
-        std::int64_t hidden_size, std::int64_t hc_mult, int device,
-        const std::shared_ptr<MoeExpertCache>& cache,
-        tyloi::engine::PrefillChunk chunk, std::size_t growth) {
-    const auto context=default_context(device);
-    const auto transfer=moe_prefill_workspace_budget(cache,false).transfer_bytes;
-    const auto fixed=tyloi::engine::prefill_budget_add((std::size_t(1)<<30)+growth,transfer);
-    const auto available=context->available_memory()+context->workspace_available();
-    const auto row_bytes=std::size_t(hidden_size)*hc_mult*sizeof(float)*8;
-    const auto selected=tyloi::engine::select_prefill_chunk(chunk.count,chunk.count,available,fixed,row_bytes);
-    if(!selected)throw tyloi::engine::InferenceInputError(
-        tyloi::engine::InferenceInputErrorCode::ContextLength,
-        "insufficient CUDA workspace for batched prefill; reduce concurrent requests");
-    chunk.count=selected;
-    return chunk;
-}
-
-} // namespace tyloi::cuda
 
 namespace tyloi::engine {
 using namespace tyloi::cuda;
@@ -122,6 +100,30 @@ void Budget::workspace(Device device, std::size_t bytes) {
     context->reclaim_idle_memory();
     std::cerr<<"runtime_workspace_budget requested_bytes="<<bytes
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
+}
+
+PrefillChunk Budget::batch(Device device, std::size_t row_bytes, PrefillChunk chunk,
+        std::size_t growth) {
+    require_cuda_device(device);
+    const auto context=default_context(device.index);
+    const auto transfer=moe_prefill_workspace_budget(tyloi::weights::detail::cache(weights_).moe,false).transfer_bytes;
+    const auto fixed=engine::prefill_budget_add((std::size_t(1)<<30)+growth,transfer);
+    const auto available=context->available_memory()+context->workspace_available();
+    const auto selected=engine::select_prefill_chunk(chunk.count,chunk.count,available,fixed,row_bytes);
+    if(!selected)throw engine::InferenceInputError(
+        engine::InferenceInputErrorCode::ContextLength,
+        "insufficient CUDA workspace for batched prefill; reduce concurrent requests");
+    chunk.count=selected;
+    return chunk;
+}
+
+void Budget::request(Device device, bool retire_decode) {
+    require_cuda_device(device);
+    const auto& moe = tyloi::weights::detail::cache(weights_).moe;
+    finish_moe_expert_exchanges(moe);
+    if (retire_decode) release_moe_decode_buffers(moe);
+    else release_moe_prefill_buffers(moe);
+    default_context(device.index)->reclaim_idle_memory();
 }
 
 Budget::Prefill Budget::prefill_mode(std::size_t tokens, bool resumed) const {

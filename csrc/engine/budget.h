@@ -53,6 +53,9 @@ public:
     void reserve_kv(std::size_t bytes);
     void reserve_ram(std::size_t bytes);
     void workspace(Device device, std::size_t bytes);
+    PrefillChunk batch(Device device, std::size_t row_bytes, PrefillChunk chunk,
+        std::size_t growth = 0);
+    void request(Device device, bool retire_decode);
     Prefill prefill_mode(std::size_t tokens, bool resumed) const;
     void prepare_prefill(Device device, std::size_t tokens, std::int64_t limit,
         Prefill mode, bool retire_decode = false);

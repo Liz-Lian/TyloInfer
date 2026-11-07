@@ -418,7 +418,7 @@ private:
             batching_ = make_batch(
                 std::shared_ptr<const Model>(model_), &state(),
                 execution_->executor().fork(model_parallel_primary_device(execution_->config)), execution_->executor().collectives(),
-                execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), ::tyloi::weights::detail::cache(weights_).moe, std::move(batch_config),
+                execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), *budget_, std::move(batch_config),
                 config_.generation.prefill_chunk_size,
                 runtime_options::kv_vram_preallocated(),
                 execution_->config.dense_cpu_layer_count != 0 ||

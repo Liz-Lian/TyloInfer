@@ -50,7 +50,7 @@ using namespace tyloi::cuda::internal;
 template <class M, class S>
 std::unique_ptr<engine::Batch> make_batch(
     std::shared_ptr<const M>, S*, std::unique_ptr<Executor>, Collectives&,
-    Executor::Mode, std::shared_ptr<MoeExpertCache>, tyloi::engine::ContinuousBatchConfig,
+    Executor::Mode, tyloi::engine::Budget&, tyloi::engine::ContinuousBatchConfig,
     std::int64_t, bool, bool, int) {
     throw std::invalid_argument("continuous batching is unavailable for this model");
 }
@@ -69,7 +69,6 @@ struct Text {
     std::shared_ptr<KvOffloadStore>& offload;
     tyloi::engine::RuntimeConfig config;
     std::shared_ptr<const tyloi::ModelSource> source;
-    std::optional<tyloi::engine::Budget> budget;
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
@@ -80,6 +79,7 @@ struct Text {
     const tyloi::models::Info info;
     DecodeGraphCache graph;
     tyloi::engine::SessionCache<CudaSessionOps> cache;
+    std::optional<tyloi::engine::Budget> budget;
     tyloi::engine::mtp::State mtp_state;
     std::unique_ptr<tyloi::engine::Batch> batching;
     bool duplex_active = false;
@@ -176,7 +176,7 @@ struct Text {
         if (offload) offload->bind_budget(&*budget);
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
-                batching = make_batch(language, *execution, config.continuous_batch,
+                batching = make_batch(language, *execution, *budget, config.continuous_batch,
                     config.generation.prefill_chunk_size);
             else {
                 auto batch_config = config.continuous_batch;
@@ -184,7 +184,7 @@ struct Text {
                 batching = make_batch(
                     std::shared_ptr<const Model>(model), &state, execution->executor().fork(model_parallel_primary_device(execution->config)),
                     execution->executor().collectives(), execution->executor().forward_mode(execution->config.layer_placement.primary_device()),
-                    ::tyloi::weights::detail::cache(weights).moe, std::move(batch_config),
+                    *budget, std::move(batch_config),
                     config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
                     execution->config.dense_cpu_layer_count != 0 ||

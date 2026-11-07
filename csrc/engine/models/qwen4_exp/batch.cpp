@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/options.h"
-#include "engine/budget_internal.h"
+#include "engine/budget.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "components/error.h"
 
@@ -44,8 +44,8 @@ class CacheScope {
 } // namespace
 
 BatchOps::BatchOps(qwen4_exp::Model& model, CudaExecutionContext& execution,
-                   tyloi::engine::ContinuousBatchConfig config)
-    : model_(model), execution_(execution), config_(std::move(config)) {
+                   tyloi::engine::Budget& budget, tyloi::engine::ContinuousBatchConfig config)
+    : model_(model), execution_(execution), budget_(budget), config_(std::move(config)) {
     TYLOINFER_RUNTIME_CHECK(config_.max_sequences > 0 && config_.max_sequences <= 32,
                             "Flash-Next continuous batching supports 1..32 requests");
     model_.active->reset(1);
@@ -91,10 +91,9 @@ tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
     const std::shared_ptr<Request>& request, tyloi::engine::PrefillChunk chunk) {
     CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     initialize_prefill(request, chunk);
-    return tyloi::cuda::budget_batch_prefill(
-        model_.metadata.hidden_size, model_.metadata.hc_mult, execution_.config.layer_placement.primary_device(),
-        ::tyloi::weights::detail::cache(execution_.weights).moe, chunk,
-        request->cache->prefill_growth_bytes(chunk.count));
+    const auto row_bytes = std::size_t(model_.metadata.hidden_size) * model_.metadata.hc_mult * sizeof(float) * 8;
+    return budget_.batch(tyloi::Device{tyloi::DeviceType::cuda, execution_.config.layer_placement.primary_device()},
+        row_bytes, chunk, request->cache->prefill_growth_bytes(chunk.count));
 }
 
 static std::exception_ptr flash_next_prefill_failure(std::exception_ptr failure) {
@@ -416,10 +415,10 @@ void BatchOps::recover(State& state) {
 namespace tyloi::cuda {
 
 std::unique_ptr<tyloi::engine::Batch> make_batch(
-    qwen4_exp::Model& model, CudaExecutionContext& execution,
+    qwen4_exp::Model& model, CudaExecutionContext& execution, tyloi::engine::Budget& budget,
     const tyloi::engine::ContinuousBatchConfig& config, std::int64_t chunk_size) {
     return std::make_unique<tyloi::engine::ContinuousBatch<qwen4_exp::BatchOps>>(
-        chunk_size, config.prefill_token_budget, model, execution, config);
+        chunk_size, config.prefill_token_budget, model, execution, budget, config);
 }
 
 } // namespace tyloi::cuda

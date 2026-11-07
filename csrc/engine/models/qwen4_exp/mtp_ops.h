@@ -218,12 +218,11 @@ template<class Ops, class Started>
 double mtp_begin_predictor_prefill(qwen4_exp::Model& model, Ops& ops, int64_t pairs, Started started) {
     if(ops.cache_only_prompt_history())return 0;
     if(pairs<=128 || !model.reuse_decode_graphs || !model.graph_registry)return 0;
-    prepare_moe_decode_residency(::tyloi::weights::detail::cache(ops.weights).moe);
     const auto rows=std::min<int64_t>(1024,pairs);
     const auto bytes=(std::size_t(1)<<30)+std::size_t(rows)*model.config.hidden*
-        model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(::tyloi::weights::detail::cache(ops.weights).moe,true);
+        model.config.streams*sizeof(float)*8;
     auto loan=std::make_unique<tyloi::weights::Loan>(ops.weights);
-    if(loan->begin(bytes))ops.predictor_loan=std::move(loan);
+    if(loan->predictor(bytes))ops.predictor_loan=std::move(loan);
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
 
