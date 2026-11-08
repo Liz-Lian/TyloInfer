@@ -264,7 +264,11 @@ struct Text {
                 request.sampling.mtp_max_draft_tokens=3;
                 for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.metadata.vocab_size);
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto scope=executor->enter();
+#else
                 auto scope=language.execution_scope();
+#endif
                 auto generation=run_mtp_generation(language,state,executor.get(),execution->executor().collectives(),
                                                    execution->executor().forward_mode(execution->config.layer_placement.primary_device()),weights,info,source.get(),predictor,mtp_state,request,output,16,
                                                    nullptr,0,{},nullptr,0,nullptr);

@@ -17,6 +17,8 @@
 #include "engine/backends/cuda/native/device.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include <cmath>
+#include <exception>
+#include <iostream>
 #endif
 
 namespace tyloi::ops {
@@ -319,18 +321,38 @@ ProfileRange::~ProfileRange() = default;
 void ProfileRange::finish() { if (impl_) impl_->range->finish(); }
 struct ProfileCapture::Impl {
     CudaProfiler& profiler;
-    bool previous;
-    explicit Impl(CudaProfiler& profiler)
-        : profiler(profiler), previous(profiler.enabled) {
-        profiler.reset(); profiler.enabled = true;
+    bool previous, enabled, selected;
+    std::string report_name;
+    Impl(CudaProfiler& profiler, bool selected, std::string report_name)
+        : profiler(profiler), previous(profiler.enabled), enabled(selected || profiler.enabled),
+          selected(selected), report_name(std::move(report_name)) {
+        if (selected) {
+            profiler.reset();
+            profiler.enabled = true;
+        }
     }
-    ~Impl() { profiler.enabled = previous; }
+    ~Impl() {
+        if (selected && !report_name.empty() && std::uncaught_exceptions() == 0) {
+            try {
+                profiler.report(report_name);
+                profiler.reset();
+            } catch (const std::exception& error) {
+                std::cerr << "prefill_profile_error " << error.what() << '\n';
+            }
+        }
+        profiler.enabled = previous;
+    }
 };
 ProfileCapture::ProfileCapture(bool selected)
-    : impl_(selected ? std::make_unique<Impl>(cuda::Executor::current().profiler()) : nullptr) {}
+    : impl_(selected ? std::make_unique<Impl>(cuda::Executor::current().profiler(), true, std::string{}) : nullptr) {}
+ProfileCapture::ProfileCapture(bool selected, const std::string& report_name)
+    : impl_(std::make_unique<Impl>(cuda::Executor::current().profiler(), selected, report_name)) {}
 ProfileCapture::~ProfileCapture() = default;
 void ProfileCapture::report(const std::string& name) {
-    if (impl_) impl_->profiler.report(name);
+    if (impl_ && impl_->selected) impl_->profiler.report(name);
+}
+void ProfileCapture::resume() {
+    if (impl_) impl_->profiler.enabled = impl_->enabled;
 }
 SelectedExperts topk(const Tensor& logits_tensor, std::int64_t count, const MoeRouting& routing,
                      const Tensor& bias) {

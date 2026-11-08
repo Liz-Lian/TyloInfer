@@ -2,7 +2,6 @@
 
 // Shared layer weights and the per-request layer state.
 
-#include "engine/weights/cache.h"
 #include "engine/models/qwen4_exp/model.h"
 #include "engine/models/qwen4_exp/moe.h"
 #include "engine/models/qwen4_exp/config.h"
@@ -10,7 +9,6 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
-#include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "diagnostics/router_lookahead.h"
 
 #include <functional>
@@ -218,11 +216,10 @@ struct Qwen4Block final {
         if(ple)for(auto* value:ple->graph_state(state.ple))if(value->defined())result.push_back(value);
         return result;
     }
-    DenseTensor execute_graph(LayerState& state, CudaExecutionContext& execution,DenseTensor x,const DenseTensor& ids,
+    GatedResidual::Result graph_attention(LayerState& state,DenseTensor x,const DenseTensor& ids,
                          const DenseTensor& positions,const DenseTensor& cache_positions,const DenseTensor& ple_rows,int layer,
                          int64_t confirmed=0,RecurrentGraphCheckpoint* checkpoint=nullptr,
-                         const std::optional<GatedResidual::Result>& pending_residual={},
-                         std::optional<GatedResidual::Result>* deferred_residual=nullptr) {
+                         const std::optional<GatedResidual::Result>& pending_residual={}) {
         if(auto* window=DecodeWindow::recording())window->set_profile_layer_kind(layer,gdn?"gdn":"qsa");
         const auto mark=[&](const char* phase){if(auto* window=DecodeWindow::recording())window->mark(layer,phase);};
         const bool detailed=::tyloi::cuda::options::mhc_timings();
@@ -247,35 +244,7 @@ struct Qwen4Block final {
         auto ffn_result=ffn_gr.pre_after(attention_output,attention_residual,attention_gate,marker("ffn_mhc_"));
         mark("ffn_pre_end");
         attention_output={};
-        const auto& [ffn_input,ffn_residual,ffn_gate]=ffn_result;
-        DecodeWindow::Task prediction{};
-        if(state.next_prefetch && ffn_input.numel()==config.hidden && DecodeWindow::recording()->prediction_enabled()) {
-            const auto routing=config.routing();
-            auto logits=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(state.next_router,ffn_input.reshape({1,config.hidden}).to(::tyloi::kFloat16)).to(::tyloi::kFloat32).contiguous();
-            const int prediction_count=std::min<int64_t>(logits.size(-1),
-                execution.weights.prefetch().candidates);
-            auto selected=moe_topk_cuda(logits,prediction_count,
-                routing.activation==tyloi::ops::RouterActivation::sigmoid,
-                routing.activation==tyloi::ops::RouterActivation::sqrt_softplus,
-                routing.normalize,routing.delayed_softmax,mfq_nullopt,1e-20,routing.scale);
-            prediction=state.next_prefetch(selected[0].to(::tyloi::kInt32).contiguous());
-        }
-        if(state.router_audit)state.router_audit->input(layer,ffn_input);
-        const bool early_prediction=prediction.identity && execution.weights.prefetch().early;
-        if(early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
-        auto ffn_output=ffn.forward(
-#ifndef TYLOINFER_NATIVE_CUDA
-            execution,
-#endif
-            ffn_input);
-        // Reserve current-layer readers before selecting speculative
-        // slots. The route export itself precedes current FFN math.
-        if(prediction.identity && !early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
-        if(deferred_residual) {
-            *deferred_residual=std::move(ffn_result);
-            return ffn_output;
-        }
-        return ffn_gr.post(ffn_output,ffn_residual,ffn_gate);
+        return ffn_result;
     }
 };
 

@@ -145,9 +145,11 @@ struct Model : tyloi::models::CausalModel {
     std::vector<std::unique_ptr<qwen4_exp::Qwen4Block>> blocks;
 
     // ---- helpers absorbed from the retired CausalLm plumbing
+#ifndef TYLOINFER_NATIVE_CUDA
     auto execution_scope() const {
         return CudaScope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
     }
+#endif
     ::tyloi::DenseTensor device_ids(::tyloi::DenseTensor ids) const {
 #ifdef TYLOINFER_NATIVE_CUDA
         return tyloi::ops::contiguous(tyloi::ops::copy(

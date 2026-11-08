@@ -127,8 +127,11 @@ private:
 class ProfileCapture {
 public:
     explicit ProfileCapture(bool selected);
+    // Report on normal exit; unselected scopes still restore external profiling state.
+    ProfileCapture(bool selected, const std::string& report_name);
     ~ProfileCapture();
     void report(const std::string& name);
+    void resume();
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

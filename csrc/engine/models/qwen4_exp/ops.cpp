@@ -510,7 +510,15 @@ struct Qwen4MtpGraph {
                         block.qsa->forward_graph(*layer_state.qsa,mix.mixed,cell.positions,cell.cache_positions,{},true,true);
                     } else {
                         auto input=make_input(cell.hidden,cell.ids,tokens);
-                        cell.multi=block.execute_graph(layer_state,execution,std::move(input),cell.ids,cell.positions,cell.cache_positions,{},0);
+                        {
+                            auto ffn_result=block.graph_attention(layer_state,std::move(input),cell.ids,cell.positions,cell.cache_positions,{},0);
+                            auto ffn_output=block.ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+                                execution,
+#endif
+                                ffn_result.mixed);
+                            cell.multi=block.ffn_gr.post(ffn_output,ffn_result.residual,ffn_result.gate);
+                        }
                         cell.window.mark(-1,"head_begin");
                         cell.normalized=predictor.final_mixer->pre(cell.multi).mixed;
                         cell.logits=predictor.logits(cell.normalized.narrow(1,tokens-1,1).contiguous());
@@ -1339,9 +1347,46 @@ struct Qwen4DecodeGraph {
                             auto& next=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[layer+1]);
                             defer=!next.ple && next.attention_gr.can_fuse(pending_residual?pending_residual->residual:hidden);
                         }
-                        hidden=b.execute_graph(*request.layers[layer],*model.execution,std::move(hidden),cell.ids,cell.positions,
-                            cell.cache_positions,rows,layer,confirmed,confirmed?&cell.checkpoints[layer]:nullptr,
-                            pending_residual,defer?&next_residual:nullptr);
+                        {
+                            auto& layer_state=*request.layers[layer];
+                            auto ffn_result=b.graph_attention(layer_state,std::move(hidden),cell.ids,cell.positions,
+                                cell.cache_positions,rows,layer,confirmed,confirmed?&cell.checkpoints[layer]:nullptr,pending_residual);
+                            const auto& ffn_input=ffn_result.mixed;
+                            DecodeWindow::Task prediction{};
+                            if(layer_state.next_prefetch && ffn_input.numel()==b.config.hidden && DecodeWindow::recording()->prediction_enabled()) {
+                                const auto routing=b.config.routing();
+#ifdef TYLOINFER_NATIVE_CUDA
+                                auto logits=::tyloi::ops::project(ffn_input.reshape({1,b.config.hidden}).to(::tyloi::kFloat16),layer_state.next_router).dense().to(::tyloi::kFloat32).contiguous();
+#else
+                                auto logits=model.execution->executor().projector(model.execution->executor().mode().ffn, model_parallel_primary_device(model.execution->config)).run(layer_state.next_router,ffn_input.reshape({1,b.config.hidden}).to(::tyloi::kFloat16)).to(::tyloi::kFloat32).contiguous();
+#endif
+                                const int prediction_count=std::min<int64_t>(logits.size(-1),model.execution->weights.prefetch().candidates);
+#ifdef TYLOINFER_NATIVE_CUDA
+                                auto selected=::tyloi::ops::topk(logits,prediction_count,routing);
+                                prediction=layer_state.next_prefetch(selected.ids.dense().to(::tyloi::kInt32).contiguous());
+#else
+                                auto selected=moe_topk_cuda(logits,prediction_count,
+                                    routing.activation==tyloi::ops::RouterActivation::sigmoid,
+                                    routing.activation==tyloi::ops::RouterActivation::sqrt_softplus,
+                                    routing.normalize,routing.delayed_softmax,mfq_nullopt,1e-20,routing.scale);
+                                prediction=layer_state.next_prefetch(selected[0].to(::tyloi::kInt32).contiguous());
+#endif
+                            }
+                            if(layer_state.router_audit)layer_state.router_audit->input(layer,ffn_input);
+                            const bool early_prediction=prediction.identity && model.execution->weights.prefetch().early;
+                            if(early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
+                            auto ffn_output=b.ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+                                *model.execution,
+#endif
+                                ffn_input);
+                            // Reserve current-layer readers before selecting speculative slots.
+                            if(prediction.identity && !early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
+                            if(defer) {
+                                next_residual=std::move(ffn_result);
+                                hidden=std::move(ffn_output);
+                            } else hidden=b.ffn_gr.post(ffn_output,ffn_result.residual,ffn_result.gate);
+                        }
                         pending_residual=std::move(next_residual);
                         cell.window.mark(layer++,"block_end");
                     }
@@ -1582,7 +1627,9 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state,
         ~StartupWarmup(){Qwen4DecodeGraph::startup_warmup=false;}
     } startup_scope;
     const auto start=std::chrono::steady_clock::now();
+#ifndef TYLOINFER_NATIVE_CUDA
     auto scope=model.execution_scope();
+#endif
     const auto options=::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64);
     // Diverse synthetic IDs exercise more routed experts than sixteen copies
     // of one token. Only loading uses these rows; all request state is reset.
@@ -2395,11 +2442,12 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         qwen4_layer_major_prefill_eligible(model,state,ids.size(1)),
         "layer-major prefill requires a bounded single-device Qwen4 chunk and whole-layer cache");
     TYLOINFER_RUNTIME_CHECK(compute_chunk>8,"layer-major compute chunk must exceed decode width");
+#ifndef TYLOINFER_NATIVE_CUDA
     auto scope=model.execution_scope();
+#endif
     ids=model.device_ids(std::move(ids));
     const auto tokens=ids.size(1);
     const auto cache_start=state.cache_pos;
-    auto& profiler=model.execution->executor().profiler();
     const auto* profile_once=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_PREFILL_ONCE");
     static std::atomic<uint64_t> profile_requests{0};
     const bool profile_enabled=profile_once && profile_once[0]=='1';
@@ -2409,6 +2457,14 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
     const bool collect=profile_enabled && profile_request==uint64_t(skipped);
     if(profile_enabled)std::cerr<<"prefill_profile_request index="<<profile_request
         <<" tokens="<<tokens<<" collect="<<int(collect)<<'\n';
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::ProfileCapture capture(collect,"prefill_regression_once");
+    const auto profile_measure=[&](const char* name, const auto& operation) {
+        return tyloi::ops::measure(name, operation);
+    };
+    const auto resume_profile=[&] { capture.resume(); };
+#else
+    auto& profiler=model.execution->executor().profiler();
     const bool previous_profile=profiler.enabled;
     if(collect){profiler.reset();profiler.enabled=true;}
     struct ProfileRestore {
@@ -2421,6 +2477,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
             profiler.enabled=previous;
         }
     } restore{profiler,profiler.enabled,previous_profile,collect};
+    const auto profile_measure=[&](const char* name, const auto& operation) {
+        return profiler.measure(name, operation);
+    };
+    const auto resume_profile=[&] { profiler.enabled=restore.enabled; };
+#endif
     compute_chunk=std::min(compute_chunk,tokens);
     tyloi::weights::Loan workspace_loan(model.execution->weights);
     bool borrowed_workspace=false;
@@ -2535,13 +2596,13 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                     source.narrow(1,begin,count).copy_(input);
                 }
             }
-            attention_result=profiler.measure("prefill.gr_attention",[&] {
+            attention_result=profile_measure("prefill.gr_attention",[&] {
                 return qwen_block.attention_gr.pre(source);
             });
             if(bulk_gdn && qwen_block.gdn) {
                 if(cancelled && cancelled())return {};
                 const qwen4_exp::QwenGdnPrefillProjectionRowsScope projection_rows(compute_chunk);
-                attention_output=profiler.measure("prefill.gdn",[&] {
+                attention_output=profile_measure("prefill.gdn",[&] {
                     return qwen_block.gdn->forward(layer_state.gdn,attention_result.mixed,true,0);
                 });
             }
@@ -2550,7 +2611,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
             if(cancelled && cancelled())return {};
             if(bulk_gdn && static_cast<qwen4_exp::Qwen4Block&>(*block).gdn)continue;
             const auto count=std::min(compute_chunk,tokens-begin);
-            profiler.enabled=restore.enabled;
+            resume_profile();
             auto chunk_ids=ids.narrow(1,begin,count);
             auto host_ids=cpu_ids.narrow(1,begin,count);
             auto positions=prepared.narrow(-1,begin,count);
@@ -2608,7 +2669,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         if(tokens>9216)decode_reuse.clear();
         if(bulk_gr) {
             auto& qwen_block=static_cast<qwen4_exp::Qwen4Block&>(*block);
-            auto mix=profiler.measure("prefill.gr_ffn_pre",[&] {
+            auto mix=profile_measure("prefill.gr_ffn_pre",[&] {
                 return qwen_block.ffn_gr.pre_after(attention_output,attention_result.residual,attention_result.gate);
             });
             ffn_inputs=mix.mixed.to(::tyloi::kFloat16);ffn_gate=std::move(mix.gate);
@@ -2622,8 +2683,8 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         if(batch_experts) {
             if(cancelled && cancelled())return {};
             auto& qwen_block=static_cast<qwen4_exp::Qwen4Block&>(*block);
-            profiler.enabled=restore.enabled;
-            auto ffn_output=profiler.measure("prefill.ffn",[&] {
+            resume_profile();
+            auto ffn_output=profile_measure("prefill.ffn",[&] {
                 if(expert_batch_count(tokens)==tokens)return qwen_block.ffn.forward(
 #ifndef TYLOINFER_NATIVE_CUDA
                     *model.execution,
@@ -2714,7 +2775,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                     std::chrono::steady_clock::now()-started).count()<<std::endl;
         }
     }
-    profiler.enabled=restore.enabled;
+    resume_profile();
     if(last_only && !raw_hidden) {
         const auto begin=((tokens-1)/compute_chunk)*compute_chunk;
         DenseTensor result;
