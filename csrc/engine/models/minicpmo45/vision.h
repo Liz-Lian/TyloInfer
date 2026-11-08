@@ -185,11 +185,26 @@ struct MiniCPMO45VisionEncoder {
         return result;
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::StepSequence<::tyloi::Tensor> forward_steps(
+        tyloi::cuda::Projector projector, ::tyloi::Tensor pixels_value,
+        ::tyloi::Tensor patch_mask_value, ::tyloi::Tensor target_sizes_value) const {
+#else
     tyloi::StepSequence<::tyloi::DenseTensor> forward_steps(
-        tyloi::cuda::Projector projector,
-        ::tyloi::DenseTensor pixels,
-        ::tyloi::DenseTensor patch_mask,
-        ::tyloi::DenseTensor target_sizes) const {
+        tyloi::cuda::Projector projector, ::tyloi::DenseTensor pixels_value,
+        ::tyloi::DenseTensor patch_mask_value, ::tyloi::DenseTensor target_sizes_value) const {
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (!pixels_value.defined() || !patch_mask_value.defined() || !target_sizes_value.defined())
+            throw std::runtime_error("MiniCPM-o vision input geometry is invalid");
+        auto pixels = pixels_value.dense();
+        auto patch_mask = patch_mask_value.dense();
+        auto target_sizes = target_sizes_value.dense();
+#else
+        auto pixels = pixels_value;
+        auto patch_mask = patch_mask_value;
+        auto target_sizes = target_sizes_value;
+#endif
         if (patch_mask.dim() == 3) {
             patch_mask = patch_mask.flatten(1);
         }
@@ -274,12 +289,23 @@ struct MiniCPMO45VisionEncoder {
                 return minicpmo45_layer_norm(hidden, post_norm_weight, post_norm_bias, 1e-6);
 #endif
             });
-        while (auto step = encoding.next()) co_yield std::move(step);
+        while (auto step = encoding.next()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            if (step.value) co_yield ::tyloi::Tensor(std::move(*step.value));
+#else
+            if (step.value) co_yield std::move(*step.value);
+#endif
+            else co_yield step.state;
+        }
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+        ::tyloi::Tensor pixels, ::tyloi::Tensor mask, ::tyloi::Tensor sizes) const {
+#else
     ::tyloi::DenseTensor forward(const tyloi::cuda::Projector& projector,
-        ::tyloi::DenseTensor pixels, ::tyloi::DenseTensor mask,
-        ::tyloi::DenseTensor sizes) const {
+        ::tyloi::DenseTensor pixels, ::tyloi::DenseTensor mask, ::tyloi::DenseTensor sizes) const {
+#endif
         return tyloi::finish_steps(
             forward_steps(projector, std::move(pixels), std::move(mask), std::move(sizes)));
     }
@@ -402,9 +428,23 @@ struct MiniCPMO45Resampler {
         return result;
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+                            ::tyloi::Tensor input_value, ::tyloi::Tensor target_sizes_value) const {
+#else
     ::tyloi::DenseTensor forward(const tyloi::cuda::Projector& projector,
-                                       ::tyloi::DenseTensor input,
-                                       ::tyloi::DenseTensor target_sizes) const {
+                                 ::tyloi::DenseTensor input_value,
+                                 ::tyloi::DenseTensor target_sizes_value) const {
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (!input_value.defined() || !target_sizes_value.defined())
+            throw std::runtime_error("MiniCPM-o Resampler input geometry is invalid");
+        const auto& input = input_value.dense();
+        const auto& target_sizes = target_sizes_value.dense();
+#else
+        const auto& input = input_value;
+        const auto& target_sizes = target_sizes_value;
+#endif
         if (input.dim() != 3 || input.size(2) != 1152 || target_sizes.dim() != 2 ||
             target_sizes.size(1) != 2 || target_sizes.size(0) != input.size(0) ||
             target_sizes.device().is_cuda() ||

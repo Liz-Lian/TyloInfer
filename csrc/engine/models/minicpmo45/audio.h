@@ -215,10 +215,23 @@ struct MiniCPMO45AudioEncoder {
         return layers.front().key_cache.size(2);
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor forward_streaming(const tyloi::cuda::Projector& projector,
+                                      ::tyloi::Tensor features_value,
+                                      int64_t prefix_extra_frames, int64_t suffix_extra_frames) {
+#else
     ::tyloi::DenseTensor forward_streaming(const tyloi::cuda::Projector& projector,
-                                                 ::tyloi::DenseTensor features,
-                                                 int64_t prefix_extra_frames,
-                                                 int64_t suffix_extra_frames) {
+                                           ::tyloi::DenseTensor features_value,
+                                           int64_t prefix_extra_frames, int64_t suffix_extra_frames) {
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (!features_value.defined())
+            throw std::runtime_error("MiniCPM-o streaming audio expects [1,80,frames] and "
+                                     "non-negative extra-frame counts");
+        const auto& features = features_value.dense();
+#else
+        const auto& features = features_value;
+#endif
         if (features.dim() != 3 || features.size(0) != 1 || features.size(1) != 80 ||
             prefix_extra_frames < 0 || suffix_extra_frames < 0) {
             throw std::runtime_error("MiniCPM-o streaming audio expects [1,80,frames] and "
@@ -323,9 +336,16 @@ struct MiniCPMO45AudioEncoder {
             }));
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    static std::vector<int64_t> pooled_lengths(::tyloi::Tensor raw_lengths) {
+#else
     static std::vector<int64_t> pooled_lengths(::tyloi::DenseTensor raw_lengths) {
-        auto lengths =
-            raw_lengths.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto lengths = raw_lengths.dense().to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+#else
+        auto lengths = raw_lengths.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
+#endif
         const auto *values = lengths.data_ptr<int64_t>();
         std::vector<int64_t> result(static_cast<size_t>(lengths.numel()));
         for (int64_t index = 0; index < lengths.numel(); ++index) {
@@ -335,11 +355,24 @@ struct MiniCPMO45AudioEncoder {
         return result;
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::StepSequence<::tyloi::Tensor> forward_steps(
+        tyloi::cuda::Projector projector, ::tyloi::Tensor features_value,
+        ::tyloi::Tensor raw_lengths_value, bool use_cache = false) {
+#else
     tyloi::StepSequence<::tyloi::DenseTensor> forward_steps(
-        tyloi::cuda::Projector projector,
-        ::tyloi::DenseTensor features,
-        ::tyloi::DenseTensor raw_lengths,
-        bool use_cache = false) {
+        tyloi::cuda::Projector projector, ::tyloi::DenseTensor features_value,
+        ::tyloi::DenseTensor raw_lengths_value, bool use_cache = false) {
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (!features_value.defined() || !raw_lengths_value.defined())
+            throw std::runtime_error("MiniCPM-o audio input geometry is invalid");
+        const auto& features = features_value.dense();
+        const auto& raw_lengths = raw_lengths_value.dense();
+#else
+        const auto& features = features_value;
+        const auto& raw_lengths = raw_lengths_value;
+#endif
         if (features.dim() != 3 || features.size(1) != 80 || raw_lengths.dim() != 1 ||
             raw_lengths.size(0) != features.size(0)) {
             throw std::runtime_error("MiniCPM-o audio input geometry is invalid");
@@ -446,11 +479,23 @@ struct MiniCPMO45AudioEncoder {
                     .transpose(1, 2)
                     .contiguous();
             });
-        while (auto step = encoding.next()) co_yield std::move(step);
+        while (auto step = encoding.next()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            if (step.value) co_yield ::tyloi::Tensor(std::move(*step.value));
+#else
+            if (step.value) co_yield std::move(*step.value);
+#endif
+            else co_yield step.state;
+        }
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+        ::tyloi::Tensor features, ::tyloi::Tensor lengths, bool use_cache = false) {
+#else
     ::tyloi::DenseTensor forward(const tyloi::cuda::Projector& projector,
         ::tyloi::DenseTensor features, ::tyloi::DenseTensor lengths, bool use_cache = false) {
+#endif
         return tyloi::finish_steps(
             forward_steps(projector, std::move(features), std::move(lengths), use_cache));
     }

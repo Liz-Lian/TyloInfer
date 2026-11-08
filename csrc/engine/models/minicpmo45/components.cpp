@@ -119,7 +119,11 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
     co_yield tyloi::StepState::advanced;
     auto encoding = state_->runtime.encode(input_ids, pixels, patch_mask,
         target_sizes, image_bounds, audio_features, audio_lengths, audio_bounds);
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::models::minicpmo45::MultimodalResult<::tyloi::Tensor> result;
+#else
     tyloi::models::minicpmo45::MultimodalResult<::tyloi::DenseTensor> result;
+#endif
     while (auto step = encoding.next()) {
         if (step.value) result = std::move(*step.value);
         else co_yield step.state;
@@ -127,7 +131,7 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
     PreparedPrompt prepared;
     prepared.token_ids = prompt;
 #ifdef TYLOINFER_NATIVE_CUDA
-    prepared.embeddings = std::make_shared<::tyloi::DenseTensor>(std::move(result.input_embeddings));
+    prepared.embeddings = std::move(result.input_embeddings);
     prepared.positions = std::make_shared<::tyloi::DenseTensor>(
         ::tyloi::cuda::arange(static_cast<int64_t>(prompt.size()), cuda_i64));
 #else
