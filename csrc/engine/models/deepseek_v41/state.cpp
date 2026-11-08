@@ -214,15 +214,34 @@ void State::restore_text_session_state(const TextSessionState& state) {
         Block& block=*model_.blocks[i];
         MfqCudaGuard guard(block.cuda_device);
         const auto& saved=snapshot->blocks[i];auto& target=block.L();
-        restore_session_tensor(target.local_kv,saved.local_kv.get());
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto local_kv=restore_session_tensor(target.local_kv,saved.local_kv);
+        target.local_kv=local_kv.defined()?local_kv.dense():DenseTensor{};
+#else
+        restore_session_tensor(target.local_kv,saved.local_kv);
+#endif
         if(block.kv_source()) {
-            restore_session_prefix_tensor(target.compressed_kv,*saved.compressed_kv,1,
+#ifdef TYLOINFER_NATIVE_CUDA
+            target.compressed_kv=restore_session_prefix_tensor(target.compressed_kv,saved.compressed_kv,1,
+                                          std::max<int64_t>(1,block.max_context/block.ratio)).dense();
+            target.index_k=restore_session_prefix_tensor(target.index_k,saved.index_k,1,
+                                          std::max<int64_t>(1,block.max_context/block.ratio)).dense();
+#else
+            restore_session_prefix_tensor(target.compressed_kv,saved.compressed_kv,1,
                                           std::max<int64_t>(1,block.max_context/block.ratio));
             restore_session_prefix_tensor(target.index_k,*saved.index_k,1,
                                           std::max<int64_t>(1,block.max_context/block.ratio));
+#endif
             if(block.ratio>1) {
-                restore_session_tensor(target.partial_kv,saved.partial_kv.get());
-                restore_session_tensor(target.partial_score,saved.partial_score.get());
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto partial_kv=restore_session_tensor(target.partial_kv,saved.partial_kv);
+                target.partial_kv=partial_kv.defined()?partial_kv.dense():DenseTensor{};
+                auto partial_score=restore_session_tensor(target.partial_score,saved.partial_score);
+                target.partial_score=partial_score.defined()?partial_score.dense():DenseTensor{};
+#else
+                restore_session_tensor(target.partial_kv,saved.partial_kv);
+                restore_session_tensor(target.partial_score,saved.partial_score);
+#endif
             }
         }
         target.position=state.cache_pos;target.compressed_length=saved.compressed_length;

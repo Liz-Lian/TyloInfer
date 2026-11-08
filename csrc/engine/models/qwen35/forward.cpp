@@ -71,8 +71,14 @@ void clear_linear_speculative(LinearState& state) noexcept {
 
 } // namespace
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
+             int primary, const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
+    auto ids = ids_handle.dense();
+#else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
+#endif
     auto normalized = normalize_ids(collectives, primary, std::move(ids));
     const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
@@ -81,8 +87,14 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
         .to(::tyloi::kFloat16).contiguous();
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle,
+                 std::int64_t batch, std::int64_t tokens) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
+#endif
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
     const Task task{task::Norm{0, 0,
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -98,15 +110,26 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& logits_handle) {
+    auto logits = logits_handle.dense();
+#else
 DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) {
+#endif
     const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
     Inputs inputs;
     inputs.values = {std::move(logits)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool capped,
+              const Executor::Mode& mode) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
+#endif
     std::array<Task, 2> tasks{
         Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
         Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
@@ -118,12 +141,20 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 
 namespace {
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward_impl(const Model& model, State& state, Executor& executor,
+#else
 DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
+#endif
                     Collectives& collectives, const Executor::Mode& options, DenseTensor ids,
-                    DenseTensor embeddings, std::optional<Input::DenseTensor> positions,
-                    std::optional<Input::DenseTensor> lengths, Input::Trace* trace,
-                    bool advance,
-                    std::optional<Input::DenseTensor> cache_positions, Input::DenseTensor* raw_hidden,
+                    DenseTensor embeddings, std::optional<DenseTensor> positions,
+                    std::optional<DenseTensor> lengths, Input::Trace* trace,
+                    bool advance, std::optional<DenseTensor> cache_positions,
+#ifdef TYLOINFER_NATIVE_CUDA
+                    ::tyloi::Tensor* raw_hidden,
+#else
+                    DenseTensor* raw_hidden,
+#endif
                     std::int64_t confirmed, std::int64_t kv_length,
                     std::int64_t attention_parts) {
     ids = normalize_ids(collectives, options.primary, std::move(ids));
@@ -194,9 +225,14 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
     std::optional<DenseTensor> physical_for_layers;
     if (has_mrope || positions.has_value() || cache_positions.has_value())
         physical_for_layers = physical;
-    AttentionStep step{semantic, lengths ? MfqOptional<DenseTensor>(DenseTensor(*lengths)) : mfq_nullopt,
-                       physical_for_layers, state.cache_pos, kv_length,
-                       attention_parts};
+#ifdef TYLOINFER_NATIVE_CUDA
+    AttentionStep step{semantic, lengths ? ::tyloi::Tensor(*lengths) : ::tyloi::Tensor{},
+                       physical_for_layers ? ::tyloi::Tensor(*physical_for_layers) : ::tyloi::Tensor{},
+                       state.cache_pos, kv_length, attention_parts};
+#else
+    AttentionStep step{semantic, lengths ? MfqOptional<DenseTensor>(*lengths) : mfq_nullopt,
+                       physical_for_layers, state.cache_pos, kv_length, attention_parts};
+#endif
     auto hidden = collectives.copy(std::move(embeddings), options.primary).contiguous();
     if (trace)
         trace->push_back(collectives.copy(hidden, options.primary)
@@ -238,16 +274,32 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
 
 } // namespace
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+               const Executor::Mode& options, Input input) {
+#else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& options, Input input) {
-    auto ids = normalize_ids(collectives, options.primary, DenseTensor(std::move(input.ids)));
-    auto embeddings = input.embeddings.has_value()
-                          ? DenseTensor(std::move(*input.embeddings))
-                          : embed(model, executor, collectives, options.primary, ids, options);
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto ids = normalize_ids(collectives, options.primary, input.ids.dense());
+    auto embeddings = input.embeddings ? input.embeddings.dense()
+        : embed(model, executor, collectives, options.primary, ids, options).dense();
+    auto positions = input.positions ? std::optional<DenseTensor>(input.positions.dense()) : std::nullopt;
+    auto lengths = input.lengths ? std::optional<DenseTensor>(input.lengths.dense()) : std::nullopt;
+    auto cache_positions = input.cache_positions ? std::optional<DenseTensor>(input.cache_positions.dense()) : std::nullopt;
+#else
+    auto ids = normalize_ids(collectives, options.primary, std::move(input.ids));
+    auto embeddings = input.embeddings ? *input.embeddings
+        : embed(model, executor, collectives, options.primary, ids, options);
+    auto positions = std::move(input.positions);
+    auto lengths = std::move(input.lengths);
+    auto cache_positions = std::move(input.cache_positions);
+#endif
     return forward_impl(model, state, executor, collectives, options, std::move(ids),
-                        std::move(embeddings), std::move(input.positions),
-                        std::move(input.lengths), input.trace, input.advance,
-                        std::move(input.cache_positions), input.raw_hidden,
+                        std::move(embeddings), std::move(positions),
+                        std::move(lengths), input.trace, input.advance,
+                        std::move(cache_positions), input.raw_hidden,
                         input.confirmed, input.kv_length, input.attention_parts);
 }
 

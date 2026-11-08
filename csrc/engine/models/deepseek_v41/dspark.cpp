@@ -372,7 +372,14 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     ring->size(2)!=config.head_dim || !dynamic_cast<const DenseTensor*>(ring.get()))
                 throw CudaSessionStateError("DeepSeek-V4.1 DSpark saved ring geometry is incompatible");
         if(batch!=1 || rings.size()!=stages.size() || !attention_meta.defined())reset(1);
-        for(std::size_t i=0;i<rings.size();++i)restore_session_tensor(rings[i],saved->rings[i].get());
+        for(std::size_t i=0;i<rings.size();++i) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto restored=restore_session_tensor(rings[i],saved->rings[i]);
+            rings[i]=restored.defined()?restored.dense():DenseTensor{};
+#else
+            restore_session_tensor(rings[i],saved->rings[i]);
+#endif
+        }
         position=state.cache_pos;
     }
 

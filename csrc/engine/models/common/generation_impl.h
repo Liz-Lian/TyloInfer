@@ -57,7 +57,12 @@ template <typename Model>
 constexpr bool has_logits =
     causal<Model> ||
     requires(
-    Model& model, tyloi::cuda::Executor& executor, DenseTensor hidden) {
+    Model& model, tyloi::cuda::Executor& executor,
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor& hidden) {
+#else
+    DenseTensor hidden) {
+#endif
     logits(model, executor, std::move(hidden), true);
 };
 
@@ -72,7 +77,7 @@ auto hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
         auto scope = executor->enter(mode.ffn);
         return model.forward(std::move(input), state, forward_options(mode));
     } else {
-        return ::tyloi::Tensor(forward(model, state, *executor, collectives, mode, std::move(input)));
+        return forward(model, state, *executor, collectives, mode, std::move(input));
     }
 #else
     return forward(model, state, *executor, collectives, mode, std::move(input));
@@ -90,8 +95,7 @@ auto project(Model& model, tyloi::cuda::Executor* executor,
         auto scope = executor->enter(mode.ffn);
         return model.logits(value, capped);
     } else {
-        ::tyloi::Tensor input(std::move(value));
-        return ::tyloi::Tensor(logits(model, *executor, input.dense(), capped, mode));
+        return logits(model, *executor, value, capped, mode);
     }
 #else
     return logits(model, *executor, std::move(value), capped, mode);

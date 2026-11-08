@@ -382,15 +382,26 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 }
 } // namespace
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
+             ::tyloi::Tensor input_ids, const Executor::Mode& mode) {
+    auto ids = input_ids.dense();
+#else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
+#endif
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor normalize(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, int64_t batch, int64_t tokens) {
+    auto hidden = input_hidden.dense();
+#else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
+#endif
     return executor.profiler().measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, model.metadata.hidden_size})
                                  .to(::tyloi::kFloat32),
@@ -404,26 +415,50 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
     });
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor softcap(const Model& model, Executor&, ::tyloi::Tensor value) {
+    const double cap = model.metadata.final_logit_softcapping;
+    if (cap > 0.0) return ::tyloi::cuda::tanh(value.dense() / cap) * cap;
+    return value;
+}
+#else
 DenseTensor softcap(const Model& model, Executor&, DenseTensor value) {
     const double cap = model.metadata.final_logit_softcapping;
     return cap > 0.0 ? ::tyloi::cuda::tanh(value / cap) * cap : value;
 }
+#endif
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor logits(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, bool capped,
+              const Executor::Mode& mode) {
+    auto hidden = input_hidden.dense();
+#else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
-    const Task task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"};
+#endif
+    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
     auto value = executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
-    return capped ? softcap(model, executor, std::move(value)) : value;
+    if (capped) return softcap(model, executor, std::move(value));
+    return value;
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+               const Executor::Mode& mode, Input input) {
+#else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
+#endif
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(collectives, mode.primary, DenseTensor(std::move(input.ids)));
-    auto embeddings = input.embeddings.has_value() ? DenseTensor(std::move(*input.embeddings))
+    auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids).dense());
+    auto embeddings = input.embeddings.defined() ? std::move(input.embeddings).dense()
+#ifdef TYLOINFER_NATIVE_CUDA
+        : embed(model, executor, collectives, mode.primary, ids, mode).dense();
+#else
         : embed(model, executor, collectives, mode.primary, ids, mode);
+#endif
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
                                    embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
@@ -626,16 +661,34 @@ static void restore_pool(PoolState &target, const PoolSnapshot &state) {
         throw CudaSessionStateError("DeepSeek V4 saved compressor state is invalid");
     }
     target.capacity = state.capacity;
-    restore_session_tensor(target.state_kv, state.state_kv.get());
-    restore_session_tensor(target.state_gate, state.state_gate.get());
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto state_kv = restore_session_tensor(target.state_kv, state.state_kv);
+    target.state_kv = state_kv ? state_kv.dense() : DenseTensor{};
+    auto state_gate = restore_session_tensor(target.state_gate, state.state_gate);
+    target.state_gate = state_gate ? state_gate.dense() : DenseTensor{};
+#else
+    restore_session_tensor(target.state_kv, state.state_kv);
+    restore_session_tensor(target.state_gate, state.state_gate);
+#endif
     if (state.overlap) {
-        restore_session_tensor(target.previous_kv, state.previous_kv.get());
-        restore_session_tensor(target.previous_gate, state.previous_gate.get());
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto previous_kv = restore_session_tensor(target.previous_kv, state.previous_kv);
+        target.previous_kv = previous_kv ? previous_kv.dense() : DenseTensor{};
+        auto previous_gate = restore_session_tensor(target.previous_gate, state.previous_gate);
+        target.previous_gate = previous_gate ? previous_gate.dense() : DenseTensor{};
+#else
+        restore_session_tensor(target.previous_kv, state.previous_kv);
+        restore_session_tensor(target.previous_gate, state.previous_gate);
+#endif
     } else {
         target.previous_kv = ::tyloi::DenseTensor();
         target.previous_gate = ::tyloi::DenseTensor();
     }
-    restore_session_prefix_tensor(target.pool, *state.pool, 1, state.capacity);
+#ifdef TYLOINFER_NATIVE_CUDA
+    target.pool = restore_session_prefix_tensor(target.pool, state.pool, 1, state.capacity).dense();
+#else
+    restore_session_prefix_tensor(target.pool, state.pool, 1, state.capacity);
+#endif
 }
 
 void PoolState::reset(int64_t batch, int64_t max_positions) {
@@ -859,7 +912,12 @@ void State::restore_text_session_state(const TextSessionState& state) {
         if (!saved.local_cache || !saved.local_cache->defined() || saved.local_cache->dim() != 3 ||
             saved.local_cache->size(0) != 1 || saved.local_cache->size(1) != 128)
             throw CudaSessionStateError("DeepSeek V4 saved local cache is invalid");
-        restore_session_tensor(layer.local_cache, saved.local_cache.get());
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto local_cache = restore_session_tensor(layer.local_cache, saved.local_cache);
+        layer.local_cache = local_cache ? local_cache.dense() : DenseTensor{};
+#else
+        restore_session_tensor(layer.local_cache, saved.local_cache);
+#endif
         restore_pool(layer.compressor, saved.compressor);
         restore_pool(layer.indexer_compressor, saved.indexer_compressor);
     }

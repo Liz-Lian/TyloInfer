@@ -106,7 +106,11 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                 .contiguous();
         initialize_sampling(*request, request->prefill_ids);
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor hidden;
+#else
     DenseTensor hidden;
+#endif
     std::unique_ptr<PrefillCudaTimer> final_timer;
     auto chunk_timer = std::make_unique<PrefillCudaTimer>();
     MfqOptional<DenseTensor> length = mfq_nullopt;

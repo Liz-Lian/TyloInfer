@@ -348,16 +348,28 @@ std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int pr
 }
 #endif
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
+             int primary, const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
+    auto ids = ids_handle.dense();
+#else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
+#endif
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle,
+                 std::int64_t batch, std::int64_t tokens) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
+#endif
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
     const Task task{task::Norm{0, 0,
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -373,15 +385,26 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& value_handle) {
+    auto value = value_handle.dense();
+#else
 DenseTensor softcap(const Model& model, Executor& executor, DenseTensor value) {
+#endif
     const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
     Inputs inputs;
     inputs.values = {std::move(value)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool capped,
+              const Executor::Mode& mode) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
+#endif
     std::array<Task, 2> tasks{
         Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
         Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
@@ -460,12 +483,22 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
 #endif
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+               const Executor::Mode& mode, Input input) {
+#else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
+#endif
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(collectives, mode.primary, DenseTensor(std::move(input.ids)));
-    auto embeddings = input.embeddings.has_value() ? DenseTensor(std::move(*input.embeddings))
+    auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids).dense());
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto embeddings = input.embeddings ? input.embeddings.dense()
+        : embed(model, executor, collectives, mode.primary, ids, mode).dense();
+#else
+    auto embeddings = input.embeddings ? *input.embeddings
         : embed(model, executor, collectives, mode.primary, ids, mode);
+#endif
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
                                embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,

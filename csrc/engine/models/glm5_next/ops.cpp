@@ -252,15 +252,26 @@ static DenseTensor normalize_ids(Collectives& copies, int primary, DenseTensor i
     return copies.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
+             ::tyloi::Tensor input_ids, const Executor::Mode& mode) {
+    auto ids = input_ids.dense();
+#else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
+#endif
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {normalize_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor normalize(const Model& model, Executor&, ::tyloi::Tensor input_hidden, int64_t, int64_t) {
+    auto hidden = input_hidden.dense();
+#else
 DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t, int64_t) {
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
     return rms_norm(hidden.mean(2), *model.output_norm, model.metadata.rms_norm_eps);
 #else
@@ -268,21 +279,40 @@ DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t
 #endif
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor softcap(const Model&, Executor&, ::tyloi::Tensor value) { return value; }
+#else
 DenseTensor softcap(const Model&, Executor&, DenseTensor value) { return value; }
+#endif
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor logits(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, bool,
+              const Executor::Mode& mode) {
+    auto hidden = input_hidden.dense();
+#else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
-    return executor.projector(mode.ffn).run(*model.lm_head, hidden);
+#endif
+    return executor.projector(mode.ffn).run(model.lm_head, hidden);
 }
 
 bool supports_speculation(const Model& model) noexcept { return !model.layers.empty(); }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
+               const Executor::Mode& mode, Input input) {
+#else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
+#endif
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(copies, mode.primary, DenseTensor(std::move(input.ids)));
-    auto embeddings = input.embeddings.has_value() ? DenseTensor(std::move(*input.embeddings))
+    auto ids = normalize_ids(copies, mode.primary, std::move(input.ids).dense());
+    auto embeddings = input.embeddings.defined() ? std::move(input.embeddings).dense()
+#ifdef TYLOINFER_NATIVE_CUDA
+        : embed(model, executor, copies, mode.primary, ids, mode).dense();
+#else
         : embed(model, executor, copies, mode.primary, ids, mode);
+#endif
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
         embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,

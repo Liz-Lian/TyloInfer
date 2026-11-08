@@ -731,7 +731,7 @@ template <class Model, class State> struct CudaMtpOps {
       return result;
     } else {
       TYLOINFER_RUNTIME_CHECK(executor != nullptr,"CUDA model logits requires an executor");
-      return logits(model,*executor,input.dense(),true);
+      return logits(model,*executor,input,true);
     }
   }
 #else

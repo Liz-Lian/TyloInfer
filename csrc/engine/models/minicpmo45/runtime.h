@@ -62,11 +62,7 @@ struct MiniCPMO45Runtime {
         DenseTensor embed(DenseTensor ids) {
             return tyloi::cuda::minicpmo45::text::embed(
                 runtime.language, runtime.language_executor, runtime.execution.executor().collectives(),
-#ifdef TYLOINFER_NATIVE_CUDA
-                runtime.execution.config.layer_placement.primary_device(), ids.dense(),
-#else
                 runtime.execution.config.layer_placement.primary_device(), std::move(ids),
-#endif
                 runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()));
         }
         auto vision(DenseTensor pixels, DenseTensor mask, DenseTensor sizes) {
@@ -327,17 +323,30 @@ struct MiniCPMO45DuplexSession {
             runtime.execution.executor().collectives(), runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()),
             tyloi::cuda::Input{token_ids, embeddings.to(::tyloi::kBFloat16).contiguous()});
         auto logits = tyloi::cuda::minicpmo45::text::logits(
+#ifdef TYLOINFER_NATIVE_CUDA
+            runtime.language, runtime.language_executor, tyloi::ops::select(hidden, 1, -1),
+#else
             runtime.language, runtime.language_executor, hidden.index({Slice(), -1, Slice()}),
+#endif
             true, runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()));
+#ifdef TYLOINFER_NATIVE_CUDA
+        return {logits.dense(), hidden.dense()};
+#else
         return {logits, hidden};
+#endif
     }
 
     std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> feed_ids(::tyloi::DenseTensor token_ids) {
         if (token_ids.dim() == 0) token_ids = token_ids.reshape({1});
         if (token_ids.dim() == 1) token_ids = token_ids.unsqueeze(0);
         token_ids = token_ids.to(::tyloi::kCUDA, ::tyloi::kInt64).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+        return feed_embeddings(
+            MiniCPMO45Runtime::EncodeOps{runtime}.embed(token_ids).dense(), token_ids);
+#else
         return feed_embeddings(
             MiniCPMO45Runtime::EncodeOps{runtime}.embed(token_ids), token_ids);
+#endif
     }
 
     std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> feed_id(int64_t token) {

@@ -11,6 +11,20 @@
 
 namespace tyloi::cuda::qwen35 {
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor embed(const Model&, Executor&, Collectives&, int primary, const ::tyloi::Tensor& ids,
+             const Executor::Mode& = {});
+
+::tyloi::Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
+
+::tyloi::Tensor normalize(const Model&, Executor&, const ::tyloi::Tensor& hidden, std::int64_t batch,
+                 std::int64_t tokens);
+
+::tyloi::Tensor logits(const Model&, Executor&, const ::tyloi::Tensor& hidden, bool capped = true,
+              const Executor::Mode& = {});
+
+::tyloi::Tensor softcap(const Model&, Executor&, const ::tyloi::Tensor& logits);
+#else
 DenseTensor embed(const Model&, Executor&, Collectives&, int primary, DenseTensor ids,
              const Executor::Mode& = {});
 
@@ -23,6 +37,7 @@ DenseTensor logits(const Model&, Executor&, DenseTensor hidden, bool capped = tr
               const Executor::Mode& = {});
 
 DenseTensor softcap(const Model&, Executor&, DenseTensor logits);
+#endif
 
 bool supports_speculation(const Model&) noexcept;
 

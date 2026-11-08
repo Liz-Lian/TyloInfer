@@ -98,6 +98,17 @@ bool session_tensor_layout_matches(
     const ::tyloi::Tensor& target,
     const ::tyloi::Tensor& source);
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor restore_session_tensor(
+    ::tyloi::Tensor target,
+    const ::tyloi::Tensor& source);
+
+::tyloi::Tensor restore_session_prefix_tensor(
+    ::tyloi::Tensor target,
+    const ::tyloi::Tensor& source,
+    int64_t dimension,
+    int64_t capacity);
+#else
 void restore_session_tensor(
     ::tyloi::DenseTensor& target,
     const ::tyloi::Tensor* source);
@@ -107,6 +118,7 @@ void restore_session_prefix_tensor(
     const ::tyloi::Tensor& source,
     int64_t dimension,
     int64_t capacity);
+#endif
 
 KvSnapshot capture_kv(
     const KVCache& cache,

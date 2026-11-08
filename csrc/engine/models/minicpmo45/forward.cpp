@@ -17,15 +17,26 @@ DenseTensor token_ids(Collectives& copies, int device, DenseTensor ids) {
 }
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
+             const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
+    auto ids = ids_handle.dense();
+#else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
+#endif
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs input;
     input.values = {token_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), mode);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, int64_t batch, int64_t tokens) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
+#endif
     const Task task{task::Norm{0, 0,
 #ifdef TYLOINFER_NATIVE_CUDA
                                *model.output_norm,
@@ -39,17 +50,28 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), {});
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool,
+              const Executor::Mode& mode) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
-    const Task task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"};
+#endif
+    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
     Inputs input;
     input.values = {std::move(hidden)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(input), mode);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
+               const Executor::Mode& mode, Input input) {
+#else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
-    auto ids = token_ids(copies, mode.primary, DenseTensor(std::move(input.ids)));
+#endif
+    auto ids = token_ids(copies, mode.primary, std::move(input.ids).dense());
     const auto batch = ids.size(0), tokens = ids.size(1);
     TYLOINFER_RUNTIME_CHECK(input.confirmed == 0, "MiniCPM TTS has no speculative predictor");
     TYLOINFER_RUNTIME_CHECK(state.layers.size() == model.layers.size(), "MiniCPM TTS layer state mismatch");
@@ -57,8 +79,13 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         "MiniCPM TTS history exceeds context capacity");
     if (state.cache_pos == 0) state.reset(batch);
     TYLOINFER_RUNTIME_CHECK(state.batch == batch, "MiniCPM TTS cache batch does not match inputs");
-    auto hidden = input.embeddings ? DenseTensor(std::move(*input.embeddings))
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto hidden = input.embeddings ? input.embeddings.dense()
+                                  : embed(model, executor, copies, mode.primary, ids, mode).dense();
+#else
+    auto hidden = input.embeddings ? *input.embeddings
                                   : embed(model, executor, copies, mode.primary, ids, mode);
+#endif
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(0) == batch && hidden.size(1) == tokens &&
         hidden.size(2) == model.metadata.hidden_size, "inputs_embeds must match [batch,tokens,hidden_size]");
     auto physical = input.cache_positions

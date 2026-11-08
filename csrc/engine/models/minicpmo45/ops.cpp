@@ -229,20 +229,31 @@ DenseTensor token_ids(Collectives& copies, int primary, DenseTensor ids) {
 }
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
+             const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
+    auto ids = ids_handle.dense();
+#else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
+#endif
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {token_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
         .to(::tyloi::kBFloat16).contiguous();
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, int64_t batch, int64_t tokens) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
+#endif
     return executor.profiler().measure("model.output_norm", [&] {
         return qwen_rms_norm_bf16(executor.attention_options().fused_norm,
             hidden.reshape({batch * tokens, model.metadata.hidden_size}),
 #ifdef TYLOINFER_NATIVE_CUDA
-            *model.output_norm,
+            model.output_norm,
 #else
             model.output_norm,
 #endif
@@ -250,22 +261,38 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
             .reshape({batch, tokens, model.metadata.hidden_size});
     });
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool,
+              const Executor::Mode& mode) {
+    auto hidden = hidden_handle.dense();
+#else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
-    const Task task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"};
+#endif
+    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
         .to(::tyloi::kBFloat16).contiguous();
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
+               const Executor::Mode& run_mode, Input input) {
+#else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& run_mode, Input input) {
+#endif
     auto mode = run_mode;
     mode.ffn.independent = true;
     MfqCudaGuard guard(mode.primary);
-    auto ids = token_ids(copies, mode.primary, DenseTensor(std::move(input.ids)));
-    auto hidden = input.embeddings ? DenseTensor(std::move(*input.embeddings))
+    auto ids = token_ids(copies, mode.primary, std::move(input.ids).dense());
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto hidden = input.embeddings ? input.embeddings.dense()
+        : embed(model, executor, copies, mode.primary, ids, mode).dense();
+#else
+    auto hidden = input.embeddings ? *input.embeddings
         : embed(model, executor, copies, mode.primary, ids, mode);
+#endif
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(hidden.dim() == 3 && hidden.size(0) == B && hidden.size(1) == T &&
         hidden.size(2) == model.metadata.hidden_size,
@@ -274,10 +301,22 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     if (state.cache_pos == 0) state.reset(B);
     const auto options = ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::Device(::tyloi::kCUDA, mode.primary));
     auto physical = input.cache_positions
-        ? copies.copy(DenseTensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(
+#ifdef TYLOINFER_NATIVE_CUDA
+            input.cache_positions.dense().to(::tyloi::kInt64),
+#else
+            input.cache_positions->to(::tyloi::kInt64),
+#endif
+            mode.primary).contiguous()
         : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto positions = input.positions
-        ? copies.copy(DenseTensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(
+#ifdef TYLOINFER_NATIVE_CUDA
+            input.positions.dense().to(::tyloi::kInt64),
+#else
+            input.positions->to(::tyloi::kInt64),
+#endif
+            mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
     tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
         (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
@@ -300,7 +339,11 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, local(physical), state.cache_pos,
                            input.kv_length, input.attention_parts};
-        if (input.lengths) step.sequence_lengths = local(DenseTensor(*input.lengths));
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (input.lengths) step.sequence_lengths = local(input.lengths.dense());
+#else
+        if (input.lengths) step.sequence_lengths = local(*input.lengths);
+#endif
         auto& cache = state.layers[i];
         const auto capacity = attention.sliding ? attention.attention_window :
             (mode.kv_capacity > 0 ? std::max(state.cache_pos + T, mode.kv_capacity)
