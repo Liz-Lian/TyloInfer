@@ -1,5 +1,5 @@
 #include "engine/models/minicpmo45/state.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/models/minicpmo45/model.h"
 
 #include <stdexcept>

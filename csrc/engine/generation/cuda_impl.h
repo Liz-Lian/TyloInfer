@@ -536,7 +536,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 } // namespace generation_detail
 } // namespace tyloi::cuda::internal
 #include "engine/generation/generation.h"
-#include "engine/models/common/session/cache.h"
+#include "engine/models/session/cache.h"
 
 #include <cstddef>
 #include <cstdint>

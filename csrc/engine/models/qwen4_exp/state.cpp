@@ -1,9 +1,9 @@
 #include "engine/models/qwen4_exp/state.h"
 #include "engine/models/qwen4_exp/ops.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 #include "engine/models/qwen4_exp/predictor.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session/state.h"
 
 #include <algorithm>
 #include <stdexcept>

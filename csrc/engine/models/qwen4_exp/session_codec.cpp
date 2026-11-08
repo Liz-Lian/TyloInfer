@@ -2,7 +2,7 @@
 
 #include "backend.h"
 
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 
 #include <algorithm>

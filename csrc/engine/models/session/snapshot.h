@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/session/state.h"
+#include "engine/models/session/state.h"
 #include "engine/models/deepseek_v4/snapshot.h"
 #include "engine/models/deepseek_v41/snapshot.h"
 #include "engine/models/glm_dsa/snapshot.h"

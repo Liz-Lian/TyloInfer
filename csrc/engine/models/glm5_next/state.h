@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/common/attention_ops.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include <cstdint>
 #include <variant>
 #include <vector>

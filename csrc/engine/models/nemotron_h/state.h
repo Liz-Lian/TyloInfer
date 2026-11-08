@@ -2,7 +2,7 @@
 
 #include "engine/state/recurrent.h"
 #include "engine/state/kv_cache.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 
 #include <cstdint>
 #include <variant>

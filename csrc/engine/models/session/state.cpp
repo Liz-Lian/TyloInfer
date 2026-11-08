@@ -1,6 +1,6 @@
-#include "engine/models/common/session/state.h"
+#include "engine/models/session/state.h"
 #include "backend.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/state/kv_cache.h"
 
 #include <algorithm>

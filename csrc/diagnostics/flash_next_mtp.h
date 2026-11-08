@@ -3,7 +3,7 @@
 #include "nlohmann/json.hpp"
 #include "generation_result.h"
 #include "engine/models/common/mtp.h"
-#include "engine/models/session_codec.h"
+#include "engine/models/session/codec.h"
 #include "engine/models/qwen4_exp/session_codec.h"
 
 #include <cstdint>

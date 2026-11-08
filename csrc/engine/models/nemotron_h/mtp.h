@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/weights/loader.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/options.h"

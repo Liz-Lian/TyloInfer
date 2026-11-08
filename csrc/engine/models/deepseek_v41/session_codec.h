@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/session/paged.h"
+#include "engine/models/session/paged.h"
 
 struct TextSessionState;
 

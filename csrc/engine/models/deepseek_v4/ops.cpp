@@ -1,7 +1,7 @@
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/models/common/check.h"
 #include "engine/models/common/load.h"
 #include "engine/models/source/model_graph.h"
@@ -23,7 +23,7 @@
 #include <iostream>
 #include <span>
 #include "engine/models/deepseek_v4/snapshot.h"
-#include "engine/models/session_codec.h"
+#include "engine/models/session/codec.h"
 
 namespace tyloi::cuda::deepseek_v4 {
 

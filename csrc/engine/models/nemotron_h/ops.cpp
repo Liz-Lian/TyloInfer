@@ -1,7 +1,7 @@
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/scope.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/ops.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/models/common/load.h"

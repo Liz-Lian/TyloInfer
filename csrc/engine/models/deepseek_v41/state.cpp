@@ -1,9 +1,9 @@
 #include "engine/models/deepseek_v41/state.h"
 #include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/models/deepseek_v41/snapshot.h"
 #include "engine/models/common/check.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session/state.h"
 
 #include <algorithm>
 #include <stdexcept>

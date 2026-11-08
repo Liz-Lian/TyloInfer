@@ -1,8 +1,8 @@
 #pragma once
 
 #include "engine/models/state.h"
-#include "engine/models/session.h"
-#include "engine/models/common/session/size.h"
+#include "engine/models/session/snapshot.h"
+#include "engine/models/session/size.h"
 
 #include <memory>
 #include <vector>

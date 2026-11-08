@@ -6,7 +6,7 @@
 #else
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
-#include "engine/models/common/session/paged.h"
+#include "engine/models/session/paged.h"
 #endif
 
 #include <algorithm>

@@ -16,7 +16,7 @@
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/models/common/session/cache.h"
+#include "engine/models/session/cache.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/qwen35/load.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"

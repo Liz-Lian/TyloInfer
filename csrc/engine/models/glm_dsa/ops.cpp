@@ -1,4 +1,4 @@
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #ifndef TYLOINFER_NATIVE_CUDA

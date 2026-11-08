@@ -2,7 +2,7 @@
 #include "engine/models/minicpmo45/text/forward.h"
 #include "engine/models/common/load.h"
 #include "engine/models/common/causal_forward.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session/state.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/executor/options.h"

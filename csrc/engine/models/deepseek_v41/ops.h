@@ -19,7 +19,7 @@
 #include "engine/models/common/prompt.h"
 #include "engine/models/metadata.h"
 #include "engine/metrics.h"
-#include "engine/models/common/session/size.h"
+#include "engine/models/session/size.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "dspark.h"
 #include "engram.h"

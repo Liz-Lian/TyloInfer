@@ -24,7 +24,7 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
-#include "engine/models/common/session/cache.h"
+#include "engine/models/session/cache.h"
 #include "engine/models/source/model_config.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/native/env.h"

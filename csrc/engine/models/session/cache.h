@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/state/session/cache.h"
 
 #include <cstddef>

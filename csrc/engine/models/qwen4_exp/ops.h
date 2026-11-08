@@ -6,7 +6,7 @@
 #include "engine/metrics.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/qwen4_exp/block.h"
-#include "engine/models/common/session/size.h"
+#include "engine/models/session/size.h"
 #include "engine/models/qwen4_exp/state.h"
 #include "engine/models/qwen4_exp/config.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"

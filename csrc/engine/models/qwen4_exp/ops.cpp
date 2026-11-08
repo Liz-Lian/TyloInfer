@@ -1,6 +1,6 @@
 #include "engine/weights/cache.h"
 #include "engine/weights/workspace.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "env.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
@@ -36,7 +36,6 @@ using mfq::cuda::RouterLookaheadInputs;
 #include <iostream>
 #include <atomic>
 #include "engine/ops.h"
-#include "engine/models/common/session_codec.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
 #include "engine/weights/nint_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA

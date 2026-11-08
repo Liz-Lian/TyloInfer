@@ -1,9 +1,9 @@
-#include "engine/models/common/session/cache.h"
+#include "engine/models/session/cache.h"
 #include <cstring>
 
 #include "engine/load.h"
 #include "engine/backends/cpu/native/host_memory.h"
-#include "engine/models/session_codec.h"
+#include "engine/models/session/codec.h"
 #include "engine/state/session/prefix_cache.h"
 #include "engine/state/session/paged.h"
 #include "engine/state/session/cache.h"

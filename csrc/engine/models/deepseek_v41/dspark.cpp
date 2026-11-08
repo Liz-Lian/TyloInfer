@@ -1,7 +1,7 @@
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
 #endif
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/tq_moe.h"

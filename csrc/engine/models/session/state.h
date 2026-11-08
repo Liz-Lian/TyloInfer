@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/tensor.h"
-#include "engine/models/common/session/paged.h"
+#include "engine/models/session/paged.h"
 
 #include <cstddef>
 #include <cstdint>

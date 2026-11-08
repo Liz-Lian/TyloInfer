@@ -86,10 +86,10 @@ set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/generation/decode.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/mtp/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/engine.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/session/paged.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/session/state.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/session_codec.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/session/cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/session/paged.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/session/state.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/session/codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp

@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <span>
 #include "engine/models/common/load.h"
-#include "engine/models/common/session/paged.h"
+#include "engine/models/session/paged.h"
 #include "engine/ops.h"
 
 namespace tyloi::cuda::glm5_next {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/tensor.h"
 #include "engine/generation/mtp/policy.h"
 #include "engine/requests/sampling.h"

@@ -1,11 +1,11 @@
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
-#include "engine/models/session.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #include "ops.h"
 #include "vision.h"
 #include "engine/models/common/check.h"
-#include "engine/models/session_codec.h"
+#include "engine/models/session/codec.h"
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 

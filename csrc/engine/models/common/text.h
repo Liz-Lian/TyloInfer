@@ -20,7 +20,7 @@
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/batch.h"
-#include "engine/models/common/session/cache.h"
+#include "engine/models/session/cache.h"
 #include "engine/resource_metrics.h"
 #include "engine/generation/generation.h"
 #include "engine/generation/mtp/metrics.h"
