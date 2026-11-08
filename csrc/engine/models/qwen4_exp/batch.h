@@ -21,7 +21,12 @@ struct BatchRequest : tyloi::engine::BatchRequest {
     using tyloi::engine::BatchRequest::BatchRequest;
 
     std::optional<Sampler> sampler;
-    ::tyloi::DenseTensor counts, prefill_ids;
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor counts;
+#else
+    ::tyloi::DenseTensor counts;
+#endif
+    ::tyloi::DenseTensor prefill_ids;
     std::vector<std::unique_ptr<internal::PrefillCudaTimer>> prefill_timers;
     std::unique_ptr<Qwen4BatchRequestState> cache;
     int64_t decode_row = -1;
@@ -35,7 +40,11 @@ class BatchOps {
     using State = tyloi::engine::BatchState<Request>;
     using Sample = tyloi::cuda::BatchSample;
     struct Decoded {
+#ifdef TYLOINFER_NATIVE_CUDA
+        ::tyloi::Tensor logits, greedy_tokens;
+#else
         DenseTensor logits, greedy_tokens;
+#endif
     };
 
     BatchOps(qwen4_exp::Model&, CudaExecutionContext&, tyloi::engine::Budget&,
@@ -65,7 +74,11 @@ class BatchOps {
 
   private:
     void initialize_prefill(const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk);
+#ifdef TYLOINFER_NATIVE_CUDA
+    Sample finish_prefill(const std::shared_ptr<Request>&, ::tyloi::Tensor next);
+#else
     Sample finish_prefill(const std::shared_ptr<Request>&, DenseTensor next);
+#endif
 
     qwen4_exp::Model& model_;
     CudaExecutionContext& execution_;

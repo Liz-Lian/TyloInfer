@@ -139,7 +139,12 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
                     .device(::tyloi::Device(
                         ::tyloi::kCUDA, execution_.config.layer_placement.primary_device())))
                 .reshape({1, -1});
+#ifdef TYLOINFER_NATIVE_CUDA
+        request->sampler.emplace(request->sampling,
+            ::tyloi::Device(::tyloi::kCUDA, execution_.config.layer_placement.primary_device()));
+#else
         request->sampler.emplace(request->sampling);
+#endif
         if (request->sampler->has_penalties())
             request->counts = SamplingOps::token_counts(request->prefill_ids, model_.metadata.vocab_size);
     }
@@ -147,10 +152,18 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
                             "Flash-Next batch prefill position mismatch");
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+BatchOps::Sample BatchOps::finish_prefill(const std::shared_ptr<Request>& request, ::tyloi::Tensor next) {
+#else
 BatchOps::Sample BatchOps::finish_prefill(const std::shared_ptr<Request>& request, DenseTensor next) {
+#endif
     if (!next.defined())
         return {};
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto token = tyloi::ops::item(next);
+#else
     const auto token = next.item<int64_t>();
+#endif
     double milliseconds = request->packed_prefill_ms;
     for (const auto& measured : request->prefill_timers)
         milliseconds += measured->elapsed_ms();
@@ -173,12 +186,21 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                 .front();
         const auto finished =
             chunk.offset + chunk.count == static_cast<int64_t>(request->prompt.size());
+#ifdef TYLOINFER_NATIVE_CUDA
+        ::tyloi::Tensor next;
+#else
         DenseTensor next;
+#endif
         if (finished)
             next = tyloi::engine::sample_logits(
                 *request->sampler,
+#ifdef TYLOINFER_NATIVE_CUDA
+                tyloi::ops::reshape(model_.logits(
+                    hidden.dense().index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()})), {1, -1}),
+#else
                 model_.logits(
                     hidden.dense().index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()})).dense().reshape({1, -1}),
+#endif
                 request->counts, request->token_constraint);
         TYLOINFER_CUDA_CHECK(
             cudaEventRecord(timer->finished_event(), mfq_get_current_cuda_stream()));
@@ -261,15 +283,29 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
                     finished.push_back(rows[i]);
                 }
             }
+#ifdef TYLOINFER_NATIVE_CUDA
+            std::vector<::tyloi::Tensor> next(items.size());
+#else
             std::vector<DenseTensor> next(items.size());
+#endif
             if (!last.empty()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto logits = tyloi::ops::reshape(model_.logits(::tyloi::cuda::cat(last, 0)),
+                                                   {int64_t(last.size()), -1});
+#else
                 auto logits = dynamic_cast<const DenseTensor&>(*model_.logits(::tyloi::cuda::cat(last, 0)))
                                   .reshape({int64_t(last.size()), -1});
+#endif
                 for (std::size_t i = 0; i < finished.size(); ++i) {
                     const auto row = finished[i];
                     const auto& request = items[row].first;
+#ifdef TYLOINFER_NATIVE_CUDA
+                    next[row] = tyloi::engine::sample_logits(*request->sampler, tyloi::ops::slice(logits, 0, i, i + 1),
+                                              request->counts, request->token_constraint);
+#else
                     next[row] = tyloi::engine::sample_logits(*request->sampler, logits.narrow(0, i, 1),
                                               request->counts, request->token_constraint);
+#endif
                 }
             }
             TYLOINFER_CUDA_CHECK(
@@ -383,24 +419,40 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     }
     ++decode_batches_;
     decode_tokens_ += tokens.size();
+#ifdef TYLOINFER_NATIVE_CUDA
+    return {std::move(output), std::move(greedy_tokens)};
+#else
     return {std::move(logits), std::move(greedy_tokens)};
+#endif
 }
 
 BatchOps::Sample BatchOps::sample(const std::shared_ptr<Request>& request,
                                   const Decoded& decoded) {
     TYLOINFER_RUNTIME_CHECK(request->decode_row >= 0, "Flash-Next sampled an inactive row");
     if (decoded.greedy_tokens.defined())
+#ifdef TYLOINFER_NATIVE_CUDA
+        return {{}, decoded.greedy_tokens.dense().data_ptr<int64_t>()[request->decode_row], {}};
+    auto next = tyloi::engine::sample_logits(
+        *request->sampler, tyloi::ops::slice(decoded.logits, 0, request->decode_row, request->decode_row + 1),
+        request->counts, request->token_constraint);
+    const auto token = tyloi::ops::item(next);
+#else
         return {{}, decoded.greedy_tokens.data_ptr<int64_t>()[request->decode_row], {}};
     auto next = tyloi::engine::sample_logits(
         *request->sampler, decoded.logits.narrow(0, request->decode_row, 1), request->counts,
         request->token_constraint);
     const auto token = next.item<int64_t>();
+#endif
     return {std::move(next), token, {}};
 }
 
 void BatchOps::accept(const std::shared_ptr<Request>& request, const Sample& sampled) {
     if (request->counts.defined())
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::add_token_counts(request->counts, tyloi::ops::contiguous(sampled.next));
+#else
         sample_token_counts_add_cuda(request->counts, sampled.next.contiguous());
+#endif
 }
 
 void BatchOps::recover(State& state) {

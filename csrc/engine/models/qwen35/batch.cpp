@@ -397,8 +397,14 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
     }
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor Batch::logits_from_last_hidden(::tyloi::Tensor hidden, const Executor::Mode& mode) {
+    const auto& hidden_dense = hidden.dense();
+#else
 DenseTensor Batch::logits_from_last_hidden(DenseTensor hidden, const Executor::Mode& mode) {
-    auto last = hidden.index({::tyloi::indexing::Slice(), -1,
+    const auto& hidden_dense = hidden;
+#endif
+    auto last = hidden_dense.index({::tyloi::indexing::Slice(), -1,
                               ::tyloi::indexing::Slice()})
                     .to(::tyloi::kFloat16)
                     .contiguous();

@@ -86,20 +86,6 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     Sampler sampler(input.sampling, full_ids->device());
     const bool penalties = sampler.has_penalties();
     if (penalties) { ops::fill(*graph.counts, 0); ops::add_token_counts(*graph.counts, *full_ids); }
-    const auto sample = [&](std::shared_ptr<Tensor> logits) {
-        logits = ops::reshape(*ops::contiguous(*logits), {1, -1});
-        if (penalties) sampler.apply_penalties(*logits, *graph.counts);
-        auto next = sampler.sample(*logits);
-        if (input.token_constraint && !input.token_constraint->allows(ops::item(*next))) {
-            auto masked = ops::constrain(*logits, input.token_constraint);
-            auto device_masked = ops::contiguous(*ops::copy(*masked, logits->device()));
-            next = sampler.sample(*device_masked);
-            if (!input.token_constraint->allows(ops::item(*next)))
-                throw std::runtime_error("CUDA constrained sampler returned an invalid token");
-        }
-        if (input.token_constraint) input.token_constraint->accept(ops::item(*next));
-        return next;
-    };
     const auto project = [&](const Tensor& hidden, bool capped) {
         auto last = ops::contiguous(*ops::cast(*ops::select(hidden, 1, -1), kFloat16));
         return model_->logits(*last, capped);
@@ -124,7 +110,7 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
             if (prepared && prepared->transformed()) state.set_position_delta(prepared->decode_position_delta);
             timer->stop();
             if (!output.stopped() && chunk.offset + chunk.count == int64_t(prompt.size()))
-                pending = sample(project(*hidden, true));
+                pending = sample_logits(sampler, project(*hidden, true), *graph.counts, input.token_constraint);
             const auto ms = timer->elapsed_ms();
             elapsed += ms;
             if (config.decode_graph.trace) std::cerr << "runtime_prefill_chunk offset=" << chunk.offset
@@ -164,7 +150,9 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
             model_input.advance = true;
             auto profile = config.profile_decode ? executor_->profile("runtime.decode") : nullptr;
             auto hidden = model_->forward(std::move(model_input), state, forward_options);
-            pending = sample(project(*hidden, !(sampler.greedy() && !penalties && !input.token_constraint)));
+            pending = sample_logits(sampler,
+                project(*hidden, !(sampler.greedy() && !penalties && !input.token_constraint)),
+                *graph.counts, input.token_constraint);
             if (profile) profile->finish();
             token = ops::item(*pending);
         } else {

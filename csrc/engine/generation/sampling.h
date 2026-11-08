@@ -126,6 +126,24 @@ private:
     std::mt19937_64 rng_;
     std::shared_ptr<Tensor> random_host_, random_cuda_;
 };
+
+inline Tensor sample_logits(Sampler& sampler, Tensor logits, const Tensor& counts,
+                            const MfqTokenConstraintPtr& token_constraint = {}) {
+    logits = ops::reshape(ops::contiguous(logits), {1, -1});
+    if (sampler.has_penalties())
+        sampler.apply_penalties(logits, counts);
+
+    auto next = sampler.sample(logits);
+    if (token_constraint && !token_constraint->allows(ops::item(next))) {
+        auto masked = ops::constrain(logits, token_constraint);
+        next = sampler.sample(ops::contiguous(ops::copy(masked, logits.device())));
+        if (!token_constraint->allows(ops::item(next)))
+            throw std::runtime_error("CUDA constrained sampler returned an invalid token");
+    }
+    if (token_constraint)
+        token_constraint->accept(ops::item(next));
+    return next;
+}
 #else
 // Ops supplies:
 //   using DenseTensor;
