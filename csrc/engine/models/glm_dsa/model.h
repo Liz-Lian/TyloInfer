@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/glm_dsa/config.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/source.h"
 #include "engine/backends/cuda/ops/rope/rope.h"

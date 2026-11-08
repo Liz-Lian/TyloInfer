@@ -13,6 +13,18 @@ namespace tyloi::models {
 
 struct ForwardOptions;
 
+struct CausalState {
+    int64_t position() const noexcept { return cache_pos; }
+    void advance(int64_t tokens) noexcept { cache_pos += tokens; }
+    void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
+
+    int64_t cache_pos = 0;
+    int64_t decode_position_delta = 0;
+    int64_t speculative_start = -1;
+    int64_t speculative_confirmed = 0;
+    bool speculative_suffix_forward = false;
+};
+
 class State {
 public:
     virtual ~State() = default;

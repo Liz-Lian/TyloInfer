@@ -9,7 +9,7 @@
 #include "engine/models/nemotron_h/components.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "engine/models/causal_model.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/budget.h"

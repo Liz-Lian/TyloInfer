@@ -3,7 +3,7 @@
 #include "engine/models/minicpmo45/layer.h"
 #include "engine/models/common/model_config.h"
 #include "engine/ops.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/task.h"
 #include "engine/backends/cuda/ops/rope/rope.h"

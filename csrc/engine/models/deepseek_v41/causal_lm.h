@@ -1,6 +1,6 @@
 #pragma once
 #include "config.h"
-#include "../common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "../common/check.h"
 #include <optional>
 #include <utility>

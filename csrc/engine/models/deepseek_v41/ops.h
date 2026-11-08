@@ -17,7 +17,7 @@
 #include "engine/models/common/capabilities.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/prompt.h"
-#include "engine/models/info.h"
+#include "engine/models/metadata.h"
 #include "engine/metrics.h"
 #include "engine/models/common/session/size.h"
 #include "engine/backends/cuda/ops/projection/projection.h"

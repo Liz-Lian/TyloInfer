@@ -2,7 +2,7 @@
 #include "config.h"
 #include "../common/weight_loading.h"
 #include "../common/causal_forward.h"
-#include "../common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include <utility>
 
 namespace tyloi::models::glm_dsa {

@@ -10,7 +10,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
-#include "engine/models/info.h"
+#include "engine/models/metadata.h"
 #include "engine/models/source.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/requests/output.h"

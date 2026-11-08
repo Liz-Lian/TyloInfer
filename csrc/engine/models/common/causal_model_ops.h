@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 
 #include "engine/models/common/capabilities.h"
 #include "engine/backends/cuda/native/scope.h"

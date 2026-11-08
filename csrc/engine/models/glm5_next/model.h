@@ -2,7 +2,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
 #include "engine/models/glm5_next/weights.h"
 #include "engine/models/glm5_next/state.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/source.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"

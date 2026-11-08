@@ -1,6 +1,6 @@
 #pragma once
 #include "config.h"
-#include "../common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "../common/predictor.h"
 #include "../common/recurrent_attention.h"
 

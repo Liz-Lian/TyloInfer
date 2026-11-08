@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/qwen35/config.h"
-#include "../common/causal_metadata.h"
+#include "engine/models/metadata.h"
 
 namespace tyloi::models::qwen35 {
 

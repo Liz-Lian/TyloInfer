@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/capabilities.h"
+#include "models/metadata.h"
 #include "requests/request.h"
 #include "requests/result.h"
 #include "executor.h"

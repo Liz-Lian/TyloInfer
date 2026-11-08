@@ -6,7 +6,7 @@
 #else
 #include "engine/backends/cuda/ops/rope/tail.h"
 #endif
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/deepseek_v4/config.h"
 #include "engine/models/source.h"

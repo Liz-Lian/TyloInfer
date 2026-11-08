@@ -2,7 +2,7 @@
 
 #include "config.h"
 #include "engine/ops.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "engine/models/common/weight_loading.h"
 
 #include <stdexcept>

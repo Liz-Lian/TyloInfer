@@ -2,7 +2,7 @@
 
 #include "engine/models/common/causal_model_ops.h"
 #include "engine/models/causal_model.h"
-#include "engine/models/info.h"
+#include "engine/models/metadata.h"
 #include "engine/metrics.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/qwen4_exp/block.h"

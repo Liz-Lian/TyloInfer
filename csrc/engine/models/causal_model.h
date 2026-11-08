@@ -2,9 +2,8 @@
 
 #include "engine/tensor.h"
 #include "engine/metrics.h"
-#include "engine/models/capabilities.h"
+#include "engine/models/metadata.h"
 #include "engine/models/input.h"
-#include "engine/models/info.h"
 #include "engine/models/options.h"
 #include "engine/models/state.h"
 #include "engine/models/prepared.h"

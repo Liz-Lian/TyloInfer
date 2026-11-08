@@ -1,10 +1,32 @@
 #pragma once
-#include "engine/models/info.h"
+
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+struct MfqModelCapabilities {
+    std::string family = "unknown";
+    bool text = true;
+    bool image_input = false;
+    bool video_input = false;
+    bool audio_input = false;
+    bool audio_output = false;
+    bool full_duplex = false;
+    bool mtp = false;
+    std::string source;
+};
+
 namespace tyloi::models {
+
+struct Info {
+    std::int64_t vocab_size;
+    std::int64_t max_context;
+    std::string model_type;
+    std::size_t prefill_row_bytes;
+    bool decode_graph;
+    bool double_warmup;
+};
 
 struct CausalLmMetadata {
     int64_t vocab_size = 0;
@@ -46,17 +68,5 @@ Info model_info(const Model& model) {
     if constexpr (requires { model.info(); }) return model.info();
     else return model_info(model.metadata);
 }
-
-struct CausalState {
-    int64_t position() const noexcept { return cache_pos; }
-    void advance(int64_t tokens) noexcept { cache_pos += tokens; }
-    void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
-
-    int64_t cache_pos = 0;
-    int64_t decode_position_delta = 0;
-    int64_t speculative_start = -1;
-    int64_t speculative_confirmed = 0;
-    bool speculative_suffix_forward = false;
-};
 
 } // namespace tyloi::models

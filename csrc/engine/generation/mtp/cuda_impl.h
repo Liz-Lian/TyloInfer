@@ -11,7 +11,7 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/generation/mtp/state.h"
-#include "engine/models/info.h"
+#include "engine/models/metadata.h"
 #include "engine/models/source.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"

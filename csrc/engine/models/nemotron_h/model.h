@@ -4,7 +4,7 @@
 #include "engine/models/common/attention.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/models/nemotron_h/config.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/metadata.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/source.h"
 
