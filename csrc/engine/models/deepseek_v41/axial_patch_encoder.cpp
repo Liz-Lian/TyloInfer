@@ -1,4 +1,4 @@
-#include "engine/models/common/vision/axial_patch_encoder.h"
+#include "engine/models/deepseek_v41/axial_patch_encoder.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/norm/layer.h"

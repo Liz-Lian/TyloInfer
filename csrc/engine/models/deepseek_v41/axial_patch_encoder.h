@@ -5,7 +5,7 @@
 #else
 #include "backend.h"
 #endif
-#include "engine/models/common/vision/axial_patch_vision.h"
+#include "engine/models/deepseek_v41/axial_patch_vision.h"
 #include "engine/generation/sequence.h"
 
 #include <cstdint>

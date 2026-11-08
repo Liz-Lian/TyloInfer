@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/executor/execution.h"
 #endif
 #include "vision.h"
-#include "engine/models/common/vision/axial_patch_encoder.h"
+#include "engine/models/deepseek_v41/axial_patch_encoder.h"
 #include "engine/state/session/prefix_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
