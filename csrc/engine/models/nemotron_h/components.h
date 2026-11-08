@@ -16,7 +16,7 @@ struct Components {
     std::optional<CudaRadioPromptComponent> radio_vision;
     std::unique_ptr<tyloi::models::Mtp> mtp;
 
-    tyloi::StepSequence<PreparedPrompt> prepare(Model& language, MediaCache& images,
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif

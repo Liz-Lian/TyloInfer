@@ -321,7 +321,7 @@ struct MiniCPMO45DuplexSession {
         auto hidden = tyloi::cuda::minicpmo45::text::forward(
             runtime.language, runtime.language_state, runtime.language_executor,
             runtime.execution.executor().collectives(), runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()),
-            tyloi::cuda::Input{token_ids, embeddings.to(::tyloi::kBFloat16).contiguous()});
+            tyloi::models::Input{token_ids, embeddings.to(::tyloi::kBFloat16).contiguous()});
         auto logits = tyloi::cuda::minicpmo45::text::logits(
 #ifdef TYLOINFER_NATIVE_CUDA
             runtime.language, runtime.language_executor, tyloi::ops::select(hidden, 1, -1),

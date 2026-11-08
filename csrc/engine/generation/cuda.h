@@ -42,7 +42,7 @@ tyloi::engine::Generation generate(
     const tyloi::engine::Config& config, tyloi::engine::InferenceRequest& request,
     tyloi::engine::InferenceOutput& output, tyloi::engine::mtp::State& mtp_state,
     Predictor* mtp = nullptr,
-    std::optional<PreparedPrompt> prepared = {},
+    std::optional<tyloi::models::Prepared> prepared = {},
     tyloi::engine::Batch* batching = nullptr,
     std::string request_id = {}, bool decode_ready = false);
 } // namespace tyloi::cuda::internal
@@ -58,7 +58,7 @@ tyloi::engine::Generation run_mtp_generation(
     tyloi::models::Mtp& mtp, tyloi::engine::mtp::State& mtp_state,
     tyloi::engine::InferenceRequest& request,
     tyloi::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,
-    const tyloi::cuda::PreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,
+    const tyloi::models::Prepared* prepared = nullptr, std::size_t reused_tokens = 0,
     std::shared_ptr<const tyloi::Tensor> restored_last_hidden = {},
     std::shared_ptr<tyloi::Tensor>* session_last_hidden = nullptr,
     std::size_t stable_prefix_tokens = 0,

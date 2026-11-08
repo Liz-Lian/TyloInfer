@@ -66,10 +66,10 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
-               const Executor::Mode& mode, Input input) {
+               const Executor::Mode& mode, tyloi::models::Input input) {
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
-               const Executor::Mode& mode, Input input) {
+               const Executor::Mode& mode, tyloi::models::Input input) {
 #endif
     auto ids = token_ids(copies, mode.primary, std::move(input.ids).dense());
     const auto batch = ids.size(0), tokens = ids.size(1);

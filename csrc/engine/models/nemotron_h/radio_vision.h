@@ -529,7 +529,7 @@ class CudaRadioPromptComponent {
                                         std::move(input_contract));
     }
 
-    tyloi::StepSequence<PreparedPrompt> prepare(Model &language,
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(Model &language,
 #ifndef TYLOINFER_NATIVE_CUDA
                                                   Projector projector,
                                                   Executor &executor, Collectives &collectives,
@@ -625,7 +625,7 @@ class CudaRadioPromptComponent {
                                  .device(::tyloi::kCUDA))
                              .reshape({1, static_cast<std::int64_t>(token_ids.size())});
 #endif
-        co_yield PreparedPrompt{token_ids, std::move(embeddings), std::move(positions), 0,
+        co_yield tyloi::models::Prepared{token_ids, std::move(embeddings), std::move(positions), 0,
                                     cache_key};
     }
 

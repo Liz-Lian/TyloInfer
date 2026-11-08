@@ -11,7 +11,6 @@
 #endif
 #include "engine/weights/weights.h"
 #include "engine/models/source.h"
-#include "engine/models/options.h"
 #include "engine/models/input.h"
 #include "engine/models/causal_model.h"
 

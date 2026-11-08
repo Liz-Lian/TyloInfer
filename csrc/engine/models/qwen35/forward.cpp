@@ -148,7 +148,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
 #endif
                     Collectives& collectives, const Executor::Mode& options, DenseTensor ids,
                     DenseTensor embeddings, std::optional<DenseTensor> positions,
-                    std::optional<DenseTensor> lengths, Input::Trace* trace,
+                    std::optional<DenseTensor> lengths, tyloi::models::Input::Trace* trace,
                     bool advance, std::optional<DenseTensor> cache_positions,
 #ifdef TYLOINFER_NATIVE_CUDA
                     ::tyloi::Tensor* raw_hidden,
@@ -276,10 +276,10 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& options, Input input) {
+               const Executor::Mode& options, tyloi::models::Input input) {
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& options, Input input) {
+               const Executor::Mode& options, tyloi::models::Input input) {
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
     auto ids = normalize_ids(collectives, options.primary, input.ids.dense());

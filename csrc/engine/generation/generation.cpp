@@ -251,7 +251,7 @@ namespace tyloi::cuda::internal {
         tyloi::engine::InferenceOutput &,                                                            \
         tyloi::engine::mtp::State &,                                                                  \
         PREDICTOR *,                                                                      \
-        std::optional<PreparedPrompt>,                                                         \
+        std::optional<tyloi::models::Prepared>,                                                         \
         tyloi::engine::Batch*, std::string,                    \
         bool);
 #ifndef TYLOINFER_NATIVE_CUDA

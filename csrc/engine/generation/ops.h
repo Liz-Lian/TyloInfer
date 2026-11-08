@@ -6,7 +6,7 @@
 #include "engine/weights/workspace.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/options.h"
+#include "engine/models/input.h"
 #endif
 
 #include <cstddef>
@@ -40,7 +40,7 @@ template<class Model, class Ops>
 void generation_request(Model&, Ops&, const tyloi::engine::InferenceRequest&) {}
 
 template<class Model, class State>
-bool generation_borrow(Model&, State&, std::size_t, const PreparedPrompt*) { return false; }
+bool generation_borrow(Model&, State&, std::size_t, const tyloi::models::Prepared*) { return false; }
 
 template<class Model>
 bool generation_prefill_begin(Model&, DecodeGraphCache&, bool) { return false; }

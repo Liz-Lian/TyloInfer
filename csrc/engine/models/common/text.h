@@ -292,7 +292,7 @@ struct Text {
     void execute(const std::vector<RequestId>& eligible) {
         if (batching) batching->step(eligible);
     }
-    using Prepared = PreparedPrompt;
+    using Prepared = tyloi::models::Prepared;
     tyloi::StepSequence<Prepared> prepare(InferenceRequest& input, State& state) {
         if constexpr (std::is_same_v<Parts, std::unique_ptr<tyloi::cuda::minicpmo45::Components>>) {
             if (!components) throw std::invalid_argument("model has no multimodal component");

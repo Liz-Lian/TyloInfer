@@ -63,7 +63,7 @@ Components::Components(const text::Model& language, text::State& language_state,
 
 Components::~Components() = default;
 
-tyloi::StepSequence<PreparedPrompt> Components::prepare(
+tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
         const std::vector<int64_t>& prompt, const MfqMultimodalInput& vision) {
     const auto cpu_i64 =
         ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCPU);
@@ -128,7 +128,7 @@ tyloi::StepSequence<PreparedPrompt> Components::prepare(
         if (step.value) result = std::move(*step.value);
         else co_yield step.state;
     }
-    PreparedPrompt prepared;
+    tyloi::models::Prepared prepared;
     prepared.token_ids = prompt;
 #ifdef TYLOINFER_NATIVE_CUDA
     prepared.embeddings = std::move(result.input_embeddings);

@@ -19,7 +19,7 @@
 #include "engine/models/source/model_config.h"
 #include "engine/models/session/cache.h"
 #include "engine/models/gemma4/load.h"
-#include "engine/models/options.h"
+#include "engine/models/input.h"
 #include "engine/requests/processor.h"
 #include "engine/state/session/sessions.h"
 #endif

@@ -21,7 +21,7 @@
 #include "engine/models/common/prompt.h"
 #include "engine/backends/cuda/executor/sampling.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#include "engine/models/common/input.h"
+#include "engine/models/input.h"
 #include "engine/models/causal_model.h"
 
 #include <algorithm>
@@ -50,7 +50,7 @@ constexpr bool has_forward =
     requires(
     Model& model, State& state, tyloi::cuda::Executor& executor,
     tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
-    tyloi::cuda::Input input) {
+    tyloi::models::Input input) {
     forward(model, state, executor, collectives, mode, std::move(input));
 };
 
@@ -69,7 +69,7 @@ constexpr bool has_logits =
 
 template <typename Model, typename State>
 auto hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
-              Collectives& collectives, const Executor::Mode& mode, tyloi::cuda::Input input) {
+              Collectives& collectives, const Executor::Mode& mode, tyloi::models::Input input) {
     static_assert(has_forward<Model, State>);
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                             "CUDA model forward requires an executor");
@@ -107,7 +107,7 @@ template <typename Model, typename State, typename Value>
 auto last_logits(Model& model, State& state, tyloi::cuda::Executor* executor,
                    Collectives& collectives, const Executor::Mode& mode, Value ids, bool capped) {
     auto value = hidden(model, state, executor, collectives, mode,
-                        tyloi::cuda::Input{std::move(ids)});
+                        tyloi::models::Input{std::move(ids)});
 #ifdef TYLOINFER_NATIVE_CUDA
     return project(model, executor, mode,
                    tyloi::ops::contiguous(tyloi::ops::cast(tyloi::ops::select(value, 1, -1),
@@ -180,7 +180,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 #endif
     tyloi::cuda::Sampler sampler;
     bool has_penalties;
-    const PreparedPrompt *prepared;
+    const tyloi::models::Prepared *prepared;
     const tyloi::engine::GraphConfig graph_config;
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor full_ids;
@@ -199,7 +199,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         Collectives& collectives, Executor::Mode mode, CudaProfiler& profiler,
         ::tyloi::weights::Cache& weights, bool& serial_branches, bool report_memory,
         const tyloi::models::Info &info, DecodeGraphCache &graph,
-        const tyloi::engine::InferenceRequest &request, const PreparedPrompt *prepared,
+        const tyloi::engine::InferenceRequest &request, const tyloi::models::Prepared *prepared,
         const tyloi::engine::GraphConfig &graph_config,int64_t compute_chunk=1024,
         tyloi::engine::InferenceOutput* inference_output=nullptr,
         tyloi::engine::Budget* budget=nullptr, const tyloi::ModelSource* source=nullptr)
@@ -265,7 +265,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         } else if (prepared && prepared->transformed()) {
             tyloi::weights::Loan workspace(weights);
             const bool borrowed=generation_workspace(model,workspace,chunk.count);
-            tyloi::cuda::Input input;
+            tyloi::models::Input input;
 #ifdef TYLOINFER_NATIVE_CUDA
             input.ids = ids;
             if (prepared->embeddings)
@@ -298,7 +298,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
             state.set_position_delta(prepared->decode_position_delta);
         } else {
             hidden = ::tyloi::cuda::internal::generation_detail::hidden(
-                model, state, executor, collectives, mode, tyloi::cuda::Input{std::move(ids)});
+                model, state, executor, collectives, mode, tyloi::models::Input{std::move(ids)});
         }
         // Match prompt-progress timing: first-token head/sampling and expert
         // restoration remain in TTFT, outside reported prefill throughput.
@@ -367,7 +367,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         auto graph_mode = mode;
         graph_mode.ffn.serial = true;
         const auto sample_static = [&]() {
-            tyloi::cuda::Input input;
+            tyloi::models::Input input;
             input.ids = graph.static_input;
             input.positions = graph.static_pos;
             input.cache_positions = graph.static_pos;
@@ -571,7 +571,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     const tyloi::engine::Config &config;
     tyloi::engine::mtp::State &mtp_state;
     Predictor *mtp;
-    std::optional<PreparedPrompt> prepared;
+    std::optional<tyloi::models::Prepared> prepared;
     tyloi::engine::Batch* batching;
     std::string request_id;
     bool decode_ready;
@@ -705,7 +705,7 @@ Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
     const tyloi::engine::Config &config, tyloi::engine::InferenceRequest &request,
     tyloi::engine::InferenceOutput &output, tyloi::engine::mtp::State &mtp_state,
     Predictor *mtp,
-    std::optional<PreparedPrompt> prepared,
+    std::optional<tyloi::models::Prepared> prepared,
     tyloi::engine::Batch* batching, std::string request_id,
     bool decode_ready) {
     return tyloi::engine::generate_request(

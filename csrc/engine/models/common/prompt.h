@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/native/tensor/backend.h"
-#include "engine/models/prepared.h"
+#include "engine/models/input.h"
 #include "engine/state/media.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
@@ -17,22 +17,8 @@ namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA
 using MediaCache = tyloi::cache::Media<std::shared_ptr<tyloi::Tensor>>;
-using PreparedPrompt = tyloi::models::Prepared;
 #else
 using MediaCache = tyloi::cache::Media<::tyloi::DenseTensor>;
-struct PreparedPrompt {
-    std::vector<std::int64_t> token_ids;
-    ::tyloi::DenseTensor embeddings;
-    ::tyloi::DenseTensor positions;
-    int decode_position_delta = 0;
-    std::string cache_key;
-    ::tyloi::DenseTensor image_mask;
-
-    bool transformed() const noexcept {
-        return embeddings.defined() || positions.defined() ||
-            decode_position_delta != 0;
-    }
-};
 #endif
 
 // Image participation is scoped to one prepared prefill chunk. It must not
@@ -44,7 +30,7 @@ template<class State> class ImageMaskScope {
     std::shared_ptr<const Tensor> mask_;
 #endif
 public:
-    ImageMaskScope(State& state,const PreparedPrompt* prepared,
+    ImageMaskScope(State& state,const tyloi::models::Prepared* prepared,
                    int64_t offset,int64_t count):state_(state) {
 #ifdef TYLOINFER_NATIVE_CUDA
         if(!prepared || !prepared->image_mask || !prepared->image_mask.defined())return;

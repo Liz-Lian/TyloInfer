@@ -174,7 +174,7 @@ class CudaGridVisionPromptComponent {
          std::string input_contract, std::string position_policy);
 
     template <typename Model>
-    tyloi::StepSequence<PreparedPrompt> prepare(
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(
         const Model &language, MediaCache &images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives &collectives,
@@ -375,7 +375,7 @@ class CudaGridVisionPromptComponent {
                     .to(::tyloi::kInt64);
 #endif
             });
-        co_yield PreparedPrompt{token_ids, std::move(prepared.embeddings),
+        co_yield tyloi::models::Prepared{token_ids, std::move(prepared.embeddings),
                                     std::move(prepared.positions), prepared.decode_delta,
                                     std::move(cache_key)};
     }

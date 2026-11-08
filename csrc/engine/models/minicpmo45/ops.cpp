@@ -277,10 +277,10 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 }
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
-               const Executor::Mode& run_mode, Input input) {
+               const Executor::Mode& run_mode, tyloi::models::Input input) {
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
-               const Executor::Mode& run_mode, Input input) {
+               const Executor::Mode& run_mode, tyloi::models::Input input) {
 #endif
     auto mode = run_mode;
     mode.ffn.independent = true;

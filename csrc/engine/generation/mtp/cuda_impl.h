@@ -22,7 +22,7 @@
 #include "engine/generation/mtp/ops.h"
 #include "engine/generation/ops.h"
 #include "engine/backends/cuda/native/profile.h"
-#include "engine/models/common/input.h"
+#include "engine/models/input.h"
 #include "engine/models/causal_model.h"
 
 #include <cuda_runtime_api.h>
@@ -73,7 +73,7 @@ using Tensor = ::tyloi::DenseTensor;
 template <typename Model, typename State>
 constexpr bool has_forward =
 #ifdef TYLOINFER_NATIVE_CUDA
-  requires(Model& model, State& state, tyloi::cuda::Input input,
+  requires(Model& model, State& state, tyloi::models::Input input,
            const tyloi::models::ForwardOptions& options) {
     static_cast<const tyloi::models::CausalModel&>(model).forward(std::move(input), state, options);
   } ||
@@ -81,7 +81,7 @@ constexpr bool has_forward =
   requires(
     Model& model, State& state, tyloi::cuda::Executor& executor,
     tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
-    tyloi::cuda::Input input) {
+    tyloi::models::Input input) {
   forward(model, state, executor, collectives, mode, std::move(input));
 };
 
@@ -94,7 +94,7 @@ constexpr bool has_replay = requires(
 template <typename Model, typename State>
 Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
               tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
-              tyloi::cuda::Input input) {
+              tyloi::models::Input input) {
   static_assert(has_forward<Model, State>);
 #ifdef TYLOINFER_NATIVE_CUDA
   auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
@@ -133,7 +133,7 @@ template <class Model, class State> struct CudaMtpOps {
   const tyloi::ModelSource* source;
   tyloi::models::Mtp &mtp;
   tyloi::engine::mtp::State &mtp_state;
-  const tyloi::cuda::PreparedPrompt *prepared;
+  const tyloi::models::Prepared *prepared;
   bool transformed_prompt;
   int position_axes;
   int64_t prefill_compute_chunk;
@@ -296,7 +296,7 @@ template <class Model, class State> struct CudaMtpOps {
              ::tyloi::weights::Cache& weights,
              const tyloi::models::Info &info, const tyloi::ModelSource* source,
              tyloi::models::Mtp &mtp, tyloi::engine::mtp::State &mtp_state,
-             const tyloi::cuda::PreparedPrompt *prepared,
+             const tyloi::models::Prepared *prepared,
              int64_t compute_chunk, InferenceOutput* output,
              tyloi::engine::Budget* budget = nullptr)
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
@@ -417,7 +417,7 @@ template <class Model, class State> struct CudaMtpOps {
     };
     if(auto result=mtp_target_forward(model,*this,ids,raw,confirmed,transfer_before,finish_profile))
       return std::move(*result);
-    tyloi::cuda::Input input;
+    tyloi::models::Input input;
     input.ids = std::move(ids);
     input.raw_hidden = raw;
     input.confirmed = confirmed;
@@ -504,7 +504,7 @@ template <class Model, class State> struct CudaMtpOps {
                                  -1, chunk.offset, chunk.count).contiguous())
                            : mfq_nullopt;
 #endif
-      tyloi::cuda::Input input;
+      tyloi::models::Input input;
 #ifdef TYLOINFER_NATIVE_CUDA
       input.ids = std::move(ids);
       input.embeddings = std::move(embeddings);
@@ -883,7 +883,7 @@ run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
                    tyloi::models::Mtp &mtp, tyloi::engine::mtp::State &mtp_state,
                    InferenceRequest &request,
                    InferenceOutput &output, int64_t prefill_chunk_size,
-                   const tyloi::cuda::PreparedPrompt *prepared,
+                   const tyloi::models::Prepared *prepared,
                    std::size_t reused_tokens,
                    std::shared_ptr<const tyloi::Tensor> restored_last_hidden,
                    std::shared_ptr<tyloi::Tensor> *session_last_hidden,

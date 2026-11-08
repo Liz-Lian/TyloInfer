@@ -595,7 +595,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
 }
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& mode, Input input) {
+               const Executor::Mode& mode, tyloi::models::Input input) {
     MfqCudaGuard guard(mode.primary);
     auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids));
     auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)

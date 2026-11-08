@@ -49,7 +49,7 @@ class CudaEngine final : public engine::Engine {
     using Options = CudaEngineOptions;
 
 public:
-    using Prepared = PreparedPrompt;
+    using Prepared = tyloi::models::Prepared;
 
     CudaEngine(
         CudaEngineOptions options,

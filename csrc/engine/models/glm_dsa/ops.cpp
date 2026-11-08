@@ -371,10 +371,10 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 }
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& mode, Input input) {
+               const Executor::Mode& mode, tyloi::models::Input input) {
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& mode, Input input) {
+               const Executor::Mode& mode, tyloi::models::Input input) {
 #endif
     MfqCudaGuard guard(mode.primary);
     auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids).dense());

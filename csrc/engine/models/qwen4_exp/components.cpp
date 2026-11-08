@@ -19,7 +19,7 @@ std::optional<tyloi::engine::Metrics> Components::memory_metrics(const Model& la
     return qwen4_cache_memory_metrics(language, state, mtp.get());
 }
 
-tyloi::StepSequence<PreparedPrompt> Components::prepare(
+tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
         Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,

@@ -1,7 +1,7 @@
 #include "engine/models/gemma4/state.h"
 #include "engine/models/gemma4/model.h"
 #ifdef TYLOINFER_NATIVE_CUDA
-#include "engine/models/options.h"
+#include "engine/models/input.h"
 #include "engine/ops.h"
 #else
 #include "engine/backends/cuda/executor/options.h"

@@ -121,7 +121,7 @@ void generation_request(qwen4_exp::Model& model, Ops& ops, const tyloi::engine::
 #endif
 }
 
-inline bool generation_borrow(qwen4_exp::Model& model, qwen4_exp::State& state, std::size_t tokens, const PreparedPrompt* prepared) {
+inline bool generation_borrow(qwen4_exp::Model& model, qwen4_exp::State& state, std::size_t tokens, const tyloi::models::Prepared* prepared) {
     return qwen4_layer_major_prefill_eligible(model,state,std::min<std::size_t>(tokens,8192)) &&
         (!prepared || !prepared->transformed());
 }

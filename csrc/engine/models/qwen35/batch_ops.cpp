@@ -1,6 +1,6 @@
 #include "engine/models/qwen35/batch_ops.h"
 #include "engine/models/batch.h"
-#include "engine/models/common/input.h"
+#include "engine/models/input.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
@@ -117,7 +117,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     if (chunk.offset > 0 && chunk.count == 1)
         length =
             ::tyloi::cuda::full({1}, chunk.offset + 1, request->prefill_ids.options());
-    Input input;
+    tyloi::models::Input input;
     input.ids = request->prefill_ids.narrow(1, chunk.offset, chunk.count).contiguous();
     input.lengths = std::move(length);
     hidden = forward(*model_, request->cache.state(), request->cache.executor(),
@@ -306,7 +306,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     try {
         if (graph_decode) {
             const auto invoke = [&]() {
-                Input input;
+                tyloi::models::Input input;
                 input.ids = ids;
                 input.positions = pos;
                 input.lengths = lengths;
@@ -347,7 +347,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
             graph_tokens = decode_graph->static_next;
             ++cuda_graph_replays_;
         } else {
-            Input input;
+            tyloi::models::Input input;
             input.ids = ids;
             input.positions = pos;
             input.lengths = lengths;

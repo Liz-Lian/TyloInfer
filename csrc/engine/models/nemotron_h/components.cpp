@@ -37,7 +37,7 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
     return result;
 }
 
-tyloi::StepSequence<PreparedPrompt> Components::prepare(Model& language, MediaCache&,
+tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(Model& language, MediaCache&,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif

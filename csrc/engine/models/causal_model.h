@@ -4,9 +4,7 @@
 #include "engine/metrics.h"
 #include "engine/models/metadata.h"
 #include "engine/models/input.h"
-#include "engine/models/options.h"
 #include "engine/models/state.h"
-#include "engine/models/prepared.h"
 #include "engine/generation/sequence.h"
 
 #include <cstdint>

@@ -21,7 +21,7 @@ class Components {
                CudaExecutionContext& execution);
     ~Components();
 
-    tyloi::StepSequence<PreparedPrompt> prepare(const std::vector<int64_t>& prompt,
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<int64_t>& prompt,
                                                const MfqMultimodalInput& media);
     void start(const MfqDuplexSessionParams& parameters);
     MfqDuplexStepResult step(const MfqDuplexStepInput& input);

@@ -21,7 +21,7 @@ struct Components {
     static constexpr bool streamed_kv() noexcept { return true; }
     tyloi::engine::Metrics profile_metrics(const Model& language, const State& state) const;
     std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language, const State& state) const;
-    tyloi::StepSequence<PreparedPrompt> prepare(
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(
         Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,

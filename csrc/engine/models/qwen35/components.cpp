@@ -48,7 +48,7 @@ void Components::describe(tyloi::engine::EngineInfo& info) const {
         caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
 }
 
-tyloi::StepSequence<PreparedPrompt> Components::prepare(
+tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
     Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA
     Projector projector, Collectives& collectives,

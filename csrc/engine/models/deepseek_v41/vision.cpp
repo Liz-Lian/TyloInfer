@@ -99,7 +99,7 @@ tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
     }
 }
 
-tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& language, MediaCache& images,
+tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(deepseek_v41::Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector,
 #endif
@@ -199,11 +199,11 @@ tyloi::StepSequence<PreparedPrompt> Vision::prepare(deepseek_v41::Model& languag
         co_yield tyloi::StepState::advanced;
     }
 #ifdef TYLOINFER_NATIVE_CUDA
-    PreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
+    tyloi::models::Prepared prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
     auto mask_tensor=tyloi::ops::tensor(mask,tyloi::Device{tyloi::DeviceType::cpu,0});
     prepared.image_mask=tyloi::ops::reshape(*mask_tensor,{1,-1});
 #else
-    PreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
+    tyloi::models::Prepared prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
     prepared.image_mask=::tyloi::cuda::tensor(mask,::tyloi::TensorOptions()
         .dtype(::tyloi::kUInt8).device(::tyloi::kCPU)).reshape({1,-1});
 #endif

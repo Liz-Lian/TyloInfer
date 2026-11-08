@@ -15,7 +15,7 @@ public:
     using DenseTensor = ::tyloi::DenseTensor;
 #endif
     static Vision load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,const CommonConfig& config);
-    tyloi::StepSequence<PreparedPrompt> prepare(deepseek_v41::Model& language, MediaCache& images,
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(deepseek_v41::Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector,
 #endif

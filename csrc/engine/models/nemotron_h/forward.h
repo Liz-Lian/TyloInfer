@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/common/input.h"
+#include "engine/models/input.h"
 #include "engine/models/nemotron_h/model.h"
 #include "engine/models/nemotron_h/state.h"
 
@@ -17,7 +17,7 @@ namespace tyloi::cuda::nemotron_h {
 ::tyloi::Tensor softcap(const Model&, Executor&, const ::tyloi::Tensor& logits);
 ::tyloi::Tensor logits(const Model&, Executor&, const ::tyloi::Tensor& hidden, bool capped = true,
               const Executor::Mode& = {});
-::tyloi::Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
+::tyloi::Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, tyloi::models::Input);
 #else
 DenseTensor embed(const Model&, Executor&, Collectives&, int primary, DenseTensor ids,
              const Executor::Mode& = {});
@@ -25,7 +25,7 @@ DenseTensor normalize(const Model&, Executor&, DenseTensor hidden, std::int64_t 
 DenseTensor softcap(const Model&, Executor&, DenseTensor logits);
 DenseTensor logits(const Model&, Executor&, DenseTensor hidden, bool capped = true,
               const Executor::Mode& = {});
-DenseTensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
+DenseTensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, tyloi::models::Input);
 #endif
 DenseTensor forward_layer(const Layer&, LayerState&, Executor&, std::size_t scratch_index, DenseTensor,
                      const AttentionStep&, std::int64_t confirmed, const Executor::Mode&);

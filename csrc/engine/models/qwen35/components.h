@@ -51,7 +51,7 @@ struct Components {
 
     void describe(tyloi::engine::EngineInfo& info) const;
 
-    tyloi::StepSequence<PreparedPrompt> prepare(
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(
         Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,

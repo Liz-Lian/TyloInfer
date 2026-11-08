@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/common/input.h"
+#include "engine/models/input.h"
 #include "engine/models/qwen35/model.h"
 #include "engine/models/qwen35/state.h"
 #include "engine/models/common/attention.h"
@@ -15,7 +15,7 @@ namespace tyloi::cuda::qwen35 {
 ::tyloi::Tensor embed(const Model&, Executor&, Collectives&, int primary, const ::tyloi::Tensor& ids,
              const Executor::Mode& = {});
 
-::tyloi::Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
+::tyloi::Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, tyloi::models::Input);
 
 ::tyloi::Tensor normalize(const Model&, Executor&, const ::tyloi::Tensor& hidden, std::int64_t batch,
                  std::int64_t tokens);
@@ -28,7 +28,7 @@ namespace tyloi::cuda::qwen35 {
 DenseTensor embed(const Model&, Executor&, Collectives&, int primary, DenseTensor ids,
              const Executor::Mode& = {});
 
-DenseTensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
+DenseTensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, tyloi::models::Input);
 
 DenseTensor normalize(const Model&, Executor&, DenseTensor hidden, std::int64_t batch,
                  std::int64_t tokens);
