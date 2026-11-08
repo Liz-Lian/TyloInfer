@@ -5,8 +5,8 @@
 #include "engine/weights/source/safetensors.h"
 #include "engine/weights/source/read.h"
 
-#include "engine/models/common/hf.h"
-#include "engine/models/common/mlx_names.h"
+#include "engine/models/source/hf.h"
+#include "engine/models/source/mlx_names.h"
 #include "engine/weights/hf.h"
 #include "nlohmann/json.hpp"
 

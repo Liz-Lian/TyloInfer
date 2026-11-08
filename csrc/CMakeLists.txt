@@ -73,7 +73,7 @@ endif()
 # canonical model graph and several public policy headers consume it.
 add_subdirectory(components/json)
 add_subdirectory(engine/weights/encoding)
-add_subdirectory(engine/models/common)
+add_subdirectory(engine/models/source)
 add_subdirectory(engine/backends/cpu)
 add_subdirectory(engine/state)
 add_subdirectory(components/io)

@@ -4,7 +4,7 @@
 #include "engine/models/metadata.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/task.h"
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_graph.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/common/attention.h"
 #include "engine/backends/cuda/ops/attention/linear.h"

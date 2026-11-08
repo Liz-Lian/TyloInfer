@@ -1,7 +1,7 @@
 #include "engine/models/qwen4_exp/components.h"
 
 #include "engine/backends/cuda/executor/execution.h"
-#include "engine/models/common/model_config.h"
+#include "engine/models/source/model_config.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/weights/loader.h"

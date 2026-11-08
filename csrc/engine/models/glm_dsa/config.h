@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../common/model_config.h"
+#include "../source/model_config.h"
 
 #include <cstdint>
 #include <string>

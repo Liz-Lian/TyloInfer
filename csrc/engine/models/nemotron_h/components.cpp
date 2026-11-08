@@ -1,6 +1,6 @@
 #include "engine/models/nemotron_h/components.h"
 
-#include "engine/models/common/model_config.h"
+#include "engine/models/source/model_config.h"
 #include "engine/models/nemotron_h/model.h"
 #include "engine/models/nemotron_h/mtp.h"
 

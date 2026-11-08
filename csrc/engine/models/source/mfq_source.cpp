@@ -4,7 +4,7 @@
 #include "engine/weights/source/files.h"
 #include "engine/weights/source/mapped.h"
 
-#include "engine/models/common/legacy_names.h"
+#include "engine/models/source/legacy_names.h"
 
 #include <algorithm>
 #include <limits>

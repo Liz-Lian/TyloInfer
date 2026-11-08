@@ -1,7 +1,7 @@
 #include "engine/models/source.h"
 #include "engine/ops.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_graph.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/moe/load.h"
 #include "engine/weights/loader.h"

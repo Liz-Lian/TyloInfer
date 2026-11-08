@@ -23,14 +23,14 @@ add_library(mfq-model-source STATIC
     ../source.h
     tq_fixture_source.cpp
     tq_fixture_source.h
-    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq_source.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/hf_source.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/gguf_source.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/common/gguf_source.h
-    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq_source.h
-    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq.h
-    ${PROJECT_SOURCE_DIR}/engine/models/common/hf_source.h
+    mfq_source.cpp
+    mfq.cpp
+    hf_source.cpp
+    gguf_source.cpp
+    gguf_source.h
+    mfq_source.h
+    mfq.h
+    hf_source.h
 )
 add_library(mfq::model-source ALIAS mfq-model-source)
 target_include_directories(mfq-model-source PUBLIC ${PROJECT_SOURCE_DIR})

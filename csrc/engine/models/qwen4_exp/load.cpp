@@ -5,8 +5,8 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/check.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/model_config.h"
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_config.h"
+#include "engine/models/source/model_graph.h"
 #include "engine/models/source.h"
 #include "engine/weights/cache.h"
 

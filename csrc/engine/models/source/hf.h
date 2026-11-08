@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/legacy_names.h"
+#include "engine/models/source/legacy_names.h"
 
 #include <optional>
 #include <string>

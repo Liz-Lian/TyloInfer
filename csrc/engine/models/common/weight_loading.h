@@ -1,6 +1,6 @@
 #pragma once
 
-#include "model_config.h"
+#include "../source/model_config.h"
 #include "engine/ops.h"
 #include <memory>
 #include <string>

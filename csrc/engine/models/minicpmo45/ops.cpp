@@ -3,7 +3,7 @@
 #include "engine/models/common/load.h"
 #include "engine/models/common/causal_forward.h"
 #include "engine/models/common/session/state.h"
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/ops/norm/rms.h"

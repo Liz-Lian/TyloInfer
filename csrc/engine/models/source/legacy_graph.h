@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_graph.h"
 
 #include <functional>
 #include <string_view>

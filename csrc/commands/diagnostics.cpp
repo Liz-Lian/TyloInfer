@@ -1,5 +1,5 @@
 #include "engine/models/common/load.h"
-#include "engine/models/common/model_config.h"
+#include "engine/models/source/model_config.h"
 #include "env.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/models/glm5_next/mtp.h"

@@ -1,10 +1,10 @@
 #include "source.h"
 
 #include "engine/weights/source/gguf.h"
-#include "common/hf_source.h"
-#include "common/gguf_source.h"
-#include "common/mfq_source.h"
-#include "common/tq_fixture_source.h"
+#include "source/hf_source.h"
+#include "source/gguf_source.h"
+#include "source/mfq_source.h"
+#include "source/tq_fixture_source.h"
 
 #include <cstdlib>
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/common/load.h"
-#include "engine/models/common/model_config.h"
+#include "engine/models/source/model_config.h"
 #include "env.h"
 #include "engine/load.h"
 #include "engine/drain.h"

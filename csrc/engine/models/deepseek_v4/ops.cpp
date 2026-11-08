@@ -4,7 +4,7 @@
 #include "engine/models/session.h"
 #include "engine/models/common/check.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_graph.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/group.h"
 #include "engine/backends/cuda/executor/tq.h"

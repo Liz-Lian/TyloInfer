@@ -1,8 +1,8 @@
 #pragma once
 
 #include "engine/weights/source/source.h"
-#include "common/legacy_names.h"
-#include "common/model_graph.h"
+#include "source/legacy_names.h"
+#include "source/model_graph.h"
 
 namespace tyloi {
 

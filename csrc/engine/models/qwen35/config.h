@@ -1,9 +1,9 @@
 #pragma once
 
 #include "engine/models/common/vision/grid_vision.h"
-#include "engine/models/common/legacy_names.h"
-#include "engine/models/common/model_graph.h"
-#include "engine/models/common/model_config.h"
+#include "engine/models/source/legacy_names.h"
+#include "engine/models/source/model_graph.h"
+#include "engine/models/source/model_config.h"
 #include "engine/ops.h"
 
 #include <cstdint>

@@ -10,8 +10,8 @@
 #include "engine/models/deepseek_v41/components.h"
 #include "engine/models/nemotron_h/components.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/model_config.h"
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_config.h"
+#include "engine/models/source/model_graph.h"
 #include "engine/models/qwen35/load.h"
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/gemma4/load.h"

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "engine/models/common/model_graph.h"
-#include "../common/model_config.h"
+#include "engine/models/source/model_graph.h"
+#include "../source/model_config.h"
 
 #include <cstdint>
 #include <string>

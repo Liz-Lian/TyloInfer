@@ -1,7 +1,7 @@
-#include "engine/models/common/gguf_source.h"
+#include "engine/models/source/gguf_source.h"
 
-#include "engine/models/common/gguf.h"
-#include "engine/models/common/legacy_names.h"
+#include "engine/models/source/gguf.h"
+#include "engine/models/source/legacy_names.h"
 #include "engine/weights/gguf.h"
 
 #include "nlohmann/json.hpp"

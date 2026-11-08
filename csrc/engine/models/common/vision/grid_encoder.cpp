@@ -1,7 +1,7 @@
 #include "engine/models/common/vision/grid_encoder.h"
 
 #include "engine/backends/cuda/executor/options.h"
-#include "engine/models/common/model_graph.h"
+#include "engine/models/source/model_graph.h"
 #include "engine/weights/loader.h"
 
 #include <algorithm>
