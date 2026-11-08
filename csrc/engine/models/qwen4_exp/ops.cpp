@@ -16,7 +16,6 @@
 #include "engine/backends/cuda/native/stream.h"
 #include "ops.h"
 #include "model.h"
-#include "loader.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 #include "predictor.h"
 #include "engine/models/common/load.h"
@@ -381,19 +380,6 @@ DenseTensor Moe::forward(CudaExecutionContext &execution,const DenseTensor &x) c
 }
 
 
-// Block weights load through the local loader; defined here where it is complete.
-Qwen4Block::Qwen4Block(CudaExecutionContext &execution, const tyloi::weights::Loader& weights,
-                       const tyloi::models::qwen4_exp::Config &c, int layer, bool predictor) {
-    BlockLoader loader{weights, execution, &router, &prefetch, &tq_graph_ffn};
-    loader.role = "qwen4_exp";
-    tyloi::models::qwen4_exp::load_block(*this, loader, c, layer, predictor);
-}
-
-
-std::unique_ptr<Qwen4Block> BlockLoader::block(const Config &c, int layer, bool predictor) {
-    return std::make_unique<Qwen4Block>(execution, *this, c, layer, predictor);
-}
-
 // One word changes the captured readout's work without retaining a second
 // graph or its scratch. DecodeWindow waits for the previous replay before the
 // host changes this flag. Greedy requests do not consume compact top-k.
@@ -577,26 +563,6 @@ Predictor::Predictor() = default;
 Predictor::~Predictor() = default;
 Predictor::Predictor(Predictor&&) noexcept = default;
 Predictor& Predictor::operator=(Predictor&&) noexcept = default;
-
-std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execution,
-                                                      const tyloi::weights::Loader& weights,
-                                                      const tyloi::models::qwen4_exp::Config &main,
-                                                      std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
-                                                      double softcap) {
-    Predictor result;
-    result.execution = &execution;
-    result.embedding = std::move(embedding);
-    result.output = std::move(output);
-    result.softcap = softcap;
-    result.primary = weights.placement.device;
-    BlockLoader loader{weights,execution};
-    loader.role = "qwen4_exp";
-    if (!tyloi::models::qwen4_exp::load_predictor(result, loader, main))
-        return std::nullopt;
-    for (const auto& layer : result.layers)
-        result.layer_states.push_back(std::make_unique<LayerState>(*layer));
-    return result;
-}
 
 DenseTensor Predictor::embed(DenseTensor ids) const {
     return tyloi::cuda::embed(*embedding, std::move(ids), execution->executor().collectives(),

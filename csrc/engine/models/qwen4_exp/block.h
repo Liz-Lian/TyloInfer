@@ -18,7 +18,6 @@
 #include <vector>
 
 namespace tyloi::cuda::qwen4_exp {
-struct BlockLoader;
 struct Qwen4Block;
 
 struct LayerState {
@@ -89,7 +88,6 @@ struct Qwen4Block final {
         }
         return ::tyloi::cuda::cat(outputs,0);
     }
-    // Defined in ops.cpp, next to the loader it uses.
     Qwen4Block(CudaExecutionContext &execution, const tyloi::weights::Loader& weights,
                const tyloi::models::qwen4_exp::Config &c, int layer, bool predictor = false);
     void reset(LayerState& state, int64_t) {

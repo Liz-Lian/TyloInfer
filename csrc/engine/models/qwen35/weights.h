@@ -2,7 +2,7 @@
 
 #include "engine/models/qwen35/config.h"
 #include "engine/ops.h"
-#include "../common/weight_loading.h"
+#include "engine/models/common/load.h"
 
 namespace tyloi::models::qwen35 {
 

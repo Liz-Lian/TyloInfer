@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <span>
 #include "engine/models/common/load.h"
+#include "engine/weights/loader.h"
 #include "engine/models/session/paged.h"
 #include "engine/ops.h"
 

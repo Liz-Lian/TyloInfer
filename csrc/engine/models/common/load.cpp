@@ -1,6 +1,8 @@
 #include "engine/models/source.h"
 #include "engine/ops.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/attention.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/moe/load.h"
@@ -12,6 +14,9 @@
 #include <cstdio>
 #include <cmath>
 #include <nlohmann/json.hpp>
+
+std::vector<std::int64_t> TransformerWeightLoader::shape(const ::tyloi::DenseTensor& value) { return value.sizes().vec(); }
+int64_t TransformerWeightLoader::elements(const ::tyloi::DenseTensor& value) { return value.numel(); }
 
 void load_important_neuron_branch(const tyloi::weights::Loader& weights,
                                   int64_t hidden_size, int64_t intermediate_size, tyloi::cuda::Ffn &f,

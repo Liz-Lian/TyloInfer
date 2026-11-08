@@ -8,6 +8,8 @@
 #include "engine/requests/policy.h"
 #include "engine/generation/sampling.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/attention.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/state/kv_cache.h"

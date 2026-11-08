@@ -3,6 +3,7 @@
 #include "engine/models/qwen35/components.h"
 
 #include "engine/models/common/load.h"
+#include "engine/weights/loader.h"
 #include "engine/models/common/vision/grid_encoder.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/qwen35/load.h"

@@ -1,6 +1,6 @@
 #pragma once
 #include "config.h"
-#include "../common/weight_loading.h"
+#include "engine/models/common/load.h"
 #include "../common/causal_forward.h"
 #include "engine/models/metadata.h"
 #include <utility>
