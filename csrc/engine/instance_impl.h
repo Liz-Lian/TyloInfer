@@ -8,7 +8,7 @@
 #include "engine/models/common/capabilities.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
-#include "engine/models/common/text.h"
+#include "engine/generation/instance.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
 #include "engine/backends/cuda/executor/options.h"
@@ -203,8 +203,12 @@ class EngineInstance final : public Engine {
             if (text_) info_.chat = text_->chat_template_capabilities();
             loaded_ = true;
         } catch (...) {
-            unload_model();
-            throw;
+            const auto failure = std::current_exception();
+            try { unload_model(); }
+            catch (const std::exception& error) {
+                std::cerr << "runtime_load_cleanup error=" << error.what() << '\n';
+            }
+            std::rethrow_exception(failure);
         }
     }
     bool exclusive() const override {

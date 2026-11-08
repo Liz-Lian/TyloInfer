@@ -177,12 +177,6 @@ struct Native {
     StepSequence<Prepared> prepare(InferenceRequest& input, models::State& target) {
         return model.prepare(input.prompt, *input.vision, target);
     }
-    auto advance_preparation(StepSequence<Prepared>& preparation) {
-        auto timer = executor.timer();
-        auto step = preparation.next();
-        timer->stop();
-        return std::pair{std::move(step), timer->elapsed_ms()};
-    }
     void validate_prepared() const {
         if (prepared && prepared->image_mask && prepared->image_mask->defined())
             throw std::invalid_argument("model cannot apply an image participation mask");
@@ -236,7 +230,7 @@ StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) 
     return generate_prepared(
         Native{*model_, *request.state, *executor_, *budget_, *graph_, *weights_, model_info_,
                config_, forward_options_, source_.get()},
-        *request.state, request.input, *request.output, id, request.batched);
+        *request.state, *executor_, request.input, *request.output, id, request.batched);
 }
 } // namespace tyloi::engine
 

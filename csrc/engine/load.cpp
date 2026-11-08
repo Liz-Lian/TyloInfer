@@ -11,7 +11,6 @@
 #include "engine/models/glm5_next/forward.h"
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/source/model_graph.h"
-#include "engine/engine_impl.h"
 #include "engine/instance_impl.h"
 #include "engine/drain.h"
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -52,6 +51,7 @@
 namespace tyloi::cuda::engine_detail {
 
 using State = std::variant<
+    std::unique_ptr<Text<qwen35::Model, qwen35::State, qwen35::Components>>,
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State, std::unique_ptr<minicpmo45::Components>>>,
     std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>,
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -109,28 +109,6 @@ bool model_parallel_cuda_graph_enabled(const CudaLoadConfig& config,
 
 namespace {
 
-auto load_qwen(
-    std::shared_ptr<const ModelSource> source,
-    const tyloi::weights::Loader& weights,
-    LayerPlacementConfig& placement,
-    tyloi::ops::YarnScaling& yarn,
-    int& cpu_layers,
-    const CudaEngineOptions& options,
-    int gpu_layers,
-    bool extend_yarn,
-    bool expert_parallel,
-    bool mirror_scalars) {
-    return std::make_shared<qwen35::Model>(qwen35::load(
-        source, weights, placement, yarn, cpu_layers,
-        qwen35::LoadOptions{
-            .config_path = options.config_path,
-            .context_size = options.context_size,
-            .gpu_layers = gpu_layers,
-            .extend_yarn = extend_yarn,
-            .expert_parallel = expert_parallel,
-            .mirror_scalars = mirror_scalars}));
-}
-
 #ifdef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target);
 #endif
@@ -140,11 +118,6 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     auto source = tyloi::open_model_source(options.model_path);
     const auto backbone = cuda_backbone(tyloi::models::graph(*source).backbone);
-    if (backbone == CudaBackbone::generic_qwen) {
-        return std::make_unique<CudaEngine<
-            qwen35::Model, qwen35::State, qwen35::Components,
-            load_qwen>>(std::move(options), std::move(source));
-    }
     source.reset();
 #ifdef TYLOINFER_NATIVE_CUDA
     if (backbone == CudaBackbone::gemma4) {
@@ -152,17 +125,11 @@ std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     }
 #endif
     return std::make_unique<engine_detail::EngineInstance<
-        engine_detail::State, with_model<false>>>(std::move(options));
+        engine_detail::State, with_model<>>>(std::move(options));
 }
 
 void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
-    if (auto* target = dynamic_cast<CudaEngine<qwen35::Model, qwen35::State, qwen35::Components, load_qwen>*>(&engine)) {
-        target->options_ = std::move(options);
-        target->source_ = tyloi::open_model_source(target->options_.model_path);
-        target->load();
-        return;
-    }
-    if (auto* target = dynamic_cast<engine_detail::EngineInstance<engine_detail::State, with_model<false>>*>(&engine)) {
+    if (auto* target = dynamic_cast<engine_detail::EngineInstance<engine_detail::State, with_model<>>*>(&engine)) {
         target->options = std::move(options);
         target->load();
         return;

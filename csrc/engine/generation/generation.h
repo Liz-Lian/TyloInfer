@@ -2,6 +2,7 @@
 
 #include "step.h"
 #include "engine/config.h"
+#include "engine/executor.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/metadata.h"
 
@@ -22,7 +23,8 @@ inline bool batch_compatible(const EngineRequest &request, bool persistent_prefi
 }
 
 template <class Operations, class State>
-Generation generate_prepared(Operations operations, State &state, InferenceRequest &input, InferenceOutput &output,
+Generation generate_prepared(Operations operations, State &state, tyloi::Executor& executor,
+                             InferenceRequest &input, InferenceOutput &output,
                              const RequestId& id, bool batched) {
     using Ops = std::unwrap_reference_t<Operations>;
     Ops& ops = operations;
@@ -30,8 +32,13 @@ Generation generate_prepared(Operations operations, State &state, InferenceReque
     if (input.vision && !output.stopped()) {
         auto preparation = ops.prepare(input, state);
         while (!output.stopped()) {
-            auto [step, elapsed] = ops.advance_preparation(preparation);
-            output.metrics.multimodal_ms += elapsed;
+            StepResult<typename Ops::Prepared> step;
+            {
+                auto timer = executor.timer();
+                step = preparation.next();
+                timer->stop();
+                output.metrics.multimodal_ms += timer->elapsed_ms();
+            }
             if (step.value) {
                 prepared = std::move(*step.value);
                 break;
