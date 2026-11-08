@@ -15,14 +15,6 @@
 #include <utility>
 #include <vector>
 
-namespace tyloi { class ModelSource; }
-namespace tyloi::weights { struct Loader; }
-
-enum class TextSessionStateKind : int;
-struct TextSessionState;
-
-struct CudaExecutionContext;
-
 namespace tyloi::cuda {
 
 // What the layer loop hands each block: the family-local geometry of one
@@ -40,15 +32,4 @@ struct BlockContext {
     MfqOptional<::tyloi::DenseTensor> cache_positions = mfq_nullopt;
 };
 
-struct CausalResources {
-    tyloi::models::CausalLmMetadata metadata;
-    CudaExecutionContext *execution = nullptr;
-    void adapter_prepare_blocks(const tyloi::weights::Loader& weights);
-    ::tyloi::DenseTensor adapter_embed(::tyloi::DenseTensor output) const;
-    ::tyloi::DenseTensor
-    adapter_raw_hidden(const ::tyloi::DenseTensor &hidden,
-                       const ::tyloi::DenseTensor &finalized) const;
-    ::tyloi::DenseTensor adapter_logits(const ::tyloi::Tensor &lm_head,
-                                              ::tyloi::DenseTensor hidden) const;
-};
 } // namespace tyloi::cuda

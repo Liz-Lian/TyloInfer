@@ -15,9 +15,11 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         Model& model, Ops& ops, const tyloi::engine::PrefillChunk&,
         ::tyloi::DenseTensor& ids, const Finish&) {
     ::tyloi::DenseTensor hidden;
-    if(!ops.prepared || !ops.prepared->transformed())
-        hidden=deepseek_v41_prefill_hidden(model,ops.state,ids,ops.prefill_compute_chunk,
+    if(!ops.prepared || !ops.prepared->transformed()) {
+        auto result=deepseek_v41_prefill_hidden(model,ops.state,ids,ops.prefill_compute_chunk,
             [&] {return ops.output && ops.output->stopped();});
+        if(result) hidden=std::move(result.dense());
+    }
     return {std::move(hidden),false,false};
 }
 

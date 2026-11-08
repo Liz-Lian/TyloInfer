@@ -1148,7 +1148,7 @@ namespace {
 }
 ::tyloi::DenseTensor qwen4_logits_from_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden) {
     const auto cap = model.metadata.final_logit_softcapping;
-    auto logits = model.adapter_logits(*model.lm_head, std::move(hidden));
+    auto logits = model.logits(hidden).dense();
     return cap > 0.0 ? ::tyloi::cuda::tanh(logits / cap) * cap : logits;
 }
 ::tyloi::DenseTensor qwen4_finalize_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden,
@@ -1257,9 +1257,8 @@ namespace {
     model.adapter_finish_forward(full_positions, B, T);
     state.cache_pos += T;
     hidden = model.execution->executor().collectives().copy(hidden, primary);
+    if (input.raw_hidden) *input.raw_hidden = hidden;
     auto finalized = model.adapter_finalize_hidden(std::move(hidden), B, T);
-    if (input.raw_hidden)
-        *input.raw_hidden = std::make_shared<DenseTensor>(model.adapter_raw_hidden(DenseTensor(), finalized));
     return finalized;
 }
 
@@ -1267,12 +1266,12 @@ namespace {
 bool Model::adapter_prefetch_token_rows(qwen4_exp::Model& model,const ::tyloi::DenseTensor& ids) {
     return reuse_decode_graphs && graph_registry && qwen4_prefetch_decode_ple(model,ids);
 }
-bool qwen4_prefetch_decode_ple(qwen4_exp::Model& model,const ::tyloi::DenseTensor& host_ids) {
+bool qwen4_prefetch_decode_ple(qwen4_exp::Model& model,const ::tyloi::Tensor& host_ids) {
     bool issued=false;
     for(const auto& block:model.blocks) {
         auto* qwen4=dynamic_cast<qwen4_exp::Qwen4Block*>(block.get());
         if(qwen4 && qwen4->ple && qwen4->ple->graph_supported()) {
-            qwen4->ple->prefetch_tokens(host_ids,true);
+            qwen4->ple->prefetch_tokens(host_ids.dense(),true);
             issued=true;
         }
     }
@@ -1540,8 +1539,8 @@ struct Qwen4DecodeGraph {
                                 cudaMemcpyDeviceToHost,stream.stream()));
                         }
                     }
-                    else if(kind==2)cell.output=model.adapter_next_token(*model.lm_head,qwen4_last_hidden(std::move(hidden)));
-                    else if(kind==1)cell.output=model.adapter_last_logits(*model.lm_head,qwen4_last_hidden(std::move(hidden)));
+                    else if(kind==2)cell.output=model.adapter_next_token(qwen4_last_hidden(std::move(hidden)));
+                    else if(kind==1)cell.output=model.logits(qwen4_last_hidden(std::move(hidden))).dense();
                     else cell.output=qwen4_logits_from_hidden(model, std::move(hidden));
                     cell.window.mark(-1,"window_end");
                     auto audit=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks.front()).router_audit;
@@ -1589,12 +1588,13 @@ struct Qwen4DecodeGraph {
         } catch(...) {failed=true;throw;}
     }
 };
-::tyloi::DenseTensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model& model) {
+::tyloi::Tensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model& model) {
     return model.graph_registry?model.graph_registry->last_compact: ::tyloi::DenseTensor{};
 }
 
-std::optional<::tyloi::DenseTensor> qwen4_decode_graph_logits(qwen4_exp::Model& model,::tyloi::DenseTensor ids,int kind,
-        const ::tyloi::DenseTensor& host_ids) {
+std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(qwen4_exp::Model& model,::tyloi::Tensor ids_handle,int kind,
+        const ::tyloi::Tensor& host_ids) {
+    auto ids = ids_handle.dense();
     if (!streamed_decode_graphs(*model.execution)) return {};
     const auto decode=model.execution->weights.decode(model.execution->config.cache.pipeline);
     const bool tq=decode==::tyloi::weights::Cache::Decode::routed;
@@ -1611,7 +1611,8 @@ std::optional<::tyloi::DenseTensor> qwen4_decode_graph_logits(qwen4_exp::Model& 
     }
     TYLOINFER_RUNTIME_CHECK(model.active->cache_pos+ids.size(1)<=model.max_position_embeddings(),"MFQ window exceeds context");
     if(!model.graph_registry)model.graph_registry=std::make_unique<Qwen4DecodeGraph>(model);
-    return model.graph_registry->run(model,model.device_ids(std::move(ids)),kind,nullptr,0,nullptr,host_ids);
+    return ::tyloi::Tensor(model.graph_registry->run(model,model.device_ids(std::move(ids)),kind,nullptr,0,nullptr,
+        host_ids ? host_ids.dense() : ::tyloi::DenseTensor{}));
 }
 
 void qwen4_report_decode_graph(const qwen4_exp::Model& model,std::ostream& output) {
@@ -1659,10 +1660,11 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(
     return result;
 }
 
-std::optional<::tyloi::DenseTensor> qwen4_decode_graph_hidden(
-        qwen4_exp::Model& model,::tyloi::DenseTensor ids,::tyloi::DenseTensor* raw_hidden,int64_t confirmed,
-        bool* initialized,const ::tyloi::DenseTensor& host_ids,::tyloi::DenseTensor* logits,
+std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
+        qwen4_exp::Model& model,::tyloi::Tensor ids_handle,::tyloi::Tensor* raw_hidden,int64_t confirmed,
+        bool* initialized,const ::tyloi::Tensor& host_ids,::tyloi::Tensor* logits,
         std::vector<int32_t>* greedy_tokens,bool compact_sampling) {
+    auto ids = ids_handle.dense();
     if(initialized)*initialized=false;
     const auto decode=model.execution->weights.decode(model.execution->config.cache.pipeline);
     const bool tq=decode==::tyloi::weights::Cache::Decode::routed;
@@ -1683,8 +1685,14 @@ std::optional<::tyloi::DenseTensor> qwen4_decode_graph_hidden(
     }
     TYLOINFER_RUNTIME_CHECK(model.active->cache_pos+ids.size(1)<=model.max_position_embeddings(),"MFQ window exceeds context");
     if(!model.graph_registry)model.graph_registry=std::make_unique<Qwen4DecodeGraph>(model);
-    return model.graph_registry->run(model,model.device_ids(std::move(ids)),(logits || greedy_tokens)?4:3,raw_hidden,
-        static_cast<int>(confirmed),initialized,host_ids,logits,greedy_tokens,compact_sampling);
+    ::tyloi::DenseTensor raw_result, logits_result;
+    auto result = model.graph_registry->run(model,model.device_ids(std::move(ids)),(logits || greedy_tokens)?4:3,
+        raw_hidden ? &raw_result : nullptr, static_cast<int>(confirmed),initialized,
+        host_ids ? host_ids.dense() : ::tyloi::DenseTensor{}, logits ? &logits_result : nullptr,
+        greedy_tokens,compact_sampling);
+    if (raw_hidden) *raw_hidden = std::move(raw_result);
+    if (logits) *logits = std::move(logits_result);
+    return ::tyloi::Tensor(std::move(result));
 }
 
 void qwen4_release_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp) {
@@ -1827,7 +1835,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
         // widths five/six afterwards also needs live recurrent-state clones.
         for(int rows=verification_rows;rows>=1;--rows) {
             if(model.active->cache_pos+rows+2>model.max_position_embeddings())model.active->reset(1);
-            ::tyloi::DenseTensor hidden,logits;
+            ::tyloi::Tensor hidden,logits;
             (void)qwen4_decode_graph_hidden(model,ids.narrow(1,0,rows),&hidden,
                 rows>1?1:0,nullptr,{},&logits);
             if(rows>1)model.active->commit_speculative();
@@ -1849,7 +1857,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,tyloi::models::Mtp* mtp,
             else for(int row=0;row+1<rows;++row)
                 predictor->history_step(raw.narrow(1,offset+row,1),tokens.narrow(1,row,1));
             (void)predictor->step(raw.narrow(1,offset+rows-1,1),tokens.narrow(1,rows-1,1));
-            ::tyloi::DenseTensor hidden,logits;
+            ::tyloi::Tensor hidden,logits;
             (void)qwen4_decode_graph_hidden(model,tokens,&hidden,rows>1?1:0,nullptr,{},&logits);
             if(rows>1)model.active->commit_speculative();
         }
@@ -2092,9 +2100,11 @@ Qwen4BatchDecodeGraph::~Qwen4BatchDecodeGraph() = default;
 void Qwen4BatchDecodeGraph::clear() { graph_->clear(); }
 int64_t Qwen4BatchDecodeGraph::captures() const { return graph_->captures; }
 int64_t Qwen4BatchDecodeGraph::replays() const { return graph_->replays; }
-std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
+std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
         const std::vector<Qwen4BatchRequestState*>& requests,
-        const ::tyloi::DenseTensor& ids,const ::tyloi::DenseTensor& host_ids,bool greedy) {
+        const ::tyloi::Tensor& ids_handle,const ::tyloi::Tensor& host_ids_handle,bool greedy) {
+    const auto& ids = ids_handle.dense();
+    const auto& host_ids = host_ids_handle.dense();
     auto& graph = *graph_;
     auto& model = graph.model;
     if (model.execution->offload || !mfq_cuda_graph_capture_supported()) return {};
@@ -2276,7 +2286,7 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
                 graph.window->mark(static_cast<int>(i),"block_end");
             }
             auto finalized=qwen4_finalize_hidden(model, std::move(hidden),batch,1);
-            graph.logits = greedy ? model.adapter_next_token(*model.lm_head,qwen4_last_hidden(std::move(finalized)))
+            graph.logits = greedy ? model.adapter_next_token(qwen4_last_hidden(std::move(finalized)))
                 .reshape({batch,1}) : qwen4_logits_from_hidden(model, std::move(finalized)).reshape({batch,-1});
             graph.window->mark(-1,"window_end");
         },[&] { for (const auto& saved : recurrent) saved.tensor->copy_(saved.snapshot); },
@@ -2306,12 +2316,15 @@ std::optional<::tyloi::DenseTensor> Qwen4BatchDecodeGraph::run(
             state.position_storage,model.max_position_embeddings());
         ++state.cache_position;
     }
-    return graph.logits;
+    return ::tyloi::Tensor(graph.logits);
 }
 
-std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(qwen4_exp::Model& model,
+std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         const std::vector<Qwen4BatchRequestState*>& requests,
-        const std::vector<::tyloi::DenseTensor>& chunks) {
+        const std::vector<::tyloi::Tensor>& chunk_handles) {
+    std::vector<::tyloi::DenseTensor> chunks;
+    chunks.reserve(chunk_handles.size());
+    for (const auto& chunk : chunk_handles) chunks.push_back(chunk.dense());
     TYLOINFER_RUNTIME_CHECK(!requests.empty() && requests.size()==chunks.size(),"invalid packed prefill rows");
     auto& execution = *model.execution;
     const bool packed=requests.size()>1;
@@ -2401,7 +2414,7 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             });
     }
     hidden=qwen4_finalize_hidden(model, std::move(hidden),1,tokens);
-    std::vector<::tyloi::DenseTensor> result;
+    std::vector<::tyloi::Tensor> result;
     for (std::size_t row=0;row<requests.size();++row) {
         result.push_back(hidden.narrow(1,offsets[row+1]-1,1));
         requests[row]->state_->positions=std::move(full[row]);
@@ -2410,9 +2423,11 @@ std::vector<::tyloi::DenseTensor> qwen4_batch_prefill(qwen4_exp::Model& model,
     return result;
 }
 
-::tyloi::DenseTensor qwen4_batch_decode(qwen4_exp::Model& model,
-        const std::vector<Qwen4BatchRequestState*>& requests, ::tyloi::DenseTensor ids,
-        const ::tyloi::DenseTensor& host_ids) {
+::tyloi::Tensor qwen4_batch_decode(qwen4_exp::Model& model,
+        const std::vector<Qwen4BatchRequestState*>& requests, ::tyloi::Tensor ids_handle,
+        const ::tyloi::Tensor& host_ids_handle) {
+    const auto& ids = ids_handle.dense();
+    const auto& host_ids = host_ids_handle.dense();
     const auto batch = static_cast<int64_t>(requests.size());
     TYLOINFER_RUNTIME_CHECK(batch > 0 && ids.dim() == 2 && ids.size(0) == batch && ids.size(1) == 1,
                       "invalid Flash-Next batch input");
@@ -2556,19 +2571,20 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
     return logical_chunk;
 }
 
-::tyloi::DenseTensor qwen4_layer_major_prefill_hidden(
-        qwen4_exp::Model& model,::tyloi::DenseTensor ids,int64_t compute_chunk,
-        bool last_only,const std::function<bool()>& cancelled,::tyloi::DenseTensor* raw_hidden,
+::tyloi::Tensor qwen4_layer_major_prefill_hidden(
+        qwen4_exp::Model& model,::tyloi::Tensor ids_handle,int64_t compute_chunk,
+        bool last_only,const std::function<bool()>& cancelled,::tyloi::Tensor* raw_hidden,
         bool raw_hidden_host) {
-    return qwen4_layer_major_prefill_hidden(model,std::move(ids),compute_chunk,last_only,
+    return qwen4_layer_major_prefill_hidden(model,std::move(ids_handle),compute_chunk,last_only,
         cancelled,raw_hidden,raw_hidden_host,{});
 }
 
-::tyloi::DenseTensor qwen4_layer_major_prefill_hidden(
-        qwen4_exp::Model& model,::tyloi::DenseTensor ids,int64_t compute_chunk,
-        bool last_only,const std::function<bool()>& cancelled,::tyloi::DenseTensor* raw_hidden,
+::tyloi::Tensor qwen4_layer_major_prefill_hidden(
+        qwen4_exp::Model& model,::tyloi::Tensor ids_handle,int64_t compute_chunk,
+        bool last_only,const std::function<bool()>& cancelled,::tyloi::Tensor* raw_hidden,
         bool raw_hidden_host,const std::function<void()>& computation_finished) {
     using DenseTensor=::tyloi::DenseTensor;
+    auto ids = ids_handle.dense();
     TYLOINFER_RUNTIME_CHECK(ids.dim()==2 && ids.size(0)==1 &&
         qwen4_layer_major_prefill_eligible(model,ids.size(1)),
         "layer-major prefill requires a bounded single-device Qwen4 chunk and whole-layer cache");
@@ -2921,19 +2937,12 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, std::size_t tokens,
     return final_mixer->pre(hidden,marker).mixed;
 }
 
-::tyloi::DenseTensor
-Model::adapter_last_logits(const ::tyloi::Tensor &lm_head,
-                                ::tyloi::DenseTensor hidden) const {
-    return adapter_logits(lm_head, std::move(hidden));
-}
-
-::tyloi::DenseTensor Model::adapter_next_token(const ::tyloi::Tensor &lm_head,
-                                                          ::tyloi::DenseTensor hidden) const {
+::tyloi::DenseTensor Model::adapter_next_token(::tyloi::DenseTensor hidden) const {
     auto* window=DecodeWindow::recording();
     if(window)window->mark(-1,"lm_head_begin");
-    auto logits=adapter_logits(lm_head,std::move(hidden));
+    auto projected=this->logits(hidden).dense();
     if(window)window->mark(-1,"lm_head_projection_end");
-    auto output=::tyloi::cuda::argmax(logits,-1).to(::tyloi::kInt64);
+    auto output=::tyloi::cuda::argmax(projected,-1).to(::tyloi::kInt64);
     if(window)window->mark(-1,"lm_head_sample_end");
     return output;
 }
@@ -2987,16 +2996,19 @@ std::shared_ptr<::tyloi::Tensor> Model::embedding(const ::tyloi::Tensor& ids, in
     return std::make_shared<::tyloi::DenseTensor>(embed_tokens(device_ids(dynamic_cast<const ::tyloi::DenseTensor&>(ids))));
 }
 
-std::shared_ptr<::tyloi::Tensor> Model::normalize(const ::tyloi::Tensor& hidden, std::int64_t, std::int64_t) const {
-    return std::make_shared<::tyloi::DenseTensor>(dynamic_cast<const ::tyloi::DenseTensor&>(hidden));
+::tyloi::Tensor Model::normalize(const ::tyloi::Tensor& hidden, std::int64_t, std::int64_t) const {
+    return hidden;
 }
 
-std::shared_ptr<::tyloi::Tensor> Model::softcap(const ::tyloi::Tensor& logits) const {
-    return std::make_shared<::tyloi::DenseTensor>(dynamic_cast<const ::tyloi::DenseTensor&>(logits));
+::tyloi::Tensor Model::softcap(const ::tyloi::Tensor& logits) const {
+    return logits;
 }
 
-std::shared_ptr<::tyloi::Tensor> Model::logits(const ::tyloi::Tensor& hidden, bool) const {
-    return std::make_shared<::tyloi::DenseTensor>(adapter_logits(*lm_head, dynamic_cast<const ::tyloi::DenseTensor&>(hidden)));
+::tyloi::Tensor Model::logits(const ::tyloi::Tensor& hidden, bool) const {
+    return execution->executor().profiler().measure("model.lm_head", [&] {
+        return execution->executor().projector(execution->executor().mode().ffn,
+            model_parallel_primary_device(execution->config)).run(lm_head, hidden.dense());
+    });
 }
 
 std::shared_ptr<::tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,

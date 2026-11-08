@@ -51,10 +51,10 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
     return logical_chunk;
 }
 
-DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor ids,
-                                   int64_t compute_chunk, const std::function<bool()>& stopped, DenseTensor* raw_hidden) {
+::tyloi::Tensor deepseek_v41_prefill_hidden(Model& model, State& state, const ::tyloi::Tensor& input_ids,
+                                   int64_t compute_chunk, const std::function<bool()>& stopped, ::tyloi::Tensor* raw_hidden) {
     auto scope = model.execution_scope();
-    ids = model.device_ids(std::move(ids));
+    auto ids = model.device_ids(input_ids.dense());
     const auto batch = ids.size(0), tokens = ids.size(1);
     const auto* profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     const bool trace=profile && profile[0]=='1';
@@ -184,7 +184,7 @@ DenseTensor deepseek_v41_prefill_hidden(Model& model, State& state, DenseTensor 
             model.execution->config.layer_placement.primary_device()),
         batch, replay_tokens);
     if (raw_hidden)
-        *raw_hidden = model.adapter_raw_hidden(DenseTensor(), finalized);
+        *raw_hidden = model.raw_hidden();
     return finalized;
 }
 } // namespace tyloi::cuda::deepseek_v41

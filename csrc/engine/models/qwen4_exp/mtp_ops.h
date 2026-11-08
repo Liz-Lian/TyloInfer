@@ -60,14 +60,15 @@ std::optional<DenseTensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops,
         const auto host_ids = ops.known_ids_device.defined() &&
             ids.data_ptr() == ops.known_ids_device.data_ptr() && ids.sizes() == ops.known_ids_device.sizes()
             ? ops.known_ids_host : DenseTensor{};
-        DenseTensor logits;
-        if(auto hidden=qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&ops.projected_target_greedy,ops.captured_compact_requested())) {
+        ::tyloi::Tensor raw_result, logits;
+        if(auto hidden=qwen4_decode_graph_hidden(model,ids,raw ? &raw_result : nullptr,confirmed,&initialized,host_ids,&logits,&ops.projected_target_greedy,ops.captured_compact_requested())) {
             ops.target_transfer_bytes=ops.weights.activity().streamed_bytes-transfer_before;
             ops.target_maintenance=ops.target_maintenance || initialized;
-            ops.projected_target_hidden = *hidden; ops.projected_target_logits = std::move(logits);
-            ops.projected_target_compact=qwen4_decode_graph_compact_topk(model);
+            if (raw) *raw = raw_result.dense();
+            ops.projected_target_hidden = hidden->dense(); ops.projected_target_logits = logits.dense();
+            ops.projected_target_compact=qwen4_decode_graph_compact_topk(model).dense();
             finish_profile();
-            return std::move(*hidden);
+            return hidden->dense();
         }
     }
     return std::nullopt;
@@ -93,10 +94,12 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(qwen4_exp::Model& model, 
     }
     if(!ops.transformed_prompt && qwen4_layer_major_prefill_eligible(model,chunk.count)) {
         const bool host_history=ops.host_prompt_history(chunk.count);
+        ::tyloi::Tensor raw_result;
         auto hidden=qwen4_layer_major_prefill_hidden(model,ids,ops.prefill_compute_chunk,true,
-            [&] { return ops.output && ops.output->stopped(); }, &raw,host_history,finish_prefill);
+            [&] { return ops.output && ops.output->stopped(); }, &raw_result,host_history,finish_prefill);
+        if (raw_result) raw = raw_result.dense();
         finish_prefill();
-        return typename Ops::PrefillResult{std::move(hidden),std::move(raw),timer.elapsed_ms()};
+        return typename Ops::PrefillResult{hidden ? hidden.dense() : DenseTensor{},std::move(raw),timer.elapsed_ms()};
     }
     return std::nullopt;
 }

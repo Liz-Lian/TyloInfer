@@ -365,8 +365,11 @@ std::shared_ptr<tyloi::Tensor> Model::softcap(const tyloi::Tensor& logits) const
     return std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(logits));
 }
 
-std::shared_ptr<tyloi::Tensor> Model::logits(const tyloi::Tensor& hidden, bool) const {
-    return std::make_shared<DenseTensor>(adapter_logits(*lm_head, dynamic_cast<const DenseTensor&>(hidden)));
+::tyloi::Tensor Model::logits(const tyloi::Tensor& hidden, bool) const {
+    return execution->executor().profiler().measure("model.lm_head", [&] {
+        return execution->executor().projector(execution->executor().mode().ffn,
+            model_parallel_primary_device(execution->config)).run(lm_head, hidden.dense());
+    });
 }
 
 bool Model::supports_speculation() const {
@@ -385,7 +388,7 @@ void Model::adapter_load_final_state(const tyloi::weights::Loader& weights) {
 #endif
 }
 
-void Model::adapter_prepare_blocks(const tyloi::weights::Loader& weights) {
+void Model::prepare_blocks(const tyloi::weights::Loader& weights) {
     shared = deepseek_v41_runtime::load_shared_state(weights.source, config);
 }
 
@@ -452,8 +455,7 @@ void Model::adapter_begin_forward(bool capture_raw_hidden) const {
 #endif
 }
 
-::tyloi::DenseTensor Model::adapter_raw_hidden(const ::tyloi::DenseTensor&,
-                                               const ::tyloi::DenseTensor&) const {
+::tyloi::DenseTensor Model::raw_hidden() const {
     return shared->dspark_target_hidden();
 }
 
@@ -591,12 +593,11 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
         hidden = block->forward_context(*execution, std::move(hidden), context);
         trace_layer();
     }
-    // finish hook is the CausalResources no-op for this family
     state.cache_pos += T;
     hidden = execution->executor().collectives().copy(hidden, primary);
     auto finalized = adapter_finalize_hidden(std::move(hidden), B, T);
     if (input.raw_hidden)
-        *input.raw_hidden = std::make_shared<DenseTensor>(adapter_raw_hidden(DenseTensor(), finalized));
+        *input.raw_hidden = raw_hidden();
     return std::make_shared<DenseTensor>(std::move(finalized));
 }
 

@@ -36,10 +36,10 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
             if(output && output->stopped())break;
             const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
             auto part=ids.narrow(1,offset,rows);
-            DenseTensor window_logits;
+            ::tyloi::Tensor window_logits;
             if(auto result=qwen4_decode_graph_hidden(model,part,nullptr,rows>1?1:0,
                     nullptr,{},&window_logits))
-                hidden=std::move(*result);
+                hidden=result->dense();
             else
                 hidden = dynamic_cast<const DenseTensor&>(*model.forward(tyloi::models::Input{std::make_shared<DenseTensor>(part), {}, {}, {}, {}, nullptr, nullptr,
                                                             false, rows>1?1:0, 0, 0},
@@ -50,8 +50,9 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
     } else if((!prepared || !prepared->transformed()) &&
         qwen4_layer_major_prefill_eligible(model,chunk.count)) {
         layer_major=true;
-        hidden=qwen4_layer_major_prefill_hidden(model,ids,ops.prefill_compute_chunk,true,
+        auto result=qwen4_layer_major_prefill_hidden(model,ids,ops.prefill_compute_chunk,true,
             [&] {return output && output->stopped();},nullptr,false,finish_prefill);
+        if (result) hidden=result.dense();
     }
     return {std::move(hidden),layer_major,short_windows};
 }
@@ -67,8 +68,8 @@ std::optional<int64_t> generation_decode(qwen4_exp::Model& model, Ops& ops) {
     if(ops.known_token_host.defined()) {
         const bool greedy=ops.sampler.greedy() && !ops.has_penalties && !ops.constraint;
         if(auto result=qwen4_decode_graph_logits(model,ops.pending.reshape({1,1}),greedy?2:1,ops.known_token_host)) {
-            ops.pending=greedy?std::move(*result):tyloi::engine::sample_logits(ops.sampler,
-                result->contiguous().view({1,-1}),ops.counts,ops.constraint);
+            ops.pending=greedy?result->dense():tyloi::engine::sample_logits(ops.sampler,
+                result->dense().contiguous().view({1,-1}),ops.counts,ops.constraint);
             return ops.pending.template item<int64_t>();
         }
     }

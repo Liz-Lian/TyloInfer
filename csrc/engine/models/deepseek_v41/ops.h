@@ -1099,7 +1099,7 @@ namespace deepseek_v41 {
 
 // The model record: weights, placement and load-time state. Request data
 // lives in State; blocks reference the shared scratch through `shared`.
-struct Model : CausalResources, tyloi::models::CausalModel {
+struct Model : tyloi::models::CausalModel {
     using CausalConfig = tyloi::models::deepseek_v41::Config;
     static bool accepts_backbone(std::string_view backbone) { return backbone == "deepseek_v41"; }
 
@@ -1127,6 +1127,8 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     bool adapter_prefetch_token_rows(Model& model, const ::tyloi::DenseTensor& ids);
 
     // ---- weights and load-time state
+    tyloi::models::CausalLmMetadata metadata;
+    CudaExecutionContext* execution = nullptr;
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;
@@ -1157,7 +1159,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     }
     ::tyloi::DenseTensor embed_tokens(::tyloi::DenseTensor ids) const {
         return execution->executor().profiler().measure(
-            "model.embed", [&] { return adapter_embed(quant_embedding_lookup(*embed, ids)); });
+            "model.embed", [&] { return quant_embedding_lookup(*embed, ids); });
     }
     static ::tyloi::DenseTensor softcap_apply(::tyloi::DenseTensor logits, double cap) {
         return ::tyloi::cuda::tanh(logits / cap) * cap;
@@ -1189,7 +1191,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
     // ---- family adapters (implementations in ops.cpp)
     void adapter_validate_load_options() const;
     void adapter_load_final_state(const tyloi::weights::Loader& weights);
-    void adapter_prepare_blocks(const tyloi::weights::Loader& weights);
+    void prepare_blocks(const tyloi::weights::Loader& weights);
     std::unique_ptr<deepseek_v41_runtime::Block> adapter_load_block(
         const tyloi::weights::Loader& weights, int layer, int device,
         const std::string& type);
@@ -1211,8 +1213,7 @@ struct Model : CausalResources, tyloi::models::CausalModel {
                                                 std::int64_t tokens) const;
     ::tyloi::DenseTensor adapter_finalize_hidden(::tyloi::DenseTensor hidden,
                                                  std::int64_t batch, std::int64_t tokens) const;
-    ::tyloi::DenseTensor adapter_raw_hidden(const ::tyloi::DenseTensor& hidden,
-                                            const ::tyloi::DenseTensor& finalized) const;
+    ::tyloi::DenseTensor raw_hidden() const;
     void adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
                                   bool has_position_override, bool has_cache_position_override) const;
     void adapter_begin_speculative();
@@ -1225,9 +1226,9 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
 void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
           bool defer_moe_cache_finalize, bool load_blocks, bool load_optional_components);
 
-::tyloi::DenseTensor deepseek_v41_prefill_hidden(
-    Model& model, State& state, ::tyloi::DenseTensor ids, std::int64_t compute_chunk,
-    const std::function<bool()>& stopped = {}, ::tyloi::DenseTensor* raw_hidden = nullptr);
+::tyloi::Tensor deepseek_v41_prefill_hidden(
+    Model& model, State& state, const ::tyloi::Tensor& ids, std::int64_t compute_chunk,
+    const std::function<bool()>& stopped = {}, ::tyloi::Tensor* raw_hidden = nullptr);
 std::int64_t prefill_span(const Model&, std::size_t tokens,
                           std::int64_t chunk, std::size_t, std::size_t,
                           bool transformed, bool retained);

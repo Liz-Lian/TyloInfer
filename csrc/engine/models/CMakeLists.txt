@@ -1,5 +1,4 @@
 set(TYLOINFER_CUDA_MODEL_SOURCES
-    ${PROJECT_SOURCE_DIR}/engine/models/common/causal_model_ops.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/vision/axial_patch_encoder.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/vision/grid_encoder.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v4/ops.cpp

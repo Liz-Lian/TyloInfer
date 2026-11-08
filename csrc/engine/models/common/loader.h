@@ -26,7 +26,7 @@ template <class Model> struct ModelLoader {
     void final_state() {
         model.adapter_load_final_state(weights);
     }
-    void prepare_blocks() { model.adapter_prepare_blocks(weights); }
+    void prepare_blocks() { model.prepare_blocks(weights); }
     auto block(int layer, const std::string &type) {
         auto &execution = *model.execution;
         const int device = execution.config.layer_placement.device_for_layer(layer);

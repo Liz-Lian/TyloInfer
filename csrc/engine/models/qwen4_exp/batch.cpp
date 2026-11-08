@@ -177,8 +177,8 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
         if (finished)
             next = tyloi::engine::sample_logits(
                 *request->sampler,
-                dynamic_cast<const DenseTensor&>(*model_.logits(
-                    hidden.index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()}))).reshape({1, -1}),
+                model_.logits(
+                    hidden.dense().index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()})).dense().reshape({1, -1}),
                 request->counts, request->token_constraint);
         TYLOINFER_CUDA_CHECK(
             cudaEventRecord(timer->finished_event(), mfq_get_current_cuda_stream()));
@@ -241,7 +241,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
                 return;
             }
             std::vector<Qwen4BatchRequestState*> caches;
-            std::vector<DenseTensor> chunks;
+            std::vector<::tyloi::Tensor> chunks;
             int64_t tokens = 0;
             for (const auto row : rows) {
                 const auto& [request, chunk] = items[row];
@@ -257,7 +257,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
             for (std::size_t i = 0; i < rows.size(); ++i) {
                 const auto& [request, chunk] = items[rows[i]];
                 if (chunk.offset + chunk.count == static_cast<int64_t>(request->prompt.size())) {
-                    last.push_back(hidden[i]);
+                    last.push_back(hidden[i].dense());
                     finished.push_back(rows[i]);
                 }
             }
@@ -355,7 +355,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                                           !request->sampler->has_penalties() &&
                                           !request->token_constraint);
                               });
-    std::optional<DenseTensor> captured;
+    std::optional<::tyloi::Tensor> captured;
     try {
         if (graph_)
             captured = graph_->run(caches, ids, host_ids, greedy);
@@ -370,8 +370,9 @@ BatchOps::Decoded BatchOps::decode(State& state) {
             tyloi::engine::InferenceInputErrorCode::ContextLength,
             "insufficient GPU or pinned RAM for the batch decode workspace; reduce concurrent requests");
     }
-    auto logits = captured ? std::move(*captured)
+    auto output = captured ? std::move(*captured)
                            : qwen4_batch_decode(model_, caches, std::move(ids), host_ids);
+    auto logits = output.dense();
     DenseTensor greedy_tokens;
     if (greedy) {
         greedy_tokens = captured ? logits.to(::tyloi::kCPU).contiguous()
