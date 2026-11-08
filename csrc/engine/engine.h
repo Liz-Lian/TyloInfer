@@ -49,14 +49,14 @@ struct EngineStatus {
 class Engine {
 public:
 #ifdef TYLOINFER_NATIVE_CUDA
-    Engine(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+    Engine(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
         Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
         std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
         std::unique_ptr<tyloi::Executor::Graph> graph);
     // Retire active requests before replacing dependencies; the Scheduler remains attached.
-    void rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+    void rebind(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
         Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
@@ -138,7 +138,7 @@ private:
     SessionResult set_budget(const SessionCommand&);
     void drain();
     void clear_bindings() noexcept;
-    std::shared_ptr<models::CausalModel> model_;
+    std::unique_ptr<models::CausalModel> model_;
     std::unique_ptr<tyloi::Executor> executor_;
     Config config_;
     std::shared_ptr<const ModelSource> source_;

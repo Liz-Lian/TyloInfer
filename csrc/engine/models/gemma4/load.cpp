@@ -1,10 +1,7 @@
 #include "engine/models/gemma4/load.h"
+#include "engine/models/gemma4/model.h"
 #include "engine/models/gemma4/weights.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
-#else
-#include "engine/backends/cuda/ops/rope/rope.h"
-#endif
 #include "engine/weights/loader.h"
 #include "engine/weights/tq/source.h"
 
@@ -17,15 +14,9 @@
 namespace tyloi::cuda::gemma4 {
 struct LayerLoader {
     const tyloi::weights::Loader& weights;
-#ifdef TYLOINFER_NATIVE_CUDA
     auto dense(const std::string& name) const {
         return weights.tensor(name);
     }
-#else
-    auto dense(const std::string& name) const {
-        return dynamic_cast<const tyloi::DenseTensor&>(*weights.tensor(name));
-    }
-#endif
     void qkv(FullAttention& attention, const std::vector<std::string>& names) const {
         attention.qkv = weights.group(names, 2);
     }
@@ -40,75 +31,37 @@ struct LayerLoader {
     static int64_t elements(const std::shared_ptr<const tyloi::Tensor>& value) {
         return value ? value->numel() : 0;
     }
-#ifndef TYLOINFER_NATIVE_CUDA
-    static auto shape(const tyloi::DenseTensor& value) { return value.sizes().vec(); }
-    static int64_t elements(const tyloi::DenseTensor& value) { return value.numel(); }
-#endif
     auto rope(int64_t capacity, const tyloi::models::gemma4::LayerSpec &spec) {
-#ifdef TYLOINFER_NATIVE_CUDA
         return tyloi::ops::rope_table(capacity, spec.head_dim, spec.rope_base,
             tyloi::Device(tyloi::kCUDA, weights.placement.device),
             spec.head_dim, spec.rotary_pairs);
-#else
-        return RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
-#endif
     }
     auto ones(int64_t width) {
-#ifdef TYLOINFER_NATIVE_CUDA
         const std::array<int64_t, 1> shape{width};
         auto value = tyloi::ops::full(shape, 1, tyloi::Device(
             weights.placement.cpu ? tyloi::kCPU : tyloi::kCUDA, weights.placement.device));
         return tyloi::ops::cast(*value, tyloi::kFloat32);
-#else
-        return ::tyloi::cuda::ones({width}, ::tyloi::TensorOptions()
-            .device(::tyloi::Device(weights.placement.cpu ? tyloi::kCPU : tyloi::kCUDA,
-                                    weights.placement.device))
-            .dtype(::tyloi::kFloat32));
-#endif
     }
     auto layer_scale(const std::string &name) {
-#ifdef TYLOINFER_NATIVE_CUDA
         auto value = tyloi::ops::cast(*weights.tensor(name), tyloi::kFloat16);
         return tyloi::ops::contiguous(*value);
-#else
-        return dense(name).to(::tyloi::kFloat16).contiguous();
-#endif
     }
     auto router_parameter(const std::string &name) {
-#ifdef TYLOINFER_NATIVE_CUDA
         auto value = tyloi::ops::cast(*weights.tensor(name), tyloi::kFloat32);
         return tyloi::ops::contiguous(*value);
-#else
-        return dense(name).to(::tyloi::kFloat32).contiguous();
-#endif
     }
     auto normalized_router_parameter(const std::string &name, double divisor) {
-#ifdef TYLOINFER_NATIVE_CUDA
         auto value = router_parameter(name);
         auto divided = tyloi::ops::divide(*value, divisor);
         return tyloi::ops::contiguous(*divided);
-#else
-        return (router_parameter(name) / divisor).contiguous();
-#endif
     }
     auto mlp(const std::vector<std::string>& names, const std::string& down_name) {
-#ifdef TYLOINFER_NATIVE_CUDA
         auto down = weights.weight(down_name);
         auto group = weights.gate_up(names, *down, 2);
         return Mlp{std::move(group), std::move(down),
                                 tyloi::ops::MlpActivation::gelu_gated};
-#else
-        auto down = weights.weight(down_name);
-        auto group = weights.gate_up(names, *down, 2);
-        Ffn result;
-        result.geglu = true;
-        result.down = std::move(down);
-        result.gate_up = std::move(group);
-        return result;
-#endif
     }
     auto experts(const std::string &name, int layer, const char *projection) {
-#ifdef TYLOINFER_NATIVE_CUDA
         if (weights.placement.experts.enabled()) {
             if (tyloi::is_tq_table(weights.source, name))
                 throw std::runtime_error("Gemma4 expert parallelism does not support TQ expert banks: " + name);
@@ -116,7 +69,6 @@ struct LayerLoader {
             if (dtype == "F32" || dtype == "F16" || dtype == "BF16")
                 throw std::runtime_error("Gemma4 expert parallelism does not support " + dtype + " expert banks: " + name);
         }
-#endif
         return weights.experts(name, true, layer, projection);
     }
     static auto expert_shape(const tyloi::Tensor& weight) {
@@ -126,9 +78,6 @@ struct LayerLoader {
 
 Layer load_layer(const tyloi::weights::Loader& weights, const Config &config,
                  int layer, const std::string &type) {
-#ifndef TYLOINFER_NATIVE_CUDA
-    MfqCudaGuard guard(weights.placement.device);
-#endif
     Layer result;
     result.device = weights.placement.device;
     LayerLoader loader{weights};
@@ -150,18 +99,11 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
                 "--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
         throw std::runtime_error("--n-gpu-layers currently supports dense Qwen-style blocks only");
     }
-#ifndef TYLOINFER_NATIVE_CUDA
-    MfqCudaGuard guard(placement.primary_device());
-#endif
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings &&
             (weights.has("model.output.weight") || tyloi::is_tq_table(weights.source, "model.output.weight"));
         model.embed = weights.embedding("model.token_embedding.weight", separate);
-#ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
-#else
-        model.output_norm = dynamic_cast<const tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
-#endif
         if (separate || weights.placement.tensor.enabled()) {
             model.lm_head = weights.weight(
                 separate ? "model.output.weight" : "model.token_embedding.weight",
@@ -173,9 +115,6 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
             model.layers.reserve(static_cast<std::size_t>(config.num_hidden_layers));
             for (int index = 0; index < config.num_hidden_layers; ++index) {
                 const int device = placement.device_for_layer(index);
-#ifndef TYLOINFER_NATIVE_CUDA
-                MfqCudaGuard layer_guard(device);
-#endif
                 const auto& type = config.layer_types.at(static_cast<std::size_t>(index));
                 std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
                 model.layers.push_back(load_layer(weights.for_layer(device, false), config, index, type));
@@ -183,25 +122,23 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
-#ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
-#else
-        model.output_norm = dynamic_cast<const tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
-#endif
     }
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
-std::shared_ptr<tyloi::models::CausalModel> load(
+std::unique_ptr<tyloi::models::CausalModel> load(
         std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
         std::int64_t context, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         int gpu_layers, bool expert_parallel) {
-    auto model = std::make_shared<Model>(read(std::move(source), definition, context));
+    auto model = std::make_unique<Model>(read(std::move(source), definition, context));
     load(*model, weights, placement, gpu_layers, expert_parallel);
-    if (model->plan.vision != CudaVisionAdapter::none || model->plan.predictor != CudaPredictorAdapter::none)
+    if (const auto* vision = model->graph.component("vision"); vision != nullptr &&
+        vision->tensor_root == "vision" && vision->implementation == "radio" &&
+        vision->input_contract == tyloi::kRadioCpeInputContract &&
+        vision->position_policy.empty()) {
         throw std::runtime_error("CUDA component adapter is unsupported for this model");
+    }
     return model;
 }
-#endif
 
 } // namespace tyloi::cuda::gemma4

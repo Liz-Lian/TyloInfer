@@ -13,10 +13,6 @@
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/models/qwen35/load.h"
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/models/gemma4/load.h"
-#include "engine/models/gemma4/state.h"
-#endif
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/glm_dsa/state.h"
 #include "engine/models/deepseek_v4/load.h"
@@ -160,32 +156,6 @@ inline constexpr auto with_model = []<typename F>(
         }
         case CudaBackbone::minicpmo_tts:
             return load_tts();
-        case CudaBackbone::gemma4: {
-#ifdef TYLOINFER_NATIVE_CUDA
-            throw std::runtime_error("unsupported CUDA model backbone");
-#else
-            auto started = std::chrono::steady_clock::now();
-            auto definition = tyloi::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
-            auto owner = std::make_shared<gemma4::Model>(
-                gemma4::read(source, definition, options.context_size));
-            auto weights = execution.weights.loader(*source, execution.config.weights,
-                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
-                 execution.config.tensor_parallel, moe_parallel_config(execution.config)});
-            execution.config.dense_cpu_layer_count = 0;
-            gemma4::load(*owner, weights, execution.config.layer_placement, execution.config.n_gpu_layers,
-                         execution.config.expert_parallel.enabled());
-            auto state = std::make_unique<gemma4::State>(*owner);
-            state->preallocate();
-            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            if (load_optional_components && (owner->plan.vision != CudaVisionAdapter::none ||
-                    owner->plan.predictor != CudaPredictorAdapter::none))
-                throw std::runtime_error("CUDA component adapter is unsupported for this model");
-            std::monostate components;
-            return finish(owner, state, executor, components, started);
-#endif
-        }
         case CudaBackbone::glm_dsa: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);

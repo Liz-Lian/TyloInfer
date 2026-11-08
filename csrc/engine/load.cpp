@@ -5,7 +5,6 @@
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/minicpmo45/text/forward.h"
-#include "engine/models/gemma4/forward.h"
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/deepseek_v4/forward.h"
 #include "engine/models/glm5_next/forward.h"
@@ -14,6 +13,7 @@
 #include "engine/instance_impl.h"
 #include "engine/drain.h"
 #ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/causal_model.h"
 #include "engine/models/source/model_config.h"
 #include "engine/models/session/cache.h"
 #include "engine/models/gemma4/load.h"
@@ -54,9 +54,6 @@ using State = std::variant<
     std::unique_ptr<Text<qwen35::Model, qwen35::State, qwen35::Components>>,
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State, std::unique_ptr<minicpmo45::Components>>>,
     std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>,
-#ifndef TYLOINFER_NATIVE_CUDA
-    std::unique_ptr<Text<gemma4::Model, gemma4::State, std::monostate>>,
-#endif
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
     std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
@@ -154,7 +151,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
     CudaLoadConfig load;
     tyloi::engine::Config config;
     std::unique_ptr<Executor> root;
-    std::shared_ptr<models::CausalModel> model;
+    std::unique_ptr<models::CausalModel> model;
     std::unique_ptr<models::State> state;
     std::unique_ptr<tyloi::state::Sessions> sessions;
     std::unique_ptr<tyloi::Executor::Graph> graph;

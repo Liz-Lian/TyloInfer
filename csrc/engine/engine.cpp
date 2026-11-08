@@ -24,7 +24,7 @@ namespace tyloi::engine {
 
 Engine::Engine() = default;
 #ifdef TYLOINFER_NATIVE_CUDA
-Engine::Engine(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+Engine::Engine(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
         Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
@@ -79,7 +79,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
     }
 }
 
-void Engine::rebind(std::shared_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
+void Engine::rebind(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
         Config config, std::shared_ptr<const ModelSource> source,
         std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
         std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,

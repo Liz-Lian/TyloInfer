@@ -236,7 +236,6 @@ StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) 
 
 #else
 #include "engine/models/deepseek_v4/forward.h"
-#include "engine/models/gemma4/forward.h"
 #include "engine/models/glm5_next/forward.h"
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/minicpmo45/text/forward.h"
@@ -263,12 +262,10 @@ namespace tyloi::cuda::internal {
         tyloi::engine::mtp::State &,                                                                  \
         PREDICTOR *,                                                                      \
         std::optional<tyloi::models::Prepared>,                                                         \
-        tyloi::engine::Batch*, std::string,                    \
-        bool);
+        tyloi::engine::Batch*, std::string);
 #ifndef TYLOINFER_NATIVE_CUDA
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::Model, tyloi::cuda::minicpmo45::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::text::Model, tyloi::cuda::minicpmo45::text::State, tyloi::models::Mtp)
-TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::gemma4::Model, tyloi::cuda::gemma4::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm_dsa::Model, tyloi::cuda::glm_dsa::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::qwen4_exp::Model, tyloi::cuda::qwen4_exp::State, tyloi::models::Mtp)
