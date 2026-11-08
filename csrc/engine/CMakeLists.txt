@@ -10,6 +10,8 @@ add_library(mfq-engine STATIC
     config.cpp
     generation/mtp/metrics.cpp
     models/prepare.cpp
+    models/deepseek_v4/input.cpp
+    models/minicpmo45/input.cpp
     models/common/vision/axial_patch_vision.cpp
     models/common/vision/grid_vision.cpp
     models/deepseek_v4/config.cpp
