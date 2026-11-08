@@ -8,7 +8,7 @@
 
 namespace tyloi::models::qwen4_exp {
 
-struct BlockSnapshot {
+struct LayerSnapshot {
     std::shared_ptr<const ::tyloi::Tensor> keys, values, index;
     std::shared_ptr<const ::tyloi::Tensor> convolution, recurrent, ple_convolution;
     int64_t ple_batch = 0;
@@ -26,24 +26,24 @@ struct BlockSnapshot {
 };
 
 struct Snapshot {
-    std::vector<BlockSnapshot> blocks;
+    std::vector<LayerSnapshot> layers;
     std::shared_ptr<const ::tyloi::Tensor> positions;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
         if (positions) visit(*positions);
-        for (const auto& block : blocks) block.tensors(visit);
+        for (const auto& layer : layers) layer.tensors(visit);
     }
 };
 
 struct MtpSnapshot {
-    std::vector<BlockSnapshot> blocks;
+    std::vector<LayerSnapshot> layers;
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> positions;
     std::vector<int64_t> lengths;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
-        for (const auto& block : blocks) block.tensors(visit);
+        for (const auto& layer : layers) layer.tensors(visit);
         for (const auto& position : positions) if (position) visit(*position);
     }
 };

@@ -1,9 +1,8 @@
 #include "engine/models/qwen4_exp/ops.h"
-#include "engine/models/qwen4_exp/block.h"
+#include "engine/models/qwen4_exp/layer.h"
 #include "engine/models/qwen4_exp/causal_lm.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/tq.h"
-#include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/backends/cuda/ops/projection/nint.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/loader.h"
@@ -32,14 +31,11 @@ namespace tyloi::cuda::qwen4_exp {
 
 using Config = tyloi::models::qwen4_exp::Config;
 
-struct BlockLoader : tyloi::weights::Loader {
+struct LayerLoader : tyloi::weights::Loader {
     using GdnWeights = qwen4_exp::GdnWeights;
     using QsaWeights = qwen4_exp::QsaWeights;
     using PleWeights = qwen4_exp::PleWeights;
     CudaExecutionContext& execution;
-    Linear* router_capture=nullptr;
-    MoeFfnPrefetch* prefetch_capture=nullptr;
-    bool* tq_graph_capture=nullptr;
     struct Embedding {
         attention_ops::Embedding function;
         std::shared_ptr<tyloi::NintRows> range;
@@ -155,15 +151,8 @@ struct BlockLoader : tyloi::weights::Loader {
     }
     auto moe(std::vector<Linear> gate_up, Linear down, Linear router,
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
-        if(router_capture)*router_capture=router;
-        if(tq_graph_capture) {
-            const auto banks = tq_banks(gate_up.empty() ? nullptr : gate_up.front(),
-                gate_up.empty() ? nullptr : gate_up.back(), down);
-            *tq_graph_capture = gate_up.size()==2 && down &&
-                banks.gate && banks.up && banks.down;
-        }
         return Moe(execution.executor().pipelines(), std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
-                        std::move(sg), std::move(su), std::move(sd), c, prefetch_capture);
+                        std::move(sg), std::move(su), std::move(sd), c);
     }
     auto embedding(const std::string &name) const {
         if(tyloi::is_tq_table(source,name)) {
@@ -222,14 +211,14 @@ struct BlockLoader : tyloi::weights::Loader {
         return std::make_unique<Ple>(std::move(embedding), std::move(weights), c.hidden, c.streams,
                                      c.ngram, c.eps);
     }
-    std::unique_ptr<Qwen4Block> block(const Config &c, int layer, bool predictor);
+    std::unique_ptr<Layer> layer(const Config &c, int layer, bool predictor);
 };
 
-std::unique_ptr<Qwen4Block> BlockLoader::block(const Config &c, int layer, bool predictor) {
-    auto result = std::make_unique<Qwen4Block>();
-    BlockLoader loader{*this, execution, &result->router, &result->prefetch, &result->tq_graph_ffn};
+std::unique_ptr<Layer> LayerLoader::layer(const Config &c, int layer, bool predictor) {
+    auto result = std::make_unique<Layer>();
+    LayerLoader loader{*this, execution};
     loader.role = "qwen4_exp";
-    tyloi::models::qwen4_exp::load_block(*result, loader, c, layer, predictor);
+    tyloi::models::qwen4_exp::load_layer(*result, loader, c, layer, predictor);
     return result;
 }
 
@@ -244,7 +233,7 @@ std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execut
     result.output = std::move(output);
     result.softcap = softcap;
     result.primary = weights.placement.device;
-    BlockLoader loader{weights,execution};
+    LayerLoader loader{weights,execution};
     loader.role = "qwen4_exp";
     if (!tyloi::models::qwen4_exp::load_predictor(result, loader, main))
         return std::nullopt;
@@ -274,7 +263,7 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> model_source,
 }
 
 void load(Model& model, CudaExecutionContext& execution, std::int64_t context_size,
-          bool defer_moe_cache_finalize, bool load_blocks) {
+          bool defer_moe_cache_finalize, bool load_layers) {
     auto definition = tyloi::models::config_json(*model.source, {});
     definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
         std::move(definition), model.graph.backbone, context_size);
@@ -309,15 +298,15 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
     constexpr auto output = "model.output.weight";
     const bool independent = !model.tie_word_embeddings() && tensors.has(output);
     model.embed = tensors.embedding(embedding, independent);
-    BlockLoader loader{tensors, execution};
+    LayerLoader loader{tensors, execution};
     loader.role = "qwen4_exp";
     model.final_mixer = loader.final_mixer(
         tyloi::models::qwen4_exp::load_residual(loader, model.config, "model.mhc.pre", false));
     model.lm_head = independent ? tensors.weight(output, TensorParallelAxis::Output)
         : tensors.placement.tensor.enabled() ? tensors.weight(embedding, TensorParallelAxis::Output)
                                               : model.embed;
-    if (load_blocks) {
-        model.blocks.reserve(static_cast<std::size_t>(model.num_hidden_layers()));
+    if (load_layers) {
+        model.layers.reserve(static_cast<std::size_t>(model.num_hidden_layers()));
         for (int layer = 0; layer < model.num_hidden_layers(); ++layer) {
             const int device = execution.config.layer_placement.device_for_layer(layer);
             const bool cpu = layer < execution.config.dense_cpu_layer_count;
@@ -325,11 +314,11 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
             std::cerr << "loading layer " << layer << ' '
                       << model.metadata.layer_types.at(static_cast<std::size_t>(layer)) << ' '
                       << (cpu ? "CPU" : "CUDA") << std::endl;
-            BlockLoader placed{tensors.for_layer(device, cpu), execution};
-            auto block = placed.block(model.config, layer, false);
+            LayerLoader placed{tensors.for_layer(device, cpu), execution};
+            auto block = placed.layer(model.config, layer, false);
             block->cuda_device = device;
             block->cpu_offloaded = cpu;
-            model.blocks.push_back(std::move(block));
+            model.layers.push_back(std::move(block));
         }
     }
     if (!defer_moe_cache_finalize)

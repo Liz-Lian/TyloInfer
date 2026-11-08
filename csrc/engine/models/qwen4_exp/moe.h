@@ -18,7 +18,24 @@ class Moe {
     Moe(Pipelines&, std::vector<::tyloi::Tensor> gate_up, ::tyloi::Tensor down,
         ::tyloi::Tensor router, ::tyloi::Tensor shared_gate, ::tyloi::Tensor gate,
         ::tyloi::Tensor up, ::tyloi::Tensor shared_down,
-        const tyloi::models::qwen4_exp::Config&, MoeFfnPrefetch* = nullptr);
+        const tyloi::models::qwen4_exp::Config&);
+    const auto& router() const noexcept { return router_; }
+    bool tq() const noexcept {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return tq_;
+#else
+        return bool(tq_);
+#endif
+    }
+    bool can_prefetch() const noexcept { return !tq() && !pipeline_.expired(); }
+    ::tyloi::cuda::DecodeWindow::Task prefetch(const ::tyloi::DenseTensor& ids) const {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        if (tq()) return {};
+        if (auto pipeline = pipeline_.lock())
+            return prefetch_moe_ffn_pipeline(pipeline, ids);
+#endif
+        return {};
+    }
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::DenseTensor forward(const ::tyloi::DenseTensor&) const;
 #else

@@ -1267,7 +1267,7 @@ class Qsa {
         return std::size_t(count)*(c_.kv_heads*(key_width()+value_width())*(quantization_.enabled()?4:2)+
             c_.index_width*request.index.storage().element_size());
     }
-    void capture_session(const State& request,tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count,std::size_t& bytes) const {
+    void capture_session(const State& request,tyloi::models::qwen4_exp::LayerSnapshot& state,int64_t count,std::size_t& bytes) const {
         TYLOINFER_RUNTIME_CHECK(!request.offload && count>0 && count<=position(request),"invalid Qwen4 QSA session boundary");
         const auto save=[&](const DenseTensor& tensor) {
             auto saved=std::make_shared<DenseTensor>(tensor.contiguous().clone());bytes+=session_tensor_bytes(*saved);return saved;
@@ -1285,7 +1285,7 @@ class Qsa {
         }
         state.index=save(request.index.storage().narrow(1,0,count));
     }
-    void restore_session(State& request,const tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count) {
+    void restore_session(State& request,const tyloi::models::qwen4_exp::LayerSnapshot& state,int64_t count) {
         const auto* keys=state.keys.representation<DenseTensor>();
         const auto* values=state.values.representation<DenseTensor>();
         const auto* index=state.index.representation<DenseTensor>();

@@ -66,8 +66,8 @@ auto load_ple(Loader &ops, const Config &c, const std::string &p) {
 }
 
 // The same layer definition loads the backbone and its QSA-only predictor.
-template <class Block, class Loader>
-void load_block(Block &b, Loader &ops, const Config &c, int layer, bool predictor = false) {
+template <class Layer, class Loader>
+void load_layer(Layer &b, Loader &ops, const Config &c, int layer, bool predictor = false) {
     const auto p = std::string(predictor ? "predictor" : "model") + ".block." + std::to_string(layer);
     b.config = c;
     b.attention_gr = load_residual(ops, c, p + ".attention.mhc.pre", true);
@@ -112,7 +112,7 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     result.hidden_fusion = ops.weight("predictor.fusion.hidden.weight");
     result.final_mixer = ops.final_mixer(load_residual(ops, c, "predictor.mhc.pre", false));
     for (int64_t i = 0; i < count; ++i)
-        result.layers.push_back(ops.block(c, int(i), true));
+        result.layers.push_back(ops.layer(c, int(i), true));
 #ifdef TYLOINFER_NATIVE_CUDA
     require_model(result.embedding_norm->dim() == 1 && result.embedding_norm->size(0) == c.hidden &&
                       result.hidden_norm->dim() == 1 && result.hidden_norm->size(0) == c.hidden * c.streams,

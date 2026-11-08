@@ -30,12 +30,12 @@ std::shared_ptr<const ::tyloi::Tensor> read_optional(CudaPagedReader& reader) {
     auto [tensor,device]=reader.tensor();
     return tensor->relocated(::tyloi::Device{::tyloi::DeviceType::cuda,device});
 }
-void write_recurrent(CudaPagedWriter& writer,const tyloi::models::qwen4_exp::BlockSnapshot& layer) {
+void write_recurrent(CudaPagedWriter& writer,const tyloi::models::qwen4_exp::LayerSnapshot& layer) {
     write_optional(writer,layer.convolution.get());write_optional(writer,layer.recurrent.get());write_optional(writer,layer.ple_convolution.get());
     writer.scalar<int64_t>(layer.ple_batch);writer.scalar<uint32_t>(uint32_t(layer.ple_tokens.size()));
     for(auto token:layer.ple_tokens)writer.scalar<int64_t>(token);
 }
-void read_recurrent(CudaPagedReader& reader,tyloi::models::qwen4_exp::BlockSnapshot& layer) {
+void read_recurrent(CudaPagedReader& reader,tyloi::models::qwen4_exp::LayerSnapshot& layer) {
     layer.convolution=read_optional(reader);layer.recurrent=read_optional(reader);layer.ple_convolution=read_optional(reader);
     layer.ple_batch=reader.scalar<int64_t>("PLE batch");
     const auto count=reader.scalar<uint32_t>("PLE history length");
@@ -49,15 +49,15 @@ void write_qwen4_mtp(CudaPagedWriter& writer,const MtpSessionState& state) {
     if(state.last_target_hidden && !hidden)throw CudaSessionStateError("incompatible Qwen4 MTP session state");
     writer.scalar<int64_t>(state.cache_pos);
     write_optional(writer,hidden);
-    writer.scalar<uint32_t>(uint32_t(snapshot->blocks.size()));
-    for(std::size_t i=0;i<snapshot->blocks.size();++i) {
-        const auto& layer=snapshot->blocks[i];
+    writer.scalar<uint32_t>(uint32_t(snapshot->layers.size()));
+    for(std::size_t i=0;i<snapshot->layers.size();++i) {
+        const auto& layer=snapshot->layers[i];
         write_optional(writer,layer.keys.get());write_optional(writer,layer.values.get());write_optional(writer,layer.index.get());
         write_recurrent(writer,layer);write_optional(writer,snapshot->positions[i].get());
         writer.scalar<int64_t>(snapshot->lengths[i]);
     }
 }
-std::size_t qwen4_layer_bytes(const tyloi::models::qwen4_exp::BlockSnapshot& layer) {
+std::size_t qwen4_layer_bytes(const tyloi::models::qwen4_exp::LayerSnapshot& layer) {
     std::size_t bytes=layer.ple_tokens.size()*sizeof(int64_t);
     for(const auto* tensor:{&layer.keys,&layer.values,&layer.index,&layer.convolution,&layer.recurrent,&layer.ple_convolution})
         if(*tensor)bytes+=session_tensor_bytes(**tensor);
@@ -72,8 +72,8 @@ MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
     if(!count || count>64)throw CudaSessionStateError("invalid Qwen4 MTP layers");
     auto& snapshot=state.payload.emplace<tyloi::models::qwen4_exp::MtpSnapshot>();
     for(uint32_t i=0;i<count;++i) {
-        tyloi::models::qwen4_exp::BlockSnapshot layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
-        read_recurrent(reader,layer);state.bytes+=qwen4_layer_bytes(layer);snapshot.blocks.push_back(std::move(layer));
+        tyloi::models::qwen4_exp::LayerSnapshot layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
+        read_recurrent(reader,layer);state.bytes+=qwen4_layer_bytes(layer);snapshot.layers.push_back(std::move(layer));
         auto positions=read_optional(reader);if(positions)state.bytes+=session_tensor_bytes(*positions);snapshot.positions.push_back(std::move(positions));
         snapshot.lengths.push_back(reader.scalar<int64_t>("MTP layer position"));
     }
@@ -83,15 +83,15 @@ MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
 
 CudaPagedPayload encode_block(const TextSessionState& state,size_t block_size,size_t index) {
     const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::Snapshot>(&state.payload);
-    if(!block_size || !snapshot || snapshot->blocks.empty() || state.cache_pos<=0 || state.tokens.size()!=std::size_t(state.cache_pos) ||
+    if(!block_size || !snapshot || snapshot->layers.empty() || state.cache_pos<=0 || state.tokens.size()!=std::size_t(state.cache_pos) ||
         index>state.tokens.size()/block_size || index*block_size>=state.tokens.size() || state.cache_pos>UINT32_MAX)
         throw std::runtime_error("invalid Qwen4 prefix block boundary");
     const auto start=index*block_size,count=std::min(block_size,state.tokens.size()-start);
     const bool exact=start+count==state.tokens.size();
     CudaPagedWriter writer;writer.raw(qwen4_magic.data(),qwen4_magic.size());writer.scalar<uint32_t>(1);
     writer.scalar<uint32_t>(uint32_t(start));writer.scalar<uint32_t>(uint32_t(count));
-    writer.scalar<uint32_t>(uint32_t(snapshot->blocks.size()));writer.scalar<uint32_t>(exact?1:0);
-    for(const auto& layer:snapshot->blocks) {
+    writer.scalar<uint32_t>(uint32_t(snapshot->layers.size()));writer.scalar<uint32_t>(exact?1:0);
+    for(const auto& layer:snapshot->layers) {
         for(const auto* tensor:{&layer.keys,&layer.values,&layer.index}) {
             const auto* dense=dynamic_cast<const ::tyloi::DenseTensor*>(tensor->get());
             if(*tensor && !dense)throw CudaSessionStateError("incompatible Qwen4 session tensor");
@@ -117,7 +117,7 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     const std::vector<int64_t>& tokens,size_t block_size) {
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
     tyloi::models::qwen4_exp::Snapshot snapshot;
-    auto& layers=snapshot.blocks;
+    auto& layers=snapshot.layers;
     std::vector<std::array<std::vector<::tyloi::DenseTensor>,3>> fragments;
     size_t position=0;
     for(size_t i=0;i<payloads.size();++i) {

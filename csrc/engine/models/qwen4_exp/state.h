@@ -3,7 +3,8 @@
 #include "engine/models/state.h"
 #include "engine/models/session/snapshot.h"
 #include "engine/models/session/size.h"
-#include "engine/models/qwen4_exp/block.h"
+#include "engine/models/qwen4_exp/snapshot.h"
+#include "engine/models/qwen4_exp/layer.h"
 
 #include <memory>
 #include <vector>
@@ -15,10 +16,30 @@ namespace tyloi::cuda::qwen4_exp {
 
 struct Model;
 
+// Per-request recurrent and attention storage for one shared layer.
+struct LayerState {
+    Gdn::State gdn;
+    std::unique_ptr<Qsa::State> qsa;
+    Ple::State ple;
+    bool retain_graph_storage = false, retained_prefix = false;
+
+    explicit LayerState(const Layer& layer);
+    void reset(const Layer& layer);
+    void commit(const Layer& layer);
+    void rollback(const Layer& layer, std::int64_t keep);
+    std::vector<::tyloi::Tensor*> graph_state(const Layer& layer);
+};
+
+tyloi::models::qwen4_exp::LayerSnapshot capture_layer_session(
+    const Layer& layer, const LayerState& state, std::int64_t position, std::size_t& bytes);
+void restore_layer_session(
+    const Layer& layer, LayerState& state,
+    const tyloi::models::qwen4_exp::LayerSnapshot& snapshot, std::int64_t position);
+
 // One request owns its layer caches, decode graph, positions and journal.
 class State : public tyloi::models::State {
 public:
-    explicit State(Model& model);
+    explicit State(const Model& model);
     State(const State&) = delete;
     State& operator=(const State&) = delete;
     State(State&&) = delete;
@@ -65,7 +86,7 @@ public:
 
 private:
     friend tyloi::models::SnapshotSize snapshot_size(const State&, const tyloi::models::Mtp*);
-    Model& model_;
+    const Model& model_;
 };
 
 tyloi::models::SnapshotSize snapshot_size(const State&, const tyloi::models::Mtp*);

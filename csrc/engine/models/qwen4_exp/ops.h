@@ -5,7 +5,7 @@
 #include "engine/models/metadata.h"
 #include "engine/metrics.h"
 #include "engine/models/common/prompt.h"
-#include "engine/models/qwen4_exp/block.h"
+#include "engine/models/qwen4_exp/layer.h"
 #include "engine/models/session/size.h"
 #include "engine/models/qwen4_exp/state.h"
 #include "engine/models/qwen4_exp/config.h"
@@ -17,7 +17,7 @@
 #include <iosfwd>
 #include <vector>
 
-namespace tyloi::cuda::qwen4_exp { struct Qwen4Block; }
+namespace tyloi::cuda::qwen4_exp { struct Layer; }
 namespace tyloi::cuda { class GatedResidual; }
 namespace tyloi::models { struct Mtp; }
 
@@ -142,7 +142,7 @@ struct Model : tyloi::models::CausalModel {
     std::shared_ptr<const ::tyloi::Tensor> lm_head;
     CausalConfig config;
     std::unique_ptr<GatedResidual> final_mixer;
-    std::vector<std::unique_ptr<qwen4_exp::Qwen4Block>> blocks;
+    std::vector<std::unique_ptr<qwen4_exp::Layer>> layers;
 
     // ---- helpers absorbed from the retired CausalLm plumbing
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -188,12 +188,8 @@ struct Model : tyloi::models::CausalModel {
 
 void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
           std::string_view definition, std::int64_t context_size);
-tyloi::models::qwen4_exp::BlockSnapshot capture_block_session(const Qwen4Block& block, const LayerState& layer,
-                                                              std::int64_t position, std::size_t& bytes);
-void restore_block_session(Qwen4Block& block, LayerState& layer, const tyloi::models::qwen4_exp::BlockSnapshot& state,
-                           std::int64_t position);
 void load(Model& model, CudaExecutionContext& execution, std::int64_t context_size,
-          bool defer_moe_cache_finalize, bool load_blocks);
+          bool defer_moe_cache_finalize, bool load_layers);
 
 } // namespace tyloi::cuda::qwen4_exp
 

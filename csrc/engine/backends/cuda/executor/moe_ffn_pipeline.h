@@ -23,7 +23,6 @@ struct MoeFfnOptions {
 
 using MoeFfnShared=std::function<::tyloi::DenseTensor(const tyloi::cuda::Projector&,const ::tyloi::DenseTensor&)>;
 using MoeFfnDispatchObserver=std::function<void(const tyloi::MoeDispatchPlan&)>;
-using MoeFfnPrefetch=std::function<tyloi::cuda::DecodeWindow::Task(const ::tyloi::DenseTensor&)>;
 class MoeFfnPipeline;
 struct MoeFfnSharedWeights {
     std::array<std::shared_ptr<const ::tyloi::Tensor>,3> projections;

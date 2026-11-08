@@ -12,6 +12,7 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/vision.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/attention.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/layer.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/components.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/load.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/glm5_next/ops.cpp
