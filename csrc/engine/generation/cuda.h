@@ -8,7 +8,7 @@
 #include "engine/models/metadata.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/models/common/mtp.h"
-#include "engine/load.h"
+#include "engine/config.h"
 
 #include <functional>
 #include <optional>

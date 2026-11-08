@@ -43,7 +43,7 @@ set(TYLOINFER_MODELS_CUDA_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/qwen35/mtp_state.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen35/mtp.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen35/components.cpp
-    ${PROJECT_SOURCE_DIR}/engine/load.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/load.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/batch.cpp
 )
 set(TYLOINFER_MODELS_CUDA_SOURCES "${TYLOINFER_MODELS_CUDA_SOURCES}" PARENT_SCOPE)

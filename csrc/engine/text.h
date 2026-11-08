@@ -1,7 +1,7 @@
 #pragma once
 
 #include "env.h"
-#include "engine/load.h"
+#include "engine/backends/cuda/executor/config.h"
 #include "engine/drain.h"
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/components.h"

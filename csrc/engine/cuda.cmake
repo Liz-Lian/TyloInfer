@@ -80,7 +80,7 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}/models)
 
 # Remaining legacy bindings are shared by native and optional Torch builds.
-# Concrete Engine selection is compiled from engine/load.cpp.
+# Library loading calls the model factory and prepares execution resources.
 set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/generation/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/decode.cpp
@@ -94,6 +94,7 @@ set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
     ${PROJECT_SOURCE_DIR}/commands/cli.cpp
+    ${PROJECT_SOURCE_DIR}/engine/load.cpp
     ${TYLOINFER_CUDA_MODEL_SOURCES}
 )
 add_library(mfq-cuda-engine STATIC

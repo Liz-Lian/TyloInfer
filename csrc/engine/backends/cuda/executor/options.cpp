@@ -1,5 +1,5 @@
 #include "options.h"
-#include "engine/load.h"
+#include "engine/backends/cuda/executor/config.h"
 
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"

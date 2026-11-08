@@ -33,11 +33,34 @@
 #include "engine/models/minicpmo45/text/state.h"
 
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <memory>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
+
+struct LayerPlacementConfig;
+
+namespace tyloi {
+class ModelSource;
+namespace weights { struct Loader; }
+
+namespace models {
+class CausalModel;
+
+std::unique_ptr<CausalModel> load(
+    std::shared_ptr<const ModelSource> source,
+    std::string_view definition,
+    std::int64_t context,
+    const weights::Loader& weights,
+    LayerPlacementConfig& placement,
+    int gpu_layers = -1,
+    bool expert_parallel = false);
+
+} // namespace models
+} // namespace tyloi
 
 namespace tyloi::cuda {
 

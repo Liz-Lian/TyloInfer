@@ -297,6 +297,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/execution.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/options.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/config.cpp
     ${PROJECT_SOURCE_DIR}/engine/budget.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/executor.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp

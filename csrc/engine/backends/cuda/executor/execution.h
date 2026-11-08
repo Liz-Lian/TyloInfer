@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/weights/encoding/format_features.h"
-#include "engine/load.h"
+#include "engine/backends/cuda/executor/config.h"
 #include "engine/weights/placement.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/scope.h"
