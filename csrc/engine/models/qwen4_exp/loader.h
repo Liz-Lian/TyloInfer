@@ -39,8 +39,12 @@ struct BlockLoader : tyloi::weights::Loader {
             ? GatedResidual::Part::final_down
             : name=="model.mhc.pre.up.weight" || name=="predictor.mhc.pre.up.weight"
                 ? GatedResidual::Part::final_up : GatedResidual::Part::generic;
+#ifdef TYLOINFER_NATIVE_CUDA
+        return GatedResidual::projection(weight(name), part);
+#else
         return GatedResidual::projection(weight(name), execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(),
                                           execution.executor().options().residual, part);
+#endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA
     GatedResidual residual(std::shared_ptr<const ::tyloi::Tensor> norm, GatedResidual::Projection down,
@@ -49,7 +53,11 @@ struct BlockLoader : tyloi::weights::Loader {
 #endif
         GatedResidual::Projection up, GatedResidual::Projection injection, const Config &c) const {
         return {std::move(norm), std::move(down), std::move(up), std::move(injection),
+#ifdef TYLOINFER_NATIVE_CUDA
+                c.hidden, c.streams, c.eps};
+#else
                 c.hidden, c.streams, c.eps, execution.executor().options().residual, execution.executor().mode().ffn.batch_serial};
+#endif
     }
     static auto final_mixer(GatedResidual weights) { return std::make_unique<GatedResidual>(std::move(weights)); }
     auto gdn_weights(const std::string &p) const {

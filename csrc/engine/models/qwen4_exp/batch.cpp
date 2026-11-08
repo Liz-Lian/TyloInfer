@@ -387,6 +387,11 @@ BatchOps::Decoded BatchOps::decode(State& state) {
         ::tyloi::kCUDA, execution_.config.layer_placement.primary_device()));
     CacheScope moe_cache_scope(
         execution_.executor().mode().ffn.batch_serial, tokens.size() > 8);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto policy = Executor::current_ffn();
+    policy.batch_serial = execution_.executor().mode().ffn.batch_serial;
+    auto policy_scope = Executor::current().enter(policy);
+#endif
     const bool greedy =
         config_.greedy && std::all_of(
                               state.active.begin(), state.active.end(), [](const auto& request) {

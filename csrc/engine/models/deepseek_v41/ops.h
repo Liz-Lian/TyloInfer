@@ -907,7 +907,11 @@ struct Block final {
             [&](DenseTensor attended) { return output_projection(attended); });
     }
 
-    DenseTensor forward_context(SharedState& shared, CudaExecutionContext& execution,DenseTensor hidden,
+    DenseTensor forward_context(SharedState& shared,
+#ifndef TYLOINFER_NATIVE_CUDA
+            CudaExecutionContext& execution,
+#endif
+            DenseTensor hidden,
             const BlockContext& context) {
         if(context.confirmed_prefix>0) {
             // A joint pass writes pending and draft rows. Protect their whole
@@ -920,11 +924,19 @@ struct Block final {
         }
         TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
                               "block does not support speculative verification");
-        return forward(shared, execution, std::move(hidden), context.positions, context.cache_position,
+        return forward(shared,
+#ifndef TYLOINFER_NATIVE_CUDA
+                       execution,
+#endif
+                       std::move(hidden), context.positions, context.cache_position,
                        context.sequence_lengths, context.cache_positions);
     }
 
-    DenseTensor forward(SharedState& shared, CudaExecutionContext &execution, DenseTensor hidden, DenseTensor positions,
+    DenseTensor forward(SharedState& shared,
+#ifndef TYLOINFER_NATIVE_CUDA
+                   CudaExecutionContext &execution,
+#endif
+                   DenseTensor hidden, DenseTensor positions,
                    std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
                    const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
@@ -983,17 +995,15 @@ struct Block final {
             }
             if(layer+1<static_cast<int64_t>(shared.tables.router_prefetch.size()))
                 if(const auto* next=shared.tables.router_prefetch[layer+1]) {
-#ifndef TYLOINFER_NATIVE_CUDA
-                    auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-#endif
-                    next->prefetch(
 #ifdef TYLOINFER_NATIVE_CUDA
-                        value,
+                    next->prefetch(value, layer_state.current_ids);
 #else
+                    auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+                    next->prefetch(
                         value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
-#endif
                         execution.weights.lookahead(::tyloi::weights::Cache::Lookahead::neighbor),
                         layer_state.current_ids);
+#endif
                 }
 #ifdef TYLOINFER_NATIVE_CUDA
             return mlp.forward(

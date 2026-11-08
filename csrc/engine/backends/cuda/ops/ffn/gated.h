@@ -30,7 +30,17 @@ public:
         bool two_stage = true;
         bool dense_injection = true;
     };
+    enum class Part { generic, final_down, final_up };
     struct Projection {
+#ifdef TYLOINFER_NATIVE_CUDA
+        ::tyloi::Tensor weight;
+        DenseTensor right, promoted, prepared_right, up_group_coefficients;
+        bool can_mix = false, can_activate = false;
+        DenseTensor forward(const DenseTensor& input) const;
+        DenseTensor mix(const DenseTensor& input, const DenseTensor& normalized, int64_t streams) const;
+        DenseTensor activate(const DenseTensor& input, int64_t streams, bool injection) const;
+        explicit operator bool() const { return weight.defined(); }
+#else
         using Forward = std::function<DenseTensor(const DenseTensor&)>;
         using Mix = std::function<DenseTensor(const DenseTensor&, const DenseTensor&, int64_t)>;
         using Activation = std::function<DenseTensor(const DenseTensor&, int64_t, bool)>;
@@ -43,23 +53,29 @@ public:
         // Optional FP32 coefficients or packed row/group records.
         DenseTensor up_group_coefficients;
         explicit operator bool() const { return bool(forward); }
+#endif
     };
-    enum class Part { generic, final_down, final_up };
-    // Borrowed execution resources and options outlive the prepared projections.
-    static Projection projection(std::shared_ptr<const ::tyloi::Tensor>, Projector,
+#ifdef TYLOINFER_NATIVE_CUDA
+    static Projection projection(::tyloi::Tensor, Part);
+#else
+    static Projection projection(::tyloi::Tensor, Projector,
                                  CudaProfiler&, const Options&, Part);
+#endif
 
     GatedResidual() = default;
 #ifdef TYLOINFER_NATIVE_CUDA
-    GatedResidual(std::shared_ptr<const ::tyloi::Tensor> norm, Projection down, Projection up, Projection injection,
+    GatedResidual(::tyloi::Tensor norm, Projection down, Projection up, Projection injection,
+                  int64_t hidden, int64_t streams, double eps)
+        : norm(std::move(norm)), down(std::move(down)), up(std::move(up)),
+          injection(std::move(injection)), hidden(hidden), streams(streams), eps(eps), initialized_(true) {}
 #else
     GatedResidual(DenseTensor norm, Projection down, Projection up, Projection injection,
-#endif
                   int64_t hidden, int64_t streams, double eps,
                   const Options& options, const bool& cache_serial)
         : norm(std::move(norm)), down(std::move(down)), up(std::move(up)),
           injection(std::move(injection)), hidden(hidden), streams(streams), eps(eps),
           options_(&options), cache_serial_(&cache_serial) {}
+#endif
 
     Result pre(const DenseTensor& input, const GatedResidualMarker& marker = {}) const;
     Result pre_after(const DenseTensor& input, const DenseTensor& residual, const DenseTensor& gate,
@@ -76,9 +92,12 @@ private:
     Projection down, up, injection;
     int64_t hidden = 0, streams = 0;
     double eps = 0;
-    // Borrow settings so diagnostics stay live; the engine drains before releasing them.
+#ifndef TYLOINFER_NATIVE_CUDA
     const Options* options_ = nullptr;
     const bool* cache_serial_ = nullptr;
+#else
+    bool initialized_ = false;
+#endif
 
     int64_t prefill_work_chunk(const DenseTensor& input) const;
     template<class Project>

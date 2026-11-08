@@ -104,7 +104,11 @@ std::int64_t prefill_span(const Model&, const State&, std::size_t tokens,
             hidden = block.cpu_offloaded
                 ? hidden.to(::tyloi::kCPU).contiguous()
                 : model.execution->executor().collectives().copy(hidden, block.cuda_device);
-            hidden = block.forward_context(*state.shared, *model.execution, std::move(hidden), context);
+            hidden = block.forward_context(*state.shared,
+#ifndef TYLOINFER_NATIVE_CUDA
+                                           *model.execution,
+#endif
+                                           std::move(hidden), context);
             if(selected)profiler.report("deepseek_v41.layer."+std::to_string(layer));
         } catch(...) {profiler.enabled=previous;throw;}
         profiler.enabled=previous;

@@ -89,7 +89,7 @@ bool expert_parallel(const Ffn& f) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-void Ffn::prefetch(const DenseTensor& x, bool enabled,
+void Ffn::prefetch(const DenseTensor& x,
         MfqOptional<DenseTensor> input_ids) const {
 #else
 void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, bool enabled,
@@ -103,7 +103,11 @@ void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, b
     const auto& f = *this;
     const auto project_ = executor.projector(mode);
     auto pipeline=f.moe_pipeline.lock();
+#ifdef TYLOINFER_NATIVE_CUDA
+    if(!moe_ffn_neighbor_prefetch_enabled(pipeline) ||
+#else
     if(!enabled || !pipeline ||
+#endif
             x.dim()<2 || x.numel()/x.size(-1)>32)return;
     ::tyloi::DenseTensor ids;
     // Cover each row's leading candidates without reading low-confidence

@@ -68,5 +68,6 @@ private:
     const ::tyloi::DenseTensor& weights,bool batch_serial=false,int tile=0,int tiles=1);
 tyloi::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
     std::shared_ptr<MoeFfnPipeline> pipeline,const ::tyloi::DenseTensor& ids);
+bool moe_ffn_neighbor_prefetch_enabled(const std::shared_ptr<MoeFfnPipeline>& pipeline);
 void activate_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);
 void drain_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);

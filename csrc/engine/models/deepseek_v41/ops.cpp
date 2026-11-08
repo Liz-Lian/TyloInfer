@@ -510,7 +510,11 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
             hidden = hidden.to(::tyloi::kCPU).contiguous();
         else
             hidden = execution->executor().collectives().copy(hidden, block->cuda_device);
-        hidden = block->forward_context(*state.shared, *execution, std::move(hidden), context);
+        hidden = block->forward_context(*state.shared,
+#ifndef TYLOINFER_NATIVE_CUDA
+                                        *execution,
+#endif
+                                        std::move(hidden), context);
         trace_layer();
     }
     state.cache_pos += T;

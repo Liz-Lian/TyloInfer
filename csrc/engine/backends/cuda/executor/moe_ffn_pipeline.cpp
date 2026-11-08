@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/native/device.h"
 #include "engine/backends/cpu/native/host_copy.h"
 #include "engine/weights/moe/cached_source_internal.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/ops/projection/cpu_rows.h"
 #include "engine/backends/cpu/executor/expert_pool.h"
 #include "engine/backends/cuda/executor/graph_registry.h"
@@ -4262,6 +4263,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         }
     }
 public:
+    bool neighbor_prefetch_enabled() const {
+        return moe_expert_cache_ssd_router_prefetch(std::shared_ptr<MoeExpertCache>(sources_[0], cache_));
+    }
     void prefetch_host(const std::vector<int32_t>& predictions,Mapped& flags) {
         struct Field {void* destination;::tyloi::DenseTensor source;int64_t bytes,offset=0;};
         std::vector<Field> fields;
@@ -4758,6 +4762,10 @@ tyloi::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
     if(!ids.is_cuda())throw std::invalid_argument("MFQ prefetch routes must be CUDA");
     const MfqCudaGuard guard(ids.device());
     return pipeline->prediction(ids);
+}
+
+bool moe_ffn_neighbor_prefetch_enabled(const std::shared_ptr<MoeFfnPipeline>& pipeline) {
+    return pipeline && pipeline->neighbor_prefetch_enabled();
 }
 
 void drain_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline) {

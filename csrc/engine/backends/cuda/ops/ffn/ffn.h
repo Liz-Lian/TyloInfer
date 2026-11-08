@@ -76,7 +76,7 @@ public:
         MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt,
         MfqOptional<::tyloi::DenseTensor> router_bias = mfq_nullopt) const;
     void prefetch(
-        const ::tyloi::DenseTensor& input, bool enabled,
+        const ::tyloi::DenseTensor& input,
         MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt) const;
 #else
     ::tyloi::DenseTensor forward(

@@ -26,7 +26,12 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
     TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation() && model.tables.engram_parameters,
         "invalid DeepSeek-V4.1 DSpark model");
     return deepseek_v41_runtime::load_dspark_if_present(
-        *model.execution, weights, model.config, model.embed, model.lm_head,
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.execution->executor().pipelines(),
+#else
+        *model.execution,
+#endif
+        weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping);
 }
 

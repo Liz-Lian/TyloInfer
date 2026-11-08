@@ -1,4 +1,6 @@
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
+#endif
 #include "engine/models/session.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
@@ -48,8 +50,10 @@ dspark_full_attention_plan(std::int64_t batch, std::int64_t queries, std::int64_
 }
 
 struct DeepseekV41Dspark final : tyloi::models::Mtp {
+#ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext *execution = nullptr;
-    std::shared_ptr<const ::tyloi::Tensor> embedding, output;
+#endif
+    ::tyloi::Tensor embedding, output;
     double softcap = 0;
     int primary = 0;
     CommonConfig config;
@@ -230,11 +234,14 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         return result;
     }
 
-    static std::optional<DeepseekV41Dspark> load_if_present(CudaExecutionContext &execution,
-                                                            const tyloi::weights::Loader& weights,
-                                                            const CommonConfig &config,
-                                                            std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
-                                                            double softcap) {
+    static std::optional<DeepseekV41Dspark> load_if_present(
+#ifdef TYLOINFER_NATIVE_CUDA
+        Pipelines& pipelines,
+#else
+        CudaExecutionContext &execution,
+#endif
+        const tyloi::weights::Loader& weights, const CommonConfig &config,
+        ::tyloi::Tensor embedding, ::tyloi::Tensor output, double softcap) {
         const bool root = weights.has("predictor.stage.0.main_projection.weight");
         const bool any = root || weights.has("predictor.stage.0.attention.query_a.weight") ||
                          weights.has("predictor.stage.0.mlp.router.weight") ||
@@ -247,7 +254,9 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         TYLOINFER_RUNTIME_CHECK(config.has_dspark(),
                           "DeepSeek-V4.1 model source has DSpark tensors without configuration");
         DeepseekV41Dspark result;
+#ifndef TYLOINFER_NATIVE_CUDA
         result.execution = &execution;
+#endif
         result.embedding = std::move(embedding);
         result.output = std::move(output);
         result.softcap = softcap;
@@ -272,7 +281,13 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
             weights.weight(last + "confidence.projection.weight");
         result.stages.reserve(static_cast<std::size_t>(result.config.n_mtp_layers));
         for (std::int64_t stage = 0; stage < result.config.n_mtp_layers; ++stage) {
-            result.stages.push_back(load_stage(execution.executor().pipelines(), weights, result.config, stage));
+            result.stages.push_back(load_stage(
+#ifdef TYLOINFER_NATIVE_CUDA
+                pipelines,
+#else
+                execution.executor().pipelines(),
+#endif
+                weights, result.config, stage));
         }
         const auto target_width =
             result.config.hidden *
@@ -717,12 +732,21 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     }
 };
 
-std::unique_ptr<tyloi::models::Mtp> load_dspark_if_present(CudaExecutionContext &execution,
-                                                    const tyloi::weights::Loader& weights,
-                                                    const CommonConfig &config,
-                                                    std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
-                                                    double softcap) {
-    auto predictor = DeepseekV41Dspark::load_if_present(execution, weights, config,
+std::unique_ptr<tyloi::models::Mtp> load_dspark_if_present(
+#ifdef TYLOINFER_NATIVE_CUDA
+    Pipelines& pipelines,
+#else
+    CudaExecutionContext &execution,
+#endif
+    const tyloi::weights::Loader& weights, const CommonConfig &config,
+    ::tyloi::Tensor embedding, ::tyloi::Tensor output, double softcap) {
+    auto predictor = DeepseekV41Dspark::load_if_present(
+#ifdef TYLOINFER_NATIVE_CUDA
+        pipelines,
+#else
+        execution,
+#endif
+        weights, config,
         std::move(embedding), std::move(output), softcap);
     return predictor ? std::make_unique<DeepseekV41Dspark>(std::move(*predictor)) : nullptr;
 }
