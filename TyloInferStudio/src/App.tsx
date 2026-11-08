@@ -1,18 +1,13 @@
-
 import { lazy, Suspense } from 'react';
-import { Navigate, Route, Routes } from 'react-router';
+import { Route, Routes } from 'react-router';
 import { StudioUpdateProvider } from './features/settings/UpdateManager';
 import { RuntimeProvider } from './app/RuntimeProvider';
-import { AgentProvider } from './features/agent/AgentProvider';
 import { StudioShell } from './app/StudioShell';
 import { LabLayout } from './app/LabLayout';
 import { LoadingPage } from './app/LoadingPage';
 import { NotFoundPage } from './app/NotFoundPage';
 import './shared/ui/primitives.css';
 
-const AgentPage = lazy(() =>
-  import('./features/agent/AgentPage').then((module) => ({ default: module.AgentPage })),
-);
 const OverviewPage = lazy(() =>
   import('./features/runtime/OverviewPage').then((module) => ({ default: module.OverviewPage })),
 );
@@ -33,46 +28,41 @@ const LogsPage = lazy(() =>
 const ModelHubPage = lazy(() =>
   import('./features/models/ModelHubPage').then((module) => ({ default: module.ModelHubPage })),
 );
-const EvaluationsPage = lazy(() =>
-  import('./features/evaluations/EvaluationsPage').then((module) => ({
-    default: module.EvaluationsPage,
-  })),
-);
 const AnalysisPage = lazy(() =>
   import('./features/analysis/AnalysisPage').then((module) => ({ default: module.AnalysisPage })),
 );
 const VersionsPage = lazy(() =>
-  import('./features/settings/VersionsPage').then(module => ({ default: module.VersionsPage })),
+  import('./features/settings/VersionsPage').then((module) => ({ default: module.VersionsPage })),
 );
-
 
 export default function App() {
   return (
-      <StudioUpdateProvider>
-        <RuntimeProvider>
-          <AgentProvider>
-            <Suspense fallback={<main className="fatal-workspace"><LoadingPage /></main>}>
-              <Routes>
-                <Route element={<StudioShell />}>
-                  <Route index element={<OverviewPage />} />
-                  <Route path="agent" element={<AgentPage />} />
-                  <Route path="chat" element={<Navigate to="/agent" replace />} />
-                  <Route path="models" element={<ModelsPage />} />
-                  <Route path="runtime" element={<ConnectionsPage />} />
-                  <Route path="resources" element={<CachePage />} />
-                  <Route path="logs" element={<LogsPage />} />
-                  <Route path="versions" element={<VersionsPage />} />
-                  <Route element={<LabLayout />}>
-                    <Route path="analysis" element={<AnalysisPage />} />
-                    <Route path="model-hub" element={<ModelHubPage />} />
-                    <Route path="evaluations" element={<EvaluationsPage />} />
-                  </Route>
-                  <Route path="*" element={<NotFoundPage />} />
-                </Route>
-              </Routes>
-            </Suspense>
-          </AgentProvider>
-        </RuntimeProvider>
-      </StudioUpdateProvider>
+    <StudioUpdateProvider>
+      <RuntimeProvider>
+        <Suspense
+          fallback={
+            <main className="fatal-workspace">
+              <LoadingPage />
+            </main>
+          }
+        >
+          <Routes>
+            <Route element={<StudioShell />}>
+              <Route index element={<OverviewPage />} />
+              <Route path="models" element={<ModelsPage />} />
+              <Route path="runtime" element={<ConnectionsPage />} />
+              <Route path="resources" element={<CachePage />} />
+              <Route path="logs" element={<LogsPage />} />
+              <Route path="versions" element={<VersionsPage />} />
+              <Route element={<LabLayout />}>
+                <Route path="analysis" element={<AnalysisPage />} />
+                <Route path="model-hub" element={<ModelHubPage />} />
+              </Route>
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Routes>
+        </Suspense>
+      </RuntimeProvider>
+    </StudioUpdateProvider>
   );
 }

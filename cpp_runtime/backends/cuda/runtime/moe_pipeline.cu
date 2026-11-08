@@ -1,8 +1,8 @@
 #include "cpp_runtime/backends/cuda/kernels/kernel_dispatch_trace.h"
+#include "../kernels/system_ready.cuh"
 #include "moe_pipeline.h"
 #include "shared_storage.cuh"
 #include <cuda_fp16.h>
-#include <cuda/atomic>
 #include <cstdlib>
 #include <algorithm>
 #include <stdexcept>
@@ -12,8 +12,7 @@ namespace {
 __device__ void publish_host_flag(std::uint32_t* flag) {
     // Aligned stores also work on mapped host memory without native PCIe
     // atomics. A read-modify-write exchange requires that extra capability.
-    ::cuda::atomic_ref<std::uint32_t, ::cuda::thread_scope_system> ready(*flag);
-    ready.store(1u, ::cuda::std::memory_order_release);
+    detail::store_system_release(flag,1u);
 }
 __global__ void export_routes(const __half* input, const std::int32_t* routes,
         float* host_input, std::int32_t* host_routes, std::uint32_t* ready,
@@ -23,7 +22,8 @@ __global__ void export_routes(const __half* input, const std::int32_t* routes,
         if (item < input_count) host_input[item] = __half2float(input[item]);
         else host_routes[item - input_count] = routes[item - input_count];
     }
-    __threadfence_system();
+    // The block barrier orders every producer before lane zero's system
+    // release store, which publishes the payload to the host.
     __syncthreads();
     if (!threadIdx.x) publish_host_flag(ready);
 }
@@ -38,12 +38,7 @@ __global__ void await_host(const std::uint32_t* ready,std::uint64_t* waited_unti
         __threadfence_system();
         if(!pending)return;
     }
-    while (!*observed) {
-#if __CUDA_ARCH__ >= 700
-        __nanosleep(64);
-#endif
-    }
-    __threadfence_system();
+    detail::wait_system_ready(ready);
     if constexpr(Timed) {
         unsigned long long now;
         asm volatile("mov.u64 %0, %%globaltimer;":"=l"(now));
@@ -52,19 +47,12 @@ __global__ void await_host(const std::uint32_t* ready,std::uint64_t* waited_unti
     }
 }
 __global__ void notify_host(std::uint32_t* ready) {
-    __threadfence_system();
     publish_host_flag(ready);
 }
 __global__ void await_plan(const std::uint32_t* ready,const std::int32_t* host_kind,
         std::int32_t* device_kind,int experts,const std::uint32_t* host_abort,std::uint32_t* device_abort) {
     if(!threadIdx.x) {
-        auto* observed=reinterpret_cast<const volatile std::uint32_t*>(ready);
-        while(!*observed) {
-#if __CUDA_ARCH__ >= 700
-            __nanosleep(64);
-#endif
-        }
-        __threadfence_system();
+        detail::wait_system_ready(ready);
         *device_abort=*reinterpret_cast<const volatile std::uint32_t*>(host_abort);
     }
     __syncthreads();
@@ -222,9 +210,8 @@ __global__ void await_plan_snapshot(const uint32_t* ready,const uint32_t* host_a
     __shared__ uint64_t descriptor_words;
     __shared__ uint32_t abort;
     if(!threadIdx.x) {
-        while(!*reinterpret_cast<const volatile uint32_t*>(ready) &&
-                !*reinterpret_cast<const volatile uint32_t*>(host_abort))__nanosleep(64);
-        __threadfence_system();
+        while(!detail::load_system_acquire(ready) &&
+                !detail::load_system_acquire(host_abort))detail::system_wait_pause();
         abort=*reinterpret_cast<const volatile uint32_t*>(host_abort);
         count=abort?0:table[0];
         const bool empty_packet=count==~uint64_t(0);

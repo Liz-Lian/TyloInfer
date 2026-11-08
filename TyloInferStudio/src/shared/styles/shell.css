@@ -59,15 +59,11 @@
   flex-direction: column;
   margin-inline: -3px;
   padding-inline: 3px;
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 
-.sidebar-scroll[data-scroll-mode=all] { overflow-y: auto; }
 .sectioned-nav { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 12px; }
 .sectioned-nav > section { display: grid; flex-shrink: 0; gap: 4px; }
-.sectioned-nav > .sidebar-agent-section { display: flex; min-height: 0; flex: 1; flex-direction: column; }
-.sidebar-agent-section > .sidebar-section-heading, .sidebar-agent-section > .agent-new-conversation { flex-shrink: 0; }
-.sidebar-scroll[data-scroll-mode=all] .sectioned-nav, .sidebar-scroll[data-scroll-mode=all] .sidebar-agent-section { flex: 0 0 auto; }
 .sectioned-nav > section + section { border-top: 1px solid var(--sidebar-line); padding-top: 12px; }
 .sidebar-nav-items { display: grid; gap: 4px; }
 .sidebar-nav-items[hidden] { display: none; }

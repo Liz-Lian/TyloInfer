@@ -31,6 +31,29 @@ struct M1PreparedIq4Xs:PreparedDot<GGML_TYPE_IQ4_XS> {
         }
         return w;
     }
+    template<bool Streaming,class T>
+    __device__ static T load_window_word(const T* address) {
+        if constexpr(Streaming)return __ldcs(address);
+        else return __ldg(address);
+    }
+    template<bool Streaming>
+    __device__ static Weight load_aligned_window(const void* data,int block,int part) {
+        // The caller checks both the base and row stride. The 136-byte
+        // block and four-word fragment preserve eight-byte alignment.
+        // Checking each fragment instead duplicates the nonlinear decoder
+        // in the hot loop; ordinary external four-byte views keep load().
+        const auto* b=static_cast<const block_iq4_xs*>(data)+block;Weight w;w.block=part/4;
+        w.scale=__half2float(__ushort_as_half(load_window_word<Streaming>(reinterpret_cast<const uint16_t*>(&b->d))));
+        w.scale_code=(((load_window_word<Streaming>(b->scales_l+part/8)>>(part&4))&15)|
+            ((load_window_word<Streaming>(&b->scales_h)>>(part/2)&3)<<4))-32;
+        const auto* pairs=reinterpret_cast<const uint2*>(b->qs+part*4);
+        const auto first=load_window_word<Streaming>(pairs),second=load_window_word<Streaming>(pairs+1);
+        w.codes[0]=get_int_from_table_16(first.x,kvalues_iq4nl);
+        w.codes[1]=get_int_from_table_16(first.y,kvalues_iq4nl);
+        w.codes[2]=get_int_from_table_16(second.x,kvalues_iq4nl);
+        w.codes[3]=get_int_from_table_16(second.y,kvalues_iq4nl);
+        return w;
+    }
     __device__ static float apply_activation(const Weight& w,const Activation& a) {
         int sum=0;
         #pragma unroll

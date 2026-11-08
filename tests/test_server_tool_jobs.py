@@ -24,6 +24,14 @@ from tyloinfer.server.state.storage import SessionStore
 
 
 @pytest.fixture(autouse=True)
+def _download_disk_capacity(monkeypatch):
+    import shutil
+
+    capacity = shutil._ntuple_diskusage(4 << 30, 1 << 30, 3 << 30)
+    monkeypatch.setattr("tyloinfer.server.runtime.disk_budget.shutil.disk_usage", lambda _: capacity)
+
+
+@pytest.fixture(autouse=True)
 def _python_script_executables_on_windows(tmp_path, monkeypatch):
     if os.name != 'nt':
         return
@@ -46,7 +54,7 @@ def _python_script_executables_on_windows(tmp_path, monkeypatch):
 @pytest.mark.parametrize('raw_parts', [False, True])
 def test_download_reports_real_written_bytes_and_speed(tmp_path, monkeypatch, raw_parts):
     async def run():
-        handlers = ToolJobHandlers(ModelCatalog([]), ToolJobPaths(tmp_path, tmp_path / 'tq', None, None, None, None))
+        handlers = ToolJobHandlers(ModelCatalog([]), ToolJobPaths(tmp_path, tmp_path / 'tq', None, None, None))
         captured = []
         class Context:
             async def progress(self, value, **kwargs): captured.append((value, kwargs['data']))
@@ -84,9 +92,9 @@ def test_standalone_cli_jobs_reinvoke_the_unified_mfq_binary(tmp_path: Path) -> 
         ),
     )
 
-    assert handlers._mfq_command("wt2-reference", "input", "output") == [
+    assert handlers._mfq_command("_hub-download", "input", "output") == [
         str(executable),
-        "wt2-reference",
+        "_hub-download",
         "input",
         "output",
     ]
@@ -139,7 +147,7 @@ def test_tool_process_retains_only_a_bounded_output_tail(
         )
         handlers = ToolJobHandlers(
             ModelCatalog([]),
-            ToolJobPaths(tmp_path, executable, None, None, None, None),
+            ToolJobPaths(tmp_path, executable, None, None, None),
         )
         context = Context()
         lines = await handlers._run(context, [str(executable)])
@@ -186,7 +194,7 @@ def test_cancelled_tool_stops_process_and_releases_download_locks(tmp_path, monk
             def __init__(self): self.cleanup = []
             def add_cleanup(self, callback): self.cleanup.append(callback)
             def raise_if_cancelled(self): raise JobCancelledError()
-        handlers = ToolJobHandlers(ModelCatalog([]), ToolJobPaths(tmp_path, tmp_path / 'tq', None, None, None, None))
+        handlers = ToolJobHandlers(ModelCatalog([]), ToolJobPaths(tmp_path, tmp_path / 'tq', None, None, None))
         context = Context()
         with pytest.raises(JobCancelledError):
             await handlers._run(context, ['fake-download'])
@@ -256,7 +264,6 @@ def test_container_validation_and_workspace_path_boundary(tmp_path: Path) -> Non
                 modelscope=None,
                 huggingface=None,
                 runtime=runtime,
-                perplexity=None,
                 diagnostics=diagnostics,
             ),
         )
@@ -308,7 +315,6 @@ def test_download_argv_does_not_execute_shell_metacharacters(tmp_path: Path) -> 
                 modelscope=downloader,
                 huggingface=None,
                 runtime=None,
-                perplexity=None,
             ),
         )
         store = SessionStore(tmp_path / "jobs.sqlite3")
@@ -362,7 +368,6 @@ def test_packaged_download_reinvokes_the_unified_cli(tmp_path: Path) -> None:
                 modelscope=None,
                 huggingface=None,
                 runtime=None,
-                perplexity=None,
                 standalone_cli=True,
                 internal_modelscope=True,
             ),
@@ -427,75 +432,6 @@ def test_download_passes_selected_route_to_sdk_and_external_cli(tmp_path, monkey
             payload={"repo_id": "owner/model", "destination": "downloads/model", "expected_bytes": 2}))
         result = await _wait(store, submitted.id)
         assert result.status == JobStatus.SUCCEEDED and result.result["files"] == 1
-        await manager.close()
-
-    asyncio.run(run())
-
-
-def test_perplexity_job_parses_result_and_publishes_logits(tmp_path: Path) -> None:
-    async def run() -> None:
-        model_dir = tmp_path / "models"
-        model_dir.mkdir()
-        _model(model_dir / "tiny.tq")
-        (tmp_path / "dataset.txt").write_text("evaluation text", encoding="utf-8")
-        perplexity = _executable(
-            tmp_path / "perplexity",
-            """\
-            #!/usr/bin/env python3
-            import pathlib, sys
-            if '--logits-file' in sys.argv:
-                path = pathlib.Path(sys.argv[sys.argv.index('--logits-file') + 1])
-                path.write_bytes(b'logits')
-            print('[1]12.3000,')
-            print('Final estimate: PPL = 12.3000 +/- 0.12000 (255 scored tokens)')
-            """,
-        )
-        catalog = ModelCatalog([model_dir], cache_seconds=0)
-        handlers = ToolJobHandlers(
-            catalog,
-            ToolJobPaths(
-                work_root=tmp_path,
-                python=Path(__import__("sys").executable),
-                modelscope=None,
-                huggingface=None,
-                runtime=None,
-                perplexity=perplexity,
-            ),
-        )
-        store = SessionStore(tmp_path / "jobs.sqlite3")
-        assert "evaluate.perplexity" not in handlers.handlers()
-        manager = JobManager(store, {"evaluate.perplexity": handlers.perplexity})
-        artifact = (await catalog.list()).data[0]
-        submitted = await manager.submit(
-            CreateJobRequest(
-                kind="evaluate.perplexity",
-                payload={
-                    "model": artifact.name,
-                    "dataset_file": "dataset.txt",
-                    "dataset": "fixture",
-                    "chunks": 1,
-                    "logits_file": "results/reference.logits",
-                },
-            )
-        )
-        result = await _wait(store, submitted.id)
-        assert result.status == JobStatus.SUCCEEDED
-        assert result.result["perplexity"] == 12.3
-        assert result.result["uncertainty"] == 0.12
-        assert result.result["model_id"] == artifact.name
-        assert result.result["artifact_id"] == artifact.id
-        assert result.result["logits"] == "workspace://results/reference.logits"
-        evaluation = store.list_evaluations()[0]
-        assert str(evaluation.id) == result.result["evaluation_id"]
-        assert evaluation.kind == "perplexity"
-        assert evaluation.metrics["perplexity"] == 12.3
-        assert evaluation.dataset_manifest["byte_size"] == 15
-        assert evaluation.hardware_identity["machine"]
-        assert evaluation.runtime_identity["executable"] == "perplexity"
-        assert evaluation.model_id == artifact.name
-        assert evaluation.runtime_identity["artifact_id"] == artifact.id
-        events = store.list_job_events(submitted.id)
-        assert any(event.type.value == "artifact" for event in events)
         await manager.close()
 
     asyncio.run(run())

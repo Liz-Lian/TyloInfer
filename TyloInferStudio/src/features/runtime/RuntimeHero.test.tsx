@@ -33,10 +33,9 @@ it('retains the normal Models action when a model is running', () => {
   expect(screen.getByTestId('location').textContent).toBe('/models');
 });
 
-it('opens the agent workspace instead of the retired chat route', () => {
+it('does not expose the removed agent action', () => {
   render(<MemoryRouter><RuntimeHero /><Location /></MemoryRouter>);
-  fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
-  expect(screen.getByTestId('location').textContent).toBe('/agent');
+  expect(screen.queryByRole('button', { name: 'Agent' })).not.toBeInTheDocument();
 });
 
 it('shows an interrupted load after runtime cleanup and lets a new retry show its progress', () => {

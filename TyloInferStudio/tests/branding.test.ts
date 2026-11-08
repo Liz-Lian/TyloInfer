@@ -22,7 +22,6 @@ it('uses TyloInfer in context-management descriptions and exported filenames', (
   const context = read('src/features/runtime/ModelContextSettings.tsx');
   expect(context).toContain('留空由 TyloInfer 管理');
   expect(context).not.toContain('由 MFQ 管理');
-  expect(read('src/features/evaluations/EvaluationDetails.tsx')).toContain('tyloinfer-evaluation-');
   expect(read('src/features/runtime/LogsPage.tsx')).toContain('`tyloinfer-${tab}-');
 });
 

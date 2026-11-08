@@ -12,6 +12,7 @@ public:
     void read(std::uint64_t offset,std::byte* destination,std::size_t size) const;
     void read_coalesced(const std::vector<ReadSpan>& spans) const;
     std::vector<FileReadStats> replica_stats() const;
+    FileReadStats stats()const noexcept;
 private:
     void validate(const ReadSpan& span) const;
     std::size_t replica(std::uint64_t offset) const noexcept;

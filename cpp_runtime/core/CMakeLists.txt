@@ -37,8 +37,19 @@ set_target_properties(mfq-model-graph PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+add_library(mfq-file-range-reader STATIC file_range_reader.cpp include/tyloinfer/file_range_reader.h
+    include/tyloinfer/read_span.h)
+add_library(mfq::file-range-reader ALIAS mfq-file-range-reader)
+target_include_directories(mfq-file-range-reader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(mfq-file-range-reader PUBLIC Threads::Threads)
+target_link_libraries(mfq-file-range-reader PRIVATE mfq-host-parallel)
+target_compile_features(mfq-file-range-reader PUBLIC cxx_std_17)
+set_target_properties(mfq-file-range-reader PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+    target_compile_options(mfq-file-range-reader PRIVATE /EHsc)
+endif()
+
 add_library(mfq-model-source STATIC
-    file_range_reader.cpp
     mirrored_file_reader.cpp
     include/tyloinfer/mirrored_file_reader.h
     async_range_reader.cpp
@@ -75,7 +86,7 @@ target_include_directories(mfq-model-source PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/compat
 )
-target_link_libraries(mfq-model-source PUBLIC mfq-model-graph)
+target_link_libraries(mfq-model-source PUBLIC mfq-model-graph mfq-file-range-reader)
 target_link_libraries(mfq-model-source PRIVATE mfq-host-parallel)
 target_link_libraries(mfq-model-source PRIVATE mfq-json mfq-ggml)
 target_compile_features(mfq-model-source PUBLIC cxx_std_17)
@@ -96,7 +107,7 @@ add_library(mfq-qsa-kv-store STATIC
     include/tyloinfer/qsa_precision_policy.h
     include/tyloinfer/qsa_ram_policy.h)
 target_include_directories(mfq-qsa-kv-store PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(mfq-qsa-kv-store PUBLIC Threads::Threads)
+target_link_libraries(mfq-qsa-kv-store PUBLIC Threads::Threads mfq-file-range-reader)
 target_link_libraries(mfq-qsa-kv-store PRIVATE mfq-ggml mfq-host-parallel)
 target_compile_features(mfq-qsa-kv-store PUBLIC cxx_std_17)
 set_target_properties(mfq-qsa-kv-store PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -128,7 +139,18 @@ if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
     target_include_directories(mfq-paged-prefix-cache PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
-    target_link_libraries(mfq-paged-prefix-cache PUBLIC Threads::Threads)
+    target_link_libraries(mfq-paged-prefix-cache PUBLIC Threads::Threads mfq-file-range-reader)
+    if(WIN32)
+        target_link_libraries(mfq-paged-prefix-cache PRIVATE bcrypt)
+    elseif(NOT APPLE)
+        # EVP_MD_CTX_new/free require OpenSSL 1.1; older or absent libraries
+        # keep the portable implementation without adding a build dependency.
+        find_package(OpenSSL 1.1 QUIET COMPONENTS Crypto)
+        if(TARGET OpenSSL::Crypto)
+            target_link_libraries(mfq-paged-prefix-cache PRIVATE OpenSSL::Crypto)
+            target_compile_definitions(mfq-paged-prefix-cache PRIVATE TYLOINFER_PREFIX_OPENSSL=1)
+        endif()
+    endif()
     target_compile_features(mfq-paged-prefix-cache PUBLIC cxx_std_17)
     set_target_properties(mfq-paged-prefix-cache PROPERTIES
         POSITION_INDEPENDENT_CODE ON

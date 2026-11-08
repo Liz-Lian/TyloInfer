@@ -306,6 +306,74 @@ void run_chunked_prompt_history(bool streaming, int reused) {
         throw std::runtime_error("streamed prompt history changed the final cache boundary");
 }
 
+void run_native_prompt_checkpoint() {
+    for(bool streaming:{false,true})for(int reused:{0,1,4})
+    for(int stable:{0,1,2,5,9,12,13,14})for(int chunk:{1,4,64})for(bool cancel:{false,true}) {
+        const bool checkpoint=stable>reused && stable<13;
+        if(cancel && !checkpoint)continue;
+        struct CheckpointOps:Ops {
+            bool streaming;
+            std::vector<int64_t>* pairs;
+            std::vector<PrefillChunk>* chunks;
+            bool stream_prompt_history(int64_t) const {return streaming;}
+            static Tensor slice(Tensor value,int axis,int64_t begin,int64_t length) {
+                value=Ops::slice(value,axis,begin,length);value.start+=begin;return value;
+            }
+            static Tensor concatenate(const std::vector<Tensor>& values,int axis) {
+                int64_t end=values.front().start;
+                for(const auto& value:values) {
+                    if(value.start!=end)throw std::runtime_error("native checkpoint concatenated disjoint hidden rows");
+                    end+=size(value,axis);
+                }
+                return Ops::concatenate(values,axis);
+            }
+            Prefill prefill(PrefillChunk chunk) {
+                if(chunk.offset!=model.cache_pos)throw std::runtime_error("native checkpoint repeated target rows");
+                chunks->push_back(chunk);model.cache_pos+=chunk.count;
+                Tensor hidden{{1,chunk.count,1},false,chunk.offset};
+                return {hidden,hidden,1.0};
+            }
+            double predictor_prefill(Tensor hidden,Tensor ids,Tensor positions) {
+                if(hidden.start+1!=ids.start || size(hidden,1)!=size(ids,1) || ids.start!=mtp.position+1)
+                    throw std::runtime_error("native checkpoint lost or repeated a predictor pair");
+                for(int64_t i=0;i<size(ids,1);++i)pairs->push_back(ids.start+i);
+                (void)predictor_step(hidden,ids,positions);return 2.0;
+            }
+        };
+        Model model;model.cache_pos=reused;
+        Predictor mtp;mtp.position=reused?reused-1:0;
+        InferenceRequest request;request.prompt=std::vector<int64_t>(13,0);
+        request.sampling.max_tokens=8;request.stop_token_ids={0};
+        InferenceOutput output(request,nullptr,"native-prompt-checkpoint");
+        Tensor hidden,restored{{1,1,1},false,reused-1};
+        std::vector<int64_t> pairs,boundaries;std::vector<PrefillChunk> chunks;
+        auto generation=speculative_sequence(CheckpointOps{{model,mtp},streaming,&pairs,&chunks},
+            request,output,chunk,reused,restored,&hidden,stable);
+        while(auto step=generation.next())if(step.value)
+            if(const auto* progress=std::get_if<PrefillProgress>(&*step.value);progress && progress->session_boundary) {
+                if(output.metrics.saw_token || mtp.position!=model.cache_pos-1 ||
+                        !Ops::defined(hidden) || Ops::size(hidden,1)!=1 || hidden.start!=model.cache_pos-1)
+                    throw std::runtime_error("native snapshot target/predictor/hidden boundaries disagree");
+                boundaries.push_back(model.cache_pos);
+                if(progress->timing.prompt_tokens!=model.cache_pos-reused)
+                    throw std::runtime_error("native checkpoint omitted target tokens from PP");
+                if(cancel)output.result.cancelled=true;
+            }
+        std::vector<int64_t> expected_boundaries;
+        if(checkpoint)expected_boundaries.push_back(stable);
+        if(!cancel)expected_boundaries.push_back(13);
+        if(boundaries!=expected_boundaries || output.result.completion_tokens!=(cancel?0:1))
+            throw std::runtime_error("native checkpoint emitted a wrong boundary or ignored cancellation");
+        std::vector<int64_t> expected_pairs;
+        const auto end=cancel?stable:13;
+        for(int i=std::max(1,reused);i<end;++i)expected_pairs.push_back(i);
+        if(pairs!=expected_pairs || model.cache_pos!=end || mtp.position!=end-1)
+            throw std::runtime_error("native checkpoint changed the target or predictor history");
+        for(const auto& part:chunks)if(part.last!=(part.offset+part.count==13))
+            throw std::runtime_error("native checkpoint changed the last-chunk flag");
+    }
+}
+
 void run_prompt_snapshot_boundary() {
     const auto wall_started=InferenceMetrics::Clock::now();
     Model model;Predictor mtp;
@@ -850,6 +918,38 @@ void run_restored_blockwise_context() {
     assert(rejected && predictor.context_appends.empty() && model.cache_pos==4);
 }
 
+void run_bounded_blockwise_prompt() {
+    for(const int window:{1,5,16})for(const int chunk:{3,32})for(const int stable:{0,19}) {
+        Model model;Predictor predictor;predictor.blockwise=true;
+        InferenceRequest request;request.prompt=std::vector<int64_t>(23,1);
+        request.sampling.max_tokens=8;request.stop_token_ids={0};
+        struct WindowOps:Ops {
+            int window;
+            int64_t initial_blockwise_context_window() const {return window;}
+            static Tensor slice(Tensor value,int axis,int64_t begin,int64_t count) {
+                value=Ops::slice(value,axis,begin,count);if(axis==1)value.start+=begin;return value;
+            }
+            Prefill prefill(PrefillChunk chunk) {
+                auto result=Ops::prefill(chunk);result.raw.start=chunk.offset;return result;
+            }
+            double blockwise_prompt_context(Tensor context,int64_t position,bool seed) {
+                if(seed && (size(context,1)!=std::min<int64_t>(position,window) ||
+                        context.start!=position-size(context,1)))
+                    throw std::runtime_error("Bounded draft seed lost the exact global prompt suffix");
+                if(seed)mtp.seed_target_context(context,position);
+                else mtp.append_target_context(context,position-size(context,1));
+                return 0.;
+            }
+        };
+        InferenceOutput output(request,nullptr,"bounded-draft-prompt");Tensor hidden;
+        auto sequence=speculative_sequence(WindowOps{{model,predictor},window},request,output,chunk,
+            0,Tensor{},stable?&hidden:nullptr,stable);
+        while(sequence.next()){}
+        if(output.result.completion_tokens!=1 || predictor.position!=23 || model.cache_pos!=23)
+            throw std::runtime_error("Bounded prompt history changed final cache or output boundaries");
+    }
+    std::cout<<"Sliding draft prompt window: suffix/global position/chunk/checkpoint parity PASS\n";
+}
 void run_blockwise_prompt_checkpoint() {
     for(int reused:{0,4})for(int stable:{5,9})for(int chunk:{3,64})for(bool tail_only:{false,true}) {
         if(tail_only && chunk<64)continue;
@@ -1136,6 +1236,7 @@ int main() try {
     run_prepared_default_positions();
     run_restored_blockwise_context();
     run_blockwise_prompt_checkpoint();
+    run_bounded_blockwise_prompt();
     run_blockwise_greedy_hook();run_blockwise_final_context();
     run_parked_blockwise_history();
     run(false);
@@ -1144,6 +1245,7 @@ int main() try {
     run(true);
     run_dspark_draft_cost();
     for(bool streaming:{false,true})for(int reused:{0,4})run_chunked_prompt_history(streaming,reused);
+    run_native_prompt_checkpoint();
     run_prompt_snapshot_boundary();
     run_bootstrap_publication();
     run_target_initialization();

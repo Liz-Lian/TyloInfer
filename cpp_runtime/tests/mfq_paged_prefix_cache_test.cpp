@@ -1,5 +1,6 @@
 #include "mfq_paged_prefix_cache.h"
 #include "paged_session_bindings.h"
+#include "tyloinfer/file_read_window.h"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -23,12 +26,13 @@ void require(bool condition, const char* message) {
 }
 
 std::filesystem::path temporary_directory() {
-    const auto value = std::chrono::steady_clock::now()
-        .time_since_epoch().count();
-    auto path = std::filesystem::temp_directory_path() /
-        ("mfq-paged-prefix-cache-test-" + std::to_string(value));
-    std::filesystem::create_directories(path);
-    return path;
+    const auto parent=std::filesystem::temp_directory_path();
+    // Two SHA-256 path components already consume most of MAX_PATH. Use
+    // short atomic fixture names under the configured build/test temp root.
+    for(std::size_t index=0;;++index) {
+        auto path=parent/("p"+std::to_string(index));
+        if(std::filesystem::create_directory(path))return path;
+    }
 }
 
 std::shared_ptr<const std::vector<std::uint8_t>> payload(
@@ -44,6 +48,150 @@ std::size_t benchmark_size(const char* name, std::size_t fallback) {
     require(end != value && *end == '\0' && parsed > 0,
             "invalid prefix cache benchmark size");
     return static_cast<std::size_t>(parsed);
+}
+
+void check_read_window() {
+    using Window=tyloinfer::ScopedFileReadWindow;
+    std::vector<std::uint8_t> file(3*Window::capacity+17);
+    for(std::size_t i=0;i<file.size();++i)file[i]=std::uint8_t(i*37+i/251);
+    std::size_t calls=0,total=0;bool fail=false;
+    const auto reader=[&](std::uint64_t at,void* output,std::size_t count) {
+        ++calls;total+=count;
+        require(at<=file.size() && count<=file.size()-at,"Read window crossed EOF");
+        std::memcpy(output,file.data()+at,count);
+        if(fail)throw std::runtime_error("Injected window read failure");
+    };
+    std::array<std::uint8_t,80> bytes{};
+    const auto read=[&](std::uint64_t source,std::size_t at) {
+        const auto hit=Window::read(source,file.size(),at,bytes.data(),bytes.size(),reader);
+        if(hit)require(std::equal(bytes.begin(),bytes.end(),file.begin()+at),"Read window changed bytes");
+        return hit;
+    };
+    require(!read(1,0) && calls==0,"Read-ahead leaked outside a recovery scope");
+    {
+        Window scope;
+        require(read(1,13) && read(1,97) && calls==1 && total==Window::capacity,
+            "Sequential ranges did not share one bounded read");
+        {
+            Window index_only(false);
+            require(read(1,200) && !read(1,Window::capacity+13) && calls==1,
+                "SSD-only companion read caused unwanted KV prefetch");
+        }
+        require(read(1,Window::capacity+13) && calls==2,"Nested scope lost its parent's read-ahead mode");
+        require(read(2,Window::capacity+13) && calls==3,"File version change reused stale bytes");
+        fail=true;bool rejected=false;
+        try{read(3,0);}catch(const std::runtime_error&){rejected=true;}
+        require(rejected,"Failed window fill did not throw");fail=false;
+        require(read(2,Window::capacity+13) && calls==5,"Failed fill left a valid corrupted window");
+        require(read(1,file.size()-bytes.size()) && total==5*Window::capacity+bytes.size(),
+            "Read window did not clamp its final fill at EOF");
+        std::vector<std::uint8_t> bulk(Window::capacity);
+        require(!Window::read(1,file.size(),0,bulk.data(),bulk.size(),reader),
+            "Bulk reads unexpectedly used read-ahead");
+        try{Window::read(1,file.size(),file.size()-1,bytes.data(),2,reader);
+            require(false,"Invalid window range was accepted");}catch(const std::out_of_range&){}
+        auto isolated=std::async(std::launch::async,[&]{return read(1,0);});
+        require(!isolated.get(),"Read-ahead state leaked across threads");
+    }
+    require(!read(1,0),"Recovery window survived its owning scope");
+}
+
+void check_ancestry_eviction() {
+    using namespace mfq::cache;
+    const auto root = temporary_directory();
+    constexpr std::uint64_t file_bytes = 156 + 4;
+    PagedPrefixCacheConfig config{root, "durable-prefix-ancestry", 4, 4096, 0, 8};
+    config.min_disk_free_bytes = 0;
+    config.max_pending_bytes = 0;
+    {
+        PagedPrefixCache cache(config);
+        const std::vector<std::int64_t> tokens{1,2,3,4,5,6,7,8,9,10,11,12};
+        const auto first = cache.store({}, tokens.data(), 4, payload({1,2,3,4}));
+        const auto second = cache.store(first, tokens.data()+4, 4, payload({5,6,7,8}));
+        const auto third = cache.store(second, tokens.data()+8, 4, payload({9,10,11,12}));
+        cache.flush();
+        require(cache.load(first).has_value(), "Ancestry fixture lost its first page");
+        cache.set_disk_limit(2*file_bytes);
+        cache.flush();
+        require(cache.match(tokens).matched_tokens == 8 && cache.load(second) && !cache.load(third),
+            "Disk LRU removed an interior prefix page instead of the branch leaf");
+        require(cache.metrics().disk_bytes == 2*file_bytes && cache.metrics().evictions == 1,
+            "Ancestry-aware eviction exceeded its byte budget");
+        cache.set_disk_limit(file_bytes);
+        cache.flush();
+        require(cache.match(tokens).matched_tokens == 4 && !cache.load(second),
+            "Repeated disk shrink did not retain the usable prefix root");
+        cache.set_disk_limit(0);
+        cache.flush();
+        require(cache.metrics().disk_blocks == 0, "Zero SSD budget left prefix ancestors behind");
+    }
+    config.compatibility_key = "branched-prefix-ancestry";
+    {
+        PagedPrefixCache cache(config);
+        const std::vector<std::int64_t> trunk{1,2,3,4}, a{5,6,7,8}, b{9,10,11,12};
+        const auto first = cache.store({}, trunk.data(), 4, payload({1,2,3,4}));
+        const auto old_leaf = cache.store(first, a.data(), 4, payload({5,6,7,8}));
+        const auto recent_leaf = cache.store(first, b.data(), 4, payload({9,10,11,12}));
+        cache.flush();
+        cache.set_disk_limit(2*file_bytes);
+        cache.flush();
+        require(cache.load(first) && !cache.load(old_leaf) && cache.load(recent_leaf),
+            "Branch leaf selection stopped respecting LRU");
+    }
+    config.compatibility_key = "pinned-prefix-leaf";
+    {
+        PagedPrefixCache cache(config);
+        const std::vector<std::int64_t> tokens{1,2,3,4,5,6,7,8};
+        const auto first = cache.store({}, tokens.data(), 4, payload({1,2,3,4}));
+        const auto second = cache.store(first, tokens.data()+4, 4, payload({5,6,7,8}));
+        cache.flush();
+        cache.pin({second});
+        cache.set_disk_limit(file_bytes);
+        cache.flush();
+        require(cache.match(tokens).matched_tokens == 8,
+            "Pinned child retained its payload but lost its prefix ancestor");
+        cache.unpin({second});
+        cache.flush();
+        require(cache.match(tokens).matched_tokens == 4,
+            "Unpinned leaf prevented deferred ancestor-safe eviction");
+    }
+    std::filesystem::remove_all(root);
+}
+
+void check_deferred_replacement() {
+    using namespace mfq::cache;
+    const auto root = temporary_directory();
+    PagedPrefixCacheConfig config{root, "deferred-current-version", 4, 4096, 16, 8};
+    config.spill_hot_on_eviction = true;
+    config.max_pending_bytes = 0;
+    config.min_disk_free_bytes = 0;
+    {
+        PagedPrefixCache cache(config);
+        const std::vector<std::int64_t> tokens{1,2,3,4};
+        const auto hash = cache.store({},tokens.data(),4,payload({1,2,3,4}));
+        cache.trim_hot();cache.flush();
+        const auto old = cache.borrow(hash);
+        require(old && old->payload_bytes==4,"Deferred replacement lost initial SSD version");
+        const auto replacement = cache.replace({},tokens.data(),4,payload({9,8,7,6,5,4}));
+        cache.flush();
+        require(replacement==hash && cache.metrics().writes==1 && cache.metrics().hot_bytes==6,
+            "RAM replacement unexpectedly wrote through to SSD");
+        require(!cache.borrow(hash) && !cache.borrow_prefix({hash}).front(),
+            "Dirty RAM replacement exposed its stale SSD file lease");
+        const auto loaded = cache.load(hash);
+        require(loaded && *loaded==std::vector<std::uint8_t>({9,8,7,6,5,4}),
+            "Current RAM replacement was not readable");
+        require(old->read_range(0,4)==std::vector<std::uint8_t>({1,2,3,4}),
+            "RAM replacement invalidated an earlier immutable SSD lease");
+        cache.trim_hot();cache.flush();
+        const auto current = cache.borrow(hash);
+        require(current && current!=old && current->payload_bytes==6 &&
+                current->read_range(0,6)==*loaded && cache.metrics().writes==2,
+            "Evicted RAM replacement did not publish its current SSD version");
+        require(old->read_range(0,4)==std::vector<std::uint8_t>({1,2,3,4}),
+            "New SSD publication mixed existing file-reader versions");
+    }
+    std::filesystem::remove_all(root);
 }
 
 void run_benchmark() {
@@ -154,7 +302,71 @@ void run_benchmark() {
 
 int main() try {
     using namespace mfq::cache;
+    check_read_window();
+    check_ancestry_eviction();
+    check_deferred_replacement();
     const auto inspect_root = temporary_directory();
+    require(block_hash_hex(sha256(""))=="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "SHA-256 empty known-answer mismatch");
+    require(block_hash_hex(sha256("abc"))=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "SHA-256 abc known-answer mismatch");
+    {
+        auto image=std::make_shared<std::vector<std::uint8_t>>(1000000,'a');
+        require(block_hash_hex(sha256(image->data(),image->size()))==
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+            "SHA-256 million-byte known-answer mismatch");
+        PagedPrefixCacheConfig config{inspect_root/"streamed-sha","streamed-sha",4,8ULL<<20,0,8};
+        config.max_pending_bytes=0;PagedPrefixCache cache(config);
+        const std::vector<std::int64_t> tokens{1,2,3,4};
+        const auto hash=cache.store({},tokens.data(),tokens.size(),image);cache.flush();
+        auto reader=cache.borrow(hash);
+        require(reader && reader->read_range(65530,80)==std::vector<std::uint8_t>(80,'a'),
+            "Streaming SHA-256 validation rejected a known payload across read boundaries");
+        tyloinfer::ScopedFileReadWindow window;
+        for(std::size_t at:{std::size_t(0),std::size_t(65530),std::size_t(65580),image->size()-80})
+            require(reader->read_range(at,80)==std::vector<std::uint8_t>(80,'a'),
+                "Recovery read-ahead changed the borrowed payload");
+    }
+    {
+        PagedPrefixCacheConfig config{inspect_root/"verified-leases","verified-file-lease",4,4096,0,8};
+        config.max_pending_bytes=0;
+        PagedPrefixCache cache(config);
+        const std::vector<std::int64_t> tokens{1,2,3,4};
+        const auto hash=cache.store({},tokens.data(),tokens.size(),payload({1,2,3,4}));cache.flush();
+        auto incoming=cache.borrow_prefix({hash,hash,{}});
+        require(incoming.size()==3 && !incoming.back(),"Batch prefix borrow lost its missing-entry boundary");
+        auto first=incoming.front(),second=incoming[1];incoming.clear();
+        std::array<uint8_t,6> direct{};direct.fill(0x6a);
+        require(first && first->read_range_into,"Verified file lease omitted direct destination reads");
+        first->read_range_into(1,direct.data()+1,2);
+        require(direct==std::array<uint8_t,6>{0x6a,2,3,0x6a,0x6a,0x6a},"Direct prefix read changed its range or surrounding bytes");
+        try {first->read_range_into(3,direct.data(),2);require(false,"Out-of-range direct prefix read accepted");}catch(const std::out_of_range&){}
+        require(direct[0]==0x6a,"Rejected direct prefix read changed its destination");
+        try {first->read_range_into(0,nullptr,1);require(false,"Null direct prefix destination accepted");}catch(const std::invalid_argument&){}
+        tyloinfer::ScopedFileReadWindow window;
+        require(first && first==second,"Repeated borrow did not reuse its verified immutable file lease");
+        const std::weak_ptr<const PagedPrefixReadLease> weak=first;
+        cache.replace({},tokens.data(),tokens.size(),payload({5,6,7,8}));cache.flush();
+        auto replaced=cache.borrow(hash);
+        require(replaced && replaced!=first && replaced->read_range(0,4)==std::vector<uint8_t>({5,6,7,8}) &&
+            first->read_range(0,4)==std::vector<uint8_t>({1,2,3,4}),"Replacement mixed old and new prefix file versions");
+        first.reset();second.reset();require(weak.expired(),"Verified-lease memo retained an unused file handle");
+        std::atomic<unsigned> failures{0};std::vector<std::thread> readers;
+        for(int i=0;i<6;++i)readers.emplace_back([&]{if(cache.borrow(hash)!=replaced)++failures;});
+        for(auto& thread:readers)thread.join();require(!failures,"Concurrent readers lost the shared file version");
+        cache.clear();require(!cache.borrow(hash),"Clear retained a borrowable cache entry");
+        require(replaced->read_range(0,4)==std::vector<uint8_t>({5,6,7,8}),"Clear invalidated a live file lease");
+        replaced->read_range_into(0,direct.data(),4);
+        require(std::equal(direct.begin(),direct.begin()+4,std::array<uint8_t,4>{5,6,7,8}.begin()),"Clear invalidated a direct prefix reader");
+        cache.store({},tokens.data(),tokens.size(),payload({9,10,11,12}));cache.flush();
+        auto before_corruption=cache.borrow(hash);require(bool(before_corruption),"Fresh cache lease missing");
+        const auto hex=block_hash_hex(hash);
+        const auto file=config.cache_dir/block_hash_hex(sha256(config.compatibility_key))/hex.substr(0,2)/(hex+".mfqkv");
+        const auto stamp=std::filesystem::last_write_time(file);
+        {std::fstream output(file,std::ios::binary|std::ios::in|std::ios::out);output.seekp(-1,std::ios::end);output.put(0);}
+        std::filesystem::last_write_time(file,stamp+std::chrono::seconds(2));
+        require(!cache.borrow(hash),"Changed prefix file bypassed checksum validation through the lease memo");
+    }
     for (const bool disk : {false, true}) {
         PagedPrefixCacheConfig config{inspect_root, disk ? "disposable-ram-ssd" : "disposable-ram", 4,
             disk ? 4096ULL : 0ULL, 8, 8};

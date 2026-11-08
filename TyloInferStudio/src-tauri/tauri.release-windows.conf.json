@@ -1,11 +1,16 @@
 {
   "bundle": {
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "useLocalToolsDir": true,
     "windows": {
       "nsis": {
         "compression": "zlib",
-        "languages": ["SimpChinese", "English"],
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"
       }
@@ -18,8 +23,7 @@
       "../dist": "web-ui",
       "../../packaging/windows-runtime/": "",
       "../../packaging/Resources/tyloinfer-cli": "tyloinfer-cli",
-      "../../packaging/Resources/licenses": "licenses",
-      "../../packaging/Resources/agent-runtime": "agent-runtime"
+      "../../packaging/Resources/licenses": "licenses"
     }
   }
 }

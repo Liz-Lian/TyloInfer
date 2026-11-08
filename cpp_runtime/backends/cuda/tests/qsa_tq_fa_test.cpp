@@ -96,6 +96,20 @@ void check_prefill_graph() {
   ck(cudaMemsetAsync(f.output.p,0x7f,expected.size()*2,stream));
   ck(cudaError_t(graph.run(a)));ck(cudaStreamSynchronize(stream));assert_graph_equal(expected,read_graph_output(f));assert_graph_history(history,f);++cases;
  }
+ // Exercise compact unions and KV partitions with empty tiles and tails.
+ {
+  GraphFixture sparse(35,65536,1,6,17,16);ck(cudaDeviceSynchronize());auto a=sparse.args();a.stream=stream;
+  ck(cudaError_t(tq::tq_sparse_attention_prefill(a)));ck(cudaStreamSynchronize(stream));
+  const auto expected=read_graph_output(sparse);const auto history=read_graph_history(sparse);
+  clear_graph_history(sparse,stream);ck(cudaError_t(graph.run(a)));ck(cudaStreamSynchronize(stream));
+  assert_graph_equal(expected,read_graph_output(sparse));assert_graph_history(history,sparse);
+  sparse.positions.put(std::vector<int64_t>(sparse.queries,-1));ck(cudaDeviceSynchronize());
+  clear_graph_history(sparse,stream);ck(cudaError_t(graph.run(a)));ck(cudaStreamSynchronize(stream));
+  const auto empty=read_graph_output(sparse);const auto empty_history=read_graph_history(sparse);
+  for(auto value:empty)if(__half2float(value)!=0.f)throw std::runtime_error("Empty partitioned attention changed zero output");
+  for(int i=0;i<sparse.blocks;++i)if(empty_history.hits[i]!=0.f || empty_history.mass[i]!=0.f)
+   throw std::runtime_error("Empty partitioned attention recorded history");
+ }
  // Update one executor again while its preceding launch remains in flight.
  GraphFixture first(67,260,2,6,17,16),second(67,260,2,6,17,16);
  ck(cudaDeviceSynchronize());
@@ -121,9 +135,10 @@ int main()try {
     check_materialized_gate();
     constexpr int queries=33,kvheads=2,count=16,padded=256;
     int cases=0;double maxrel=0,maxmass=0;
-    for(int rows:{128,260}) {
+    for(int rows:{128,260,65536}) {
     const int blocks=rows/4;
     for(int ratio:{4,5,6,8,9,12})for(int width:{17,256})for(bool query_half:{false,true})for(bool output_half:{false,true}) {
+        if(rows==65536 && (ratio!=6 || width!=17 || query_half))continue;
         const int heads=kvheads*ratio,parts=tq::tq_attention_partitions(queries,heads,kvheads,padded,count,query_half,true);
         std::vector<float> q(queries*heads*width),gate(q.size()),signs(padded),vsigns(padded);
         std::vector<half> qh(q.size()),gh(q.size()),k(rows*kvheads*padded),v(k.size());

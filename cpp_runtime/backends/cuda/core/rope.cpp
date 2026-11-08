@@ -280,7 +280,6 @@ RotaryEmbedding::RotaryEmbedding(int64_t dimension, int64_t maximum, double base
     constexpr bool default_fused = false;
 #endif
     fused_ = fused.value_or(configured.value_or(default_fused));
-    if(yarn_.enabled())fused_=false;
     TYLOINFER_RUNTIME_CHECK(dimension > 0 && dimension % 2 == 0 && maximum > 0 &&
                           std::isfinite(base) && base > 0,
                       "invalid rotary configuration");
@@ -323,12 +322,12 @@ RotaryEmbedding::Prepared RotaryEmbedding::prepare_parameters(const Tensor& valu
 
 bool RotaryEmbedding::pool_normalized_into(const Tensor& index,const Tensor& weight,const Tensor& positions,
         const Tensor& cache_positions,const Tensor& output,int64_t pool,int64_t maximum,double eps) const {
-    if(!fused_ || index.dim()!=3 || index.size(0)!=1 || index.size(2)>256 || index.size(2)<dimension_ ||
-        cache_positions.numel()>32 || (index.scalar_type()!=tb::kFloat16 && index.scalar_type()!=tb::kFloat32) ||
+    if(!fused_ || index.dim()!=3 || index.size(0)!=1 || index.size(2)-(index.scalar_type()==tb::kInt16?2:0)>256 || index.size(2)-(index.scalar_type()==tb::kInt16?2:0)<dimension_ ||
+        cache_positions.numel()>32 || (index.scalar_type()!=tb::kFloat16 && index.scalar_type()!=tb::kFloat32 && index.scalar_type()!=tb::kInt16) ||
         (positions.scalar_type()!=tb::kInt32 && positions.scalar_type()!=tb::kInt64))return false;
     const auto prepared=prepare_parameters(index);
     qsa_pool_rotary_cache_cuda(index,weight.to(tb::kFloat32).contiguous(),positions.contiguous(),cache_positions,
-        prepared.frequencies,prepared.axes,output,pool,maximum,maximum_,eps);
+        prepared.frequencies,prepared.axes,output,pool,maximum,maximum_,eps,yarn_.attention_factor());
     return true;
 }
 
@@ -336,15 +335,15 @@ Tensor RotaryEmbedding::pool_normalized(const Tensor& index,const Tensor& weight
         const Tensor& positions,int64_t pool,double eps) const {
     // The shared pooling workspace holds at most 256 coordinates. Wider or
     // unsupported inputs keep the existing composition at the caller.
-    if(!fused_ || index.dim()!=3 || index.size(0)!=1 || index.size(2)>256 || index.size(2)<dimension_ ||
-        (index.scalar_type()!=tb::kFloat16 && index.scalar_type()!=tb::kFloat32) ||
+    if(!fused_ || index.dim()!=3 || index.size(0)!=1 || index.size(2)-(index.scalar_type()==tb::kInt16?2:0)>256 || index.size(2)-(index.scalar_type()==tb::kInt16?2:0)<dimension_ ||
+        (index.scalar_type()!=tb::kFloat16 && index.scalar_type()!=tb::kFloat32 && index.scalar_type()!=tb::kInt16) ||
         (positions.scalar_type()!=tb::kInt32 && positions.scalar_type()!=tb::kInt64))return {};
     TYLOINFER_RUNTIME_CHECK(pool>0 && index.size(1)>0 && index.size(1)%pool==0,
         "compact rotary pooling requires complete pools");
     const auto prepared=prepare_parameters(index);
     auto output=tb::empty({1,index.size(1)/pool,index.size(2)},index.options());
     qsa_pool_rotary_cuda(index,weight.to(tb::kFloat32).contiguous(),positions.contiguous(),
-        prepared.frequencies,prepared.axes,output,pool,maximum_,eps);
+        prepared.frequencies,prepared.axes,output,pool,maximum_,eps,yarn_.attention_factor());
     return output;
 }
 
@@ -358,7 +357,7 @@ Tensor RotaryEmbedding::forward_normalized(const Tensor& value, const Tensor& we
         ? positions.contiguous() : positions.to(tb::kInt32).contiguous();
     return rotary_normalized_cached_cuda(value, weight.to(tb::kFloat32).contiguous(), active_positions,
         prepared.frequencies, prepared.axes, maximum_, eps, key_cache, cache_positions,
-        projected_value, value_cache);
+        projected_value, value_cache,yarn_.attention_factor());
 }
 
 std::vector<Tensor> RotaryEmbedding::forward_normalized_grouped(
@@ -384,7 +383,7 @@ std::vector<Tensor> RotaryEmbedding::forward_normalized_grouped(
         active_entries.push_back(entry.scalar_type()==tb::kInt32 || entry.scalar_type()==tb::kInt64
             ?entry.contiguous():entry.to(tb::kInt32).contiguous());
     return rotary_normalized_grouped_cuda(values,active_weights,active_positions,prepared.frequencies,
-        prepared.axes,maximum_,eps,cache_entry,key_cache,cache_positions,projected_value,value_cache,active_entries);
+        prepared.axes,maximum_,eps,cache_entry,key_cache,cache_positions,projected_value,value_cache,active_entries,yarn_.attention_factor());
 }
 
 mfq_tensor_backend::Tensor RotaryEmbedding::forward(const Tensor &value, const Tensor &positions) const {
@@ -402,7 +401,7 @@ mfq_tensor_backend::Tensor RotaryEmbedding::forward(const Tensor &value, const T
     if(fused_) {
         const auto prepared = prepare_parameters(value);
         return rotary_embedding_cached_cuda(input.contiguous(),positions.to(tb::kInt32).contiguous(),
-            prepared.frequencies,prepared.axes,maximum_);
+            prepared.frequencies,prepared.axes,maximum_,yarn_.attention_factor());
     }
     auto f = input.to(tb::kFloat32);
     auto pair = tb::arange(pairs, value.options().dtype(tb::kInt64));

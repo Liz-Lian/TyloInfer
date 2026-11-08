@@ -20,6 +20,7 @@
 #include "../runtime/moe_pipeline.h"
 #include "kernel_dispatch_trace.h"
 #include <algorithm>
+#include <numeric>
 #include <atomic>
 #include <climits>
 #include <stdexcept>
@@ -586,6 +587,47 @@ void matvec_group(const DenseProjection* projections,std::size_t count,std::int6
             if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
                 "gguf_dense_group_single",reinterpret_cast<const void*>(function),
                 "M=1 matrices="+std::to_string(packet.count));
+            checked_launch();packet={};blocks=0;return;
+        }
+        if(tokens>1 && std::all_of(packet.entries,packet.entries+packet.count,
+                [](const auto& e){return e.whole_group;})) {
+            // Keep complete existing K partitions in each block. In
+            // particular, three cooperating warps need no idle fourth warp.
+            int block_warps=1;
+            for(int i=0;i<packet.count;++i)
+                block_warps=std::min(4,std::lcm(block_warps,packet.entries[i].warps));
+            std::uint64_t total=0;
+            for(int i=0;i<packet.count;++i) {
+                const auto& e=packet.entries[i];const int outputs=2*(block_warps/e.warps);
+                total+=(std::uint64_t(e.projection.rows)+outputs-1)/outputs;
+            }
+            // More, smaller blocks must still fit CUDA's x grid. The
+            // original four-warp packet has already passed that bound.
+            if(total>INT_MAX)block_warps=4;
+            unsigned next=0;
+            for(int i=0;i<packet.count;++i) {
+                auto& e=packet.entries[i];const int outputs=2*(block_warps/e.warps);
+                const auto tiles=unsigned((std::uint64_t(e.projection.rows)+outputs-1)/outputs);
+                e.begin=next;next+=tiles;e.end=next;
+            }
+            const auto count=[&]<int M>() {
+                const auto launch=[&]<int BlockWarps>() {
+                    const auto function=project_dense_group_whole<M,BlockWarps>;
+                    function<<<next,dim3(32,BlockWarps),0,stream>>>(packet,int(columns),
+                        static_cast<const block_q8_1*>(native_input),half_output);
+                    if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
+                        "gguf_dense_group_whole",reinterpret_cast<const void*>(function),
+                        "M="+std::to_string(M)+" matrices="+std::to_string(packet.count)+
+                        " block_warps="+std::to_string(BlockWarps)+" whole_q8_groups=1");
+                };
+                if(block_warps==1)launch.template operator()<1>();
+                else if(block_warps==2)launch.template operator()<2>();
+                else if(block_warps==3)launch.template operator()<3>();
+                else launch.template operator()<4>();
+            };
+            if(tokens==2)count.template operator()<2>();
+            else if(tokens==3)count.template operator()<3>();
+            else count.template operator()<4>();
             checked_launch();packet={};blocks=0;return;
         }
         const auto launch=[&]<int M>() {

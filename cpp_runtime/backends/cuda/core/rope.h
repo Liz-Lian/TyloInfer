@@ -59,7 +59,7 @@ public:
     mfq_tensor_backend::Tensor forward(const mfq_tensor_backend::Tensor& value,
                                        const mfq_tensor_backend::Tensor& positions) const;
     // Switch only after execution and captured graphs using this module finish.
-    void set_fused(bool enabled) { fused_ = enabled && !yarn_.enabled(); }
+    void set_fused(bool enabled) { fused_ = enabled; }
     bool fused() const { return fused_; }
     bool pool_normalized_into(const mfq_tensor_backend::Tensor& index,
         const mfq_tensor_backend::Tensor& weight,const mfq_tensor_backend::Tensor& positions,

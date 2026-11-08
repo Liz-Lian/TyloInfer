@@ -200,7 +200,7 @@ int tq_make_encode_plan(TqEncodePlan* output,int blocks,int rows,TqEncodeProfile
     for(int k=1;k<=8;++k) {
         const int maximum=plan.state_bits==14?capacity<14>(plan.rows,k):capacity<16>(plan.rows,k);
         if(maximum<0)return -maximum;
-        const auto row_bytes=(std::size_t(256)<<(plan.state_bits-k))/(k==1?8:(k==2 || k==3)?2:1);
+        const auto row_bytes=(std::size_t(256)<<(plan.state_bits-k))/(k==1?8:k<=4?2:1);
         if(budget && (budget<cursor || budget-cursor<row_bytes))return int(cudaErrorMemoryAllocation);
         plan.waves[k-1]=budget?int(std::min<std::size_t>(maximum,(budget-cursor)/row_bytes)):maximum;
         trace_size=std::max(trace_size,row_bytes*plan.waves[k-1]);
@@ -217,7 +217,7 @@ int tq_limit_encode_waves(TqEncodePlan* plan,int active_rows) {
     for(int bits=1;bits<=8;++bits) {
         if(waves[bits-1]<=0)return int(cudaErrorInvalidValue);
         waves[bits-1]=std::min(waves[bits-1],active_rows);
-        const auto row_bytes=(std::size_t(256)<<(plan->state_bits-bits))/(bits==1?8:(bits==2 || bits==3)?2:1);
+        const auto row_bytes=(std::size_t(256)<<(plan->state_bits-bits))/(bits==1?8:bits<=4?2:1);
         if(std::size_t(waves[bits-1])>(std::numeric_limits<std::size_t>::max()-plan->trace)/row_bytes)
             return int(cudaErrorInvalidValue);
         trace_bytes=std::max(trace_bytes,row_bytes*waves[bits-1]);

@@ -396,7 +396,6 @@ def _run_locked(args: argparse.Namespace, identity: dict[str, str | int]) -> int
     store = SessionStore(database_path, media_root=media_root)
     backend = ClusterBackend(runtime_manager, store)
     binary_dir = Path(sys.executable).parent
-    perplexity = executable.with_name("mfq-perplexity")
     handlers = ToolJobHandlers(
         catalog,
         ToolJobPaths(
@@ -407,7 +406,6 @@ def _run_locked(args: argparse.Namespace, identity: dict[str, str | int]) -> int
             ),
             huggingface=(binary_dir / "hf") if (binary_dir / "hf").is_file() else None,
             runtime=executable,
-            perplexity=perplexity if perplexity.is_file() else None,
             diagnostics=(
                 executable.with_name("mfq-diagnostics" + executable.suffix)
                 if selected_backend == "cuda" else executable

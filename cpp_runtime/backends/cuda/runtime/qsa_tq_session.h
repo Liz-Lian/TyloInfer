@@ -2,6 +2,7 @@
 #include "mfq_tensor_backend.h"
 #include "tyloinfer/qsa_ram_store.h"
 #include <stdexcept>
+#include <cstring>
 
 namespace mfq::cuda {
 // A serialized model worker owns updates to these small immutable archives.
@@ -10,16 +11,32 @@ struct QsaIndexArchive {
     std::shared_ptr<const std::vector<std::uint8_t>> resident;
     std::shared_ptr<mfq::cache::QsaKvStore> store;
     mfq::cache::QsaKvStore::BlockPtr block;
-    std::function<std::vector<std::uint8_t>()> reader;
+    std::shared_ptr<const tyloinfer::qsa::RamKvReadSource> source;
+    std::size_t offset=0,bytes=0;
     std::shared_ptr<const std::vector<std::uint8_t>> read()const {
         if(resident)return resident;
-        if(reader)return std::make_shared<const std::vector<std::uint8_t>>(reader());
+        if(source)return std::make_shared<const std::vector<std::uint8_t>>(source->read(offset,bytes));
         if(store && block)return store->read(block);
         throw std::runtime_error("QSA index archive has no retained backing");
     }
-    void bind(std::function<std::vector<std::uint8_t>()> source) {
-        if(!source)throw std::invalid_argument("QSA index prefix reader is empty");
-        reader=std::move(source);resident.reset();block.reset();store.reset();
+    // Restore the active INT16 suffix directly without copying its retained
+    // FP32 companion. Validate the complete archive geometry before any read.
+    void read_slice_into(std::size_t at,std::uint8_t* destination,std::size_t count,std::size_t expected_bytes)const {
+        if(at>expected_bytes || count>expected_bytes-at)throw std::out_of_range("QSA index slice exceeds archive");
+        if(count && !destination)throw std::invalid_argument("QSA index destination is null");
+        if(source && !resident) {
+            if(bytes!=expected_bytes)throw std::runtime_error("Incompatible QSA snapshot index archive length");
+            source->validate(offset,bytes);source->read_into(offset+at,destination,count);return;
+        }
+        const auto data=read();
+        if(data->size()!=expected_bytes)throw std::runtime_error("Incompatible QSA snapshot index archive length");
+        if(count)std::memcpy(destination,data->data()+at,count);
+    }
+    void bind(std::shared_ptr<const tyloinfer::qsa::RamKvReadSource> reader,std::size_t at,std::size_t count) {
+        if(!reader)throw std::invalid_argument("QSA index prefix reader is empty");
+        reader->validate(at,count);
+        source=std::move(reader);offset=at;bytes=count;
+        resident.reset();block.reset();store.reset();
     }
 };
 struct QsaTqSession {

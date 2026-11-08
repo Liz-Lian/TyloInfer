@@ -16,7 +16,7 @@ for (const language of ['zh', 'en'] as const) {
     const tools = sidebar.locator('nav > section').filter({ has: page.getByText(language === 'zh' ? '工具' : 'Tools', { exact: true }) });
     await expect(tools.getByRole('button', { name: language === 'zh' ? '工具' : 'Tools', exact: true })).toHaveAttribute('aria-expanded', 'true');
     await expect(tools.locator('.sidebar-nav-items button')).toHaveText(language === 'zh'
-      ? ['分析', '下载', '测评', '日志'] : ['Analysis', 'Downloads', 'Evaluations', 'Logs']);
+      ? ['分析', '下载', '日志'] : ['Analysis', 'Downloads', 'Logs']);
     expect((await sidebar.boundingBox())!.width).toBeCloseTo(200, 3);
     for (const button of await tools.locator('button').all()) {
       expect(await button.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -483,7 +483,6 @@ test('页面按需请求自己的资源，概览不预载其他业务列表', as
     expect(state.requests).not.toContain(`GET /api/v1/${path}`);
   }
   const routes = [
-    ['/evaluations', '/api/v1/evaluations'],
     ['/model-hub', null],
     ['/versions', null],
     ['/runtime', null],

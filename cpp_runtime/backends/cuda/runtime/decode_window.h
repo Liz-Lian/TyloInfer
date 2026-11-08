@@ -14,9 +14,9 @@ void wait_route_publication(const uint32_t* flag,cudaStream_t stream,int timeout
 void publish_mapped_flag(uint32_t* flag) noexcept;
 void check_stream_progress(cudaStream_t stream);
 void check_route_submission(cudaStream_t stream);
-// Resident KV uses one model graph. Streamed KV adds boundaries at host I/O;
-// expert operators within each segment keep their GPU body and host tasks in
-// one submission. Disk reads run after a segment completes, without GPU spins.
+// Resident and codec-free streamed KV share a model graph with host I/O tasks.
+// Reads requiring a foreground device codec retain explicit host boundaries;
+// expert operators keep their GPU body and host tasks within each submission.
 class DecodeWindow {
 public:
     struct Task {

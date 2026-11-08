@@ -14,9 +14,10 @@ describe('业务职责边界', () => {
     const app = source('App.tsx');
     expect(app).not.toMatch(/\buseState\b|\buseEffect\b|\bapi\.|\bfetch\(|<form\b|<input\b/);
     expect(app.split('\n').length).toBeLessThan(100);
-    for (const route of ['agent', 'chat', 'models', 'runtime', 'resources', 'logs', 'model-hub', 'evaluations']) {
+    for (const route of ['models', 'runtime', 'resources', 'logs', 'model-hub']) {
       expect(app).toContain(`path="${route}"`);
     }
+    expect(app).not.toMatch(/AgentProvider|AgentPage|EvaluationsPage/);
     expect(app).not.toContain('QuantizationPage');
     expect(app).not.toContain('ApplicationsPage');
     expect(app).not.toContain('SettingsRoute');

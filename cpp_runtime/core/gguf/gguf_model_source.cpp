@@ -17,6 +17,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <regex>
 #include <sstream>
 
@@ -81,6 +82,11 @@ public:
                 std::min<uint64_t>(parts_[i].size, header_bytes - parts_[i].begin) : 0;
             parts_[i].file = std::make_shared<MirroredFileReader>(std::move(replicas), model_file_read_mode(), header);
         }
+    }
+    FileReadStats stats()const noexcept {
+        FileReadStats result;
+        for(const auto& part:parts_)add_file_read_stats(result,part.file->stats());
+        return result;
     }
     const std::vector<std::filesystem::path>& paths() const noexcept { return paths_; }
     uint64_t size() const noexcept { return size_; }
@@ -607,7 +613,42 @@ struct GgufModelSource::Impl {
         std::shared_ptr<ModelSource> external;
         std::string external_name;
     };
+    static void read_record(const Record& record,uint64_t offset,std::byte* destination,std::size_t size) {
+        if (offset > record.tensor.nbytes || size > record.tensor.nbytes - offset)
+            throw std::out_of_range("GGUF tensor read exceeds its byte range");
+        if (!size) return;
+        if (!destination) throw std::invalid_argument("GGUF tensor destination is null");
+        if (record.external) {
+            record.external->read_range_into(record.external_name, offset, destination, size);
+            return;
+        }
+        if (!record.inline_bytes.empty()) {
+            if (size) std::memcpy(destination, record.inline_bytes.data() + offset, size);
+            return;
+        }
+        if (!record.pieces.empty()) {
+            auto piece = std::upper_bound(record.pieces.begin(), record.pieces.end(), offset,
+                [](uint64_t at, const Impl::Record::Piece& value) { return at < value.begin; }) - 1;
+            while (size) {
+                const auto within = offset - piece->begin;
+                const auto count = std::min<uint64_t>(size, piece->size - within);
+                piece->file->read(piece->file_offset + within, destination, count);
+                offset += count; destination += count; size -= count;
+                ++piece;
+            }
+            return;
+        }
+        if (offset < record.prefix.size()) {
+            const auto count = std::min<std::size_t>(size, record.prefix.size() - offset);
+            std::memcpy(destination, record.prefix.data() + offset, count);
+            offset += count; destination += count; size -= count;
+        }
+        if (size) record.file->read(record.offset + offset - record.prefix.size(), destination, size);
+    }
+    mutable std::mutex group_reader_mutex;
+    mutable std::weak_ptr<const TensorGroupReader> group_reader;
     std::vector<std::filesystem::path> paths;
+    std::vector<std::shared_ptr<GgufFile>> files;
     std::string arch;
     std::unordered_map<std::string, std::string> metadata;
     HadamardTransforms hadamard;
@@ -841,6 +882,8 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
         physical_paths.push_back(part);
     }
     impl_->paths = std::move(physical_paths);
+    impl_->files.reserve(files.size());
+    for(const auto& [path,file]:files)impl_->files.push_back(file);
     json mixed_experts = json::object();
     std::vector<std::string> type_maps;
     const std::string map_suffix = ".ffn_exps_gu_type";
@@ -1197,36 +1240,7 @@ ModelSource::TensorReader GgufModelSource::tensor_reader(std::string_view name) 
     }
     return [saved = std::shared_ptr<const Impl::Record>(impl_, &it->second)](uint64_t offset, std::byte* destination, std::size_t size) {
         const auto& record = *saved;
-        if (offset > record.tensor.nbytes || size > record.tensor.nbytes - offset)
-            throw std::out_of_range("GGUF tensor read exceeds its byte range");
-        if (!size) return;
-        if (!destination) throw std::invalid_argument("GGUF tensor destination is null");
-        if (record.external) {
-            record.external->read_range_into(record.external_name, offset, destination, size);
-            return;
-        }
-        if (!record.inline_bytes.empty()) {
-            if (size) std::memcpy(destination, record.inline_bytes.data() + offset, size);
-            return;
-        }
-        if (!record.pieces.empty()) {
-            auto piece = std::upper_bound(record.pieces.begin(), record.pieces.end(), offset,
-                [](uint64_t at, const Impl::Record::Piece& value) { return at < value.begin; }) - 1;
-            while (size) {
-                const auto within = offset - piece->begin;
-                const auto count = std::min<uint64_t>(size, piece->size - within);
-                piece->file->read(piece->file_offset + within, destination, count);
-                offset += count; destination += count; size -= count;
-                ++piece;
-            }
-            return;
-        }
-        if (offset < record.prefix.size()) {
-            const auto count = std::min<std::size_t>(size, record.prefix.size() - offset);
-            std::memcpy(destination, record.prefix.data() + offset, count);
-            offset += count; destination += count; size -= count;
-        }
-        if (size) record.file->read(record.offset + offset - record.prefix.size(), destination, size);
+        Impl::read_record(record,offset,destination,size);
     };
 }
 ModelSource::TensorReader GgufModelSource::mapped_tensor_reader(std::string_view name) const {
@@ -1322,8 +1336,60 @@ ModelSource::TensorBatchReader GgufModelSource::tensor_batch_reader(std::string_
         record.file->read_coalesced(destinations);
     };
 }
+std::shared_ptr<const GgufModelSource::TensorGroupReader> GgufModelSource::tensor_group_reader() const {
+    std::lock_guard lock(impl_->group_reader_mutex);
+    if(auto reader=impl_->group_reader.lock())return reader;
+    auto reader=std::make_shared<const TensorGroupReader>([saved=impl_](const std::vector<NamedReadSpan>& spans) {
+        std::vector<const Impl::Record*> records;records.reserve(spans.size());
+        std::vector<std::pair<std::uintptr_t,std::uintptr_t>> targets;targets.reserve(spans.size());
+        for(const auto& named:spans) {
+            const auto found=saved->records.find(std::string(named.name));
+            if(found==saved->records.end())throw std::out_of_range("GGUF tensor not found: "+std::string(named.name));
+            const auto& record=found->second;const auto& span=named.span;
+            if(span.offset>record.tensor.nbytes || span.size>record.tensor.nbytes-span.offset)
+                throw std::out_of_range("GGUF tensor read exceeds its byte range");
+            if(span.size) {
+                const auto first=reinterpret_cast<std::uintptr_t>(span.destination);
+                if(!span.destination || span.size>UINTPTR_MAX-first)
+                    throw std::invalid_argument("GGUF tensor destination range is invalid");
+                targets.emplace_back(first,first+span.size);
+            }
+            records.push_back(&record);
+        }
+        std::sort(targets.begin(),targets.end());
+        for(std::size_t i=1;i<targets.size();++i)if(targets[i].first<targets[i-1].second) {
+            // Aliased destinations retain the caller's overwrite order.
+            for(std::size_t j=0;j<spans.size();++j) {
+                const auto& span=spans[j].span;
+                Impl::read_record(*records[j],span.offset,span.destination,span.size);
+            }
+            return;
+        }
+        struct Group {std::shared_ptr<GgufFile> file;std::vector<ReadSpan> spans;};
+        std::vector<Group> groups;
+        for(std::size_t i=0;i<spans.size();++i) {
+            const auto& span=spans[i].span;const auto& record=*records[i];
+            if(!span.size)continue;
+            if(!record.prefix.empty() || !record.inline_bytes.empty() || record.external || !record.pieces.empty()) {
+                Impl::read_record(record,span.offset,span.destination,span.size);continue;
+            }
+            auto group=std::find_if(groups.begin(),groups.end(),[&](const auto& value){return value.file==record.file;});
+            if(group==groups.end()){groups.push_back({record.file,{}});group=groups.end()-1;}
+            group->spans.push_back({record.offset+span.offset,span.destination,span.size});
+        }
+        for(const auto& group:groups)group.file->read_coalesced(group.spans);
+    });
+    impl_->group_reader=reader;
+    return reader;
+}
+
 void GgufModelSource::read_range_into(std::string_view name, uint64_t offset, std::byte* destination, std::size_t size) const {
     tensor_reader(name)(offset, destination, size);
+}
+FileReadStats GgufModelSource::file_read_stats()const noexcept {
+    FileReadStats result;
+    for(const auto& file:impl_->files)add_file_read_stats(result,file->stats());
+    return result;
 }
 const std::vector<std::string>& GgufModelSource::assets() const noexcept { return impl_->assets; }
 bool GgufModelSource::has_asset(std::string_view name) const noexcept { return impl_->asset_data.count(std::string(name)) != 0; }

@@ -138,7 +138,7 @@ KvMemoryOptions kv_memory_options() {
     return o;
 }
 std::size_t KvMemoryAllocation::raw_bytes() const {return std::size_t(maximum)*heads*(key_width+value_width)*width_bytes(options);}
-std::size_t KvMemoryAllocation::index_bytes() const {return std::size_t(maximum+(maximum+pool-1)/pool)*index_width*2;}
+std::size_t KvMemoryAllocation::index_bytes() const {return std::size_t(maximum+(maximum+pool-1)/pool)*(index_width+2)*2;}
 std::size_t KvMemoryAllocation::gpu_bytes() const {
     if (!ready) return 0;
     if (virtual_keys) return index_bytes() + std::size_t(virtual_keys->range.mapped_count()+virtual_values->range.mapped_count())*kv_vmm::vmm_granularity();
@@ -285,9 +285,9 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
     if(tiered_budget && !options_.additional_request && !options_.dynamic && setting("TYLOINFER_KV_EXPERT_LOAN",1))expert_loan_=std::make_shared<KvExpertLoan>();
     for(auto& weak:allocations_)if(auto a=weak.lock()) {
         const auto shape=[&](int64_t w){return std::vector<int64_t>{1,a->heads,a->maximum,w};};
-        auto index_options=a->options;index_options.dtype(tb::kFloat16);
-        a->index=tb::zeros({1,a->maximum,a->index_width},index_options);
-        a->pooled=tb::zeros({1,(a->maximum+a->pool-1)/a->pool,a->index_width},index_options);
+        auto index_options=a->options;index_options.dtype(tb::kInt16);
+        a->index=tb::zeros({1,a->maximum,a->index_width+2},index_options);
+        a->pooled=tb::zeros({1,(a->maximum+a->pool-1)/a->pool,a->index_width+2},index_options);
         a->host=options_.placement=="ram" || automatic_ram_ || exclusive || raw_host_only;a->offload=offload_;
         if(options_.dynamic) {
             a->virtual_keys=std::make_shared<KvMemoryAllocation::Virtual>(a->maximum,a->heads,a->key_width,width_bytes(a->options));
@@ -313,8 +313,8 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
         a->ready=true;
         if(expert_loan_) {
             a->expert_loan=expert_loan_;
-            expert_loan_->add(a->index,a->maximum,std::size_t(a->index_width)*2,false);
-            expert_loan_->add(a->pooled,(a->maximum+a->pool-1)/a->pool,std::size_t(a->index_width)*2,false,a->pool);
+            expert_loan_->add(a->index,a->maximum,std::size_t(a->index_width+2)*2,false);
+            expert_loan_->add(a->pooled,(a->maximum+a->pool-1)/a->pool,std::size_t(a->index_width+2)*2,false,a->pool);
             const auto& k=a->hot.exclusive()?a->hot.keys:a->keys;
             const auto& v=a->hot.exclusive()?a->hot.values:a->values;
             if(a->hot.exclusive() || (!a->host && !a->offload))for(int64_t h=0;h<a->heads;++h) {

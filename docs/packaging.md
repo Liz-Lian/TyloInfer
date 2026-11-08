@@ -9,10 +9,10 @@ sidecars.
 
 ## macOS
 
-The macOS release packages the `mfq` service/evaluation CLI and TyloInfer into an
+The macOS release packages the `mfq` service CLI and TyloInfer into an
 Apple Silicon DMG. It includes:
 
-- the unified `mfq` CLI with service, benchmark scoring, and native WT2 reference generation;
+- the unified `mfq` CLI with service and model management;
 - the private native `mfq-decode-metal` sidecar;
 - `libmlx`, `libjaccl`, `mlx.metallib`, and the AVFoundation video bridge;
 - TyloInfer and its production Web UI, without PyTorch.
@@ -31,8 +31,7 @@ code signatures, then copies the DMG to `packaging/dist/`.
 ## Windows
 
 The Windows release packages `mfq serve`, TyloInfer, and the native CUDA
-`mfq-runtime` sidecar into a single x64 NSIS installer. Service, benchmark scoring,
-and native WT2 reference generation are included. The package
+`mfq-runtime` sidecar into a single x64 NSIS installer. Service and model management are included. The package
 excludes PyTorch and the training, calibration, quantization, and MiniCPM-o
 dependency groups. The CUDA, cuBLAS, MSVC, and optional OpenMP runtime DLLs are
 bundled with the sidecar, so end users do not need Python, the CUDA Toolkit, or a

@@ -1123,6 +1123,9 @@ static void check_kv_memory() {
     KvMemoryManager manager(config);
     auto allocation=manager.add(32768,2,128,128,16,4,options);
     manager.finalize();
+    check(allocation->index.scalar_type()==tb::kInt16 && allocation->pooled.scalar_type()==tb::kInt16 &&
+        allocation->index.size(-1)==18 && allocation->pooled.size(-1)==18,
+        "QSA Indexer allocation lost INT16 affine scale/zero records");
     const auto bytes=allocation->gpu_bytes();
     auto* address=allocation->keys.data_ptr();
     auto prefix=tb::full({1,2,16,128},3.0,options);
@@ -1242,7 +1245,7 @@ static void check_exclusive_kv() {
         const int kw=bits?cuda_kv_packed_width(width,int(std::floor(bits))):width;
         const int vw=bits?cuda_kv_packed_width(width,int(std::ceil(bits))):width;
         KvMemoryOptions policy;policy.budget_policy=true;policy.ram_limit_set=true;policy.ram_limit=1<<20;
-        policy.gpu_budget=(maximum+maximum/4)*8*2+cells*heads*(kw+vw)*(bits?4:2);
+        policy.gpu_budget=(maximum+maximum/4)*(8+2)*2+cells*heads*(kw+vw)*(bits?4:2);
         KvMemoryManager manager(policy);
         auto memory=manager.add(maximum,heads,kw,vw,8,4,options.dtype(bits?tb::kInt32:tb::kFloat16));manager.finalize();
         check(memory->hot.exclusive(),"budgeted KV did not use exclusive GPU/RAM tiers");

@@ -3,6 +3,7 @@
 #include "ggml-cuda/common.cuh"
 #include "gguf_quantize.cuh"
 #include "kernel_dispatch_trace.h"
+#include "system_ready.cuh"
 #include <algorithm>
 #include <stdexcept>
 #include <type_traits>
@@ -126,13 +127,7 @@ __global__ void prepare_resident(const std::uint64_t* mapped,std::uint64_t* devi
     RouteGroup* groups,const std::uint32_t* admission_ready,std::uint64_t* start_clock) {
     if(admission_ready) {
         if(!threadIdx.x) {
-            const auto* ready=reinterpret_cast<const volatile std::uint32_t*>(admission_ready);
-            while(!*ready) {
-#if __CUDA_ARCH__ >= 700
-                __nanosleep(64);
-#endif
-            }
-            __threadfence_system();
+            mfq::cuda::detail::wait_system_ready(admission_ready);
         }
         __syncthreads();
     }

@@ -2,9 +2,9 @@
 
 
 
-export type ViewName = 'chat' | 'agent' | 'dashboard' | 'lab' | 'versions';
+export type ViewName = 'dashboard' | 'lab' | 'versions';
 export type DashboardPage = 'overview' | 'models' | 'connections' | 'cache' | 'logs';
-export type LabPage = 'models' | 'evaluations' | 'analysis';
+export type LabPage = 'models' | 'analysis';
 
 export interface StudioLocation {
   view: ViewName;
@@ -14,13 +14,10 @@ export interface StudioLocation {
 
 export const STUDIO_PATHS = {
   overview: '/',
-  chat: '/chat',
-  agent: '/agent',
   models: '/models',
   server: '/runtime',
   resources: '/resources',
   modelHub: '/model-hub',
-  evaluations: '/evaluations',
   analysis: '/analysis',
   versions: '/versions',
   logs: '/logs',
@@ -36,7 +33,6 @@ const DASHBOARD_PATHS: Record<DashboardPage, string> = {
 
 const LAB_PATHS: Record<LabPage, string> = {
   models: STUDIO_PATHS.modelHub,
-  evaluations: STUDIO_PATHS.evaluations,
   analysis: STUDIO_PATHS.analysis,
 };
 
@@ -55,12 +51,6 @@ export function resolveStudioLocation(pathname: string): StudioLocation {
   const normalizedPath = normalizeStudioPath(pathname);
   if (normalizedPath === STUDIO_PATHS.versions) {
     return { view: 'versions', dashboardPage: 'overview', labPage: 'models' };
-  }
-  if (normalizedPath === STUDIO_PATHS.agent) {
-    return { view: 'agent', dashboardPage: 'overview', labPage: 'models' };
-  }
-  if (normalizedPath === STUDIO_PATHS.chat) {
-    return { view: 'chat', dashboardPage: 'overview', labPage: 'models' };
   }
 
   const dashboardPage = (Object.entries(DASHBOARD_PATHS).find(([, path]) => path === normalizedPath)?.[0]

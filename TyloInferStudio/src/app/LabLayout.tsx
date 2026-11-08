@@ -7,8 +7,6 @@ const tools = [
     detail: ['查看检查点结构、参数与量化分布。', 'Explore checkpoint architecture, parameters and precision.'] },
   { path: '/model-hub', zh: '模型下载', en: 'Model downloads',
     detail: ['浏览模型，选择适合设备的精度版本。', 'Find models and precision tiers for your device.'] },
-  { path: '/evaluations', zh: '评测与数据集', en: 'Evaluations',
-    detail: ['WT2 质量一致性、推理吞吐与能力评测。', 'WT2 quality agreement, inference throughput and capability evaluation.'] },
 ];
 
 export function LabLayout() {

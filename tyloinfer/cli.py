@@ -77,15 +77,6 @@ def _hub_download(args: argparse.Namespace) -> int:
     return 0
 
 
-def _wt2_reference(args: argparse.Namespace) -> int:
-    from tyloinfer.evaluation.reference import generate_reference
-    backend = ('metal' if sys.platform == 'darwin' else 'cuda') if args.backend == 'auto' else args.backend
-    device = args.device or ('mps' if backend == 'metal' else 'cuda:0')
-    if device.split(':', 1)[0] != ('mps' if backend == 'metal' else 'cuda'):
-        raise ValueError('WT2 device must match the selected backend')
-    generate_reference(args.model, args.dataset, args.output, context_size=args.context_size,
-        chunks=args.chunks, device=device, layerwise=not args.resident, runtime=args.runtime or None)
-    return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -99,17 +90,6 @@ def _build_parser() -> argparse.ArgumentParser:
     add_residual_parser(sub)
     add_build_parser(sub)
     add_serve_parser(sub)
-    reference = sub.add_parser('wt2-reference', help='generate official WT2 reference logits from original HF weights')
-    reference.add_argument('--model', required=True)
-    reference.add_argument('--dataset', required=True)
-    reference.add_argument('--output', required=True)
-    reference.add_argument('--context-size', type=int, default=512)
-    reference.add_argument('--chunks', type=int, default=8)
-    reference.add_argument('--backend', choices=('auto', 'metal', 'cuda'), default='auto')
-    reference.add_argument('--device', default='')
-    reference.add_argument('--resident', action='store_true')
-    reference.add_argument('--runtime', default='', help='native CUDA runtime executable')
-    reference.set_defaults(_impl=_wt2_reference)
     sub.add_parser(
         "voice-runtime-check",
         help="verify optional MiniCPM-o voice output dependencies",
@@ -138,15 +118,6 @@ def main(argv: list[str] | None = None) -> int:
         import multiprocessing
 
         multiprocessing.freeze_support()
-    arguments = sys.argv[1:] if argv is None else argv
-    if arguments == ["_official-scoring-probe"]:
-        print(4)
-        return 0
-    if arguments == ["_official-scoring-worker"]:
-        from tyloinfer.server.services.official_scoring_worker import main as score_main
-
-        score_main()
-        return 0
     parser = _build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

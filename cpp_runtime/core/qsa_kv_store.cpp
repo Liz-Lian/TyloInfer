@@ -1,5 +1,6 @@
 #include "tyloinfer/qsa_kv_store.h"
 #include "tyloinfer/disk_budget.h"
+#include "tyloinfer/file_read_window.h"
 
 #include <algorithm>
 #include <condition_variable>
@@ -85,8 +86,18 @@ std::int64_t read_file(int descriptor, void* data, std::size_t bytes, std::int64
         [[maybe_unused]] std::mutex& file_mutex) {
 #ifdef _WIN32
     std::lock_guard<std::mutex> lock(file_mutex);
-    if (::_lseeki64(descriptor, offset, SEEK_SET) < 0) return -1;
-    return ::_read(descriptor, data, static_cast<unsigned>(std::min(bytes, std::size_t{INT_MAX})));
+    if(offset<0){errno=EINVAL;return -1;}
+    // A synchronous handle accepts an explicit OVERLAPPED offset. Recall
+    // each microblock with one read instead of a separate seek and CRT read.
+    OVERLAPPED position{};position.Offset=DWORD(std::uint64_t(offset));
+    position.OffsetHigh=DWORD(std::uint64_t(offset)>>32);
+    DWORD count=0;
+    if(!ReadFile(reinterpret_cast<HANDLE>(::_get_osfhandle(descriptor)),data,
+            DWORD(std::min(bytes,std::size_t{INT_MAX})),&count,&position)) {
+        if(GetLastError()==ERROR_HANDLE_EOF)return 0;
+        errno=EIO;return -1;
+    }
+    return count;
 #else
     return ::pread(descriptor, data, bytes, static_cast<off_t>(offset));
 #endif
@@ -128,6 +139,17 @@ struct QsaKvStore::Impl {
     }
 
     void check() const { if (error) std::rethrow_exception(error); }
+    void read_payload(const Block& block,std::uint8_t* destination) {
+        std::size_t done=0;
+        while(done<block.bytes) {
+            const auto count=read_file(fd,destination+done,block.bytes-done,
+                static_cast<std::int64_t>(block.offset+done),io_mutex);
+            if(count<0 && errno==EINTR)continue;
+            if(count<=0)throw std::runtime_error("QSA KV SSD read failed");
+            done+=static_cast<std::size_t>(count);
+        }
+        ++reads;read_bytes+=block.bytes;
+    }
 
     std::size_t hot_limit() const {
         const auto available = config.budget_bytes - config.buffer_bytes;
@@ -320,16 +342,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> QsaKvStore::read(const BlockPtr
     }
     if (!block->ready) throw std::runtime_error("QSA KV microblock was not written");
     auto bytes = std::make_shared<std::vector<std::uint8_t>>(block->bytes);
-    std::size_t done = 0;
-    while (done < bytes->size()) {
-        const auto read = read_file(impl_->fd, bytes->data() + done, bytes->size() - done,
-            static_cast<std::int64_t>(block->offset + done),impl_->io_mutex);
-        if (read < 0 && errno == EINTR) continue;
-        if (read <= 0) throw std::runtime_error("QSA KV SSD read failed");
-        done += static_cast<std::size_t>(read);
-    }
-    ++impl_->reads;
-    impl_->read_bytes += bytes->size();
+    impl_->read_payload(*block,bytes->data());
     if (bytes->size() <= impl_->hot_limit()) {
         auto& order = impl_->lru[block->priority];
         order.push_front(block->id);
@@ -340,10 +353,85 @@ std::shared_ptr<const std::vector<std::uint8_t>> QsaKvStore::read(const BlockPtr
     return bytes;
 }
 
+void QsaKvStore::read_into(const BlockPtr& block,std::uint8_t* destination,std::size_t bytes) {
+    if(!block || !destination || bytes!=block->bytes)
+        throw std::invalid_argument("QSA KV destination size differs from its block");
+    std::unique_lock<std::recursive_mutex> guard(impl_->mutex);impl_->check();
+    if(block->pending) {
+        ++impl_->hits;std::memcpy(destination,block->pending->data(),bytes);return;
+    }
+    const auto found=impl_->hot.find(block->id);
+    if(found!=impl_->hot.end()) {
+        ++impl_->hits;auto& order=impl_->lru[block->priority];
+        order.splice(order.begin(),order,found->second.order);
+        std::memcpy(destination,found->second.bytes->data(),bytes);return;
+    }
+    if(!block->ready)throw std::runtime_error("QSA KV microblock was not written");
+    impl_->read_payload(*block,destination);
+}
+
 void QsaKvStore::flush() {
     std::unique_lock<std::recursive_mutex> guard(impl_->mutex);
     impl_->changed.wait(guard, [&] { return impl_->error || impl_->pending_bytes == 0; });
     impl_->check();
+}
+
+void QsaKvStore::read_into_batch(const std::vector<ReadRequest>& requests) {
+    for(const auto& r:requests)if(!r.block || !r.destination || r.bytes!=r.block->bytes)
+        throw std::invalid_argument("QSA KV batch destination differs from its block");
+    std::unique_lock<std::recursive_mutex> guard(impl_->mutex);impl_->check();
+    std::vector<const ReadRequest*> disk;disk.reserve(requests.size());
+    for(const auto& r:requests) {
+        if(r.block->pending || impl_->hot.count(r.block->id))read_into(r.block,r.destination,r.bytes);
+        else {
+            if(!r.block->ready)throw std::runtime_error("QSA KV microblock was not written");
+            disk.push_back(&r);
+        }
+    }
+    std::sort(disk.begin(),disk.end(),[](const auto* a,const auto* b){return a->block->offset<b->block->offset;});
+    constexpr std::size_t window=tyloinfer::ScopedFileReadWindow::capacity;
+    const bool sequential=tyloinfer::ScopedFileReadWindow::read_ahead_enabled();
+    std::size_t requested=0,physical=0,operations=0;
+    std::vector<std::uint8_t> buffer;
+    for(std::size_t begin=0;begin<disk.size();) {
+        auto end=begin+1;std::size_t bytes=disk[begin]->bytes,useful=bytes;
+        const auto start=disk[begin]->block->offset;
+        const auto destination=reinterpret_cast<std::uintptr_t>(disk[begin]->destination);
+        bool direct=true;
+        while(end<disk.size()) {
+            const auto& next=*disk[end];const auto offset=next.block->offset;
+            if(next.bytes>SIZE_MAX-offset || next.bytes>SIZE_MAX-useful)break;
+            const auto finish=std::max(start+bytes,offset+next.bytes);
+            const auto extent=finish-start;
+            const bool contiguous=direct && offset==start+bytes && bytes<=UINTPTR_MAX-destination &&
+                reinterpret_cast<std::uintptr_t>(next.destination)==destination+bytes;
+            // A contiguous caller-owned span needs no scatter workspace.
+            // Keep random reads and gapped bounce reads within their window.
+            if(extent>window && !(sequential && contiguous))break;
+            if(sequential) {
+                // Only recovery opts into gaps. Bound actual read bytes by
+                // twice the requested payload and the existing workspace cap.
+                if((extent+1)/2>useful+next.bytes)break;
+            }else if(offset!=start+bytes)break;
+            direct=contiguous;bytes=extent;useful+=next.bytes;++end;
+        }
+        Block span;span.offset=start;span.bytes=bytes;
+        if(direct)impl_->read_payload(span,disk[begin]->destination);
+        else {
+            buffer.resize(bytes);
+            impl_->read_payload(span,buffer.data());
+            for(auto i=begin;i<end;++i)
+                std::memcpy(disk[i]->destination,buffer.data()+disk[i]->block->offset-start,disk[i]->bytes);
+        }
+        requested+=useful;physical+=bytes;++operations;
+        begin=end;
+    }
+    if(sequential && !disk.empty())if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+        static std::atomic<bool> reported{false};
+        if(!reported.exchange(true))std::fprintf(stderr,
+            "native_qsa_session_window actual_match=1 blocks=%zu reads=%zu requested_bytes=%zu physical_bytes=%zu scatter_window_bytes=%zu contiguous_direct=1 max_read_amplification=2\n",
+            disk.size(),operations,requested,physical,window);
+    }
 }
 
 QsaKvStoreStats QsaKvStore::stats() const {

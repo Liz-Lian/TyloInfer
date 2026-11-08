@@ -348,6 +348,85 @@ void batch_prefix_policy_test() {
     assert(executor.empty());
 }
 
+// Recurrent checkpoints cannot be sliced back from N to N-1 like dense KV.
+// An identical ordinary request must restore its pre-logit boundary and compute
+// just the final prompt token, including when the whole prompt is cacheable.
+struct OrdinaryPrefixFixture {
+    struct MtpState { std::size_t bytes=0; };
+    struct Snapshot {
+        std::vector<int64_t> tokens;std::string input_key;
+        std::optional<MtpState> mtp;std::size_t bytes=0;
+    };
+    struct Model {
+        int64_t cache_pos=0;
+        int vocab_size()const{return 32;}
+        int max_position_embeddings()const{return 64;}
+        bool supports_text_session_state()const{return true;}
+        Snapshot capture_text_session_state(std::vector<int64_t> tokens)const {
+            assert(std::size_t(cache_pos)==tokens.size());return {std::move(tokens)};
+        }
+    } model;
+    struct Mtp {
+        struct Stats {bool available=false;} last_stats;
+        bool supports_session_state()const{return true;}
+        MtpState capture_session_state(int64_t,int)const{return {};}
+    };
+    struct Restore {std::size_t tokens=0;int mtp_last_target_hidden=0;};
+    struct Cache {
+        std::vector<Snapshot> checkpoints;
+        bool persistent_prefix_enabled()const{return true;}
+        Restore restore_best(Model& model,Mtp*,const std::string&,
+            const std::vector<int64_t>& prompt,std::size_t maximum,const std::string& key) {
+            std::size_t best=0;maximum=std::min(maximum,prompt.size()-1);
+            for(const auto& state:checkpoints)
+                if(state.tokens.size()>best && state.tokens.size()<=maximum && state.input_key==key &&
+                    std::equal(state.tokens.begin(),state.tokens.end(),prompt.begin()))best=state.tokens.size();
+            model.cache_pos=static_cast<int64_t>(best);return {best,0};
+        }
+        void store(const std::string&,Snapshot state){checkpoints.push_back(std::move(state));}
+    } cache;
+    struct Prepared {
+        std::vector<int64_t> token_ids;int decode_position_delta=0;std::string cache_key;
+        bool transformed()const{return false;}
+    };
+    struct Operations {
+        using Hidden=int;
+        using Restore=OrdinaryPrefixFixture::Restore;
+        Model& model;Cache& cache;RuntimeConfig& config;std::size_t& computed;
+        Mtp* mtp=nullptr;std::optional<Prepared> prepared;
+        bool batched()const{return false;}
+        bool has_hidden(int)const{return true;}
+        void reset(){model.cache_pos=0;}
+        void release(){reset();}
+        void invalidate_plan(){}
+        void set_prefix_boundary(std::size_t){}
+        double prefill(PrefillChunk chunk){assert(model.cache_pos==chunk.offset);model.cache_pos+=chunk.count;computed+=chunk.count;return 1.;}
+        int64_t first_token()const{return 10;}
+        int64_t advance(){++model.cache_pos;return 10;}
+        void accept(int64_t){}
+        Generation plain(InferenceRequest& request,InferenceOutput& output,std::size_t reused,std::size_t boundary) {
+            return generate_sequence(std::ref(*this),output,request.prompt.size(),reused,boundary,config.generation.prefill_chunk_size);
+        }
+        Generation speculate(InferenceRequest&,InferenceOutput&,std::size_t,int,int*){co_return;}
+    };
+};
+static void check_ordinary_prefix_boundary() {
+    for(std::size_t stable:{std::size_t(0),std::size_t(3),std::size_t(5)}) {
+        OrdinaryPrefixFixture f;RuntimeConfig config;config.generation.prefill_chunk_size=8;
+        const auto run=[&] {
+            InferenceRequest request;request.prompt={1,2,3,4,5};request.sampling.max_tokens=1;
+            request.sampling.enable_mtp=false;request.cache_plan.session_id="same-prompt";request.cache_plan.stable_prefix_tokens=stable;
+            InferenceOutput output(request,nullptr,"ordinary-boundary");std::size_t computed=0;
+            OrdinaryPrefixFixture::Operations ops{f.model,f.cache,config,computed};
+            auto sequence=generate_request(ops,request,output);while(sequence.next()){}
+            return computed;
+        };
+        assert(run()==5);
+        if(stable==5)assert(std::any_of(f.cache.checkpoints.begin(),f.cache.checkpoints.end(),[](const auto& state){return state.tokens.size()==4;}));
+        assert(run()==(stable?5-std::min(stable,std::size_t(4)):5));
+    }
+}
+
 int main() {
     batch_prefix_policy_test();
     // Text admission needs a tokenizer; a raw token request does not.
@@ -391,6 +470,7 @@ int main() {
         assert(complete && executor.empty() && ops.advances == 1);
         assert((tokens == std::vector<int64_t>{10, 11}));
     }
+    check_ordinary_prefix_boundary();
     check_waiting_and_cleanup();
     check_preparation_steps();
     check_engine_lifecycle();

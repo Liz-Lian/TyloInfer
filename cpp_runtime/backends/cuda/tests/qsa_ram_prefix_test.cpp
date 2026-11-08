@@ -19,9 +19,61 @@ void setting(const char* name,const std::string& value) {
 #endif
 }
 void require(bool b,const char* message) {if(!b)throw std::runtime_error(message);}
+void failed_restore(mfq::cuda::QsaTqCache& runtime,const mfq::cuda::QsaTqSession& state,bool borrow) {
+    auto broken=state;const auto id=std::min<std::size_t>(513,broken.index.size()-1);
+    broken.index[id]=std::make_shared<mfq::cuda::QsaIndexArchive>();
+    broken.index[id]->resident=std::make_shared<const std::vector<std::uint8_t>>(1);
+    bool rejected=false;
+    try{runtime.restore_session(broken,borrow);}catch(const std::runtime_error&){rejected=true;}
+    require(rejected && runtime.stats().resident_bytes==0,"Failed prefix restore retained partial RAM KV");
+}
 void same(const tb::Tensor& a,const tb::Tensor& b) {
     require(a.sizes()==b.sizes() && !std::memcmp(a.data_ptr(),b.data_ptr(),a.nbytes()),
         "Compressed prefix changed exact index selection or attention output");
+}
+void index_archive_slices(const std::filesystem::path& directory) {
+    constexpr std::size_t width=128,raw=8*width,stride=2*(width+2),length=raw+stride,padding=13;
+    auto payload=std::make_shared<std::vector<std::uint8_t>>(padding+length+9);
+    for(std::size_t i=0;i<payload->size();++i)(*payload)[i]=std::uint8_t(i*29+7);
+    std::vector<std::uint8_t> output(stride+8,0xa5);
+    const auto verify=[&] {
+        require(std::equal(output.begin()+4,output.end()-4,payload->begin()+padding+raw),"Index suffix bytes changed");
+        for(int i=0;i<4;++i)require(output[i]==0xa5 && output[output.size()-1-i]==0xa5,"Index slice overwrote destination guards");
+    };
+    mfq::cuda::QsaIndexArchive archive;
+    archive.resident=std::make_shared<const std::vector<std::uint8_t>>(payload->begin()+padding,payload->begin()+padding+length);
+    archive.read_slice_into(raw,output.data()+4,stride,length);verify();
+    auto source=std::make_shared<tyloinfer::qsa::RamKvReadSource>();source->bytes=payload->size();
+    unsigned direct=0,vector=0;
+    source->read_range=[&](std::size_t,std::size_t)->std::vector<std::uint8_t>{++vector;throw std::runtime_error("Direct index slice allocated a full archive");};
+    source->read_range_into=[&](std::size_t at,std::uint8_t* destination,std::size_t count) {
+        ++direct;require(at==padding+raw && count==stride,"Index restore read its unused FP32 companion");
+        std::memcpy(destination,payload->data()+at,count);
+    };
+    archive.bind(source,padding,length);archive.read_slice_into(raw,output.data()+4,stride,length);verify();
+    require(direct==1 && vector==0,"Index slice did not use direct retained I/O");
+    for(int bad=0;bad<3;++bad) {
+        bool rejected=false;try {
+            if(bad==0)archive.read_slice_into(length,output.data()+4,1,length);
+            if(bad==1)archive.read_slice_into(raw,nullptr,stride,length);
+            if(bad==2)archive.read_slice_into(raw,output.data()+4,stride,length+1);
+        }catch(const std::exception&){rejected=true;}
+        require(rejected && direct==1 && vector==0,"Invalid index slice reached its reader");
+    }
+    archive.read_slice_into(length,nullptr,0,length);require(direct==1,"Empty index slice performed I/O");
+    source->bytes=padding+length-1;bool truncated=false;
+    try{archive.read_slice_into(raw,output.data()+4,stride,length);}catch(const std::out_of_range&){truncated=true;}
+    require(truncated && direct==1,"Truncated retained index extent was accepted");source->bytes=payload->size();
+    source->read_range_into={};source->read_range=[&](std::size_t at,std::size_t count) {
+        ++vector;require(at==padding+raw && count==stride,"Vector-only index reader received the wrong slice");
+        return std::vector<std::uint8_t>(payload->begin()+at,payload->begin()+at+count);
+    };
+    archive.read_slice_into(raw,output.data()+4,stride,length);verify();require(vector==1,"Vector-only reader was not retained");
+    mfq::cache::QsaKvStoreConfig config;config.directory=directory.string();config.buffer_bytes=config.budget_bytes=4096;
+    auto store=std::make_shared<mfq::cache::QsaKvStore>(config);mfq::cuda::QsaIndexArchive session;
+    session.store=store;session.block=store->write({payload->begin()+padding,payload->begin()+padding+length});store->flush();
+    session.read_slice_into(raw,output.data()+4,stride,length);verify();
+    std::cout<<"Index archive slices: exact INT16 suffix, direct/vector/session/resident sources, full geometry and destination bounds PASS\n";
 }
 void run(int bits,size_t page,const std::filesystem::path& directory) {
     setting("TYLOINFER_QSA_RAM_KV_BITS",std::to_string(bits));
@@ -54,19 +106,72 @@ void run(int bits,size_t page,const std::filesystem::path& directory) {
     state.payload=std::move(layers);state.qwen4_positions=tb::arange(prefix,f.dtype(tb::kInt64)).reshape({1,prefix});
     state.mtp.emplace();state.mtp->cache_pos=prefix;state.mtp->last_target_hidden=tb::zeros({1,1,5},f);
     Qwen4BlockSessionState head;head.adaptive_qsa=runtime.capture_session(prefix);
+    // Real predictor layers own independent index archives. This fixture uses
+    // the same values for both layers, but must preserve that ownership rule.
+    for(auto& archive:head.adaptive_qsa->index)archive=std::make_shared<mfq::cuda::QsaIndexArchive>(*archive);
     state.mtp->qwen4_blocks.push_back(std::move(head));state.mtp->qwen4_positions.push_back(state.qwen4_positions.clone());
     state.mtp->qwen4_lengths.push_back(prefix);
     refresh_cuda_qwen4_session_bytes(state);const auto old_bytes=state.bytes;
     const auto expected=append(prefix,3);
+    {
+        auto sliced=*std::get<std::vector<Qwen4BlockSessionState>>(state.payload)[0].adaptive_qsa;
+        auto reads=std::make_shared<std::size_t>(0);
+        for(auto& archive:sliced.index) {
+            const auto bytes=archive->read();
+            auto reader=std::make_shared<tyloinfer::qsa::RamKvReadSource>();reader->bytes=bytes->size();
+            reader->read_range_into=[bytes,reads](std::size_t at,std::uint8_t* destination,std::size_t count) {
+                require(at==8*iw && count==2*(iw+2),"Borrowed index restore requested unused FP32 data");
+                ++*reads;std::memcpy(destination,bytes->data()+at,count);
+            };
+            archive=std::make_shared<mfq::cuda::QsaIndexArchive>();archive->bind(reader,0,bytes->size());
+        }
+        runtime.reset();runtime.restore_session(sliced,true);same(expected,append(prefix,3));
+        require(*reads==sliced.index.size(),"Borrowed index restore did not read each exact INT16 slice once");
+    }
     std::vector<CudaPagedPayload> payloads;
     for(size_t i=0;i<(prefix+page-1)/page;++i)payloads.push_back(encode_cuda_qwen4_paged_block(state,page,i));
     auto decoded=decode_cuda_qwen4_paged_session(payloads,state.tokens,page);
     auto packed=std::get<std::vector<Qwen4BlockSessionState>>(decoded.payload)[0].adaptive_qsa;
     require(packed && !packed->borrow_prefix,"Standalone codec unexpectedly enabled SSD borrowing");
-    runtime.reset();runtime.restore_session(*packed,false);same(expected,append(prefix,3));
+    runtime.reset();failed_restore(runtime,*packed,false);
+    runtime.restore_session(*packed,false);same(expected,append(prefix,3));
     require(decoded.mtp && decoded.mtp->qwen4_blocks.size()==1 && decoded.mtp->qwen4_blocks[0].adaptive_qsa,
         "Compressed native MTP prefix omitted its head KV");
     runtime.reset();runtime.restore_session(*decoded.mtp->qwen4_blocks[0].adaptive_qsa,false);same(expected,append(prefix,3));
+    {
+        // A normal checkpoint may already be on SSD when the same token
+        // boundary gains MTP state in disposable RAM. Read the new version
+        // before RAM pressure eventually writes it to the same SSD key.
+        auto ordinary=state;ordinary.mtp.reset();
+        mfq::cache::PagedPrefixCacheConfig upgrade;
+        upgrade.cache_dir=directory/"ram-upgrade";
+        upgrade.compatibility_key="mtp-upgrade-"+std::to_string(bits)+"-"+std::to_string(page);
+        upgrade.block_size_tokens=page;upgrade.max_disk_bytes=upgrade.max_hot_bytes=8<<20;
+        upgrade.max_pending_bytes=0;upgrade.min_disk_free_bytes=0;upgrade.spill_hot_on_eviction=true;
+        mfq::cache::PagedPrefixCache cache(upgrade);
+        std::vector<mfq::cache::BlockHash> blocks;mfq::cache::BlockHash parent{};
+        for(size_t i=0;i<payloads.size();++i) {
+            const auto at=i*page,count=std::min(page,state.tokens.size()-at);
+            parent=cache.store(parent,state.tokens.data()+at,count,encode_cuda_qwen4_paged_block(ordinary,page,i));
+            blocks.push_back(parent);
+        }
+        cache.trim_hot();cache.flush();
+        const auto previous=cache.borrow(blocks.back());require(bool(previous),"Missing ordinary SSD checkpoint");
+        const auto i=payloads.size()-1,at=i*page,count=state.tokens.size()-at;
+        cache.replace(i?blocks[i-1]:mfq::cache::BlockHash{},state.tokens.data()+at,count,payloads.back());
+        require(!cache.borrow(blocks.back()),"RAM MTP upgrade borrowed an obsolete ordinary SSD checkpoint");
+        auto prompt=state.tokens;prompt.push_back(999);
+        auto upgraded=decode_cuda_qwen4_paged_prefix(cache,blocks,prompt,page);
+        require(upgraded.mtp && upgraded.mtp->cache_pos==prefix && upgraded.tokens.size()==prefix &&
+                upgraded.mtp->qwen4_blocks.size()==1 && upgraded.mtp->qwen4_blocks[0].adaptive_qsa,
+            "Deferred RAM MTP checkpoint was lost behind an older SSD file");
+        runtime.reset();runtime.restore_session(*upgraded.mtp->qwen4_blocks[0].adaptive_qsa,false);
+        same(expected,append(prefix,3));
+        cache.trim_hot();cache.flush();const auto current=cache.borrow(blocks.back());
+        require(current && current!=previous && current->payload_bytes>previous->payload_bytes,
+            "RAM MTP upgrade did not become the new durable file version");
+        std::cout<<"RAM MTP upgrade supersedes older SSD checkpoint without eager persistence PASS bits="<<bits<<" page="<<page<<"\n";
+    }
     mfq::cache::PagedPrefixCacheConfig cfg;cfg.cache_dir=directory;cfg.compatibility_key="packed-prefix-"+std::to_string(bits)+"-"+std::to_string(page);
     cfg.block_size_tokens=page;cfg.max_disk_bytes=8<<20;cfg.max_hot_bytes=0;cfg.max_pending_bytes=0;cfg.min_disk_free_bytes=0;
     mfq::cache::PagedPrefixCache cache(cfg);std::vector<mfq::cache::BlockHash> blocks;mfq::cache::BlockHash parent{};
@@ -77,6 +182,14 @@ void run(int bits,size_t page,const std::filesystem::path& directory) {
     cache.flush();bind_cuda_qwen4_paged_prefix(state,cache,blocks);refresh_cuda_qwen4_session_bytes(state);
     require(state.bytes<old_bytes,"Prefix binding retained duplicate compressed RAM images");
     const auto bound=std::get<std::vector<Qwen4BlockSessionState>>(state.payload)[0].adaptive_qsa;
+    const auto retained=bound->kv->blocks.front().backing;
+    bind_cuda_qwen4_paged_prefix(state,cache,blocks);
+    require(bound->kv->blocks.front().backing==retained,"Repeated binding recreated an unchanged prefix reader");
+    // Replacing the same token hash creates a new immutable file version.
+    // Old snapshots must remain readable, while the next bind uses that version.
+    cache.replace({},state.tokens.data(),page,payloads.front());cache.flush();
+    bind_cuda_qwen4_paged_prefix(state,cache,blocks);
+    require(bound->kv->blocks.front().backing!=retained,"Prefix replacement reused a stale file lease");
     for(size_t i=0;i<bound->kv->blocks.size();++i)
         require(!bound->kv->blocks[i].image && bound->kv->blocks[i].backing && !bound->index[i]->resident,
             "Prefix binding failed to release compressed RAM owners");
@@ -85,12 +198,21 @@ void run(int bits,size_t page,const std::filesystem::path& directory) {
     require(imported.tokens==state.tokens,"Streamed prefix selected the wrong recurrent boundary");
     auto restored=std::get<std::vector<Qwen4BlockSessionState>>(imported.payload)[0].adaptive_qsa;
     require(restored->borrow_prefix && restored->durable_prefix,"Streamed prefix lost its SSD file leases");
+    for(size_t start=0;start<size_t(prefix);start+=page) {
+        const auto first=start/4,last=std::min(start+page,size_t(prefix))/4;
+        for(auto id=first;id<last;++id) {
+            const auto& b=restored->kv->blocks[id].backing;const auto& index=restored->index[id];
+            require(b && b->source && b->source==restored->kv->blocks[first].backing->source &&
+                    b->source==index->source && index->offset==b->offset+b->key_bytes+b->value_bytes,
+                "Prefix page did not share its immutable KV/index range reader");
+        }
+    }
     prepare_cuda_qwen4_session_restore(imported,false);require(!restored->borrow_prefix,"Disabled SSD prefix remained enabled");
     require(!imported.mtp->qwen4_blocks[0].adaptive_qsa->borrow_prefix,"Disabled SSD prefix still lent MTP head KV");
     prepare_cuda_qwen4_session_restore(imported,true);require(restored->borrow_prefix,"Enabled SSD prefix did not lend its files");
     cache.clear();runtime.reset();runtime.restore_session(*restored,true);same(expected,append(prefix,3));
     runtime.reset();runtime.restore_session(*imported.mtp->qwen4_blocks[0].adaptive_qsa,true);same(expected,append(prefix,3));
-    require(cache.metrics().writes==payloads.size(),"Prefix reuse unexpectedly duplicated disk writes");
+    require(cache.metrics().writes==payloads.size()+1,"Prefix reuse wrote pages beyond the explicit replacement");
     auto truncated=std::make_shared<std::vector<uint8_t>>(*payloads.back());truncated->resize(truncated->size()-1);
     payloads.back()=truncated;bool rejected=false;
     try{(void)decode_cuda_qwen4_paged_session(payloads,state.tokens,page);}catch(const CudaSessionStateError&){rejected=true;}
@@ -127,7 +249,8 @@ void pressure(const std::filesystem::path& directory) {
     auto prompt=state.tokens;prompt.push_back(999);
     auto restored=decode_cuda_qwen4_paged_prefix(cache,blocks,prompt,256);
     auto snapshot=std::get<std::vector<Qwen4BlockSessionState>>(restored.payload)[0].adaptive_qsa;
-    runtime.reset();runtime.restore_session(*snapshot,true);same(expected,append(n,3));runtime.wait();
+    runtime.reset();failed_restore(runtime,*snapshot,true);
+    runtime.restore_session(*snapshot,true);same(expected,append(n,3));runtime.wait();
     same(expected_continuation,append(n+3,12));runtime.wait();
     require(runtime.stats().resident_bytes<=size_t(7<<20),"Prefix restore exceeded the RAM pressure budget");
     std::cout<<"Real mixed FP16/A8/TQ4/session-SSD prefix restore under RAM budget PASS\n";
@@ -184,6 +307,7 @@ int main(int argc,char** argv)try {
     const auto directory=argc>1?std::filesystem::path(argv[1]):std::filesystem::current_path()/"packed-prefix-test-data";
     if(argc>2 && std::string(argv[2])=="shared-codec"){shared_codec(true);return 0;}
     if(argc>2 && std::string(argv[2])=="large-tq4"){large_tq4_prefill();large_tq4_prefill(24,4,256);return 0;}
+    index_archive_slices(directory/"index-slices");
     for(int bits:{16,8,4})for(size_t page:{size_t(64),size_t(65)})run(bits,page,directory);
     pressure(directory/"pressure");
     shared_codec();

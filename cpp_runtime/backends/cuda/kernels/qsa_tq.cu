@@ -9,6 +9,7 @@
 #include <climits>
 #include <algorithm>
 #include "qsa_tq_indexer.cuh"
+#include "qsa_tq_indexer_integer.cuh"
 
 namespace tyloinfer::qsa {
 namespace {
@@ -84,10 +85,18 @@ __device__ float read_input(const void* x,bool fp16,int64_t at) {
 }
 __global__ void stage_append(const void* keys,const void* values,const void* index,bool kh,bool vh,bool ih,
     const float* old_k,const float* old_v,const float* old_i,float* k,float* v,float* raw,
-    int tokens,int prior,int heads,int width,int iw,int64_t kt,int64_t ks,int64_t vt,int64_t vs,int64_t it) {
+    int tokens,int prior,int heads,int width,int iw,int64_t kt,int64_t ks,int64_t vt,int64_t vs,int64_t it,
+    const int64_t* position=nullptr,int staged=0) {
+    if(position)prior=int(*position&3);
     const int64_t at=int64_t(blockIdx.x)*blockDim.x+threadIdx.x,channels=int64_t(heads)*width,cols=2*channels+iw;
-    if(at>=int64_t(tokens+prior)*cols)return;
+    if(at>=int64_t(position?staged:tokens+prior)*cols)return;
     const auto row=at/cols,col=at%cols;
+    if(row>=tokens+prior) {
+        if(col<channels)k[row*channels+col]=0;
+        else if(col<2*channels)v[row*channels+col-channels]=0;
+        else raw[row*iw+col-2*channels]=0;
+        return;
+    }
     if(col<channels)k[row*channels+col]=row<prior?old_k[row*channels+col]:read_input(keys,kh,(row-prior)*kt+(col/width)*ks+col%width);
     else if(col<2*channels) {
         const auto d=col-channels;v[row*channels+d]=row<prior?old_v[row*channels+d]:read_input(values,vh,(row-prior)*vt+(d/width)*vs+d%width);
@@ -116,6 +125,58 @@ __global__ void archive_indexer(const int16_t* codes,const uint16_t* scales,cons
     auto* destination=output+int64_t(blockIdx.x)*(width+2);
     for(int d=threadIdx.x;d<width;d+=blockDim.x)destination[d]=uint16_t(codes[block*width+d]);
     if(!threadIdx.x){destination[width]=scales[block];destination[width+1]=uint16_t(zero[block]);}
+}
+__global__ void copy_pending_tail(PendingTail source,PendingTail destination,int64_t keys,int64_t rotated,int64_t index) {
+    auto at=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
+    if(at<keys){destination.key[at]=source.key[at];return;}at-=keys;
+    if(at<keys){destination.value[at]=source.value[at];return;}at-=keys;
+    if(at<rotated){destination.rotated_key[at]=source.rotated_key[at];return;}at-=rotated;
+    if(at<rotated){destination.rotated_value[at]=source.rotated_value[at];return;}at-=rotated;
+    if(at<index)destination.index[at]=source.index[at];
+}
+__global__ void publish_graph_batch(PendingBatchPublication b) {
+    const auto at=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
+    const auto first=*b.position/4;const int staged=int(*b.position&3)+b.tokens,complete=staged/4,remainder=staged%4;
+    const int64_t channels=int64_t(b.heads)*b.width,rotated=int64_t(b.heads)*b.padded_width;
+    const int64_t record_bytes=2LL*b.image_bytes+8LL*b.index_width+(b.archive_index?2LL*(b.index_width+2):0);
+    if(at<int64_t(complete)*record_bytes) {
+        const auto block=at/record_bytes,offset=at%record_bytes;
+        const auto destination=b.destinations[(first+block)%b.destination_slots];
+        uint8_t value=0;
+        if(offset<b.image_bytes) {
+            value=b.keys[block*b.image_bytes+offset];const_cast<uint8_t*>(destination.key)[offset]=value;
+        }else if(offset<2LL*b.image_bytes) {
+            value=b.values[block*b.image_bytes+offset-b.image_bytes];const_cast<uint8_t*>(destination.value)[offset-b.image_bytes]=value;
+        }else if(offset<2LL*b.image_bytes+8LL*b.index_width) {
+            const auto d=offset-2LL*b.image_bytes;
+            const auto bits=__half_as_ushort(__float2half_rn(b.raw_index[block*4*b.index_width+d/2]));
+            value=uint8_t(bits>>((d&1)*8));
+        }else {
+            const auto d=offset-2LL*b.image_bytes-8LL*b.index_width;
+            const auto id=first+block;
+            if(d<2LL*b.index_width)value=reinterpret_cast<const uint8_t*>(b.index_codes+id*b.index_width)[d];
+            else if(d<2LL*b.index_width+2)value=reinterpret_cast<const uint8_t*>(b.index_scales+id)[d-2LL*b.index_width];
+            else value=reinterpret_cast<const uint8_t*>(b.index_zero+id)[d-2LL*b.index_width-2];
+        }
+        b.archive[at]=value;
+    }
+    if(at<complete)b.views[first+at]=b.destinations[(first+at)%b.destination_slots];
+    if(!at && remainder) {
+        const auto stride=4LL*b.heads*b.padded_width;
+        b.views[first+complete]={reinterpret_cast<const uint8_t*>(b.fp16_keys+complete*stride),
+            reinterpret_cast<const uint8_t*>(b.fp16_values+complete*stride),0,0};
+    }
+    const auto columns=2*channels+b.index_width;
+    if(at<int64_t(remainder)*columns) {
+        const auto row=at/columns,col=at%columns,source=staged-remainder+row;
+        if(col<channels)b.tail.key[row*channels+col]=b.raw_keys[source*channels+col];
+        else if(col<2*channels)b.tail.value[row*channels+col-channels]=b.raw_values[source*channels+col-channels];
+        else b.tail.index[row*b.index_width+col-2*channels]=b.raw_index[source*b.index_width+col-2*channels];
+    }
+    if(at<int64_t(remainder)*rotated) {
+        const auto source=int64_t(staged-remainder)*rotated+at;
+        b.tail.rotated_key[at]=b.rotated_keys[source];b.tail.rotated_value[at]=b.rotated_values[source];
+    }
 }
 template<int W,bool Query=false> __global__ void append_pending(const void* keys,const void* values,const void* index,bool key_half,bool value_half,bool index_half,
     const int64_t* position,float* tail_k,float* tail_v,float* tail_i,float* rotated_k,float* rotated_v,const float* ks,const float* vs,
@@ -213,6 +274,10 @@ __global__ void initialize_destinations(uint8_t* payload,TqBlockView* output,int
     const int id=blockIdx.x*blockDim.x+threadIdx.x;if(id>=slots)return;
     output[id]={payload+int64_t(2*id)*bytes,payload+int64_t(2*id+1)*bytes,tag,tag};
 }
+__global__ void publish_contiguous_views(TqBlockView base,TqBlockView* output,int bytes,int count) {
+    const auto id=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;if(id>=count)return;
+    output[id]={base.key+id*bytes,base.value+id*bytes,base.key_bits,base.value_bits};
+}
 
 template<int W,bool F16> __global__ void prepare_modes(const void* keys,const void* values,
     const float* ks,const float* vs,float* km,float* vm,half* pending_k,half* pending_v,
@@ -258,9 +323,11 @@ template<int W,bool F16> __global__ void prepare_modes(const void* keys,const vo
     }
 }
 
-__global__ void affine_encode(const float* input,int16_t* output,uint16_t* scales,
-                            int16_t* zero,int width,const int64_t* position=nullptr) {
-    const int input_row=blockIdx.x,row=position?int(*position/4):input_row,lane=threadIdx.x;
+template<bool Records=false> __global__ void affine_encode(const float* input,int16_t* output,uint16_t* scales,
+                            int16_t* zero,int width,const int64_t* position=nullptr,int capacity=INT_MAX) {
+    const int input_row=blockIdx.x,lane=threadIdx.x;
+    const int64_t row=position?*position/4+input_row:input_row;
+    if(row>=capacity)return;
     float lo=0,hi=0;
     for (int d=lane;d<width;d+=32) {
         const auto x=input[int64_t(input_row)*width+d];lo=fminf(lo,x);hi=fmaxf(hi,x);
@@ -273,49 +340,136 @@ __global__ void affine_encode(const float* input,int16_t* output,uint16_t* scale
     if (__half2float(scale)<step) scale=__ushort_as_half(__half_as_ushort(scale)+1);
     const float s=__half2float(scale);
     const int zp=max(-32768,min(32767,-32768-int(nearbyintf(lo/s))));
-    if (!lane) {scales[row]=__half_as_ushort(scale);zero[row]=int16_t(zp);}
+    if (!lane) {
+        if constexpr(Records){output[row*(width+2)+width]=int16_t(__half_as_ushort(scale));output[row*(width+2)+width+1]=int16_t(zp);}
+        else {scales[row]=__half_as_ushort(scale);zero[row]=int16_t(zp);}
+    }
     for (int d=lane;d<width;d+=32) {
         const int code=max(-32768,min(32767,int(nearbyintf(input[int64_t(input_row)*width+d]/s))+zp));
-        output[int64_t(row)*width+d]=int16_t(code);
+        output[int64_t(row)*(width+(Records?2:0))+d]=int16_t(code);
     }
 }
 
-template<int QT> __global__ void affine_scores(const float* query,const int16_t* keys,const uint16_t* scales,
-    const int16_t* zero,const int64_t* positions,float* output,int queries,int heads,int width,int blocks) {
-    const int lane=threadIdx.x&31,block=blockIdx.x*4+threadIdx.x/32,first=blockIdx.y*QT;
-    if (block>=blocks) return;
-    bool active[QT];bool any=false;
+// A single-query warp shares its query across four keys and four heads.
+// Aligned pairs reduce input loads; scalar loads handle arbitrary alignment.
+// Multi-query warps retain two keys and one head at a time to bound register
+// lifetimes. Both paths accumulate in FP32 before descending XOR reductions.
+constexpr int affine_score_threads=256;
+template<int QT,bool Records=false,bool Pairs=false> __global__ __launch_bounds__(affine_score_threads,QT==1?4:1)
+void affine_scores(const float* query,const int16_t* keys,const uint16_t* scales,
+    const int16_t* zero,const int64_t* positions,float* output,int queries,int heads,int width,int blocks,int pool=4) {
+    constexpr int Rows=QT==1?4:2;
+    const int lane=threadIdx.x&31,base=(blockIdx.x*(affine_score_threads/32)+threadIdx.x/32)*Rows,first=blockIdx.y*QT;
+    if(base>=blocks)return;
+    // Unpacked index rows each represent four tokens.
+    const int pooling=Records?pool:4;
+    bool active[QT][Rows];bool any=false;
     #pragma unroll
-    for(int q=0;q<QT;++q) {active[q]=first+q<queries && block<(positions[first+q]+1)/4;any|=active[q];}
-    if(!any) {
-        if(!lane)for(int q=0;q<QT;++q)if(first+q<queries)output[int64_t(first+q)*blocks+block]=-CUDART_INF_F;
-        return;
+    for(int q=0;q<QT;++q){
+        const auto limit=first+q<queries?(positions?(positions[first+q]+1)/pooling:blocks):0;
+        #pragma unroll
+        for(int r=0;r<Rows;++r){active[q][r]=first+q<queries && base+r<blocks && base+r<limit;any|=active[q][r];}
     }
-    const float scale=__half2float(__ushort_as_half(scales[block]));
-    const int zp=zero[block];
-    // Keep the dot-product accumulator tile at four values. Increasing both
-    // query and head tiles raises register pressure without saving more keys.
-    constexpr int HT=4/QT;
-    float score[QT]={};
-    for (int first_head=0;first_head<heads;first_head+=HT) {
-        float dot[QT][HT]={};
-        for (int d=lane;d<width;d+=32) {
-            const float k=float(int(keys[int64_t(block)*width+d])-zp)*scale;
-            #pragma unroll
-            for(int q=0;q<QT;++q)if(active[q]) {
+    if(!any){if(!lane)for(int q=0;q<QT;++q)if(first+q<queries)
+        for(int r=0;r<Rows;++r)if(base+r<blocks)output[int64_t(first+q)*blocks+base+r]=-CUDART_INF_F;return;}
+    const int stride=width+(Records?2:0);
+    float scale[Rows];int zp[Rows];
+    #pragma unroll
+    for(int r=0;r<Rows;++r){
+        scale[r]=base+r<blocks?__half2float(__ushort_as_half(Records?uint16_t(keys[int64_t(base+r)*stride+width]):scales[base+r])):0.f;
+        zp[r]=base+r<blocks?(Records?keys[int64_t(base+r)*stride+width+1]:zero[base+r]):0;
+    }
+    constexpr int HT=QT==1?4:1;float score[QT][Rows]={};
+    for(int first_head=0;first_head<heads;first_head+=HT){
+        float dot[QT][HT][Rows]={};
+        if constexpr(Pairs) {
+            for(int d=2*lane;d<width;d+=64) {
+                float k0[Rows],k1[Rows];
                 #pragma unroll
-                for(int h=0;h<HT;++h)if(first_head+h<heads)
-                    dot[q][h]=fmaf(query[(int64_t(first+q)*heads+first_head+h)*width+d],k,dot[q][h]);
+                for(int r=0;r<Rows;++r) {
+                    short2 packed{};
+                    if(base+r<blocks) {
+                        const auto* pointer=keys+int64_t(base+r)*stride+d;
+                        packed=*reinterpret_cast<const short2*>(pointer);
+                    }
+                    k0[r]=float(int(packed.x)-zp[r])*scale[r];
+                    k1[r]=float(int(packed.y)-zp[r])*scale[r];
+                }
+                #pragma unroll
+                for(int q=0;q<QT;++q)if(first+q<queries) {
+                    #pragma unroll
+                    for(int h=0;h<HT;++h)if(first_head+h<heads) {
+                        const auto* pointer=query+(int64_t(first+q)*heads+first_head+h)*width+d;
+                        const auto x=*reinterpret_cast<const float2*>(pointer);
+                        #pragma unroll
+                        for(int r=0;r<Rows;++r)if(QT==1 || active[q][r]) {
+                            dot[q][h][r]=fmaf(x.x,k0[r],dot[q][h][r]);
+                            dot[q][h][r]=fmaf(x.y,k1[r],dot[q][h][r]);
+                        }
+                    }
+                }
+            }
+        }else {
+            for(int d=lane;d<width;d+=32){
+                float k[Rows];
+                #pragma unroll
+                for(int r=0;r<Rows;++r)k[r]=base+r<blocks?float(int(keys[int64_t(base+r)*stride+d])-zp[r])*scale[r]:0.f;
+                #pragma unroll
+                for(int q=0;q<QT;++q)if(first+q<queries){
+                    #pragma unroll
+                    for(int h=0;h<HT;++h)if(first_head+h<heads){
+                        const float x=query[(int64_t(first+q)*heads+first_head+h)*width+d];
+                        #pragma unroll
+                        // Singleton masks are applied at publication. Keeping
+                        // their predicates outside the FMA loop reduces live
+                        // registers without changing any active score's order.
+                        for(int r=0;r<Rows;++r)if(QT==1 || active[q][r])dot[q][h][r]=fmaf(x,k[r],dot[q][h][r]);
+                    }
+                }
             }
         }
         #pragma unroll
-        for(int q=0;q<QT;++q) {
+        for(int q=0;q<QT;++q){
             #pragma unroll
-            for(int h=0;h<HT;++h)score[q]+=fmaxf(warp_sum(dot[q][h]),0.f);
+            for(int h=0;h<HT;++h)if(QT!=1 || first_head+h<heads){
+                #pragma unroll
+                for(int r=0;r<Rows;++r)score[q][r]+=fmaxf(warp_sum(dot[q][h][r]),0.f);
+            }
         }
     }
-    if (!lane)for(int q=0;q<QT;++q)if(first+q<queries)
-        output[int64_t(first+q)*blocks+block]=active[q]?score[q]:-CUDART_INF_F;
+    if(!lane){
+        #pragma unroll
+        for(int q=0;q<QT;++q)if(first+q<queries){
+            #pragma unroll
+            for(int r=0;r<Rows;++r)if(base+r<blocks)output[int64_t(first+q)*blocks+base+r]=
+                active[q][r]?score[q][r]*(Records?rsqrtf(float(width)):1.f):-CUDART_INF_F;
+        }
+    }
+}
+
+
+template<bool Records=false> static int launch_affine_scores_pairs(const float* query,const int16_t* keys,
+        const uint16_t* scales,const int16_t* zero,const int64_t* positions,float* output,
+        int queries,int heads,int width,int blocks,cudaStream_t stream,int pool=4) {
+    // Every key row and query head must preserve short2/float2 alignment.
+    if(queries!=1 || (width&1) || (reinterpret_cast<std::uintptr_t>(keys)&3u) ||
+            (reinterpret_cast<std::uintptr_t>(query)&7u))return int(cudaErrorNotSupported);
+    affine_scores<1,Records,true><<<unsigned((int64_t(blocks)+31)/32),affine_score_threads,0,stream>>>(
+        query,keys,scales,zero,positions,output,queries,heads,width,blocks,pool);
+    const auto status=cudaGetLastError();
+    if(status==cudaSuccess)if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+        static std::atomic<bool> reported{false};
+        if(!reported.exchange(true,std::memory_order_relaxed))std::fprintf(stderr,
+            "native_indexer_affine16_pairs actual_match=1 queries=%d blocks=%d heads=%d width=%d records=%d vector_coordinates=2 fp32=1\n",
+            queries,blocks,heads,width,int(Records));
+    }
+    return int(status);
+}
+
+__global__ void affine_record_decode(const int16_t* records,float* output,int rows,int width) {
+    const auto at=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;if(at>=int64_t(rows)*width)return;
+    const auto row=at/width;const auto* record=records+row*(width+2);
+    output[at]=float(int(record[at%width])-int(record[width+1]))*__half2float(__ushort_as_half(uint16_t(record[width])));
 }
 
 __global__ void online8(const float* input,const half* book,const uint8_t* candidates,
@@ -476,6 +630,18 @@ __device__ TqRowView tq_row(const uint8_t* data,int uniform,int row,int rows,con
     if(state_bits>16){asm volatile("trap;");return {};}
     return {words,__fmul_rn(anchor,__half2float(relative[selector])),bits|int(state_bits<<16)};
 }
+__device__ __forceinline__ float tq_state_value(uint32_t state,float scale) {
+    const uint32_t product=state*0x83dcd12du;
+#if __CUDA_ARCH__ >= 610
+    const unsigned sum=__dp4a(product,0x01010101u,0u);
+#else
+    const unsigned sum=(product&255)+((product>>8)&255)+((product>>16)&255)+(product>>24);
+#endif
+    const auto base=__float2half_rn(fmaf(float(sum+1024),
+        __half2float(__ushort_as_half(0x1eee)),__half2float(__ushort_as_half(0xc931))));
+    return __half2float(__float2half_rn(__fmul_rn(__half2float(base),scale)));
+}
+
 __device__ __forceinline__ float tq_value(const TqRowView row,int col) {
     if (!row.bits) return __half2float(reinterpret_cast<const half*>(row.words)[col]);
     if ((row.bits&255)==254) return float(int(reinterpret_cast<const int8_t*>(row.words)[col])-(row.bits>>8)+128)*row.scale;
@@ -488,15 +654,7 @@ __device__ __forceinline__ float tq_value(const TqRowView row,int col) {
     const auto lo=words[word],hi=words[next==8*bits?0:next];
     const unsigned profile=unsigned(row.bits)>>16;
     const uint32_t state=__funnelshift_r(lo,hi,shift)&((1u<<(profile?profile:16))-1);
-    const uint32_t product=state*0x83dcd12du;
-#if __CUDA_ARCH__ >= 610
-    const unsigned sum=__dp4a(product,0x01010101u,0u);
-#else
-    const unsigned sum=(product&255)+((product>>8)&255)+((product>>16)&255)+(product>>24);
-#endif
-    const auto base=__float2half_rn(fmaf(float(sum+1024),
-        __half2float(__ushort_as_half(0x1eee)),__half2float(__ushort_as_half(0xc931))));
-    return __half2float(__float2half_rn(__fmul_rn(__half2float(base),row.scale)));
+    return tq_state_value(state,row.scale);
 }
 
 // Decode packed adjacent coordinates without expanding persistent KV.
@@ -515,7 +673,23 @@ __device__ __forceinline__ float4 tq_values4(const TqRowView row,int col) {
         const auto p=__half22float2(a),q=__half22float2(b);
         return make_float4(p.x,p.y,q.x,q.y);
     }
-    return make_float4(tq_value(row,col),tq_value(row,col+1),tq_value(row,col+2),tq_value(row,col+3));
+    const unsigned bits=unsigned(row.bits)&255u,profile=unsigned(row.bits)>>16;
+    const unsigned state_bits=profile?profile:16u;
+    const unsigned first=(252u-unsigned(col))*bits,word=first/32u,shift=first&31u;
+    // Four adjacent coordinates share a circular bitstream window. A rare
+    // wide state/unaligned start spans three words and uses scalar reads.
+    if(shift+3u*bits+state_bits>64u)
+        return make_float4(tq_value(row,col),tq_value(row,col+1),tq_value(row,col+2),tq_value(row,col+3));
+    const auto lo=row.words[word],hi=row.words[word+1u==8u*bits?0u:word+1u];
+    const auto mask=(1u<<state_bits)-1u;
+    float value[4];
+    #pragma unroll
+    for(unsigned i=0;i<4;++i) {
+        const unsigned offset=shift+(3u-i)*bits;
+        const auto state=(offset<32u?__funnelshift_r(lo,hi,offset):(hi>>(offset-32u)))&mask;
+        value[i]=tq_state_value(state,row.scale);
+    }
+    return make_float4(value[0],value[1],value[2],value[3]);
 }
 
 __global__ void decode_modes(const TqBlockView* blocks,float* keys,float* values,const half* relative,int rows) {
@@ -800,7 +974,8 @@ template<int W,bool Snapshots> __global__ void sparse_attention_mma(const float*
 
 #include "qsa_tq_mma.cuh"
 
-template<int W,bool Snapshots,bool Narrow=false> bool mma_attention_available(int* resident=nullptr,int* sms=nullptr) {
+template<int W,bool Snapshots,bool Narrow=false,int HeadTiles=1>
+bool mma_attention_available(int* resident=nullptr,int* sms=nullptr) {
     static thread_local int initialized=-1;
     static thread_local bool available=false;
     static thread_local int resident_blocks=0,multiprocessors=0;
@@ -810,18 +985,21 @@ template<int W,bool Snapshots,bool Narrow=false> bool mma_attention_available(in
         int major=0,limit=0;cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,device);
         cudaDeviceGetAttribute(&limit,cudaDevAttrMaxSharedMemoryPerBlockOptin,device);
         cudaDeviceGetAttribute(&multiprocessors,cudaDevAttrMultiProcessorCount,device);
-        constexpr int dynamic=Narrow?(W+8)*32+4352:(W+8)*160+1536;
-        constexpr int overhead=32*(W/256)*sizeof(TqRowView)+4*sizeof(SelectedBlock)+(Narrow?32:0);
-        // FP16 m16n8k16 requires SM80; the previous WMMA path requires SM70.
-        // Two independent narrow CTAs are needed to cover decode/load latency.
-        // A device whose shared-memory or register budget cannot hold both
-        // retains the smaller SIMT tile or the existing wide-head WMMA path.
-        available=major>=(Narrow?8:7) && dynamic+overhead<=limit;
+        constexpr int dynamic=Narrow?(W+8)*32+4352*HeadTiles:(W+8)*160+1536;
+        // m16n8k16 requires SM80; the previous WMMA path requires SM70.
+        const void* function=Narrow?reinterpret_cast<const void*>(sparse_attention_mma8<W,Snapshots,false,HeadTiles>):
+            reinterpret_cast<const void*>(sparse_attention_mma<W,Snapshots>);
+        cudaFuncAttributes attributes{};
+        available=major>=(Narrow?8:7) && cudaFuncGetAttributes(&attributes,function)==cudaSuccess &&
+            dynamic+attributes.sharedSizeBytes<=std::size_t(limit);
+        // Two head tiles retain more accumulators. Keep the smaller tile
+        // when the compiled kernel spills them into thread-local memory.
+        if constexpr(Narrow && HeadTiles>1)available=available && !attributes.localSizeBytes;
         if(available) {
-            const void* function=Narrow?reinterpret_cast<const void*>(sparse_attention_mma8<W,Snapshots>):reinterpret_cast<const void*>(sparse_attention_mma<W,Snapshots>);
             available=cudaFuncSetAttribute(function,cudaFuncAttributeMaxDynamicSharedMemorySize,dynamic)==cudaSuccess;
             if constexpr(Narrow)if(available) {
                 int blocks=0;
+                // Independent CTAs cover compressed-KV decode/load latency.
                 available=cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks,function,256,dynamic)==cudaSuccess && blocks>=2;
                 if(available)resident_blocks=blocks;
             }
@@ -833,13 +1011,22 @@ template<int W,bool Snapshots,bool Narrow=false> bool mma_attention_available(in
     return available;
 }
 
+template<int W,bool Snapshots>
+int narrow_attention_head_tiles(int gqa,int* resident=nullptr,int* sms=nullptr) {
+    // A second tile is useful only when a KV head serves more than eight
+    // query heads. Resource checks use the actual compiled kernel/device.
+    if(gqa>8 && mma_attention_available<W,Snapshots,true,2>(resident,sms))return 2;
+    return mma_attention_available<W,Snapshots,true>(resident,sms)?1:0;
+}
+
 template<int W,bool Snapshots> int attention_partitions(int queries,int heads,int kv_heads,int count,bool fp16,bool fp16_math) {
     const int legacy=std::min(queries>8?4:64,count);
     if(queries>8 || !(fp16 || fp16_math) || heads/kv_heads<4)return legacy;
     int resident=0,sms=0;
-    if(!mma_attention_available<W,Snapshots,true>(&resident,&sms))return legacy;
-    if(resident<=0 || sms<=0)return legacy;
-    const auto groups=int64_t(queries)*kv_heads*((heads/kv_heads+7)/8);
+    const int tiles_per_head=narrow_attention_head_tiles<W,Snapshots>(heads/kv_heads,&resident,&sms);
+    if(!tiles_per_head || resident<=0 || sms<=0)return legacy;
+    const int tile_heads=8*tiles_per_head;
+    const auto groups=int64_t(queries)*kv_heads*((heads/kv_heads+tile_heads-1)/tile_heads);
     const auto capacity=int64_t(sms)*resident;
     const int tiles=int((int64_t(count)+3)/4);
     const int limit=int(std::min({int64_t(128),int64_t(tiles),std::max<int64_t>(1,capacity/groups)}));
@@ -929,25 +1116,30 @@ template<int W,bool Snapshots> int launch_attention(const void* query,const floa
         reinterpret_cast<const half*>(relative),blocks,selected,positions,partial,stats,block_log_mass,heads,kv_heads,width,count,parts)
     // At least half of either 8/16-head tile must carry useful work. FP32 callers
     // opt into inference math explicitly; normalization often emits FP32.
-    const bool use_narrow_mma=(query_half || allow_fp16_math) && heads/kv_heads>=4 && mma_attention_available<W,Snapshots,true>();
+    const int head_tiles=(query_half || allow_fp16_math) && heads/kv_heads>=4?
+        narrow_attention_head_tiles<W,Snapshots>(heads/kv_heads):0;
+    const bool use_narrow_mma=head_tiles!=0;
     const bool use_mma=use_narrow_mma || ((query_half || allow_fp16_math) && heads/kv_heads>=8 && mma_attention_available<W,Snapshots>());
     static thread_local unsigned reported=0;const unsigned category=queries==1?1:queries<=8?2:4;
     if(const auto* trace=std::getenv("TYLOINFER_TRACE_QSA_TQ");trace && trace[0]=='1' && !(reported&category)) {
         reported|=category;
         std::fprintf(stderr,"native_qsa_tq_attention actual_match=1 tensor_core=%d query_fp16=%d queries=%d heads=%d kv_heads=%d padded=%d parts=%d\n",
-            (use_narrow_mma?8:use_mma?16:0),int(query_half),queries,heads,kv_heads,W,parts);
+            (use_narrow_mma?8*head_tiles:use_mma?16:0),int(query_half),queries,heads,kv_heads,W,parts);
     }
-    if(use_narrow_mma && !Snapshots && staged_keys && staged_values)
-        sparse_attention_mma8<W,Snapshots,true><<<dim3(parts,kv_heads*((heads/kv_heads+7)/8),queries),256,(W+8)*32+4352,stream>>>(rotated,
-            reinterpret_cast<const half*>(relative),blocks,selected,positions,partial,stats,block_log_mass,heads,kv_heads,width,count,parts,
-            reinterpret_cast<const half*>(staged_keys),reinterpret_cast<const half*>(staged_values));
-    else if(use_narrow_mma)
-        sparse_attention_mma8<W,Snapshots><<<dim3(parts,kv_heads*((heads/kv_heads+7)/8),queries),256,(W+8)*32+4352,stream>>>(rotated,
-            reinterpret_cast<const half*>(relative),blocks,selected,positions,partial,stats,block_log_mass,heads,kv_heads,width,count,parts);
+#define NARROW_ATTEND(TILES,STAGED) sparse_attention_mma8<W,Snapshots,STAGED,TILES><<< \
+        dim3(parts,kv_heads*((heads/kv_heads+8*TILES-1)/(8*TILES)),queries),256,(W+8)*32+4352*TILES,stream>>>(rotated, \
+        reinterpret_cast<const half*>(relative),blocks,selected,positions,partial,stats,block_log_mass,heads,kv_heads,width,count,parts, \
+        reinterpret_cast<const half*>(staged_keys),reinterpret_cast<const half*>(staged_values))
+    if(use_narrow_mma) {
+        const bool staged=!Snapshots && staged_keys && staged_values;
+        if(head_tiles==2){if(staged){NARROW_ATTEND(2,true);}else {NARROW_ATTEND(2,false);}}
+        else {if(staged){NARROW_ATTEND(1,true);}else {NARROW_ATTEND(1,false);}}
+    }
     else if(use_mma)
         sparse_attention_mma<W,Snapshots><<<dim3(parts,kv_heads*((heads/kv_heads+15)/16),queries),128,(W+8)*160+1536,stream>>>(rotated,
             reinterpret_cast<const half*>(relative),blocks,selected,positions,partial,stats,block_log_mass,heads,kv_heads,width,count,parts);
     else if(heads/kv_heads>4){ATTEND(8);}else {ATTEND(4);}
+#undef NARROW_ATTEND
 #undef ATTEND
     if(output_half)merge_output<W,true><<<queries*heads,W,0,stream>>>(partial,stats,vs,output,log_norm,width,parts,gate,gate_half,heads,gt,gh);
     else merge_output<W,false><<<queries*heads,W,0,stream>>>(partial,stats,vs,output,log_norm,width,parts,gate,gate_half,heads,gt,gh);
@@ -1014,22 +1206,54 @@ int tq_decode_modes(const TqBlockView* blocks,float* keys,float* values,const ui
 int indexer_affine16_encode(const float* input,int16_t* output,uint16_t* scales,int16_t* zero,
     int rows,int width,cudaStream_t stream) {
     if (!input || !output || !scales || !zero || rows<=0 || width<=0)return int(cudaErrorInvalidValue);
-    affine_encode<<<rows,32,0,stream>>>(input,output,scales,zero,width);return int(cudaGetLastError());
+    affine_encode<false><<<rows,32,0,stream>>>(input,output,scales,zero,width);return int(cudaGetLastError());
 }
 int indexer_affine16_append(const float* input,int16_t* output,uint16_t* scales,int16_t* zero,
     const int64_t* position,int width,cudaStream_t stream) {
     if(!input || !output || !scales || !zero || !position || width<=0)return int(cudaErrorInvalidValue);
-    affine_encode<<<1,32,0,stream>>>(input,output,scales,zero,width,position);return int(cudaGetLastError());
+    affine_encode<false><<<1,32,0,stream>>>(input,output,scales,zero,width,position);return int(cudaGetLastError());
+}
+int indexer_affine16_append_batch(const float* input,int16_t* output,uint16_t* scales,int16_t* zero,
+    const int64_t* position,int rows,int width,int capacity,cudaStream_t stream) {
+    if(!input || !output || !scales || !zero || !position || rows<=0 || width<=0 || capacity<=0)return int(cudaErrorInvalidValue);
+    affine_encode<false><<<rows,32,0,stream>>>(input,output,scales,zero,width,position,capacity);return int(cudaGetLastError());
 }
 int indexer_affine16_scores(const float* query,const int16_t* keys,const uint16_t* scales,
     const int16_t* zero,const int64_t* positions,float* output,int queries,int heads,int width,int blocks,cudaStream_t stream) {
     if (!query || !keys || !scales || !zero || !positions || !output || queries<=0 || heads<=0 || width<=0 || blocks<=0)
         return int(cudaErrorInvalidValue);
-#define SCORES(QT) affine_scores<QT><<<dim3((blocks+3)/4,(queries+QT-1)/QT),128,0,stream>>>(query,keys,scales,zero,positions,output,queries,heads,width,blocks)
+    const int paired=launch_affine_scores_pairs(query,keys,scales,zero,positions,output,queries,heads,width,blocks,stream);
+    if(paired!=int(cudaErrorNotSupported))return paired;
+#define SCORES(QT) affine_scores<QT><<<dim3((blocks+(QT==1?31:15))/(QT==1?32:16),(queries+QT-1)/QT),affine_score_threads,0,stream>>>(query,keys,scales,zero,positions,output,queries,heads,width,blocks)
+    const int tensor=launch_affine_scores_tensor(query,keys,scales,zero,positions,output,queries,heads,width,blocks,stream);
+    if(tensor!=int(cudaErrorNotSupported))return tensor;
     const int tiled=launch_affine_scores_tiled(query,keys,scales,zero,positions,output,queries,heads,width,blocks,stream);
     if(tiled!=int(cudaErrorNotSupported))return tiled;
     if(queries==1){SCORES(1);}else if(queries==2){SCORES(2);}else {SCORES(4);}
 #undef SCORES
+    return int(cudaGetLastError());
+}
+int indexer_affine16_pack(const float* input,int16_t* output,int rows,int width,cudaStream_t stream) {
+    if(!input || !output || rows<=0 || width<=0)return int(cudaErrorInvalidValue);
+    affine_encode<true><<<rows,32,0,stream>>>(input,output,nullptr,nullptr,width);return int(cudaGetLastError());
+}
+int indexer_affine16_unpack(const int16_t* records,float* output,int rows,int width,cudaStream_t stream) {
+    if(!records || !output || rows<=0 || width<=0)return int(cudaErrorInvalidValue);
+    const auto n=int64_t(rows)*width;
+    affine_record_decode<<<unsigned((n+255)/256),256,0,stream>>>(records,output,rows,width);return int(cudaGetLastError());
+}
+int indexer_affine16_record_scores(const float* query,const int16_t* records,const int64_t* positions,float* output,
+        int queries,int heads,int width,int blocks,int pool,cudaStream_t stream) {
+    if(!query || !records || !output || queries<=0 || heads<=0 || width<=0 || blocks<=0 || pool<=0)return int(cudaErrorInvalidValue);
+    const int paired=launch_affine_scores_pairs<true>(query,records,nullptr,nullptr,positions,output,queries,heads,width,blocks,stream,pool);
+    if(paired!=int(cudaErrorNotSupported))return paired;
+    const int tensor=launch_affine_scores_tensor<true>(query,records,nullptr,nullptr,positions,output,queries,heads,width,blocks,stream,pool);
+    if(tensor!=int(cudaErrorNotSupported))return tensor;
+    const int tiled=launch_affine_scores_tiled<true>(query,records,nullptr,nullptr,positions,output,queries,heads,width,blocks,stream,pool);
+    if(tiled!=int(cudaErrorNotSupported))return tiled;
+#define RECORD_SCORES(QT) affine_scores<QT,true><<<dim3((blocks+(QT==1?31:15))/(QT==1?32:16),(queries+QT-1)/QT),affine_score_threads,0,stream>>>(query,records,nullptr,nullptr,positions,output,queries,heads,width,blocks,pool)
+    if(queries==1){RECORD_SCORES(1);}else if(queries==2){RECORD_SCORES(2);}else {RECORD_SCORES(4);}
+#undef RECORD_SCORES
     return int(cudaGetLastError());
 }
 int tq8_fit_online(const float* rows,const uint16_t* codebook,const uint8_t* candidates,
@@ -1089,6 +1313,38 @@ int tq_archive_indexer(const int16_t* codes,const uint16_t* scales,const int16_t
     archive_indexer<<<blocks,128,0,stream>>>(codes,scales,zero,reinterpret_cast<uint16_t*>(archive+offset),width,start,position);
     return int(cudaGetLastError());
 }
+int tq_copy_pending_tail(PendingTail source,PendingTail destination,int heads,int width,int padded,int iw,cudaStream_t stream) {
+    if(!source.key || !source.value || !source.index || !source.rotated_key || !source.rotated_value ||
+       !destination.key || !destination.value || !destination.index || !destination.rotated_key || !destination.rotated_value ||
+       heads<=0 || width<=0 || padded<width || iw<=0)return int(cudaErrorInvalidValue);
+    const auto keys=4LL*heads*width,rotated=4LL*heads*padded,index=4LL*iw;
+    const auto total=2*keys+2*rotated+index;
+    if((total+255)/256>INT_MAX)return int(cudaErrorInvalidValue);
+    copy_pending_tail<<<unsigned((total+255)/256),256,0,stream>>>(source,destination,keys,rotated,index);
+    return int(cudaGetLastError());
+}
+int tq_stage_graph_batch(const void* keys,const void* values,const void* index,bool kh,bool vh,bool ih,
+    PendingTail previous,const int64_t* position,float* k,float* v,float* raw,int tokens,int staged,int heads,int width,int iw,
+    int64_t kt,int64_t ks,int64_t vt,int64_t vs,int64_t it,cudaStream_t stream) {
+    if(!keys || !values || !index || !position || !previous.key || !previous.value || !previous.index || !k || !v || !raw ||
+       tokens<1 || tokens>8 || staged<(tokens+3+3)/4*4 || heads<=0 || width<=0 || iw<=0 || kt<=0 || ks<=0 || vt<=0 || vs<=0 || it<=0)
+        return int(cudaErrorInvalidValue);
+    const auto total=int64_t(staged)*(2LL*heads*width+iw);
+    if((total+255)/256>INT_MAX)return int(cudaErrorInvalidValue);
+    stage_append<<<unsigned((total+255)/256),256,0,stream>>>(keys,values,index,kh,vh,ih,previous.key,previous.value,previous.index,k,v,raw,
+        tokens,0,heads,width,iw,kt,ks,vt,vs,it,position,staged);return int(cudaGetLastError());
+}
+int tq_publish_graph_batch(const PendingBatchPublication& b,cudaStream_t stream) {
+    if(!b.position || !b.keys || !b.values || !b.fp16_keys || !b.fp16_values || !b.raw_keys || !b.raw_values || !b.raw_index ||
+       !b.rotated_keys || !b.rotated_values || !b.index_codes || !b.index_scales || !b.index_zero || !b.destinations || !b.views || !b.archive ||
+       !b.tail.key || !b.tail.value || !b.tail.index || !b.tail.rotated_key || !b.tail.rotated_value || b.tokens<1 || b.tokens>8 ||
+       b.heads<=0 || b.width<=0 || b.padded_width<b.width || b.index_width<=0 || b.image_bytes<=0 || b.destination_slots<=0)
+        return int(cudaErrorInvalidValue);
+    const auto record=2LL*b.image_bytes+8LL*b.index_width+(b.archive_index?2LL*(b.index_width+2):0);
+    const auto total=std::max<int64_t>({int64_t((b.tokens+3)/4)*record,3LL*(2LL*b.heads*b.width+b.index_width),3LL*b.heads*b.padded_width});
+    if((total+255)/256>INT_MAX)return int(cudaErrorInvalidValue);
+    publish_graph_batch<<<unsigned((total+255)/256),256,0,stream>>>(b);return int(cudaGetLastError());
+}
 int tq_append_pending(const void* key,const void* value,const void* index,bool kh,bool vh,bool ih,
     const int64_t* position,float* tail_k,float* tail_v,float* tail_i,float* rotated_k,float* rotated_v,const float* ks,const float* vs,
     uint16_t* pk,uint16_t* pv,TqBlockView* views,int heads,int width,int padded,int iw,int64_t khs,int64_t vhs,cudaStream_t stream,float* km,float* vm,const PendingQuery* query) {
@@ -1117,6 +1373,12 @@ int tq_initialize_destinations(uint8_t* payload,TqBlockView* output,int bytes,in
 int tq_initialize_fp16_destinations(uint8_t* payload,TqBlockView* output,int bytes,int slots,cudaStream_t stream) {
     if(!payload || !output || bytes<=0 || slots<=0)return int(cudaErrorInvalidValue);
     initialize_destinations<<<(slots+127)/128,128,0,stream>>>(payload,output,bytes,slots,0);return int(cudaGetLastError());
+}
+int tq_publish_contiguous_views(TqBlockView base,TqBlockView* output,int bytes,int count,cudaStream_t stream) {
+    if(count<0 || bytes<=0 || !base.key || !base.value || !output)return int(cudaErrorInvalidValue);
+    if(!count)return int(cudaSuccess);
+    publish_contiguous_views<<<unsigned((int64_t(count)+127)/128),128,0,stream>>>(base,output,bytes,count);
+    return int(cudaGetLastError());
 }
 int tq_sparse_attention_staged(const uint16_t* staged_keys,const uint16_t* staged_values,const void* query,const float* ks,const float* vs,const uint16_t* relative,
     const TqBlockView* blocks,const SelectedBlock* selected,const int64_t* positions,void* output,

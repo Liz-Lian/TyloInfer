@@ -26,6 +26,7 @@ struct Qwen4HiddenCapture {
     mfq_tensor_backend::Tensor result(const mfq_tensor_backend::Tensor& fallback) const;
 };
 void qwen4_set_hidden_capture_layers(Qwen4CausalLm&, const std::vector<int64_t>&);
+std::uint64_t qwen4_qsa_ssd_read_bytes(const Qwen4CausalLm&,const MtpModule* = nullptr);
 struct Qwen4DecodeGraph;
 class Qwen4BatchDecodeGraph;
 // A request owns recurrent, positional and attention state; weights stay shared.
@@ -83,6 +84,7 @@ std::optional<mfq_tensor_backend::Tensor> qwen4_decode_graph_hidden(
     mfq_tensor_backend::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
 void qwen4_report_decode_graph(const Qwen4CausalLm&,std::ostream&);
 void qwen4_wait_adaptive_qsa(Qwen4CausalLm&);
+void qwen4_release_idle_qsa(Qwen4CausalLm&,MtpModule*);
 void qwen4_set_adaptive_qsa_budget(Qwen4CausalLm&,std::size_t bytes_per_layer);
 std::vector<tyloinfer::qsa::AdaptiveCacheStats> qwen4_adaptive_qsa_stats(const Qwen4CausalLm&);
 std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const Qwen4CausalLm&,const MtpModule*);

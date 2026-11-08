@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "strata/core/vmm.hpp"
@@ -164,6 +165,12 @@ public:
         auto& old = residency_[(size_t) layer * n_expert_ + old_expert];
         residency_[(size_t) layer * n_expert_ + new_expert] = old;
         old = kNotResident;
+    }
+    // Exchange a live slot with an unmapped tail slot, retaining a unique
+    // owner for both addresses when that tail is mapped again.
+    void swap_residency(int64_t layer, int32_t first, int32_t second) {
+        std::swap(residency_[(size_t)layer*n_expert_+first],
+                  residency_[(size_t)layer*n_expert_+second]);
     }
 
     /// **R4.2g: GIVE EACH LAYER ITS OWN SLOTS.  ROUND 328 MEASURED WHY THE GLOBAL FORM CANNOT WORK.**

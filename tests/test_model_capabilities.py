@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 from tyloinfer.server.protocol.output_protocols import output_protocol_for_architecture

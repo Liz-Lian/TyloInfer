@@ -98,6 +98,11 @@ void MirroredFileReader::read_coalesced(const std::vector<ReadSpan>& spans) cons
         }
     });
 }
+FileReadStats MirroredFileReader::stats()const noexcept {
+    FileReadStats result;
+    for(const auto& reader:readers_)add_file_read_stats(result,reader->stats());
+    return result;
+}
 std::vector<FileReadStats> MirroredFileReader::replica_stats() const {
     std::vector<FileReadStats> result;result.reserve(readers_.size());
     for(const auto& reader:readers_)result.push_back(reader->stats());

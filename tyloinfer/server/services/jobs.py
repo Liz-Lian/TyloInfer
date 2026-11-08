@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
-import os
-import platform
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -18,8 +14,6 @@ from pydantic import BaseModel
 from tyloinfer.server.protocol.models import (
     CreateJobRequest,
     ErrorDetail,
-    EvaluationKind,
-    EvaluationResultResource,
     JobEventLevel,
     JobEventType,
     JobKindList,
@@ -154,44 +148,6 @@ class JobContext:
             self.job_id,
         )
 
-    async def evaluation(
-        self,
-        *,
-        kind: EvaluationKind,
-        model_id: str,
-        metrics: dict[str, Any],
-        parameters: dict[str, Any],
-        comparison_parameters: dict[str, Any],
-        dataset_id: UUID | None = None,
-        dataset_manifest: dict[str, Any] | None = None,
-        runtime_identity: dict[str, Any] | None = None,
-    ) -> EvaluationResultResource:
-        canonical = json.dumps(
-            comparison_parameters,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ).encode("utf-8")
-        return await asyncio.to_thread(
-            self.store.record_evaluation,
-            job_id=self.job_id,
-            kind=kind,
-            model_id=model_id,
-            metrics=metrics,
-            parameters=parameters,
-            dataset_id=dataset_id,
-            dataset_manifest=dataset_manifest or {},
-            hardware_identity={
-                "system": platform.system(),
-                "release": platform.release(),
-                "machine": platform.machine(),
-                "processor": platform.processor(),
-                "cpu_count": os.cpu_count(),
-            },
-            runtime_identity=runtime_identity or {},
-            comparison_key=hashlib.sha256(canonical).hexdigest(),
-        )
-
     async def cleanup(self) -> None:
         for callback in reversed(self._cleanup_callbacks):
             with suppress(Exception):
@@ -294,7 +250,7 @@ class JobManager:
     async def retry(self, job_id: UUID, *, payload: dict[str, Any] | None = None) -> JobResource:
         await self.start()
         previous = await asyncio.to_thread(self.store.get_job, job_id)
-        if previous.kind in {'download.huggingface', 'download.modelscope'}:
+        if previous.kind in {"download.huggingface", "download.modelscope"}:
             if previous.kind not in self.handlers:
                 raise JobKindNotRegisteredError(previous.kind)
             if previous.status in {JobStatus.RUNNING, JobStatus.QUEUED}:
@@ -376,7 +332,10 @@ class JobManager:
                 if self._closing:
                     await asyncio.to_thread(self.store.interrupt_job, job_id)
                     job = await asyncio.to_thread(self.store.get_job, job_id)
-                    if job.kind in {'download.huggingface', 'download.modelscope'} and not job.cancel_requested:
+                    if (
+                        job.kind in {"download.huggingface", "download.modelscope"}
+                        and not job.cancel_requested
+                    ):
                         await asyncio.to_thread(self.store.requeue_job, job_id)
                 else:
                     await asyncio.to_thread(self.store.cancel_job, job_id)

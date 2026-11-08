@@ -84,8 +84,11 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
         plan.stable_prefix_tokens > 0 &&
         (!cache_plan.session_id.empty() || session_cache.persistent_prefix_enabled());
     const bool use_mtp = mtp && sampling.enable_mtp && sampling.max_tokens > 1;
+    // Prefix restore leaves one prompt token to recover the next logits.
+    // Recurrent models therefore need a checkpoint at that same boundary.
+    const auto prefix_boundary=caching?std::min(plan.stable_prefix_tokens,prompt.size()-1):0;
     if constexpr(requires { ops.set_prefix_boundary(size_t{}); })
-        ops.set_prefix_boundary(caching?std::min(plan.stable_prefix_tokens,prompt.size()-1):0);
+        ops.set_prefix_boundary(prefix_boundary);
     if (mtp) {
         mtp->last_stats = {};
         mtp->last_stats.available = true;
@@ -134,13 +137,13 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     auto sequence = use_mtp
         ? ops.speculate(request, output, restored.tokens, restored.mtp_last_target_hidden,
                         &last_target_hidden)
-        : ops.plain(request, output, restored.tokens, caching ? plan.stable_prefix_tokens : 0);
+        : ops.plain(request, output, restored.tokens, prefix_boundary);
     bool traced_decode_boundary = false;
     while (auto step = sequence.next()) {
         auto& event = step.value;
         if (auto *progress = event ? std::get_if<PrefillProgress>(&*event) : nullptr;
             progress && !use_mtp && caching &&
-            progress->timing.prompt_tokens + restored.tokens == plan.stable_prefix_tokens)
+            progress->timing.prompt_tokens + restored.tokens == prefix_boundary)
             snapshot();
         if (auto *progress = event ? std::get_if<PrefillProgress>(&*event) : nullptr;
             progress && progress->session_boundary && use_mtp && caching &&
@@ -163,6 +166,10 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
             }
         }
         co_yield std::move(step);
+    }
+    if(traced_decode_boundary) {
+        if constexpr(requires { ops.trace_expert_cache("decode_end", false); })
+            ops.trace_expert_cache("decode_end", false);
     }
     // Flush parser-held text before a final session snapshot can copy or evict
     // a large cache. The executor's terminal finish remains idempotent and

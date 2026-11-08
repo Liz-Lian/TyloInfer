@@ -85,6 +85,42 @@ struct PendingQuery {
     std::int64_t head_stride;
     bool fp16;
 };
+struct PendingTail {
+    float* key;
+    float* value;
+    float* index;
+    float* rotated_key;
+    float* rotated_value;
+};
+// Preserve a replay's committed four-token prefix across capture warmups.
+int tq_copy_pending_tail(PendingTail source,PendingTail destination,int heads,int width,
+    int padded_width,int index_width,cudaStream_t stream);
+int tq_stage_graph_batch(const void* keys,const void* values,const void* index,bool key_fp16,bool value_fp16,bool index_fp16,
+    PendingTail previous,const std::int64_t* position,float* staged_keys,float* staged_values,float* staged_index,
+    int tokens,int staged_tokens,int heads,int width,int index_width,std::int64_t key_token_stride,std::int64_t key_head_stride,
+    std::int64_t value_token_stride,std::int64_t value_head_stride,std::int64_t index_token_stride,cudaStream_t stream);
+struct PendingBatchPublication {
+    const std::int64_t* position;
+    const std::uint8_t* keys;
+    const std::uint8_t* values;
+    const std::uint16_t* fp16_keys;
+    const std::uint16_t* fp16_values;
+    const float* raw_keys;
+    const float* raw_values;
+    const float* raw_index;
+    const float* rotated_keys;
+    const float* rotated_values;
+    const std::int16_t* index_codes;
+    const std::uint16_t* index_scales;
+    const std::int16_t* index_zero;
+    const TqBlockView* destinations;
+    TqBlockView* views;
+    std::uint8_t* archive;
+    PendingTail tail;
+    int tokens,heads,width,padded_width,index_width,image_bytes,destination_slots;
+    bool archive_index;
+};
+int tq_publish_graph_batch(const PendingBatchPublication& batch,cudaStream_t stream);
 int tq_append_pending(const void* key,const void* value,const void* index,bool key_fp16,bool value_fp16,bool index_fp16,
     const std::int64_t* position,float* tail_keys,float* tail_values,float* tail_index,
     float* rotated_tail_keys,float* rotated_tail_values,
@@ -99,15 +135,37 @@ int tq_finalize_pending(const float* key_modes,const float* value_modes,const fl
     std::uint8_t* archive,int rows,int index_width,int destination_slots,cudaStream_t stream);
 int tq_initialize_destinations(std::uint8_t* payload,TqBlockView* destinations,int image_bytes,int slots,cudaStream_t stream);
 int tq_initialize_fp16_destinations(std::uint8_t* payload,TqBlockView* destinations,int image_bytes,int slots,cudaStream_t stream);
+// Publish fixed-size K/V planes directly on device. The base flags are
+// preserved; each following image advances both pointers by image_bytes.
+int tq_publish_contiguous_views(TqBlockView base,TqBlockView* output,int image_bytes,int count,cudaStream_t stream);
 
+// Self-contained INT16 affine rows: width codes, FP16 scale bits, INT16 zero.
+// Raw and pooled Indexer caches use the same representation on every KV tier.
+int indexer_affine16_pack(const float* input,std::int16_t* records,int rows,int width,cudaStream_t stream);
+int indexer_affine16_unpack(const std::int16_t* records,float* output,int rows,int width,cudaStream_t stream);
+int indexer_affine16_record_scores(const float* query,const std::int16_t* records,const std::int64_t* positions,float* output,
+    int queries,int heads,int width,int blocks,int pool,cudaStream_t stream);
 int indexer_affine16_encode(const float* input, std::int16_t* output,
     std::uint16_t* scales, std::int16_t* zero, int rows, int width, cudaStream_t stream);
 int indexer_affine16_append(const float* input,std::int16_t* output,std::uint16_t* scales,
     std::int16_t* zero,const std::int64_t* position,int width,cudaStream_t stream);
+int indexer_affine16_append_batch(const float* input,std::int16_t* output,std::uint16_t* scales,
+    std::int16_t* zero,const std::int64_t* position,int rows,int width,int capacity,cudaStream_t stream);
 int indexer_affine16_scores(const float* query, const std::int16_t* keys,
     const std::uint16_t* scales, const std::int16_t* zero,
     const std::int64_t* positions, float* output,
     int queries, int heads, int width, int blocks, cudaStream_t stream);
+
+// Caller-owned query scratch keeps integer Indexer preparation capture-safe.
+// Unsupported instructions, widths or scratch retain the ordinary scorer.
+std::size_t indexer_affine16_score_scratch(int queries,int heads,int width);
+int indexer_affine16_scores(const float* query,const std::int16_t* keys,
+    const std::uint16_t* scales,const std::int16_t* zero,const std::int64_t* positions,
+    float* output,int queries,int heads,int width,int blocks,cudaStream_t stream,
+    void* workspace,std::size_t workspace_bytes);
+int indexer_affine16_record_scores(const float* query,const std::int16_t* records,
+    const std::int64_t* positions,float* output,int queries,int heads,int width,int blocks,
+    int pool,cudaStream_t stream,void* workspace,std::size_t workspace_bytes);
 
 // Online TQ8: full 16-bit serialized states, sparse candidate transitions.
 // candidates: [bins, 256 destination symbols, 8 predecessor symbols].

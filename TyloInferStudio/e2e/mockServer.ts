@@ -96,14 +96,6 @@ export async function mockStudioServer(page: Page, options: MockOptions = {}) {
     state.requests.push(`${method} ${path}`);
     const json = async (value: unknown) => route.fulfill({ json: value });
     if (path === '/api/v1/auth/policy' && method === 'GET') return json({ enabled: false, has_key: false });
-    if (path === '/api/v1/agent/state' || path === '/api/v1/agent/start') return json({
-      running: false, workspaces: [], sessions: [], models: [], approvals: [],
-    });
-    if (/^\/api\/v1\/agent\/sessions\/[^/]+\/controls$/.test(path)) return json({
-      values: { modelSelection: { next: null }, plan: { active: false, pending: null }, permissions: { currentValue: 'workspace-write' } },
-      commands: [{ name: 'plan', description: 'Enter or leave plan mode', input: { hint: '[off|message]' } }],
-      permissions: [{ value: 'read-only', name: 'read-only' }, { value: 'workspace-write', name: 'workspace-write' }, { value: 'danger-full-access', name: 'danger-full-access' }],
-    });
     if (path === '/api/v1/hub/official') return json(officialCatalog);
     if (path === '/api/v1/hub/download-directory') return json({ directory: null, actual_directory: '/tmp/studio/models', default_directory: '/tmp/studio/models' });
     if (path === '/api/v1/quantization/workspace' && method === 'GET')
@@ -129,9 +121,6 @@ export async function mockStudioServer(page: Page, options: MockOptions = {}) {
     if (path.startsWith('/api/v1/runtime/yarn/')) return json({ supported: false,
       native_context: 262144, maximum_context: 262144, maximum_factor: 1, enabled: false, effective_factor: 1 });
     if (/^\/api\/v1\/models\/[^/]+\/cache-profile$/.test(path)) return json(null);
-    if (path === '/api/v1/evaluations/tools')
-      return json({ workspace_root: null, api_base: 'http://127.0.0.1:8090/v1',
-        quality_available: false, benchmark_available: false, accuracy_available: false, task_benchmarks: {} });
     if (path === '/api/v1/runtime/status')
       return json({
         runtime_state: 'ready',
@@ -311,9 +300,6 @@ export async function mockStudioServer(page: Page, options: MockOptions = {}) {
         '/api/v1/presets',
         '/api/v1/runtime/profiles',
         '/api/v1/artifacts/lineage',
-        '/api/v1/datasets',
-        '/api/v1/datasets/catalog',
-        '/api/v1/evaluations',
         '/api/v1/cluster/nodes',
       ].includes(path)
     )

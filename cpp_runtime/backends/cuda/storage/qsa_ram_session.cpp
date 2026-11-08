@@ -34,6 +34,27 @@ tb::Tensor read_tail(CudaPagedReader& r,const std::vector<int64_t>& shape,bool d
     r.raw(t.data_ptr(),bytes,"QSA raw tail");return t;
 }
 }
+bool reuse_ram_qsa_page(QsaTqSession& state,size_t start,size_t count,
+        const std::shared_ptr<const cache::PagedPrefixReadLease>& lease,bool release_readers) {
+    const auto first=start/4,last=(start+count)/4;
+    if(!lease || !state.kv || state.kv->blocks.size()<last || state.index.size()<last)return false;
+    for(auto id=first;id<last;++id) {
+        const auto& block=state.kv->blocks[id];const auto& backing=block.backing;
+        if(!backing || !backing->source || !state.index[id] || !state.index[id]->source)return false;
+        const auto* kv=backing->source->read_range.target<QsaPrefixRangeReader>();
+        const auto* index=state.index[id]->source->read_range.target<QsaPrefixRangeReader>();
+        if(!kv || !index || kv->lease!=lease || index->lease!=lease)return false;
+        if(release_readers && block.image) {
+            const auto& image=*block.image;
+            if(image.key_bytes==backing->key_bytes && image.value_bytes==backing->value_bytes &&
+                    image.key_bits==backing->key_bits && image.value_bits==backing->value_bits &&
+                    image.key_state_bits==backing->key_state_bits && image.value_state_bits==backing->value_state_bits)
+                state.kv->bind_prefix(id,backing);
+        }
+    }
+    if(release_readers)state.durable_prefix=state.borrow_prefix=true;
+    return true;
+}
 void write_ram_qsa_page(CudaPagedWriter& w,const QsaTqSession& s,size_t start,size_t count,bool exact) {
     require(s.tokens>0 && s.kv && s.index.size()==s.kv->blocks.size() &&
         s.kv->blocks.size()==size_t(s.tokens/4) && start<=size_t(s.tokens) && count<=size_t(s.tokens)-start,
@@ -78,6 +99,20 @@ void read_ram_qsa_page(CudaPagedReader& r,const CudaPagedPayload& payload,
     const auto fp16=rows*512,affine=((rows*3+3)&~uint64_t(3))+rows*256;
     const auto tq4=((rows*2+(rows+1)/2+(rows*3+7)/8+3)&~uint64_t(3))+rows*128;
     const size_t index_bytes=uint64_t(iw)*10+4;
+    std::shared_ptr<qsa::RamKvReadSource> source;
+    if(lease) {
+        source=std::make_shared<qsa::RamKvReadSource>();source->bytes=lease->payload_bytes;
+        source->file_reader=lease->file_reader;source->file_offset=lease->file_offset;
+        source->read_range=QsaPrefixRangeReader{lease};
+        source->read_range_into=QsaPrefixRangeReader{lease};
+        source->read_ranges_into=[lease](const std::vector<mfq::ReadSpan>& spans) {
+            if(lease->read_ranges_into)lease->read_ranges_into(spans);
+            else {
+                const QsaPrefixRangeReader reader{lease};
+                for(const auto& span:spans)reader(span.offset,reinterpret_cast<std::uint8_t*>(span.destination),span.size);
+            }
+        };
+    }
     for(auto id=first;id<last;++id) {
         qsa::RamKvSnapshotBlock b;const auto tier=r.scalar<uint32_t>("QSA RAM tier");
         require(tier<=3,"invalid QSA RAM tier");b.tier=qsa::RamKvTier(tier);
@@ -105,8 +140,8 @@ void read_ram_qsa_page(CudaPagedReader& r,const CudaPagedPayload& payload,
         const auto at=payload->size()-r.remaining(),total=key_bytes+value_bytes;
         auto archive=std::make_shared<QsaIndexArchive>();
         if(lease) {
-            backing->read=[lease,at,total]{return lease->read_range(at,total);};
-            archive->reader=[lease,at,total,ilen]{return lease->read_range(at+total,ilen);};
+            backing->source=source;backing->offset=at;
+            archive->bind(source,at+total,ilen);
             b.backing=backing;
         } else {
             auto data=std::make_shared<const std::vector<uint8_t>>(range(payload,at,total));
@@ -128,7 +163,7 @@ void read_ram_qsa_page(CudaPagedReader& r,const CudaPagedPayload& payload,
                 (image?image->value_state_bits:prev?prev->value_state_bits:0)==vs;
             if(same)s.kv->bind_prefix(id,backing);
             // The exact index archive is independent of KV's current tier.
-            require(bool(s.index[id]),"missing live QSA index archive");s.index[id]->bind(archive->reader);
+            require(bool(s.index[id]),"missing live QSA index archive");s.index[id]->bind(archive->source,archive->offset,archive->bytes);
         } else {s.kv->blocks.push_back(std::move(b));s.index.push_back(std::move(archive));}
     }
     if(!bind)s.tokens=int64_t(start+count);

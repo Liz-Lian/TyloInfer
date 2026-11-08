@@ -133,6 +133,16 @@ struct StreamPlanSnapshot {
     std::int64_t selected_slots=0,experts=0;
 };
 void snapshot_stream_plan(const StreamPlanSnapshot&,cudaStream_t stream);
+// A stable, GPU-readable residency table can prove that no selected expert
+// needs streaming. No CPU slots may be active. The caller still serves the
+// CPU task before reusing its mapped packet, preserving route learning.
+struct ResidentStreamPlan {
+    const std::uint64_t* addresses=nullptr;
+    const std::uint32_t* ready=nullptr;
+    std::uint32_t* gate_up_done=nullptr;
+    std::uint32_t* down_done=nullptr;
+};
+void snapshot_stream_plan(const StreamPlanSnapshot&,const ResidentStreamPlan&,cudaStream_t stream);
 // Preserve the native per-expert FP16 rounding before summation. Optional
 // mapped CPU values replace their GPU slots in the same reduction kernel.
 void reduce_moe_output(const float* pairs,const float* weights,std::int64_t tokens,

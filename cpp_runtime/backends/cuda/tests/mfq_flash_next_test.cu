@@ -484,6 +484,95 @@ void check_rotary_normalized_fusion() {
              <<" changing_graph_exact_cases="<<graph_cases<<" PASS\n";
 }
 
+void check_rotary_yarn_fusion() {
+    using namespace mfq::cuda;
+    const auto exact=[](const Tensor& actual,const Tensor& expected,const char* label) {
+        const auto a=actual.contiguous().cpu(),b=expected.contiguous().cpu();
+        if(a.sizes()!=b.sizes() || a.scalar_type()!=b.scalar_type() || std::memcmp(a.data_ptr(),b.data_ptr(),a.nbytes()))
+            throw std::runtime_error(std::string("YaRN rotary bytes differ: ")+label);
+    };
+    int cases=0;
+    for(auto dtype:{kFloat16,kFloat32})for(int tokens:{1,4,9})for(int mode=0;mode<3;++mode) {
+        const int width=128,rotary=64,heads=3;
+        mfq::models::YarnScaling yarn;yarn.factor=8;yarn.original_context=131072;
+        std::vector<int64_t> sections=mode?std::vector<int64_t>{10,11,11}:std::vector<int64_t>{};
+        RotaryEmbedding reference(rotary,1048576,1e7,sections,mode==2,false,yarn);
+        RotaryEmbedding fused(rotary,1048576,1e7,sections,mode==2,true,yarn);
+        if(!fused.fused())throw std::runtime_error("YaRN disabled requested rotary fusion");
+        std::vector<float> values(tokens*heads*2*width),weight(width);
+        for(size_t i=0;i<values.size();++i)values[i]=float(std::sin(double(i)*.019)*.7);
+        for(int i=0;i<width;++i)weight[i]=float(std::cos(i*.031)*.17);
+        auto x=tensor(values).reshape({1,tokens,heads,2*width}).to(kCUDA,dtype).narrow(-1,0,width);
+        auto w=tensor(weight).to(kCUDA);
+        std::vector<int64_t> ids(3*tokens);
+        const std::array<int64_t,5> choices{-5,131073,524287,1047553,1048583};
+        for(size_t i=0;i<ids.size();++i)ids[i]=choices[i%choices.size()];
+        auto positions=tensor(ids).reshape({3,1,tokens}).to(kCUDA);
+        auto input=x.permute({0,2,1,3}).contiguous();
+        exact(fused.forward(input,positions),reference.forward(input,positions),"ordinary");++cases;
+        const auto expected=[&] {
+            auto norm=grouped_rms_norm_cuda(x.contiguous(),w,width,1e-6,1.0);
+            return reference.forward(norm.permute({0,2,1,3}),positions);
+        };
+        exact(fused.forward_normalized(x,w,positions,1e-6),expected(),"normalized");++cases;
+        auto grouped=fused.forward_normalized_grouped({x,x},{w,w},positions,1e-6);
+        exact(grouped[0],expected(),"grouped first");exact(grouped[1],expected(),"grouped second");++cases;
+        if(tokens==4) {
+            auto raw=x.select(2,0).contiguous();
+            auto starts=positions.narrow(-1,0,1).contiguous();
+            auto pooled=raw.reshape({1,1,4,width}).to(kFloat32).mean(2).to(dtype);
+            auto norm=grouped_rms_norm_cuda(pooled,w,width,1e-6,1.0);
+            const auto expected_pool=reference.forward(norm.unsqueeze(1),starts).squeeze(1);
+            exact(fused.pool_normalized(raw,w,starts,4,1e-6),expected_pool,"pooled");++cases;
+            if(dtype==kFloat32) {
+                const auto packed=qsa_indexer::encode(raw),decoded=qsa_indexer::decode(packed);
+                auto mean=decoded.reshape({1,1,4,width}).mean(2);
+                auto normalized=grouped_rms_norm_cuda(mean,w,width,1e-6,1.0);
+                const auto expected_packed=qsa_indexer::encode(reference.forward(normalized.unsqueeze(1),starts).squeeze(1));
+                exact(fused.pool_normalized(packed,w,starts,4,1e-6),expected_packed,"INT16 pooled");++cases;
+            }
+        }
+        TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
+        std::array<StreamHandle,2> streams{stream_from_pool(false),stream_from_pool(false)};
+        std::array<Graph,2> graphs;
+        std::array<Tensor,2> outputs;
+        for(int kind=0;kind<2;++kind) {
+            StreamGuard guard(streams[kind]);
+            graphs[kind].prepare_memory();
+            outputs[kind]=kind?fused.forward_normalized(x,w,positions,1e-6):expected();
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
+            outputs[kind]=Tensor{};
+            graphs[kind].capture_begin();
+            outputs[kind]=kind?fused.forward_normalized(x,w,positions,1e-6):expected();
+            graphs[kind].capture_end();
+        }
+        for(int replay=0;replay<3;++replay) {
+            for(auto& id:ids)id+=17;
+            positions.copy_(tensor(ids).reshape(positions.sizes()).to(kCUDA));
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
+            for(int kind=0;kind<2;++kind) {
+                StreamGuard guard(streams[kind]);graphs[kind].replay();
+                TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(streams[kind].stream()));
+            }
+            try {exact(outputs[0],expected(),"reference graph");exact(outputs[1],outputs[0],"changing graph");}
+            catch(...) {
+                auto actual=outputs[1].to(kFloat32).contiguous().cpu(),wanted=outputs[0].to(kFloat32).contiguous().cpu();
+                for(int64_t i=0;i<actual.numel();++i)if(actual.data_ptr<float>()[i]!=wanted.data_ptr<float>()[i]) {
+                    std::cerr<<"YaRN first difference index="<<i<<" actual="<<actual.data_ptr<float>()[i]<<" expected="<<wanted.data_ptr<float>()[i]<<'\n';break;
+                }
+                exact(fused.forward_normalized(x,w,positions,1e-6),expected(),"updated eager");
+                std::cerr<<"YaRN graph dtype="<<int(dtype)<<" tokens="<<tokens<<" mode="<<mode<<" replay="<<replay<<'\n';throw;
+            }
+            ++cases;
+        }
+        fused.set_fused(false);if(fused.fused())throw std::runtime_error("YaRN rotary disable ignored");
+        exact(fused.forward(input,positions),reference.forward(input,positions),"disabled");
+        fused.set_fused(true);if(!fused.fused())throw std::runtime_error("YaRN rotary enable ignored");
+        exact(fused.forward(input,positions),reference.forward(input,positions),"reenabled");++cases;
+    }
+    std::cout<<"YaRN partial/full axes FP16/FP32 normalized/grouped/pooling and changing graph exact cases="<<cases<<" PASS\n";
+}
+
 void check_attention_fusion() {
     using namespace mfq::cuda;
     int ordinary_cases=0,gate_cases=0,graph_cases=0;
@@ -565,6 +654,7 @@ int main(int argc, char** argv) {
         mfq::cuda::StreamGuard stream_guard(stream);
         if(argc==2 && std::string(argv[1])=="--rotary-fused-check") {check_rotary_fusion();return 0;}
         if(argc==2 && std::string(argv[1])=="--rotary-normalized-check") {check_rotary_normalized_fusion();return 0;}
+        if(argc==2 && std::string(argv[1])=="--rotary-yarn-check") {check_rotary_yarn_fusion();return 0;}
         if(argc==2 && std::string(argv[1])=="--attention-fused-check") {check_attention_fusion();return 0;}
         if (argc == 1) {
             auto q = mfq::cuda::ones({1,1,2,4}, mfq::cuda::TensorOptions{}.device(mfq::cuda::kCUDA));

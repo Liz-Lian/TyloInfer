@@ -132,7 +132,7 @@ def test_cuda_build_plan_is_native_and_does_not_import_or_configure_torch(
     command = " ".join(plan.configure_command)
     assert plan.target == "mfq-runtime"
     assert plan.build_command[plan.build_command.index("--target") + 1 : -2] == (
-        "mfq-runtime", "mfq-diagnostics", "mfq-eval"
+        "mfq-runtime", "mfq-diagnostics"
     )
     assert "TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME=OFF" in command
     assert "CMAKE_PREFIX_PATH" not in command

@@ -25,6 +25,9 @@ struct RamBlockView {
 };
 
 struct RamCacheSlot {
+    // An image can occupy a power-of-two aligned group of base slots. Every
+    // occupied way repeats its owner/version; overlapping evictions clear
+    // that entire owner before any part of its payload can be reused.
     std::int32_t id=-1;
     std::uint64_t generation=0,last_frame=0;
 };
@@ -40,6 +43,10 @@ struct RamStageCache {
     std::size_t payload_bytes=0,slot_bytes=0;
     int sets=0;
 };
+// Resolve selected records from an already uploaded layer; copy descriptors
+// only. Payloads remain shared across all prefill query windows.
+
+
 int tq_reset_ram_stage_cache(const RamStageCache& cache,cudaStream_t stream);
 
 // Serialized publication follows prior attention reads on the same stream.
@@ -57,6 +64,24 @@ int tq_publish_ram_append(RamBlockView* sources,int capacity,const TqBlockView* 
 int tq_collect_ram_missing(const RamBlockView* sources,int capacity,const SelectedBlock* selected,
     int queries,int count,std::uint32_t* first_use,std::int32_t* missing,int* missing_count,
     const RamStageCache& cache,cudaStream_t stream);
+// A captured collector reads the current cache layout from a stable device
+// descriptor; RAM/SSD transitions can change its slot size between replays.
+int tq_collect_ram_missing(const RamBlockView* sources,int capacity,const SelectedBlock* selected,
+    int queries,int count,std::uint32_t* first_use,std::int32_t* missing,int* missing_count,
+    const RamStageCache* device_cache,cudaStream_t stream);
+// Control data only: write the selected IDs and miss list to mapped pinned
+// memory. The caller joins the containing graph before reading either list.
+int tq_export_ram_selection(const std::int32_t* missing,const SelectedBlock* selected,
+    std::int32_t* mapped_missing,SelectedBlock* mapped_selected,int queries,int count,cudaStream_t stream);
+enum RamGraphControl {RamGraphRequest=0,RamGraphReady=1,RamGraphImages=2,RamGraphError=3};
+// Temporarily publish CPU-read packed images for one selected window. Backup
+// count is device-owned, so cancellation cannot prevent its later rollback.
+int tq_publish_ram_graph(RamBlockView* sources,int capacity,const std::int32_t* mapped_ids,
+    const RamBlockView* mapped_images,std::uint32_t* control,RamBlockView* backup,
+    std::uint32_t* backup_count,int maximum,cudaStream_t stream);
+int tq_cancel_ram_graph_selection(SelectedBlock* selected,int count,const std::uint32_t* backup_count,cudaStream_t stream);
+int tq_restore_ram_graph(RamBlockView* sources,const std::int32_t* mapped_ids,const RamBlockView* backup,
+    const std::uint32_t* backup_count,int maximum,cudaStream_t stream);
 
 // Deduplicate the complete query window on device and copy every selected
 // logical block once. No selected IDs or payloads pass through CPU staging.
@@ -81,11 +106,22 @@ int tq_stage_ram_selected_cached(const RamBlockView* sources,int capacity,
     void* arena,std::size_t arena_bytes,std::size_t slot_bytes,
     const RamStageCache& cache,std::uint64_t* copied_bytes,
     std::uint64_t* hit_blocks,cudaStream_t stream);
+// The envelope bounds allocated cache sets and the launch grid. Replays read
+// the current layout from device_cache, which may shrink its slots as RAM KV
+// is quantized without rebuilding the graph or changing its payload budget.
+int tq_stage_ram_selected_cached(const RamBlockView* sources,int capacity,
+    const SelectedBlock* selected,int queries,int count,
+    std::uint32_t* first_use,TqBlockView* selected_views,
+    void* arena,std::size_t arena_bytes,std::size_t slot_bytes,
+    const RamStageCache& envelope,std::uint64_t* copied_bytes,
+    std::uint64_t* hit_blocks,cudaStream_t stream,const RamStageCache* device_cache);
 
 enum class RamStageStep {Available,Hydrated};
 // Available copies resident images and packed cache hits, leaving null views
 // for actual SSD misses. Hydrated fills only those null views after source
-// publication. Keep the same selection, scratch and cache between the steps;
+// publication and admits the fetched images. Both stages protect selected
+// cache hits and allocations still used by this attention window.
+// Keep the same selection, scratch and cache between the steps;
 // selected resident images must remain leased until both copies have retired.
 // This lets SSD reads overlap the first GPU copy without copying any image
 // twice, advancing the LRU twice, or displacing a selected cache hit.

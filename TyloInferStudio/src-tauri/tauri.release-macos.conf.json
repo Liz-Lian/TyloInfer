@@ -1,17 +1,17 @@
 {
   "bundle": {
-    "targets": ["dmg"],
+    "targets": [
+      "dmg"
+    ],
     "externalBin": [
-      "../../packaging/sidecars/mfq-decode-metal",
-      "../../packaging/sidecars/mfq-perplexity"
+      "../../packaging/sidecars/mfq-decode-metal"
     ],
     "resources": {
       "../dist": "web-ui",
       "../../packaging/Resources/mlx.metallib": "mlx.metallib",
       "../../packaging/Resources/mfq-metal": "mfq-metal",
       "../../packaging/Resources/tyloinfer-cli": "tyloinfer-cli",
-      "../../packaging/Resources/licenses": "licenses",
-      "../../packaging/Resources/agent-runtime": "agent-runtime"
+      "../../packaging/Resources/licenses": "licenses"
     },
     "macOS": {
       "minimumSystemVersion": "26.2",

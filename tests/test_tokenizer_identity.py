@@ -3,27 +3,11 @@ import json
 import struct
 
 import pytest
-from tokenizers import Tokenizer, models, pre_tokenizers
+from tokenizers import Tokenizer, models
 
-from tyloinfer.evaluation.reference import tokenize_windows
 from tyloinfer.formats.tokenizer_identity import TOKENIZER_IDENTITY_FORMAT, tokenizer_identity
 
 
-def test_reference_identity_rejects_same_sized_reordered_mapping(tmp_path):
-    identities = []
-    for name, vocab in (("reference", {"<unk>": 0, "a": 1, "b": 2}),
-                        ("candidate", {"<unk>": 0, "a": 2, "b": 1})):
-        root = tmp_path / name
-        root.mkdir()
-        tokenizer = Tokenizer(models.WordLevel(vocab, unk_token="<unk>"))
-        tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
-        tokenizer.save(str(root / "tokenizer.json"))
-        (root / "tokenizer_config.json").write_text("{}")
-        tokens, metadata = tokenize_windows(root, " ".join(["a", "b"] * 32), 32, 1)
-        identities.append(metadata["identity"])
-        assert metadata["vocab_size"] == 3
-        assert tokens[0, 0] == vocab["a"]
-    assert identities[0] != identities[1]
 
 
 def test_identity_matches_native_encoding_and_output_vocabulary_padding():
