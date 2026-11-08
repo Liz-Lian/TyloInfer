@@ -1,10 +1,15 @@
 #pragma once
 
 #include "step.h"
+#include "engine/config.h"
+#include "engine/models/common/prompt.h"
+#include "engine/models/metadata.h"
 
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace tyloi::engine {
 
@@ -16,9 +21,11 @@ inline bool batch_compatible(const EngineRequest &request, bool persistent_prefi
            !(input.sampling.enable_mtp && has_mtp);
 }
 
-template <class Ops, class State>
-Generation generate_prepared(Ops &ops, State &state, InferenceRequest &input, InferenceOutput &output,
+template <class Operations, class State>
+Generation generate_prepared(Operations operations, State &state, InferenceRequest &input, InferenceOutput &output,
                              const RequestId& id, bool batched) {
+    using Ops = std::unwrap_reference_t<Operations>;
+    Ops& ops = operations;
     std::optional<typename Ops::Prepared> prepared;
     if (input.vision && !output.stopped()) {
         auto preparation = ops.prepare(input, state);
@@ -48,36 +55,20 @@ Generation generate_prepared(Ops &ops, State &state, InferenceRequest &input, In
     }
 }
 
+namespace detail {
+
 // Session transactions surround both ordinary and speculative execution.
-// Ops owns native prompt/hidden storage and constructs device execution objects.
 template <class Ops>
-Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput &output) {
+Generation generate_session(Ops& ops, InferenceRequest& request, InferenceOutput& output,
+                            const GenerationPlan& plan) {
     using Hidden = typename Ops::Hidden;
-    auto &state = ops.state;
-    const auto &info = ops.info;
-    auto &session_cache = ops.cache;
-    auto *mtp = ops.mtp;
-    const auto &prepared = ops.prepared;
-    const auto &config = ops.config;
-    const auto &prompt = request.prompt;
-    auto &sampling = request.sampling;
-    const auto &cache_plan = request.cache_plan;
-    if (config.generation.prefill_chunk_size <= 0)
-        throw std::invalid_argument("prefill chunk size must be positive");
-    if (prepared && prepared->token_ids != prompt)
-        throw std::invalid_argument("prepared prompt token IDs disagree");
-    const auto occupied =
-        static_cast<int64_t>(prompt.size()) +
-        (prepared && prepared->transformed() ? prepared->decode_position_delta : 0);
-    const auto plan = plan_generation(prompt,
-        info.vocab_size,
-        info.max_context,
-        sampling.max_tokens,
-        cache_plan.stable_prefix_tokens,
-        std::max<int64_t>(prompt.size(), occupied));
-    sampling.max_tokens = plan.generation_tokens;
-    if (output.stopped())
-        co_return;
+    auto& state = ops.state;
+    auto& session_cache = ops.cache;
+    auto* mtp = ops.mtp;
+    const auto& prepared = ops.prepared;
+    const auto& prompt = request.prompt;
+    const auto& sampling = request.sampling;
+    const auto& cache_plan = request.cache_plan;
     const std::string input_key = prepared ? prepared->cache_key : std::string{};
     const bool caching =
         !ops.batched() && state.supports_text_session_state() &&
@@ -87,12 +78,6 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     const bool use_mtp = mtp && sampling.enable_mtp && sampling.max_tokens > 1;
     if constexpr(requires { ops.set_prefix_boundary(size_t{}); })
         ops.set_prefix_boundary(caching?std::min(plan.stable_prefix_tokens,prompt.size()-1):0);
-    if (mtp) {
-        ops.mtp_state.stats = {};
-        ops.mtp_state.stats.available = true;
-    }
-    ExecutionCleanup cleanup{output.cleanup_failure, [&] { ops.release(); }};
-    if constexpr(requires { ops.prepare_request(request); })ops.prepare_request(request);
     typename Ops::Restore restored;
     if (caching && (!use_mtp || mtp->supports_session_state()))
         restored = session_cache.restore_best(state,
@@ -158,8 +143,8 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
             snapshot();
         }
         if (auto *delta = event ? std::get_if<OutputDelta>(&*event) : nullptr) {
-            if(!traced_decode_boundary && !delta->token_ids.empty()) {
-                if constexpr(requires { ops.trace_expert_cache("decode_begin", false); })
+            if (!traced_decode_boundary && !delta->token_ids.empty()) {
+                if constexpr (requires { ops.trace_expert_cache("decode_begin", false); })
                     ops.trace_expert_cache("decode_begin", false);
                 traced_decode_boundary = true;
             }
@@ -181,6 +166,56 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
         if(!tail.diffs.empty())co_yield std::move(tail);
     }
     snapshot();
+}
+
+} // namespace detail
+
+// All request paths share validation and cleanup.
+template <class Operations>
+Generation generate_request(Operations operations, InferenceRequest& request, InferenceOutput& output) {
+    std::unwrap_reference_t<Operations>& ops = operations;
+    const auto& info = ops.info;
+    const auto& config = ops.config;
+    const auto& prepared = ops.prepared;
+    const auto& prompt = request.prompt;
+    auto& sampling = request.sampling;
+    const auto& cache_plan = request.cache_plan;
+    if (config.generation.prefill_chunk_size <= 0)
+        throw std::invalid_argument("prefill chunk size must be positive");
+    if (prepared && prepared->token_ids != prompt)
+        throw std::invalid_argument("prepared prompt token IDs disagree");
+    if constexpr (requires { ops.validate_prepared(); }) ops.validate_prepared();
+    const auto occupied =
+        static_cast<int64_t>(prompt.size()) +
+        (prepared && prepared->transformed() ? prepared->decode_position_delta : 0);
+    const auto plan = plan_generation(prompt,
+        info.vocab_size,
+        info.max_context,
+        sampling.max_tokens,
+        cache_plan.stable_prefix_tokens,
+        std::max<int64_t>(prompt.size(), occupied));
+    sampling.max_tokens = plan.generation_tokens;
+    if (output.stopped())
+        co_return;
+    if constexpr (requires { ops.mtp; }) {
+        if (ops.mtp) {
+            ops.mtp_state.stats = {};
+            ops.mtp_state.stats.available = true;
+        }
+    }
+    ExecutionCleanup cleanup{output.cleanup_failure, [&] { ops.release(); }};
+    if constexpr (requires { ops.prepare_request(request); }) ops.prepare_request(request);
+    {
+        auto sequence = [&] {
+            if constexpr (requires { ops.cache; })
+                return detail::generate_session(ops, request, output, plan);
+            else {
+                ops.reset();
+                return ops.plain(request, output, 0, 0);
+            }
+        }();
+        while (auto step = sequence.next()) co_yield std::move(step);
+    }
     cleanup.finish();
 }
 

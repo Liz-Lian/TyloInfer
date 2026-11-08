@@ -398,7 +398,7 @@ struct Text {
                 if (components.mtp) components.mtp->reset(predictor_state(), 1);
             }
         }
-        return generate_prepared(*this, state, input, output, id, batched);
+        return generate_prepared(std::ref(*this), state, input, output, id, batched);
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, GetMetrics>) {

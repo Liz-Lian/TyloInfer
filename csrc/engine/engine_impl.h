@@ -242,7 +242,7 @@ public:
     engine::Generation generate(
         const engine::RequestId& id, engine::Request& request) override {
         if (request.batched) graph_->invalidate();
-        return engine::generate_prepared(*this, state(), request.input, *request.output, id, request.batched);
+        return engine::generate_prepared(std::ref(*this), state(), request.input, *request.output, id, request.batched);
     }
 
 private:

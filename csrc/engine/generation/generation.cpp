@@ -6,7 +6,7 @@
 #include "engine/engine.h"
 #include "engine/budget.h"
 #include "engine/generation/decode.h"
-#include "engine/generation/step.h"
+#include "engine/generation/generation.h"
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/models/causal_model.h"
@@ -160,100 +160,83 @@ struct Plain {
     }
 };
 
-} // namespace
+struct Native {
+    using Prepared = models::Prepared;
+    models::CausalModel& model;
+    models::State& state;
+    tyloi::Executor& executor;
+    Budget& budget;
+    Decode& graph;
+    weights::Cache& weights;
+    const models::Info& info;
+    const Config& config;
+    const models::ForwardOptions& forward_options;
+    const ModelSource* source;
+    std::optional<Prepared> prepared;
 
-StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
-    auto& input = request.input;
-    auto& output = *request.output;
-    auto& state = *request.state;
-    std::optional<models::Prepared> prepared;
-    if (input.vision && !output.stopped()) {
-        auto preparation = model_->prepare(input.prompt, *input.vision, state);
-        while (!output.stopped()) {
-            StepResult<models::Prepared> step;
-            {
-                auto timer = executor_->timer();
-                step = preparation.next();
-                timer->stop();
-                output.metrics.multimodal_ms += timer->elapsed_ms();
-            }
-            if (step.value) {
-                prepared = std::move(*step.value);
-                break;
-            }
-            if (!step) throw std::runtime_error("media preparation returned no prompt");
-            co_yield step.state;
-        }
-        if (output.stopped()) co_return;
-        const auto elapsed = output.metrics.multimodal_ms;
-        co_yield PrefillProgress{{0, 0.0, elapsed, elapsed}};
+    StepSequence<Prepared> prepare(InferenceRequest& input, models::State& target) {
+        return model.prepare(input.prompt, *input.vision, target);
     }
-    if (output.stopped()) co_return;
-    auto& weights = *weights_;
-    auto& graph = *graph_;
-    const auto& info = model_info_;
-    const auto& config = config_;
-    const auto& forward_options = forward_options_;
-    const auto& prompt = input.prompt;
-    const auto& cache_plan = input.cache_plan;
-    if (config.generation.prefill_chunk_size <= 0)
-        throw std::invalid_argument("prefill chunk size must be positive");
-    if (prepared && prepared->token_ids != prompt)
-        throw std::invalid_argument("prepared prompt token IDs disagree");
-    if (prepared && prepared->image_mask && prepared->image_mask->defined())
-        throw std::invalid_argument("model cannot apply an image participation mask");
-    const auto occupied = static_cast<int64_t>(prompt.size()) +
-        (prepared && prepared->transformed() ? prepared->decode_position_delta : 0);
-    const auto plan = plan_generation(prompt, info.vocab_size, info.max_context,
-        input.sampling.max_tokens, cache_plan.stable_prefix_tokens,
-        std::max<int64_t>(prompt.size(), occupied));
-    input.sampling.max_tokens = plan.generation_tokens;
-    if (output.stopped()) co_return;
-
-    const auto trace = [&](const char* boundary, bool wait = true) {
+    auto advance_preparation(StepSequence<Prepared>& preparation) {
+        auto timer = executor.timer();
+        auto step = preparation.next();
+        timer->stop();
+        return std::pair{std::move(step), timer->elapsed_ms()};
+    }
+    void validate_prepared() const {
+        if (prepared && prepared->image_mask && prepared->image_mask->defined())
+            throw std::invalid_argument("model cannot apply an image participation mask");
+    }
+    Generation generate_text(InferenceRequest& input, InferenceOutput& output, models::State&,
+                             std::optional<Prepared> value, const RequestId&, bool) {
+        prepared = std::move(value);
+        return generate_request(std::ref(*this), input, output);
+    }
+    void trace_expert_cache(const char* boundary, bool wait = true) {
         if (!config.trace_moe || std::uncaught_exceptions()) return;
-        weights.trace(boundary, wait, source_.get());
-    };
-    ExecutionCleanup cleanup{output.cleanup_failure, [&] {
-        trace("end");
-        try { state.reset(1); }
+        weights.trace(boundary, wait, source);
+    }
+    void prepare_request(const InferenceRequest&) { trace_expert_cache("begin"); }
+    void reset() { state.reset(1); }
+    void release() {
+        trace_expert_cache("end");
+        try { reset(); }
         catch (...) { graph.invalidate(); throw; }
         if (std::uncaught_exceptions()) graph.invalidate();
-    }};
-    trace("begin");
-    state.reset(1);
-
-    const auto tokens = prompt.size();
-    const auto limit = config.generation.prefill_chunk_size;
-    const auto chunk_size = budget_->prefill(tokens, limit, info.prefill_row_bytes,
-        state.position() > 0, config.prefill_chunk_auto);
-
-    auto full_ids = ops::reshape(*ops::tensor(std::span<const int64_t>(prompt), Device(kCUDA, forward_options.primary)), {1, -1});
-    graph.ensure_storage(info.vocab_size);
-    Sampler sampler(input.sampling, full_ids->device());
-    const bool penalties = sampler.has_penalties();
-    if (penalties) { ops::fill(graph.counts, 0); ops::add_token_counts(graph.counts, full_ids); }
-    {
-        Plain plain{*model_, state, *executor_, *budget_, graph, weights, info, config,
-                    forward_options, source_.get(), input, output, prepared, chunk_size,
+    }
+    Generation plain(InferenceRequest& input, InferenceOutput& output, std::size_t, std::size_t) {
+        const auto& prompt = input.prompt;
+        const auto chunk_size = budget.prefill(prompt.size(), config.generation.prefill_chunk_size,
+            info.prefill_row_bytes, state.position() > 0, config.prefill_chunk_auto);
+        auto full_ids = ops::reshape(*ops::tensor(std::span<const int64_t>(prompt),
+            Device(kCUDA, forward_options.primary)), {1, -1});
+        graph.ensure_storage(info.vocab_size);
+        Sampler sampler(input.sampling, full_ids->device());
+        const bool penalties = sampler.has_penalties();
+        if (penalties) { ops::fill(graph.counts, 0); ops::add_token_counts(graph.counts, full_ids); }
+        Plain plain{model, state, executor, budget, graph, weights, info, config,
+                    forward_options, source, input, output, prepared, chunk_size,
                     std::move(full_ids), std::move(sampler), penalties};
         auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), 0, 0, chunk_size);
         bool traced_decode = false;
         while (auto step = sequence.next()) {
-            if (step.value) {
-                if (auto* progress = std::get_if<PrefillProgress>(&*step.value)) {
-                    progress->timing.multimodal_ms = output.metrics.multimodal_ms;
-                    progress->timing.model_ms += output.metrics.multimodal_ms;
-                } else if (auto* delta = std::get_if<OutputDelta>(&*step.value);
-                           delta && !traced_decode && !delta->token_ids.empty()) {
-                    trace("decode_begin", false);
-                    traced_decode = true;
-                }
+            if (auto* delta = step.value ? std::get_if<OutputDelta>(&*step.value) : nullptr;
+                delta && !traced_decode && !delta->token_ids.empty()) {
+                trace_expert_cache("decode_begin", false);
+                traced_decode = true;
             }
             co_yield std::move(step);
         }
     }
-    cleanup.finish();
+};
+
+} // namespace
+
+StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
+    return generate_prepared(
+        Native{*model_, *request.state, *executor_, *budget_, *graph_, *weights_, model_info_,
+               config_, forward_options_, source_.get()},
+        *request.state, request.input, *request.output, id, request.batched);
 }
 } // namespace tyloi::engine
 
