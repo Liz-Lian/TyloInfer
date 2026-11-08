@@ -45,6 +45,9 @@
 #include <map>
 #include <sstream>
 #include <stdexcept>
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/executor/executor.h"
+#endif
 
 namespace {
 // The shared-expert fast paths need the NINT payload, if the weight has one.
@@ -4263,6 +4266,19 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         }
     }
 public:
+#ifdef TYLOINFER_NATIVE_CUDA
+    bool use_for(std::int64_t rows,std::size_t gate_up_count) const {
+        const auto hint=tyloi::cuda::options::moe_prefill_layer();
+        const auto cache=std::shared_ptr<MoeExpertCache>(sources_[0],cache_);
+        const bool combined=rows>8 && mmq_.mode==KlMmqMode::Default &&
+            ((hint && *hint && moe_expert_cache_layer_prefill_ready(cache)) ||
+             moe_expert_cache_ssd_experts(cache));
+        const auto& mode=tyloi::cuda::Executor::current_ffn();
+        return gate_up_count!=1 || combined ||
+            ((rows<=8 || (rows<=32 && mode.batch_serial)) && options_.two_stage &&
+             mmq_.mode==KlMmqMode::Default);
+    }
+#endif
     bool neighbor_prefetch_enabled() const {
         return moe_expert_cache_ssd_router_prefetch(std::shared_ptr<MoeExpertCache>(sources_[0], cache_));
     }
@@ -4764,9 +4780,26 @@ tyloi::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
     return pipeline->prediction(ids);
 }
 
+
 bool moe_ffn_neighbor_prefetch_enabled(const std::shared_ptr<MoeFfnPipeline>& pipeline) {
     return pipeline && pipeline->neighbor_prefetch_enabled();
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+bool moe_ffn_use_pipeline(const std::shared_ptr<MoeFfnPipeline>& pipeline,
+                          std::int64_t rows,std::size_t gate_up_count) {
+    return pipeline && pipeline->use_for(rows,gate_up_count);
+}
+
+::tyloi::DenseTensor run_moe_ffn_pipeline(const std::shared_ptr<MoeFfnPipeline>& pipeline,
+        const ::tyloi::DenseTensor& input,const ::tyloi::DenseTensor& ids,
+        const ::tyloi::DenseTensor& weights) {
+    auto& executor=tyloi::cuda::Executor::current();
+    const auto& mode=tyloi::cuda::Executor::current_ffn();
+    return run_moe_ffn_pipeline(pipeline,executor.projector(mode),input,ids,weights,
+                                mode.batch_serial,mode.tile,mode.tiles);
+}
+#endif
 
 void drain_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline) {
     if(pipeline)pipeline->drain();

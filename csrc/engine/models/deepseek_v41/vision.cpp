@@ -1,5 +1,7 @@
 #include "engine/models/source.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
+#endif
 #include "vision.h"
 #include "engine/models/common/vision/axial_patch_encoder.h"
 #include "engine/state/session/prefix_cache.h"

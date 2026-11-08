@@ -284,7 +284,12 @@ inline constexpr auto with_model = []<typename F>(
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
             deepseek_v41::load(*owner, execution, options.context_size, false, true, false);
-            auto components = deepseek_v41::load_components(*owner, weights, load_optional_components);
+            auto components = deepseek_v41::load_components(*owner, weights, load_optional_components,
+#ifdef TYLOINFER_NATIVE_CUDA
+                execution.executor().pipelines(), execution.weights);
+#else
+                execution);
+#endif
             auto state = std::unique_ptr<deepseek_v41::State>(static_cast<deepseek_v41::State*>(
                 owner->make_state().release()));
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));

@@ -128,6 +128,15 @@ struct KvMemoryAllocation::Virtual {
     }
 };
 
+namespace {
+std::size_t initial_virtual_bytes(const KvMemoryAllocation& a) {
+    const auto tokens=std::min<int64_t>(a.maximum,16384);
+    const auto pages=virtual_pages(a.maximum,a.heads,a.key_width,width_bytes(a.options),tokens).size()
+        +virtual_pages(a.maximum,a.heads,a.value_width,width_bytes(a.options),tokens).size();
+    return pages*vmm::vmm_granularity();
+}
+}
+
 KvMemoryOptions kv_memory_options() {
     KvMemoryOptions o;
     if (const auto* p=tyloi::cuda::env_lookup("TYLOINFER_KV_PLACEMENT")) o.placement=p;
@@ -205,27 +214,33 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
     std::size_t raw=0,index=0;
     for (auto& weak:allocations_) if(auto a=weak.lock()){raw+=a->raw_bytes();index+=a->index_bytes();}
     if (!raw) {ready_=true;return;}
-    auto context=default_context();context->reclaim_idle_memory();
-    const auto free=context->available_memory();
+    const bool admission=budget_ && options_.additional_request;
+    auto device=tyloi::Device(tyloi::kCUDA);
+    if(admission)for(const auto& weak:allocations_)if(auto a=weak.lock()) {device=a->options.target_device();break;}
+    auto context=default_context(device.index);context->reclaim_idle_memory();
     const auto reserve=(options_.additional_request?std::size_t(256)<<20 : ::tyloi::cuda::options::workspace_reserve_bytes())+minimum_experts;
-    if (free<reserve || index>free-reserve) throw std::runtime_error(insufficient);
-    auto gpu=free-reserve-index;
-    if(options_.gpu_limit)gpu=std::min(gpu,options_.gpu_limit);
-    auto available=host_available();
-    std::size_t ram=available> (1ULL<<30) ? available-(1ULL<<30) : 0;
-    if(options_.ram_limit_set)ram=std::min(ram,options_.ram_limit);
+    const auto initial_free=context->available_memory();
+    if(!admission && (initial_free<reserve || index>initial_free-reserve))throw std::runtime_error(insufficient);
     // Long discrete-memory sessions keep canonical raw KV in RAM. The GPU
     // cache is bounded by resident cells; selected rows are resolved on-device
     // and the same fixed addresses remain valid in decode/MTP CUDA Graphs.
-    int64_t maximum=0,cells=options_.resident_cells;
+    int64_t maximum=0,maximum_cells=options_.resident_cells;
     std::size_t per_cell=0,fixed_metadata=0;
     for(auto& weak:allocations_)if(auto a=weak.lock()) {
-        maximum=std::max(maximum,a->maximum);cells=std::min(cells,a->maximum);
+        maximum=std::max(maximum,a->maximum);maximum_cells=std::min(maximum_cells,a->maximum);
         per_cell+=std::size_t(a->heads)*(a->key_width+a->value_width)*width_bytes(a->options);
         fixed_metadata+=std::size_t(a->maximum)*16+56;
     }
     const bool automatic=options_.placement=="auto" || options_.placement=="auto_ssd";
     const bool tiered_budget=options_.budget_policy && discrete_device();
+    std::size_t initial_mapped=0;
+    if(admission && options_.dynamic) {
+        if(tiered_budget && options_.gpu_budget && options_.gpu_budget<index)
+            throw std::runtime_error("kv_budget_below_indexer: VRAM KV budget must cover the complete target indexer cache");
+        if(!vmm::vmm_available())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
+        for(const auto& weak:allocations_)if(auto a=weak.lock())
+            initial_mapped=engine::prefill_budget_add(initial_mapped,initial_virtual_bytes(*a));
+    }
     // A small target context must not shrink staging below the selected KV
     // workspace. That would turn an 8K prefill into thousands of per-row
     // gathers even though the fixed decode workspace can hold a whole layer.
@@ -234,73 +249,96 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
         stream_buffer=std::max(stream_buffer,std::size_t(16*a->selected_columns*a->heads)*
             (a->key_width+a->value_width)*width_bytes(a->options));
     }
-    bool exclusive=false,raw_host_only=false;
-    std::optional<KvOffloadConfig> offload_config;
-    if(tiered_budget) {
-        if(options_.gpu_budget && options_.gpu_budget<index)
-            throw std::runtime_error("kv_budget_below_indexer: VRAM KV budget must cover the complete target indexer cache");
-        const auto desired=options_.gpu_budget?options_.gpu_budget-index:
-            (options_.placement=="vram" || options_.dynamic?raw:options_.placement=="ram"?0:std::size_t(std::ceil(raw*kv_resident_fraction(maximum))));
-        if(options_.gpu_budget && desired>gpu)throw std::runtime_error("kv_vram_insufficient: explicit KV VRAM budget exceeds available capacity after weights and workspace");
-        gpu=std::min(gpu,desired);
-        if(options_.placement=="ram")gpu=0;
-        if(!options_.dynamic && options_.placement!="vram" && gpu<raw) {
-            cells=std::min<int64_t>(maximum,gpu/per_cell);
-            gpu=std::size_t(cells)*per_cell;
-            const auto required=raw-gpu;
-            if(options_.placement!="auto_ssd" && required>ram)throw std::runtime_error(insufficient);
-            if(options_.ram_preallocated && required<=ram) {
-                exclusive=cells>0;raw_host_only=cells==0;
-            } else {
-                if(options_.placement!="auto_ssd")throw std::runtime_error(insufficient);
-                const auto disk_needed=options_.ram_preallocated?required-std::min(required,ram):required;
-                auto directory=std::filesystem::path(options_.directory);
-                if(directory.empty())throw std::runtime_error("kv_ssd_insufficient: SSD KV directory is required");
-                while(!std::filesystem::exists(directory) && directory.has_parent_path())directory=directory.parent_path();
-                if(std::filesystem::space(directory).available<disk_needed+(64ULL<<20))
-                    throw std::runtime_error("kv_ssd_insufficient: insufficient disk space for the target cold KV capacity");
-                KvOffloadConfig config;
-                config.buffer_bytes=stream_buffer;
-                config.gpu_budget_bytes=gpu+config.buffer_bytes;
-                config.ram_budget_bytes=std::min(ram,required+config.buffer_bytes);
-                config.preallocate=true;config.ram_preallocated=options_.ram_preallocated;config.ssd_enabled=true;config.directory=options_.directory;
-                offload_config=std::move(config);
-                std::cerr<<"runtime_kv_warning code=kv_ssd_overflow target_spill_bytes="<<disk_needed
-                    <<" message=KV may spill to SSD; long-context latency and disk usage will increase\n";
+    struct Plan {
+        std::size_t gpu=0;
+        int64_t cells=0;
+        bool exclusive=false,raw_host_only=false,automatic_ram=false;
+        std::optional<KvOffloadConfig> offload_config;
+        std::optional<std::size_t> disk_needed;
+    };
+    const auto make_plan=[&](std::size_t free) {
+        Plan plan;
+        if(free<reserve || index>free-reserve)throw std::runtime_error(insufficient);
+        plan.gpu=free-reserve-index;
+        if(options_.gpu_limit)plan.gpu=std::min(plan.gpu,options_.gpu_limit);
+        plan.cells=maximum_cells;
+        const auto available=host_available();
+        auto ram=available>(1ULL<<30)?available-(1ULL<<30):0;
+        if(options_.ram_limit_set)ram=std::min(ram,options_.ram_limit);
+        auto& gpu=plan.gpu;
+        auto& cells=plan.cells;
+        auto& exclusive=plan.exclusive;
+        auto& raw_host_only=plan.raw_host_only;
+        auto& offload_config=plan.offload_config;
+        if(tiered_budget) {
+            if(options_.gpu_budget && options_.gpu_budget<index)
+                throw std::runtime_error("kv_budget_below_indexer: VRAM KV budget must cover the complete target indexer cache");
+            const auto desired=options_.gpu_budget?options_.gpu_budget-index:
+                (options_.placement=="vram" || options_.dynamic?std::max(raw,initial_mapped):options_.placement=="ram"?0:std::size_t(std::ceil(raw*kv_resident_fraction(maximum))));
+            if(!admission && options_.gpu_budget && desired>gpu)throw std::runtime_error("kv_vram_insufficient: explicit KV VRAM budget exceeds available capacity after weights and workspace");
+            gpu=std::min(gpu,desired);
+            if(options_.placement=="ram")gpu=0;
+            if(!options_.dynamic && options_.placement!="vram" && gpu<raw) {
+                cells=std::min<int64_t>(maximum,gpu/per_cell);
+                gpu=std::size_t(cells)*per_cell;
+                const auto required=raw-gpu;
+                if(options_.placement!="auto_ssd" && required>ram)throw std::runtime_error(insufficient);
+                if(options_.ram_preallocated && required<=ram) {
+                    exclusive=cells>0;raw_host_only=cells==0;
+                } else {
+                    if(options_.placement!="auto_ssd")throw std::runtime_error(insufficient);
+                    const auto disk_needed=options_.ram_preallocated?required-std::min(required,ram):required;
+                    auto directory=std::filesystem::path(options_.directory);
+                    if(directory.empty())throw std::runtime_error("kv_ssd_insufficient: SSD KV directory is required");
+                    while(!std::filesystem::exists(directory) && directory.has_parent_path())directory=directory.parent_path();
+                    if(std::filesystem::space(directory).available<disk_needed+(64ULL<<20))
+                        throw std::runtime_error("kv_ssd_insufficient: insufficient disk space for the target cold KV capacity");
+                    KvOffloadConfig config;
+                    config.buffer_bytes=stream_buffer;
+                    config.gpu_budget_bytes=gpu+config.buffer_bytes;
+                    config.ram_budget_bytes=std::min(ram,required+config.buffer_bytes);
+                    config.preallocate=true;config.ram_preallocated=options_.ram_preallocated;config.ssd_enabled=true;config.directory=options_.directory;
+                    offload_config=std::move(config);
+                    plan.disk_needed=disk_needed;
+                }
             }
         }
-    }
-    automatic_ram_=!tiered_budget && automatic && !options_.dynamic && options_.auto_stream_threshold>0 &&
-        maximum>=options_.auto_stream_threshold && raw<=ram && cells>0 && discrete_device();
-    if(automatic_ram_) {
-        const auto allocations=std::count_if(allocations_.begin(),allocations_.end(),[](const auto& weak){return !weak.expired();});
-        const auto bytes_per_cell=per_cell+std::size_t(allocations)*12;
-        if(gpu<=fixed_metadata)automatic_ram_=false;
-        else cells=std::min<int64_t>(cells,(gpu-fixed_metadata)/bytes_per_cell);
-        if(!cells)automatic_ram_=false;
-    }
-    if(options_.placement=="vram" && raw>gpu)throw std::runtime_error("kv_vram_insufficient: configured KV cache does not fit in available VRAM");
-    if(options_.placement=="ram" && raw>ram)throw std::runtime_error(insufficient);
-    if(options_.placement=="auto" && (raw>gpu && raw-gpu>ram))throw std::runtime_error(insufficient);
-    if(options_.dynamic && !vmm::vmm_available())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
-    if(options_.dynamic && raw>gpu)throw std::runtime_error("kv_dynamic_unavailable: experimental dynamic KV currently requires a GPU-resident cache");
-    if(!tiered_budget && !automatic_ram_ && !options_.dynamic && options_.placement!="ram" && raw>gpu) {
-        KvOffloadConfig config;
-        config.buffer_bytes=std::min<std::size_t>(64ULL<<20,std::max<std::size_t>(4096,raw/16));
-        // Streaming arenas are preallocated. SSD is opened only on first spill.
-        config.gpu_budget_bytes=std::min(raw,gpu);
-        if(config.gpu_budget_bytes<config.buffer_bytes*2)throw std::runtime_error(insufficient);
-        config.ram_budget_bytes=std::min(ram,raw-(config.gpu_budget_bytes-config.buffer_bytes));
-        // A partially filled block is replaced transactionally during append.
-        // Retain room for that replacement in addition to the complete cache.
-        const auto required_ram=raw-(config.gpu_budget_bytes-config.buffer_bytes)+config.buffer_bytes;
-        if(options_.placement=="auto" && required_ram>ram)throw std::runtime_error(insufficient);
-        config.ram_budget_bytes=std::min(ram,required_ram);
-        config.directory=options_.directory;config.preallocate=true;config.ssd_enabled=options_.placement=="auto_ssd";
-        offload_config=std::move(config);
-    }
+        plan.automatic_ram=!tiered_budget && automatic && !options_.dynamic && options_.auto_stream_threshold>0 &&
+            maximum>=options_.auto_stream_threshold && raw<=ram && cells>0 && discrete_device();
+        if(plan.automatic_ram) {
+            const auto allocations=std::count_if(allocations_.begin(),allocations_.end(),[](const auto& weak){return !weak.expired();});
+            const auto bytes_per_cell=per_cell+std::size_t(allocations)*12;
+            if(gpu<=fixed_metadata)plan.automatic_ram=false;
+            else cells=std::min<int64_t>(cells,(gpu-fixed_metadata)/bytes_per_cell);
+            if(!cells)plan.automatic_ram=false;
+        }
+        if(options_.placement=="vram" && (!admission || !options_.dynamic) && raw>gpu)throw std::runtime_error("kv_vram_insufficient: configured KV cache does not fit in available VRAM");
+        if(options_.placement=="ram" && raw>ram)throw std::runtime_error(insufficient);
+        if(options_.placement=="auto" && (!admission || !options_.dynamic) && (raw>gpu && raw-gpu>ram))throw std::runtime_error(insufficient);
+        if(options_.dynamic && !vmm::vmm_available())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
+        if(options_.dynamic && !admission && raw>gpu)throw std::runtime_error("kv_dynamic_unavailable: experimental dynamic KV currently requires a GPU-resident cache");
+        if(admission && options_.dynamic && initial_mapped>gpu)
+            throw std::runtime_error("kv_dynamic_unavailable: initial dynamic KV pages exceed available VRAM");
+        if(!tiered_budget && !plan.automatic_ram && !options_.dynamic && options_.placement!="ram" && raw>gpu) {
+            KvOffloadConfig config;
+            config.buffer_bytes=std::min<std::size_t>(64ULL<<20,std::max<std::size_t>(4096,raw/16));
+            // Streaming arenas are preallocated. SSD is opened only on first spill.
+            config.gpu_budget_bytes=std::min(raw,gpu);
+            if(config.gpu_budget_bytes<config.buffer_bytes*2)throw std::runtime_error(insufficient);
+            config.ram_budget_bytes=std::min(ram,raw-(config.gpu_budget_bytes-config.buffer_bytes));
+            // A partially filled block is replaced transactionally during append.
+            // Retain room for that replacement in addition to the complete cache.
+            const auto required_ram=raw-(config.gpu_budget_bytes-config.buffer_bytes)+config.buffer_bytes;
+            if(options_.placement=="auto" && required_ram>ram)throw std::runtime_error(insufficient);
+            config.ram_budget_bytes=std::min(ram,required_ram);
+            config.directory=options_.directory;config.preallocate=true;config.ssd_enabled=options_.placement=="auto_ssd";
+            offload_config=std::move(config);
+        }
+        return plan;
+    };
     const auto* stream_graphs=tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
-    if(budget_) {
+    const auto layout_bytes=[&](const Plan& plan) {
+        const auto& offload_config=plan.offload_config;
         std::vector<std::pair<tyloi::Device,std::size_t>> required;
         const auto add=[&](tyloi::Device device,std::size_t bytes) {
             auto entry=std::find_if(required.begin(),required.end(),[&](const auto& item){return item.first==device;});
@@ -312,14 +350,11 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
         for(auto& weak:allocations_)if(auto a=weak.lock()) {
             auto bytes=a->index_bytes();
             if(options_.dynamic) {
-                const auto tokens=std::min<int64_t>(a->maximum,16384);
-                const auto pages=virtual_pages(a->maximum,a->heads,a->key_width,width_bytes(a->options),tokens).size()
-                    +virtual_pages(a->maximum,a->heads,a->value_width,width_bytes(a->options),tokens).size();
-                bytes=engine::prefill_budget_add(bytes,pages*vmm::vmm_granularity());
-            } else if(exclusive || automatic_ram_) {
-                bytes=engine::prefill_budget_add(bytes,HotKvCache::layout(a->heads,a->maximum,cells,
-                    a->key_width,a->value_width,a->options,exclusive).gpu_bytes());
-            } else if(options_.placement!="ram" && !raw_host_only && !offload_config) {
+                bytes=engine::prefill_budget_add(bytes,initial_virtual_bytes(*a));
+            } else if(plan.exclusive || plan.automatic_ram) {
+                bytes=engine::prefill_budget_add(bytes,HotKvCache::layout(a->heads,a->maximum,plan.cells,
+                    a->key_width,a->value_width,a->options,plan.exclusive).gpu_bytes());
+            } else if(options_.placement!="ram" && !plan.raw_host_only && !offload_config) {
                 bytes=engine::prefill_budget_add(bytes,a->raw_bytes());
             }
             add(a->options.target_device(),bytes);
@@ -331,9 +366,40 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
                         a->options.scalar_type(),a->heads,a->key_width).gpu_bytes());
             }
         }
-        for(const auto& [device,bytes]:required)
-            budget_->reserve_kv(device,engine::prefill_budget_add(bytes,reserve));
+        return required;
+    };
+    if(admission) {
+        const auto count=std::count_if(allocations_.begin(),allocations_.end(),[](const auto& weak){return !weak.expired();});
+        auto capacity=engine::prefill_budget_add(std::max(raw,initial_mapped),fixed_metadata);
+        capacity=engine::prefill_budget_add(capacity,std::size_t(std::max<int64_t>(0,maximum_cells))*std::size_t(count)*12);
+        const auto candidate=make_plan(engine::prefill_budget_add(engine::prefill_budget_add(reserve,index),capacity));
+        for(const auto& [device,bytes]:layout_bytes(candidate))
+            budget_->reclaim_kv(device,engine::prefill_budget_add(bytes,reserve));
     }
+    auto available=admission?context->available_memory():initial_free;
+    auto selected=make_plan(available);
+    while(admission && (selected.exclusive || selected.automatic_ram || selected.offload_config)) {
+        std::size_t shortage=0;
+        for(const auto& [device,bytes]:layout_bytes(selected)) {
+            const auto needed=engine::prefill_budget_add(bytes,reserve);
+            const auto free=default_context(device.index)->available_memory();
+            if(needed>free)shortage=std::max(shortage,needed-free);
+        }
+        if(!shortage || available<=reserve || index>=available-reserve)break;
+        const auto headroom=available-reserve-index;
+        available-=std::min(shortage,headroom);
+        selected=make_plan(available);
+    }
+    if(budget_)for(const auto& [device,bytes]:layout_bytes(selected))
+        budget_->reserve_kv(device,engine::prefill_budget_add(bytes,reserve));
+    automatic_ram_=selected.automatic_ram;
+    const auto cells=selected.cells;
+    const auto gpu=selected.gpu;
+    const auto exclusive=selected.exclusive;
+    const auto raw_host_only=selected.raw_host_only;
+    auto& offload_config=selected.offload_config;
+    if(selected.disk_needed)std::cerr<<"runtime_kv_warning code=kv_ssd_overflow target_spill_bytes="<<*selected.disk_needed
+        <<" message=KV may spill to SSD; long-context latency and disk usage will increase\n";
     if(offload_config)offload_=std::make_shared<KvOffloadStore>(std::move(*offload_config));
     ResidentAllocationScope resident;
     if(tiered_budget && !options_.additional_request && !options_.dynamic && setting("TYLOINFER_KV_EXPERT_LOAN",1)) {

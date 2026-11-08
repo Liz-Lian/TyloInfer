@@ -1,4 +1,4 @@
-#include "engine/backends/cuda/executor/execution.h"
+#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/models/session.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
@@ -258,14 +258,6 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Lo
     return result;
 }
 
-void validate_load_options(const CudaExecutionContext &execution) {
-    if (execution.config.tensor_parallel.enabled() || execution.config.layer_placement.enabled() ||
-        execution.config.n_gpu_layers >= 0) {
-        throw std::runtime_error("DeepSeek-V4.1 native CUDA currently supports single-device dense "
-                                 "placement or expert parallelism");
-    }
-}
-
 DenseTensor finalize_hidden(const SharedState &state, const DenseTensor &hidden) {
     return tyloi::ops::measure("model.deepseek_v41.final_collapse", [&]() {
         return state.final_collapse(hidden, state.config.n_layers);
@@ -338,9 +330,11 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     return vision->prepare(const_cast<Model&>(*this), const_cast<Model&>(*this).media, tokens, media);
 }
 
-std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int) const {
+::tyloi::Tensor Model::embedding(const tyloi::Tensor& ids, int) const {
+#ifndef TYLOINFER_NATIVE_CUDA
     auto scope = execution_scope();
-    return std::make_shared<DenseTensor>(embed_tokens(device_ids(dynamic_cast<const DenseTensor&>(ids))));
+#endif
+    return std::make_shared<DenseTensor>(embed_tokens(device_ids(ids.dense())));
 }
 
 std::shared_ptr<tyloi::Tensor> Model::normalize(const tyloi::Tensor& hidden, std::int64_t, std::int64_t) const {
@@ -441,12 +435,14 @@ void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cac
 std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                                     const tyloi::models::ForwardOptions&) const {
     auto& state = static_cast<State&>(state_value);
+#ifndef TYLOINFER_NATIVE_CUDA
     auto scope = execution_scope();
-    const auto primary = execution->config.layer_placement.primary_device();
-    require_model(input.ids && input.ids->defined(), "token ids are required");
-    auto ids = device_ids(dynamic_cast<const DenseTensor&>(*input.ids));
+#endif
+    const auto primary = ::tyloi::Device(::tyloi::kCUDA, primary_device);
+    require_model(input.ids && input.ids.defined(), "token ids are required");
+    auto ids = device_ids(input.ids.dense());
     auto embeddings = input.embeddings
-        ? execution->executor().collectives().copy(dynamic_cast<const DenseTensor&>(*input.embeddings), primary).contiguous()
+        ? tyloi::ops::contiguous(tyloi::ops::copy(input.embeddings, primary)).dense()
         : embed_tokens(ids);
     const auto B = ids.size(0), T = ids.size(1);
     require_model(embeddings.dim() == 3 && embeddings.size(0) == B && embeddings.size(1) == T &&
@@ -475,7 +471,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
     if (state.decode_position_delta != 0)
         positions = positions + state.decode_position_delta;
     DenseTensor host_ids, cpu_positions;
-    if (execution->config.cache.pipeline || execution->config.dense_cpu_layer_count > 0) {
+    if (needs_host_tokens) {
         host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         cpu_positions = positions.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
     }
@@ -486,16 +482,16 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
     const auto trace_layer = [&] {
         if (!input.trace) return;
         input.trace->push_back(std::make_shared<DenseTensor>(
-            execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone()));
+            tyloi::ops::copy(hidden, primary).dense().to(::tyloi::kFloat32).clone()));
     };
     for (auto& block : blocks) {
         MfqCudaGuard guard(block->cuda_device);
         auto local_ids = block->cpu_offloaded
             ? host_ids
-            : execution->executor().collectives().copy(ids, block->cuda_device);
+            : tyloi::ops::copy(ids, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
         auto local_pos = block->cpu_offloaded
             ? cpu_positions
-            : execution->executor().collectives().copy(positions, block->cuda_device);
+            : tyloi::ops::copy(positions, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
         block->set_token_ids(*state.shared, local_ids);
         BlockContext context;
         context.token_ids = local_ids;
@@ -509,7 +505,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
         if (block->cpu_offloaded)
             hidden = hidden.to(::tyloi::kCPU).contiguous();
         else
-            hidden = execution->executor().collectives().copy(hidden, block->cuda_device);
+            hidden = tyloi::ops::copy(hidden, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
         hidden = block->forward_context(*state.shared,
 #ifndef TYLOINFER_NATIVE_CUDA
                                         *execution,
@@ -518,7 +514,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
         trace_layer();
     }
     state.cache_pos += T;
-    hidden = execution->executor().collectives().copy(hidden, primary);
+    hidden = tyloi::ops::copy(hidden, primary).dense();
     auto finalized = finalize_hidden(state, std::move(hidden), B, T);
     if (input.raw_hidden)
         *input.raw_hidden = state.shared->dspark_target_hidden();

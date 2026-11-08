@@ -1,5 +1,6 @@
 #pragma once
 #include "backend.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/backends/cuda/executor/decode_window.h"
 #include <array>
 #include <functional>
@@ -69,5 +70,12 @@ private:
 tyloi::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
     std::shared_ptr<MoeFfnPipeline> pipeline,const ::tyloi::DenseTensor& ids);
 bool moe_ffn_neighbor_prefetch_enabled(const std::shared_ptr<MoeFfnPipeline>& pipeline);
+#ifdef TYLOINFER_NATIVE_CUDA
+bool moe_ffn_use_pipeline(const std::shared_ptr<MoeFfnPipeline>& pipeline,
+                          std::int64_t rows, std::size_t gate_up_count);
+::tyloi::DenseTensor run_moe_ffn_pipeline(const std::shared_ptr<MoeFfnPipeline>& pipeline,
+    const ::tyloi::DenseTensor& input, const ::tyloi::DenseTensor& ids,
+    const ::tyloi::DenseTensor& weights);
+#endif
 void activate_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);
 void drain_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);

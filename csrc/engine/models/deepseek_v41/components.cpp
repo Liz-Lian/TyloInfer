@@ -10,7 +10,13 @@
 namespace tyloi::cuda::deepseek_v41 {
 
 std::unique_ptr<tyloi::models::Mtp> load_components(
-        Model& model, const tyloi::weights::Loader& weights, bool load_optional_components) {
+        Model& model, const tyloi::weights::Loader& weights, bool load_optional_components,
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::cuda::Pipelines& pipelines, tyloi::weights::Cache& cache) {
+#else
+        CudaExecutionContext& execution) {
+    auto& cache = execution.weights;
+#endif
     if (!load_optional_components) return {};
     if ((model.plan.vision != CudaVisionAdapter::none &&
          model.plan.vision != CudaVisionAdapter::deepseek_v41) ||
@@ -20,16 +26,16 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
     }
     if (model.plan.vision == CudaVisionAdapter::deepseek_v41) {
         model.vision = std::make_unique<deepseek_v41_runtime::Vision>(
-            deepseek_v41_runtime::Vision::load(model.source, weights, model.execution->weights, model.config));
+            deepseek_v41_runtime::Vision::load(model.source, weights, cache, model.config));
     }
     if (model.plan.predictor == CudaPredictorAdapter::none) return {};
     TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation() && model.tables.engram_parameters,
         "invalid DeepSeek-V4.1 DSpark model");
     return deepseek_v41_runtime::load_dspark_if_present(
 #ifdef TYLOINFER_NATIVE_CUDA
-        model.execution->executor().pipelines(),
+        pipelines,
 #else
-        *model.execution,
+        execution,
 #endif
         weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping);

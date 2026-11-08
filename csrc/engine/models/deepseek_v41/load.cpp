@@ -1,5 +1,6 @@
 #include "engine/models/deepseek_v41/ops.h"
 
+#include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/check.h"
 #include "engine/models/common/load.h"
@@ -13,6 +14,16 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+namespace tyloi::cuda::deepseek_v41_runtime {
+void validate_load_options(const CudaExecutionContext &execution) {
+    if (execution.config.tensor_parallel.enabled() || execution.config.layer_placement.enabled() ||
+        execution.config.n_gpu_layers >= 0) {
+        throw std::runtime_error("DeepSeek-V4.1 native CUDA currently supports single-device dense "
+                                 "placement or expert parallelism");
+    }
+}
+}
 
 namespace tyloi::cuda::deepseek_v41 {
 
@@ -44,12 +55,16 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
     definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
         std::move(definition), model.graph.backbone, context_size);
     read(model, model.source, definition, context_size);
+#ifndef TYLOINFER_NATIVE_CUDA
     model.execution = &execution;
+#endif
     deepseek_v41_runtime::validate_load_options(execution);
     if (execution.config.expert_parallel.enabled() && model.metadata.num_experts <= 0)
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
     execution.config.layer_placement.prepare(model.num_hidden_layers());
     execution.config.dense_cpu_layer_count = 0;
+    model.primary_device = execution.config.layer_placement.primary_device();
+    model.needs_host_tokens = execution.config.cache.pipeline || execution.config.dense_cpu_layer_count > 0;
     if (execution.config.n_gpu_layers >= 0 && execution.config.n_gpu_layers < model.num_hidden_layers())
         throw std::runtime_error("--n-gpu-layers currently supports dense Qwen-style blocks only");
     CudaScope model_guard(execution.config.layer_placement.primary_device(), execution.executor().contexts());
@@ -91,7 +106,12 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
     if (!defer_moe_cache_finalize)
         execution.weights.finalize();
     if (load_optional_components)
-        load_components(model, tensors, true);
+        load_components(model, tensors, true,
+#ifdef TYLOINFER_NATIVE_CUDA
+                        execution.executor().pipelines(), execution.weights);
+#else
+                        execution);
+#endif
 }
 
 } // namespace tyloi::cuda::deepseek_v41

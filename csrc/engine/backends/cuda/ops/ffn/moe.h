@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/ops/projection/mmq.h"
 
 #include <cstdint>
+#include <array>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -64,6 +65,23 @@ struct MoeScratch {
 };
 
 namespace tyloi::cuda {
+class Projector;
+class MoeSharedExpert {
+public:
+    MoeSharedExpert(::tyloi::Tensor gate, ::tyloi::Tensor up, ::tyloi::Tensor down,
+                    ::tyloi::Tensor scalar_gate);
+    ::tyloi::DenseTensor forward(const Projector&, const ::tyloi::DenseTensor&, std::int64_t rows) const;
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::DenseTensor forward(const ::tyloi::DenseTensor&, std::int64_t rows) const;
+#endif
+    ::tyloi::DenseTensor gate(const Projector&, const ::tyloi::DenseTensor&) const;
+    std::array<::tyloi::Tensor,3> projections;
+    ::tyloi::Tensor scalar_gate;
+private:
+    ::tyloi::DenseTensor raw(const Projector&, const ::tyloi::DenseTensor&) const;
+    bool tq = false, row_parallel = false;
+};
+
 struct MoeScratchCache {
     std::map<std::weak_ptr<const void>,
              std::map<const void*, std::map<std::pair<int, std::uintptr_t>, std::shared_ptr<MoeScratch>>>,

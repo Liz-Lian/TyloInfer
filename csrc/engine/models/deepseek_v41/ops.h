@@ -1,6 +1,8 @@
 #pragma once
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/cache.h"
 #include "engine/backends/cuda/executor/execution.h"
+#endif
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
@@ -12,6 +14,7 @@
 #include "engine/models/deepseek_v41/causal_lm.h"
 
 #include "engine/models/common/causal_model_ops.h"
+#include "engine/models/common/capabilities.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/info.h"
@@ -39,6 +42,7 @@
 #include <vector>
 
 namespace tyloi::cuda { class Pipelines; }
+struct CudaExecutionContext;
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 
@@ -1086,7 +1090,11 @@ struct Model : tyloi::models::CausalModel {
 
     // ---- weights and load-time state
     tyloi::models::CausalLmMetadata metadata;
+    int primary_device = 0;
+    bool needs_host_tokens = false;
+#ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext* execution = nullptr;
+#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;
@@ -1104,13 +1112,20 @@ struct Model : tyloi::models::CausalModel {
     tyloi::cuda::MediaCache media;
 
     // ---- helpers absorbed from the retired CausalLm plumbing
+#ifndef TYLOINFER_NATIVE_CUDA
     auto execution_scope() const {
         return CudaScope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
     }
+#endif
     ::tyloi::DenseTensor device_ids(::tyloi::DenseTensor ids) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto converted = tyloi::ops::cast(ids, ::tyloi::kInt64);
+        return tyloi::ops::contiguous(tyloi::ops::copy(converted, ::tyloi::Device(::tyloi::kCUDA, primary_device))).dense();
+#else
         return execution->executor().collectives()
             .copy(ids.to(::tyloi::kInt64), execution->config.layer_placement.primary_device())
             .contiguous();
+#endif
     }
     ::tyloi::DenseTensor embed_tokens(::tyloi::DenseTensor ids) const {
         return tyloi::ops::measure("model.embed", [&] { return tyloi::ops::embedding(ids, embed).dense(); });
@@ -1145,9 +1160,19 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
 void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
           bool defer_moe_cache_finalize, bool load_blocks, bool load_optional_components);
 
-::tyloi::Tensor deepseek_v41_prefill_hidden(
+struct CedEncoding {
+    ::tyloi::DenseTensor ids, tail_hidden, tail_pre, tail_ids;
+    tyloi::models::deepseek_v41::EngramHashBatch tail_hashes;
+    std::int64_t batch, begin, end, tokens, compute_chunk;
+};
+::tyloi::Tensor deepseek_v41_prefill_input(
+    Model& model, State& state, const ::tyloi::Tensor& ids, std::int64_t compute_chunk);
+std::optional<CedEncoding> deepseek_v41_prefill_encode(
     Model& model, State& state, const ::tyloi::Tensor& ids, std::int64_t compute_chunk,
-    const std::function<bool()>& stopped = {}, ::tyloi::Tensor* raw_hidden = nullptr);
+    const std::function<bool()>& stopped, bool capture_raw_hidden);
+::tyloi::Tensor deepseek_v41_prefill_decode(
+    Model& model, State& state, CedEncoding encoded, const std::function<bool()>& stopped,
+    ::tyloi::Tensor* raw_hidden = nullptr);
 std::int64_t prefill_span(const Model&, const State&, std::size_t tokens,
                           std::int64_t chunk, std::size_t, std::size_t,
                           bool transformed, bool retained);

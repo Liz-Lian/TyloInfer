@@ -3,6 +3,11 @@
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/native/collectives.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/native/profile.h"
+#include "engine/ops.h"
+#endif
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/backends/cuda/ops/ffn/mfe.h"
@@ -188,3 +193,46 @@ DenseTensor Projector::run(const TqMoeBanks& banks, DenseTensor input, DenseTens
 }
 
 } // namespace tyloi::cuda
+
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::Tensor tyloi::ops::experts(const Tensor& input, const Tensor& ids, const Tensor& weights,
+                                  std::span<const Tensor> gate_up, const Tensor& down, std::int64_t width) {
+    TYLOINFER_RUNTIME_CHECK(gate_up.size() >= 1 && gate_up.size() <= 2 && down.defined() &&
+        input.defined() && ids.defined() && weights.defined() && width > 0 &&
+        input.dim() == 2 && ids.dim() == 2 && weights.dim() == 2 &&
+        input.size(0) == ids.size(0) && ids.size(0) == weights.size(0) &&
+        ids.size(1) == weights.size(1) && input.device() == ids.device() &&
+        input.device() == weights.device(), "invalid routed expert inputs");
+    for (const auto& weight : gate_up)
+        TYLOINFER_RUNTIME_CHECK(weight.defined(), "missing routed expert projection");
+    auto& executor = cuda::Executor::current();
+    const auto project = executor.projector(cuda::Executor::current_ffn());
+    auto banks = tq_banks(gate_up.empty() ? nullptr : gate_up.front(),
+                          gate_up.empty() ? nullptr : gate_up.back(), down);
+    if (banks.gate || banks.up || banks.down) {
+        TYLOINFER_RUNTIME_CHECK(gate_up.size() == 2 && down && banks.gate && banks.up && banks.down,
+                                "TQ MoE requires separate Gate, Up and Down banks");
+        return executor.profiler().measure("tq.moe", [&] {
+            return project.run(banks, input.dense(), ids.dense(), weights.dense());
+        });
+    }
+    DenseTensor hidden;
+    {
+        auto gu = project.run(gate_up[0], input.dense(), ids.dense());
+        if (gate_up.size() == 2) {
+            auto up = project.run(gate_up[1], input.dense(), ids.dense());
+            gu = cuda::cat({gu, up}, -1);
+        }
+        auto gate = gu.narrow(-1, 0, width), up = gu.narrow(-1, width, width);
+        hidden = (gate * cuda::sigmoid(gate)) * up;
+    }
+    auto pairs = project.run(down, hidden, ids.dense());
+    hidden = {};
+    auto reduced = cuda::zeros({input.size(0), input.size(1)},
+                               input.options().dtype(kFloat32));
+    for (int64_t r = 0; r < ids.size(1); ++r)
+        reduced = reduced + pairs.select(1, r).to(kFloat32) *
+                            weights.dense().select(1, r).unsqueeze(-1);
+    return reduced.to(pairs.scalar_type());
+}
+#endif

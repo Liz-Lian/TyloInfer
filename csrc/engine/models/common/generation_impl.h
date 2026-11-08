@@ -237,6 +237,9 @@ template <typename Model, typename State> struct CudaGenerationOps {
     }
 
     double prefill(const tyloi::engine::PrefillChunk &chunk) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto scope = Executor::current().enter(mode.ffn);
+#endif
         PrefillCudaTimer timer;
         bool prefill_finished=false;
         const auto finish_prefill=[&] {

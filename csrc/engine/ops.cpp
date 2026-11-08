@@ -295,6 +295,21 @@ ProfileRange::ProfileRange(const char* name, std::optional<Device> device) {
 }
 ProfileRange::~ProfileRange() = default;
 void ProfileRange::finish() { if (impl_) impl_->range->finish(); }
+struct ProfileCapture::Impl {
+    CudaProfiler& profiler;
+    bool previous;
+    explicit Impl(CudaProfiler& profiler)
+        : profiler(profiler), previous(profiler.enabled) {
+        profiler.reset(); profiler.enabled = true;
+    }
+    ~Impl() { profiler.enabled = previous; }
+};
+ProfileCapture::ProfileCapture(bool selected)
+    : impl_(selected ? std::make_unique<Impl>(cuda::Executor::current().profiler()) : nullptr) {}
+ProfileCapture::~ProfileCapture() = default;
+void ProfileCapture::report(const std::string& name) {
+    if (impl_) impl_->profiler.report(name);
+}
 SelectedExperts topk(const Tensor& logits_tensor, std::int64_t count, const MoeRouting& routing) {
     const auto& logits = ::tyloi::ops::dense(logits_tensor);
     input(logits);

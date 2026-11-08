@@ -116,6 +116,15 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+class ProfileCapture {
+public:
+    explicit ProfileCapture(bool selected);
+    ~ProfileCapture();
+    void report(const std::string& name);
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 template <class Fn>
 auto measure(const char* name, std::optional<Device> device, Fn&& operation) -> decltype(operation()) {
     ProfileRange range(name, device);
@@ -270,6 +279,9 @@ SelectedExperts topk(const Tensor& logits, std::int64_t count, const MoeRouting&
 // Scale the selected weights in place.
 void expert_scale(Tensor& weights, const Tensor& ids, const Tensor& scales);
 std::shared_ptr<Tensor> weighted_reduce(const Tensor& pairs, const Tensor& weights);
+// SwiGLU routed experts, reduced in FP32 across the selected routes.
+Tensor experts(const Tensor& input, const Tensor& ids, const Tensor& weights,
+               std::span<const Tensor> gate_up, const Tensor& down, std::int64_t width);
 // Input is CUDA F16 [rows,in], ids are CUDA I32 [rows,routes], and banks are
 // [experts,2*hidden,in] and [experts,out,hidden]. Pairs are [rows,routes,out].
 // Traced intermediates are F32 snapshots taken before subsequent projections.

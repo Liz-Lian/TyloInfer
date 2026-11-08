@@ -19,22 +19,22 @@ class Moe {
         ::tyloi::Tensor router, ::tyloi::Tensor shared_gate, ::tyloi::Tensor gate,
         ::tyloi::Tensor up, ::tyloi::Tensor shared_down,
         const tyloi::models::qwen4_exp::Config&, MoeFfnPrefetch* = nullptr);
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::DenseTensor forward(const ::tyloi::DenseTensor&) const;
+#else
     ::tyloi::DenseTensor forward(CudaExecutionContext&, const ::tyloi::DenseTensor&) const;
+#endif
 
   private:
-    struct Shared {
-        std::array<::tyloi::Tensor, 3> projections;
-        ::tyloi::Tensor scalar_gate;
-        bool tq = false, row_parallel = false;
-        ::tyloi::DenseTensor raw(const Projector&, const ::tyloi::DenseTensor&) const;
-        ::tyloi::DenseTensor forward(const Projector&, const ::tyloi::DenseTensor&) const;
-        ::tyloi::DenseTensor gate(const Projector&, const ::tyloi::DenseTensor&) const;
-    };
     std::vector<::tyloi::Tensor> gate_up_;
     ::tyloi::Tensor down_, router_;
     tyloi::models::qwen4_exp::Config config_{};
-    std::shared_ptr<const Shared> shared_;
+    std::shared_ptr<const MoeSharedExpert> shared_;
+#ifdef TYLOINFER_NATIVE_CUDA
+    bool tq_ = false;
+#else
     std::shared_ptr<TqMoeBanks> tq_;
+#endif
     std::weak_ptr<MoeFfnPipeline> pipeline_;
 };
 

@@ -53,7 +53,7 @@ void Budget::reclaim(std::size_t bytes) {
         <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
 }
 
-void Budget::reserve_kv(Device device, std::size_t bytes) {
+void Budget::reclaim_kv(Device device, std::size_t bytes) {
     require_cuda_device(device);
     auto context = default_context(device.index);
     if (context->available_memory() >= bytes) return;
@@ -63,7 +63,11 @@ void Budget::reserve_kv(Device device, std::size_t bytes) {
         trim_prefix(bytes, primary_device_);
     }
     context->reclaim_idle_memory();
-    if (context->available_memory() < bytes)
+}
+
+void Budget::reserve_kv(Device device, std::size_t bytes) {
+    reclaim_kv(device, bytes);
+    if (default_context(device.index)->available_memory() < bytes)
         throw engine::InferenceInputError(engine::InferenceInputErrorCode::ContextLength,
             "insufficient VRAM for context growth; reduce concurrent requests or prompt length");
 }

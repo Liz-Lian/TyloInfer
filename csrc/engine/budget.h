@@ -47,6 +47,7 @@ public:
     std::size_t weights() const noexcept { return weight_budget_; }
     // Call within the owner's execution scope.
     void reclaim(std::size_t bytes);
+    void reclaim_kv(Device device, std::size_t bytes);
     void reserve_kv(Device device, std::size_t bytes);
     void reserve_ram(std::size_t bytes);
     void workspace(Device device, std::size_t bytes);

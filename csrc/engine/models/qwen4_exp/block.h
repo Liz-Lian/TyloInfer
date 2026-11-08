@@ -51,7 +51,11 @@ struct Qwen4Block final {
     std::unique_ptr<Qsa> qsa;
     std::unique_ptr<Ple> ple;
     DenseTensor batch_ffn(CudaExecutionContext& execution,const DenseTensor& input) {
-        if(input.size(0)<=8)return ffn.forward(execution,input);
+        if(input.size(0)<=8)return ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+            execution,
+#endif
+            input);
         const auto option=::tyloi::cuda::options::continuous_ffn_tile();
         const int64_t rows=option?*option:8;
         TYLOINFER_RUNTIME_CHECK(rows==8 || rows==16,"continuous FFN tile must be 8 or 16 rows");
@@ -71,7 +75,17 @@ struct Qwen4Block final {
         for(int64_t start=0;start<input.size(0);start+=rows) {
             mode.tile=int(start/rows);
             if(window)window->set_profile_tile(int(start/rows));
-            outputs.push_back(ffn.forward(execution,input.narrow(0,start,std::min(rows,input.size(0)-start))));
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto tile_mode=Executor::current_ffn();
+            tile_mode.tile=mode.tile;
+            tile_mode.tiles=mode.tiles;
+            auto tile_scope=Executor::current().enter(tile_mode);
+#endif
+            outputs.push_back(ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+                execution,
+#endif
+                input.narrow(0,start,std::min(rows,input.size(0)-start))));
         }
         return ::tyloi::cuda::cat(outputs,0);
     }
@@ -123,7 +137,11 @@ struct Qwen4Block final {
             return ffn_gr.pre_after(attention_output,attention_residual,attention_gate);
         });
         attention_output={};
-        auto ffn_output=profiler.measure("prefill.ffn",[&] {return ffn.forward(execution,ffn_input);});
+        auto ffn_output=profiler.measure("prefill.ffn",[&] {return ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+            execution,
+#endif
+            ffn_input);});
         return profiler.measure("prefill.gr_ffn_post",[&] {return ffn_gr.post(ffn_output,ffn_residual,ffn_gate);});
     }
     DenseTensor forward_context(LayerState& state, CudaExecutionContext &execution, DenseTensor x, const BlockContext &context) {
@@ -200,7 +218,11 @@ struct Qwen4Block final {
         if(state.router_audit)state.router_audit->input(layer,ffn_input);
         const bool early_prediction=prediction.identity && execution.weights.prefetch().early;
         if(early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
-        auto ffn_output=ffn.forward(execution,ffn_input);
+        auto ffn_output=ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+            execution,
+#endif
+            ffn_input);
         // Reserve current-layer readers before selecting speculative
         // slots. The route export itself precedes current FFN math.
         if(prediction.identity && !early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
