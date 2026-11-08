@@ -72,8 +72,8 @@ auto hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                             "CUDA model forward requires an executor");
 #ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = Executor::current().enter(mode.ffn);
     if constexpr (causal<Model>) {
-        auto scope = executor->enter(mode.ffn);
         return model.forward(std::move(input), state, forward_options(mode));
     } else {
         return forward(model, state, *executor, collectives, mode, std::move(input));
@@ -90,8 +90,8 @@ auto project(Model& model, tyloi::cuda::Executor* executor,
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                             "CUDA model logits requires an executor");
 #ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = Executor::current().enter(mode.ffn);
     if constexpr (causal<Model>) {
-        auto scope = executor->enter(mode.ffn);
         return model.logits(value, capped);
     } else {
         return logits(model, *executor, value, capped, mode);

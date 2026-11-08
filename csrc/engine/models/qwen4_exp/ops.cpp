@@ -234,193 +234,208 @@ DenseTensor Gdn::project_output(const DenseTensor& source) const {
 }
 
 
-std::function<DenseTensor(CudaExecutionContext&, const DenseTensor&)> qwen_moe(Pipelines& pipelines, std::vector<Linear> gate_up, Linear down,
-                       Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
-                       const Config &c, MoeFfnPrefetch* prefetch) {
-    const auto shared_g=std::move(sg),shared_u=std::move(su);
-    const auto shared_d=std::move(sd),shared_gate_weight=std::move(shared_gate);
-    TYLOINFER_RUNTIME_CHECK(shared_g && shared_u && shared_d && shared_gate_weight,
-        "Qwen shared expert requires projection weights");
-    const auto shared_g_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(shared_g.get());
-    const auto shared_u_tq=dynamic_cast<const tyloi::encoding::TqTensor*>(shared_u.get());
-    const bool shared_tq = shared_g_tq && shared_u_tq &&
-        shared_g_tq->image().device().is_cuda() && shared_u_tq->image().device().is_cuda();
-    auto shared_raw=[shared_g,shared_u,shared_d,shared_gate_weight,shared_tq](const tyloi::cuda::Projector& project,const DenseTensor& source) {
-        if(shared_tq) {
+DenseTensor Moe::Shared::raw(const Projector& project,const DenseTensor& source) const {
+    const auto& shared_g=projections[0];
+    const auto& shared_u=projections[1];
+    const auto& shared_d=projections[2];
+    if(tq) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            const std::array<std::shared_ptr<const tyloi::Tensor>, 2> weights{shared_g, shared_u};
-            const auto group = project.group(weights);
+        const std::array<::tyloi::Tensor, 2> weights{shared_g, shared_u};
+        const auto group = project.group(weights);
 #else
-            const auto group = make_quant_group({shared_g, shared_u}, false, false);
+        const auto group = make_quant_group({shared_g, shared_u}, false, false);
 #endif
-            auto output=project.run(*shared_d,project.swiglu(group,source));
-            return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,source))*output;
-        }
-        DenseTensor hidden;
-        {
-            auto g=project.run(*shared_g,source);
-            auto u=project.run(*shared_u,source);
-            hidden=(g*::tyloi::cuda::sigmoid(g))*u;
-        }
-        auto output=project.run(*shared_d,hidden);
-        hidden={};
-        return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,source))*output;
-    };
-    const std::array<std::shared_ptr<const ::tyloi::Tensor>,3> shared_projections{shared_g,shared_u,shared_d};
-    const bool shared_row_parallel=std::all_of(shared_projections.begin(),shared_projections.end(),
+        auto output=project.run(*shared_d,project.swiglu(group,source));
+        return ::tyloi::cuda::sigmoid(project.run(*scalar_gate,source))*output;
+    }
+    DenseTensor hidden;
+    {
+        auto g=project.run(*shared_g,source);
+        auto u=project.run(*shared_u,source);
+        hidden=(g*::tyloi::cuda::sigmoid(g))*u;
+    }
+    auto output=project.run(*shared_d,hidden);
+    hidden={};
+    return ::tyloi::cuda::sigmoid(project.run(*scalar_gate,source))*output;
+}
+
+DenseTensor Moe::Shared::forward(const Projector& project,const DenseTensor& source) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto rows=qwen_prefill_reference_rows;
+    const auto parallel_option=::tyloi::cuda::options::moe_prefill_shared_streams();
+    const int streams=parallel_option?*parallel_option:0;
+    const auto chain_option=::tyloi::cuda::options::moe_prefill_shared_chain_streams();
+    const int chain_streams=chain_option?*chain_option:4;
+    const auto tail=rows>0?source.size(0)%rows:0;
+    if(chain_streams>0 && row_parallel && rows>8 && source.size(0)>=8192 &&
+            source.size(0)>rows && (tail==0 || tail>8)) {
+        // The first original chunk prepares all three cached weight
+        // matrices. Worker pipelines then read them after the ready fence.
+        auto first=raw(project,source.narrow(0,0,rows));
+        auto shape=first.sizes().vec();shape[0]=source.size(0);
+        auto output=::tyloi::cuda::empty(shape,first.options());
+        output.narrow(0,0,rows).copy_(first);
+        tyloi::cuda::submit_parallel_rows(source.get_device(),rows,source.size(0),rows,chain_streams,
+            [&](int64_t begin,int64_t count) {
+                auto part=raw(project,source.narrow(0,begin,count));
+                output.narrow(0,begin,count).copy_(part);
+            });
+        return output;
+    }
+    if(streams>0 && row_parallel && rows>8 && source.size(0)>rows && (tail==0 || tail>8)) {
+        // Each GEMM retains its original row count. Only its submission
+        // stream changes; activations remain in their canonical FP16 form.
+        const auto projection=[&](int index,const DenseTensor& input) {
+            const tyloi::cuda::MatmulRowsScope gemm_rows(rows,streams);
+            return project.run(*projections[index],input);
+        };
+        auto gate=projection(0,source),up=projection(1,source);
+        auto output=projection(2,(gate*::tyloi::cuda::sigmoid(gate))*up);
+        auto scale=qwen_prefill_preserve_rows(source,[&](const DenseTensor& part) {
+            return ::tyloi::cuda::sigmoid(project.run(*scalar_gate,part));
+        });
+        return scale*output;
+    }
+#endif
+    return qwen_prefill_preserve_rows(source,[&](const DenseTensor& part){return raw(project,part);});
+}
+
+DenseTensor Moe::Shared::gate(const Projector& project,const DenseTensor& input) const {
+    const auto option=::tyloi::cuda::options::shared_gate_fused();
+    const auto* nint_option=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
+    const auto* gate_nint=scalar_gate.representation<tyloi::NintTensor>();
+    const auto* gate_dense=scalar_gate.representation<tyloi::DenseTensor>();
+    if((!option || *option) && (!nint_option || nint_option[0]!='0') &&
+            gate_nint)
+        if(auto output=try_nint_shared_gate_sigmoid_cuda(input,*gate_nint))return *output;
+    if((!option || *option) && gate_dense)
+        if(auto output=try_shared_gate_sigmoid_cuda(input,*gate_dense))return *output;
+    return ::tyloi::cuda::sigmoid(project.run(*scalar_gate,input));
+}
+
+Moe::Moe(Pipelines& pipelines, std::vector<Linear> gate_up, Linear down,
+         Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
+         const Config &c, MoeFfnPrefetch* prefetch)
+    : gate_up_(std::move(gate_up)), down_(std::move(down)), router_(std::move(router)), config_(c) {
+    TYLOINFER_RUNTIME_CHECK(sg && su && sd && shared_gate,
+        "Qwen shared expert requires projection weights");
+    auto shared = std::make_shared<Shared>();
+    shared->projections={std::move(sg),std::move(su),std::move(sd)};
+    shared->scalar_gate=std::move(shared_gate);
+    const auto* shared_g_tq=shared->projections[0].representation<tyloi::encoding::TqTensor>();
+    const auto* shared_u_tq=shared->projections[1].representation<tyloi::encoding::TqTensor>();
+    shared->tq = shared_g_tq && shared_u_tq &&
+        shared_g_tq->image().device().is_cuda() && shared_u_tq->image().device().is_cuda();
+    shared->row_parallel=std::all_of(shared->projections.begin(),shared->projections.end(),
         [](const auto& weight) {
-            const auto* nint=dynamic_cast<const tyloi::NintTensor*>(weight.get());
+            const auto* nint=weight.representation<tyloi::NintTensor>();
             return nint && !nint->q8_zero;
         });
-    auto shared=[shared_raw,shared_projections,shared_gate_weight,shared_row_parallel](const tyloi::cuda::Projector& project,const DenseTensor& source) {
-#ifdef TYLOINFER_NATIVE_CUDA
-        const auto rows=qwen_prefill_reference_rows;
-        const auto parallel_option=::tyloi::cuda::options::moe_prefill_shared_streams();
-        const int streams=parallel_option?*parallel_option:0;
-        const auto chain_option=::tyloi::cuda::options::moe_prefill_shared_chain_streams();
-        const int chain_streams=chain_option?*chain_option:4;
-        const auto tail=rows>0?source.size(0)%rows:0;
-        if(chain_streams>0 && shared_row_parallel && rows>8 && source.size(0)>=8192 &&
-                source.size(0)>rows && (tail==0 || tail>8)) {
-            // The first original chunk prepares all three cached weight
-            // matrices. Worker pipelines then read them after the ready fence.
-            auto first=shared_raw(project,source.narrow(0,0,rows));
-            auto shape=first.sizes().vec();shape[0]=source.size(0);
-            auto output=::tyloi::cuda::empty(shape,first.options());
-            output.narrow(0,0,rows).copy_(first);
-            tyloi::cuda::submit_parallel_rows(source.get_device(),rows,source.size(0),rows,chain_streams,
-                [&](int64_t begin,int64_t count) {
-                    auto part=shared_raw(project,source.narrow(0,begin,count));
-                    output.narrow(0,begin,count).copy_(part);
-                });
-            return output;
-        }
-        if(streams>0 && shared_row_parallel && rows>8 && source.size(0)>rows && (tail==0 || tail>8)) {
-            // Each GEMM retains its original row count. Only its submission
-            // stream changes; activations remain in their canonical FP16 form.
-            const auto projection=[&](int index,const DenseTensor& input) {
-                const tyloi::cuda::MatmulRowsScope gemm_rows(rows,streams);
-                return project.run(*shared_projections[index],input);
-            };
-            auto gate=projection(0,source),up=projection(1,source);
-            auto output=projection(2,(gate*::tyloi::cuda::sigmoid(gate))*up);
-            auto scale=qwen_prefill_preserve_rows(source,[&](const DenseTensor& part) {
-                return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,part));
-            });
-            return scale*output;
-        }
-#endif
-        return qwen_prefill_preserve_rows(source,[&](const DenseTensor& part){return shared_raw(project,part);});
-    };
+    shared_=shared;
     MoeFfnSharedWeights shared_weights;
-    shared_weights.projections=shared_projections;
-    shared_weights.scalar_gate=shared_gate_weight;
-    shared_weights.gate=[shared_gate_weight](const tyloi::cuda::Projector& project,const DenseTensor& input) {
-        const auto option=::tyloi::cuda::options::shared_gate_fused();
-        const auto* nint_option=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
-        const auto* gate_nint=dynamic_cast<const tyloi::NintTensor*>(shared_gate_weight.get());
-        const auto* gate_dense=dynamic_cast<const tyloi::DenseTensor*>(shared_gate_weight.get());
-        if((!option || *option) && (!nint_option || nint_option[0]!='0') &&
-                gate_nint)
-            if(auto output=try_nint_shared_gate_sigmoid_cuda(input,*gate_nint))return *output;
-        if((!option || *option) && gate_dense)
-            if(auto output=try_shared_gate_sigmoid_cuda(input,*gate_dense))return *output;
-        return ::tyloi::cuda::sigmoid(project.run(*shared_gate_weight,input));
+    shared_weights.projections=shared->projections;
+    shared_weights.scalar_gate=shared->scalar_gate;
+    shared_weights.gate=[shared](const Projector& project,const DenseTensor& input) {
+        return shared->gate(project,input);
     };
-    std::shared_ptr<TqMoeBanks> tq;
-    auto banks = tq_banks(gate_up.empty() ? nullptr : gate_up.front(),
-        gate_up.empty() ? nullptr : gate_up.back(), down);
+    auto banks = tq_banks(gate_up_.empty() ? nullptr : gate_up_.front(),
+        gate_up_.empty() ? nullptr : gate_up_.back(), down_);
     if(banks.gate || banks.up || banks.down) {
-        TYLOINFER_RUNTIME_CHECK(gate_up.size()==2 && down &&
+        TYLOINFER_RUNTIME_CHECK(gate_up_.size()==2 && down_ &&
             banks.gate && banks.up && banks.down,
             "TQ MoE requires separate Gate, Up and Down banks");
-        tq=std::make_shared<TqMoeBanks>(std::move(banks));
+        tq_=std::make_shared<TqMoeBanks>(std::move(banks));
     }
-    std::weak_ptr<MoeFfnPipeline> pipeline;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     std::shared_ptr<MoeFfnPipeline> owned_pipeline;
     MoeFfnPrefetch prefetch_fn;
-    if(!tq) {
+    if(!tq_) {
         owned_pipeline=pipelines.make(
-            gate_up,{down},shared,{},std::move(shared_weights));
+            gate_up_,{down_},[shared](const Projector& project,const DenseTensor& source) {
+                return shared->forward(project,source);
+            },{},std::move(shared_weights));
         if(owned_pipeline) {
             const std::weak_ptr<MoeFfnPipeline> borrowed=owned_pipeline;
             if(prefetch)prefetch_fn=[borrowed](const DenseTensor& ids) {
                 if(auto pipeline=borrowed.lock())return prefetch_moe_ffn_pipeline(pipeline,ids);
                 return tyloi::cuda::DecodeWindow::Task{};
             };
-            pipeline=borrowed;
+            pipeline_=borrowed;
         }
     }
 #endif
-    auto result=[gate_up, down, router, shared, pipeline, tq, c](CudaExecutionContext &execution,
-                                                               const DenseTensor &x) {
-        auto source = x.reshape({-1, c.hidden}).to(::tyloi::kFloat16);
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-        auto borrowed=pipeline.lock();
-#endif
-        const auto layer_prefill = ::tyloi::cuda::options::moe_prefill_layer();
-        const bool combined_prefill = source.size(0)>8 &&
-            execution.executor().mmq().mode==KlMmqMode::Default &&
-            execution.weights.prefill_ready(layer_prefill);
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-        const bool use_pipeline=borrowed && (gate_up.size()!=1 ||
-            combined_prefill ||
-            ((source.size(0)<=8 || (source.size(0)<=32 && execution.executor().mode().ffn.batch_serial)) &&
-             execution.executor().options().moe_ffn.two_stage &&
-             execution.executor().mmq().mode==KlMmqMode::Default));
-#else
-        const bool use_pipeline=false;
-#endif
-        const auto routing = c.routing();
-        auto selected = moe_topk_cuda(
-            qwen_prefill_preserve_rows(source,[&](const DenseTensor& part){return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*router,part);}).contiguous(),
-            c.topk, routing.activation == tyloi::ops::RouterActivation::sigmoid,
-            routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
-            routing.normalize, routing.delayed_softmax, mfq_nullopt, 1e-20, routing.scale);
-        auto shared_output = use_pipeline ? DenseTensor{} : shared(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),source);
-        DenseTensor routed;
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-        if(use_pipeline) routed = run_moe_ffn_pipeline(borrowed,execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),source,
-                    selected[0].to(::tyloi::kInt32).contiguous(),selected[1],execution.executor().mode().ffn.batch_serial,
-                    execution.executor().mode().ffn.tile,execution.executor().mode().ffn.tiles);
-        else
-#endif
-        if(tq) routed = execution.executor().profiler().measure("tq.moe",[&] {
-                    return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*tq,source,selected[0],selected[1]);
-                });
-        else {
-            DenseTensor hidden;
-            {
-                const auto& project = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config));
-                auto gu = project.run(*gate_up[0], source, selected[0]);
-                if(gate_up.size()==2) {
-                    auto up = project.run(*gate_up[1], source, selected[0]);
-                    gu = ::tyloi::cuda::cat({gu, up}, -1);
-                }
-                auto gate = gu.narrow(-1, 0, c.moe_width),
-                     up = gu.narrow(-1, c.moe_width, c.moe_width);
-                hidden = (gate * ::tyloi::cuda::sigmoid(gate)) * up;
-            }
-            auto pairs = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*down, hidden, selected[0]);
-            hidden = {};
-            auto reduced = ::tyloi::cuda::zeros({source.size(0), c.hidden},
-                                                source.options().dtype(::tyloi::kFloat32));
-            for (int64_t r = 0; r < c.topk; ++r)
-                reduced = reduced + pairs.select(1, r).to(::tyloi::kFloat32) *
-                                    selected[1].select(1, r).unsqueeze(-1);
-            routed = reduced.to(pairs.scalar_type());
-        }
-        if(use_pipeline)return routed.reshape(x.sizes());
-        return (routed + shared_output).reshape(x.sizes());
-    };
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if(owned_pipeline) {
         pipelines.add(std::move(owned_pipeline));
         if(prefetch)*prefetch=std::move(prefetch_fn);
     }
 #endif
-    return result;
+}
+
+DenseTensor Moe::forward(CudaExecutionContext &execution,const DenseTensor &x) const {
+    const auto& c=config_;
+    const auto& gate_up=gate_up_;
+    const auto& down=down_;
+    const auto& router=router_;
+    const auto& tq=tq_;
+    auto source = x.reshape({-1, c.hidden}).to(::tyloi::kFloat16);
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    auto borrowed=pipeline_.lock();
+#endif
+    const auto layer_prefill = ::tyloi::cuda::options::moe_prefill_layer();
+    const bool combined_prefill = source.size(0)>8 &&
+        execution.executor().mmq().mode==KlMmqMode::Default &&
+        execution.weights.prefill_ready(layer_prefill);
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    const bool use_pipeline=borrowed && (gate_up.size()!=1 ||
+        combined_prefill ||
+        ((source.size(0)<=8 || (source.size(0)<=32 && execution.executor().mode().ffn.batch_serial)) &&
+         execution.executor().options().moe_ffn.two_stage &&
+         execution.executor().mmq().mode==KlMmqMode::Default));
+#else
+    const bool use_pipeline=false;
+#endif
+    const auto routing = c.routing();
+    auto selected = moe_topk_cuda(
+        qwen_prefill_preserve_rows(source,[&](const DenseTensor& part){return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*router,part);}).contiguous(),
+        c.topk, routing.activation == tyloi::ops::RouterActivation::sigmoid,
+        routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
+        routing.normalize, routing.delayed_softmax, mfq_nullopt, 1e-20, routing.scale);
+    auto shared_output = use_pipeline ? DenseTensor{} : shared_->forward(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),source);
+    DenseTensor routed;
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if(use_pipeline) routed = run_moe_ffn_pipeline(borrowed,execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),source,
+                selected[0].to(::tyloi::kInt32).contiguous(),selected[1],execution.executor().mode().ffn.batch_serial,
+                execution.executor().mode().ffn.tile,execution.executor().mode().ffn.tiles);
+    else
+#endif
+    if(tq) routed = execution.executor().profiler().measure("tq.moe",[&] {
+                return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*tq,source,selected[0],selected[1]);
+            });
+    else {
+        DenseTensor hidden;
+        {
+            const auto& project = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config));
+            auto gu = project.run(*gate_up[0], source, selected[0]);
+            if(gate_up.size()==2) {
+                auto up = project.run(*gate_up[1], source, selected[0]);
+                gu = ::tyloi::cuda::cat({gu, up}, -1);
+            }
+            auto gate = gu.narrow(-1, 0, c.moe_width),
+                 up = gu.narrow(-1, c.moe_width, c.moe_width);
+            hidden = (gate * ::tyloi::cuda::sigmoid(gate)) * up;
+        }
+        auto pairs = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*down, hidden, selected[0]);
+        hidden = {};
+        auto reduced = ::tyloi::cuda::zeros({source.size(0), c.hidden},
+                                            source.options().dtype(::tyloi::kFloat32));
+        for (int64_t r = 0; r < c.topk; ++r)
+            reduced = reduced + pairs.select(1, r).to(::tyloi::kFloat32) *
+                                selected[1].select(1, r).unsqueeze(-1);
+        routed = reduced.to(pairs.scalar_type());
+    }
+    if(use_pipeline)return routed.reshape(x.sizes());
+    return (routed + shared_output).reshape(x.sizes());
 }
 
 
@@ -760,7 +775,7 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
             x=block.attention_gr.post(attention_output,attention_residual,attention_gate);
             attention_output={};
             auto [ffn_input,ffn_residual,ffn_gate]=block.ffn_gr.pre(x);
-            auto ffn_output=block.ffn(*execution,ffn_input);
+            auto ffn_output=block.ffn.forward(*execution,ffn_input);
             return block.ffn_gr.post(ffn_output,ffn_residual,ffn_gate);
         },
         [&](const DenseTensor &multi) { return history_only?DenseTensor{}:final_mixer->pre(multi).mixed; },
@@ -1854,13 +1869,18 @@ Qwen4BatchRequestState::Qwen4BatchRequestState(qwen4_exp::Model& model)
                           "Flash-Next continuous batching requires one CUDA device");
         state_->layers.emplace_back(*block);
     }
-    std::size_t fixed=0;
-    for(const auto& layer:state_->layers)if(layer.gdn)fixed+=layer.gdn->request_cache_growth_bytes(layer.gdn_state);
-    if(fixed && model.reserve_kv_workspace)model.reserve_kv_workspace(fixed+(std::size_t(64)<<20));
-    for(auto& layer:state_->layers)if(layer.gdn)layer.gdn->initialize_request_cache(layer.gdn_state,false);
 }
 Qwen4BatchRequestState::~Qwen4BatchRequestState() = default;
 int64_t Qwen4BatchRequestState::position() const { return state_->cache_position; }
+std::size_t Qwen4BatchRequestState::initial_growth_bytes() const {
+    std::size_t fixed=0;
+    for(const auto& layer:state_->layers)
+        if(layer.gdn)fixed+=layer.gdn->request_cache_growth_bytes(layer.gdn_state);
+    return fixed;
+}
+void Qwen4BatchRequestState::initialize() {
+    for(auto& layer:state_->layers)if(layer.gdn)layer.gdn->initialize_request_cache(layer.gdn_state,false);
+}
 std::size_t Qwen4BatchRequestState::prefill_growth_bytes(int64_t tokens) const {
     return state_->growth_bytes(tokens);
 }
@@ -1915,11 +1935,8 @@ Qwen4BatchDecodeGraph::~Qwen4BatchDecodeGraph() = default;
 void Qwen4BatchDecodeGraph::clear() { graph_->clear(); }
 int64_t Qwen4BatchDecodeGraph::captures() const { return graph_->captures; }
 int64_t Qwen4BatchDecodeGraph::replays() const { return graph_->replays; }
-std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
-        const std::vector<Qwen4BatchRequestState*>& requests,
-        const ::tyloi::Tensor& ids_handle,const ::tyloi::Tensor& host_ids_handle,bool greedy) {
-    const auto& ids = ids_handle.dense();
-    const auto& host_ids = host_ids_handle.dense();
+std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
+        const std::vector<Qwen4BatchRequestState*>& requests, bool greedy) {
     auto& graph = *graph_;
     auto& model = graph.model;
     if (model.execution->offload || !mfq_cuda_graph_capture_supported()) return {};
@@ -1948,10 +1965,9 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
         model.execution->weights.finish_exchange();
         default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
     }
-    graph.greedy = greedy;
-    if (!graph.window) {
-        graph.requests = requests;
-        std::size_t growth = 0;
+    Plan plan;
+    plan.rebuild = !graph.window;
+    if (plan.rebuild) {
         for (auto* request : requests) {
             const auto maximum = model.max_position_embeddings();
             const auto required = request->position() + 1;
@@ -1968,13 +1984,31 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                 capacity = std::min(maximum,capacity > maximum/2 ? maximum : capacity*2);
             for(const auto& layer:request->state_->layers)
                 if(layer.qsa && layer.qsa->graph_capacity(*layer.qsa_state))capacity=layer.qsa->graph_capacity(*layer.qsa_state);
-            graph.capacities.push_back(capacity);
+            plan.capacities.push_back(capacity);
             for (const auto& layer : request->state_->layers) {
-                if (layer.qsa) growth += layer.qsa->graph_growth_bytes(*layer.qsa_state,capacity);
-                if (layer.gdn) growth += layer.gdn->request_cache_growth_bytes(layer.gdn_state);
+                if (layer.qsa) plan.growth += layer.qsa->graph_growth_bytes(*layer.qsa_state,capacity);
+                if (layer.gdn) plan.growth += layer.gdn->request_cache_growth_bytes(layer.gdn_state);
             }
         }
-        if (model.reserve_kv_workspace) model.reserve_kv_workspace(growth + (std::size_t(64) << 20));
+    }
+    return plan;
+}
+
+std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
+        const std::vector<Qwen4BatchRequestState*>& requests,
+        const ::tyloi::Tensor& ids_handle,const ::tyloi::Tensor& host_ids_handle,bool greedy,const Plan& plan) {
+    const auto& ids = ids_handle.dense();
+    const auto& host_ids = host_ids_handle.dense();
+    auto& graph = *graph_;
+    auto& model = graph.model;
+    const auto batch = static_cast<int64_t>(requests.size());
+    graph.ready.record(mfq_get_current_cuda_stream());
+    MfqCudaStreamGuard stream_guard(graph.stream);
+    TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(graph.stream.stream(),graph.ready.get(),0));
+    graph.greedy = greedy;
+    if (plan.rebuild) {
+        graph.requests = requests;
+        graph.capacities = plan.capacities;
         graph.ids = ::tyloi::cuda::empty_like(ids);
         graph.ple.resize(batch);
         for (int64_t row = 0; row < batch; ++row) {
@@ -2158,11 +2192,6 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
     auto ids=::tyloi::cuda::cat(chunks,1);
     auto host_ids=ids.to(::tyloi::kCPU);
     const auto tokens=offsets.back();
-    if(tokens>1024)model.execution->weights.workspace(::tyloi::cuda::options::workspace_reserve_bytes());
-    if(!packed) {
-        if(model.reserve_kv_workspace)
-            model.reserve_kv_workspace(requests.front()->state_->growth_bytes(tokens)+(std::size_t(256)<<20));
-    }
     if(!packed && execution.config.cache.pipeline) {
         for(std::size_t row=0;row<requests.size();++row) {
             const auto row_ids=host_ids.narrow(1,offsets[row],chunks[row].size(1));
@@ -2220,8 +2249,8 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             execution.executor().profiler().measure("prefill.gr_ffn_pre",[&] {
                 return block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
             });
-        auto ffn_output=packed ? block.ffn(execution,ffn_mix.mixed) :
-            execution.executor().profiler().measure("prefill.ffn",[&] { return block.ffn(execution,ffn_mix.mixed); });
+        auto ffn_output=packed ? block.ffn.forward(execution,ffn_mix.mixed) :
+            execution.executor().profiler().measure("prefill.ffn",[&] { return block.ffn.forward(execution,ffn_mix.mixed); });
         hidden=packed ? block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate) :
             execution.executor().profiler().measure("prefill.gr_ffn_post",[&] {
                 return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
@@ -2245,18 +2274,14 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
     const auto batch = static_cast<int64_t>(requests.size());
     TYLOINFER_RUNTIME_CHECK(batch > 0 && ids.dim() == 2 && ids.size(0) == batch && ids.size(1) == 1,
                       "invalid Flash-Next batch input");
-    std::size_t growth = 0;
     std::vector<::tyloi::DenseTensor> current, full;
     for (const auto* request : requests) {
         const auto& state = *request->state_;
         TYLOINFER_RUNTIME_CHECK(state.cache_position < model.max_position_embeddings(), "batch request exceeds max_context");
-        growth += state.growth_bytes(1);
         auto position = ::tyloi::cuda::full({1},state.cache_position,ids.options());
         current.push_back(position);
         full.push_back(state.positions.defined() ? ::tyloi::cuda::cat({state.positions,position},-1) : position);
     }
-    if (growth && model.reserve_kv_workspace)
-        model.reserve_kv_workspace(growth + (std::size_t(64) << 20));
     auto& execution = *model.execution;
     auto hidden = model.repeat_hidden(model.embed_tokens(ids),model.metadata.hc_mult);
     for (std::size_t i = 0; i < model.blocks.size(); ++i) {
@@ -2569,7 +2594,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                     ffn_inputs=::tyloi::cuda::empty({1,tokens,model.hidden_size()},mix.mixed.options().dtype(::tyloi::kFloat16));
                     ffn_gate=::tyloi::cuda::empty({1,tokens,mix.gate.size(-1)},mix.gate.options());
                 }
-                // qwen_moe casts the router/FFN source to half at this boundary.
+                // The MoE casts the router/FFN source to half at this boundary.
                 ffn_inputs.narrow(1,begin,count).copy_(mix.mixed.to(::tyloi::kFloat16));
                 ffn_gate.narrow(1,begin,count).copy_(mix.gate);
                 output=std::move(mix.residual);
@@ -2607,7 +2632,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
             auto& qwen_block=static_cast<qwen4_exp::Qwen4Block&>(*block);
             profiler.enabled=restore.enabled;
             auto ffn_output=profiler.measure("prefill.ffn",[&] {
-                if(expert_batch_count(tokens)==tokens)return qwen_block.ffn(*model.execution,ffn_inputs);
+                if(expert_batch_count(tokens)==tokens)return qwen_block.ffn.forward(*model.execution,ffn_inputs);
                 DenseTensor result;
                 for(int64_t begin=0;begin<tokens;) {
                     if(cancelled && cancelled())return DenseTensor{};
@@ -2618,7 +2643,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                     // layer. Keep both batches in prefill, including chat inputs
                     // just above the expert-batch boundary.
                     if(tail>0 && tail<=8)count-=16-tail;
-                    auto part=qwen_block.ffn(*model.execution,ffn_inputs.narrow(1,begin,count));
+                    auto part=qwen_block.ffn.forward(*model.execution,ffn_inputs.narrow(1,begin,count));
                     if(!result.defined()) {
                         auto shape=part.sizes().vec();shape[1]=tokens;
                         result=::tyloi::cuda::empty(shape,part.options());
@@ -2634,7 +2659,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                 for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
                     const auto count=std::min(compute_chunk,tokens-begin);
                     expected.narrow(1,begin,count).copy_(
-                        qwen_block.ffn(*model.execution,ffn_inputs.narrow(1,begin,count)));
+                        qwen_block.ffn.forward(*model.execution,ffn_inputs.narrow(1,begin,count)));
                 }
                 auto a=ffn_output.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
                 auto b=expected.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();

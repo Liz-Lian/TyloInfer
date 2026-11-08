@@ -19,10 +19,6 @@
 namespace tyloi::cuda::qwen4_exp {
 using Config = tyloi::models::qwen4_exp::Config;
 
-std::function<DenseTensor(CudaExecutionContext&, const DenseTensor&)> qwen_moe(
-    Pipelines&, std::vector<Linear>, Linear, Linear, Linear, Linear, Linear, Linear,
-    const Config&, MoeFfnPrefetch* = nullptr);
-
 struct BlockLoader : tyloi::weights::Loader {
     using GdnWeights = qwen4_exp::GdnWeights;
     using QsaWeights = qwen4_exp::QsaWeights;
@@ -145,7 +141,7 @@ struct BlockLoader : tyloi::weights::Loader {
             *tq_graph_capture = gate_up.size()==2 && down &&
                 banks.gate && banks.up && banks.down;
         }
-        return qwen_moe(execution.executor().pipelines(), std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
+        return Moe(execution.executor().pipelines(), std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
                         std::move(sg), std::move(su), std::move(sd), c, prefetch_capture);
     }
     auto embedding(const std::string &name) const {

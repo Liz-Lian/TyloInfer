@@ -1,5 +1,6 @@
 #pragma once
 #include "backend.h"
+#include <array>
 #include <cstdint>
 
 namespace tyloi::cuda {
@@ -18,6 +19,15 @@ struct HotKvCache {
     // In exclusive mode a logical row lives in exactly one tier. The cold
     // tensors contain only maximum-cells rows of mapped RAM.
     ::tyloi::DenseTensor cold_keys, cold_values, cold_mapping, free_cold, free_gpu, cold_control;
+    struct Layout {
+        std::array<int64_t, 4> keys, values;
+        int64_t mapping, slot_ids, requested, epochs, queue, control;
+        int64_t cold_mapping, free_cold, free_gpu, cold_control;
+        std::size_t element;
+        std::size_t gpu_bytes() const;
+    };
+    static Layout layout(int64_t heads, int64_t maximum, int64_t cells,
+        int64_t key_width, int64_t value_width, const ::tyloi::TensorOptions& options, bool exclusive);
     static HotKvCache allocate(int64_t heads, int64_t maximum, int64_t cells,
         int64_t key_width, int64_t value_width, const ::tyloi::TensorOptions& options);
     bool defined() const { return mapping.defined(); }

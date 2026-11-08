@@ -18,7 +18,7 @@ DenseTensor Executor::full_ffn(
     const FullAttention& attention,
     DenseTensor residual, DenseTensor output, const Ffn::Mode& mode, Trace* trace_output) {
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = enter(mfq_current_cuda_device());
+    auto scope = enter(mfq_current_cuda_device(), mode);
 #endif
     const auto project_ = projector(mode);
     const auto& projection_ = options_.projection;
@@ -58,7 +58,7 @@ DenseTensor Executor::full_ffn(
         ? dense(ffn, project_).bf16(project_, profiler, dense_.bf16_swiglu, input)
               .reshape({B, T, H}).to(::tyloi::kBFloat16).contiguous()
 #ifdef TYLOINFER_NATIVE_CUDA
-        : ffn.forward(input, mode).reshape({B, T, H});
+        : ffn.forward(input).reshape({B, T, H});
 #else
         : ffn.forward(input, *this, mode).reshape({B, T, H});
 #endif
@@ -77,7 +77,7 @@ DenseTensor Executor::linear_ffn(
     const LinearAttention& attention,
     DenseTensor residual, DenseTensor output, const Ffn::Mode& mode) {
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = enter(mfq_current_cuda_device());
+    auto scope = enter(mfq_current_cuda_device(), mode);
 #endif
     const auto project_ = projector(mode);
     const auto& projection_ = options_.projection;
@@ -99,7 +99,7 @@ DenseTensor Executor::linear_ffn(
     residual = pair[0];
     auto input = pair[1].reshape({B * T, H});
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto ff = ffn.forward(input, mode).reshape({B, T, H});
+    auto ff = ffn.forward(input).reshape({B, T, H});
 #else
     auto ff = ffn.forward(input, *this, mode).reshape({B, T, H});
 #endif

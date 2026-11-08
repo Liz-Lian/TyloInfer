@@ -1472,7 +1472,7 @@ DenseTensor forward_layer(const Layer& w, LayerState& state, Executor& executor,
     });
 #ifdef TYLOINFER_NATIVE_CUDA
     auto feed_forward = ffn.forward(
-        normalized.reshape({batch * tokens, hidden_size}), mode.ffn, current_ids);
+        normalized.reshape({batch * tokens, hidden_size}), current_ids);
 #else
     auto feed_forward = ffn.forward(
         normalized.reshape({batch * tokens, hidden_size}), executor, mode.ffn, current_ids);

@@ -652,12 +652,13 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 auto mlp = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
                         return stage.mlp.forward(mlp_mix.branch.reshape({-1, config.hidden}),
+                                     draft_ids.narrow(1, 0, rows))
 #else
                         auto executor = execution->executor().fork(model_parallel_primary_device(execution->config));
                         return stage.mlp.forward(mlp_mix.branch.reshape({-1, config.hidden}), *executor,
-#endif
                                      execution->executor().forward_mode(execution->config.layer_placement.primary_device()).ffn,
                                      draft_ids.narrow(1, 0, rows))
+#endif
                             .reshape({batch, rows, config.hidden});
                 }();
                 auto result = stage.expand(mlp, after_attention.narrow(1, 0, rows), mlp_mix,

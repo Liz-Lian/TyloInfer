@@ -194,13 +194,8 @@ struct Text {
         }
 #ifdef TYLOINFER_NATIVE_CUDA
         budget->bind(component_predictor(components) != nullptr);
-        if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
-            language.reserve_kv_workspace = [this](std::size_t bytes) {
-                budget->reserve_kv(tyloi::Device(tyloi::kCUDA,
-                    execution->config.layer_placement.primary_device()), bytes);
-            };
+        if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
             if(kv)kv->bind_budget(&*budget);
-        }
 #endif
         if(const auto bytes=::tyloi::cuda::options::resident_budget_bytes()) {
             SessionCommand command;
@@ -271,7 +266,6 @@ struct Text {
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), mtp_available());
     }
     void clear_bindings() noexcept {
-        if constexpr(std::is_same_v<Model,qwen4_exp::Model>) language.reserve_kv_workspace={};
         if(kv)kv->bind_budget(nullptr);
         if (budget) budget->unbind();
         if (offload) offload->bind_budget(nullptr);

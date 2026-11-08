@@ -94,10 +94,10 @@ Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
               tyloi::cuda::Input input) {
   static_assert(has_forward<Model, State>);
 #ifdef TYLOINFER_NATIVE_CUDA
+  auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
   if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).forward(
                              std::move(input), state, tyloi::cuda::forward_options(mode)); }) {
     const tyloi::models::CausalModel& causal = model;
-    auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
     auto result = causal.forward(std::move(input), state, tyloi::cuda::forward_options(mode));
     TYLOINFER_RUNTIME_CHECK(result.defined(), "CUDA model forward returned no hidden tensor");
     return result;
@@ -313,9 +313,12 @@ template <class Model, class State> struct CudaMtpOps {
     target_graph_captures=weights.activity().graph_captures;
   }
   void rollback_target(std::int64_t accepted) {
-    if constexpr (has_replay<Model, State>)
+    if constexpr (has_replay<Model, State>) {
+#ifdef TYLOINFER_NATIVE_CUDA
+      auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
+#endif
       replay_target(model, state, executor, accepted);
-    else
+    } else
       state.rollback_speculative(accepted);
   }
   void initialize(const std::vector<int64_t> &prompt,
@@ -466,6 +469,9 @@ template <class Model, class State> struct CudaMtpOps {
     return timer.elapsed_ms();
   }
   PrefillResult prefill(tyloi::engine::PrefillChunk chunk) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
+#endif
     PrefillCudaTimer timer;
     bool prefill_finished=false;
     const auto finish_prefill=[&] {
@@ -565,6 +571,9 @@ template <class Model, class State> struct CudaMtpOps {
   }
 #endif
   tyloi::models::MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
+#endif
     if(auto result=mtp_predictor_step(model,*this,hidden,ids,positions))
       return std::move(*result);
     auto result=mtp.step(hidden, ids, positions.defined() ? &positions : nullptr);
@@ -589,6 +598,9 @@ template <class Model, class State> struct CudaMtpOps {
     return result;
   }
   void predictor_history_step(Tensor hidden, Tensor ids, Tensor positions,bool scalar_chain=false) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
+#endif
     if(mtp_predictor_history_step(model,*this,hidden,ids,positions,scalar_chain))return;
     (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
   }
@@ -610,6 +622,9 @@ template <class Model, class State> struct CudaMtpOps {
     return 0;
   }
   double predictor_prefill(Tensor hidden, Tensor ids, Tensor positions) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
+#endif
     mtp_predictor_prefill_begin(model,*this,ids);
     PrefillCudaTimer timer;
     bool prefill_finished=false;

@@ -89,7 +89,7 @@ bool expert_parallel(const Ffn& f) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-void Ffn::prefetch(const DenseTensor& x, const Mode& mode, bool enabled,
+void Ffn::prefetch(const DenseTensor& x, bool enabled,
         MfqOptional<DenseTensor> input_ids) const {
 #else
 void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, bool enabled,
@@ -98,6 +98,7 @@ void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, b
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #ifdef TYLOINFER_NATIVE_CUDA
     auto& executor = Executor::current();
+    const auto& mode = Executor::current_ffn();
 #endif
     const auto& f = *this;
     const auto project_ = executor.projector(mode);
@@ -819,9 +820,10 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-DenseTensor Ffn::forward(DenseTensor x, const Mode& mode, MfqOptional<DenseTensor> input_ids,
+DenseTensor Ffn::forward(DenseTensor x, MfqOptional<DenseTensor> input_ids,
                     MfqOptional<DenseTensor> router_bias) const {
     auto& executor = Executor::current();
+    const auto& mode = Executor::current_ffn();
 #else
 DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
                     MfqOptional<DenseTensor> input_ids,

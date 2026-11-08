@@ -252,17 +252,29 @@ template<class Word> __global__ void publish_rows(const Word* keys,const Word* v
 }
 
 }
-HotKvCache HotKvCache::allocate(int64_t heads,int64_t maximum,int64_t cells,int64_t kw,int64_t vw,
-        const ::tyloi::TensorOptions& options) {
+HotKvCache::Layout HotKvCache::layout(int64_t heads,int64_t maximum,int64_t cells,int64_t kw,int64_t vw,
+        const ::tyloi::TensorOptions& options,bool exclusive) {
     TYLOINFER_RUNTIME_CHECK(heads>0 && maximum>0 && maximum<=INT_MAX && cells>0 && cells<=maximum,
         "invalid resident KV geometry");
+    return {{1,heads,cells,kw},{1,heads,cells,vw},maximum,cells,maximum,cells,maximum,7,
+        exclusive?maximum:0,exclusive?maximum-cells:0,exclusive?cells:0,exclusive?3:0,
+        ::tyloi::scalar_size(options.scalar_type())};
+}
+std::size_t HotKvCache::Layout::gpu_bytes() const {
+    return std::size_t(keys[1])*keys[2]*(keys[3]+values[3])*element
+        +std::size_t(mapping+slot_ids+queue+cold_mapping+free_cold+free_gpu+cold_control)*4
+        +std::size_t(requested+epochs+control)*8;
+}
+HotKvCache HotKvCache::allocate(int64_t heads,int64_t maximum,int64_t cells,int64_t kw,int64_t vw,
+        const ::tyloi::TensorOptions& options) {
+    const auto plan=layout(heads,maximum,cells,kw,vw,options,false);
     ResidentAllocationScope resident;
     HotKvCache result;
-    result.keys=::tyloi::cuda::empty({1,heads,cells,kw},options);result.values=::tyloi::cuda::empty({1,heads,cells,vw},options);
+    result.keys=::tyloi::cuda::empty(plan.keys,options);result.values=::tyloi::cuda::empty(plan.values,options);
     const auto integers=options.dtype(::tyloi::kInt32),stamps=options.dtype(::tyloi::kInt64);
-    result.mapping=::tyloi::cuda::full({maximum},-1,integers);result.slot_ids=::tyloi::cuda::full({cells},-1,integers);
-    result.requested=::tyloi::cuda::zeros({maximum},stamps);result.epochs=::tyloi::cuda::zeros({cells},stamps);
-    result.queue=::tyloi::cuda::empty({maximum},integers);result.control=::tyloi::cuda::zeros({7},stamps);
+    result.mapping=::tyloi::cuda::full({plan.mapping},-1,integers);result.slot_ids=::tyloi::cuda::full({plan.slot_ids},-1,integers);
+    result.requested=::tyloi::cuda::zeros({plan.requested},stamps);result.epochs=::tyloi::cuda::zeros({plan.epochs},stamps);
+    result.queue=::tyloi::cuda::empty({plan.queue},integers);result.control=::tyloi::cuda::zeros({plan.control},stamps);
     return result;
 }
 HotKvView HotKvCache::view() const {
@@ -272,10 +284,11 @@ HotKvView HotKvCache::view() const {
 }
 void HotKvCache::set_cold_storage(const ::tyloi::DenseTensor& k,const ::tyloi::DenseTensor& v) {
     TYLOINFER_RUNTIME_CHECK(defined() && k.size(2)==mapping.numel()-keys.size(2) && k.size(2)>0,"invalid exclusive KV capacity");
+    const auto plan=layout(keys.size(1),mapping.numel(),keys.size(2),keys.size(3),values.size(3),keys.options(),true);
     cold_keys=k;cold_values=v;
-    cold_mapping=::tyloi::cuda::full({mapping.numel()},-1,mapping.options());
-    free_cold=::tyloi::cuda::empty({k.size(2)},mapping.options());free_gpu=::tyloi::cuda::arange(keys.size(2),mapping.options());
-    cold_control=::tyloi::cuda::zeros({3},mapping.options());cold_control.narrow(0,2,1).fill_(keys.size(2));
+    cold_mapping=::tyloi::cuda::full({plan.cold_mapping},-1,mapping.options());
+    free_cold=::tyloi::cuda::empty({plan.free_cold},mapping.options());free_gpu=::tyloi::cuda::arange(plan.free_gpu,mapping.options());
+    cold_control=::tyloi::cuda::zeros({plan.cold_control},mapping.options());cold_control.narrow(0,2,1).fill_(keys.size(2));
 }
 void HotKvCache::append(const ::tyloi::DenseTensor& k,const ::tyloi::DenseTensor& v,const ::tyloi::DenseTensor& positions) {
     TYLOINFER_RUNTIME_CHECK(exclusive() && k.size(2)==positions.numel() && v.size(2)==positions.numel(),"exclusive KV append geometry mismatch");

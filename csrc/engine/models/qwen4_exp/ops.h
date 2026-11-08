@@ -33,6 +33,8 @@ class Qwen4BatchRequestState {
     Qwen4BatchRequestState& operator=(const Qwen4BatchRequestState&) = delete;
     int64_t position() const;
     std::size_t resident_bytes() const;
+    std::size_t initial_growth_bytes() const;
+    void initialize();
     std::size_t prefill_growth_bytes(int64_t tokens) const;
   private:
     struct Impl;
@@ -53,11 +55,17 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(
     ::tyloi::Tensor ids, const ::tyloi::Tensor& host_ids);
 class Qwen4BatchDecodeGraph {
   public:
+    struct Plan {
+        std::vector<int64_t> capacities;
+        std::size_t growth = 0;
+        bool rebuild = false;
+    };
     explicit Qwen4BatchDecodeGraph(qwen4_exp::Model&);
     ~Qwen4BatchDecodeGraph();
+    std::optional<Plan> plan(const std::vector<Qwen4BatchRequestState*>&, bool greedy);
     std::optional<::tyloi::Tensor> run(
         const std::vector<Qwen4BatchRequestState*>&,
-        const ::tyloi::Tensor&,const ::tyloi::Tensor&,bool greedy=false);
+        const ::tyloi::Tensor&,const ::tyloi::Tensor&,bool greedy,const Plan&);
     void clear();
     int64_t captures() const;
     int64_t replays() const;
@@ -135,7 +143,6 @@ struct Model : tyloi::models::CausalModel {
     CausalConfig config;
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<qwen4_exp::Qwen4Block>> blocks;
-    std::function<void(std::size_t)> reserve_kv_workspace;
 
     // ---- helpers absorbed from the retired CausalLm plumbing
     auto execution_scope() const {

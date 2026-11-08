@@ -86,7 +86,7 @@ struct KvOffloadStore::Impl {
         cold.directory = config.directory;
         ram = std::make_shared<cache::QsaKvStore>(std::move(cold));
     }
-    std::size_t hot_limit() const { return config.gpu_budget_bytes - config.buffer_bytes; }
+    std::size_t hot_limit() const { return config.gpu_hot_bytes(); }
     void spill_ram() {
         while(!ram_lru.empty()) {
             auto weak=ram_lru.back();auto block=weak.lock();
@@ -208,22 +208,28 @@ struct KvOffloadStore::Impl {
 
 KvOffloadStore::KvOffloadStore(KvOffloadConfig config) : impl_(std::make_shared<Impl>(std::move(config))) {}
 KvOffloadStore::~KvOffloadStore() = default;
-std::shared_ptr<KvOffloadStore::GatherWorkspace> KvOffloadStore::gather_workspace(int64_t rows,int64_t width,::tyloi::ScalarType dtype,int64_t heads,int64_t key_width) {
-    std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+KvOffloadStore::GatherLayout KvOffloadStore::gather_layout(int64_t rows,int64_t width,::tyloi::ScalarType dtype,int64_t heads,int64_t key_width) {
     if(rows<=0 || width<=0 || heads<=0 || width%heads || key_width<0 || (key_width && key_width>=width/heads))
         throw std::invalid_argument("invalid CUDA KV gather geometry");
+    return {rows,width,4+rows*(key_width?2*heads:1)*4,dtype};
+}
+std::size_t KvOffloadStore::GatherLayout::gpu_bytes() const {
+    return std::size_t(rows)*width*::tyloi::scalar_size(dtype)*2+std::size_t(descriptors)*sizeof(int64_t);
+}
+std::shared_ptr<KvOffloadStore::GatherWorkspace> KvOffloadStore::gather_workspace(int64_t rows,int64_t width,::tyloi::ScalarType dtype,int64_t heads,int64_t key_width) {
+    const auto plan=gather_layout(rows,width,dtype,heads,key_width);
+    std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
     auto& workspace=impl_->gather_workspaces[{rows,width,int(dtype),heads,key_width}];
     if(!workspace) {
         ResidentAllocationScope resident;
         auto fresh=std::make_shared<GatherWorkspace>();
         fresh->heads=heads;fresh->key_width=key_width;
         const auto options=::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(dtype);
-        fresh->rows=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({rows,width},options));
-        fresh->upload=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({rows,width},options));
-        fresh->host=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({rows,width},options.device(::tyloi::kCPU).pinned_memory(true)));
-        const auto fields=key_width?2*heads:1;
-        fresh->descriptors=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({4+rows*fields*4},options.device(::tyloi::kCPU).dtype(::tyloi::kInt64).pinned_memory(true)));
-        fresh->device_descriptors=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({4+rows*fields*4},options.dtype(::tyloi::kInt64)));
+        fresh->rows=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({plan.rows,plan.width},options));
+        fresh->upload=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({plan.rows,plan.width},options));
+        fresh->host=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::empty({plan.rows,plan.width},options.device(::tyloi::kCPU).pinned_memory(true)));
+        fresh->descriptors=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({plan.descriptors},options.device(::tyloi::kCPU).dtype(::tyloi::kInt64).pinned_memory(true)));
+        fresh->device_descriptors=std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::zeros({plan.descriptors},options.dtype(::tyloi::kInt64)));
         workspace=std::move(fresh);
     }
     return workspace;

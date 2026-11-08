@@ -973,7 +973,7 @@ struct Block final {
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
                 return mlp.forward(
-                    value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids, bias)
+                    value.reshape({-1,config.hidden}), layer_state.current_ids, bias)
 #else
                 auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
                 return mlp.forward(
@@ -988,7 +988,7 @@ struct Block final {
 #endif
                     next->prefetch(
 #ifdef TYLOINFER_NATIVE_CUDA
-                        value, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
+                        value,
 #else
                         value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
 #endif
@@ -997,7 +997,7 @@ struct Block final {
                 }
 #ifdef TYLOINFER_NATIVE_CUDA
             return mlp.forward(
-                    value.reshape({-1, config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids)
+                    value.reshape({-1, config.hidden}), layer_state.current_ids)
 #else
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return mlp.forward(

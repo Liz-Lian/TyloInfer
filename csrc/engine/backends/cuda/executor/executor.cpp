@@ -441,6 +441,8 @@ public:
     ExecutorScope(Executor& executor, int primary, ContextSet& contexts, const Ffn::Mode& mode)
         : owner(executor), ffn(mode), native_(std::in_place, primary, contexts),
           no_grad_(std::in_place), previous_(active_scope) {
+        if (previous_ && &previous_->owner == &executor)
+            ffn.serial = ffn.serial || previous_->ffn.serial;
         active_scope = this;
     }
     ExecutorScope(Executor& executor, const Ffn::Mode& mode)

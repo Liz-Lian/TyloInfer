@@ -19,6 +19,7 @@ struct KvOffloadConfig {
     bool preallocate = false;
     bool ram_preallocated = true;
     bool ssd_enabled = true;
+    std::size_t gpu_hot_bytes() const { return gpu_budget_bytes-buffer_bytes; }
 };
 
 // Immutable microblocks have one native GPU hot copy. Eviction transfers to
@@ -31,6 +32,12 @@ public:
         std::shared_ptr<::tyloi::Tensor> rows, upload, host, descriptors, device_descriptors;
         int64_t heads=1,key_width=0;
     };
+    struct GatherLayout {
+        int64_t rows, width, descriptors;
+        ::tyloi::ScalarType dtype;
+        std::size_t gpu_bytes() const;
+    };
+    static GatherLayout gather_layout(int64_t rows,int64_t width,::tyloi::ScalarType dtype,int64_t heads=1,int64_t key_width=0);
     std::shared_ptr<GatherWorkspace> gather_workspace(int64_t rows,int64_t width,::tyloi::ScalarType dtype,int64_t heads=1,int64_t key_width=0);
     std::size_t graph_workspace_bytes() const;
     explicit KvOffloadStore(KvOffloadConfig config);

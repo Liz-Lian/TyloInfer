@@ -14,6 +14,8 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <tuple>
 #include <set>
 #include <filesystem>
 #ifdef _WIN32
@@ -79,6 +81,21 @@ bool discrete_device() {
 }
 }
 
+namespace {
+std::set<int64_t> virtual_pages(int64_t maximum, int64_t heads, int64_t width,
+        std::size_t element, int64_t tokens) {
+    std::set<int64_t> result;
+    tokens=std::min(maximum,((tokens+8191)/8192)*8192);
+    const auto g=vmm::vmm_granularity();
+    for(int64_t head=0;head<heads;++head) {
+        const auto begin=std::size_t(head)*maximum*width*element;
+        const auto end=begin+std::size_t(tokens)*width*element;
+        for(auto page=begin/g;page<(end+g-1)/g;++page)result.insert(int64_t(page));
+    }
+    return result;
+}
+}
+
 struct KvMemoryAllocation::Virtual {
     vmm::VmmRange range;
     int64_t maximum, heads, width, committed = 0;
@@ -90,16 +107,11 @@ struct KvMemoryAllocation::Virtual {
     }
     ~Virtual() { (void)cudaDeviceSynchronize(); }
     std::set<int64_t> missing(int64_t tokens) const {
-        std::set<int64_t> result;
         tokens=std::min(maximum,((tokens+8191)/8192)*8192);
-        if (tokens <= committed) return result;
-        const auto g = vmm::vmm_granularity();
-        for (int64_t head=0; head<heads; ++head) {
-            const auto begin = std::size_t(head)*maximum*width*element;
-            const auto end = begin + std::size_t(tokens)*width*element;
-            for (auto page=begin/g; page<(end+g-1)/g; ++page)
-                if (!range.mapped(int64_t(page))) result.insert(int64_t(page));
-        }
+        if (tokens <= committed) return {};
+        auto result=virtual_pages(maximum,heads,width,element,tokens);
+        for(auto it=result.begin();it!=result.end();)
+            if(range.mapped(*it))it=result.erase(it);else ++it;
         return result;
     }
     void ensure(int64_t tokens) {
@@ -177,6 +189,7 @@ std::shared_ptr<KvMemoryAllocation> KvMemoryManager::add(int64_t maximum,int64_t
         // Admit extra GPU sessions against currently free memory.
         if(!automatic_ram_ && !policy.budget_policy && (policy.placement=="auto" || policy.placement=="auto_ssd"))policy.placement="vram";
         KvMemoryManager child(policy);
+        child.bind_budget(budget_);
         auto a=child.add(maximum,heads,kw,vw,iw,pool,options,selected_columns);
         child.finalize(*cache_);allocations_.push_back(a);return a;
     }
@@ -222,6 +235,7 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
             (a->key_width+a->value_width)*width_bytes(a->options));
     }
     bool exclusive=false,raw_host_only=false;
+    std::optional<KvOffloadConfig> offload_config;
     if(tiered_budget) {
         if(options_.gpu_budget && options_.gpu_budget<index)
             throw std::runtime_error("kv_budget_below_indexer: VRAM KV budget must cover the complete target indexer cache");
@@ -250,7 +264,7 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
                 config.gpu_budget_bytes=gpu+config.buffer_bytes;
                 config.ram_budget_bytes=std::min(ram,required+config.buffer_bytes);
                 config.preallocate=true;config.ram_preallocated=options_.ram_preallocated;config.ssd_enabled=true;config.directory=options_.directory;
-                offload_=std::make_shared<KvOffloadStore>(config);
+                offload_config=std::move(config);
                 std::cerr<<"runtime_kv_warning code=kv_ssd_overflow target_spill_bytes="<<disk_needed
                     <<" message=KV may spill to SSD; long-context latency and disk usage will increase\n";
             }
@@ -283,8 +297,44 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
         if(options_.placement=="auto" && required_ram>ram)throw std::runtime_error(insufficient);
         config.ram_budget_bytes=std::min(ram,required_ram);
         config.directory=options_.directory;config.preallocate=true;config.ssd_enabled=options_.placement=="auto_ssd";
-        offload_=std::make_shared<KvOffloadStore>(config);
+        offload_config=std::move(config);
     }
+    const auto* stream_graphs=tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
+    if(budget_) {
+        std::vector<std::pair<tyloi::Device,std::size_t>> required;
+        const auto add=[&](tyloi::Device device,std::size_t bytes) {
+            auto entry=std::find_if(required.begin(),required.end(),[&](const auto& item){return item.first==device;});
+            if(entry==required.end())required.emplace_back(device,bytes);
+            else entry->second=engine::prefill_budget_add(entry->second,bytes);
+        };
+        if(offload_config)add(tyloi::Device(tyloi::kCUDA),offload_config->gpu_hot_bytes());
+        std::set<std::tuple<int64_t,int64_t,int,int64_t,int64_t>> gather_layouts;
+        for(auto& weak:allocations_)if(auto a=weak.lock()) {
+            auto bytes=a->index_bytes();
+            if(options_.dynamic) {
+                const auto tokens=std::min<int64_t>(a->maximum,16384);
+                const auto pages=virtual_pages(a->maximum,a->heads,a->key_width,width_bytes(a->options),tokens).size()
+                    +virtual_pages(a->maximum,a->heads,a->value_width,width_bytes(a->options),tokens).size();
+                bytes=engine::prefill_budget_add(bytes,pages*vmm::vmm_granularity());
+            } else if(exclusive || automatic_ram_) {
+                bytes=engine::prefill_budget_add(bytes,HotKvCache::layout(a->heads,a->maximum,cells,
+                    a->key_width,a->value_width,a->options,exclusive).gpu_bytes());
+            } else if(options_.placement!="ram" && !raw_host_only && !offload_config) {
+                bytes=engine::prefill_budget_add(bytes,a->raw_bytes());
+            }
+            add(a->options.target_device(),bytes);
+            if(offload_config && (!stream_graphs || stream_graphs[0]!='0') && a->selected_columns) {
+                const auto rows=8*a->selected_columns,width=a->heads*(a->key_width+a->value_width);
+                const auto key=std::make_tuple(rows,width,int(a->options.scalar_type()),a->heads,a->key_width);
+                if(gather_layouts.insert(key).second)
+                    add(tyloi::Device(tyloi::kCUDA),KvOffloadStore::gather_layout(rows,width,
+                        a->options.scalar_type(),a->heads,a->key_width).gpu_bytes());
+            }
+        }
+        for(const auto& [device,bytes]:required)
+            budget_->reserve_kv(device,engine::prefill_budget_add(bytes,reserve));
+    }
+    if(offload_config)offload_=std::make_shared<KvOffloadStore>(std::move(*offload_config));
     ResidentAllocationScope resident;
     if(tiered_budget && !options_.additional_request && !options_.dynamic && setting("TYLOINFER_KV_EXPERT_LOAN",1)) {
         cache_->prepare_kv();
@@ -332,7 +382,6 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
     if(offload_ && lending_)offload_->lend(*cache_);
     // Reserve shared decode I/O buffers before sizing the expert arenas.
     // Graph capture must not discover a large workspace after admission.
-    const auto* stream_graphs=tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
     if(offload_ && (!stream_graphs || stream_graphs[0]!='0'))for(auto& weak:allocations_)if(auto a=weak.lock()) {
         if(a->selected_columns)offload_->gather_workspace(8*a->selected_columns,
             a->heads*(a->key_width+a->value_width),a->options.scalar_type(),a->heads,a->key_width);

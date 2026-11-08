@@ -860,7 +860,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Selection& sele
     auto hidden = std::move(prepared[0]);
     auto ffn_input = std::move(prepared[1]);
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto ffn_out = ffn.forward(ffn_input, mode.ffn).reshape({B * T, H});
+    auto ffn_out = ffn.forward(ffn_input).reshape({B * T, H});
 #else
     auto ffn_out = ffn.forward(ffn_input, executor, mode.ffn).reshape({B * T, H});
 #endif

@@ -293,7 +293,7 @@ static DenseTensor moe_forward(const Moe& weights, Executor& executor, DenseTens
     });
     auto mixed = executor.profiler().measure("moe.ffn", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-        return ffn.forward(xn.reshape({B * T, H}), mode.ffn).reshape({B, T, H});
+        return ffn.forward(xn.reshape({B * T, H})).reshape({B, T, H});
 #else
         return ffn.forward(xn.reshape({B * T, H}), executor, mode.ffn).reshape({B, T, H});
 #endif
