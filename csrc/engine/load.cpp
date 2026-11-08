@@ -188,17 +188,14 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 auto definition = models::config_json(*source, options.config_path);
                 definition = configure_yarn(load.yarn, load.yarn_context_extension,
                     std::move(definition), models::graph(*source).backbone, options.context_size);
-                auto owner = std::make_shared<gemma4::Model>(gemma4::read(source, definition, options.context_size));
-                model = owner;
                 auto loader = weights->loader(*source, load.weights,
                     {load.layer_placement.primary_device(), false, load.drop_file_cache,
                      load.tensor_parallel, moe_parallel_config(load)});
                 load.dense_cpu_layer_count = 0;
-                gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
+                model = gemma4::load(source, definition, options.context_size, loader,
+                    load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
                 state = model->make_state();
                 if (::tyloi::cuda::options::kv_vram_preallocated()) state->preallocate();
-                if (owner->plan.vision != CudaVisionAdapter::none || owner->plan.predictor != CudaPredictorAdapter::none)
-                    throw std::runtime_error("CUDA component adapter is unsupported for this model");
                 finalize_kv(kv.get(), *weights, offload);
                 finish_load(kv.get(), *weights, 0, load.report_cuda_memory);
                 if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");

@@ -225,17 +225,12 @@ struct BlockLoader : tyloi::weights::Loader {
     std::unique_ptr<Qwen4Block> block(const Config &c, int layer, bool predictor);
 };
 
-// Block weights load through the local loader; defined here where it is complete.
-Qwen4Block::Qwen4Block(CudaExecutionContext &execution, const tyloi::weights::Loader& weights,
-                       const tyloi::models::qwen4_exp::Config &c, int layer, bool predictor) {
-    BlockLoader loader{weights, execution, &router, &prefetch, &tq_graph_ffn};
-    loader.role = "qwen4_exp";
-    tyloi::models::qwen4_exp::load_block(*this, loader, c, layer, predictor);
-}
-
-
 std::unique_ptr<Qwen4Block> BlockLoader::block(const Config &c, int layer, bool predictor) {
-    return std::make_unique<Qwen4Block>(execution, *this, c, layer, predictor);
+    auto result = std::make_unique<Qwen4Block>();
+    BlockLoader loader{*this, execution, &result->router, &result->prefetch, &result->tq_graph_ffn};
+    loader.role = "qwen4_exp";
+    tyloi::models::qwen4_exp::load_block(*result, loader, c, layer, predictor);
+    return result;
 }
 
 std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execution,
@@ -330,8 +325,8 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
             std::cerr << "loading layer " << layer << ' '
                       << model.metadata.layer_types.at(static_cast<std::size_t>(layer)) << ' '
                       << (cpu ? "CPU" : "CUDA") << std::endl;
-            auto placed = tensors.for_layer(device, cpu);
-            auto block = std::make_unique<Qwen4Block>(execution, placed, model.config, layer);
+            BlockLoader placed{tensors.for_layer(device, cpu), execution};
+            auto block = placed.block(model.config, layer, false);
             block->cuda_device = device;
             block->cpu_offloaded = cpu;
             model.blocks.push_back(std::move(block));

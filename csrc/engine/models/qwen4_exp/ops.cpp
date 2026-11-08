@@ -1184,19 +1184,17 @@ struct Qwen4DecodeGraph {
     ::tyloi::DenseTensor position_storage;
     int64_t kv_capacity=0;
     bool failed=false;
+    bool link=false;
     ::tyloi::DenseTensor last_compact;
     explicit Qwen4DecodeGraph(qwen4_exp::Model& model,qwen4_exp::State& state)
-        :stream(mfq_get_current_cuda_stream()),ple_stream(mfq_get_stream_from_pool()),request(state) {
-        const bool enabled=model.execution->weights.lookahead(
-            ::tyloi::weights::Cache::Lookahead::link,request.router_lookahead);
+        :stream(mfq_get_current_cuda_stream()),ple_stream(mfq_get_stream_from_pool()),request(state),
+         link(model.execution->weights.lookahead(
+            ::tyloi::weights::Cache::Lookahead::link,request.router_lookahead)) {
+
         for(std::size_t i=0;i<model.blocks.size();++i) {
-            auto& current=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]);
-            auto& layer=*request.layers[i];
-            layer.next_router={};layer.next_prefetch={};
-            if(enabled && i+1<model.blocks.size()) {
-                auto& next=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i+1]);
+            if(link && i+1<model.blocks.size()) {
+                const auto& next=static_cast<const qwen4_exp::Qwen4Block&>(*model.blocks[i+1]);
                 TYLOINFER_RUNTIME_CHECK(next.router && next.prefetch,"router lookahead requires the tiered FFN pipeline");
-                layer.next_router=next.router;layer.next_prefetch=next.prefetch;
             }
         }
         for(std::size_t i=0;i<model.blocks.size();++i)
@@ -1353,26 +1351,28 @@ struct Qwen4DecodeGraph {
                                 cell.cache_positions,rows,layer,confirmed,confirmed?&cell.checkpoints[layer]:nullptr,pending_residual);
                             const auto& ffn_input=ffn_result.mixed;
                             DecodeWindow::Task prediction{};
-                            if(layer_state.next_prefetch && ffn_input.numel()==b.config.hidden && DecodeWindow::recording()->prediction_enabled()) {
+                            if(link && size_t(layer+1)<model.blocks.size() &&
+                                    ffn_input.numel()==b.config.hidden && DecodeWindow::recording()->prediction_enabled()) {
+                                const auto& next=static_cast<const qwen4_exp::Qwen4Block&>(*model.blocks[layer+1]);
                                 const auto routing=b.config.routing();
 #ifdef TYLOINFER_NATIVE_CUDA
-                                auto logits=::tyloi::ops::project(ffn_input.reshape({1,b.config.hidden}).to(::tyloi::kFloat16),layer_state.next_router).dense().to(::tyloi::kFloat32).contiguous();
+                                auto logits=::tyloi::ops::project(ffn_input.reshape({1,b.config.hidden}).to(::tyloi::kFloat16),next.router).dense().to(::tyloi::kFloat32).contiguous();
 #else
-                                auto logits=model.execution->executor().projector(model.execution->executor().mode().ffn, model_parallel_primary_device(model.execution->config)).run(layer_state.next_router,ffn_input.reshape({1,b.config.hidden}).to(::tyloi::kFloat16)).to(::tyloi::kFloat32).contiguous();
+                                auto logits=model.execution->executor().projector(model.execution->executor().mode().ffn, model_parallel_primary_device(model.execution->config)).run(next.router,ffn_input.reshape({1,b.config.hidden}).to(::tyloi::kFloat16)).to(::tyloi::kFloat32).contiguous();
 #endif
                                 const int prediction_count=std::min<int64_t>(logits.size(-1),model.execution->weights.prefetch().candidates);
 #ifdef TYLOINFER_NATIVE_CUDA
                                 auto selected=::tyloi::ops::topk(logits,prediction_count,routing);
-                                prediction=layer_state.next_prefetch(selected.ids.dense().to(::tyloi::kInt32).contiguous());
+                                prediction=next.prefetch(selected.ids.dense().to(::tyloi::kInt32).contiguous());
 #else
                                 auto selected=moe_topk_cuda(logits,prediction_count,
                                     routing.activation==tyloi::ops::RouterActivation::sigmoid,
                                     routing.activation==tyloi::ops::RouterActivation::sqrt_softplus,
                                     routing.normalize,routing.delayed_softmax,mfq_nullopt,1e-20,routing.scale);
-                                prediction=layer_state.next_prefetch(selected[0].to(::tyloi::kInt32).contiguous());
+                                prediction=next.prefetch(selected[0].to(::tyloi::kInt32).contiguous());
 #endif
                             }
-                            if(layer_state.router_audit)layer_state.router_audit->input(layer,ffn_input);
+                            if(request.router_audit)request.router_audit->input(layer,ffn_input);
                             const bool early_prediction=prediction.identity && model.execution->weights.prefetch().early;
                             if(early_prediction)DecodeWindow::recording()->enroll(std::move(prediction));
                             auto ffn_output=b.ffn.forward(
@@ -1411,7 +1411,7 @@ struct Qwen4DecodeGraph {
                     else if(kind==1)cell.output=model.logits(qwen4_last_hidden(std::move(hidden))).dense();
                     else cell.output=qwen4_logits_from_hidden(model, std::move(hidden));
                     cell.window.mark(-1,"window_end");
-                    auto audit=request.layers.front()->router_audit;
+                    auto audit=request.router_audit;
                     if(audit)cell.window.enroll({audit.get(),[]{},[]{},[audit]{audit->finish_sample();},{}});
                 },restore,[&]{cell.output={};cell.raw_hidden={};cell.logits={};});
                 ++request.decode_graph_captures;
@@ -1768,11 +1768,11 @@ void qwen4_begin_router_lookahead_audit(qwen4_exp::Model& model,qwen4_exp::State
         static_cast<int>(model.config.hidden),samples);
     for(std::size_t i=0;i<model.blocks.size();++i) {
         if(!model.blocks[i]->router)throw std::runtime_error("router lookahead audit has no retained router");
-        state.layers[i]->router_audit=audit;
     }
+    state.router_audit=std::move(audit);
 }
 void qwen4_finish_router_lookahead_audit(qwen4_exp::Model& model,qwen4_exp::State& state,const std::string& prefix) {
-    auto audit=state.layers.front()->router_audit;
+    auto audit=state.router_audit;
     if(!audit || !audit->samples())throw std::runtime_error("router lookahead audit captured no decode inputs");
     std::ofstream file(prefix+"-logits.f32",std::ios::binary);
     if(!file)throw std::runtime_error("cannot write router lookahead audit logits");
@@ -1852,6 +1852,47 @@ Model::~Model() = default;
 namespace tyloi::cuda {
 Model::Model(Model&&) noexcept = default;
 Model& Model::operator=(Model&&) noexcept = default;
+
+static ::tyloi::DenseTensor batch_ffn(const qwen4_exp::Moe& ffn,CudaExecutionContext& execution,
+                                      const ::tyloi::DenseTensor& input) {
+    if(input.size(0)<=8)return ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+        execution,
+#endif
+        input);
+    const auto option=::tyloi::cuda::options::continuous_ffn_tile();
+    const int64_t rows=option?*option:8;
+    TYLOINFER_RUNTIME_CHECK(rows==8 || rows==16,"continuous FFN tile must be 8 or 16 rows");
+    auto* window=DecodeWindow::recording();
+    const int previous_profile_tile=window ? window->set_profile_tile(-1) : -1;
+    auto& mode = execution.executor().mode().ffn;
+    struct TileScope {
+        tyloi::cuda::Ffn::Mode& mode;
+        int tile,tiles;
+        DecodeWindow* window;
+        int profile_tile;
+        ~TileScope() {mode.tile=tile;mode.tiles=tiles;
+            if(window)window->set_profile_tile(profile_tile);}
+    } scope{mode,mode.tile,mode.tiles,window,previous_profile_tile};
+    mode.tiles=int((input.size(0)+rows-1)/rows);
+    std::vector<::tyloi::DenseTensor> outputs;
+    for(int64_t start=0;start<input.size(0);start+=rows) {
+        mode.tile=int(start/rows);
+        if(window)window->set_profile_tile(int(start/rows));
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto tile_mode=Executor::current_ffn();
+        tile_mode.tile=mode.tile;
+        tile_mode.tiles=mode.tiles;
+        auto tile_scope=Executor::current().enter(tile_mode);
+#endif
+        outputs.push_back(ffn.forward(
+#ifndef TYLOINFER_NATIVE_CUDA
+            execution,
+#endif
+            input.narrow(0,start,std::min(rows,input.size(0)-start))));
+    }
+    return ::tyloi::cuda::cat(outputs,0);
+}
 
 struct Qwen4BatchRequestState::Impl {
     struct Layer {
@@ -2142,7 +2183,7 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                 graph.window->mark(static_cast<int>(i),"attention_core_end");
                 auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate,marker("ffn_mhc_"));
                 graph.window->mark(static_cast<int>(i),"ffn_pre_end");
-                auto ffn_output=block.batch_ffn(execution,ffn_mix.mixed);
+                auto ffn_output=batch_ffn(block.ffn,execution,ffn_mix.mixed);
                 bool defer=false;
                 if(chain_post && i+1<model.blocks.size()) {
                     auto& next=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i+1]);
@@ -2338,7 +2379,7 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         if(project_batch)attention=block.gdn->project_output(attention);
         auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
         // Tiles share the expert transfer cache across all eligible rows.
-        hidden = block.ffn_gr.post(block.batch_ffn(execution,ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
+        hidden = block.ffn_gr.post(batch_ffn(block.ffn,execution,ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
     }
     auto logits = qwen4_logits_from_hidden(model, qwen4_finalize_hidden(model, std::move(hidden),batch,1)).reshape({batch,-1});
     for (int64_t row = 0; row < batch; ++row) {

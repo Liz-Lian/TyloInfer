@@ -191,4 +191,17 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
     }
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+std::shared_ptr<tyloi::models::CausalModel> load(
+        std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+        std::int64_t context, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+        int gpu_layers, bool expert_parallel) {
+    auto model = std::make_shared<Model>(read(std::move(source), definition, context));
+    load(*model, weights, placement, gpu_layers, expert_parallel);
+    if (model->plan.vision != CudaVisionAdapter::none || model->plan.predictor != CudaPredictorAdapter::none)
+        throw std::runtime_error("CUDA component adapter is unsupported for this model");
+    return model;
+}
+#endif
+
 } // namespace tyloi::cuda::gemma4

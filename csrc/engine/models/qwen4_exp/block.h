@@ -6,10 +6,11 @@
 #include "engine/models/qwen4_exp/moe.h"
 #include "engine/models/qwen4_exp/config.h"
 #include "engine/ops.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
+#endif
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
-#include "diagnostics/router_lookahead.h"
 
 #include <functional>
 #include <memory>
@@ -24,9 +25,6 @@ struct LayerState {
     std::unique_ptr<Qsa::State> qsa;
     Ple::State ple;
     bool retain_graph_storage = false, retained_prefix = false;
-    Linear next_router;
-    MoeFfnPrefetch next_prefetch;
-    std::shared_ptr<mfq::cuda::RouterLookaheadInputs> router_audit;
     explicit LayerState(const Qwen4Block& layer);
 };
 
@@ -48,47 +46,6 @@ struct Qwen4Block final {
     std::unique_ptr<Gdn> gdn;
     std::unique_ptr<Qsa> qsa;
     std::unique_ptr<Ple> ple;
-    DenseTensor batch_ffn(CudaExecutionContext& execution,const DenseTensor& input) {
-        if(input.size(0)<=8)return ffn.forward(
-#ifndef TYLOINFER_NATIVE_CUDA
-            execution,
-#endif
-            input);
-        const auto option=::tyloi::cuda::options::continuous_ffn_tile();
-        const int64_t rows=option?*option:8;
-        TYLOINFER_RUNTIME_CHECK(rows==8 || rows==16,"continuous FFN tile must be 8 or 16 rows");
-        auto* window=DecodeWindow::recording();
-        const int previous_profile_tile=window ? window->set_profile_tile(-1) : -1;
-        auto& mode = execution.executor().mode().ffn;
-        struct TileScope {
-            tyloi::cuda::Ffn::Mode& mode;
-            int tile,tiles;
-            DecodeWindow* window;
-            int profile_tile;
-            ~TileScope() {mode.tile=tile;mode.tiles=tiles;
-                if(window)window->set_profile_tile(profile_tile);}
-        } scope{mode,mode.tile,mode.tiles,window,previous_profile_tile};
-        mode.tiles=int((input.size(0)+rows-1)/rows);
-        std::vector<DenseTensor> outputs;
-        for(int64_t start=0;start<input.size(0);start+=rows) {
-            mode.tile=int(start/rows);
-            if(window)window->set_profile_tile(int(start/rows));
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto tile_mode=Executor::current_ffn();
-            tile_mode.tile=mode.tile;
-            tile_mode.tiles=mode.tiles;
-            auto tile_scope=Executor::current().enter(tile_mode);
-#endif
-            outputs.push_back(ffn.forward(
-#ifndef TYLOINFER_NATIVE_CUDA
-                execution,
-#endif
-                input.narrow(0,start,std::min(rows,input.size(0)-start))));
-        }
-        return ::tyloi::cuda::cat(outputs,0);
-    }
-    Qwen4Block(CudaExecutionContext &execution, const tyloi::weights::Loader& weights,
-               const tyloi::models::qwen4_exp::Config &c, int layer, bool predictor = false);
     void reset(LayerState& state, int64_t) {
         if (gdn)
             gdn->reset(state.gdn, state.retain_graph_storage);
