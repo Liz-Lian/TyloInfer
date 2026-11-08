@@ -7,6 +7,8 @@
 namespace tyloi::cuda::ops {
 tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight);
 tyloi::DenseTensor project(tyloi::DenseTensor input, const ::tyloi::Tensor& weight);
+tyloi::DenseTensor project(tyloi::DenseTensor input, const ::tyloi::Tensor& weight,
+                           tyloi::DenseTensor ids);
 tyloi::DenseTensor low_rank(tyloi::DenseTensor input, const ::tyloi::Tensor& output_a,
                            const ::tyloi::Tensor& output_b, int64_t groups, bool groupwise, bool profile);
 tyloi::DenseTensor linear(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor* bias);

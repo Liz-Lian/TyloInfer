@@ -39,14 +39,14 @@ class Kda {
                               std::isfinite(eps) && eps > 0,
                           "invalid GLM KDA configuration");
     }
-    DenseTensor forward(const Projector& project, KdaState& state, const DenseTensor &hidden, bool use_cache,
+    DenseTensor forward(KdaState& state, const DenseTensor &hidden, bool use_cache,
                    int64_t confirmed = 0) const {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0,
                           "recurrent attention requires nonempty [B,T,H] input");
         return tyloi::models::recurrent_window(
             hidden.size(1), use_cache, confirmed, state.pending(),
             [&](int64_t start, int64_t count) {
-                return forward_chunk(project, state, hidden.narrow(1, start, count), use_cache);
+                return forward_chunk(state, hidden.narrow(1, start, count), use_cache);
             },
             [&] {
                 state.rollback_conv = state.conv;
@@ -55,7 +55,7 @@ class Kda {
             [&] { state.rollback(); },
             [](DenseTensor prefix, DenseTensor suffix) { return ::tyloi::cuda::cat({prefix, suffix}, 1); });
     }
-    DenseTensor forward_chunk(const Projector& project, KdaState& state, const DenseTensor &hidden, bool use_cache) const {
+    DenseTensor forward_chunk(KdaState& state, const DenseTensor &hidden, bool use_cache) const {
         const auto b = hidden.size(0), t = hidden.size(1), channels = heads_ * width_;
         const auto options = hidden.options().dtype(::tyloi::kFloat32);
         TYLOINFER_RUNTIME_CHECK(!use_cache || !state.conv.defined() ||
@@ -67,8 +67,8 @@ class Kda {
         return tyloi::models::gated_delta_attention(
             use_cache,
             [&] {
-                auto projected = ::tyloi::cuda::cat({project.run(*w_.query, hidden), project.run(*w_.key, hidden),
-                                          project.run(*w_.value, hidden)},
+                auto projected = ::tyloi::cuda::cat({::tyloi::ops::project(hidden, w_.query).dense(), ::tyloi::ops::project(hidden, w_.key).dense(),
+                                          ::tyloi::ops::project(hidden, w_.value).dense()},
                                          -1)
                                      .to(::tyloi::kFloat32);
                 TYLOINFER_RUNTIME_CHECK(projected.sizes().vec() ==
@@ -112,7 +112,7 @@ class Kda {
                                                    heads_, width_, lower_bound_)
                         .permute({0, 2, 1, 3})
                         .contiguous();
-                auto beta = ::tyloi::cuda::sigmoid(project.run(*w_.beta, hidden).to(::tyloi::kFloat32))
+                auto beta = ::tyloi::cuda::sigmoid(::tyloi::ops::project(hidden, w_.beta).dense().to(::tyloi::kFloat32))
                                 .transpose(1, 2)
                                 .contiguous();
                 return std::array<DenseTensor, 2>{forget, beta};
@@ -151,7 +151,7 @@ class Kda {
                 return std::array<DenseTensor, 2>{attended, next_recurrent};
             },
             [&](DenseTensor attended) {
-                auto gate = project.run(*w_.gate_b, project.run(*w_.gate_a, hidden))
+                auto gate = ::tyloi::ops::project(::tyloi::ops::project(hidden, w_.gate_a), w_.gate_b).dense()
                                 .reshape({b, t, heads_, width_})
                                 .permute({0, 2, 1, 3});
                 return rms_norm(attended,
@@ -164,9 +164,9 @@ class Kda {
                        ::tyloi::cuda::sigmoid(gate.to(::tyloi::kFloat32));
             },
             [&](DenseTensor normalized) {
-                auto result = project.run(*w_.output, normalized.permute({0, 2, 1, 3})
+                auto result = ::tyloi::ops::project(normalized.permute({0, 2, 1, 3})
                                                        .reshape({b, t, channels})
-                                                       .to(hidden.scalar_type()));
+                                                       .to(hidden.scalar_type()), w_.output).dense();
                 return result;
             },
             [&](const auto &convolution, const DenseTensor &next) {
@@ -184,7 +184,7 @@ class Kda {
 struct MlaWeights {
     Linear query_a, key_value_a, query_b, output, index_query, index_key, index_score;
     // Head-wise absorbed projections accept/return [B,T,heads,width].
-    attention_ops::Transform embed_query, unembed_output;
+    Linear embed_query, unembed_output;
     Parameter query_norm, latent_norm, index_norm, index_bias, index_gate, index_position;
 };
 
@@ -202,7 +202,7 @@ class SparseMla {
                               c_.pool > 0 && c_.budget > 0 && c_.budget % c_.pool == 0,
                           "invalid Flash-Next MLA configuration");
     }
-    DenseTensor forward(const Projector& project, MlaState& state, const DenseTensor &hidden, bool use_cache) const {
+    DenseTensor forward(MlaState& state, const DenseTensor &hidden, bool use_cache) const {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0 &&
                               hidden.size(1) > 0,
                           "GLM MLA requires nonempty [B,T,H] input");
@@ -216,22 +216,22 @@ class SparseMla {
         return tyloi::models::glm5_next::sparse_mla(
             offset + t, c_.budget, use_cache,
             [&] {
-                auto qr = rms_norm(project.run(*w_.query_a, hidden),
+                auto qr = rms_norm(::tyloi::ops::project(hidden, w_.query_a).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                                    *w_.query_norm,
 #else
                                    w_.query_norm,
 #endif
                                    c_.eps);
-                auto query = project.run(*w_.query_b, qr).reshape({b, t, c_.heads, c_.nope});
-                auto latent = rms_norm(project.run(*w_.key_value_a, hidden).narrow(-1, 0, c_.latent),
+                auto query = ::tyloi::ops::project(qr, w_.query_b).dense().reshape({b, t, c_.heads, c_.nope});
+                auto latent = rms_norm(::tyloi::ops::project(hidden, w_.key_value_a).dense().narrow(-1, 0, c_.latent),
 #ifdef TYLOINFER_NATIVE_CUDA
                                        *w_.latent_norm, c_.eps);
 #else
                                        w_.latent_norm, c_.eps);
 #endif
                 // Metal's indexer LayerNorm explicitly casts the source/output to F16.
-                auto ik = project.run(*w_.index_key, hidden).to(::tyloi::kFloat16).to(::tyloi::kFloat32);
+                auto ik = ::tyloi::ops::project(hidden, w_.index_key).dense().to(::tyloi::kFloat16).to(::tyloi::kFloat32);
                 auto centered = ik - ik.mean(-1, true);
 #ifdef TYLOINFER_NATIVE_CUDA
                 ik = (centered * ::tyloi::cuda::rsqrt((centered * centered).mean(-1, true) + 1e-6) *
@@ -262,7 +262,11 @@ class SparseMla {
                 p.index = state.index.append(p.index);
             },
             [&](const Projection &p) {
-                return w_.embed_query(project, p.query).permute({0, 2, 1, 3}).to(::tyloi::kFloat32);
+                TYLOINFER_RUNTIME_CHECK(p.query.dim()==4 && p.query.size(2)==c_.heads,"GLM head-wise projection shape mismatch");
+                const auto batch=p.query.size(0), tokens=p.query.size(1), rows=batch*tokens*c_.heads;
+                auto ids=::tyloi::cuda::arange(rows,p.query.options().dtype(::tyloi::kInt32)).remainder(c_.heads).reshape({rows,1});
+                return ::tyloi::ops::project(p.query.reshape({rows,p.query.size(-1)}),w_.embed_query,ids).dense()
+                    .reshape({batch,tokens,c_.heads,c_.latent}).permute({0,2,1,3}).to(::tyloi::kFloat32);
             },
             [&](const DenseTensor &query, const Projection &p) {
                 return mfq_glm5_next::dense_mla_attention(query, p.latent, offset, scale);
@@ -278,12 +282,12 @@ class SparseMla {
 #endif
             },
             [&](const Projection &p) {
-                return project.run(*w_.index_query, p.rank)
+                return ::tyloi::ops::project(p.rank, w_.index_query).dense()
                     .reshape({b, t, c_.index_heads, c_.index_width});
             },
             [&](DenseTensor query, DenseTensor pooled) {
                 return mfq_glm5_next::kpool_scores(query, pooled,
-                                                   project.run(*w_.index_score, hidden));
+                                                   ::tyloi::ops::project(hidden, w_.index_score).dense());
             },
             [&](DenseTensor scores) {
                 return select_pooled_blocks(scores, offset, offset + t, c_.pool, c_.budget,
@@ -293,10 +297,15 @@ class SparseMla {
                 return mfq_glm5_next::sparse_mla_attention(query, p.latent, selected, scale);
             },
             [&](DenseTensor attended) {
-                return w_.unembed_output(project, attended.to(::tyloi::kFloat16));
+                auto value=attended.to(::tyloi::kFloat16);
+                TYLOINFER_RUNTIME_CHECK(value.dim()==4 && value.size(2)==c_.heads,"GLM head-wise projection shape mismatch");
+                const auto batch=value.size(0), tokens=value.size(1), rows=batch*tokens*c_.heads;
+                auto ids=::tyloi::cuda::arange(rows,value.options().dtype(::tyloi::kInt32)).remainder(c_.heads).reshape({rows,1});
+                return ::tyloi::ops::project(value.reshape({rows,value.size(-1)}),w_.unembed_output,ids).dense()
+                    .reshape({batch,tokens,c_.heads,c_.value_width});
             },
             [&](DenseTensor value) {
-                return project.run(*w_.output, value.reshape({b, t, c_.heads * c_.value_width}));
+                return ::tyloi::ops::project(value.reshape({b, t, c_.heads * c_.value_width}), w_.output).dense();
             },
             [&] {
                 state.latent.truncate(offset);
@@ -322,11 +331,24 @@ struct Mhc {
     }
 };
 
+struct FeedForward {
+    Linear gate, up, down;
+    std::vector<Linear> routed_gate_up;
+    Linear routed_down, router;
+    Parameter router_bias;
+    double limit = 0;
+    int64_t hidden = 0, topk = 0, intermediate = 0;
+    tyloi::ops::MoeRouting routing;
+
+    DenseTensor dense(const DenseTensor& input) const;
+    DenseTensor forward(const DenseTensor& input) const;
+};
+
 struct Layer {
     tyloi::models::glm5_next::Config config;
     Mhc attention_hc, ffn_hc;
     Parameter attention_norm, ffn_norm;
-    attention_ops::Transform ffn;
+    FeedForward ffn;
     std::unique_ptr<Kda> kda;
     std::unique_ptr<SparseMla> mla;
     int device = 0;

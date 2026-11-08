@@ -118,8 +118,16 @@ tyloi::DenseTensor matmul(tyloi::DenseTensor left, tyloi::DenseTensor right) {
     MfqCudaGuard guard(left.device().index);
     return ::tyloi::cuda::matmul(left, right);
 }
-tyloi::DenseTensor add_residual(tyloi::DenseTensor residual, tyloi::DenseTensor value) {
+tyloi::DenseTensor add_residual(tyloi::DenseTensor residual, tyloi::DenseTensor value, bool configured) {
     MfqCudaGuard guard(residual.device().index);
+    if (configured) {
+        if (Executor::current().fp32_residual()) {
+            residual = residual.to(::tyloi::kFloat32);
+            value = value.to(::tyloi::kFloat32);
+        } else if (value.scalar_type() != residual.scalar_type()) {
+            value = value.to(residual.scalar_type()).contiguous();
+        }
+    }
     return acc_cuda(residual, value);
 }
 

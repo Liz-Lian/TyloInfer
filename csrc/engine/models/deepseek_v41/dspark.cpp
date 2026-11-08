@@ -49,9 +49,7 @@ dspark_full_attention_plan(std::int64_t batch, std::int64_t queries, std::int64_
     return {std::move(indices), std::move(mask)};
 }
 
-// DSpark's rings and attention workspace are request state.  The predictor
-// object keeps only weights and immutable geometry; each request gets one of
-// these states through Mtp::make_state().
+// DSpark ring history belongs to the request; execution scratch belongs to the backend.
 struct DsState final : tyloi::models::MtpState {
     explicit DsState(const tyloi::models::Mtp& owner)
         : tyloi::models::MtpState(owner) {}
@@ -59,7 +57,9 @@ struct DsState final : tyloi::models::MtpState {
     std::int64_t position() const noexcept override { return position_; }
 
     std::vector<DenseTensor> rings;
+#ifndef TYLOINFER_NATIVE_CUDA
     DenseTensor attention_meta;
+#endif
     std::int64_t batch = 0;
     std::int64_t position_ = 0;
 };
@@ -353,8 +353,10 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
             state.rings.push_back(::tyloi::cuda::zeros(
                 {next_batch, config.sliding_window, config.head_dim}, half));
         }
+#ifndef TYLOINFER_NATIVE_CUDA
         state.attention_meta =
             ::tyloi::cuda::empty({8 * 1024 * 1024}, half.dtype(::tyloi::kFloat32));
+#endif
         state.batch = next_batch;
         state.position_ = 0;
     }
@@ -404,7 +406,11 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     ring->dim()!=3 || ring->size(0)!=1 || ring->size(1)!=config.sliding_window ||
                     ring->size(2)!=config.head_dim || !dynamic_cast<const DenseTensor*>(ring.get()))
                 throw CudaSessionStateError("DeepSeek-V4.1 DSpark saved ring geometry is incompatible");
+#ifndef TYLOINFER_NATIVE_CUDA
         if(state.batch!=1 || state.rings.size()!=stages.size() || !state.attention_meta.defined())reset(value, 1);
+#else
+        if(state.batch!=1 || state.rings.size()!=stages.size())reset(value, 1);
+#endif
         for(std::size_t i=0;i<state.rings.size();++i) {
 #ifdef TYLOINFER_NATIVE_CUDA
             auto restored=restore_session_tensor(state.rings[i],saved->rings[i]);
@@ -589,14 +595,17 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 return dspark_full_attention_plan(state.batch, tokens, keys.size(1), input.device());
             },
             [&](DenseTensor query, DenseTensor keys, const auto &plan) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                return tyloi::ops::sparse_attention(
+                           query, keys, plan.first, plan.second, stage.sinks,
+                           1.0 / std::sqrt(static_cast<double>(config.head_dim)))
+                    .dense();
+#else
                 return attention_dsv4_sparse_cuda(
                     query, keys, plan.first, plan.second,
-#ifdef TYLOINFER_NATIVE_CUDA
-                    stage.sinks.dense(), state.attention_meta,
-#else
                     stage.sinks, state.attention_meta,
-#endif
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
+#endif
             },
             [&](DenseTensor attended) {
 #ifdef TYLOINFER_NATIVE_CUDA

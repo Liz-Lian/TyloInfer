@@ -27,6 +27,14 @@ struct AttentionScratch {
     ::tyloi::DenseTensor partial_o, partial_m, partial_l;
     ::tyloi::DenseTensor mask, kv_max, meta;
 
+    // Executor::storage() retains this per-stream arena for graph capture and replay.
+    void ensure_meta(std::int64_t minimum, ::tyloi::Device device) {
+        if (!meta.defined() || meta.device() != device ||
+            meta.scalar_type() != ::tyloi::kFloat32 || meta.numel() < minimum)
+            meta = ::tyloi::cuda::empty(
+                {minimum}, ::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat32));
+    }
+
     void split(std::int64_t rows, std::int64_t parts, std::int64_t width,
                ::tyloi::Device device) {
         if (partial_o.defined() && partial_o.device() == device && partial_o.size(0) >= rows &&

@@ -140,6 +140,14 @@ tyloi::DenseTensor tyloi::cuda::ops::project(tyloi::DenseTensor input, const ::t
         weight, input);
 }
 
+tyloi::DenseTensor tyloi::cuda::ops::project(tyloi::DenseTensor input, const ::tyloi::Tensor& weight,
+                                          tyloi::DenseTensor ids) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
+    return Executor::current().projector(Executor::current_ffn()).run(
+        weight, std::move(input), std::move(ids));
+}
+
 tyloi::DenseTensor tyloi::cuda::ops::low_rank(tyloi::DenseTensor input, const ::tyloi::Tensor& output_a,
                                             const ::tyloi::Tensor& output_b, int64_t groups,
                                             bool groupwise, bool profile) {

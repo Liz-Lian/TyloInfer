@@ -2,6 +2,7 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
@@ -487,5 +488,22 @@ AttentionResult dispatch_attention(const AttentionInput& request,
     return AttentionResult{std::move(attention), attention_token_major};
 #endif
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::DenseTensor ops::sparse_attention(
+    ::tyloi::DenseTensor query, ::tyloi::DenseTensor cache,
+    ::tyloi::DenseTensor indices, ::tyloi::DenseTensor mask,
+    ::tyloi::DenseTensor sinks, double scale) {
+    const auto device = query.device();
+    MfqCudaGuard guard(device.index);
+    auto& executor = Executor::current();
+    auto& scratch = executor.attention_scratch(
+        device, {query.size(1), 1, query.size(3), 0});
+    scratch.ensure_meta(8 * 1024 * 1024, device);
+    return attention_dsv4_sparse_cuda(
+        std::move(query), std::move(cache), std::move(indices), std::move(mask),
+        std::move(sinks), scratch.meta, scale);
+}
+#endif
 
 } // namespace tyloi::cuda

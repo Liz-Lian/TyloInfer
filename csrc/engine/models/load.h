@@ -233,8 +233,7 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<glm5_next::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = glm5_next::load_components(*owner, weights, load_optional_components,
-                execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().collectives(), execution.executor().profiler());
+            auto components = glm5_next::load_components(*owner, weights, load_optional_components);
             return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::qwen4_exp: {
@@ -317,7 +316,12 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<nemotron_h::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = nemotron_h::load_components(*owner, weights, load_optional_components, execution);
+            auto components = nemotron_h::load_components(*owner, weights, load_optional_components,
+#ifdef TYLOINFER_NATIVE_CUDA
+                execution.executor().pipelines());
+#else
+                execution);
+#endif
             return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::unsupported:

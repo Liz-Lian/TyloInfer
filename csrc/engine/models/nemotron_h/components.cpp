@@ -10,7 +10,12 @@
 namespace tyloi::cuda::nemotron_h {
 
 Components load_components(Model& model, const tyloi::weights::Loader& weights,
-        bool load_optional_components, CudaExecutionContext& execution) {
+        bool load_optional_components,
+#ifdef TYLOINFER_NATIVE_CUDA
+        Pipelines& pipelines) {
+#else
+        CudaExecutionContext& execution) {
+#endif
     Components result;
     if (!load_optional_components) return result;
     if ((model.plan.vision != CudaVisionAdapter::none &&
@@ -30,7 +35,13 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
     }
     if (model.plan.predictor == CudaPredictorAdapter::none) return result;
     TYLOINFER_RUNTIME_CHECK(supports_speculation(model), "invalid Nemotron-H predictor model");
-    auto predictor = Mtp::load_if_present(execution, weights, model.config, model.embed);
+    auto predictor = Mtp::load_if_present(
+#ifdef TYLOINFER_NATIVE_CUDA
+        pipelines,
+#else
+        execution,
+#endif
+        weights, model.config, model.embed);
     TYLOINFER_RUNTIME_CHECK(predictor,
         "Nemotron-H graph declares the predictor component but the source has no MTP weights");
     result.mtp = std::make_unique<Mtp>(std::move(*predictor));

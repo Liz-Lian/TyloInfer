@@ -98,7 +98,9 @@ struct SharedState {
     DenseTensor topk;
     DenseTensor candidate_blocks;
     DenseTensor previous_pre;
+#ifndef TYLOINFER_NATIVE_CUDA
     DenseTensor attention_meta;
+#endif
     std::unique_ptr<EngramHashState> engram_hash;
     std::vector<std::unique_ptr<Engram::State>> engram_states;
     EngramHashBatch engram_hashes;
@@ -206,11 +208,13 @@ struct SharedState {
             if(++issued==2)break;
         }
         ++next_layer;
+#ifndef TYLOINFER_NATIVE_CUDA
         if (!attention_meta.defined() || attention_meta.device() != device) {
             attention_meta = ::tyloi::cuda::empty(
                 {8 * 1024 * 1024}, ::tyloi::TensorOptions().device(device).dtype(
                                        ::tyloi::kFloat32));
         }
+#endif
     }
 
     DenseTensor final_collapse(const DenseTensor &hidden, std::int64_t layer_count) const {
@@ -887,14 +891,17 @@ struct Block final {
                 return plan;
             },
             [&](DenseTensor query, DenseTensor cache, const auto &plan) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                return tyloi::ops::sparse_attention(
+                           query, cache, plan.at(0), plan.at(1), sinks,
+                           1.0 / std::sqrt(static_cast<double>(config.head_dim)))
+                    .dense();
+#else
                 return attention_dsv4_sparse_cuda(
                     query, cache, plan.at(0), plan.at(1),
-#ifdef TYLOINFER_NATIVE_CUDA
-                    sinks.dense(), shared.attention_meta,
-#else
                     sinks, shared.attention_meta,
-#endif
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
+#endif
             },
             [&](DenseTensor attended) {
 #ifdef TYLOINFER_NATIVE_CUDA

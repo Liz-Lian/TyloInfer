@@ -867,12 +867,14 @@ tyloi::DenseTensor mlp(tyloi::DenseTensor input, std::span<const std::shared_ptr
 }
 
 tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count,
-                               const tyloi::ops::MoeRouting& routing) {
+                               const tyloi::ops::MoeRouting& routing, const tyloi::DenseTensor* bias) {
     MfqCudaGuard guard(logits.device().index);
-    auto result = moe_topk_cuda(DenseTensor(logits).contiguous(), count,
+    MfqOptional<DenseTensor> selection_bias = mfq_nullopt;
+    if (bias) selection_bias = *bias;
+    auto result = moe_topk_cuda(logits.dense().contiguous(), count,
         routing.activation == tyloi::ops::RouterActivation::sigmoid,
         routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
-        routing.normalize, routing.delayed_softmax, mfq_nullopt, 1e-20, routing.scale);
+        routing.normalize, routing.delayed_softmax, selection_bias, 1e-20, routing.scale);
     return {std::make_shared<DenseTensor>(result.at(0)), std::make_shared<DenseTensor>(result.at(1))};
 }
 tyloi::DenseTensor expert_scale(tyloi::DenseTensor weights, tyloi::DenseTensor ids, const tyloi::DenseTensor& scales) {

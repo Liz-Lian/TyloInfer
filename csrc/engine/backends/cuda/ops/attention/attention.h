@@ -124,6 +124,10 @@ namespace ops {
 std::int64_t attention_parts(std::int64_t planned_len);
 tyloi::ops::AttentionResult attention(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
                                     const tyloi::ops::AttentionConfig&);
+::tyloi::DenseTensor sparse_attention(
+    ::tyloi::DenseTensor query, ::tyloi::DenseTensor cache,
+    ::tyloi::DenseTensor indices, ::tyloi::DenseTensor mask,
+    ::tyloi::DenseTensor sinks, double scale);
 std::optional<tyloi::DenseTensor> norm_rope_kv(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,
     const tyloi::ops::RopeTable&, const tyloi::DenseTensor&, const tyloi::DenseTensor&, double, double);
 std::optional<tyloi::DenseTensor> rope_kv(const tyloi::ops::AttentionInput&, const tyloi::state::KvView&,

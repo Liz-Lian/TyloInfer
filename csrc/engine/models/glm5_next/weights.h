@@ -41,10 +41,8 @@ auto load_mla(Loader &ops, const Config &c, int layer, const std::string &a) {
         ops.weight(a + ".query_b.weight"), ops.weight(a + ".output.weight"),
         ops.weight(a + ".indexer.query.weight"), ops.weight(a + ".indexer.key.weight"),
         ops.weight(a + ".indexer.score.weight"),
-        ops.headwise(ops.routed(a + ".latent.query_embedding.weight", layer, c.heads, c.latent, c.nope),
-                     c.heads, c.latent),
-        ops.headwise(ops.routed(a + ".latent.output_unembedding.weight", layer, c.heads, c.value_width, c.latent),
-                     c.heads, c.value_width),
+        ops.routed(a + ".latent.query_embedding.weight", layer, c.heads, c.latent, c.nope),
+        ops.routed(a + ".latent.output_unembedding.weight", layer, c.heads, c.value_width, c.latent),
 #ifdef TYLOINFER_NATIVE_CUDA
         ops.dense(a + ".query_a_norm.weight"),
         ops.dense(a + ".key_value_a_norm.weight"),

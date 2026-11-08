@@ -142,7 +142,9 @@ std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
     if (shared->topk.defined()) result.push_back(shared->topk);
     if (shared->candidate_blocks.defined()) result.push_back(shared->candidate_blocks);
     if (shared->previous_pre.defined()) result.push_back(shared->previous_pre);
+#ifndef TYLOINFER_NATIVE_CUDA
     if (shared->attention_meta.defined()) result.push_back(shared->attention_meta);
+#endif
     if (shared->image_mask.defined()) result.push_back(shared->image_mask);
     if (shared->text_rows.defined()) result.push_back(shared->text_rows);
     if (shared->routing_mask.defined()) result.push_back(shared->routing_mask);

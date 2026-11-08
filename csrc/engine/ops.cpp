@@ -124,6 +124,28 @@ std::shared_ptr<Tensor> attention(const Tensor& query_tensor, const Tensor& key_
     return owner(cuda::ops::attention(query, key, value, dense_mask, scale));
 }
 
+Tensor sparse_attention(const Tensor& query_tensor, const Tensor& cache_tensor,
+                        const Tensor& indices_tensor, const Tensor& mask_tensor,
+                        const Tensor& sinks_tensor, double scale_value) {
+    const auto& query = dense(query_tensor);
+    const auto& cache = dense(cache_tensor);
+    const auto& indices = dense(indices_tensor);
+    const auto& mask = dense(mask_tensor);
+    const auto& sinks = dense(sinks_tensor);
+    compatible(query, cache);
+    compatible(query, indices);
+    compatible(query, mask);
+    compatible(query, sinks);
+    require_cuda(query);
+    if (query.dim() != 4 || cache.dim() != 3 || indices.dim() != 3 ||
+        mask.sizes() != indices.sizes() || sinks.dim() != 1 ||
+        query.size(0) != cache.size(0) || query.size(0) != indices.size(0) ||
+        query.size(2) != indices.size(1) || query.size(3) != cache.size(2))
+        throw std::invalid_argument("sparse attention geometry is incompatible");
+    return owner(cuda::ops::sparse_attention(
+        query, cache, indices, mask, sinks, scale_value));
+}
+
 TailRopeTable tail_rope_table(std::int64_t max_positions, double base, std::int64_t compress_ratio,
         Device target, double compress_base, std::int64_t original_positions,
         double factor, double beta_fast, double beta_slow) {
@@ -241,12 +263,12 @@ std::shared_ptr<Tensor> transpose(const Tensor& value_tensor, std::int64_t first
     input(value);
     return owner(tyloi::transpose(value, first, second));
 }
-std::shared_ptr<Tensor> add_residual(const Tensor& residual_tensor, const Tensor& value_tensor) {
+Tensor add_residual(const Tensor& residual_tensor, const Tensor& value_tensor, ResidualMode mode) {
     const auto& residual = ::tyloi::ops::dense(residual_tensor);
     const auto& value = ::tyloi::ops::dense(value_tensor);
     compatible(residual, value);
     require_cuda(residual);
-    return owner(cuda::ops::add_residual(residual, value));
+    return owner(cuda::ops::add_residual(residual, value, mode == ResidualMode::configured));
 }
 std::optional<ResidualNorms> residual_norms(const Tensor& residual_tensor, const Tensor& attention_tensor, const Tensor& attention_weight_tensor,
                                             const Tensor& dense_weight_tensor, const Tensor& router_weight_tensor,
@@ -310,11 +332,14 @@ ProfileCapture::~ProfileCapture() = default;
 void ProfileCapture::report(const std::string& name) {
     if (impl_) impl_->profiler.report(name);
 }
-SelectedExperts topk(const Tensor& logits_tensor, std::int64_t count, const MoeRouting& routing) {
+SelectedExperts topk(const Tensor& logits_tensor, std::int64_t count, const MoeRouting& routing,
+                     const Tensor& bias) {
     const auto& logits = ::tyloi::ops::dense(logits_tensor);
     input(logits);
     require_cuda(logits);
-    return cuda::ops::topk(logits, count, routing);
+    const auto* selection_bias = bias.defined() ? &dense(bias) : nullptr;
+    if (selection_bias) compatible(logits, bias);
+    return cuda::ops::topk(logits, count, routing, selection_bias);
 }
 void expert_scale(Tensor& weights_tensor, const Tensor& ids_tensor, const Tensor& scales_tensor) {
     auto& weights = dense(weights_tensor);
@@ -460,6 +485,10 @@ std::shared_ptr<Tensor> project(const Tensor& value_tensor, const ::tyloi::Tenso
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     return owner(cuda::ops::project(value, weight));
+}
+Tensor project(const Tensor& value, const Tensor& weight, const Tensor& ids) {
+    compatible(value, ids);
+    return owner(cuda::ops::project(dense(value), weight, dense(ids)));
 }
 Tensor low_rank(const Tensor& value_tensor, const Tensor& output_a, const Tensor& output_b,
                 std::int64_t groups, bool groupwise, bool profile) {

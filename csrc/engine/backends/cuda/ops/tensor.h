@@ -34,7 +34,7 @@ tyloi::DenseTensor add(tyloi::DenseTensor input, std::int64_t offset);
 tyloi::DenseTensor add(tyloi::DenseTensor left, tyloi::DenseTensor right);
 tyloi::DenseTensor multiply(tyloi::DenseTensor left, tyloi::DenseTensor right);
 tyloi::DenseTensor matmul(tyloi::DenseTensor left, tyloi::DenseTensor right);
-tyloi::DenseTensor add_residual(tyloi::DenseTensor residual, tyloi::DenseTensor value);
+tyloi::DenseTensor add_residual(tyloi::DenseTensor residual, tyloi::DenseTensor value, bool configured);
 // Numeric conveniences shared with DenseTensor members; thin dispatch to native ops.
 tyloi::DenseTensor mean(tyloi::DenseTensor input, std::int64_t dim, bool keepdim);
 tyloi::DenseTensor amax(tyloi::DenseTensor input, std::int64_t dim, bool keepdim);

@@ -65,13 +65,31 @@ DenseTensor next_convolution_state(const DenseTensor& conv_input, int64_t kernel
 
 } // namespace
 
+#ifdef TYLOINFER_NATIVE_CUDA
+static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity,
+                            DenseTensor x) {
+#else
 static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Executor& executor,
                             DenseTensor x, const Executor::Mode& mode) {
+#endif
     const auto& [layer, mamba_heads, mamba_head_dim, ssm_state_size, mamba_groups, conv_kernel,
                  rms_norm_eps, time_step_limit_lo, time_step_limit_hi, mixer_norm, in_proj,
                  conv_weight_value, conv_bias_value, a_log_value, d_value, dt_bias_value, scan_norm_value, out_proj] = weights;
     auto& [mixer, speculative_xbc, speculative_dt] = activity;
-    auto& profiler = executor.profiler();
+    auto measure = [&](const char* name, auto&& operation) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return tyloi::ops::measure(name, x.device(), std::forward<decltype(operation)>(operation));
+#else
+        return executor.profiler().measure(name, std::forward<decltype(operation)>(operation));
+#endif
+    };
+    const auto project = [&](const DenseTensor& input, const ::tyloi::Tensor& weight) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return tyloi::ops::project(::tyloi::Tensor(input), weight).dense();
+#else
+        return executor.projector(mode.ffn).run(weight, input);
+#endif
+    };
     auto& state = mixer.view();
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t heads = mamba_heads;
@@ -106,20 +124,22 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                           ? conv_bias_value
                           : ::tyloi::cuda::empty({0}, f32);
 #endif
-    auto xn = profiler.measure("mamba.norm", [&] {
-        return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
+    auto xn = measure("mamba.norm", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                             *mixer_norm, rms_norm_eps, 0.0)
+        auto normalized = tyloi::ops::rms_norm(
+            ::tyloi::Tensor(x.reshape({B * T, H})), mixer_norm, rms_norm_eps, 0.0);
+        return tyloi::ops::reshape(normalized, {B, T, H}).dense();
 #else
+        return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
                              mixer_norm, rms_norm_eps, 0.0)
-#endif
             .reshape({B, T, H});
+#endif
     });
     auto mixed = selective_state_attention<DenseTensor>(
                 true,
                 [&]() {
-                    auto projected = profiler.measure("mamba.in_proj", [&] {
-                        return executor.projector(mode.ffn).run(*in_proj, xn).to(::tyloi::kFloat32);
+                    auto projected = measure("mamba.in_proj", [&] {
+                        return project(xn, in_proj).to(::tyloi::kFloat32);
                     });
                     TYLOINFER_RUNTIME_CHECK(projected.size(-1) == projection_width,
                                       "mamba fused projection width disagrees with config");
@@ -134,7 +154,7 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                 },
                 [&](const std::array<DenseTensor, 3>& projected) {
                     const auto& xbc = projected[1];
-                    auto convolved = profiler.measure("mamba.conv", [&] {
+                    auto convolved = measure("mamba.conv", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
                         const auto& conv_weight = dynamic_cast<const DenseTensor&>(*conv_weight_value);
 #else
@@ -159,7 +179,7 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                     return std::array<DenseTensor, 3>{std::move(x), std::move(b), std::move(c)};
                 },
                 [&](const std::array<DenseTensor, 3>& signals, const DenseTensor& dt) {
-                    return profiler.measure("mamba.scan", [&] {
+                    return measure("mamba.scan", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
                         const auto& dt_bias = dynamic_cast<const DenseTensor&>(*dt_bias_value);
                         const auto& a_log = dynamic_cast<const DenseTensor&>(*a_log_value);
@@ -185,7 +205,7 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                     });
                 },
                 [&](DenseTensor scanned, DenseTensor gate) {
-                    return profiler.measure("mamba.gated_norm", [&] {
+                    return measure("mamba.gated_norm", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
                         const auto& scan_norm = dynamic_cast<const DenseTensor&>(*scan_norm_value);
 #else
@@ -199,9 +219,9 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
                     });
                 },
                 [&](DenseTensor normalized) {
-                    return profiler.measure(
+                    return measure(
                         "mamba.out_proj",
-                        [&] { return executor.projector(mode.ffn).run(*out_proj, normalized); });
+                        [&] { return project(normalized, out_proj); });
                 },
                 [&](const DenseTensor& final_state) {
                     if (final_state.defined())
@@ -212,7 +232,12 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
     auto mm = mixed.reshape({-1, H});
     if (mm.scalar_type() != rr.scalar_type())
         mm = mm.to(rr.scalar_type()).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+    return tyloi::ops::add_residual(::tyloi::Tensor(rr), ::tyloi::Tensor(mm)).dense()
+        .reshape({B, T, H});
+#else
     return acc_cuda(rr, mm).reshape({B, T, H});
+#endif
 }
 
 static void clear_speculative(MambaState& activity) noexcept {
@@ -300,20 +325,33 @@ static void rollback_speculative(const Mamba& weights, MambaState& activity, int
     }
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+static DenseTensor moe_forward(const Moe& weights, DenseTensor x) {
+#else
 static DenseTensor moe_forward(const Moe& weights, Executor& executor, DenseTensor x,
                           const Executor::Mode& mode) {
+#endif
     const auto& [layer, rms_norm_eps, ffn_norm, ffn] = weights;
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
-    auto xn = executor.profiler().measure("moe.norm", [&] {
-        return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
+    auto measure = [&](const char* name, auto&& operation) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                             *ffn_norm, rms_norm_eps, 0.0)
+        return tyloi::ops::measure(name, x.device(), std::forward<decltype(operation)>(operation));
 #else
-                             ffn_norm, rms_norm_eps, 0.0)
+        return executor.profiler().measure(name, std::forward<decltype(operation)>(operation));
 #endif
+    };
+    auto xn = measure("moe.norm", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto normalized = tyloi::ops::rms_norm(
+            ::tyloi::Tensor(x.reshape({B * T, H})), ffn_norm, rms_norm_eps, 0.0);
+        return tyloi::ops::reshape(normalized, {B, T, H}).dense();
+#else
+        return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
+                             ffn_norm, rms_norm_eps, 0.0)
             .reshape({B, T, H});
+#endif
     });
-    auto mixed = executor.profiler().measure("moe.ffn", [&] {
+    auto mixed = measure("moe.ffn", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
         return ffn.forward(xn.reshape({B * T, H})).reshape({B, T, H});
 #else
@@ -325,13 +363,24 @@ static DenseTensor moe_forward(const Moe& weights, Executor& executor, DenseTens
     auto mm = mixed.reshape({-1, H});
     if (mm.scalar_type() != rr.scalar_type())
         mm = mm.to(rr.scalar_type()).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+    return tyloi::ops::add_residual(::tyloi::Tensor(rr), ::tyloi::Tensor(mm)).dense()
+        .reshape({B, T, H});
+#else
     return acc_cuda(rr, mm).reshape({B, T, H});
+#endif
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+static DenseTensor attention_residual(DenseTensor residual, DenseTensor attention_output,
+                                 int64_t batch, int64_t tokens, int64_t hidden) {
+#else
 static DenseTensor attention_residual(Executor& executor, DenseTensor residual, DenseTensor attention_output,
                                  int64_t batch, int64_t tokens, int64_t hidden) {
+#endif
     auto rr = residual.reshape({-1, hidden});
     auto aa = attention_output.reshape({-1, hidden});
+#ifndef TYLOINFER_NATIVE_CUDA
     if (executor.fp32_residual()) {
         rr = rr.to(::tyloi::kFloat32);
         aa = aa.to(::tyloi::kFloat32);
@@ -341,6 +390,13 @@ static DenseTensor attention_residual(Executor& executor, DenseTensor residual, 
     return executor.profiler().measure("attention.residual", [&] {
         return acc_cuda(rr, aa).reshape({batch, tokens, hidden});
     });
+#else
+    return tyloi::ops::measure("attention.residual", residual.device(), [&] {
+        return tyloi::ops::add_residual(::tyloi::Tensor(rr), ::tyloi::Tensor(aa),
+            tyloi::ops::ResidualMode::configured).dense()
+            .reshape({batch, tokens, hidden});
+    });
+#endif
 }
 
 static DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids) {
@@ -443,20 +499,34 @@ bool supports_speculation(const Model& model) noexcept {
            });
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+DenseTensor forward_layer(const Layer& layer, LayerState& state, DenseTensor input,
+                     const AttentionStep& step, std::int64_t confirmed,
+                     const tyloi::models::ForwardOptions& mode) {
+#else
 DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
                      std::size_t scratch_index, DenseTensor input, const AttentionStep& step,
                      std::int64_t confirmed, const Executor::Mode& mode) {
+#endif
     MfqCudaGuard guard(layer.device);
     if (const auto* mamba = std::get_if<Mamba>(&layer.weights)) {
         auto& activity = std::get<MambaState>(state);
-        if (confirmed == 0)
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto run = [&] {
+            return mamba_forward(*mamba, activity, std::move(input));
+        };
+#else
+        const auto run = [&] {
             return mamba_forward(*mamba, activity, executor, std::move(input), mode);
+        };
+#endif
+        if (confirmed == 0) return run();
         TYLOINFER_RUNTIME_CHECK(input.is_cuda() && !activity.mixer.pending() && confirmed > 0 &&
                                confirmed < input.size(1) && activity.mixer.defined(),
                                "invalid Nemotron-H speculative mamba transaction");
         activity.mixer.begin(step.cache_position, confirmed, input.size(1));
         try {
-            return mamba_forward(*mamba, activity, executor, std::move(input), mode);
+            return run();
         } catch (...) {
             activity.mixer.abort();
             clear_speculative(activity);
@@ -464,7 +534,11 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
         }
     }
     if (const auto* moe = std::get_if<Moe>(&layer.weights))
+#ifdef TYLOINFER_NATIVE_CUDA
+        return moe_forward(*moe, std::move(input));
+#else
         return moe_forward(*moe, executor, std::move(input), mode);
+#endif
     const auto& attention = std::get<FullAttention>(layer.weights);
     auto& cache = std::get<KVCache>(state);
     const auto B = input.size(0), T = input.size(1), H = input.size(2);
@@ -481,20 +555,10 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
                         attention.kv_quantization);
     cache.quantization = attention.kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA
-    (void)scratch_index;
-    DenseTensor residual;
-    const Task task{task::Attention{0, 1, 2, attention, 0, &residual}, 0};
-    const auto view = cache.view();
-    Inputs inputs;
-    inputs.values = {std::move(input), {}, {}};
-    inputs.output = 2;
-    inputs.kv = std::span<const AttentionKvView>{&view, 1};
-    inputs.attention = step;
-    inputs.rope = attention.attention_rope;
-    inputs.trace = attention.layer == mode.trace_layer ? mode.trace : nullptr;
-    inputs.trace_scope = 0;
-    auto output = executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
-    return attention_residual(executor, std::move(residual), std::move(output), B, T, H);
+    auto output = attention.forward(::tyloi::Tensor(std::move(input)), step,
+        cache.view(), attention.attention_rope,
+        attention.layer == mode.trace_layer ? mode.trace : nullptr);
+    return attention_residual(output[0].dense(), output[1].dense(), B, T, H);
 #else
     auto mixed = attention.forward(executor.projector(mode.ffn), executor.profiler(),
         executor.attention_options(), std::move(input), step, cache.view(),
@@ -567,13 +631,20 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         const auto& layer = model.layers[index];
         MfqCudaGuard layer_guard(layer.device);
         auto local = step;
-        local.positions = collectives.copy(DenseTensor(step.positions), layer.device);
-        if (step.sequence_lengths.has_value())
-            local.sequence_lengths = collectives.copy(DenseTensor(*step.sequence_lengths), layer.device);
-        if (step.cache_positions.has_value())
-            local.cache_positions = collectives.copy(DenseTensor(*step.cache_positions), layer.device);
+        local.positions = collectives.copy(step.positions.dense(), layer.device);
+        if (step.sequence_lengths.defined())
+            local.sequence_lengths = collectives.copy(step.sequence_lengths.dense(), layer.device);
+        if (step.cache_positions.defined())
+            local.cache_positions = collectives.copy(step.cache_positions.dense(), layer.device);
+#ifdef TYLOINFER_NATIVE_CUDA
+        hidden = forward_layer(layer, state.layers[index],
+            collectives.copy(std::move(hidden), layer.device), local,
+            input.confirmed,
+            tyloi::models::ForwardOptions{mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary});
+#else
         hidden = forward_layer(layer, state.layers[index], executor, index,
             collectives.copy(std::move(hidden), layer.device), local, input.confirmed, mode);
+#endif
         trace(hidden);
     }
     if (!input.positions.has_value() || input.advance) state.cache_pos += T;

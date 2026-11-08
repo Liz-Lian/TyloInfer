@@ -13,8 +13,7 @@ namespace tyloi::cuda::glm5_next {
 std::unique_ptr<tyloi::models::Mtp> load_components(
         tyloi::cuda::glm5_next::Model& model,
         const tyloi::weights::Loader& weights,
-        bool load_optional_components, tyloi::cuda::Projector projector,
-        tyloi::cuda::Collectives& copies, CudaProfiler& profiler) {
+        bool load_optional_components) {
     std::unique_ptr<tyloi::models::Mtp> result;
     if (!load_optional_components) return result;
     if (model.plan.vision != tyloi::cuda::CudaVisionAdapter::none ||
@@ -30,7 +29,7 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
         tyloi::cuda::glm5_next::supports_speculation(model),
         "invalid Flash-Next predictor model");
     auto predictor = tyloi::cuda::glm5_next::Mtp::load_if_present(
-        weights, std::move(projector), copies, profiler, model.embed, model.config);
+        weights, model.embed, model.config);
     if (predictor) {
         result =
             std::make_unique<tyloi::cuda::glm5_next::Mtp>(

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/common/mtp.h"
-#include "engine/models/common/attention_ops.h"
+#include "engine/models/glm5_next/model.h"
 #include "engine/models/glm5_next/config.h"
 #include "engine/models/glm5_next/state.h"
 
@@ -33,7 +33,7 @@ struct Mtp final : tyloi::models::Mtp {
     struct Layer {
         Parameter attention_norm, ffn_norm;
         std::unique_ptr<SparseMla> attention;
-        attention_ops::Transform ffn;
+        FeedForward ffn;
     };
 
     tyloi::models::glm5_next::Config config;
@@ -41,14 +41,12 @@ struct Mtp final : tyloi::models::Mtp {
     Linear fusion;
     std::vector<Layer> layers;
 
-    Mtp(Projector project, Collectives& copies, CudaProfiler& profiler,
-                std::shared_ptr<const ::tyloi::Tensor> embedding, int primary);
+    Mtp(::tyloi::Tensor embedding, int primary);
     ~Mtp() override;
     Mtp(Mtp&&) noexcept;
 
     static std::optional<Mtp> load_if_present(const ::tyloi::weights::Loader& weights,
-                                                      Projector projector, Collectives& copies,
-                                                      CudaProfiler& profiler, std::shared_ptr<const ::tyloi::Tensor> embedding,
+                                                      ::tyloi::Tensor embedding,
                                                       const tyloi::models::glm5_next::Config &main);
 
     std::unique_ptr<tyloi::models::MtpState> make_state() const override {
@@ -81,10 +79,7 @@ struct Mtp final : tyloi::models::Mtp {
     bool preserve_output_dtype() const noexcept override;
 
   private:
-    Projector project_;
-    Collectives& copies_;
-    CudaProfiler& profiler_;
-    std::shared_ptr<const ::tyloi::Tensor> embedding_;
+    ::tyloi::Tensor embedding_;
     int primary_;
 };
 

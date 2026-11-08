@@ -40,8 +40,13 @@ struct AttentionResult { std::shared_ptr<Tensor> value; bool token_major = false
 AttentionResult attention(const AttentionInput& input, const state::KvView& kv,
                           const AttentionConfig& config);
 std::int64_t attention_parts(std::int64_t planned_len, Device device);
-std::shared_ptr<Tensor> attention(const Tensor& query, const Tensor& key, const Tensor& value,
-                 const Tensor* additive_mask, double scale);
+Tensor attention(const Tensor& query, const Tensor& key, const Tensor& value,
+                 const Tensor& additive_mask, double scale);
+// Query [B,H,T,D], shared KV [B,S,D], indices and mask [B,T,K], sinks [H].
+// The backend owns execution scratch.
+Tensor sparse_attention(const Tensor& query, const Tensor& cache,
+                        const Tensor& indices, const Tensor& mask,
+                        const Tensor& sinks, double scale);
 // Writes the supplied backing and returns visible KV; paged prefixes may be gathered.
 // An unpaged, unquantized zero-batch write can use CPU tensors.
 std::pair<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>> append_kv(state::KvView kv, const Tensor& key, const Tensor& value,
@@ -88,11 +93,14 @@ std::shared_ptr<Tensor> segmented_attention(const Tensor& query, const Tensor& k
 // Null or undefined weights pass their value through, including CPU values; other outputs use F32 or BF16.
 std::array<std::shared_ptr<Tensor>, 3> qkv_norm(std::array<const Tensor*, 3> values, std::array<const Tensor*, 3> weights,
                                double eps, double offset, ScalarType output_type);
-std::shared_ptr<Tensor> add(const Tensor& left, const Tensor& right);
-std::shared_ptr<Tensor> multiply(const Tensor& left, const Tensor& right);
-std::shared_ptr<Tensor> matmul(const Tensor& left, const Tensor& right);
-std::shared_ptr<Tensor> transpose(const Tensor& input, std::int64_t first, std::int64_t second);
-std::shared_ptr<Tensor> add_residual(const Tensor& residual, const Tensor& value);
+Tensor add(const Tensor& left, const Tensor& right);
+Tensor multiply(const Tensor& left, const Tensor& right);
+Tensor matmul(const Tensor& left, const Tensor& right);
+Tensor transpose(const Tensor& input, std::int64_t first, std::int64_t second);
+enum class ResidualMode { preserve, configured };
+// configured applies the execution residual policy; preserve skips input conversion.
+Tensor add_residual(const Tensor& residual, const Tensor& value,
+                    ResidualMode mode = ResidualMode::preserve);
 
 struct ResidualNorms {
     std::shared_ptr<Tensor> residual, dense, router, experts;
@@ -142,8 +150,10 @@ std::shared_ptr<Tensor> scale(const Tensor& input, double factor);
 // Scalar division preserves shape and dtype.
 std::shared_ptr<Tensor> divide(const Tensor& input, double divisor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
-std::shared_ptr<Tensor> embedding(const Tensor& ids, const ::tyloi::Tensor& weight);
-std::shared_ptr<Tensor> project(const Tensor& input, const ::tyloi::Tensor& weight);
+Tensor embedding(const Tensor& ids, const ::tyloi::Tensor& weight);
+Tensor project(const Tensor& input, const ::tyloi::Tensor& weight);
+// Select one weight bank per route; keep the route axis in the result.
+Tensor project(const Tensor& input, const Tensor& weight, const Tensor& ids);
 // Input starts with [batch,tokens]; each group has output_a.size(1) values.
 // Two projections preserve those axes and return output_b.size(0) channels.
 Tensor low_rank(const Tensor& input, const Tensor& output_a, const Tensor& output_b,
@@ -274,8 +284,9 @@ struct MoeRouting {
     double scale = 1.0;
 };
 
-struct SelectedExperts { std::shared_ptr<Tensor> ids, weights; };
-SelectedExperts topk(const Tensor& logits, std::int64_t count, const MoeRouting& routing);
+struct SelectedExperts { Tensor ids, weights; };
+SelectedExperts topk(const Tensor& logits, std::int64_t count, const MoeRouting& routing,
+                     const Tensor& bias = {});
 // Scale the selected weights in place.
 void expert_scale(Tensor& weights, const Tensor& ids, const Tensor& scales);
 std::shared_ptr<Tensor> weighted_reduce(const Tensor& pairs, const Tensor& weights);
