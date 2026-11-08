@@ -13,15 +13,24 @@
 namespace tyloi::cuda {
 
 template<class Ops, class Finish>
+#ifdef TYLOINFER_NATIVE_CUDA
+std::tuple<::tyloi::Tensor, bool, bool> generation_prefill(
+        qwen4_exp::Model& model, Ops& ops, const tyloi::engine::PrefillChunk& chunk,
+        ::tyloi::Tensor& ids, const Finish& finish_prefill) {
+#else
 std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         qwen4_exp::Model& model, Ops& ops, const tyloi::engine::PrefillChunk& chunk,
         ::tyloi::DenseTensor& ids, const Finish& finish_prefill) {
-    using DenseTensor = ::tyloi::DenseTensor;
+#endif
     auto& weights=ops.weights;
     auto& state=ops.state;
     auto* prepared=ops.prepared;
     auto* output=ops.output;
-    DenseTensor hidden;
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor hidden;
+#else
+    ::tyloi::DenseTensor hidden;
+#endif
     bool layer_major=false,short_windows=false;
     // TQ groups all prompt rows by expert without expanding an entire
     // layer. Splitting these batches into verification windows would
@@ -35,15 +44,27 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         for(int64_t offset=0;offset<chunk.count;) {
             if(output && output->stopped())break;
             const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto part=tyloi::ops::slice(ids,1,offset,offset+rows);
+#else
             auto part=ids.narrow(1,offset,rows);
+#endif
             ::tyloi::Tensor window_logits;
             if(auto result=qwen4_decode_graph_hidden(model,part,nullptr,rows>1?1:0,
                     nullptr,{},&window_logits))
+#ifdef TYLOINFER_NATIVE_CUDA
+                hidden=std::move(*result);
+            else
+                hidden = model.forward(tyloi::models::Input{part, {}, {}, {}, {}, nullptr, nullptr,
+                                                            false, rows>1?1:0, 0, 0},
+                                       ops.state);
+#else
                 hidden=result->dense();
             else
-                hidden = dynamic_cast<const DenseTensor&>(*model.forward(tyloi::models::Input{std::make_shared<DenseTensor>(part), {}, {}, {}, {}, nullptr, nullptr,
+                hidden = model.forward(tyloi::models::Input{part, {}, {}, {}, {}, nullptr, nullptr,
                                                             false, rows>1?1:0, 0, 0},
-                                       ops.state));
+                                       ops.state).dense();
+#endif
             if(rows>1)state.commit_speculative();
             offset+=rows;
         }
@@ -52,7 +73,11 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         layer_major=true;
         auto result=qwen4_layer_major_prefill_hidden(model,ids,ops.prefill_compute_chunk,true,
             [&] {return output && output->stopped();},nullptr,false,finish_prefill);
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (result) hidden=std::move(result);
+#else
         if (result) hidden=result.dense();
+#endif
     }
     return {std::move(hidden),layer_major,short_windows};
 }
@@ -67,11 +92,19 @@ template<class Ops>
 std::optional<int64_t> generation_decode(qwen4_exp::Model& model, Ops& ops) {
     if(ops.known_token_host.defined()) {
         const bool greedy=ops.sampler.greedy() && !ops.has_penalties && !ops.constraint;
+#ifdef TYLOINFER_NATIVE_CUDA
+        if(auto result=qwen4_decode_graph_logits(model,tyloi::ops::reshape(ops.pending,{1,1}),greedy?2:1,ops.known_token_host)) {
+            ops.pending=greedy?std::move(*result):tyloi::engine::sample_logits(ops.sampler,
+                tyloi::ops::reshape(tyloi::ops::contiguous(*result),{1,-1}),ops.counts,ops.constraint);
+            return tyloi::ops::item(ops.pending);
+        }
+#else
         if(auto result=qwen4_decode_graph_logits(model,ops.pending.reshape({1,1}),greedy?2:1,ops.known_token_host)) {
             ops.pending=greedy?result->dense():tyloi::engine::sample_logits(ops.sampler,
                 result->dense().contiguous().view({1,-1}),ops.counts,ops.constraint);
             return ops.pending.template item<int64_t>();
         }
+#endif
     }
     return std::nullopt;
 }

@@ -26,8 +26,12 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     const auto &prompt = request.prompt;
     const auto &sampling = request.sampling;
     const auto &token_constraint = request.token_constraint;
-    using DenseTensor = typename Ops::DenseTensor;
-    DenseTensor restored_last_hidden = restored ? dynamic_cast<const DenseTensor&>(*restored) : DenseTensor{};
+    using Tensor = typename Ops::Tensor;
+#ifdef TYLOINFER_NATIVE_CUDA
+    Tensor restored_last_hidden = std::move(restored);
+#else
+    Tensor restored_last_hidden = restored ? restored.dense() : Tensor{};
+#endif
     auto &state = ops.state;
     const auto &metadata = ops.info;
     auto &mtp = ops.mtp;
@@ -45,12 +49,12 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         reused_tokens < prompt.size(), "restored MTP prefix must be shorter than the prompt");
     const bool transformed_prompt = prepared != nullptr && prepared->transformed();
 #ifdef TYLOINFER_NATIVE_CUDA
-    const DenseTensor prepared_positions = transformed_prompt && prepared->positions
-        ? dynamic_cast<const DenseTensor&>(*prepared->positions) : DenseTensor{};
-    const bool prepared_embeddings = transformed_prompt && prepared->embeddings && prepared->embeddings->defined();
+    const Tensor prepared_positions = transformed_prompt && prepared->positions
+        ? prepared->positions : Tensor{};
+    const bool prepared_embeddings = transformed_prompt && prepared->embeddings.defined();
 #else
-    const DenseTensor prepared_positions = transformed_prompt ? DenseTensor(prepared->positions) : DenseTensor{};
-    const bool prepared_embeddings = transformed_prompt && ops.defined(DenseTensor(prepared->embeddings));
+    const Tensor prepared_positions = transformed_prompt ? prepared->positions.dense() : Tensor{};
+    const bool prepared_embeddings = transformed_prompt && ops.defined(prepared->embeddings.dense());
 #endif
     const bool positioned_prompt = transformed_prompt && ops.defined(prepared_positions);
     require_execution(prepared == nullptr || prepared->token_ids == prompt,
@@ -119,15 +123,15 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     mtp_state.stats.park_count=depth_controller->parks();
 
     {
-        DenseTensor raw, hidden;
-        std::vector<DenseTensor> raw_chunks;
+        Tensor raw, hidden;
+        std::vector<Tensor> raw_chunks;
         double prefill_ms = 0.0;
         double target_prefill_ms=0.0, predictor_prefill_ms=0.0, predictor_workspace_ms=0.0;
         const auto checkpoint=mtp.blockwise_drafting() && session_last_hidden &&
             stable_prefix_tokens>reused_tokens && stable_prefix_tokens<prompt.size()
             ?static_cast<int64_t>(stable_prefix_tokens):int64_t(0);
         bool prompt_context_seeded=false;
-        const auto prime_blockwise=[&](DenseTensor context,int64_t position,bool seed) {
+        const auto prime_blockwise=[&](Tensor context,int64_t position,bool seed) {
             if constexpr(requires { ops.blockwise_prompt_context(context,position,seed); }) {
                 const auto elapsed=ops.blockwise_prompt_context(context,position,seed);
                 prefill_ms+=elapsed;predictor_prefill_ms+=elapsed;
@@ -147,7 +151,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 return ops.predictor_prefill_chunk_size(prefill_chunk_size);
             return std::min<int64_t>(512, prefill_chunk_size);
         }();
-        auto prime_rows = [&](DenseTensor prime_hidden, int64_t ids_offset, int64_t pairs) {
+        auto prime_rows = [&](Tensor prime_hidden, int64_t ids_offset, int64_t pairs) {
             if (pairs <= 0) return;
             if constexpr (requires { ops.begin_predictor_prefill(pairs); }) {
                 const auto elapsed=ops.begin_predictor_prefill(pairs);
@@ -159,7 +163,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 auto prime = ops.slice(prime_hidden, 1, chunk.offset, chunk.count);
                 auto ids = ops.slice(input_ids, 1, ids_offset + chunk.offset, chunk.count);
                 auto positions = positioned_prompt
-                    ? ops.slice(prepared_positions, -1, ids_offset + chunk.offset, chunk.count) : DenseTensor{};
+                    ? ops.slice(prepared_positions, -1, ids_offset + chunk.offset, chunk.count) : Tensor{};
                 if constexpr (requires { ops.predictor_prefill(prime, ids, positions); }) {
                     const auto elapsed=ops.predictor_prefill(std::move(prime), std::move(ids), std::move(positions));
                     prefill_ms+=elapsed;predictor_prefill_ms+=elapsed;
@@ -202,7 +206,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 // Keep an exact checkpoint before the final prompt token so
                 // an identical retry can reuse the prefix and recompute logits.
                 auto context=raw_chunks.size()==1?std::move(raw_chunks.front()):ops.concatenate(raw_chunks,1);
-                *session_last_hidden=std::make_shared<DenseTensor>(ops.clone(ops.slice(context,1,ops.size(context,1)-1,1)));
+                *session_last_hidden=ops.clone(ops.slice(context,1,ops.size(context,1)-1,1));
                 prime_blockwise(context,offset,reused_tokens==0);
                 prompt_context_seeded=true;raw_chunks.clear();
                 co_yield PrefillProgress{
@@ -226,7 +230,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if (output.stopped() && flush_history) flush_history();
             output.metrics.mtp = mtp_state.stats;
             if (session_last_hidden != nullptr) {
-                *session_last_hidden = std::make_shared<DenseTensor>(committed_last_hidden);
+                *session_last_hidden = committed_last_hidden;
             }
         };
         auto logits = ops.logits_for(ops.slice(hidden, 1, ops.size(hidden, 1) - 1, 1));
@@ -246,7 +250,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     return ops.predictor_prefill_chunk_size(prefill_chunk_size);
                 return std::min<int64_t>(512, prefill_chunk_size);
             }();
-            DenseTensor prime_hidden;
+            Tensor prime_hidden;
             int64_t prime_ids_offset = 1;
             int64_t pairs = ops.size(raw, 1) - 1;
             if (reused_tokens > 0) {
@@ -273,7 +277,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 auto ids = ops.slice(input_ids, 1, prime_ids_offset + chunk.offset, chunk.count);
                 auto positions = positioned_prompt
                     ? ops.slice(prepared_positions, -1, prime_ids_offset + chunk.offset, chunk.count)
-                    : DenseTensor{};
+                    : Tensor{};
                 if constexpr (requires { ops.predictor_prefill(prime, ids, positions); }) {
                     const auto elapsed=ops.predictor_prefill(std::move(prime), std::move(ids), std::move(positions));
                     prefill_ms+=elapsed;predictor_prefill_ms+=elapsed;
@@ -301,11 +305,11 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         // slice can still own the entire prompt allocation; detach it before
         // the first decode replay and release the large prefill tensors.
         committed_last_hidden = ops.clone(committed_last_hidden);
-        raw = DenseTensor{};
-        hidden = DenseTensor{};
-        logits = DenseTensor{};
+        raw = Tensor{};
+        hidden = Tensor{};
+        logits = Tensor{};
         if(session_last_hidden != nullptr) {
-            *session_last_hidden = std::make_shared<DenseTensor>(committed_last_hidden);
+            *session_last_hidden = committed_last_hidden;
             // Initial prompt caching precedes token-one publication. Charge it
             // to TTFT rather than the interval between generated tokens.
             co_yield PrefillProgress{
@@ -313,10 +317,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if(output.stopped())co_return;
         }
         auto initial_hidden = committed_last_hidden;
-        auto bootstrap = [&](DenseTensor token_counts,const MfqTokenConstraintPtr& cursor) {
+        auto bootstrap = [&](Tensor token_counts,const MfqTokenConstraintPtr& cursor) {
             if(mtp.teacher_forced_prompt_prime()) {
                 (void)ops.predictor_step(initial_hidden,ops.ids_for({pending}),
-                    positioned_prompt ? ops.decode_positions(state.cache_pos,1) : DenseTensor{});
+                    positioned_prompt ? ops.decode_positions(state.cache_pos,1) : Tensor{});
             }
             auto next_hidden=ops.target_forward(ops.ids_for({pending}),&raw);
             committed_last_hidden=ops.slice(raw,1,ops.size(raw,1)-1,1);
@@ -339,7 +343,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 auto preview=output;
                 (void)preview.append(first_tokens);
                 if(!preview.stopped()) {
-                    auto prospective_counts=penalties?ops.clone(counts):DenseTensor{};
+                    auto prospective_counts=penalties?ops.clone(counts):Tensor{};
                     if(penalties)ops.add_counts(prospective_counts,ops.ids_for(first_tokens));
                     auto cursor=token_constraint?token_constraint->clone():MfqTokenConstraintPtr{};
                     require_execution(!token_constraint || cursor,"MTP bootstrap constraint cursor is incomplete");
@@ -382,7 +386,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             return static_cast<int>(
                 std::min<int64_t>(desired, std::min(context_depth, output_depth)));
         };
-        std::vector<DenseTensor> pending_hidden;
+        std::vector<Tensor> pending_hidden;
         std::vector<int64_t> pending_ids;
         bool maintenance = false;
         flush_history = [&] {
@@ -391,7 +395,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 : ops.concatenate(pending_hidden, 1);
             auto ids=ops.ids_for(pending_ids);
             auto positions=positioned_prompt ? ops.decode_positions(predictor_history_position + 1,
-                static_cast<int64_t>(pending_ids.size())) : DenseTensor{};
+                static_cast<int64_t>(pending_ids.size())) : Tensor{};
             if constexpr(requires {ops.predictor_history_step(rows,ids,positions);})
                 ops.predictor_history_step(std::move(rows),std::move(ids),std::move(positions));
             else (void)ops.predictor_step(std::move(rows),std::move(ids),std::move(positions));
@@ -399,7 +403,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             pending_hidden.clear();
             pending_ids.clear();
         };
-        auto prepare_draft = [&](DenseTensor hidden_rows,
+        auto prepare_draft = [&](Tensor hidden_rows,
                                  const std::vector<int32_t> &next_ids,
                                  int requested_depth,
                                  bool initial) {
@@ -412,12 +416,12 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 if(requested_depth>0)ops.prefetch_target_first(next_ids.back());
             }
             mtp.trim_cache_to(predictor_history_position);
-            auto prospective_counts = penalties ? ops.clone(counts) : DenseTensor{};
+            auto prospective_counts = penalties ? ops.clone(counts) : Tensor{};
             DraftChain result;
             result.tokens.reserve(static_cast<size_t>(requested_depth));
             result.probabilities.reserve(static_cast<size_t>(requested_depth));
             result.compact_probabilities.reserve(static_cast<size_t>(requested_depth));
-            auto select_draft = [&](DenseTensor draft_logits) {
+            auto select_draft = [&](Tensor draft_logits) {
                 draft_logits = ops.reshape(draft_logits, {1, -1});
                 int32_t token = -1;
                 if (greedy) {
@@ -449,13 +453,21 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 if (requested_depth > 0) {
                     auto block_result = mtp.draft_block(
                         ops.ids_for({next_ids.back()}), requested_depth);
-                    const auto& block = dynamic_cast<const DenseTensor&>(*block_result);
+#ifdef TYLOINFER_NATIVE_CUDA
+                    const auto& block = block_result;
+#else
+                    const auto& block = block_result.dense();
+#endif
                     require_execution(ops.size(block, 1) == requested_depth,
                         "block predictor returned an incomplete draft");
                     auto previous = ops.ids_for({next_ids.back()});
                     for (int position = 0; position < requested_depth; ++position) {
                         auto logits = mtp.draft_next(ops.slice(block, 1, position, 1), previous);
-                        const auto token = select_draft(dynamic_cast<const DenseTensor&>(*logits));
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const auto token = select_draft(logits);
+#else
+                        const auto token = select_draft(logits.dense());
+#endif
                         previous = ops.ids_for({token});
                     }
                 }
@@ -490,12 +502,17 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 ops.ids_for(std::move(shifted)),
                 positioned_prompt ? ops.decode_positions(predictor_history_position + 1,
                                          history_rows)
-                                   : DenseTensor{});
+                                   : Tensor{});
             predictor_history_position += history_rows;
             require_execution(mtp.cache_position() == predictor_history_position,
                 "MTP predictor cache did not advance");
-            const auto& sample = dynamic_cast<const DenseTensor&>(*head.sample_hidden);
-            const auto& chain = dynamic_cast<const DenseTensor&>(*head.chain_hidden);
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto& sample = head.sample_hidden;
+            const auto& chain = head.chain_hidden;
+#else
+            const auto& sample = head.sample_hidden.dense();
+            const auto& chain = head.chain_hidden.dense();
+#endif
             auto sample_hidden = ops.slice(sample, 1, ops.size(sample, 1) - 1, 1);
             auto chain_hidden = ops.slice(chain, 1, ops.size(chain, 1) - 1, 1);
             for (int position = 0; position < requested_depth; ++position) {
@@ -510,9 +527,14 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                         ops.ids_for({token}),
                         positioned_prompt
                             ? ops.decode_positions(predictor_history_position + position + 1, 1)
-                            : DenseTensor{});
-                    sample_hidden = dynamic_cast<const DenseTensor&>(*next.sample_hidden);
-                    chain_hidden = dynamic_cast<const DenseTensor&>(*next.chain_hidden);
+                            : Tensor{});
+#ifdef TYLOINFER_NATIVE_CUDA
+                    sample_hidden = next.sample_hidden;
+                    chain_hidden = next.chain_hidden;
+#else
+                    sample_hidden = next.sample_hidden.dense();
+                    chain_hidden = next.chain_hidden.dense();
+#endif
                 }
             }
             return result;
@@ -530,7 +552,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             }
             if (depth_controller->parked()) {
                 const auto plain_started=Clock::now();
-                DenseTensor raw_step;
+                Tensor raw_step;
                 auto hidden_step = ops.target_forward(ops.ids_for({pending}), &raw_step);
                 const auto next = ops.sample_constrained(ops.logits_for(hidden_step), counts, constraint_cursor);
                 mtp_state.stats.target_ms+=std::chrono::duration<double,std::milli>(Clock::now()-plain_started).count();
@@ -565,13 +587,13 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             // Depth selection pays for the draft prepared before verification
             // as well. Keep that complete cycle when comparing with depth zero.
             const auto verify_started=Clock::now();
-            DenseTensor verified_raw;
+            Tensor verified_raw;
             std::vector<int64_t> verify_ids{pending};
             verify_ids.insert(verify_ids.end(), draft.tokens.begin(), draft.tokens.end());
-            DenseTensor verified;
+            Tensor verified;
             const bool split_target=mtp.split_target_verification();
             if (split_target) {
-                DenseTensor pending_raw;
+                Tensor pending_raw;
                 auto pending_hidden = ops.target_forward(ops.ids_for({pending}), &pending_raw);
                 if (draft_count > 0) {
                     // The pending token is already committed. Journal only
@@ -584,7 +606,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                         throw std::runtime_error(
                             "target model does not support speculative suffix forwarding");
                     std::vector<int64_t> draft_ids(draft.tokens.begin(), draft.tokens.end());
-                    DenseTensor draft_raw;
+                    Tensor draft_raw;
                     auto draft_hidden =
                         ops.target_suffix(ops.ids_for(std::move(draft_ids)), &draft_raw);
                     verified = ops.concatenate({pending_hidden, draft_hidden}, 1);
@@ -610,7 +632,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 ++mtp_state.stats.position_drafted.at(static_cast<size_t>(position));
             }
 
-            auto row_counts = penalties ? ops.clone(counts) : DenseTensor{};
+            auto row_counts = penalties ? ops.clone(counts) : Tensor{};
             policy::ChainVerification result;
             if (draft_count == 0) {
                 // No proposal distribution is needed: use the ordinary GPU
@@ -686,7 +708,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                                   result.next_token < metadata.vocab_size,
                 "MTP verification returned invalid data");
             if (constraint_cursor) {
-                auto constraint_counts = penalties ? ops.clone(counts) : DenseTensor{};
+                auto constraint_counts = penalties ? ops.clone(counts) : Tensor{};
                 bool corrected = false;
                 for (int position = 0; position < accepted; ++position) {
                     const int32_t token = draft.tokens[static_cast<size_t>(position)];

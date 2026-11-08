@@ -125,10 +125,10 @@ struct Model : tyloi::models::CausalModel {
     // ---- speculative contract used by the MTP sequence
     bool supports_speculation() const noexcept { return true; }
     bool supports_suffix_speculation() const noexcept { return true; }
-    ::tyloi::DenseTensor hidden_forward_speculative_suffix(::tyloi::DenseTensor ids,
-                                                           ::tyloi::DenseTensor* raw_hidden = nullptr);
+    ::tyloi::Tensor hidden_forward_speculative_suffix(::tyloi::Tensor ids,
+                                                      ::tyloi::Tensor* raw_hidden = nullptr);
     void rollback_speculative(std::int64_t accepted);
-    bool adapter_prefetch_token_rows(Model& model, const ::tyloi::DenseTensor& ids);
+    bool adapter_prefetch_token_rows(Model& model, const ::tyloi::Tensor& ids);
 
     // ---- weights and load-time state
     tyloi::models::CausalLmMetadata metadata;

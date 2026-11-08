@@ -24,9 +24,9 @@ inline tyloi::models::ForwardOptions forward_options(const Executor::Mode& mode)
 }
 #endif
 
-template<class Model, class Ops, class Finish>
-std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
-        Model&, Ops&, const tyloi::engine::PrefillChunk&, ::tyloi::DenseTensor&, const Finish&) {
+template<class Model, class Ops, class Tensor, class Finish>
+std::tuple<Tensor, bool, bool> generation_prefill(
+        Model&, Ops&, const tyloi::engine::PrefillChunk&, Tensor&, const Finish&) {
     return {{}, false, false};
 }
 

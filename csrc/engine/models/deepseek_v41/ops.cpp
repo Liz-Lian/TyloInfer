@@ -392,7 +392,8 @@ void Model::prepare_blocks(const tyloi::weights::Loader& weights) {
     shared = deepseek_v41_runtime::load_shared_state(weights.source, config);
 }
 
-bool Model::adapter_prefetch_token_rows(Model&, const ::tyloi::DenseTensor& ids) {
+bool Model::adapter_prefetch_token_rows(Model&, const ::tyloi::Tensor& input_ids) {
+    const auto& ids = input_ids.dense();
     const auto cache_pos = active ? active->cache_pos : shared->cache_position;
     if(!shared || shared->batch!=1 || !shared->engram_hash || shared->engram_prefetch.empty())return false;
     if(!ids.is_cpu() || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<=0 ||
@@ -482,21 +483,19 @@ void Model::adapter_rollback_speculative(std::int64_t position) {
     shared->rollback_speculative(position);
 }
 
-::tyloi::DenseTensor Model::hidden_forward_speculative_suffix(::tyloi::DenseTensor ids,
-                                                              ::tyloi::DenseTensor* raw_hidden) {
+::tyloi::Tensor Model::hidden_forward_speculative_suffix(::tyloi::Tensor ids,
+                                                       ::tyloi::Tensor* raw_hidden) {
     auto& state = *active;
     require_model(state.speculative_start >= 0 && state.speculative_confirmed == 0 &&
                       !state.speculative_suffix_forward,
                   "speculative suffix is not active");
     state.speculative_suffix_forward = true;
     try {
-        std::shared_ptr<tyloi::Tensor> raw;
-        auto result = forward(tyloi::models::Input{std::make_shared<DenseTensor>(std::move(ids)), {}, {}, {}, {}, nullptr,
-                                                   raw_hidden ? &raw : nullptr, false, 0, 0, 0},
+        auto result = forward(tyloi::models::Input{std::move(ids), {}, {}, {}, {}, nullptr,
+                                                   raw_hidden, false, 0, 0, 0},
                               state);
-        if (raw_hidden) *raw_hidden = dynamic_cast<const DenseTensor&>(*raw);
         state.speculative_suffix_forward = false;
-        return dynamic_cast<const DenseTensor&>(*result);
+        return result;
     } catch (...) {
         state.speculative_suffix_forward = false;
         throw;

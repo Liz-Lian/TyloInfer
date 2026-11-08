@@ -1263,7 +1263,7 @@ namespace {
 }
 
 } // namespace
-bool Model::adapter_prefetch_token_rows(qwen4_exp::Model& model,const ::tyloi::DenseTensor& ids) {
+bool Model::adapter_prefetch_token_rows(qwen4_exp::Model& model,const ::tyloi::Tensor& ids) {
     return reuse_decode_graphs && graph_registry && qwen4_prefetch_decode_ple(model,ids);
 }
 bool qwen4_prefetch_decode_ple(qwen4_exp::Model& model,const ::tyloi::Tensor& host_ids) {
@@ -3018,19 +3018,17 @@ std::shared_ptr<::tyloi::Tensor> Model::forward(tyloi::models::Input input, tylo
     return std::make_shared<::tyloi::DenseTensor>(qwen4_forward(const_cast<Model&>(*this), static_cast<State&>(state_value), std::move(input)));
 }
 
-::tyloi::DenseTensor Model::hidden_forward_speculative_suffix(::tyloi::DenseTensor ids,
-                                                              ::tyloi::DenseTensor* raw_hidden) {
+::tyloi::Tensor Model::hidden_forward_speculative_suffix(::tyloi::Tensor ids,
+                                                       ::tyloi::Tensor* raw_hidden) {
     auto& state = *active;
     tyloi::models::require_model(state.speculative_start >= 0 && state.speculative_confirmed == 0 &&
                                      !state.speculative_suffix_forward,
                                  "speculative suffix is not active");
     state.speculative_suffix_forward = true;
     try {
-        std::shared_ptr<::tyloi::Tensor> raw;
         auto result = qwen4_forward(*this, state,
-                                    tyloi::models::Input{std::make_shared<::tyloi::DenseTensor>(std::move(ids)), {}, {}, {}, {}, nullptr,
-                                                         raw_hidden ? &raw : nullptr, false, 0, 0, 0});
-        if (raw_hidden) *raw_hidden = dynamic_cast<const ::tyloi::DenseTensor&>(*raw);
+                                    tyloi::models::Input{std::move(ids), {}, {}, {}, {}, nullptr,
+                                                         raw_hidden, false, 0, 0, 0});
         state.speculative_suffix_forward = false;
         return result;
     } catch (...) {
