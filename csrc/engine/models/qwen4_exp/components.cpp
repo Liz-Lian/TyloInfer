@@ -11,12 +11,12 @@
 
 namespace tyloi::cuda::qwen4_exp {
 
-tyloi::engine::Metrics Components::profile_metrics(const Model& language) const {
-    return qwen4_decode_graph_profile_metrics(language, mtp.get());
+tyloi::engine::Metrics Components::profile_metrics(const Model& language, const State& state) const {
+    return qwen4_decode_graph_profile_metrics(language, state, mtp.get());
 }
 
-std::optional<tyloi::engine::Metrics> Components::memory_metrics(const Model& language) const {
-    return qwen4_cache_memory_metrics(language, mtp.get());
+std::optional<tyloi::engine::Metrics> Components::memory_metrics(const Model& language, const State& state) const {
+    return qwen4_cache_memory_metrics(language, state, mtp.get());
 }
 
 tyloi::StepSequence<PreparedPrompt> Components::prepare(

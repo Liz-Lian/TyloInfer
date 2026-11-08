@@ -13,7 +13,7 @@ namespace tyloi::cuda {
 template<class Model> bool mtp_stream_prompt_history(Model&, int64_t, const char*) { return false; }
 template<class Model> bool mtp_host_prompt_history(Model&, int64_t) { return false; }
 template<class Model> bool mtp_bootstrap_before_publication(Model&, const char*) { return false; }
-template<class Model, class Mtp> bool mtp_retains_partial_target_prefix(Model&, Mtp& mtp, int) { return mtp.retains_partial_target_prefix(); }
+template<class Model, class State, class Mtp> bool mtp_retains_partial_target_prefix(Model&, State&, Mtp& mtp, int) { return mtp.retains_partial_target_prefix(); }
 template<class Model> std::size_t mtp_history_merge_limit(Model&) { return 0; }
 template<class Model> std::size_t mtp_history_flush_threshold(Model&, const char*) { return 512; }
 template<class Model> std::size_t mtp_parked_history_flush_threshold(Model&, const char*) { return 512; }

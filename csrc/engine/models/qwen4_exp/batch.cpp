@@ -47,7 +47,6 @@ BatchOps::BatchOps(qwen4_exp::Model& model, CudaExecutionContext& execution,
     : model_(model), execution_(execution), budget_(budget), config_(std::move(config)) {
     TYLOINFER_RUNTIME_CHECK(config_.max_sequences > 0 && config_.max_sequences <= 32,
                             "Flash-Next continuous batching supports 1..32 requests");
-    model_.active->reset(1);
     if (config_.cuda_graph)
         graph_ = std::make_unique<Qwen4BatchDecodeGraph>(model_);
 }
@@ -122,11 +121,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
             return row && row->cache;
         });
         if (!active) {
-            // The preceding exclusive request's global KV/recurrent state is
-            // unused while independent batch rows own their own context.
-            qwen4_release_decode_graphs(model_, nullptr);
-            model_.active->reset(1);
-            execution_.weights.retire_decode();
+                    execution_.weights.retire_decode();
             default_context(execution_.config.layer_placement.primary_device())->reclaim_idle_memory();
         }
         requests_.push_back(request);
@@ -222,8 +217,6 @@ int64_t BatchOps::prefill_batch_token_budget() const {
 std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill_batch(
     const std::vector<std::pair<std::shared_ptr<Request>, tyloi::engine::PrefillChunk>>& items) {
     CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
-    qwen4_release_decode_graphs(model_, nullptr);
-    model_.adapter_begin_forward(false);
     execution_.weights.retire_decode();
     std::vector<tyloi::engine::PrefillBatchResult<Sample>> result(items.size());
     std::vector<std::size_t> ready;
@@ -352,7 +345,7 @@ void BatchOps::retire(const std::vector<std::shared_ptr<Request>>& retired, int6
         const auto request = weak.lock();
         return request && request->cache;
     });
-    if (!active && !model_.graph_registry) {
+    if (!active) {
         // Batch widths have distinct transfer arenas and graph scratch. Return
         // them at idle while preserving resident experts and adaptation heat.
         execution_.weights.retire_decode();

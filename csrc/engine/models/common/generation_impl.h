@@ -15,7 +15,6 @@
 #include "engine/requests/policy.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/profile.h"
-#include "engine/models/common/prefetch.h"
 #include "engine/models/common/generation_ops.h"
 #include "engine/models/common/prompt.h"
 #include "engine/backends/cuda/executor/sampling.h"
@@ -250,7 +249,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 #else
         auto ids = full_ids.narrow(1, chunk.offset, chunk.count).contiguous();
 #endif
-        ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
+        ImageMaskScope image_scope(state,prepared,chunk.offset,chunk.count);
         auto [hidden,layer_major,short_windows]=generation_prefill(model,*this,chunk,ids,finish_prefill);
         if(output && output->stopped()) {
             finish_prefill();
@@ -505,7 +504,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
             sample_token_counts_add_cuda(counts, pending.contiguous());
 #endif
         }
-        if constexpr(requires {model.adapter_prefetch_token_rows(model,known_token_host);}) {
+        if constexpr(requires {model.prefetch_token_rows(state,known_token_host);}) {
             const auto* option=tyloi::cuda::env_lookup("TYLOINFER_DECODE_EARLY_PLE");
             if((option && option[0]=='0') || (prepared && prepared->transformed()) ||
                (output && output->stopped()))return;
@@ -518,7 +517,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
             known_token_host.template data_ptr<int64_t>()[0]=token;
 #endif
-            if(prefetch_token_rows(model,known_token_host)) {
+            if(model.prefetch_token_rows(state,known_token_host)) {
                 static bool reported=false;
                 if(!reported) {
                     reported=true;

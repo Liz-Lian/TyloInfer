@@ -37,38 +37,38 @@ struct PreparedPrompt {
 
 // Image participation is scoped to one prepared prefill chunk. It must not
 // survive cancellation, a failed forward, ordinary decode or graph capture.
-template<class Model> class ImageMaskScope {
-    Model& model_;
+template<class State> class ImageMaskScope {
+    State& state_;
     bool active_=false;
 #ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const Tensor> mask_;
 #endif
 public:
-    ImageMaskScope(Model& model,const PreparedPrompt* prepared,
-                   int64_t offset,int64_t count):model_(model) {
+    ImageMaskScope(State& state,const PreparedPrompt* prepared,
+                   int64_t offset,int64_t count):state_(state) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if(!prepared || !prepared->image_mask || !prepared->image_mask->defined())return;
-        if constexpr(requires {model_.adapter_set_image_mask(mask_);}) {
-            auto slice=tyloi::ops::slice(*prepared->image_mask,1,offset,offset+count);
-            mask_=tyloi::ops::contiguous(*slice);
-            model_.adapter_set_image_mask(mask_);
+        if(!prepared || !prepared->image_mask || !prepared->image_mask.defined())return;
+        if constexpr(requires {state_.set_image_mask(mask_);}) {
+            auto slice=tyloi::ops::slice(prepared->image_mask,1,offset,offset+count);
+            mask_=tyloi::ops::contiguous(slice);
+            state_.set_image_mask(mask_);
             active_=true;
         } else throw std::invalid_argument("model cannot apply an image participation mask");
 #else
         if(!prepared || !prepared->image_mask.defined())return;
-        if constexpr(requires {model_.adapter_set_image_mask(prepared->image_mask);}) {
-            model_.adapter_set_image_mask(prepared->image_mask.narrow(1,offset,count).contiguous());
+        if constexpr(requires {state_.set_image_mask(prepared->image_mask);}) {
+            state_.set_image_mask(prepared->image_mask.narrow(1,offset,count).contiguous());
             active_=true;
         } else throw std::invalid_argument("model cannot apply an image participation mask");
 #endif
     }
     ~ImageMaskScope() {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if constexpr(requires {model_.adapter_set_image_mask(mask_);})
-            if(active_)model_.adapter_set_image_mask(std::shared_ptr<const Tensor>{});
+        if constexpr(requires {state_.set_image_mask(mask_);})
+            if(active_)state_.set_image_mask(Tensor{});
 #else
-        if constexpr(requires {model_.adapter_set_image_mask(::tyloi::DenseTensor{});})
-            if(active_)model_.adapter_set_image_mask({});
+        if constexpr(requires {state_.set_image_mask(::tyloi::DenseTensor{});})
+            if(active_)state_.set_image_mask({});
 #endif
     }
     ImageMaskScope(const ImageMaskScope&)=delete;

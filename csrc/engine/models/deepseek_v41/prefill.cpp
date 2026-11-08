@@ -41,7 +41,7 @@ HashBatch append_hash_tail(const HashBatch& previous, const HashBatch& current, 
 }
 }
 
-std::int64_t prefill_span(const Model&, std::size_t tokens,
+std::int64_t prefill_span(const Model&, const State&, std::size_t tokens,
                           std::int64_t chunk, std::size_t, std::size_t,
                           bool transformed, bool retained) {
     auto logical_chunk=chunk;
@@ -59,7 +59,7 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
     const auto* profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     const bool trace=profile && profile[0]=='1';
     if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=prepare tokens="<<tokens<<'\n';
-    TYLOINFER_RUNTIME_CHECK(model.shared && batch > 0 && tokens > 0 && compute_chunk > 0 &&
+    TYLOINFER_RUNTIME_CHECK(state.shared && batch > 0 && tokens > 0 && compute_chunk > 0 &&
                           state.speculative_start < 0 &&
                           state.cache_pos + tokens <= model.max_position_embeddings(),
                       "invalid DeepSeek-V4.1 encoder prefill request");
@@ -94,7 +94,7 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
             auto local_pos = block.cpu_offloaded
                 ? positions
                 : model.execution->executor().collectives().copy(positions, block.cuda_device);
-            block.set_token_ids(local_ids);
+            block.set_token_ids(*state.shared, local_ids);
             BlockContext context;
             context.token_ids=local_ids;
             context.host_token_ids=host_ids;
@@ -104,7 +104,7 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
             hidden = block.cpu_offloaded
                 ? hidden.to(::tyloi::kCPU).contiguous()
                 : model.execution->executor().collectives().copy(hidden, block.cuda_device);
-            hidden = block.forward_context(*model.execution, std::move(hidden), context);
+            hidden = block.forward_context(*state.shared, *model.execution, std::move(hidden), context);
             if(selected)profiler.report("deepseek_v41.layer."+std::to_string(layer));
         } catch(...) {profiler.enabled=previous;throw;}
         profiler.enabled=previous;
@@ -121,8 +121,8 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
         DenseTensor host_ids;
         if (model.execution->config.cache.pipeline || model.execution->config.dense_cpu_layer_count > 0)
             host_ids = chunk_ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
-        auto hidden = model.adapter_prepare_hidden(model.embed_tokens(chunk_ids), batch, count);
-        model.adapter_begin_forward(raw_hidden != nullptr);
+        auto hidden = model.prepare_hidden(model.embed_tokens(chunk_ids), batch, count);
+        state.begin_forward(raw_hidden != nullptr);
         for (int64_t layer = 0; layer < split; ++layer) {
             if (cancelled()) return {};
             if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=encoder layer="<<layer<<" tokens="<<count<<'\n';
@@ -133,22 +133,22 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
         for (int64_t layer = split; layer < model.num_hidden_layers(); ++layer) {
             auto& block = *model.blocks.at(layer);
             if (!block.kv_source()) continue;
-            auto source = deepseek_v41_hc_input_cuda(hidden, model.shared->previous_pre,
+            auto source = deepseek_v41_hc_input_cuda(hidden, state.shared->previous_pre,
 #ifdef TYLOINFER_NATIVE_CUDA
                                                      dynamic_cast<const DenseTensor&>(*block.attention_norm), config.rms_eps);
 #else
                                                      block.attention_norm, config.rms_eps);
 #endif
             model.execution->executor().profiler().measure("deepseek_v41.ced.global_kv", [&] {
-                block.publish_compressed_source(*model.execution, source, state.cache_pos);
+                block.publish_compressed_source(*state.shared, *model.execution, source, state.cache_pos);
                 return source;
             });
-            block.L().prefilled_global_end = state.cache_pos + count;
+            state.shared->layers.at(static_cast<std::size_t>(layer)).prefilled_global_end = state.cache_pos + count;
         }
         tail_hidden = append_tail(tail_hidden, hidden, config.sliding_window);
-        tail_pre = append_tail(tail_pre, model.shared->previous_pre, config.sliding_window);
+        tail_pre = append_tail(tail_pre, state.shared->previous_pre, config.sliding_window);
         tail_ids = append_tail(tail_ids, chunk_ids, config.sliding_window);
-        tail_hashes = append_hash_tail(tail_hashes, model.shared->engram_hashes,
+        tail_hashes = append_hash_tail(tail_hashes, state.shared->engram_hashes,
                                        static_cast<int>(config.sliding_window));
         state.cache_pos += count;
     }
@@ -156,11 +156,11 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
     const auto replay_tokens = tail_ids.size(1), replay_begin = end - replay_tokens;
     const bool truncated_local = replay_begin > begin;
     state.cache_pos = replay_begin;
-    model.shared->batch = batch;
-    model.shared->tokens = replay_tokens;
-    model.shared->cache_position = replay_begin;
-    model.shared->previous_pre = std::move(tail_pre);
-    model.shared->engram_hashes = std::move(tail_hashes);
+    state.shared->batch = batch;
+    state.shared->tokens = replay_tokens;
+    state.shared->cache_position = replay_begin;
+    state.shared->previous_pre = std::move(tail_pre);
+    state.shared->engram_hashes = std::move(tail_hashes);
     auto replay_positions = ::tyloi::cuda::arange(replay_begin, replay_begin + replay_tokens,
                                                   ::tyloi::TensorOptions()
                                                       .device(::tyloi::kCUDA)
@@ -172,19 +172,19 @@ std::int64_t prefill_span(const Model&, std::size_t tokens,
         if (cancelled()) return {};
         if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=decoder layer="<<layer<<" tokens="<<replay_tokens<<'\n';
         auto& block = *model.blocks.at(layer);
-        block.L().position = replay_begin;
-        block.L().replay_local_window = truncated_local;
+        state.shared->layers.at(static_cast<std::size_t>(layer)).position = replay_begin;
+        state.shared->layers.at(static_cast<std::size_t>(layer)).replay_local_window = truncated_local;
         tail_hidden = forward_layer(layer,std::move(tail_hidden),replay_positions,replay_host_ids);
     }
     state.cache_pos = end;
     std::cerr << "runtime_deepseek_v41_ced_prefill tokens=" << tokens << " encoder_layers=" << split
               << " decoder_tokens=" << replay_tokens << " compute_chunk=" << compute_chunk << '\n';
-    auto finalized = model.adapter_finalize_hidden(
+    auto finalized = model.finalize_hidden(state,
         model.execution->executor().collectives().copy(tail_hidden,
             model.execution->config.layer_placement.primary_device()),
         batch, replay_tokens);
     if (raw_hidden)
-        *raw_hidden = model.raw_hidden();
+        *raw_hidden = state.shared->dspark_target_hidden();
     return finalized;
 }
 } // namespace tyloi::cuda::deepseek_v41

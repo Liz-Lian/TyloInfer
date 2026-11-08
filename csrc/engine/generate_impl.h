@@ -80,7 +80,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
 #ifdef TYLOINFER_NATIVE_CUDA
         return budget.chunk(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
             tokens, limit, info.prefill_row_bytes, state.position() > 0,
-            config.prefill_chunk_auto, generation_borrow(model, tokens, prepared ? &*prepared : nullptr));
+            config.prefill_chunk_auto, generation_borrow(model, state, tokens, prepared ? &*prepared : nullptr));
 #else
         return std::min<int64_t>(tokens,limit);
 #endif
@@ -133,8 +133,8 @@ template <class Model, class State, class Predictor> struct RequestOps {
         prepare_prefill_workspace(input.prompt.size()-reused);
         const auto compute_chunk=prefill_chunk(input.prompt.size()-reused);
         auto logical_chunk=compute_chunk;
-        if constexpr(requires { prefill_span(model,input.prompt.size(),compute_chunk,reused,stable,false,false); }) {
-            logical_chunk=prefill_span(model,input.prompt.size(),compute_chunk,reused,stable,
+        if constexpr(requires { prefill_span(model,state,input.prompt.size(),compute_chunk,reused,stable,false,false); }) {
+            logical_chunk=prefill_span(model,state,input.prompt.size(),compute_chunk,reused,stable,
                 prepared && prepared->transformed(),
                 weights.prefill_mode(input.prompt.size()-reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
         }

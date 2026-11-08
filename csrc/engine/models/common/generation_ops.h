@@ -39,8 +39,8 @@ std::optional<int64_t> generation_decode(Model&, Ops&) { return std::nullopt; }
 template<class Model, class Ops>
 void generation_request(Model&, Ops&, const tyloi::engine::InferenceRequest&) {}
 
-template<class Model>
-bool generation_borrow(Model&, std::size_t, const PreparedPrompt*) { return false; }
+template<class Model, class State>
+bool generation_borrow(Model&, State&, std::size_t, const PreparedPrompt*) { return false; }
 
 template<class Model>
 bool generation_prefill_begin(Model&, DecodeGraphCache&, bool) { return false; }

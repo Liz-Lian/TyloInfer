@@ -461,11 +461,11 @@ private:
                     return parts.metrics();
             }();
             engine::Metrics profile_metrics;
-            if constexpr (requires { parts.profile_metrics(model); })
-                profile_metrics = parts.profile_metrics(model);
+            if constexpr (requires { parts.profile_metrics(model,state()); })
+                profile_metrics = parts.profile_metrics(model,state());
             std::optional<engine::Metrics> memory;
-            if constexpr (requires { parts.memory_metrics(model); })
-                memory = parts.memory_metrics(model);
+            if constexpr (requires { parts.memory_metrics(model,state()); })
+                memory = parts.memory_metrics(model,state());
             const bool streamed_kv = parts.streamed_kv();
             const auto* mtp = parts.mtp.get();
             const auto batch_metrics = batching_ ? batching_->metrics() : engine::Metrics{};

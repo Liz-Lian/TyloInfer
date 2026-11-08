@@ -23,10 +23,10 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
             deepseek_v41_runtime::Vision::load(model.source, weights, model.execution->weights, model.config));
     }
     if (model.plan.predictor == CudaPredictorAdapter::none) return {};
-    TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation() && model.shared,
+    TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation() && model.tables.engram_parameters,
         "invalid DeepSeek-V4.1 DSpark model");
     return deepseek_v41_runtime::load_dspark_if_present(
-        *model.execution, weights, model.shared->config, model.embed, model.lm_head,
+        *model.execution, weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping);
 }
 

@@ -149,7 +149,7 @@ class EngramHashState : public tyloi::models::deepseek_v41::EngramHashState {
 
   public:
     using HashState::HashState;
-    static std::unique_ptr<EngramHashState> load(const tyloi::source::Source &model,
+    static std::shared_ptr<const Parameters> load_parameters(const tyloi::source::Source &model,
                                                  const EngramConfig &config) {
         constexpr const char *asset_name = "__mfq_asset__/deepseek-v41-engram-v1.bin";
         if (!model.has_asset(asset_name)) {
@@ -227,10 +227,10 @@ class EngramHashState : public tyloi::models::deepseek_v41::EngramHashState {
                         [](std::int64_t value) { return value <= 0 || !(value & 1); })) {
             throw std::runtime_error("DeepSeek-V4.1 Engram hash metadata is invalid");
         }
-        return std::unique_ptr<EngramHashState>(new EngramHashState(
+        return std::make_shared<const Parameters>(Parameters{
             static_cast<int>(vocabulary), static_cast<int>(max_ngram), static_cast<int>(heads),
             pad_id, std::move(layer_ids), std::move(table_rows), std::move(primes),
-            std::move(offsets), std::move(multipliers), std::move(token_map)));
+            std::move(offsets), std::move(multipliers), std::move(token_map)});
     }
 
     EngramHashBatch forward(const EngramTensor &token_ids, std::int64_t pos0,
@@ -291,23 +291,40 @@ class EngramHashState : public tyloi::models::deepseek_v41::EngramHashState {
 };
 
 class EngramTable {
+    struct Shared;
+    struct Impl;
   public:
+    class State {
+      public:
+        ~State();
+        State(State&&) noexcept;
+        State& operator=(State&&) noexcept;
+        State(const State&) = delete;
+        State& operator=(const State&) = delete;
+        std::vector<::tyloi::Tensor> storage() const;
+
+      private:
+        friend class EngramTable;
+        explicit State(std::unique_ptr<Impl>);
+        std::unique_ptr<Impl> impl_;
+    };
+
     static std::shared_ptr<EngramTable> load(const tyloi::source::Source&, const std::string&,
         std::int64_t expected_rows, int expected_width, std::size_t cache_capacity_rows);
     ~EngramTable();
-    void prefetch(const std::int64_t* rows, std::size_t count) const;
-    EngramTensor gather(const std::int64_t* rows, int batch, int tokens, int hash_columns,
+    std::unique_ptr<State> make_state() const;
+    void prefetch(State&, const std::int64_t* rows, std::size_t count) const;
+    EngramTensor gather(State&, const std::int64_t* rows, int batch, int tokens, int hash_columns,
                         const ::tyloi::Device& device) const;
   private:
-    EngramTable(const tyloi::source::Source&, std::string, std::uint64_t nbytes,
-                std::int64_t rows, int width, std::uint64_t value_bytes, std::size_t capacity,
-                std::shared_ptr<tyloi::NintRows> nint={});
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+    explicit EngramTable(std::shared_ptr<const Shared>);
+    std::shared_ptr<const Shared> shared_;
 };
 
 class Engram {
   public:
+    using State = EngramTable::State;
+
     static std::unique_ptr<Engram> load(const tyloi::weights::Loader& weights, const EngramConfig &config,
                                         int layer, std::size_t cache_rows) {
         const auto found =
@@ -350,26 +367,32 @@ class Engram {
 
     int64_t layer_id() const { return config_.engram_layer_ids[hash_layer_]; }
 
-    void prefetch(const EngramHashBatch& hashes,const std::vector<int64_t>* text_rows=nullptr) const {
+    std::unique_ptr<State> make_state() const { return table_->make_state(); }
+
+    void prefetch(State& state, const EngramHashBatch& hashes,
+                  const std::vector<int64_t>* text_rows=nullptr) const {
         if(text_rows) {
             if(text_rows->empty())return;
             const auto selected=select_hash_rows(hashes,*text_rows);
-            table_->prefetch(selected.layer_data(hash_layer_),std::size_t(selected.tokens)*selected.columns);
+            table_->prefetch(state, selected.layer_data(hash_layer_),
+                             std::size_t(selected.tokens)*selected.columns);
             return;
         }
-        table_->prefetch(hashes.layer_data(hash_layer_),
+        table_->prefetch(state, hashes.layer_data(hash_layer_),
             std::size_t(hashes.batch) * hashes.tokens * hashes.columns);
     }
 
-    EngramTensor forward(const Projector& projector, CudaProfiler& profiler, const EngramTensor &hidden,
-                         const EngramHashBatch &hashes,const EngramTensor& text_rows={},
+    EngramTensor forward(State& state, const Projector& projector, CudaProfiler& profiler,
+                         const EngramTensor &hidden, const EngramHashBatch &hashes,
+                         const EngramTensor& text_rows={},
                          const std::vector<int64_t>* host_rows=nullptr) const {
         if(text_rows.defined()) {
             if(!text_rows.numel())return hidden;
             TYLOINFER_RUNTIME_CHECK(host_rows && host_rows->size()==std::size_t(text_rows.numel()),
                               "DeepSeek-V4.1 Engram image participation is incomplete");
             auto flat=hidden.reshape({1,-1,config_.hc_mult,config_.hidden});
-            auto selected=forward(projector,profiler,flat.index_select(1,text_rows).contiguous(),
+            auto selected=forward(state, projector, profiler,
+                                  flat.index_select(1,text_rows).contiguous(),
                                   select_hash_rows(hashes,*host_rows));
             auto result=flat.clone();result.index_copy_(1,text_rows,selected);
             return result.reshape(hidden.sizes());
@@ -383,7 +406,7 @@ class Engram {
             throw std::invalid_argument("DeepSeek-V4.1 Engram activation geometry disagrees");
         }
         auto embeddings = profiler.measure("deepseek_v41.engram.rows", [&] {
-            return table_->gather(hashes.layer_data(hash_layer_), batch, tokens,
+            return table_->gather(state, hashes.layer_data(hash_layer_), batch, tokens,
                                   hashes.columns, hidden.device());
         });
         auto projected = profiler.measure("deepseek_v41.engram.projection", [&] {

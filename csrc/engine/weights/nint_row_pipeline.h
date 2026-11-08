@@ -3,6 +3,11 @@
 #include "engine/weights/encoding/quant/nint_rows.h"
 #include <memory>
 namespace tyloi {class NintRowCache;}
+struct NintRowSource {
+    explicit NintRowSource(std::vector<std::shared_ptr<tyloi::NintRows>>);
+    const std::vector<std::shared_ptr<tyloi::NintRows>> tables;
+    const uint64_t identity;
+};
 class NintRowStage {
 public:
     ~NintRowStage();
@@ -17,7 +22,7 @@ private:
 };
 class NintRowPipeline {
 public:
-    explicit NintRowPipeline(std::vector<std::shared_ptr<tyloi::NintRows>>,
+    explicit NintRowPipeline(std::shared_ptr<const NintRowSource>,
         std::shared_ptr<tyloi::NintRowCache> cache={});
     ~NintRowPipeline();
     void issue(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,bool early_prefix=false);

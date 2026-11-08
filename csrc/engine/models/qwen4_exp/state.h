@@ -3,18 +3,18 @@
 #include "engine/models/state.h"
 #include "engine/models/session.h"
 #include "engine/models/common/session/size.h"
+#include "engine/models/qwen4_exp/block.h"
 
 #include <memory>
 #include <vector>
 
 namespace tyloi::models { struct Mtp; }
+namespace tyloi::cuda { struct Qwen4DecodeGraph; }
 namespace tyloi::cuda::qwen4_exp {
 
 struct Model;
 
-// One request: the logical cache position, the speculative journal and the
-// session snapshot plumbing. The recurrent caches inside the layer records
-// follow into the State when requests stop being single-flight.
+// One request owns its layer caches, decode graph, positions and journal.
 class State : public tyloi::models::State {
 public:
     explicit State(Model& model);
@@ -41,6 +41,10 @@ public:
     // Speculative suffix journal; the layer records hold the checkpoints.
     void begin_speculative_suffix(std::int64_t draft_tokens);
     void commit_speculative();
+    void rollback_speculative(std::int64_t accepted);
+    void begin_forward();
+    void finish_forward(const ::tyloi::DenseTensor& full_positions, std::int64_t batch,
+                        std::int64_t tokens);
 
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
@@ -48,6 +52,14 @@ public:
     std::int64_t speculative_start = -1;
     std::int64_t speculative_confirmed = 0;
     bool speculative_suffix_forward = false;
+    ::tyloi::DenseTensor positions;
+    std::vector<std::unique_ptr<LayerState>> layers;
+    std::unique_ptr<Qwen4DecodeGraph> graph_registry;
+    bool reuse_decode_graphs = false;
+    std::uint64_t decode_graph_captures = 0;
+    std::int64_t decode_reserve_until = 0;
+    bool speculative_prefix_retention = false;
+    std::optional<bool> router_lookahead;
 
 private:
     friend tyloi::models::SnapshotSize snapshot_size(const State&, const tyloi::models::Mtp*);

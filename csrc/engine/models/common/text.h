@@ -104,7 +104,7 @@ struct Text {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             if(!components.mtp)return;
             const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
-            if(!language.reuse_decode_graphs || !execution->config.cache.pipeline || (warmup && warmup[0]=='0'))return;
+            if(!state.reuse_decode_graphs || !execution->config.cache.pipeline || (warmup && warmup[0]=='0'))return;
             const auto& sampling=input.sampling;
             const bool wide=sampling.temperature<=0 || sampling.top_k==1 ||
                 (sampling.top_k>0 && sampling.top_k<=64);
@@ -113,19 +113,19 @@ struct Text {
             // Short prefill shares the existing four-row graphs. Only draft
             // caps above three need additional verification storage.
             const int depth=std::max(3,requested);
-            if(depth==graph_draft_depth && language.graph_registry)return;
+            if(depth==graph_draft_depth && state.graph_registry)return;
             const auto started=std::chrono::steady_clock::now();
             preparing_graph_depth=true;
             try {
                 weights.release_workspace();
                 graph.invalidate();
-                qwen4_release_decode_graphs(language,components.mtp.get());
+                qwen4_release_decode_graphs(language,state,components.mtp.get());
                 weights.retire_decode();
                 state.reset(1);components.mtp->reset(1);
                 auto context=tyloi::cuda::default_context(execution->config.layer_placement.primary_device());
                 context->reclaim_idle_memory();
                 budget->reclaim((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth));
-                qwen4_warmup_decode_graphs(language,components.mtp.get(),depth);
+                qwen4_warmup_decode_graphs(language,state,components.mtp.get(),depth);
                 graph_draft_depth=depth;
                 preparing_graph_depth=false;
                 configure_decode_budget();
@@ -209,12 +209,12 @@ struct Text {
             session(command);
         }
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            qwen4_warmup_decode_graphs(language,components.mtp.get());
+            qwen4_warmup_decode_graphs(language,state,components.mtp.get());
             // Exercise the same draft/verify/commit loop as a real request.
             // Graph-only warmup cannot cover its history replay, sampling and
             // expert exchange boundaries. No synthetic policy/history survives.
             const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_MTP");
-            if(language.graph_registry && components.mtp &&
+            if(state.graph_registry && components.mtp &&
                     language.max_position_embeddings()>=48 && (!warmup || warmup[0]!='0')) {
                 tyloi::weights::Cache::Warmup learning(weights, false);
                 auto& predictor=*components.mtp;
@@ -287,7 +287,7 @@ struct Text {
         weights.settle();
         graph.invalidate();
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
-            qwen4_release_decode_graphs(language,components.mtp.get());
+            qwen4_release_decode_graphs(language,state,components.mtp.get());
         if(batching)batching->release_idle_buffers();
         if(auto* mtp=component_predictor(components))mtp->reset(1);
         state.reset(1);
@@ -359,7 +359,7 @@ struct Text {
             if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
                 // Exclusive MTP generation has ended before a batch starts.
                 // Its graph consumers must retire before idle batch buffers.
-                qwen4_release_decode_graphs(language,components.mtp.get());
+                qwen4_release_decode_graphs(language,state,components.mtp.get());
                 if (components.mtp) components.mtp->reset(1);
             }
         }
@@ -371,11 +371,11 @@ struct Text {
             const auto& parts = std::as_const(components);
             const auto component_values = tyloi::cuda::component_metrics(model, parts);
             Metrics profile_metrics;
-            if constexpr (requires { parts.profile_metrics(model); })
-                profile_metrics = parts.profile_metrics(model);
+            if constexpr (requires { parts.profile_metrics(model,state); })
+                profile_metrics = parts.profile_metrics(model,state);
             std::optional<Metrics> memory;
-            if constexpr (requires { parts.memory_metrics(model); })
-                memory = parts.memory_metrics(model);
+            if constexpr (requires { parts.memory_metrics(model,state); })
+                memory = parts.memory_metrics(model,state);
             const bool streamed_kv = [] {
                 if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
                 else return false;

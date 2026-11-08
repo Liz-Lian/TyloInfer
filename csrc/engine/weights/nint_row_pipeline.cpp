@@ -42,7 +42,7 @@ std::shared_ptr<tyloi::NintRowCache> row_cache() {
 }
 }
 struct NintRowStage::Impl {
-    uint64_t source;
+    uint64_t owner;
     int64_t rows;
     int width;
     std::size_t payload_bytes,host_bytes;
@@ -55,7 +55,7 @@ struct NintRowStage::Impl {
     ::tyloi::DenseTensor packet,packed,descriptors,inverse,flat,shaped;
     Impl(uint64_t identity,int64_t n,int w,std::size_t capacity,
         std::vector<int64_t> dimensions,const ::tyloi::Device& device,bool use_mapped)
-        :source(identity),rows(n),width(w),payload_bytes(capacity),host_bytes(capacity+n*32),
+        :owner(identity),rows(n),width(w),payload_bytes(capacity),host_bytes(capacity+n*32),
          mapped(use_mapped),shape(std::move(dimensions)),host(host_bytes,use_mapped) {
         const auto* trace=tyloi::cuda::env_lookup("TYLOINFER_TRACE_PLE_TIMINGS");profile=trace && trace[0]=='1';
         const MfqCudaGuard guard(device);
@@ -112,10 +112,22 @@ bool NintRowStage::mapped_rows() const {return impl_->mapped;}
 void NintRowStage::decode() {
     auto& s=*impl_;nint_selected_rows_into_cuda(s.packed,s.descriptors,s.inverse,s.flat);
 }
+NintRowSource::NintRowSource(std::vector<std::shared_ptr<tyloi::NintRows>> data)
+    : tables(std::move(data)), identity([] {
+        static std::atomic<uint64_t> next{1};return next.fetch_add(1);
+      }()) {
+    if(tables.empty() || !tables.front())throw std::invalid_argument("MFQ PLE needs row sources");
+    const auto rows=tables.front()->rows(),width=tables.front()->width();
+    for(const auto& table:tables)if(!table || table->rows()!=rows || table->width()!=width)
+        throw std::invalid_argument("MFQ PLE shard dimensions differ");
+    if(rows*static_cast<int64_t>(tables.size())>int64_t(UINT32_MAX))throw std::overflow_error("PLE logical row cache key overflow");
+    if(identity>UINT32_MAX)throw std::overflow_error("PLE source cache identity overflow");
+}
 struct NintRowPipeline::Impl {
     std::vector<std::shared_ptr<tyloi::NintRows>> tables;
     std::shared_ptr<tyloi::NintRowCache> cache=row_cache();
-    uint64_t source_id=0;int64_t rows=0;int width=0;
+    // Row cache identity is shared; upload stages belong to one request pipeline.
+    uint64_t source_id=0,stage_owner=0;int64_t rows=0;int width=0;
     bool profile=false,serial_small=false;uint64_t serial=0;
     std::vector<int64_t> current_ids,current_shape;
     bool early_prefix=false;unsigned reported_prefix_sizes=0;
@@ -126,7 +138,11 @@ struct NintRowPipeline::Impl {
     std::condition_variable work_ready;
     std::packaged_task<Gathered()> work;
     std::thread worker;
-    explicit Impl(std::vector<std::shared_ptr<tyloi::NintRows>> data,std::shared_ptr<tyloi::NintRowCache> rows_cache):tables(std::move(data)) {
+    explicit Impl(std::shared_ptr<const NintRowSource> source,std::shared_ptr<tyloi::NintRowCache> rows_cache) {
+        if(!source)throw std::invalid_argument("MFQ PLE needs a row source");
+        tables=source->tables;source_id=source->identity;
+        static std::atomic<uint64_t> next{1};stage_owner=next.fetch_add(1);
+        rows=tables.front()->rows();width=tables.front()->width();
         if(rows_cache)cache=std::move(rows_cache);
         const auto* trace=tyloi::cuda::env_lookup("TYLOINFER_TRACE_PLE_TIMINGS");profile=trace && trace[0]=='1';
         const auto* serial_setting=tyloi::cuda::env_lookup("TYLOINFER_PLE_SERIAL_SMALL_GATHER");
@@ -135,13 +151,6 @@ struct NintRowPipeline::Impl {
         reuse_worker=!worker_setting || worker_setting[0]!='0';
         const auto* pool_setting=tyloi::cuda::env_lookup("TYLOINFER_PLE_ACTIVE_READ_POOL");
         active_read_pool=!pool_setting || pool_setting[0]!='0';
-        static std::atomic<uint64_t> next{1};source_id=next.fetch_add(1);
-        if(tables.empty() || !tables.front())throw std::invalid_argument("MFQ PLE needs row sources");
-        rows=tables.front()->rows();width=tables.front()->width();
-        for(const auto& table:tables)if(!table || table->rows()!=rows || table->width()!=width)
-            throw std::invalid_argument("MFQ PLE shard dimensions differ");
-        if(rows*static_cast<int64_t>(tables.size())>int64_t(UINT32_MAX))throw std::overflow_error("PLE logical row cache key overflow");
-        if(source_id>UINT32_MAX)throw std::overflow_error("PLE source cache identity overflow");
     }
     ~Impl() {
         // A queued read owns references to this source and its row cache.
@@ -238,7 +247,7 @@ struct NintRowPipeline::Impl {
         return out;
     }
 };
-NintRowPipeline::NintRowPipeline(std::vector<std::shared_ptr<tyloi::NintRows>> data,
+NintRowPipeline::NintRowPipeline(std::shared_ptr<const NintRowSource> data,
     std::shared_ptr<tyloi::NintRowCache> cache):impl_(std::make_unique<Impl>(std::move(data),std::move(cache))){}
 NintRowPipeline::~NintRowPipeline()=default;
 void NintRowPipeline::issue(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,bool early_prefix) {
@@ -306,11 +315,11 @@ std::shared_ptr<NintRowStage> NintRowPipeline::make_stage(const std::vector<int6
     const bool small_decode=small_shape && capacity+std::size_t(n)*32<=16u*1024;
     const bool mapped=setting?setting[0]=='1':small_decode;
     return std::shared_ptr<NintRowStage>(new NintRowStage(std::make_unique<NintRowStage::Impl>(
-        s.source_id,n,s.width,capacity,shape,device,mapped)));
+        s.stage_owner,n,s.width,capacity,shape,device,mapped)));
 }
 void NintRowPipeline::upload(NintRowStage& stage,const std::vector<int64_t>& ids,const std::vector<int64_t>& shape) {
     auto& s=*impl_;auto& target=*stage.impl_;
-    if(target.source!=s.source_id || target.shape!=shape || int64_t(ids.size())!=target.rows)
+    if(target.owner!=s.stage_owner || target.shape!=shape || int64_t(ids.size())!=target.rows)
         throw std::invalid_argument("PLE graph upload differs from its prepared stage");
     auto point=target.profile?RowClock::now():RowClock::time_point{};
     issue(ids,shape);

@@ -31,7 +31,9 @@ public:
     std::int64_t position() const noexcept override { return cache_pos; }
     void advance(std::int64_t tokens) noexcept override { cache_pos += tokens; }
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
-    std::vector<std::shared_ptr<const tyloi::Tensor>> storage() const override;
+    void set_image_mask(::tyloi::Tensor mask);
+    void begin_forward(bool capture_raw_hidden);
+    std::vector<::tyloi::Tensor> storage() const override;
     std::vector<tyloi::Tensor*> graph_state() override { return {}; }
 
     bool supports_text_session_state() const override;
@@ -43,8 +45,9 @@ public:
     // Speculative suffix journal; the block records hold the checkpoints.
     void begin_speculative_suffix(std::int64_t draft_tokens);
     void commit_speculative();
+    void rollback_speculative(std::int64_t accepted);
 
-    std::shared_ptr<deepseek_v41_runtime::SharedState> shared;
+    std::unique_ptr<deepseek_v41_runtime::SharedState> shared;
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
     std::int64_t batch = 0;

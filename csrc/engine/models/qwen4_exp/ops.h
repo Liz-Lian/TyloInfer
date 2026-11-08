@@ -65,44 +65,39 @@ class Qwen4BatchDecodeGraph {
     struct Impl;
     std::unique_ptr<Impl> graph_;
 };
-void qwen4_begin_router_lookahead_audit(qwen4_exp::Model&,int samples);
-void qwen4_finish_router_lookahead_audit(qwen4_exp::Model&,const std::string& prefix);
-void qwen4_set_rotary_fusion(qwen4_exp::Model&, bool enabled);
-void qwen4_set_attention_grouping(qwen4_exp::Model&, bool enabled);
-bool qwen4_prefetch_decode_ple(qwen4_exp::Model&,const ::tyloi::Tensor& host_ids);
+void qwen4_begin_router_lookahead_audit(qwen4_exp::Model&,qwen4_exp::State&,int samples);
+void qwen4_finish_router_lookahead_audit(qwen4_exp::Model&,qwen4_exp::State&,const std::string& prefix);
 std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(
-    qwen4_exp::Model&,::tyloi::Tensor,int,const ::tyloi::Tensor& host_ids={});
+    qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,int,const ::tyloi::Tensor& host_ids={});
 std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
-    qwen4_exp::Model&,::tyloi::Tensor,::tyloi::Tensor* raw_hidden,int64_t confirmed=0,
+    qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,::tyloi::Tensor* raw_hidden,int64_t confirmed=0,
     bool* initialized=nullptr,const ::tyloi::Tensor& host_ids={},
     ::tyloi::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
-void qwen4_report_decode_graph(const qwen4_exp::Model&,std::ostream&);
-std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const tyloi::models::Mtp*);
-::tyloi::Tensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model&);
-void qwen4_release_decode_graphs(qwen4_exp::Model&,tyloi::models::Mtp*);
-void qwen4_warmup_decode_graphs(qwen4_exp::Model&,tyloi::models::Mtp*,int maximum_draft_depth=3);
+void qwen4_report_decode_graph(const qwen4_exp::Model&,const qwen4_exp::State&,std::ostream&);
+std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
+::tyloi::Tensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model&,const qwen4_exp::State&);
+void qwen4_release_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&,tyloi::models::Mtp*);
+void qwen4_warmup_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&,tyloi::models::Mtp*,int maximum_draft_depth=3);
 std::size_t qwen4_mtp_graph_reserve(const qwen4_exp::Model&,const tyloi::models::Mtp*,int maximum_draft_depth=5);
-std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const tyloi::models::Mtp*);
-bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, int64_t tokens);
-std::int64_t prefill_span(const qwen4_exp::Model&, std::size_t tokens,
+std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
+bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp::State&, int64_t tokens);
+std::int64_t prefill_span(const qwen4_exp::Model&, const qwen4_exp::State&, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,
                           std::size_t stable, bool transformed, bool);
 ::tyloi::Tensor qwen4_layer_major_prefill_hidden(
-    qwen4_exp::Model&, ::tyloi::Tensor ids, int64_t compute_chunk = 1024,
+    qwen4_exp::Model&, qwen4_exp::State&, ::tyloi::Tensor ids, int64_t compute_chunk = 1024,
     bool last_only = true, const std::function<bool()>& cancelled = {},
     ::tyloi::Tensor* raw_hidden = nullptr, bool raw_hidden_host = false);
 // Report completed prompt computation before restoring lent expert storage.
 ::tyloi::Tensor qwen4_layer_major_prefill_hidden(
-    qwen4_exp::Model&, ::tyloi::Tensor ids, int64_t compute_chunk,
+    qwen4_exp::Model&, qwen4_exp::State&, ::tyloi::Tensor ids, int64_t compute_chunk,
     bool last_only, const std::function<bool()>& cancelled,
     ::tyloi::Tensor* raw_hidden, bool raw_hidden_host,
     const std::function<void()>& computation_finished);
 
 namespace qwen4_exp {
 
-// The model record: weights, decode-graph registry and load-time state.
-// Request position and speculative journal live in State; the recurrent
-// caches inside Gdn/Qsa/Ple follow them once requests stop being single-flight.
+// The model record owns weights and load-time state.
 struct Model : tyloi::models::CausalModel {
     using CausalConfig = tyloi::models::qwen4_exp::Config;
     static bool accepts_backbone(std::string_view backbone) { return backbone == "qwen4_exp"; }
@@ -125,10 +120,9 @@ struct Model : tyloi::models::CausalModel {
     // ---- speculative contract used by the MTP sequence
     bool supports_speculation() const noexcept { return true; }
     bool supports_suffix_speculation() const noexcept { return true; }
-    ::tyloi::Tensor hidden_forward_speculative_suffix(::tyloi::Tensor ids,
+    ::tyloi::Tensor hidden_forward_speculative_suffix(State& state, ::tyloi::Tensor ids,
                                                       ::tyloi::Tensor* raw_hidden = nullptr);
-    void rollback_speculative(std::int64_t accepted);
-    bool adapter_prefetch_token_rows(Model& model, const ::tyloi::Tensor& ids);
+    bool prefetch_token_rows(State& state, const ::tyloi::Tensor& ids);
 
     // ---- weights and load-time state
     tyloi::models::CausalLmMetadata metadata;
@@ -140,19 +134,8 @@ struct Model : tyloi::models::CausalModel {
     std::shared_ptr<const ::tyloi::Tensor> lm_head;
     CausalConfig config;
     std::unique_ptr<GatedResidual> final_mixer;
-    ::tyloi::DenseTensor positions;
-    int64_t batch = 0;
-    std::optional<bool> router_lookahead;
-    std::unique_ptr<Qwen4DecodeGraph> graph_registry;
-    bool reuse_decode_graphs=false;
-    uint64_t decode_graph_captures=0;
-    // Bounded request lookahead, independent of the configured context ceiling.
-    int64_t decode_reserve_until=0;
-    bool speculative_prefix_retention=false;
     std::vector<std::unique_ptr<qwen4_exp::Qwen4Block>> blocks;
     std::function<void(std::size_t)> reserve_kv_workspace;
-    // shortcut: states are single-flight per engine; the bridge is released in ~State
-    State* active = nullptr;
 
     // ---- helpers absorbed from the retired CausalLm plumbing
     auto execution_scope() const {
@@ -189,9 +172,6 @@ struct Model : tyloi::models::CausalModel {
         }
     }
     void load_config(std::string_view payload);
-    bool adapter_requires_batch_reset(std::int64_t new_batch) const noexcept {
-        return batch != 0 && batch != new_batch;
-    }
     static ::tyloi::DenseTensor repeat_hidden(::tyloi::DenseTensor hidden, std::int64_t streams) {
         return hidden.to(::tyloi::kFloat16).repeat({1, 1, streams});
     }
@@ -235,23 +215,17 @@ struct Model : tyloi::models::CausalModel {
     std::unique_ptr<qwen4_exp::Qwen4Block> adapter_load_block(
         const tyloi::weights::Loader& weights, int layer, int device,
         const std::string& type);
-    void adapter_reset(int64_t batch);
-    void adapter_begin_forward(bool capture_raw_hidden);
     ::tyloi::DenseTensor
     adapter_block_positions(const ::tyloi::DenseTensor& full_positions,
                             const ::tyloi::DenseTensor& local_positions, int device) const;
-    void adapter_finish_forward(const ::tyloi::DenseTensor& full_positions, int64_t batch,
-                                int64_t tokens);
     ::tyloi::DenseTensor adapter_next_token(::tyloi::DenseTensor hidden) const;
-    void adapter_rollback_speculative(int64_t keep);
-    void adapter_commit_speculative() { speculative_prefix_retention=false; }
 };
 
 void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
           std::string_view definition, std::int64_t context_size);
-tyloi::models::qwen4_exp::BlockSnapshot capture_block_session(const Qwen4Block& block,
+tyloi::models::qwen4_exp::BlockSnapshot capture_block_session(const Qwen4Block& block, const LayerState& layer,
                                                               std::int64_t position, std::size_t& bytes);
-void restore_block_session(Qwen4Block& block, const tyloi::models::qwen4_exp::BlockSnapshot& state,
+void restore_block_session(Qwen4Block& block, LayerState& layer, const tyloi::models::qwen4_exp::BlockSnapshot& state,
                            std::int64_t position);
 void load(Model& model, CudaExecutionContext& execution, std::int64_t context_size,
           bool defer_moe_cache_finalize, bool load_blocks);

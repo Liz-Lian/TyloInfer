@@ -8,6 +8,16 @@
 #include <algorithm>
 #include <stdexcept>
 
+namespace tyloi::cuda::deepseek_v41_runtime {
+SharedState::SharedState(const CommonConfig& config, const ModelTables& tables)
+    : config(config), tables(tables), layers(static_cast<std::size_t>(config.n_layers)),
+      engram_hash(std::make_unique<EngramHashState>(tables.engram_parameters)),
+      engram_states(static_cast<std::size_t>(config.n_layers)) {
+    for (const auto* memory : tables.engram_prefetch)
+        engram_states.at(static_cast<std::size_t>(memory->layer_id())) = memory->make_state();
+}
+} // namespace tyloi::cuda::deepseek_v41_runtime
+
 namespace tyloi::cuda::deepseek_v41 {
 
 using deepseek_v41_runtime::Block;
@@ -67,14 +77,37 @@ tyloi::models::SnapshotSize snapshot_size(const State& state,const tyloi::models
     return {incoming,incoming};
 }
 
-State::State(Model& model) : shared(model.shared), model_(model) {
-    model_.active = this;
-    TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 model has no shared state");
+State::State(Model& model)
+    : shared(std::make_unique<deepseek_v41_runtime::SharedState>(model.config, model.tables)), model_(model) {}
+
+State::~State() = default;
+
+void State::set_image_mask(::tyloi::Tensor mask) {
+    auto& state = *shared;
+    if (!mask) {
+        state.image_mask = {}; state.text_rows = {}; state.routing_mask = {}; state.text_row_ids.clear();
+        return;
+    }
+    const auto& dense = mask.dense();
+    TYLOINFER_RUNTIME_CHECK(dense.is_cpu() && dense.dim()==2 && dense.is_contiguous() &&
+                            dense.scalar_type()==::tyloi::kUInt8,
+                            "DeepSeek-V4.1 image mask must be contiguous CPU uint8 [B,T]");
+    std::vector<int64_t> images;
+    state.text_row_ids.clear();
+    const auto* flags=dense.data_ptr<uint8_t>();
+    for(int64_t i=0;i<dense.numel();++i)(flags[i]?images:state.text_row_ids).push_back(i);
+    if(images.empty()) { set_image_mask({}); return; }
+    auto options=::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64);
+    auto text=::tyloi::cuda::tensor(state.text_row_ids,options);
+    auto routing=dense.reshape({-1,1}).to(::tyloi::kCUDA).to(::tyloi::kBool);
+    state.image_mask=dense; state.text_rows=std::move(text); state.routing_mask=std::move(routing);
 }
 
-State::~State() {
-    if (model_.active == this)
-        model_.active = nullptr;
+void State::begin_forward(bool capture_raw_hidden) {
+    shared->capture_dspark_targets = capture_raw_hidden;
+    shared->dspark_target_hiddens.clear();
+    if (capture_raw_hidden)
+        shared->dspark_target_hiddens.resize(model_.config.dspark_target_layer_ids.size());
 }
 
 void State::reset(std::int64_t next_batch) {
@@ -84,17 +117,41 @@ void State::reset(std::int64_t next_batch) {
     speculative_suffix_forward = false;
     batch = next_batch;
     for (auto& block : model_.blocks)
-        block->reset(next_batch);
+        block->reset(*shared, next_batch);
 }
 
 std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
     std::vector<std::shared_ptr<const tyloi::Tensor>> result;
     for (const auto& block : model_.blocks) {
-        const auto& state = block->L();
+        const auto& state = shared->layers.at(static_cast<std::size_t>(block->layer));
         if (state.local_kv.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.local_kv));
         if (state.compressed_kv.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.compressed_kv));
         if (state.index_k.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.index_k));
         if (state.partial_kv.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.partial_kv));
+        if (state.partial_score.defined()) result.push_back(state.partial_score);
+        if (state.speculative_local_slots.defined()) result.push_back(state.speculative_local_slots);
+        if (state.speculative_slot_ids.defined()) result.push_back(state.speculative_slot_ids);
+        if (state.speculative_partial_kv.defined()) result.push_back(state.speculative_partial_kv);
+        if (state.speculative_partial_score.defined()) result.push_back(state.speculative_partial_score);
+        if (state.speculative_projected_kv.defined()) result.push_back(state.speculative_projected_kv);
+        if (state.speculative_projected_score.defined()) result.push_back(state.speculative_projected_score);
+        if (state.current_ids.defined()) result.push_back(state.current_ids);
+    }
+    if (shared->compressed_kv.defined()) result.push_back(shared->compressed_kv);
+    if (shared->index_k.defined()) result.push_back(shared->index_k);
+    if (shared->topk.defined()) result.push_back(shared->topk);
+    if (shared->candidate_blocks.defined()) result.push_back(shared->candidate_blocks);
+    if (shared->previous_pre.defined()) result.push_back(shared->previous_pre);
+    if (shared->attention_meta.defined()) result.push_back(shared->attention_meta);
+    if (shared->image_mask.defined()) result.push_back(shared->image_mask);
+    if (shared->text_rows.defined()) result.push_back(shared->text_rows);
+    if (shared->routing_mask.defined()) result.push_back(shared->routing_mask);
+    for (const auto& hidden : shared->dspark_target_hiddens)
+        if (hidden.defined()) result.push_back(hidden);
+    for (const auto& engram : shared->engram_states) {
+        if (!engram) continue;
+        auto buffers = engram->storage();
+        result.insert(result.end(), buffers.begin(), buffers.end());
     }
     return result;
 }
@@ -106,24 +163,25 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
                   "invalid speculative suffix");
     speculative_start = cache_pos;
     speculative_confirmed = 0;
-    model_.adapter_begin_speculative();
+    TYLOINFER_RUNTIME_CHECK(shared->engram_hash, "DeepSeek-V4.1 Engram state is unavailable");
+    shared->engram_hash->begin_speculative();
     std::size_t begun = 0;
     try {
         for (auto& block : model_.blocks) {
             MfqCudaGuard guard(block->cuda_device);
-            block->begin_speculative(draft_tokens);
+            block->begin_speculative(*shared, draft_tokens);
             ++begun;
         }
     } catch (...) {
         for (std::size_t i = 0; i < begun; ++i) {
             try {
                 MfqCudaGuard guard(model_.blocks[i]->cuda_device);
-                model_.blocks[i]->commit_speculative();
+                model_.blocks[i]->commit_speculative(*shared);
             } catch (...) {
             }
         }
         try {
-            model_.adapter_rollback_speculative(cache_pos);
+            shared->engram_hash->rollback_speculative(cache_pos);
         } catch (...) {
         }
         speculative_start = -1;
@@ -136,9 +194,22 @@ void State::commit_speculative() {
     require_model(speculative_start >= 0, "no speculative transaction");
     for (auto& block : model_.blocks) {
         MfqCudaGuard guard(block->cuda_device);
-        block->commit_speculative();
+        block->commit_speculative(*shared);
     }
-    model_.adapter_commit_speculative();
+    if (shared->engram_hash) shared->engram_hash->commit_speculative();
+    speculative_start = -1;
+    speculative_confirmed = 0;
+}
+
+void State::rollback_speculative(std::int64_t accepted) {
+    using tyloi::models::require_model;
+    require_model(speculative_start >= 0 && accepted >= 0, "no speculative transaction");
+    const auto keep = speculative_start + speculative_confirmed + accepted;
+    for (auto& block : model_.blocks)
+        block->rollback_speculative(*shared, keep);
+    TYLOINFER_RUNTIME_CHECK(shared->engram_hash, "DeepSeek-V4.1 Engram state is unavailable");
+    shared->engram_hash->rollback_speculative(keep);
+    cache_pos = keep;
     speculative_start = -1;
     speculative_confirmed = 0;
 }
@@ -174,8 +245,8 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     for(const auto& item:model_.blocks) {
         const Block& block=*item;
         MfqCudaGuard guard(block.cuda_device);
-        const auto& source=block.L();
-        if(block.L().speculative_pending || source.position!=cache_pos)
+        const auto& source=shared->layers.at(static_cast<std::size_t>(block.layer));
+        if(source.speculative_pending || source.position!=cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
         const auto copy=[&](const DenseTensor& value) -> std::shared_ptr<const ::tyloi::Tensor> {
@@ -213,7 +284,7 @@ void State::restore_text_session_state(const TextSessionState& state) {
     for(std::size_t i=0;i<snapshot->blocks.size();++i) {
         Block& block=*model_.blocks[i];
         MfqCudaGuard guard(block.cuda_device);
-        const auto& saved=snapshot->blocks[i];auto& target=block.L();
+        const auto& saved=snapshot->blocks[i];auto& target=shared->layers.at(i);
 #ifdef TYLOINFER_NATIVE_CUDA
         auto local_kv=restore_session_tensor(target.local_kv,saved.local_kv);
         target.local_kv=local_kv.defined()?local_kv.dense():DenseTensor{};
@@ -248,7 +319,7 @@ void State::restore_text_session_state(const TextSessionState& state) {
         target.partial_length=saved.partial_length;
     }
     *shared->engram_hash=std::move(hash);
-    shared->set_image_mask({});
+    set_image_mask({});
     cache_pos=state.cache_pos;
 }
 

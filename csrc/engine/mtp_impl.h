@@ -21,8 +21,8 @@ run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
                    std::shared_ptr<tyloi::Tensor> *session_last_hidden,
                    std::size_t stable_prefix_tokens, tyloi::engine::Budget* budget) {
   auto logical_chunk=prefill_chunk_size;
-  if constexpr(requires { prefill_span(model,request.prompt.size(),prefill_chunk_size,reused_tokens,0,false,false); }) {
-    logical_chunk=prefill_span(model,request.prompt.size(),prefill_chunk_size,reused_tokens,0,
+  if constexpr(requires { prefill_span(model,state,request.prompt.size(),prefill_chunk_size,reused_tokens,0,false,false); }) {
+    logical_chunk=prefill_span(model,state,request.prompt.size(),prefill_chunk_size,reused_tokens,0,
         prepared && prepared->transformed(),reused_tokens>0 && prefill_chunk_size<=8);
   }
   return tyloi::engine::speculative_sequence(

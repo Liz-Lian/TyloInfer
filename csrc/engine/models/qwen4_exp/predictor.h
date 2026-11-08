@@ -13,6 +13,7 @@ namespace tyloi::cuda { class GatedResidual; }
 namespace tyloi::cuda::qwen4_exp {
 using attention_ops::Linear;
 struct Qwen4Block;
+struct LayerState;
 struct Qwen4MtpGraph;
 
 struct Predictor final : tyloi::models::Mtp {
@@ -30,6 +31,7 @@ struct Predictor final : tyloi::models::Mtp {
     Linear embedding_fusion, hidden_fusion;
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<Qwen4Block>> layers;
+    std::vector<std::unique_ptr<LayerState>> layer_states;
     std::vector<DenseTensor> positions;
     std::vector<int64_t> lengths;
     CudaExecutionContext *execution = nullptr;

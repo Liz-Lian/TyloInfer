@@ -43,12 +43,25 @@ struct RowStage {
 };
 }
 
-struct EngramTable::Impl {
+struct EngramTable::Shared {
     const tyloi::source::Source& source;
     std::string name;
-    std::uint64_t rows, value_bytes;
-    int width;
-    std::size_t capacity, row_bytes;
+    std::uint64_t rows = 0;
+    std::uint64_t value_bytes = 0;
+    int width = 0;
+    std::size_t capacity = 0;
+    std::size_t row_bytes = 0;
+    std::shared_ptr<const tyloi::TqTable> tq_table;
+    std::shared_ptr<const NintRowSource> nint;
+
+    Shared(const tyloi::source::Source& data, std::string tensor, std::uint64_t count,
+           int columns, std::uint64_t values, std::size_t cache_rows)
+        : source(data), name(std::move(tensor)), rows(count), value_bytes(values), width(columns),
+          capacity(cache_rows), row_bytes(columns + columns / 32) {}
+};
+
+struct EngramTable::Impl {
+    std::shared_ptr<const Shared> shared;
     tyloi::source::Source::TensorBatchReader read_batch;
     struct CacheEntry {
         std::vector<std::uint8_t> packed;
@@ -71,28 +84,18 @@ struct EngramTable::Impl {
     std::unique_ptr<tyloi::cuda::Event> nint_done;
     bool nint_pending=false;
     std::size_t nint_stage_rows=0;
-    std::shared_ptr<tyloi::TqTable> tq_table;
-
-    Impl(const tyloi::source::Source& data, std::string tensor, std::uint64_t count,
-         int columns, std::uint64_t values, std::size_t cache_rows,std::shared_ptr<tyloi::NintRows> nint)
-        : source(data), name(std::move(tensor)), rows(count), value_bytes(values),
-          width(columns), capacity(cache_rows), row_bytes(columns + columns / 32) {
-        if(tyloi::is_tq_table(source,name)) {
-            tq_table=tyloi::tq_table(source,name);
-            if(tq_table->rows()!=rows || tq_table->width()!=width)
-                throw std::invalid_argument("TQ Engram table shape differs");
-            return;
-        }
+    explicit Impl(std::shared_ptr<const Shared> resources) : shared(std::move(resources)) {
+        if (shared->tq_table) return;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        if(nint) {
-            nint_pipeline=std::make_shared<NintRowPipeline>(std::vector{std::move(nint)},
-                std::make_shared<tyloi::NintRowCache>(cache_rows));
+        if(shared->nint) {
+            nint_pipeline=std::make_shared<NintRowPipeline>(shared->nint,
+                std::make_shared<tyloi::NintRowCache>(shared->capacity));
             return;
         }
 #endif
 
-        read_batch = source.mapped_tensor_batch_reader(name);
-        if (!read_batch) read_batch = source.tensor_batch_reader(name);
+        read_batch = shared->source.mapped_tensor_batch_reader(shared->name);
+        if (!read_batch) read_batch = shared->source.tensor_batch_reader(shared->name);
     }
     ~Impl() {
         if(nint_pending)try {nint_done->synchronize();}catch(...) {}
@@ -109,9 +112,9 @@ struct EngramTable::Impl {
         std::map<std::int64_t, std::size_t> locations;
         for (auto id : ids) locations.emplace(id, 0);
         out.unique = locations.size();
-        if (out.unique > std::numeric_limits<std::size_t>::max() / row_bytes)
+        if (out.unique > std::numeric_limits<std::size_t>::max() / shared->row_bytes)
             throw std::overflow_error("DeepSeek-V4.1 Engram packet is too large");
-        out.packed.resize(out.unique * row_bytes);
+        out.packed.resize(out.unique * shared->row_bytes);
         std::vector<std::pair<std::int64_t, std::size_t>> misses;
         std::size_t index = 0;
         for (auto& [id, location] : locations) {
@@ -119,8 +122,8 @@ struct EngramTable::Impl {
             const auto found = cache.find(id);
             if (found == cache.end()) misses.emplace_back(id, location);
             else {
-                std::memcpy(out.packed.data() + location * row_bytes,
-                            found->second.packed.data(), row_bytes);
+                std::memcpy(out.packed.data() + location * shared->row_bytes,
+                            found->second.packed.data(), shared->row_bytes);
                 recency.splice(recency.begin(), recency, found->second.recency);
             }
         }
@@ -129,10 +132,11 @@ struct EngramTable::Impl {
         std::vector<tyloi::ReadSpan> spans;
         spans.reserve(misses.size() * 2);
         for (int scale = 0; scale < 2; ++scale) for (auto [id, location] : misses) {
-            const auto count = scale ? width / 32 : width;
+            const auto count = scale ? shared->width / 32 : shared->width;
             const auto offset = engram_detail::kMxHeaderBytes +
-                (scale ? value_bytes : 0) + static_cast<std::uint64_t>(id) * count;
-            auto* destination = out.packed.data() + location * row_bytes + (scale ? width : 0);
+                (scale ? shared->value_bytes : 0) + static_cast<std::uint64_t>(id) * count;
+            auto* destination = out.packed.data() + location * shared->row_bytes +
+                                (scale ? shared->width : 0);
             spans.push_back({offset, reinterpret_cast<std::byte*>(destination), std::size_t(count)});
         }
         if (!spans.empty()) {
@@ -141,29 +145,32 @@ struct EngramTable::Impl {
                 read_batch(spans);
             }
             else read_pool.run(0, spans.size(), 32,
-                source.supports_parallel_tensor_reads() ? 8 : 1, [&](int64_t first, int64_t last) {
+                shared->source.supports_parallel_tensor_reads() ? 8 : 1,
+                [&](int64_t first, int64_t last) {
                     for (auto i = first; i < last; ++i) {
                         const auto& span = spans[i];
-                        source.read_range_into(name, span.offset, span.destination, span.size);
+                        shared->source.read_range_into(shared->name, span.offset, span.destination,
+                                                       span.size);
                     }
                 });
         }
         // Validate once on insertion, retaining the original malformed-row
         // errors without inspecting or expanding cached values on every token.
         for (auto [id, location] : misses) {
-            const auto* packed = out.packed.data() + location * row_bytes;
-            for (int col = 0; col < width; ++col) if ((packed[col] & 127) == 127)
+            const auto* packed = out.packed.data() + location * shared->row_bytes;
+            for (int col = 0; col < shared->width; ++col) if ((packed[col] & 127) == 127)
                 throw std::runtime_error("DeepSeek-V4.1 Engram row contains an E4M3 NaN");
-            for (int col = 0; col < width / 32; ++col) if (packed[width + col] == 255)
+            for (int col = 0; col < shared->width / 32; ++col)
+                if (packed[shared->width + col] == 255)
                 throw std::runtime_error("DeepSeek-V4.1 Engram row contains an invalid E8M0 scale");
-            if (!capacity) continue;
-            if (cache.size() >= capacity) {
+            if (!shared->capacity) continue;
+            if (cache.size() >= shared->capacity) {
                 cache.erase(recency.back());
                 recency.pop_back();
             }
             recency.push_front(id);
-            cache.emplace(id, CacheEntry{std::vector<std::uint8_t>(packed, packed + row_bytes),
-                                          recency.begin()});
+            cache.emplace(id, CacheEntry{std::vector<std::uint8_t>(
+                                         packed, packed + shared->row_bytes), recency.begin()});
         }
         out.inverse.reserve(ids.size());
         for (auto id : ids) out.inverse.push_back(locations.at(id));
@@ -173,7 +180,7 @@ struct EngramTable::Impl {
     void issue(const std::int64_t* ids, std::size_t count) {
         if (!ids || !count) throw std::invalid_argument("DeepSeek-V4.1 Engram lookup is empty");
         for (std::size_t i = 0; i < count; ++i)
-            if (ids[i] < 0 || static_cast<std::uint64_t>(ids[i]) >= rows)
+            if (ids[i] < 0 || static_cast<std::uint64_t>(ids[i]) >= shared->rows)
                 throw std::out_of_range("DeepSeek-V4.1 Engram lookup row is outside the table");
         if (current_ids.size() == count && std::equal(current_ids.begin(), current_ids.end(), ids) &&
             (pending.valid() || ready)) return;
@@ -203,36 +210,62 @@ struct EngramTable::Impl {
     }
 };
 
-EngramTable::EngramTable(const tyloi::source::Source& source, std::string name, std::uint64_t,
-    std::int64_t rows, int width, std::uint64_t values, std::size_t capacity,std::shared_ptr<tyloi::NintRows> nint)
-    : impl_(std::make_unique<Impl>(source, std::move(name), rows, width, values, capacity,std::move(nint))) {}
+EngramTable::State::State(std::unique_ptr<EngramTable::Impl> impl) : impl_(std::move(impl)) {}
+EngramTable::State::~State() = default;
+EngramTable::State::State(EngramTable::State&&) noexcept = default;
+EngramTable::State& EngramTable::State::operator=(EngramTable::State&&) noexcept = default;
+
+std::vector<::tyloi::Tensor> EngramTable::State::storage() const {
+    std::vector<::tyloi::Tensor> result;
+    if (!impl_)
+        return result;
+    if (impl_->stage && impl_->stage->packet.defined())
+        result.emplace_back(impl_->stage->packet);
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (impl_->nint_stage && impl_->nint_stage->output().defined())
+        result.emplace_back(impl_->nint_stage->output());
+#endif
+    return result;
+}
+
+EngramTable::EngramTable(std::shared_ptr<const Shared> shared) : shared_(std::move(shared)) {}
 EngramTable::~EngramTable() = default;
 
-void EngramTable::prefetch(const std::int64_t* rows, std::size_t count) const {
-    if(impl_->tq_table)return;
+std::unique_ptr<EngramTable::State> EngramTable::make_state() const {
+    return std::unique_ptr<State>(new State(std::make_unique<Impl>(shared_)));
+}
+
+void EngramTable::prefetch(State& state, const std::int64_t* rows, std::size_t count) const {
+    if (!state.impl_ || state.impl_->shared.get() != shared_.get())
+        throw std::invalid_argument("DeepSeek-V4.1 Engram state belongs to another table");
+    auto& s = *state.impl_;
+    if(s.shared->tq_table)return;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        if(impl_->nint_pipeline) {
+        if(s.nint_pipeline) {
         if(!rows || !count)throw std::invalid_argument("DeepSeek-V4.1 Engram lookup is empty");
-        for(std::size_t i=0;i<count;++i)if(rows[i]<0 || static_cast<std::uint64_t>(rows[i])>=impl_->rows)
+        for(std::size_t i=0;i<count;++i)if(rows[i]<0 || static_cast<std::uint64_t>(rows[i])>=s.shared->rows)
             throw std::out_of_range("DeepSeek-V4.1 Engram lookup row is outside the table");
-        impl_->nint_pipeline->issue(std::vector<int64_t>(rows,rows+count),{static_cast<int64_t>(count)});
+        s.nint_pipeline->issue(std::vector<int64_t>(rows,rows+count),{static_cast<int64_t>(count)});
         return;
     }
 #endif
 
-    impl_->issue(rows, count);
+    s.issue(rows, count);
 }
 
-EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens, int columns,
+EngramTensor EngramTable::gather(State& state, const std::int64_t* rows, int batch, int tokens,
+                                int columns,
                                 const ::tyloi::Device& device) const {
     if (batch <= 0 || tokens <= 0 || columns <= 0 || !device.is_cuda())
         throw std::invalid_argument("DeepSeek-V4.1 Engram lookup geometry disagrees");
-    auto& s = *impl_;
+    if (!state.impl_ || state.impl_->shared.get() != shared_.get())
+        throw std::invalid_argument("DeepSeek-V4.1 Engram state belongs to another table");
+    auto& s = *state.impl_;
     const auto count = std::size_t(batch) * tokens * columns;
-    if(s.tq_table) {
-        auto result=lookup_tq_table(*s.tq_table,rows,count,device);
-        return dynamic_cast<const ::tyloi::DenseTensor&>(*result)
-            .reshape({batch,tokens,static_cast<int64_t>(columns)*s.width});
+    if(s.shared->tq_table) {
+        auto result=lookup_tq_table(*s.shared->tq_table,rows,count,device);
+        return result.dense()
+            .reshape({batch,tokens,static_cast<int64_t>(columns)*s.shared->width});
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         if(s.nint_pipeline) {
@@ -247,8 +280,8 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
         s.nint_pipeline->upload(*s.nint_stage,std::vector<int64_t>(rows,rows+count),shape);
         s.nint_stage->decode();
         s.nint_done->record(mfq_current_cuda_stream());s.nint_pending=true;
-        return dynamic_cast<const ::tyloi::DenseTensor&>(s.nint_stage->output())
-            .reshape({batch,tokens,static_cast<int64_t>(columns)*s.width});
+        return s.nint_stage->output().dense()
+            .reshape({batch,tokens,static_cast<int64_t>(columns)*s.shared->width});
     }
 #endif
 
@@ -272,11 +305,11 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
     auto options = stage.packet.options();
     auto* data = stage.packet.data_ptr<std::uint8_t>();
     auto packed = ::tyloi::cuda::from_blob(data, {static_cast<int64_t>(selected.unique),
-                                      static_cast<int64_t>(s.row_bytes)}, options);
+                                      static_cast<int64_t>(s.shared->row_bytes)}, options);
     auto inverse = ::tyloi::cuda::from_blob(data + inverse_offset, {static_cast<int64_t>(count)},
                                  options.dtype(::tyloi::kInt64));
-    auto output = deepseek_v41_engram_rows_cuda(packed, inverse, s.width)
-        .reshape({batch, tokens, static_cast<int64_t>(columns) * s.width});
+    auto output = deepseek_v41_engram_rows_cuda(packed, inverse, s.shared->width)
+        .reshape({batch, tokens, static_cast<int64_t>(columns) * s.shared->width});
     stage.uploaded.record(mfq_current_cuda_stream());
     stage.pending = true;
     return output;
@@ -285,8 +318,14 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
 std::shared_ptr<EngramTable> EngramTable::load(const tyloi::source::Source &model, const std::string &name,
                                              std::int64_t expected_rows, int expected_width,
                                              std::size_t cache_capacity_rows) {
-        if(tyloi::is_tq_table(model,name))return std::shared_ptr<EngramTable>(new EngramTable(model,name,0,
-            expected_rows,expected_width,0,cache_capacity_rows,{}));
+        if(tyloi::is_tq_table(model,name)) {
+            auto shared = std::make_shared<Shared>(model, name, expected_rows, expected_width, 0,
+                                                   cache_capacity_rows);
+            shared->tq_table = tyloi::tq_table(model, name);
+            if (shared->tq_table->rows() != shared->rows || shared->tq_table->width() != shared->width)
+                throw std::invalid_argument("TQ Engram table shape differs");
+            return std::shared_ptr<EngramTable>(new EngramTable(std::move(shared)));
+        }
         const auto record = require_tensor(model, name);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         if(record.dtype=="NINT") {
@@ -295,8 +334,11 @@ std::shared_ptr<EngramTable> EngramTable::load(const tyloi::source::Source &mode
                 throw std::runtime_error("DeepSeek-V4.1 Engram NINT table shape disagrees: "+name);
             std::fprintf(stderr,"deepseek_v41_engram_dispatch format=NINT row_pipeline=ple rows=%lld width=%d\n",
                 static_cast<long long>(expected_rows),expected_width);
-            return std::shared_ptr<EngramTable>(new EngramTable(model,name,record.nbytes,expected_rows,
-                expected_width,0,cache_capacity_rows,std::move(table)));
+            auto shared = std::make_shared<Shared>(model, name, expected_rows, expected_width, 0,
+                                                   cache_capacity_rows);
+            shared->nint = std::make_shared<const NintRowSource>(
+                std::vector<std::shared_ptr<tyloi::NintRows>>{std::move(table)});
+            return std::shared_ptr<EngramTable>(new EngramTable(std::move(shared)));
         }
 #endif
 
@@ -332,9 +374,10 @@ std::shared_ptr<EngramTable> EngramTable::load(const tyloi::source::Source &mode
             engram_detail::kMxHeaderBytes + value_bytes + scale_bytes != record.nbytes) {
             throw std::runtime_error("DeepSeek-V4.1 Engram MXFP8 payload size disagrees: " + name);
         }
-        return std::shared_ptr<EngramTable>(
-            new EngramTable(model, name, record.nbytes, static_cast<std::int64_t>(rows),
-                            static_cast<int>(columns), value_bytes, cache_capacity_rows));
+        auto shared = std::make_shared<Shared>(model, name, static_cast<std::int64_t>(rows),
+                                               static_cast<int>(columns), value_bytes,
+                                               cache_capacity_rows);
+        return std::shared_ptr<EngramTable>(new EngramTable(std::move(shared)));
     }
 
 } // namespace tyloi::cuda::deepseek_v41_runtime

@@ -12,14 +12,15 @@ namespace tyloi::weights { struct Loader; }
 namespace tyloi::cuda::qwen4_exp {
 
 struct Model;
+class State;
 
 struct Components {
     std::optional<grid_vision_runtime::CudaGridVisionPromptComponent> grid_vision;
     std::unique_ptr<tyloi::models::Mtp> mtp;
 
     static constexpr bool streamed_kv() noexcept { return true; }
-    tyloi::engine::Metrics profile_metrics(const Model& language) const;
-    std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language) const;
+    tyloi::engine::Metrics profile_metrics(const Model& language, const State& state) const;
+    std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language, const State& state) const;
     tyloi::StepSequence<PreparedPrompt> prepare(
         Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA

@@ -38,19 +38,33 @@ struct EngramHashBatch {
 };
 
 class EngramHashState {
+  public:
+    // Immutable model metadata. Each request owns only the rolling history;
+    // this object can be shared by all request-local EngramHashState values.
     struct Parameters {
+        int vocabulary = 0;
+        int max_ngram_size = 0;
+        int heads = 0;
+        std::int64_t pad_id = 0;
         std::vector<std::int64_t> layer_ids,table_rows,primes,offsets,multipliers;
         std::vector<std::int32_t> token_map;
     };
-  public:
     EngramHashState(int vocabulary, int max_ngram_size, int heads, std::int64_t pad_id,
                     std::vector<std::int64_t> layer_ids, std::vector<std::int64_t> table_rows,
                     std::vector<std::int64_t> primes, std::vector<std::int64_t> offsets,
                     std::vector<std::int64_t> multipliers, std::vector<std::int32_t> token_map)
-        : vocabulary_(vocabulary), max_ngram_size_(max_ngram_size), heads_(heads), pad_id_(pad_id),
-          parameters_(std::make_shared<const Parameters>(Parameters{
-              std::move(layer_ids),std::move(table_rows),std::move(primes),std::move(offsets),
-              std::move(multipliers),std::move(token_map)})) {}
+        : parameters_(std::make_shared<const Parameters>(Parameters{
+              vocabulary, max_ngram_size, heads, pad_id, std::move(layer_ids),
+              std::move(table_rows), std::move(primes), std::move(offsets),
+              std::move(multipliers), std::move(token_map)})) {}
+
+    explicit EngramHashState(std::shared_ptr<const Parameters> parameters)
+        : parameters_(std::move(parameters)) {
+        if (!parameters_ || parameters_->vocabulary <= 0 || parameters_->max_ngram_size < 2 ||
+            parameters_->heads <= 0 || parameters_->pad_id < 0) {
+            throw std::invalid_argument("invalid DeepSeek-V4.1 Engram hash parameters");
+        }
+    }
 
     void reset(int batch) {
         if (batch <= 0) {
@@ -58,7 +72,8 @@ class EngramHashState {
         }
         batch_ = batch;
         position_ = 0;
-        context_.assign(static_cast<std::size_t>(batch * (max_ngram_size_ - 1)), pad_id_);
+        context_.assign(static_cast<std::size_t>(batch * (parameters_->max_ngram_size - 1)),
+                        parameters_->pad_id);
         speculative_context_.reset();
         speculative_position_ = -1;
         speculative_tokens_.clear();
@@ -72,9 +87,10 @@ class EngramHashState {
 
     void restore(const EngramHashSnapshot& state) {
         if(state.batch<=0 || state.position<0 ||
-                state.context.size()!=std::size_t(state.batch)*std::size_t(max_ngram_size_-1) ||
+                state.context.size()!=std::size_t(state.batch)*
+                    std::size_t(parameters_->max_ngram_size-1) ||
                 std::any_of(state.context.begin(),state.context.end(),[&](auto value) {
-                    return value<kDeadToken || value>=vocabulary_;
+                    return value<kDeadToken || value>=parameters_->vocabulary;
                 }))throw std::invalid_argument("Engram session history is incompatible");
         auto context=state.context;
         commit_speculative();
@@ -106,7 +122,7 @@ class EngramHashState {
         const auto kept=position-speculative_position_,drafted=position_-speculative_position_;
         if(kept && speculative_tokens_.size()!=std::size_t(batch_)*drafted)
             throw std::runtime_error("Engram speculative token history is incomplete");
-        const int prefix=max_ngram_size_-1;
+        const int prefix=parameters_->max_ngram_size-1;
         for(int batch=0;batch<batch_;++batch)for(int column=0;column<prefix;++column) {
             const auto index=kept+column;
             context_[std::size_t(batch)*prefix+column]=index<prefix?
@@ -158,10 +174,10 @@ class EngramHashState {
             speculative_tokens_=std::move(saved);
         }
 
-        const int prefix = max_ngram_size_ - 1;
+        const int prefix = parameters_->max_ngram_size - 1;
         const int combined_length = prefix + tokens;
         const int layers = static_cast<int>(parameters_->layer_ids.size());
-        const int columns = (max_ngram_size_ - 1) * heads_;
+        const int columns = (parameters_->max_ngram_size - 1) * parameters_->heads;
         EngramHashBatch result;
         result.batch = batch;
         result.tokens = tokens;
@@ -169,7 +185,7 @@ class EngramHashState {
         result.columns = columns;
         result.values.resize(static_cast<std::size_t>(layers) * batch * tokens * columns);
         std::vector<std::int64_t> history(static_cast<std::size_t>(batch) * combined_length,
-                                          pad_id_);
+                                          parameters_->pad_id);
         for (int bi = 0; bi < batch; ++bi) {
             auto *row = history.data() + static_cast<std::size_t>(bi) * combined_length;
             std::copy_n(context_.data() + static_cast<std::size_t>(bi) * prefix, prefix, row);
@@ -177,29 +193,31 @@ class EngramHashState {
                         row + prefix);
             for (int token = 0; token < tokens; ++token) {
                 std::array<std::int64_t, 32> ngram_tokens{};
-                if (max_ngram_size_ > static_cast<int>(ngram_tokens.size())) {
+                if (parameters_->max_ngram_size > static_cast<int>(ngram_tokens.size())) {
                     throw std::runtime_error(
                         "DeepSeek-V4.1 Engram ngram size exceeds native bound");
                 }
                 bool blocked = false;
-                for (int shift = 0; shift < max_ngram_size_; ++shift) {
+                for (int shift = 0; shift < parameters_->max_ngram_size; ++shift) {
                     const auto source = row[prefix + token - shift];
                     blocked = blocked || source == kDeadToken;
-                    ngram_tokens[static_cast<std::size_t>(shift)] = blocked ? pad_id_ : source;
+                    ngram_tokens[static_cast<std::size_t>(shift)] =
+                        blocked ? parameters_->pad_id : source;
                 }
                 for (int layer = 0; layer < layers; ++layer) {
-                    const auto multiplier_base = static_cast<std::size_t>(layer * max_ngram_size_);
+                    const auto multiplier_base =
+                        static_cast<std::size_t>(layer * parameters_->max_ngram_size);
                     std::uint64_t rolling =
                         static_cast<std::uint64_t>(ngram_tokens[0]) *
                         static_cast<std::uint64_t>(parameters_->multipliers[multiplier_base]);
-                    for (int shift = 1; shift < max_ngram_size_; ++shift) {
+                    for (int shift = 1; shift < parameters_->max_ngram_size; ++shift) {
                         rolling ^=
                             static_cast<std::uint64_t>(ngram_tokens[shift]) *
                             static_cast<std::uint64_t>(parameters_->multipliers[multiplier_base + shift]);
                         std::int64_t signed_hash = 0;
                         std::memcpy(&signed_hash, &rolling, sizeof(signed_hash));
-                        for (int head = 0; head < heads_; ++head) {
-                            const int column = (shift - 1) * heads_ + head;
+                        for (int head = 0; head < parameters_->heads; ++head) {
+                            const int column = (shift - 1) * parameters_->heads + head;
                             const auto bucket = static_cast<std::size_t>(layer * columns + column);
                             const auto prime = parameters_->primes[bucket];
                             auto remainder = signed_hash % prime;
@@ -230,10 +248,6 @@ class EngramHashState {
     }
 
   private:
-    int vocabulary_ = 0;
-    int max_ngram_size_ = 0;
-    int heads_ = 0;
-    std::int64_t pad_id_ = 0;
     std::shared_ptr<const Parameters> parameters_;
     int batch_ = 0;
     std::int64_t position_ = 0;

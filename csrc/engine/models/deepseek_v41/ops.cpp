@@ -30,20 +30,18 @@ tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const tyloi::weights::Loader&
 
 std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Loader& weights,
                                     std::int64_t layer,
-                                    const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows) {
-    TYLOINFER_RUNTIME_CHECK(shared, "missing DeepSeek-V4.1 CUDA state");
-    const auto &config = shared->config;
+                                    const CommonConfig& config, ModelTables& tables,
+                                    std::size_t engram_cache_rows) {
     const auto prefix = "model.block." + std::to_string(layer) + ".";
     auto result = std::make_unique<Block>();
     result->config = config;
     result->layer = layer;
     result->ratio = config.compress_ratios.at(static_cast<std::size_t>(layer));
     result->max_context = config.max_position_embeddings;
-    result->shared = shared;
     if (config.has_engram(layer)) {
         result->engram = Engram::load(weights, config, static_cast<int>(layer),
                                       engram_cache_rows);
-        shared->engram_prefetch.push_back(result->engram.get());
+        tables.engram_prefetch.push_back(result->engram.get());
     }
 #ifdef TYLOINFER_NATIVE_CUDA
     result->attention_norm = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "attention.norm.weight"))
@@ -158,8 +156,8 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Lo
                           "DeepSeek-V4.1 vision router bias shape mismatch");
 #endif
     }
-    if(shared->router_prefetch.empty())shared->router_prefetch.resize(config.n_layers,nullptr);
-    shared->router_prefetch.at(static_cast<std::size_t>(layer))=&result->mlp;
+    if(tables.router_prefetch.empty())tables.router_prefetch.resize(config.n_layers,nullptr);
+    tables.router_prefetch.at(static_cast<std::size_t>(layer))=&result->mlp;
 #ifdef TYLOINFER_NATIVE_CUDA
     result->rope = ::tyloi::ops::tail_rope_table(
         config.max_position_embeddings, config.rope_theta, result->ratio,
@@ -268,20 +266,10 @@ void validate_load_options(const CudaExecutionContext &execution) {
     }
 }
 
-std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &source,
-                                               const CommonConfig &config) {
-    auto state = std::make_shared<SharedState>();
-    state->config = config;
-    state->layers.resize(static_cast<std::size_t>(config.n_layers));
-    state->engram_hash = EngramHashState::load(source, config);
-    return state;
-}
-
-DenseTensor finalize_hidden(const std::shared_ptr<SharedState> &state, const DenseTensor &hidden,
+DenseTensor finalize_hidden(const SharedState &state, const DenseTensor &hidden,
                        CudaProfiler &profiler) {
-    TYLOINFER_RUNTIME_CHECK(state, "DeepSeek-V4.1 final state is unavailable");
     return profiler.measure("model.deepseek_v41.final_collapse", [&]() {
-        return state->final_collapse(hidden, state->config.n_layers);
+        return state.final_collapse(hidden, state.config.n_layers);
     });
 }
 
@@ -340,7 +328,6 @@ tyloi::engine::Metrics Model::metrics() const {
 }
 
 std::unique_ptr<tyloi::models::State> Model::make_state() const {
-    // shortcut: states are single-flight per engine; the bridge is released in ~State
     return std::make_unique<State>(const_cast<Model&>(*this));
 }
 
@@ -389,37 +376,29 @@ void Model::adapter_load_final_state(const tyloi::weights::Loader& weights) {
 }
 
 void Model::prepare_blocks(const tyloi::weights::Loader& weights) {
-    shared = deepseek_v41_runtime::load_shared_state(weights.source, config);
+    tables.engram_parameters = deepseek_v41_runtime::EngramHashState::load_parameters(weights.source, config);
 }
 
-bool Model::adapter_prefetch_token_rows(Model&, const ::tyloi::Tensor& input_ids) {
+bool Model::prefetch_token_rows(State& state, const ::tyloi::Tensor& input_ids) const {
     const auto& ids = input_ids.dense();
-    const auto cache_pos = active ? active->cache_pos : shared->cache_position;
-    if(!shared || shared->batch!=1 || !shared->engram_hash || shared->engram_prefetch.empty())return false;
+    auto& shared = *state.shared;
+    const auto cache_pos = state.cache_pos;
+    if(shared.batch!=1 || !shared.engram_hash || tables.engram_prefetch.empty())return false;
     if(!ids.is_cpu() || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<=0 ||
             ids.size(1)>std::numeric_limits<int>::max() || ids.scalar_type()!=::tyloi::kInt64 ||
             !ids.is_contiguous())throw std::invalid_argument("Engram prefetch needs contiguous host token IDs");
-    const auto hashes=shared->engram_hash->preview(ids.data_ptr<int64_t>(),1,int(ids.size(1)),cache_pos);
-    for(const auto* memory:shared->engram_prefetch)memory->prefetch(hashes);
+    const auto hashes=shared.engram_hash->preview(ids.data_ptr<int64_t>(),1,int(ids.size(1)),cache_pos);
+    for(const auto* memory:tables.engram_prefetch)
+        memory->prefetch(*shared.engram_states.at(static_cast<std::size_t>(memory->layer_id())), hashes);
     return true;
 }
 
 std::unique_ptr<deepseek_v41_runtime::Block> Model::adapter_load_block(
         const tyloi::weights::Loader& weights, int layer, int,
         const std::string& type) {
-    TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");
-    return deepseek_v41_runtime::load_block(execution->executor().pipelines(), weights, layer, shared,
+    TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && tables.engram_parameters, "invalid DeepSeek-V4.1 block loader state");
+    return deepseek_v41_runtime::load_block(execution->executor().pipelines(), weights, layer, config, tables,
                                             execution->config.deepseek_v41_engram_cache_rows);
-}
-
-void Model::adapter_begin_forward(bool capture_raw_hidden) const {
-    TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 target capture state is unavailable");
-    shared->begin_forward(capture_raw_hidden, shared->config.dspark_target_layer_ids.size());
-}
-
-::tyloi::DenseTensor Model::collapse_hidden(::tyloi::DenseTensor hidden, std::int64_t,
-                                            std::int64_t) const {
-    return deepseek_v41_runtime::finalize_hidden(shared, hidden, execution->executor().profiler());
 }
 
 ::tyloi::DenseTensor Model::normalize_hidden(::tyloi::DenseTensor hidden,
@@ -437,7 +416,7 @@ void Model::adapter_begin_forward(bool capture_raw_hidden) const {
     });
 }
 
-::tyloi::DenseTensor Model::adapter_prepare_hidden(::tyloi::DenseTensor hidden, std::int64_t batch,
+::tyloi::DenseTensor Model::prepare_hidden(::tyloi::DenseTensor hidden, std::int64_t batch,
                                                    std::int64_t tokens) const {
     const auto width = hidden.size(-1);
     return hidden.to(::tyloi::kFloat16)
@@ -446,9 +425,9 @@ void Model::adapter_begin_forward(bool capture_raw_hidden) const {
         .contiguous();
 }
 
-::tyloi::DenseTensor Model::adapter_finalize_hidden(::tyloi::DenseTensor hidden,
+::tyloi::DenseTensor Model::finalize_hidden(State& state, ::tyloi::DenseTensor hidden,
                                                     std::int64_t batch, std::int64_t tokens) const {
-    auto collapsed = collapse_hidden(std::move(hidden), batch, tokens);
+    auto collapsed = deepseek_v41_runtime::finalize_hidden(*state.shared, hidden, execution->executor().profiler());
 #ifdef TYLOINFER_NATIVE_CUDA
     return normalize_hidden(std::move(collapsed), *output_norm, batch, tokens);
 #else
@@ -456,11 +435,7 @@ void Model::adapter_begin_forward(bool capture_raw_hidden) const {
 #endif
 }
 
-::tyloi::DenseTensor Model::raw_hidden() const {
-    return shared->dspark_target_hidden();
-}
-
-void Model::adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
+void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
                                      bool has_position_override, bool has_cache_position_override) const {
     require_model(
         tokens > 0 && cache_position + tokens <= metadata.max_position_embeddings &&
@@ -468,24 +443,8 @@ void Model::adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int
         "DeepSeek-V4.1 currently requires contiguous causal cache positions");
 }
 
-void Model::adapter_begin_speculative() {
-    TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 speculative state is unavailable");
-    shared->begin_speculative();
-}
-
-void Model::adapter_commit_speculative() {
-    TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 speculative state is unavailable");
-    shared->commit_speculative();
-}
-
-void Model::adapter_rollback_speculative(std::int64_t position) {
-    TYLOINFER_RUNTIME_CHECK(shared, "DeepSeek-V4.1 speculative state is unavailable");
-    shared->rollback_speculative(position);
-}
-
-::tyloi::Tensor Model::hidden_forward_speculative_suffix(::tyloi::Tensor ids,
+::tyloi::Tensor Model::hidden_forward_speculative_suffix(State& state, ::tyloi::Tensor ids,
                                                        ::tyloi::Tensor* raw_hidden) {
-    auto& state = *active;
     require_model(state.speculative_start >= 0 && state.speculative_confirmed == 0 &&
                       !state.speculative_suffix_forward,
                   "speculative suffix is not active");
@@ -500,18 +459,6 @@ void Model::adapter_rollback_speculative(std::int64_t position) {
         state.speculative_suffix_forward = false;
         throw;
     }
-}
-
-void Model::rollback_speculative(std::int64_t accepted) {
-    auto& state = *active;
-    require_model(state.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
-    const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
-    for (auto& block : blocks)
-        block->rollback_speculative(keep);
-    adapter_rollback_speculative(keep);
-    state.cache_pos = keep;
-    state.speculative_start = -1;
-    state.speculative_confirmed = 0;
 }
 
 // The decode forward, ported from the retired generic causal loop. The block
@@ -531,7 +478,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
     require_model(embeddings.dim() == 3 && embeddings.size(0) == B && embeddings.size(1) == T &&
                       embeddings.size(2) == hidden_size(),
                   "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    adapter_validate_forward(B, T, state.cache_pos, bool(input.positions),
+    validate_forward(B, T, state.cache_pos, bool(input.positions),
                              bool(input.cache_positions));
     require_model(state.speculative_start < 0 || state.speculative_suffix_forward,
                   "commit or roll back the pending speculative pass before forwarding");
@@ -558,8 +505,8 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
         host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         cpu_positions = positions.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
     }
-    auto hidden = adapter_prepare_hidden(std::move(embeddings), B, T);
-    adapter_begin_forward(input.raw_hidden != nullptr);
+    auto hidden = prepare_hidden(std::move(embeddings), B, T);
+    state.begin_forward(input.raw_hidden != nullptr);
     if (input.trace)
         input.trace->push_back(std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).clone()));
     const auto trace_layer = [&] {
@@ -575,7 +522,7 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
         auto local_pos = block->cpu_offloaded
             ? cpu_positions
             : execution->executor().collectives().copy(positions, block->cuda_device);
-        block->set_token_ids(local_ids);
+        block->set_token_ids(*state.shared, local_ids);
         BlockContext context;
         context.token_ids = local_ids;
         context.host_token_ids = host_ids;
@@ -589,14 +536,14 @@ std::shared_ptr<tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi:
             hidden = hidden.to(::tyloi::kCPU).contiguous();
         else
             hidden = execution->executor().collectives().copy(hidden, block->cuda_device);
-        hidden = block->forward_context(*execution, std::move(hidden), context);
+        hidden = block->forward_context(*state.shared, *execution, std::move(hidden), context);
         trace_layer();
     }
     state.cache_pos += T;
     hidden = execution->executor().collectives().copy(hidden, primary);
-    auto finalized = adapter_finalize_hidden(std::move(hidden), B, T);
+    auto finalized = finalize_hidden(state, std::move(hidden), B, T);
     if (input.raw_hidden)
-        *input.raw_hidden = raw_hidden();
+        *input.raw_hidden = state.shared->dspark_target_hidden();
     return std::make_shared<DenseTensor>(std::move(finalized));
 }
 

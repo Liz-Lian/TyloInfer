@@ -10,7 +10,6 @@
 #include "engine/generation/mtp/state.h"
 #include "engine/models/info.h"
 #include "engine/models/source.h"
-#include "engine/models/common/prefetch.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/backends/cuda/executor/sampling.h"
@@ -195,7 +194,7 @@ template <class Model, class State> struct CudaMtpOps {
     return std::exchange(target_maintenance,false) || initialized;
   }
   bool prefetch_target_ids(int32_t token,const std::vector<int32_t>& drafts) {
-    if constexpr(requires {model.adapter_prefetch_token_rows(model,early_ple_ids_host);}) {
+    if constexpr(requires {model.prefetch_token_rows(state,early_ple_ids_host);}) {
       const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_EARLY_PLE");
       if(option && option[0]=='0')return false;
       const int tokens=mtp.split_target_verification()?1:1+int(drafts.size());
@@ -209,7 +208,7 @@ template <class Model, class State> struct CudaMtpOps {
       auto* ids=early_ple_ids_host.template data_ptr<int64_t>();ids[0]=token;
 #endif
       for(int i=1;i<tokens;++i)ids[i]=drafts[std::size_t(i-1)];
-      if(tyloi::cuda::internal::prefetch_token_rows(model,slice(early_ple_ids_host,1,0,tokens))) {
+      if(model.prefetch_token_rows(state,slice(early_ple_ids_host,1,0,tokens))) {
         static bool reported=false;
         if(!reported) {
           reported=true;std::cerr<<"runtime_mtp_early_token_rows enabled=1 prefix_tokens=1\n";
@@ -261,7 +260,7 @@ template <class Model, class State> struct CudaMtpOps {
     return mtp_bootstrap_before_publication(model,option);
   }
   bool retains_partial_target_prefix(int accepted) const {
-    return mtp_retains_partial_target_prefix(model,mtp,accepted);
+    return mtp_retains_partial_target_prefix(model,state,mtp,accepted);
   }
   std::size_t predictor_history_merge_limit() const {
     return mtp_history_merge_limit(model);
@@ -317,7 +316,7 @@ template <class Model, class State> struct CudaMtpOps {
     if constexpr (has_replay<Model, State>)
       replay_target(model, state, executor, accepted);
     else
-      model.rollback_speculative(accepted);
+      state.rollback_speculative(accepted);
   }
   void initialize(const std::vector<int64_t> &prompt,
                   const MfqSamplingParams &sampling) {
@@ -426,8 +425,8 @@ template <class Model, class State> struct CudaMtpOps {
       TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation(),
                               "model does not support speculative suffix forwarding");
     }
-    if constexpr (requires(Model& value, ::tyloi::Tensor value_ids, ::tyloi::Tensor* value_raw) {
-                    value.hidden_forward_speculative_suffix(std::move(value_ids), value_raw);
+    if constexpr (requires(Model& value, State& value_state, ::tyloi::Tensor value_ids, ::tyloi::Tensor* value_raw) {
+                    value.hidden_forward_speculative_suffix(value_state,std::move(value_ids), value_raw);
                   }) {
       projected_target_hidden = {}; projected_target_logits = {};
       projected_target_compact={};
@@ -435,10 +434,10 @@ template <class Model, class State> struct CudaMtpOps {
       const auto transfer_before=weights.activity().streamed_bytes;
       const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
 #ifdef TYLOINFER_NATIVE_CUDA
-      auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
+      auto hidden=model.hidden_forward_speculative_suffix(state,ids, raw);
 #else
       ::tyloi::Tensor raw_result;
-      auto result=model.hidden_forward_speculative_suffix(ids, raw ? &raw_result : nullptr);
+      auto result=model.hidden_forward_speculative_suffix(state,ids, raw ? &raw_result : nullptr);
       auto hidden=result.dense();
       if(raw && raw_result)*raw=raw_result.dense();
 #endif
@@ -476,7 +475,7 @@ template <class Model, class State> struct CudaMtpOps {
     };
     Tensor raw;
     auto ids = slice(input_ids, 1, chunk.offset, chunk.count);
-    tyloi::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
+    tyloi::cuda::ImageMaskScope image_scope(state,prepared,chunk.offset,chunk.count);
     if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
       return std::move(*result);
     tyloi::weights::Loan workspace(weights);

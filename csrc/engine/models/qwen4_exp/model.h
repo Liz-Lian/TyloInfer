@@ -48,6 +48,18 @@ struct GdnWeights {
 
 class Gdn {
   public:
+    struct State {
+        State() = default;
+        State(const State&) = delete;
+        State& operator=(const State&) = delete;
+        State(State&&) = default;
+        State& operator=(State&&) = default;
+        ::tyloi::Tensor conv{DenseTensor{}}, recurrent{DenseTensor{}}, core_workspace{DenseTensor{}};
+        DenseTensor saved_conv, saved_state;
+        std::vector<DenseTensor> saved_prefix_conv, saved_prefix_state;
+        int64_t saved_prefix_position = -1;
+        bool resident = false;
+    };
     Gdn(std::shared_ptr<const GdnWeights> weights, int64_t key_heads, int64_t value_heads, int64_t width, int64_t kernel,
         double eps, bool silu_gate, bool fused_decode = true, bool transposed_state = true,
         bool fused_output = true, bool grouped_projection = true, bool fused_preparation = true,
@@ -60,40 +72,40 @@ class Gdn {
         TYLOINFER_RUNTIME_CHECK(nk_ > 0 && nv_ > 0 && nv_ % nk_ == 0 && d_ > 0 && kernel_ > 1 && eps_ > 0,
                           "invalid Qwen4 GDN head/convolution geometry");
     }
-    void reset(bool retain_storage=false) {
+    void reset(State& request, bool retain_storage=false) {
         if(retain_storage) {
-            if(conv_.defined())conv_.zero_();
-            if(state_.defined())state_.zero_();
-            if(core_workspace_.defined())core_workspace_.zero_();
+            if(request.conv.dense().defined())request.conv.dense().zero_();
+            if(request.recurrent.dense().defined())request.recurrent.dense().zero_();
+            if(request.core_workspace.dense().defined())request.core_workspace.dense().zero_();
         } else {
-            conv_ = DenseTensor();
-            state_ = DenseTensor();
-            core_workspace_ = DenseTensor();
+            request.conv.dense() = DenseTensor();
+            request.recurrent.dense() = DenseTensor();
+            request.core_workspace.dense() = DenseTensor();
         }
-        commit();
+        commit(request);
     }
-    void commit() {
-        saved_conv_ = DenseTensor();
-        saved_state_ = DenseTensor();
-        saved_prefix_conv_.clear();saved_prefix_state_.clear();saved_prefix_position_=-1;
+    void commit(State& request) {
+        request.saved_conv = DenseTensor();
+        request.saved_state = DenseTensor();
+        request.saved_prefix_conv.clear();request.saved_prefix_state.clear();request.saved_prefix_position=-1;
     }
-    void rollback(int64_t keep=-1) {
-        TYLOINFER_RUNTIME_CHECK(saved_conv_.defined(), "Qwen4 GDN has no speculative checkpoint");
-        if(keep>=0 && saved_prefix_position_>=0) {
-            const auto index=keep-saved_prefix_position_;
-            TYLOINFER_RUNTIME_CHECK(index>=0 && index<int64_t(saved_prefix_conv_.size()),
+    void rollback(State& request, int64_t keep=-1) {
+        TYLOINFER_RUNTIME_CHECK(request.saved_conv.defined(), "Qwen4 GDN has no speculative checkpoint");
+        if(keep>=0 && request.saved_prefix_position>=0) {
+            const auto index=keep-request.saved_prefix_position;
+            TYLOINFER_RUNTIME_CHECK(index>=0 && index<int64_t(request.saved_prefix_conv.size()),
                 "Qwen4 GDN prefix checkpoint is out of range");
-            saved_conv_=saved_prefix_conv_[index];saved_state_=saved_prefix_state_[index];
+            request.saved_conv=request.saved_prefix_conv[index];request.saved_state=request.saved_prefix_state[index];
         }
-        if(conv_.defined())conv_.copy_(saved_conv_);else conv_=saved_conv_;
-        if(state_.defined())state_.copy_(saved_state_);else state_=saved_state_;
-        commit();
+        if(request.conv.dense().defined())request.conv.dense().copy_(request.saved_conv);else request.conv.dense()=request.saved_conv;
+        if(request.recurrent.dense().defined())request.recurrent.dense().copy_(request.saved_state);else request.recurrent.dense()=request.saved_state;
+        commit(request);
     }
-    const DenseTensor &conv_state() const { return conv_; }
-    void initialize_request_cache(bool allocate_counters=true) {
+    const DenseTensor &conv_state(const State& request) const { return request.conv.dense(); }
+    void initialize_request_cache(State& request, bool allocate_counters=true) {
         // Recurrence is allocated on first use, outside temporary pool pages.
         // Keep the reusable decode counters out of graph scratch as well.
-        request_state_storage_=true;
+        request.resident=true;
 #ifdef TYLOINFER_NATIVE_CUDA
         ResidentAllocationScope resident;
 #endif
@@ -102,78 +114,81 @@ class Gdn {
 #else
         auto options=w_->norm.options().dtype(::tyloi::kFloat32);
 #endif
-        if(allocate_counters && !core_workspace_.defined() && fused_core_ && fused_decode_ &&
+        if(allocate_counters && !request.core_workspace.dense().defined() && fused_core_ && fused_decode_ &&
             fused_preparation_ && fused_output_ && transposed_state_)
-            core_workspace_=::tyloi::cuda::zeros({1,nv_,d_+1},options);
+            request.core_workspace.dense()=::tyloi::cuda::zeros({1,nv_,d_+1},options);
     }
-    std::size_t growth_bytes() const {
-        return (conv_.defined() ? 0 : std::size_t(kernel_-1)*(2*nk_+nv_)*d_*sizeof(float)) +
-            (state_.defined() ? 0 : std::size_t(nv_)*d_*d_*sizeof(float));
+    std::size_t growth_bytes(const State& request) const {
+        return (request.conv.dense().defined() ? 0 : std::size_t(kernel_-1)*(2*nk_+nv_)*d_*sizeof(float)) +
+            (request.recurrent.dense().defined() ? 0 : std::size_t(nv_)*d_*d_*sizeof(float));
     }
-    std::size_t request_cache_growth_bytes() const {
-        return growth_bytes() + (fused_core_ && fused_decode_ && fused_preparation_ &&
-            fused_output_ && transposed_state_ && !core_workspace_.defined()
+    std::size_t request_cache_growth_bytes(const State& request) const {
+        return growth_bytes(request) + (fused_core_ && fused_decode_ && fused_preparation_ &&
+            fused_output_ && transposed_state_ && !request.core_workspace.dense().defined()
             ? std::size_t(nv_)*(d_+1)*sizeof(float) : 0);
     }
-    void restore_session(const DenseTensor& convolution,const DenseTensor& recurrent,bool retain_storage=false) {
+    void restore_session(State& request, const DenseTensor& convolution,const DenseTensor& recurrent,bool retain_storage=false) {
         TYLOINFER_RUNTIME_CHECK(convolution.defined() && recurrent.defined(),"missing Qwen4 GDN session state");
         if(retain_storage) {
-            TYLOINFER_RUNTIME_CHECK(conv_.defined() && state_.defined() && conv_.sizes()==convolution.sizes() &&
-                state_.sizes()==recurrent.sizes(),"Qwen4 GDN graph session geometry changed");
-            commit();conv_.copy_(convolution);state_.copy_(recurrent);
-        } else {reset();conv_=convolution.clone();state_=recurrent.clone();}
+            TYLOINFER_RUNTIME_CHECK(request.conv.dense().defined() && request.recurrent.dense().defined() && request.conv.dense().sizes()==convolution.sizes() &&
+                request.recurrent.dense().sizes()==recurrent.sizes(),"Qwen4 GDN graph session geometry changed");
+            commit(request);request.conv.dense().copy_(convolution);request.recurrent.dense().copy_(recurrent);
+        } else {reset(request);request.conv.dense()=convolution.clone();request.recurrent.dense()=recurrent.clone();}
     }
-    DenseTensor recurrent_state() const {
-        return state_.defined() && transposed_state_ ? state_.transpose(-1,-2) : state_;
+    DenseTensor recurrent_state(const State& request) const {
+        return request.recurrent.dense().defined() && transposed_state_ ? request.recurrent.dense().transpose(-1,-2) : request.recurrent.dense();
     }
-    std::vector<DenseTensor*> graph_state() { return {&conv_,&state_}; }
+    std::vector<::tyloi::Tensor*> graph_state(State& request) { return {&request.conv, &request.recurrent}; }
     std::vector<DenseTensor> project_inputs(const tyloi::cuda::Projector& projector,const DenseTensor& x) const;
     DenseTensor project_output(const tyloi::cuda::Projector& projector,const DenseTensor& x) const;
-    static DenseTensor prepare_independent_batch(const std::vector<Gdn*>& rows) {
+    static DenseTensor prepare_independent_batch(const std::vector<std::pair<const Gdn*, State*>>& rows) {
         if(rows.size()<2 || rows.size()>32)return {};
         const auto inplace=::tyloi::cuda::options::gdn_inplace_state();
         if(inplace && !*inplace)return {};
-        const auto& first=*rows.front();
-        const auto eligible=[](const Gdn& row) {
+        const auto& first=*rows.front().first;
+        const auto& first_state=*rows.front().second;
+        const auto eligible=[](const auto& entry) {
+            const auto& row=*entry.first;
+            const auto& request=*entry.second;
             return row.fused_core_ && row.fused_decode_ && row.fused_preparation_ &&
                 row.fused_output_ && row.transposed_state_ &&
                 (row.d_==32 || row.d_==64 || row.d_==128) &&
-                row.conv_.defined() && row.state_.defined() && row.core_workspace_.defined() &&
-                row.conv_.is_cuda() && row.state_.is_cuda() && row.core_workspace_.is_cuda() &&
-                row.conv_.is_contiguous() && row.state_.is_contiguous() && row.core_workspace_.is_contiguous() &&
-                row.conv_.scalar_type()==::tyloi::kFloat32 && row.state_.scalar_type()==::tyloi::kFloat32 &&
-                row.core_workspace_.scalar_type()==::tyloi::kFloat32 &&
-                row.conv_.sizes().vec()==std::vector<int64_t>({1,row.kernel_-1,(2*row.nk_+row.nv_)*row.d_}) &&
-                row.state_.sizes().vec()==std::vector<int64_t>({1,row.nv_,row.d_,row.d_}) &&
-                row.core_workspace_.sizes().vec()==std::vector<int64_t>({1,row.nv_,row.d_+1});
+                request.conv.dense().defined() && request.recurrent.dense().defined() && request.core_workspace.dense().defined() &&
+                request.conv.dense().is_cuda() && request.recurrent.dense().is_cuda() && request.core_workspace.dense().is_cuda() &&
+                request.conv.dense().is_contiguous() && request.recurrent.dense().is_contiguous() && request.core_workspace.dense().is_contiguous() &&
+                request.conv.dense().scalar_type()==::tyloi::kFloat32 && request.recurrent.dense().scalar_type()==::tyloi::kFloat32 &&
+                request.core_workspace.dense().scalar_type()==::tyloi::kFloat32 &&
+                request.conv.dense().sizes().vec()==std::vector<int64_t>({1,row.kernel_-1,(2*row.nk_+row.nv_)*row.d_}) &&
+                request.recurrent.dense().sizes().vec()==std::vector<int64_t>({1,row.nv_,row.d_,row.d_}) &&
+                request.core_workspace.dense().sizes().vec()==std::vector<int64_t>({1,row.nv_,row.d_+1});
         };
         if(::tyloi::cuda::options::gdn_independent_batch_trace())
             std::fprintf(stderr,"gdn_batch_state eligible=%d flags=%d%d%d%d%d conv=%d state=%d counters=%d geometry=%lld/%lld/%lld/%lld\n",
-                int(eligible(first)),int(first.fused_core_),int(first.fused_decode_),int(first.fused_preparation_),
-                int(first.fused_output_),int(first.transposed_state_),int(first.conv_.defined()),int(first.state_.defined()),
-                int(first.core_workspace_.defined()),(long long)first.nk_,(long long)first.nv_,(long long)first.d_,(long long)first.kernel_);
-        if(!eligible(first))return {};
-        for(const auto* row:rows)if(!eligible(*row) || row->nk_!=first.nk_ || row->nv_!=first.nv_ ||
-            row->d_!=first.d_ || row->kernel_!=first.kernel_ || row->eps_!=first.eps_ ||
-            row->silu_gate_!=first.silu_gate_ || row->state_.device()!=first.state_.device() ||
-            row->conv_.device()!=first.state_.device() || row->core_workspace_.device()!=first.state_.device() ||
+                int(eligible(rows.front())),int(first.fused_core_),int(first.fused_decode_),int(first.fused_preparation_),
+                int(first.fused_output_),int(first.transposed_state_),int(first_state.conv.dense().defined()),int(first_state.recurrent.dense().defined()),
+                int(first_state.core_workspace.dense().defined()),(long long)first.nk_,(long long)first.nv_,(long long)first.d_,(long long)first.kernel_);
+        if(!eligible(rows.front()))return {};
+        for(const auto& row:rows)if(!eligible(row) || row.first->nk_!=first.nk_ || row.first->nv_!=first.nv_ ||
+            row.first->d_!=first.d_ || row.first->kernel_!=first.kernel_ || row.first->eps_!=first.eps_ ||
+            row.first->silu_gate_!=first.silu_gate_ || row.second->recurrent.dense().device()!=first_state.recurrent.dense().device() ||
+            row.second->conv.dense().device()!=first_state.recurrent.dense().device() || row.second->core_workspace.dense().device()!=first_state.recurrent.dense().device() ||
 #ifdef TYLOINFER_NATIVE_CUDA
-            dynamic_cast<const DenseTensor&>(*row->w_->conv).data_ptr()!=dynamic_cast<const DenseTensor&>(*first.w_->conv).data_ptr() || dynamic_cast<const DenseTensor&>(*row->w_->norm).data_ptr()!=dynamic_cast<const DenseTensor&>(*first.w_->norm).data_ptr() ||
-            dynamic_cast<const DenseTensor&>(*row->w_->dt_bias).data_ptr()!=dynamic_cast<const DenseTensor&>(*first.w_->dt_bias).data_ptr() || dynamic_cast<const DenseTensor&>(*row->w_->a_log).data_ptr()!=dynamic_cast<const DenseTensor&>(*first.w_->a_log).data_ptr())return {};
+            row.first->w_->conv.dense().data_ptr()!=first.w_->conv.dense().data_ptr() || row.first->w_->norm.dense().data_ptr()!=first.w_->norm.dense().data_ptr() ||
+            row.first->w_->dt_bias.dense().data_ptr()!=first.w_->dt_bias.dense().data_ptr() || row.first->w_->a_log.dense().data_ptr()!=first.w_->a_log.dense().data_ptr())return {};
 #else
-            row->w_->conv.data_ptr()!=first.w_->conv.data_ptr() || row->w_->norm.data_ptr()!=first.w_->norm.data_ptr() ||
-            row->w_->dt_bias.data_ptr()!=first.w_->dt_bias.data_ptr() || row->w_->a_log.data_ptr()!=first.w_->a_log.data_ptr())return {};
+            row.first->w_->conv.data_ptr()!=first.w_->conv.data_ptr() || row.first->w_->norm.data_ptr()!=first.w_->norm.data_ptr() ||
+            row.first->w_->dt_bias.data_ptr()!=first.w_->dt_bias.data_ptr() || row.first->w_->a_log.data_ptr()!=first.w_->a_log.data_ptr())return {};
 #endif
-        auto addresses=::tyloi::cuda::empty({int64_t(rows.size()),3},first.state_.options().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
+        auto addresses=::tyloi::cuda::empty({int64_t(rows.size()),3},first_state.recurrent.dense().options().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
         auto* values=addresses.data_ptr<int64_t>();
         for(std::size_t i=0;i<rows.size();++i) {
-            values[3*i]=reinterpret_cast<int64_t>(rows[i]->conv_.data_ptr());
-            values[3*i+1]=reinterpret_cast<int64_t>(rows[i]->state_.data_ptr());
-            values[3*i+2]=reinterpret_cast<int64_t>(rows[i]->core_workspace_.data_ptr());
+            values[3*i]=reinterpret_cast<int64_t>(rows[i].second->conv.dense().data_ptr());
+            values[3*i+1]=reinterpret_cast<int64_t>(rows[i].second->recurrent.dense().data_ptr());
+            values[3*i+2]=reinterpret_cast<int64_t>(rows[i].second->core_workspace.dense().data_ptr());
         }
-        return addresses.to(first.state_.device());
+        return addresses.to(first_state.recurrent.dense().device());
     }
-    DenseTensor forward_independent_batch(const DenseTensor& x,const std::vector<DenseTensor>& projections,
+    DenseTensor forward_independent_batch(State& request, const DenseTensor& x,const std::vector<DenseTensor>& projections,
                                      const DenseTensor& addresses) {
         if(::tyloi::cuda::options::gdn_independent_batch_trace() && projections.size()==4)
             std::fprintf(stderr,"gdn_batch_projection input=%d qkv=%d gate=%d alpha=%d beta=%d rows=%lld\n",
@@ -199,18 +214,18 @@ class Gdn {
         auto result=gdn_decode_core_cuda(direct(projections[0]),direct(projections[1]),
             projections[2].reshape({x.size(0),1,nv_}),projections[3].reshape({x.size(0),1,nv_}),
 #ifdef TYLOINFER_NATIVE_CUDA
-            conv_,state_,weight,dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),
-            dynamic_cast<const DenseTensor&>(*w_->norm).to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
+            request.conv.dense(),request.recurrent.dense(),weight,w_->dt_bias.dense().to(::tyloi::kFloat32).contiguous(),w_->a_log.dense().to(::tyloi::kFloat32).contiguous(),
+            w_->norm.dense().to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
 #else
-            conv_,state_,weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
+            request.conv.dense(),request.recurrent.dense(),weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
             w_->norm.to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
 #endif
-            x.scalar_type()==::tyloi::kFloat16,true,core_workspace_,true,addresses);
+            x.scalar_type()==::tyloi::kFloat16,true,request.core_workspace.dense(),true,addresses);
         return result[0];
     }
-    DenseTensor forward_graph(const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor& x,int64_t confirmed,
+    DenseTensor forward_graph(State& request, const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor& x,int64_t confirmed,
                          std::vector<DenseTensor>& checkpoint_conv,std::vector<DenseTensor>& checkpoint_state) {
-        if(!confirmed)return forward_chunk(project,profiler,x,true);
+        if(!confirmed)return forward_chunk(request, project,profiler,x,true);
         const auto batch=::tyloi::cuda::options::gdn_batch_projection();
         const bool grouped=grouped_projection_ && project.grouped(w_->input_projection) && x.size(1)<=8 && (!batch || *batch);
         // Only recurrence is split at the confirmation boundary. Both parts
@@ -223,7 +238,7 @@ class Gdn {
             (!window_option || window_option[0]!='0') && nv_<=65535 &&
             (!inplace_option || *inplace_option) && (!checkpoint_option || checkpoint_option[0]!='0') &&
             d_==128 && kernel_==4 && fused_core_ && fused_decode_ && fused_preparation_ &&
-            fused_output_ && transposed_state_ && conv_.defined() && state_.defined() &&
+            fused_output_ && transposed_state_ && request.conv.dense().defined() && request.recurrent.dense().defined() &&
             projected.size()==4 && projected[0].scalar_type()==::tyloi::kFloat16 &&
             projected[1].scalar_type()==projected[2].scalar_type() &&
             projected[2].scalar_type()==projected[3].scalar_type() &&
@@ -239,14 +254,14 @@ class Gdn {
                 weight=weight.reshape({channels,1,kernel_});
             auto decoded=gdn_decode_window_cuda(projected[0],projected[1],projected[2].reshape({1,x.size(1),nv_}),
 #ifdef TYLOINFER_NATIVE_CUDA
-                projected[3].reshape({1,x.size(1),nv_}),conv_,state_,weight,dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),
-                dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->norm).to(::tyloi::kFloat32).contiguous(),int(nk_),int(nv_),int(confirmed),
+                projected[3].reshape({1,x.size(1),nv_}),request.conv.dense(),request.recurrent.dense(),weight,w_->dt_bias.dense().to(::tyloi::kFloat32).contiguous(),
+                w_->a_log.dense().to(::tyloi::kFloat32).contiguous(),w_->norm.dense().to(::tyloi::kFloat32).contiguous(),int(nk_),int(nv_),int(confirmed),
 #else
-                projected[3].reshape({1,x.size(1),nv_}),conv_,state_,weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),
+                projected[3].reshape({1,x.size(1),nv_}),request.conv.dense(),request.recurrent.dense(),weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),
                 w_->a_log.to(::tyloi::kFloat32).contiguous(),w_->norm.to(::tyloi::kFloat32).contiguous(),int(nk_),int(nv_),int(confirmed),
 #endif
                 1e-6,eps_,silu_gate_,x.scalar_type()==::tyloi::kFloat16,true,checkpoint_conv,checkpoint_state);
-            conv_.copy_(decoded[1]);
+            request.conv.dense().copy_(decoded[1]);
             return project_output(project,decoded[0]);
         }
         const auto slice=[&](int64_t begin,int64_t count) {
@@ -261,42 +276,38 @@ class Gdn {
             const auto count=begin==0?confirmed:1;
             const auto end=begin+count,index=end-confirmed;
             bool snapshot_written=false;
-            outputs.push_back(forward_chunk(project,profiler,x.narrow(1,begin,count),true,
+            outputs.push_back(forward_chunk(request, project,profiler,x.narrow(1,begin,count),true,
                 slice(begin,count),!grouped,
                 end<x.size(1)?checkpoint_conv[index]:DenseTensor{},
                 end<x.size(1)?checkpoint_state[index]:DenseTensor{},&snapshot_written));
             begin=end;
             if(begin<x.size(1) && !snapshot_written) {
-                checkpoint_conv[index].copy_(conv_);checkpoint_state[index].copy_(state_);
+                checkpoint_conv[index].copy_(request.conv.dense());checkpoint_state[index].copy_(request.recurrent.dense());
             }
         }
         auto result=::tyloi::cuda::cat(outputs,1);
         return grouped?project_output(project,result):result;
     }
-    void bind_graph_checkpoint(const std::vector<DenseTensor>& conv,const std::vector<DenseTensor>& state,
+    void bind_graph_checkpoint(State& request, const std::vector<DenseTensor>& conv,const std::vector<DenseTensor>& state,
                                int64_t position) {
-        TYLOINFER_RUNTIME_CHECK(!saved_conv_.defined(),"resolve previous GDN checkpoint");
+        TYLOINFER_RUNTIME_CHECK(!request.saved_conv.defined(),"resolve previous GDN checkpoint");
         TYLOINFER_RUNTIME_CHECK(!conv.empty() && conv.size()==state.size(),"invalid GDN prefix checkpoints");
-        saved_conv_=conv.front();saved_state_=state.front();
-        saved_prefix_conv_=conv;saved_prefix_state_=state;saved_prefix_position_=position;
+        request.saved_conv=conv.front();request.saved_state=state.front();
+        request.saved_prefix_conv=conv;request.saved_prefix_state=state;request.saved_prefix_position=position;
     }
-    void set_grouped_projection(bool enabled) {
-        TYLOINFER_RUNTIME_CHECK(!conv_.defined() && !state_.defined(), "reset GDN before switching projection execution");
-        grouped_projection_ = enabled;
-    }
-    DenseTensor forward(const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor &x, bool cache,
+    DenseTensor forward(State& request, const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor &x, bool cache,
                    int64_t confirmed = 0, int64_t cache_position = -1) {
         TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.dim() == 3 && x.size(0) > 0,
                           "recurrent attention requires nonempty [B,T,H] input");
         if(cache && cache_position>=0 && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8) {
-            TYLOINFER_RUNTIME_CHECK(!saved_conv_.defined() && conv_.defined() && state_.defined(),
+            TYLOINFER_RUNTIME_CHECK(!request.saved_conv.defined() && request.conv.dense().defined() && request.recurrent.dense().defined(),
                               "GDN verification requires committed recurrent state");
             std::vector<DenseTensor> conv,state;
             for(int64_t i=confirmed;i<x.size(1);++i) {
-                conv.push_back(::tyloi::cuda::empty_like(conv_));state.push_back(::tyloi::cuda::empty_like(state_));
+                conv.push_back(::tyloi::cuda::empty_like(request.conv.dense()));state.push_back(::tyloi::cuda::empty_like(request.recurrent.dense()));
             }
-            auto result=forward_graph(project,profiler,x,confirmed,conv,state);
-            bind_graph_checkpoint(conv,state,cache_position+confirmed);
+            auto result=forward_graph(request, project,profiler,x,confirmed,conv,state);
+            bind_graph_checkpoint(request, conv,state,cache_position+confirmed);
             return result;
         }
         const auto batch=::tyloi::cuda::options::gdn_batch_projection();
@@ -305,9 +316,9 @@ class Gdn {
         std::vector<DenseTensor> projected;
         if(grouped)projected=project_inputs(project,x);
         auto result=tyloi::models::recurrent_window(
-            x.size(1), cache, confirmed, saved_conv_.defined(),
+            x.size(1), cache, confirmed, request.saved_conv.defined(),
             [&](int64_t start, int64_t count) {
-                if(!grouped)return forward_chunk(project,profiler,x.narrow(1,start,count),cache);
+                if(!grouped)return forward_chunk(request, project,profiler,x.narrow(1,start,count),cache);
                 // Share both projections across the verification window and
                 // preserve the same per-prefix recurrent order as the graph.
                 std::vector<DenseTensor> outputs;
@@ -315,36 +326,36 @@ class Gdn {
                     const auto rows=begin==0?count:int64_t(1);
                     std::vector<DenseTensor> inputs;
                     for(const auto& value:projected)inputs.push_back(value.narrow(1,begin,rows));
-                    outputs.push_back(forward_chunk(project,profiler,x.narrow(1,begin,rows),cache,std::move(inputs),false));
+                    outputs.push_back(forward_chunk(request, project,profiler,x.narrow(1,begin,rows),cache,std::move(inputs),false));
                     begin+=rows;
                 }
                 return outputs.size()==1?std::move(outputs.front()): ::tyloi::cuda::cat(outputs,1);
             },
             [&] {
-                saved_conv_ = conv_.clone();
-                saved_state_ = state_.clone();
+                request.saved_conv = request.conv.dense().clone();
+                request.saved_state = request.recurrent.dense().clone();
             },
-            [&] { rollback(); },
+            [&] { rollback(request); },
             [](DenseTensor prefix, DenseTensor suffix) { return ::tyloi::cuda::cat({prefix, suffix}, 1); });
         return grouped?project_output(project,result):result;
     }
-    DenseTensor forward_chunk(const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor &x, bool cache,
+    DenseTensor forward_chunk(State& request, const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor &x, bool cache,
                          std::vector<DenseTensor> projections = {},bool project_output=true,
                          DenseTensor checkpoint_conv={},DenseTensor checkpoint_state={},bool* snapshot_written=nullptr) {
         if(snapshot_written)*snapshot_written=false;
         const auto b = x.size(0), t = x.size(1), kw = nk_ * d_, vw = nv_ * d_,
                    channels = 2 * kw + vw;
         auto options = x.options().dtype(::tyloi::kFloat32);
-        TYLOINFER_RUNTIME_CHECK(!cache || !conv_.defined() ||
-                              (conv_.size(0) == b && conv_.device() == x.device()),
+        TYLOINFER_RUNTIME_CHECK(!cache || !request.conv.dense().defined() ||
+                              (request.conv.dense().size(0) == b && request.conv.dense().device() == x.device()),
                           "reset Qwen4 GDN before changing batch/device");
         auto previous =
-            cache && conv_.defined() ? conv_ : ::tyloi::cuda::zeros({b, kernel_ - 1, channels}, options);
+            cache && request.conv.dense().defined() ? request.conv.dense() : ::tyloi::cuda::zeros({b, kernel_ - 1, channels}, options);
         std::array<DenseTensor,2> prepared_gates;
         const auto prefill_option=::tyloi::cuda::options::gdn_prefill_fused();
         const bool prefill_fused=t>1 && fused_preparation_ && d_<=256 && kernel_<=8 &&
             (!prefill_option || *prefill_option!=0);
-        if(cache && conv_.defined() && state_.defined() && fused_core_ && fused_decode_ &&
+        if(cache && request.conv.dense().defined() && request.recurrent.dense().defined() && fused_core_ && fused_decode_ &&
             fused_preparation_ && fused_output_ && transposed_state_ && t==1 &&
             (d_==32 || d_==64 || d_==128) &&
             (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32)) {
@@ -363,13 +374,13 @@ class Gdn {
 #endif
                 if(weight.dim()==2 && weight.size(0)==channels && weight.size(1)==kernel_)
                     weight=weight.reshape({channels,1,kernel_});
-                if(!core_workspace_.defined())core_workspace_=::tyloi::cuda::zeros({b,nv_,d_+1},options);
+                if(!request.core_workspace.dense().defined())request.core_workspace.dense()=::tyloi::cuda::zeros({b,nv_,d_+1},options);
                 const auto stride_setting=::tyloi::cuda::options::gdn_strided_projections();
                 const auto direct=[&](const DenseTensor& value){return !stride_setting || *stride_setting?value:value.contiguous();};
                 const auto decode=[&](bool checkpoint) {
                   auto qkv=direct(projections[0]),gate=direct(projections[1]);
                   auto alpha=projections[2].reshape({b,t,nv_}),beta=projections[3].reshape({b,t,nv_});
-                  if(checkpoint)return gdn_decode_core_checkpoint_cuda(qkv,gate,alpha,beta,previous,state_,
+                  if(checkpoint)return gdn_decode_core_checkpoint_cuda(qkv,gate,alpha,beta,previous,request.recurrent.dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                     weight,dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),
                     dynamic_cast<const DenseTensor&>(*w_->norm).to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
@@ -377,9 +388,9 @@ class Gdn {
                     weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
                     w_->norm.to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
 #endif
-                    x.scalar_type()==::tyloi::kFloat16,true,core_workspace_,true,checkpoint_conv,checkpoint_state);
+                    x.scalar_type()==::tyloi::kFloat16,true,request.core_workspace.dense(),true,checkpoint_conv,checkpoint_state);
                   return gdn_decode_core_cuda(qkv,gate,
-                    projections[2].reshape({b,t,nv_}),projections[3].reshape({b,t,nv_}),previous,state_,
+                    projections[2].reshape({b,t,nv_}),projections[3].reshape({b,t,nv_}),previous,request.recurrent.dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                     weight,dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),
                     dynamic_cast<const DenseTensor&>(*w_->norm).to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
@@ -387,7 +398,7 @@ class Gdn {
                     weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
                     w_->norm.to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
 #endif
-                    x.scalar_type()==::tyloi::kFloat16,true,core_workspace_,
+                    x.scalar_type()==::tyloi::kFloat16,true,request.core_workspace.dense(),
                     [] {const auto value=::tyloi::cuda::options::gdn_inplace_state();return !value || *value;}());
                 };
                 const auto* checkpoint_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
@@ -405,8 +416,8 @@ class Gdn {
                     }
                 }
                 auto output=project_output?this->project_output(project,decoded[0]):decoded[0];
-                if(conv_.data_ptr()!=decoded[1].data_ptr())conv_.copy_(decoded[1]);
-                if(state_.data_ptr()!=decoded[2].data_ptr())state_.copy_(decoded[2]);
+                if(request.conv.dense().data_ptr()!=decoded[1].data_ptr())request.conv.dense().copy_(decoded[1]);
+                if(request.recurrent.dense().data_ptr()!=decoded[2].data_ptr())request.recurrent.dense().copy_(decoded[2]);
                 return output;
             }
         }
@@ -553,7 +564,7 @@ class Gdn {
             [&](const auto &convolution, const auto &gates) {
                 auto q = convolution[0], k = convolution[1], v = convolution[2];
                 auto decay = gates[0], beta = gates[1];
-                auto initial = cache && state_.defined() ? state_ : DenseTensor{};
+                auto initial = cache && request.recurrent.dense().defined() ? request.recurrent.dense() : DenseTensor{};
                 DenseTensor attended, next_state;
                 if (d_ == 32 || d_ == 64 || d_ == 128) {
                     auto result = profiler.measure("prefill.gdn_recurrence",[&] {
@@ -625,19 +636,19 @@ class Gdn {
                 return result;
             },
             [&](const auto &convolution, const DenseTensor &next) {
-                if(conv_.defined())conv_.copy_(convolution[3]);
+                if(request.conv.dense().defined())request.conv.dense().copy_(convolution[3]);
                 else {
 #ifdef TYLOINFER_NATIVE_CUDA
-                    ResidentAllocationScope resident(request_state_storage_);
+                    ResidentAllocationScope resident(request.resident);
 #endif
-                    conv_=request_state_storage_?convolution[3].clone():convolution[3];
+                    request.conv.dense()=request.resident?convolution[3].clone():convolution[3];
                 }
-                if(state_.defined()) {if(state_.data_ptr()!=next.data_ptr())state_.copy_(next);}
+                if(request.recurrent.dense().defined()) {if(request.recurrent.dense().data_ptr()!=next.data_ptr())request.recurrent.dense().copy_(next);}
                 else {
 #ifdef TYLOINFER_NATIVE_CUDA
-                    ResidentAllocationScope resident(request_state_storage_);
+                    ResidentAllocationScope resident(request.resident);
 #endif
-                    state_=request_state_storage_?next.clone():next;
+                    request.recurrent.dense()=request.resident?next.clone():next;
                 }
             });
     }
@@ -649,10 +660,6 @@ class Gdn {
     int64_t nk_, nv_, d_, kernel_;
     double eps_;
     bool silu_gate_, fused_decode_,transposed_state_,fused_output_,grouped_projection_,fused_preparation_,fused_core_;
-    bool request_state_storage_=false;
-    DenseTensor conv_, state_, saved_conv_, saved_state_,core_workspace_;
-    std::vector<DenseTensor> saved_prefix_conv_,saved_prefix_state_;
-    int64_t saved_prefix_position_=-1;
 };
 
 // The upstream PLE hash is a CPU uint64 algorithm, including signed remainder
@@ -662,13 +669,31 @@ class NgramEmbedding {
     using Context = tyloi::models::qwen4_exp::NgramContext;
     using RowLookup = std::function<std::shared_ptr<::tyloi::Tensor>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
     using StageFactory = std::function<std::shared_ptr<RowStage>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
+    struct State {
+        State() = default;
+        State(const State&) = delete;
+        State& operator=(const State&) = delete;
+        State(State&&) = default;
+        State& operator=(State&&) = default;
+        Context context;
+        std::shared_ptr<NintRowPipeline> pipeline;
+        bool hash_ready=false,hash_reported=false;
+        int cached_tokens=0;
+        std::array<int64_t,8> cached_ids{};
+        tyloi::models::qwen4_exp::NgramHashes cached_hashes;
+    };
     NgramEmbedding(std::vector<Embedding> shards, int64_t rows, int64_t dimension, int64_t ngram,
                    int64_t heads_per_ngram, int64_t eos, std::vector<int64_t> multipliers,
-                   std::vector<int64_t> offsets, std::vector<int64_t> vocab,std::shared_ptr<NintRowPipeline> pipeline = {},
+                   std::vector<int64_t> offsets, std::vector<int64_t> vocab,std::vector<std::shared_ptr<tyloi::NintRows>> ranges = {},
                    RowLookup row_lookup = {},StageFactory stage_factory = {})
         : shards_(std::move(shards)), rows_(rows), dimension_(dimension), ngram_(ngram),
           heads_(heads_per_ngram), eos_(eos), multipliers_(std::move(multipliers)),
-          offsets_(std::move(offsets)), vocab_(std::move(vocab)),pipeline_(std::move(pipeline)),row_lookup_(std::move(row_lookup)),stage_factory_(std::move(stage_factory)) {
+          offsets_(std::move(offsets)), vocab_(std::move(vocab)),row_lookup_(std::move(row_lookup)),stage_factory_(std::move(stage_factory)) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        if(!ranges.empty())source_=std::make_shared<NintRowSource>(std::move(ranges));
+#else
+        (void)ranges;
+#endif
         TYLOINFER_RUNTIME_CHECK(!shards_.empty() && rows_ > 0 && dimension_ > 0 && ngram_ > 1 &&
                               heads_ > 0 && multipliers_.size() == size_t(ngram_) &&
                               offsets_.size() == size_t((ngram_ - 1) * heads_) &&
@@ -679,59 +704,61 @@ class NgramEmbedding {
                                   offsets_[h] <= int64_t(shards_.size()) * rows_ - vocab_[h],
                               "Qwen4 ngram vocabulary lies outside embedding shards");
     }
-    void reset() { context_ = {};hash_ready_=false; }
-    bool graph_supported() const { return bool(pipeline_) || bool(stage_factory_); }
-    const Context &context() const { return context_; }
-    void restore(Context context) { context_ = std::move(context);hash_ready_=false; }
-    Context prefix_context(const DenseTensor& host_ids,int64_t count) const {
+    void reset(State& state) const { state.context = {};state.hash_ready=false; }
+    bool graph_supported() const { return bool(source_) || bool(stage_factory_); }
+    const Context &context(const State& state) const { return state.context; }
+    void restore(State& state,Context context) const { state.context = std::move(context);state.hash_ready=false; }
+    Context prefix_context(const State& state,const DenseTensor& host_ids,int64_t count) const {
         auto host=host_ids.narrow(1,0,count).to(::tyloi::kInt64).contiguous();
         return tyloi::models::qwen4_exp::ngram_hashes(host.data_ptr<int64_t>(),host.size(0),count,
-            ngram_,heads_,eos_,multipliers_,offsets_,vocab_,context_,true).next;
+            ngram_,heads_,eos_,multipliers_,offsets_,vocab_,state.context,true).next;
     }
-    void prefetch(const DenseTensor& host_ids,bool early_prefix=false) {
+    void prefetch(State& state,const DenseTensor& host_ids,bool early_prefix=false) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-        if(!pipeline_)return;
+        if(!source_)return;
+        if(!state.pipeline)state.pipeline=std::make_shared<NintRowPipeline>(source_);
         TYLOINFER_RUNTIME_CHECK(host_ids.is_cpu() && host_ids.dim()==2,"PLE prefetch requires host token IDs");
         auto host=host_ids.to(::tyloi::kInt64).contiguous();const auto b=host.size(0),t=host.size(1);
         if(cacheable_hashes(b,t)) {
-            const auto& hashes=graph_hashes(host);
-            pipeline_->issue(hashes.ids,{b,t,(ngram_-1)*heads_},early_prefix);
+            const auto& hashes=graph_hashes(state,host);
+            state.pipeline->issue(hashes.ids,{b,t,(ngram_-1)*heads_},early_prefix);
             return;
         }
         auto hashes=tyloi::models::qwen4_exp::ngram_hashes(host.data_ptr<int64_t>(),b,t,ngram_,heads_,eos_,
-            multipliers_,offsets_,vocab_,context_,true);
-        pipeline_->issue(hashes.ids,{b,t,(ngram_-1)*heads_},early_prefix);
+            multipliers_,offsets_,vocab_,state.context,true);
+        state.pipeline->issue(hashes.ids,{b,t,(ngram_-1)*heads_},early_prefix);
 
 #else
-    (void)host_ids; (void)early_prefix;
+    (void)state; (void)host_ids; (void)early_prefix;
 #endif
 }
-    std::shared_ptr<RowStage> graph_stage(int64_t b,int64_t t,const ::tyloi::Device& device) {
+    std::shared_ptr<RowStage> graph_stage(State& state,int64_t b,int64_t t,const ::tyloi::Device& device) const {
         const std::vector<int64_t> shape{b,t,(ngram_-1)*heads_};
         if(stage_factory_)return stage_factory_(shape,device);
-        TYLOINFER_RUNTIME_CHECK(pipeline_,"PLE graph requires prepared range rows");
+        TYLOINFER_RUNTIME_CHECK(bool(source_),"PLE graph requires prepared range rows");
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        return std::make_shared<NintStage>(pipeline_,shape,device);
+        if(!state.pipeline)state.pipeline=std::make_shared<NintRowPipeline>(source_);
+        return std::make_shared<NintStage>(state.pipeline,shape,device);
 #else
         throw std::runtime_error("PLE graph requires TQ row stages");
 #endif
     }
-    void upload_graph(const DenseTensor& host_ids,RowStage& stage) {
+    void upload_graph(State& state,const DenseTensor& host_ids,RowStage& stage) const {
         TYLOINFER_RUNTIME_CHECK(graph_supported() && host_ids.is_cpu() && host_ids.dim()==2,"PLE graph requires host token IDs");
         auto host=host_ids.to(::tyloi::kInt64).contiguous();const auto b=host.size(0),t=host.size(1);
         if(cacheable_hashes(b,t)) {
-            auto& hashes=graph_hashes(host);
+            auto& hashes=graph_hashes(state,host);
             stage.upload(hashes.ids,{b,t,(ngram_-1)*heads_});
-            restore(std::move(hashes.next));
+            restore(state,std::move(hashes.next));
             return;
         }
         auto hashes=tyloi::models::qwen4_exp::ngram_hashes(host.data_ptr<int64_t>(),b,t,ngram_,heads_,eos_,
-            multipliers_,offsets_,vocab_,context_,true);
+            multipliers_,offsets_,vocab_,state.context,true);
         stage.upload(hashes.ids,{b,t,(ngram_-1)*heads_});
-        restore(std::move(hashes.next));
+        restore(state,std::move(hashes.next));
     }
-    DenseTensor forward(const DenseTensor &ids, bool cache, DenseTensor *hashed_ids = nullptr,const DenseTensor& host_ids = {}) {
+    DenseTensor forward(State& state,const DenseTensor &ids, bool cache, DenseTensor *hashed_ids = nullptr,const DenseTensor& host_ids = {}) const {
         TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0,
                           "Qwen4 ngram IDs must be [B,T]");
         const auto b = ids.size(0), t = ids.size(1), nh = (ngram_ - 1) * heads_;
@@ -739,20 +766,21 @@ class NgramEmbedding {
         TYLOINFER_RUNTIME_CHECK(host.is_cpu() && host.sizes()==ids.sizes(),"PLE host token mirror differs");
         const auto *source = host.data_ptr<int64_t>();
         auto hashes = tyloi::models::qwen4_exp::ngram_hashes(
-            source, b, t, ngram_, heads_, eos_, multipliers_, offsets_, vocab_, context_, cache);
+            source, b, t, ngram_, heads_, eos_, multipliers_, offsets_, vocab_, state.context, cache);
         auto &global = hashes.ids;
         if(row_lookup_) {
             auto result=row_lookup_(global,ids.device());
             if(hashed_ids)*hashed_ids=::tyloi::cuda::tensor(global).reshape({b,t,nh}).to(ids.device());
-            if(cache)restore(std::move(hashes.next));
-            return dynamic_cast<const DenseTensor&>(*result).reshape({b,t,nh*dimension_});
+            if(cache)restore(state,std::move(hashes.next));
+            return result.dense().reshape({b,t,nh*dimension_});
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-        if(pipeline_) {
-            auto result=pipeline_->collect(global,{b,t,nh},ids.device());
+        if(bool(source_)) {
+            if(!state.pipeline)state.pipeline=std::make_shared<NintRowPipeline>(source_);
+            auto result=state.pipeline->collect(global,{b,t,nh},ids.device());
             if(hashed_ids)*hashed_ids=::tyloi::cuda::tensor(global).reshape({b,t,nh}).to(ids.device());
-            if(cache)restore(std::move(hashes.next));
-            return dynamic_cast<const DenseTensor&>(*result).reshape({b,t,nh*dimension_});
+            if(cache)restore(state,std::move(hashes.next));
+            return result.dense().reshape({b,t,nh*dimension_});
         }
 #endif
 
@@ -777,7 +805,7 @@ class NgramEmbedding {
             result = result.defined() ? result + values : values;
         }
         if (cache)
-            restore(std::move(hashes.next));
+            restore(state,std::move(hashes.next));
         return result.reshape({b, t, nh * dimension_});
     }
 
@@ -800,31 +828,26 @@ class NgramEmbedding {
     std::vector<Embedding> shards_;
     int64_t rows_, dimension_, ngram_, heads_, eos_;
     std::vector<int64_t> multipliers_, offsets_, vocab_;
-    Context context_;
-    std::shared_ptr<NintRowPipeline> pipeline_;
+    std::shared_ptr<const NintRowSource> source_;
     RowLookup row_lookup_;
     StageFactory stage_factory_;
     bool reuse_hashes_=[] {
         const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PLE_HASH_REUSE");return !option || option[0]!='0';
     }();
-    bool hash_ready_=false,hash_reported_=false;
-    int cached_tokens_=0;
-    std::array<int64_t,8> cached_ids_{};
-    tyloi::models::qwen4_exp::NgramHashes cached_hashes_;
     bool cacheable_hashes(int64_t b,int64_t t) const {return reuse_hashes_ && b==1 && t>0 && t<=8;}
-    tyloi::models::qwen4_exp::NgramHashes& graph_hashes(const DenseTensor& host) {
+    tyloi::models::qwen4_exp::NgramHashes& graph_hashes(State& state,const DenseTensor& host) const {
         const auto tokens=host.size(1);const auto* ids=host.data_ptr<int64_t>();
-        if(hash_ready_ && cached_tokens_==tokens && std::equal(ids,ids+tokens,cached_ids_.begin())) {
-            if(!hash_reported_) {
-                hash_reported_=true;
+        if(state.hash_ready && state.cached_tokens==tokens && std::equal(ids,ids+tokens,state.cached_ids.begin())) {
+            if(!state.hash_reported) {
+                state.hash_reported=true;
                 std::fprintf(stderr,"ple_ngram_hash_reuse enabled=1 tokens=%lld\n",static_cast<long long>(tokens));
             }
-            return cached_hashes_;
+            return state.cached_hashes;
         }
-        cached_hashes_=tyloi::models::qwen4_exp::ngram_hashes(ids,1,tokens,ngram_,heads_,eos_,
-            multipliers_,offsets_,vocab_,context_,true);
-        std::copy_n(ids,tokens,cached_ids_.begin());cached_tokens_=int(tokens);hash_ready_=true;
-        return cached_hashes_;
+        state.cached_hashes=tyloi::models::qwen4_exp::ngram_hashes(ids,1,tokens,ngram_,heads_,eos_,
+            multipliers_,offsets_,vocab_,state.context,true);
+        std::copy_n(ids,tokens,state.cached_ids.begin());state.cached_tokens=int(tokens);state.hash_ready=true;
+        return state.cached_hashes;
     }
 };
 
@@ -838,123 +861,177 @@ struct PleWeights {
 };
 class Ple {
   public:
+    struct State {
+        NgramEmbedding::State embedding;
+#ifdef TYLOINFER_NATIVE_CUDA
+        ::tyloi::Tensor conv;
+#else
+        DenseTensor conv;
+#endif
+        DenseTensor saved_conv;
+        NgramEmbedding::Context saved_context;
+        std::vector<DenseTensor> saved_prefix_conv;
+        std::vector<NgramEmbedding::Context> saved_prefix_context;
+        int64_t saved_prefix_position=-1;
+        bool saved=false;
+    };
     Ple(NgramEmbedding embedding, PleWeights weights, int64_t hidden, int64_t streams,
         int64_t dilation, double eps)
         : embedding_(std::move(embedding)), w_(std::move(weights)), hidden_(hidden),
           streams_(streams), dilation_(dilation), eps_(eps) {}
-    void reset(bool retain_storage=false) {
-        embedding_.reset();
-        if(retain_storage && conv_.defined())conv_.zero_();else conv_ = DenseTensor();
-        commit();
+    void reset(State& state,bool retain_storage=false) const {
+        embedding_.reset(state.embedding);
+#ifdef TYLOINFER_NATIVE_CUDA
+        if(retain_storage && state.conv.defined())state.conv.dense().zero_();else state.conv = {};
+#else
+        if(retain_storage && state.conv.defined())state.conv.zero_();else state.conv = DenseTensor();
+#endif
+        commit(state);
     }
-    void commit() {
-        saved_ = false;
-        saved_conv_ = DenseTensor();
-        saved_context_ = {};
-        saved_prefix_conv_.clear();saved_prefix_context_.clear();saved_prefix_position_=-1;
+    void commit(State& state) const {
+        state.saved = false;
+        state.saved_conv = DenseTensor();
+        state.saved_context = {};
+        state.saved_prefix_conv.clear();state.saved_prefix_context.clear();state.saved_prefix_position=-1;
     }
-    void rollback(int64_t keep=-1) {
-        TYLOINFER_RUNTIME_CHECK(saved_, "Qwen4 PLE has no speculative checkpoint");
-        if(keep>=0 && saved_prefix_position_>=0) {
-            const auto index=keep-saved_prefix_position_;
-            TYLOINFER_RUNTIME_CHECK(index>=0 && index<int64_t(saved_prefix_conv_.size()),
+    void rollback(State& state,int64_t keep=-1) const {
+        TYLOINFER_RUNTIME_CHECK(state.saved, "Qwen4 PLE has no speculative checkpoint");
+        if(keep>=0 && state.saved_prefix_position>=0) {
+            const auto index=keep-state.saved_prefix_position;
+            TYLOINFER_RUNTIME_CHECK(index>=0 && index<int64_t(state.saved_prefix_conv.size()),
                 "Qwen4 PLE prefix checkpoint is out of range");
-            saved_conv_=saved_prefix_conv_[index];saved_context_=saved_prefix_context_[index];
+            state.saved_conv=state.saved_prefix_conv[index];state.saved_context=state.saved_prefix_context[index];
         }
-        if(conv_.defined())conv_.copy_(saved_conv_);else conv_=saved_conv_;
-        embedding_.restore(saved_context_);
-        commit();
+#ifdef TYLOINFER_NATIVE_CUDA
+        if(state.conv.defined())state.conv.dense().copy_(state.saved_conv);else state.conv=state.saved_conv;
+#else
+        if(state.conv.defined())state.conv.copy_(state.saved_conv);else state.conv=state.saved_conv;
+#endif
+        embedding_.restore(state.embedding,state.saved_context);
+        commit(state);
     }
-    const DenseTensor &conv_state() const { return conv_; }
-    std::vector<DenseTensor*> graph_state() { return {&conv_}; }
+#ifdef TYLOINFER_NATIVE_CUDA
+    const ::tyloi::Tensor &conv_state(const State& state) const { return state.conv; }
+    std::vector<::tyloi::Tensor*> graph_state(State& state) const { return {&state.conv}; }
+#else
+    const DenseTensor &conv_state(const State& state) const { return state.conv; }
+    std::vector<DenseTensor*> graph_state(State& state) const { return {&state.conv}; }
+#endif
     bool graph_supported() const { return embedding_.graph_supported(); }
-    const NgramEmbedding::Context& session_context() const { return embedding_.context(); }
-    void restore_graph_context(NgramEmbedding::Context context) { embedding_.restore(std::move(context)); }
-    void restore_session(const DenseTensor& convolution,NgramEmbedding::Context context,bool retain_storage=false) {
+    const NgramEmbedding::Context& session_context(const State& state) const { return embedding_.context(state.embedding); }
+    void restore_graph_context(State& state,NgramEmbedding::Context context) const { embedding_.restore(state.embedding,std::move(context)); }
+    void restore_session(State& state,const DenseTensor& convolution,NgramEmbedding::Context context,bool retain_storage=false) const {
         TYLOINFER_RUNTIME_CHECK(convolution.defined(),"missing Qwen4 PLE session state");
         if(retain_storage) {
-            TYLOINFER_RUNTIME_CHECK(conv_.defined() && conv_.sizes()==convolution.sizes(),
+#ifdef TYLOINFER_NATIVE_CUDA
+            TYLOINFER_RUNTIME_CHECK(state.conv.defined() && state.conv.dense().sizes()==convolution.sizes(),
+#else
+            TYLOINFER_RUNTIME_CHECK(state.conv.defined() && state.conv.sizes()==convolution.sizes(),
+#endif
                 "Qwen4 PLE graph session geometry changed");
-            commit();conv_.copy_(convolution);
-        } else {reset();conv_=convolution.clone();}
-        embedding_.restore(std::move(context));
+            commit(state);
+#ifdef TYLOINFER_NATIVE_CUDA
+            state.conv.dense().copy_(convolution);
+#else
+            state.conv.copy_(convolution);
+#endif
+        } else {reset(state);state.conv=convolution.clone();}
+        embedding_.restore(state.embedding,std::move(context));
     }
-    std::shared_ptr<RowStage> graph_stage(int64_t tokens,const ::tyloi::Device& device) {
-        return embedding_.graph_stage(1,tokens,device);
+    std::shared_ptr<RowStage> graph_stage(State& state,int64_t tokens,const ::tyloi::Device& device) const {
+        return embedding_.graph_stage(state.embedding,1,tokens,device);
     }
-    void upload_graph(const DenseTensor& host_ids,RowStage& stage) {embedding_.upload_graph(host_ids,stage);}
-    NgramEmbedding::Context graph_prefix_context(const DenseTensor& host_ids,int64_t count) const {
-        return embedding_.prefix_context(host_ids,count);
+    void upload_graph(State& state,const DenseTensor& host_ids,RowStage& stage) const {embedding_.upload_graph(state.embedding,host_ids,stage);}
+    NgramEmbedding::Context graph_prefix_context(const State& state,const DenseTensor& host_ids,int64_t count) const {
+        return embedding_.prefix_context(state.embedding,host_ids,count);
     }
-    void bind_graph_checkpoint(const std::vector<DenseTensor>& conv,
-                               std::vector<NgramEmbedding::Context> context,int64_t position) {
-        TYLOINFER_RUNTIME_CHECK(!saved_,"resolve previous PLE checkpoint");
+    void bind_graph_checkpoint(State& state,const std::vector<DenseTensor>& conv,
+                               std::vector<NgramEmbedding::Context> context,int64_t position) const {
+        TYLOINFER_RUNTIME_CHECK(!state.saved,"resolve previous PLE checkpoint");
         TYLOINFER_RUNTIME_CHECK(!conv.empty() && conv.size()==context.size(),"invalid PLE prefix checkpoints");
-        saved_=true;saved_conv_=conv.front();saved_context_=context.front();
-        saved_prefix_conv_=conv;saved_prefix_context_=std::move(context);saved_prefix_position_=position;
+        state.saved=true;state.saved_conv=conv.front();state.saved_context=context.front();
+        state.saved_prefix_conv=conv;state.saved_prefix_context=std::move(context);state.saved_prefix_position=position;
     }
-    DenseTensor forward_graph(const Projector& project,const DenseTensor& x,const DenseTensor& ids,
-                         const DenseTensor& rows,int64_t confirmed,std::vector<DenseTensor>& checkpoint_conv) {
-        if(!confirmed)return forward_chunk(project,x,ids,true,{},rows);
-        auto prefix=forward_chunk(project,x.narrow(1,0,confirmed),ids.narrow(1,0,confirmed),
+    DenseTensor forward_graph(State& state,const Projector& project,const DenseTensor& x,const DenseTensor& ids,
+                         const DenseTensor& rows,int64_t confirmed,std::vector<DenseTensor>& checkpoint_conv) const {
+        if(!confirmed)return forward_chunk(state,project,x,ids,true,{},rows);
+        auto prefix=forward_chunk(state,project,x.narrow(1,0,confirmed),ids.narrow(1,0,confirmed),
             true,{},rows.narrow(1,0,confirmed));
-        checkpoint_conv.front().copy_(conv_);
-        auto suffix=forward_chunk(project,x.narrow(1,confirmed,x.size(1)-confirmed),
+#ifdef TYLOINFER_NATIVE_CUDA
+        checkpoint_conv.front().copy_(state.conv.dense());
+#else
+        checkpoint_conv.front().copy_(state.conv);
+#endif
+        auto suffix=forward_chunk(state,project,x.narrow(1,confirmed,x.size(1)-confirmed),
             ids.narrow(1,confirmed,x.size(1)-confirmed),true,{},
             rows.narrow(1,confirmed,x.size(1)-confirmed),&checkpoint_conv,1);
         return ::tyloi::cuda::cat({prefix,suffix},1);
     }
-    void prefetch_tokens(const DenseTensor& ids,bool early_prefix=false) { embedding_.prefetch(ids,early_prefix); }
-    DenseTensor forward(const Projector& project, const DenseTensor &x, const DenseTensor &ids, bool cache,
-                   int64_t confirmed = 0,const DenseTensor& host_ids = {},int64_t cache_position = -1) {
+    void prefetch_tokens(State& state,const DenseTensor& ids,bool early_prefix=false) const { embedding_.prefetch(state.embedding,ids,early_prefix); }
+    DenseTensor forward(State& state,const Projector& project, const DenseTensor &x, const DenseTensor &ids, bool cache,
+                   int64_t confirmed = 0,const DenseTensor& host_ids = {},int64_t cache_position = -1) const {
         TYLOINFER_RUNTIME_CHECK(x.dim() == 3 && ids.dim() == 2 && x.size(0) == ids.size(0) &&
                               x.size(1) == ids.size(1) && x.size(2) == hidden_ * streams_ &&
                               confirmed >= 0 && confirmed <= x.size(1) && (!confirmed || cache),
                           "invalid Qwen4 PLE input");
         if(cache && cache_position>=0 && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8) {
-            TYLOINFER_RUNTIME_CHECK(!saved_ && conv_.defined(),"PLE verification requires committed convolution state");
+            TYLOINFER_RUNTIME_CHECK(!state.saved && state.conv.defined(),"PLE verification requires committed convolution state");
             auto host=host_ids.defined()?host_ids:ids.to(::tyloi::kCPU,::tyloi::kInt64);
             std::vector<DenseTensor> conv;
             std::vector<NgramEmbedding::Context> context;
             for(int64_t i=confirmed;i<x.size(1);++i) {
-                conv.push_back(::tyloi::cuda::empty_like(conv_));context.push_back(embedding_.prefix_context(host,i));
+#ifdef TYLOINFER_NATIVE_CUDA
+                conv.push_back(::tyloi::cuda::empty_like(state.conv.dense()));
+#else
+                conv.push_back(::tyloi::cuda::empty_like(state.conv));
+#endif
+                context.push_back(embedding_.prefix_context(state.embedding,host,i));
             }
-            auto rows=embedding_.forward(ids,true,nullptr,host);
-            auto result=forward_graph(project,x,ids,rows,confirmed,conv);
-            bind_graph_checkpoint(conv,std::move(context),cache_position+confirmed);
+            auto rows=embedding_.forward(state.embedding,ids,true,nullptr,host);
+            auto result=forward_graph(state,project,x,ids,rows,confirmed,conv);
+            bind_graph_checkpoint(state,conv,std::move(context),cache_position+confirmed);
             return result;
         }
         return tyloi::models::recurrent_window(
-            x.size(1), cache, confirmed, saved_,
+            x.size(1), cache, confirmed, state.saved,
             [&](int64_t start, int64_t count) {
-                return forward_chunk(project, x.narrow(1, start, count),
+                return forward_chunk(state,project, x.narrow(1, start, count),
                                      ids.narrow(1, start, count), cache,
                                      host_ids.defined() ? host_ids.narrow(1,start,count) : DenseTensor{});
             },
             [&] {
-                saved_ = true;
-                saved_conv_ = conv_.clone();
-                saved_context_ = embedding_.context();
+                state.saved = true;
+#ifdef TYLOINFER_NATIVE_CUDA
+                state.saved_conv = state.conv.dense().clone();
+#else
+                state.saved_conv = state.conv.clone();
+#endif
+                state.saved_context = embedding_.context(state.embedding);
             },
-            [&] { rollback(); },
+            [&] { rollback(state); },
             [](DenseTensor first, DenseTensor second) { return ::tyloi::cuda::cat({first, second}, 1); });
     }
-    DenseTensor forward_chunk(const Projector& project, const DenseTensor &x, const DenseTensor &ids,
+    DenseTensor forward_chunk(State& state,const Projector& project, const DenseTensor &x, const DenseTensor &ids,
                          bool cache,const DenseTensor& host_ids = {},const DenseTensor& graph_embeddings = {},
-                         std::vector<DenseTensor>* checkpoints=nullptr,std::size_t checkpoint_offset=0) {
-        auto context = embedding_.context();
+                         std::vector<DenseTensor>* checkpoints=nullptr,std::size_t checkpoint_offset=0) const {
+        auto context = embedding_.context(state.embedding);
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto conv = state.conv.defined() ? state.conv.dense() : DenseTensor{};
+#else
+        auto conv = state.conv;
+#endif
         const auto b = x.size(0), t = x.size(1);
         const auto save_prefixes=[&](const DenseTensor& normalized) {
             if(!checkpoints)return;
-            TYLOINFER_RUNTIME_CHECK(cache && conv_.defined(),"PLE prefix history is unavailable");
-            const auto lookback=conv_.size(1);
+            TYLOINFER_RUNTIME_CHECK(cache && conv.defined(),"PLE prefix history is unavailable");
+            const auto lookback=conv.size(1);
             // The FIR state is a tail of normalized inputs. Recover every
             // intermediate tail while keeping key/value projections batched.
             for(int64_t count=1;count<t;++count) {
                 auto& saved=checkpoints->at(checkpoint_offset+std::size_t(count-1));
                 if(count>=lookback)saved.copy_(normalized.narrow(1,count-lookback,lookback));
                 else {
-                    saved.narrow(1,0,lookback-count).copy_(conv_.narrow(1,count,lookback-count));
+                    saved.narrow(1,0,lookback-count).copy_(conv.narrow(1,count,lookback-count));
                     saved.narrow(1,lookback-count,count).copy_(normalized.narrow(1,0,count));
                 }
             }
@@ -965,7 +1042,7 @@ class Ple {
             (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32)) {
             try {
                 auto embeddings=graph_embeddings.defined()?graph_embeddings:
-                    embedding_.forward(ids,cache,nullptr,host_ids);
+                    embedding_.forward(state.embedding,ids,cache,nullptr,host_ids);
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto key=mfq_qwen4_exp::grouped_rms_norm(project.run(*w_.key,embeddings),dynamic_cast<const DenseTensor&>(*w_.key_norm),hidden_,eps_);
                 auto query=mfq_qwen4_exp::grouped_rms_norm(x,dynamic_cast<const DenseTensor&>(*w_.query_norm),hidden_,eps_);
@@ -986,15 +1063,15 @@ class Ple {
 #else
                 auto output=mfq_qwen4_exp::ple_conv_add_cuda(prepared[1],w_.conv,
 #endif
-                    cache && conv_.defined()?std::optional<DenseTensor>(conv_):std::nullopt,dilation_,prepared[0],
+                    cache && conv.defined()?std::optional<DenseTensor>(conv):std::nullopt,dilation_,prepared[0],
                     x.scalar_type()==::tyloi::kFloat16);
-                if(cache) {if(conv_.defined())conv_.copy_(output[1]);else conv_=output[1];}
+                if(cache) {if(conv.defined())conv.copy_(output[1]);else state.conv=output[1];}
                 return output[0];
-            }catch(...) {embedding_.restore(std::move(context));throw;}
+            }catch(...) {embedding_.restore(state.embedding,std::move(context));throw;}
         }
 #endif
         return tyloi::models::qwen4_exp::position_embedding(
-            cache, [&] { return graph_embeddings.defined() ? graph_embeddings : embedding_.forward(ids, cache,nullptr,host_ids); },
+            cache, [&] { return graph_embeddings.defined() ? graph_embeddings : embedding_.forward(state.embedding,ids, cache,nullptr,host_ids); },
             [&](const DenseTensor &embeddings) {
                 auto key = mfq_qwen4_exp::grouped_rms_norm(project.run(*w_.key, embeddings),
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -1039,12 +1116,12 @@ class Ple {
 #else
                     normalized, w_.conv,
 #endif
-                    cache && conv_.defined() ? std::optional<DenseTensor>(conv_) : std::nullopt,
+                    cache && conv.defined() ? std::optional<DenseTensor>(conv) : std::nullopt,
                     dilation_);
             },
             [&](DenseTensor gated, DenseTensor convolved) { return (gated + convolved).to(x.scalar_type()); },
-            [&](DenseTensor next) { if(conv_.defined())conv_.copy_(next);else conv_=std::move(next); },
-            [&] { embedding_.restore(std::move(context)); });
+            [&](DenseTensor next) { if(conv.defined())conv.copy_(next);else state.conv=std::move(next); },
+            [&] { embedding_.restore(state.embedding,std::move(context)); });
     }
 
   private:
@@ -1052,12 +1129,6 @@ class Ple {
     PleWeights w_;
     int64_t hidden_, streams_, dilation_;
     double eps_;
-    DenseTensor conv_, saved_conv_;
-    NgramEmbedding::Context saved_context_;
-    std::vector<DenseTensor> saved_prefix_conv_;
-    std::vector<NgramEmbedding::Context> saved_prefix_context_;
-    int64_t saved_prefix_position_=-1;
-    bool saved_ = false;
 };
 
 struct QsaWeights {
@@ -1077,46 +1148,58 @@ struct QsaConfig {
 
 class Qsa {
   public:
+    struct State {
+        explicit State(const Qsa& model)
+            : keys(model.c_.maximum, model.c_.kv_heads * model.key_width(), model.cache_dtype()),
+              values(model.c_.maximum, model.c_.kv_heads * model.value_width(), model.cache_dtype()),
+              index(model.c_.maximum, model.c_.index_width), offload(model.offload_) {
+            if(model.memory_manager_ && !offload)
+                memory=model.memory_manager_->add(model.c_.maximum,model.c_.kv_heads,model.key_width(),model.value_width(),
+                    model.c_.index_width,model.c_.pool,model.w_->query_norm.options().dtype(model.cache_dtype()),
+                    model.c_.maximum<=model.c_.budget?model.c_.maximum:model.c_.budget+model.c_.pool-1);
+            if(offload) {
+                offloaded_kv=std::make_unique<KvOffloadSequence>(offload,model.c_.kv_heads*(model.key_width()+model.value_width()),model.c_.pool,model.cache_dtype());
+                offloaded_index=std::make_unique<KvOffloadSequence>(offload,model.c_.index_width,model.c_.pool);
+                offloaded_pooled=std::make_unique<KvOffloadSequence>(offload,model.c_.index_width,16);
+            }
+        }
+        State(const State&) = delete;
+        State& operator=(const State&) = delete;
+        State(State&&) = default;
+        State& operator=(State&&) = default;
+        SequenceCache keys,values,index;
+        std::shared_ptr<KvOffloadStore> offload;
+        std::unique_ptr<KvOffloadSequence> offloaded_kv,offloaded_index,offloaded_pooled;
+        ::tyloi::Tensor graph_keys,graph_values,graph_pooled,graph_index;
+        std::shared_ptr<KvMemoryAllocation> memory;
+        bool graph_prepared=false;
+    };
     Qsa(std::shared_ptr<const QsaWeights> weights, QsaConfig config, std::shared_ptr<RotaryEmbedding> rotary,
         bool fused_projection, bool grouped_projection,
         std::shared_ptr<KvOffloadStore> offload, std::shared_ptr<KvMemoryManager> memory)
         : w_(std::move(weights)), c_(config), rotary_(std::move(rotary)), fused_projection_(fused_projection), grouped_projection_(grouped_projection),
-          keys_(config.maximum, config.kv_heads * key_width(), cache_dtype()),
-          values_(config.maximum, config.kv_heads * value_width(), cache_dtype()),
-          index_(config.maximum, config.index_width) {
+          offload_(std::move(offload)), memory_manager_(std::move(memory)) {
         TYLOINFER_RUNTIME_CHECK(c_.heads > 0 && c_.kv_heads > 0 && c_.heads % c_.kv_heads == 0 &&
                               c_.width > 0 && c_.index_heads > 0 && c_.pool > 0 && c_.budget > 0 &&
                               c_.budget % c_.pool == 0 && rotary_,
                           "invalid Qwen4 QSA configuration");
-        memory_manager_=memory;
-        offload_ = std::move(offload);
-        if(memory && !offload_)memory_=memory->add(c_.maximum,c_.kv_heads,key_width(),value_width(),
-#ifdef TYLOINFER_NATIVE_CUDA
-            c_.index_width,c_.pool,w_->query_norm->options().dtype(cache_dtype()),c_.maximum<=c_.budget?c_.maximum:c_.budget+c_.pool-1);
-#else
-            c_.index_width,c_.pool,w_->query_norm.options().dtype(cache_dtype()),c_.maximum<=c_.budget?c_.maximum:c_.budget+c_.pool-1);
-#endif
-        if (offload_) {
-            offloaded_kv_ = std::make_unique<KvOffloadSequence>(offload_, c_.kv_heads * (key_width()+value_width()), c_.pool, cache_dtype());
-            offloaded_index_ = std::make_unique<KvOffloadSequence>(offload_, c_.index_width, c_.pool);
-            offloaded_pooled_ = std::make_unique<KvOffloadSequence>(offload_, c_.index_width, 16);
-        }
     }
-    int64_t position() const { return offload_ && offloaded_kv_ ? offloaded_kv_->position() : keys_.position(); }
-    bool managed_memory() const {return memory_ && memory_->ready;}
-    int64_t graph_capacity() const {return managed_memory()?c_.maximum:0;}
-    void activate_memory() {
-        if(!managed_memory())return;
-        if(!index_.storage().defined())index_.replace_storage(memory_->index);
-        graph_pooled_=memory_->pooled;
-        if(memory_->offload) {
-            offload_=memory_->offload;
-            if(!offloaded_kv_)offloaded_kv_=std::make_unique<KvOffloadSequence>(offload_,
+    int64_t position(const State& request) const { return request.offload && request.offloaded_kv ? request.offloaded_kv->position() : request.keys.position(); }
+    bool managed_memory(const State& request) const {return request.memory && request.memory->ready;}
+    int64_t graph_capacity(const State& request) const {return managed_memory(request)?c_.maximum:0;}
+    std::vector<::tyloi::Tensor*> graph_state(State& request) const {
+        return {&request.graph_keys,&request.graph_values,&request.graph_pooled,&request.graph_index};
+    }
+    void activate_memory(State& request) {
+        if(!managed_memory(request))return;
+        if(!request.index.storage().defined())request.index.replace_storage(request.memory->index);
+        request.graph_index=request.index.storage();
+        request.graph_pooled=request.memory->pooled;
+        if(request.memory->offload) {
+            request.offload=request.memory->offload;
+            if(!request.offloaded_kv)request.offloaded_kv=std::make_unique<KvOffloadSequence>(request.offload,
                 c_.kv_heads*(key_width()+value_width()),c_.pool,cache_dtype());
-        } else {graph_keys_=memory_->keys;graph_values_=memory_->values;}
-    }
-    std::unique_ptr<Qsa> fork_empty() const {
-        return std::make_unique<Qsa>(w_, c_, rotary_, fused_projection_, grouped_projection_, offload_,memory_manager_);
+        } else {request.graph_keys=request.memory->keys;request.graph_values=request.memory->values;}
     }
     std::vector<DenseTensor> project_inputs(const tyloi::cuda::Projector& projector,const DenseTensor& x) const {
         std::vector<DenseTensor> projected;
@@ -1149,150 +1232,142 @@ class Qsa {
         return ::tyloi::cuda::cat({query.reshape({b,t,c_.heads,c_.width}),
             gate.reshape({b,t,c_.heads,c_.width})},-1).reshape({b,t,2*c_.heads*c_.width});
     }
-    std::size_t growth_bytes(int64_t tokens) const {
-        if(managed_memory())return memory_->growth_bytes(position()+tokens);
-        if (offload_) return 0;
-        const auto required = position() + tokens;
+    std::size_t growth_bytes(const State& request,int64_t tokens) const {
+        if(managed_memory(request))return request.memory->growth_bytes(position(request)+tokens);
+        if (request.offload) return 0;
+        const auto required = position(request) + tokens;
         TYLOINFER_RUNTIME_CHECK(tokens > 0 && required <= c_.maximum, "QSA growth exceeds max_context");
         std::size_t bytes = 0;
-        for (const auto* cache : {&keys_, &values_, &index_}) {
+        for (const auto* cache : {&request.keys, &request.values, &request.index}) {
             const auto& storage = cache->storage();
-            const int64_t current = graph_keys_.defined() && cache != &index_
-                ? graph_keys_.size(2) : (storage.defined() ? storage.size(1) : 0);
+            const int64_t current = request.graph_keys.defined() && cache != &request.index
+                ? request.graph_keys.size(2) : (storage.defined() ? storage.size(1) : 0);
             if (required <= current) continue;
             int64_t capacity = current ? current : std::min<int64_t>(16, c_.maximum);
             while (capacity < required)
                 capacity = std::min(c_.maximum, capacity > c_.maximum / 2 ? c_.maximum : capacity * 2);
-            const auto width = cache == &index_ ? c_.index_width : c_.kv_heads * (cache == &keys_ ? key_width() : value_width());
-            bytes += std::size_t(capacity) * width * (cache != &index_ && quantization_.enabled() ? 4 : 2);
+            const auto width = cache == &request.index ? c_.index_width : c_.kv_heads * (cache == &request.keys ? key_width() : value_width());
+            bytes += std::size_t(capacity) * width * (cache != &request.index && quantization_.enabled() ? 4 : 2);
         }
         return bytes;
     }
-    std::size_t graph_growth_bytes(int64_t capacity) const {
-        if(managed_memory())return memory_->growth_bytes(capacity);
-        if (graph_keys_.defined()) return 0;
+    std::size_t graph_growth_bytes(const State& request,int64_t capacity) const {
+        if(managed_memory(request))return request.memory->growth_bytes(capacity);
+        if (request.graph_keys.defined()) return 0;
         auto bytes = std::size_t(capacity) * c_.kv_heads * (key_width()+value_width()) * (quantization_.enabled()?4:2);
-        if (!index_.storage().defined() || index_.storage().size(1) != capacity)
+        if (!request.index.storage().defined() || request.index.storage().size(1) != capacity)
             bytes += std::size_t(capacity) * c_.index_width * 2;
         bytes += std::size_t((capacity+c_.pool-1)/c_.pool) * c_.index_width * 2;
         return bytes;
     }
-    bool supports_session() const { return !offload_ && !(memory_ && memory_->offload); }
-    std::size_t session_bytes(int64_t count) const {
+    bool supports_session(const State& request) const { return !request.offload && !(request.memory && request.memory->offload); }
+    std::size_t session_bytes(const State& request,int64_t count) const {
         if(count<=0)return 0;
         return std::size_t(count)*(c_.kv_heads*(key_width()+value_width())*(quantization_.enabled()?4:2)+
-            c_.index_width*index_.storage().element_size());
+            c_.index_width*request.index.storage().element_size());
     }
-    void capture_session(tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count,std::size_t& bytes) const {
-        TYLOINFER_RUNTIME_CHECK(!offload_ && count>0 && count<=position(),"invalid Qwen4 QSA session boundary");
+    void capture_session(const State& request,tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count,std::size_t& bytes) const {
+        TYLOINFER_RUNTIME_CHECK(!request.offload && count>0 && count<=position(request),"invalid Qwen4 QSA session boundary");
         const auto save=[&](const DenseTensor& tensor) {
             auto saved=std::make_shared<DenseTensor>(tensor.contiguous().clone());bytes+=session_tensor_bytes(*saved);return saved;
         };
-        if(managed_memory() && memory_->hot.exclusive()) {
-            auto pair=memory_->hot.gather(count);
+        if(managed_memory(request) && request.memory->hot.exclusive()) {
+            auto pair=request.memory->hot.gather(count);
             state.keys=save(pair.first.permute({0,2,1,3}).reshape({1,count,c_.kv_heads*key_width()}));
             state.values=save(pair.second.permute({0,2,1,3}).reshape({1,count,c_.kv_heads*value_width()}));
-        } else if(graph_keys_.defined()) {
-            state.keys=save(graph_keys_.narrow(2,0,count).permute({0,2,1,3}).reshape({1,count,c_.kv_heads*key_width()}));
-            state.values=save(graph_values_.narrow(2,0,count).permute({0,2,1,3}).reshape({1,count,c_.kv_heads*value_width()}));
+        } else if(request.graph_keys.defined()) {
+            state.keys=save((request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{}).narrow(2,0,count).permute({0,2,1,3}).reshape({1,count,c_.kv_heads*key_width()}));
+            state.values=save((request.graph_values.defined()?request.graph_values.dense():DenseTensor{}).narrow(2,0,count).permute({0,2,1,3}).reshape({1,count,c_.kv_heads*value_width()}));
         } else {
-            state.keys=save(keys_.storage().narrow(1,0,count));
-            state.values=save(values_.storage().narrow(1,0,count));
+            state.keys=save(request.keys.storage().narrow(1,0,count));
+            state.values=save(request.values.storage().narrow(1,0,count));
         }
-        state.index=save(index_.storage().narrow(1,0,count));
+        state.index=save(request.index.storage().narrow(1,0,count));
     }
-    void restore_session(const tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count) {
-        const auto* keys=dynamic_cast<const DenseTensor*>(state.keys.get());
-        const auto* values=dynamic_cast<const DenseTensor*>(state.values.get());
-        const auto* index=dynamic_cast<const DenseTensor*>(state.index.get());
-        TYLOINFER_RUNTIME_CHECK(!offload_ && keys && values && index && keys->defined() && values->defined() && index->defined() &&
+    void restore_session(State& request,const tyloi::models::qwen4_exp::BlockSnapshot& state,int64_t count) {
+        const auto* keys=state.keys.representation<DenseTensor>();
+        const auto* values=state.values.representation<DenseTensor>();
+        const auto* index=state.index.representation<DenseTensor>();
+        TYLOINFER_RUNTIME_CHECK(!request.offload && keys && values && index && keys->defined() && values->defined() && index->defined() &&
             keys->dim()==3 && keys->size(0)==1 && keys->size(1)==count &&
             keys->size(2)==c_.kv_heads*key_width() && keys->scalar_type()==cache_dtype() &&
             values->dim()==3 && values->size(0)==1 && values->size(1)==count &&
             values->size(2)==c_.kv_heads*value_width() && values->scalar_type()==cache_dtype() &&
             index->dim()==3 && index->size(0)==1 && index->size(1)==count && index->size(2)==c_.index_width,
             "incompatible Qwen4 QSA session state");
-        reset();activate_memory();
-        if(managed_memory()) {
-            memory_->ensure(count);
+        reset(request);activate_memory(request);
+        if(managed_memory(request)) {
+            request.memory->ensure(count);
             auto k=keys->reshape({1,count,c_.kv_heads,key_width()}).permute({0,2,1,3});
             auto v=values->reshape({1,count,c_.kv_heads,value_width()}).permute({0,2,1,3});
-            auto positions=::tyloi::cuda::arange(count,graph_keys_.options().dtype(::tyloi::kInt64));
-            if(memory_->hot.exclusive())memory_->hot.append(k,v,positions);
+            auto positions=::tyloi::cuda::arange(count,request.graph_keys.dense().options().dtype(::tyloi::kInt64));
+            if(request.memory->hot.exclusive())request.memory->hot.append(k,v,positions);
             else {
-                graph_keys_.narrow(2,0,count).copy_(k);graph_values_.narrow(2,0,count).copy_(v);
-                memory_->hot.publish(graph_keys_,graph_values_,positions);
+                (request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{}).narrow(2,0,count).copy_(k);(request.graph_values.defined()?request.graph_values.dense():DenseTensor{}).narrow(2,0,count).copy_(v);
+                request.memory->hot.publish((request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{}),(request.graph_values.defined()?request.graph_values.dense():DenseTensor{}),positions);
             }
-            keys_.advance_fixed(count);values_.advance_fixed(count);index_.append(*index);graph_prepared_=false;
-        } else {keys_.append(*keys);values_.append(*values);index_.append(*index);}
+            request.keys.advance_fixed(count);request.values.advance_fixed(count);request.index.append(*index);request.graph_prepared=false;
+        } else {request.keys.append(*keys);request.values.append(*values);request.index.append(*index);}
     }
-    std::vector<DenseTensor> resident_cache_tensors() const {
-        if(managed_memory())return {}; // Count physical GPU/RAM tiers through KvMemoryManager.
-        return {keys_.storage(),values_.storage(),index_.storage(),graph_keys_,graph_values_,graph_pooled_};
+    std::vector<DenseTensor> resident_cache_tensors(const State& request) const {
+        if(managed_memory(request))return {}; // Count physical GPU/RAM tiers through KvMemoryManager.
+        return {request.keys.storage(),request.values.storage(),request.index.storage(),(request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{}),(request.graph_values.defined()?request.graph_values.dense():DenseTensor{}),(request.graph_pooled.defined()?request.graph_pooled.dense():DenseTensor{})};
     }
-    void set_grouped_projection(bool enabled) {
-        TYLOINFER_RUNTIME_CHECK(!graph_keys_.defined() && position()==0,"reset QSA before switching projection execution");
-        grouped_projection_=enabled;
+    void leave_graph(State& request) {
+        if(managed_memory(request)){request.graph_prepared=false;return;}
+        if(!request.graph_keys.defined())return;
+        const auto n=position(request);
+        request.keys.replace_storage((request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{}).narrow(2,0,n).permute({0,2,1,3}).contiguous().reshape({1,n,c_.kv_heads*key_width()}));
+        request.values.replace_storage((request.graph_values.defined()?request.graph_values.dense():DenseTensor{}).narrow(2,0,n).permute({0,2,1,3}).contiguous().reshape({1,n,c_.kv_heads*value_width()}));
+        request.graph_keys={};request.graph_values={};request.graph_pooled={};request.graph_index={};
     }
-    void set_rotary_fused(bool enabled) {
-        TYLOINFER_RUNTIME_CHECK(!graph_keys_.defined() && position() == 0,
-                          "reset QSA before switching rotary execution");
-        rotary_->set_fused(enabled);
-    }
-    void leave_graph() {
-        if(managed_memory()){graph_prepared_=false;return;}
-        if(!graph_keys_.defined())return;
-        const auto n=position();
-        keys_.replace_storage(graph_keys_.narrow(2,0,n).permute({0,2,1,3}).contiguous().reshape({1,n,c_.kv_heads*key_width()}));
-        values_.replace_storage(graph_values_.narrow(2,0,n).permute({0,2,1,3}).contiguous().reshape({1,n,c_.kv_heads*value_width()}));
-        graph_keys_={};graph_values_={};graph_pooled_={};
-    }
-    void reset() {
-        if (offload_) {
-            if(offloaded_kv_)offloaded_kv_->reset();
-            if(offloaded_index_)offloaded_index_->reset();
-            if(offloaded_pooled_)offloaded_pooled_->reset();
+    void reset(State& request) {
+        if (request.offload) {
+            if(request.offloaded_kv)request.offloaded_kv->reset();
+            if(request.offloaded_index)request.offloaded_index->reset();
+            if(request.offloaded_pooled)request.offloaded_pooled->reset();
         }
-        keys_.reset();
-        values_.reset();
-        index_.reset();
-        graph_prepared_=false;
-        if(managed_memory()){memory_->hot.reset();activate_memory();return;}
-        graph_keys_={};graph_values_={};graph_pooled_={};
+        request.keys.reset();
+        request.values.reset();
+        request.index.reset();
+        request.graph_prepared=false;
+        if(managed_memory(request)){request.memory->hot.reset();activate_memory(request);return;}
+        request.graph_keys={};request.graph_values={};request.graph_pooled={};request.graph_index={};
     }
-    void prepare_graph(const DenseTensor& full_positions, int64_t capacity) {
-        activate_memory();
-        TYLOINFER_RUNTIME_CHECK(!offload_ || managed_memory(), "streamed QSA graphs require a resident indexer");
-        if(managed_memory()) {
-            if(graph_prepared_)return;
-            const auto n=position(),pools=n/c_.pool;
-            memory_->ensure(n);
+    void prepare_graph(State& request,const DenseTensor& full_positions, int64_t capacity) {
+        activate_memory(request);
+        TYLOINFER_RUNTIME_CHECK(!request.offload || managed_memory(request), "streamed QSA graphs require a resident indexer");
+        if(managed_memory(request)) {
+            if(request.graph_prepared)return;
+            const auto n=position(request),pools=n/c_.pool;
+            request.memory->ensure(n);
             if(pools) {
-                auto pooled=index_.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(index_.storage().scalar_type());
+                auto pooled=request.index.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(request.index.storage().scalar_type());
 #ifdef TYLOINFER_NATIVE_CUDA
                 pooled=rms_norm(pooled,dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32)+1,c_.eps);
 #else
                 pooled=rms_norm(pooled,w_->index_key_norm.to(::tyloi::kFloat32)+1,c_.eps);
 #endif
                 auto starts=::tyloi::cuda::arange(pools,full_positions.options().dtype(::tyloi::kInt64))*c_.pool;
-                graph_pooled_.narrow(1,0,pools).copy_(rotary_->forward(pooled.unsqueeze(1),full_positions.index_select(-1,starts)).squeeze(1));
+                (request.graph_pooled.defined()?request.graph_pooled.dense():DenseTensor{}).narrow(1,0,pools).copy_(rotary_->forward(pooled.unsqueeze(1),full_positions.index_select(-1,starts)).squeeze(1));
             }
-            graph_prepared_=true;return;
+            request.graph_prepared=true;return;
         }
-        if(graph_keys_.defined())return;
-        TYLOINFER_RUNTIME_CHECK(position()>0 && keys_.storage().size(0)==1,
+        if(request.graph_keys.defined())return;
+        TYLOINFER_RUNTIME_CHECK(position(request)>0 && request.keys.storage().size(0)==1,
             "QSA graph requires a prefilled single sequence");
-        const auto n=position();
+        const auto n=position(request);
         TYLOINFER_RUNTIME_CHECK(capacity>=n && capacity<=c_.maximum,"invalid QSA graph capacity");
-        auto graph_keys=::tyloi::cuda::zeros({1,c_.kv_heads,capacity,key_width()},keys_.storage().options());
-        auto graph_values=::tyloi::cuda::zeros({1,c_.kv_heads,capacity,value_width()},values_.storage().options());
-        graph_keys.narrow(2,0,n).copy_(keys_.storage().narrow(1,0,n).reshape({1,n,c_.kv_heads,key_width()}).permute({0,2,1,3}));
-        graph_values.narrow(2,0,n).copy_(values_.storage().narrow(1,0,n).reshape({1,n,c_.kv_heads,value_width()}).permute({0,2,1,3}));
-        index_.prepare_fixed(capacity);
-        auto graph_pooled=::tyloi::cuda::zeros({1,(capacity+c_.pool-1)/c_.pool,c_.index_width},index_.storage().options());
+        auto graph_keys=::tyloi::cuda::zeros({1,c_.kv_heads,capacity,key_width()},request.keys.storage().options());
+        auto graph_values=::tyloi::cuda::zeros({1,c_.kv_heads,capacity,value_width()},request.values.storage().options());
+        graph_keys.narrow(2,0,n).copy_(request.keys.storage().narrow(1,0,n).reshape({1,n,c_.kv_heads,key_width()}).permute({0,2,1,3}));
+        graph_values.narrow(2,0,n).copy_(request.values.storage().narrow(1,0,n).reshape({1,n,c_.kv_heads,value_width()}).permute({0,2,1,3}));
+        request.index.prepare_fixed(capacity);
+        request.graph_index=request.index.storage();
+        auto graph_pooled=::tyloi::cuda::zeros({1,(capacity+c_.pool-1)/c_.pool,c_.index_width},request.index.storage().options());
         const auto pools=n/c_.pool;
         if(pools) {
-            auto pooled=index_.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(index_.storage().scalar_type());
+            auto pooled=request.index.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(request.index.storage().scalar_type());
 #ifdef TYLOINFER_NATIVE_CUDA
             pooled=rms_norm(pooled,dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32)+1,c_.eps);
 #else
@@ -1304,24 +1379,27 @@ class Qsa {
         // Commit only after all allocation/copy submissions succeed. Replay
         // reads graph KV; retaining the old layout duplicates the full prefix
         // at every growth boundary. leave_graph recreates it when needed.
-        graph_keys_=std::move(graph_keys);graph_values_=std::move(graph_values);graph_pooled_=std::move(graph_pooled);
-        keys_.release_storage();values_.release_storage();
+        request.graph_keys=std::move(graph_keys);request.graph_values=std::move(graph_values);request.graph_pooled=std::move(graph_pooled);
+        request.keys.release_storage();request.values.release_storage();
     }
-    DenseTensor forward_graph(const tyloi::cuda::Projector& projector,const DenseTensor& hidden,
+    DenseTensor forward_graph(State& request,const tyloi::cuda::Projector& projector,const DenseTensor& hidden,
                          const DenseTensor& positions,const DenseTensor& cache_positions,
                          std::vector<DenseTensor> projections={},bool project_output=true,bool history_only=false) {
         const auto mark=[](const char* phase) {
             if(auto* window=DecodeWindow::recording())window->mark_current(phase);
         };
-        const bool streamed=bool(offload_);
-        TYLOINFER_RUNTIME_CHECK((graph_keys_.defined() || (streamed && managed_memory())) && hidden.size(0)==1 && cache_positions.dim()==1,
+        const bool streamed=bool(request.offload);
+        TYLOINFER_RUNTIME_CHECK((request.graph_keys.defined() || (streamed && managed_memory(request))) && hidden.size(0)==1 && cache_positions.dim()==1,
             "QSA graph cache is not prepared");
-        const auto t=hidden.size(1),pools=graph_pooled_.size(1);
-        const bool dense_capacity=(streamed?c_.maximum:graph_keys_.size(2))<=c_.budget;
-        const bool exclusive=managed_memory() && memory_->hot.exclusive();
+        auto graph_keys = (request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{});
+        auto graph_values = (request.graph_values.defined()?request.graph_values.dense():DenseTensor{});
+        auto graph_pooled = (request.graph_pooled.defined()?request.graph_pooled.dense():DenseTensor{});
+        const auto t=hidden.size(1),pools=request.graph_pooled.size(1);
+        const bool dense_capacity=(streamed?c_.maximum:request.graph_keys.size(2))<=c_.budget;
+        const bool exclusive=managed_memory(request) && request.memory->hot.exclusive();
         auto p=history_only?project_history(projector,hidden,positions):
             project(projector,hidden,positions,!dense_capacity,cache_positions,
-                       quantization_.enabled() || exclusive || streamed?DenseTensor{}:graph_keys_,quantization_.enabled() || exclusive || streamed?DenseTensor{}:graph_values_,
+                       quantization_.enabled() || exclusive || streamed?DenseTensor{}:graph_keys,quantization_.enabled() || exclusive || streamed?DenseTensor{}:graph_values,
                        std::move(projections));
         mark("qsa_input_end");
         const auto finish=[&](DenseTensor output) {
@@ -1335,21 +1413,21 @@ class Qsa {
         if(exclusive) {
             const auto keys=(quantization_.enabled()?encode_key(p.key):p.key).permute({0,2,1,3});
             const auto values=(quantization_.enabled()?encode_value(p.value):p.value).permute({0,2,1,3});
-            index_written=memory_->hot.append_decode(keys,values,cache_positions,p.raw,index_.storage(),begin_prepare);
-            if(!index_written)memory_->hot.append(keys.to(cache_dtype()),values.to(cache_dtype()),cache_positions);
+            index_written=request.memory->hot.append_decode(keys,values,cache_positions,p.raw,request.index.storage(),begin_prepare);
+            if(!index_written)request.memory->hot.append(keys.to(cache_dtype()),values.to(cache_dtype()),cache_positions);
         }
         else if (!p.cache_written && !streamed) {
-            graph_keys_.index_copy_(2,cache_positions,encode_key(p.key).permute({0,2,1,3}));
-            graph_values_.index_copy_(2,cache_positions,encode_value(p.value).permute({0,2,1,3}));
+            graph_keys.index_copy_(2,cache_positions,encode_key(p.key).permute({0,2,1,3}));
+            graph_values.index_copy_(2,cache_positions,encode_value(p.value).permute({0,2,1,3}));
         }
-        if(managed_memory() && !exclusive && !streamed)memory_->hot.publish(graph_keys_,graph_values_,cache_positions);
-        if(!index_written)index_.append_fixed(p.raw,cache_positions);
+        if(managed_memory(request) && !exclusive && !streamed)request.memory->hot.publish(graph_keys,graph_values,cache_positions);
+        if(!index_written)request.index.append_fixed(p.raw,cache_positions);
         mark("qsa_cache_end");
         if(history_only && streamed) {
             auto* window=DecodeWindow::recording();
             TYLOINFER_RUNTIME_CHECK(window,"streamed QSA history requires a decode window");
             struct HistoryStage {DenseTensor raw;};
-            const auto stage=window->workspace<HistoryStage>(this,[&] {
+            const auto stage=window->workspace<HistoryStage>(&request,[&] {
                 ResidentAllocationScope resident;
                 auto value=std::make_shared<HistoryStage>();
                 value->raw=::tyloi::cuda::empty({t,c_.kv_heads*(key_width()+value_width())},hidden.options().dtype(cache_dtype()));
@@ -1357,31 +1435,31 @@ class Qsa {
             });
             stage->raw.copy_(::tyloi::cuda::cat({encode_key(p.key).reshape({t,c_.kv_heads*key_width()}),
                 encode_value(p.value).reshape({t,c_.kv_heads*value_width()})},1));
-            window->host_barrier([this,stage] {offloaded_kv_->append(stage->raw);});
+            window->host_barrier([this,&request,stage] {request.offloaded_kv->append(stage->raw);});
         }
         if(dense_capacity) {
             if(history_only)return {};
             if(streamed) {
                 auto ids=::tyloi::cuda::arange(c_.maximum,cache_positions.options()).reshape({1,1,c_.maximum}).expand({1,t,c_.maximum});
                 ids=::tyloi::cuda::where(ids<=cache_positions.reshape({1,t,1}),ids,::tyloi::cuda::full_like(ids,-1)).to(::tyloi::kInt32).contiguous();
-                return finish(streamed_graph_attention(p,ids,hidden.scalar_type()));
+                return finish(streamed_graph_attention(request,p,ids,hidden.scalar_type()));
             }
-            const auto columns=std::min(graph_keys_.size(2),c_.budget+c_.pool-1);
-            const auto hot=prepare_hot({},cache_positions,columns,index_written && begin_prepare);
+            const auto columns=std::min(request.graph_keys.size(2),c_.budget+c_.pool-1);
+            const auto hot=prepare_hot(request,{},cache_positions,columns,index_written && begin_prepare);
             if(quantization_.enabled()) {
-                auto attended=cuda_kv_attention(p.query,graph_keys_,graph_values_,quantization_,{},cache_positions,0,{},0,{},{},0,hot);
+                auto attended=cuda_kv_attention(p.query,graph_keys,graph_values,quantization_,{},cache_positions,0,{},0,{},{},0,hot);
                 return finish((attended*::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32))).to(hidden.scalar_type()));
             }
             if(fused_projection_ && rotary_->fused() &&
                 (hidden.scalar_type()==::tyloi::kFloat16 || hidden.scalar_type()==::tyloi::kFloat32)) {
-                auto gated=mfq_qwen4_exp::causal_gqa_attention_gate(p.query,graph_keys_,graph_values_,
+                auto gated=mfq_qwen4_exp::causal_gqa_attention_gate(p.query,graph_keys,graph_values,
                     cache_positions,p.gate,columns,hidden.scalar_type()==::tyloi::kFloat16,hot);
                 return finish(std::move(gated));
             }
             auto absolute=cache_positions.reshape({1,t,1});
             auto indices=::tyloi::cuda::arange(columns,cache_positions.options()).reshape({1,1,columns}).expand({1,t,columns});
             indices=::tyloi::cuda::where(indices<=absolute,indices,::tyloi::cuda::full_like(indices,-1)).to(::tyloi::kInt32).contiguous();
-            auto attended=mfq_qwen4_exp::sparse_gqa_attention(p.query,graph_keys_,graph_values_,indices,hot);
+            auto attended=mfq_qwen4_exp::sparse_gqa_attention(p.query,graph_keys,graph_values,indices,hot);
             auto gated=attended.to(::tyloi::kFloat32)*::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32));
             return finish(gated.to(hidden.scalar_type()));
         }
@@ -1390,13 +1468,13 @@ class Qsa {
         const auto* pool_write=tyloi::cuda::env_lookup("TYLOINFER_QSA_POOL_WRITE_FUSED");
         const bool pool_written=(!pool_fusion || pool_fusion[0]!='0') && (!pool_write || pool_write[0]!='0') &&
 #ifdef TYLOINFER_NATIVE_CUDA
-            index_.storage().size(1)>=c_.maximum && rotary_->pool_normalized_into(index_.storage(),dynamic_cast<const DenseTensor&>(*w_->index_key_norm),
+            request.index.storage().size(1)>=c_.maximum && rotary_->pool_normalized_into(request.index.storage(),w_->index_key_norm.dense(),
 #else
-            index_.storage().size(1)>=c_.maximum && rotary_->pool_normalized_into(index_.storage(),w_->index_key_norm,
+            request.index.storage().size(1)>=c_.maximum && rotary_->pool_normalized_into(request.index.storage(),w_->index_key_norm,
 #endif
-                positions,cache_positions,graph_pooled_,c_.pool,c_.maximum,c_.eps);
-        if(!pool_written && rotary_->fused() && (!pool_fusion || pool_fusion[0]!='0') && index_.storage().size(1)>=c_.maximum) {
-            auto prepared=mfq_qwen4_exp::live_index_pool(index_.storage(),positions,cache_positions,c_.pool,c_.maximum);
+                positions,cache_positions,graph_pooled,c_.pool,c_.maximum,c_.eps);
+        if(!pool_written && rotary_->fused() && (!pool_fusion || pool_fusion[0]!='0') && request.index.storage().size(1)>=c_.maximum) {
+            auto prepared=mfq_qwen4_exp::live_index_pool(request.index.storage(),positions,cache_positions,c_.pool,c_.maximum);
             block=prepared[1];
 #ifdef TYLOINFER_NATIVE_CUDA
             pooled=rotary_->forward_normalized(prepared[0].unsqueeze(2),dynamic_cast<const DenseTensor&>(*w_->index_key_norm),prepared[2],c_.eps).squeeze(1);
@@ -1406,7 +1484,7 @@ class Qsa {
         }else if(!pool_written) {
             block=(cache_positions/c_.pool).to(::tyloi::kInt64);
             auto row=(block.unsqueeze(-1)*c_.pool+::tyloi::cuda::arange(c_.pool,block.options())).clamp(0,c_.maximum-1);
-            pooled=index_.storage().index_select(1,row.reshape({-1})).reshape({1,t,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(index_.storage().scalar_type());
+            pooled=request.index.storage().index_select(1,row.reshape({-1})).reshape({1,t,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(request.index.storage().scalar_type());
 #ifdef TYLOINFER_NATIVE_CUDA
             pooled=rms_norm(pooled,dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32)+1,c_.eps);
 #else
@@ -1416,10 +1494,10 @@ class Qsa {
             auto block_positions=block*c_.pool+delta;
             pooled=rotary_->forward(pooled.unsqueeze(1),block_positions).squeeze(1);
         }
-        if(!pool_written)graph_pooled_.index_copy_(1,block,pooled);
+        if(!pool_written)graph_pooled.index_copy_(1,block,pooled);
         mark("qsa_pool_end");
         if(history_only)return {};
-        auto ranked=mfq_qwen4_exp::live_block_scores(p.iq,graph_pooled_,cache_positions,c_.pool);
+        auto ranked=mfq_qwen4_exp::live_block_scores(p.iq,graph_pooled,cache_positions,c_.pool);
         mark("qsa_scores_end");
         auto absolute=cache_positions.reshape({1,t,1});
         const auto count=std::min(c_.budget/c_.pool,pools),columns=c_.budget+c_.pool-1;
@@ -1451,48 +1529,48 @@ class Qsa {
         selected=::tyloi::cuda::where(absolute+1<=c_.budget,dense,selected).to(::tyloi::kInt32).contiguous();
         }
         mark("qsa_select_end");
-        if(streamed)return finish(streamed_graph_attention(p,selected,hidden.scalar_type()));
+        if(streamed)return finish(streamed_graph_attention(request,p,selected,hidden.scalar_type()));
         DenseTensor gated;
-        const auto hot=prepare_hot(selected,cache_positions,0,index_written && begin_prepare);
+        const auto hot=prepare_hot(request,selected,cache_positions,0,index_written && begin_prepare);
         mark("qsa_hot_end");
         if(quantization_.enabled()) {
-            auto attended=cuda_kv_attention(p.query,graph_keys_,graph_values_,quantization_,selected,cache_positions,0,{},0,{},{},0,hot);
+            auto attended=cuda_kv_attention(p.query,graph_keys,graph_values,quantization_,selected,cache_positions,0,{},0,{},{},0,hot);
             gated=(attended*::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32))).to(hidden.scalar_type());
         } else if(fused_projection_ && rotary_->fused() &&
             (hidden.scalar_type()==::tyloi::kFloat16 || hidden.scalar_type()==::tyloi::kFloat32)) {
             const auto sparse_gate=::tyloi::cuda::options::qsa_sparse_gate_fused();
             if(!sparse_gate || *sparse_gate)
-                gated=mfq_qwen4_exp::sparse_gqa_attention_gate(p.query,graph_keys_,graph_values_,selected,
+                gated=mfq_qwen4_exp::sparse_gqa_attention_gate(p.query,graph_keys,graph_values,selected,
                     p.gate,hidden.scalar_type()==::tyloi::kFloat16,hot);
             else gated=mfq_qwen4_exp::attention_gate(
-                mfq_qwen4_exp::sparse_gqa_attention(p.query,graph_keys_,graph_values_,selected,hot),
+                mfq_qwen4_exp::sparse_gqa_attention(p.query,graph_keys,graph_values,selected,hot),
                 p.gate,hidden.scalar_type()==::tyloi::kFloat16);
         } else {
-            auto attended=mfq_qwen4_exp::sparse_gqa_attention(p.query,graph_keys_,graph_values_,selected,hot);
+            auto attended=mfq_qwen4_exp::sparse_gqa_attention(p.query,graph_keys,graph_values,selected,hot);
             gated=(attended.to(::tyloi::kFloat32)*::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32))).to(hidden.scalar_type());
         }
         return finish(std::move(gated));
     }
-    void advance_graph(int64_t tokens) {
-        if(!offload_){keys_.advance_fixed(tokens);values_.advance_fixed(tokens);}
-        index_.advance_fixed(tokens);
+    void advance_graph(State& request,int64_t tokens) {
+        if(!request.offload){request.keys.advance_fixed(tokens);request.values.advance_fixed(tokens);}
+        request.index.advance_fixed(tokens);
     }
-    void truncate(int64_t keep) {
-        if (offload_) {
-            TYLOINFER_RUNTIME_CHECK(keep >= 0 && keep <= position(), "invalid offloaded QSA truncation");
-            offloaded_kv_->truncate(keep);
-            if(managed_memory())index_.truncate(keep);
-            else {offloaded_index_->truncate(keep);offloaded_pooled_->truncate(keep/c_.pool);}
+    void truncate(State& request,int64_t keep) {
+        if (request.offload) {
+            TYLOINFER_RUNTIME_CHECK(keep >= 0 && keep <= position(request), "invalid offloaded QSA truncation");
+            request.offloaded_kv->truncate(keep);
+            if(managed_memory(request))request.index.truncate(keep);
+            else {request.offloaded_index->truncate(keep);request.offloaded_pooled->truncate(keep/c_.pool);}
             return;
         }
-        TYLOINFER_RUNTIME_CHECK(keep >= 0 && keep <= keys_.position() && keep <= values_.position() &&
-                              keep <= index_.position(),
+        TYLOINFER_RUNTIME_CHECK(keep >= 0 && keep <= request.keys.position() && keep <= request.values.position() &&
+                              keep <= request.index.position(),
                           "invalid Qwen4 QSA cache truncation");
-        keys_.truncate(keep);
-        values_.truncate(keep);
-        index_.truncate(keep);
+        request.keys.truncate(keep);
+        request.values.truncate(keep);
+        request.index.truncate(keep);
     }
-    DenseTensor forward(const tyloi::cuda::Projector& projector, const DenseTensor &hidden,
+    DenseTensor forward(State& request,const tyloi::cuda::Projector& projector, const DenseTensor &hidden,
                    const DenseTensor &current_positions, const DenseTensor &full_positions, bool use_cache,
                    std::vector<DenseTensor> *selection_trace = nullptr,
                    std::vector<DenseTensor> projections = {}, bool project_output = true,
@@ -1500,14 +1578,16 @@ class Qsa {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0 &&
                               hidden.size(1) > 0,
                           "Qwen4 QSA requires nonempty [B,T,H] input");
-        activate_memory();
+        activate_memory(request);
+        auto graph_keys = (request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{});
+        auto graph_values = (request.graph_values.defined()?request.graph_values.dense():DenseTensor{});
         TYLOINFER_RUNTIME_CHECK(!history_only || use_cache,"QSA history priming requires a cache");
         if(use_cache && hidden.size(1)>8 && !selection_trace && !history_only) {
             // Index scores grow with both query rows and the accumulated
             // context. Bound that workspace independently of the FFN tile.
             // Keep per-head products, reduction and top-k scratch below the
             // same budget even at the final chunk of a long prompt.
-            const auto offset=position(),length=offset+hidden.size(1);
+            const auto offset=position(request),length=offset+hidden.size(1);
             const auto pools=std::max<int64_t>(1,length/c_.pool);
             const auto row_bytes=std::size_t(hidden.size(0))*pools*(c_.index_heads+4)*sizeof(float);
             const auto rows=std::max<int64_t>(32,int64_t((128ULL<<20)/row_bytes)/32*32);
@@ -1517,19 +1597,19 @@ class Qsa {
                     const auto count=std::min(rows,hidden.size(1)-begin);
                     std::vector<DenseTensor> projected;
                     for(const auto& value:projections)projected.push_back(value.narrow(1,begin,count));
-                    outputs.push_back(forward(projector,hidden.narrow(1,begin,count),
+                    outputs.push_back(forward(request,projector,hidden.narrow(1,begin,count),
                         current_positions.narrow(-1,begin,count),full_positions.narrow(-1,0,offset+begin+count),
                         true,nullptr,std::move(projected),project_output));
                 }
                 return ::tyloi::cuda::cat(outputs,1);
             }
         }
-        if (offload_ && use_cache) {
-            if(managed_memory())memory_->ensure(position()+hidden.size(1));
-            return forward_offloaded(projector, hidden, current_positions, full_positions, selection_trace,
+        if (request.offload && use_cache) {
+            if(managed_memory(request))request.memory->ensure(position(request)+hidden.size(1));
+            return forward_offloaded(request,projector, hidden, current_positions, full_positions, selection_trace,
                                      std::move(projections),project_output,history_only);
         }
-        const auto b = hidden.size(0), t = hidden.size(1), offset = use_cache ? position() : 0;
+        const auto b = hidden.size(0), t = hidden.size(1), offset = use_cache ? position(request) : 0;
         const auto prefill_option=::tyloi::cuda::options::qsa_prefill_fused();
         // Scalar decode and verification use the same grouped projections and
         // normalization/RoPE preparation as captured execution. Keeping short
@@ -1537,7 +1617,7 @@ class Qsa {
         const bool prepared_inputs=!projections.empty() || (!prefill_option || *prefill_option!=0);
         TYLOINFER_RUNTIME_CHECK(
             t <= c_.maximum - offset && full_positions.size(-1) == offset + t &&
-                (!use_cache || (offset == values_.position() && offset == index_.position())),
+                (!use_cache || (offset == request.values.position() && offset == request.index.position())),
             "Qwen4 QSA cache/position geometry mismatch");
         auto project_inputs = [&] {
                 if(prepared_inputs)
@@ -1576,34 +1656,34 @@ class Qsa {
                 return Projection{gate, query, key, value, iq, raw};
             };
         auto append_inputs = [&](Projection &p) {
-                if(managed_memory()) {
+                if(managed_memory(request)) {
                     TYLOINFER_RUNTIME_CHECK(b==1,"preallocated QSA expects one sequence per cache");
-                    memory_->ensure(offset+t);
-                    if(memory_->hot.exclusive())memory_->hot.append(encode_key(p.key).permute({0,2,1,3}),
+                    request.memory->ensure(offset+t);
+                    if(request.memory->hot.exclusive())request.memory->hot.append(encode_key(p.key).permute({0,2,1,3}),
                         encode_value(p.value).permute({0,2,1,3}),::tyloi::cuda::arange(offset,offset+t,hidden.options().dtype(::tyloi::kInt64)));
                     else {
-                        graph_keys_.narrow(2,offset,t).copy_(encode_key(p.key).permute({0,2,1,3}));
-                        graph_values_.narrow(2,offset,t).copy_(encode_value(p.value).permute({0,2,1,3}));
+                        graph_keys.narrow(2,offset,t).copy_(encode_key(p.key).permute({0,2,1,3}));
+                        graph_values.narrow(2,offset,t).copy_(encode_value(p.value).permute({0,2,1,3}));
                     }
-                    if(memory_->hot.defined()) {
-                        if(!memory_->hot.exclusive())memory_->hot.publish(graph_keys_,graph_values_,::tyloi::cuda::arange(offset,offset+t,hidden.options().dtype(::tyloi::kInt64)));
-                        p.key=graph_keys_.permute({0,2,1,3});p.value=graph_values_.permute({0,2,1,3});
+                    if(request.memory->hot.defined()) {
+                        if(!request.memory->hot.exclusive())request.memory->hot.publish(graph_keys,graph_values,::tyloi::cuda::arange(offset,offset+t,hidden.options().dtype(::tyloi::kInt64)));
+                        p.key=graph_keys.permute({0,2,1,3});p.value=graph_values.permute({0,2,1,3});
                     }else {
-                        p.key=graph_keys_.narrow(2,0,offset+t).permute({0,2,1,3});
-                        p.value=graph_values_.narrow(2,0,offset+t).permute({0,2,1,3});
+                        p.key=graph_keys.narrow(2,0,offset+t).permute({0,2,1,3});
+                        p.value=graph_values.narrow(2,0,offset+t).permute({0,2,1,3});
                     }
-                    keys_.advance_fixed(t);values_.advance_fixed(t);graph_prepared_=false;
+                    request.keys.advance_fixed(t);request.values.advance_fixed(t);request.graph_prepared=false;
                 } else {
-                    p.key = keys_.append(encode_key(p.key).reshape({b, t, -1}))
+                    p.key = request.keys.append(encode_key(p.key).reshape({b, t, -1}))
                                 .reshape({b, offset + t, c_.kv_heads, key_width()});
-                    p.value = values_.append(encode_value(p.value).reshape({b, t, -1}))
+                    p.value = request.values.append(encode_value(p.value).reshape({b, t, -1}))
                                   .reshape({b, offset + t, c_.kv_heads, value_width()});
                 }
-                p.raw = index_.append(p.raw);
+                p.raw = request.index.append(p.raw);
             };
         if(history_only) {
             auto p=project_history(projector,hidden,current_positions);
-            try {append_inputs(p);}catch(...) {truncate(offset);throw;}
+            try {append_inputs(p);}catch(...) {truncate(request,offset);throw;}
             return {};
         }
         const bool short_gate=prepared_inputs && fused_projection_ && rotary_->fused() &&
@@ -1611,9 +1691,9 @@ class Qsa {
             (hidden.scalar_type()==::tyloi::kFloat16 || hidden.scalar_type()==::tyloi::kFloat32);
         const auto attend_projected=[&](const Projection& p,const DenseTensor& selected) {
             auto key=p.key.permute({0,2,1,3}),value=p.value.permute({0,2,1,3});
-            if(!short_gate)return attend(p.query,key,value,selected,offset);
+            if(!short_gate)return attend(request,p.query,key,value,selected,offset);
             const auto positions=::tyloi::cuda::arange(offset,offset+t,hidden.options().dtype(::tyloi::kInt64));
-            const auto hot=prepare_hot(selected,positions,offset+t);
+            const auto hot=prepare_hot(request,selected,positions,offset+t);
             // Match the decode graph's fused gate and FP32 attention
             // accumulation for short eager/correction calls as well.
             if(selected.defined())return mfq_qwen4_exp::sparse_gqa_attention_gate(
@@ -1663,19 +1743,21 @@ class Qsa {
                 auto result = gated.reshape({b, t, c_.heads * c_.width}).to(hidden.scalar_type());
                 return project_output ? this->project_output(projector,result) : result;
             },
-            [&] { truncate(offset); });
+            [&] { truncate(request,offset); });
     }
 
   private:
-    HotKvView prepare_hot(const DenseTensor& selected,const DenseTensor& positions={},int64_t columns=0,bool epoch_ready=false) const {
-        if(!managed_memory() || !memory_->hot.defined())return {};
-        memory_->hot.prepare(graph_keys_,graph_values_,selected,positions,columns,true,epoch_ready);
-        return memory_->hot.view();
+    HotKvView prepare_hot(State& request,const DenseTensor& selected,const DenseTensor& positions={},int64_t columns=0,bool epoch_ready=false) const {
+        if(!managed_memory(request) || !request.memory->hot.defined())return {};
+        auto graph_keys = (request.graph_keys.defined()?request.graph_keys.dense():DenseTensor{});
+        auto graph_values = (request.graph_values.defined()?request.graph_values.dense():DenseTensor{});
+        request.memory->hot.prepare(graph_keys,graph_values,selected,positions,columns,true,epoch_ready);
+        return request.memory->hot.view();
     }
-    DenseTensor attend(const DenseTensor& query, DenseTensor keys, DenseTensor values, const DenseTensor& selected, int64_t offset) const {
-        if(managed_memory() && memory_->hot.defined()) {
+    DenseTensor attend(State& request,const DenseTensor& query, DenseTensor keys, DenseTensor values, const DenseTensor& selected, int64_t offset) const {
+        if(managed_memory(request) && request.memory->hot.defined()) {
             const auto positions=::tyloi::cuda::arange(offset,offset+query.size(2),query.options().dtype(::tyloi::kInt64));
-            const auto hot=offset+query.size(2)<=memory_->hot.keys.size(2)?memory_->hot.view():prepare_hot(selected,positions,offset+query.size(2));
+            const auto hot=offset+query.size(2)<=request.memory->hot.keys.size(2)?request.memory->hot.view():prepare_hot(request,selected,positions,offset+query.size(2));
             if(quantization_.enabled())return cuda_kv_attention(query,keys,values,quantization_,selected,positions,offset,{},0,{},{},0,hot);
             if(selected.defined())return mfq_qwen4_exp::sparse_gqa_attention(query,keys,values,selected,hot);
             return mfq_qwen4_exp::dense_gqa_attention(query,keys,values,offset,hot);
@@ -1700,7 +1782,7 @@ class Qsa {
     DenseTensor encode_key(const DenseTensor& x) const { return quantization_.enabled()?cuda_kv_encode(x,quantization_.key_bits(),false):x.to(::tyloi::kFloat16); }
     DenseTensor encode_value(const DenseTensor& x) const { return quantization_.enabled()?cuda_kv_encode(x,quantization_.value_bits(),true):x.to(::tyloi::kFloat16); }
     struct Projection {DenseTensor gate,query,key,value,iq,raw;bool cache_written=false;};
-    DenseTensor streamed_graph_attention(const Projection& p,const DenseTensor& selected,::tyloi::ScalarType output_type) {
+    DenseTensor streamed_graph_attention(State& request,const Projection& p,const DenseTensor& selected,::tyloi::ScalarType output_type) {
         auto* window=DecodeWindow::recording();
         TYLOINFER_RUNTIME_CHECK(window && selected.size(1)<=8,"streamed QSA requires a decode window of at most eight rows");
         struct Stage {
@@ -1709,7 +1791,7 @@ class Qsa {
         };
         const auto tokens=selected.size(1),columns=selected.size(2);
         const auto key_row=c_.kv_heads*key_width(),value_row=c_.kv_heads*value_width();
-        const auto stage=window->workspace<Stage>(this,[&] {
+        const auto stage=window->workspace<Stage>(&request,[&] {
             ResidentAllocationScope resident;
             auto result=std::make_shared<Stage>();
             result->raw=::tyloi::cuda::empty({tokens,key_row+value_row},p.key.options().dtype(cache_dtype()));
@@ -1717,16 +1799,16 @@ class Qsa {
             result->ids=::tyloi::cuda::zeros(selected.sizes(),selected.options());
             // Every layer and MTP width shares the same bounded I/O workspace.
             // A later segment may reuse it only after the prior consumer ends.
-            result->gather=offloaded_kv_->gather_workspace(8*columns,c_.kv_heads,key_width());
+            result->gather=request.offloaded_kv->gather_workspace(8*columns,c_.kv_heads,key_width());
             return result;
         });
         stage->raw.copy_(::tyloi::cuda::cat({encode_key(p.key).reshape({tokens,key_row}),encode_value(p.value).reshape({tokens,value_row})},1));
         TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(stage->host_ids.data_ptr(),selected.data_ptr(),selected.nbytes(),
             cudaMemcpyDeviceToHost,mfq_current_cuda_stream()));
-        window->host_barrier([this,stage] {
-            const auto start=position();
+        window->host_barrier([this,&request,stage] {
+            const auto start=position(request);
             try {
-                offloaded_kv_->append(stage->raw);
+                request.offloaded_kv->append(stage->raw);
                 auto* ids=stage->host_ids.data_ptr<int32_t>();
                 std::unordered_map<int32_t,int32_t> compact;
                 std::vector<int64_t> requested;
@@ -1735,10 +1817,10 @@ class Qsa {
                     auto [item,added]=compact.emplace(ids[i],int32_t(requested.size()));
                     if(added)requested.push_back(ids[i]);ids[i]=item->second;
                 }
-                offloaded_kv_->gather_into(requested,*stage->gather);
+                request.offloaded_kv->gather_into(requested,*stage->gather);
                 TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(stage->ids.data_ptr(),ids,stage->ids.nbytes(),
                     cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
-            } catch(...) {offloaded_kv_->truncate(start);throw;}
+            } catch(...) {request.offloaded_kv->truncate(start);throw;}
         });
         const auto rows=stage->gather->rows->size(0);
         const auto& gathered=dynamic_cast<const DenseTensor&>(*stage->gather->rows);
@@ -1747,42 +1829,43 @@ class Qsa {
         auto values=flat.narrow(0,rows*key_row,rows*value_row).reshape({1,c_.kv_heads,rows,value_width()});
         if(!quantization_.enabled() && fused_projection_ && rotary_->fused() && (output_type==::tyloi::kFloat16 || output_type==::tyloi::kFloat32))
             return mfq_qwen4_exp::sparse_gqa_attention_gate(p.query,keys,values,stage->ids,p.gate,output_type==::tyloi::kFloat16);
-        auto attended=attend(p.query,keys,values,stage->ids,rows);
+        auto attended=attend(request,p.query,keys,values,stage->ids,rows);
         return (attended.to(::tyloi::kFloat32)*::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32))).to(output_type);
     }
-    DenseTensor forward_offloaded(const tyloi::cuda::Projector& projector, const DenseTensor& hidden,
+    DenseTensor forward_offloaded(State& request,const tyloi::cuda::Projector& projector, const DenseTensor& hidden,
         const DenseTensor& positions, const DenseTensor& full_positions, std::vector<DenseTensor>* trace,
         std::vector<DenseTensor> projections={},bool project_output=true,bool history_only=false) {
-        const auto offset = position(), tokens = hidden.size(1), length = offset + tokens;
-        const auto pool_position=[&]{return managed_memory()?index_.position()/c_.pool:offloaded_pooled_->position();};
-        const auto pool_range=[&](int64_t start,int64_t count,std::shared_ptr<::tyloi::Tensor>& owner) -> DenseTensor {
-            if(managed_memory()) return graph_pooled_.narrow(1,start,count).reshape({count,c_.index_width});
-            owner=offloaded_pooled_->range(start,count);
-            return dynamic_cast<const DenseTensor&>(*owner);
+        const auto offset = position(request), tokens = hidden.size(1), length = offset + tokens;
+        auto graph_pooled = (request.graph_pooled.defined()?request.graph_pooled.dense():DenseTensor{});
+        const auto pool_position=[&]{return managed_memory(request)?request.index.position()/c_.pool:request.offloaded_pooled->position();};
+        const auto pool_range=[&](int64_t start,int64_t count,::tyloi::Tensor& owner) -> DenseTensor {
+            if(managed_memory(request)) return graph_pooled.narrow(1,start,count).reshape({count,c_.index_width});
+            owner=request.offloaded_pooled->range(start,count);
+            return owner.dense();
         };
         TYLOINFER_RUNTIME_CHECK(hidden.size(0) == 1 && length <= c_.maximum && full_positions.size(-1) == length,
             "streamed QSA requires one sequence within its configured context");
         const auto key_row = c_.kv_heads * key_width(), value_row = c_.kv_heads * value_width();
         const auto max_keys = std::min(length, c_.budget + c_.pool - 1);
         const auto row_bytes = std::size_t(key_row+value_row) * (quantization_.enabled()?4:2);
-        if (std::size_t(max_keys) * row_bytes > offload_->config().buffer_bytes / 4)
+        if (std::size_t(max_keys) * row_bytes > request.offload->config().buffer_bytes / 4)
             throw std::invalid_argument("QSA I/O buffer cannot hold one selected context; increase the resident KV budget");
         auto p = history_only?project_history(projector,hidden,positions):
             project(projector, hidden, positions, length > c_.budget,{},{},{},std::move(projections));
         try {
-            offloaded_kv_->append(::tyloi::cuda::cat({encode_key(p.key).reshape({tokens,key_row}), encode_value(p.value).reshape({tokens,value_row})}, 1));
+            request.offloaded_kv->append(::tyloi::cuda::cat({encode_key(p.key).reshape({tokens,key_row}), encode_value(p.value).reshape({tokens,value_row})}, 1));
             const auto first_pool = pool_position();
-            if(managed_memory())index_.append(p.raw);
-            else offloaded_index_->append(p.raw.reshape({tokens,c_.index_width}));
+            if(managed_memory(request))request.index.append(p.raw);
+            else request.offloaded_index->append(p.raw.reshape({tokens,c_.index_width}));
             const auto new_pools = length / c_.pool - first_pool;
             if (new_pools) {
                 std::shared_ptr<::tyloi::Tensor> raw_owner;
                 DenseTensor raw;
-                if(managed_memory())
-                    raw=index_.storage().narrow(1,first_pool*c_.pool,new_pools*c_.pool).reshape({new_pools*c_.pool,c_.index_width});
+                if(managed_memory(request))
+                    raw=request.index.storage().narrow(1,first_pool*c_.pool,new_pools*c_.pool).reshape({new_pools*c_.pool,c_.index_width});
                 else {
-                    raw_owner=offloaded_index_->range(first_pool * c_.pool, new_pools * c_.pool);
-                    raw=dynamic_cast<const DenseTensor&>(*raw_owner);
+                    raw_owner=request.offloaded_index->range(first_pool * c_.pool, new_pools * c_.pool);
+                    raw=raw_owner.dense();
                 }
                 auto pooled = raw.reshape({1, new_pools, c_.pool, c_.index_width}).to(::tyloi::kFloat32).mean(2).to(::tyloi::kFloat16);
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -1792,17 +1875,17 @@ class Qsa {
 #endif
                 auto starts = (::tyloi::cuda::arange(new_pools, positions.options().dtype(::tyloi::kInt64)) + first_pool) * c_.pool;
                 pooled = rotary_->forward(pooled.unsqueeze(1), full_positions.index_select(-1, starts)).squeeze(1);
-                if(managed_memory())graph_pooled_.narrow(1,first_pool,new_pools).copy_(pooled);
-                else offloaded_pooled_->append(pooled.reshape({new_pools, c_.index_width}));
+                if(managed_memory(request))graph_pooled.narrow(1,first_pool,new_pools).copy_(pooled);
+                else request.offloaded_pooled->append(pooled.reshape({new_pools, c_.index_width}));
             }
             if(history_only)return {};
             // When one layer fits in staging, reuse that layer across the
             // entire prefill tile instead of gathering the same rows per token.
             // Other layers remain under the GPU/RAM/SSD eviction policy.
-            if (tokens > 8 && std::size_t(length) * row_bytes <= offload_->config().buffer_bytes / 2 &&
-                    std::size_t(length / c_.pool) * c_.index_width * 2 <= offload_->config().buffer_bytes / 4) {
-                auto packed_owner = offloaded_kv_->range(0, length);
-                const auto& packed = dynamic_cast<const DenseTensor&>(*packed_owner);
+            if (tokens > 8 && std::size_t(length) * row_bytes <= request.offload->config().buffer_bytes / 2 &&
+                    std::size_t(length / c_.pool) * c_.index_width * 2 <= request.offload->config().buffer_bytes / 4) {
+                auto packed_owner = request.offloaded_kv->range(0, length);
+                const auto& packed = packed_owner.dense();
                 auto key = packed.narrow(1,0,key_row).reshape({1,length,c_.kv_heads,key_width()}).permute({0,2,1,3});
                 auto value = packed.narrow(1,key_row,value_row).reshape({1,length,c_.kv_heads,value_width()}).permute({0,2,1,3});
                 DenseTensor ids;
@@ -1813,13 +1896,13 @@ class Qsa {
                     ids = select_pooled_blocks(scores, offset, length, c_.pool, c_.budget, true);
                     if (trace) *trace = {scores,ids,p.iq,pooled};
                 }
-                auto attended = attend(p.query, key, value, ids, offset);
+                auto attended = attend(request,p.query, key, value, ids, offset);
                 auto gated = attended.to(::tyloi::kFloat32) * ::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32));
                 auto result = gated.reshape({1,tokens,c_.heads*c_.width}).to(hidden.scalar_type());
                 return project_output ? this->project_output(projector,result) : result;
             }
             const auto queries = std::max<int64_t>(1, std::min<int64_t>(32,
-                offload_->config().buffer_bytes / 4 / (std::size_t(max_keys) * row_bytes)));
+                request.offload->config().buffer_bytes / 4 / (std::size_t(max_keys) * row_bytes)));
             std::vector<DenseTensor> outputs;
             for (int64_t begin = 0; begin < tokens; begin += queries) {
                 const auto count = std::min(queries, tokens - begin);
@@ -1833,7 +1916,7 @@ class Qsa {
                     DenseTensor best_scores, best_ids;
                     std::vector<DenseTensor> traced_scores, traced_pools;
                     const auto pool_chunk = std::max<int64_t>(16, std::min<int64_t>(1024,
-                        offload_->config().buffer_bytes / 8 / (c_.index_width * 2 + count * 4)));
+                        request.offload->config().buffer_bytes / 8 / (c_.index_width * 2 + count * 4)));
                     for (int64_t start = 0; start < pools; start += pool_chunk) {
                         const auto n = std::min(pool_chunk, pools - start);
                         std::shared_ptr<::tyloi::Tensor> pooled_owner;
@@ -1865,19 +1948,19 @@ class Qsa {
                     if (added) requested.push_back(mapping[index]);
                     mapping[index] = found->second;
                 }
-                auto packed_owner = offloaded_kv_->gather(requested);
-                const auto& packed = dynamic_cast<const DenseTensor&>(*packed_owner);
+                auto packed_owner = request.offloaded_kv->gather(requested);
+                const auto& packed = packed_owner.dense();
                 const auto n = static_cast<int64_t>(requested.size());
                 auto key = packed.narrow(1,0,key_row).reshape({1,n,c_.kv_heads,key_width()}).permute({0,2,1,3}).contiguous();
                 auto value = packed.narrow(1,key_row,value_row).reshape({1,n,c_.kv_heads,value_width()}).permute({0,2,1,3}).contiguous();
                 // IDs now address a compact union; selection already contains the causal mask.
-                outputs.push_back(attend(p.query.narrow(2,begin,count),key,value,cpu_ids.to(selected.device()),n));
+                outputs.push_back(attend(request,p.query.narrow(2,begin,count),key,value,cpu_ids.to(selected.device()),n));
             }
             auto attended = ::tyloi::cuda::cat(outputs, 1);
             auto gated = attended.to(::tyloi::kFloat32) * ::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32));
             auto result=gated.reshape({1, tokens, c_.heads * c_.width}).to(hidden.scalar_type());
             return project_output?this->project_output(projector,result):result;
-        } catch (...) { truncate(offset); throw; }
+        } catch (...) { truncate(request,offset); throw; }
     }
     DenseTensor project_norm(const DenseTensor& value,const DenseTensor& weight) {
         if(value.scalar_type()==::tyloi::kFloat16 || value.scalar_type()==::tyloi::kFloat32)
@@ -1979,12 +2062,7 @@ class Qsa {
     std::shared_ptr<RotaryEmbedding> rotary_;
     bool fused_projection_;
     bool grouped_projection_;
-    SequenceCache keys_, values_, index_;
     std::shared_ptr<KvOffloadStore> offload_;
-    std::unique_ptr<KvOffloadSequence> offloaded_kv_, offloaded_index_, offloaded_pooled_;
-    DenseTensor graph_keys_,graph_values_,graph_pooled_;
-    std::shared_ptr<KvMemoryAllocation> memory_;
     std::shared_ptr<KvMemoryManager> memory_manager_;
-    bool graph_prepared_=false;
 };
 } // namespace tyloi::cuda::qwen4_exp
