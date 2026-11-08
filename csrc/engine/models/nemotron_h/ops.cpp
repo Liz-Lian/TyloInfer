@@ -18,7 +18,6 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_selective_state_scan_ops.h"
-#include "engine/models/common/recurrent_attention.h"
 
 #include <algorithm>
 #include <array>
@@ -34,6 +33,29 @@ namespace tyloi::cuda::nemotron_h {
 namespace {
 
 using DenseTensor = ::tyloi::DenseTensor;
+
+// Mamba-2 has the same state lifetime as GDN but different equations: the
+// depthwise convolution state and the selective-scan state are separate, and
+// the gated norm runs after the scan (norm_before_gate=false).
+// project() returns {gate(z), convolution input(xBC), raw per-head dt};
+// convolve() turns that input into {x, B, C} and advances the convolution
+// state; scan() returns {y, final recurrent state} and updates the recurrent
+// state in place when it is a single decode step. commit() receives the final
+// state produced by a prefill scan (undefined for decode).
+template <class DenseTensor, class Project, class Convolve, class Scan, class GatedNorm, class Output,
+          class Commit>
+DenseTensor selective_state_attention(bool cache, Project project, Convolve convolve, Scan scan,
+                                GatedNorm norm_gate, Output output, Commit commit) {
+    auto projected = project();
+    if (projected.size() != 3)
+        throw std::runtime_error("Mamba-2 projection requires z, xBC and dt");
+    auto signals = convolve(projected);
+    auto scanned = scan(signals, projected[2]);
+    auto result = output(norm_gate(scanned[0], projected[0]));
+    if (cache)
+        commit(scanned[1]);
+    return result;
+}
 
 // The canonical graph returns the last K-1 convolution inputs for the next
 // call. Runtime CUDA graphs retain this storage address across requests.
@@ -93,7 +115,7 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
 #endif
             .reshape({B, T, H});
     });
-    auto mixed = tyloi::models::selective_state_attention<DenseTensor>(
+    auto mixed = selective_state_attention<DenseTensor>(
                 true,
                 [&]() {
                     auto projected = profiler.measure("mamba.in_proj", [&] {

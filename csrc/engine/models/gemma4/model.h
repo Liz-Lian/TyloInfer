@@ -4,7 +4,7 @@
 #include "engine/models/common/capabilities.h"
 #include "engine/models/common/attention.h"
 #ifdef TYLOINFER_NATIVE_CUDA
-#include "engine/models/common/mlp.h"
+#include "engine/ops.h"
 #else
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/weights/moe/experts.h"
@@ -15,6 +15,8 @@
 #include "engine/models/causal_model.h"
 
 #include <memory>
+#include <stdexcept>
+#include <utility>
 #include <string_view>
 #include <vector>
 
@@ -25,13 +27,27 @@ using DenseTensor = ::tyloi::DenseTensor;
 #endif
 using Config = tyloi::models::gemma4::Config;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+struct Mlp {
+    std::vector<std::shared_ptr<const Tensor>> gate_up;
+    std::shared_ptr<const ::tyloi::Tensor> down;
+    tyloi::ops::MlpActivation activation = tyloi::ops::MlpActivation::silu_gated;
+    double swiglu_limit = 0.0;
+
+    std::shared_ptr<Tensor> forward(const Tensor& input) const {
+        if (gate_up.empty() || !down) throw std::logic_error("MLP weights are missing");
+        return tyloi::ops::mlp(input, gate_up, *down, activation, swiglu_limit);
+    }
+};
+#endif
+
 class State;
 
 struct Layer {
     FullAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<const tyloi::Tensor> ffn_norm;
-    tyloi::models::Mlp ffn;
+    Mlp ffn;
     std::shared_ptr<const tyloi::Tensor> attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
     std::shared_ptr<const tyloi::Tensor> layer_scale;
     std::shared_ptr<const tyloi::Tensor> gemma_router, gemma_router_norm_scale, gemma_expert_scale;

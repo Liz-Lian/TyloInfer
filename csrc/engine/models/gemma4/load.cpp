@@ -95,7 +95,7 @@ struct LayerLoader {
 #ifdef TYLOINFER_NATIVE_CUDA
         auto down = weights.weight(down_name);
         auto group = weights.gate_up(names, *down, 2);
-        return tyloi::models::Mlp{std::move(group), std::move(down),
+        return Mlp{std::move(group), std::move(down),
                                 tyloi::ops::MlpActivation::gelu_gated};
 #else
         auto down = weights.weight(down_name);
