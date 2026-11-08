@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/generation_ops.h"
+#include "engine/generation/ops.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/budget.h"
 #include "engine/generation/sampling.h"

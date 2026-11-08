@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/generation_ops.h"
+#include "engine/generation/ops.h"
 #include "engine/models/common/mtp.h"
 
 #include <algorithm>

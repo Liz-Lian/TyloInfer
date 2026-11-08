@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/weights/cache.h"
-#include "engine/models/common/mtp_ops.h"
+#include "engine/generation/mtp/ops.h"
 #include "engine/models/qwen4_exp/generation.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/backends/cuda/native/context.h"

@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/generate.h"
+#include "engine/generation/cuda.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/generation/mtp/state.h"
 

@@ -14,7 +14,7 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/budget.h"
 #include "engine/backends/cuda/executor/tq.h"
-#include "engine/generate.h"
+#include "engine/generation/cuda.h"
 #include "engine/weights/loader.h"
 #include "engine/state/kv_offload.h"
 #include "engine/state/kv_memory.h"

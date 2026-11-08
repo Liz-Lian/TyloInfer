@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/mtp_ops.h"
+#include "engine/generation/mtp/ops.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/weights/cache.h"
 

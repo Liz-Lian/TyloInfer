@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/generation_ops.h"
+#include "engine/generation/ops.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/requests/output.h"

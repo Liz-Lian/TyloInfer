@@ -10,7 +10,7 @@
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/forward.h"
-#include "engine/models/common/generation_ops.h"
+#include "engine/generation/ops.h"
 
 #include <algorithm>
 #include <cstring>

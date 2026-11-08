@@ -19,7 +19,7 @@
 #include "engine/models/common/prompt.h"
 #include "engine/scheduler/request.h"
 #include "engine/generation/batch.h"
-#include "engine/generate.h"
+#include "engine/generation/cuda.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/state/kv_memory.h"
