@@ -136,7 +136,6 @@ private:
     void install(std::unique_ptr<tyloi::Executor::Graph> graph);
 
     SessionResult set_budget(const SessionCommand&);
-    void reserve(models::State& state, std::int64_t tokens);
     void drain();
     void clear_bindings() noexcept;
     std::shared_ptr<models::CausalModel> model_;

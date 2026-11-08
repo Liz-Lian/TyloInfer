@@ -12,7 +12,6 @@
 #include "engine/models/source.h"
 #include "engine/scheduler/request.h"
 #include "engine/budget.h"
-#include "engine/generation/prefill_budget.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/cache.h"
@@ -225,11 +224,6 @@ void Engine::execute(const std::vector<RequestId>&) {}
 
 void Engine::clear_bindings() noexcept {
     if (budget_) budget_->unbind();
-}
-
-void Engine::reserve(models::State& state, std::int64_t tokens) {
-    for (const auto& [device, growth] : state.growth(tokens, forward_options_))
-        if (growth) budget_->reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
 }
 
 SessionResult Engine::set_budget(const SessionCommand& command) {

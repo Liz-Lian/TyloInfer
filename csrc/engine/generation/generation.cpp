@@ -8,6 +8,7 @@
 #include "engine/generation/decode.h"
 #include "engine/generation/step.h"
 #include "engine/generation/sampling.h"
+#include "engine/generation/prefill_budget.h"
 #include "engine/models/causal_model.h"
 #include "engine/scheduler/request.h"
 #include "engine/models/source.h"
@@ -19,6 +20,148 @@
 #include <stdexcept>
 
 namespace tyloi::engine {
+namespace {
+
+struct Plain {
+    models::CausalModel& model;
+    models::State& state;
+    tyloi::Executor& executor;
+    Budget& budget;
+    Decode& graph;
+    weights::Cache& weights;
+    const models::Info& info;
+    const Config& config;
+    const models::ForwardOptions& forward_options;
+    const ModelSource* source;
+    InferenceRequest& input;
+    InferenceOutput& output;
+    const std::optional<models::Prepared>& prepared;
+    int64_t chunk_size;
+    Tensor full_ids;
+    Sampler sampler;
+    bool penalties;
+    Tensor pending;
+    bool graph_active = false;
+    bool graph_prepared = false;
+
+    Tensor project(const Tensor& hidden, bool capped) {
+        auto last = ops::contiguous(ops::cast(ops::select(hidden, 1, -1), kFloat16));
+        return model.logits(last, capped);
+    }
+    void reserve(int64_t tokens) {
+        for (const auto& [device, growth] : state.growth(tokens, forward_options))
+            if (growth) budget.reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
+    }
+    double prefill(const PrefillChunk& chunk) {
+        auto timer = executor.timer();
+        models::Input model_input;
+        model_input.ids = ops::contiguous(ops::slice(full_ids, 1, chunk.offset, chunk.offset + chunk.count));
+        model_input.advance = true;
+        if (prepared && prepared->transformed()) {
+            if (prepared->embeddings) model_input.embeddings = ops::contiguous(ops::slice(prepared->embeddings, 1, chunk.offset, chunk.offset + chunk.count));
+            if (prepared->positions) model_input.positions = ops::contiguous(ops::slice(prepared->positions, -1, chunk.offset, chunk.offset + chunk.count));
+        }
+        reserve(chunk.count);
+        auto hidden = model.forward(std::move(model_input), state, forward_options);
+        if (prepared && prepared->transformed()) state.set_position_delta(prepared->decode_position_delta);
+        timer->stop();
+        if (!output.stopped() && chunk.offset + chunk.count == int64_t(input.prompt.size()))
+            pending = sample_logits(sampler, project(hidden, true), graph.counts, input.token_constraint);
+        const auto ms = timer->elapsed_ms();
+        if (config.decode_graph.trace) std::cerr << "runtime_prefill_chunk offset=" << chunk.offset
+            << " tokens=" << chunk.count << " layer_major=0 short_windows=0 compute_chunk=" << chunk_size
+            << " elapsed_ms=" << ms << " timing=before_cache_restore\n";
+        return ms;
+    }
+    int64_t first_token() {
+        const auto token = ops::item(pending);
+        weights.prepare(::tyloi::weights::Cache::Stage::decode, Device(kCUDA, forward_options.primary), source);
+        graph_active = config.decode_graph.enabled &&
+            (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
+            graph.graph && input.sampling.max_tokens >= config.decode_graph.minimum_generation_tokens &&
+            input.sampling.max_tokens <= graph.generated_capacity;
+        return token;
+    }
+    void accept(int64_t) {
+        if (penalties && !graph_active) ops::add_token_counts(graph.counts, ops::contiguous(pending));
+    }
+    int64_t advance() {
+        reserve(1);
+        if (!graph_active) {
+            models::Input model_input;
+            model_input.ids = ops::reshape(pending, {1, 1});
+            model_input.advance = true;
+            auto profile = config.profile_decode ? executor.profile("runtime.decode") : nullptr;
+            auto hidden = model.forward(std::move(model_input), state, forward_options);
+            pending = sample_logits(sampler,
+                project(hidden, !(sampler.greedy() && !penalties && !input.token_constraint)),
+                graph.counts, input.token_constraint);
+            if (profile) profile->finish();
+            return ops::item(pending);
+        }
+        auto scope = graph.graph->enter();
+        if (!graph_prepared) {
+            if (penalties) ops::add_token_counts(graph.counts, ops::contiguous(pending));
+            graph.initialize_inputs(pending, state.position(), sampler.random_host());
+            const auto requested = state.position() + input.sampling.max_tokens;
+            const auto planned = decode_bucket(requested, info.max_context);
+            const auto parts = ops::attention_parts(planned, graph.device);
+            const auto sample_static = [&] {
+                models::Input model_input;
+                model_input.ids = graph.static_input; model_input.positions = graph.static_pos;
+                model_input.cache_positions = graph.static_pos; model_input.lengths = graph.static_len;
+                model_input.kv_length = planned; model_input.attention_parts = parts;
+                auto hidden = model.forward(std::move(model_input), state, forward_options);
+                auto logits = ops::reshape(ops::contiguous(project(hidden, !(sampler.greedy() && !penalties))), {1, -1});
+                if (penalties) sampler.apply_penalties(logits, graph.counts);
+                return sampler.greedy() ? ops::sample_greedy(logits) :
+                    ops::sample_stochastic(logits, graph.random, sampler.params().temperature, sampler.params().top_k, sampler.params().top_p);
+            };
+            auto captured = state.storage();
+            const bool hit = graph.matches(planned, sampler.params(), sampler.greedy(), captured);
+            if (hit) ++graph.reuses;
+            else {
+                graph.invalidate();
+                try {
+                    auto recurrent = state.graph_state();
+                    const auto saved_position = state.position();
+                    graph.graph->prepare(recurrent);
+                    if (!recurrent.empty() || info.double_warmup) {
+                        const auto restore = [&] {
+                            graph.graph->restore();
+                            if (state.position() != saved_position)
+                                throw std::runtime_error("static decode warmup changed cache position");
+                        };
+                        for (int pass = 0; pass < 2; ++pass) {
+                            try { sample_static(); restore(); }
+                            catch (...) { restore(); throw; }
+                        }
+                    }
+                    graph.graph->begin();
+                    auto next = sample_static();
+                    if (penalties) ops::add_token_counts(graph.counts, ops::contiguous(next));
+                    graph.capture_next(std::move(next));
+                    captured = state.storage();
+                    graph.graph->end(captured);
+                    graph.set_key(planned, sampler.params(), sampler.greedy());
+                    ++graph.captures;
+                } catch (...) { graph.invalidate(); throw; }
+            }
+            if (config.decode_graph.trace) std::cerr << "runtime_cuda_graph action=" << (hit ? "reuse" : "capture")
+                << " requested_len=" << requested << " planned_len=" << planned << " captures=" << graph.captures
+                << " reuses=" << graph.reuses << std::endl;
+            graph_prepared = true;
+        }
+        if (!sampler.greedy()) graph.upload_random(sampler.next_random());
+        graph.graph->replay();
+        const auto token = ops::item(graph.static_next);
+        state.advance(1);
+        return token;
+    }
+};
+
+} // namespace
+
 StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     auto& input = request.input;
     auto& output = *request.output;
@@ -89,134 +232,25 @@ StepSequence<EventData> Engine::generate(const RequestId&, Request& request) {
     graph.ensure_storage(info.vocab_size);
     Sampler sampler(input.sampling, full_ids->device());
     const bool penalties = sampler.has_penalties();
-    if (penalties) { ops::fill(*graph.counts, 0); ops::add_token_counts(*graph.counts, *full_ids); }
-    const auto project = [&](const Tensor& hidden, bool capped) {
-        auto last = ops::contiguous(*ops::cast(*ops::select(hidden, 1, -1), kFloat16));
-        return model_->logits(*last, capped);
-    };
-    std::shared_ptr<Tensor> pending;
-    double elapsed = 0;
-    int64_t offset = 0;
-    while (offset < static_cast<int64_t>(prompt.size()) && !output.stopped()) {
-        const auto chunk = next_prefill_chunk(int64_t(prompt.size()), offset, chunk_size);
-        {
-            PrefillActivity activity;
-            auto timer = executor_->timer();
-            models::Input model_input;
-            model_input.ids = ops::contiguous(*ops::slice(*full_ids, 1, chunk.offset, chunk.offset + chunk.count));
-            model_input.advance = true;
-            if (prepared && prepared->transformed()) {
-                if (prepared->embeddings) model_input.embeddings = ops::contiguous(*ops::slice(*prepared->embeddings, 1, chunk.offset, chunk.offset + chunk.count));
-                if (prepared->positions) model_input.positions = ops::contiguous(*ops::slice(*prepared->positions, -1, chunk.offset, chunk.offset + chunk.count));
-            }
-            reserve(state, chunk.count);
-            auto hidden = model_->forward(std::move(model_input), state, forward_options);
-            if (prepared && prepared->transformed()) state.set_position_delta(prepared->decode_position_delta);
-            timer->stop();
-            if (!output.stopped() && chunk.offset + chunk.count == int64_t(prompt.size()))
-                pending = sample_logits(sampler, project(*hidden, true), *graph.counts, input.token_constraint);
-            const auto ms = timer->elapsed_ms();
-            elapsed += ms;
-            if (config.decode_graph.trace) std::cerr << "runtime_prefill_chunk offset=" << chunk.offset
-                << " tokens=" << chunk.count << " layer_major=0 short_windows=0 compute_chunk=" << chunk_size
-                << " elapsed_ms=" << ms << " timing=before_cache_restore\n";
-        }
-        offset += chunk.count;
-        const auto multimodal_ms = output.metrics.multimodal_ms;
-        co_yield PrefillProgress{{static_cast<std::size_t>(offset), elapsed, multimodal_ms, elapsed + multimodal_ms}};
-    }
-    if (output.stopped()) {
-        cleanup.finish();
-        co_return;
-    }
-    auto token = ops::item(*pending);
-    weights.prepare(::tyloi::weights::Cache::Stage::decode, Device(kCUDA, forward_options.primary), source_.get());
-    const bool graph_active = config.decode_graph.enabled &&
-        (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
-        graph.graph &&
-        input.sampling.max_tokens >= config.decode_graph.minimum_generation_tokens &&
-        input.sampling.max_tokens <= graph.generated_capacity;
-    bool graph_prepared = false;
-    bool traced_decode = false;
-    while (!output.stopped()) {
-        auto delta = output.append(std::vector<int64_t>{token});
-        if (penalties && !graph_active) ops::add_token_counts(*graph.counts, *ops::contiguous(*pending));
-        if (!traced_decode && !delta.token_ids.empty()) {
-            trace("decode_begin", false);
-            traced_decode = true;
-        }
-        co_yield std::move(delta);
-        if (output.stopped()) break;
-        reserve(state, 1);
-        if (!graph_active) {
-            models::Input model_input;
-            model_input.ids = ops::reshape(*pending, {1, 1});
-            model_input.advance = true;
-            auto profile = config.profile_decode ? executor_->profile("runtime.decode") : nullptr;
-            auto hidden = model_->forward(std::move(model_input), state, forward_options);
-            pending = sample_logits(sampler,
-                project(*hidden, !(sampler.greedy() && !penalties && !input.token_constraint)),
-                *graph.counts, input.token_constraint);
-            if (profile) profile->finish();
-            token = ops::item(*pending);
-        } else {
-            auto scope = graph.graph->enter();
-            if (!graph_prepared) {
-                if (penalties) ops::add_token_counts(*graph.counts, *ops::contiguous(*pending));
-                graph.initialize_inputs(*pending, state.position(), sampler.random_host());
-                const auto requested = state.position() + input.sampling.max_tokens;
-                const auto planned = decode_bucket(requested, info.max_context);
-                const auto parts = ops::attention_parts(planned, graph.device);
-                const auto sample_static = [&] {
-                    models::Input model_input;
-                    model_input.ids = graph.static_input; model_input.positions = graph.static_pos;
-                    model_input.cache_positions = graph.static_pos; model_input.lengths = graph.static_len;
-                    model_input.kv_length = planned; model_input.attention_parts = parts;
-                    auto hidden = model_->forward(std::move(model_input), state, forward_options);
-                    auto logits = ops::reshape(*ops::contiguous(*project(*hidden, !(sampler.greedy() && !penalties))), {1, -1});
-                    if (penalties) sampler.apply_penalties(*logits, *graph.counts);
-                    return sampler.greedy() ? ops::sample_greedy(*logits) :
-                        ops::sample_stochastic(*logits, *graph.random, sampler.params().temperature, sampler.params().top_k, sampler.params().top_p);
-                };
-                auto captured = state.storage();
-                const bool hit = graph.matches(planned, sampler.params(), sampler.greedy(), captured);
-                if (hit) ++graph.reuses;
-                else {
-                    graph.invalidate();
-                    try {
-                        auto recurrent = state.graph_state();
-                        const auto saved_position = state.position();
-                        graph.graph->prepare(recurrent);
-                        if (!recurrent.empty() || info.double_warmup) {
-                            const auto restore = [&] {
-                                graph.graph->restore();
-                                if (state.position() != saved_position)
-                                    throw std::runtime_error("static decode warmup changed cache position");
-                            };
-                            for (int pass = 0; pass < 2; ++pass) {
-                                try { sample_static(); restore(); }
-                                catch (...) { restore(); throw; }
-                            }
-                        }
-                        graph.graph->begin();
-                        auto next = sample_static();
-                        if (penalties) ops::add_token_counts(*graph.counts, *ops::contiguous(*next));
-                        graph.capture_next(std::move(next));
-                        captured = state.storage();
-                        graph.graph->end(captured);
-                        graph.set_key(planned, sampler.params(), sampler.greedy());
-                        ++graph.captures;
-                    } catch (...) { graph.invalidate(); throw; }
+    if (penalties) { ops::fill(graph.counts, 0); ops::add_token_counts(graph.counts, full_ids); }
+    {
+        Plain plain{*model_, state, *executor_, *budget_, graph, weights, info, config,
+                    forward_options, source_.get(), input, output, prepared, chunk_size,
+                    std::move(full_ids), std::move(sampler), penalties};
+        auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), 0, 0, chunk_size);
+        bool traced_decode = false;
+        while (auto step = sequence.next()) {
+            if (step.value) {
+                if (auto* progress = std::get_if<PrefillProgress>(&*step.value)) {
+                    progress->timing.multimodal_ms = output.metrics.multimodal_ms;
+                    progress->timing.model_ms += output.metrics.multimodal_ms;
+                } else if (auto* delta = std::get_if<OutputDelta>(&*step.value);
+                           delta && !traced_decode && !delta->token_ids.empty()) {
+                    trace("decode_begin", false);
+                    traced_decode = true;
                 }
-                if (config.decode_graph.trace) std::cerr << "runtime_cuda_graph action=" << (hit ? "reuse" : "capture")
-                    << " requested_len=" << requested << " planned_len=" << planned << " captures=" << graph.captures
-                    << " reuses=" << graph.reuses << std::endl;
-                graph_prepared = true;
             }
-            if (!sampler.greedy()) graph.upload_random(sampler.next_random());
-            graph.graph->replay();
-            token = ops::item(*graph.static_next);
-            state.advance(1);
+            co_yield std::move(step);
         }
     }
     cleanup.finish();
