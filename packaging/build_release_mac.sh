@@ -19,7 +19,6 @@ mfq_tauri_target="aarch64-apple-darwin"
 mfq_output_dir="${TYLOINFER_RELEASE_OUTPUT_DIR:-${mfq_script_dir}/dist}"
 mfq_cli_name="tyloinfer-cli"
 mfq_runtime_name="mfq-decode-metal-aarch64-apple-darwin"
-mfq_perplexity_name="mfq-perplexity-aarch64-apple-darwin"
 mfq_macos_deployment_target="${TYLOINFER_RELEASE_MACOS_DEPLOYMENT_TARGET:-26.2}"
 
 fail() {
@@ -66,9 +65,7 @@ if [[ "${TYLOINFER_RELEASE_REUSE_VENV:-0}" != "1" ]]; then
     --no-default-groups \
     --no-editable \
     --group release \
-    --extra metal \
-    --extra benchmark \
-    --extra reference
+    --extra metal
 fi
 
 source "${mfq_script_dir}/macos_release_paths.sh"
@@ -100,18 +97,15 @@ cmake -S "${mfq_project_dir}/cpp_runtime" -B "${mfq_native_build_dir}" -G Ninja 
   -DTYLOINFER_MLX_ROOT="${mfq_mlx_root}" \
   -DTYLOINFER_MLX_METALLIB_DEFAULT:STRING=
 cmake --build "${mfq_native_build_dir}" \
-  --target mfq-decode-metal mfq-perplexity \
+  --target mfq-decode-metal \
   --parallel "${TYLOINFER_RELEASE_JOBS:-$(sysctl -n hw.ncpu)}"
 
 mfq_runtime_source="${mfq_native_build_dir}/metal/mfq-decode-metal"
-mfq_perplexity_source="${mfq_native_build_dir}/metal/mfq-perplexity"
 mfq_video_source="${mfq_native_build_dir}/metal/libmfq_avfoundation_video.dylib"
 [[ -x "${mfq_runtime_source}" ]] || fail "native build did not create mfq-decode-metal"
-[[ -x "${mfq_perplexity_source}" ]] || fail "native build did not create mfq-perplexity"
 [[ -f "${mfq_video_source}" ]] || fail "native build did not create the AVFoundation video library"
 
 install -m 755 "${mfq_runtime_source}" "${mfq_sidecar_dir}/${mfq_runtime_name}"
-install -m 755 "${mfq_perplexity_source}" "${mfq_sidecar_dir}/${mfq_perplexity_name}"
 install -m 644 "${mfq_mlx_root}/lib/libmlx.dylib" "${mfq_framework_dir}/libmlx.dylib"
 install -m 644 "${mfq_mlx_root}/lib/libjaccl.dylib" "${mfq_framework_dir}/libjaccl.dylib"
 install -m 755 "${mfq_video_source}" "${mfq_framework_dir}/libmfq_avfoundation_video.dylib"
@@ -131,16 +125,13 @@ install -m 644 "${mfq_project_dir}"/LICENSES/*.txt "${mfq_license_dir}/"
 
 install_name_tool -add_rpath "@executable_path/../Frameworks" \
   "${mfq_sidecar_dir}/${mfq_runtime_name}"
-install_name_tool -add_rpath "@executable_path/../Frameworks" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}"
 
 mfq_signing_identity="${TYLOINFER_RELEASE_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:--}}"
 for mfq_signed_file in \
   "${mfq_framework_dir}/libjaccl.dylib" \
   "${mfq_framework_dir}/libmlx.dylib" \
   "${mfq_framework_dir}/libmfq_avfoundation_video.dylib" \
-  "${mfq_sidecar_dir}/${mfq_runtime_name}" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}"; do
+  "${mfq_sidecar_dir}/${mfq_runtime_name}"; do
   codesign --force --sign "${mfq_signing_identity}" "${mfq_signed_file}"
   codesign --verify --strict --verbose=2 "${mfq_signed_file}"
 done
@@ -207,8 +198,7 @@ mfq_cli_path="${mfq_resource_dir}/${mfq_cli_name}/${mfq_cli_name}"
 [[ -x "${mfq_cli_path}" ]] || fail "PyInstaller did not create the unified mfq CLI"
 for mfq_arm64_file in \
   "${mfq_cli_path}" \
-  "${mfq_sidecar_dir}/${mfq_runtime_name}" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}"; do
+  "${mfq_sidecar_dir}/${mfq_runtime_name}"; do
   lipo -archs "${mfq_arm64_file}" | tr ' ' '\n' | grep -qx arm64 \
     || fail "${mfq_arm64_file} is not arm64"
 done
@@ -216,12 +206,8 @@ codesign --verify --strict --verbose=2 "${mfq_cli_path}"
 
 "${mfq_cli_path}" --version
 "${mfq_cli_path}" serve --help >/dev/null
-TYLOINFER_MLX_METALLIB="${mfq_resource_dir}/mlx.metallib" \
-DYLD_LIBRARY_PATH="${mfq_framework_dir}" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}" --help >/dev/null
 
 cd "${tyloinfer_dir}"
-"${mfq_venv_dir}/bin/python" "${mfq_script_dir}/stage_agent_runtime.py" "${mfq_resource_dir}/agent-runtime"
 npm ci
 npm run check
 if [[ "${mfq_signing_identity}" != "-" ]]; then
@@ -267,7 +253,6 @@ TYLOINFER_MLX_METALLIB="${mfq_packaged_app}/Contents/Resources/mlx.metallib" \
   "${mfq_packaged_app}/Contents/MacOS/mfq-decode-metal" --self-test-metal
 "${mfq_packaged_app}/Contents/Resources/tyloinfer-cli/tyloinfer-cli" --version >/dev/null
 TYLOINFER_MLX_METALLIB="${mfq_packaged_app}/Contents/Resources/mlx.metallib" \
-  "${mfq_packaged_app}/Contents/MacOS/mfq-perplexity" --help >/dev/null
 hdiutil detach "${mfq_mount_dir}" >/dev/null
 mfq_mounted=false
 rmdir "${mfq_mount_dir}"

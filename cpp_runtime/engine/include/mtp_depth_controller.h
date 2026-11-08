@@ -560,15 +560,18 @@ public:
         }
         if (dspark) dspark_.emplace(maximum_depth);
         else if(metal_batch_policy) {
-            batch_.emplace(std::vector<std::string>{"cuda-mtp"},maximum_depth);
+            // Joint block predictors change the whole proposal distribution
+            // with width. Keep their accumulated per-width yield history;
+            // sequential predictors can replace stale confidence on re-probe.
+            batch_.emplace(std::vector<std::string>{"cuda-mtp"},maximum_depth,0,!blockwise_);
             state_.seed_batch(*batch_);
             seeded_batch_park_=batch_->remaining()!=0;
         }
         else controller_.emplace(state_.begin(maximum_depth,gradual_warmup_,
             gradual_warmup_?60.0:0.0,blockwise_,periodic_cost_));
         if(gradual_warmup_ && !dspark)
-            std::fprintf(stderr,"runtime_mtp_depth_policy name=%s maximum_depth=%d periodic_weight_cost=%d\n",
-                batch_?"metal_batch_v1":"cuda_adaptive",maximum_depth,int(periodic_cost_));
+            std::fprintf(stderr,"runtime_mtp_depth_policy name=%s maximum_depth=%d periodic_weight_cost=%d yield_recency_refresh=%d baseline_loss_confirmation=%d\n",
+                batch_?"metal_batch_v1":"cuda_adaptive",maximum_depth,int(periodic_cost_),batch_?int(batch_->refresh_yields()):-1,int(batch_.has_value()));
     }
     ~GenerationPolicy() {
         if (controller_) state_.remember(*controller_);
@@ -672,6 +675,15 @@ private:
                 static_cast<unsigned long long>(parks()),static_cast<unsigned long long>(reentries_),
                 batch_->cost(0).value_or(0),batch_->cost(1).value_or(0),
                 batch_->cost(2).value_or(0),batch_->cost(3).value_or(0));
+            // Wider block drafts need the same measured yield/cost evidence
+            // as shallow native MTP. Emit it only under the existing trace.
+            for(int candidate=0;candidate<=batch_->maximum();++candidate) {
+                const auto cost=batch_->cost(candidate).value_or(0.);
+                const auto committed=batch_->committed_tokens(candidate);
+                const auto tokens=batch_->ordinary_requests()+batch_->requests().size()*committed;
+                std::fprintf(stderr,"runtime_mtp_batch_candidate depth=%d cycle_ms=%.4f committed=%.5f tokens_per_ms=%.6f selected=%d\n",
+                    candidate,cost,committed,cost>0?tokens/cost:0.,int(candidate==depth()));
+            }
         }
     }
     void trace_decision(const char* event,int used,int accepted,double elapsed,bool valid,bool force=false) {

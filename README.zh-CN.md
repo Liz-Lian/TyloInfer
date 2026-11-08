@@ -17,7 +17,7 @@ TyloInfer 在你的设备上运行稠密模型和 MoE 模型。权重全常驻�
 - **高速生成。** 原生 MTP、DFlash2 推测解码，配合投影融合和稠密／MoE FFN 优化。
 - **长对话支持。** RAM／SSD 持久化前缀缓存、单模型上下文设置、KV 量化，以及可限制 KV 常驻量的流式稀疏注意力。
 - **面向 Agent 的服务。** OpenAI 与 Anthropic 兼容 API、流式工具调用、模型别名、API Key 鉴权与连续批处理。
-- **完整工作台。** Studio 集成模型浏览下载、模型管理、实时资源监控、精度可视化与 Agent 启动入口。
+- **完整工作台。** Studio 集成模型浏览下载、模型管理、实时资源监控与精度可视化。
 
 Apple Silicon 使用 Metal；NVIDIA GPU 支持 Linux 和 Windows 下的 CUDA。ROCm 支持开发中。[查看模型与后端支持 →](docs/runtime/support.md)
 
@@ -57,7 +57,7 @@ NVIDIA RTX 3090 Ti · 4K input · 256 output
 
 | 推理引擎 | Prompt Processing | Generation | 原生 MTP | DFlash2（最快草稿数） |
 | --- | ---: | ---: | ---: | ---: |
-| TyloInfer | **2,174** | 45.3 | **114.5** | **179.9**（7） |
+| TyloInfer | **2,174** | 45.3 | **114.5** | **180.1**（7） |
 | NInfer-all | 2,008 | **46.9** | 110.5 | 136.3（7） |
 | llama.cpp b12125 | 1,799 | 43.9 | 89.3 | 109.9（5） |
 | ik_llama.cpp | 1,513 | 43.6 | 78.0 | 58.2（7） |

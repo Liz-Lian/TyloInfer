@@ -18,6 +18,7 @@
 #include "request_executor.h"
 #include "generation_flow.h"
 #include "mfq_weight_memory.h"
+#include "tyloinfer/host_memory.h"
 
 #include <cuda_runtime_api.h>
 #include "mfq_cuda_kv_quantization.h"
@@ -41,7 +42,7 @@ struct CudaEngineState {
     Model& language;
     DecodeGraphCache graph;
     TextSessionCache cache;
-    std::shared_ptr<void> ram_prefix_reclaimer;
+    std::shared_ptr<void> ram_prefix_reclaimer,ram_expert_reclaimer,ram_duplicate_reclaimer,ram_budget_reserver;
     std::unique_ptr<ContinuousBatch<CudaBatchOperations<Model>>> batching;
     bool duplex_active = false;
     std::size_t resident_budget=0, weight_budget=0, initial_expert_budget=0, allocation_ceiling=0;
@@ -278,6 +279,23 @@ struct CudaEngineState {
                 cuda_has_separate_memory()) {
         ram_prefix_reclaimer=register_qsa_ram_reclaimer(execution->layer_placement.primary_device(),
             mfq_current_cuda_stream(),cache.ram_reclaimer());
+        ram_duplicate_reclaimer=register_qsa_ram_reclaimer(execution->layer_placement.primary_device(),
+            mfq_current_cuda_stream(),[weak=std::weak_ptr<CudaExecutionContext>(execution)](std::size_t bytes) {
+                auto owner=weak.lock();return owner?reclaim_gguf_expert_duplicates(owner->gguf_expert_cache,bytes):0;
+            });
+        ram_budget_reserver=register_qsa_ram_budget_reserver(execution->layer_placement.primary_device(),
+            mfq_current_cuda_stream(),[weak=std::weak_ptr<CudaExecutionContext>(execution)](std::size_t bytes) {
+                auto owner=weak.lock();if(!owner)return std::size_t(0);
+                return owner->gguf_expert_cache?share_gguf_expert_host(owner->gguf_expert_cache,bytes):
+                    bytes?reclaim_routed_optional_host(*owner,bytes):0;
+            });
+        ram_expert_reclaimer=register_qsa_ram_capacity_reclaimer(execution->layer_placement.primary_device(),
+            mfq_current_cuda_stream(),[weak=std::weak_ptr<CudaExecutionContext>(execution)](std::size_t bytes) {
+                auto owner=weak.lock();if(!owner)return std::size_t(0);
+                const auto free=mfq::sample_host_memory().available_host_bytes();
+                const auto maximum=std::numeric_limits<std::size_t>::max();
+                return reclaim_routed_optional_host(*owner,bytes>maximum-free?maximum:free+bytes);
+            });
         initial_expert_budget=routed_expert_cache_budget_bytes(*execution);
         if (execution->qsa_kv_store)
             execution->qsa_kv_store->set_ram_reservation([this](std::size_t bytes) {
@@ -405,7 +423,7 @@ struct CudaEngineState {
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), bool(components.mtp));
     }
     ~CudaEngineState() {
-        ram_prefix_reclaimer.reset();
+        ram_budget_reserver.reset();ram_duplicate_reclaimer.reset();ram_expert_reclaimer.reset();ram_prefix_reclaimer.reset();
         language.restore_decode_workspace={};
         if(components.mtp)components.mtp->decode_workspace_changed={};
         try {release_graph_expert_space();}
@@ -626,8 +644,19 @@ struct CudaEngineState {
             if (execution->qsa_kv_store) {
                 auto kv = execution->qsa_kv_store->metrics();
                 metrics.insert(metrics.end(), kv.begin(), kv.end());
-            } else metrics.insert(metrics.end(), {{"qsa_kv_offload_enabled", 0.0},
-                {"qsa_kv_ram_enabled", 0.0}, {"qsa_kv_ram_bytes", 0.0}, {"qsa_kv_ssd_bytes", 0.0}});
+            } else {
+                const auto ram=metric_bytes("qsa_adaptive_ram_allocated_bytes");
+                const auto cold=metric_bytes("qsa_adaptive_ssd_bytes");
+                const auto index=metric_bytes("qsa_adaptive_index_archive_ssd_bytes");
+                const auto disk=cold+index;
+                const auto enabled=metric_bytes("qsa_adaptive_ram_enabled");
+                metrics.insert(metrics.end(),{{"qsa_kv_offload_enabled",enabled?1.:0.},
+                    {"qsa_kv_ssd_enabled",metric_bytes("qsa_adaptive_ssd_enabled")?1.:0.},
+                    {"qsa_kv_ram_enabled",enabled?1.:0.},{"qsa_kv_ram_bytes",double(ram)},
+                    {"qsa_kv_ssd_bytes",double(disk)},
+                    {"qsa_kv_cold_ssd_bytes",double(cold)},
+                    {"qsa_kv_index_archive_ssd_bytes",double(index)}});
+            }
             if (components.mtp) {
                 mtp::append_generation_metrics(metrics, components.mtp->last_stats);
                 metrics.emplace_back("mtp_predictor_graph_replays",double(components.mtp->graph_replay_count()));

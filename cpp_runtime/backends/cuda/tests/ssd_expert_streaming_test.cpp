@@ -302,12 +302,16 @@ void check_packed_metadata() {
 }
 void check_pinned_arena() {
     auto arena=std::make_shared<MoePinnedExpertArena>(1024);
+    check(arena->largest_free_bytes()==1024,"empty pinned arena lost its free interval size");
     auto a=arena->allocate(255),b=arena->allocate(256),c=arena->allocate(512);
     check(a && b && c && arena->used_bytes()==1024,"pinned expert allocations were not bounded and aligned");
     check(!arena->allocate(16),"pinned expert arena exceeded its capacity");
+    check(arena->largest_free_bytes()==0,"full pinned arena reported a free interval");
     a.reset();c.reset();
+    check(arena->largest_free_bytes()==512,"fragmented pinned arena counted separated free intervals as contiguous");
     check(!arena->allocate(768),"pinned arena reused an interval protected by a live lease");
     b.reset();
+    check(arena->largest_free_bytes()==1024,"pinned arena free size did not follow interval coalescing");
     auto joined=arena->allocate(1024);
     check(joined && joined->data()==arena->data(),"pinned expert intervals did not coalesce");
     auto storage=arena->tensor();arena.reset();

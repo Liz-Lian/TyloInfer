@@ -151,6 +151,10 @@ target_compile_features(mfq-moe-cache-policy-test PRIVATE cxx_std_17)
 add_test(NAME mfq-moe-cache-policy-test COMMAND mfq-moe-cache-policy-test)
 mfq_add_core_test(mfq-tensor-parallel-test tensor_parallel_test.cpp)
 
+add_executable(mfq-cuda-startup-test cuda_startup_test.cpp)
+target_compile_features(mfq-cuda-startup-test PRIVATE cxx_std_17)
+add_test(NAME mfq-cuda-startup-test COMMAND mfq-cuda-startup-test)
+
 add_executable(mfq-cuda-model-plan-test
     ${PROJECT_SOURCE_DIR}/backends/cuda/tests/cuda_model_plan_test.cpp
 )

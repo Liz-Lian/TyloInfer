@@ -50,7 +50,7 @@ additional scopes:
 | Sessions, presets, media, and documents | `inference` |
 | `GET` operations under `/models`, `/runtime`, and `/hub` | `inference` |
 | Model or runtime mutations | `models` |
-| Jobs, lineage, datasets, and evaluations | `jobs` |
+| Jobs and artifact lineage | `jobs` |
 | Admin routes: auth keys, cluster nodes, prefix-cache inspection and purge, listener and policy `PUT` | `admin` |
 | `/v1` compatibility endpoints | `inference` |
 
@@ -243,29 +243,6 @@ For a registered artifact, `GET /api/v1/models/{model_id}/directory` lists its
 files, `/analysis` returns checkpoint composition, and `/cache-profile`
 returns the embedded cache profile or `null`.
 
-### 2.7 Datasets and evaluations
-
-| Method | Path | Request | Success |
-|---|---|---|---|
-| `GET` | `/api/v1/datasets` | — | `200 DatasetList` |
-| `POST` | `/api/v1/datasets` | `CreateDatasetRequest` | `201 DatasetResource` |
-| `DELETE` | `/api/v1/datasets/{dataset_id}` | — | `204` |
-| `GET` | `/api/v1/evaluations` | — | `200 EvaluationResultList` |
-| `POST` | `/api/v1/evaluations/compare` | `CompareEvaluationsRequest` | `200 EvaluationComparisonResource` |
-| `GET` | `/api/v1/datasets/catalog` | — | `200 OfficialDatasetList` |
-| `GET` | `/api/v1/evaluations/tools` | — | `200 EvaluationToolsResource` |
-| `POST` | `/api/v1/evaluations/probabilities` | `ProbabilityScoreRequest` | `200 ProbabilityScoreResult` |
-
-Only evaluations with compatible kinds and comparison keys can be compared.
-
-`GET /api/v1/datasets/catalog` lists the built-in official datasets.
-`GET /api/v1/evaluations/tools` reports which evaluation handlers the current
-deployment registers and the OpenAI-compatible base URL it serves.
-`POST /api/v1/evaluations/probabilities` scores continuation log-likelihood on
-a resident instance (`mode` is `continuation` or `next_token`); it returns
-`501 probability_unavailable` when no managed runtime is configured or the
-loaded runtime cannot score probabilities.
-
 ### 2.8 Cluster nodes
 
 | Method | Path | Request | Success |
@@ -358,21 +335,6 @@ Status merges the local component state with runtime state (`active`,
 `supported_model_loaded`). Install queues a `component.voice_output.install`
 job. Activation enables the realtime voice path and returns `501` when no
 managed runtime or component manager is configured.
-
-### 2.11 WT2 reference sources
-
-| Method | Path | Request | Success |
-|---|---|---|---|
-| `GET` | `/api/v1/evaluations/reference/workspace` | — | `200 Object` |
-| `GET` | `/api/v1/evaluations/reference/files` | — | `200 ReferenceFiles` |
-| `POST` | `/api/v1/evaluations/reference/source` | `ReferenceSourceRequest` | `200 ReferenceSource` |
-| `POST` | `/api/v1/evaluations/reference/loading-plan` | `SourceLoadingRequest` | `200 SourceLoadingPlan` |
-
-`GET files` lists the directory selected by the optional `path` query.
-`POST source` inspects an original HF checkpoint; `POST loading-plan` checks
-whether it can remain resident or needs layerwise loading. Create a
-`reference.wikitext2` job to generate WT2 logits and their manifest.
-Validation failures return `422 reference_validation_failed`.
 
 ## 3. Session and response workflow
 

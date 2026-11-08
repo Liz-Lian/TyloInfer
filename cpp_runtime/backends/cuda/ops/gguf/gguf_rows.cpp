@@ -3,13 +3,18 @@
 #include "tyloinfer/row_residual.h"
 #include "../../kernels/gguf.h"
 #include "mfq_weight_memory.h"
+#include "mfq_cuda_resident_allocations.h"
 #include <algorithm>
+#include <atomic>
 #include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <future>
 
 namespace tb = mfq_tensor_backend;
 
@@ -19,6 +24,7 @@ struct GgufRowTable::RowCache {
     std::unordered_map<std::uint64_t,Entry> rows;
     std::list<std::uint64_t> recent;
     std::size_t capacity=0,bytes=0;
+    bool parallel=false;
     ~RowCache(){mfq::cuda::tensor_host_bytes.fetch_sub(bytes);}
 };
 
@@ -39,11 +45,13 @@ GgufRowTable::GgufRowTable(const mfq::ModelSource& source, const std::string& na
     correction_=source.row_residual(name);
     if(correction_ && !correction_->payload_bytes())correction_.reset();
     cache_ = std::make_unique<RowCache>();
+    cache_->parallel=source.supports_parallel_tensor_reads();
     // Include per-entry metadata in this small optional cache's bound.
     cache_->capacity=row_bytes_>SIZE_MAX-128?0:(8ULL<<20)/(row_bytes_+128);
     mfq::cuda::observe_streamed_ple(read_, record->nbytes);
 }
 GgufRowTable::~GgufRowTable()=default;
+bool GgufRowTable::parallel_reads()const noexcept{return cache_->parallel;}
 
 void GgufRowTable::read_row(std::int64_t id, void* destination) const {
     if (id < 0 || id >= rows_) throw std::out_of_range("GGUF table row id");
@@ -122,11 +130,13 @@ class GgufRowStage final : public RowStage {
     std::int64_t rows_per_shard_, count_ = 1, width_;
     std::size_t stride_ = 0, offset_, bytes_;
     tb::Device device_;
+    // Tensor release may record fences on every observed stream. Keep these
+    // owners alive until both the tensor allocations and host packet are gone.
+    std::vector<MfqCudaStream> streams_;
     std::unique_ptr<mfq::cuda::HostBuffer> host_;
     tb::Tensor packet_, output_;
     void* packet_address_ = nullptr;
     bool mapped_ = false;
-    std::vector<MfqCudaStream> streams_;
     std::unique_ptr<mfq::cuda::Event> done_;
     cudaStream_t last_stream_ = nullptr;
     bool pending_ = false;
@@ -181,6 +191,12 @@ public:
             cudaMemcpyHostToDevice, mfq_current_cuda_stream()));
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
         mfq::cuda::charge_tensor_host_bytes(bytes_);
+        if(!mapped_)if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+            static std::atomic<bool> reported{false};
+            if(!reported.exchange(true))std::fprintf(stderr,
+                "native_gguf_row_stage actual_match=1 rows=%lld width=%lld host_bytes=%zu output_bytes=%zu mapped=0\n",
+                static_cast<long long>(count_),static_cast<long long>(width_),bytes_,output_.nbytes());
+        }
     }
     ~GgufRowStage() override {
         try {
@@ -192,11 +208,24 @@ public:
     tb::Tensor output() const override { return output_; }
     bool mapped_rows() const override { return mapped_; }
     void upload(const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& shape) override {
-        if (shape != shape_ || ids.size() != static_cast<std::size_t>(count_))
-            throw std::invalid_argument("GGUF row stage upload shape differs");
         MfqCudaGuard guard(device_);
         retain_stream();
         if (pending_) done_->synchronize();
+        prepare_rows(ids,shape);
+        upload_prepared();
+    }
+    void upload_graph(const std::vector<std::int64_t>& ids,const std::vector<std::int64_t>& shape) override {
+        if(!mapped_){upload(ids,shape);return;}
+        // The graph owner already fences the preceding read. A mapped packet
+        // needs only CPU writes and the caller's publication flag, with no
+        // event recorded on an otherwise idle CUDA stream during replay.
+        prepare_rows(ids,shape);pending_=false;
+    }
+    // Runs on a CPU I/O worker. All storage/events were prepared by the
+    // model thread; this method never enters CUDA or changes GPU ownership.
+    void prepare_rows(const std::vector<std::int64_t>& ids,const std::vector<std::int64_t>& shape) {
+        if (shape != shape_ || ids.size() != static_cast<std::size_t>(count_))
+            throw std::invalid_argument("GGUF row stage upload shape differs");
         auto* descriptors = static_cast<mfq::cuda::gguf::StagedRow*>(host_->data());
         auto* bytes = static_cast<std::uint8_t*>(host_->data());
         std::vector<std::vector<mfq::ReadSpan>> requests(tables_.size());
@@ -210,6 +239,10 @@ public:
                 reinterpret_cast<std::byte*>(bytes+descriptors[i].offset),std::size_t(table->staged_row_bytes())});
         }
         for(std::size_t shard=0;shard<tables_.size();++shard)tables_[shard]->read_staged_rows(requests[shard]);
+    }
+    void upload_prepared() {
+        MfqCudaGuard guard(device_);
+        retain_stream();
         if (!mapped_) TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(packet_address_, host_->data(), bytes_,
             cudaMemcpyHostToDevice, mfq_current_cuda_stream()));
         TYLOINFER_NATIVE_CUDA_CHECK(cudaEventRecord(done_->get(), mfq_current_cuda_stream()));
@@ -242,6 +275,30 @@ public:
 std::shared_ptr<RowStage> make_gguf_row_stage(const std::vector<std::shared_ptr<GgufRowTable>>& tables,
     std::int64_t rows, const std::vector<std::int64_t>& shape, const tb::Device& device) {
     return std::make_shared<GgufRowStage>(tables, rows, shape, device);
+}
+
+std::function<tb::Tensor()> prefetch_gguf_shards(
+    const std::vector<std::shared_ptr<GgufRowTable>>& tables,std::int64_t rows,
+    const std::vector<std::int64_t>& ids,const std::vector<std::int64_t>& shape,const tb::Device& device) {
+    // Providers with a shared seek cursor must retain synchronous reads.
+    if(std::any_of(tables.begin(),tables.end(),[](const auto& table){return !table || !table->parallel_reads();}))return {};
+    struct Pending {
+        std::shared_ptr<GgufRowStage> stage;
+        // Destroy/join the CPU job before releasing stage CUDA allocations.
+        std::future<void> ready;
+    };
+    auto pending=std::make_shared<Pending>();
+    {
+        mfq::cuda::ResidentAllocationScope resident;
+        pending->stage=std::make_shared<GgufRowStage>(tables,rows,shape,device);
+    }
+    pending->ready=std::async(std::launch::async,
+        [stage=pending->stage.get(),ids,shape]{stage->prepare_rows(ids,shape);});
+    return [pending] {
+        if(pending->ready.valid())pending->ready.get();
+        pending->stage->upload_prepared();pending->stage->decode();
+        return pending->stage->output();
+    };
 }
 
 tb::Tensor lookup_gguf_shards(const std::vector<std::shared_ptr<GgufRowTable>>& tables,

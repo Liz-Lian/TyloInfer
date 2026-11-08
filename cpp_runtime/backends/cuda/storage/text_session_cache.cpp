@@ -2,6 +2,8 @@
 #include "storage/qsa_ram_session.h"
 #include "core/full_block.h"
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "cuda_runtime_config.h"
@@ -17,6 +19,7 @@
 #include "storage/session_state.h"
 #include "core/mtp.h"
 #include "mfq_paged_prefix_cache.h"
+#include "tyloinfer/host_memory.h"
 #include "paged_session_bindings.h"
 #include "session_cache.h"
 
@@ -103,17 +106,7 @@ std::shared_ptr<mfq::cache::PagedPrefixCache> make_cuda_paged_prefix_cache(
     cache.max_hot_bytes = separate ? config.ram_bytes : config.hot_bytes;
     cache.spill_hot_on_eviction = separate;
     if (separate) cache.available_ram_bytes = []() -> std::uint64_t {
-#ifdef _WIN32
-        MEMORYSTATUSEX state{};
-        state.dwLength = sizeof(state);
-        if (GlobalMemoryStatusEx(&state)) return state.ullAvailPhys;
-#elif defined(__linux__)
-        std::ifstream input("/proc/meminfo");
-        std::string name, unit;
-        std::uint64_t kib = 0;
-        while (input >> name >> kib >> unit) if (name == "MemAvailable:") return kib * 1024;
-#endif
-        return UINT64_MAX;
+        return mfq::sample_host_memory().available_host_bytes();
     };
     cache.max_pending_writes = config.pending_writes;
     cache.max_pending_bytes = config.pending_bytes;
@@ -589,10 +582,11 @@ TextSessionState decode_cuda_qwen4_paged_prefix(mfq::cache::PagedPrefixCache& ca
     std::vector<std::shared_ptr<const mfq::cache::PagedPrefixReadLease>> leases;
     std::vector<CudaPagedPayload> hot_only;
     size_t position=0,exact_pages=0,exact_tokens=0;
+    const auto incoming=cache.borrow_prefix(blocks);
     // Check small headers first. The decoder then holds only one full page
     // at a time; retained file ranges never expand the context to FP16.
     for(const auto& block:blocks) {
-        auto lease=cache.borrow(block);
+        auto lease=incoming[leases.size()];
         CudaPagedPayload header;
         if(lease)header=std::make_shared<const std::vector<uint8_t>>(lease->read_range(0,std::min(size_t(28),lease->payload_bytes)));
         else {
@@ -637,8 +631,26 @@ void bind_cuda_qwen4_paged_prefix(const TextSessionState& state,mfq::cache::Page
     const auto* layers=std::get_if<std::vector<Qwen4BlockSessionState>>(&state.payload);
     if(!layers || std::none_of(layers->begin(),layers->end(),[](const auto& b){return bool(b.adaptive_qsa);}))return;
     const auto skip_optional=[](CudaPagedReader& r){if(r.scalar<uint32_t>("tensor presence"))(void)r.tensor();};
+    size_t reused_pages=0,scanned_pages=0,page=0;
     for(const auto& hash:blocks) {
+        const auto start=page++*cache.block_size_tokens();
         auto lease=cache.borrow(hash);if(!lease)continue;
+        // Older complete pages already have immutable KV/index readers after
+        // restore or a previous snapshot. Do not reread/reparse the full chain
+        // merely to recreate those same readers. The final recurrent/MTP page
+        // still follows the normal codec validation and binding path.
+        if(page<blocks.size() && start<state.tokens.size()) {
+            const auto count=std::min(cache.block_size_tokens(),state.tokens.size()-start);
+            const auto ready=std::all_of(layers->begin(),layers->end(),[&](const auto& layer) {
+                return !layer.adaptive_qsa || mfq::cuda::internal::reuse_ram_qsa_page(*layer.adaptive_qsa,start,count,lease,false);
+            });
+            if(ready) {
+                for(const auto& layer:*layers)if(layer.adaptive_qsa)
+                    (void)mfq::cuda::internal::reuse_ram_qsa_page(*layer.adaptive_qsa,start,count,lease,true);
+                ++reused_pages;continue;
+            }
+        }
+        ++scanned_pages;
         auto payload=std::make_shared<const std::vector<uint8_t>>(lease->read_range(0,lease->payload_bytes));
         CudaPagedReader reader(*payload);const auto h=read_qwen4_header(reader);
         if(h.version!=2 || h.layers!=layers->size())continue;
@@ -677,6 +689,8 @@ void bind_cuda_qwen4_paged_prefix(const TextSessionState& state,mfq::cache::Page
             }
         }
     }
+    if(std::getenv("TYLOINFER_TRACE_QSA_TQ"))std::fprintf(stderr,
+        "native_qsa_prefix_rebind actual_match=1 reused_pages=%zu scanned_pages=%zu\n",reused_pages,scanned_pages);
 }
 
 size_t CudaPagedReader::remaining() const { return static_cast<size_t>(end_ - cursor_); }

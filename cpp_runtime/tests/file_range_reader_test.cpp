@@ -17,6 +17,64 @@
 
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+void exercise_retained_files(const std::filesystem::path& base) {
+    struct Files {
+        std::vector<std::filesystem::path> paths;
+        ~Files(){for(const auto& path:paths){std::error_code error;std::filesystem::remove(path,error);}}
+    } files;
+    std::vector<std::vector<std::byte>> expected(5,std::vector<std::byte>(32771));
+    std::vector<std::shared_ptr<const mfq::FileRangeReader>> readers;
+    for(std::size_t i=0;i<expected.size();++i) {
+        for(std::size_t j=0;j<expected[i].size();++j)expected[i][j]=std::byte((i*97+j*13+j/71)&255);
+        files.paths.push_back(base.string()+"-retained-"+std::to_string(i));
+        {std::ofstream file(files.paths.back(),std::ios::binary);
+            file.write(reinterpret_cast<const char*>(expected[i].data()),expected[i].size());}
+        readers.push_back(std::make_shared<mfq::FileRangeReader>(files.paths.back(),mfq::FileReadMode::Buffered));
+    }
+    const auto check=[&](unsigned seed) {
+        std::vector<std::vector<std::byte>> output(193,std::vector<std::byte>(133,std::byte{0x5a}));
+        std::vector<mfq::FileReadRange> ranges;
+        for(std::size_t i=0;i<output.size();++i) {
+            const auto file=(i*3+seed)%readers.size(),offset=(i*167+seed*17)%(expected[file].size()-131);
+            ranges.push_back({readers[file],{offset,output[i].data()+1,131}});
+        }
+        mfq::FileRangeReader::read_many(ranges);
+        for(std::size_t i=0;i<output.size();++i) {
+            const auto file=(i*3+seed)%readers.size();
+            require(output[i].front()==std::byte{0x5a} && output[i].back()==std::byte{0x5a} &&
+                std::equal(output[i].begin()+1,output[i].end()-1,expected[file].begin()+ranges[i].span.offset),
+                "retained multi-file queue changed bytes or destination guards");
+        }
+    };
+    std::vector<std::future<void>> jobs;
+    for(unsigned i=0;i<4;++i)jobs.push_back(std::async(std::launch::async,[&,i]{check(i);}));
+    for(auto& job:jobs)job.get();
+    std::byte guard{0x5a};bool rejected=false;
+    try{mfq::FileRangeReader::read_many({{readers[0],{0,&guard,1}},{readers[1],{readers[1]->size(),&guard,1}}});}
+    catch(const std::out_of_range&){rejected=true;}
+    require(rejected && guard==std::byte{0x5a},"multi-file validation changed an earlier destination");
+    rejected=false;try{mfq::FileRangeReader::read_many({{nullptr,{0,&guard,1}}});}
+    catch(const std::invalid_argument&){rejected=true;}
+    require(rejected,"missing multi-file reader was accepted");
+    // Retained file objects survive replacement of the visible cache entry.
+    const auto renamed=files.paths[0].string()+"-old";files.paths.push_back(renamed);
+    std::filesystem::rename(files.paths[0],renamed);
+    {std::ofstream file(files.paths[0],std::ios::binary);file<<"replacement";}
+    check(9);
+    // A failed wave drains every pending request before the caller retries.
+    {std::ofstream file(files.paths[1],std::ios::binary|std::ios::trunc);file<<"short";}
+    rejected=false;try{check(11);}catch(const std::runtime_error&){rejected=true;}
+    require(rejected,"truncated multi-file source was accepted");
+    {std::ofstream file(files.paths[1],std::ios::binary|std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(expected[1].data()),expected[1].size());}
+    check(12);
+    auto direct=std::make_shared<mfq::FileRangeReader>(files.paths[2],mfq::FileReadMode::Direct);
+    std::array<std::byte,34> output{};
+    mfq::FileRangeReader::read_many({{direct,{3,output.data(),17}},{readers[4],{7,output.data()+17,17}}});
+    require(std::equal(output.begin(),output.begin()+17,expected[2].begin()+3) &&
+        std::equal(output.begin()+17,output.end(),expected[4].begin()+7),"mixed direct/buffered sources changed bytes");
+    mfq::FileRangeReader::read_many({});
+}
 void exercise_scatter(const std::filesystem::path& path, const std::vector<std::byte>& expected,
     mfq::FileReadMode mode) {
     mfq::FileRangeReader reader(path, mode);
@@ -97,6 +155,21 @@ void exercise_large_batches(const std::filesystem::path& base) {
             "fallback batch retained oversized staging storage");
 #endif
     }
+}
+void exercise_many_ranges(const std::filesystem::path& path,const std::vector<std::byte>& expected) {
+    mfq::FileRangeReader reader(path,mfq::FileReadMode::Direct);
+    std::vector<std::byte> output(769*33,std::byte{0x5a});std::vector<mfq::ReadSpan> spans;
+    for(std::size_t i=0;i<769;++i)
+        spans.push_back({(i*9973)%(expected.size()-31),output.data()+i*33+1,31});
+    reader.read_batch(spans);
+    for(std::size_t i=0;i<spans.size();++i)
+        require(output[i*33]==std::byte{0x5a} && output[i*33+32]==std::byte{0x5a} &&
+            std::equal(output.begin()+i*33+1,output.begin()+i*33+32,expected.begin()+spans[i].offset),
+            "direct queue reuse changed a row or destination guard");
+    const auto stats=reader.stats();
+    require(stats.logical_bytes==769*31 && !stats.staging_bytes &&
+        stats.staging_peak_bytes<=std::max<std::size_t>(8u<<20,reader.alignment()),
+        "direct queue reuse exceeded its byte-wave bound");
 }
 void exercise_coalesced_staging(const std::filesystem::path& base) {
     const auto path=std::filesystem::path(base.string()+"-coalesced");
@@ -338,7 +411,7 @@ int main() {
                 }
                 require(!batched.stats().staging_bytes && !batched.stats().errors,"event reuse leaked request staging");
                 if(mode==mfq::FileReadMode::Direct)
-                    require(batched.stats().staging_peak_bytes<=128*batched.alignment(),
+                    require(batched.stats().staging_peak_bytes<=std::max<std::size_t>(8u<<20,batched.alignment()),
                         "direct row batches allocated unbounded aligned staging");
             }
             {
@@ -361,7 +434,7 @@ int main() {
                 const auto stats=growing.stats();
                 require(!stats.staging_bytes && !stats.errors && stats.logical_bytes==logical,"growing batch staging accounting differs");
                 if(mode==mfq::FileReadMode::Direct)
-                    require(stats.staging_peak_bytes<=64*(8193+2*growing.alignment()),"growing batch retained more than one wave");
+                    require(stats.staging_peak_bytes<=std::max<std::size_t>(8u<<20,growing.alignment()),"growing batch retained more than one wave");
             }
             auto reader=std::make_shared<mfq::AsyncRangeReader>(path,mode);
             std::vector<std::future<void>> jobs;
@@ -428,7 +501,9 @@ int main() {
                 "Linux queue reused an incomplete failed request");
         }
 #endif
+        exercise_retained_files(path);
         exercise_shared_staging(path);
+        exercise_many_ranges(path,expected);
         exercise_scatter(path, expected, mfq::FileReadMode::Buffered);
         exercise_scatter(path, expected, mfq::FileReadMode::Direct);
         std::filesystem::remove(path);

@@ -334,11 +334,7 @@ set_target_properties(mfq-hip-runtime PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-add_library(mfq-hip-eval STATIC ${TYLOINFER_HIP_ROOT}/eval/kl.cpp)
-mfq_configure_hip_runtime_target(mfq-hip-eval)
-target_include_directories(mfq-hip-eval PRIVATE ${TYLOINFER_HIP_ROOT}/storage)
-target_compile_definitions(mfq-hip-eval PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
-target_link_libraries(mfq-hip-eval PUBLIC mfq-hip-runtime)
+
 
 add_library(mfq-hip-diagnostics STATIC
     ${TYLOINFER_HIP_ROOT}/diagnostics/attention_checks.cpp
@@ -383,19 +379,6 @@ set_target_properties(mfq-diagnostics PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
 )
 
-add_executable(mfq-eval
-    ${TYLOINFER_HIP_ROOT}/apps/eval_main.cpp
-    ${TYLOINFER_HIP_ROOT}/commands/eval.cpp
-)
-mfq_configure_hip_runtime_target(mfq-eval)
-target_include_directories(mfq-eval PRIVATE ${TYLOINFER_HIP_ROOT}/storage)
-target_compile_definitions(mfq-eval PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
-target_link_libraries(mfq-eval PRIVATE
-    mfq-hip-eval mfq-hip-runtime mfq-hip-native-kernels mfq-ggml)
-target_compile_features(mfq-eval PRIVATE cxx_std_20)
-set_target_properties(mfq-eval PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
-)
 
 if(BUILD_TESTING)
     add_executable(mfq-hip-decode-test ${TYLOINFER_HIP_ROOT}/tests/decode_hotspots_test.cpp)

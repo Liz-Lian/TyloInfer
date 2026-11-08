@@ -31,25 +31,26 @@ void qsa_pool_rotary_cache_cuda(
     const mfq_tensor_backend::Tensor& index, const mfq_tensor_backend::Tensor& weight,
     const mfq_tensor_backend::Tensor& positions, const mfq_tensor_backend::Tensor& cache_positions,
     const mfq_tensor_backend::Tensor& frequencies, const mfq_tensor_backend::Tensor& axes,
-    const mfq_tensor_backend::Tensor& output, int64_t pool, int64_t maximum, int64_t rotary_maximum, double eps);
+    const mfq_tensor_backend::Tensor& output, int64_t pool, int64_t maximum, int64_t rotary_maximum, double eps,
+    double attention_factor = 1.0);
 
 // Compact consecutive pools with their absolute RoPE start positions.
 void qsa_pool_rotary_cuda(
     const mfq_tensor_backend::Tensor& index, const mfq_tensor_backend::Tensor& weight,
     const mfq_tensor_backend::Tensor& positions, const mfq_tensor_backend::Tensor& frequencies,
     const mfq_tensor_backend::Tensor& axes, const mfq_tensor_backend::Tensor& output,
-    int64_t pool, int64_t rotary_maximum, double eps);
+    int64_t pool, int64_t rotary_maximum, double eps,double attention_factor = 1.0);
 
 mfq_tensor_backend::Tensor rotary_embedding_cached_cuda(
     mfq_tensor_backend::Tensor input, mfq_tensor_backend::Tensor positions,
     mfq_tensor_backend::Tensor frequencies, mfq_tensor_backend::Tensor axes,
-    int64_t maximum);
+    int64_t maximum,double attention_factor = 1.0);
 mfq_tensor_backend::Tensor rotary_normalized_cached_cuda(
     mfq_tensor_backend::Tensor input, mfq_tensor_backend::Tensor weight,
     mfq_tensor_backend::Tensor positions, mfq_tensor_backend::Tensor frequencies,
     mfq_tensor_backend::Tensor axes, int64_t maximum, double eps,
     mfq_tensor_backend::Tensor key_cache, mfq_tensor_backend::Tensor cache_positions,
-    mfq_tensor_backend::Tensor projected_value, mfq_tensor_backend::Tensor value_cache);
+    mfq_tensor_backend::Tensor projected_value, mfq_tensor_backend::Tensor value_cache,double attention_factor = 1.0);
 
 std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
     const std::vector<mfq_tensor_backend::Tensor>& inputs,
@@ -58,7 +59,7 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
     mfq_tensor_backend::Tensor axes,int64_t maximum,double eps,int cache_entry,
     mfq_tensor_backend::Tensor key_cache,mfq_tensor_backend::Tensor cache_positions,
     mfq_tensor_backend::Tensor projected_value,mfq_tensor_backend::Tensor value_cache,
-    const std::vector<mfq_tensor_backend::Tensor>& entry_positions = {});
+    const std::vector<mfq_tensor_backend::Tensor>& entry_positions = {},double attention_factor = 1.0);
 
 mfq_tensor_backend::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
     mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,

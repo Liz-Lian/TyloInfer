@@ -36,7 +36,7 @@ function renderShell(overrides: Partial<ReturnType<typeof useRuntime>>, path = '
         <Route element={<StudioShell />}>
           <Route path="settings" element={<p>Settings content</p>} />
           <Route path="runtime" element={<p>Connection settings content</p>} />
-          <Route path="chat" element={<p>Chat content</p>} />
+          <Route path="models" element={<p>Models content</p>} />
           <Route index element={<p>Overview content</p>} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
@@ -54,8 +54,9 @@ describe('StudioShell 持久运行时告警', () => {
     const tools = screen.getByRole('button', { name: '工具' });
     expect(tools).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: '分析' })).toBeVisible();
-    expect(screen.getByText('Agent', { selector: '.sidebar-group-label' })).toBeVisible();
-    expect(screen.getByRole('button', { name: '新建会话' })).toBeVisible();
+    expect(screen.queryByText('Agent', { selector: '.sidebar-group-label' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '新建会话' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '测评' })).not.toBeInTheDocument();
     expect(screen.queryByText('代理', { selector: '.sidebar-group-label' })).not.toBeInTheDocument();
     expect(document.querySelector('#studio-sidebar .appearance-controls')).toBeNull();
     fireEvent.click(tools);
@@ -129,9 +130,9 @@ describe('StudioShell 持久运行时告警', () => {
   });
 
   it('未就绪的业务页面显示独立断连页，允许重试或打开连接设置', () => {
-    const runtime = renderShell({ ready: false, connectionError: 'server offline' }, '/chat');
+    const runtime = renderShell({ ready: false, connectionError: 'server offline' }, '/models');
     expect(screen.getByRole('heading', { name: '服务暂时无法连接' })).toBeTruthy();
-    expect(screen.queryByText('Chat content')).toBeNull();
+    expect(screen.queryByText('Models content')).toBeNull();
     fireEvent.click(screen.getByText('查看错误详情'));
     expect(screen.getByText('server offline')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '重新连接' }));
@@ -141,7 +142,7 @@ describe('StudioShell 持久运行时告警', () => {
   });
 
   it('首次连接中只显示等待状态，不误报失败', () => {
-    renderShell({ ready: false }, '/chat');
+    renderShell({ ready: false }, '/models');
     expect(screen.getByRole('status')).toHaveTextContent('正在加载中');
     expect(screen.getByRole('heading', { name: '正在加载中' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '服务暂时无法连接' })).toBeNull();

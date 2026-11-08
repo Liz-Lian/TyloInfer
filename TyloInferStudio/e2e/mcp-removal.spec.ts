@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { mockStudioServer } from './mockServer';
 
 for (const language of ['zh-CN', 'en'] as const) {
-  test(`service and chat have no managed MCP dependency (${language})`, async ({ page }, testInfo) => {
+  test(`service has no managed MCP dependency (${language})`, async ({ page }, testInfo) => {
     const state = await mockStudioServer(page, { language });
     await page.route('**/api/v1/runtime/model-aliases', route => route.fulfill({ json: { aliases: {} } }));
     await page.route('**/api/v1/runtime/memory-policy', route => route.fulfill({ json: {
@@ -29,10 +29,6 @@ for (const language of ['zh-CN', 'en'] as const) {
       });
     })).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('remote-routing.png'), animations: 'disabled' });
-    await page.goto('/agent');
-    await expect(page.locator('main h1')).toBeVisible();
-    expect(state.requests.some(request => request.includes('/mcp/'))).toBe(false);
-    expect(state.unexpected).toEqual([]);
     expect(errors).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });

@@ -34,12 +34,14 @@ from tyloinfer.server.state.catalog import (
     ModelRegistrationError,
 )
 from tyloinfer.server.services.checkpoint_analysis import analyze_checkpoint
-from tyloinfer.server.services.agent_runtime import AgentRuntime
-from tyloinfer.server.services.model_deletion import ModelDeletionError, delete_model_files, model_deletion_plan
+from tyloinfer.server.services.model_deletion import (
+    ModelDeletionError,
+    delete_model_files,
+    model_deletion_plan,
+)
 from tyloinfer.server.services.model_memory import checkpoint_cache_profile
 from tyloinfer.server.services.documents import DocumentExtractionError, extract_document
 from tyloinfer.server.services.desktop import FileManagerUnavailableError, open_directory
-from tyloinfer.server.services.evaluation_datasets import official_for_digest
 from tyloinfer.server.services.hub import (
     HubCatalog,
     HubError,
@@ -59,9 +61,7 @@ from tyloinfer.server.protocol.models import (
     AppendMessageResult,
     ArtifactLineageList,
     AudioPart,
-    CompareEvaluationsRequest,
     ContentPart,
-    CreateDatasetRequest,
     CreateDocumentRequest,
     CreateGenerationPresetRequest,
     CreateJobRequest,
@@ -69,17 +69,11 @@ from tyloinfer.server.protocol.models import (
     CreateResponseRequest,
     CreateRuntimeProfileRequest,
     CreateSessionRequest,
-    DatasetList,
-    DatasetResource,
     DeleteWorkspaceArtifactRequest,
     DocumentPart,
     DocumentResource,
     ErrorDetail,
     ErrorEvent,
-    EvaluationComparisonResource,
-    EvaluationComparisonRow,
-    EvaluationKind,
-    EvaluationResultList,
     ForkSessionRequest,
     GeneratedAudioPart,
     GenerationPresetList,
@@ -159,8 +153,6 @@ from tyloinfer.server.protocol.models import (
 )
 from tyloinfer.server.state.storage import (
     BeginResponseResult,
-    DatasetNotFoundError,
-    EvaluationNotFoundError,
     GenerationPresetNotFoundError,
     IdempotencyConflictError,
     InvalidJobStateError,
@@ -308,7 +300,6 @@ class ServerService:
         stream_keepalive_seconds: float = 15.0,
     ) -> None:
         self.store = store
-        self.agent_runtime = AgentRuntime(store.path.parent / 'agent')
         self.model_aliases = store.runtime_model_aliases()
         self.backend = backend
         self.jobs = jobs or JobManager(store)
@@ -330,15 +321,32 @@ class ServerService:
         if runtime_manager is not None:
             runtime_manager.store = store
             if hasattr(runtime_manager, "context_policy"):
-                runtime_manager.context_policy = RuntimeContextPolicy.model_validate(store.runtime_context_policy())
-                self.jobs.register("runtime.context.configure", TypedJobHandler(runtime_manager.configure_context, RuntimeReloadRequest))
+                runtime_manager.context_policy = RuntimeContextPolicy.model_validate(
+                    store.runtime_context_policy()
+                )
+                self.jobs.register(
+                    "runtime.context.configure",
+                    TypedJobHandler(runtime_manager.configure_context, RuntimeReloadRequest),
+                )
             if hasattr(runtime_manager, "inference_policy"):
-                runtime_manager.inference_policy = RuntimeInferencePolicy.model_validate(store.runtime_inference_policy())
+                runtime_manager.inference_policy = RuntimeInferencePolicy.model_validate(
+                    store.runtime_inference_policy()
+                )
             if hasattr(runtime_manager, "configure_memory_policy"):
-                runtime_manager.memory_policy = RuntimeMemoryPolicy.model_validate(store.runtime_memory_policy())
-                self.jobs.register("runtime.memory.configure", TypedJobHandler(runtime_manager.configure_memory_policy, RuntimeMemoryPolicy))
+                runtime_manager.memory_policy = RuntimeMemoryPolicy.model_validate(
+                    store.runtime_memory_policy()
+                )
+                self.jobs.register(
+                    "runtime.memory.configure",
+                    TypedJobHandler(runtime_manager.configure_memory_policy, RuntimeMemoryPolicy),
+                )
             if hasattr(runtime_manager, "configure_qsa_kv_offload"):
-                self.jobs.register("runtime.qsa-kv.configure", TypedJobHandler(runtime_manager.configure_qsa_kv_offload, ConfigureQsaKvOffloadRequest))
+                self.jobs.register(
+                    "runtime.qsa-kv.configure",
+                    TypedJobHandler(
+                        runtime_manager.configure_qsa_kv_offload, ConfigureQsaKvOffloadRequest
+                    ),
+                )
             self.jobs.register(
                 "model.load", TypedJobHandler(runtime_manager.load, ModelLoadRequest)
             )
@@ -376,20 +384,15 @@ class ServerService:
                 )
 
             current = asyncio.current_task()
-            tasks = {
-                task
-                for _, (_, task) in active
-                if task is not current and not task.done()
-            }
+            tasks = {task for _, (_, task) in active if task is not current and not task.done()}
             for task in tasks:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            await self.agent_runtime.close()
             await self.backend.aclose()
 
     async def create_job(self, request: CreateJobRequest) -> JobResource:
-        if request.kind in {'download.huggingface', 'download.modelscope'}:
+        if request.kind in {"download.huggingface", "download.modelscope"}:
             async with self._download_job_lock:
                 existing = await self._active_download_job(request)
                 if existing is not None:
@@ -412,67 +415,138 @@ class ServerService:
         if self.tool_handlers is None:
             return None
         try:
-            payload, destination = await asyncio.to_thread(self.tool_handlers.download_request, request.kind, request.payload)
+            payload, destination = await asyncio.to_thread(
+                self.tool_handlers.download_request, request.kind, request.payload
+            )
         except JobExecutionError as error:
             raise ServiceError(422, error.detail.code, error.detail.message) from error
-        destinations = await asyncio.to_thread(self.tool_handlers.download_destinations, request.kind, payload)
+        destinations = await asyncio.to_thread(
+            self.tool_handlers.download_destinations, request.kind, payload
+        )
         for job in await asyncio.to_thread(self.store.active_download_jobs):
-            other, path = await asyncio.to_thread(self.tool_handlers.download_request, job.kind, job.payload)
+            other, path = await asyncio.to_thread(
+                self.tool_handlers.download_request, job.kind, job.payload
+            )
             if path not in destinations:
                 continue
             other_tables = {name for name in other.include if is_engram_shard(name)}
             tables = {name for name in payload.include if is_engram_shard(name)}
             # Automatically added shared tables do not change model identity;
             # an explicit choice of a different table must remain distinct.
-            same_files = (other.repo_id.casefold(), sorted(name for name in other.include if not is_engram_shard(name)), sorted(other.exclude)) == (
-                payload.repo_id.casefold(), sorted(name for name in payload.include if not is_engram_shard(name)), sorted(payload.exclude))
+            same_files = (
+                other.repo_id.casefold(),
+                sorted(name for name in other.include if not is_engram_shard(name)),
+                sorted(other.exclude),
+            ) == (
+                payload.repo_id.casefold(),
+                sorted(name for name in payload.include if not is_engram_shard(name)),
+                sorted(payload.exclude),
+            )
             same_files = same_files and (not tables or tables == other_tables)
-            if same_files and (path != destination or (job.kind, other.revision) == (request.kind, payload.revision)):
+            if same_files and (
+                path != destination
+                or (job.kind, other.revision) == (request.kind, payload.revision)
+            ):
                 return job
-            if (path == destination and tables and tables == other_tables and
-                    (job.kind, other.repo_id, other.revision) == (request.kind, payload.repo_id, payload.revision)):
-                weights = [name for name in payload.include if name.lower().endswith(TYLOINFER_SUFFIXES) and not is_engram_shard(name)]
-                other_weights = [name for name in other.include if name.lower().endswith(TYLOINFER_SUFFIXES) and not is_engram_shard(name)]
-                if weights and other_weights and not any(
-                    fnmatch.fnmatchcase(left, right) or fnmatch.fnmatchcase(right, left)
-                    for left in weights for right in other_weights):
+            if (
+                path == destination
+                and tables
+                and tables == other_tables
+                and (job.kind, other.repo_id, other.revision)
+                == (request.kind, payload.repo_id, payload.revision)
+            ):
+                weights = [
+                    name
+                    for name in payload.include
+                    if name.lower().endswith(TYLOINFER_SUFFIXES) and not is_engram_shard(name)
+                ]
+                other_weights = [
+                    name
+                    for name in other.include
+                    if name.lower().endswith(TYLOINFER_SUFFIXES) and not is_engram_shard(name)
+                ]
+                if (
+                    weights
+                    and other_weights
+                    and not any(
+                        fnmatch.fnmatchcase(left, right) or fnmatch.fnmatchcase(right, left)
+                        for left in weights
+                        for right in other_weights
+                    )
+                ):
                     # Distinct tiers share one directory; the downloader
                     # serializes writes so the common files stay intact.
                     continue
-            raise ServiceError(409, 'download_destination_busy', 'This folder already has an active download.')
+            raise ServiceError(
+                409, "download_destination_busy", "This folder already has an active download."
+            )
         return None
 
     async def _check_download_job(self, request: CreateJobRequest) -> None:
-        if request.kind not in {'download.huggingface', 'download.modelscope'} or self.tool_handlers is None:
+        if (
+            request.kind not in {"download.huggingface", "download.modelscope"}
+            or self.tool_handlers is None
+        ):
             return
         try:
-            payload, destination = await asyncio.to_thread(self.tool_handlers.download_request, request.kind, request.payload)
-            destinations = await asyncio.to_thread(self.tool_handlers.download_destinations, request.kind, payload)
-            existing = await asyncio.to_thread(lambda: [path for path in destinations if path.is_dir() and any(path.iterdir())])
-            needs_dependencies = payload.repo_type == 'model' and any(
-                pattern.lower().endswith(TYLOINFER_SUFFIXES) and ('/' in pattern or '-of-' in pattern)
-                for pattern in payload.include)
+            payload, destination = await asyncio.to_thread(
+                self.tool_handlers.download_request, request.kind, request.payload
+            )
+            destinations = await asyncio.to_thread(
+                self.tool_handlers.download_destinations, request.kind, payload
+            )
+            existing = await asyncio.to_thread(
+                lambda: [path for path in destinations if path.is_dir() and any(path.iterdir())]
+            )
+            needs_dependencies = payload.repo_type == "model" and any(
+                pattern.lower().endswith(TYLOINFER_SUFFIXES)
+                and ("/" in pattern or "-of-" in pattern)
+                for pattern in payload.include
+            )
             if not existing and not needs_dependencies:
                 return
-            provider = request.kind.split('.')[1]
-            info = await self.hub_catalog.download_files(provider, payload.repo_id, payload.revision)
+            provider = request.kind.split(".")[1]
+            info = await self.hub_catalog.download_files(
+                provider, payload.repo_id, payload.revision
+            )
             selected = self.tool_handlers.selected_download_files(payload, info.files)
-            extra = [item.name for item in selected if payload.include and not any(
-                fnmatch.fnmatchcase(item.name, pattern) for pattern in payload.include)]
+            extra = [
+                item.name
+                for item in selected
+                if payload.include
+                and not any(fnmatch.fnmatchcase(item.name, pattern) for pattern in payload.include)
+            ]
             if extra:
-                values = {'include': [*payload.include, *extra],
-                          'expected_bytes': sum(item.byte_size for item in selected)}
+                values = {
+                    "include": [*payload.include, *extra],
+                    "expected_bytes": sum(item.byte_size for item in selected),
+                }
                 request.payload.update(values)
                 payload = payload.model_copy(update=values)
             for path in existing:
-                if await asyncio.to_thread(self.tool_handlers.download_files_present, path, payload, info.files, mfq_only=path != destination):
-                    raise ServiceError(409, 'download_already_exists', 'The requested files already exist in the download folder.')
+                if await asyncio.to_thread(
+                    self.tool_handlers.download_files_present,
+                    path,
+                    payload,
+                    info.files,
+                    mfq_only=path != destination,
+                ):
+                    raise ServiceError(
+                        409,
+                        "download_already_exists",
+                        "The requested files already exist in the download folder.",
+                    )
         except JobExecutionError as error:
             raise ServiceError(422, error.detail.code, error.detail.message) from error
         except ValueError as error:
-            raise ServiceError(422, 'invalid_model_dependencies', str(error)) from error
+            raise ServiceError(422, "invalid_model_dependencies", str(error)) from error
         except (HubError, asyncio.TimeoutError) as error:
-            raise ServiceError(502, 'model_hub_error', 'Could not verify existing download files. Refresh the model and retry.', retryable=True) from error
+            raise ServiceError(
+                502,
+                "model_hub_error",
+                "Could not verify existing download files. Refresh the model and retry.",
+                retryable=True,
+            ) from error
 
     async def job_kinds(self) -> JobKindList:
         return self.jobs.kinds()
@@ -501,8 +575,16 @@ class ServerService:
     async def cancel_job(self, job_id: UUID) -> JobResource:
         try:
             job = await asyncio.to_thread(self.store.get_job, job_id)
-            if job.kind == "runtime.context.configure" and job.status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLING}:
-                raise ServiceError(409, "context_reload_in_progress", "context reload cannot be cancelled once submitted")
+            if job.kind == "runtime.context.configure" and job.status in {
+                JobStatus.QUEUED,
+                JobStatus.RUNNING,
+                JobStatus.CANCELLING,
+            }:
+                raise ServiceError(
+                    409,
+                    "context_reload_in_progress",
+                    "context reload cannot be cancelled once submitted",
+                )
             return await self.jobs.cancel(job_id)
         except JobNotFoundError as error:
             raise ServiceError(404, "job_not_found", str(error)) from error
@@ -510,7 +592,7 @@ class ServerService:
     async def retry_job(self, job_id: UUID) -> JobResource:
         try:
             previous = await asyncio.to_thread(self.store.get_job, job_id)
-            if previous.kind in {'download.huggingface', 'download.modelscope'}:
+            if previous.kind in {"download.huggingface", "download.modelscope"}:
                 async with self._download_job_lock:
                     request = CreateJobRequest(kind=previous.kind, payload=previous.payload)
                     existing = await self._active_download_job(request)
@@ -536,31 +618,74 @@ class ServerService:
         return await self.jobs.archive_completed()
 
     async def search_hub_models(
-        self, provider: HubProvider, query: str, limit: int,
-        format: str = "all", sort: str = "downloads",
-        *, formats: str | None = None, direction: str = "desc", cursor: str | None = None, browse: bool = False,
+        self,
+        provider: HubProvider,
+        query: str,
+        limit: int,
+        format: str = "all",
+        sort: str = "downloads",
+        *,
+        formats: str | None = None,
+        direction: str = "desc",
+        cursor: str | None = None,
+        browse: bool = False,
     ) -> HubModelSearchResult:
         try:
-            if browse or formats is not None or cursor is not None or sort == 'relevance' or direction == 'asc':
+            if (
+                browse
+                or formats is not None
+                or cursor is not None
+                or sort == "relevance"
+                or direction == "asc"
+            ):
                 from tyloinfer.server.services.hub_search import HubSearchCursorError
-                selected = tuple(formats.split(',')) if formats is not None else (format,) if format != 'all' else (
-                    ('tq', 'gguf') if getattr(self.runtime_manager, 'backend', 'unknown') in {'cuda', 'hip'} else ('tq', 'gguf', 'mlx'))
-                if provider == 'modelscope' and direction == 'asc':
-                    raise ServiceError(400, 'invalid_hub_search', 'ModelScope does not support ascending search order.')
+
+                selected = (
+                    tuple(formats.split(","))
+                    if formats is not None
+                    else (format,)
+                    if format != "all"
+                    else (
+                        ("tq", "gguf")
+                        if getattr(self.runtime_manager, "backend", "unknown") in {"cuda", "hip"}
+                        else ("tq", "gguf", "mlx")
+                    )
+                )
+                if provider == "modelscope" and direction == "asc":
+                    raise ServiceError(
+                        400,
+                        "invalid_hub_search",
+                        "ModelScope does not support ascending search order.",
+                    )
                 try:
-                    return await self.hub_catalog.browse(provider, query, formats=selected,
-                        sort=sort, direction=direction, limit=limit, cursor=cursor)
+                    return await self.hub_catalog.browse(
+                        provider,
+                        query,
+                        formats=selected,
+                        sort=sort,
+                        direction=direction,
+                        limit=limit,
+                        cursor=cursor,
+                    )
                 except HubSearchCursorError as error:
-                    raise ServiceError(400, 'search_cursor_expired', str(error), retryable=True) from error
-            return await self.hub_catalog.search(provider, query, limit=limit, format=format, sort=sort)
+                    raise ServiceError(
+                        400, "search_cursor_expired", str(error), retryable=True
+                    ) from error
+            return await self.hub_catalog.search(
+                provider, query, limit=limit, format=format, sort=sort
+            )
         except HubError as error:
             raise ServiceError(502, "model_hub_error", str(error), retryable=True) from error
 
-    async def hub_model_readme(self, provider: HubProvider, repo_id: str, revision: str | None) -> dict[str, str | None]:
+    async def hub_model_readme(
+        self, provider: HubProvider, repo_id: str, revision: str | None
+    ) -> dict[str, str | None]:
         try:
             return {"content": await self.hub_catalog.readme(provider, repo_id, revision)}
         except (ValueError, HubError) as error:
-            raise ServiceError(502, "model_card_unavailable", "Could not retrieve the model card.", retryable=True) from error
+            raise ServiceError(
+                502, "model_card_unavailable", "Could not retrieve the model card.", retryable=True
+            ) from error
 
     async def hub_model_info(
         self, provider: HubProvider, repo_id: str, revision: str | None
@@ -581,9 +706,7 @@ class ServerService:
         manager = self.runtime_manager
         return system_profile(
             backend=getattr(manager, "backend", "unknown"),
-            runtime_memory_budget_bytes=getattr(
-                manager, "max_runtime_memory_bytes", None
-            ),
+            runtime_memory_budget_bytes=getattr(manager, "max_runtime_memory_bytes", None),
         )
 
     async def resolve_hub_model(self, request: HubReferenceRequest) -> HubModelInfo:
@@ -603,9 +726,7 @@ class ServerService:
                 )
             return await self.hub_catalog.info(provider, repo_id, revision)
         except HubError as error:
-            raise ServiceError(
-                502, "model_hub_error", str(error), retryable=True
-            ) from error
+            raise ServiceError(502, "model_hub_error", str(error), retryable=True) from error
 
     async def official_hub_models(self, *, refresh: bool = False) -> OfficialModelList:
         try:
@@ -1074,10 +1195,16 @@ class ServerService:
             return await self.runtime_manager.instances()
         return RuntimeInstanceList(data=[])
 
-    async def model_artifacts(self, *, refresh: bool = False, include_components: bool = False) -> ModelArtifactList:
+    async def model_artifacts(
+        self, *, refresh: bool = False, include_components: bool = False
+    ) -> ModelArtifactList:
         if self.catalog is None:
             return ModelArtifactList(data=[])
-        return await self.catalog.list(refresh=refresh, include_components=True) if include_components else await self.catalog.list(refresh=refresh)
+        return (
+            await self.catalog.list(refresh=refresh, include_components=True)
+            if include_components
+            else await self.catalog.list(refresh=refresh)
+        )
 
     async def model_directories(
         self,
@@ -1108,11 +1235,15 @@ class ServerService:
 
     async def model_artifact_directory(self, model_id: str) -> ModelDirectoryList:
         if self.catalog is None:
-            raise ServiceError(501, "model_catalog_unavailable", "model directory browsing is not available")
+            raise ServiceError(
+                501, "model_catalog_unavailable", "model directory browsing is not available"
+            )
         try:
             artifact = await self.catalog.get(model_id)
         except ModelArtifactNotFoundError as error:
-            raise ServiceError(404, "model_artifact_not_found", "model artifact is unavailable") from error
+            raise ServiceError(
+                404, "model_artifact_not_found", "model artifact is unavailable"
+            ) from error
         directory = artifact.path if artifact.resource.format == "hf" else artifact.path.parent
         return await self.model_directories(path=str(directory))
 
@@ -1123,25 +1254,39 @@ class ServerService:
             artifact = await self.catalog.get(model_id, refresh=True)
             return await asyncio.to_thread(model_deletion_plan, artifact)
         except ModelArtifactNotFoundError as error:
-            raise ServiceError(404, "model_artifact_not_found", "model artifact is unavailable") from error
+            raise ServiceError(
+                404, "model_artifact_not_found", "model artifact is unavailable"
+            ) from error
         except ModelDeletionError as error:
             raise ServiceError(409, str(error), "Model files cannot be safely deleted") from error
         except (OSError, ValueError) as error:
-            raise ServiceError(409, "model_delete_changed", "Model files changed; refresh the list and try again") from error
+            raise ServiceError(
+                409, "model_delete_changed", "Model files changed; refresh the list and try again"
+            ) from error
 
     async def delete_model_artifact(self, model_id: str, token: str) -> dict[str, int]:
         if self.catalog is None or not hasattr(self.runtime_manager, "model_deletion_guard"):
-            raise ServiceError(501, "model_delete_unavailable", "Model deletion requires a managed runtime")
+            raise ServiceError(
+                501, "model_delete_unavailable", "Model deletion requires a managed runtime"
+            )
         try:
             async with self._download_job_lock:
                 artifact = await self.catalog.get(model_id, refresh=True)
                 if self.tool_handlers is not None:
                     for job in await asyncio.to_thread(self.store.active_download_jobs):
-                        _, destination = await asyncio.to_thread(self.tool_handlers.download_request, job.kind, job.payload)
+                        _, destination = await asyncio.to_thread(
+                            self.tool_handlers.download_request, job.kind, job.payload
+                        )
                         if artifact.path.resolve().is_relative_to(destination.resolve()):
-                            raise ServiceError(409, "model_delete_downloading", "Wait for the model download to finish or cancel it first")
+                            raise ServiceError(
+                                409,
+                                "model_delete_downloading",
+                                "Wait for the model download to finish or cancel it first",
+                            )
                 async with self.runtime_manager.model_deletion_guard(artifact):
-                    deletion = asyncio.create_task(asyncio.to_thread(delete_model_files, artifact, token))
+                    deletion = asyncio.create_task(
+                        asyncio.to_thread(delete_model_files, artifact, token)
+                    )
                     try:
                         result = await asyncio.shield(deletion)
                     except asyncio.CancelledError:
@@ -1152,26 +1297,44 @@ class ServerService:
                         await self.catalog.list(refresh=True)
                 return result
         except ModelArtifactNotFoundError as error:
-            raise ServiceError(404, "model_artifact_not_found", "model artifact is unavailable") from error
+            raise ServiceError(
+                404, "model_artifact_not_found", "model artifact is unavailable"
+            ) from error
         except ModelDeletionError as error:
-            raise ServiceError(409, str(error), "Model files changed or cannot be safely deleted") from error
+            raise ServiceError(
+                409, str(error), "Model files changed or cannot be safely deleted"
+            ) from error
         except BackendError as error:
             raise ServiceError(error.status_code or 409, error.code, str(error)) from error
         except OSError as error:
-            raise ServiceError(409, "model_delete_failed", "Could not delete all model files; check permissions and refresh the list") from error
+            raise ServiceError(
+                409,
+                "model_delete_failed",
+                "Could not delete all model files; check permissions and refresh the list",
+            ) from error
 
-    async def model_cache_profile(self, model_id: str, *, include_recurrent: bool = False) -> ModelCacheProfile | None:
+    async def model_cache_profile(
+        self, model_id: str, *, include_recurrent: bool = False
+    ) -> ModelCacheProfile | None:
         if self.catalog is None:
             raise ServiceError(501, "model_catalog_unavailable", "model catalog is unavailable")
         try:
             artifact = await self.catalog.get(model_id)
         except ModelArtifactNotFoundError as error:
-            raise ServiceError(404, "model_artifact_not_found", "model artifact is unavailable") from error
+            raise ServiceError(
+                404, "model_artifact_not_found", "model artifact is unavailable"
+            ) from error
         try:
-            return await asyncio.to_thread(checkpoint_cache_profile, artifact,
-                cuda=getattr(self.runtime_manager, "backend", None) == "cuda", include_recurrent=include_recurrent)
+            return await asyncio.to_thread(
+                checkpoint_cache_profile,
+                artifact,
+                cuda=getattr(self.runtime_manager, "backend", None) == "cuda",
+                include_recurrent=include_recurrent,
+            )
         except (ValueError, OSError) as error:
-            raise ServiceError(422, "model_cache_profile_unavailable", "checkpoint cache metadata cannot be read") from error
+            raise ServiceError(
+                422, "model_cache_profile_unavailable", "checkpoint cache metadata cannot be read"
+            ) from error
 
     async def checkpoint_analysis(self, model_id: str) -> CheckpointAnalysis:
         if self.catalog is None:
@@ -1179,25 +1342,41 @@ class ServerService:
         try:
             artifact = await self.catalog.get(model_id)
         except ModelArtifactNotFoundError as error:
-            raise ServiceError(404, "model_artifact_not_found", "model artifact is unavailable") from error
+            raise ServiceError(
+                404, "model_artifact_not_found", "model artifact is unavailable"
+            ) from error
         try:
             return await asyncio.to_thread(analyze_checkpoint, artifact)
         except (ValueError, OSError) as error:
-            raise ServiceError(422, "checkpoint_analysis_unavailable", "checkpoint is incomplete or its metadata cannot be read") from error
+            raise ServiceError(
+                422,
+                "checkpoint_analysis_unavailable",
+                "checkpoint is incomplete or its metadata cannot be read",
+            ) from error
 
-    async def open_model_directory(self, request: OpenModelDirectoryRequest) -> OpenModelDirectoryResult:
+    async def open_model_directory(
+        self, request: OpenModelDirectoryRequest
+    ) -> OpenModelDirectoryResult:
         if self.catalog is None:
-            raise ServiceError(501, "model_catalog_unavailable", "model directory browsing is not available")
+            raise ServiceError(
+                501, "model_catalog_unavailable", "model directory browsing is not available"
+            )
         try:
             directory = await asyncio.to_thread(self.catalog.directory_path, request.directory_id)
         except ModelDirectoryNotFoundError as error:
-            raise ServiceError(404, "model_directory_not_found", "model directory is unavailable") from error
+            raise ServiceError(
+                404, "model_directory_not_found", "model directory is unavailable"
+            ) from error
         try:
             await asyncio.to_thread(open_directory, directory)
         except FileManagerUnavailableError as error:
             raise ServiceError(501, "file_manager_unavailable", str(error)) from error
         except (OSError, subprocess.SubprocessError) as error:
-            raise ServiceError(503, "model_directory_open_failed", "could not open the model directory in the file manager") from error
+            raise ServiceError(
+                503,
+                "model_directory_open_failed",
+                "could not open the model directory in the file manager",
+            ) from error
         return OpenModelDirectoryResult()
 
     async def register_model_directory(
@@ -1235,125 +1414,6 @@ class ServerService:
             limit=limit,
         )
         return ArtifactLineageList(data=data)
-
-    async def create_dataset(self, request: CreateDatasetRequest) -> DatasetResource:
-        if self.tool_handlers is None:
-            raise ServiceError(501, "workspace_unavailable", "workspace tools are unavailable")
-        try:
-            manifest = await asyncio.to_thread(
-                self.tool_handlers.workspace_file_manifest,
-                request.artifact_uri,
-            )
-            spec = official_for_digest(request.kind, manifest["sha256"], manifest["byte_size"])
-            request = request.model_copy(update={"name": spec.name, "source_uri": spec.url,
-                "revision": spec.revision, "metadata": spec.metadata()})
-            return await asyncio.to_thread(
-                self.store.create_dataset,
-                request,
-                sha256=manifest["sha256"],
-                byte_size=manifest["byte_size"],
-            )
-        except JobExecutionError as error:
-            raise ServiceError(
-                422, error.detail.code, error.detail.message, retryable=error.detail.retryable
-            ) from error
-        except StorageError as error:
-            raise ServiceError(409, "dataset_conflict", str(error)) from error
-
-    async def list_datasets(self) -> DatasetList:
-        registered = await asyncio.to_thread(self.store.list_datasets)
-        official = []
-        for dataset in registered:
-            try:
-                spec = official_for_digest(dataset.kind, dataset.sha256, dataset.byte_size)
-                if self.tool_handlers is None:
-                    continue
-                manifest = await asyncio.to_thread(self.tool_handlers.workspace_file_manifest, dataset.artifact_uri)
-                if (manifest["sha256"], manifest["byte_size"]) != (spec.sha256, spec.byte_size):
-                    continue
-            except (JobExecutionError, OSError):
-                continue
-            official.append(dataset.model_copy(update={"name": spec.name, "source_uri": spec.url,
-                "revision": spec.revision, "metadata": spec.metadata()}))
-        return DatasetList(data=official)
-
-    async def delete_dataset(self, dataset_id: UUID) -> None:
-        try:
-            await asyncio.to_thread(self.store.delete_dataset, dataset_id)
-        except DatasetNotFoundError as error:
-            raise ServiceError(404, "dataset_not_found", str(error)) from error
-
-    async def evaluations(
-        self,
-        *,
-        kind: EvaluationKind | None,
-        model_id: str | None,
-        limit: int,
-    ) -> EvaluationResultList:
-        return EvaluationResultList(
-            data=await asyncio.to_thread(
-                self.store.list_evaluations,
-                kind=kind,
-                model_id=model_id,
-                limit=limit,
-            )
-        )
-
-    async def compare_evaluations(
-        self, request: CompareEvaluationsRequest
-    ) -> EvaluationComparisonResource:
-        try:
-            evaluations = [
-                await asyncio.to_thread(self.store.get_evaluation, identifier)
-                for identifier in request.evaluation_ids
-            ]
-        except EvaluationNotFoundError as error:
-            raise ServiceError(404, "evaluation_not_found", str(error)) from error
-        keys = {item.comparison_key for item in evaluations}
-        kinds = {item.kind for item in evaluations}
-        if len(keys) != 1 or len(kinds) != 1:
-            raise ServiceError(
-                409,
-                "evaluations_not_comparable",
-                "evaluations must have matching kind, dataset, and execution parameters",
-            )
-        for item in evaluations:
-            if item.kind in {"perplexity", "accuracy_benchmark"}:
-                manifest = item.dataset_manifest
-                try:
-                    official_for_digest("wikitext2" if item.kind == "perplexity" else "custom",
-                        manifest.get("source_sha256", manifest.get("sha256")), manifest.get("source_byte_size", manifest.get("byte_size")))
-                except JobExecutionError as error:
-                    raise ServiceError(409, "unofficial_evaluation", "legacy or custom dataset results cannot be compared as official evaluations") from error
-        numeric_names = sorted(
-            set.intersection(
-                *[
-                    {
-                        key
-                        for key, value in item.metrics.items()
-                        if isinstance(value, (int, float)) and not isinstance(value, bool)
-                    }
-                    for item in evaluations
-                ]
-            )
-        )
-        baseline = evaluations[0]
-        rows: list[EvaluationComparisonRow] = []
-        for item in evaluations:
-            deltas: dict[str, float | None] = {}
-            ratios: dict[str, float | None] = {}
-            for name in numeric_names:
-                value = float(item.metrics[name])
-                base = float(baseline.metrics[name])
-                deltas[name] = value - base
-                ratios[name] = value / base if base != 0.0 else None
-            rows.append(EvaluationComparisonRow(evaluation=item, deltas=deltas, ratios=ratios))
-        return EvaluationComparisonResource(
-            comparison_key=baseline.comparison_key,
-            baseline_id=baseline.id,
-            metrics=numeric_names,
-            rows=rows,
-        )
 
     async def create_remote_node(self, request: CreateRemoteNodeRequest) -> RemoteNodeResource:
         try:
@@ -1452,9 +1512,7 @@ class ServerService:
                 parsed_instance_id = None
         metric_key = str(parsed_instance_id or status.get("model") or "runtime")
         last_request = status.get("last_request")
-        last_request_id = (
-            last_request.get("id") if isinstance(last_request, dict) else None
-        )
+        last_request_id = last_request.get("id") if isinstance(last_request, dict) else None
         signature = (
             status.get("runtime_state"),
             status.get("active_requests"),
@@ -1477,11 +1535,18 @@ class ServerService:
         return status
 
     async def serving_statistics(self, scope: str, model: str | None = None) -> dict[str, Any]:
-        totals = await asyncio.to_thread(self.store.serving_statistics,
-            self._serving_started_at if scope == "session" else None, model)
+        totals = await asyncio.to_thread(
+            self.store.serving_statistics,
+            self._serving_started_at if scope == "session" else None,
+            model,
+        )
         activity = getattr(self.runtime_manager, "serving_activity", None)
-        return {"scope": scope, "started_at": self._serving_started_at, "totals": totals,
-            "activity": await activity() if callable(activity) else []}
+        return {
+            "scope": scope,
+            "started_at": self._serving_started_at,
+            "totals": totals,
+            "activity": await activity() if callable(activity) else [],
+        }
 
     async def runtime_metrics(
         self,
@@ -1523,14 +1588,33 @@ class ServerService:
 
     async def configure_model_aliases(self, aliases: dict[str, str]) -> dict[str, Any]:
         models = await self.advertised_models(use_aliases=False)
-        names = {item['id'] for item in models.get('data', [])}
-        normalized = {name: alias.strip() for name, alias in aliases.items() if alias.strip() and alias.strip() != name}
+        names = {item["id"] for item in models.get("data", [])}
+        normalized = {
+            name: alias.strip()
+            for name, alias in aliases.items()
+            if alias.strip() and alias.strip() != name
+        }
         if any(name not in names for name in normalized):
-            raise ServiceError(400, "unknown_model", "alias mappings must refer to registered or loaded models")
-        if any(len(alias) > 255 or any(ord(char) < 32 for char in alias) for alias in normalized.values()):
-            raise ServiceError(400, "invalid_model_alias", "model aliases must be at most 255 characters without control characters")
-        if len(set(normalized.values())) != len(normalized) or any(alias in names for alias in normalized.values()):
-            raise ServiceError(409, "model_alias_conflict", "model aliases must be unique and cannot shadow another model name")
+            raise ServiceError(
+                400, "unknown_model", "alias mappings must refer to registered or loaded models"
+            )
+        if any(
+            len(alias) > 255 or any(ord(char) < 32 for char in alias)
+            for alias in normalized.values()
+        ):
+            raise ServiceError(
+                400,
+                "invalid_model_alias",
+                "model aliases must be at most 255 characters without control characters",
+            )
+        if len(set(normalized.values())) != len(normalized) or any(
+            alias in names for alias in normalized.values()
+        ):
+            raise ServiceError(
+                409,
+                "model_alias_conflict",
+                "model aliases must be unique and cannot shadow another model name",
+            )
         await asyncio.to_thread(self.store.save_runtime_model_aliases, normalized)
         self.model_aliases = normalized
         return {"aliases": dict(normalized)}
@@ -1551,7 +1635,13 @@ class ServerService:
             runtime_models = await self.runtime_models()
         except ServiceError:
             if advertised:
-                return {"object": "list", "data": [{**item, "id": self.model_aliases.get(name, name) if use_aliases else name} for name, item in advertised.items()]}
+                return {
+                    "object": "list",
+                    "data": [
+                        {**item, "id": self.model_aliases.get(name, name) if use_aliases else name}
+                        for name, item in advertised.items()
+                    ],
+                }
             raise
         runtime_data = runtime_models.get("data") if isinstance(runtime_models, dict) else None
         for item in runtime_data if isinstance(runtime_data, list) else []:
@@ -1560,7 +1650,13 @@ class ServerService:
             model_id = item.get("id")
             if isinstance(model_id, str) and model_id:
                 advertised.setdefault(model_id, item)
-        return {"object": "list", "data": [{**item, "id": self.model_aliases.get(name, name) if use_aliases else name} for name, item in advertised.items()]}
+        return {
+            "object": "list",
+            "data": [
+                {**item, "id": self.model_aliases.get(name, name) if use_aliases else name}
+                for name, item in advertised.items()
+            ],
+        }
 
     async def realtime_capabilities(self) -> dict[str, Any]:
         return await self._runtime_request("realtime_capabilities")
@@ -1667,7 +1763,9 @@ class ServerService:
                 501, "model_management_unavailable", "model loading is not available"
             )
         job = await self.create_job(
-            CreateJobRequest(kind="model.load", payload=request.model_dump(mode="json", exclude_unset=True))
+            CreateJobRequest(
+                kind="model.load", payload=request.model_dump(mode="json", exclude_unset=True)
+            )
         )
         return OperationAccepted(operation_id=job.id)
 
@@ -1839,8 +1937,7 @@ class ServerService:
             await self._terminate_backend_failure(prepared.begin.response.id, error)
             raise ServiceError(
                 error.status_code
-                if error.status_code
-                in {400, 404, 409, 413, 415, 422, 429, 501, 502, 503}
+                if error.status_code in {400, 404, 409, 413, 415, 422, 429, 501, 502, 503}
                 else 502,
                 error.code,
                 str(error),

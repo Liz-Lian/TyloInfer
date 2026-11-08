@@ -144,12 +144,20 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     {
         Tensor raw, hidden;
         std::vector<Tensor> raw_chunks;
+        int64_t retained_raw_rows=0;
+        const int64_t initial_context_window=mtp.blockwise_drafting() && !reused_tokens?[&] {
+            if constexpr(requires {ops.initial_blockwise_context_window();})
+                return std::max<int64_t>(0,ops.initial_blockwise_context_window());
+            return int64_t(0);
+        }():0;
         double prefill_ms = 0.0;
         double target_prefill_ms=0.0, predictor_prefill_ms=0.0, predictor_workspace_ms=0.0;
-        const auto checkpoint=mtp.blockwise_drafting() && session_last_hidden &&
+        const auto checkpoint=(mtp.blockwise_drafting() || mtp.teacher_forced_prompt_prime()) && session_last_hidden &&
             stable_prefix_tokens>reused_tokens && stable_prefix_tokens<prompt.size()
             ?static_cast<int64_t>(stable_prefix_tokens):int64_t(0);
         bool prompt_context_seeded=false;
+        int64_t primed_prefix=static_cast<int64_t>(reused_tokens);
+        bool stream_boundary_pair_pending=false;
         const auto prime_blockwise=[&](Tensor context,int64_t position,bool seed) {
             if constexpr(requires { ops.blockwise_prompt_context(context,position,seed); }) {
                 const auto elapsed=ops.blockwise_prompt_context(context,position,seed);
@@ -211,23 +219,70 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if (stream_prompt_history) {
                 if (offset == static_cast<int64_t>(reused_tokens) && reused_tokens > 0)
                     prime_rows(restored_last_hidden, offset, 1);
+                if(stream_boundary_pair_pending) {
+                    prime_rows(raw,offset,1);
+                    stream_boundary_pair_pending=false;
+                }
                 // Each target row pairs with the next input ID, including
                 // the boundary between target chunks. Retain just the final
                 // row; a long prompt's multi-stream states can occupy GiBs.
-                const auto pairs = std::min<int64_t>(chunk.count, ops.size(input_ids, 1) - offset - 1);
+                auto pairs = std::min<int64_t>(chunk.count, ops.size(input_ids, 1) - offset - 1);
+                // A checkpoint at C owns predictor pairs only through ID C-1.
+                // Keep hidden[C-1] until its ID C is consumed after the snapshot.
+                if(offset+chunk.count==checkpoint) {
+                    pairs=std::min(pairs,chunk.count-1);
+                    stream_boundary_pair_pending=true;
+                }
                 prime_rows(ops.slice(step.raw, 1, 0, pairs), offset + 1, pairs);
                 raw = ops.clone(ops.slice(step.raw, 1, ops.size(step.raw, 1) - 1, 1));
-            } else raw_chunks.push_back(std::move(step.raw));
+            } else {
+                // Sliding draft attention needs only its final prompt window.
+                // Keep owned suffixes so a narrow view cannot retain every
+                // preceding target chunk's full hidden-state allocation.
+                if(initial_context_window && !prompt_context_seeded) {
+                    auto rows=ops.size(step.raw,1);
+                    if(rows>initial_context_window) {
+                        step.raw=ops.clone(ops.slice(step.raw,1,rows-initial_context_window,initial_context_window));
+                        rows=initial_context_window;
+                    }
+                    retained_raw_rows+=rows;
+                    while(!raw_chunks.empty() && retained_raw_rows>initial_context_window) {
+                        const auto first=ops.size(raw_chunks.front(),1);
+                        const auto remove=std::min(first,retained_raw_rows-initial_context_window);
+                        if(remove==first)raw_chunks.erase(raw_chunks.begin());
+                        else raw_chunks.front()=ops.clone(ops.slice(raw_chunks.front(),1,remove,first-remove));
+                        retained_raw_rows-=remove;
+                    }
+                }
+                raw_chunks.push_back(std::move(step.raw));
+            }
             offset += chunk.count;
             prefill_ms += step.elapsed;
             target_prefill_ms += step.elapsed;
             if(offset==checkpoint) {
                 // Keep an exact checkpoint before the final prompt token so
                 // an identical retry can reuse the prefix and recompute logits.
-                auto context=raw_chunks.size()==1?std::move(raw_chunks.front()):ops.concatenate(raw_chunks,1);
-                *session_last_hidden=ops.clone(ops.slice(context,1,ops.size(context,1)-1,1));
-                prime_blockwise(context,offset,reused_tokens==0);
-                prompt_context_seeded=true;raw_chunks.clear();
+                if(stream_prompt_history) {
+                    *session_last_hidden=raw;
+                } else {
+                    auto context=raw_chunks.size()==1?std::move(raw_chunks.front()):ops.concatenate(raw_chunks,1);
+                    *session_last_hidden=ops.clone(ops.slice(context,1,ops.size(context,1)-1,1));
+                    raw_chunks.clear();retained_raw_rows=0;
+                    if(mtp.blockwise_drafting()) {
+                        prime_blockwise(context,offset,reused_tokens==0);
+                        prompt_context_seeded=true;
+                    } else {
+                        auto prime=ops.slice(context,1,0,ops.size(context,1)-1);
+                        if(reused_tokens>0)
+                            prime=ops.size(prime,1)>0
+                                ? ops.concatenate({restored_last_hidden,prime},1):restored_last_hidden;
+                        prime_rows(prime,reused_tokens>0?static_cast<int64_t>(reused_tokens):1,ops.size(prime,1));
+                        primed_prefix=offset;
+                        // Only the boundary row is needed to prime the suffix.
+                        raw_chunks.push_back(*session_last_hidden);
+                    }
+                }
+                if(output.stopped())co_return;
                 co_yield PrefillProgress{
                     {static_cast<std::size_t>(offset)-reused_tokens,prefill_ms,0.0,prefill_ms},true};
                 if(output.stopped())co_return;
@@ -272,7 +327,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             Tensor prime_hidden;
             int64_t prime_ids_offset = 1;
             int64_t pairs = ops.size(raw, 1) - 1;
-            if (reused_tokens > 0) {
+            if (primed_prefix > static_cast<int64_t>(reused_tokens)) {
+                prime_hidden=ops.slice(raw,1,0,pairs);
+                prime_ids_offset=primed_prefix;
+            } else if (reused_tokens > 0) {
                 prime_hidden =
                     ops.size(raw, 1) == 1
                         ? restored_last_hidden

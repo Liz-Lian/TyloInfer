@@ -41,7 +41,7 @@ export function StudioShell() {
   const currentLocation = resolveStudioLocation(location.pathname);
   const view = isStudioPath(location.pathname) ? currentLocation.view : 'not-found';
   const pageAvailable = ready || view === 'not-found' ||
-    location.pathname === '/runtime' || view === 'agent' || view === 'versions';
+    location.pathname === '/runtime' || view === 'versions';
   const connectionProblem = ready ? connectionError : connectionError ?? refreshError;
   const hasAlerts = pageAvailable && Boolean(
     connectionProblem || (ready && (refreshError || Object.keys(jobStreamErrors).length)),
@@ -62,7 +62,7 @@ export function StudioShell() {
           {tr('跳到主要内容', 'Skip to main content')}
         </a>
         <StudioSidebar />
-        <main className={`${view === 'chat' ? 'workspace chat-workspace' : 'workspace'}${hasAlerts ? ' has-runtime-alerts' : ''}`}
+        <main className={`${'workspace'}${hasAlerts ? ' has-runtime-alerts' : ''}`}
           id="studio-main" tabIndex={-1}>
           {hasAlerts && <RuntimeAlerts connectionProblem={connectionProblem} />}
           {pageAvailable ? (

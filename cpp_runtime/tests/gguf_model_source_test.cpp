@@ -16,6 +16,43 @@
 
 namespace {
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+void grouped_source_reads(const mfq::GgufModelSource& source) {
+    const auto reader=source.tensor_group_reader();
+    require(reader==source.tensor_group_reader(),"grouped tensor readers do not share a source identity");
+    std::vector<std::vector<std::byte>> expected,actual;
+    expected.reserve(source.tensors().size());actual.reserve(source.tensors().size());
+    for(const auto& tensor:source.tensors()) {
+        expected.push_back(source.read(tensor.name));actual.emplace_back(expected.back().size(),std::byte{0x5a});
+    }
+    std::vector<mfq::GgufModelSource::NamedReadSpan> spans;
+    for(std::size_t i=source.tensors().size();i-->0;) {
+        const auto& tensor=source.tensors()[i];const auto half=actual[i].size()/2;
+        spans.push_back({tensor.name,{half,actual[i].empty()?nullptr:actual[i].data()+half,actual[i].size()-half}});
+        spans.push_back({tensor.name,{0,actual[i].data(),half}});
+        spans.push_back({tensor.name,{tensor.nbytes,nullptr,0}});
+    }
+    (*reader)(spans);
+    require(actual==expected,"grouped cross-tensor reads changed bytes");
+    (*reader)({});
+    if(source.tensors().empty())return;
+    const auto& first=source.tensors().front();
+    std::array<std::byte,32> aliased{},reference{};
+    for(const auto& tensor:source.tensors())if(tensor.nbytes>=32 && first.nbytes>=32) {
+        const auto a=source.tensor_reader(first.name),b=source.tensor_reader(tensor.name);
+        a(1,reference.data(),19);b(3,reference.data()+7,15);
+        (*reader)({{first.name,{1,aliased.data(),19}},{tensor.name,{3,aliased.data()+7,15}}});
+        require(aliased==reference,"grouped reads changed overlapping destination order");break;
+    }
+    const auto rejects=[&](mfq::GgufModelSource::NamedReadSpan bad) {
+        std::byte unchanged{0x5a};bool rejected=false;
+        try{(*reader)({{first.name,{0,&unchanged,1}},bad});}catch(const std::exception&){rejected=true;}
+        require(rejected && unchanged==std::byte{0x5a},"grouped read failed to validate all ranges before writing");
+    };
+    rejects({"missing-group-tensor",{0,nullptr,0}});
+    rejects({first.name,{first.nbytes,nullptr,1}});
+    rejects({first.name,{0,nullptr,1}});
+    if(first.nbytes>=2)rejects({first.name,{0,reinterpret_cast<std::byte*>(UINTPTR_MAX),2}});
+}
 #include "gguf_qwen35_mtp_test.h"
 struct MirrorSetting {
     std::string previous;bool present=false;
@@ -39,6 +76,7 @@ void raw_part_source(const std::filesystem::path& path, const std::vector<std::f
     std::ifstream input(path, std::ios::binary);
     const std::vector<char> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     const mfq::GgufModelSource complete(path, companions);
+    grouped_source_reads(complete);
     std::vector<std::size_t> cuts{0, first_cut, bytes.size() / 2 + 3, bytes.size() - 7, bytes.size()};
     if (count != 4) {
         cuts = {0, first_cut};
@@ -61,6 +99,7 @@ void raw_part_source(const std::filesystem::path& path, const std::vector<std::f
         require(source->architecture() == complete.architecture() && source->metadata() == complete.metadata() &&
             source->tensors().size() == complete.tensors().size(), "raw parts changed model metadata");
         require(source->source_paths().size() == parts.size() + companions.size(), "raw parts source paths missing");
+        grouped_source_reads(dynamic_cast<const mfq::GgufModelSource&>(*source));
         for (const auto& tensor : complete.tensors()) {
             const auto expected = complete.read(tensor.name);
             require(source->read(tensor.name) == expected, "raw part tensor bytes changed");
@@ -76,12 +115,15 @@ void raw_part_source(const std::filesystem::path& path, const std::vector<std::f
             require(source->read_asset(asset) == complete.read_asset(asset), "raw parts changed tokenizer or assets");
     }
     mfq::ModelSource::TensorReader retained;
+    std::shared_ptr<const mfq::GgufModelSource::TensorGroupReader> retained_group;
+    std::string retained_name;
     std::vector<std::byte> expected;
     {
         const mfq::GgufModelSource source(parts.back(), companions);
         const auto name = source.tensors().front().name;
         expected = source.read(name);
         retained = source.tensor_reader(name);
+        retained_name=name;retained_group=source.tensor_group_reader();
     }
     std::vector<std::byte> actual(expected.size());
     retained(0, actual.data(), actual.size());
@@ -90,6 +132,9 @@ void raw_part_source(const std::filesystem::path& path, const std::vector<std::f
     std::filesystem::rename(parts[1], hidden);
     retained(0, actual.data(), actual.size());
     require(actual == expected, "retained raw part reader changed after rename");
+    std::fill(actual.begin(),actual.end(),std::byte{0});
+    (*retained_group)({{retained_name,{0,actual.data(),actual.size()}}});
+    require(actual==expected,"grouped reader expired or reopened a renamed source");
     bool missing = false;
     try { mfq::GgufModelSource invalid(parts.front(), companions); } catch (const std::runtime_error&) { missing = true; }
     require(missing, "incomplete raw GGUF parts accepted");
@@ -835,6 +880,10 @@ int main() {
         try { source->read(table->name, table->nbytes, 1); } catch (const std::out_of_range&) { bounded = true; }
         require(bounded, "out-of-range GGUF read accepted");
         const auto reader = source->tensor_reader(table->name);
+        const auto io_before=source->file_read_stats();std::byte probe{};
+        reader(0,&probe,1);const auto io_after=source->file_read_stats();
+        require(io_after.files>0 && io_after.calls>io_before.calls &&
+            io_after.logical_bytes==io_before.logical_bytes+1,"GGUF reads or retained staging memory are missing from telemetry");
         source.reset();
         std::byte value{};
         reader(0, &value, 1);

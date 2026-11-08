@@ -398,7 +398,11 @@ template <class Model> struct CudaGenerationContext {
                name=="expert_host_fetch_ms" || name=="expert_host_copy_ms" || name=="expert_transfer_cache_prepare_ms" || name=="ssd_expert_bytes_read" ||
                name=="ssd_expert_read_count" || name=="ram_expert_cache_hits" ||
                name=="ram_expert_cache_misses" || name=="ram_expert_pcie_read_bytes" ||
-               name=="expert_logical_transfer_bytes")std::cerr << ' ' << name << '=' << value;
+               name=="gguf_immutable_recovery_bytes" || name=="expert_logical_transfer_bytes") {
+                std::cerr << ' ' << name << '=';
+                if(name.ends_with("_ms"))std::cerr<<value;
+                else std::cerr<<std::uint64_t(value);
+            }
         }
         std::cerr << '\n';
         if(model.source) {
@@ -406,6 +410,10 @@ template <class Model> struct CudaGenerationContext {
             std::cerr<<"runtime_model_io_stats boundary="<<boundary<<" calls="<<io.calls
                 <<" logical_bytes="<<io.logical_bytes<<" physical_bytes="<<io.physical_bytes
                 <<" read_ms="<<double(io.read_nanoseconds)/1e6<<'\n';
+        }
+        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+            std::cerr<<"runtime_kv_io_stats boundary="<<boundary<<" logical_bytes="
+                <<qwen4_qsa_ssd_read_bytes(model,mtp)<<'\n';
         }
     }
     void prepare_request(const mfq::engine::InferenceRequest& input) {
@@ -592,7 +600,11 @@ template <class Model> struct CudaGenerationContext {
     void release() {
         if (batching) return; // Each row owns its slot cleanup.
         trace_expert_cache("end");
-        try { reset(); }
+        try {
+            reset();
+            if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
+                qwen4_release_idle_qsa(model,mtp);
+        }
         catch (...) { graph.invalidate(); throw; }
         if (std::uncaught_exceptions()) graph.invalidate();
     }

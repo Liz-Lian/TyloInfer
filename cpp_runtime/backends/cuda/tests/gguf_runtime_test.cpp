@@ -3,6 +3,7 @@
 #include "tyloinfer/gguf_model_source.h"
 #include "gguf_cpu.h"
 #include "tyloinfer/cpu_expert_pool.h"
+#include "tyloinfer/host_memory.h"
 #include "../ops/gguf/gguf_cpu_executor.h"
 #include "../ops/gguf/gguf_adaptive_slots.h"
 #include "../ops/gguf/gguf_host_snapshot.h"
@@ -25,6 +26,7 @@
 #include "quant_linear.h"
 #include "storage/weight_loader.h"
 #include "storage/pinned_copy_plan.h"
+#include "storage/moe_pinned_expert_arena.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "runtime/decode_window.h"
@@ -32,6 +34,7 @@
 #include "runtime/native_dma_batch.h"
 #include "ggml-quants.h"
 #include "mfq_cuda_resident_allocations.h"
+#include "mfq_cuda_process_memory.h"
 #include "mfq_weight_memory.h"
 #include "recurrent_copy_batch_test.h"
 #include "gguf_cpu_activation_test.h"
@@ -131,10 +134,13 @@ class Source final : public mfq::ModelSource {
     std::shared_ptr<bool> fail_batch_=std::make_shared<bool>(false);
     std::shared_ptr<std::atomic<bool>> fail_read_=std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::atomic<bool>> fail_background_=std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<std::size_t>> fail_skip_=std::make_shared<std::atomic<std::size_t>>(0);
     std::map<std::string,std::shared_ptr<const mfq::RowResidualFile>> corrections_;
-    bool batched_=false,mapped_=false;
+    bool batched_=false,mapped_=false,parallel_=false;
     std::unordered_map<std::string,std::string> metadata_;
 public:
+    bool supports_parallel_tensor_reads()const noexcept override{return parallel_;}
+    void enable_parallel_reads(){parallel_=true;}
     void add_correction(const std::string& name,const std::filesystem::path& path) {
         corrections_[name]=std::make_shared<mfq::RowResidualFile>(path);
     }
@@ -155,7 +161,7 @@ public:
     void enable_batches(){batched_=true;}
     void enable_mapping(){mapped_=true;}
     void fail_next_batch(){*fail_batch_=true;}
-    void fail_next_read(bool background_only=false){fail_background_->store(background_only);fail_read_->store(true);}
+    void fail_next_read(bool background_only=false,std::size_t skip=0){fail_background_->store(background_only);fail_skip_->store(skip);fail_read_->store(true);}
     void clear_read_failure(){fail_read_->store(false);}
     std::size_t batch_calls()const{return batch_count_->load();}
     void large_q4_scale(const std::string& name) {
@@ -241,9 +247,12 @@ public:
     }
     TensorReader tensor_reader(std::string_view name) const override {
         const auto image = images_.at(std::string(name));
-        return [image,reads=read_count_,fail=fail_read_,background=fail_background_,caller=std::this_thread::get_id()](std::uint64_t offset, std::byte* target, std::size_t count) {
-            if((!background->load() || caller!=std::this_thread::get_id()) && fail->exchange(false))
-                throw std::runtime_error("fixture single read failure");
+        return [image,reads=read_count_,fail=fail_read_,background=fail_background_,skip=fail_skip_,caller=std::this_thread::get_id()](std::uint64_t offset, std::byte* target, std::size_t count) {
+            if((!background->load() || caller!=std::this_thread::get_id()) && fail->load()) {
+                auto remaining=skip->load();
+                while(remaining && !skip->compare_exchange_weak(remaining,remaining-1)){}
+                if(!remaining && fail->exchange(false))throw std::runtime_error("fixture single read failure");
+            }
             if (offset > image->size() || count > image->size() - offset)
                 throw std::out_of_range("GGUF fixture read");
             ++*reads;std::memcpy(target, image->data() + offset, count);
@@ -1466,7 +1475,69 @@ void run_resident_predictor(bool uniform=false) {
     std::cout<<"Resident predictor mixed formats/changing graph routes/prefill/budget/no transfers PASS\n";
 }
 
-void run_gpu_residency_snapshot() {
+void run_row_graph_upload() {
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto compute=mfq_current_cuda_stream();
+    context->begin_graph_pool(compute);
+    struct PoolScope {
+        std::shared_ptr<mfq::cuda::Context> context;cudaStream_t stream;
+        ~PoolScope(){context->end_graph_pool(stream);}
+    } pool{context,compute};
+    int can_map=0;TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&can_map,cudaDevAttrCanMapHostMemory,mfq_current_cuda_device()));
+    if(!can_map){std::cout<<"SKIP row graph publication: mapped host memory unavailable\n";return;}
+    Source source;source.add("graph.rows",{23,256},GGML_TYPE_Q6_K);
+    auto table=std::make_shared<GgufRowTable>(source,"graph.rows");auto expected=source.decoded("graph.rows");
+    bool mapped_seen=false,dma_seen=false;
+    struct Case {int count;bool preload;};
+    for(const auto [count,preload]:{Case{4,false},Case{4,true},Case{256,false}}) {
+        auto stage=make_gguf_row_stage({table},23,{count},tb::Device(tb::kCUDA,mfq_current_cuda_device()));
+        mapped_seen|=stage->mapped_rows();dma_seen|=!stage->mapped_rows();
+        std::vector<std::int64_t> ids(count,0);
+        const auto verify=[&] {
+            const auto result=stage->output().to(tb::kFloat32).cpu().contiguous();
+            for(int row=0;row<count;++row)for(int column=0;column<256;++column)
+                require(result.data_ptr<float>()[row*256+column]==float(mfq_half(expected.data_ptr<float>()[ids[row]*256+column])),
+                    "Fenced graph row upload changed row order or bytes");
+        };
+        stage->upload(ids,{count});stage->decode();verify();
+        const auto output=stage->output().data_ptr();
+        mfq::cuda::HostBuffer flags(128,true);auto* host=static_cast<std::uint32_t*>(flags.data());std::memset(host,0,128);
+        std::uint32_t* mapped=nullptr;TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&mapped),host,0));
+        mfq::cuda::publish_mapped_flag(host+16);auto upload=mfq_get_stream_from_pool();
+        {
+            mfq::cuda::DecodeWindow window(compute);
+            window.capture([&] {
+                window.enroll({stage.get(),[&]{
+                    std::memset(host,0,128);
+                    if(preload)stage->upload_graph(ids,{count});
+                },[&] {
+                    if(preload)return;
+                    mfq::cuda::wait_route_publication(host,compute);const MfqCudaStreamGuard guard(upload);
+                    stage->upload_graph(ids,{count});
+                    if(stage->mapped_rows())mfq::cuda::publish_mapped_flag(host+16);
+                    else TYLOINFER_CUDA_CHECK(cudaLaunchHostFunc(upload.stream(),[](void* value){
+                        mfq::cuda::publish_mapped_flag(static_cast<std::uint32_t*>(value));},host+16));
+                },{},[&]{mfq::cuda::publish_mapped_flag(host+16);}});
+                if(!preload){mfq::cuda::signal_mapped_flag(mapped,compute);mfq::cuda::wait_mapped_flag(mapped+16,compute);}
+                stage->decode();
+            },[]{});
+            for(int revision=0;revision<12;++revision) {
+                for(int i=0;i<count;++i)ids[i]=(revision*7+i*11)%23;
+                window.run();verify();require(stage->output().data_ptr()==output,"Graph row storage changed across replay");
+            }
+            const auto saved=ids[0];ids[0]=-1;bool rejected=false;
+            try{window.run();}catch(const std::out_of_range&){rejected=true;}
+            require(rejected,"Invalid graph row was accepted");ids[0]=saved;
+        }
+        // Eager ownership remains valid after a graph (including its cancelled
+        // last replay) has fenced the same mapped packet or DMA allocation.
+        stage->upload(ids,{count});stage->decode();verify();
+    }
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());
+    require(mapped_seen && dma_seen,"Row graph tests did not cover both mapping and DMA");
+    std::cout<<"Graph row upload mapped/DMA, changed payloads, stable storage, cancellation and eager transitions PASS\n";
+}
+void run_gpu_residency_snapshot(int tokens=2) {
     Source source;
     source.add("gate",{7,256,256},GGML_TYPE_Q4_0);
     source.add("up",{7,256,256},GGML_TYPE_Q5_0);
@@ -1479,9 +1550,9 @@ void run_gpu_residency_snapshot() {
     const auto cache=execution.gguf_expert_cache;
     set_gguf_reuse_learning(cache,false);
     prepare_gguf_graph_pool(cache);
-    auto x=input(2,3,false).to(tb::kFloat16);
-    auto ids=tb::arange(6,x.options().dtype(tb::kInt64)).remainder(3).reshape({2,3});
-    auto weights=tb::full({2,3},.3,x.options().dtype(tb::kFloat32));
+    auto x=input(tokens,3,false).to(tb::kFloat16);
+    auto ids=tb::arange(tokens*3,x.options().dtype(tb::kInt64)).remainder(3).reshape({tokens,3});
+    auto weights=tb::full({tokens,3},.3,x.options().dtype(tb::kFloat32));
     // Cache only Gate and Up projections before recording a full MoE. These
     // partial hits must stay in the streamed pass, without counting them twice.
     (void)banks.gate->forward(x,ids).cpu();
@@ -1496,7 +1567,7 @@ void run_gpu_residency_snapshot() {
     const auto expert_bytes=banks.gate->expert_bytes+banks.up->expert_bytes+banks.down->expert_bytes;
     for(const bool resident:{false,true,false,true}) {
         resize_gguf_expert_cache(cache,resident?3*expert_bytes:0);
-        ids.copy_((tb::arange(6,ids.options()).remainder(3)+(resident?4:0)).reshape({2,3}));
+        ids.copy_((tb::arange(tokens*3,ids.options()).remainder(3)+(resident?4:0)).reshape({tokens,3}));
         if(resident) {
             (void)banks.gate->forward(x,ids).cpu();
             (void)banks.up->forward(x,ids).cpu();
@@ -1513,7 +1584,7 @@ void run_gpu_residency_snapshot() {
     // A segmented single-projection upload can evict a later layer's weights
     // inside one window. It must retain the per-layer residency handoff.
     const auto first_ids=tb::zeros_like(ids),last_ids=tb::full(ids.sizes(),2,ids.options());
-    const auto solo_ids=(tb::arange(6,ids.options()).remainder(3)+4).reshape({2,3});
+    const auto solo_ids=(tb::arange(tokens*3,ids.options()).remainder(3)+4).reshape({tokens,3});
     GgufMoeBanks later=banks;
     tb::Tensor first,last,solo;
     mfq::cuda::DecodeWindow mixed(mfq_current_cuda_stream());
@@ -1528,7 +1599,7 @@ void run_gpu_residency_snapshot() {
         require((solo-banks.gate->forward(x,solo_ids)).abs().max().item<float>()==0,
             "Segmented projection changed while surrounding MoE stages replaced resident experts");
     }
-    std::cout<<"GPU residency snapshot partial hits/eviction/refill/unchanged-view/segmented-window checks PASS\n";
+    std::cout<<"GPU residency snapshot partial hits/eviction/refill/unchanged-view/segmented-window checks PASS M="<<tokens<<"\n";
 }
 
 void run_transfer_workspace_reuse() {
@@ -1637,8 +1708,21 @@ void run_borrowed_gguf_prefill(bool quantized_prefill=false) {
         context->reclaim_idle_memory();
         context->set_memory_limit(std::max(context->resident_memory_usage(),context->memory_stats().allocated)+lendable/4);
         reserve_gguf_expert_workspace(execution.gguf_expert_cache,lendable/2);
-        require(gguf_prefill_lendable_bytes(execution.gguf_expert_cache)==0,
+        const auto remaining=gguf_prefill_lendable_bytes(execution.gguf_expert_cache);
+        require(context->available_memory()>=lendable/2 && remaining<lendable,
             "GGUF fixed slots retained physical VRAM needed for KV growth");
+        if(remaining) {
+            // A subsequent loan owns only the still-mapped slots, not the
+            // permanently removed tail retained for possible later growth.
+            context->reclaim_idle_memory();
+            GgufPrefillWorkspaceLoan partial(execution.gguf_expert_cache);
+            const auto borrowed=partial.begin(context->available_memory()+std::min(remaining/2,std::size_t(1)<<20));
+            require(borrowed>0,"Shrunk GGUF cache did not lend its live tail");
+            const auto transferred=gguf_expert_streamed_bytes(execution.gguf_expert_cache);
+            partial.suspend();partial.finish();
+            require(gguf_expert_streamed_bytes(execution.gguf_expert_cache)-transferred<=borrowed,
+                "Shrunk GGUF loan restored experts outside its live mapping");
+        }
         context->set_memory_limit(old_limit);
         check_moe(banks.forward(decoded_x,decoded_ids,decoded_weights),banks,decoded_x,decoded_ids,decoded_weights);
     }catch(...) {context->set_memory_limit(old_limit);throw;}
@@ -1706,6 +1790,226 @@ void run_graph_expert_batches() {
             <<" batches="<<source.batch_calls()<<'\n';
     }
 }
+void run_slot_transition_ram_coverage() {
+    ScopedSnapshot reserve("0","TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB");
+    ScopedSnapshot snapshot("0"),slots("1","TYLOINFER_GGUF_STRATA_CACHE");
+    Source source;
+    for(const auto* role:{"gate","up","down"})source.add(role,{5,256,256},GGML_TYPE_Q4_0);
+    const auto expert_bytes=3*source.find_tensor("gate")->nbytes/5;
+    CudaExecutionContext execution;
+    execution.config.moe_host_cache_bytes=3*expert_bytes;
+    execution.config.moe_device_cache_bytes=2*expert_bytes;
+    GgufMoeBanks banks{std::make_shared<GgufRoutedWeight>(execution,source,"gate"),
+        std::make_shared<GgufRoutedWeight>(execution,source,"up"),
+        std::make_shared<GgufRoutedWeight>(execution,source,"down")};
+    const auto cache=execution.gguf_expert_cache;
+    const auto metric=[&](const char* name) {
+        for(const auto& item:gguf_expert_memory_metrics(cache))if(item.first==name)return std::size_t(item.second);
+        throw std::runtime_error("Slot transition coverage metric missing");
+    };
+    auto x=tb::full({1,256},.0001,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
+    auto ids=tb::zeros({1,1},x.options().dtype(tb::kInt64));
+    auto scales=tb::full({1,1},1.,x.options().dtype(tb::kFloat32));
+    require(prepare_gguf_graph_pool(cache),"Slot transition fixture has no graph pool");
+    tb::Tensor output;mfq::cuda::DecodeWindow graph(mfq_current_cuda_stream());
+    graph.capture([&]{output=banks.forward(x,ids,scales);},[]{});
+    for(int expert=0;expert<5;++expert){ids.fill_(expert);graph.run();check_moe(output,banks,x,ids,scales);}
+    reclaim_gguf_expert_duplicates(cache,1);
+    require(metric("ssd_expert_payload_bytes")==0,"Slot transition fixture does not initially cover every expert");
+    restore_gguf_decode_workspace(cache,0,0);
+    require(metric("gguf_strata_slot_cache_bytes")==2*expert_bytes,"Slot transition did not seed the fixed arena");
+    require(metric("ssd_expert_payload_bytes")==0,
+        "Fixed-slot migration lost experts that fit in combined RAM and VRAM");
+    const auto reads=source.read_calls();
+    for(int expert=0;expert<5;++expert){ids.fill_(expert);graph.run();check_moe(output,banks,x,ids,scales);}
+    require(source.read_calls()==reads,"Warm fixed-slot replay reread an expert retained before migration");
+    std::cout<<"GGUF fixed-slot migration preserves complete combined RAM/VRAM coverage and warm source hits PASS\n";
+}
+void run_decode_seeded_slots() {
+    ScopedSnapshot reserve("0","TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB");
+    for(bool enabled:{true,false}) {
+        ScopedSnapshot slots(enabled?"1":"0","TYLOINFER_GGUF_STRATA_CACHE");
+        Source source;
+        for(const auto* layer:{"first","second"}) {
+            source.add(std::string(layer)+".gate",{8,256,256},GGML_TYPE_Q4_0);
+            source.add(std::string(layer)+".up",{8,256,256},GGML_TYPE_Q5_0);
+            source.add(std::string(layer)+".down",{8,256,256},GGML_TYPE_Q8_0);
+        }
+        const auto bytes=(source.find_tensor("first.gate")->nbytes+source.find_tensor("first.up")->nbytes+
+            source.find_tensor("first.down")->nbytes)/8;
+        CudaExecutionContext execution;execution.config.moe_host_cache_bytes=16ULL<<20;
+        execution.config.moe_device_cache_bytes=2*bytes;
+        const auto banks=[&](const char* layer) {
+            return GgufMoeBanks{std::make_shared<GgufRoutedWeight>(execution,source,std::string(layer)+".gate"),
+                std::make_shared<GgufRoutedWeight>(execution,source,std::string(layer)+".up"),
+                std::make_shared<GgufRoutedWeight>(execution,source,std::string(layer)+".down")};
+        };
+        auto first=banks("first"),second=banks("second");const auto cache=execution.gguf_expert_cache;
+        const auto metric=[&](const char* name) {
+            for(const auto& item:gguf_expert_memory_metrics(cache))if(item.first==name)return item.second;
+            throw std::runtime_error("Decode-seeded cache metric missing");
+        };
+        const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
+        auto x=tb::full({1,256},.0001,options),ids=tb::zeros({1,1},options.dtype(tb::kInt64));
+        auto scales=tb::full({1,1},1.,options.dtype(tb::kFloat32));
+        tb::Tensor a,b;require(prepare_gguf_graph_pool(cache),"Decode-seeded cache has no graph pool");
+        mfq::cuda::DecodeWindow one(mfq_current_cuda_stream()),two(mfq_current_cuda_stream());
+        one.capture([&]{a=first.forward(x,ids,scales);},[]{});one.run();
+        restore_gguf_decode_workspace(cache,0,0);
+        require(metric("gguf_strata_slot_cache_bytes")==0,"Partial decode history created an undersized slot arena");
+        two.capture([&]{b=second.forward(x,ids,scales);},[]{});two.run();
+        restore_gguf_decode_workspace(cache,0,0);
+        require((metric("gguf_strata_slot_cache_bytes")>0)==enabled,"Decode history did not seed enabled fixed slots or ignored explicit disable");
+        require(metric("gguf_decode_seed_rebalances")==double(enabled),"Decode seed did not initialize exactly once at the safe boundary");
+        for(int expert:{0,1,1,1,1,2,2,2,2}) {
+            ids.fill_(expert);one.run();check_moe(a,first,x,ids,scales);
+            two.run();check_moe(b,second,x,ids,scales);
+        }
+        restore_gguf_decode_workspace(cache,0,0);
+        require(metric("gguf_decode_seed_rebalances")==double(enabled),"Existing slot arena was needlessly rebuilt");
+        require(metric("resident_expert_cache_bytes")<=2*bytes,"Decode-seeded slots exceeded configured capacity");
+    }
+    std::cout<<"GGUF prefix-only decode history, full-capacity seed, disable override, mixed-role retained Graph and adaptive exchanges PASS\n";
+}
+void run_lazy_decode_slots() {
+    ScopedSnapshot reserve("0","TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB");
+    ScopedSnapshot slots("1","TYLOINFER_GGUF_STRATA_CACHE");
+    ScopedSnapshot snapshot("0");
+    Source source;
+    source.add("gate",{16,256,256},GGML_TYPE_Q4_0);
+    source.add("up",{16,256,256},GGML_TYPE_Q5_0);
+    source.add("down",{16,256,256},GGML_TYPE_Q8_0);
+    const auto bytes=(source.find_tensor("gate")->nbytes+source.find_tensor("up")->nbytes+
+        source.find_tensor("down")->nbytes)/16;
+    CudaExecutionContext execution;execution.config.moe_host_cache_bytes=16ULL<<20;
+    execution.config.moe_device_cache_bytes=4*bytes;
+    GgufMoeBanks banks{std::make_shared<GgufRoutedWeight>(execution,source,"gate"),
+        std::make_shared<GgufRoutedWeight>(execution,source,"up"),std::make_shared<GgufRoutedWeight>(execution,source,"down")};
+    const auto cache=execution.gguf_expert_cache;
+    const auto metric=[&](const char* name) {
+        for(const auto& item:gguf_expert_memory_metrics(cache))if(item.first==name)return item.second;
+        throw std::runtime_error("Lazy decode cache metric missing");
+    };
+    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
+    auto x=tb::full({1,256},.0001,options),ids=tb::zeros({1,1},options.dtype(tb::kInt64));
+    auto scales=tb::full({1,1},1.,options.dtype(tb::kFloat32));tb::Tensor output;
+    require(prepare_gguf_graph_pool(cache),"Lazy decode cache has no graph pool");
+    mfq::cuda::DecodeWindow graph(mfq_current_cuda_stream());
+    graph.capture([&]{output=banks.forward(x,ids,scales);},[]{});graph.run();
+    wait_gguf_expert_admission(cache);
+    const auto reads=source.read_calls(),transferred=gguf_expert_streamed_bytes(cache);
+    restore_gguf_decode_workspace(cache,0,0);
+    require(metric("gguf_strata_slot_cache_bytes")==4*bytes,"Sparse decode history did not establish full slot capacity");
+    require(metric("gguf_slot_untouched_slots")==3,"Cold slots were filled without observed demand");
+    require(metric("resident_expert_cache_bytes")==bytes,"Empty slot addresses were published as resident experts");
+    require(source.read_calls()==reads,"Lazy initialization read cold source weights");
+    require(gguf_expert_streamed_bytes(cache)-transferred<=bytes,"Lazy initialization uploaded cold weights");
+    require(metric("gguf_decode_seed_rebalances")==1,"Sparse decode history did not seed exactly once");
+    ids.fill_(15);begin_gguf_speculative_routes(cache,1);graph.run();commit_gguf_speculative_routes(cache,1);
+    wait_gguf_expert_admission(cache);check_moe(output,banks,x,ids,scales);
+    const auto first_miss=gguf_expert_streamed_bytes(cache);
+    for(const auto& bank:{banks.gate,banks.up,banks.down})(void)bank->forward(x,ids).cpu();
+    require(gguf_expert_streamed_bytes(cache)==first_miss,"An empty slot imposed the occupied-expert replacement threshold");
+    for(int expert:{3,15}) {
+        ids.fill_(expert);
+        for(int step=0;step<8;++step){graph.run();wait_gguf_expert_admission(cache);check_moe(output,banks,x,ids,scales);}
+        const auto before=gguf_expert_streamed_bytes(cache);
+        for(const auto& bank:{banks.gate,banks.up,banks.down})(void)bank->forward(x,ids).cpu();
+        require(gguf_expert_streamed_bytes(cache)==before,"Lazy assigned or replacement slot failed to admit its observed expert");
+    }
+    require(metric("gguf_slot_untouched_slots")<3,"Observed cold slot remained empty");
+    require(metric("resident_expert_cache_bytes")<=4*bytes,"Lazy slots exceeded the configured cache capacity");
+    restore_gguf_decode_workspace(cache,0,0);
+    require(metric("gguf_decode_seed_rebalances")==1,"Lazy slot cache was initialized again");
+    std::cout<<"GGUF sparse-history full-capacity lazy slots, unpublished cold addresses and retained Graph admission PASS\n";
+}
+void run_lazy_admission_retry() {
+    ScopedSnapshot reserve("0","TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB");
+    ScopedSnapshot slots("1","TYLOINFER_GGUF_STRATA_CACHE");ScopedSnapshot snapshot("0");
+    Source source;for(const auto* role:{"gate","up","down"})source.add(role,{4,256,256},GGML_TYPE_Q8_0);
+    const auto bytes=3*source.find_tensor("gate")->nbytes/4;
+    CudaExecutionContext execution;execution.config.moe_host_cache_bytes=1;execution.config.moe_device_cache_bytes=2*bytes;
+    GgufMoeBanks banks{std::make_shared<GgufRoutedWeight>(execution,source,"gate"),
+        std::make_shared<GgufRoutedWeight>(execution,source,"up"),std::make_shared<GgufRoutedWeight>(execution,source,"down")};
+    const auto cache=execution.gguf_expert_cache;
+    const auto metric=[&](const char* name){for(const auto& item:gguf_expert_memory_metrics(cache))if(item.first==name)return item.second;throw std::runtime_error("Retry metric missing");};
+    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
+    auto x=tb::full({1,256},.0001,options),ids=tb::zeros({1,1},options.dtype(tb::kInt64));
+    auto scales=tb::full({1,1},1.,options.dtype(tb::kFloat32));tb::Tensor output;
+    require(prepare_gguf_graph_pool(cache),"Lazy retry has no graph pool");mfq::cuda::DecodeWindow graph(mfq_current_cuda_stream());
+    graph.capture([&]{output=banks.forward(x,ids,scales);},[]{});graph.run();wait_gguf_expert_admission(cache);
+    restore_gguf_decode_workspace(cache,0,0);
+    require(metric("gguf_slot_untouched_slots")==1,"Lazy retry fixture has no single empty slot");
+    ids.fill_(1);begin_gguf_speculative_routes(cache,1);graph.run();source.fail_next_read(true,1);
+    bool failed=false;
+    try{commit_gguf_speculative_routes(cache,1);wait_gguf_expert_admission(cache);}
+    catch(const std::runtime_error& error){failed=std::string(error.what())=="fixture single read failure";}
+    require(failed,"Partial lazy admission did not propagate its second-role source error");
+    require(metric("gguf_slot_untouched_slots")==0,"Partial failure did not prepare its last cold slot");
+    begin_gguf_speculative_routes(cache,1);graph.run();commit_gguf_speculative_routes(cache,1);
+    wait_gguf_expert_admission(cache);
+    const auto before=gguf_expert_streamed_bytes(cache);
+    for(const auto& bank:{banks.gate,banks.up,banks.down})(void)bank->forward(x,ids).cpu();
+    require(gguf_expert_streamed_bytes(cache)==before,"Previously touched empty slot did not retry its missing projections");
+    require(metric("resident_expert_cache_bytes")==2*bytes,"Retry lost an existing resident expert");
+    check_moe(output,banks,x,ids,scales);
+    std::cout<<"GGUF partial lazy admission error, touched-slot retry and retained Graph recovery PASS\n";
+}
+void run_reusable_expert_pool_budget() {
+    ScopedSnapshot slots("0","TYLOINFER_GGUF_STRATA_CACHE");
+    Source source;
+    for(const auto* role:{"gate","up","down"})source.add(role,{4,256,256},GGML_TYPE_Q8_0);
+    CudaExecutionContext execution;execution.config.moe_host_cache_bytes=2ULL<<20;
+    execution.config.moe_device_cache_bytes=16ULL<<20;
+    GgufMoeBanks banks{std::make_shared<GgufRoutedWeight>(execution,source,"gate"),
+        std::make_shared<GgufRoutedWeight>(execution,source,"up"),std::make_shared<GgufRoutedWeight>(execution,source,"down")};
+    const auto cache=execution.gguf_expert_cache;
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
+    auto x=tb::full({1,256},.0001,options),ids=tb::zeros({1,1},options.dtype(tb::kInt64));
+    auto weights=tb::full({1,1},1.,options.dtype(tb::kFloat32));
+    check_moe(banks.forward(x,ids,weights),banks,x,ids,weights);
+    std::vector<tb::Tensor> fragments;
+    {
+        const mfq::cuda::RoutedWeightAllocationScope resident;
+        for(int i=0;i<128;++i)fragments.push_back(tb::empty({65536},options.dtype(tb::kUInt8)));
+    }
+    context->reclaim_idle_memory();
+    CUmemoryPool handle=nullptr;
+    if(cuPointerGetAttribute(&handle,CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE,
+            CUdeviceptr(reinterpret_cast<std::uintptr_t>(fragments.front().data_ptr())))!=CUDA_SUCCESS || !handle) {
+        std::cout<<"SKIP expert pool budget: allocation is not backed by an async memory pool\n";
+        return;
+    }
+    for(std::size_t i=1;i<fragments.size();i+=2)fragments[i]={};
+    context->reclaim_idle_memory();
+    const auto previous_limit=context->memory_stats().limit;
+    try {
+        context->set_memory_limit(std::max(context->resident_memory_usage(),context->memory_stats().allocated)+(1ULL<<20));
+        std::uint64_t used=0,reserved=0;
+        const auto pool=reinterpret_cast<cudaMemPool_t>(handle);
+        TYLOINFER_CUDA_CHECK(cudaMemPoolGetAttribute(pool,cudaMemPoolAttrUsedMemCurrent,&used));
+        TYLOINFER_CUDA_CHECK(cudaMemPoolGetAttribute(pool,cudaMemPoolAttrReservedMemCurrent,&reserved));
+        const auto reusable=reserved>used?reserved-used:0,available=context->available_memory();
+        if(reusable<=available) {
+            context->set_memory_limit(previous_limit);
+            std::cout<<"SKIP expert pool budget: driver returned all fragmented free pages\n";
+            return;
+        }
+        std::size_t resident=0;
+        for(const auto& item:gguf_expert_memory_metrics(cache))
+            if(item.first=="resident_expert_cache_bytes")resident=std::size_t(item.second);
+        require(resident>0,"Reusable expert pool fixture has no cache images");
+        const auto before=gguf_expert_cache_budget_bytes(cache);
+        reserve_gguf_expert_workspace(cache,available/2);
+        require(gguf_expert_cache_budget_bytes(cache)>=std::min(before,resident+reusable),
+            "Workspace reservation discarded reusable expert pool capacity");
+        require(context->available_memory()>=available/2,"Cache reuse consumed the physical workspace reservation");
+        context->set_memory_limit(previous_limit);
+        check_moe(banks.forward(x,ids,weights),banks,x,ids,weights);
+        std::cout<<"GGUF fragmented expert pool capacity retained across workspace reservation PASS reusable_bytes="<<reusable<<'\n';
+    } catch(...) {context->set_memory_limit(previous_limit);throw;}
+}
 void run_decode_workspace_budget() {
     ScopedSnapshot reserve(nullptr,"TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB");
     ScopedSnapshot slots("1","TYLOINFER_GGUF_STRATA_CACHE");
@@ -1734,16 +2038,24 @@ void run_decode_workspace_budget() {
         for(const auto& item:gguf_expert_memory_metrics(cache))if(item.first==name)return item.second;
         throw std::runtime_error("GGUF decode reserve metric missing");
     };
-    context->set_memory_limit(std::max(context->resident_memory_usage(),context->memory_stats().allocated)+(96ULL<<20));
+    constexpr auto prepared_reserve=std::size_t(732)<<20;
+    if(context->available_memory()<prepared_reserve+(96ULL<<20)) {
+        std::cout<<"SKIP automatic decode reserve: insufficient available memory for its residency allowance and test allocations\n";
+        return;
+    }
+    const auto roomy_limit=std::max(context->resident_memory_usage(),context->memory_stats().allocated)+prepared_reserve+(96ULL<<20);
+    context->set_memory_limit(roomy_limit);
     try {
         resize_gguf_expert_cache(cache,16ULL<<20);
         restore_gguf_decode_workspace(cache);
         require(gguf_expert_cache_budget_bytes(cache)==0,"GGUF unprepared caller lost its capture allowance");
         restore_gguf_decode_workspace(cache,0,16ULL<<20);
         require(metric("gguf_decode_workspace_prepared")==1,"GGUF prepared decoder reserve was ignored");
-        require(metric("gguf_decode_workspace_reserve_bytes")==double(48ULL<<20),"GGUF upload reserve was lost");
+        require(metric("gguf_decode_workspace_reserve_bytes")==double(prepared_reserve),"GGUF physical residency or upload reserve was lost");
         require(gguf_expert_cache_budget_bytes(cache)>0 && gguf_expert_cache_budget_bytes(cache)<=16ULL<<20,
             "GGUF prepared decode did not reuse spare memory within configured cache budget");
+        (void)banks.forward(x,ids,weights).cpu();
+        restore_gguf_decode_workspace(cache,0,16ULL<<20);
         const auto one=x.narrow(0,0,1),chosen=ids.narrow(0,0,1),scales=weights.narrow(0,0,1);
         check_moe(banks.forward(one,chosen,scales),banks,one,chosen,scales);
         auto output=tb::Tensor{};
@@ -1751,18 +2063,75 @@ void run_decode_workspace_budget() {
         mfq::cuda::DecodeWindow window(mfq_current_cuda_stream());
         window.capture([&]{output=banks.forward(one,chosen,scales);},[]{});
         window.run();check_moe(output,banks,one,chosen,scales);
+        auto tail_id=tb::full({1,1},47,ids.options());tb::Tensor tail_output;
+        mfq::cuda::DecodeWindow tail_window(mfq_current_cuda_stream());
+        begin_gguf_speculative_routes(cache,1);
+        tail_window.capture([&]{tail_output=banks.forward(one,tail_id,scales);},[]{});
+        discard_gguf_speculative_routes(cache);
+        tail_window.run();check_moe(tail_output,banks,one,tail_id,scales);
         const auto available=context->available_memory();
+        const auto arena_before=metric("gguf_strata_slot_cache_bytes");
+        const auto segment=metric("gguf_slot_max_segment_bytes");
+        const auto rebuilds=metric("gguf_slot_rebuilds");
+        if(mfq::cuda::gguf::grouped_f16_available(mfq_current_cuda_device()))
+            require(arena_before>0,"GGUF pressure fixture did not create its fixed slot arena");
         reserve_gguf_expert_workspace(cache,available+(1ULL<<20));
-        require(gguf_prefill_lendable_bytes(cache)==0,"GGUF workspace pressure retained revocable expert slots");
+        require(context->available_memory()>=available+(1ULL<<20),"GGUF workspace pressure did not return physical pages");
+        if(metric("gguf_slot_segmented_arenas") && arena_before>segment+(1ULL<<20)) {
+            require(metric("gguf_strata_slot_cache_bytes")>0 && metric("gguf_strata_slot_cache_bytes")<arena_before,
+                "Small workspace pressure discarded the complete segmented expert cache");
+            require(metric("gguf_slot_shrinks")>0 && metric("gguf_slot_rebuilds")==rebuilds,
+                "Segmented expert cache rebuilt instead of preserving its prefix");
+        }else if(arena_before)require(gguf_prefill_lendable_bytes(cache)<std::size_t(arena_before),
+            "GGUF workspace pressure retained all revocable expert slots");
+        else require(gguf_prefill_lendable_bytes(cache)==0,"GGUF unseeded cache reported fixed slots");
         window.run();check_moe(output,banks,one,chosen,scales);
+        if(metric("gguf_slot_segmented_arenas") && arena_before>segment+(1ULL<<20)) {
+            // Admit an expert from the unmapped tail while it is absent. Its
+            // former tail slot must then belong to the displaced live expert.
+            for(int step=0;step<8;++step) {
+                begin_gguf_speculative_routes(cache,1);tail_window.run();commit_gguf_speculative_routes(cache,1);
+                wait_gguf_expert_admission(cache);check_moe(tail_output,banks,one,tail_id,scales);
+            }
+            const auto streamed=gguf_expert_streamed_bytes(cache);
+            for(const auto& bank:{banks.gate,banks.up,banks.down})(void)bank->forward(one,tail_id).cpu();
+            require(gguf_expert_streamed_bytes(cache)==streamed,"Shrunk cache did not adapt to its missing tail expert");
+        }
         restore_gguf_decode_workspace_after_capture(cache);
         require(metric("gguf_decode_workspace_prepared")==1 &&
-            metric("gguf_decode_workspace_reserve_bytes")==double(48ULL<<20) &&
+            metric("gguf_decode_workspace_reserve_bytes")==double(prepared_reserve) &&
             metric("resident_expert_cache_bytes")>0,
             "GGUF capture did not restore its previous prepared policy and resident experts");
         window.run();check_moe(output,banks,one,chosen,scales);
+        tail_window.run();check_moe(tail_output,banks,one,tail_id,scales);
+        if(metric("gguf_slot_segmented_arenas") && arena_before>segment+(1ULL<<20)) {
+            require(metric("gguf_slot_grows")>0 && metric("gguf_slot_rebuilds")==rebuilds,
+                "Returned workspace did not refill only the removed expert-cache tail");
+            std::cout<<"GGUF segmented pressure, missing-tail adaptation, owner-preserving growth and retained Graph PASS\n";
+        }
+        for(int expert=0;expert<48;++expert) {
+            const auto selected=tb::full({1,1},expert,ids.options());
+            check_moe(banks.forward(one,selected,scales),banks,one,selected,scales);
+        }
         restore_gguf_decode_workspace(cache,5ULL<<20,16ULL<<20);
-        require(metric("gguf_decode_workspace_reserve_bytes")==double(53ULL<<20),"GGUF prepared allowance omitted KV growth");
+        require(metric("gguf_decode_workspace_reserve_bytes")==double(prepared_reserve+(5ULL<<20)),"GGUF prepared allowance omitted KV growth");
+        // Retained graph allocations can leave a positive amount of free
+        // memory which is nevertheless below the decoder's reserve. Existing
+        // experts must yield physical pages before that graph runs again.
+        // External slot arenas need a driver process-usage meter for this
+        // quota test; allocator-owned bytes alone cannot observe their frees.
+        if(mfq::cuda::process_device_memory_stats(mfq_current_cuda_device())) {
+        const auto needed=std::size_t(metric("gguf_decode_workspace_reserve_bytes"));
+        const auto shortfall=std::min(std::size_t(1)<<20,std::size_t(metric("resident_expert_cache_bytes"))/2);
+        require(shortfall>0,"Workspace pressure fixture has no resident expert pages to reclaim");
+        context->reclaim_idle_memory();
+        context->set_memory_limit(context->resident_memory_usage()+needed-shortfall);
+        require(context->available_memory()<needed,"Workspace pressure fixture did not consume the promised allowance");
+        restore_gguf_decode_workspace(cache,5ULL<<20,16ULL<<20);
+        require(context->available_memory()>=needed,"Existing GPU experts consumed the retained decoder's free-memory reserve");
+        window.run();check_moe(output,banks,one,chosen,scales);
+        context->set_memory_limit(roomy_limit);
+        }
         {
             ScopedSnapshot explicit_reserve("0.0625","TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB");
             restore_gguf_decode_workspace(cache,5ULL<<20,16ULL<<20);
@@ -1880,6 +2249,389 @@ void run_prefill_partial_fence() {
         if(key=="gguf_prefill_phased_groups")phased=value;
     require(phased>0,"large-Down fixture bypassed phased DMA");
     std::cout<<"GGUF partial GU/Down fences long K/large Down/multiple stages/tail byte parity PASS\n";
+}
+void run_host_kv_sharing() {
+    ScopedSnapshot snapshot("0");Source source;
+    for(const auto* name:{"gate","up","down"})source.add(name,{7,256,256},GGML_TYPE_Q4_0);
+    CudaExecutionContext execution;execution.config.moe_host_cache_bytes=4ULL<<20;
+    execution.config.moe_device_cache_bytes=3*source.find_tensor("gate")->nbytes;
+    GgufMoeBanks banks{std::make_shared<GgufRoutedWeight>(execution,source,"gate"),
+        std::make_shared<GgufRoutedWeight>(execution,source,"up"),std::make_shared<GgufRoutedWeight>(execution,source,"down")};
+    const auto metric=[&](const char* name) {
+        for(const auto& [key,value]:gguf_expert_memory_metrics(execution.gguf_expert_cache))if(key==name)return std::size_t(value);
+        throw std::runtime_error("Missing RAM sharing metric");
+    };
+    auto x=input(1,1,false).to(tb::kFloat16),ids=routes(1,0);
+    auto weights=tb::full({1,3},.3,x.options().dtype(tb::kFloat32));
+    const auto expected=banks.forward(x,ids,weights).cpu();
+    const auto unique=metric("ram_expert_unique_payload_bytes");
+    reclaim_gguf_expert_duplicates(execution.gguf_expert_cache,SIZE_MAX/2);
+    require(metric("ram_expert_unique_payload_bytes")==unique,"Duplicate-only reclamation discarded a unique RAM expert");
+    const auto cap=metric("ram_expert_cache_budget_bytes");
+    share_gguf_expert_host(execution.gguf_expert_cache,SIZE_MAX/2);
+    require(metric("ram_expert_cache_allocated_bytes")==0 && metric("ram_expert_cache_budget_bytes")==0,
+        "KV reservation left pinned expert arenas allocated or allowed immediate cache regrowth");
+    const auto actual=banks.forward(x,ids,weights).cpu();
+    require(actual.nbytes()==expected.nbytes() && std::memcmp(actual.data_ptr(),expected.data_ptr(),actual.nbytes())==0,
+        "Expert RAM reclamation changed resident or streamed results");
+    share_gguf_expert_host(execution.gguf_expert_cache,0);
+    require(metric("ram_expert_cache_budget_bytes")==cap,"Returned KV loan did not restore the expert RAM ceiling");
+    std::cout<<"GGUF duplicate-only protection, physical arena reclamation, KV soft ceiling, reuse and loan return PASS\n";
+}
+void run_pinned_hole_under_pressure() {
+    ScopedSnapshot snapshot("0");
+    ScopedSnapshot direct("0","TYLOINFER_GGUF_DIRECT_EXPERTS");
+    ScopedSnapshot slots("0","TYLOINFER_GGUF_STRATA_CACHE");
+    Source source;source.add("gate",{8,256,256},GGML_TYPE_Q4_0);
+    (void)tb::empty({1},tb::TensorOptions().device(tb::kCUDA)).cpu();
+    CudaExecutionContext execution;
+    execution.config.moe_host_cache_bytes=4ULL<<20;
+    execution.config.moe_host_physical_bytes=mfq::sample_host_memory().resident_bytes+(128ULL<<20);
+    const auto expert_bytes=source.find_tensor("gate")->nbytes/8;
+    execution.config.moe_device_cache_bytes=expert_bytes;
+    auto bank=std::make_shared<GgufRoutedWeight>(execution,source,"gate");
+    const auto cache=execution.gguf_expert_cache;
+    const auto metric=[&](const char* name) {
+        for(const auto& [key,value]:gguf_expert_memory_metrics(cache))if(key==name)return std::size_t(value);
+        throw std::runtime_error("Missing pinned-hole cache metric");
+    };
+    auto x=input(1,1,false).to(tb::kFloat16);
+    auto ids=tb::zeros({1,1},x.options().dtype(tb::kInt64));
+    const auto expected=bank->forward(x,ids).cpu();
+    require(metric("ram_expert_pinned_payload_bytes")==8*expert_bytes &&
+        metric("ram_expert_duplicate_payload_bytes")==expert_bytes,
+        "Pinned-hole fixture did not retain eight experts and one GPU backup");
+    reclaim_gguf_expert_duplicates(cache,1);
+    const auto unique=metric("ram_expert_unique_payload_bytes");
+    const auto allocated=metric("ram_expert_cache_allocated_bytes");
+    const auto reads=source.read_calls();
+    require(unique==7*expert_bytes && metric("ram_expert_duplicate_payload_bytes")==0,
+        "Pinned-hole fixture failed to leave a reusable interval beside unique RAM experts");
+    {
+        // Exceed only this cache's process-relative soft budget. The real
+        // machine needs just 128MiB; no dependence on its capacity or model.
+        mfq::cuda::HostBuffer pressure(128ULL<<20,true);
+        std::memset(pressure.data(),0,128ULL<<20);
+        require(mfq::sample_host_memory().resident_bytes>=execution.config.moe_host_physical_bytes,
+            "Pinned-hole fixture did not exhaust its simulated physical allowance");
+        resize_gguf_expert_cache(cache,0);
+        require(metric("ram_expert_unique_payload_bytes")==unique+expert_bytes &&
+            metric("ram_expert_cache_allocated_bytes")==allocated,
+            "Reusable pinned interval discarded unique RAM experts under physical pressure");
+    }
+    const auto actual=bank->forward(x,ids).cpu();
+    require(std::memcmp(expected.data_ptr(),actual.data_ptr(),actual.nbytes())==0 &&
+        source.read_calls()==reads,
+        "Pinned interval reuse changed the result or reread an already resident expert");
+    std::cout<<"GGUF physical pressure reuses pinned holes without unique eviction or SSD reread PASS\n";
+}
+void run_pinned_interval_compaction() {
+    auto arena=std::make_shared<MoePinnedExpertArena>(1024);
+    auto gap=arena->allocate(128),first=arena->allocate(256),middle=arena->allocate(128);
+    auto second=arena->allocate(256),guard=arena->allocate(256);
+    for(std::size_t i=0;i<256;++i){first->data()[i]=std::uint8_t(i);second->data()[i]=std::uint8_t(i^0xa5);}
+    auto* fixed=guard->data();gap.reset();middle.reset();
+    require(arena->largest_free_bytes()==128,"Separated holes were counted as one interval");
+    require(first->compact_left()==256 && arena->used_bytes()==768 && arena->largest_free_bytes()==256,
+        "In-place overlapping move lost pinned capacity accounting");
+    require(second->compact_left()==256 && guard->data()==fixed,
+        "In-place packing moved a protected neighbor");
+    for(std::size_t i=0;i<256;++i)
+        require(first->data()[i]==std::uint8_t(i) && second->data()[i]==std::uint8_t(i^0xa5),
+            "In-place overlapping move changed expert bytes");
+    auto joined=arena->allocate(256);
+    require(joined && joined->offset()==512 && !arena->allocate(16),
+        "Compacted holes did not provide the expected bounded allocation");
+    first.reset();second.reset();joined.reset();guard.reset();
+    require(arena->used_bytes()==0 && arena->largest_free_bytes()==1024,
+        "Packed expert leases did not return their complete arena");
+    std::cout<<"GGUF in-place pinned interval packing: overlapping byte parity/fixed neighbor/bounded reuse/coalescing PASS\n";
+}
+void run_prefill_host_scan_bypass(bool pressure=false) {
+    ScopedSnapshot snapshot("0");
+    ScopedSnapshot slots("0","TYLOINFER_GGUF_STRATA_CACHE");
+    Source source;source.enable_batches();
+    for(const auto* layer:{"warm","scan"})for(const auto* role:{"gate","up","down"})
+        source.add(std::string(layer)+role,{pressure && std::string_view(layer)=="scan"?512:32,256,256},GGML_TYPE_Q4_0);
+    CudaExecutionContext execution;
+    execution.config.moe_host_cache_bytes=pressure?16ULL<<20:3*source.find_tensor("warmgate")->nbytes;
+    if(pressure)execution.config.moe_host_physical_bytes=mfq::sample_host_memory().resident_bytes+(512ULL<<20);
+    execution.config.moe_device_cache_bytes=0;
+    const auto make=[&](const char* layer) {
+        return GgufMoeBanks{std::make_shared<GgufRoutedWeight>(execution,source,std::string(layer)+"gate"),
+            std::make_shared<GgufRoutedWeight>(execution,source,std::string(layer)+"up"),
+            std::make_shared<GgufRoutedWeight>(execution,source,std::string(layer)+"down")};
+    };
+    auto warm=make("warm"),scan=make("scan");
+    const auto metric=[&](const char* name) {
+        for(const auto& [key,value]:gguf_expert_memory_metrics(execution.gguf_expert_cache))
+            if(key==name)return static_cast<std::uint64_t>(value);
+        throw std::runtime_error("Missing PP host bypass metric");
+    };
+    auto x=tb::full({64,256},.001,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
+    auto ids=tb::arange(64,x.options().dtype(tb::kInt64)).remainder(32).reshape({64,1});
+    auto weights=tb::full({64,1},1.,x.options().dtype(tb::kFloat32));
+    const auto baseline=warm.forward(x,ids,weights).to(tb::kFloat32).cpu();
+    std::vector<tb::Tensor> physical_pressure;
+    if(pressure)while(mfq::sample_host_memory().resident_bytes<execution.config.moe_host_physical_bytes)
+        physical_pressure.push_back(tb::full({8<<20},19.,x.options().device(tb::kCPU).dtype(tb::kUInt8)));
+    const auto payload=metric("ram_expert_payload_bytes");
+    const auto evictions=metric("ram_expert_cache_evictions");
+    (void)scan.forward(x,ids,weights).cpu();
+    require(metric("gguf_prefill_host_bypass_bytes")==3*source.find_tensor("warmgate")->nbytes,
+        ("Bounded PP misses did not use transient source storage: bypass="+
+        std::to_string(metric("gguf_prefill_host_bypass_bytes"))+" expected="+
+        std::to_string(3*source.find_tensor("warmgate")->nbytes)+" payload="+
+        std::to_string(metric("ram_expert_payload_bytes"))+" pinned="+
+        std::to_string(metric("ram_expert_pinned_reserved_bytes"))+" resident="+
+        std::to_string(mfq::sample_host_memory().resident_bytes)+" physical_limit="+
+        std::to_string(execution.config.moe_host_physical_bytes)).c_str());
+    require(metric("ram_expert_cache_evictions")==evictions && metric("ram_expert_payload_bytes")==payload,
+        "PP scan changed the persistent RAM working set");
+    const auto reads=source.read_calls();
+    const auto actual=warm.forward(x,ids,weights).to(tb::kFloat32).cpu();
+    require(source.read_calls()==reads && actual.nbytes()==baseline.nbytes() &&
+        std::memcmp(actual.data_ptr(),baseline.data_ptr(),actual.nbytes())==0,
+        "PP scan changed cached expert bytes or reread retained RAM weights");
+    std::cout<<"GGUF bounded PP host scan bypass preserves resident RAM and byte parity PASS pressure="<<pressure<<'\n';
+}
+void run_fragmented_pinned_fallback(bool batch=false) {
+    ScopedSnapshot snapshot("0");
+    ScopedSnapshot direct("0","TYLOINFER_GGUF_DIRECT_EXPERTS");
+    ScopedSnapshot slots("0","TYLOINFER_GGUF_STRATA_CACHE");
+    Source source;
+    if(batch)source.enable_batches();
+    for(const auto* name:{"small-a","small-b","small-c"})source.add(name,{1024,256,256},GGML_TYPE_Q4_0);
+    source.add("large",{batch?16:1,8192,batch?256:4096},GGML_TYPE_Q4_0);
+    if(batch) {
+        source.add("large-up",{16,8192,256},GGML_TYPE_Q4_0);
+        source.add("large-down",{16,256,8192},GGML_TYPE_Q4_0);
+    }
+    (void)tb::empty({1},tb::TensorOptions().device(tb::kCUDA)).cpu();
+    CudaExecutionContext execution;
+    execution.config.moe_host_cache_bytes=96ULL<<20;
+    execution.config.moe_host_physical_bytes=mfq::sample_host_memory().resident_bytes+(384ULL<<20);
+    const auto small_bytes=source.find_tensor("small-a")->nbytes/1024;
+    execution.config.moe_device_cache_bytes=2048*small_bytes;
+    std::array<std::shared_ptr<GgufRoutedWeight>,3> banks;
+    banks[0]=std::make_shared<GgufRoutedWeight>(execution,source,"small-a");
+    banks[1]=std::make_shared<GgufRoutedWeight>(execution,source,"small-b");
+    banks[2]=std::make_shared<GgufRoutedWeight>(execution,source,"small-c");
+    const auto cache=execution.gguf_expert_cache;
+    const auto metric=[&](const char* name) {
+        for(const auto& [key,value]:gguf_expert_memory_metrics(cache))if(key==name)return std::size_t(value);
+        throw std::runtime_error("Missing fragmented allocation metric");
+    };
+    auto x=(input(512,1,false)*.001).to(tb::kFloat16);
+    auto even=(tb::arange(512,x.options().dtype(tb::kInt64))*2).reshape({512,1}),odd=even+1;
+    std::array<std::vector<tb::Tensor>,3> expected;
+    for(unsigned i=0;i<3;++i)for(int begin=0;begin<512;begin+=32)
+        expected[i].push_back(banks[i]->forward(x.narrow(0,begin,32),odd.narrow(0,begin,32)).cpu());
+    for(const auto& bank:banks)for(int begin=0;begin<512;begin+=32)
+        (void)bank->forward(x.narrow(0,begin,32),even.narrow(0,begin,32)).cpu();
+    require(metric("ram_expert_pageable_payload_bytes")==0 && metric("ram_expert_duplicate_payload_bytes")>0,
+        ("Fragmented fallback fixture did not create locked GPU backups: pageable="+
+        std::to_string(metric("ram_expert_pageable_payload_bytes"))+" duplicates="+
+        std::to_string(metric("ram_expert_duplicate_payload_bytes"))).c_str());
+    auto large=std::make_shared<GgufRoutedWeight>(execution,source,"large");
+    const auto before=metric("ram_expert_pinned_interval_compactions");
+    auto large_x=tb::full({batch?16:1,1,batch?256:4096},.001,x.options());
+    auto large_id=tb::arange(batch?16:1,x.options().dtype(tb::kInt64)).reshape({batch?16:1,1});
+    if(batch) {
+        GgufMoeBanks large_banks{large,std::make_shared<GgufRoutedWeight>(execution,source,"large-up"),
+            std::make_shared<GgufRoutedWeight>(execution,source,"large-down")};
+        large_x=tb::full({64,256},.001,x.options());
+        large_id=tb::arange(64,x.options().dtype(tb::kInt64)).remainder(16).reshape({64,1});
+        const auto coefficients=tb::full({64,1},1.,x.options().dtype(tb::kFloat32));
+        const auto result=large_banks.forward(large_x,large_id,coefficients);
+        const auto actual=result.to(tb::kFloat32).cpu();
+        std::cout<<"Fragmented batch interval passes="<<metric("ram_expert_pinned_interval_compactions")-before
+            <<" moved_bytes="<<metric("ram_expert_compacted_bytes")<<'\n';
+        require(metric("ram_expert_pinned_interval_compactions")-before<=6,
+            ("Fragmented read batch repeatedly compacted one expert at a time: count="+
+            std::to_string(metric("ram_expert_pinned_interval_compactions")-before)).c_str());
+        CudaExecutionContext reference;
+        reference.config.moe_host_cache_bytes=256ULL<<20;reference.config.moe_device_cache_bytes=0;
+        GgufMoeBanks reference_banks{std::make_shared<GgufRoutedWeight>(reference,source,"large"),
+            std::make_shared<GgufRoutedWeight>(reference,source,"large-up"),
+            std::make_shared<GgufRoutedWeight>(reference,source,"large-down")};
+        const auto expected=reference_banks.forward(large_x,large_id,coefficients).to(tb::kFloat32).cpu();
+        require(actual.sizes()==expected.sizes() && std::memcmp(actual.data_ptr(),expected.data_ptr(),actual.nbytes())==0,
+            "Fragmented batched MoE bytes differ from an unfragmented cache");
+    }else (void)large->forward(large_x,large_id).cpu();
+    require(batch || metric("ram_expert_pinned_interval_compactions")>0,
+        "Fragmented fallback did not exercise in-place interval packing");
+    const auto transient=batch?3*source.find_tensor("large")->nbytes:0;
+    require((batch || metric("ram_expert_pageable_payload_bytes")==0) &&
+        metric("ram_expert_payload_bytes")<=execution.config.moe_host_cache_bytes &&
+        metric("ram_expert_cache_allocated_bytes")<=execution.config.moe_host_cache_bytes+transient,
+        ("Fragmented locked capacity caused an avoidable pageable allocation: compacted="+
+        std::to_string(metric("ram_expert_compacted_bytes"))+" pageable="+
+        std::to_string(metric("ram_expert_pageable_payload_bytes"))+" allocated="+
+        std::to_string(metric("ram_expert_cache_allocated_bytes"))).c_str());
+    const auto reads=source.read_calls();
+    for(unsigned i=0;i<3;++i)for(int begin=0;begin<512;begin+=32) {
+        const auto actual=banks[i]->forward(x.narrow(0,begin,32),odd.narrow(0,begin,32)).cpu();
+        const auto& reference=expected[i][begin/32];
+        require(actual.nbytes()==reference.nbytes() && !std::memcmp(actual.data_ptr(),reference.data_ptr(),actual.nbytes()),
+            "Fragmented allocation changed retained expert bytes");
+    }
+    if(!batch)require(source.read_calls()==reads,"Fragmented allocation discarded unique RAM experts");
+    std::cout<<"GGUF fragmented locked capacity reused before pageable allocation, unique expert bytes and physical ceiling preserved PASS\n";
+}
+void run_host_vram_evacuation() {
+    ScopedSnapshot snapshot("0");
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto previous_limit=context->memory_stats().limit;
+    std::vector<tb::Tensor> baseline;
+    try {
+        for(int mode=0;mode<4;++mode) {
+            Source source;
+            for(const auto* name:{"gate","up","down"})source.add(name,{7,256,256},GGML_TYPE_Q4_0);
+            const auto payload=3*source.find_tensor("gate")->nbytes;
+            CudaExecutionContext execution;execution.config.moe_host_cache_bytes=4ULL<<20;
+            execution.config.moe_device_cache_bytes=mode==2?1:2*payload;
+            GgufMoeBanks banks{std::make_shared<GgufRoutedWeight>(execution,source,"gate"),
+                std::make_shared<GgufRoutedWeight>(execution,source,"up"),std::make_shared<GgufRoutedWeight>(execution,source,"down")};
+            const auto cache=execution.gguf_expert_cache;
+            const auto metric=[&](const char* name) {
+                for(const auto& [key,value]:gguf_expert_memory_metrics(cache))if(key==name)return std::size_t(value);
+                throw std::runtime_error("Missing RAM evacuation metric");
+            };
+            require(metric("resident_expert_cache_bytes")==0 && metric("ram_expert_unique_payload_bytes")==payload,
+                "Evacuation fixture did not start with unique RAM experts");
+            if(mode!=0)finalize_gguf_expert_cache(cache);
+            if(mode==3) {
+                restore_gguf_decode_workspace(cache,0,16ULL<<20);
+                const auto reserve=metric("gguf_decode_workspace_reserve_bytes");
+                context->set_memory_limit(context->resident_memory_usage()+reserve/2);
+                require(context->available_memory()<reserve,"Evacuation fixture did not consume its workspace allowance");
+            }
+            const auto reads=source.read_calls();
+            share_gguf_expert_host(cache,SIZE_MAX/2);
+            require(metric("ram_expert_cache_allocated_bytes")==0 && metric("ram_expert_cache_budget_bytes")==0,
+                "Evacuation failed to return physical RAM for KV");
+            require(metric("ram_expert_evacuated_to_vram_bytes")==std::size_t(mode==1?payload:0),
+                "RAM evacuation ignored load completion, GPU budget or workspace headroom");
+            require(metric("resident_expert_cache_bytes")<=execution.config.moe_device_cache_bytes && source.read_calls()==reads,
+                "RAM evacuation overfilled VRAM or fetched uncached weights from SSD");
+            context->set_memory_limit(previous_limit);
+            for(int tokens:{1,4}) {
+                auto x=input(tokens,1,false).to(tb::kFloat16);
+                auto ids=tb::arange(tokens*3,x.options().dtype(tb::kInt64)).remainder(7).reshape({tokens,3});
+                auto weights=tb::full({tokens,3},.3,x.options().dtype(tb::kFloat32));
+                const auto before=source.read_calls();const auto actual=banks.forward(x,ids,weights);
+                if(mode==1)require(source.read_calls()==before,"A migrated expert was fetched again from SSD");
+                const auto cpu=actual.to(tb::kFloat32).cpu();
+                if(mode==0)baseline.push_back(cpu);
+                else {
+                    // The first case used ordinary source reads, with migration
+                    // disabled. Its independent bytes catch expert/key mixups.
+                    const auto& expected=baseline.at(tokens==1?0:1);
+                    float error=0,magnitude=0;
+                    for(int64_t i=0;i<cpu.numel();++i) {
+                        error=std::max(error,std::abs(cpu.data_ptr<float>()[i]-expected.data_ptr<float>()[i]));
+                        magnitude=std::max(magnitude,std::abs(expected.data_ptr<float>()[i]));
+                    }
+                    require(std::isfinite(error) && error<1e-5f+magnitude*1e-4f,
+                        "Migrated expert output differs from the ordinary source-read baseline");
+                }
+                check_moe(actual,banks,x,ids,weights);
+            }
+            if(mode==1) {
+                auto x=input(1,0,false).to(tb::kFloat16),ids=routes(1,0);
+                auto weights=tb::full({1,3},.3,x.options().dtype(tb::kFloat32));tb::Tensor result;
+                require(prepare_gguf_graph_pool(cache),"Evacuation fixture has no graph pool");
+                mfq::cuda::DecodeWindow graph(mfq_current_cuda_stream());
+                graph.capture([&]{result=banks.forward(x,ids,weights);},[]{});
+                graph.run();check_moe(result,banks,x,ids,weights);
+            }
+        }
+    } catch(...) {context->set_memory_limit(previous_limit);throw;}
+    std::cout<<"GGUF RAM evacuation: unused GPU capacity, no SSD rereads, load/budget/workspace guards and Graph PASS\n";
+}
+void run_pinned_range_trim() {
+    MoePinnedExpertArena arena(256);auto block=arena.allocate(192);
+    for(int i=0;i<192;++i)block->data()[i]=std::uint8_t(i);
+    const auto kept=block->data()+64;
+    require(block->retain_range(64,64)==128 && block->bytes()==64 && block->data()==kept && arena.used_bytes()==64,
+        "Pinned range trim changed live address or used-byte accounting");
+    for(int i=0;i<64;++i)require(block->data()[i]==i+64,"Pinned range trim changed live bytes");
+    auto head=arena.allocate(64),tail=arena.allocate(128);
+    require(head && tail && arena.used_bytes()==256,"Pinned range trim did not return both adjacent holes");
+    bool rejected=false;try{block->retain_range(1,16);}catch(const std::invalid_argument&){rejected=true;}
+    require(rejected && block->data()==kept && arena.used_bytes()==256,"Invalid pinned trim mutated its lease");
+    block.reset();head.reset();tail.reset();
+    require(arena.used_bytes()==0 && bool(arena.allocate(256)),"Trimmed pinned intervals did not coalesce after release");
+    auto padded=arena.allocate(256);const auto start=padded->data();
+    require(padded->retain_range(16,17)==224 && padded->data()==start+16 && padded->bytes()==32 && arena.used_bytes()==32,
+        "Pinned subrange lost its alignment padding or prefix interval");
+    require(padded->retain_range(0,17)==0,"Repeated pinned subrange changed an already minimal lease");
+}
+void run_fragmented_host_reclaim(bool paired=false) {
+    ScopedSnapshot snapshot("0");
+    ScopedSnapshot direct("0","TYLOINFER_GGUF_DIRECT_EXPERTS");
+    Source source;
+    const std::array<std::string,3> names=paired?std::array<std::string,3>{"layers.0.mlp.experts.gate.weight",
+        "layers.0.mlp.experts.up.weight","layers.0.mlp.experts.down.weight"}:std::array<std::string,3>{"gate","up","down"};
+    for(const auto& name:names)source.add(name,{1024,256,256},GGML_TYPE_Q4_0);
+    // Force several bounded arenas using a process-relative budget; this
+    // exercises fragmentation independently of the test machine's RAM size.
+    (void)tb::empty({1},tb::TensorOptions().device(tb::kCUDA)).cpu();
+    CudaExecutionContext execution;execution.config.moe_host_cache_bytes=192ULL<<20;
+    execution.config.moe_host_physical_bytes=mfq::sample_host_memory().resident_bytes+(256ULL<<20);
+    const auto expert_bytes=source.find_tensor(names[0])->nbytes/1024;
+    execution.config.moe_device_cache_bytes=3*512*expert_bytes;
+    std::array<std::shared_ptr<GgufRoutedWeight>,3> banks;
+    int role=0;for(const auto& name:names)
+        banks[role++]=std::make_shared<GgufRoutedWeight>(execution,source,name);
+    const auto cache=execution.gguf_expert_cache;
+    const auto metric=[&](const char* name) {
+        for(const auto& [key,value]:gguf_expert_memory_metrics(cache))if(key==name)return std::size_t(value);
+        throw std::runtime_error("Missing fragmented RAM cache metric");
+    };
+    auto x=(input(512,1,false)*.001).to(tb::kFloat16);
+    auto even=(tb::arange(512,x.options().dtype(tb::kInt64))*2).reshape({512,1});
+    auto odd=even+1;
+    std::array<std::vector<tb::Tensor>,3> expected;
+    for(int i=0;i<3;++i)for(int start=0;start<512;start+=32)
+        expected[i].push_back(banks[i]->forward(x.narrow(0,start,32),odd.narrow(0,start,32)).cpu());
+    require(prepare_gguf_graph_pool(cache),"Fragmented expert test has no graph pool");
+    tb::Tensor graph_output;mfq::cuda::DecodeWindow graph(mfq_current_cuda_stream());
+    graph.capture([&]{graph_output=banks[0]->forward(x.narrow(0,0,32),odd.narrow(0,0,32));},[]{},[&]{graph_output={};});
+    for(int i=0;i<(paired?1:3);++i)for(int start=0;start<512;start+=32)
+        (void)banks[i]->forward(x.narrow(0,start,32),even.narrow(0,start,32)).cpu();
+    const auto unique=metric("ram_expert_unique_payload_bytes");
+    const auto allocated=metric("ram_expert_cache_allocated_bytes");
+    require(metric("ram_expert_duplicate_payload_bytes")>0,"Fragmented fixture has no GPU duplicates");
+    const auto released=reclaim_gguf_expert_duplicates(cache,1);
+    std::cout<<"Fragmented RAM reclaim: allocated="<<allocated<<" released="<<released
+        <<" unique_before="<<unique<<" unique_after="<<metric("ram_expert_unique_payload_bytes")
+        <<" copied="<<metric("ram_expert_compacted_bytes")<<'\n';
+    require(released>0 && metric("ram_expert_cache_allocated_bytes")<allocated,
+        "Interleaved GPU duplicates did not release physical pinned arenas");
+    require(metric("ram_expert_duplicate_payload_bytes")>0,
+        "A small RAM reservation discarded every unrelated GPU backup");
+    require(metric("ram_expert_compacted_bytes")>0 && metric("ram_expert_unique_payload_bytes")==unique,
+        "Pinned arena compaction did not preserve unique RAM experts");
+    if(paired)require(metric("ram_expert_trimmed_pinned_bytes")>0,
+        "Paired survivor did not return its unused compressed-image half");
+    const auto reads=source.read_calls();
+    for(int i=0;i<3;++i)for(int start=0;start<512;start+=32) {
+        const auto actual=banks[i]->forward(x.narrow(0,start,32),odd.narrow(0,start,32)).cpu();
+        const auto& reference=expected[i][start/32];
+        require(actual.nbytes()==reference.nbytes() && !std::memcmp(actual.data_ptr(),reference.data_ptr(),actual.nbytes()),
+            "Pinned arena compaction changed expert bytes or output");
+    }
+    require(source.read_calls()==reads,"Compacted unique experts were fetched from their source again");
+    graph.run();const auto graph_result=graph_output.cpu();
+    require(graph_result.nbytes()==expected[0][0].nbytes() &&
+        !std::memcmp(graph_result.data_ptr(),expected[0][0].data_ptr(),graph_result.nbytes()),
+        "Retained expert Graph used stale RAM pointers after compaction");
+    share_gguf_expert_host(cache,SIZE_MAX/2);
+    require(metric("ram_expert_cache_allocated_bytes")==0,
+        "Full RAM reservation left relocated expert blocks behind");
+    std::cout<<"GGUF fragmented pinned arenas: duplicate-only physical release/unique byte parity/no SSD rereads PASS\n";
 }
 void run_host_snapshot(bool pageable=false,bool mixed=false) {
     ScopedSnapshot setting("1");
@@ -4081,7 +4833,43 @@ void run_admission_failure_and_lifetime() {
     }
     require(observed.expired(),"GGUF asynchronous admission retained a destroyed model cache");
 }
+void run_row_prefetch() {
+    const auto device=tb::Device(tb::kCUDA,mfq_current_cuda_device());
+    for(bool batched:{false,true}) {
+        Source source;source.enable_parallel_reads();source.add("table",{11,256});if(batched)source.enable_batches();
+        auto table=std::make_shared<GgufRowTable>(source,"table");
+        const auto expected=source.decoded("table");
+        for(int count:{9,17,33}) {
+            std::vector<int64_t> ids(count);for(int i=0;i<count;++i)ids[i]=(i*7)%22;
+            auto collect=prefetch_gguf_shards({table,table},11,ids,{1,count},device);
+            const auto values=collect().to(tb::kFloat32).cpu();
+            for(int row=0;row<count;++row)for(int k=0;k<256;++k)
+                require(values.data_ptr<float>()[row*256+k]==float(mfq_half(expected.data_ptr<float>()[(ids[row]%11)*256+k])),
+                    "GGUF asynchronous PLE changed shard, duplicate or row ordering");
+        }
+        const auto reads=source.read_calls();
+        {auto cancelled=prefetch_gguf_shards({table},11,{0,1,1},{3},device);}
+        require(source.read_calls()==reads,"Cancelling a cached PLE job repeated its rows");
+        bool rejected=false;
+        try{auto bad=prefetch_gguf_shards({table},11,{11},{1},device);bad();}
+        catch(const std::out_of_range&){rejected=true;}
+        require(rejected,"Asynchronous PLE accepted an invalid shard");
+    }
+    Source serial;serial.add("table",{11,256});
+    auto serial_table=std::make_shared<GgufRowTable>(serial,"table");const auto serial_reads=serial.read_calls();
+    require(!prefetch_gguf_shards({serial_table},11,{1,2},{2},device) && serial.read_calls()==serial_reads,
+        "PLE scheduled concurrent reads for a provider with a shared seek cursor");
+    Source source;source.enable_parallel_reads();source.add("table",{11,256});
+    auto table=std::make_shared<GgufRowTable>(source,"table");source.fail_next_read(true);
+    auto collect=prefetch_gguf_shards({table},11,{7,1,7},{3},device);
+    bool rejected=false;try{collect();}catch(const std::runtime_error& error){rejected=std::string(error.what())=="fixture single read failure";}
+    require(rejected,"PLE I/O did not run on its CPU worker or swallowed its error");
+    collect=prefetch_gguf_shards({table},11,{7,1,7},{3},device);
+    require(collect().numel()==3*256,"Asynchronous PLE could not recover after a read failure");
+    std::cout<<"GGUF asynchronous PLE shard/duplicate/tail ordering, cancellation, background failure and retry PASS\n";
+}
 void run() {
+    run_row_prefetch();
     Source source; source.add("bank", {3, 7, 256}); source.add("table", {11, 256});
     CudaExecutionContext execution;
     execution.config.moe_host_cache_bytes = 65536;
@@ -4798,7 +5586,7 @@ int main(int argc,char** argv) {
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
     if(argc==2 && std::strcmp(argv[1],"--decode-budget-check")==0) {
-        try{run_decode_workspace_budget();return 0;}
+        try{run_slot_transition_ram_coverage();run_decode_seeded_slots();run_lazy_decode_slots();run_lazy_admission_retry();run_reusable_expert_pool_budget();run_decode_workspace_budget();return 0;}
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
     if(argc==2 && std::strcmp(argv[1],"--cpu-quantize-check")==0) {
@@ -5045,7 +5833,7 @@ int main(int argc,char** argv) {
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
     if(argc==2 && std::strcmp(argv[1],"--expert-image-check")==0) {
-        try{run_host_layout_plan();run_paired_host_cache();run_host_snapshot();run_host_snapshot(true);run_host_snapshot(false,true);
+        try{run_prefill_host_scan_bypass();run_host_layout_plan();run_paired_host_cache();run_host_kv_sharing();run_pinned_hole_under_pressure();run_pinned_interval_compaction();run_fragmented_pinned_fallback();run_fragmented_pinned_fallback(true);run_host_vram_evacuation();run_pinned_range_trim();run_fragmented_host_reclaim();run_fragmented_host_reclaim(true);run_host_snapshot();run_host_snapshot(true);run_host_snapshot(false,true);
             run_inplace_mmq_moe();run_pinned_copy_plan();
             std::cout<<"GGUF expert-major host/PP output/eviction/fallback checks PASS\n";return 0;}
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
@@ -5056,6 +5844,10 @@ int main(int argc,char** argv) {
     }
     if(argc==2 && std::strcmp(argv[1],"--layer-admission-snapshot-check")==0) {
         try{run_layer_admission_snapshot();return 0;}
+        catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+    }
+    if(argc==2 && std::strcmp(argv[1],"--row-graph-check")==0) {
+        try{run_row_graph_upload();return 0;}
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
     if(argc==2 && std::strcmp(argv[1],"--layer-admission-check")==0) {

@@ -3160,35 +3160,6 @@ class RuntimePool:
             raise self._backend_load_error(error)
         return False
 
-    @asynccontextmanager
-    async def benchmark_runtime(self, instance_id: UUID) -> AsyncIterator[tuple[Any, Any]]:
-        deadline = asyncio.get_running_loop().time() + 2.0
-        while True:
-            async with self._lock:
-                instance = self._instances.get(instance_id)
-                if instance is None or instance.state != RuntimeInstanceState.READY:
-                    raise BackendError("model_not_ready", "select a ready, loaded model for benchmarking")
-                if self._memory_configuration_job is not None or instance.active_requests or instance.queued_requests:
-                    raise BackendError("runtime_busy", "benchmarking requires an idle runtime", retryable=True)
-                if not callable(getattr(instance.backend, "benchmark", None)):
-                    raise BackendError("benchmark_unsupported", "this runtime does not expose native benchmark metrics")
-                if not instance.control_leases:
-                    instance.control_leases += 1
-                    instance.active_requests += 1
-                    instance.state = RuntimeInstanceState.BUSY
-                    break
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise BackendError("runtime_busy", "runtime control operations have not finished; retry benchmarking", retryable=True)
-            await asyncio.sleep(.02)
-        try:
-            yield instance, instance.backend
-        finally:
-            async with self._lock:
-                instance.active_requests = max(0, instance.active_requests - 1)
-                if instance.state == RuntimeInstanceState.BUSY and not instance.active_requests:
-                    instance.state = RuntimeInstanceState.READY
-                instance.last_used_at = datetime.now(timezone.utc)
-            await self._release_control_lease(instance)
 
     @asynccontextmanager
     async def _runtime_control_lease(

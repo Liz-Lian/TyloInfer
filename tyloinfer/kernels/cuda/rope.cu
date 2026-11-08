@@ -52,11 +52,11 @@ __device__ float2 normalized_rotary_angles(const void* positions,bool wide_posit
     return make_float2(float(cosine),float(sine));
 }
 
-template<bool Compact,class Value>
+template<bool Compact,class Value,bool Affine=false>
 __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* weight,const void* positions,
         bool wide_positions,const int64_t* cache,const float* frequencies,const int32_t* selected_axes,Value* output,
         int tokens,int width,int pool,int maximum,int rotary_maximum,int pairs,int axes,float eps,
-        int64_t row_stride,int64_t column_stride) {
+        int64_t row_stride,int64_t column_stride,double attention_factor) {
     const int token=blockIdx.x,column=threadIdx.x;
     const int64_t block=Compact?int64_t(token):cache[token]/pool,start=block*pool;
     // A verify batch can touch one block repeatedly. Only its last query writes
@@ -68,9 +68,15 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
         float sum=0;
         for(int i=0;i<pool;++i) {
             const int64_t row=min(max(int64_t(0),start+i),int64_t(maximum)-1);
-            sum=__fadd_rn(sum,float(index[row*row_stride+column*column_stride]));
+            float value;
+            if constexpr(Affine) {
+                const auto* record=index+row*row_stride;
+                value=float(int(record[column])-int(record[width+1]))*__half2float(__ushort_as_half(uint16_t(record[width])));
+            }else value=float(index[row*row_stride+column*column_stride]);
+            sum=__fadd_rn(sum,value);
         }
-        mean=float(Value(__fdiv_rn(sum,float(pool))));
+        if constexpr(Affine)mean=__fdiv_rn(sum,float(pool));
+        else mean=float(Value(__fdiv_rn(sum,float(pool))));
     }
     means[column]=mean;partial[column]=__fadd_rn(0.f,__fmul_rn(mean,mean));
     __syncthreads();
@@ -81,7 +87,39 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
         __syncthreads();
     }
     const float inverse=__fdiv_rn(1.f,__fsqrt_rn(__fadd_rn(__fdiv_rn(partial[0],float(width)),eps)));
-    const auto normalized=[&](int col){return Value(__fmul_rn(__fmul_rn(means[col],inverse),__fadd_rn(weight[col],1.f)));};
+    using Normal=std::conditional_t<Affine,float,Value>;
+    const auto normalized=[&](int col){return Normal(__fmul_rn(__fmul_rn(means[col],inverse),__fadd_rn(weight[col],1.f)));};
+    if constexpr(Affine) {
+        float value=0;
+        if(column<width) {
+            if(column>=2*pairs)value=normalized(column);
+            else {
+                const int pair=column%pairs;int axis=selected_axes[pair];if(axis>=axes)axis=0;
+                int64_t raw=rotary_position(positions,wide_positions,int64_t(axis)*tokens+token);
+                if constexpr(!Compact)raw+=start-cache[token];
+                const int pos=max(0,min(rotary_maximum-1,int(raw)));
+                const float angle=__fmul_rn(float(pos),frequencies[pair]);
+                double sine,cosine;::sincos(double(angle),&sine,&cosine);
+                const float cs=float(double(float(cosine))*attention_factor),sn=float(double(float(sine))*attention_factor);
+                const auto first=float(normalized(pair)),second=float(normalized(pair+pairs));
+                value=column<pairs?__fsub_rn(__fmul_rn(first,cs),__fmul_rn(second,sn)):
+                    __fadd_rn(__fmul_rn(second,cs),__fmul_rn(first,sn));
+            }
+        }
+        // Finish every reader of the normalized input before reusing its array.
+        __syncthreads();means[column]=value;partial[column]=fminf(0.f,value);__syncthreads();
+        for(int stride=blockDim.x/2;stride;stride/=2){if(column<stride)partial[column]=fminf(partial[column],partial[column+stride]);__syncthreads();}
+        const float lo=partial[0];__syncthreads();partial[column]=fmaxf(0.f,value);__syncthreads();
+        for(int stride=blockDim.x/2;stride;stride/=2){if(column<stride)partial[column]=fmaxf(partial[column],partial[column+stride]);__syncthreads();}
+        const float step=fmaxf(__fmul_rn(__fsub_rn(partial[0],lo),1.f/65535.f),0x1p-24f);
+        auto scale=__float2half_rn(step);if(__half2float(scale)<step)scale=__ushort_as_half(__half_as_ushort(scale)+1);
+        const float scale_value=__half2float(scale);
+        const int zp=max(-32768,min(32767,-32768-int(nearbyintf(lo/scale_value))));
+        auto* record=output+block*(width+2);
+        if(!column){record[width]=int16_t(__half_as_ushort(scale));record[width+1]=int16_t(zp);}
+        if(column<width)record[column]=int16_t(max(-32768,min(32767,int(nearbyintf(means[column]/scale_value))+zp)));
+        return;
+    }
     if(column>=width-pairs)return;
     if(column>=pairs){output[block*width+column+pairs]=normalized(column+pairs);return;}
     int axis=selected_axes[column];if(axis>=axes)axis=0;
@@ -97,7 +135,7 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
     const float angle=__fmul_rn(float(position),frequencies[column]);
     double wide_sine,wide_cosine;
     ::sincos(double(angle),&wide_sine,&wide_cosine);
-    const float cosine=float(wide_cosine),sine=float(wide_sine);
+    const float cosine=float(double(float(wide_cosine))*attention_factor),sine=float(double(float(wide_sine))*attention_factor);
     const float first=float(normalized(column)),second=float(normalized(column+pairs));
     output[block*width+column]=Value(__fsub_rn(__fmul_rn(first,cosine),__fmul_rn(second,sine)));
     output[block*width+column+pairs]=Value(__fadd_rn(__fmul_rn(second,cosine),__fmul_rn(first,sine)));
@@ -106,12 +144,12 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
 void qsa_pool_rotary_cache_cuda(const mfq_tensor_backend::Tensor& index,const mfq_tensor_backend::Tensor& weight,
         const mfq_tensor_backend::Tensor& positions,const mfq_tensor_backend::Tensor& cache,
         const mfq_tensor_backend::Tensor& frequencies,const mfq_tensor_backend::Tensor& axes,
-        const mfq_tensor_backend::Tensor& output,int64_t pool,int64_t maximum,int64_t rotary_maximum,double eps) {
+        const mfq_tensor_backend::Tensor& output,int64_t pool,int64_t maximum,int64_t rotary_maximum,double eps,double attention_factor) {
     namespace tb=mfq_tensor_backend;
-    TYLOINFER_RUNTIME_CHECK(index.is_cuda() && index.dim()==3 && index.size(0)==1 && index.size(2)>0 && index.size(2)<=256 &&
-        (index.scalar_type()==tb::kFloat16 || index.scalar_type()==tb::kFloat32) && pool>0 && pool<=INT_MAX &&
+    TYLOINFER_RUNTIME_CHECK(index.is_cuda() && index.dim()==3 && index.size(0)==1 && index.size(2)>0 && index.size(2)<=(index.scalar_type()==tb::kInt16?258:256) &&
+        (index.scalar_type()==tb::kFloat16 || index.scalar_type()==tb::kFloat32 || index.scalar_type()==tb::kInt16) && pool>0 && pool<=INT_MAX &&
         maximum>0 && maximum<=index.size(1) && maximum<=INT_MAX && rotary_maximum>0 && rotary_maximum<=INT_MAX &&
-        std::isfinite(eps) && eps>=0,"invalid pooled rotary geometry");
+        std::isfinite(eps) && eps>=0 && std::isfinite(attention_factor) && attention_factor>0,"invalid pooled rotary geometry");
     TYLOINFER_RUNTIME_CHECK(cache.device()==index.device() && cache.is_contiguous() && cache.dim()==1 &&
         cache.numel()>0 && cache.numel()<=32 && cache.scalar_type()==tb::kInt64 &&
         positions.device()==index.device() && positions.is_contiguous() && positions.dim()>=1 && positions.dim()<=3 &&
@@ -119,20 +157,21 @@ void qsa_pool_rotary_cache_cuda(const mfq_tensor_backend::Tensor& index,const mf
         (positions.scalar_type()==tb::kInt32 || positions.scalar_type()==tb::kInt64),"invalid pooled rotary positions");
     TYLOINFER_RUNTIME_CHECK(output.device()==index.device() && output.is_contiguous() && output.dim()==3 && output.size(0)==1 &&
         output.size(1)>=(maximum+pool-1)/pool && output.size(2)==index.size(2) && output.scalar_type()==index.scalar_type() &&
-        weight.device()==index.device() && weight.is_contiguous() && weight.scalar_type()==tb::kFloat32 && weight.numel()==index.size(2) &&
+        weight.device()==index.device() && weight.is_contiguous() && weight.scalar_type()==tb::kFloat32 && weight.numel()==index.size(2)-(index.scalar_type()==tb::kInt16?2:0) &&
         frequencies.device()==index.device() && frequencies.is_contiguous() && frequencies.scalar_type()==tb::kFloat32 &&
-        frequencies.dim()==1 && frequencies.numel()>0 && frequencies.numel()<=index.size(2)/2 &&
+        frequencies.dim()==1 && frequencies.numel()>0 && frequencies.numel()<=(index.size(2)-(index.scalar_type()==tb::kInt16?2:0))/2 &&
         axes.device()==index.device() && axes.is_contiguous() && axes.scalar_type()==tb::kInt32 && axes.sizes()==frequencies.sizes(),
         "invalid pooled rotary storage");
-    MfqCudaGuard guard(index.device());const int width=int(index.size(2));
+    MfqCudaGuard guard(index.device());const int width=int(index.size(2))-(index.scalar_type()==tb::kInt16?2:0);
     const int threads=width<=32?32:width<=64?64:width<=128?128:256;
     const auto launch=[&](auto* source,auto* target) {
-        qsa_pool_rotary_cache_kernel<false><<<unsigned(cache.numel()),threads,0,mfq_current_cuda_stream()>>>(source,
+        qsa_pool_rotary_cache_kernel<false,std::remove_cv_t<std::remove_pointer_t<decltype(source)>>,std::is_same_v<std::remove_cv_t<std::remove_pointer_t<decltype(source)>>,int16_t>><<<unsigned(cache.numel()),threads,0,mfq_current_cuda_stream()>>>(source,
             weight.data_ptr<float>(),positions.data_ptr(),positions.scalar_type()==tb::kInt64,cache.data_ptr<int64_t>(),
             frequencies.data_ptr<float>(),axes.data_ptr<int32_t>(),target,int(cache.numel()),width,int(pool),int(maximum),
-            int(rotary_maximum),int(frequencies.numel()),positions.dim()==1?1:int(positions.size(0)),float(eps),index.stride(1),index.stride(2));
+            int(rotary_maximum),int(frequencies.numel()),positions.dim()==1?1:int(positions.size(0)),float(eps),index.stride(1),index.stride(2),attention_factor);
     };
     if(index.scalar_type()==tb::kFloat16)launch(reinterpret_cast<const __half*>(index.data_ptr()),reinterpret_cast<__half*>(output.data_ptr()));
+    else if(index.scalar_type()==tb::kInt16)launch(index.data_ptr<int16_t>(),output.data_ptr<int16_t>());
     else launch(index.data_ptr<float>(),output.data_ptr<float>());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -140,12 +179,12 @@ void qsa_pool_rotary_cache_cuda(const mfq_tensor_backend::Tensor& index,const mf
 void qsa_pool_rotary_cuda(const mfq_tensor_backend::Tensor& index,const mfq_tensor_backend::Tensor& weight,
         const mfq_tensor_backend::Tensor& positions,const mfq_tensor_backend::Tensor& frequencies,
         const mfq_tensor_backend::Tensor& axes,const mfq_tensor_backend::Tensor& output,
-        int64_t pool,int64_t rotary_maximum,double eps) {
+        int64_t pool,int64_t rotary_maximum,double eps,double attention_factor) {
     namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(index.is_cuda() && index.dim()==3 && index.size(0)==1 && index.size(1)>0 &&
-        index.size(1)<=INT_MAX && index.size(2)>0 && index.size(2)<=256 && pool>0 && pool<=INT_MAX &&
-        index.size(1)%pool==0 && (index.scalar_type()==tb::kFloat16 || index.scalar_type()==tb::kFloat32) &&
-        rotary_maximum>0 && rotary_maximum<=INT_MAX && std::isfinite(eps) && eps>=0,
+        index.size(1)<=INT_MAX && index.size(2)>0 && index.size(2)<=(index.scalar_type()==tb::kInt16?258:256) && pool>0 && pool<=INT_MAX &&
+        index.size(1)%pool==0 && (index.scalar_type()==tb::kFloat16 || index.scalar_type()==tb::kFloat32 || index.scalar_type()==tb::kInt16) &&
+        rotary_maximum>0 && rotary_maximum<=INT_MAX && std::isfinite(eps) && eps>=0 && std::isfinite(attention_factor) && attention_factor>0,
         "invalid compact pooled rotary geometry");
     const int64_t tokens=index.size(1)/pool;
     TYLOINFER_RUNTIME_CHECK(positions.device()==index.device() && positions.is_contiguous() &&
@@ -155,22 +194,23 @@ void qsa_pool_rotary_cuda(const mfq_tensor_backend::Tensor& index,const mfq_tens
         output.device()==index.device() && output.is_contiguous() && output.dim()==3 &&
         output.size(0)==1 && output.size(1)==tokens && output.size(2)==index.size(2) &&
         output.scalar_type()==index.scalar_type() && weight.device()==index.device() &&
-        weight.is_contiguous() && weight.scalar_type()==tb::kFloat32 && weight.numel()==index.size(2) &&
+        weight.is_contiguous() && weight.scalar_type()==tb::kFloat32 && weight.numel()==index.size(2)-(index.scalar_type()==tb::kInt16?2:0) &&
         frequencies.device()==index.device() && frequencies.is_contiguous() &&
         frequencies.scalar_type()==tb::kFloat32 && frequencies.dim()==1 && frequencies.numel()>0 &&
-        frequencies.numel()<=index.size(2)/2 && axes.device()==index.device() && axes.is_contiguous() &&
+        frequencies.numel()<=(index.size(2)-(index.scalar_type()==tb::kInt16?2:0))/2 && axes.device()==index.device() && axes.is_contiguous() &&
         axes.scalar_type()==tb::kInt32 && axes.sizes()==frequencies.sizes(),
         "invalid compact pooled rotary storage");
-    MfqCudaGuard guard(index.device());const int width=int(index.size(2));
+    MfqCudaGuard guard(index.device());const int width=int(index.size(2))-(index.scalar_type()==tb::kInt16?2:0);
     const int threads=width<=32?32:width<=64?64:width<=128?128:256;
     const auto launch=[&](auto* source,auto* target) {
-        qsa_pool_rotary_cache_kernel<true><<<unsigned(tokens),threads,0,mfq_current_cuda_stream()>>>(source,
+        qsa_pool_rotary_cache_kernel<true,std::remove_cv_t<std::remove_pointer_t<decltype(source)>>,std::is_same_v<std::remove_cv_t<std::remove_pointer_t<decltype(source)>>,int16_t>><<<unsigned(tokens),threads,0,mfq_current_cuda_stream()>>>(source,
             weight.data_ptr<float>(),positions.data_ptr(),positions.scalar_type()==tb::kInt64,nullptr,
             frequencies.data_ptr<float>(),axes.data_ptr<int32_t>(),target,int(tokens),width,int(pool),int(index.size(1)),
             int(rotary_maximum),int(frequencies.numel()),positions.dim()==1?1:int(positions.size(0)),
-            float(eps),index.stride(1),index.stride(2));
+            float(eps),index.stride(1),index.stride(2),attention_factor);
     };
     if(index.scalar_type()==tb::kFloat16)launch(reinterpret_cast<const __half*>(index.data_ptr()),reinterpret_cast<__half*>(output.data_ptr()));
+    else if(index.scalar_type()==tb::kInt16)launch(index.data_ptr<int16_t>(),output.data_ptr<int16_t>());
     else launch(index.data_ptr<float>(),output.data_ptr<float>());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -183,7 +223,7 @@ __device__ __forceinline__ void rotary_normalized_row(
     float eps, RotaryProjectionLayout layout, __half* key_cache,
     const void* cache_positions, bool wide_cache_positions, int64_t capacity,
     const void* projected_value, bool float_value, RotaryProjectionLayout value_layout,
-    __half* value_cache, int64_t row, int active_threads,const float2* rotations) {
+    __half* value_cache, int64_t row, int active_threads,const float2* rotations,double attention_factor) {
     const int64_t batch = row / (int64_t(heads) * tokens);
     const int head = int((row / tokens) % heads), token = int(row % tokens);
     const int64_t source = batch * layout.batch + token * layout.token + head * layout.head;
@@ -253,7 +293,7 @@ __device__ __forceinline__ void rotary_normalized_row(
         const auto rotation=rotations?rotations[((batches==1?0:batch)*tokens+token)*pairs+column]:
             normalized_rotary_angles(positions,wide_positions,frequencies,selected_axes,column,token,batch,
                 tokens,axes,batches,maximum);
-        const float cosine=rotation.x,sine=rotation.y;
+        const float cosine=float(double(rotation.x)*attention_factor),sine=float(double(rotation.y)*attention_factor);
         const float first = float(normalized(column)), second = float(normalized(column + pairs));
         store(column, Value(__fsub_rn(__fmul_rn(first, cosine), __fmul_rn(second, sine))));
         store(column + pairs, Value(__fadd_rn(__fmul_rn(second, cosine), __fmul_rn(first, sine))));
@@ -277,10 +317,10 @@ __global__ void rotary_normalized_cached_kernel(
     float eps, RotaryProjectionLayout layout, __half* key_cache,
     const void* cache_positions, bool wide_cache_positions, int64_t capacity,
     const void* projected_value, bool float_value, RotaryProjectionLayout value_layout,
-    __half* value_cache,const float2* rotations) {
+    __half* value_cache,const float2* rotations,double attention_factor) {
     rotary_normalized_row<Value,FusedReduction>(input,weight,positions,wide_positions,frequencies,selected_axes,output,
         heads,tokens,width,pairs,axes,batches,maximum,eps,layout,key_cache,
-        cache_positions,wide_cache_positions,capacity,projected_value,float_value,value_layout,value_cache,blockIdx.x,blockDim.x,rotations);
+        cache_positions,wide_cache_positions,capacity,projected_value,float_value,value_layout,value_cache,blockIdx.x,blockDim.x,rotations,attention_factor);
 }
 
 struct RotaryNormalizedProjection {
@@ -304,6 +344,7 @@ struct RotaryNormalizedProjection {
     __half* value_cache;
     int64_t rows;
     const float2* rotations=nullptr;
+    double attention_factor=1.0;
 };
 struct RotaryNormalizedGroup { RotaryNormalizedProjection entries[3]; int count; };
 
@@ -380,7 +421,7 @@ __global__ void rotary_normalized_grouped_kernel(RotaryNormalizedGroup group) {
     rotary_normalized_row<Value,FusedReduction>(static_cast<const Value*>(p.input),p.weight,p.positions,p.wide_positions,
         p.frequencies,p.selected_axes,static_cast<Value*>(p.output),p.heads,p.tokens,p.width,p.pairs,
         p.axes,p.batches,p.maximum,p.eps,p.layout,p.key_cache,p.cache_positions,p.wide_cache_positions,
-        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache,row,p.threads,p.rotations);
+        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache,row,p.threads,p.rotations,p.attention_factor);
 }
 template<class Value>
 void launch_rotary_normalized(const RotaryNormalizedProjection& p) {
@@ -391,12 +432,12 @@ void launch_rotary_normalized(const RotaryNormalizedProjection& p) {
         static_cast<const Value*>(p.input),p.weight,p.positions,p.wide_positions,
         p.frequencies,p.selected_axes,static_cast<Value*>(p.output),p.heads,p.tokens,p.width,p.pairs,
         p.axes,p.batches,p.maximum,p.eps,p.layout,p.key_cache,p.cache_positions,p.wide_cache_positions,
-        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache,p.rotations);
+        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache,p.rotations,p.attention_factor);
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
             "rotary_normalized_cached",reinterpret_cast<const void*>(function),
-            "fused_reduction="+std::to_string(Fused)+" width="+std::to_string(p.width));
+            "fused_reduction="+std::to_string(Fused)+" width="+std::to_string(p.width)+" attention_factor="+std::to_string(p.attention_factor));
 #endif
     };
     if(fused_rotary_reduction_enabled())launch(std::true_type{});else launch(std::false_type{});
@@ -412,7 +453,7 @@ void launch_rotary_normalized_grouped(const RotaryNormalizedGroup& group,unsigne
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
             "rotary_normalized_grouped",reinterpret_cast<const void*>(function),
-            "fused_reduction="+std::to_string(Fused)+" rows="+std::to_string(rows));
+            "fused_reduction="+std::to_string(Fused)+" rows="+std::to_string(rows)+" attention_factor="+std::to_string(group.entries[0].attention_factor));
 #endif
     };
     if(fused_rotary_reduction_enabled())launch(std::true_type{});else launch(std::false_type{});
@@ -499,10 +540,11 @@ mfq_tensor_backend::Tensor rotary_normalized_cached_cuda(
     mfq_tensor_backend::Tensor positions, mfq_tensor_backend::Tensor frequencies,
     mfq_tensor_backend::Tensor axes, int64_t maximum, double eps,
     mfq_tensor_backend::Tensor key_cache, mfq_tensor_backend::Tensor cache_positions,
-    mfq_tensor_backend::Tensor projected_value, mfq_tensor_backend::Tensor value_cache) {
-
+    mfq_tensor_backend::Tensor projected_value, mfq_tensor_backend::Tensor value_cache,double attention_factor) {
+    TYLOINFER_RUNTIME_CHECK(std::isfinite(attention_factor) && attention_factor>0,"invalid rotary attention factor");
     auto prepared=prepare_rotary_normalized(input,weight,positions,frequencies,axes,maximum,eps,
         key_cache,cache_positions,projected_value,value_cache);
+    prepared.second.attention_factor=attention_factor;
     MfqCudaGuard guard(input.device());
     mfq_tensor_backend::Tensor angles;
     const auto function=input.scalar_type()==mfq_tensor_backend::kFloat32?
@@ -523,8 +565,9 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
     mfq_tensor_backend::Tensor axes,int64_t maximum,double eps,int cache_entry,
     mfq_tensor_backend::Tensor key_cache,mfq_tensor_backend::Tensor cache_positions,
     mfq_tensor_backend::Tensor projected_value,mfq_tensor_backend::Tensor value_cache,
-    const std::vector<mfq_tensor_backend::Tensor>& entry_positions) {
+    const std::vector<mfq_tensor_backend::Tensor>& entry_positions,double attention_factor) {
     namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(std::isfinite(attention_factor) && attention_factor>0,"invalid grouped rotary attention factor");
     TYLOINFER_RUNTIME_CHECK(!inputs.empty() && inputs.size()<=3 && weights.size()==inputs.size(),
         "normalized rotary group must contain one to three input/weight pairs");
     TYLOINFER_RUNTIME_CHECK(entry_positions.empty() || entry_positions.size()==inputs.size(),
@@ -541,7 +584,7 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
             int(i)==cache_entry?projected_value:tb::Tensor{},int(i)==cache_entry?value_cache:tb::Tensor{});
         TYLOINFER_RUNTIME_CHECK(inputs[i].device()==inputs[0].device(),"normalized rotary group device mismatch");
         uniform=uniform && inputs[i].scalar_type()==inputs[0].scalar_type();
-        group.entries[i]=prepared.second;outputs.push_back(std::move(prepared.first));
+        group.entries[i]=prepared.second;group.entries[i].attention_factor=attention_factor;outputs.push_back(std::move(prepared.first));
         rows+=prepared.second.rows;threads=std::max(threads,prepared.second.threads);
     }
     MfqCudaGuard guard(inputs[0].device());
@@ -577,7 +620,7 @@ __global__ void rotary_embedding_cached_kernel(
     const Value* __restrict__ input,const int32_t* __restrict__ positions,
     const float* __restrict__ frequencies,const int32_t* __restrict__ selected_axes,
     Value* __restrict__ output,int64_t rows,int heads,int tokens,int width,int pairs,
-    int axes,int batches,int maximum) {
+    int axes,int batches,int maximum,double attention_factor) {
     const int columns=width-pairs;
     const int64_t total=rows*columns;
     for(int64_t linear=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
@@ -598,7 +641,7 @@ __global__ void rotary_embedding_cached_kernel(
         // Match native tensor sin/cos promotion and every stored FP32 product.
         double wide_sine,wide_cosine;
         ::sincos(double(angle),&wide_sine,&wide_cosine);
-        const float cosine=float(wide_cosine),sine=float(wide_sine);
+        const float cosine=float(double(float(wide_cosine))*attention_factor),sine=float(double(float(wide_sine))*attention_factor);
         const float first=float(input[offset+column]),second=float(input[offset+column+pairs]);
         const float a=__fsub_rn(__fmul_rn(first,cosine),__fmul_rn(second,sine));
         const float b=__fadd_rn(__fmul_rn(second,cosine),__fmul_rn(first,sine));
@@ -608,8 +651,9 @@ __global__ void rotary_embedding_cached_kernel(
 
 mfq_tensor_backend::Tensor rotary_embedding_cached_cuda(
     mfq_tensor_backend::Tensor input,mfq_tensor_backend::Tensor positions,
-    mfq_tensor_backend::Tensor frequencies,mfq_tensor_backend::Tensor axes,int64_t maximum) {
+    mfq_tensor_backend::Tensor frequencies,mfq_tensor_backend::Tensor axes,int64_t maximum,double attention_factor) {
     namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(std::isfinite(attention_factor) && attention_factor>0,"invalid rotary attention factor");
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && positions.is_cuda() && frequencies.is_cuda() && axes.is_cuda() &&
         input.device()==positions.device() && input.device()==frequencies.device() && input.device()==axes.device(),
         "cached rotary tensors must share a CUDA device");
@@ -631,7 +675,7 @@ mfq_tensor_backend::Tensor rotary_embedding_cached_cuda(
         rotary_embedding_cached_kernel<Value><<<blocks,128,0,mfq_current_cuda_stream()>>>(
             reinterpret_cast<const Value*>(input.data_ptr()),positions.data_ptr<int32_t>(),frequencies.data_ptr<float>(),
             axes.data_ptr<int32_t>(),reinterpret_cast<Value*>(output.data_ptr()),rows,int(input.size(1)),int(input.size(2)),
-            int(input.size(3)),int(pairs),int(position_axes),int(batches),int(maximum));
+            int(input.size(3)),int(pairs),int(position_axes),int(batches),int(maximum),attention_factor);
     };
     if(input.scalar_type()==tb::kFloat32)launch(float{});else launch(__half{});
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();return output;

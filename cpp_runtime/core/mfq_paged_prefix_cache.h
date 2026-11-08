@@ -10,6 +10,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "tyloinfer/read_span.h"
+
+namespace mfq {class FileRangeReader;}
 
 namespace mfq::cache {
 
@@ -22,6 +25,10 @@ using PagedPrefixPayload =
 struct PagedPrefixReadLease {
     std::size_t payload_bytes=0;
     std::function<std::vector<std::uint8_t>(std::size_t,std::size_t)> read_range;
+    std::function<void(std::size_t,std::uint8_t*,std::size_t)> read_range_into;
+    std::function<void(const std::vector<mfq::ReadSpan>&)> read_ranges_into;
+    std::shared_ptr<const mfq::FileRangeReader> file_reader;
+    std::uint64_t file_offset=0;
 };
 
 BlockHash sha256(const void* data, std::size_t size);
@@ -135,7 +142,13 @@ public:
     std::vector<PagedPrefixPayload> load_prefix(
         const std::vector<BlockHash>& blocks);
 
+    // No SSD lease is returned while a newer RAM version awaits persistence.
+    // load/load_prefix still expose that current version without forcing a write.
     std::shared_ptr<const PagedPrefixReadLease> borrow(const BlockHash& block);
+    // Verify file leases with the configured bounded read parallelism. Keeps
+    // only file handles and small checksum buffers; missing entries are null.
+    std::vector<std::shared_ptr<const PagedPrefixReadLease>> borrow_prefix(
+        const std::vector<BlockHash>& blocks);
 
     // Remove a block that passed file-integrity checks but failed the
     // runtime codec's semantic validation. This rare path waits for an

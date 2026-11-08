@@ -21,6 +21,7 @@
 #include "runtime/native_dma_batch.h"
 #include "runtime/execution_options.h"
 #include "tyloinfer/host_memory.h"
+#include "tyloinfer/gguf_model_source.h"
 #include "tyloinfer/cpu_expert_pool.h"
 #include "tyloinfer/runtime.h"
 #include "tyloinfer/cpu_wait.h"
@@ -44,6 +45,7 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -236,8 +238,11 @@ class GgufExpertCache {
     std::size_t upload_cursor_ = 0;
     int upload_blocks_=0,upload_threads_=0;
     std::mutex mutex_;
-    std::size_t host_limit_, host_used_ = 0, host_reserved_ = 0, physical_limit_;
+    std::size_t host_limit_, host_used_ = 0, host_reserved_ = 0, host_pageable_ = 0, physical_limit_;
     std::size_t pinned_ceiling_ = SIZE_MAX;
+    std::size_t pin_fragment_probe_bytes_=SIZE_MAX;
+    std::uint64_t pin_fragment_retries_=0,pin_fragment_reuses_=0;
+    std::uint64_t pin_interval_compactions_=0;
     std::shared_ptr<GgufHostSnapshot> snapshot_;
     std::unordered_map<std::uint64_t,GgufHostSnapshot::Bank> snapshot_sources_;
     struct PreloadedGate {std::uint64_t source;std::size_t bytes;std::int64_t experts;ggml_type type;};
@@ -254,13 +259,22 @@ class GgufExpertCache {
     double prefill_host_staging_wait_ms_=0;
     std::optional<std::size_t> configured_device_limit_;
     std::map<int, std::size_t> device_limit_, device_used_;
+    std::unordered_set<int> finalized_devices_;
+    std::unordered_map<std::uint64_t,std::shared_ptr<GgufRoutedWeight>> reclaim_banks_;
+    std::uint64_t host_evacuated_bytes_=0,host_evacuated_images_=0;
+    bool host_evacuation_blocked_=false;
+    struct BlockHostEvacuation {
+        bool& flag;bool previous;
+        explicit BlockHostEvacuation(bool& value):flag(value),previous(std::exchange(value,true)){}
+        ~BlockHostEvacuation(){flag=previous;}
+    };
     std::uint64_t sources_ = 0;
     std::size_t payload_bytes_ = 0, predictor_resident_bytes_ = 0;
     std::uint64_t calls_ = 0, gpu_hits_ = 0, host_hits_ = 0, source_bytes_ = 0,
         source_reads_ = 0, transfer_bytes_ = 0, host_evictions_ = 0, device_evictions_ = 0,
         writeback_bytes_ = 0, pin_failures_ = 0, pin_capacity_misses_ = 0,
-        batch_packets_ = 0, grouped_prefills_ = 0, source_batches_=0,
-        immutable_recovery_bytes_=0;
+        batch_packets_ = 0, grouped_prefills_ = 0, source_batches_=0, source_group_batches_=0,
+        immutable_recovery_bytes_=0,host_compacted_bytes_=0,host_trimmed_bytes_=0;
     struct DirectTraffic {std::uint64_t layers=0,hits=0,misses=0,bytes=0;};
     std::map<int,DirectTraffic> direct_by_rows_;
     std::uint64_t direct_calls_ = 0, direct_bytes_ = 0, batch_mapped_bytes_=0,
@@ -274,9 +288,15 @@ class GgufExpertCache {
     std::uint64_t direct_arena_reuses_=0;
     std::vector<std::shared_ptr<MoePinnedExpertArena>> arenas_;
     std::unordered_map<std::uint64_t, HostEntry> host_;
+    std::unordered_map<const void*,std::unordered_set<std::uint64_t>> host_arena_keys_;
     std::list<std::uint64_t> host_recent_;
     std::list<std::uint64_t> host_duplicates_;
     std::unordered_map<std::uint64_t,mfq::ModelSource::TensorReader> source_readers_;
+    struct GroupSource {
+        std::shared_ptr<const mfq::GgufModelSource::TensorGroupReader> reader;
+        std::string name;
+    };
+    std::unordered_map<std::uint64_t,GroupSource> group_sources_;
     std::unordered_map<std::uint64_t, std::size_t> device_copies_;
     std::unordered_map<Key, DeviceEntry, Hash> device_;
     std::map<std::array<std::uint64_t,4>,std::shared_ptr<GgufResidentView>> resident_views_;
@@ -317,8 +337,10 @@ class GgufExpertCache {
         std::array<std::weak_ptr<GgufRoutedWeight>,3> banks;
         std::vector<std::uint64_t> counts;
     };
-    std::map<std::uint64_t,PrefillDemand> prefill_demand_;
-    bool prefill_rebalance_pending_=false;
+    std::map<int,std::map<std::uint64_t,PrefillDemand>> prefill_demand_;
+    std::unordered_set<int> prefill_rebalance_pending_,decode_seed_pending_;
+    std::map<int,std::size_t> decode_seed_bytes_;
+    std::uint64_t decode_seed_rebalances_=0;
     std::size_t prefill_resident_experts_=0;
     double prefill_rebalance_ms_=0;
     CudaProfiler& profiler_;
@@ -372,7 +394,7 @@ class GgufExpertCache {
     std::array<double,6> host_prepare_ms_{};
     std::uint64_t host_prepare_calls_=0;
     double resident_lock_ms_=0,resident_events_ms_=0,resident_body_ms_=0;
-    std::uint64_t prefill_inplace_mmq_bytes_=0;
+    std::uint64_t prefill_inplace_mmq_bytes_=0,prefill_host_bypass_bytes_=0;
     std::uint64_t host_device_ready_waits_=0,prefill_device_ready_skips_=0;
     std::uint64_t speculative_cache_observed_=0;
     std::vector<std::shared_ptr<mfq::cuda::Event>> deferred_events_;
@@ -385,6 +407,7 @@ class GgufExpertCache {
     struct SlotOwner {
         std::array<std::weak_ptr<GgufRoutedWeight>,3> banks;
         std::int64_t expert;
+        bool touched=false;
     };
     struct SlotRole {int layer,role;std::size_t offset;};
     struct SlotTier {
@@ -397,6 +420,7 @@ class GgufExpertCache {
         std::vector<std::array<std::shared_ptr<GgufRoutedWeight>,3>> admission_banks;
         std::vector<std::vector<float>> usage;
         std::uint64_t windows=0,last_decay=0;
+        std::size_t full_mapped_bytes=0;
         std::int64_t loan_first=0;
         bool loan_active=false;
     };
@@ -406,6 +430,8 @@ class GgufExpertCache {
     std::vector<std::weak_ptr<strata::core::ExpertCache>> slot_arenas_;
     std::size_t slot_touch_free_before_=0,slot_touch_free_after_=0,slot_touch_reserve_=0;
     std::uint64_t slot_touch_retries_=0;
+    std::uint64_t slot_shrinks_=0,slot_grows_=0,slot_rebuilds_=0;
+    std::size_t slot_released_bytes_=0,slot_restored_bytes_=0;
     static bool strata_slots_requested() {
         const auto* setting=std::getenv("TYLOINFER_GGUF_STRATA_CACHE");
         return !setting || setting[0]!='0';
@@ -414,11 +440,12 @@ class GgufExpertCache {
         if(bytes>std::size_t(INT64_MAX)-255)throw std::overflow_error("GGUF slot size overflows");
         return (bytes+255)&~std::size_t(255);
     }
-    tb::Tensor slot_image(const GgufRoutedWeight& bank,std::int64_t expert,int device) const {
+    tb::Tensor slot_image(const GgufRoutedWeight& bank,std::int64_t expert,int device) {
         const auto tier=slot_tiers_.find(device);if(tier==slot_tiers_.end())return {};
         const auto role=tier->second.roles.find(bank.source_id);if(role==tier->second.roles.end())return {};
         const auto slot=tier->second.cache->slot_of(role->second.layer,expert);
         if(slot<0 || slot>=tier->second.loan_first)return {};
+        tier->second.owners[std::size_t(slot)].touched=true;
         auto storage=std::make_shared<mfq::cuda::TensorStorage>();
         storage->owner=tier->second.cache;storage->base=tier->second.cache->device_slot(slot)+role->second.offset;
         storage->bytes=bank.expert_bytes;storage->device=mfq::cuda::Device{mfq::cuda::DeviceType::cuda,device};
@@ -450,8 +477,13 @@ class GgufExpertCache {
             device_used_[device]-=entry->second.weight.packed.nbytes();remove_device_copy(key.image,key.device);
             device_.erase(entry);++device_evictions_;
         }
-        tier.cache->replace(role->second.layer,std::int32_t(old_expert),std::int32_t(expert));
-        owner.expert=expert;return true;
+        const auto tail=tier.cache->slot_of(role->second.layer,expert);
+        if(tail>=tier.loan_first) {
+            if(std::size_t(tail)>=tier.owners.size())throw std::logic_error("GGUF displaced slot exceeded its owners");
+            tier.cache->swap_residency(role->second.layer,std::int32_t(old_expert),std::int32_t(expert));
+            tier.owners[std::size_t(tail)]=owner;
+        }else tier.cache->replace(role->second.layer,std::int32_t(old_expert),std::int32_t(expert));
+        owner.expert=expert;owner.touched=false;return true;
     }
     template<class Candidate> bool select_slot_swaps(std::vector<Candidate>& selected,int device,bool frequent) {
         const auto found=slot_tiers_.find(device);if(found==slot_tiers_.end())return false;
@@ -461,10 +493,47 @@ class GgufExpertCache {
         // Preserve the same heat lifetime when that cadence changes.
         if(tier.loan_active)return true;
         ++adaptive_rounds_;if(frequent)++adaptive_fast_rounds_;
+        // An assigned cold slot has no published GPU image yet. Admit its
+        // observed misses directly. Empty addresses need no replacement-gain
+        // threshold, and can hold another observed expert from the same layer.
+        std::vector<std::unordered_set<std::int64_t>> reserved(tier.banks.size());
+        std::vector<std::vector<std::int64_t>> empty(tier.banks.size());
+        for(std::int64_t slot=0;slot<tier.loan_first;++slot) {
+            const auto& owner=tier.owners[std::size_t(slot)];if(owner.touched)continue;
+            const auto bank=owner.banks[0].lock();if(!bank)continue;
+            const auto role=tier.roles.at(bank->source_id);
+            const auto demand=direct_demand_.find(bank->source_id);
+            if(demand==direct_demand_.end() || !demand->second.scores.count(owner.expert))
+                empty[role.layer].push_back(owner.expert);
+        }
+        for(const auto& [source,demand]:direct_demand_) {
+            const auto role=tier.roles.find(source);if(role==tier.roles.end())continue;
+            auto banks=tier.admission_banks[role->second.layer];
+            const auto bytes=banks[0]->expert_bytes+banks[1]->expert_bytes+banks[2]->expert_bytes;
+            std::vector<std::pair<std::int64_t,std::uint64_t>> ranked(demand.scores.begin(),demand.scores.end());
+            auto& spare=empty[role->second.layer];auto& used=reserved[role->second.layer];
+            if(!spare.empty())std::sort(ranked.begin(),ranked.end(),[](const auto& a,const auto& b){
+                return a.second!=b.second?a.second>b.second:a.first<b.first;
+            });
+            for(const auto& [expert,score]:ranked) {
+                const auto slot=tier.cache->slot_of(role->second.layer,expert);
+                if(slot<0 || slot>=tier.loan_first) {
+                    if(spare.empty())continue;
+                    const auto victim=spare.back();spare.pop_back();
+                    selected.push_back({banks,expert,score,bytes,victim});used.insert(expert);used.insert(victim);
+                    continue;
+                }
+                bool ready=true;
+                for(const auto& bank:banks)ready&=device_.count(Key{(bank->source_id<<32)|std::uint64_t(expert),device})!=0;
+                if(!ready){selected.push_back({banks,expert,score,bytes,-1});used.insert(expert);}
+            }
+        }
         const auto swaps=mfq::cuda::gguf::adaptive_slot_swaps(tier.usage,[&](auto layer,auto expert) {
-            return tier.cache->slot_of(layer,expert)>=0;
+            const auto slot=tier.cache->slot_of(layer,expert);
+            return slot>=0 && slot<tier.loan_first;
         });
         for(const auto& swap:swaps) {
+            if(reserved[swap.layer].count(swap.in) || reserved[swap.layer].count(swap.out))continue;
             auto banks=tier.admission_banks[swap.layer];
             const auto bytes=banks[0]->expert_bytes+banks[1]->expert_bytes+banks[2]->expert_bytes;
             selected.push_back({std::move(banks),swap.in,0,bytes,swap.out});
@@ -481,7 +550,7 @@ class GgufExpertCache {
         // Each slot holds three unchanged GGUF byte ranges, not a new format.
         SlotTier tier;tier.cache=std::make_shared<strata::core::ExpertCache>();
         std::int64_t max_experts=0;int layer=0;
-        for(const auto& [source,demand]:prefill_demand_) {
+        for(const auto& [source,demand]:prefill_demand_.at(device)) {
             std::size_t offset=0;bool alive=true;
             for(int role=0;role<3;++role) {
                 const auto bank=demand.banks[role].lock();if(!bank){alive=false;break;}
@@ -522,6 +591,21 @@ class GgufExpertCache {
         }
         selected.resize(retained);if(selected.empty())return;
         context->check_memory_limit(total);
+#if CUDA_VERSION >= 10020 && !defined(__HIP_PLATFORM_AMD__)
+        // Segments let CUDA VMM return physical pages while captured slot
+        // addresses remain stable. Use the driver's granularity and bound
+        // mapping overhead to about 128 segments.
+        int supported=0;CUdevice target=0;std::size_t granularity=0;
+        CUmemAllocationProp properties{};properties.type=CU_MEM_ALLOCATION_TYPE_PINNED;
+        properties.location.type=CU_MEM_LOCATION_TYPE_DEVICE;properties.location.id=device;
+        if(cuDeviceGet(&target,device)==CUDA_SUCCESS &&
+                cuDeviceGetAttribute(&supported,CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED,target)==CUDA_SUCCESS && supported &&
+                cuMemGetAllocationGranularity(&granularity,&properties,CU_MEM_ALLOC_GRANULARITY_RECOMMENDED)==CUDA_SUCCESS && granularity) {
+            const auto wanted=(total+127)/128;
+            const auto segment=std::max(granularity,(wanted+granularity-1)/granularity*granularity);
+            tier.cache->set_segment_bytes(std::int64_t(segment));
+        }
+#endif
         std::string error;
         // Match Strata's post-write residency check: an allocation accepted by
         // the driver can leave less physical room once all its pages are touched.
@@ -544,6 +628,7 @@ class GgufExpertCache {
             if(sizes.empty())return;
         }
         slot_arenas_.push_back(tier.cache);
+        tier.full_mapped_bytes=std::size_t(tier.cache->mapped_bytes());
         tier.loan_first=tier.cache->slots();
         for(std::size_t i=0;i<selected.size();++i) {
             const auto& candidate=selected[i];
@@ -554,9 +639,86 @@ class GgufExpertCache {
         slot_tiers_.emplace(device,std::move(tier));
     }
 
+    void demote_slot_tail(int device,std::int64_t first) {
+        const auto found=slot_tiers_.find(device);if(found==slot_tiers_.end())return;
+        auto& tier=found->second;
+        for(auto entry=device_.begin();entry!=device_.end();) {
+            const auto role=tier.roles.find(entry->first.image>>32);
+            const auto slot=role==tier.roles.end()?-1:tier.cache->slot_of(role->second.layer,std::uint32_t(entry->first.image));
+            if(entry->first.device!=device || slot<first){++entry;continue;}
+            const auto key=entry->first;demote(key,entry->second);
+            device_recent_.erase(entry->second.recent);device_used_[device]-=entry->second.weight.packed.nbytes();
+            remove_device_copy(key.image,key.device);entry=device_.erase(entry);++device_evictions_;
+        }
+    }
+    bool shrink_slot_tier(int device,std::size_t keep_bytes) {
+        const MfqCudaGuard device_guard(device);
+        const auto found=slot_tiers_.find(device);if(found==slot_tiers_.end())return false;
+        auto& tier=found->second;
+        if(!tier.cache->segmented() || tier.loan_active)return false;
+        const auto before=std::size_t(tier.cache->mapped_bytes());
+        const auto segment=std::size_t(tier.cache->segment_bytes());
+        const auto keep=std::min(keep_bytes,before)/segment*segment;
+        if(keep>=before)return true;
+        const auto first=tier.cache->slots_within(std::int64_t(keep));
+        demote_slot_tail(device,first);
+        TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));reap();
+        std::string error;
+        const auto success=tier.cache->shrink(std::int64_t(keep),error);
+        tier.loan_first=std::min(first,tier.cache->slots());
+        if(!success)throw std::runtime_error(error);
+        ++slot_shrinks_;slot_released_bytes_+=before-std::size_t(tier.cache->mapped_bytes());
+        if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1')
+            std::fprintf(stderr,"native_gguf_slot_shrink actual_match=1 before_bytes=%zu after_bytes=%lld retained_slots=%lld\n",
+                before,static_cast<long long>(tier.cache->mapped_bytes()),static_cast<long long>(tier.loan_first));
+        return true;
+    }
+    void grow_slot_tier(int device,std::size_t physical_capacity) {
+        const MfqCudaGuard device_guard(device);
+        std::lock_guard lock(mutex_);
+        const auto found=slot_tiers_.find(device);if(found==slot_tiers_.end())return;
+        auto& tier=found->second;
+        if(!tier.cache->segmented() || tier.loan_active)return;
+        const auto before=std::size_t(tier.cache->mapped_bytes());
+        auto wanted=std::min(physical_capacity,device_limit_.at(device));
+        if(device_limit_.at(device)>=std::size_t(tier.cache->full_bytes()))
+            wanted=std::min(physical_capacity,tier.full_mapped_bytes);
+        std::string error;
+        // Partial physical growth remains usable if a later segment cannot
+        // be allocated. Its slots become visible only after their uploads.
+        if(wanted>before)(void)tier.cache->grow(std::int64_t(wanted),error);
+        const auto available=tier.cache->slots();
+        if(std::size_t(available)>tier.owners.size())throw std::logic_error("GGUF grown slots exceeded retained owners");
+        const auto old_first=tier.loan_first;
+        auto completed=old_first;
+        try {
+            for(auto slot=old_first;slot<available;++slot) {
+                const auto& owner=tier.owners[std::size_t(slot)];
+                tier.loan_first=slot+1;
+                if(!owner.touched){completed=slot+1;continue;}
+                for(const auto& weak:owner.banks) {
+                    const auto bank=weak.lock();if(!bank)throw std::runtime_error("GGUF grown slot owner expired");
+                    const auto role=tier.roles.find(bank->source_id);
+                    if(role==tier.roles.end() || tier.cache->slot_of(role->second.layer,owner.expert)!=slot)
+                        throw std::logic_error("GGUF grown slot differs from its retained owner");
+                    (void)acquire_locked(*bank,{owner.expert},device);
+                }
+                completed=slot+1;
+            }
+        } catch(...) {
+            tier.loan_first=completed;demote_slot_tail(device,completed);throw;
+        }
+        if(tier.loan_first>old_first) {
+            ++slot_grows_;slot_restored_bytes_+=std::size_t(tier.cache->mapped_bytes())-before;
+            if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1')
+                std::fprintf(stderr,"native_gguf_slot_grow actual_match=1 before_bytes=%zu after_bytes=%lld restored_slots=%lld\n",
+                    before,static_cast<long long>(tier.cache->mapped_bytes()),static_cast<long long>(tier.loan_first-old_first));
+        }
+    }
     void release_slot_tier(int device) {
         const auto tier=slot_tiers_.find(device);if(tier==slot_tiers_.end())return;
         if(tier->second.loan_active)throw std::logic_error("Cannot release an active GGUF prefill loan");
+        ++slot_rebuilds_;
         const MfqCudaGuard guard(device);
         for(auto entry=device_.begin();entry!=device_.end();) {
             if(entry->first.device!=device){++entry;continue;}
@@ -567,7 +729,8 @@ class GgufExpertCache {
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));reap();
         slot_tiers_.erase(tier);
         mfq::cuda::default_context(device)->reclaim_idle_memory();
-        prefill_rebalance_pending_=!prefill_demand_.empty();
+        if(const auto demand=prefill_demand_.find(device);demand!=prefill_demand_.end() && !demand->second.empty())
+            prefill_rebalance_pending_.insert(device);
     }
 
     std::size_t reusable_resident_memory(int device) const {
@@ -623,9 +786,7 @@ class GgufExpertCache {
         });
     }
     std::size_t host_allocated() const {
-        auto bytes = host_reserved_+(snapshot_?snapshot_->bytes:0);
-        for (const auto& [key, entry] : host_) if (!entry.image->block && !entry.image->snapshot) bytes += entry.image->bytes;
-        return bytes;
+        return host_reserved_+host_pageable_+(snapshot_?snapshot_->bytes:0);
     }
     void evict_host() {
         // Spare RAM may keep upload sources, avoiding a return transfer when
@@ -634,15 +795,264 @@ class GgufExpertCache {
         const auto old = host_duplicates_.empty() ? host_recent_.back() : host_duplicates_.back();
         erase_host(old); ++host_evictions_;
     }
-    std::size_t reclaim_host(std::size_t bytes) {
-        reap(); const auto before = host_allocated();
-        release_empty_arenas();
-        for(auto it=host_recent_.end();before-host_allocated()<bytes && it!=host_recent_.begin();) {
-            --it;const auto found=host_.find(*it);
-            if(found->second.image->snapshot)continue;
-            const auto key=*it;++it;erase_host(key);++host_evictions_;release_empty_arenas();
+    bool compact_pinned_interval(std::size_t bytes) {
+        struct Lease {MoePinnedExpertArena::Block* block;std::size_t owners=0,references=0;bool idle=true;};
+        std::vector<std::pair<std::size_t,MoePinnedExpertArena*>> candidates;
+        for(const auto& arena:arenas_) {
+            const auto free=arena->bytes()-arena->used_bytes();
+            if(free>=bytes)candidates.emplace_back(free,arena.get());
         }
-        return before - host_allocated();
+        std::sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.first>b.first;});
+        // A contiguous run of idle leases can combine its surrounding holes.
+        // Prefer an arena with spare capacity, then minimize its moved bytes.
+        std::vector<MoePinnedExpertArena::Block*> best;
+        std::size_t best_bytes=SIZE_MAX;
+        for(const auto& [free,arena]:candidates) {
+            const auto keys=host_arena_keys_.find(arena->allocation_id());
+            if(keys==host_arena_keys_.end())continue;
+            std::unordered_map<MoePinnedExpertArena::Block*,Lease> leases;
+            for(const auto key:keys->second) {
+                const auto& image=host_.at(key).image;
+                auto* block=image->block.get();
+                auto [found,inserted]=leases.try_emplace(block,Lease{block});
+                ++found->second.owners;
+                found->second.references=image->block.use_count();
+                found->second.idle&=image.use_count()==1;
+            }
+            std::vector<Lease*> blocks;blocks.reserve(leases.size());
+            for(auto& [block,lease]:leases)blocks.push_back(&lease);
+            std::size_t accounted=0;
+            for(const auto* lease:blocks)accounted+=lease->block->bytes();
+            // Leases held outside the cache may occupy otherwise apparent gaps.
+            if(accounted!=arena->used_bytes())continue;
+            std::sort(blocks.begin(),blocks.end(),[](const auto* a,const auto* b){return a->block->offset()<b->block->offset();});
+            std::vector<std::size_t> gaps;gaps.reserve(blocks.size()+1);
+            std::size_t end=0;
+            for(auto* lease:blocks) {
+                gaps.push_back(lease->block->offset()-end);
+                end=lease->block->offset()+lease->block->bytes();
+                // Count distinct HostImage owners without retaining another
+                // Block reference that would prevent the exclusivity check.
+                lease->idle&=lease->owners==lease->references;
+            }
+            gaps.push_back(arena->bytes()-end);
+            std::size_t begin=0;
+            while(begin<blocks.size()) {
+                while(begin<blocks.size() && !blocks[begin]->idle)++begin;
+                if(begin==blocks.size())break;
+                auto finish=begin;
+                while(finish<blocks.size() && blocks[finish]->idle)++finish;
+                std::size_t left=begin,free=0,cost=0;
+                for(auto right=begin;right<=finish;++right) {
+                    free+=gaps[right];
+                    if(right>begin)cost+=blocks[right-1]->block->bytes();
+                    while(left<right && free-gaps[left]>=bytes) {
+                        free-=gaps[left];cost-=blocks[left]->block->bytes();++left;
+                    }
+                    if(free>=bytes && cost<best_bytes) {
+                        best_bytes=cost;best.clear();
+                        for(auto i=left;i<right;++i)best.push_back(blocks[i]->block);
+                    }
+                }
+                begin=finish;
+            }
+            if(!best.empty())break;
+        }
+        if(best.empty())return false;
+        for(auto* block:best)host_compacted_bytes_+=block->compact_left();
+        ++pin_interval_compactions_;
+        return true;
+    }
+    std::size_t relocate_host_allocation(const void* allocation,const std::vector<std::uint64_t>& keys,
+            std::unordered_set<const void*>& retained) {
+        struct Move { std::uint64_t key;HostImage* image; std::shared_ptr<MoePinnedExpertArena::Block> target; };
+        std::vector<Move> moves;
+        std::vector<std::pair<std::uint64_t,HostImage*>> images;
+        std::multimap<std::size_t,MoePinnedExpertArena*> targets;
+        std::size_t available=0,required=0;
+        for(const auto& arena:arenas_)if(arena->allocation_id()!=allocation) {
+            const auto largest=arena->largest_free_bytes();
+            if(largest)targets.emplace(largest,arena.get());
+            available+=arena->bytes()-arena->used_bytes();
+        }
+        // Plan into already registered holes. Keep every source unchanged if
+        // the whole allocation cannot move; no temporary pinned arena is made.
+        for(const auto key:keys) {
+            const auto found=host_.find(key);if(found==host_.end())continue;
+            const auto& image=found->second.image;
+            if(!image->block || image->block->allocation_id()!=allocation)continue;
+            if(image.use_count()!=1)return 0;
+            const auto bytes=(image->bytes+15)&~std::size_t(15);
+            if(targets.empty() || bytes>targets.rbegin()->first || bytes>available-required)return 0;
+            required+=bytes;images.emplace_back(key,image.get());
+        }
+        // Reserve large images first. The maximum-hole index rejects
+        // impossible moves before constructing thousands of temporary leases.
+        std::sort(images.begin(),images.end(),[](const auto& a,const auto& b){return a.second->bytes>b.second->bytes;});
+        moves.reserve(images.size());
+        for(const auto& [key,image]:images) {
+            const auto found=targets.lower_bound((image->bytes+15)&~std::size_t(15));
+            if(found==targets.end())return 0;
+            auto* arena=found->second;targets.erase(found);
+            std::shared_ptr<MoePinnedExpertArena::Block> target;
+            target=arena->allocate(image->bytes);
+            if(!target)return 0;
+            if(const auto largest=arena->largest_free_bytes())targets.emplace(largest,arena);
+            moves.push_back({key,image,std::move(target)});
+        }
+        std::size_t copied=0;
+        for(auto& move:moves) {
+            std::memcpy(move.target->data(),move.image->data(),move.image->bytes);
+            copied+=move.image->bytes;
+            retained.insert(move.target->allocation_id());
+            remove_host_arena_key(move.key,move.image->block->allocation_id());
+            host_arena_keys_[move.target->allocation_id()].insert(move.key);
+            move.image->block=std::move(move.target);move.image->block_offset=0;
+        }
+        return copied;
+    }
+    void evacuate_host_allocation(const void* allocation) {
+        const auto device=mfq_current_cuda_device();
+        // Fixed layer slots require their own ownership protocol. Raw cached
+        // images may use only spare capacity after all model weights exist.
+        if(host_evacuation_blocked_ || mfq::cuda::DecodeWindow::recording() ||
+                !finalized_devices_.count(device) || slot_tiers_.count(device))return;
+        const auto limit=device_limit_.find(device);
+        if(limit==device_limit_.end() || device_used_[device]>=limit->second)return;
+        const auto stream=mfq_current_cuda_stream();cudaStreamCaptureStatus capture;
+        TYLOINFER_CUDA_CHECK(cudaStreamIsCapturing(stream,&capture));
+        if(capture!=cudaStreamCaptureStatusNone)return;
+        const auto context=mfq::cuda::default_context(device);
+        const auto reserve=decode_workspace_reserve_?decode_workspace_reserve_:
+            mfq::cuda::runtime_options::workspace_reserve_bytes();
+        const auto available=context->available_memory();if(available<=reserve)return;
+        std::size_t remaining=std::min(limit->second-device_used_[device],available-reserve);
+        std::vector<Key> candidates,promoted;
+        for(const auto& [image,entry]:host_) {
+            if(entry.duplicate || !entry.image->block || entry.image.use_count()!=1 ||
+                    entry.image->block->allocation_id()!=allocation || !reclaim_banks_.count(image>>32))continue;
+            if(entry.image->ready && !entry.image->ready_on_host && !entry.image->ready->ready())continue;
+            candidates.push_back({image,device});
+        }
+        promoted.reserve(candidates.size());
+        std::shared_ptr<mfq::cuda::Event> ready;
+        for(const auto& key:candidates) {
+            const auto& bank=*reclaim_banks_.at(key.image>>32);
+            if(bank.expert_bytes>remaining)continue;
+            try {
+                if(!ready)ready=std::make_shared<mfq::cuda::Event>();
+                (void)acquire_locked(bank,{std::int64_t(std::uint32_t(key.image))},device,
+                    nullptr,true,nullptr,nullptr,ready);
+            } catch(const mfq::cuda::Error& error) {
+                // A competing process may consume VRAM after the budget sample.
+                // Keep the existing RAM/SSD eviction path for allocation failure.
+                if(std::string(error.what()).find(cudaGetErrorString(cudaErrorMemoryAllocation))==std::string::npos) {
+                    (void)cudaStreamSynchronize(stream);reap();throw;
+                }
+                (void)cudaGetLastError();break;
+            }
+            if(device_.count(key)){promoted.push_back(key);remaining-=bank.expert_bytes;}
+        }
+        if(promoted.empty())return;
+        TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));reap();
+        if(context->available_memory()<reserve) {
+            // Allocation granularity can exceed payload bytes. Roll back this
+            // batch while the unchanged RAM images still own every byte.
+            for(const auto& key:promoted) {
+                const auto found=device_.find(key);if(found==device_.end())continue;
+                device_used_[device]-=found->second.weight.packed.nbytes();
+                device_recent_.erase(found->second.recent);device_.erase(found);
+                remove_device_copy(key.image,key.device);
+            }
+            context->reclaim_idle_memory();return;
+        }
+        for(const auto& key:promoted) {
+            auto& entry=device_.at(key);entry.ready_on_host=true;
+            // Migration fills unused capacity without displacing hot experts.
+            device_recent_.splice(device_recent_.end(),device_recent_,entry.recent);
+            host_evacuated_bytes_+=entry.weight.packed.nbytes();++host_evacuated_images_;
+        }
+    }
+    std::size_t reclaim_host(std::size_t bytes,bool duplicates_only=false) {
+        reap();const auto before=host_allocated();
+        if(serving_graph_ || layer_admission_)return 0;
+        release_empty_arenas();
+        if(before-host_allocated()>=bytes)return before-host_allocated();
+        struct Victim {
+            const void* allocation=nullptr;
+            std::size_t unique=0,payload=0,allocated=0,age=0;
+            std::unordered_set<const void*> blocks;
+            bool busy=false;
+            std::vector<std::uint64_t> keys;
+        };
+        std::unordered_map<const void*,Victim> allocations;
+        // Releasing unrelated LRU entries leaves holes in many still-pinned
+        // arenas. Rank whole allocations by the unique expert data they lose.
+        std::size_t age=0;
+        for(auto it=host_recent_.rbegin();it!=host_recent_.rend();++it,++age) {
+            const auto& entry=host_.at(*it);const auto& image=entry.image;
+            if(image->snapshot)continue;
+            const auto id=image->block?image->block->allocation_id():image.get();
+            auto& victim=allocations[id];victim.allocation=id;
+            if(victim.keys.empty())victim.age=age;victim.keys.push_back(*it);
+            if(image->block && victim.blocks.insert(image->block.get()).second)victim.allocated+=image->block->bytes();
+            victim.payload+=image->bytes;
+            if(!entry.duplicate)victim.unique+=image->bytes;
+            victim.busy|=image.use_count()!=1;
+        }
+        for(const auto& arena:arenas_)if(const auto found=allocations.find(arena->allocation_id());found!=allocations.end())
+            found->second.busy|=arena->used_bytes()>found->second.allocated;
+        std::vector<Victim*> order;order.reserve(allocations.size());
+        for(auto& [id,victim]:allocations)
+            if(!victim.busy)order.push_back(&victim);
+        std::stable_sort(order.begin(),order.end(),[](const auto* a,const auto* b) {
+            // Fully duplicated allocations always precede unique RAM data.
+            // Within each class, evict the least unique payload per arena.
+            if(a->unique!=b->unique)return a->unique<b->unique;
+            if(a->payload!=b->payload)return a->payload<b->payload;
+            return a->age<b->age;
+        });
+        std::unordered_set<const void*> retained;
+        for(const auto* victim:order) {
+            if(before-host_allocated()>=bytes)break;
+            // Reclaim one allocation at a time. Dropping every GPU backup
+            // merely to free one arena needlessly destroys later reuse.
+            for(const auto key:victim->keys)if(const auto found=host_.find(key);found!=host_.end()) {
+                const auto& image=found->second.image;
+                const auto allocation=image->block?image->block->allocation_id():image.get();
+                if(allocation==victim->allocation && found->second.duplicate){erase_host(key);++host_evictions_;}
+            }
+            // A paired Gate/Up survivor otherwise keeps its deleted half
+            // unavailable. Narrow only exclusively owned, idle image ranges.
+            for(const auto key:victim->keys)if(const auto found=host_.find(key);found!=host_.end()) {
+                auto& image=found->second.image;
+                if(image.use_count()!=1 || !image->block || image->block.use_count()!=1 || image->block_offset%16 ||
+                        image->block->allocation_id()!=victim->allocation)continue;
+                if(const auto freed=image->block->retain_range(image->block_offset,image->bytes)) {
+                    image->block_offset=0;host_trimmed_bytes_+=freed;
+                }
+            }
+            release_empty_arenas();
+            if(before-host_allocated()>=bytes)break;
+            // Each survivor moves at most once during a reclaim, even when
+            // the caller requests more RAM than duplicates can actually free.
+            const auto copied=retained.count(victim->allocation)?0:relocate_host_allocation(victim->allocation,victim->keys,retained);
+            host_compacted_bytes_+=copied;
+            release_empty_arenas();
+        }
+        // Preserve every unique RAM image until duplicate release and packing
+        // are exhausted. A larger KV reservation may still need unique data.
+        if(!duplicates_only)for(const auto* victim:order) {
+            if(before-host_allocated()>=bytes)break;
+            evacuate_host_allocation(victim->allocation);
+            for(auto next=host_.begin();next!=host_.end();) {
+                const auto current=next++;const auto& image=current->second.image;
+                const auto allocation=image->block?image->block->allocation_id():image.get();
+                if(allocation==victim->allocation){erase_host(current->first);++host_evictions_;}
+            }
+            release_empty_arenas();
+        }
+        return before-host_allocated();
     }
     std::shared_ptr<MoePinnedExpertArena::Block> allocate_pinned(std::size_t bytes) {
         for (const auto& arena : arenas_)
@@ -683,13 +1093,50 @@ class GgufExpertCache {
         }
         return {};
     }
-    std::shared_ptr<HostImage> allocate_host(std::size_t bytes) {
+    std::shared_ptr<HostImage> allocate_host(std::size_t bytes,std::size_t batch_bytes=0) {
         while (bytes > host_limit_ - std::min(host_used_, host_limit_) && !host_recent_.empty())
             evict_host();
-        const auto available = host_available();
-        if (available < bytes) reclaim_host(bytes - available);
         auto image = std::make_shared<HostImage>(); image->bytes = bytes;
+        // An existing pinned interval consumes no additional physical RAM.
+        // Try it (and disposable GPU backups) before reclaiming whole arenas:
+        // low free RAM alone must not discard their unique expert payloads.
         image->block = allocate_pinned(bytes);
+        if(!image->block && !serving_graph_ && !layer_admission_) {
+            std::size_t holes=0,largest_arena=0;
+            for(const auto& arena:arenas_) {
+                holes+=arena->bytes()-arena->used_bytes();
+                largest_arena=std::max(largest_arena,arena->bytes());
+            }
+            pin_fragment_probe_bytes_=bytes>SIZE_MAX-pin_fragment_probe_bytes_?SIZE_MAX:pin_fragment_probe_bytes_+bytes;
+            if(holes>=bytes && pin_fragment_probe_bytes_>=largest_arena) {
+                // Fragmented locked pages already consume the RAM budget.
+                // Pack idle images before adding a separate pageable copy.
+                // Amortize each cache-wide pass over one arena of failed
+                // requests; live transfer leases can prevent a release.
+                pin_fragment_probe_bytes_=0;++pin_fragment_retries_;
+                const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");
+                const bool trace_reclaim=trace && trace[0]=='1';
+                const auto started=trace_reclaim?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+                // A batch may consume many holes. Bound repeated packing by
+                // the arena-sized failed demand rather than each new image.
+                const bool interval_compacted=compact_pinned_interval(bytes);
+                if(!interval_compacted)reclaim_host(bytes,true);
+                image->block=allocate_pinned(bytes);
+                if(image->block && !batch_bytes)pin_fragment_probe_bytes_=SIZE_MAX;
+                if(image->block)++pin_fragment_reuses_;
+                if(trace_reclaim)
+                    std::fprintf(stderr,"native_gguf_pinned_fragment_reuse actual_match=1 requested_bytes=%zu free_locked_bytes=%zu reused=%d probes=%llu reclaim_ms=%.6f interval_compacted=%d\n",
+                        bytes,holes,int(bool(image->block)),static_cast<unsigned long long>(pin_fragment_retries_),
+                        std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),int(interval_compacted));
+            }
+        }
+        if (!image->block) {
+            const auto available = host_available();
+            if (available < bytes) {
+                reclaim_host(bytes - available);
+                image->block = allocate_pinned(bytes);
+            }
+        }
         if (!image->block) {
             ++pin_capacity_misses_;
             image->fallback = tb::empty({static_cast<std::int64_t>(image->bytes)},
@@ -703,16 +1150,26 @@ class GgufExpertCache {
             auto [found, inserted] = host_.emplace(key, HostEntry{image, host_recent_.begin(), {}});
             if (!inserted) throw std::logic_error("GGUF duplicate host cache insertion");
             host_used_ += image->bytes;
+            if(image->block)host_arena_keys_[image->block->allocation_id()].insert(key);
+            if(!image->block && !image->snapshot)host_pageable_+=image->bytes;
             if (device_copies_.count(key)) {
                 host_duplicates_.push_front(key); found->second.duplicate = host_duplicates_.begin();
             }
         }
+    }
+    void remove_host_arena_key(std::uint64_t key,const void* allocation) {
+        const auto found=host_arena_keys_.find(allocation);
+        if(found==host_arena_keys_.end() || !found->second.erase(key))
+            throw std::logic_error("GGUF pinned arena index differs");
+        if(found->second.empty())host_arena_keys_.erase(found);
     }
     void erase_host(std::uint64_t key) {
         const auto found = host_.find(key);
         if (found == host_.end()) return;
         if(serving_graph_ && found->second.image->ready)deferred_events_.push_back(found->second.image->ready);
         host_used_ -= found->second.image->bytes;
+        if(found->second.image->block)remove_host_arena_key(key,found->second.image->block->allocation_id());
+        if(!found->second.image->block && !found->second.image->snapshot)host_pageable_-=found->second.image->bytes;
         if (found->second.duplicate) host_duplicates_.erase(*found->second.duplicate);
         host_recent_.erase(found->second.recent); host_.erase(found);
     }
@@ -752,6 +1209,8 @@ class GgufExpertCache {
                     auto pinned = std::make_shared<HostImage>(); pinned->bytes = image->bytes;
                     pinned->block = std::move(block); std::memcpy(pinned->data(), image->data(), image->bytes);
                     if(serving_graph_ && image->ready)deferred_events_.push_back(image->ready);
+                    host_pageable_-=image->bytes;
+                    host_arena_keys_[pinned->block->allocation_id()].insert(key);
                     found->second.image = pinned; image = std::move(pinned);
                 }
             }
@@ -773,7 +1232,8 @@ class GgufExpertCache {
         insert_host(key, image);
         return image;
     }
-    void read_host_batch(const GgufRoutedWeight& bank,const std::vector<std::int64_t>& experts,int device) {
+    void read_host_batch(const GgufRoutedWeight& bank,const std::vector<std::int64_t>& experts,int device,
+            std::unordered_map<std::uint64_t,std::shared_ptr<HostImage>>* transient=nullptr) {
         if((snapshot_ && snapshot_sources_.count(bank.source_id)) || !bank.batch_reader || experts.size()<2)return;
         std::vector<std::int64_t> missing;
         std::unordered_set<std::int64_t> unique;
@@ -782,21 +1242,54 @@ class GgufExpertCache {
             const Key key{(bank.source_id<<32)|std::uint64_t(expert),device};
             if(!host_.count(key.image) && !device_.count(key) && unique.insert(expert).second)missing.push_back(expert);
         }
-        if(missing.size()<2 || missing.size()>host_limit_/bank.expert_bytes)return;
+        if(missing.empty() || missing.size()>SIZE_MAX/bank.expert_bytes)return;
+        const auto total=missing.size()*bank.expert_bytes;
+        // Registered holes consume no new physical RAM. Reserve every
+        // transient source first; only pageable images need fresh headroom.
         std::vector<std::pair<std::uint64_t,std::shared_ptr<HostImage>>> images;
         std::vector<mfq::ReadSpan> spans;
         images.reserve(missing.size());spans.reserve(missing.size());
-        try {
+        bool bypass=transient && !serving_graph_ && !layer_admission_;
+        if(bypass) {
+            auto available=host_available();
             for(const auto expert:missing) {
+                auto image=std::make_shared<HostImage>();image->bytes=bank.expert_bytes;
+                const auto reserved=host_reserved_;
+                image->block=allocate_pinned(image->bytes);
+                available-=std::min(available,host_reserved_-reserved);
+                if(!image->block) {
+                    if(image->bytes>available){bypass=false;break;}
+                    image->fallback=tb::empty({static_cast<int64_t>(image->bytes)},
+                        tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8));
+                    available-=image->bytes;
+                }
+                images.emplace_back((bank.source_id<<32)|std::uint64_t(expert),std::move(image));
+            }
+            if(!bypass)images.clear();
+        }
+        if(!bypass && (missing.size()<2 || missing.size()>host_limit_/bank.expert_bytes))return;
+        try {
+            auto remaining=total;
+            for(std::size_t i=0;i<missing.size();++i) {
+                const auto expert=missing[i];
                 const auto key=(bank.source_id<<32)|std::uint64_t(expert);
-                auto image=allocate_host(bank.expert_bytes);
-                images.emplace_back(key,image);
-                insert_host(key,image);
+                auto image=bypass?images[i].second:allocate_host(bank.expert_bytes,remaining);
+                remaining-=bank.expert_bytes;
+                if(bypass)transient->emplace(key,image);
+                else {images.emplace_back(key,image);insert_host(key,image);}
                 spans.push_back({std::uint64_t(expert)*bank.expert_bytes,
                     static_cast<std::byte*>(image->data()),image->bytes});
             }
             bank.batch_reader(spans);
-            source_bytes_+=missing.size()*bank.expert_bytes;source_reads_+=missing.size();++source_batches_;
+            source_bytes_+=total;source_reads_+=missing.size();++source_batches_;
+            if(bypass) {
+                prefill_host_bypass_bytes_+=total;
+                if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+                    static std::atomic<bool> reported{false};
+                    if(!reported.exchange(true))std::fprintf(stderr,
+                        "native_gguf_prefill_host_bypass actual_match=1 bytes=%zu retains_ram_experts=1 physical_headroom_checked=1\n",total);
+                }
+            }
         } catch(...) {
             // No partially read image may be used after an I/O failure. The
             // mutex keeps these placeholders private until the batch succeeds.
@@ -805,7 +1298,59 @@ class GgufExpertCache {
             throw;
         }
     }
+    bool read_host_group(const std::array<std::shared_ptr<GgufRoutedWeight>,3>& banks,
+            const std::vector<std::int64_t>& experts,int device,
+            const std::array<const std::int64_t*,3>& resident,GgufDirectWorkspaceImages* workspace_images) {
+        std::shared_ptr<const mfq::GgufModelSource::TensorGroupReader> reader;
+        for(const auto& bank:banks) {
+            if(bank->resident_packed.defined())continue;
+            const auto found=group_sources_.find(bank->source_id);
+            if(found==group_sources_.end() || (snapshot_ && snapshot_sources_.count(bank->source_id)))return false;
+            if(reader && reader!=found->second.reader)return false;
+            reader=found->second.reader;
+        }
+        if(!reader)return false;
+        struct Missing {std::uint64_t key,offset;const GgufRoutedWeight* bank;};
+        std::vector<Missing> missing;std::unordered_set<std::uint64_t> unique;
+        std::size_t bytes=0;
+        for(int role=0;role<3;++role) {
+            const auto& bank=*banks[role];
+            if(bank.resident_packed.defined())continue;
+            for(std::size_t selected=0;selected<experts.size();++selected) {
+                const auto expert=experts[selected];
+                if(expert<0 || expert>=bank.experts)throw std::out_of_range("GGUF expert id");
+                const auto key=(bank.source_id<<32)|std::uint64_t(expert);
+                if((resident[role] && resident[role][expert]) || device_.count(Key{key,device}) || host_.count(key) ||
+                        (workspace_images && workspace_images->contains(selected,role)) || !unique.insert(key).second)continue;
+                if(bank.expert_bytes>host_limit_-std::min(bytes,host_limit_))return false;
+                bytes+=bank.expert_bytes;
+                missing.push_back({key,std::uint64_t(expert)*bank.expert_bytes,&bank});
+            }
+        }
+        if(missing.size()<2)return false;
+        std::vector<std::pair<std::uint64_t,std::shared_ptr<HostImage>>> images;
+        std::vector<mfq::GgufModelSource::NamedReadSpan> spans;
+        images.reserve(missing.size());spans.reserve(missing.size());
+        try {
+            auto remaining=bytes;
+            for(const auto& item:missing) {
+                auto image=allocate_host(item.bank->expert_bytes,remaining);remaining-=item.bank->expert_bytes;
+                images.emplace_back(item.key,image);insert_host(item.key,image);
+                spans.push_back({group_sources_.at(item.bank->source_id).name,
+                    {item.offset,static_cast<std::byte*>(image->data()),image->bytes}});
+            }
+            (*reader)(spans);
+            source_bytes_+=bytes;source_reads_+=missing.size();++source_batches_;++source_group_batches_;
+        } catch(...) {
+            // No incomplete image becomes visible after a failed grouped read.
+            for(const auto& [key,image]:images)
+                if(auto found=host_.find(key);found!=host_.end() && found->second.image==image)erase_host(key);
+            throw;
+        }
+        return true;
+    }
     void demote(const Key& key, const DeviceEntry& entry) {
+        const BlockHostEvacuation block(host_evacuation_blocked_);
         if (host_.count(key.image) || (snapshot_ && snapshot_sources_.count(key.image>>32)) ||
                 entry.weight.packed.nbytes() > host_limit_) return;
         const auto image = allocate_host(entry.weight.packed.nbytes());
@@ -896,12 +1441,13 @@ public:
             // owners. Retire them before checking the loan's live tensors.
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));reap();
             mfq::cuda::default_context(device)->end_workspace_loan();
-            restore.assign(tier.owners.begin()+tier.loan_first,tier.owners.end());
+            restore.assign(tier.owners.begin()+tier.loan_first,tier.owners.begin()+tier.cache->slots());
             tier.loan_first=tier.cache->slots();tier.loan_active=false;
         }
         // As in Strata, this refill follows computation_finished and remains
         // part of TTFT. It never changes the PP or stable-decode timer.
         for(const auto& owner:restore) {
+            if(!owner.touched)continue;
             std::array<std::shared_ptr<GgufRoutedWeight>,3> banks;
             for(int role=0;role<3;++role) {
                 banks[role]=owner.banks[role].lock();
@@ -1254,11 +1800,31 @@ public:
         if(banks[0]->cache!=banks[1]->cache || banks[0]->cache!=banks[2]->cache)return;
         std::lock_guard lock(mutex_);
         if(!reuse_learning_)return;
-        auto& demand=prefill_demand_[banks[0]->source_id];
+        const auto device=mfq_current_cuda_device();
+        auto& demand=prefill_demand_[device][banks[0]->source_id];
         for(int role=0;role<3;++role)demand.banks[role]=banks[role];
         demand.counts.resize(routes.size());
         for(std::size_t expert=0;expert<routes.size();++expert)demand.counts[expert]=routes[expert].size();
-        prefill_rebalance_pending_=true;
+        decode_seed_bytes_[device]=0;decode_seed_pending_.erase(device);
+        prefill_rebalance_pending_.insert(device);
+    }
+    void record_decode_seed(const std::array<std::shared_ptr<GgufRoutedWeight>,3>& banks,
+            const std::vector<GgufSpeculativeTouch>& touches,int device) {
+        // A prefix hit may never visit grouped prefill. Retain its executed
+        // routes so the next safe phase boundary can seed the same slot cache.
+        // Unobserved experts receive empty slots when the safe phase boundary
+        // establishes full geometry, without transferring their cold weights.
+        if(slot_tiers_.count(device) || !strata_slots_requested())return;
+        auto& seed=prefill_demand_[device][banks[0]->source_id];
+        auto& observed=decode_seed_bytes_[device];
+        for(int role=0;role<3;++role)seed.banks[role]=banks[role];
+        seed.counts.resize(std::size_t(banks[0]->experts));
+        const auto bytes=banks[0]->expert_bytes+banks[1]->expert_bytes+banks[2]->expert_bytes;
+        for(const auto& touch:touches)if(touch.uses) {
+            auto& count=seed.counts.at(std::size_t(touch.expert));
+            if(!count)observed+=std::min(bytes,SIZE_MAX-observed);
+            count+=std::min(touch.uses,UINT64_MAX-count);decode_seed_pending_.insert(device);
+        }
     }
     void rebalance_prefill() {
         wait_direct_admission();
@@ -1271,14 +1837,25 @@ public:
         const auto started=std::chrono::steady_clock::now();
         const int ordinal=mfq_current_cuda_device();
         std::vector<Candidate> selected;
+        std::vector<std::uint64_t> retained_host;
+        bool decode_seed=false;
         {
             std::lock_guard lock(mutex_);
-            if(!prefill_rebalance_pending_)return;
-            prefill_rebalance_pending_=false;
+            if(!prefill_rebalance_pending_.count(ordinal)) {
+                if(!decode_seed_pending_.count(ordinal) || !strata_slots_requested() || !device_limit_.count(ordinal))return;
+                std::unordered_set<std::uint64_t> described;
+                for(const auto& [source,demand]:prefill_demand_.at(ordinal))
+                    for(const auto& weak:demand.banks)if(const auto bank=weak.lock())described.insert(bank->source_id);
+                // A decode-only profile must cover every registered evictable
+                // bank before assigning the arena to particular layers.
+                for(const auto& [source,bank]:reclaim_banks_)if(!described.count(source))return;
+                decode_seed=true;
+            }
+            prefill_rebalance_pending_.erase(ordinal);
             if(slot_tiers_.count(ordinal))return;
             if(!device_limit_.count(ordinal) || !device_limit_.at(ordinal))return;
             std::vector<Candidate> candidates;
-            for(auto& [source,demand]:prefill_demand_) {
+            for(auto& [source,demand]:prefill_demand_.at(ordinal)) {
                 std::array<std::shared_ptr<GgufRoutedWeight>,3> banks;
                 bool alive=true;
                 for(int role=0;role<3;++role){banks[role]=demand.banks[role].lock();alive&=bool(banks[role]);}
@@ -1299,7 +1876,39 @@ public:
                 for(const auto& bank:candidate.banks)wanted.insert((bank->source_id<<32)|std::uint64_t(candidate.expert));
                 selected.push_back(std::move(candidate));
             }
-            if(strata_slots_requested())initialize_slot_tier(selected,ordinal);
+            if(strata_slots_requested() && remaining) {
+                struct ColdGroup {
+                    std::array<std::shared_ptr<GgufRoutedWeight>,3> banks;
+                    const std::vector<std::uint64_t>* counts;
+                    std::size_t bytes;
+                };
+                std::vector<ColdGroup> cold;
+                for(auto& [source,demand]:prefill_demand_.at(ordinal)) {
+                    std::array<std::shared_ptr<GgufRoutedWeight>,3> banks;bool alive=true;
+                    for(int role=0;role<3;++role){banks[role]=demand.banks[role].lock();alive&=bool(banks[role]);}
+                    if(alive)cold.push_back({banks,&demand.counts,
+                        std::size_t(banks[0]->expert_bytes+banks[1]->expert_bytes+banks[2]->expert_bytes)});
+                }
+                // Interleave unknown experts across layers. Their reserved
+                // addresses stay empty until actual demand supplies an image.
+                for(std::size_t expert=0;;++expert) {
+                    bool more=false;
+                    for(const auto& group:cold)if(expert<group.counts->size()) {
+                        more=true;if((*group.counts)[expert] || group.bytes>remaining)continue;
+                        remaining-=group.bytes;selected.push_back({group.banks,std::int64_t(expert),0,group.bytes});
+                    }
+                    if(!more || !remaining)break;
+                }
+            }
+            if(strata_slots_requested()) {
+                // Replacing separate GPU allocations temporarily demotes all
+                // of them. Keep the identities of sole RAM copies so that
+                // this temporary overlap cannot permanently reduce coverage.
+                retained_host.reserve(host_.size());
+                for(const auto key:host_recent_)
+                    if(!device_copies_.count(key))retained_host.push_back(key);
+                initialize_slot_tier(selected,ordinal);
+            }
             bool released=false;
             for(auto next=device_.begin();next!=device_.end();) {
                 const auto& key=next->first;
@@ -1318,15 +1927,41 @@ public:
         // This is prompt cleanup, after the PP timer stops and before the
         // first generated token. It remains part of TTFT.
         std::map<std::uint64_t,std::vector<const Candidate*>> groups;
-        for(const auto& candidate:selected)groups[candidate.banks[0]->source_id].push_back(&candidate);
+        for(const auto& candidate:selected)if(candidate.count)groups[candidate.banks[0]->source_id].push_back(&candidate);
         for(const auto& [source,group]:groups) {
             std::vector<std::int64_t> experts;experts.reserve(group.size());
             for(const auto* candidate:group)experts.push_back(candidate->expert);
             (void)acquire_moe(group.front()->banks,experts,ordinal);
         }
+        if(!retained_host.empty()) {
+            // Upload sources must become reusable before recovering RAM
+            // holes. This finite join is at the existing TTFT boundary.
+            TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
+            std::lock_guard lock(mutex_);reap();
+            std::size_t unique=0;
+            for(const auto& [key,entry]:host_)if(!entry.duplicate)unique+=entry.image->bytes;
+            for(const auto key:retained_host) {
+                if(host_.count(key) || device_copies_.count(key))continue;
+                const auto bank=reclaim_banks_.find(key>>32);
+                if(bank==reclaim_banks_.end())continue;
+                const auto bytes=bank->second->expert_bytes;
+                // Restore recent coverage only when the unchanged RAM budget
+                // can hold it alongside the currently unique RAM experts.
+                if(bytes>host_limit_-std::min(host_limit_,unique))continue;
+                (void)read_host(*bank->second,std::uint32_t(key));
+                if(host_.count(key))unique+=bytes;
+            }
+        }
         std::lock_guard lock(mutex_);
         direct_demand_.clear();direct_window_pending_=false;
-        prefill_resident_experts_=selected.size();
+        decode_seed_pending_.erase(ordinal);
+        if(decode_seed && slot_tiers_.count(ordinal)) {
+            ++decode_seed_rebalances_;
+            if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1')
+                std::fprintf(stderr,"native_gguf_decode_slot_seed actual_match=1 observed_bytes=%zu cache_bytes=%llu\n",
+                    decode_seed_bytes_[ordinal],static_cast<unsigned long long>(slot_tiers_.at(ordinal).cache->bytes()));
+        }
+        prefill_resident_experts_=std::count_if(selected.begin(),selected.end(),[](const auto& candidate){return candidate.count!=0;});
         prefill_rebalance_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
     }
     void finish_direct(bool frequent=false) {
@@ -1544,6 +2179,7 @@ public:
         // original +1, including FP32 saturation; demand counts each unique
         // missed expert once per window, as the former set-based loop did.
         speculative_journal_.collect({ids,std::size_t(tokens*routes)},std::size_t(banks[0]->experts),ordinary_touches_,missed);
+        record_decode_seed(banks,ordinary_touches_,device);
         std::vector<float>* usage=nullptr;
         if(auto tier=slot_tiers_.find(device);tier!=slot_tiers_.end())
             if(auto role=tier->second.roles.find(banks[0]->source_id);role!=tier->second.roles.end())
@@ -1581,6 +2217,8 @@ public:
                         usage=&tier->second.usage[role->second.layer];
                 std::array<std::shared_ptr<GgufRoutedWeight>,3> banks;
                 for(std::size_t role=0;role<banks.size();++role)banks[role]=pending.banks[role].lock();
+                if(observed && std::all_of(banks.begin(),banks.end(),[](const auto& bank){return bool(bank);}))
+                    record_decode_seed(banks,pending.touches,pending.device);
                 const bool snapshot_current=pending.resident_version==resident_version_;
                 if(observed)for(std::size_t index=pending.touches.size();index-->0;) {
                     const auto* it=&pending.touches[index];
@@ -1626,7 +2264,8 @@ public:
         try { graph_pools_.emplace(stream.stream(), GraphPool{stream, context}); }
         catch (...) { context->end_graph_pool(stream.stream()); throw; }
     }
-    std::uint64_t register_source(const std::string& name,std::size_t bytes,mfq::ModelSource::TensorReader recovery,bool resident=false) {
+    std::uint64_t register_source(const std::string& name,std::size_t bytes,mfq::ModelSource::TensorReader recovery,bool resident=false,
+            std::shared_ptr<const mfq::GgufModelSource::TensorGroupReader> group={}) {
         std::lock_guard lock(mutex_);
         if (bytes > SIZE_MAX - (resident?predictor_resident_bytes_:payload_bytes_)) throw std::overflow_error("GGUF source payload overflow");
         if (++sources_ > UINT32_MAX) throw std::overflow_error("too many GGUF expert sources");
@@ -1639,7 +2278,13 @@ public:
             snapshot_sources_.emplace(sources_,bank->second);
         }
         if(recovery)source_readers_.emplace(sources_,std::move(recovery));
+        if(group)group_sources_.emplace(sources_,GroupSource{std::move(group),name});
         return sources_;
+    }
+    void register_reclaim_bank(const GgufRoutedWeight& bank) {
+        if(bank.resident_packed.defined())return;
+        auto metadata=std::make_shared<GgufRoutedWeight>(bank);metadata->cache.reset();
+        std::lock_guard lock(mutex_);reclaim_banks_.emplace(bank.source_id,std::move(metadata));
     }
     std::size_t budget_bytes() {
         std::lock_guard lock(mutex_);
@@ -1671,6 +2316,7 @@ public:
         const auto capacity = available > total_reserve ? available - total_reserve : 0;
         device_limit_[device] = std::min(configured_device_limit_.value_or(capacity), capacity);
         evict_device(device, 0);
+        finalized_devices_.insert(device);
     }
     void reserve_workspace(std::size_t bytes) {
         wait_direct_admission();
@@ -1680,10 +2326,9 @@ public:
         if(slot_tiers_.count(device)) {
             context->reclaim_idle_memory();reap();
             if(context->available_memory()>=bytes)return;
-            // KV growth needs physical pages outside the PP loan. Retire the
-            // fixed arena before reserving them; restore_workspace can seed
-            // the remaining capacity again after the new allocation exists.
-            release_slot_tier(device);
+            // A segmented arena can return only its cold tail. Contiguous
+            // allocations still require the original complete retirement.
+            if(!slot_tiers_.at(device).cache->segmented())release_slot_tier(device);
         }
         reap();
         context->reclaim_idle_memory();
@@ -1700,7 +2345,7 @@ public:
 #endif
         struct Allocation {std::uintptr_t begin,end;Key key;};
         std::vector<Allocation> allocations;
-        if(granularity && available<bytes) {
+        if(granularity && available<bytes && !slot_tiers_.count(device)) {
             for(const auto& [key,entry]:device_)if(key.device==device) {
                 const auto start=reinterpret_cast<std::uintptr_t>(entry.weight.packed.data_ptr());
                 allocations.push_back({start,start+entry.weight.packed.nbytes(),key});
@@ -1713,6 +2358,14 @@ public:
         // workspace reservation.
         while(available<bytes) {
             const auto needed=bytes-available;
+            if(const auto tier=slot_tiers_.find(device);tier!=slot_tiers_.end() &&
+                    tier->second.cache->segmented() && tier->second.cache->mapped_bytes()>0) {
+                const auto mapped=std::size_t(tier->second.cache->mapped_bytes());
+                if(!shrink_slot_tier(device,mapped>needed?mapped-needed:0))
+                    release_slot_tier(device);
+                reap();context->reclaim_idle_memory();available=context->available_memory();
+                continue;
+            }
             std::size_t released=0;
             while(released<needed) {
                 auto old=std::find_if(device_recent_.rbegin(),device_recent_.rend(),
@@ -1743,8 +2396,15 @@ public:
         }
         // Do not refill the returned workspace with PP cache admissions.
         // restore_workspace recomputes the configured decode capacity later.
-        if(auto limit=device_limit_.find(device);limit!=device_limit_.end())
-            limit->second=std::min(limit->second,device_used_[device]+(available>bytes?available-bytes:0));
+        const auto reusable=reusable_resident_memory(device);
+        if(auto limit=device_limit_.find(device);limit!=device_limit_.end()) {
+            // Live expert images can strand free space in their async pool.
+            // New cache images reuse those pages; a workspace in another pool
+            // still needs the physical availability reserved above. Match
+            // restore_workspace rather than discarding that cache capacity.
+            const auto capacity=device_used_[device]+reusable+(available>bytes?available-bytes:0);
+            limit->second=std::min(limit->second,capacity);
+        }
         if(const auto* trace=std::getenv("TYLOINFER_TRACE_LAYER_TIMINGS");trace && trace[0]!='0')
             std::fprintf(stderr,"runtime_gguf_workspace_reserve requested_bytes=%zu available_before=%zu available_after=%zu resident_before=%zu resident_after=%zu\n",
                 bytes,before,available,resident_before,device_used_[device]);
@@ -1767,6 +2427,12 @@ public:
         const auto base=configured?mfq::cuda::runtime_options::workspace_reserve_bytes():
             add(std::max(transient.value_or(std::size_t(1280)<<20),residency_allowance),2*upload_capacity);
         const auto reserve=add(base,growth);
+        // A retained decoder can return from prefill with less free memory
+        // than its allowance. Clamping a negative surplus to zero would keep
+        // every existing expert and silently consume the promised headroom.
+        // Reclaim actual pages before sizing the cache, including pool-page
+        // fragmentation and any WDDM residency deficit.
+        if(context->available_memory()<reserve)reserve_workspace(reserve);
         {
             std::lock_guard lock(mutex_);reap();context->reclaim_idle_memory();
             decode_workspace_reserve_=reserve;decode_workspace_prepared_=transient.has_value() && !configured;
@@ -1776,12 +2442,22 @@ public:
             // without increasing physical residency. PP workspace uses the
             // temporary pool and therefore cannot count this space as free.
             const auto existing=slot_tiers_.find(device);
-            const auto physical=existing==slot_tiers_.end()?device_used_[device]:std::size_t(existing->second.cache->bytes());
+            const auto physical=existing==slot_tiers_.end()?device_used_[device]:std::size_t(existing->second.cache->mapped_bytes());
             const auto capacity=physical+reusable+(available>reserve?available-reserve:0);
             if(const auto tier=slot_tiers_.find(device);tier!=slot_tiers_.end() &&
-                    std::uint64_t(tier->second.cache->bytes())>capacity)release_slot_tier(device);
+                    std::uint64_t(tier->second.cache->bytes())>capacity)
+                if(!shrink_slot_tier(device,capacity))release_slot_tier(device);
             device_limit_[device]=std::min(configured_device_limit_.value_or(capacity),capacity);
             evict_device(device,0);
+        }
+        {
+            std::size_t capacity=0;
+            {std::lock_guard lock(mutex_);
+                if(const auto tier=slot_tiers_.find(device);tier!=slot_tiers_.end()) {
+                    const auto free=context->available_memory();
+                    capacity=std::size_t(tier->second.cache->mapped_bytes())+(free>reserve?free-reserve:0);
+                }}
+            if(capacity)grow_slot_tier(device,capacity);
         }
         rebalance_prefill();
         if(route_trace_) {
@@ -1821,18 +2497,58 @@ public:
     }
     void resize(std::size_t bytes) {
         wait_direct_admission();
-        std::lock_guard lock(mutex_);
-        std::vector<int> release;
-        for(const auto& [device,tier]:slot_tiers_)if(std::uint64_t(tier.cache->bytes())>bytes)release.push_back(device);
-        for(const auto device:release)release_slot_tier(device);
-        configured_device_limit_ = bytes;
-        for (auto& [device, limit] : device_limit_) { limit = bytes; evict_device(device, 0); }
+        std::vector<std::pair<int,std::size_t>> growth;
+        {
+            std::lock_guard lock(mutex_);
+            std::vector<int> release;
+            for(const auto& [device,tier]:slot_tiers_)if(std::uint64_t(tier.cache->bytes())>bytes)release.push_back(device);
+            for(const auto device:release)
+                if(!bytes || !shrink_slot_tier(device,bytes))release_slot_tier(device);
+            configured_device_limit_ = bytes;
+            for(auto& [device,limit]:device_limit_) {
+                limit=bytes;evict_device(device,0);
+                if(const auto tier=slot_tiers_.find(device);tier!=slot_tiers_.end()) {
+                    const auto free=mfq::cuda::default_context(device)->available_memory();
+                    growth.emplace_back(device,std::size_t(tier->second.cache->mapped_bytes())+
+                        (free>decode_workspace_reserve_?free-decode_workspace_reserve_:0));
+                }
+            }
+        }
+        for(const auto& [device,capacity]:growth)grow_slot_tier(device,capacity);
     }
+    std::size_t reclaim_duplicates(std::size_t bytes) {
+        if(!bytes)return 0;
+        wait_direct_admission();std::lock_guard lock(mutex_);
+        return reclaim_host(bytes,true);
+    }
+    std::size_t share_host(std::size_t free_bytes) {
+        // Only called by the model thread, outside graph host callbacks.
+        // Updating the soft ceiling prevents experts immediately borrowing
+        // back the pages that a growing KV cache has just requested.
+        const auto released=free_bytes?reserve_host(free_bytes):0;
+        std::lock_guard lock(mutex_);
+        const auto free=host_available();
+        const auto ceiling=free>=free_bytes?
+            host_used_+std::min(ordinary_host_limit_-std::min(ordinary_host_limit_,host_used_),free-free_bytes):
+            host_used_-std::min(host_used_,free_bytes-free);
+        host_limit_=free_bytes?std::min(ordinary_host_limit_,ceiling):ordinary_host_limit_;
+        return released;
+    }
+    std::chrono::steady_clock::time_point last_host_trim_{};
     std::size_t reserve_host(std::size_t bytes) {
         wait_direct_admission();
         std::lock_guard lock(mutex_);
-        const auto available = host_available();
+        auto available = host_available();
         if(available>=bytes)return 0;
+        const auto now=std::chrono::steady_clock::now();
+        if(now-last_host_trim_>=std::chrono::seconds(1)) {
+            last_host_trim_=now;mfq_release_host_allocator_cache();
+            const auto after=host_available();
+            if(std::getenv("TYLOINFER_TRACE_QSA_TQ"))std::fprintf(stderr,
+                "native_host_allocator_trim before_free=%zu after_free=%zu actual_released=%zu\n",
+                available,after,after>available?after-available:0);
+            available=after;if(available>=bytes)return 0;
+        }
         auto released=reclaim_host(bytes-available);
         if(snapshot_ && available+released<bytes) {
             // This is a request-planning boundary, never a host callback of a
@@ -1860,18 +2576,27 @@ public:
             decode_dma_signals+=lane->signals();
         }
         std::size_t device_bytes = 0, budget = 0, covered = host_used_;
-        std::size_t slot_bytes=0,borrowed_bytes=0;
+        std::size_t slot_bytes=0,borrowed_bytes=0,slot_mapped=0,segmented_arenas=0,max_segment=0,untouched_slots=0;
         for(const auto& [device,tier]:slot_tiers_) {
             slot_bytes+=tier.cache->bytes();
+            slot_mapped+=std::size_t(tier.cache->mapped_bytes());
+            for(std::int64_t slot=0;slot<tier.loan_first;++slot)
+                untouched_slots+=!tier.owners[std::size_t(slot)].touched;
+            if(tier.cache->segmented()) {
+                ++segmented_arenas;max_segment=std::max(max_segment,std::size_t(tier.cache->segment_bytes()));
+            }
             if(tier.loan_active)borrowed_bytes+=tier.cache->bytes()-tier.cache->bytes_of(tier.loan_first);
         }
         std::size_t live_arena_bytes=0,live_arenas=0;
         std::erase_if(slot_arenas_,[](const auto& arena){return arena.expired();});
         for(const auto& weak:slot_arenas_)if(const auto arena=weak.lock()) {
-            live_arena_bytes+=std::size_t(arena->bytes());++live_arenas;
+            live_arena_bytes+=std::size_t(arena->mapped_bytes());++live_arenas;
         }
-        std::size_t pinned = 0;
-        for (const auto& [key, entry] : host_) if (entry.image->pinned()) pinned += entry.image->bytes;
+        std::size_t pinned = 0,duplicates=0;
+        for (const auto& [key, entry] : host_) {
+            if (entry.image->pinned()) pinned += entry.image->bytes;
+            if (entry.duplicate) duplicates += entry.image->bytes;
+        }
         std::unordered_set<std::uint64_t> covered_images;
         for (const auto& [key, entry] : device_) {
             if (!host_.count(key.image) && covered_images.insert(key.image).second)
@@ -1893,8 +2618,20 @@ public:
         std::size_t direct_arena_bytes=0;
         for(const auto& allocation:direct_allocations_)if(auto arena=allocation.lock())direct_arena_bytes+=arena->storage.nbytes();
         std::vector<std::pair<std::string,double>> result{{"resident_expert_cache_bytes", double(device_bytes)},
+            {"gguf_slot_shrinks",double(slot_shrinks_)},
+            {"gguf_slot_grows",double(slot_grows_)},
+            {"gguf_slot_rebuilds",double(slot_rebuilds_)},
+            {"gguf_slot_released_bytes",double(slot_released_bytes_)},
+            {"gguf_slot_restored_bytes",double(slot_restored_bytes_)},
+            {"gguf_slot_mapped_bytes",double(slot_mapped)},
+            {"gguf_slot_segmented_arenas",double(segmented_arenas)},
+            {"gguf_slot_max_segment_bytes",double(max_segment)},
+            {"gguf_slot_untouched_slots",double(untouched_slots)},
             {"gguf_decode_workspace_reserve_bytes",double(decode_workspace_reserve_)},
             {"gguf_decode_workspace_prepared",double(decode_workspace_prepared_)},
+            {"gguf_decode_seed_bytes",double(std::accumulate(decode_seed_bytes_.begin(),decode_seed_bytes_.end(),std::size_t(0),
+                [](auto sum,const auto& item){return sum+item.second;}))},
+            {"gguf_decode_seed_rebalances",double(decode_seed_rebalances_)},
             {"gguf_direct_arena_bytes",double(direct_arena_bytes)},
             {"gguf_direct_arena_reuses",double(direct_arena_reuses_)},
             {"gguf_gpu_resident_view_refreshes",double(resident_view_refreshes_)},
@@ -1912,7 +2649,7 @@ public:
             {"gguf_strata_slot_cache_bytes",double(slot_bytes)},
             {"gguf_slot_live_arena_bytes",double(live_arena_bytes)},
             {"gguf_slot_live_arenas",double(live_arenas)},
-            {"gguf_slot_retired_arena_bytes",double(live_arena_bytes>slot_bytes?live_arena_bytes-slot_bytes:0)},
+            {"gguf_slot_retired_arena_bytes",double(live_arena_bytes>slot_mapped?live_arena_bytes-slot_mapped:0)},
             {"gguf_slot_touch_free_before_bytes",double(slot_touch_free_before_)},
             {"gguf_slot_touch_free_after_bytes",double(slot_touch_free_after_)},
             {"gguf_slot_touch_reserve_bytes",double(slot_touch_reserve_)},
@@ -1924,8 +2661,12 @@ public:
             {"expert_cache_budget_bytes", double(device_limit_.empty() ? configured_device_limit_.value_or(0) : budget)},
             {"ram_expert_enabled", host_used_ ? 1. : 0.},
             {"ram_expert_payload_bytes", double(host_used_)},
+            {"ram_expert_duplicate_payload_bytes",double(duplicates)},
+            {"ram_expert_unique_payload_bytes",double(host_used_-duplicates)},
             {"ram_expert_cache_budget_bytes", double(host_limit_)},
             {"ram_expert_cache_allocated_bytes", double(host_allocated())},
+            {"ram_expert_compacted_bytes",double(host_compacted_bytes_)},
+            {"ram_expert_trimmed_pinned_bytes",double(host_trimmed_bytes_)},
             {"ram_expert_pinned_payload_bytes", double(pinned)},
             {"ram_expert_pageable_payload_bytes", double(host_used_-pinned)},
             {"ram_expert_pinned_reserved_bytes", double(host_reserved_+(snapshot_?snapshot_->arena->registered_bytes:0))},
@@ -1937,12 +2678,18 @@ public:
             {"gguf_prefill_host_staging_wait_ms",prefill_host_staging_wait_ms_},
             {"ram_expert_pin_failures", double(pin_failures_)},
             {"ram_expert_pinned_capacity_misses", double(pin_capacity_misses_)},
+            {"ram_expert_pinned_fragment_retries",double(pin_fragment_retries_)},
+            {"ram_expert_pinned_interval_compactions",double(pin_interval_compactions_)},
+            {"ram_expert_pinned_fragment_reuses",double(pin_fragment_reuses_)},
             {"gguf_immutable_recovery_bytes",double(immutable_recovery_bytes_)},
             {"ram_expert_cache_hits", double(host_hits_)},
             {"ram_expert_cache_evictions", double(host_evictions_)},
             {"ssd_expert_enabled", cold ? 1. : 0.}, {"ssd_expert_payload_bytes", double(cold)},
             {"ssd_expert_bytes_read", double(source_bytes_)}, {"ssd_expert_read_count", double(source_reads_)},
             {"gguf_expert_source_batches",double(source_batches_)},
+            {"gguf_expert_source_group_batches",double(source_group_batches_)},
+            {"ram_expert_evacuated_to_vram_bytes",double(host_evacuated_bytes_)},
+            {"ram_expert_evacuated_to_vram_images",double(host_evacuated_images_)},
             {"expert_logical_transfer_bytes", double(transfer_bytes_)},
             {"ram_expert_pcie_read_bytes", double(transfer_bytes_)},
             {"expert_writeback_bytes", double(writeback_bytes_)},
@@ -2015,6 +2762,7 @@ public:
             {"gguf_prefill_dma_bytes",double(prefill_dma_bytes_)},
             {"gguf_prefill_staging_images",double(prefill_staging_images_)},
             {"gguf_prefill_staging_bytes",double(prefill_staging_bytes_)},
+            {"gguf_prefill_host_bypass_bytes",double(prefill_host_bypass_bytes_)},
             {"gguf_prefill_dma_copies",double(prefill_dma_copies_)},
             {"gguf_prefill_dma_images",double(prefill_dma_images_)},
             {"gguf_prefill_dma_batches",double(prefill_dma_batches_)},
@@ -2092,6 +2840,12 @@ public:
         const std::vector<std::uint8_t>* admission = nullptr,GgufPrefillWeightStage* staging = nullptr) {
         MfqCudaGuard guard(device);
         std::lock_guard lock(mutex_); reap();
+        return acquire_locked(bank,selected,device,batch,retain,admission,staging);
+    }
+    std::vector<GgufWeight> acquire_locked(const GgufRoutedWeight& bank,
+        const std::vector<std::int64_t>& selected,int device,UploadBatch* batch=nullptr,bool retain=true,
+        const std::vector<std::uint8_t>* admission=nullptr,GgufPrefillWeightStage* staging=nullptr,
+        const std::shared_ptr<mfq::cuda::Event>& shared_ready={}) {
         const auto stream = mfq_current_cuda_stream();
         if(bank.resident_packed.defined()) {
             std::vector<GgufWeight> result;result.reserve(selected.size());
@@ -2110,7 +2864,8 @@ public:
         }
         std::vector<GgufWeight> result; result.reserve(selected.size());
         const auto batch_started=std::chrono::steady_clock::now();
-        read_host_batch(bank,selected,device);
+        std::unordered_map<std::uint64_t,std::shared_ptr<HostImage>> transient;
+        read_host_batch(bank,selected,device,batch && admission && staging?&transient:nullptr);
         fetch_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-batch_started).count();
         for (const auto expert : selected) {
             ++calls_;
@@ -2135,7 +2890,8 @@ public:
                 continue;
             }
             const auto started = std::chrono::steady_clock::now();
-            const auto image = read_host(bank, expert);
+            const auto temporary=transient.find(key.image);
+            const auto image=temporary!=transient.end()?temporary->second:read_host(bank,expert);
             fetch_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             // Free the promoted image's logical RAM slot before demoting the
             // VRAM victim, otherwise a full cache discards a different cold
@@ -2177,7 +2933,9 @@ public:
                 batch->images.push_back({key, weight, image, keep}); result.push_back(std::move(weight));
                 continue;
             }
-            auto ready = std::make_shared<mfq::cuda::Event>();
+            // An evacuation batch stays under the cache mutex until its last
+            // DMA finishes. One event may cover every image in that batch.
+            auto ready = shared_ready?shared_ready:std::make_shared<mfq::cuda::Event>();
             // Retain the host allocation even if a later cache eviction occurs
             // while the upload is still in flight.
             transfers_.push_back({image, ready, {}});
@@ -2464,6 +3222,7 @@ public:
         const Serving serving(serving_graph_);
         std::size_t pageable_bytes=0;copy_count=copy_bytes=0;
         ++direct_calls_;
+        bool group_attempted=false;
         for(int role=0;role<3;++role) {
             if(role==2 && gate_up_bytes)*gate_up_bytes=copy_bytes;
             const auto& bank=*banks[role];
@@ -2503,6 +3262,10 @@ public:
                     continue;
                 }
                 const auto started=std::chrono::steady_clock::now();
+                if(!group_attempted && !host_.count(key.image)) {
+                    group_attempted=true;
+                    read_host_group(banks,experts,device,resident,workspace_images);
+                }
                 if(!batch_attempted && !host_.count(key.image)) {
                     batch_attempted=true;
                     std::vector<std::int64_t> pending;
@@ -2771,6 +3534,12 @@ void resize_gguf_expert_cache(const std::shared_ptr<GgufExpertCache>& cache, std
 std::size_t reserve_gguf_expert_host(const std::shared_ptr<GgufExpertCache>& cache, std::size_t bytes) {
     return cache ? cache->reserve_host(bytes) : 0;
 }
+std::size_t reclaim_gguf_expert_duplicates(const std::shared_ptr<GgufExpertCache>& cache,std::size_t bytes) {
+    return cache?cache->reclaim_duplicates(bytes):0;
+}
+std::size_t share_gguf_expert_host(const std::shared_ptr<GgufExpertCache>& cache,std::size_t free_bytes) {
+    return cache?cache->share_host(free_bytes):0;
+}
 std::vector<std::pair<std::string, double>> gguf_expert_memory_metrics(const std::shared_ptr<GgufExpertCache>& cache) {
     return cache ? cache->memory_metrics() : std::vector<std::pair<std::string, double>>{};
 }
@@ -2865,7 +3634,10 @@ GgufRoutedWeight::GgufRoutedWeight(CudaExecutionContext& execution,
     // Keep the measured transfer path until mapped residency is accounted for.
     const auto* mapped_recovery=std::getenv("TYLOINFER_GGUF_MAPPED_RECOVERY");
     auto recovery=mapped_recovery && mapped_recovery[0]=='1'?source.mapped_tensor_reader(name):mfq::ModelSource::TensorReader{};
-    source_id=cache->register_source(name,record->nbytes,std::move(recovery),resident);cache->preload(*this,name);
+    const auto* gguf_source=dynamic_cast<const mfq::GgufModelSource*>(&source);
+    auto group=!resident && gguf_source?gguf_source->tensor_group_reader():nullptr;
+    source_id=cache->register_source(name,record->nbytes,std::move(recovery),resident,std::move(group));
+    cache->register_reclaim_bank(*this);cache->preload(*this,name);
 }
 
 GgufWeight GgufRoutedWeight::resident_expert(std::int64_t expert,int device) const {
@@ -3458,7 +4230,13 @@ struct GgufMoeStage {
             plan.addresses=reinterpret_cast<std::uint64_t*>(streamed_device_addresses.data_ptr());
             plan.ids=ids.data_ptr<std::int64_t>();plan.selected_slots=tokens*routes;plan.experts=banks[0]->experts;
         }
-        mfq::cuda::gguf::snapshot_stream_plan(plan,copy_stream);
+        if(resident_overlap && !cpu_buffer && !lease->mutable_residency) {
+            mfq::cuda::gguf::ResidentStreamPlan resident;
+            resident.addresses=static_cast<const std::uint64_t*>(resident_view->mapped);
+            resident.ready=resident_view->admission_device();
+            if(decode_dma){resident.gate_up_done=flags+2;resident.down_done=flags+3;}
+            mfq::cuda::gguf::snapshot_stream_plan(plan,resident,copy_stream);
+        }else mfq::cuda::gguf::snapshot_stream_plan(plan,copy_stream);
         if(decode_dma) {
             mfq::cuda::wait_mapped_flag(reinterpret_cast<const std::uint32_t*>(static_cast<const std::uint8_t*>(mapped_routes)+72),copy_stream);
             copy_gate_up_done->record(copy_stream);
@@ -4172,11 +4950,11 @@ tb::Tensor GgufMoeBanks::forward(tb::Tensor source, tb::Tensor ids, tb::Tensor w
         window->enroll({stage.get(), [stage] { stage->reset_routes(); }, [stage,limit] {
                 if (stage->mapped_routes) { stage->wait_routes(); stage->load(limit); }
             }, [lease,stage] { stage->wait_cpu();lease->clear();if(stage->direct)stage->banks[0]->cache->finish_direct(); },
-            [stage] {stage->cancel();}, [lease] { lease->clear(); }, [stage] {
+            [stage] {stage->cancel();}, [lease] { lease->clear(); }, [stage,lease] {
                 // The synchronized warmup has completed all consumers. Drop
                 // its borrowed inputs now, before capture: their side-stream
                 // lifetime fences cannot be inserted into an unrelated graph.
-                stage->input={};stage->ids={};stage->weights={};
+                stage->input={};stage->ids={};stage->weights={};lease->clear();
             }});
         if(!stage->direct)window->host_barrier([stage,limit] { if (!stage->mapped_routes) stage->load(limit); });
     }
@@ -4224,7 +5002,7 @@ tb::Tensor GgufRoutedWeight::forward_base(tb::Tensor source, tb::Tensor ids) con
         }
         if (window) {
             window->enroll({stage.get(), [] {}, [] {}, [lease] { lease->clear(); },
-                [] {}, [lease] { lease->clear(); }, {}});
+                [] {}, [lease] { lease->clear(); }, [lease] {lease->clear();}});
             window->host_barrier([stage] { stage->load(); });
         }
         stage->compute();

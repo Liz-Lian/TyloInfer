@@ -933,6 +933,10 @@ struct Draft final : MtpModule {
     }
 };
 }
+int64_t prompt_context_window(const MtpModule& predictor) noexcept {
+    const auto* draft=dynamic_cast<const Draft*>(&predictor);
+    return draft?draft->c.window:0;
+}
 std::unique_ptr<MtpModule> load(CudaExecutionContext& execution, Qwen4CausalLm& target, const std::filesystem::path& directory) {
     auto config = Config::load(directory);
     if (config.hidden != target.hidden_size() || config.vocabulary != target.vocab_size() || config.target_layers.back() >= target.num_hidden_layers())

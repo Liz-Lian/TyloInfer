@@ -3,9 +3,12 @@
 // STATE_BITS is supplied by the including profile namespace.
 constexpr int WARMUP=32;
 template<int K> constexpr int E=1<<(STATE_BITS-K);
-template<int K> constexpr int THREADS=std::min(512,E<K>/2);
+// Cached low-width points amortize four edges per lane, allowing independent
+// row CTAs to overlap barriers. Procedural high widths keep two edges per lane.
+template<int K> constexpr int THREADS=std::min(512,E<K>/(K<=4?4:2));
 // Internal traceback compression; serialized row streams stay unchanged.
-template<int K> constexpr bool PAIRED=WARMUP<128&&(K==2||K==3);
+// Two successive choices fit in one byte for widths up to four bits.
+template<int K> constexpr bool PAIRED=WARMUP<128&&(K>=2&&K<=4);
 template<int K> constexpr int TRACE_DIV=K==1?8:((PAIRED<K>)?2:1);
 __device__ __forceinline__ unsigned qsa_byte_sum(unsigned value) {
 #if __CUDA_ARCH__ >= 610

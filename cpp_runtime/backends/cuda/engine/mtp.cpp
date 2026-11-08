@@ -22,6 +22,7 @@
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/qwen4_exp/mtp.h"
+#include "models/dflash2/dflash2.h"
 #include "moe_expert_cache.h"
 
 #include <cuda_runtime_api.h>
@@ -121,6 +122,9 @@ template <class Model> struct CudaMtpOps {
       result[5]=double(io.physical_bytes)/1048576.0;
     }
     return result;
+  }
+  int64_t initial_blockwise_context_window() const noexcept {
+    return mfq::cuda::dflash2::prompt_context_window(mtp);
   }
   CudaMtpOps(CudaMtpOps&&)=default;
   ~CudaMtpOps() {

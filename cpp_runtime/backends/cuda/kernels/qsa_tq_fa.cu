@@ -5,15 +5,21 @@
 // See LICENSES/llama.cpp-MIT.txt.
 #include "qsa_tq_fa_mma.cuh"
 #include "qsa_tq_fa.h"
+#include "qsa_tq_fa_sparse.cuh"
 #include <cstdio>
 #include <cstdlib>
 #include <atomic>
+struct QsaFaConfiguration {
+    int device=-1,warps=0,stages=0,sm_count=0,split_occupancy=0,batch=0;
+    size_t shared=0;
+};
+static thread_local QsaFaConfiguration qsa_fa_configuration;
+
 static int qsa_llama_launch(const float* query,const half* keys,const half* values,const half* mask,
-        const int* indices,float* output,int queries,int kv_heads,int kv_rows,cudaStream_t stream,QsaFaHistory history,int requested_heads=0,float softmax_scale=1.f/16) {
+        const int* indices,float* output,int queries,int kv_heads,int kv_rows,cudaStream_t stream,QsaFaHistory history,int requested_heads=0,float softmax_scale=1.f/16,int index_rows=0) {
     constexpr int width=256;
     const auto fn=flash_attn_ext_f16<256,256,8,8,false,false,true>;
-    struct Configuration {int device=-1,warps=0,stages=0;size_t shared=0;};
-    static thread_local Configuration cached;
+    auto& cached=qsa_fa_configuration;
     int device=0;auto error=cudaGetDevice(&device);if(error!=cudaSuccess)return int(error);
     if(cached.device!=device) {
         int major=0,minor=0;
@@ -46,7 +52,20 @@ static int qsa_llama_launch(const float* query,const half* keys,const half* valu
         if(shared>size_t(available))return int(cudaErrorNotSupported);
         error=cudaFuncSetAttribute(fn,cudaFuncAttributeMaxDynamicSharedMemorySize,int(shared));
         if(error!=cudaSuccess)return int(error);
-        cached={device,warps,stages,shared};
+        int sms=0,occupancy=0;
+        error=cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,device);
+        if(error!=cudaSuccess)return int(error);
+        cudaFuncAttributes split_image{};
+        error=cudaFuncGetAttributes(&split_image,qsa_fa_split);
+        if(error!=cudaSuccess)return int(error);
+        // The split body also requires an SM80 virtual-architecture image.
+        if(split_image.ptxVersion>=80 && split_image.maxThreadsPerBlock>=32*warps) {
+            error=cudaFuncSetAttribute(qsa_fa_split,cudaFuncAttributeMaxDynamicSharedMemorySize,int(shared));
+            if(error!=cudaSuccess)return int(error);
+            error=cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occupancy,qsa_fa_split,32*warps,shared);
+            if(error!=cudaSuccess)return int(error);
+        }
+        cached={device,warps,stages,sms,occupancy,batch,shared};
     }
     // A null query performs capability/setup checks without a GPU launch.
     if(!query)return int(cudaSuccess);
@@ -60,7 +79,7 @@ static int qsa_llama_launch(const float* query,const half* keys,const half* valu
         reinterpret_cast<const char*>(values),reinterpret_cast<const char*>(mask),nullptr,indices,nullptr,output,nullptr,
         softmax_scale,0.f,1.f,1.f,0,0.f,
         width,init_fastdiv_values(queries),heads,1,heads*width*4,width*4,queries*heads*width*4,
-        width,kv_rows,kv_heads,1,row_stride,head_stride,int64_t(kv_rows)*kv_heads*width*2,
+        width,index_rows?index_rows:kv_rows,kv_heads,1,row_stride,head_stride,int64_t(kv_rows)*kv_heads*width*2,
         row_stride,head_stride,int64_t(kv_rows)*kv_heads*width*2,
         queries,1,1,kv_rows*2,queries*kv_rows*2,int64_t(queries)*kv_rows*2,history);
     const auto status=cudaGetLastError();
@@ -193,10 +212,10 @@ static __global__ void prepare_sparse_mask_indices(
 
 using QsaSelectedBlock=tyloinfer::qsa::SelectedBlock;
 static void qsa_llama_prepare(const void* selected,const int64_t* positions,const int* inverse,half* mask,int* indices,
-        int queries,int rows,int count,cudaStream_t stream) {
+        int queries,int rows,int count,int index_rows,cudaStream_t stream) {
     const int tiles=(queries+7)/8;
     prepare_sparse_mask_indices<8,true><<<dim3(tiles,1),256,0,stream>>>(mask,inverse,static_cast<const QsaSelectedBlock*>(selected),positions,count,
-        indices,indices+int64_t(tiles)*rows,rows,queries,rows,rows,int64_t(queries)*rows);
+        indices,indices+int64_t(tiles)*index_rows,rows,queries,index_rows,rows,int64_t(queries)*rows);
 }
 __global__ void inverse_selected(const QsaSelectedBlock* selected,int* inverse,int nq,int count,int blocks) {
     for(auto i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;i<int64_t(nq)*count;i+=int64_t(gridDim.x)*blockDim.x) {
@@ -291,13 +310,50 @@ int tyloinfer::qsa::tq_sparse_attention_prefill(const TqPrefillAttention& a) {
     auto* mask=reinterpret_cast<half*>(bytes+output_bytes);
     auto* inverse=reinterpret_cast<int*>(bytes+output_bytes+mask_bytes);
     auto* ids=reinterpret_cast<int*>(bytes+output_bytes+mask_bytes+inverse_bytes);
+    const int tiles=(a.queries+7)/8;
+    const int index_rows=int(std::min(int64_t(a.kv_rows),int64_t(8)*a.count*4));
+    const uint64_t used=(output_bytes+mask_bytes+inverse_bytes+(uint64_t(tiles)*index_rows+tiles)*4+255)&~uint64_t(255);
+    const uint64_t partial_bytes=uint64_t(a.queries)*a.heads*257*sizeof(float);
+    const auto& configuration=qsa_fa_configuration;
+    const int grid=tiles*a.kv_heads*((a.heads/a.kv_heads+7)/8);
+    // Partition only when the existing query grid leaves resident CTA slots idle.
+    // Compact union indices free space in the existing scratch allocation.
+    int parts=configuration.split_occupancy>0?
+        int((int64_t(configuration.sm_count)*configuration.split_occupancy+grid-1)/grid):1;
+    parts=std::min(parts,std::max(1,index_rows/(4*configuration.batch)));
+    if(used<a.temporary_bytes)parts=std::min(uint64_t(parts),(a.temporary_bytes-used)/partial_bytes);
+    else parts=1;
+    parts=std::max(1,parts);
     qsa_fa_rotate<<<a.queries*a.heads,256,0,a.stream>>>(a);
     qsa_llama_inverse(a.selected,inverse,a.queries,a.count,a.kv_rows,a.stream);
-    qsa_llama_prepare(a.selected,a.positions,inverse,mask,ids,a.queries,a.kv_rows,a.count,a.stream);
-    const auto status=qsa_llama_launch(a.rotated,reinterpret_cast<const half*>(a.keys),reinterpret_cast<const half*>(a.values),mask,ids,a.temporary,
-        a.queries,a.kv_heads,a.kv_rows,a.stream,{inverse,a.logmass,a.norm,a.kv_rows/4,a.count,a.heads/a.kv_heads,a.kv_heads},
-        a.heads,1.f/sqrtf(float(a.width)));
-    if(status!=int(cudaSuccess))return status;
+    const bool sort_union=a.count<=1024 && int64_t(8)*a.count<a.kv_rows/4;
+    auto* counts=ids+int64_t(tiles)*index_rows;
+    if(sort_union) {
+        if(a.count<=128)prepare_sparse_selected_union<4><<<tiles,256,0,a.stream>>>(mask,inverse,a.selected,a.positions,a.count,ids,counts,a.kv_rows,a.queries,index_rows);
+        else if(a.count<=256)prepare_sparse_selected_union<8><<<tiles,256,0,a.stream>>>(mask,inverse,a.selected,a.positions,a.count,ids,counts,a.kv_rows,a.queries,index_rows);
+        else if(a.count<=512)prepare_sparse_selected_union<16><<<tiles,256,0,a.stream>>>(mask,inverse,a.selected,a.positions,a.count,ids,counts,a.kv_rows,a.queries,index_rows);
+        else prepare_sparse_selected_union<32><<<tiles,256,0,a.stream>>>(mask,inverse,a.selected,a.positions,a.count,ids,counts,a.kv_rows,a.queries,index_rows);
+    } else qsa_llama_prepare(a.selected,a.positions,inverse,mask,ids,a.queries,a.kv_rows,a.count,index_rows,a.stream);
+    QsaFaHistory history{inverse,a.logmass,a.norm,a.kv_rows/4,a.count,a.heads/a.kv_heads,a.kv_heads};
+    if(parts>1) {
+        auto* partial=reinterpret_cast<float*>(bytes+used);
+        auto* norms=partial+int64_t(parts)*a.queries*a.heads*256;
+        qsa_fa_split<<<dim3(grid,parts),dim3(32,configuration.warps),configuration.shared,a.stream>>>(
+            a,mask,ids,index_rows,partial,norms,parts,init_fastdiv_values(a.queries),history);
+        qsa_fa_merge<<<a.queries*a.heads,256,0,a.stream>>>(a.temporary,a.norm,partial,norms,a.queries*a.heads,parts);
+    } else {
+        const auto status=qsa_llama_launch(a.rotated,reinterpret_cast<const half*>(a.keys),reinterpret_cast<const half*>(a.values),mask,ids,a.temporary,
+            a.queries,a.kv_heads,a.kv_rows,a.stream,history,a.heads,1.f/sqrtf(float(a.width)),index_rows);
+        if(status!=int(cudaSuccess))return status;
+    }
+    if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+        static thread_local int previous_parts=-1,previous_sort=-1;
+        if(previous_parts!=parts || previous_sort!=int(sort_union)) {
+            previous_parts=parts;previous_sort=int(sort_union);
+            std::fprintf(stderr,"native_qsa_sparse_plan actual_match=1 queries=%d kv_rows=%d union_rows=%d parts=%d sort_union=%d scratch_reused=1\n",
+                a.queries,a.kv_rows,index_rows,parts,int(sort_union));
+        }
+    }
     qsa_fa_restore<<<a.queries*a.heads,256,0,a.stream>>>(a);
     if(a.hits && a.mass)qsa_llama_observe(a.selected,a.positions,a.logmass,a.norm,a.hits,a.mass,a.queries,a.heads,a.count,a.stream);
     if(const auto* flag=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");flag && flag[0]=='1') {

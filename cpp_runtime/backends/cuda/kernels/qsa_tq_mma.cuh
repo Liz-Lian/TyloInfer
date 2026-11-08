@@ -1,5 +1,5 @@
 #pragma once
-// Eight-query-head Tensor Core tile with joint four-token KV decoding.
+// One or two eight-head Tensor Core tiles share joint four-token KV decoding.
 // m16n8k16 FP16 operands require SM80; FP32 accumulation is retained.
 __device__ __forceinline__ void qsa_mma16x8(float* d,const unsigned* a,const unsigned* b) {
 #if __CUDA_ARCH__ >= 800
@@ -12,32 +12,35 @@ __device__ __forceinline__ void qsa_mma16x8(float* d,const unsigned* a,const uns
 __device__ __forceinline__ unsigned qsa_pack_half(half a,half b) {
     return unsigned(__half_as_ushort(a))|(unsigned(__half_as_ushort(b))<<16);
 }
-template<int W,bool Snapshots,bool Staged=false> __global__ void __launch_bounds__(256,(W==256?4:2)) sparse_attention_mma8(const float* query,const half* relative,
+template<int W,bool Snapshots,bool Staged=false,int HeadTiles=1> __global__ void __launch_bounds__(256,(W==256?(HeadTiles==1?4:3):2)) sparse_attention_mma8(const float* query,const half* relative,
     const TqBlockView* blocks,const SelectedBlock* selected,const int64_t* positions,
     float* partial,float* stats,float* block_log_mass,int heads,int kv_heads,int width,int count,int parts,const half* staged_keys=nullptr,const half* staged_values=nullptr) {
 #if __CUDA_ARCH__ >= 800
-    constexpr int P=W+8,Rings=W/256;
+    constexpr int P=W+8,Rings=W/256,TileHeads=8*HeadTiles;
     const int tid=threadIdx.x,lane=tid&31,warp=tid/32,part=blockIdx.x,token=blockIdx.z;
-    const int gqa=heads/kv_heads,groups=(gqa+7)/8,kh=blockIdx.y/groups,base=(blockIdx.y%groups)*8;
+    const int gqa=heads/kv_heads,groups=(gqa+TileHeads-1)/TileHeads,kh=blockIdx.y/groups,base=(blockIdx.y%groups)*TileHeads;
     extern __shared__ __align__(32) unsigned char memory[];
     auto* key=reinterpret_cast<half*>(memory);auto* value=key;
     auto* probability=value+16*P;
-    auto* scores=reinterpret_cast<float*>(probability+8*16);
+    auto* scores=reinterpret_cast<float*>(probability+TileHeads*16);
     __shared__ TqRowView kr[16*Rings],vr[16*Rings];
     __shared__ SelectedBlock chosen[4];
-    __shared__ float factors[8];
-    // Keep one K eighth of the eight query heads per warp. Query
-    // operands and output fragments use half as many registers per thread.
-    unsigned query_words[W/64];
-    const int qhead=kh*gqa+base+lane/4,qk=(lane%4)*2;
+    __shared__ float factors[TileHeads];
+    // A warp retains one K eighth for each eight-head tile. Enlarging
+    // the head tile reuses decoded KV while preserving this operand layout.
+    unsigned query_words[HeadTiles][W/64];
     #pragma unroll
-    for(int i=0;i<W/128;++i) {
-        const int d=warp*16+i*128+qk;
-        const auto* q=base+lane/4<gqa?query+(int64_t(token)*heads+qhead)*W+d:query;
-        query_words[2*i]=base+lane/4<gqa?qsa_pack_half(__float2half_rn(q[0]),__float2half_rn(q[1])):0;
-        query_words[2*i+1]=base+lane/4<gqa?qsa_pack_half(__float2half_rn(q[8]),__float2half_rn(q[9])):0;
+    for(int head_tile=0;head_tile<HeadTiles;++head_tile) {
+        const int local=base+head_tile*8+lane/4,qhead=kh*gqa+local,qk=(lane%4)*2;
+        #pragma unroll
+        for(int i=0;i<W/128;++i) {
+            const int d=warp*16+i*128+qk;
+            const auto* q=local<gqa?query+(int64_t(token)*heads+qhead)*W+d:query;
+            query_words[head_tile][2*i]=local<gqa?qsa_pack_half(__float2half_rn(q[0]),__float2half_rn(q[1])):0;
+            query_words[head_tile][2*i+1]=local<gqa?qsa_pack_half(__float2half_rn(q[8]),__float2half_rn(q[9])):0;
+        }
     }
-    float accum[W/128][4]{};
+    float accum[HeadTiles][W/128][4]{};
     float maximum=-CUDART_INF_F,mass=0;
     const int tiles=(count+3)/4,begin=4*(part*tiles/parts),end=min(count,4*((part+1)*tiles/parts));
     const auto boundary=positions[token];
@@ -87,33 +90,34 @@ template<int W,bool Snapshots,bool Staged=false> __global__ void __launch_bounds
         }
         }
         __syncthreads();
-        {
+        for(int head_tile=0;head_tile<HeadTiles;++head_tile) {
             float c[4]{};const int r=lane/4,k=(lane%4)*2;
             #pragma unroll
             for(int i=0;i<W/128;++i) {
                 const int d=warp*16+i*128;
                 const unsigned a[4]={*reinterpret_cast<unsigned*>(key+r*P+d+k),*reinterpret_cast<unsigned*>(key+(r+8)*P+d+k),
                     *reinterpret_cast<unsigned*>(key+r*P+d+k+8),*reinterpret_cast<unsigned*>(key+(r+8)*P+d+k+8)};
-                const unsigned b[2]={query_words[2*i],query_words[2*i+1]};
+                const unsigned b[2]={query_words[head_tile][2*i],query_words[head_tile][2*i+1]};
                 qsa_mma16x8(c,a,b);
             }
             const int h=(lane%4)*2;
-            scores[warp*128+h*16+r]=c[0];scores[warp*128+(h+1)*16+r]=c[1];scores[warp*128+h*16+r+8]=c[2];scores[warp*128+(h+1)*16+r+8]=c[3];
+            scores[head_tile*1024+warp*128+h*16+r]=c[0];scores[head_tile*1024+warp*128+(h+1)*16+r]=c[1];scores[head_tile*1024+warp*128+h*16+r+8]=c[2];scores[head_tile*1024+warp*128+(h+1)*16+r+8]=c[3];
         }
         __syncthreads();
         // A half warp owns one complete16-token softmax row. Both halves
         // are live, so the mask remains uniform even for padded query heads.
-        if(warp<4) {
+        if(warp<4*HeadTiles) {
             const int local=2*warp+(lane>>4),column=lane&15;
             const int head=kh*gqa+base+local;
             const bool active=base+local<gqa;
             float score=-CUDART_INF_F;
+            const auto* head_scores=scores+(local/8)*1024+(local%8)*16+column;
             const auto item=chosen[column/4];
             if(active && item.id>=0 && (item.token_mask&(1u<<(column&3))) && int64_t(item.id)*4+(column&3)<=boundary)
-                score=(((scores[local*16+column]+scores[128+local*16+column])+
-                        (scores[256+local*16+column]+scores[384+local*16+column]))+
-                       ((scores[512+local*16+column]+scores[640+local*16+column])+
-                        (scores[768+local*16+column]+scores[896+local*16+column])))*rsqrtf(float(width));
+                score=(((head_scores[0]+head_scores[128])+
+                        (head_scores[256]+head_scores[384]))+
+                       ((head_scores[512]+head_scores[640])+
+                        (head_scores[768]+head_scores[896])))*rsqrtf(float(width));
             float top=score;
             #pragma unroll
             for(int delta=8;delta;delta/=2)top=fmaxf(top,__shfl_xor_sync(0xffffffffu,top,delta,16));
@@ -167,38 +171,37 @@ template<int W,bool Snapshots,bool Staged=false> __global__ void __launch_bounds
         }
         __syncthreads();
         const int row=lane/4,k=(lane%4)*2,head_pair=(lane%4)*2;
-        for(int tile=0;tile<W/128;++tile) {
+        for(int head_tile=0;head_tile<HeadTiles;++head_tile)for(int tile=0;tile<W/128;++tile) {
             const int d=(tile*8+warp)*16+row;
             const unsigned a[4]={qsa_pack_half(value[k*P+d],value[(k+1)*P+d]),qsa_pack_half(value[k*P+d+8],value[(k+1)*P+d+8]),
                 qsa_pack_half(value[(k+8)*P+d],value[(k+9)*P+d]),qsa_pack_half(value[(k+8)*P+d+8],value[(k+9)*P+d+8])};
-            const unsigned b[2]={*reinterpret_cast<unsigned*>(probability+row*16+k),*reinterpret_cast<unsigned*>(probability+row*16+k+8)};
+            const unsigned b[2]={*reinterpret_cast<unsigned*>(probability+(head_tile*8+row)*16+k),*reinterpret_cast<unsigned*>(probability+(head_tile*8+row)*16+k+8)};
             float next[4]{};qsa_mma16x8(next,a,b);
-            accum[tile][0]=fmaf(accum[tile][0],factors[head_pair],next[0]);
-            accum[tile][1]=fmaf(accum[tile][1],factors[head_pair+1],next[1]);
-            accum[tile][2]=fmaf(accum[tile][2],factors[head_pair],next[2]);
-            accum[tile][3]=fmaf(accum[tile][3],factors[head_pair+1],next[3]);
+            accum[head_tile][tile][0]=fmaf(accum[head_tile][tile][0],factors[head_tile*8+head_pair],next[0]);
+            accum[head_tile][tile][1]=fmaf(accum[head_tile][tile][1],factors[head_tile*8+head_pair+1],next[1]);
+            accum[head_tile][tile][2]=fmaf(accum[head_tile][tile][2],factors[head_tile*8+head_pair],next[2]);
+            accum[head_tile][tile][3]=fmaf(accum[head_tile][tile][3],factors[head_tile*8+head_pair+1],next[3]);
         }
         __syncthreads();
     }
-    for(int tile=0;tile<W/128;++tile)for(int h=0;h<2;++h) {
-        const int local=base+(lane%4)*2+h,head=kh*gqa+local,d=(tile*8+warp)*16+lane/4;
+    for(int head_tile=0;head_tile<HeadTiles;++head_tile)for(int tile=0;tile<W/128;++tile)for(int h=0;h<2;++h) {
+        const int local=base+head_tile*8+(lane%4)*2+h,head=kh*gqa+local,d=(tile*8+warp)*16+lane/4;
         if(local<gqa) {
-            partial[((int64_t(token)*heads+head)*parts+part)*W+d]=accum[tile][h];
-            partial[((int64_t(token)*heads+head)*parts+part)*W+d+8]=accum[tile][h+2];
+            partial[((int64_t(token)*heads+head)*parts+part)*W+d]=accum[head_tile][tile][h];
+            partial[((int64_t(token)*heads+head)*parts+part)*W+d+8]=accum[head_tile][tile][h+2];
         }
     }
     const int stat_local=2*warp+(lane>>4);
-    if(warp<4 && !(lane&15) && base+stat_local<gqa) {
+    if(warp<4*HeadTiles && !(lane&15) && base+stat_local<gqa) {
         const auto at=(int64_t(token)*heads+kh*gqa+base+stat_local)*parts+part;
         stats[at*2]=maximum;stats[at*2+1]=mass;
     }
 
 #else
-    // A lower-architecture PTX image may be JIT-compiled on a newer GPU.
-    // Preserve actual computation even when that image lacks m16n8k16.
-    // Eight warps cover the full eight-head group in the portable SIMT path.
-    sparse_attention_impl<W,Snapshots,8>(query,relative,blocks,selected,positions,partial,stats,
-        block_log_mass,heads,kv_heads,width,count,parts,0);
-
+    // Lower-architecture PTX can be JIT-compiled on a newer device. Each
+    // call covers eight heads with the same logical 8*HeadTiles group.
+    for(int tile=0;tile<HeadTiles;++tile)
+        sparse_attention_impl<W,Snapshots,8*HeadTiles>(query,relative,blocks,selected,positions,
+            partial,stats,block_log_mass,heads,kv_heads,width,count,parts,8*tile);
 #endif
 }

@@ -222,7 +222,7 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
     expect(APP).toContain('const storageKey = `${page}:${id}`');
     expect(APP).toContain('localStorage.setItem(PANEL_COLLAPSED_KEY, JSON.stringify(updated))');
     expect(shell).toContain('<Outlet />');
-    expect(APP_ENTRY).toContain('path="agent"');
+    expect(APP_ENTRY).not.toContain('path="agent"');
     expect(APP_ENTRY).not.toContain('path="settings"');
     expect(APP_ENTRY).not.toContain('path="quantization"');
     const jobs = readSources('features/jobs/useJobRecordActions.ts');

@@ -97,6 +97,27 @@ void run(TqEncodeProfile profile,int rows,bool limited=false) {
         require(actual==expected,"CUDA decoder differs from CPU row reference");
     };
     encode();verify();
+    // Publication windows may combine sparse conversions differently. Each
+    // encoded microblock must retain identical bytes regardless of batch size.
+    std::vector<std::uint8_t> reference(blocks*stride);
+    std::vector<std::uint32_t> reference_sizes(blocks),reference_flags(blocks);
+    check(cudaMemcpy(reference.data(),images.data,reference.size(),cudaMemcpyDeviceToHost));
+    check(cudaMemcpy(reference_sizes.data(),sizes.data,blocks*4,cudaMemcpyDeviceToHost));
+    check(cudaMemcpy(reference_flags.data(),flags.data,blocks*4,cudaMemcpyDeviceToHost));
+    TqEncodePlan single;check(tq_make_encode_plan(&single,1,rows,profile));Buffer single_work(single.workspace_bytes);
+    for(int block=0;block<blocks;++block)
+        check(tq_encode_modes(single,x.as<float>()+block*rows*256,targets.as<int>()+block,0,1.1f,
+            images.as<std::uint8_t>()+block*stride,stride,sizes.as<std::uint32_t>()+block,
+            flags.as<std::uint32_t>()+block,status.as<int>(),single_work.data,single.workspace_bytes,nullptr));
+    check(cudaDeviceSynchronize());
+    std::vector<std::uint8_t> individual(blocks*stride);std::vector<std::uint32_t> individual_sizes(blocks),individual_flags(blocks);
+    check(cudaMemcpy(individual.data(),images.data,individual.size(),cudaMemcpyDeviceToHost));
+    check(cudaMemcpy(individual_sizes.data(),sizes.data,blocks*4,cudaMemcpyDeviceToHost));
+    check(cudaMemcpy(individual_flags.data(),flags.data,blocks*4,cudaMemcpyDeviceToHost));
+    require(individual_sizes==reference_sizes && individual_flags==reference_flags,"TQ encoding metadata depends on batch size");
+    for(int block=0;block<blocks;++block)
+        require(std::equal(reference.begin()+block*stride,reference.begin()+block*stride+reference_sizes[block],individual.begin()+block*stride),
+            "TQ encoded microblock bytes depend on batch size");
     cudaGraph_t graph=nullptr;cudaGraphExec_t executable=nullptr;
     cudaStream_t stream=nullptr;check(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
     check(cudaStreamBeginCapture(stream,cudaStreamCaptureModeGlobal));

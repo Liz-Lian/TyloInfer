@@ -10,6 +10,8 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <map>
+#include <memory>
 
 namespace tb=mfq_tensor_backend;
 void check_attention_partitions() {
@@ -303,6 +305,78 @@ void check_pending_graph(int heads,int width,bool ssd=true,bool wrap=false,bool 
     std::cerr<<"adaptive QSA single-segment graph reuse, archive boundaries, rollback and reset PASS heads="
              <<heads<<" width="<<width<<" replays="<<replays<<'\n';
 }
+void check_batch_graph(int heads,int width,int bits) {
+    const auto* saved=std::getenv("TYLOINFER_QSA_RAM_KV_BITS");const std::string previous=saved?saved:"";
+    const auto setting=[](const std::string& value) {
+#ifdef _WIN32
+        _putenv_s("TYLOINFER_QSA_RAM_KV_BITS",value.c_str());
+#else
+        if(value.empty())unsetenv("TYLOINFER_QSA_RAM_KV_BITS");else setenv("TYLOINFER_QSA_RAM_KV_BITS",value.c_str(),1);
+#endif
+    };
+    setting(std::to_string(bits));
+    constexpr int maximum=512,kh=2,iw=13;
+    const auto f=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32),h=f.dtype(tb::kFloat16);
+    mfq::cuda::QsaTqCache cache(maximum,heads,kh,width,3,iw,64,f,false),reference(maximum,heads,kh,width,3,iw,64,f,false);
+    struct Inputs {tb::Tensor q,k,v,iq,raw,positions,absolute,gate,out;};
+    std::map<int,Inputs> inputs;
+    std::map<std::pair<int,int>,std::unique_ptr<mfq::cuda::DecodeWindow>> windows;
+    const auto pool=[&](const auto& x,const auto& starts) {
+        if(starts.dim()!=3 || starts.size(0)!=3)throw std::runtime_error("QSA archive discarded MRoPE axes");
+        auto shift=starts.to(tb::kFloat32).sum(0).reshape({1,starts.size(-1),1})*.0001;
+        return x.reshape({1,x.size(1)/4,4,iw}).mean(2)+shift;
+    };
+    for(int n=1;n<=8;++n) {
+        auto& x=inputs[n];x.q=tb::zeros({1,heads,n,width},h);x.k=tb::zeros({1,n,kh,width},h);x.v=tb::zeros_like(x.k);
+        x.iq=tb::zeros({1,n,3,iw},f);x.raw=tb::zeros({1,n,iw},f);x.positions=tb::zeros({1,n},f.dtype(tb::kInt64));
+        x.absolute=tb::zeros({3,1,n},f.dtype(tb::kInt64));
+        x.gate=tb::full({1,n,heads,width},.7,h);x.out=tb::empty({1,n,heads*width},h);
+    }
+    int position=0,replays=0;
+    const auto append=[&](int n,int iteration,bool graph) {
+        auto& x=inputs.at(n);std::vector<float> k(n*kh*width),v(k.size()),q(n*heads*width),raw(n*iw),iq(n*3*iw);
+        for(std::size_t i=0;i<k.size();++i){k[i]=.1f*std::sin(float(i+position*kh*width)*.13f+iteration*.07f);v[i]=.1f*std::cos(float(i+position*kh*width)*.17f+iteration*.11f);}
+        for(std::size_t i=0;i<q.size();++i)q[i]=std::sin(float(i)*.023f+iteration*.07f);
+        for(std::size_t i=0;i<raw.size();++i)raw[i]=std::sin(float(i)*.071f+position*.13f);
+        for(std::size_t i=0;i<iq.size();++i)iq[i]=std::cos(float(i)*.093f+position*.17f);
+        x.k.copy_(tb::tensor(k,f).reshape(x.k.sizes()));x.v.copy_(tb::tensor(v,f).reshape(x.v.sizes()));
+        x.q.copy_(tb::tensor(q,f).reshape(x.q.sizes()));x.raw.copy_(tb::tensor(raw,f).reshape(x.raw.sizes()));
+        x.iq.copy_(tb::tensor(iq,f).reshape(x.iq.sizes()));x.positions.copy_(tb::arange(position,position+n,x.positions.options()).reshape({1,n}));
+        for(int axis=0;axis<3;++axis)x.absolute.narrow(0,axis,1).copy_((x.positions+axis*7).reshape({1,1,n}));
+        auto expected=reference.forward(x.q,x.k,x.v,x.iq,x.raw,x.absolute,pool,false,x.gate).to(tb::kCPU,tb::kFloat32).contiguous();
+        if(graph && iteration==6) {
+            cache.prepare_decode_tokens(n,true);
+            cache.forward_pending_graph(x.q,x.k,x.v,x.iq,x.raw,x.positions,x.gate,x.out,pool,x.absolute);
+            graph=false; // Abandon a warmup that already crossed block boundaries.
+        }
+        if(graph) {
+            const int kind=cache.device_graph_kind(n);if(!kind)throw std::runtime_error("RAM batch graph dispatch was not enabled");
+            cache.prepare_decode_tokens(n,true);auto& window=windows[{n,kind}];
+            if(!window)window=std::make_unique<mfq::cuda::DecodeWindow>(mfq_current_cuda_stream());
+            if(!window->valid())window->capture([&]{cache.forward_pending_graph(x.q,x.k,x.v,x.iq,x.raw,x.positions,x.gate,x.out,pool,x.absolute);},[]{});
+            if(window->segments()!=1)throw std::runtime_error("RAM batch graph retained a CPU boundary");
+            window->run();cache.advance_graph(n);++replays;
+        }else cache.forward(x.q,x.k,x.v,x.iq,x.raw,x.absolute,pool,false,x.gate,x.out);
+        auto actual=x.out.to(tb::kCPU,tb::kFloat32).contiguous();double error=0,energy=0,maximum_error=0;
+        for(int64_t i=0;i<actual.numel();++i) {
+            const double a=actual.data_ptr<float>()[i],b=expected.data_ptr<float>()[i],d=a-b;
+            error+=d*d;energy+=b*b;maximum_error=std::max(maximum_error,std::abs(d));
+        }
+        if(!std::isfinite(error) || maximum_error>.002 || error>5e-4*std::max(energy,1e-30))
+            throw std::runtime_error("RAM batch graph parity failure: M="+std::to_string(n)+" position="+std::to_string(position)+" max="+std::to_string(maximum_error)+" nmse="+std::to_string(error/std::max(energy,1e-30)));
+        position+=n;if(cache.position()!=position)throw std::runtime_error("RAM batch graph changed the token timeline");
+    };
+    append(3,0,false);
+    for(int i=0;i<48;++i) {
+        if(i==17){position-=5;cache.truncate(position);reference.truncate(position);}
+        if(i==32){position=0;cache.reset();reference.reset();}
+        append(i%8+1,i+1,true);
+    }
+    while(position<maximum)append(std::min(8,maximum-position),49+position,true);
+    if(cache.device_graph_kind(1))throw std::runtime_error("RAM graph exceeded its final context position");
+    cache.wait();reference.wait();setting(previous);
+    std::cerr<<"adaptive QSA M1..8 single-segment graph parity/phase/warmup/rollback/reset PASS heads="<<heads<<" width="<<width<<" bits="<<bits<<" replays="<<replays<<'\n';
+}
 void check_async_history() {
     constexpr int heads=8,kh=2,width=17,iw=13,length=260;
     const auto f=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
@@ -399,6 +473,90 @@ void check_nonzero_attention(int heads,int kh,int width) {
     std::cerr<<"adaptive QSA nonzero FP16 attention and padded tensor-core tile PASS heads="<<heads<<" kv_heads="<<kh<<" width="<<width<<" max_quantization_error="<<maximum_error
              <<" max_tensor_core_error="<<tensor_core_error<<'\n';
 }
+void check_nonzero_attention_geometries() {
+    for(int width:{256,257,1024})check_nonzero_attention(24,2,width);
+    // Exercise a partial second eight-head tile, multiple sixteen-head
+    // groups, and padded channels against the independent CPU reference.
+    check_nonzero_attention(20,2,256);
+    check_nonzero_attention(48,2,256);
+    check_nonzero_attention(36,2,257);
+    check_nonzero_attention(24,4,256);
+    check_nonzero_attention(10,2,257);
+    check_nonzero_attention(12,2,1024);
+}
+void check_packed_decode_windows() {
+    namespace tq=tyloinfer::qsa;
+    constexpr int heads=2,width=256,rows=4*heads,images=8*17;
+    constexpr int metadata=(2*rows+(rows+1)/2+3)&~3;
+    constexpr int stride=(metadata+rows*256+15)&~15;
+    const auto f=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+    const auto host=f.device(tb::kCPU).dtype(tb::kUInt8);
+    std::vector<std::uint8_t> encoded(std::size_t(images)*2*stride);
+    std::vector<tq::TqBlockView> views(images);
+    std::vector<tq::SelectedBlock> selected(images);
+    std::uint32_t rng=0x713b9e21u;
+    for(auto& x:encoded){rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;x=std::uint8_t(rng);}
+    for(int image=0;image<images;++image)for(int kind=0;kind<2;++kind) {
+        auto* record=encoded.data()+(image*2+kind)*stride;
+        std::memset(record+2*rows,0,metadata-2*rows);
+        for(int row=0;row<rows;++row) {
+            const auto scale=__float2half_rn(row%5==0?0.f:std::ldexp(1.f,-3-row%5));
+            std::memcpy(record+2*row,&scale,2);
+        }
+    }
+    auto payload=tb::empty({int64_t(encoded.size())},host);
+    std::memcpy(payload.data_ptr(),encoded.data(),encoded.size());payload=payload.to(tb::kCUDA);
+    const auto upload=[&](const auto& values) {
+        auto cpu=tb::empty({int64_t(values.size()*sizeof(values[0]))},host);
+        std::memcpy(cpu.data_ptr(),values.data(),size_t(cpu.numel()));return cpu.to(tb::kCUDA);
+    };
+    for(int image=0;image<images;++image) {
+        const unsigned bits=unsigned(image/17+1),profile=unsigned(image%17),flags=bits|(profile<<8);
+        const auto* start=static_cast<const std::uint8_t*>(payload.data_ptr())+image*2*stride;
+        views[image]={start,start+stride,flags,flags};selected[image]={image,15};
+    }
+    auto table=upload(views),selection=upload(selected),relative=tb::ones({16},f.dtype(tb::kFloat16));
+    auto keys=tb::empty({images,heads,4,width},f.dtype(tb::kFloat16)),values=tb::empty_like(keys);
+    auto requested=tb::empty({images},f.dtype(tb::kInt32));
+    const int status=tq::tq_stage_attention_blocks(static_cast<const tq::TqBlockView*>(table.data_ptr()),
+        static_cast<const std::uint16_t*>(relative.data_ptr()),static_cast<std::uint16_t*>(keys.data_ptr()),
+        static_cast<std::uint16_t*>(values.data_ptr()),images,heads,width,mfq_current_cuda_stream(),
+        static_cast<const tq::SelectedBlock*>(selection.data_ptr()),1,images,requested.data_ptr<std::uint32_t>());
+    if(status)throw std::runtime_error(cudaGetErrorString(cudaError_t(status)));
+    const auto actual_keys=keys.cpu().contiguous(),actual_values=values.cpu().contiguous();
+    std::size_t checked=0;
+    for(int image=0;image<images;++image)for(int kind=0;kind<2;++kind) {
+        const int bits=image/17+1,profile=image%17,state_bits=profile?profile:16;
+        const auto* record=encoded.data()+(image*2+kind)*stride;
+        const auto* actual=static_cast<const std::uint16_t*>((kind?actual_values:actual_keys).data_ptr());
+        for(int head=0;head<heads;++head)for(int token=0;token<4;++token)for(int d=0;d<width;++d) {
+            float expected=0;
+            for(int mode=0;mode<4;++mode) {
+                const int row=head*4+mode,total=256*bits;std::uint32_t state=0;
+                const auto* stream=record+metadata+row*32*bits;
+                // Read individual circular bits, independently of the GPU's
+                // adjacent-coordinate extraction and word-boundary handling.
+                for(int j=0;j<state_bits;++j) {
+                    const int bit=((255-d)*bits+j)%total;
+                    state|=((stream[bit/8]>>(bit&7))&1u)<<j;
+                }
+                const std::uint32_t product=state*0x83dcd12du;
+                const unsigned sum=(product&255)+((product>>8)&255)+((product>>16)&255)+(product>>24);
+                const auto base=__float2half_rn(std::fma(float(sum+1024),
+                    __half2float(__ushort_as_half(0x1eee)),__half2float(__ushort_as_half(0xc931))));
+                __half scale;std::memcpy(&scale,record+2*row,2);
+                const float value=__half2float(__float2half_rn(__half2float(base)*__half2float(scale)));
+                const int parity=((token&mode)&1)^(((token&mode)>>1)&1);
+                expected+=(parity?-.5f:.5f)*value;
+            }
+            const auto offset=((std::size_t(image)*heads+head)*4+token)*width+d;
+            if(actual[offset]!=__half_as_ushort(__float2half_rn(expected)))
+                throw std::runtime_error("Packed KV decode differs from circular-bit/H4 CPU reference");
+            ++checked;
+        }
+    }
+    std::cerr<<"packed KV adjacent decode bits1..8/state0..16, wrap/three-word windows, zero scales and H4 exact PASS values="<<checked<<'\n';
+}
 int main(int argc,char** argv)try {
     int devices=0;const auto available=cudaGetDeviceCount(&devices);
     if(available!=cudaSuccess || !devices) {
@@ -409,14 +567,12 @@ int main(int argc,char** argv)try {
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     if(argc>2 && std::string(argv[2])=="--attention-only") {
         check_mass_observation();
-        check_nonzero_attention(24,2,257);
-        check_nonzero_attention(24,4,256);
-        check_nonzero_attention(10,2,257);
-        check_nonzero_attention(12,2,1024);
+        check_packed_decode_windows();
+        check_nonzero_attention_geometries();
         std::cerr<<"adaptive QSA attention-only checks PASS\n";
         return 0;
     }
-    check_attention_partitions();check_mass_observation();check_selected_blocks();
+    check_attention_partitions();check_mass_observation();check_selected_blocks();check_packed_decode_windows();
     check_async_history();
     check(6,17);check(10,257);check(10,257,true,true);check(24,256,true,true);
     check_pending_graph(6,17);check_pending_graph(10,257);check_pending_graph(24,256);
@@ -424,10 +580,14 @@ int main(int argc,char** argv)try {
     check(10,257,true,true,false);check_pending_graph(24,256,false);
     check_pending_graph(6,17,false,true);
     check_pending_graph(24,257,false,false,true);
-    check_nonzero_attention(24,2,257);
-    check_nonzero_attention(24,4,256);
-    check_nonzero_attention(10,2,257);
-    check_nonzero_attention(12,2,1024);
+    check_batch_graph(6,17,16);
+    check_batch_graph(24,256,16);
+    check_batch_graph(10,257,8);
+    check_batch_graph(6,17,4);
+    check_batch_graph(20,257,8);
+    check_batch_graph(48,256,4);
+    check_batch_graph(24,1024,16);
+    check_nonzero_attention_geometries();
     context->end_graph_pool(stream);
     std::cerr<<"adaptive QSA cache checks PASS\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

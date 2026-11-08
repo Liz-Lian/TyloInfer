@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentProps } from 'react';
-import { CaretRightIcon, NotePencilIcon } from '@phosphor-icons/react';
+import { CaretRightIcon } from '@phosphor-icons/react';
 import { useLocation, useNavigate } from 'react-router';
 import { useRuntime } from './RuntimeProvider';
 import { useSettings } from '../features/settings/SettingsProvider';
@@ -11,8 +11,6 @@ import { Icon } from './display';
 import tyloInferMark from '../assets/tylogi-ai-lab-mark.svg';
 import { formatNumber } from './formatters';
 import { studioBuild } from '../features/settings/releases';
-import { AgentWorkspaceSidebar } from '../features/agent/AgentWorkspaceSidebar';
-import { useSidebarScroll } from './useSidebarScroll';
 import { dashboardPath, labPath, resolveStudioLocation, isStudioPath,
   type DashboardPage, type LabPage } from '../navigation';
 
@@ -41,9 +39,7 @@ export function StudioSidebar() {
   const { dashboardPage, labPage } = currentLocation;
   const view = isStudioPath(location.pathname) ? currentLocation.view : 'not-found';
   const activeRequests = Number(runtime?.active_requests || 0);
-  const agentWorkspace = new URLSearchParams(location.search).get('workspace');
   const [toolsOpen, setToolsOpen] = useState(true);
-  const { scrollRef, scrollAll } = useSidebarScroll();
 
   useEffect(() => { closeSidebar(); }, [location.pathname, closeSidebar]);
   useEffect(() => {
@@ -73,12 +69,9 @@ export function StudioSidebar() {
         active: view === 'lab' && labPage === 'analysis' },
       { label: ['下载', 'Downloads'], icon: 'download', path: lab('models'),
         active: view === 'lab' && labPage === 'models' },
-      { label: ['测评', 'Evaluations'], icon: 'activity', path: lab('evaluations'),
-        active: view === 'lab' && labPage === 'evaluations' },
       { label: ['日志', 'Logs'], icon: 'scroll', path: dashboard('logs'),
         active: view === 'dashboard' && dashboardPage === 'logs', current: true },
     ] },
-    { label: ['Agent', 'Agent'], items: [] },
   ];
 
   function open(path: string) {
@@ -93,19 +86,15 @@ export function StudioSidebar() {
           <img src={tyloInferMark} alt="" />
           <div><strong>TyloInfer</strong></div>
         </div>
-        <div className="sidebar-scroll" ref={scrollRef} data-scroll-mode={scrollAll ? 'all' : 'workspaces'}>
+        <div className="sidebar-scroll">
           <nav className="sectioned-nav" aria-label={tr('推理', 'Inference')}>
             {groups.map((group) => (
-              <section key={group.label[1]} className={group.label[1] === 'Agent' ? 'sidebar-agent-section' : undefined}>
+              <section key={group.label[1]}>
                 {group.label[1] === 'Tools' ? <button className="sidebar-group-toggle sidebar-section-heading" type="button" aria-expanded={toolsOpen}
                   aria-controls="sidebar-tools" onClick={() => setToolsOpen(value => !value)}>
                   <span>{tr(...group.label)}</span><CaretRightIcon size={10} weight="fill" />
                 </button> : <div className="sidebar-group-label sidebar-section-heading">{tr(...group.label)}</div>}
-                {group.label[1] === 'Agent' ? <button type="button" className="agent-new-conversation"
-                  aria-current={view === 'agent' && !location.search ? 'page' : undefined}
-                  onClick={() => open(agentWorkspace ? `/agent?workspace=${encodeURIComponent(agentWorkspace)}` : '/agent')}>
-                  <NotePencilIcon size={14} /><span>{tr('新建会话', 'New conversation')}</span>
-                </button> : <div id={group.label[1] === 'Tools' ? 'sidebar-tools' : undefined} className="sidebar-nav-items" hidden={group.label[1] === 'Tools' && !toolsOpen}>
+                <div id={group.label[1] === 'Tools' ? 'sidebar-tools' : undefined} className="sidebar-nav-items" hidden={group.label[1] === 'Tools' && !toolsOpen}>
                 {group.items.map((item) => (
                   <button
                     aria-current={item.active ? 'page' : undefined}
@@ -119,8 +108,7 @@ export function StudioSidebar() {
                     {item.count != null && <span>{formatNumber(item.count)}</span>}
                   </button>
                 ))}
-                </div>}
-                {group.label[1] === 'Agent' && <AgentWorkspaceSidebar onOpen={open} />}
+                </div>
               </section>
             ))}
           </nav>

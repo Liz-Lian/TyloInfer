@@ -718,9 +718,6 @@ if(TYLOINFER_BUILD_PRECOMPILED_METAL)
         VERBATIM)
     add_custom_target(mfq-metal-precompiled DEPENDS "${_TYLOINFER_AOT_ROOT}/manifest.json")
     add_dependencies(mfq-decode-metal mfq-metal-precompiled)
-    if(TARGET mfq-perplexity)
-        add_dependencies(mfq-perplexity mfq-metal-precompiled)
-    endif()
 endif()
 set(_TYLOINFER_METAL_RUNTIME_BUNDLE_STAMP
     "${_TYLOINFER_METAL_RUNTIME_BUNDLE_DIR}/.mfq-runtime-bundle.stamp")
@@ -750,19 +747,6 @@ if(TARGET mfq-runtime-communication)
     target_compile_definitions(
         mfq-decode-metal PRIVATE TYLOINFER_METAL_RUNTIME_COMMUNICATION=1)
 
-    add_executable(mfq-perplexity
-        apps/mfq_perplexity_mlx.cpp
-    )
-    target_link_libraries(mfq-perplexity PRIVATE
-        mfq-metal-runtime
-        mfq-runtime-communication
-    )
-    target_compile_features(mfq-perplexity PRIVATE cxx_std_20)
-    set_target_properties(mfq-perplexity PROPERTIES
-        BUILD_RPATH "@executable_path/lib"
-        BUILD_WITH_INSTALL_RPATH ON
-        INSTALL_RPATH "@executable_path/lib"
-    )
 endif()
 
 add_custom_command(
@@ -774,12 +758,6 @@ add_custom_command(
 add_custom_target(mfq-metal-runtime-bundle
     DEPENDS "${_TYLOINFER_METAL_RUNTIME_BUNDLE_STAMP}")
 add_dependencies(mfq-decode-metal mfq-metal-runtime-bundle)
-if(TARGET mfq-perplexity)
-    add_dependencies(mfq-perplexity mfq-metal-runtime-bundle)
-    if(TARGET mfq-metal-precompiled)
-        add_dependencies(mfq-perplexity mfq-metal-precompiled)
-    endif()
-endif()
 
 add_executable(tyloinfer-metal-native-projection-test tests/mlx_mx_test.cpp)
 target_link_libraries(tyloinfer-metal-native-projection-test PRIVATE mfq-metal-runtime)

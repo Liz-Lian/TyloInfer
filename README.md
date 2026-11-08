@@ -17,7 +17,7 @@ TyloInfer runs dense and mixture-of-experts models on your own hardware. Keep we
 - **Faster generation.** Native MTP and DFlash2 speculative decoding, fused projections, and optimized dense and routed FFNs.
 - **Long conversations.** Persistent RAM/SSD prefix caching, per-model context settings, KV quantization, and streaming sparse attention with a bounded resident KV budget.
 - **Ready for agents.** OpenAI- and Anthropic-compatible APIs, streaming tool calls, model aliases, API-key authentication, and continuous batching.
-- **A complete workspace.** Studio brings together model browsing and downloads, model management, live resource monitoring, precision visualization, and Agent launchers.
+- **A complete workspace.** Studio brings together model browsing and downloads, model management, live resource monitoring, precision visualization.
 
 Apple Silicon uses Metal; NVIDIA GPUs use CUDA on Linux and Windows. ROCm support is in development. [Model and backend coverage →](docs/runtime/support.md)
 
@@ -57,7 +57,7 @@ NVIDIA RTX 3090 Ti · 4K input · 256 output
 
 | Engine | Prompt processing | Generation | Native MTP | DFlash2 (fastest drafts) |
 | --- | ---: | ---: | ---: | ---: |
-| TyloInfer | **2,174** | 45.3 | **114.5** | **179.9** (7) |
+| TyloInfer | **2,174** | 45.3 | **114.5** | **180.1** (7) |
 | NInfer-all | 2,008 | **46.9** | 110.5 | 136.3 (7) |
 | llama.cpp b12125 | 1,799 | 43.9 | 89.3 | 109.9 (5) |
 | ik_llama.cpp | 1,513 | 43.6 | 78.0 | 58.2 (7) |

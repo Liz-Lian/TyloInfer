@@ -11,6 +11,7 @@ struct Config {
     std::vector<int64_t> target_layers;
     static Config load(const std::filesystem::path&);
 };
+int64_t prompt_context_window(const MtpModule&) noexcept;
 std::unique_ptr<MtpModule> load(CudaExecutionContext&, Qwen4CausalLm&, const std::filesystem::path&);
 std::unique_ptr<MtpModule> load(CudaExecutionContext&, Qwen35CausalLm&, const std::filesystem::path&);
 }

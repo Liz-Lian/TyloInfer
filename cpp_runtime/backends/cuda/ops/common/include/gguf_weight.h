@@ -93,6 +93,9 @@ std::uint64_t gguf_expert_streamed_bytes(const std::shared_ptr<GgufExpertCache>&
 double gguf_expert_fetch_ms(const std::shared_ptr<GgufExpertCache>&);
 void resize_gguf_expert_cache(const std::shared_ptr<GgufExpertCache>&, std::size_t bytes);
 std::size_t reserve_gguf_expert_host(const std::shared_ptr<GgufExpertCache>&, std::size_t bytes);
+std::size_t reclaim_gguf_expert_duplicates(const std::shared_ptr<GgufExpertCache>&,std::size_t bytes);
+// Keep an available-RAM allowance for growing live KV. Zero returns the loan.
+std::size_t share_gguf_expert_host(const std::shared_ptr<GgufExpertCache>&,std::size_t free_bytes);
 std::vector<std::pair<std::string, double>> gguf_expert_memory_metrics(const std::shared_ptr<GgufExpertCache>&);
 bool prepare_gguf_graph_pool(const std::shared_ptr<GgufExpertCache>&);
 void finalize_gguf_expert_cache(const std::shared_ptr<GgufExpertCache>&, std::size_t reserve_bytes = 0);
@@ -176,6 +179,7 @@ public:
     std::int64_t width() const noexcept { return columns_; }
     std::uint64_t row_bytes() const noexcept { return row_bytes_; }
     ggml_type type() const noexcept { return type_; }
+    bool parallel_reads() const noexcept;
     void read_row(std::int64_t id, void* destination) const;
     void read_rows(const std::vector<mfq::ReadSpan>& rows) const;
     std::uint64_t staged_row_bytes() const noexcept { return correction_?std::uint64_t(columns_)*2:row_bytes_; }
@@ -187,6 +191,11 @@ public:
 
 std::shared_ptr<RowStage> make_gguf_row_stage(const std::vector<std::shared_ptr<GgufRowTable>>&,
     std::int64_t rows_per_shard, const std::vector<std::int64_t>& shape,
+    const mfq_tensor_backend::Device& device);
+// Issue CPU row reads now; collect/upload/decode on the owning model thread.
+std::function<mfq_tensor_backend::Tensor()> prefetch_gguf_shards(
+    const std::vector<std::shared_ptr<GgufRowTable>>&,std::int64_t rows_per_shard,
+    const std::vector<std::int64_t>& ids,const std::vector<std::int64_t>& shape,
     const mfq_tensor_backend::Device& device);
 mfq_tensor_backend::Tensor lookup_gguf_shards(const std::vector<std::shared_ptr<GgufRowTable>>&,
     std::int64_t rows_per_shard, const std::vector<std::int64_t>& ids,

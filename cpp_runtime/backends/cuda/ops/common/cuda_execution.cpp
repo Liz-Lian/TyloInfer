@@ -30,7 +30,7 @@
 #include <wrl/client.h>
 #endif
 
-#if defined(__GLIBC__)
+#if defined(__GLIBC__) || defined(_WIN32)
 #include <malloc.h>
 #endif
 
@@ -609,6 +609,8 @@ CudaExecutionConfig load_cuda_execution_config() {
 void mfq_release_host_allocator_cache() noexcept {
 #if defined(__GLIBC__)
     (void)malloc_trim(0);
+#elif defined(_WIN32)
+    (void)_heapmin();
 #endif
 }
 

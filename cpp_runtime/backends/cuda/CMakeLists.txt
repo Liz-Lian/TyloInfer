@@ -422,6 +422,8 @@ if(BUILD_TESTING)
         ${TYLOINFER_CUDA_ROOT}/tests/mfq_flash_next_test.cu
         mfq-cuda-native-kernels mfq-json)
     target_compile_definitions(mfq-flash-next-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1)
+    add_test(NAME mfq-flash-next-rotary-yarn-test COMMAND mfq-flash-next-test --rotary-yarn-check)
+    set_tests_properties(mfq-flash-next-rotary-yarn-test PROPERTIES SKIP_RETURN_CODE 77)
     if(TYLOINFER_ENABLE_MFQ_COMPAT)
     mfq_add_cuda_test(mfq-nint-row-pipeline-test tests/nint_row_pipeline_test.cpp mfq-model-source mfq-cuda-native-kernels)
     target_compile_definitions(mfq-nint-row-pipeline-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1)
@@ -607,7 +609,6 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_batching.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/minicpmo45.cpp
     ${TYLOINFER_CUDA_MODEL_SOURCES}
     ${TYLOINFER_CUDA_TRANSFORMER_SOURCES}
@@ -972,6 +973,27 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tyloinfer-cuda-qsa-indexer-test COMMAND tyloinfer-cuda-qsa-indexer-test)
     set_tests_properties(tyloinfer-cuda-qsa-indexer-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(tyloinfer-cuda-moe-publication-test
+        ${TYLOINFER_CUDA_ROOT}/tests/moe_publication_test.cpp
+        ${TYLOINFER_CUDA_ROOT}/runtime/moe_pipeline.cu)
+    target_include_directories(tyloinfer-cuda-moe-publication-test PRIVATE
+        ${TYLOINFER_REPOSITORY_ROOT} ${TYLOINFER_CUDA_KERNEL_ROOT})
+    target_link_libraries(tyloinfer-cuda-moe-publication-test PRIVATE CUDA::cudart Threads::Threads)
+    target_compile_features(tyloinfer-cuda-moe-publication-test PRIVATE cxx_std_20)
+    set_target_properties(tyloinfer-cuda-moe-publication-test PROPERTIES
+        CUDA_ARCHITECTURES "${TYLOINFER_CUDA_ARCHITECTURES}"
+        CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON CUDA_RUNTIME_LIBRARY Shared)
+    if(MSVC)
+        target_compile_options(tyloinfer-cuda-moe-publication-test PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+    endif()
+    add_test(NAME tyloinfer-cuda-moe-publication-test COMMAND tyloinfer-cuda-moe-publication-test)
+    set_tests_properties(tyloinfer-cuda-moe-publication-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(tyloinfer-cuda-qsa-indexer-cache-test ${TYLOINFER_CUDA_ROOT}/tests/qsa_indexer_cache_test.cpp)
+    mfq_configure_cuda_runtime_target(tyloinfer-cuda-qsa-indexer-cache-test)
+    target_compile_definitions(tyloinfer-cuda-qsa-indexer-cache-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(tyloinfer-cuda-qsa-indexer-cache-test PRIVATE mfq-cuda-runtime)
+    add_test(NAME tyloinfer-cuda-qsa-indexer-cache-test COMMAND tyloinfer-cuda-qsa-indexer-cache-test)
+    set_tests_properties(tyloinfer-cuda-qsa-indexer-cache-test PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(tyloinfer-cuda-attention-mma-gqa-test ${TYLOINFER_CUDA_ROOT}/tests/attention_mma_gqa_test.cpp)
     mfq_configure_cuda_runtime_target(tyloinfer-cuda-attention-mma-gqa-test)
     target_compile_definitions(tyloinfer-cuda-attention-mma-gqa-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
@@ -1163,6 +1185,10 @@ if(BUILD_TESTING)
     set_tests_properties(tyloinfer-gguf-mmq-schedule-test PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME tyloinfer-gguf-event-retirement-test COMMAND tyloinfer-cuda-gguf-runtime-test --event-retirement-check)
     set_tests_properties(tyloinfer-gguf-event-retirement-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME tyloinfer-gguf-row-graph-test COMMAND tyloinfer-cuda-gguf-runtime-test --row-graph-check)
+    set_tests_properties(tyloinfer-gguf-row-graph-test PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME tyloinfer-gguf-decode-budget-test COMMAND tyloinfer-cuda-gguf-runtime-test --decode-budget-check)
+    set_tests_properties(tyloinfer-gguf-decode-budget-test PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME tyloinfer-gguf-prefill-phase-test COMMAND tyloinfer-cuda-gguf-runtime-test --prefill-phase-check)
     set_tests_properties(tyloinfer-gguf-prefill-phase-test PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME tyloinfer-gguf-cpu-hidden-quantize-test COMMAND tyloinfer-cuda-gguf-runtime-test --cpu-quantize-check)
@@ -1297,11 +1323,7 @@ if(BUILD_TESTING)
     endif()
 endif()
 
-add_library(mfq-cuda-eval STATIC ${TYLOINFER_CUDA_ROOT}/eval/kl.cpp)
-mfq_configure_cuda_runtime_target(mfq-cuda-eval)
-target_include_directories(mfq-cuda-eval PRIVATE ${TYLOINFER_CUDA_ROOT}/storage)
-target_compile_definitions(mfq-cuda-eval PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
-target_link_libraries(mfq-cuda-eval PUBLIC mfq-cuda-runtime)
+
 
 add_library(mfq-cuda-diagnostics STATIC
     ${TYLOINFER_CUDA_ROOT}/diagnostics/attention_checks.cpp
@@ -1316,7 +1338,7 @@ target_include_directories(mfq-cuda-diagnostics PRIVATE ${TYLOINFER_CUDA_ROOT}/s
 target_compile_definitions(mfq-cuda-diagnostics PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 target_link_libraries(mfq-cuda-diagnostics PUBLIC mfq-cuda-runtime)
 if(MSVC)
-    foreach(target mfq-cuda-diagnostics mfq-cuda-eval)
+    foreach(target mfq-cuda-diagnostics)
         target_compile_options(${target} PRIVATE /utf-8 /EHsc /bigobj)
     endforeach()
 endif()
@@ -1353,33 +1375,14 @@ set_target_properties(mfq-diagnostics PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
 )
 
-add_executable(mfq-eval
-    ${TYLOINFER_CUDA_ROOT}/apps/eval_main.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/eval.cpp
-)
-mfq_configure_cuda_runtime_target(mfq-eval)
-target_include_directories(mfq-eval PRIVATE ${TYLOINFER_CUDA_ROOT}/storage)
-target_compile_definitions(mfq-eval PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
-target_link_libraries(mfq-eval PRIVATE
-    mfq-cuda-eval mfq-cuda-runtime mfq-cuda-native-kernels mfq-ggml)
-target_compile_features(mfq-eval PRIVATE cxx_std_20)
-if(MSVC)
-    target_compile_options(mfq-eval PRIVATE /utf-8 /EHsc /bigobj)
-endif()
-set_target_properties(mfq-eval PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
-)
 
 if(BUILD_TESTING)
     add_test(
         NAME mfq-deepseek-v41-runtime-check
         COMMAND mfq-diagnostics --check-deepseek-v41)
     add_test(NAME mfq-diagnostics-help COMMAND mfq-diagnostics --help)
-    add_test(NAME mfq-eval-help COMMAND mfq-eval --help)
-    add_test(NAME mfq-eval-kl-help COMMAND mfq-eval kl --help)
     add_test(NAME mfq-runtime-cli-options COMMAND mfq-runtime --transport stdio --continuous-batching 2 --help)
     add_test(NAME mfq-diagnostics-cli-options COMMAND mfq-diagnostics --ids 1,2 --gen 3 --help)
-    add_test(NAME mfq-eval-cli-options COMMAND mfq-eval kl --kl-base x --kl-evaluator optimized --help)
     add_test(NAME mfq-runtime-rejects-check
         COMMAND mfq-runtime --check-mfq-container)
     add_test(NAME mfq-runtime-rejects-kl
@@ -1396,16 +1399,11 @@ if(BUILD_TESTING)
         COMMAND mfq-diagnostics --kl-base reference.bin)
     add_test(NAME mfq-diagnostics-rejects-missing-value
         COMMAND mfq-diagnostics --check-linear --check-backend-argmax)
-    add_test(NAME mfq-eval-rejects-check
-        COMMAND mfq-eval kl --check-mfq-container)
-    add_test(NAME mfq-eval-rejects-bad-number
-        COMMAND mfq-eval kl --kl-chunks 1x --help)
     set_tests_properties(
         mfq-runtime-rejects-check mfq-runtime-rejects-kl
         mfq-runtime-rejects-bad-number mfq-runtime-rejects-missing-value
         mfq-runtime-rejects-token-input mfq-diagnostics-rejects-bad-ids
         mfq-diagnostics-rejects-kl mfq-diagnostics-rejects-missing-value
-        mfq-eval-rejects-check mfq-eval-rejects-bad-number
         PROPERTIES WILL_FAIL TRUE)
 endif()
 

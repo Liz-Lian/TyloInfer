@@ -7,13 +7,10 @@ import sys
 import textwrap
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from bench import model_bench
-from tyloinfer.server.services.inference_benchmark import validate_benchmark_run
-from tyloinfer.server.services.jobs import JobExecutionError
 
 
 def native_result():
@@ -121,35 +118,6 @@ def test_timeout_reaps_wrapper_children_holding_output_pipes(runtime_script):
         runtime.close()
 
 
-@pytest.mark.parametrize("section,key,value", [
-    ("usage", "prompt_tokens", 16),
-    ("usage", "completion_tokens", 0),
-    ("usage", "completion_tokens", 9),
-    ("usage", "completion_tokens", True),
-    ("metrics", "prefill_tokens", 0),
-    ("metrics", "prefill_ms", 0),
-    ("metrics", "decode_ms", float("nan")),
-    ("metrics", "ttft_ms", float("inf")),
-    ("metrics", "ttft_ms", None),
-    ("metrics", "prefill_tps", float("nan")),
-    ("metrics", "mtp_used", "false"),
-    ("metrics", "mtp_used", 1),
-    ("metrics", "mtp_available", "unsupported"),
-    ("metrics", "mtp_drafted_tokens", -1),
-    ("metrics", "mtp_accepted_tokens", 1),
-])
-def test_cli_and_server_reject_the_same_invalid_metrics(runtime_script, section, key, value):
-    result = native_result()
-    result[section][key] = value
-    # JSON also exercises the native wire representation of non-finite numbers.
-    body = f"result = json.loads({json.dumps(result)!r})\nsend('event', result)\nsend('done')\n"
-    runtime = process(runtime_script(body))
-    try:
-        assert runtime.generate("invalid", 32, 8, False, 1)["status"] == "error"
-    finally:
-        runtime.close()
-    with pytest.raises(JobExecutionError):
-        validate_benchmark_run(result, SimpleNamespace(prompt_tokens=32, output_tokens=8), "decode")
 
 
 def test_requested_mtp_must_execute(runtime_script):

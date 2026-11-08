@@ -200,6 +200,8 @@ void history_tail_graph() {
                 close(actual,expected.narrow(1,rows-1,1));
                 Qwen4BlockSessionState a,b;std::size_t bytes=0;
                 tail.capture_session(a,prefix+rows,bytes);full.capture_session(b,prefix+rows,bytes);
+                if(a.index.scalar_type()!=tb::kInt16 || a.index.size(-1)!=config.index_width+2)
+                    throw std::runtime_error("QSA session did not retain INT16 affine Indexer records");
                 for(const auto& pair:{std::pair{a.keys,b.keys},std::pair{a.values,b.values},std::pair{a.index,b.index}}) {
                     const auto av=pair.first.cpu().contiguous(),bv=pair.second.cpu().contiguous();
                     if(av.sizes()!=bv.sizes() || av.scalar_type()!=bv.scalar_type() ||

@@ -42,8 +42,8 @@ void check_plan(const std::vector<tq::RamPressureBlock>& original,const tq::RamP
         }
         require(saved==action.saved_bytes && moved==action.tokens,"Pressure action accounting differs");
         bytes-=saved;tokens[from]-=moved;tokens[to]+=moved;
-        if(from==0)require(tokens[0]>=plan.minimum_fp16,"FP16 retention fell below five percent");
-        if(from==1)require(tokens[1]>=plan.minimum_affine8,"Affine8 retention fell below fifteen percent");
+        if(from==0)require(tokens[0]>=plan.minimum_fp16,"FP16 retention fell below its budget-adjusted floor");
+        if(from==1)require(tokens[1]>=plan.minimum_affine8,"Affine8 retention fell below its budget-adjusted floor");
     }
     require(bytes==plan.ram_bytes && tokens==plan.tokens,"Final pressure accounting differs");
 }
@@ -67,6 +67,41 @@ int main()try {
     require(tq::ram_kv_reclaim_bytes(0,maximum,maximum)==maximum/4+1,"Large reserve arithmetic overflowed");
     require(tq::ram_kv_reclaim_bytes(0,0,maximum)==maximum,"Unrepresentable reclaim did not saturate");
     auto blocks=fixture();int cases=0;
+    const auto unconstrained=tq::plan_ram_pressure(blocks,64*MiB,{2048,true});
+    require(unconstrained.minimum_fp16==1640 && unconstrained.minimum_affine8==4916,
+        "An affordable cache changed its protected fractions");++cases;
+    // Keep only a short live tail in RAM while growing SSD history to 1M.
+    // Historical tokens must not create an unbounded high-precision floor.
+    std::uint64_t previous_fp16=0,previous_affine8=0;
+    for(std::size_t count:{std::size_t(16384),std::size_t(65536),std::size_t(262144)}) {
+        auto input=fixture(count);
+        for(std::size_t i=0;i<count-4096;++i)input[i].tier=tq::RamKvTier::Ssd;
+        const auto bounded=tq::plan_ram_pressure(input,16*MiB,{2048,true});
+        require(bounded.fits(),"SSD history made budget-adjusted precision floors unfit");
+        require(bounded.tokens[0]>=bounded.minimum_fp16 && bounded.tokens[1]>=bounded.minimum_affine8,
+            "Long-context pressure discarded a protected tier");
+        if(previous_fp16)require(bounded.minimum_fp16==previous_fp16 &&
+            bounded.minimum_affine8==previous_affine8,"Precision floors grew with SSD-only history");
+        previous_fp16=bounded.minimum_fp16;previous_affine8=bounded.minimum_affine8;
+        const auto smaller=tq::plan_ram_pressure(input,8*MiB,{2048,true});
+        require(smaller.minimum_fp16<=bounded.minimum_fp16 &&
+            smaller.minimum_affine8<=bounded.minimum_affine8,"Precision floors ignored a smaller RAM budget");
+        const auto disabled=tq::plan_ram_pressure(fixture(count),16*MiB,{2048,false});
+        require(!disabled.fits() && disabled.needs_ssd,"Disabled SSD accepted excess live RAM");
+        ++cases;
+    }
+    // Full low-bit residency has priority over higher-precision protection.
+    // An independently sized budget fits TQ4 plus two complete batch tails.
+    {
+        const auto input=fixture(32768);
+        const auto base=input.size()*input.front().bytes[2];
+        const auto tails=2*512*input.front().bytes[0];
+        for(bool ssd:{false,true}) {
+            const auto plan=tq::plan_ram_pressure(input,base+tails,{2048,ssd});
+            check_plan(input,plan,{2048,ssd});
+            require(plan.fits() && plan.tokens[3]==0,"A fitting all-TQ4 context was evicted to SSD for precision floors");
+        }
+    }
     for(bool ssd:{false,true})for(auto canonical:{tq::RamKvTier::Fp16,tq::RamKvTier::Affine8,tq::RamKvTier::Tq4}) {
         auto input=blocks;for(auto& b:input)b.tier=canonical;
         tq::RamPressureConfig config;config.ssd_enabled=ssd;config.canonical_tier=canonical;
@@ -96,6 +131,9 @@ int main()try {
     require(rejected,"Overflowed RAM availability was accepted");++cases;
     rejected=false;try{tq::plan_ram_pressure(blocks,MiB,{2047,true});}catch(const std::invalid_argument&){rejected=true;}
     require(rejected,"Partial quantization batches were accepted");++cases;
+    require(tq::ram_precision_target(0,{0,0,0},tq::RamKvTier::Fp16)==0,"Empty KV retained a RAM reservation");
+    require(tq::ram_precision_target(1,{1024,512,256},tq::RamKvTier::Fp16)==1024,"Short KV lost its bounded precision tail");
+    require(tq::ram_precision_target(10000,{10240000,5120000,2560000},tq::RamKvTier::Tq4)==2560000,"TQ4 reservation grew beyond its payload");
     std::printf("QSA RAM pressure reserve, LRU, 2048-token batches, protected tiers and SSD policy PASS cases=%d\n",cases);
     return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

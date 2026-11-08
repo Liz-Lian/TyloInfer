@@ -14,7 +14,6 @@ TyloInfer provides TQ inference, CUDA/Metal runtimes, and local serving.
 
 - [TQ format and execution](formats/tq.md)
 - [Runtime sampling profiles](runtime/sampling-profiles.md)
-- [WT2 reference generation and utility commands](cli/utilities.md)
 - [Runtime support matrix](runtime/support.md)
 - [Python/C++ runtime transport](runtime/transport.md)
 - [CUDA KV memory policies](runtime/cuda-kv-memory.md)

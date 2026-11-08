@@ -17,53 +17,7 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter
 
-from tyloinfer.server.protocol.models import (
-    ApiKeyResource,
-    ArtifactLineageResource,
-    ContentPart,
-    CreateApiKeyRequest,
-    CreateDatasetRequest,
-    CreateGenerationPresetRequest,
-    CreateRemoteNodeRequest,
-    CreateRuntimeProfileRequest,
-    CreateSessionRequest,
-    DatasetResource,
-    DocumentResource,
-    ErrorDetail,
-    EvaluationKind,
-    EvaluationResultResource,
-    ForkSessionRequest,
-    GenerationPresetResource,
-    JobEventLevel,
-    JobEventResource,
-    JobEventType,
-    JobResource,
-    JobStatus,
-    MediaRef,
-    MediaResource,
-    Message,
-    MessageRole,
-    ModelLoadRequest,
-    RemoteNodeResource,
-    ResponsePerformance,
-    ResponseRequestSettings,
-    ResponseResource,
-    ResponseStatus,
-    RewindSessionRequest,
-    RuntimeLogEntry,
-    RuntimeLogLevel,
-    RuntimeMetricSnapshot,
-    RuntimeProfileResource,
-    SamplingParams,
-    SessionMode,
-    SessionResource,
-    SessionState,
-    TokenUsage,
-    UpdateGenerationPresetRequest,
-    UpdateRemoteNodeRequest,
-    UpdateRuntimeProfileRequest,
-    UpdateSessionRequest,
-)
+from tyloinfer.server.protocol.models import (ApiKeyResource, ArtifactLineageResource, ContentPart, CreateApiKeyRequest, CreateGenerationPresetRequest, CreateRemoteNodeRequest, CreateRuntimeProfileRequest, CreateSessionRequest, DocumentResource, ErrorDetail, ForkSessionRequest, GenerationPresetResource, JobEventLevel, JobEventResource, JobEventType, JobResource, JobStatus, MediaRef, MediaResource, Message, MessageRole, ModelLoadRequest, RemoteNodeResource, ResponsePerformance, ResponseRequestSettings, ResponseResource, ResponseStatus, RewindSessionRequest, RuntimeLogEntry, RuntimeLogLevel, RuntimeMetricSnapshot, RuntimeProfileResource, SamplingParams, SessionMode, SessionResource, SessionState, TokenUsage, UpdateGenerationPresetRequest, UpdateRemoteNodeRequest, UpdateRuntimeProfileRequest, UpdateSessionRequest)
 from tyloinfer.server.services.serving_stats import request_values, summarize
 
 SCHEMA_VERSION = 19
@@ -75,12 +29,8 @@ class StorageError(RuntimeError):
     """Base class for persistent conversation errors."""
 
 
-class DatasetNotFoundError(StorageError):
-    pass
 
 
-class EvaluationNotFoundError(StorageError):
-    pass
 
 
 class RemoteNodeNotFoundError(StorageError):
@@ -333,38 +283,6 @@ class SessionStore:
                     created_at TEXT NOT NULL,
                     last_used_at TEXT
                 );
-
-                CREATE TABLE IF NOT EXISTS datasets (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE,
-                    kind TEXT NOT NULL,
-                    artifact_uri TEXT NOT NULL,
-                    sha256 TEXT NOT NULL,
-                    byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
-                    source_uri TEXT,
-                    revision TEXT,
-                    metadata_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS evaluation_results (
-                    id TEXT PRIMARY KEY,
-                    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
-                    kind TEXT NOT NULL,
-                    model_id TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL,
-                    parameters_json TEXT NOT NULL,
-                    dataset_id TEXT REFERENCES datasets(id) ON DELETE SET NULL,
-                    dataset_manifest_json TEXT NOT NULL,
-                    hardware_identity_json TEXT NOT NULL,
-                    runtime_identity_json TEXT NOT NULL,
-                    comparison_key TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS evaluation_results_comparison
-                    ON evaluation_results(comparison_key, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS remote_nodes (
                     id TEXT PRIMARY KEY,
@@ -949,162 +867,12 @@ class SessionStore:
             rows = connection.execute(query, values).fetchall()
         return [self._artifact_lineage_from_row(row) for row in rows]
 
-    def create_dataset(
-        self,
-        request: CreateDatasetRequest,
-        *,
-        sha256: str,
-        byte_size: int,
-        dataset_id: UUID | None = None,
-        now: datetime | None = None,
-    ) -> DatasetResource:
-        identifier = dataset_id or uuid4()
-        created_at = now or _utcnow()
-        try:
-            with self._connection() as connection:
-                connection.execute(
-                    """
-                    INSERT INTO datasets(
-                        id, name, kind, artifact_uri, sha256, byte_size,
-                        source_uri, revision, metadata_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(identifier),
-                        request.name,
-                        request.kind,
-                        request.artifact_uri,
-                        sha256,
-                        byte_size,
-                        request.source_uri,
-                        request.revision,
-                        json.dumps(request.metadata, separators=(",", ":")),
-                        _timestamp(created_at),
-                        _timestamp(created_at),
-                    ),
-                )
-        except sqlite3.IntegrityError as error:
-            raise StorageError(f"dataset already exists: {request.name}") from error
-        return self.get_dataset(identifier)
 
-    def get_dataset(self, dataset_id: UUID) -> DatasetResource:
-        with self._connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM datasets WHERE id = ?", (str(dataset_id),)
-            ).fetchone()
-        if row is None:
-            raise DatasetNotFoundError(str(dataset_id))
-        return self._dataset_from_row(row)
 
-    def list_datasets(self) -> list[DatasetResource]:
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM datasets ORDER BY name COLLATE NOCASE, id"
-            ).fetchall()
-        return [self._dataset_from_row(row) for row in rows]
 
-    def delete_dataset(self, dataset_id: UUID) -> None:
-        with self._connection() as connection:
-            cursor = connection.execute("DELETE FROM datasets WHERE id = ?", (str(dataset_id),))
-        if cursor.rowcount != 1:
-            raise DatasetNotFoundError(str(dataset_id))
 
-    def record_evaluation(
-        self,
-        *,
-        job_id: UUID,
-        kind: EvaluationKind,
-        model_id: str,
-        metrics: dict[str, Any],
-        parameters: dict[str, Any],
-        dataset_id: UUID | None,
-        dataset_manifest: dict[str, Any],
-        hardware_identity: dict[str, Any],
-        runtime_identity: dict[str, Any],
-        comparison_key: str,
-        evaluation_id: UUID | None = None,
-        now: datetime | None = None,
-    ) -> EvaluationResultResource:
-        self.get_job(job_id)
-        if dataset_id is not None:
-            self.get_dataset(dataset_id)
-        identifier = evaluation_id or uuid4()
-        created_at = now or _utcnow()
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO evaluation_results(
-                    id, job_id, kind, model_id, metrics_json, parameters_json,
-                    dataset_id, dataset_manifest_json, hardware_identity_json,
-                    runtime_identity_json, comparison_key, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(job_id) DO UPDATE SET
-                    kind = excluded.kind,
-                    model_id = excluded.model_id,
-                    metrics_json = excluded.metrics_json,
-                    parameters_json = excluded.parameters_json,
-                    dataset_id = excluded.dataset_id,
-                    dataset_manifest_json = excluded.dataset_manifest_json,
-                    hardware_identity_json = excluded.hardware_identity_json,
-                    runtime_identity_json = excluded.runtime_identity_json,
-                    comparison_key = excluded.comparison_key,
-                    created_at = excluded.created_at
-                """,
-                (
-                    str(identifier),
-                    str(job_id),
-                    kind,
-                    model_id,
-                    json.dumps(metrics, separators=(",", ":")),
-                    json.dumps(parameters, separators=(",", ":")),
-                    str(dataset_id) if dataset_id is not None else None,
-                    json.dumps(dataset_manifest, separators=(",", ":")),
-                    json.dumps(hardware_identity, separators=(",", ":")),
-                    json.dumps(runtime_identity, separators=(",", ":")),
-                    comparison_key,
-                    _timestamp(created_at),
-                ),
-            )
-            row = connection.execute(
-                "SELECT * FROM evaluation_results WHERE job_id = ?",
-                (str(job_id),),
-            ).fetchone()
-        if row is None:
-            raise StorageError("evaluation result was not persisted")
-        return self._evaluation_from_row(row)
 
-    def get_evaluation(self, evaluation_id: UUID) -> EvaluationResultResource:
-        with self._connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM evaluation_results WHERE id = ?", (str(evaluation_id),)
-            ).fetchone()
-        if row is None:
-            raise EvaluationNotFoundError(str(evaluation_id))
-        return self._evaluation_from_row(row)
 
-    def list_evaluations(
-        self,
-        *,
-        kind: EvaluationKind | None = None,
-        model_id: str | None = None,
-        limit: int = 200,
-    ) -> list[EvaluationResultResource]:
-        clauses: list[str] = []
-        values: list[Any] = []
-        if kind is not None:
-            clauses.append("kind = ?")
-            values.append(kind)
-        if model_id is not None:
-            clauses.append("model_id = ?")
-            values.append(model_id)
-        query = "SELECT * FROM evaluation_results"
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY created_at DESC, id LIMIT ?"
-        values.append(limit)
-        with self._connection() as connection:
-            rows = connection.execute(query, values).fetchall()
-        return [self._evaluation_from_row(row) for row in rows]
 
     def create_remote_node(
         self,
@@ -2812,38 +2580,7 @@ class SessionStore:
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
-    @staticmethod
-    def _dataset_from_row(row: sqlite3.Row) -> DatasetResource:
-        return DatasetResource(
-            id=UUID(row["id"]),
-            name=row["name"],
-            kind=row["kind"],
-            artifact_uri=row["artifact_uri"],
-            sha256=row["sha256"],
-            byte_size=int(row["byte_size"]),
-            source_uri=row["source_uri"],
-            revision=row["revision"],
-            metadata=json.loads(row["metadata_json"]),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
 
-    @staticmethod
-    def _evaluation_from_row(row: sqlite3.Row) -> EvaluationResultResource:
-        return EvaluationResultResource(
-            id=UUID(row["id"]),
-            job_id=UUID(row["job_id"]),
-            kind=row["kind"],
-            model_id=row["model_id"],
-            metrics=json.loads(row["metrics_json"]),
-            parameters=json.loads(row["parameters_json"]),
-            dataset_id=UUID(row["dataset_id"]) if row["dataset_id"] else None,
-            dataset_manifest=json.loads(row["dataset_manifest_json"]),
-            hardware_identity=json.loads(row["hardware_identity_json"]),
-            runtime_identity=json.loads(row["runtime_identity_json"]),
-            comparison_key=row["comparison_key"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-        )
 
     @staticmethod
     def _remote_node_from_row(row: sqlite3.Row) -> RemoteNodeResource:

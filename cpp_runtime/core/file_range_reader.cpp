@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <map>
 #include <optional>
 #include <mutex>
 #include <stdexcept>
@@ -190,10 +191,16 @@ struct FileRangeReader::Impl {
     std::size_t transfer(std::uint64_t offset, void* buffer, std::size_t bytes) const {
 #if defined(_WIN32)
         struct Event {
-            HANDLE value = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            HANDLE value=nullptr;
+            Event() {
+                value=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+                if(!value)throw std::system_error(GetLastError(),std::system_category(),"create file-read event");
+            }
             ~Event() { if (value) CloseHandle(value); }
-        } event;
-        if (!event.value) throw std::system_error(GetLastError(), std::system_category(), "create file-read event");
+        };
+        // Each positional operation joins before this worker reuses its event.
+        // The event retains no file handle or caller-owned buffer.
+        static thread_local Event event;
         OVERLAPPED request{};
         request.Offset = static_cast<DWORD>(offset);
         request.OffsetHigh = static_cast<DWORD>(offset >> 32);
@@ -211,6 +218,105 @@ struct FileRangeReader::Impl {
         return static_cast<std::size_t>(actual);
 #endif
     }
+#if defined(_WIN32)
+    struct BufferedRange {const Impl* owner;ReadSpan span;};
+    static BOOL complete_buffered(HANDLE handle,OVERLAPPED* request,DWORD* actual,bool pending) noexcept {
+        unsigned spins=0;
+        while(pending && !HasOverlappedIoCompleted(static_cast<const volatile OVERLAPPED*>(request))) {
+            if(spins<256){++spins;YieldProcessor();}
+            else SwitchToThread();
+        }
+        return GetOverlappedResult(handle,request,actual,FALSE);
+    }
+    static void buffered_read_queue(const BufferedRange* ranges,std::size_t range_count) {
+        // Each worker owns a bounded queue of exact caller spans.
+        // Operation state and destinations survive every pending read;
+        // independent ranges are submitted before completion is polled.
+        using Clock=std::chrono::steady_clock;
+        using Interval=std::pair<Clock::time_point,Clock::time_point>;
+        struct Requests {
+            std::array<Interval*,64> intervals{};
+            std::array<const Impl*,64> owners{};
+            std::array<OVERLAPPED,64> native{};
+            std::array<DWORD,64> bytes{};
+            std::array<bool,64> submitted{},finished{},pending{};
+            std::size_t count=0;
+            ~Requests() {
+                // Even submission/short-read failures must drain every read
+                // before caller-owned destinations and OVERLAPPEDs go away.
+                for(std::size_t i=0;i<count;++i)if(submitted[i] && !finished[i]) {
+                    DWORD ignored=0;Impl::complete_buffered(owners[i]->handle,&native[i],&ignored,pending[i]);
+                }
+            }
+        };
+        std::map<const Impl*,Interval> times;
+        try {
+            std::size_t span_index=0,span_offset=0;
+            while(span_index<range_count) {
+                Requests requests;
+                while(requests.count<requests.native.size() && span_index<range_count) {
+                    const auto& range=ranges[span_index];
+                    const auto& span=range.span;
+                    const auto* owner=range.owner;
+                    if(span_offset==span.size){++span_index;span_offset=0;continue;}
+                    const auto i=requests.count++;
+                    const auto offset=span.offset+span_offset;
+                    auto& request=requests.native[i];
+                    request.Offset=static_cast<DWORD>(offset);request.OffsetHigh=static_cast<DWORD>(offset>>32);
+                    // Poll this operation's completion status; the shared file
+                    // signal cannot identify one request among concurrent reads.
+                    requests.bytes[i]=static_cast<DWORD>(std::min<std::size_t>(span.size-span_offset,std::numeric_limits<DWORD>::max()));
+                    auto& interval=times[owner];if(interval.first==Clock::time_point{})interval.first=Clock::now();
+                    requests.intervals[i]=&interval;
+                    owner->calls.fetch_add(1,std::memory_order_relaxed);
+                    const auto ok=ReadFile(owner->handle,span.destination+span_offset,requests.bytes[i],nullptr,&request);
+                    const auto error=ok?ERROR_SUCCESS:GetLastError();
+                    if(!ok && error!=ERROR_IO_PENDING)throw std::system_error(error,std::system_category(),"submit buffered batch read");
+                    requests.pending[i]=!ok;
+                    requests.submitted[i]=true;requests.owners[i]=owner;span_offset+=requests.bytes[i];
+                }
+                for(std::size_t i=0;i<requests.count;++i) {
+                    DWORD actual=0;
+                    const auto ok=complete_buffered(requests.owners[i]->handle,&requests.native[i],&actual,requests.pending[i]);
+                    requests.finished[i]=true;
+                    if(!ok)throw std::system_error(GetLastError(),std::system_category(),"complete buffered batch read");
+                    const auto* owner=requests.owners[i];
+                    requests.intervals[i]->second=Clock::now();
+                    owner->physical.fetch_add(actual,std::memory_order_relaxed);
+                    if(actual!=requests.bytes[i])throw std::runtime_error("model file truncated during buffered batch read");
+                    owner->logical.fetch_add(actual,std::memory_order_relaxed);
+                }
+            }
+        }catch(...){for(const auto& [owner,interval]:times)owner->errors.fetch_add(1,std::memory_order_relaxed);throw;}
+        for(const auto& [owner,interval]:times)owner->nanos.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            interval.second-interval.first).count(),std::memory_order_relaxed);
+        if(times.size()>1)if(const auto* option=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");option && option[0]=='1') {
+            static std::atomic<bool> reported{false};
+            if(!reported.exchange(true,std::memory_order_relaxed))std::fprintf(stderr,
+                "native_file_read_many actual_match=1 files=%zu ranges=%zu bounded_queue=64 completion_poll=1\n",times.size(),range_count);
+        }
+    }
+    static void buffered_reads(const std::vector<BufferedRange>& ranges) {
+        // Native submission itself is serial CPU work. Keep small queues on
+        // the caller; larger queues share persistent independent I/O workers.
+        const auto threads=int(std::min<std::size_t>({8,
+            std::max(1u,std::thread::hardware_concurrency()),ranges.size()/12}));
+        if(threads<2) {buffered_read_queue(ranges.data(),ranges.size());return;}
+        static thread_local HostParallelPool submissions({},false);
+        const auto caller=std::this_thread::get_id();std::atomic<unsigned> assisted{0};
+        submissions.run(0,static_cast<std::int64_t>(ranges.size()),std::int64_t((ranges.size()+threads-1)/threads),threads,[&](auto first,auto end) {
+            if(std::this_thread::get_id()!=caller)assisted.fetch_add(1,std::memory_order_relaxed);
+            buffered_read_queue(ranges.data()+first,static_cast<std::size_t>(end-first));
+        });
+        if(assisted.load(std::memory_order_relaxed))if(const auto* option=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");option && option[0]=='1') {
+            static std::atomic<bool> reported{false};
+            if(!reported.exchange(true,std::memory_order_relaxed))std::fprintf(stderr,
+                "native_file_read_submit_parallel actual_match=1 ranges=%zu threads=%d\n",ranges.size(),threads);
+        }
+    }
+
+#endif
+
 };
 
 FileRangeReader::FileRangeReader(const std::filesystem::path& path, FileReadMode mode)
@@ -447,6 +553,35 @@ struct LinuxAioContext {
 }
 #endif
 
+void FileRangeReader::read_many(const std::vector<FileReadRange>& ranges) {
+#if defined(_WIN32)
+    bool buffered=true;
+#endif
+    for(const auto& range:ranges) {
+        if(!range.reader)throw std::invalid_argument("Missing retained file reader");
+        const auto& span=range.span;const auto& owner=*range.reader->impl_;
+        if(span.offset>owner.size || span.size>owner.size-span.offset)
+            throw std::out_of_range("Multi-file read range is out of bounds");
+        if(span.size && !span.destination)throw std::invalid_argument("Multi-file read destination is null");
+#if defined(_WIN32)
+        buffered&=owner.mode==FileReadMode::Buffered;
+#endif
+    }
+#if defined(_WIN32)
+    if(buffered) {
+        std::vector<Impl::BufferedRange> native;native.reserve(ranges.size());
+        for(const auto& range:ranges)native.push_back({range.reader->impl_.get(),range.span});
+        Impl::buffered_reads(native);return;
+    }
+#endif
+    // Direct I/O keeps its alignment/staging rules; portable buffered readers
+    // retain positional semantics without sharing a mutable file cursor.
+    std::map<const FileRangeReader*,std::vector<ReadSpan>> groups;
+    for(const auto& range:ranges)groups[range.reader.get()].push_back(range.span);
+    for(const auto& [reader,spans]:groups)reader->read_batch(spans);
+}
+
+std::uint64_t FileRangeReader::size() const noexcept {return impl_->size;}
 void FileRangeReader::read_batch(const std::vector<ReadSpan>& spans) const {
     for (const auto& span : spans) {
         if (span.offset > impl_->size || span.size > impl_->size - span.offset)
@@ -456,73 +591,15 @@ void FileRangeReader::read_batch(const std::vector<ReadSpan>& spans) const {
     }
 #if defined(_WIN32)
     if(impl_->mode==FileReadMode::Buffered) {
-        // Buffered reads accept the caller's exact spans. Reuse a bounded
-        // event ring per I/O worker: no per-range event/temporary allocation,
-        // and all five NINT streams can be in flight before any wait.
-        struct Events {
-            std::array<HANDLE,64> handles{};
-            ~Events(){for(auto h:handles)if(h)CloseHandle(h);}
-            HANDLE at(std::size_t i) {
-                if(!handles[i])handles[i]=CreateEventW(nullptr,TRUE,FALSE,nullptr);
-                if(!handles[i])throw std::system_error(GetLastError(),std::system_category(),"create buffered batch event");
-                return handles[i];
-            }
-        };
-        static thread_local Events events;
-        struct Requests {
-            HANDLE file;
-            std::array<OVERLAPPED,64> native{};
-            std::array<DWORD,64> bytes{};
-            std::array<bool,64> submitted{},finished{};
-            std::size_t count=0;
-            explicit Requests(HANDLE h):file(h){}
-            ~Requests() {
-                // Even submission/short-read failures must drain every read
-                // before caller-owned destinations and OVERLAPPEDs go away.
-                for(std::size_t i=0;i<count;++i)if(submitted[i] && !finished[i]) {
-                    DWORD ignored=0;GetOverlappedResult(file,&native[i],&ignored,TRUE);
-                }
-            }
-        };
-        const auto started=std::chrono::steady_clock::now();
-        try {
-            std::size_t span_index=0,span_offset=0;
-            while(span_index<spans.size()) {
-                Requests requests(impl_->handle);
-                while(requests.count<requests.native.size() && span_index<spans.size()) {
-                    const auto& span=spans[span_index];
-                    if(span_offset==span.size){++span_index;span_offset=0;continue;}
-                    const auto i=requests.count++;
-                    const auto offset=span.offset+span_offset;
-                    auto& request=requests.native[i];
-                    request.Offset=static_cast<DWORD>(offset);request.OffsetHigh=static_cast<DWORD>(offset>>32);
-                    request.hEvent=events.at(i);
-                    // ReadFile resets this event before starting the operation.
-                    // The preceding batch was fully drained before slot reuse.
-                    requests.bytes[i]=static_cast<DWORD>(std::min<std::size_t>(span.size-span_offset,std::numeric_limits<DWORD>::max()));
-                    impl_->calls.fetch_add(1,std::memory_order_relaxed);
-                    const auto ok=ReadFile(impl_->handle,span.destination+span_offset,requests.bytes[i],nullptr,&request);
-                    const auto error=ok?ERROR_SUCCESS:GetLastError();
-                    if(!ok && error!=ERROR_IO_PENDING)throw std::system_error(error,std::system_category(),"submit buffered batch read");
-                    requests.submitted[i]=true;span_offset+=requests.bytes[i];
-                }
-                for(std::size_t i=0;i<requests.count;++i) {
-                    DWORD actual=0;
-                    const auto ok=GetOverlappedResult(impl_->handle,&requests.native[i],&actual,TRUE);
-                    requests.finished[i]=true;
-                    if(!ok)throw std::system_error(GetLastError(),std::system_category(),"complete buffered batch read");
-                    impl_->physical.fetch_add(actual,std::memory_order_relaxed);
-                    if(actual!=requests.bytes[i])throw std::runtime_error("model file truncated during buffered batch read");
-                    impl_->logical.fetch_add(actual,std::memory_order_relaxed);
-                }
-            }
-        }catch(...){impl_->errors.fetch_add(1,std::memory_order_relaxed);throw;}
-        impl_->nanos.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now()-started).count(),std::memory_order_relaxed);
-        return;
+        std::vector<Impl::BufferedRange> ranges;ranges.reserve(spans.size());
+        for(const auto& span:spans)ranges.push_back({impl_.get(),span});
+        Impl::buffered_reads(ranges);return;
     }
+
     struct DirectEvents {
-        std::array<HANDLE,64> handles{};
+        // Small random rows need enough outstanding I/O to hide device
+        // latency. The existing byte-wave limit still bounds staging RAM.
+        std::array<HANDLE,256> handles{};
         ~DirectEvents(){for(auto handle:handles)if(handle)CloseHandle(handle);}
         HANDLE at(std::size_t i) {
             if(!handles[i])handles[i]=CreateEventW(nullptr,TRUE,FALSE,nullptr);
@@ -566,7 +643,7 @@ void FileRangeReader::read_batch(const std::vector<ReadSpan>& spans) const {
     const auto started = std::chrono::steady_clock::now();
     // Destruction drains requests before releasing their common I/O target.
     BatchStorage storage(*impl_);
-    std::array<std::optional<Request>,64> requests;
+    std::array<std::optional<Request>,256> requests;
     std::size_t count=0;
     try {
         const auto alignment = impl_->alignment;

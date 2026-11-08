@@ -41,6 +41,15 @@ public:
     QsaKvStore& operator=(const QsaKvStore&) = delete;
     BlockPtr write(std::vector<std::uint8_t> bytes, int priority = 0);
     std::shared_ptr<const std::vector<std::uint8_t>> read(const BlockPtr& block);
+    // Read into caller-owned storage without allocating or populating the
+    // pageable read cache. Existing pending/hot images remain valid sources.
+    void read_into(const BlockPtr& block,std::uint8_t* destination,std::size_t bytes);
+    struct ReadRequest {BlockPtr block;std::uint8_t* destination;std::size_t bytes;};
+    // Independent destinations, with all blocks belonging to this store.
+    // Sequential contiguous file/destination spans read directly into caller
+    // storage. Scatter reads retain bounded workspace and amplification;
+    // ordinary random recall keeps its exact ranges.
+    void read_into_batch(const std::vector<ReadRequest>& requests);
     void flush();
     QsaKvStoreStats stats() const;
     const QsaKvStoreConfig& config() const noexcept;

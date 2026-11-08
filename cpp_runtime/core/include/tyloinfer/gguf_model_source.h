@@ -24,8 +24,14 @@ public:
     TensorReader tensor_reader(std::string_view name) const override;
     TensorReader mapped_tensor_reader(std::string_view name) const override;
     TensorBatchReader tensor_batch_reader(std::string_view name) const override;
+    struct NamedReadSpan { std::string_view name; ReadSpan span; };
+    using TensorGroupReader = std::function<void(const std::vector<NamedReadSpan>&)>;
+    // Retains the original file handles and combines independent tensors in
+    // each file's bounded read queue. The reader survives the source object.
+    std::shared_ptr<const TensorGroupReader> tensor_group_reader() const;
     std::optional<TensorFileRange> tensor_file_range(std::string_view name) const override;
     bool supports_parallel_tensor_reads() const noexcept override { return true; }
+    FileReadStats file_read_stats()const noexcept override;
     const std::vector<std::string>& assets() const noexcept override;
     bool has_asset(std::string_view name) const noexcept override;
     std::vector<std::byte> read_asset(std::string_view name) const override;

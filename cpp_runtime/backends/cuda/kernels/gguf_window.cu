@@ -15,11 +15,12 @@ namespace mfq::cuda::gguf {
 namespace {
 // Retire one token's decoded activation after the output rows consume it.
 // The ordinary M=1..4 prepared dots and reduction order remain unchanged.
-template<bool Streaming=false>
+template<bool Streaming=false,bool Aligned8=false>
 struct Iq4WindowPrepared : M1PreparedDot<GGML_TYPE_IQ4_XS> {
     using Base=M1PreparedDot<GGML_TYPE_IQ4_XS>;
     __device__ static Weight load(const void* data,int block,int part) {
-        if constexpr(Streaming)return Base::load_streaming(data,block,part);
+        if constexpr(Aligned8)return Base::template load_aligned_window<Streaming>(data,block,part);
+        else if constexpr(Streaming)return Base::load_streaming(data,block,part);
         else return Base::load(data,block,part);
     }
 };
@@ -111,20 +112,27 @@ bool project_dense_window_q8(ggml_type type, const void* packed, std::uint64_t s
             " activation_reuse=1 warp_first=" + std::to_string(WarpFirst) +
             " weight_first=" + std::to_string(Format==GGML_TYPE_Q5_K && Rows>2 && WarpFirst) +
             " streaming_weight_loads=" + std::to_string(std::is_same_v<Prepared,DirectQ5Group> ||
-                std::is_same_v<Prepared,Iq4WindowPrepared<true>>) +
+                std::is_same_v<Prepared,Iq4WindowPrepared<true>> ||
+                std::is_same_v<Prepared,Iq4WindowPrepared<true,true>>) +
+            " aligned_weight_vector=" + std::to_string(std::is_same_v<Prepared,Iq4WindowPrepared<true,true>> ||
+                std::is_same_v<Prepared,Iq4WindowPrepared<false,true>>) +
             " direct_weight_gather=" + std::to_string(Format==GGML_TYPE_Q6_K) +
             " warps=" + std::to_string(Warps));
     };
     if (type == GGML_TYPE_IQ4_XS) {
         const int warps=canonical_iq4_k_warps(columns);
-        const auto iq4=[&]<int Warps>() {
+        const auto iq4=[&]<int Warps,bool Aligned>() {
             if(stream_iq4_window(columns))
-                launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared<true>,Warps,2,true>();
-            else launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared<>,Warps,4,true>();
+                launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared<true,Aligned>,Warps,2,true>();
+            else launch.template operator()<GGML_TYPE_IQ4_XS,Iq4WindowPrepared<false,Aligned>,Warps,4,true>();
         };
-        if(warps==3)iq4.template operator()<3>();
-        else if(warps==4)iq4.template operator()<4>();
-        else iq4.template operator()<1>();
+        const auto alignment=[&]<bool Aligned>() {
+            if(warps==3)iq4.template operator()<3,Aligned>();
+            else if(warps==4)iq4.template operator()<4,Aligned>();
+            else iq4.template operator()<1,Aligned>();
+        };
+        if((reinterpret_cast<std::uintptr_t>(packed)|stride)&7u)alignment.template operator()<false>();
+        else alignment.template operator()<true>();
     }
     // Cover a whole Q8 group before applying scales, reusing the same
     // contiguous decoder as M=1. Eight-value fragments repeat metadata and
@@ -176,7 +184,9 @@ bool project_dense_split_window_q8(ggml_type type,const void* packed,std::uint64
             "format="+std::to_string(type)+" M="+std::to_string(tokens)+" output_rows="+std::to_string(Rows)+
             " weight_first="+std::to_string(Format==GGML_TYPE_Q5_K && Rows>2 && WarpFirst)+
             " streaming_weight_loads="+std::to_string(Format==GGML_TYPE_Q5_K ||
-                std::is_same_v<Base,Iq4WindowPrepared<true>>)+" split_q8_planes=1 exact_token_tile=1 cached_integer_sum="+
+                std::is_same_v<Base,Iq4WindowPrepared<true>> || std::is_same_v<Base,Iq4WindowPrepared<true,true>>)+
+            " aligned_weight_vector="+std::to_string(std::is_same_v<Base,Iq4WindowPrepared<true,true>> ||
+                std::is_same_v<Base,Iq4WindowPrepared<false,true>>)+" split_q8_planes=1 exact_token_tile=1 cached_integer_sum="+
             std::to_string(Format==GGML_TYPE_Q5_K || Format==GGML_TYPE_Q4_K)+" warps="+std::to_string(Warps));
     };
     const auto count=[&]<int Count>() {
@@ -200,14 +210,18 @@ bool project_dense_split_window_q8(ggml_type type,const void* packed,std::uint64
     else if(type==GGML_TYPE_Q4_K)launch.template operator()<Count,GGML_TYPE_Q4_K,M1PreparedDot<GGML_TYPE_Q4_K>,1,4,true>();
     else if(type==GGML_TYPE_IQ4_XS) {
         const int warps=canonical_iq4_k_warps(columns);
-        const auto iq4=[&]<int Warps>() {
+        const auto iq4=[&]<int Warps,bool Aligned>() {
             if(stream_iq4_window(columns))
-                launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared<true>,Warps,2,true>();
-            else launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared<>,Warps,4,true>();
+                launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared<true,Aligned>,Warps,2,true>();
+            else launch.template operator()<Count,GGML_TYPE_IQ4_XS,Iq4WindowPrepared<false,Aligned>,Warps,4,true>();
         };
-        if(warps==3)iq4.template operator()<3>();
-        else if(warps==4)iq4.template operator()<4>();
-        else iq4.template operator()<1>();
+        const auto alignment=[&]<bool Aligned>() {
+            if(warps==3)iq4.template operator()<3,Aligned>();
+            else if(warps==4)iq4.template operator()<4,Aligned>();
+            else iq4.template operator()<1,Aligned>();
+        };
+        if((reinterpret_cast<std::uintptr_t>(packed)|stride)&7u)alignment.template operator()<false>();
+        else alignment.template operator()<true>();
     }else {
         const int warps=whole_q8_k_warps(columns);
         const auto q5=[&]<int Warps>(){

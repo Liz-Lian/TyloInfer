@@ -25,6 +25,27 @@ int main() {
     check_resident_depth_policy();
     using namespace mfq::engine::mtp;
     {
+        // Initialization invalidates timing, while its completed token
+        // decisions remain real observations. The next valid cycle must be
+        // usable immediately; unrelated gaps and interrupted work cannot
+        // contaminate a newly selected width's cost or yield.
+        v1::BatchDepthPolicy policy({"complete-cycles"},3);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point zero{};
+        const std::array<int,1> full{3},miss{0},two{2},one{1};
+        policy.observe(3,full,zero,zero+std::chrono::seconds(5),false,false);
+        require(!policy.cost(3) && policy.committed_tokens(3)==4.);
+        policy.observe(3,miss,zero+std::chrono::seconds(10),zero+std::chrono::seconds(10)+std::chrono::milliseconds(24),true,false);
+        require(policy.cost(3)==24. && policy.committed_tokens(3)>2.);
+        policy.observe(2,two,zero+std::chrono::seconds(20),zero+std::chrono::seconds(20)+std::chrono::milliseconds(22),true,false);
+        require(policy.cost(2)==22. && policy.committed_tokens(2)==3.);
+        policy.observe(2,miss,zero,zero+std::chrono::hours(1),true,true);
+        require(policy.cost(2)==22. && policy.committed_tokens(2)==3.);
+        policy.observe(2,one,zero+std::chrono::seconds(30),zero+std::chrono::seconds(30)+std::chrono::milliseconds(18),true,false);
+        require(policy.cost(2)==20. && policy.committed_tokens(2)<3.);
+        rejects([&]{policy.committed_tokens(4);});
+    }
+    {
         DepthController block(7,nullptr,7.0,1.03,true,60.0,true);
         DepthController serial(7,nullptr,7.0,1.03,true,60.0);
         require(block.depth()==7 && serial.depth()==1);
@@ -116,6 +137,66 @@ int main() {
             policy.observe(depth,accepted,started,now,true,false);
         }
         require(probes>=3 && policy.cost(0).value_or(100.)<16. && policy.parks()>0);
+    }
+    {
+        // A cache-pressure change slows both execution modes. Recheck scalar
+        // time before suspending drafts that still improve current throughput.
+        for (int maximum : {1, 3, 7}) {
+            v1::BatchDepthPolicy policy({"pressure-drift"}, maximum);
+            using Clock = v1::BatchDepthPolicy::Clock;
+            Clock::time_point now{};
+            const auto step = [&](double plain, double draft) {
+                const int depth = policy.depth();
+                const auto started = now;
+                now += std::chrono::duration_cast<Clock::duration>(
+                    std::chrono::duration<double, std::milli>(depth ? draft : plain));
+                policy.observe(depth, std::array<int, 1>{depth ? 1 : 0}, started, now, true, false);
+                return depth;
+            };
+            for (int i = 0; i < 120; ++i) step(8., 12.);
+            int probes = 0;
+            bool excluded = false;
+            for (int i = 0; i < 180; ++i) {
+                probes += step(30., 45.) == 0;
+                if (!excluded && !policy.cost(0)) {
+                    const auto started = now;
+                    now += std::chrono::seconds(5);
+                    policy.observe(0, std::array<int, 1>{0}, started, now, false, false);
+                    require(!policy.cost(0) && !policy.parks());
+                    excluded = true;
+                }
+            }
+            require(excluded && probes >= 5 && probes <= 20);
+            require(!policy.parks() && policy.cost(0) == 30.);
+        }
+    }
+    {
+        // Confirming a real loss adds one bounded baseline probe. Ordinary
+        // cooldown and cross-request retry retain their existing lengths.
+        v1::BatchDepthPolicy policy({"confirmed-loss"}, 3);
+        using Clock = v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};
+        const auto step = [&](int accepted, bool stable = true) {
+            const int depth = policy.depth();
+            const auto started = now;
+            now += std::chrono::milliseconds(stable ? (depth ? 40 : 10) : 9000);
+            policy.observe(depth, std::array<int, 1>{std::min(depth, accepted)}, started, now, stable, false);
+        };
+        int rounds = 0;
+        while (!policy.parks() && rounds++ < 40) step(0);
+        require(policy.parks() == 1 && rounds < 40);
+        require(policy.remaining() == 128 && policy.cooldown() == 256);
+        step(0, false);
+        require(policy.remaining() == 128);
+        v1::BatchParkMemory memory;
+        memory.parked(policy);
+        for (int i = 0; i < 10; ++i) memory.tick();
+        v1::BatchDepthPolicy next({"next-request"}, 3);
+        memory.seed(next);
+        require(next.remaining() == 118 && next.cooldown() == 256);
+        for (int i = 0; i < 128; ++i) step(0);
+        require(!policy.remaining() && policy.depth() == 3);
+        require(!policy.cost(1) && !policy.cost(2) && !policy.cost(3));
     }
     {
         // Refreshing the ordinary baseline must retain a profitable high-
@@ -215,6 +296,45 @@ int main() {
                 refreshed_competitor=true;
         }
         require(refreshed_competitor && !policy.parks());
+    }
+    {
+        // An initially rejected width becomes useful later in the response.
+        // A cheap dormant width must recover within a short request; a width
+        // too expensive even at full acceptance retains its longer deadline.
+        for(bool costly:{false,true}) {
+            v1::BatchDepthPolicy policy({"acceptance-drift"},3);
+            using Clock=v1::BatchDepthPolicy::Clock;Clock::time_point now{};
+            int recovered=0;double first=0.;
+            while(now<Clock::time_point{}+std::chrono::milliseconds(2500)) {
+                const int depth=policy.depth();const auto started=now;
+                const double age=std::chrono::duration<double,std::milli>(now.time_since_epoch()).count();
+                const double ms=depth==0?15.:depth==1?20.:depth==2?25.:costly?100.:28.;
+                const int accepted=depth==0?0:depth==3?(age>=600.?3:0):1;
+                if(depth==3 && age>=600.){++recovered;if(!first)first=age;}
+                now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(ms));
+                policy.observe(depth,std::array<int,1>{accepted},started,now,true,false);
+            }
+            require(!policy.parks());
+            if(costly)require(recovered==0);
+            else require(recovered>30 && first<1500. && policy.committed_tokens(3)>3.5);
+        }
+    }
+    {
+        // Joint block proposals retain independent width history when that
+        // predictor disables recency refresh. A sequential predictor uses the
+        // new observation after many intervening completed decode cycles.
+        for(bool refresh:{false,true}) {
+            v1::BatchDepthPolicy policy({"yield-confidence"},3,0,refresh);
+            using Clock=v1::BatchDepthPolicy::Clock;Clock::time_point now{};
+            const auto observe=[&](int depth,int accepted) {
+                const auto started=now;now+=std::chrono::milliseconds(20);
+                policy.observe(depth,std::array<int,1>{accepted},started,now,true,false);
+            };
+            for(int i=0;i<3;++i)observe(3,0);
+            for(int i=0;i<40;++i)observe(1,1);
+            observe(3,3);
+            require(refresh?policy.committed_tokens(3)>3.5:policy.committed_tokens(3)<2.5);
+        }
     }
     {
         GenerationStats stats;
