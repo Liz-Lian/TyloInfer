@@ -8,7 +8,6 @@
 #include "dspark.h"
 #include "engine/models/deepseek_v41/policy.h"
 
-#include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/mtp.h"
 #include "ops.h"
 

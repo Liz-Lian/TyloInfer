@@ -13,7 +13,6 @@
 #endif
 #include "engine/models/deepseek_v41/causal_lm.h"
 
-#include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/prompt.h"
@@ -918,13 +917,15 @@ struct Block final {
             [&](DenseTensor attended) { return output_projection(attended); });
     }
 
-    DenseTensor forward_context(SharedState& shared,
+    DenseTensor forward(SharedState& shared,
 #ifndef TYLOINFER_NATIVE_CUDA
-            CudaExecutionContext& execution,
+                   CudaExecutionContext &execution,
 #endif
-            DenseTensor hidden,
-            const BlockContext& context) {
-        if(context.confirmed_prefix>0) {
+                   DenseTensor hidden, DenseTensor positions,
+                   std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
+                   const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt,
+                   std::int64_t confirmed_prefix = 0) {
+        if(confirmed_prefix>0) {
             // A joint pass writes pending and draft rows. Protect their whole
             // physical window; rollback retains the confirmed prefix as well.
             begin_speculative(shared, hidden.size(1));
@@ -933,23 +934,8 @@ struct Block final {
                 shared.engram_hash->begin_speculative();
             }
         }
-        TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
+        TYLOINFER_RUNTIME_CHECK(confirmed_prefix == 0 || supports_speculation(),
                               "block does not support speculative verification");
-        return forward(shared,
-#ifndef TYLOINFER_NATIVE_CUDA
-                       execution,
-#endif
-                       std::move(hidden), context.positions, context.cache_position,
-                       context.sequence_lengths, context.cache_positions);
-    }
-
-    DenseTensor forward(SharedState& shared,
-#ifndef TYLOINFER_NATIVE_CUDA
-                   CudaExecutionContext &execution,
-#endif
-                   DenseTensor hidden, DenseTensor positions,
-                   std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
-                   const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
         TYLOINFER_RUNTIME_CHECK(layer_state.current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&

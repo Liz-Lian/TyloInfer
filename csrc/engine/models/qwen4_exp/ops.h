@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/causal_model_ops.h"
+#include "engine/ops.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/metadata.h"
 #include "engine/metrics.h"
@@ -149,13 +149,25 @@ struct Model : tyloi::models::CausalModel {
         return CudaScope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
     }
     ::tyloi::DenseTensor device_ids(::tyloi::DenseTensor ids) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return tyloi::ops::contiguous(tyloi::ops::copy(
+            tyloi::ops::cast(ids, ::tyloi::kInt64),
+            ::tyloi::Device(::tyloi::kCUDA, execution->config.layer_placement.primary_device()))).dense();
+#else
         return execution->executor().collectives()
             .copy(ids.to(::tyloi::kInt64), execution->config.layer_placement.primary_device())
             .contiguous();
+#endif
     }
     ::tyloi::DenseTensor embed_tokens(::tyloi::DenseTensor ids) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return tyloi::ops::measure("model.embed", ids.device(), [&] {
+            return tyloi::ops::embedding(ids, embed);
+        }).dense();
+#else
         return execution->executor().profiler().measure(
-            "model.embed", [&] { return quant_embedding_lookup(*embed, ids); });
+            "model.embed", [&] { return quant_embedding_lookup(embed, ids); });
+#endif
     }
     std::int64_t hidden_size() const noexcept { return metadata.hidden_size; }
     std::int64_t max_position_embeddings() const noexcept { return config.maximum; }

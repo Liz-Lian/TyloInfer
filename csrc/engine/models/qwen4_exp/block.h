@@ -6,7 +6,7 @@
 #include "engine/models/qwen4_exp/model.h"
 #include "engine/models/qwen4_exp/moe.h"
 #include "engine/models/qwen4_exp/config.h"
-#include "engine/models/common/causal_model_ops.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace tyloi::cuda::qwen4_exp {
@@ -114,54 +115,100 @@ struct Qwen4Block final {
         if (ple)
             ple->rollback(state.ple, keep);
     }
-    DenseTensor execute(LayerState& state, CudaExecutionContext &execution, DenseTensor x, const DenseTensor &ids,
+    DenseTensor execute(LayerState& state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                   CudaExecutionContext &execution,
+#endif
+                   DenseTensor x, const DenseTensor &ids,
                    const DenseTensor &positions, const DenseTensor &full_positions, int64_t confirmed = 0,const DenseTensor& host_ids = {}) {
         state.retained_prefix=confirmed>0 && ids.size(1)<=8;
-        auto& profiler=execution.executor().profiler();
-        if(ple)x=x+profiler.measure("prefill.ple",[&] {
+        const auto measure=[&](const char* name,auto&& operation) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            return ::tyloi::ops::measure(name,std::forward<decltype(operation)>(operation));
+#else
+            return execution.executor().profiler().measure(name,std::forward<decltype(operation)>(operation));
+#endif
+        };
+        if(ple)x=x+measure("prefill.ple",[&] {
             return ple->forward(state.ple, x,ids,true,confirmed,host_ids,full_positions.size(-1)-ids.size(1));
         });
-        auto [attention_input,attention_residual,attention_gate]=profiler.measure("prefill.gr_attention",[&] {
+        auto [attention_input,attention_residual,attention_gate]=measure("prefill.gr_attention",[&] {
             return attention_gr.pre(x);
         });
         auto attention_output=gdn
-            ? profiler.measure("prefill.gdn",[&] {
+            ? measure("prefill.gdn",[&] {
                 return gdn->forward(state.gdn, attention_input,true,confirmed,full_positions.size(-1)-ids.size(1));
             })
-            : profiler.measure("prefill.qsa",[&] {
+            : measure("prefill.qsa",[&] {
                 return qsa->forward(*state.qsa, attention_input,positions,full_positions,true);
             });
-        auto [ffn_input,ffn_residual,ffn_gate]=profiler.measure("prefill.gr_ffn_pre",[&] {
+        auto [ffn_input,ffn_residual,ffn_gate]=measure("prefill.gr_ffn_pre",[&] {
             return ffn_gr.pre_after(attention_output,attention_residual,attention_gate);
         });
         attention_output={};
-        auto ffn_output=profiler.measure("prefill.ffn",[&] {return ffn.forward(
+        auto ffn_output=measure("prefill.ffn",[&] {return ffn.forward(
 #ifndef TYLOINFER_NATIVE_CUDA
             execution,
 #endif
             ffn_input);});
-        return profiler.measure("prefill.gr_ffn_post",[&] {return ffn_gr.post(ffn_output,ffn_residual,ffn_gate);});
+        return measure("prefill.gr_ffn_post",[&] {return ffn_gr.post(ffn_output,ffn_residual,ffn_gate);});
     }
-    DenseTensor forward_context(LayerState& state, CudaExecutionContext &execution, DenseTensor x, const BlockContext &context) {
-        return execute(state, execution, std::move(x), context.token_ids, context.positions,
-                       context.full_positions, context.confirmed_prefix,context.host_token_ids);
-    }
-    DenseTensor prefill_ple(LayerState& state, CudaExecutionContext& execution,DenseTensor x,const BlockContext& context) {
-        if(ple)x=x+execution.executor().profiler().measure("prefill.ple",[&] {
-            return ple->forward(state.ple, x,context.token_ids,true,0,context.host_token_ids);
+    DenseTensor prefill_ple(LayerState& state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                           CudaExecutionContext& execution,
+#endif
+                           DenseTensor x,const DenseTensor& ids,const DenseTensor& host_ids) {
+        if(ple)x=x+
+#ifdef TYLOINFER_NATIVE_CUDA
+            ::tyloi::ops::measure
+#else
+            execution.executor().profiler().measure
+#endif
+            ("prefill.ple",[&] {
+            return ple->forward(state.ple, x,ids,true,0,host_ids);
         });
         return x;
     }
-    DenseTensor prefill_attention_core(LayerState& state, CudaExecutionContext& execution,const DenseTensor& input,const BlockContext& context) {
-        return gdn?
-            execution.executor().profiler().measure("prefill.gdn",[&] {return gdn->forward(state.gdn, input,true,0);}):
-            execution.executor().profiler().measure("prefill.qsa",[&] {return qsa->forward(*state.qsa, input,context.positions,context.full_positions,true);});
+    DenseTensor prefill_attention_core(LayerState& state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                                      CudaExecutionContext& execution,
+#endif
+                                      const DenseTensor& input,const DenseTensor& positions,const DenseTensor& full_positions) {
+        const auto measure=[&](const char* name,auto&& operation) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            return ::tyloi::ops::measure(name,std::forward<decltype(operation)>(operation));
+#else
+            return execution.executor().profiler().measure(name,std::forward<decltype(operation)>(operation));
+#endif
+        };
+        return gdn?measure("prefill.gdn",[&] {return gdn->forward(state.gdn, input,true,0);}):
+            measure("prefill.qsa",[&] {return qsa->forward(*state.qsa, input,positions,full_positions,true);});
     }
-    GatedResidual::Result prefill_attention(LayerState& state, CudaExecutionContext& execution,DenseTensor x,const BlockContext& context) {
-        x=prefill_ple(state, execution,std::move(x),context);
-        auto mix=execution.executor().profiler().measure("prefill.gr_attention",[&] {return attention_gr.pre(x);});
-        auto attention_output=prefill_attention_core(state, execution,mix.mixed,context);
-        return execution.executor().profiler().measure("prefill.gr_ffn_pre",[&] {
+    GatedResidual::Result prefill_attention(LayerState& state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                                            CudaExecutionContext& execution,
+#endif
+                                            DenseTensor x,const DenseTensor& ids,const DenseTensor& host_ids,
+                                            const DenseTensor& positions,const DenseTensor& full_positions) {
+        const auto measure=[&](const char* name,auto&& operation) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            return ::tyloi::ops::measure(name,std::forward<decltype(operation)>(operation));
+#else
+            return execution.executor().profiler().measure(name,std::forward<decltype(operation)>(operation));
+#endif
+        };
+        x=prefill_ple(state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                      execution,
+#endif
+                      std::move(x),ids,host_ids);
+        auto mix=measure("prefill.gr_attention",[&] {return attention_gr.pre(x);});
+        auto attention_output=prefill_attention_core(state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                                                    execution,
+#endif
+                                                    mix.mixed,positions,full_positions);
+        return measure("prefill.gr_ffn_pre",[&] {
             return ffn_gr.pre_after(attention_output,mix.residual,mix.gate);
         });
     }

@@ -61,20 +61,15 @@ DenseTensor forward_layer(Model& model, State& state, const DenseTensor& ids, in
             ? positions
             : tyloi::ops::copy(positions, ::tyloi::Device(::tyloi::kCUDA, block.cuda_device)).dense();
         block.set_token_ids(*state.shared, local_ids);
-        BlockContext context;
-        context.token_ids=local_ids;
-        context.host_token_ids=host_ids;
-        context.positions=local_pos;
-        context.full_positions=local_pos;
-        context.cache_position=state.cache_pos;
         hidden = block.cpu_offloaded
             ? hidden.to(::tyloi::kCPU).contiguous()
             : tyloi::ops::copy(hidden, ::tyloi::Device(::tyloi::kCUDA, block.cuda_device)).dense();
-        hidden = block.forward_context(*state.shared,
+        hidden = block.forward(*state.shared,
 #ifndef TYLOINFER_NATIVE_CUDA
                                        *model.execution,
 #endif
-                                       std::move(hidden), context);
+                                       std::move(hidden), local_pos, state.cache_pos,
+                                       mfq_nullopt, mfq_nullopt, 0);
 #ifdef TYLOINFER_NATIVE_CUDA
         if(selected)capture.report("deepseek_v41.layer."+std::to_string(layer));
 #else

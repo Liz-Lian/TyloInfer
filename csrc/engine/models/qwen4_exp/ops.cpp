@@ -484,13 +484,15 @@ struct Qwen4MtpGraph {
                     const auto make_input=[&](const DenseTensor& hidden_rows,const DenseTensor& token_rows,int64_t rows) {
                         auto embeddings=predictor.embed(token_rows);
 #ifdef TYLOINFER_NATIVE_CUDA
-                        auto e=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.embedding_fusion,rms_norm(embeddings,dynamic_cast<const DenseTensor&>(*predictor.embedding_norm)+1,predictor.config.eps));
-                        auto h=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.hidden_fusion,rms_norm(hidden_rows,dynamic_cast<const DenseTensor&>(*predictor.hidden_norm)+1,predictor.config.eps)
+                        auto e=::tyloi::ops::project(rms_norm(embeddings,predictor.embedding_norm.dense()+1,predictor.config.eps),
+                                                     predictor.embedding_fusion).dense();
+                        auto h=::tyloi::ops::project(rms_norm(hidden_rows,predictor.hidden_norm.dense()+1,predictor.config.eps)
+                            .reshape({1,rows,predictor.config.streams,predictor.config.hidden}),predictor.hidden_fusion).dense();
 #else
                         auto e=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.embedding_fusion,rms_norm(embeddings,predictor.embedding_norm+1,predictor.config.eps));
                         auto h=execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*predictor.hidden_fusion,rms_norm(hidden_rows,predictor.hidden_norm+1,predictor.config.eps)
-#endif
                             .reshape({1,rows,predictor.config.streams,predictor.config.hidden}));
+#endif
                         return (h+e.unsqueeze(-2)).reshape({1,rows,predictor.config.streams*predictor.config.hidden});
                     };
                     if(scalar_chain) {
@@ -580,13 +582,28 @@ Predictor::Predictor(Predictor&&) noexcept = default;
 Predictor& Predictor::operator=(Predictor&&) noexcept = default;
 
 DenseTensor Predictor::embed(DenseTensor ids) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto normalized=::tyloi::ops::contiguous(::tyloi::ops::copy(
+        ::tyloi::ops::cast(ids,::tyloi::kInt64),::tyloi::Device(::tyloi::kCUDA,primary)));
+    return ::tyloi::ops::measure("model.embed",normalized.device(),[&] {
+        return ::tyloi::ops::embedding(normalized,embedding);
+    }).dense();
+#else
     return tyloi::cuda::embed(*embedding, std::move(ids), execution->executor().collectives(),
                            execution->executor().profiler(), primary);
+#endif
 }
 
 DenseTensor Predictor::logits(DenseTensor hidden) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto projected=::tyloi::ops::measure("model.lm_head",hidden.device(),[&] {
+        return ::tyloi::ops::project(hidden,output);
+    });
+    return ::tyloi::ops::softcap(projected,softcap).dense();
+#else
     return tyloi::cuda::logits(*output, std::move(hidden), execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)),
                             execution->executor().profiler(), softcap);
+#endif
 }
 
 void Predictor::reset(tyloi::models::MtpState& value, int64_t next_batch) const {
@@ -674,23 +691,25 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(tyloi::models::MtpState&
     {
         DenseTensor e;
         {
-            e = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*embedding_fusion,
 #ifdef TYLOINFER_NATIVE_CUDA
-                                    rms_norm(embeds, dynamic_cast<const DenseTensor&>(*embedding_norm) + 1, config.eps));
+            e = ::tyloi::ops::project(rms_norm(embeds, embedding_norm.dense() + 1, config.eps),
+                                      embedding_fusion).dense();
 #else
+            e = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*embedding_fusion,
                                     rms_norm(embeds, embedding_norm + 1, config.eps));
 #endif
         }
         // Release prior-stage tensors before later projections allocate.
         embeds = {};
         DenseTensor streams;
-        streams = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*hidden_fusion,
 #ifdef TYLOINFER_NATIVE_CUDA
-                                         rms_norm(hidden, dynamic_cast<const DenseTensor&>(*hidden_norm) + 1, config.eps)
+        streams = ::tyloi::ops::project(rms_norm(hidden, hidden_norm.dense() + 1, config.eps)
+                                           .reshape({b, t, config.streams, config.hidden}),hidden_fusion).dense();
 #else
+        streams = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*hidden_fusion,
                                          rms_norm(hidden, hidden_norm + 1, config.eps)
-#endif
                                              .reshape({b, t, config.streams, config.hidden}));
+#endif
         x = (streams + e.unsqueeze(-2)).reshape({b, t, config.streams * config.hidden});
     }
     DenseTensor multi;
@@ -962,12 +981,15 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
 
 ::tyloi::DenseTensor qwen4_forward(qwen4_exp::Model& model, qwen4_exp::State& state,
                                    tyloi::models::Input input) {
+#ifndef TYLOINFER_NATIVE_CUDA
     auto scope = model.execution_scope();
+#endif
     const auto primary = model.execution->config.layer_placement.primary_device();
     tyloi::models::require_model(bool(input.ids), "Qwen4 forward requires token ids");
     auto ids = model.device_ids(dynamic_cast<const DenseTensor&>(*input.ids));
     auto embeddings = input.embeddings
-        ? model.execution->executor().collectives().copy(dynamic_cast<const DenseTensor&>(*input.embeddings), primary).contiguous()
+        ? tyloi::ops::contiguous(tyloi::ops::copy(input.embeddings,
+            ::tyloi::Device(::tyloi::kCUDA, primary))).dense()
         : model.embed_tokens(ids);
     const auto B = ids.size(0), T = ids.size(1);
     tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
@@ -1008,23 +1030,24 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
                                      (current.dim() == 3 && current.size(0) == 3 && current.size(1) == B)) &&
                                      current.size(-1) == T,
                                  "Qwen4 positions require [T], [3,T], [4,T], [3,B,T] or [4,B,T]");
-    DenseTensor host_ids, cpu_positions, cpu_cache_positions;
+    DenseTensor host_ids, cpu_positions;
     const bool pinned = model.execution->config.cache.pipeline ||
                         model.execution->config.dense_cpu_layer_count > 0;
     if (pinned) {
         host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         cpu_positions = current.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
-        cpu_cache_positions = cache_positions.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         for (std::size_t i=0;i<model.blocks.size();++i)
             model.blocks[i]->prefetch_token_ids(*state.layers[i], host_ids);
     }
     auto hidden = model.repeat_hidden(
-        model.execution->executor().collectives().copy(embeddings, primary).contiguous(), model.metadata.hc_mult);
+        tyloi::ops::contiguous(tyloi::ops::copy(embeddings,
+            ::tyloi::Device(::tyloi::kCUDA, primary))).dense(), model.metadata.hc_mult);
     state.begin_forward();
     const auto trace_layer = [&] {
         if (!input.trace) return;
         input.trace->push_back(
-            std::make_shared<DenseTensor>(model.execution->executor().collectives().copy(hidden, primary).to(::tyloi::kFloat32).clone()));
+            std::make_shared<DenseTensor>(tyloi::ops::copy(hidden,
+                ::tyloi::Device(::tyloi::kCUDA, primary)).dense().to(::tyloi::kFloat32).clone()));
     };
     if (input.trace)
         input.trace->push_back(std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).clone()));
@@ -1033,32 +1056,26 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
         MfqCudaGuard guard(block->cuda_device);
         auto local_ids = block->cpu_offloaded
             ? host_ids
-            : model.execution->executor().collectives().copy(ids, block->cuda_device);
+            : tyloi::ops::copy(ids, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
         auto local_pos = block->cpu_offloaded
             ? cpu_positions
-            : model.execution->executor().collectives().copy(current, block->cuda_device);
-        auto local_cache_positions = block->cpu_offloaded
-            ? cpu_cache_positions
-            : model.execution->executor().collectives().copy(cache_positions, block->cuda_device);
-        tyloi::cuda::BlockContext context;
-        context.token_ids = local_ids;
-        context.host_token_ids = host_ids;
-        context.positions = local_pos;
-        context.full_positions = model.execution->executor().collectives().copy(full_positions, block->cuda_device);
-        context.cache_position = state.cache_pos;
-        context.confirmed_prefix = confirmed;
-        context.planned_kv_length = input.kv_length;
-        context.decode_attention_parts = input.attention_parts;
-        context.cache_positions = local_cache_positions;
+            : tyloi::ops::copy(current, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
+        auto local_full_positions = tyloi::ops::copy(full_positions,
+            ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
         hidden = block->cpu_offloaded
             ? hidden.to(::tyloi::kCPU).contiguous()
-            : model.execution->executor().collectives().copy(hidden, block->cuda_device);
-        hidden = block->forward_context(*state.layers[i], *model.execution, std::move(hidden), context);
+            : tyloi::ops::copy(hidden, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
+        hidden = block->execute(*state.layers[i],
+#ifndef TYLOINFER_NATIVE_CUDA
+                                *model.execution,
+#endif
+                                std::move(hidden), local_ids, local_pos, local_full_positions,
+                                confirmed, host_ids);
         trace_layer();
     }
     state.finish_forward(full_positions, B, T);
     state.cache_pos += T;
-    hidden = model.execution->executor().collectives().copy(hidden, primary);
+    hidden = tyloi::ops::copy(hidden, ::tyloi::Device(::tyloi::kCUDA, primary)).dense();
     if (input.raw_hidden) *input.raw_hidden = hidden;
     auto finalized = qwen4_finalize_hidden(model, std::move(hidden), B, T);
     return finalized;
@@ -2506,11 +2523,14 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                 for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
                     if(cancelled && cancelled())return {};
                     const auto count=std::min(compute_chunk,tokens-begin);
-                    BlockContext context;
-                    context.token_ids=ids.narrow(1,begin,count);
-                    context.host_token_ids=cpu_ids.narrow(1,begin,count);
-                    block->prefetch_token_ids(layer_state,context.host_token_ids);
-                    auto input=qwen_block.prefill_ple(layer_state,*model.execution,hidden.narrow(1,begin,count),context);
+                    auto chunk_ids=ids.narrow(1,begin,count);
+                    auto host_ids=cpu_ids.narrow(1,begin,count);
+                    block->prefetch_token_ids(layer_state,host_ids);
+                    auto input=qwen_block.prefill_ple(layer_state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                        *model.execution,
+#endif
+                        hidden.narrow(1,begin,count),chunk_ids,host_ids);
                     if(begin==0)source=::tyloi::cuda::empty(hidden.sizes(),input.options());
                     source.narrow(1,begin,count).copy_(input);
                 }
@@ -2531,18 +2551,20 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
             if(bulk_gdn && static_cast<qwen4_exp::Qwen4Block&>(*block).gdn)continue;
             const auto count=std::min(compute_chunk,tokens-begin);
             profiler.enabled=restore.enabled;
-            BlockContext context;
-            context.token_ids=ids.narrow(1,begin,count);
-            context.host_token_ids=cpu_ids.narrow(1,begin,count);
-            context.positions=prepared.narrow(-1,begin,count);
-            context.full_positions=prepared_full.narrow(-1,0,cache_start+begin+count);
-            context.cache_position=cache_start+begin;
-            block->prefetch_token_ids(layer_state,context.host_token_ids);
+            auto chunk_ids=ids.narrow(1,begin,count);
+            auto host_ids=cpu_ids.narrow(1,begin,count);
+            auto positions=prepared.narrow(-1,begin,count);
+            auto full_positions=prepared_full.narrow(-1,0,cache_start+begin+count);
+            block->prefetch_token_ids(layer_state,host_ids);
             auto input=hidden.narrow(1,begin,count);
             DenseTensor output;
             if(bulk_gr) {
                 auto& qwen_block=static_cast<qwen4_exp::Qwen4Block&>(*block);
-                auto attention_chunk=qwen_block.prefill_attention_core(layer_state,*model.execution,attention_result.mixed.narrow(1,begin,count),context);
+                auto attention_chunk=qwen_block.prefill_attention_core(layer_state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                    *model.execution,
+#endif
+                    attention_result.mixed.narrow(1,begin,count),positions,full_positions);
                 if(!attention_output.defined()) {
                     auto shape=attention_chunk.sizes().vec();shape[1]=tokens;
                     attention_output=::tyloi::cuda::empty(shape,attention_chunk.options());
@@ -2551,7 +2573,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                 continue;
             } else if(batch_experts) {
                 auto& qwen_block=static_cast<qwen4_exp::Qwen4Block&>(*block);
-                auto mix=qwen_block.prefill_attention(layer_state,*model.execution,input,context);
+                auto mix=qwen_block.prefill_attention(layer_state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                    *model.execution,
+#endif
+                    input,chunk_ids,host_ids,positions,full_positions);
                 if(!ffn_inputs.defined()) {
                     ffn_inputs=::tyloi::cuda::empty({1,tokens,model.hidden_size()},mix.mixed.options().dtype(::tyloi::kFloat16));
                     ffn_gate=::tyloi::cuda::empty({1,tokens,mix.gate.size(-1)},mix.gate.options());
@@ -2560,7 +2586,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                 ffn_inputs.narrow(1,begin,count).copy_(mix.mixed.to(::tyloi::kFloat16));
                 ffn_gate.narrow(1,begin,count).copy_(mix.gate);
                 output=std::move(mix.residual);
-            } else output=block->forward_context(layer_state,*model.execution,input,context);
+            } else output=block->execute(layer_state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                *model.execution,
+#endif
+                input,chunk_ids,positions,full_positions,0,host_ids);
             // Retain the original rounding at every layer boundary. The next
             // chunk is independent of this input once its cache writes retire.
             TYLOINFER_RUNTIME_CHECK(output.sizes()==input.sizes(),"layer-major decoder changed hidden shape");
@@ -2770,9 +2800,11 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     throw std::invalid_argument("model has no multimodal component");
 }
 
-std::shared_ptr<::tyloi::Tensor> Model::embedding(const ::tyloi::Tensor& ids, int) const {
+::tyloi::Tensor Model::embedding(const ::tyloi::Tensor& ids, int) const {
+#ifndef TYLOINFER_NATIVE_CUDA
     auto scope = execution_scope();
-    return std::make_shared<::tyloi::DenseTensor>(embed_tokens(device_ids(dynamic_cast<const ::tyloi::DenseTensor&>(ids))));
+#endif
+    return std::make_shared<::tyloi::DenseTensor>(embed_tokens(device_ids(ids.dense())));
 }
 
 ::tyloi::Tensor Model::normalize(const ::tyloi::Tensor& hidden, std::int64_t, std::int64_t) const {
@@ -2784,10 +2816,16 @@ std::shared_ptr<::tyloi::Tensor> Model::embedding(const ::tyloi::Tensor& ids, in
 }
 
 ::tyloi::Tensor Model::logits(const ::tyloi::Tensor& hidden, bool) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
+        return tyloi::ops::project(hidden, lm_head);
+    });
+#else
     return execution->executor().profiler().measure("model.lm_head", [&] {
         return execution->executor().projector(execution->executor().mode().ffn,
             model_parallel_primary_device(execution->config)).run(lm_head, hidden.dense());
     });
+#endif
 }
 
 std::shared_ptr<::tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
