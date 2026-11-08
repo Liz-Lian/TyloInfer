@@ -3,7 +3,6 @@
 #include "engine/load.h"
 #include "engine/weights/placement.h"
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/scope.h"
 namespace tyloi::cuda { class KvOffloadStore; class KvMemoryManager; }
 namespace tyloi::weights { class Cache; }

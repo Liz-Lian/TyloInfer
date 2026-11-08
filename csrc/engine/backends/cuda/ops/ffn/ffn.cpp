@@ -13,7 +13,6 @@
 #include "engine/weights/moe/cached_source_internal.h"
 #endif
 #include "engine/backends/cuda/executor/tq_moe.h"
-#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -26,9 +25,7 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <climits>
-#include <cstdio>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -85,59 +82,6 @@ bool expert_parallel(const Ffn& f) {
     return true;
 #else
     return false;
-#endif
-}
-
-#ifdef TYLOINFER_NATIVE_CUDA
-void Ffn::prefetch(const DenseTensor& x,
-        MfqOptional<DenseTensor> input_ids) const {
-#else
-void Ffn::prefetch(const DenseTensor& x, Executor& executor, const Mode& mode, bool enabled,
-        MfqOptional<DenseTensor> input_ids) const {
-#endif
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto& executor = Executor::current();
-    const auto& mode = Executor::current_ffn();
-#endif
-    const auto& f = *this;
-    const auto project_ = executor.projector(mode);
-    auto pipeline=f.moe_pipeline.lock();
-#ifdef TYLOINFER_NATIVE_CUDA
-    if(!moe_ffn_neighbor_prefetch_enabled(pipeline) ||
-#else
-    if(!enabled || !pipeline ||
-#endif
-            x.dim()<2 || x.numel()/x.size(-1)>32)return;
-    ::tyloi::DenseTensor ids;
-    // Cover each row's leading candidates without reading low-confidence
-    // tails just because the leading experts are already cached.
-    constexpr int64_t candidates_per_row=4;
-    if(f.moe_hash_ids) {
-        if(!input_ids.has_value() || !input_ids.value().numel())return;
-        ids=dynamic_cast<const DenseTensor&>(*f.moe_hash_ids).index_select(0,input_ids.value().reshape({-1}).to(::tyloi::kCUDA,::tyloi::kInt64));
-        ids=ids.narrow(1,0,std::min(candidates_per_row,ids.size(1))).to(::tyloi::kInt32).contiguous();
-    }else {
-        auto row=x.reshape({-1,x.size(-1)}).to(::tyloi::kFloat32);
-        const auto* router = dynamic_cast<const DenseTensor*>(f.moe_router.get());
-        auto logits=(router ? ::tyloi::cuda::matmul(row,router->transpose(0,1)) :
-            project_.run(*f.moe_router, row)).contiguous();
-        ids=moe_topk_cuda(logits,std::min({int64_t(f.moe_top_k),logits.size(-1),candidates_per_row}),f.moe_use_sigmoid,
-            f.moe_use_sqrt_softplus,f.moe_normalize,f.moe_delayed_softmax,
-            f.moe_router_bias?MfqOptional<::tyloi::DenseTensor>(dynamic_cast<const DenseTensor&>(*f.moe_router_bias)):mfq_nullopt,
-            1e-20,f.moe_router_scale).at(0).to(::tyloi::kInt32).contiguous();
-    }
-    // Visit each row's highest-ranked candidate before lower ranks, so one
-    // token cannot consume the entire speculative read budget for a batch.
-    static std::atomic<bool> reported{false};
-    if(!reported.load(std::memory_order_relaxed) && !reported.exchange(true,std::memory_order_relaxed))
-        std::fprintf(stderr,"moe_ssd_router_candidates scope=first_forecast rows=%lld candidates_per_row=%lld\n",
-            static_cast<long long>(ids.size(0)),static_cast<long long>(ids.size(1)));
-    auto task=prefetch_moe_ffn_pipeline(pipeline,ids.transpose(0,1).contiguous().reshape({1,-1}));
-    if(auto* window=tyloi::cuda::DecodeWindow::recording())window->enroll(std::move(task));
-    else task.serve();
-#else
-    return;
 #endif
 }
 
@@ -371,13 +315,6 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
         DenseTensor shared_gate_logits;
         bool projection_bundle_prefetched = false;
         const bool sharded_experts = expert_parallel(f);
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-        auto pipeline=f.moe_pipeline.lock();
-        const bool use_pipeline=bool(pipeline) &&
-            mmq_.mode == KlMmqMode::Default && !mode_.materialized;
-#else
-        const bool use_pipeline=false;
-#endif
         struct ExpertOutput {
             DenseTensor values;
             bool reduced;
@@ -389,7 +326,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
         // wait, preserving the existing execution semantics.
         auto prefetch_projection_bundle = [&]() {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-            if (use_pipeline || !options_.bundle_prefetch || cpu_moe_down ||
+            if (!options_.bundle_prefetch || cpu_moe_down ||
                 mode_.batch_serial) {
                 return false;
             }
@@ -452,7 +389,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                         1e-20, f.moe_router_scale);
                 });
             }
-            if (!use_pipeline && !tq_routed) {
+            if (!tq_routed) {
                 // Dense (source-precision) banks are not MFE cohorts, so
                 // their expert count comes from the bank itself.
                 const auto routed_experts =
@@ -469,7 +406,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
         }
         DenseTensor shared_half;
         {
-            if (tyloi::mfq_compat_enabled && !sharded_experts && !use_pipeline && !tq_routed) {
+            if (tyloi::mfq_compat_enabled && !sharded_experts && !tq_routed) {
                 if (f.moe_split_gate_up) {
                     if (options_.delayed_readback) {
                         if (moe_gate) tyloi::cuda::prefetch_experts(*moe_gate, route, true);
@@ -501,7 +438,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                         .contiguous();
                 });
             }
-            if (tyloi::mfq_compat_enabled && !sharded_experts && !use_pipeline && !tq_routed && options_.delayed_readback) {
+            if (tyloi::mfq_compat_enabled && !sharded_experts && !tq_routed && options_.delayed_readback) {
                 projection_bundle_prefetched = prefetch_projection_bundle();
                 if (!projection_bundle_prefetched) {
                     if (f.moe_split_gate_up) {
@@ -609,7 +546,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                 experts = {reduced, true};
             }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-            else if (f.moe_ungated_experts && !use_pipeline) {
+            else if (f.moe_ungated_experts) {
                 // relu-squared experts store Up and Down only: one Up matmul,
                 // no gate projection, and the shared expert stays outside
                 // the routed latent space.
@@ -656,12 +593,6 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mod
                             true};
                 else
                     experts = {down_pair, false};
-            }
-            else if(use_pipeline) {
-                auto result=run_moe_ffn_pipeline(pipeline,project_,routed_input,selected.at(0),
-                    selected.at(1),mode_.batch_serial,mode_.tile,mode_.tiles);
-                if(result.dim()==3)result=moe_weighted_reduce_cuda(result,selected.at(1));
-                experts = {finish_latent(result),true};
             }
             else if (sharded_experts) {
                 auto result = profiler.measure("moe.sharded_experts", [&] {

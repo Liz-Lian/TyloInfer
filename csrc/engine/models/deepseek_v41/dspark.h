@@ -7,9 +7,7 @@ class ModelSource;
 class Tensor;
 namespace models { struct Mtp; namespace deepseek_v41 { struct Config; } }
 }
-#ifdef TYLOINFER_NATIVE_CUDA
-namespace tyloi::cuda { class Pipelines; }
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
 struct CudaExecutionContext;
 #endif
 namespace tyloi::weights { struct Loader; }
@@ -17,9 +15,7 @@ namespace tyloi::weights { struct Loader; }
 namespace tyloi::cuda::deepseek_v41_runtime {
 
 std::unique_ptr<tyloi::models::Mtp> load_dspark_if_present(
-#ifdef TYLOINFER_NATIVE_CUDA
-    tyloi::cuda::Pipelines& pipelines,
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext& execution,
 #endif
     const tyloi::weights::Loader& weights,

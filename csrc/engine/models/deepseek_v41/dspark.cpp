@@ -83,8 +83,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         return std::make_unique<DsState>(*this);
     }
 
-    static std::unique_ptr<Block> load_stage(Pipelines& pipelines,
-                                             const tyloi::weights::Loader& weights,
+    static std::unique_ptr<Block> load_stage(const tyloi::weights::Loader& weights,
                                              const CommonConfig &config, std::int64_t stage) {
         const auto prefix = "predictor.stage." + std::to_string(stage) + ".";
         auto result = std::make_unique<Block>();
@@ -169,7 +168,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
             weights.weight(prefix + "attention.output_b.weight");
         // Predictor bundles must not extend the backbone's final-layer marker:
         // residency updates also run when ordinary decoding skips DSpark.
-        result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.",
+        result->mlp = load_moe_at(weights, config, prefix + "mlp.",
                                   -1 - stage, config.dspark_top_k);
 #ifdef TYLOINFER_NATIVE_CUDA
         result->rope = ::tyloi::ops::tail_rope_table(config.max_position_embeddings,
@@ -248,9 +247,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     }
 
     static std::optional<DeepseekV41Dspark> load_if_present(
-#ifdef TYLOINFER_NATIVE_CUDA
-        Pipelines& pipelines,
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
         CudaExecutionContext &execution,
 #endif
         const tyloi::weights::Loader& weights, const CommonConfig &config,
@@ -293,13 +290,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
             weights.weight(last + "confidence.projection.weight");
         result.stages.reserve(static_cast<std::size_t>(result.config.n_mtp_layers));
         for (std::int64_t stage = 0; stage < result.config.n_mtp_layers; ++stage) {
-            result.stages.push_back(load_stage(
-#ifdef TYLOINFER_NATIVE_CUDA
-                pipelines,
-#else
-                execution.executor().pipelines(),
-#endif
-                weights, result.config, stage));
+            result.stages.push_back(load_stage(weights, result.config, stage));
         }
         const auto target_width =
             result.config.hidden *
@@ -772,17 +763,13 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 };
 
 std::unique_ptr<tyloi::models::Mtp> load_dspark_if_present(
-#ifdef TYLOINFER_NATIVE_CUDA
-    Pipelines& pipelines,
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext &execution,
 #endif
     const tyloi::weights::Loader& weights, const CommonConfig &config,
     ::tyloi::Tensor embedding, ::tyloi::Tensor output, double softcap) {
     auto predictor = DeepseekV41Dspark::load_if_present(
-#ifdef TYLOINFER_NATIVE_CUDA
-        pipelines,
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
         execution,
 #endif
         weights, config,

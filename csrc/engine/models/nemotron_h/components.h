@@ -7,9 +7,7 @@
 #include <optional>
 #include <vector>
 
-#ifdef TYLOINFER_NATIVE_CUDA
-namespace tyloi::cuda { class Pipelines; }
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
 struct CudaExecutionContext;
 #endif
 namespace tyloi::weights { struct Loader; }
@@ -32,11 +30,11 @@ struct Components {
 };
 
 Components load_components(Model& model, const tyloi::weights::Loader& weights,
-    bool load_optional_components,
+    bool load_optional_components
 #ifdef TYLOINFER_NATIVE_CUDA
-    Pipelines& pipelines);
+    );
 #else
-    CudaExecutionContext& execution);
+    , CudaExecutionContext& execution);
 #endif
 
 } // namespace tyloi::cuda::nemotron_h

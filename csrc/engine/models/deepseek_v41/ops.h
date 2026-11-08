@@ -40,7 +40,6 @@
 #include <utility>
 #include <vector>
 
-namespace tyloi::cuda { class Pipelines; }
 struct CudaExecutionContext;
 
 namespace tyloi::cuda::deepseek_v41_runtime {
@@ -84,7 +83,6 @@ struct LayerState {
 struct ModelTables {
     std::shared_ptr<const EngramHashState::Parameters> engram_parameters;
     std::vector<const Engram*> engram_prefetch;
-    std::vector<const tyloi::cuda::Ffn*> router_prefetch;
 };
 
 struct SharedState {
@@ -990,18 +988,6 @@ struct Block final {
 #endif
                     .reshape({batch,tokens,config.hidden});
             }
-            if(layer+1<static_cast<int64_t>(shared.tables.router_prefetch.size()))
-                if(const auto* next=shared.tables.router_prefetch[layer+1]) {
-#ifdef TYLOINFER_NATIVE_CUDA
-                    next->prefetch(value, layer_state.current_ids);
-#else
-                    auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-                    next->prefetch(
-                        value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
-                        execution.weights.lookahead(::tyloi::weights::Cache::Lookahead::neighbor),
-                        layer_state.current_ids);
-#endif
-                }
 #ifdef TYLOINFER_NATIVE_CUDA
             return mlp.forward(
                     value.reshape({-1, config.hidden}), layer_state.current_ids)
@@ -1018,11 +1004,11 @@ struct Block final {
     }
 };
 
-tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const tyloi::weights::Loader& weights,
+tyloi::cuda::Ffn load_moe_at(const tyloi::weights::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 
-std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Loader& weights,
+std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
                                     std::int64_t layer, const CommonConfig& config,
                                     ModelTables& tables, std::size_t engram_cache_rows);
 void validate_load_options(const CudaExecutionContext &execution);

@@ -6,6 +6,7 @@
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/profile.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/ops.h"
 #endif
 
@@ -195,8 +196,13 @@ DenseTensor Projector::run(const TqMoeBanks& banks, DenseTensor input, DenseTens
 } // namespace tyloi::cuda
 
 #ifdef TYLOINFER_NATIVE_CUDA
-tyloi::Tensor tyloi::ops::experts(const Tensor& input, const Tensor& ids, const Tensor& weights,
-                                  std::span<const Tensor> gate_up, const Tensor& down, std::int64_t width) {
+namespace tyloi::ops {
+namespace {
+
+void validate_expert_inputs(const Tensor& input, const Tensor& ids,
+                            const Tensor& weights,
+                            std::span<const Tensor> gate_up,
+                            const Tensor& down, std::int64_t width) {
     TYLOINFER_RUNTIME_CHECK(gate_up.size() >= 1 && gate_up.size() <= 2 && down.defined() &&
         input.defined() && ids.defined() && weights.defined() && width > 0 &&
         input.dim() == 2 && ids.dim() == 2 && weights.dim() == 2 &&
@@ -205,6 +211,14 @@ tyloi::Tensor tyloi::ops::experts(const Tensor& input, const Tensor& ids, const 
         input.device() == weights.device(), "invalid routed expert inputs");
     for (const auto& weight : gate_up)
         TYLOINFER_RUNTIME_CHECK(weight.defined(), "missing routed expert projection");
+}
+
+} // namespace
+} // namespace tyloi::ops
+
+tyloi::Tensor tyloi::ops::experts(const Tensor& input, const Tensor& ids, const Tensor& weights,
+                                  std::span<const Tensor> gate_up, const Tensor& down, std::int64_t width) {
+    validate_expert_inputs(input, ids, weights, gate_up, down, width);
     auto& executor = cuda::Executor::current();
     const auto project = executor.projector(cuda::Executor::current_ffn());
     auto banks = tq_banks(gate_up.empty() ? nullptr : gate_up.front(),
@@ -234,5 +248,21 @@ tyloi::Tensor tyloi::ops::experts(const Tensor& input, const Tensor& ids, const 
         reduced = reduced + pairs.select(1, r).to(kFloat32) *
                             weights.dense().select(1, r).unsqueeze(-1);
     return reduced.to(pairs.scalar_type());
+}
+
+tyloi::Tensor tyloi::ops::moe(const Tensor& input, const Tensor& ids, const Tensor& weights,
+                              std::span<const Tensor> gate_up, const Tensor& down,
+                              std::span<const Tensor> shared, const Tensor& shared_gate,
+                              std::int64_t width, std::int64_t shared_rows) {
+    validate_expert_inputs(input, ids, weights, gate_up, down, width);
+    TYLOINFER_RUNTIME_CHECK(shared.size() == 3 && shared_gate.defined(),
+                            "invalid shared expert inputs");
+    for (const auto& weight : shared)
+        TYLOINFER_RUNTIME_CHECK(weight.defined(), "missing shared expert projection");
+
+    const auto shared_output = cuda::MoeSharedExpert(
+        shared[0], shared[1], shared[2], shared_gate).forward(input.dense(), shared_rows);
+    const auto routed = experts(input, ids, weights, gate_up, down, width).dense();
+    return routed + shared_output;
 }
 #endif

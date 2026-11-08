@@ -1,4 +1,3 @@
-#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/session/snapshot.h"
@@ -705,7 +704,7 @@ void validate_components(const tyloi::ModelGraph& graph) {
             "implementation under the predictor tensor root");
 }
 
-Layer load_layer(Pipelines& pipelines, const ::tyloi::weights::Loader& weights,
+Layer load_layer(const ::tyloi::weights::Loader& weights,
                  const Config& config, int layer, const std::string& type,
                  std::string_view tensor_root) {
     MfqCudaGuard guard(weights.placement.device);
@@ -728,7 +727,6 @@ Layer load_layer(Pipelines& pipelines, const ::tyloi::weights::Loader& weights,
         case tyloi::models::nemotron_h::MixerKind::moe: {
             auto& moe = result.weights.emplace<Moe>();
             tyloi::models::nemotron_h::load_moe(moe, loader, config, layer, tensor_root);
-            pipelines.prepare(moe.ffn);
             break;
         }
         case tyloi::models::nemotron_h::MixerKind::mlp: {
@@ -762,7 +760,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-void load(Model& model, const ::tyloi::weights::Loader& weights, Pipelines& pipelines,
+void load(Model& model, const ::tyloi::weights::Loader& weights,
           LayerPlacementConfig& placement, int gpu_layers, bool expert_parallel,
           bool load_layers, bool load_input_output) {
     const auto& config = model.config;
@@ -797,7 +795,7 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, Pipelines& pipe
                 MfqCudaGuard layer_guard(device);
                 const auto& type = model.metadata.layer_types.at(static_cast<std::size_t>(index));
                 std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
-                model.layers.push_back(load_layer(pipelines, weights.for_layer(device, false),
+                model.layers.push_back(load_layer(weights.for_layer(device, false),
                                                   config, index, type));
             }
         }

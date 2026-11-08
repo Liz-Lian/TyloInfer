@@ -11,7 +11,6 @@
 
 namespace tyloi::models { struct Mtp; }
 namespace tyloi::cuda { struct Qwen4DecodeGraph; }
-namespace mfq::cuda { class RouterLookaheadInputs; }
 namespace tyloi::cuda::qwen4_exp {
 
 struct Model;
@@ -76,13 +75,11 @@ public:
     bool speculative_suffix_forward = false;
     ::tyloi::DenseTensor positions;
     std::vector<std::unique_ptr<LayerState>> layers;
-    std::shared_ptr<mfq::cuda::RouterLookaheadInputs> router_audit;
     std::unique_ptr<Qwen4DecodeGraph> graph_registry;
     bool reuse_decode_graphs = false;
     std::uint64_t decode_graph_captures = 0;
     std::int64_t decode_reserve_until = 0;
     bool speculative_prefix_retention = false;
-    std::optional<bool> router_lookahead;
 
 private:
     friend tyloi::models::SnapshotSize snapshot_size(const State&, const tyloi::models::Mtp*);

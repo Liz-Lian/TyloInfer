@@ -151,8 +151,8 @@ struct LayerLoader : tyloi::weights::Loader {
     }
     auto moe(std::vector<Linear> gate_up, Linear down, Linear router,
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
-        return Moe(execution.executor().pipelines(), std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
-                        std::move(sg), std::move(su), std::move(sd), c);
+        return Moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
+                   std::move(sg), std::move(su), std::move(sd), c);
     }
     auto embedding(const std::string &name) const {
         if(tyloi::is_tq_table(source,name)) {

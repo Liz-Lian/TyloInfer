@@ -197,7 +197,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 state = model->make_state();
                 if (::tyloi::cuda::options::kv_vram_preallocated()) state->preallocate();
                 finalize_kv(kv.get(), *weights, offload);
-                finish_load(kv.get(), *weights, 0, load.report_cuda_memory);
+                finish_load(kv.get(), *weights, load.report_cuda_memory);
                 if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             }
             graph = root->graph();
@@ -591,7 +591,6 @@ void setup_cuda_load(
         std::shared_ptr<KvMemoryManager>& kv, std::shared_ptr<KvOffloadStore>& offload) {
     drain_cuda(executor, weights, offload.get(),
                config.layer_placement, config.tensor_parallel, config.expert_parallel);
-    executor.pipelines().clear();
 #ifndef TYLOINFER_NATIVE_CUDA
     executor.attention_scratch().clear();
 #endif
@@ -717,11 +716,10 @@ void finalize_kv(KvMemoryManager* kv, tyloi::weights::Cache& weights,
 }
 
 std::chrono::steady_clock::time_point finish_load(
-        KvMemoryManager* kv, tyloi::weights::Cache& weights, std::size_t graph_reserve,
-        bool report_memory) {
+        KvMemoryManager* kv, tyloi::weights::Cache& weights, bool report_memory) {
     if (weights.needs_finalize()) {
         weights.finalize(
-            (kv ? kv->growth_reserve() : 0) + graph_reserve,
+            kv ? kv->growth_reserve() : 0,
             kv ? kv->expert_budget_charge() : 0);
     }
     mfq_cuda_synchronize();

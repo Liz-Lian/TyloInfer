@@ -44,7 +44,7 @@ tyloi::engine::Generation generate(
     Predictor* mtp = nullptr,
     std::optional<tyloi::models::Prepared> prepared = {},
     tyloi::engine::Batch* batching = nullptr,
-    std::string request_id = {}, bool decode_ready = false);
+    std::string request_id = {});
 } // namespace tyloi::cuda::internal
 
 // Creation and every resume run inside the owner's CUDA device/context scope.

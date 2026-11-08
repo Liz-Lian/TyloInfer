@@ -73,8 +73,6 @@ class Qwen4BatchDecodeGraph {
     struct Impl;
     std::unique_ptr<Impl> graph_;
 };
-void qwen4_begin_router_lookahead_audit(qwen4_exp::Model&,qwen4_exp::State&,int samples);
-void qwen4_finish_router_lookahead_audit(qwen4_exp::Model&,qwen4_exp::State&,const std::string& prefix);
 std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(
     qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,int,const ::tyloi::Tensor& host_ids={});
 std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
@@ -82,11 +80,10 @@ std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
     bool* initialized=nullptr,const ::tyloi::Tensor& host_ids={},
     ::tyloi::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
 void qwen4_report_decode_graph(const qwen4_exp::Model&,const qwen4_exp::State&,std::ostream&);
-std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
+std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const qwen4_exp::State&);
 ::tyloi::Tensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model&,const qwen4_exp::State&);
-void qwen4_release_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&,tyloi::models::Mtp*);
-void qwen4_warmup_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&,tyloi::models::Mtp*,int maximum_draft_depth=3);
-std::size_t qwen4_mtp_graph_reserve(const qwen4_exp::Model&,const tyloi::models::Mtp*,int maximum_draft_depth=5);
+void qwen4_release_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&);
+void qwen4_warmup_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&);
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
 bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp::State&, int64_t tokens);
 std::int64_t prefill_span(const qwen4_exp::Model&, const qwen4_exp::State&, std::size_t tokens,

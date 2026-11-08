@@ -208,7 +208,7 @@ ControlResult Engine::control_command(ControlRequest request) {
                 text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
             } else { text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
         } else if constexpr (std::is_same_v<T, engine::GetMetrics>) {
-            return resource_metrics(model_->metrics(), {}, std::nullopt, false, 3,
+            return resource_metrics(model_->metrics(), {}, std::nullopt, false,
                 {}, {}, std::nullopt, {}, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
                 executor_->memory(config_.devices), Device(kCUDA, forward_options_.primary), config_.online_budget);

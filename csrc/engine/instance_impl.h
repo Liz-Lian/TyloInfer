@@ -227,7 +227,6 @@ class EngineInstance final : public Engine {
             {
                 CudaScope scope(execution->config.layer_placement.primary_device(), execution->executor().contexts());
                 state.reset();
-                execution->executor().pipelines().clear();
                 offload.reset();
                 kv.reset();
                 weights.clear_workspace();

@@ -574,7 +574,6 @@ template <class Model, class State, class Predictor> struct RequestOps {
     std::optional<tyloi::models::Prepared> prepared;
     tyloi::engine::Batch* batching;
     std::string request_id;
-    bool decode_ready;
 
     bool batched() const { return batching != nullptr; }
     void trace_expert_cache(const char* boundary, bool wait = true) {
@@ -668,7 +667,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
             CudaGenerationOps<Model, State>(model, state, executor, collectives,
                 mode, profiler, weights, serial_branches, report_memory, info, graph, input,
                 prepared ? &*prepared : nullptr,
-                graph_options,compute_chunk,&output,decode_ready ? &budget : nullptr,source),
+                graph_options,compute_chunk,&output,&budget,source),
             output, input.prompt.size(), reused, stable,logical_chunk);
     }
     Generation speculate(tyloi::engine::InferenceRequest &input, tyloi::engine::InferenceOutput &output,
@@ -688,7 +687,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
                 prepared ? &*prepared : nullptr,
                 reused,
                 restored,
-                committed,prefix_boundary,decode_ready ? &budget : nullptr);
+                committed,prefix_boundary,&budget);
         }
     }
 };
@@ -707,8 +706,7 @@ Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
     tyloi::engine::InferenceOutput &output, tyloi::engine::mtp::State &mtp_state,
     Predictor *mtp,
     std::optional<tyloi::models::Prepared> prepared,
-    tyloi::engine::Batch* batching, std::string request_id,
-    bool decode_ready) {
+    tyloi::engine::Batch* batching, std::string request_id) {
     if (mtp) {
         if constexpr (requires { state.predictor; }) {
             if (!state.predictor || !state.predictor->belongs_to(*mtp))
@@ -723,7 +721,7 @@ Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
                                      std::move(drain), info, source, graph, cache, config, mtp_state,
                                      mtp,
                                      std::move(prepared), batching,
-                                     std::move(request_id), decode_ready},
+                                     std::move(request_id)},
         request,
         output);
 }

@@ -59,9 +59,7 @@ bool moe_expert_cache_has_sources(
     const std::shared_ptr<MoeExpertCache>& cache);
 bool moe_expert_cache_finalized(
     const std::shared_ptr<MoeExpertCache>& cache);
-bool moe_expert_cache_layer_prefill_ready(const std::shared_ptr<MoeExpertCache>& cache);
 bool moe_expert_cache_ssd_experts(const std::shared_ptr<MoeExpertCache>& cache);
-bool moe_expert_cache_ssd_router_prefetch(const std::shared_ptr<MoeExpertCache>& cache);
 std::vector<std::pair<std::string, double>> moe_expert_memory_metrics(
     const std::shared_ptr<MoeExpertCache>& cache);
 void finalize_moe_expert_cache(
@@ -82,7 +80,6 @@ std::uint64_t moe_expert_graph_captures(const std::shared_ptr<MoeExpertCache>& c
 // Finish the adaptive transaction before a session reset or a prefill loan.
 void drain_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache);
 void finish_moe_expert_exchanges(const std::shared_ptr<MoeExpertCache>& cache);
-void prepare_moe_predictor_exchange(const std::shared_ptr<MoeExpertCache>& cache);
 void begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows);
 void commit_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows);
 void discard_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache) noexcept;

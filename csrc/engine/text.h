@@ -86,9 +86,6 @@ struct Text {
     tyloi::engine::mtp::State mtp_state;
     std::unique_ptr<tyloi::engine::Batch> batching;
     bool duplex_active = false;
-    int graph_draft_depth=3;
-    bool preparing_graph_depth=true;
-
     tyloi::models::MtpState& predictor_state() {
         if constexpr (requires { state.predictor; }) {
             if (!state.predictor)
@@ -99,18 +96,11 @@ struct Text {
         }
     }
 
-    const tyloi::models::MtpState* predictor_state_if_present() const noexcept {
-        if constexpr (requires { state.predictor; })
-            return state.predictor.get();
-        else
-            return nullptr;
-    }
-
     void release_request_resources() noexcept {
         if constexpr (std::is_same_v<Model, qwen4_exp::Model>) {
             if (components.mtp) {
                 try {
-                    qwen4_release_decode_graphs(language, state, components.mtp.get());
+                    qwen4_release_decode_graphs(language, state);
                 } catch (...) {
                 }
             }
@@ -122,9 +112,6 @@ struct Text {
         owned_state.reset();
         components = Parts{};
     }
-
-    void configure_decode_budget();
-    void prepare_graph_depth(const InferenceRequest& input);
 
     bool online_budget_supported() const {
         return execution->config.layer_placement.devices.size()<=1 && !execution->config.tensor_parallel.enabled()
@@ -190,52 +177,8 @@ struct Text {
             session(command);
         }
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            qwen4_warmup_decode_graphs(language,state,components.mtp.get());
-            // Exercise the same draft/verify/commit loop as a real request.
-            // Graph-only warmup cannot cover its history replay, sampling and
-            // expert exchange boundaries. No synthetic policy/history survives.
-            const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_MTP");
-            if(state.graph_registry && components.mtp &&
-                    language.max_position_embeddings()>=48 && (!warmup || warmup[0]!='0')) {
-                tyloi::weights::Cache::Warmup learning(weights, false);
-                auto& predictor=*components.mtp;
-                const auto saved_policy=mtp_state.policy;
-                const auto start=std::chrono::steady_clock::now();
-                InferenceRequest request;
-                request.chat=false;
-                request.sampling.temperature=0.7;
-                request.sampling.top_p=0.8;
-                request.sampling.top_k=20;
-                request.sampling.seed=1234;
-                request.sampling.max_tokens=static_cast<int32_t>(
-                    std::min<int64_t>(64,language.max_position_embeddings()-16));
-                request.sampling.mtp_max_draft_tokens=3;
-                for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.metadata.vocab_size);
-                InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
-#ifdef TYLOINFER_NATIVE_CUDA
-                auto scope=executor->enter();
-#else
-                auto scope=language.execution_scope();
-#endif
-                auto generation=run_mtp_generation(language,state,executor.get(),execution->executor().collectives(),
-                                                   execution->executor().forward_mode(execution->config.layer_placement.primary_device()),weights,info,source.get(),predictor,mtp_state,request,output,16,
-                                                   nullptr,0,{},nullptr,0,nullptr);
-                while(generation.next()) {}
-                learning.drain();
-                predictor.reset(predictor_state(), 1);
-                state.reset(1);
-                mtp_state.policy=saved_policy;
-                mtp_state.stats={};
-                mtp_state.cycles=mtp_state.accepted=mtp_state.rejected=0;
-                TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_get_current_cuda_stream()));
-                std::cerr<<"runtime_qwen4_mtp_warmup tokens="<<output.result.completion_tokens
-                    <<" ms="<<std::chrono::duration<double,std::milli>(
-                        std::chrono::steady_clock::now()-start).count()<<'\n';
-                learning.release(tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()), false);
-            }
+            qwen4_warmup_decode_graphs(language,state);
         }
-        preparing_graph_depth=false;
-        configure_decode_budget();
         weights.prepare(::tyloi::weights::Cache::Stage::loaded,
             tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()), source.get());
         } catch (...) {
@@ -274,7 +217,7 @@ struct Text {
         weights.settle();
         graph.invalidate();
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
-            qwen4_release_decode_graphs(language,state,components.mtp.get());
+            qwen4_release_decode_graphs(language,state);
         if(batching)batching->release_idle_buffers();
         if(auto* mtp=component_predictor(components))mtp->reset(predictor_state(), 1);
         state.reset(1);
@@ -312,12 +255,9 @@ struct Text {
             Metrics predictor_metrics;
             if (mtp) {
                 tyloi::engine::mtp::append_generation_metrics(predictor_metrics, mtp_state.stats);
-                const auto* predictor_state = predictor_state_if_present();
-                predictor_metrics.emplace_back("mtp_predictor_graph_replays",
-                    double(predictor_state ? predictor_state->graph_replay_count() : 0));
             }
             return tyloi::engine::resource_metrics(component_values,profile_metrics,std::move(memory),streamed_kv,
-                graph_draft_depth,batch_metrics,kv_metrics,offload_metrics,predictor_metrics,source.get(),
+                batch_metrics,kv_metrics,offload_metrics,predictor_metrics,source.get(),
                 *weight_memory,weights,cache,*budget,
                 execution->executor().memory(cuda_devices(execution->config)),
                 tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()),

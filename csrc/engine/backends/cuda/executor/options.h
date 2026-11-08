@@ -35,8 +35,6 @@ bool ram_field_packing();
 bool warp_multi_sum();
 float residency_heat_retention();
 int residency_interval();
-bool router_lookahead();
-std::optional<bool> router_lookahead_override();
 bool batch_attention_projections();
 bool gdn_independent_batch();
 bool gdn_independent_batch_trace();

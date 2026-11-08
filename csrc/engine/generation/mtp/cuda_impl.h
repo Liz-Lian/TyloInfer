@@ -57,8 +57,6 @@ using tyloi::cuda::mtp_cache_only_prompt_history;
 using tyloi::cuda::mtp_initialize;
 using tyloi::cuda::mtp_target_forward;
 using tyloi::cuda::mtp_prefill;
-using tyloi::cuda::mtp_predictor_step;
-using tyloi::cuda::mtp_predictor_compact;
 using tyloi::cuda::mtp_predictor_history_step;
 using tyloi::cuda::mtp_begin_predictor_prefill;
 using tyloi::cuda::mtp_predictor_prefill_begin;
@@ -151,7 +149,7 @@ template <class Model, class State> struct CudaMtpOps {
   Tensor early_ple_ids_host;
   Tensor projected_target_hidden, projected_target_logits;
   Tensor projected_predictor_hidden, projected_predictor_logits;
-  Tensor projected_target_compact,projected_predictor_compact;
+  Tensor projected_target_compact;
   int graph_sampling_reuses=0;
   int32_t projected_predictor_greedy=-1;
   std::vector<int32_t> projected_target_greedy;
@@ -578,18 +576,12 @@ template <class Model, class State> struct CudaMtpOps {
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
 #endif
-    if(auto result=mtp_predictor_step(model,*this,hidden,ids,positions))
-      return std::move(*result);
     auto result=mtp.step(predictor,hidden, ids, positions);
-    const bool initialized=predictor.take_graph_initialization();
-    target_maintenance=target_maintenance || initialized;
 #ifdef TYLOINFER_NATIVE_CUDA
     projected_predictor_logits = result.sample_logits;
 #else
     projected_predictor_logits = result.sample_logits ? result.sample_logits.dense() : Tensor{};
 #endif
-    projected_predictor_compact={};
-    mtp_predictor_compact(model,*this,result);
     projected_predictor_greedy = result.greedy_token;
     if (projected_predictor_logits.defined()) {
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -690,15 +682,14 @@ template <class Model, class State> struct CudaMtpOps {
     return tyloi::cuda::SamplingOps::probabilities(logits.dense(),parameters);
   }
   Tensor captured_compact(const Tensor& logits,const MfqSamplingParams& parameters) {
-    for(const auto& pair:std::array<std::pair<Tensor,Tensor>,2>{{
-        {projected_predictor_logits,projected_predictor_compact},{projected_target_logits,projected_target_compact}}})
-      if(pair.second && same_data(pair.first,logits) && pair.second.size(0)==logits.size(0)) {
+    if(projected_target_compact && same_data(projected_target_logits,logits) &&
+        projected_target_compact.size(0)==logits.size(0)) {
         if(++graph_sampling_reuses==1)std::cerr<<"runtime_mtp_graph_sampling captured_topk=64 host_rows="<<logits.size(0)<<'\n';
 #ifdef TYLOINFER_MTP_VERIFY_GRAPH_TOPK
         static thread_local std::array<bool,33> checked{};
         if(!checked[logits.size(0)]) {
           auto expected=tyloi::cuda::SamplingOps::compact_radix_rows(logits.dense(),parameters);
-          auto actual=tyloi::cuda::SamplingOps::compact_rows_from_host(pair.second.dense(),parameters);
+          auto actual=tyloi::cuda::SamplingOps::compact_rows_from_host(projected_target_compact.dense(),parameters);
           TYLOINFER_RUNTIME_CHECK(expected.size()==actual.size(),"captured MTP top-k row count differs");
           for(std::size_t row=0;row<actual.size();++row) {
             TYLOINFER_RUNTIME_CHECK(expected[row].tokens==actual[row].tokens,"captured MTP top-k token IDs differ");
@@ -710,7 +701,7 @@ template <class Model, class State> struct CudaMtpOps {
           std::cerr<<"runtime_mtp_graph_sampling_check rows="<<logits.size(0)<<" PASS\n";
         }
 #endif
-        return pair.second;
+        return projected_target_compact;
       }
     return {};
   }
@@ -802,16 +793,15 @@ template <class Model, class State> struct CudaMtpOps {
     return tyloi::cuda::SamplingOps::probabilities(std::move(logits), parameters);
   }
   Tensor captured_compact(const Tensor& logits,const MfqSamplingParams& parameters) {
-    for(const auto& pair:std::array<std::pair<Tensor,Tensor>,2>{{
-        {projected_predictor_logits,projected_predictor_compact},{projected_target_logits,projected_target_compact}}})
-      if(pair.first.defined() && pair.second.defined() && pair.first.data_ptr()==logits.data_ptr() &&
-          pair.first.numel()==logits.numel() && pair.second.size(0)==logits.size(0)) {
+    if(projected_target_logits.defined() && projected_target_compact.defined() &&
+        projected_target_logits.data_ptr()==logits.data_ptr() &&
+        projected_target_logits.numel()==logits.numel() && projected_target_compact.size(0)==logits.size(0)) {
         if(++graph_sampling_reuses==1)std::cerr<<"runtime_mtp_graph_sampling captured_topk=64 host_rows="<<logits.size(0)<<'\n';
 #ifdef TYLOINFER_MTP_VERIFY_GRAPH_TOPK
         static thread_local std::array<bool,33> checked{};
         if(!checked[logits.size(0)]) {
             auto expected=tyloi::cuda::SamplingOps::compact_radix_rows(logits,parameters);
-            auto actual=tyloi::cuda::SamplingOps::compact_rows_from_host(pair.second,parameters);
+            auto actual=tyloi::cuda::SamplingOps::compact_rows_from_host(projected_target_compact,parameters);
             TYLOINFER_RUNTIME_CHECK(expected.size()==actual.size(),"captured MTP top-k row count differs");
             for(std::size_t row=0;row<actual.size();++row) {
                 TYLOINFER_RUNTIME_CHECK(expected[row].tokens==actual[row].tokens,"captured MTP top-k token IDs differ");
@@ -823,7 +813,7 @@ template <class Model, class State> struct CudaMtpOps {
             std::cerr<<"runtime_mtp_graph_sampling_check rows="<<logits.size(0)<<" PASS\n";
         }
 #endif
-        return pair.second;
+        return projected_target_compact;
       }
     return {};
   }

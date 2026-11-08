@@ -2499,15 +2499,8 @@ std::uint64_t moe_expert_graph_captures(const std::shared_ptr<MoeExpertCache>& c
 std::size_t moe_expert_cache_minimum_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache ? cache->minimum_bytes() : 0;
 }
-bool moe_expert_cache_layer_prefill_ready(const std::shared_ptr<MoeExpertCache>& cache) {
-    return cache && cache->layer_prefill_ready();
-}
 bool moe_expert_cache_ssd_experts(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache && cache->ssd_experts();
-}
-bool moe_expert_cache_ssd_router_prefetch(const std::shared_ptr<MoeExpertCache>& cache) {
-    return cache && cache->ssd_experts() && cache->reuse_learning() &&
-        ::tyloi::cuda::options::router_lookahead_override().value_or(cache->ssd_router_prefetch());
 }
 std::size_t moe_expert_cache_budget_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache ? std::size_t(cache->budget_bytes()) : 0;
@@ -2721,9 +2714,6 @@ void drain_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache) {
 
 void finish_moe_expert_exchanges(const std::shared_ptr<MoeExpertCache>& cache) {
     if(cache)cache->finish_pipeline_exchanges();
-}
-void prepare_moe_predictor_exchange(const std::shared_ptr<MoeExpertCache>& cache) {
-    if(cache)cache->prepare_predictor_exchange();
 }
 
 bool suspend_moe_residency(const std::shared_ptr<MoeExpertCache>& cache,bool suspended) {

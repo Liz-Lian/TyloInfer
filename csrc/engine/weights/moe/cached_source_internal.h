@@ -601,7 +601,6 @@ public:
 
 private:
     friend class MoeExpertCache;
-    friend class MoeFfnPipeline;
     friend class MoeResidencyManager;
     friend struct MoeResidencyTestAccess;
 

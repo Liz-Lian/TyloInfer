@@ -65,7 +65,7 @@ struct Mtp final : tyloi::models::Mtp {
     int64_t predictor_capacity() const noexcept { return config.max_position_embeddings; }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    static std::optional<Mtp> load_if_present(Pipelines& pipelines,
+    static std::optional<Mtp> load_if_present(
 #else
     static std::optional<Mtp> load_if_present(CudaExecutionContext &execution,
 #endif
@@ -117,11 +117,6 @@ struct Mtp final : tyloi::models::Mtp {
             const auto type =
                 std::string(tyloi::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
             result.layers.push_back(load_layer(
-#ifdef TYLOINFER_NATIVE_CUDA
-                                               pipelines,
-#else
-                                               execution.executor().pipelines(),
-#endif
                                                weights, main,
                                                static_cast<int>(index), type, "predictor"));
         }

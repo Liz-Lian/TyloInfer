@@ -17,7 +17,6 @@
 #include <future>
 #include <condition_variable>
 
-struct MoeFfnPrefillHostWorkspace;
 struct MoeScratch;
 struct CudaProfiler;
 class MoePinnedExpertArena;
@@ -575,7 +574,6 @@ public:
         }
         if(selected!=ssd_prediction_auto_){ssd_prediction_auto_=selected;++ssd_prediction_switches_;}
     }
-    bool ssd_router_prefetch() const noexcept {return ssd_prediction_auto_;}
     std::unique_ptr<SsdExpertReads> begin_ssd_expert_reads(std::vector<SsdExpertRequest> requests,std::size_t gate_up_requests);
     std::vector<MoeHostExpertCache::Lease> read_ssd_experts(const std::vector<SsdExpertRequest>& requests,bool background=false);
     struct SsdExpertCopy {MoeQuantRangeSource* source;int expert;std::vector<::tyloi::DenseTensor> fields;};
@@ -602,7 +600,6 @@ public:
     bool reuse_learning() const noexcept {return pipeline_reuse_learning_;}
     double ram_pcie_fraction() const noexcept { return ram_pcie_fraction_; }
     void finish_pipeline_exchanges() { if(moe_residency_)moe_residency_->apply_pending(); }
-    void prepare_predictor_exchange() { if(moe_residency_)moe_residency_->prepare_predictor(); }
     void prepare_decode_residency() { if(moe_residency_)moe_residency_->prepare_decode(); }
 
     void begin_route_experts(
@@ -1355,7 +1352,6 @@ private:
     bool measuring_preload_h2d_=false;
     std::vector<std::unique_ptr<MoePreloadH2DTiming>> preload_h2d_timings_;
     friend class MoeCachedSource;
-    friend class MoeFfnPipeline;
     friend class MoeResidencyManager;
     friend void release_moe_prefill_buffers(MoeExpertCache* cache);
     friend void release_moe_decode_buffers(const std::shared_ptr<MoeExpertCache>& cache);
@@ -1410,7 +1406,6 @@ private:
     cudaMemPool_t pipeline_prefill_pool_=nullptr;
     uint64_t pipeline_prefill_pool_previous_threshold_=0;
     std::vector<std::function<void()>> pipeline_prefill_release_;
-    std::unordered_map<std::string,std::shared_ptr<MoeFfnPrefillHostWorkspace>> pipeline_prefill_host_workspaces_;
     bool pipeline_transfer_cache_=::tyloi::cuda::options::transfer_cache();
     bool pipeline_mapped_copy_=::tyloi::cuda::options::mapped_copy();
     std::vector<MoeCacheNewLease> pipeline_transfer_slots_;

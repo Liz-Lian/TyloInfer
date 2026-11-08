@@ -28,9 +28,6 @@ template<class Model, class Ops, class Chunk, class Tensor, class Timer, class F
 std::optional<typename Ops::PrefillResult> mtp_prefill(Model&, Ops&, const Chunk&, Tensor&, Tensor&, Timer&, const Finish&) { return std::nullopt; }
 
 template<class Model, class Ops, class Tensor>
-std::optional<tyloi::models::MtpStep> mtp_predictor_step(Model&, Ops&, Tensor&, Tensor&, Tensor&) { return std::nullopt; }
-template<class Model, class Ops> void mtp_predictor_compact(Model&, Ops&, tyloi::models::MtpStep&) {}
-template<class Model, class Ops, class Tensor>
 bool mtp_predictor_history_step(Model&, Ops&, Tensor&, Tensor&, Tensor&, bool) { return false; }
 template<class Model, class Ops, class Started>
 double mtp_begin_predictor_prefill(Model&, Ops&, int64_t, Started started) {

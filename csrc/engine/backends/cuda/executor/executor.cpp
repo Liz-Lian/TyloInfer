@@ -1,6 +1,5 @@
 #include "executor.h"
 
-#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -274,12 +273,8 @@ Executor::Executor(Options options, int primary)
       owned_branches_(std::make_unique<Branches>()), branches_(*owned_branches_),
       owned_collectives_(std::make_unique<Collectives>()), collectives_(*owned_collectives_),
       owned_routes_(std::make_unique<RouteStats>(env_value("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
-          env_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false))), routes_(*owned_routes_),
-      owned_pipelines_(std::make_unique<Pipelines>(profiler_, mmq_, options_.projection.moe,
-                                                   options_.moe_ffn, routes_)),
-      pipelines_(*owned_pipelines_), primary_(primary) {
+          env_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false))), routes_(*owned_routes_), primary_(primary) {
     profiler_.filter = options_.profile_filter;
-    mode_.ffn.reuse_input = options_.moe_ffn.reuse_input;
     mode_.linear.shared_input = options_.projection.grouped && options_.tensor_parallel_shared_linear_attention_input;
     mode_.linear.fused_conv = options_.linear_conv_prefill_fused;
     mode_.transposed = options_.gdn_transposed_state;
@@ -288,10 +283,10 @@ Executor::Executor(Options options, int primary)
 }
 
 Executor::Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
-        Branches& branches, Pipelines& pipelines, Collectives& collectives, RouteStats& routes,
+        Branches& branches, Collectives& collectives, RouteStats& routes,
         const Options& options, Mode& mode, int primary)
     : contexts_(contexts), options_(options), mode_(mode), profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches),
-      collectives_(collectives), routes_(routes), pipelines_(pipelines), primary_(primary) {}
+      collectives_(collectives), routes_(routes), primary_(primary) {}
 
 Executor::~Executor() = default;
 
@@ -306,7 +301,6 @@ void Executor::drain() {
 void Executor::clear() {
     if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
         std::cerr << "cuda knobs in use:\n" << env_dump();
-    pipelines_.clear();
     scratch_.clear();
     {
         std::lock_guard lock(attention_scratch_mutex_);
@@ -331,7 +325,6 @@ void Executor::join() {
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
-    finish([&] { pipelines_.drain(); });
     finish([&] { collectives_.drain(); });
     if (failure) std::rethrow_exception(failure);
 }
@@ -365,7 +358,7 @@ std::unique_ptr<Executor> Executor::fork() const {
 
 std::unique_ptr<Executor> Executor::fork(int primary) const {
     return std::unique_ptr<Executor>(new Executor(contexts_, profiler_, mmq_, tq_, branches_,
-        pipelines_, collectives_, routes_, options_, mode_, primary));
+        collectives_, routes_, options_, mode_, primary));
 }
 
 Executor::Mode Executor::forward_mode(int primary) const {

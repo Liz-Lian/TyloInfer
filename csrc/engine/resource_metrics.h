@@ -19,14 +19,14 @@ namespace tyloi::engine {
 
 inline Metrics resource_metrics(
         const Metrics& component_metrics, const Metrics& profile_metrics,
-        std::optional<Metrics> memory, bool streamed_kv, int graph_depth,
+        std::optional<Metrics> memory, bool streamed_kv,
         const Metrics& batch_metrics, const Metrics& kv_metrics,
         std::optional<Metrics> offload_metrics, const Metrics& predictor_metrics,
         const source::Source* source, const weights::Memory& ledger,
         const weights::Cache& weights, const state::Sessions& cache,
         const Budget& budget, std::span<const tyloi::Executor::Memory> devices,
         Device primary, bool online_budget_supported) {
-    Metrics metrics{{"mtp_graph_prepared_depth", double(graph_depth)}};
+    Metrics metrics;
     metrics.insert(metrics.end(), component_metrics.begin(), component_metrics.end());
     auto experts = weights.metrics();
     metrics.insert(metrics.end(), experts.begin(), experts.end());

@@ -1,4 +1,3 @@
-#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/models/session/snapshot.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
@@ -9,7 +8,7 @@
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 
-tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const tyloi::weights::Loader& weights,
+tyloi::cuda::Ffn load_moe_at(const tyloi::weights::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k) {
     auto result = load_moe_weights(weights, prefix,
@@ -24,11 +23,10 @@ tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const tyloi::weights::Loader&
     result.moe_router_scale = config.routed_scaling;
     result.swiglu_limit = config.swiglu_limit;
     result.shared->swiglu_limit = config.swiglu_limit;
-    pipelines.prepare(result);
     return result;
 }
 
-std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Loader& weights,
+std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
                                     std::int64_t layer,
                                     const CommonConfig& config, ModelTables& tables,
                                     std::size_t engram_cache_rows) {
@@ -141,7 +139,7 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Lo
         result->index_score =
             weights.weight(prefix + "attention.indexer.score.weight");
     }
-    result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.", layer, config.top_k);
+    result->mlp = load_moe_at(weights, config, prefix + "mlp.", layer, config.top_k);
     if(weights.has(prefix+"mlp.router.vision_bias")) {
 #ifdef TYLOINFER_NATIVE_CUDA
         result->vision_router_bias=std::make_shared<DenseTensor>(
@@ -156,8 +154,6 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Lo
                           "DeepSeek-V4.1 vision router bias shape mismatch");
 #endif
     }
-    if(tables.router_prefetch.empty())tables.router_prefetch.resize(config.n_layers,nullptr);
-    tables.router_prefetch.at(static_cast<std::size_t>(layer))=&result->mlp;
 #ifdef TYLOINFER_NATIVE_CUDA
     result->rope = ::tyloi::ops::tail_rope_table(
         config.max_position_embeddings, config.rope_theta, result->ratio,

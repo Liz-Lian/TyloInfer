@@ -1,7 +1,6 @@
 #pragma once
 
 #include "engine/backends/cuda/executor/task.h"
-#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
@@ -21,7 +20,6 @@ namespace tyloi::cuda {
 
 class Branches;
 class Collectives;
-class Pipelines;
 class RouteStats;
 
 class Executor
@@ -79,7 +77,6 @@ public:
                 .mma_prefill = true, .mma_decode = true, .split_k = true}};
         Dense::Options dense;
         Ffn::Options ffn;
-        MoeFfnOptions moe_ffn;
         GatedResidual::Options residual;
         bool gdn_fused_output = true;
         bool gdn_fused_preparation = true;
@@ -138,7 +135,6 @@ public:
     RouteStats& routes() noexcept { return routes_; }
     const RouteStats& routes() const noexcept { return routes_; }
     Branches& branches() noexcept { return branches_; }
-    Pipelines& pipelines() noexcept { return pipelines_; }
     const Options& options() const noexcept { return options_; }
     Mode& mode() noexcept { return mode_; }
     const Mode& mode() const noexcept { return mode_; }
@@ -156,7 +152,7 @@ public:
 
 private:
     Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
-             Branches& branches, Pipelines& pipelines, Collectives& collectives, RouteStats& routes,
+             Branches& branches, Collectives& collectives, RouteStats& routes,
              const Options& options, Mode& mode, int primary);
     friend class Ffn;
     std::unique_ptr<ContextSet> owned_contexts_;
@@ -176,8 +172,6 @@ private:
     Collectives& collectives_;
     std::unique_ptr<RouteStats> owned_routes_;
     RouteStats& routes_;
-    std::unique_ptr<Pipelines> owned_pipelines_;
-    Pipelines& pipelines_;
     int primary_;
     std::vector<AttentionScratch> scratch_;
     MfeScratch mfe_scratch_;

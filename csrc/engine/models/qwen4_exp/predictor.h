@@ -14,26 +14,17 @@ namespace tyloi::cuda::qwen4_exp {
 using attention_ops::Linear;
 struct Layer;
 struct LayerState;
-struct Qwen4MtpGraph;
 struct Predictor;
 
 struct PredictorState final : tyloi::models::MtpState {
     explicit PredictorState(const Predictor& owner);
     ~PredictorState() override;
     int64_t position() const noexcept override;
-    bool take_graph_initialization() noexcept override { return std::exchange(graph_initialized,false); }
-    uint64_t graph_replay_count() const noexcept override { return graph_replays; }
 
     std::vector<std::unique_ptr<LayerState>> layer_states;
     std::vector<::tyloi::DenseTensor> positions;
     std::vector<int64_t> lengths;
     int64_t batch = 0;
-    bool reuse_decode_graphs=false;
-    uint64_t graph_captures=0;
-    uint64_t graph_replays=0;
-    bool graph_initialized=false;
-    bool compact_graph_sampling=true;
-    std::unique_ptr<Qwen4MtpGraph> graph_registry;
 };
 
 struct Predictor final : tyloi::models::Mtp {
@@ -52,8 +43,6 @@ struct Predictor final : tyloi::models::Mtp {
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<Layer>> layers;
     CudaExecutionContext *execution = nullptr;
-    DenseTensor graph_compact_topk(const tyloi::models::MtpState&) const;
-    void set_compact_graph_sampling(tyloi::models::MtpState&, bool) const;
 
     Predictor();
     ~Predictor() override;

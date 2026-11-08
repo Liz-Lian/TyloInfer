@@ -20,7 +20,7 @@ inline void drain_cuda(
         [[maybe_unused]] const ParallelConfig& expert_parallel) {
 #ifdef TYLOINFER_NATIVE_CUDA
     if (executor.contexts().empty() && weights.empty() && !offload &&
-        executor.tq()->empty() && executor.pipelines().empty() && executor.branches().empty() &&
+        executor.tq()->empty() && executor.branches().empty() &&
         executor.collectives().streams().empty()) return;
 #endif
     auto scope = executor.enter(layer_placement.primary_device());

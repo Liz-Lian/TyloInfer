@@ -66,18 +66,8 @@ inline constexpr auto with_model = []<typename F>(
         }
         tyloi::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
-        std::size_t graph_reserve=0;
-        if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
-            if (execution.weights.needs_finalize()) {
-                graph_reserve=qwen4_mtp_graph_reserve(model,components.mtp.get());
-                if(graph_reserve)std::cerr<<"runtime_mtp_flexible_budget maximum_depth="
-                    <<components.mtp->maximum_draft_depth()<<" bytes="<<graph_reserve
-                    <<" initial_depth=3 lend_unused_to_experts=1\n";
-            }
-        }
         const auto loaded_at = tyloi::cuda::finish_load(
-            execution.kv.get(), execution.weights,
-            graph_reserve, execution.config.report_cuda_memory);
+            execution.kv.get(), execution.weights, execution.config.report_cuda_memory);
         return run(owner, state, executor, components, started, loaded_at, source);
     };
     auto load_tts = [&] {
@@ -291,7 +281,7 @@ inline constexpr auto with_model = []<typename F>(
             deepseek_v41::load(*owner, execution, options.context_size, false, true, false);
             auto components = deepseek_v41::load_components(*owner, weights, load_optional_components,
 #ifdef TYLOINFER_NATIVE_CUDA
-                execution.executor().pipelines(), execution.weights);
+                execution.weights);
 #else
                 execution);
 #endif
@@ -311,15 +301,15 @@ inline constexpr auto with_model = []<typename F>(
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
             execution.config.dense_cpu_layer_count = 0;
-            nemotron_h::load(*owner, weights, execution.executor().pipelines(), execution.config.layer_placement,
+            nemotron_h::load(*owner, weights, execution.config.layer_placement,
                              execution.config.n_gpu_layers, execution.config.expert_parallel.enabled());
             auto state = std::make_unique<nemotron_h::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = nemotron_h::load_components(*owner, weights, load_optional_components,
 #ifdef TYLOINFER_NATIVE_CUDA
-                execution.executor().pipelines());
+            auto components = nemotron_h::load_components(*owner, weights, load_optional_components);
 #else
+            auto components = nemotron_h::load_components(*owner, weights, load_optional_components,
                 execution);
 #endif
             return finish(owner, state, executor, components, started);

@@ -92,7 +92,6 @@ void Cache::configure(std::size_t bytes, const CachePolicy& policy, bool preload
         .host_bytes = data_->host_bytes,
         .host_limit = data_->host_limit,
         .preload = preload,
-        .two_stage = options.moe_ffn.two_stage,
         .heterogeneous = options.projection.moe.heterogeneous});
     if (!profile_path.empty() && data_->moe)
         set_moe_expert_cache_profile(*data_->moe, tyloi::load_moe_cache_profile(profile_path));
@@ -129,14 +128,8 @@ Cache::Transfer Cache::transfer() const {
     return data_->moe ? Transfer::coordinated : Transfer::automatic;
 }
 
-Cache::Decode Cache::decode(bool pipeline) const {
-    if (data_->tq) return Decode::routed;
-    return pipeline && data_->moe ? Decode::streamed : Decode::none;
-}
-
-bool Cache::prefill_ready(std::optional<bool> hint) const {
-    return (hint && *hint && moe_expert_cache_layer_prefill_ready(data_->moe)) ||
-        moe_expert_cache_ssd_experts(data_->moe);
+Cache::Decode Cache::decode() const {
+    return data_->tq ? Decode::routed : Decode::none;
 }
 
 bool Cache::split_prefill(std::int64_t rows) const {
@@ -150,27 +143,6 @@ bool Cache::prepare_graph(Device device) {
     if (!data_->tq) return false;
     data_->exec->get(device.index)->prepare_graph();
     return true;
-}
-
-Cache::Prefetch Cache::prefetch() const {
-    return moe_expert_cache_ssd_experts(data_->moe) ? Prefetch{4, true} : Prefetch{2, false};
-}
-
-bool Cache::lookahead(Lookahead purpose, std::optional<bool> model_override) const {
-    switch (purpose) {
-    case Lookahead::link:
-        return model_override.value_or(cuda::options::router_lookahead_override().value_or(
-            moe_expert_cache_ssd_experts(data_->moe)));
-    case Lookahead::capture:
-        return !data_->tq && model_override.value_or(cuda::options::router_lookahead_override().value_or(
-            moe_expert_cache_ssd_router_prefetch(data_->moe)));
-    case Lookahead::warmup:
-        return moe_expert_cache_ssd_experts(data_->moe) && !model_override.has_value() &&
-            !cuda::options::router_lookahead_override().has_value();
-    case Lookahead::neighbor:
-        return moe_expert_cache_ssd_router_prefetch(data_->moe);
-    }
-    return false;
 }
 
 Cache::Prefill Cache::prefill_mode(std::size_t tokens, bool resumed) const {
@@ -218,11 +190,6 @@ std::optional<std::size_t> Cache::prepare_prefill(Device device, std::size_t tok
     return std::nullopt;
 }
 
-void Cache::configure_decode(std::size_t lendable_bytes, int graph_depth) {
-    data_->decode_lendable_bytes = lendable_bytes;
-    data_->decode_graph_depth = graph_depth;
-}
-
 void Cache::prepare(Stage stage, Device device, const source::Source* source) {
     if (stage == Stage::snapshot) {
         retire_prefill();
@@ -233,11 +200,6 @@ void Cache::prepare(Stage stage, Device device, const source::Source* source) {
         throw std::invalid_argument("budget requires a CUDA device");
     prepare_moe_decode_residency(data_->moe);
     cuda::default_context(device.index)->reclaim_idle_memory();
-    if (data_->moe && data_->decode_lendable_bytes) {
-        const auto bytes = lend_decode(data_->decode_lendable_bytes);
-        if (bytes) std::cerr << "runtime_mtp_workspace_cache action=lend depth="
-            << data_->decode_graph_depth << " bytes=" << bytes << '\n';
-    }
     restore_workspace(cuda::options::workspace_reserve_bytes(), source);
 }
 
@@ -260,10 +222,6 @@ void Cache::finish_exchange() const {
 
 void Cache::retire_prefill() {
     release_moe_prefill_buffers(data_->moe);
-}
-
-void Cache::prepare_predictor() {
-    prepare_moe_predictor_exchange(data_->moe);
 }
 
 void Cache::settle() {
@@ -298,8 +256,6 @@ void Cache::reset() noexcept {
     data_->device_bytes.reset();
     data_->exec.reset();
     data_->kv.reset();
-    data_->decode_lendable_bytes = 0;
-    data_->decode_graph_depth = 0;
 }
 
 } // namespace tyloi::weights

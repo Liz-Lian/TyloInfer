@@ -6,7 +6,6 @@
 
 #include <memory>
 
-class MoeFfnPipeline;
 struct MoeRoutePlan;
 
 namespace tyloi::cuda {
@@ -68,24 +67,17 @@ public:
     double moe_router_scale = 1.0;
     double swiglu_limit = 0.0;
     int moe_layer = -1;
-    std::weak_ptr<MoeFfnPipeline> moe_pipeline;
 
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::DenseTensor forward(
         ::tyloi::DenseTensor input,
         MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt,
         MfqOptional<::tyloi::DenseTensor> router_bias = mfq_nullopt) const;
-    void prefetch(
-        const ::tyloi::DenseTensor& input,
-        MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt) const;
 #else
     ::tyloi::DenseTensor forward(
         ::tyloi::DenseTensor input, Executor& executor, const Mode& mode,
         MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt,
         MfqOptional<::tyloi::DenseTensor> router_bias = mfq_nullopt) const;
-    void prefetch(
-        const ::tyloi::DenseTensor& input, Executor& executor, const Mode& mode,
-        bool enabled, MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt) const;
 #endif
 
 private:

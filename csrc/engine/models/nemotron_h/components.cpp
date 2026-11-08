@@ -10,11 +10,11 @@
 namespace tyloi::cuda::nemotron_h {
 
 Components load_components(Model& model, const tyloi::weights::Loader& weights,
-        bool load_optional_components,
+        bool load_optional_components
 #ifdef TYLOINFER_NATIVE_CUDA
-        Pipelines& pipelines) {
+        ) {
 #else
-        CudaExecutionContext& execution) {
+        , CudaExecutionContext& execution) {
 #endif
     Components result;
     if (!load_optional_components) return result;
@@ -36,9 +36,7 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
     if (model.plan.predictor == CudaPredictorAdapter::none) return result;
     TYLOINFER_RUNTIME_CHECK(supports_speculation(model), "invalid Nemotron-H predictor model");
     auto predictor = Mtp::load_if_present(
-#ifdef TYLOINFER_NATIVE_CUDA
-        pipelines,
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
         execution,
 #endif
         weights, model.config, model.embed);

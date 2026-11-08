@@ -87,11 +87,6 @@ float residency_heat_retention() {
 int residency_interval() {
     return env_int("TYLOINFER_MOE_RESIDENCY_INTERVAL",1,1,1024);
 }
-bool router_lookahead() { return exact_one("TYLOINFER_MOE_ROUTER_LOOKAHEAD"); }
-std::optional<bool> router_lookahead_override() {
-    const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MOE_ROUTER_LOOKAHEAD");
-    return value?std::optional<bool>(std::string_view(value)=="1"):std::nullopt;
-}
 bool batch_attention_projections() {
     const auto* value=tyloi::cuda::env_lookup("TYLOINFER_BATCH_ATTENTION_PROJECTIONS");
     return !value || value[0]!='0';
@@ -608,13 +603,6 @@ std::pair<tyloi::cuda::CudaLoadConfig, tyloi::cuda::Executor::Options> tyloi::cu
         "TYLOINFER_MOE_DELAYED_ROUTE_READBACK", true);
     numeric.ffn.bundle_prefetch = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_PROJECTION_BUNDLE_PREFETCH");
-    numeric.moe_ffn.reuse_input = enabled_unless_disabled(
-        "TYLOINFER_DISABLE_SPLIT_MOE_ACTIVATION_REUSE");
-    numeric.moe_ffn.resident_dispatch = tyloi::cuda::env_flag(
-        "TYLOINFER_MOE_GPU_RESIDENT_DISPATCH", false);
-    numeric.moe_ffn.fused_activation = tyloi::cuda::env_flag(
-        "TYLOINFER_MOE_FFN_FUSED_ACTIVATION", true);
-    numeric.moe_ffn.two_stage = tyloi::cuda::env_flag("TYLOINFER_MOE_TWO_STAGE_FFN", false);
     numeric.ffn.swiglu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SWIGLU_QUANT_FUSION");
     numeric.ffn.reduce_fusion = enabled_unless_disabled(

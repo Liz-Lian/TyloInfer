@@ -298,7 +298,6 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/execution.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/options.cpp
     ${PROJECT_SOURCE_DIR}/engine/budget.cpp
-    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/pipelines.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/executor.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/batch_graph.cpp
@@ -310,7 +309,6 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
-        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/moe_ffn_pipeline.cpp
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/moe_batch.cpp)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})

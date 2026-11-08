@@ -97,7 +97,7 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
             auto placed = tensors.for_layer(device, cpu_offloaded);
             TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && model.tables.engram_parameters,
                                     "invalid DeepSeek-V4.1 block loader state");
-            auto block = deepseek_v41_runtime::load_block(execution.executor().pipelines(), placed,
+            auto block = deepseek_v41_runtime::load_block(placed,
                 layer, model.config, model.tables, execution.config.deepseek_v41_engram_cache_rows);
             block->cuda_device = device;
             block->cpu_offloaded = cpu_offloaded;
@@ -109,7 +109,7 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
     if (load_optional_components)
         load_components(model, tensors, true,
 #ifdef TYLOINFER_NATIVE_CUDA
-                        execution.executor().pipelines(), execution.weights);
+                        execution.weights);
 #else
                         execution);
 #endif

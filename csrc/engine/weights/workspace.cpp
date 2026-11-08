@@ -43,8 +43,6 @@ struct detail::Workspace {
     };
 
     int device = 0;
-    ::tyloi::DenseTensor decode_storage;
-    std::optional<std::size_t> decode_region;
     std::vector<PrefillRegion> prefill_regions;
     std::uint64_t prefill_reclaimed_used_bytes = 0;
 };
@@ -186,7 +184,7 @@ std::size_t Cache::prefill_workspace_capacity() const noexcept {
 }
 
 void Cache::release_workspace(std::size_t required_available, const char* reason) {
-    if (!data_->workspace || (!data_->workspace->decode_region && data_->workspace->prefill_regions.empty())) return;
+    if (!data_->workspace || data_->workspace->prefill_regions.empty()) return;
     auto& w = *data_->workspace;
     auto& loan = *data_->kv->loan;
     if (reason) {
@@ -212,42 +210,7 @@ void Cache::release_workspace(std::size_t required_available, const char* reason
         std::cerr << "runtime_prefill_workspace_cache action=reclaim bytes="
             << bytes << " used_bytes=" << used << '\n';
     }
-    if (w.decode_region &&
-            (all || context->available_memory() < required_available)) {
-        const auto bytes = w.decode_storage.nbytes();
-        loan.remove(*w.decode_region);
-        w.decode_region.reset();
-        w.decode_storage = {};
-        std::cerr << "runtime_mtp_workspace_cache action=reclaim bytes="
-            << bytes << '\n';
-    }
     context->reclaim_idle_memory();
-}
-
-std::size_t Cache::lend_decode(std::size_t maximum_minus_active) {
-    if (!data_->workspace) return 0;
-    auto& w = *data_->workspace;
-    if (w.decode_region || !data_->kv || !maximum_minus_active) return 0;
-
-    const auto context = default_context(w.device);
-    const auto available = context->available_memory();
-    constexpr auto headroom = std::size_t(256) << 20;
-    auto bytes = std::min(maximum_minus_active,
-        available > headroom ? available - headroom : std::size_t(0));
-    bytes = bytes / KvExpertLoan::page * KvExpertLoan::page;
-    if (!bytes) return 0;
-
-    ResidentAllocationScope resident;
-    try {
-        w.decode_storage = make_storage(bytes);
-    } catch (const std::exception& error) {
-        if (!is_memory_pressure(error)) throw;
-        std::cerr << "runtime_mtp_workspace_cache action=skip reason=memory_pressure\n";
-        return 0;
-    }
-    w.decode_region = data_->kv->loan->add(w.decode_storage, static_cast<std::int64_t>(bytes),
-        1, true, 1, true, true);
-    return bytes;
 }
 
 void Cache::restore_workspace(std::size_t reserve_bytes, const tyloi::source::Source* source) {
@@ -323,19 +286,15 @@ void Cache::restore_workspace(std::size_t reserve_bytes, const tyloi::source::So
 
 void Cache::append_workspace_metrics(
         std::vector<std::pair<std::string, double>>& metrics) const {
-    std::size_t decode_capacity = 0, decode_used = 0, prefill_used = 0;
+    std::size_t prefill_used = 0;
     std::uint64_t prefill_reclaimed_used = 0;
     if (data_->workspace) {
         const auto& w = *data_->workspace;
-        decode_capacity = w.decode_storage.defined() ? w.decode_storage.nbytes() : 0;
-        decode_used = w.decode_region && data_->kv ? data_->kv->loan->region_bytes(*w.decode_region) : 0;
         for (const auto& part : w.prefill_regions)
             if (data_->kv) prefill_used += data_->kv->loan->region_bytes(part.region);
         prefill_reclaimed_used = w.prefill_reclaimed_used_bytes;
     }
     metrics.insert(metrics.end(), {
-        {"mtp_flexible_expert_capacity_bytes", double(decode_capacity)},
-        {"mtp_flexible_expert_used_bytes", double(decode_used)},
         {"prefill_workspace_expert_capacity_bytes", double(prefill_workspace_capacity())},
         {"prefill_workspace_expert_used_bytes", double(prefill_used)},
         {"prefill_workspace_expert_reclaimed_used_bytes", double(prefill_reclaimed_used)}});
