@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/weights/moe/expert_store.h"
 #include "engine/weights/moe/quant_range_source.h"
-#include "engine/weights/cache_policy.h"
+#include "engine/weights/moe/cache_policy.h"
 #include "engine/backends/cuda/kernels/moe_cache_transfer.h"
 
 #include <algorithm>

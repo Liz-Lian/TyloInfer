@@ -1,6 +1,6 @@
 #include "engine/weights/moe/prepare.h"
 #include "engine/weights/moe/experts.h"
-#include "engine/weights/dispatch_plan.h"
+#include "engine/weights/moe/dispatch_plan.h"
 #include "env.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"

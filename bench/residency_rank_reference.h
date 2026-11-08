@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/weights/ranker.h"
+#include "engine/weights/moe/ranker.h"
 #include <map>
 
 namespace mfq::bench {

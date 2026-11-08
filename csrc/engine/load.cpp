@@ -30,7 +30,7 @@
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
-#include "engine/weights/profile_path.h"
+#include "engine/weights/moe/profile.h"
 
 #include <algorithm>
 #include <charconv>

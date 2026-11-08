@@ -5,7 +5,7 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/weights/moe/expert_cache_internal.h"
-#include "engine/weights/dispatch_plan.h"
+#include "engine/weights/moe/dispatch_plan.h"
 
 struct MoeCachedCohort {
     int index = -1;

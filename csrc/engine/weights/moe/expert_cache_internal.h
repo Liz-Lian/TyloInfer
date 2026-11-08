@@ -9,8 +9,8 @@
 #include "engine/backends/cuda/native/device.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/backends/cpu/native/host_parallel.h"
-#include "engine/weights/cpu_cost_model.h"
-#include "engine/weights/cpu_calibration.h"
+#include "engine/weights/moe/cpu_cost_model.h"
+#include "engine/weights/moe/cpu_calibration.h"
 #include <array>
 #include <cstring>
 #include <fstream>

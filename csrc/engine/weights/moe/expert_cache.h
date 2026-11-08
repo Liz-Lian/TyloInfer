@@ -1,7 +1,7 @@
 #pragma once
 #include "env.h"
 
-#include "engine/weights/profile.h"
+#include "engine/weights/moe/profile.h"
 #include "engine/weights/moe/options.h"
 
 #include <cstdint>

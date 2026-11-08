@@ -7,10 +7,10 @@
 #include "engine/backends/cuda/native/memory.h"
 #include "engine/backends/cpu/executor/expert_pool.h"
 #include "components/error.h"
-#include "engine/weights/routes.h"
+#include "engine/weights/moe/routes.h"
 #include "engine/backends/cpu/native/host_memory_copy.h"
 #include "resident_allocations.h"
-#include "engine/weights/ranker.h"
+#include "engine/weights/moe/ranker.h"
 #include <algorithm>
 #include <array>
 #include <exception>
