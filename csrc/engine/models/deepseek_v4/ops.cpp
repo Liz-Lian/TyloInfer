@@ -16,7 +16,6 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
-#include "engine/models/common/transformer_layer.h"
 #include <iomanip>
 #include <limits>
 #include <algorithm>
@@ -1445,78 +1444,42 @@ DenseTensor forward_layer(const Layer& w, LayerState& state, Executor& executor,
     }
     const int64_t batch = x.size(0);
     const int64_t tokens = x.size(1);
-    return tyloi::models::hyperconnection_layer(
-        std::move(x),
-        [&](::tyloi::DenseTensor x) {
-            auto pre = profiler.measure("dsv4.hc_attn_pre", [&]() {
+    auto attention_mix = profiler.measure("dsv4.hc_attn_pre", [&]() {
+        return hc_pre(w, x, hc_attn_fn, hc_attn_scale, hc_attn_base, "attn_pre");
+    });
+    auto normalized = profiler.measure("dsv4.attn_norm", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA
-                return hc_pre(w, x, *hc_attn_fn, *hc_attn_scale, *hc_attn_base, "attn_pre");
+        const auto& attn_norm = w.attn_norm.dense();
+#endif
+        return rms_norm_cuda(attention_mix.at(0).reshape({batch * tokens, hidden_size})
+                                 .to(::tyloi::kFloat32), attn_norm, eps)
+            .reshape({batch, tokens, hidden_size}).to(::tyloi::kFloat16);
+    });
+    auto attention = attention_forward(w, state, executor, normalized, step, mode);
+    x = profiler.measure("dsv4.hc_attn_post", [&]() {
+        return hc_post(w, attention, x, attention_mix.at(1), attention_mix.at(2), "attn_post");
+    });
+    auto ffn_mix = profiler.measure("dsv4.hc_ffn_pre", [&]() {
+        return hc_pre(w, x, hc_ffn_fn, hc_ffn_scale, hc_ffn_base, "ffn_pre");
+    });
+    normalized = profiler.measure("dsv4.ffn_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& ffn_norm = w.ffn_norm.dense();
+#endif
+        return rms_norm_cuda(ffn_mix.at(0).reshape({batch * tokens, hidden_size})
+                                 .to(::tyloi::kFloat32), ffn_norm, eps)
+            .reshape({batch, tokens, hidden_size}).to(::tyloi::kFloat16);
+    });
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto feed_forward = ffn.forward(
+        normalized.reshape({batch * tokens, hidden_size}), mode.ffn, current_ids);
 #else
-                return hc_pre(w, x, hc_attn_fn, hc_attn_scale, hc_attn_base, "attn_pre");
+    auto feed_forward = ffn.forward(
+        normalized.reshape({batch * tokens, hidden_size}), executor, mode.ffn, current_ids);
 #endif
-            });
-            auto normalized = profiler.measure("dsv4.attn_norm", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA
-                const auto& attn_norm = dynamic_cast<const DenseTensor&>(*w.attn_norm);
-#endif
-                return rms_norm_cuda(pre.at(0)
-                                         .reshape({batch * tokens, hidden_size})
-                                         .to(::tyloi::kFloat32),
-                                     attn_norm, eps)
-                    .reshape({batch, tokens, hidden_size})
-                    .to(::tyloi::kFloat16);
-            });
-            return std::make_pair(normalized, pre);
-        },
-        [&](const auto &mix) {
-            return attention_forward(w, state, executor, mix.first, step, mode);
-        },
-        [&](::tyloi::DenseTensor attention, ::tyloi::DenseTensor residual,
-            const auto &mix) {
-            return profiler.measure("dsv4.hc_attn_post", [&]() {
-                return hc_post(w, attention, residual, mix.second.at(1), mix.second.at(2),
-                               "attn_post");
-            });
-        },
-        [&](::tyloi::DenseTensor x, const auto &) {
-            auto pre = profiler.measure("dsv4.hc_ffn_pre", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA
-                return hc_pre(w, x, *hc_ffn_fn, *hc_ffn_scale, *hc_ffn_base, "ffn_pre");
-#else
-                return hc_pre(w, x, hc_ffn_fn, hc_ffn_scale, hc_ffn_base, "ffn_pre");
-#endif
-            });
-            auto normalized = profiler.measure("dsv4.ffn_norm", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA
-                const auto& ffn_norm = dynamic_cast<const DenseTensor&>(*w.ffn_norm);
-#endif
-                return rms_norm_cuda(pre.at(0)
-                                         .reshape({batch * tokens, hidden_size})
-                                         .to(::tyloi::kFloat32),
-                                     ffn_norm, eps)
-                    .reshape({batch, tokens, hidden_size})
-                    .to(::tyloi::kFloat16);
-            });
-            return std::make_pair(normalized, pre);
-        },
-        [&](const auto &mix) {
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto feed_forward = ffn.forward(
-                mix.first.reshape({batch * tokens, hidden_size}), mode.ffn, current_ids);
-#else
-            auto feed_forward = ffn.forward(
-                mix.first.reshape({batch * tokens, hidden_size}), executor, mode.ffn, current_ids);
-#endif
-            feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
-            return feed_forward;
-        },
-        [&](::tyloi::DenseTensor feed_forward, ::tyloi::DenseTensor residual,
-            const auto &mix) {
-            return profiler.measure("dsv4.hc_ffn_post", [&]() {
-                return hc_post(w, feed_forward, residual, mix.second.at(1), mix.second.at(2),
-                               "ffn_post");
-            });
-        },
-        [](const auto &) {});
+    feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
+    return profiler.measure("dsv4.hc_ffn_post", [&]() {
+        return hc_post(w, feed_forward, x, ffn_mix.at(1), ffn_mix.at(2), "ffn_post");
+    });
 }
 } // namespace tyloi::cuda::deepseek_v4

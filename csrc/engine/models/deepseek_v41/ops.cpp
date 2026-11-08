@@ -266,9 +266,8 @@ void validate_load_options(const CudaExecutionContext &execution) {
     }
 }
 
-DenseTensor finalize_hidden(const SharedState &state, const DenseTensor &hidden,
-                       CudaProfiler &profiler) {
-    return profiler.measure("model.deepseek_v41.final_collapse", [&]() {
+DenseTensor finalize_hidden(const SharedState &state, const DenseTensor &hidden) {
+    return tyloi::ops::measure("model.deepseek_v41.final_collapse", [&]() {
         return state.final_collapse(hidden, state.config.n_layers);
     });
 }
@@ -353,30 +352,13 @@ std::shared_ptr<tyloi::Tensor> Model::softcap(const tyloi::Tensor& logits) const
 }
 
 ::tyloi::Tensor Model::logits(const tyloi::Tensor& hidden, bool) const {
-    return execution->executor().profiler().measure("model.lm_head", [&] {
-        return execution->executor().projector(execution->executor().mode().ffn,
-            model_parallel_primary_device(execution->config)).run(lm_head, hidden.dense());
+    return tyloi::ops::measure("model.lm_head", [&] {
+        return tyloi::ops::project(hidden, lm_head);
     });
 }
 
 bool Model::supports_speculation() const {
     return !blocks.empty();
-}
-
-void Model::adapter_validate_load_options() const {
-    deepseek_v41_runtime::validate_load_options(*execution);
-}
-
-void Model::adapter_load_final_state(const tyloi::weights::Loader& weights) {
-#ifdef TYLOINFER_NATIVE_CUDA
-    output_norm = weights.tensor("model.output_norm.weight");
-#else
-    output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
-#endif
-}
-
-void Model::prepare_blocks(const tyloi::weights::Loader& weights) {
-    tables.engram_parameters = deepseek_v41_runtime::EngramHashState::load_parameters(weights.source, config);
 }
 
 bool Model::prefetch_token_rows(State& state, const ::tyloi::Tensor& input_ids) const {
@@ -393,14 +375,6 @@ bool Model::prefetch_token_rows(State& state, const ::tyloi::Tensor& input_ids) 
     return true;
 }
 
-std::unique_ptr<deepseek_v41_runtime::Block> Model::adapter_load_block(
-        const tyloi::weights::Loader& weights, int layer, int,
-        const std::string& type) {
-    TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && tables.engram_parameters, "invalid DeepSeek-V4.1 block loader state");
-    return deepseek_v41_runtime::load_block(execution->executor().pipelines(), weights, layer, config, tables,
-                                            execution->config.deepseek_v41_engram_cache_rows);
-}
-
 ::tyloi::DenseTensor Model::normalize_hidden(::tyloi::DenseTensor hidden,
 #ifdef TYLOINFER_NATIVE_CUDA
                                              const ::tyloi::Tensor& output_norm,
@@ -408,7 +382,7 @@ std::unique_ptr<deepseek_v41_runtime::Block> Model::adapter_load_block(
                                              const ::tyloi::DenseTensor& output_norm,
 #endif
                                              std::int64_t batch, std::int64_t tokens) const {
-    return execution->executor().profiler().measure("model.output_norm", [&]() {
+    return tyloi::ops::measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, metadata.hidden_size})
                                  .to(::tyloi::kFloat32),
                              output_norm, metadata.rms_norm_eps, metadata.norm_weight_offset)
@@ -427,7 +401,7 @@ std::unique_ptr<deepseek_v41_runtime::Block> Model::adapter_load_block(
 
 ::tyloi::DenseTensor Model::finalize_hidden(State& state, ::tyloi::DenseTensor hidden,
                                                     std::int64_t batch, std::int64_t tokens) const {
-    auto collapsed = deepseek_v41_runtime::finalize_hidden(*state.shared, hidden, execution->executor().profiler());
+    auto collapsed = deepseek_v41_runtime::finalize_hidden(*state.shared, hidden);
 #ifdef TYLOINFER_NATIVE_CUDA
     return normalize_hidden(std::move(collapsed), *output_norm, batch, tokens);
 #else

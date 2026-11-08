@@ -7,6 +7,7 @@
 #include "engine/models/qwen4_exp/causal_lm.h"
 #include "engine/models/qwen4_exp/ngram.h"
 #include "engine/models/common/attention_ops.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/kernels/ple_fused.h"
@@ -139,8 +140,8 @@ class Gdn {
         return request.recurrent.dense().defined() && transposed_state_ ? request.recurrent.dense().transpose(-1,-2) : request.recurrent.dense();
     }
     std::vector<::tyloi::Tensor*> graph_state(State& request) { return {&request.conv, &request.recurrent}; }
-    std::vector<DenseTensor> project_inputs(const tyloi::cuda::Projector& projector,const DenseTensor& x) const;
-    DenseTensor project_output(const tyloi::cuda::Projector& projector,const DenseTensor& x) const;
+    std::vector<DenseTensor> project_inputs(const DenseTensor& x) const;
+    DenseTensor project_output(const DenseTensor& x) const;
     static DenseTensor prepare_independent_batch(const std::vector<std::pair<const Gdn*, State*>>& rows) {
         if(rows.size()<2 || rows.size()>32)return {};
         const auto inplace=::tyloi::cuda::options::gdn_inplace_state();
@@ -223,14 +224,14 @@ class Gdn {
             x.scalar_type()==::tyloi::kFloat16,true,request.core_workspace.dense(),true,addresses);
         return result[0];
     }
-    DenseTensor forward_graph(State& request, const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor& x,int64_t confirmed,
+    DenseTensor forward_graph(State& request, const DenseTensor& x,int64_t confirmed,
                          std::vector<DenseTensor>& checkpoint_conv,std::vector<DenseTensor>& checkpoint_state) {
-        if(!confirmed)return forward_chunk(request, project,profiler,x,true);
+        if(!confirmed)return forward_chunk(request, x,true);
         const auto batch=::tyloi::cuda::options::gdn_batch_projection();
-        const bool grouped=grouped_projection_ && project.grouped(w_->input_projection) && x.size(1)<=8 && (!batch || *batch);
+        const bool grouped=grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection) && x.size(1)<=8 && (!batch || *batch);
         // Only recurrence is split at the confirmation boundary. Both parts
         // share the input projections and one output projection.
-        std::vector<DenseTensor> projected;if(grouped)projected=project_inputs(project,x);
+        std::vector<DenseTensor> projected;if(grouped)projected=project_inputs(x);
         const auto* window_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_GDN_REGISTER_WINDOW");
         const auto inplace_option=::tyloi::cuda::options::gdn_inplace_state();
         const auto* checkpoint_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
@@ -262,7 +263,7 @@ class Gdn {
 #endif
                 1e-6,eps_,silu_gate_,x.scalar_type()==::tyloi::kFloat16,true,checkpoint_conv,checkpoint_state);
             request.conv.dense().copy_(decoded[1]);
-            return project_output(project,decoded[0]);
+            return project_output(decoded[0]);
         }
         const auto slice=[&](int64_t begin,int64_t count) {
             std::vector<DenseTensor> result;for(const auto& value:projected)result.push_back(value.narrow(1,begin,count));
@@ -276,7 +277,7 @@ class Gdn {
             const auto count=begin==0?confirmed:1;
             const auto end=begin+count,index=end-confirmed;
             bool snapshot_written=false;
-            outputs.push_back(forward_chunk(request, project,profiler,x.narrow(1,begin,count),true,
+            outputs.push_back(forward_chunk(request, x.narrow(1,begin,count),true,
                 slice(begin,count),!grouped,
                 end<x.size(1)?checkpoint_conv[index]:DenseTensor{},
                 end<x.size(1)?checkpoint_state[index]:DenseTensor{},&snapshot_written));
@@ -286,7 +287,7 @@ class Gdn {
             }
         }
         auto result=::tyloi::cuda::cat(outputs,1);
-        return grouped?project_output(project,result):result;
+        return grouped?project_output(result):result;
     }
     void bind_graph_checkpoint(State& request, const std::vector<DenseTensor>& conv,const std::vector<DenseTensor>& state,
                                int64_t position) {
@@ -295,7 +296,7 @@ class Gdn {
         request.saved_conv=conv.front();request.saved_state=state.front();
         request.saved_prefix_conv=conv;request.saved_prefix_state=state;request.saved_prefix_position=position;
     }
-    DenseTensor forward(State& request, const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor &x, bool cache,
+    DenseTensor forward(State& request, const DenseTensor &x, bool cache,
                    int64_t confirmed = 0, int64_t cache_position = -1) {
         TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.dim() == 3 && x.size(0) > 0,
                           "recurrent attention requires nonempty [B,T,H] input");
@@ -306,19 +307,19 @@ class Gdn {
             for(int64_t i=confirmed;i<x.size(1);++i) {
                 conv.push_back(::tyloi::cuda::empty_like(request.conv.dense()));state.push_back(::tyloi::cuda::empty_like(request.recurrent.dense()));
             }
-            auto result=forward_graph(request, project,profiler,x,confirmed,conv,state);
+            auto result=forward_graph(request, x,confirmed,conv,state);
             bind_graph_checkpoint(request, conv,state,cache_position+confirmed);
             return result;
         }
         const auto batch=::tyloi::cuda::options::gdn_batch_projection();
         const bool grouped=cache && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8 &&
-            grouped_projection_ && project.grouped(w_->input_projection) && (!batch || *batch);
+            grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection) && (!batch || *batch);
         std::vector<DenseTensor> projected;
-        if(grouped)projected=project_inputs(project,x);
+        if(grouped)projected=project_inputs(x);
         auto result=tyloi::models::recurrent_window(
             x.size(1), cache, confirmed, request.saved_conv.defined(),
             [&](int64_t start, int64_t count) {
-                if(!grouped)return forward_chunk(request, project,profiler,x.narrow(1,start,count),cache);
+                if(!grouped)return forward_chunk(request, x.narrow(1,start,count),cache);
                 // Share both projections across the verification window and
                 // preserve the same per-prefix recurrent order as the graph.
                 std::vector<DenseTensor> outputs;
@@ -326,7 +327,7 @@ class Gdn {
                     const auto rows=begin==0?count:int64_t(1);
                     std::vector<DenseTensor> inputs;
                     for(const auto& value:projected)inputs.push_back(value.narrow(1,begin,rows));
-                    outputs.push_back(forward_chunk(request, project,profiler,x.narrow(1,begin,rows),cache,std::move(inputs),false));
+                    outputs.push_back(forward_chunk(request, x.narrow(1,begin,rows),cache,std::move(inputs),false));
                     begin+=rows;
                 }
                 return outputs.size()==1?std::move(outputs.front()): ::tyloi::cuda::cat(outputs,1);
@@ -337,9 +338,9 @@ class Gdn {
             },
             [&] { rollback(request); },
             [](DenseTensor prefix, DenseTensor suffix) { return ::tyloi::cuda::cat({prefix, suffix}, 1); });
-        return grouped?project_output(project,result):result;
+        return grouped?project_output(result):result;
     }
-    DenseTensor forward_chunk(State& request, const tyloi::cuda::Projector& project,CudaProfiler& profiler,const DenseTensor &x, bool cache,
+    DenseTensor forward_chunk(State& request, const DenseTensor &x, bool cache,
                          std::vector<DenseTensor> projections = {},bool project_output=true,
                          DenseTensor checkpoint_conv={},DenseTensor checkpoint_state={},bool* snapshot_written=nullptr) {
         if(snapshot_written)*snapshot_written=false;
@@ -360,7 +361,7 @@ class Gdn {
             (d_==32 || d_==64 || d_==128) &&
             (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32)) {
             if(projections.empty()) {
-                projections=project_inputs(project,x);
+                projections=project_inputs(x);
             }
             TYLOINFER_RUNTIME_CHECK(projections.size()==4,"GDN input projection count mismatch");
             if(projections[0].scalar_type()==::tyloi::kFloat16 &&
@@ -415,7 +416,7 @@ class Gdn {
                             static_cast<long long>(d_),static_cast<long long>(nv_));
                     }
                 }
-                auto output=project_output?this->project_output(project,decoded[0]):decoded[0];
+                auto output=project_output?this->project_output(decoded[0]):decoded[0];
                 if(request.conv.dense().data_ptr()!=decoded[1].data_ptr())request.conv.dense().copy_(decoded[1]);
                 if(request.recurrent.dense().data_ptr()!=decoded[2].data_ptr())request.recurrent.dense().copy_(decoded[2]);
                 return output;
@@ -426,18 +427,18 @@ class Gdn {
             [&] {
                 DenseTensor projected;
                 if(!projections.empty())projected=projections[0];
-                else if(grouped_projection_ && project.grouped(w_->input_projection)) {
-                    projections=project_inputs(project,x);
+                else if(grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection)) {
+                    projections=project_inputs(x);
                     TYLOINFER_RUNTIME_CHECK(projections.size()==4,"GDN input projection count mismatch");
                     projected=projections[0];
-                } else projected=project_qkv(project,x);
+                } else projected=project_qkv(x);
                 TYLOINFER_RUNTIME_CHECK(projected.sizes().vec() == std::vector<int64_t>({b, t, channels}),
                                   "Qwen4 GDN projection width mismatch");
                 return projected;
             },
             [&](DenseTensor projected) {
                 if(prefill_fused && projected.scalar_type()==::tyloi::kFloat16) {
-                    return profiler.measure("prefill.gdn_conv_qkv",[&] {
+                    return ::tyloi::ops::measure("prefill.gdn_conv_qkv",[&] {
 #ifdef TYLOINFER_NATIVE_CUDA
                         auto weight=dynamic_cast<const DenseTensor&>(*w_->conv).to(::tyloi::kFloat32).contiguous();
 #else
@@ -481,9 +482,9 @@ class Gdn {
                     std::vector<DenseTensor> qkv;
                     if(fused_preparation_) {
                         auto alpha=projections.empty()
-                            ?project_weight(project,*w_->input_projection[w_->qkv_count+1],x):projections[2];
+                            ?project_weight(w_->input_projection[w_->qkv_count+1],x):projections[2];
                         auto beta=projections.empty()
-                            ?project_weight(project,*w_->input_projection[w_->qkv_count+2],x):projections[3];
+                            ?project_weight(w_->input_projection[w_->qkv_count+2],x):projections[3];
                         if(alpha.scalar_type()!=beta.scalar_type() ||
                             (alpha.scalar_type()!=::tyloi::kFloat16 && alpha.scalar_type()!=::tyloi::kFloat32)) {
                             alpha=alpha.to(::tyloi::kFloat32);beta=beta.to(::tyloi::kFloat32);
@@ -525,9 +526,9 @@ class Gdn {
             [&] {
                 if(prepared_gates[0].defined())return prepared_gates;
                 auto alpha=projections.empty()
-                    ?project_weight(project,*w_->input_projection[w_->qkv_count+1],x):projections[2];
+                    ?project_weight(w_->input_projection[w_->qkv_count+1],x):projections[2];
                 auto raw_beta=projections.empty()
-                    ?project_weight(project,*w_->input_projection[w_->qkv_count+2],x):projections[3];
+                    ?project_weight(w_->input_projection[w_->qkv_count+2],x):projections[3];
                 if ((fused_decode_ && t == 1) || prefill_fused) {
                     auto gates = linear_gate_beta_cuda(
                         alpha.to(::tyloi::kFloat32).reshape({b, t, nv_}),
@@ -567,7 +568,7 @@ class Gdn {
                 auto initial = cache && request.recurrent.dense().defined() ? request.recurrent.dense() : DenseTensor{};
                 DenseTensor attended, next_state;
                 if (d_ == 32 || d_ == 64 || d_ == 128) {
-                    auto result = profiler.measure("prefill.gdn_recurrence",[&] {
+                    auto result = ::tyloi::ops::measure("prefill.gdn_recurrence",[&] {
                         const auto short_option=::tyloi::cuda::options::gdn_short_inplace();
                         const auto inplace=::tyloi::cuda::options::gdn_inplace_state();
                         if(cache && initial.defined() && t<=8 && (!short_option || *short_option) && (!inplace || *inplace))
@@ -602,7 +603,7 @@ class Gdn {
                 const auto stride_setting=::tyloi::cuda::options::gdn_strided_projections();
                 const bool strided=!stride_setting || *stride_setting;
                 auto projected_gate=projections.empty()
-                    ?project_weight(project,*w_->input_projection[w_->qkv_count],x)
+                    ?project_weight(w_->input_projection[w_->qkv_count],x)
                     :strided?projections[1]:projections[1].contiguous();
                 if(fused_decode_ && fused_output_ && attended.is_contiguous() &&
                     attended.scalar_type()==::tyloi::kFloat32 && (projected_gate.is_contiguous() ||
@@ -629,10 +630,10 @@ class Gdn {
 #endif
             },
             [&](DenseTensor normalized) {
-                if(normalized.dim()==3)return project_output?this->project_output(project,normalized):normalized;
+                if(normalized.dim()==3)return project_output?this->project_output(normalized):normalized;
                 normalized=normalized.permute({0,2,1,3}).reshape({b,t,vw}).to(x.scalar_type());
                 if(!project_output)return normalized;
-                auto result = this->project_output(project,normalized);
+                auto result = this->project_output(normalized);
                 return result;
             },
             [&](const auto &convolution, const DenseTensor &next) {
@@ -654,8 +655,8 @@ class Gdn {
     }
 
   private:
-    DenseTensor project_weight(const tyloi::cuda::Projector& projector,const ::tyloi::Tensor& weight,const DenseTensor& source) const;
-    DenseTensor project_qkv(const tyloi::cuda::Projector& projector,const DenseTensor& source) const;
+    DenseTensor project_weight(const ::tyloi::Tensor& weight,const DenseTensor& source) const;
+    DenseTensor project_qkv(const DenseTensor& source) const;
     std::shared_ptr<const GdnWeights> w_;
     int64_t nk_, nv_, d_, kernel_;
     double eps_;
@@ -952,23 +953,23 @@ class Ple {
         state.saved=true;state.saved_conv=conv.front();state.saved_context=context.front();
         state.saved_prefix_conv=conv;state.saved_prefix_context=std::move(context);state.saved_prefix_position=position;
     }
-    DenseTensor forward_graph(State& state,const Projector& project,const DenseTensor& x,const DenseTensor& ids,
+    DenseTensor forward_graph(State& state,const DenseTensor& x,const DenseTensor& ids,
                          const DenseTensor& rows,int64_t confirmed,std::vector<DenseTensor>& checkpoint_conv) const {
-        if(!confirmed)return forward_chunk(state,project,x,ids,true,{},rows);
-        auto prefix=forward_chunk(state,project,x.narrow(1,0,confirmed),ids.narrow(1,0,confirmed),
+        if(!confirmed)return forward_chunk(state,x,ids,true,{},rows);
+        auto prefix=forward_chunk(state,x.narrow(1,0,confirmed),ids.narrow(1,0,confirmed),
             true,{},rows.narrow(1,0,confirmed));
 #ifdef TYLOINFER_NATIVE_CUDA
         checkpoint_conv.front().copy_(state.conv.dense());
 #else
         checkpoint_conv.front().copy_(state.conv);
 #endif
-        auto suffix=forward_chunk(state,project,x.narrow(1,confirmed,x.size(1)-confirmed),
+        auto suffix=forward_chunk(state,x.narrow(1,confirmed,x.size(1)-confirmed),
             ids.narrow(1,confirmed,x.size(1)-confirmed),true,{},
             rows.narrow(1,confirmed,x.size(1)-confirmed),&checkpoint_conv,1);
         return ::tyloi::cuda::cat({prefix,suffix},1);
     }
     void prefetch_tokens(State& state,const DenseTensor& ids,bool early_prefix=false) const { embedding_.prefetch(state.embedding,ids,early_prefix); }
-    DenseTensor forward(State& state,const Projector& project, const DenseTensor &x, const DenseTensor &ids, bool cache,
+    DenseTensor forward(State& state, const DenseTensor &x, const DenseTensor &ids, bool cache,
                    int64_t confirmed = 0,const DenseTensor& host_ids = {},int64_t cache_position = -1) const {
         TYLOINFER_RUNTIME_CHECK(x.dim() == 3 && ids.dim() == 2 && x.size(0) == ids.size(0) &&
                               x.size(1) == ids.size(1) && x.size(2) == hidden_ * streams_ &&
@@ -988,14 +989,14 @@ class Ple {
                 context.push_back(embedding_.prefix_context(state.embedding,host,i));
             }
             auto rows=embedding_.forward(state.embedding,ids,true,nullptr,host);
-            auto result=forward_graph(state,project,x,ids,rows,confirmed,conv);
+            auto result=forward_graph(state,x,ids,rows,confirmed,conv);
             bind_graph_checkpoint(state,conv,std::move(context),cache_position+confirmed);
             return result;
         }
         return tyloi::models::recurrent_window(
             x.size(1), cache, confirmed, state.saved,
             [&](int64_t start, int64_t count) {
-                return forward_chunk(state,project, x.narrow(1, start, count),
+                return forward_chunk(state, x.narrow(1, start, count),
                                      ids.narrow(1, start, count), cache,
                                      host_ids.defined() ? host_ids.narrow(1,start,count) : DenseTensor{});
             },
@@ -1011,7 +1012,7 @@ class Ple {
             [&] { rollback(state); },
             [](DenseTensor first, DenseTensor second) { return ::tyloi::cuda::cat({first, second}, 1); });
     }
-    DenseTensor forward_chunk(State& state,const Projector& project, const DenseTensor &x, const DenseTensor &ids,
+    DenseTensor forward_chunk(State& state, const DenseTensor &x, const DenseTensor &ids,
                          bool cache,const DenseTensor& host_ids = {},const DenseTensor& graph_embeddings = {},
                          std::vector<DenseTensor>* checkpoints=nullptr,std::size_t checkpoint_offset=0) const {
         auto context = embedding_.context(state.embedding);
@@ -1044,13 +1045,13 @@ class Ple {
                 auto embeddings=graph_embeddings.defined()?graph_embeddings:
                     embedding_.forward(state.embedding,ids,cache,nullptr,host_ids);
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto key=mfq_qwen4_exp::grouped_rms_norm(project.run(*w_.key,embeddings),dynamic_cast<const DenseTensor&>(*w_.key_norm),hidden_,eps_);
-                auto query=mfq_qwen4_exp::grouped_rms_norm(x,dynamic_cast<const DenseTensor&>(*w_.query_norm),hidden_,eps_);
+                auto key=mfq_qwen4_exp::grouped_rms_norm(::tyloi::ops::project(embeddings,w_.key).dense(),w_.key_norm.dense(),hidden_,eps_);
+                auto query=mfq_qwen4_exp::grouped_rms_norm(x,w_.query_norm.dense(),hidden_,eps_);
 #else
-                auto key=mfq_qwen4_exp::grouped_rms_norm(project.run(*w_.key,embeddings),w_.key_norm,hidden_,eps_);
+                auto key=mfq_qwen4_exp::grouped_rms_norm(::tyloi::ops::project(embeddings,w_.key).dense(),w_.key_norm,hidden_,eps_);
                 auto query=mfq_qwen4_exp::grouped_rms_norm(x,w_.query_norm,hidden_,eps_);
 #endif
-                auto value=project.run(*w_.value,embeddings);
+                auto value=::tyloi::ops::project(embeddings,w_.value).dense();
                 auto prepared=mfq_qwen4_exp::ple_gate_norm_cuda(key,query,value,
 #ifdef TYLOINFER_NATIVE_CUDA
                     dynamic_cast<const DenseTensor&>(*w_.conv_norm).to(::tyloi::kFloat32).contiguous(),hidden_,streams_,eps_);
@@ -1073,7 +1074,7 @@ class Ple {
         return tyloi::models::qwen4_exp::position_embedding(
             cache, [&] { return graph_embeddings.defined() ? graph_embeddings : embedding_.forward(state.embedding,ids, cache,nullptr,host_ids); },
             [&](const DenseTensor &embeddings) {
-                auto key = mfq_qwen4_exp::grouped_rms_norm(project.run(*w_.key, embeddings),
+                auto key = mfq_qwen4_exp::grouped_rms_norm(::tyloi::ops::project(embeddings,w_.key).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                                                            dynamic_cast<const DenseTensor&>(*w_.key_norm), hidden_, eps_)
 #else
@@ -1097,7 +1098,7 @@ class Ple {
                 auto sign = (score > 0).to(::tyloi::kFloat32) - (score < 0).to(::tyloi::kFloat32);
                 auto root = sign * ::tyloi::cuda::clamp_min(score.abs(), 1e-6).sqrt();
                 auto gated = (::tyloi::cuda::sigmoid(root).unsqueeze(-1) *
-                              project.run(*w_.value, embeddings).to(::tyloi::kFloat32).unsqueeze(-2))
+                              ::tyloi::ops::project(embeddings,w_.value).dense().to(::tyloi::kFloat32).unsqueeze(-2))
                                  .reshape({b, t, streams_ * hidden_});
                 return gated;
             },
@@ -1201,16 +1202,16 @@ class Qsa {
                 c_.kv_heads*(key_width()+value_width()),c_.pool,cache_dtype());
         } else {request.graph_keys=request.memory->keys;request.graph_values=request.memory->values;}
     }
-    std::vector<DenseTensor> project_inputs(const tyloi::cuda::Projector& projector,const DenseTensor& x) const {
+    std::vector<DenseTensor> project_inputs(const DenseTensor& x) const {
         std::vector<DenseTensor> projected;
-        const bool grouped=grouped_projection_ && projector.grouped(w_->input_projection);
+        const bool grouped=grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection);
         if(grouped)
-            projected=projector.run(w_->input_projection,x);
+            { auto values=::tyloi::ops::project_group(x,w_->input_projection,1); for(const auto& value:values)projected.push_back(value.dense()); }
         else
-            projected={project_query(projector,x),
-                projector.run(*w_->input_projection[1],x),
-                projector.run(*w_->input_projection[2],x),
-                projector.run(*w_->input_projection[3],x)};
+            projected={project_query(x),
+                ::tyloi::ops::project(x,w_->input_projection[1]).dense(),
+                ::tyloi::ops::project(x,w_->input_projection[2]).dense(),
+                ::tyloi::ops::project(x,w_->input_projection[3]).dense()};
         if(grouped && w_->has_gate) {
             TYLOINFER_RUNTIME_CHECK(projected.size()==5,"QSA input projection count mismatch");
             const auto b=x.size(0),t=x.size(1);
@@ -1221,14 +1222,14 @@ class Qsa {
         TYLOINFER_RUNTIME_CHECK(projected.size()==4,"QSA input projection count mismatch");
         return projected;
     }
-    DenseTensor project_output(const tyloi::cuda::Projector& projector,const DenseTensor& x) const {
-        return projector.run(*w_->output,x);
+    DenseTensor project_output(const DenseTensor& x) const {
+        return ::tyloi::ops::project(x,w_->output).dense();
     }
-    DenseTensor project_query(const tyloi::cuda::Projector& projector,const DenseTensor& x) const {
-        auto query=projector.run(*w_->input_projection[0],x);
+    DenseTensor project_query(const DenseTensor& x) const {
+        auto query=::tyloi::ops::project(x,w_->input_projection[0]).dense();
         if(!w_->has_gate)return query;
         const auto b=x.size(0),t=x.size(1);
-        auto gate=projector.run(*w_->input_projection[4],x);
+        auto gate=::tyloi::ops::project(x,w_->input_projection[4]).dense();
         return ::tyloi::cuda::cat({query.reshape({b,t,c_.heads,c_.width}),
             gate.reshape({b,t,c_.heads,c_.width})},-1).reshape({b,t,2*c_.heads*c_.width});
     }
@@ -1382,7 +1383,7 @@ class Qsa {
         request.graph_keys=std::move(graph_keys);request.graph_values=std::move(graph_values);request.graph_pooled=std::move(graph_pooled);
         request.keys.release_storage();request.values.release_storage();
     }
-    DenseTensor forward_graph(State& request,const tyloi::cuda::Projector& projector,const DenseTensor& hidden,
+    DenseTensor forward_graph(State& request,const DenseTensor& hidden,
                          const DenseTensor& positions,const DenseTensor& cache_positions,
                          std::vector<DenseTensor> projections={},bool project_output=true,bool history_only=false) {
         const auto mark=[](const char* phase) {
@@ -1397,15 +1398,15 @@ class Qsa {
         const auto t=hidden.size(1),pools=request.graph_pooled.size(1);
         const bool dense_capacity=(streamed?c_.maximum:request.graph_keys.size(2))<=c_.budget;
         const bool exclusive=managed_memory(request) && request.memory->hot.exclusive();
-        auto p=history_only?project_history(projector,hidden,positions):
-            project(projector,hidden,positions,!dense_capacity,cache_positions,
+        auto p=history_only?project_history(hidden,positions):
+            project(hidden,positions,!dense_capacity,cache_positions,
                        quantization_.enabled() || exclusive || streamed?DenseTensor{}:graph_keys,quantization_.enabled() || exclusive || streamed?DenseTensor{}:graph_values,
                        std::move(projections));
         mark("qsa_input_end");
         const auto finish=[&](DenseTensor output) {
             mark("qsa_attention_end");
             output=output.reshape({1,t,c_.heads*c_.width});
-            return project_output?this->project_output(projector,output):output;
+            return project_output?this->project_output(output):output;
         };
         bool index_written=false;
         const auto* prepare_option=tyloi::cuda::env_lookup("TYLOINFER_KV_PREPARE_FUSED");
@@ -1570,7 +1571,7 @@ class Qsa {
         request.values.truncate(keep);
         request.index.truncate(keep);
     }
-    DenseTensor forward(State& request,const tyloi::cuda::Projector& projector, const DenseTensor &hidden,
+    DenseTensor forward(State& request, const DenseTensor &hidden,
                    const DenseTensor &current_positions, const DenseTensor &full_positions, bool use_cache,
                    std::vector<DenseTensor> *selection_trace = nullptr,
                    std::vector<DenseTensor> projections = {}, bool project_output = true,
@@ -1597,7 +1598,7 @@ class Qsa {
                     const auto count=std::min(rows,hidden.size(1)-begin);
                     std::vector<DenseTensor> projected;
                     for(const auto& value:projections)projected.push_back(value.narrow(1,begin,count));
-                    outputs.push_back(forward(request,projector,hidden.narrow(1,begin,count),
+                    outputs.push_back(forward(request,hidden.narrow(1,begin,count),
                         current_positions.narrow(-1,begin,count),full_positions.narrow(-1,0,offset+begin+count),
                         true,nullptr,std::move(projected),project_output));
                 }
@@ -1606,7 +1607,7 @@ class Qsa {
         }
         if (request.offload && use_cache) {
             if(managed_memory(request))request.memory->ensure(position(request)+hidden.size(1));
-            return forward_offloaded(request,projector, hidden, current_positions, full_positions, selection_trace,
+            return forward_offloaded(request, hidden, current_positions, full_positions, selection_trace,
                                      std::move(projections),project_output,history_only);
         }
         const auto b = hidden.size(0), t = hidden.size(1), offset = use_cache ? position(request) : 0;
@@ -1621,8 +1622,8 @@ class Qsa {
             "Qwen4 QSA cache/position geometry mismatch");
         auto project_inputs = [&] {
                 if(prepared_inputs)
-                    return project(projector,hidden,current_positions,!history_only && offset+t>c_.budget,{},{},{},std::move(projections));
-                auto pair = this->project_query(projector,hidden).reshape({b, t, c_.heads, 2 * c_.width});
+                    return project(hidden,current_positions,!history_only && offset+t>c_.budget,{},{},{},std::move(projections));
+                auto pair = this->project_query(hidden).reshape({b, t, c_.heads, 2 * c_.width});
                 auto gate = pair.narrow(-1, c_.width, c_.width);
                 auto query = rms_norm(pair.narrow(-1, 0, c_.width),
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -1632,17 +1633,17 @@ class Qsa {
 #endif
                                  .permute({0, 2, 1, 3});
                 auto key =
-                    rms_norm(projector.run(*w_->input_projection[1],hidden).reshape({b, t, c_.kv_heads, c_.width}),
+                    rms_norm(::tyloi::ops::project(hidden,w_->input_projection[1]).dense().reshape({b, t, c_.kv_heads, c_.width}),
 #ifdef TYLOINFER_NATIVE_CUDA
                              dynamic_cast<const DenseTensor&>(*w_->key_norm).to(::tyloi::kFloat32) + 1, c_.eps)
 #else
                              w_->key_norm.to(::tyloi::kFloat32) + 1, c_.eps)
 #endif
                         .permute({0, 2, 1, 3});
-                auto value = projector.run(*w_->input_projection[2],hidden).reshape({b, t, c_.kv_heads, c_.width});
+                auto value = ::tyloi::ops::project(hidden,w_->input_projection[2]).dense().reshape({b, t, c_.kv_heads, c_.width});
                 query = rotary_->forward(query, current_positions);
                 key = rotary_->forward(key, current_positions).permute({0, 2, 1, 3});
-                auto iqk = projector.run(*w_->input_projection[3],hidden);
+                auto iqk = ::tyloi::ops::project(hidden,w_->input_projection[3]).dense();
                 auto iq = rms_norm(iqk.narrow(-1, 0, c_.index_heads * c_.index_width)
                                        .reshape({b, t, c_.index_heads, c_.index_width}),
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -1682,7 +1683,7 @@ class Qsa {
                 p.raw = request.index.append(p.raw);
             };
         if(history_only) {
-            auto p=project_history(projector,hidden,current_positions);
+            auto p=project_history(hidden,current_positions);
             try {append_inputs(p);}catch(...) {truncate(request,offset);throw;}
             return {};
         }
@@ -1741,7 +1742,7 @@ class Qsa {
                 auto gated = short_gate?std::move(attended):
                     attended.to(::tyloi::kFloat32) * ::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32));
                 auto result = gated.reshape({b, t, c_.heads * c_.width}).to(hidden.scalar_type());
-                return project_output ? this->project_output(projector,result) : result;
+                return project_output ? this->project_output(result) : result;
             },
             [&] { truncate(request,offset); });
     }
@@ -1832,7 +1833,7 @@ class Qsa {
         auto attended=attend(request,p.query,keys,values,stage->ids,rows);
         return (attended.to(::tyloi::kFloat32)*::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32))).to(output_type);
     }
-    DenseTensor forward_offloaded(State& request,const tyloi::cuda::Projector& projector, const DenseTensor& hidden,
+    DenseTensor forward_offloaded(State& request, const DenseTensor& hidden,
         const DenseTensor& positions, const DenseTensor& full_positions, std::vector<DenseTensor>* trace,
         std::vector<DenseTensor> projections={},bool project_output=true,bool history_only=false) {
         const auto offset = position(request), tokens = hidden.size(1), length = offset + tokens;
@@ -1850,8 +1851,8 @@ class Qsa {
         const auto row_bytes = std::size_t(key_row+value_row) * (quantization_.enabled()?4:2);
         if (std::size_t(max_keys) * row_bytes > request.offload->config().buffer_bytes / 4)
             throw std::invalid_argument("QSA I/O buffer cannot hold one selected context; increase the resident KV budget");
-        auto p = history_only?project_history(projector,hidden,positions):
-            project(projector, hidden, positions, length > c_.budget,{},{},{},std::move(projections));
+        auto p = history_only?project_history(hidden,positions):
+            project( hidden, positions, length > c_.budget,{},{},{},std::move(projections));
         try {
             request.offloaded_kv->append(::tyloi::cuda::cat({encode_key(p.key).reshape({tokens,key_row}), encode_value(p.value).reshape({tokens,value_row})}, 1));
             const auto first_pool = pool_position();
@@ -1899,7 +1900,7 @@ class Qsa {
                 auto attended = attend(request,p.query, key, value, ids, offset);
                 auto gated = attended.to(::tyloi::kFloat32) * ::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32));
                 auto result = gated.reshape({1,tokens,c_.heads*c_.width}).to(hidden.scalar_type());
-                return project_output ? this->project_output(projector,result) : result;
+                return project_output ? this->project_output(result) : result;
             }
             const auto queries = std::max<int64_t>(1, std::min<int64_t>(32,
                 request.offload->config().buffer_bytes / 4 / (std::size_t(max_keys) * row_bytes)));
@@ -1959,7 +1960,7 @@ class Qsa {
             auto attended = ::tyloi::cuda::cat(outputs, 1);
             auto gated = attended.to(::tyloi::kFloat32) * ::tyloi::cuda::sigmoid(p.gate.to(::tyloi::kFloat32));
             auto result=gated.reshape({1, tokens, c_.heads * c_.width}).to(hidden.scalar_type());
-            return project_output?this->project_output(projector,result):result;
+            return project_output?this->project_output(result):result;
         } catch (...) { truncate(request,offset); throw; }
     }
     DenseTensor project_norm(const DenseTensor& value,const DenseTensor& weight) {
@@ -1967,9 +1968,9 @@ class Qsa {
             return grouped_rms_norm_cuda(value.contiguous(),weight.to(::tyloi::kFloat32).contiguous(),value.size(-1),c_.eps,1.0);
         return rms_norm(value,weight.to(::tyloi::kFloat32)+1,c_.eps);
     }
-    Projection project_history(const tyloi::cuda::Projector& projector,const DenseTensor& hidden,const DenseTensor& positions) {
+    Projection project_history(const DenseTensor& hidden,const DenseTensor& positions) {
         const auto b=hidden.size(0),t=hidden.size(1);
-        auto source=projector.run(*w_->input_projection[1],hidden).reshape({b,t,c_.kv_heads,c_.width});
+        auto source=::tyloi::ops::project(hidden,w_->input_projection[1]).dense().reshape({b,t,c_.kv_heads,c_.width});
         DenseTensor key;
         if(fused_projection_ && rotary_->fused() &&
                 (source.scalar_type()==::tyloi::kFloat16 || source.scalar_type()==::tyloi::kFloat32))
@@ -1980,22 +1981,22 @@ class Qsa {
             key=rotary_->forward_normalized_grouped({source},{w_->key_norm},positions,c_.eps,1)[0].permute({0,2,1,3});
         else key=rotary_->forward(project_norm(source,w_->key_norm).permute({0,2,1,3}),positions).permute({0,2,1,3});
 #endif
-        auto value=projector.run(*w_->input_projection[2],hidden).reshape({b,t,c_.kv_heads,c_.width});
-        auto raw=projector.run(*w_->input_projection[3],hidden).narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
+        auto value=::tyloi::ops::project(hidden,w_->input_projection[2]).dense().reshape({b,t,c_.kv_heads,c_.width});
+        auto raw=::tyloi::ops::project(hidden,w_->input_projection[3]).dense().narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
         return {{},{},std::move(key),std::move(value),{},std::move(raw)};
     }
-    Projection project(const tyloi::cuda::Projector& projector,const DenseTensor& hidden,const DenseTensor& positions,
+    Projection project(const DenseTensor& hidden,const DenseTensor& positions,
                        bool index_query_needed=true,const DenseTensor& cache_positions={},
                        const DenseTensor& key_cache={},const DenseTensor& value_cache={},
                        std::vector<DenseTensor> projections={}) {
         const auto b=hidden.size(0),t=hidden.size(1);
         if(projections.empty()) {
-            if(grouped_projection_ && projector.grouped(w_->input_projection))
-                projections=project_inputs(projector,hidden);
-            else projections={project_query(projector,hidden),
-                projector.run(*w_->input_projection[1],hidden),
-                projector.run(*w_->input_projection[2],hidden),
-                projector.run(*w_->input_projection[3],hidden)};
+            if(grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection))
+                projections=project_inputs(hidden);
+            else projections={project_query(hidden),
+                ::tyloi::ops::project(hidden,w_->input_projection[1]).dense(),
+                ::tyloi::ops::project(hidden,w_->input_projection[2]).dense(),
+                ::tyloi::ops::project(hidden,w_->input_projection[3]).dense()};
         }
         TYLOINFER_RUNTIME_CHECK(projections.empty() || projections.size()==4,"QSA input projection count mismatch");
         auto pair=projections[0].reshape({b,t,c_.heads,2*c_.width});

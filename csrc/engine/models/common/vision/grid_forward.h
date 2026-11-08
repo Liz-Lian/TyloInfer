@@ -3,7 +3,6 @@
 #include "engine/generation/sequence.h"
 #include "engine/ops.h"
 #include "grid_vision.h"
-#include "../transformer_layer.h"
 #include <cmath>
 #include <utility>
 

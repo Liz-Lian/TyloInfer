@@ -52,6 +52,7 @@ public:
     static const Ffn::Mode& current_ffn();
     std::unique_ptr<tyloi::Executor::Scope> enter(int device, const Ffn::Mode& mode);
     // Override only the policy on this active executor; retain its device and stream.
+    // Nested policy scopes retain an outer serial-branch requirement.
     std::unique_ptr<tyloi::Executor::Scope> enter(const Ffn::Mode& mode);
 #else
     void wait(const std::unordered_set<int>& devices);

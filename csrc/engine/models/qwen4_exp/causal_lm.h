@@ -3,7 +3,6 @@
 #include "../common/causal_metadata.h"
 #include "../common/predictor.h"
 #include "../common/recurrent_attention.h"
-#include "../common/transformer_layer.h"
 
 namespace tyloi::models::qwen4_exp {
 
@@ -172,50 +171,6 @@ auto position_embedding(bool cache, Embed embed, Key key, Query query, Gate gate
         rollback();
         throw;
     }
-}
-
-template <class DenseTensor, class PositionEmbedding, class Add, class AttentionPre,
-          class LinearAttention, class SparseAttention, class AttentionPost, class FfnPre,
-          class Ffn, class FfnPost>
-auto decoder_layer(DenseTensor hidden, bool has_ple, bool linear, PositionEmbedding position_embedding,
-                   Add add, AttentionPre attention_pre, LinearAttention linear_attention,
-                   SparseAttention sparse_attention, AttentionPost attention_post, FfnPre ffn_pre,
-                   Ffn ffn, FfnPost ffn_post) {
-    if (has_ple) {
-        auto positional = position_embedding(hidden);
-        hidden = add(std::move(hidden), std::move(positional));
-    }
-    return hyperconnection_layer(
-        std::move(hidden), attention_pre,
-        [&](const auto &mix) {
-            return linear ? linear_attention(mix[0]) : sparse_attention(mix[0]);
-        },
-        [&](auto branch, const auto &, const auto &mix) {
-            return attention_post(std::move(branch), mix);
-        },
-        [&](const auto &value, const auto &) { return ffn_pre(value); },
-        [&](const auto &mix) { return ffn(mix[0]); },
-        [&](auto branch, const auto &, const auto &mix) {
-            return ffn_post(std::move(branch), mix);
-        },
-        [](const auto &) {});
-}
-
-template <class DenseTensor, class PositionEmbedding, class Add, class AttentionPre,
-          class LinearAttention, class SparseAttention, class FfnPreAfter, class Ffn, class FfnPost>
-auto decoder_layer_chained(DenseTensor hidden, bool has_ple, bool linear,
-    PositionEmbedding position_embedding, Add add, AttentionPre attention_pre,
-    LinearAttention linear_attention, SparseAttention sparse_attention,
-    FfnPreAfter ffn_pre_after, Ffn ffn, FfnPost ffn_post) {
-    if (has_ple) {
-        auto positional = position_embedding(hidden);
-        hidden = add(std::move(hidden), std::move(positional));
-    }
-    auto attention_mix = attention_pre(hidden);
-    auto attention_branch = linear ? linear_attention(attention_mix[0]) : sparse_attention(attention_mix[0]);
-    auto ffn_mix = ffn_pre_after(std::move(attention_branch), attention_mix);
-    auto ffn_branch = ffn(ffn_mix[0]);
-    return ffn_post(std::move(ffn_branch), ffn_mix);
 }
 
 } // namespace tyloi::models::qwen4_exp

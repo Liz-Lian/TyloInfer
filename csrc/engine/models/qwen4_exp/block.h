@@ -106,17 +106,17 @@ struct Qwen4Block final {
         state.retained_prefix=confirmed>0 && ids.size(1)<=8;
         auto& profiler=execution.executor().profiler();
         if(ple)x=x+profiler.measure("prefill.ple",[&] {
-            return ple->forward(state.ple, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),x,ids,true,confirmed,host_ids,full_positions.size(-1)-ids.size(1));
+            return ple->forward(state.ple, x,ids,true,confirmed,host_ids,full_positions.size(-1)-ids.size(1));
         });
         auto [attention_input,attention_residual,attention_gate]=profiler.measure("prefill.gr_attention",[&] {
             return attention_gr.pre(x);
         });
         auto attention_output=gdn
             ? profiler.measure("prefill.gdn",[&] {
-                return gdn->forward(state.gdn, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),execution.executor().profiler(),attention_input,true,confirmed,full_positions.size(-1)-ids.size(1));
+                return gdn->forward(state.gdn, attention_input,true,confirmed,full_positions.size(-1)-ids.size(1));
             })
             : profiler.measure("prefill.qsa",[&] {
-                return qsa->forward(*state.qsa, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),attention_input,positions,full_positions,true);
+                return qsa->forward(*state.qsa, attention_input,positions,full_positions,true);
             });
         auto [ffn_input,ffn_residual,ffn_gate]=profiler.measure("prefill.gr_ffn_pre",[&] {
             return ffn_gr.pre_after(attention_output,attention_residual,attention_gate);
@@ -131,14 +131,14 @@ struct Qwen4Block final {
     }
     DenseTensor prefill_ple(LayerState& state, CudaExecutionContext& execution,DenseTensor x,const BlockContext& context) {
         if(ple)x=x+execution.executor().profiler().measure("prefill.ple",[&] {
-            return ple->forward(state.ple, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),x,context.token_ids,true,0,context.host_token_ids);
+            return ple->forward(state.ple, x,context.token_ids,true,0,context.host_token_ids);
         });
         return x;
     }
     DenseTensor prefill_attention_core(LayerState& state, CudaExecutionContext& execution,const DenseTensor& input,const BlockContext& context) {
         return gdn?
-            execution.executor().profiler().measure("prefill.gdn",[&] {return gdn->forward(state.gdn, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),execution.executor().profiler(),input,true,0);}):
-            execution.executor().profiler().measure("prefill.qsa",[&] {return qsa->forward(*state.qsa, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),input,context.positions,context.full_positions,true);});
+            execution.executor().profiler().measure("prefill.gdn",[&] {return gdn->forward(state.gdn, input,true,0);}):
+            execution.executor().profiler().measure("prefill.qsa",[&] {return qsa->forward(*state.qsa, input,context.positions,context.full_positions,true);});
     }
     GatedResidual::Result prefill_attention(LayerState& state, CudaExecutionContext& execution,DenseTensor x,const BlockContext& context) {
         x=prefill_ple(state, execution,std::move(x),context);
@@ -169,16 +169,16 @@ struct Qwen4Block final {
             };
         };
         if(ple)x=x+(confirmed
-            ? ple->forward_graph(state.ple, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),x,ids,ple_rows,confirmed,checkpoint->ple_conv)
-            : ple->forward_chunk(state.ple, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),x,ids,true,{},ple_rows));
+            ? ple->forward_graph(state.ple, x,ids,ple_rows,confirmed,checkpoint->ple_conv)
+            : ple->forward_chunk(state.ple, x,ids,true,{},ple_rows));
         auto [attention_input,attention_residual,attention_gate]=pending_residual
             ? attention_gr.pre_after(x,pending_residual->residual,pending_residual->gate,marker("attention_mhc_"))
             : attention_gr.pre(x,marker("attention_mhc_"));
         mark("attention_core_begin");
         auto attention_output=gdn
-            ? (confirmed ? gdn->forward_graph(state.gdn, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),execution.executor().profiler(),attention_input,confirmed,checkpoint->gdn_conv,checkpoint->gdn_state)
-                         : gdn->forward_chunk(state.gdn, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),execution.executor().profiler(),attention_input,true))
-            : qsa->forward_graph(*state.qsa, execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)),attention_input,positions,cache_positions);
+            ? (confirmed ? gdn->forward_graph(state.gdn, attention_input,confirmed,checkpoint->gdn_conv,checkpoint->gdn_state)
+                         : gdn->forward_chunk(state.gdn, attention_input,true))
+            : qsa->forward_graph(*state.qsa, attention_input,positions,cache_positions);
         mark("attention_core_end");
         auto ffn_result=ffn_gr.pre_after(attention_output,attention_residual,attention_gate,marker("ffn_mhc_"));
         mark("ffn_pre_end");

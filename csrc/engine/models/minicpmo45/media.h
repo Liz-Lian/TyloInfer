@@ -3,7 +3,6 @@
 #include "engine/generation/sequence.h"
 #include "engine/ops.h"
 #include "engine/models/common/causal_forward.h"
-#include "engine/models/common/transformer_layer.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -221,26 +220,6 @@ auto resample(ProjectKv project_kv, NormKv norm_kv, NormQ norm_q, Query query, K
     auto k = key(kv);
     auto v = value(kv);
     return final(norm_output(output(attend(std::move(q), std::move(k), std::move(v)))));
-}
-
-// Text-conditioned TTS has its own embedding and output head, but the decoder
-// traversal and logical position transitions are the same on every backend.
-template <class DenseTensor, class Layers, class Reset, class Prepare, class Positions, class Layer,
-          class Normalize>
-auto tts_forward(DenseTensor embeddings, int64_t batch, int64_t tokens, int64_t capacity,
-                 int64_t &cache_position, Layers &layers, Reset reset, Prepare prepare,
-                 Positions positions, Layer layer, Normalize normalize) {
-    require_model(batch > 0 && tokens > 0 && cache_position >= 0 && cache_position <= capacity &&
-                      tokens <= capacity - cache_position,
-                  "MiniCPM-o TTS context exceeds capacity or has invalid geometry");
-    if (cache_position == 0)
-        reset();
-    auto pos = positions();
-    auto hidden = layer_stack(prepare(std::move(embeddings)), layers, [&](auto &block, auto value) {
-        return layer(block, std::move(value), pos);
-    });
-    cache_position += tokens;
-    return normalize(std::move(hidden));
 }
 
 } // namespace tyloi::models::minicpmo45

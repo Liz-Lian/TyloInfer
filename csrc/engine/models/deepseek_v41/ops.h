@@ -9,7 +9,6 @@
 #else
 #include "engine/backends/cuda/ops/rope/tail.h"
 #endif
-#include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 
 #include "engine/models/common/causal_model_ops.h"
@@ -544,7 +543,7 @@ struct Block final {
     // No dense warmup state: the recurrent cache lives in AttentionState.
     std::vector<DenseTensor*> graph_warmup_state() { return {}; }
 
-    MhcResult collapse(CudaProfiler &profiler, const DenseTensor &residual, const DenseTensor &previous_pre,
+    MhcResult collapse(const DenseTensor &residual, const DenseTensor &previous_pre,
 #ifdef TYLOINFER_NATIVE_CUDA
                        const ::tyloi::Tensor &function_tensor, const ::tyloi::Tensor &scale_tensor,
                        const ::tyloi::Tensor &base_tensor, const ::tyloi::Tensor &norm_tensor, const char *profile) const {
@@ -552,7 +551,7 @@ struct Block final {
                        const DenseTensor &function, const DenseTensor &scale, const DenseTensor &base,
                        const DenseTensor &norm, const char *profile) const {
 #endif
-        return profiler.measure(profile, [&]() {
+        return tyloi::ops::measure(profile, [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA
             const auto& function = dynamic_cast<const DenseTensor&>(function_tensor);
             const auto& scale = dynamic_cast<const DenseTensor&>(scale_tensor);
@@ -574,20 +573,19 @@ struct Block final {
         });
     }
 
-    DenseTensor expand(CudaProfiler &profiler, const DenseTensor &branch, const DenseTensor &residual,
+    DenseTensor expand(const DenseTensor &branch, const DenseTensor &residual,
                   const MhcResult &mix, const char *profile) const {
-        return profiler.measure(profile, [&]() {
+        return tyloi::ops::measure(profile, [&]() {
             return dsv4_hc_post_cuda(branch.contiguous(), residual.contiguous(),
                                      mix.post.contiguous(), mix.combination.contiguous());
         });
     }
 
-    DenseTensor output_projection(CudaExecutionContext &execution, DenseTensor attention) const {
-        return execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).low_rank(attention, *output_a, *output_b,
-                                               config.o_groups, true, false);
+    DenseTensor output_projection(DenseTensor attention) const {
+        return tyloi::ops::low_rank(attention, output_a, output_b, config.o_groups, true, false).dense();
     }
 
-    std::optional<DenseTensor> update_compressed_source(SharedState& shared, CudaExecutionContext &execution,
+    std::optional<DenseTensor> update_compressed_source(SharedState& shared,
                                                    const DenseTensor &input, std::int64_t position) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
         const auto batch = input.size(0);
@@ -596,7 +594,7 @@ struct Block final {
         return tyloi::models::deepseek_v41::compress(
             layer_state, tokens, position, ratio,
             [&] {
-                return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*compressor_key_value, input),
+                return weighted_rms(tyloi::ops::project(input, compressor_key_value).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                                     *compressor_norm,
 #else
@@ -605,10 +603,10 @@ struct Block final {
                                     config.rms_eps);
             },
             [&] {
-                projected_kv = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*compressor_key_value, input)
+                projected_kv = tyloi::ops::project(input, compressor_key_value).dense()
                                    .to(::tyloi::kFloat32)
                                    .contiguous();
-                projected_score = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*compressor_gate, input)
+                projected_score = tyloi::ops::project(input, compressor_gate).dense()
                                       .to(::tyloi::kFloat32)
                                       .contiguous();
                 if(layer_state.speculative_pending) {
@@ -655,12 +653,12 @@ struct Block final {
             [](const auto &emitted) { return ::tyloi::cuda::cat(emitted, 1).contiguous(); });
     }
 
-    void publish_compressed_source(SharedState& shared, CudaExecutionContext &execution, const DenseTensor &input,
+    void publish_compressed_source(SharedState& shared, const DenseTensor &input,
                                    std::int64_t position) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
         std::optional<DenseTensor> latent;
         if (layer_state.prefilled_global_end == position + input.size(1)) layer_state.prefilled_global_end = -1;
-        else latent = update_compressed_source(shared, execution, input, position);
+        else latent = update_compressed_source(shared, input, position);
         if (latent) {
             const auto count = latent->size(1);
             const auto begin = layer_state.compressed_length;
@@ -670,7 +668,7 @@ struct Block final {
                 ::tyloi::cuda::arange(begin * ratio, (begin + count) * ratio, ratio,
                                            latent->options().dtype(::tyloi::kInt64));
             auto index_values =
-                weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*index_key, *latent),
+                weighted_rms(tyloi::ops::project(*latent, index_key).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                              *index_key_norm, config.rms_eps);
 #else
@@ -692,7 +690,7 @@ struct Block final {
         shared.ratio = ratio;
     }
 
-    DenseTensor compute_topk(SharedState& shared, CudaExecutionContext &execution, const DenseTensor &input, const DenseTensor &q_rank,
+    DenseTensor compute_topk(SharedState& shared, const DenseTensor &input, const DenseTensor &q_rank,
                         const DenseTensor &positions, std::int64_t position) {
         const auto batch = input.size(0);
         const auto tokens = input.size(1);
@@ -711,7 +709,7 @@ struct Block final {
             },
             [&] {
                 auto query =
-                    execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*index_query, q_rank)
+                    tyloi::ops::project(q_rank, index_query).dense()
                         .reshape({batch, tokens, config.index_n_heads, config.index_head_dim})
                         .transpose(1, 2)
                         .contiguous();
@@ -724,7 +722,7 @@ struct Block final {
                             .transpose(1, 2)
                             .contiguous();
                 query = dsv4_fp4_sim_cuda(query.to(::tyloi::kFloat16).contiguous());
-                auto weights = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*index_score, input)
+                auto weights = tyloi::ops::project(input, index_score).dense()
                                    .reshape({batch, tokens, config.index_n_heads})
                                    .to(::tyloi::kFloat16)
                                    .contiguous();
@@ -734,12 +732,12 @@ struct Block final {
                                       "DeepSeek-V4.1 hierarchical indexer has no candidates");
                     candidates = candidate_positions(shared.candidate_blocks,
                                                      config.candidate_block_size, pool_length);
-                    return execution.executor().profiler().measure("deepseek_v41.indexer.candidate_scores", [&] {
+                    return tyloi::ops::measure("deepseek_v41.indexer.candidate_scores", [&] {
                         return dsv4_indexer_candidate_scores_cuda(query, keys, weights, candidates,
                                                                   position, ratio);
                     });
                 }
-                return execution.executor().profiler().measure("deepseek_v41.indexer.full_scores", [&] {
+                return tyloi::ops::measure("deepseek_v41.indexer.full_scores", [&] {
                     return dsv4_indexer_scores_cuda(query, keys, weights, position, ratio);
                 });
             },
@@ -757,7 +755,7 @@ struct Block final {
             [&](DenseTensor topk) { shared.topk = std::move(topk); });
     }
 
-    DenseTensor attention_forward(SharedState& shared, CudaExecutionContext &execution, const DenseTensor &input,
+    DenseTensor attention_forward(SharedState& shared, const DenseTensor &input,
                              const DenseTensor &positions, std::int64_t position,
                              const MfqOptional<DenseTensor> &sequence_lengths,
                              bool truncated_local = false) {
@@ -768,7 +766,7 @@ struct Block final {
         return tyloi::models::deepseek_v41::attention(
             kv_source(), ratio,
             [&] {
-                return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*query_a, input),
+                return weighted_rms(tyloi::ops::project(input, query_a).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                                     *query_a_norm,
 #else
@@ -777,7 +775,7 @@ struct Block final {
                                     config.rms_eps);
             },
             [&](DenseTensor q_rank) {
-                auto query = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*query_b, q_rank)
+                auto query = tyloi::ops::project(q_rank, query_b).dense()
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
@@ -792,7 +790,7 @@ struct Block final {
                 return query;
             },
             [&] {
-                auto local = weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(*key_value, input),
+                auto local = weighted_rms(tyloi::ops::project(input, key_value).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
                                           *key_value_norm,
 #else
@@ -805,14 +803,14 @@ struct Block final {
 
                 return local;
             },
-            [&] { publish_compressed_source(shared, execution, input, position); },
+            [&] { publish_compressed_source(shared, input, position); },
             [&] {
                 TYLOINFER_RUNTIME_CHECK(shared.compressed_kv.defined() && shared.index_k.defined() &&
                                       shared.ratio == ratio,
                                   "DeepSeek-V4.1 CSA2 consumer ran before its source layer");
             },
             [&](DenseTensor q_rank) {
-                return compute_topk(shared, execution, input, q_rank, positions, position);
+                return compute_topk(shared, input, q_rank, positions, position);
             },
             [&](DenseTensor local) {
                 DenseTensor local_for_attention;
@@ -906,7 +904,7 @@ struct Block final {
                     .contiguous();
             },
             [&] { layer_state.position += tokens; },
-            [&](DenseTensor attended) { return output_projection(execution, attended); });
+            [&](DenseTensor attended) { return output_projection(attended); });
     }
 
     DenseTensor forward_context(SharedState& shared, CudaExecutionContext& execution,DenseTensor hidden,
@@ -930,7 +928,6 @@ struct Block final {
                    std::int64_t cache_position, const MfqOptional<DenseTensor> &sequence_lengths,
                    const MfqOptional<DenseTensor> &cache_positions = mfq_nullopt) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
-        auto &profiler = execution.executor().profiler();
         TYLOINFER_RUNTIME_CHECK(layer_state.current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
                               positions.dim() == 1 && positions.numel() == hidden.size(1) &&
@@ -942,92 +939,75 @@ struct Block final {
 
         const auto batch = hidden.size(0), tokens = hidden.size(1);
         const bool truncated_local = std::exchange(layer_state.replay_local_window, false);
-        return tyloi::models::deepseek_v41::decoder_layer(
-            std::move(hidden), bool(engram), shared.previous_pre,
-            [&](DenseTensor value) {
-                return profiler.measure("deepseek_v41.engram", [&] {
-                    return engram->forward(*shared.engram_states.at(static_cast<std::size_t>(layer)),
-                                          execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), profiler, value, shared.engram_hashes,
-                                          shared.text_rows,&shared.text_row_ids);
-                });
-            },
-            [&](const DenseTensor &value) { shared.capture_dspark_target(layer, config, value); },
-            [&](DenseTensor value, const DenseTensor &previous_pre, int branch) {
-                return collapse(profiler, value, previous_pre,
-#ifdef TYLOINFER_NATIVE_CUDA
-                                *(branch == 0 ? attention_mhc_function : mlp_mhc_function),
-                                *(branch == 0 ? attention_mhc_scale : mlp_mhc_scale),
-                                *(branch == 0 ? attention_mhc_base : mlp_mhc_base),
-                                *(branch == 0 ? attention_norm : mlp_norm),
-#else
-                                branch == 0 ? attention_mhc_function : mlp_mhc_function,
-                                branch == 0 ? attention_mhc_scale : mlp_mhc_scale,
-                                branch == 0 ? attention_mhc_base : mlp_mhc_base,
-                                branch == 0 ? attention_norm : mlp_norm,
-#endif
-                                branch == 0 ? "deepseek_v41.mhc.attention.collapse"
-                                            : "deepseek_v41.mhc.mlp.collapse");
-            },
-            [&](DenseTensor value) {
-                return profiler.measure("deepseek_v41.attention", [&] {
-                    return attention_forward(shared, execution, value, positions, cache_position,
-                                             sequence_lengths, truncated_local);
-                });
-            },
-            [&](DenseTensor value, DenseTensor residual, const auto &mix, int branch) {
-                return expand(profiler, value, residual, mix,
-                              branch == 0 ? "deepseek_v41.mhc.attention.expand"
-                                          : "deepseek_v41.mhc.mlp.expand");
-            },
-            [&](DenseTensor value) {
-                return profiler.measure("deepseek_v41.mlp", [&] {
-                    if(shared.image_mask.defined()) {
-#ifdef TYLOINFER_NATIVE_CUDA
-                        TYLOINFER_RUNTIME_CHECK(vision_router_bias && vision_router_bias->defined(),"DeepSeek-V4.1 visual router bias is missing");
-#else
-                        TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
-#endif
-                        TYLOINFER_RUNTIME_CHECK(mlp.moe_router_bias, "DeepSeek-V4.1 router bias is missing");
-#ifdef TYLOINFER_NATIVE_CUDA
-                        auto bias=::tyloi::cuda::where(shared.routing_mask,vision_router_bias.dense(),mlp.moe_router_bias.dense()).contiguous();
-#else
-                        auto bias=::tyloi::cuda::where(shared.routing_mask,vision_router_bias,mlp.moe_router_bias.dense()).contiguous();
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
-                        return mlp.forward(
-                            value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids, bias)
-#else
-                        auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-                        return mlp.forward(
-                            value.reshape({-1,config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids, bias)
-#endif
-                            .reshape({batch,tokens,config.hidden});
-                    }
-                    if(layer+1<static_cast<int64_t>(shared.tables.router_prefetch.size()))
-                        if(const auto* next=shared.tables.router_prefetch[layer+1]) {
-#ifndef TYLOINFER_NATIVE_CUDA
-                            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-#endif
-                            next->prefetch(
-#ifdef TYLOINFER_NATIVE_CUDA
-                                value, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
-#else
-                                value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
-#endif
-                                execution.weights.lookahead(::tyloi::weights::Cache::Lookahead::neighbor),
-                                layer_state.current_ids);
-                        }
-#ifdef TYLOINFER_NATIVE_CUDA
-                    return mlp.forward(
-                            value.reshape({-1, config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids)
-#else
-                    auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-                    return mlp.forward(
-                            value.reshape({-1, config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids)
-#endif
-                        .reshape({batch, tokens, config.hidden});
-                });
+        if (engram) {
+            hidden = tyloi::ops::measure("deepseek_v41.engram", [&] {
+                return engram->forward(*shared.engram_states.at(static_cast<std::size_t>(layer)),
+                                       hidden, shared.engram_hashes, shared.text_rows, &shared.text_row_ids);
             });
+        }
+        shared.capture_dspark_target(layer, config, hidden);
+        auto attention_mix = collapse(hidden, shared.previous_pre,
+            attention_mhc_function, attention_mhc_scale, attention_mhc_base, attention_norm,
+            "deepseek_v41.mhc.attention.collapse");
+        auto attended = tyloi::ops::measure("deepseek_v41.attention", [&] {
+            return attention_forward(shared, attention_mix.branch, positions, cache_position,
+                                     sequence_lengths, truncated_local);
+        });
+        hidden = expand(attended, hidden, attention_mix, "deepseek_v41.mhc.attention.expand");
+        auto ffn_mix = collapse(hidden, attention_mix.next_pre,
+            mlp_mhc_function, mlp_mhc_scale, mlp_mhc_base, mlp_norm,
+            "deepseek_v41.mhc.mlp.collapse");
+        auto output = tyloi::ops::measure("deepseek_v41.mlp", [&] {
+            const auto& value = ffn_mix.branch;
+            if(shared.image_mask.defined()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                TYLOINFER_RUNTIME_CHECK(vision_router_bias && vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
+#else
+                TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
+#endif
+                TYLOINFER_RUNTIME_CHECK(mlp.moe_router_bias, "DeepSeek-V4.1 router bias is missing");
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto bias=::tyloi::cuda::where(shared.routing_mask,vision_router_bias.dense(),mlp.moe_router_bias.dense()).contiguous();
+#else
+                auto bias=::tyloi::cuda::where(shared.routing_mask,vision_router_bias,mlp.moe_router_bias.dense()).contiguous();
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+                return mlp.forward(
+                    value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids, bias)
+#else
+                auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+                return mlp.forward(
+                    value.reshape({-1,config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids, bias)
+#endif
+                    .reshape({batch,tokens,config.hidden});
+            }
+            if(layer+1<static_cast<int64_t>(shared.tables.router_prefetch.size()))
+                if(const auto* next=shared.tables.router_prefetch[layer+1]) {
+#ifndef TYLOINFER_NATIVE_CUDA
+                    auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+#endif
+                    next->prefetch(
+#ifdef TYLOINFER_NATIVE_CUDA
+                        value, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
+#else
+                        value, *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
+#endif
+                        execution.weights.lookahead(::tyloi::weights::Cache::Lookahead::neighbor),
+                        layer_state.current_ids);
+                }
+#ifdef TYLOINFER_NATIVE_CUDA
+            return mlp.forward(
+                    value.reshape({-1, config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids)
+#else
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+            return mlp.forward(
+                    value.reshape({-1, config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids)
+#endif
+                .reshape({batch, tokens, config.hidden});
+        });
+        hidden = expand(output, hidden, ffn_mix, "deepseek_v41.mhc.mlp.expand");
+        shared.previous_pre = std::move(ffn_mix.next_pre);
+        return hidden;
     }
 };
 
@@ -1039,8 +1019,7 @@ std::unique_ptr<Block> load_block(Pipelines& pipelines, const tyloi::weights::Lo
                                     std::int64_t layer, const CommonConfig& config,
                                     ModelTables& tables, std::size_t engram_cache_rows);
 void validate_load_options(const CudaExecutionContext &execution);
-DenseTensor finalize_hidden(const SharedState &state, const DenseTensor &hidden,
-                       CudaProfiler &profiler);
+DenseTensor finalize_hidden(const SharedState &state, const DenseTensor &hidden);
 
 inline int run_self_check() {
     EngramHashState::self_check();
@@ -1124,8 +1103,7 @@ struct Model : tyloi::models::CausalModel {
             .contiguous();
     }
     ::tyloi::DenseTensor embed_tokens(::tyloi::DenseTensor ids) const {
-        return execution->executor().profiler().measure(
-            "model.embed", [&] { return quant_embedding_lookup(*embed, ids); });
+        return tyloi::ops::measure("model.embed", [&] { return tyloi::ops::embedding(ids, embed).dense(); });
     }
     static ::tyloi::DenseTensor softcap_apply(::tyloi::DenseTensor logits, double cap) {
         return ::tyloi::cuda::tanh(logits / cap) * cap;
@@ -1134,34 +1112,9 @@ struct Model : tyloi::models::CausalModel {
     std::int64_t max_position_embeddings() const noexcept { return config.max_position_embeddings; }
     std::int64_t num_hidden_layers() const noexcept { return config.n_layers; }
     bool tie_word_embeddings() const noexcept { return metadata.tie_word_embeddings; }
-    template <class Loader> bool has_independent_output_weights(Loader &loader) const {
-        return !tie_word_embeddings() && loader.has_weight("model.output.weight");
-    }
-    template <class Loader> void load_weights(Loader &loader, bool with_blocks = true) {
-        constexpr auto embedding = "model.token_embedding.weight";
-        constexpr auto output = "model.output.weight";
-        this->embed = loader.embedding(embedding);
-        loader.final_state();
-        this->lm_head = tie_word_embeddings() || !loader.has_weight(output)
-                            ? loader.tied_output(this->embed, embedding)
-                            : loader.output(output);
-        if (with_blocks) {
-            loader.prepare_blocks();
-            this->blocks.reserve(static_cast<std::size_t>(num_hidden_layers()));
-            for (int layer = 0; layer < num_hidden_layers(); ++layer)
-                this->blocks.push_back(loader.block(layer, std::string(metadata.layer_types.at(static_cast<std::size_t>(layer)))));
-        }
-    }
     void load_config(std::string_view payload);
 
     // ---- family adapters (implementations in ops.cpp)
-    void adapter_validate_load_options() const;
-    void adapter_load_final_state(const tyloi::weights::Loader& weights);
-    void prepare_blocks(const tyloi::weights::Loader& weights);
-    std::unique_ptr<deepseek_v41_runtime::Block> adapter_load_block(
-        const tyloi::weights::Loader& weights, int layer, int device,
-        const std::string& type);
-    bool adapter_supports_prepared_prompt() const noexcept { return true; }
     ::tyloi::DenseTensor normalize_hidden(::tyloi::DenseTensor hidden,
 #ifdef TYLOINFER_NATIVE_CUDA
                                           const ::tyloi::Tensor& output_norm, std::int64_t batch,

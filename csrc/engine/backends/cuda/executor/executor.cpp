@@ -447,6 +447,8 @@ public:
         : owner(executor), ffn(mode), previous_(active_scope) {
         if (!previous_ || &previous_->owner != &executor)
             throw std::logic_error("CUDA executor is not active");
+        // Capture serialization remains in force through nested policy scopes.
+        ffn.serial = ffn.serial || previous_->ffn.serial;
         active_scope = this;
     }
     Ffn::Mode ffn;

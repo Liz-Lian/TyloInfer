@@ -154,71 +154,15 @@ struct Model : tyloi::models::CausalModel {
     std::int64_t max_position_embeddings() const noexcept { return config.maximum; }
     std::int64_t num_hidden_layers() const noexcept { return config.layers; }
     bool tie_word_embeddings() const noexcept { return metadata.tie_word_embeddings; }
-    template <class Loader> bool has_independent_output_weights(Loader &loader) const {
-        return !tie_word_embeddings() && loader.has_weight("model.output.weight");
-    }
-    template <class Loader> void load_weights(Loader &loader, bool with_blocks = true) {
-        constexpr auto embedding = "model.token_embedding.weight";
-        constexpr auto output = "model.output.weight";
-        this->embed = loader.embedding(embedding);
-        loader.final_state();
-        this->lm_head = tie_word_embeddings() || !loader.has_weight(output)
-                            ? loader.tied_output(this->embed, embedding)
-                            : loader.output(output);
-        if (with_blocks) {
-            this->blocks.reserve(static_cast<std::size_t>(num_hidden_layers()));
-            for (int layer = 0; layer < num_hidden_layers(); ++layer)
-                this->blocks.push_back(loader.block(layer, std::string(metadata.layer_types.at(static_cast<std::size_t>(layer)))));
-        }
-    }
     void load_config(std::string_view payload);
     static ::tyloi::DenseTensor repeat_hidden(::tyloi::DenseTensor hidden, std::int64_t streams) {
         return hidden.to(::tyloi::kFloat16).repeat({1, 1, streams});
     }
-    ::tyloi::DenseTensor adapter_prepare_hidden(::tyloi::DenseTensor hidden, std::int64_t,
-                                                std::int64_t) const {
-        return repeat_hidden(std::move(hidden), metadata.hc_mult);
-    }
-    bool adapter_force_cache_advance() const noexcept { return true; }
-    void adapter_validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cache_position,
-                                  bool, bool has_cache_position_override) const {
-        tyloi::models::require_model(tokens > 0 &&
-                              cache_position + tokens <= metadata.max_position_embeddings &&
-                                  !has_cache_position_override,
-                              "Qwen4 requires unpadded causal cache positions");
-    }
-    void adapter_validate_positions(const ::tyloi::DenseTensor& positions, std::int64_t batch,
-                                    std::int64_t tokens, bool) const {
-        tyloi::models::require_model((positions.dim() == 1 || (positions.dim() == 2 && positions.size(0) == 3) ||
-                                 (positions.dim() == 3 && positions.size(0) == 3 && positions.size(1) == batch)) &&
-                              positions.size(-1) == tokens,
-                              "Qwen4 positions require [T], [3,T], [4,T], [3,B,T] or [4,B,T]");
-    }
-    ::tyloi::DenseTensor adapter_prepare_positions(::tyloi::DenseTensor current, std::int64_t,
-                                                   std::int64_t) {
-        if ((current.dim() == 2 || current.dim() == 3) && current.size(0) == 4)
-            current = current.narrow(0, 1, 3);
-        return current;
-    }
-    bool adapter_allows_speculative_position_override() const noexcept { return true; }
-    ::tyloi::DenseTensor
-    adapter_finalize_hidden(::tyloi::DenseTensor hidden,
-                            std::int64_t batch, std::int64_t tokens) const;
-
-    // ---- family adapters (implementations in ops.cpp)
     Model();
     ~Model();
     Model(Model&&) noexcept;
     Model& operator=(Model&&) noexcept;
-    void adapter_validate_load_options() const;
-    void adapter_load_final_state(const tyloi::weights::Loader& weights);
-    std::unique_ptr<qwen4_exp::Qwen4Block> adapter_load_block(
-        const tyloi::weights::Loader& weights, int layer, int device,
-        const std::string& type);
-    ::tyloi::DenseTensor
-    adapter_block_positions(const ::tyloi::DenseTensor& full_positions,
-                            const ::tyloi::DenseTensor& local_positions, int device) const;
-    ::tyloi::DenseTensor adapter_next_token(::tyloi::DenseTensor hidden) const;
+
 };
 
 void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,

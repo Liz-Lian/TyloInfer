@@ -139,8 +139,8 @@ std::int64_t prefill_span(const Model&, const State&, std::size_t tokens,
 #else
                                                      block.attention_norm, config.rms_eps);
 #endif
-            model.execution->executor().profiler().measure("deepseek_v41.ced.global_kv", [&] {
-                block.publish_compressed_source(*state.shared, *model.execution, source, state.cache_pos);
+            tyloi::ops::measure("deepseek_v41.ced.global_kv", [&] {
+                block.publish_compressed_source(*state.shared, source, state.cache_pos);
                 return source;
             });
             state.shared->layers.at(static_cast<std::size_t>(layer)).prefilled_global_end = state.cache_pos + count;

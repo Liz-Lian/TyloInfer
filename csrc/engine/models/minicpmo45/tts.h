@@ -288,79 +288,72 @@ struct Tts {
         const int64_t batch = input_embeddings.size(0);
         const int64_t tokens = input_embeddings.size(1);
         TYLOINFER_RUNTIME_CHECK(state.kv.size() == layers.size(), "MiniCPM-o TTS state layer count differs");
-        return tyloi::models::minicpmo45::tts_forward(
-            std::move(input_embeddings), batch, tokens, config.max_position_embeddings,
-            state.position, layers,
-            [&] { state.reset(batch); },
-            [&](auto value) { return value.to(::tyloi::kBFloat16).contiguous(); },
-            [&] {
-                auto positions = ::tyloi::cuda::arange(
-                    state.position, state.position + tokens,
-                    ::tyloi::TensorOptions().device(::tyloi::kCUDA)
-                        .dtype(::tyloi::kInt64));
-                MfqOptional<::tyloi::DenseTensor> sequence_length = mfq_nullopt;
-                if (state.position > 0) {
-                    sequence_length = ::tyloi::cuda::full(
-                        {batch}, state.position + tokens,
-                        ::tyloi::TensorOptions().device(::tyloi::kCUDA)
-                            .dtype(::tyloi::kInt64));
-                }
-                return std::make_pair(positions, sequence_length);
-            },
-            [&](const Layer& layer, auto hidden, const auto& positions) {
-                const auto& attention = layer.attention;
-                auto& cache = state.kv.at(attention.layer);
-                if (!cache.defined()) {
-                    const auto capacity = mode.kv_capacity > 0
-                        ? std::max(state.position + tokens, mode.kv_capacity)
-                        : attention.max_position_embeddings;
-                    cache = KVCache(batch, attention.kv_heads, capacity, attention.attention_head_dim,
-                        false, hidden.device(), ::tyloi::kFloat16, attention.kv_quantization);
-                }
-                cache.quantization = attention.kv_quantization;
-                const std::array<AttentionKvView, 1> kv{cache.view()};
-                const std::array<Task, 2> tasks{{
-                    {task::Attention{0, 1, 2, attention, 0}, attention.layer},
+        tyloi::models::require_model(
+            batch > 0 && tokens > 0 && state.position >= 0 &&
+                state.position <= config.max_position_embeddings &&
+                tokens <= config.max_position_embeddings - state.position,
+            "MiniCPM-o TTS context exceeds capacity or has invalid geometry");
+        if (state.position == 0) state.reset(batch);
+        auto positions = ::tyloi::cuda::arange(
+            state.position, state.position + tokens,
+            ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64));
+        MfqOptional<::tyloi::DenseTensor> sequence_length = mfq_nullopt;
+        if (state.position > 0) {
+            sequence_length = ::tyloi::cuda::full(
+                {batch}, state.position + tokens,
+                ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64));
+        }
+        auto hidden = input_embeddings.to(::tyloi::kBFloat16).contiguous();
+        input_embeddings = {};
+        for (const auto& layer : layers) {
+            const auto& attention = layer.attention;
+            auto& cache = state.kv.at(attention.layer);
+            if (!cache.defined()) {
+                const auto capacity = mode.kv_capacity > 0
+                    ? std::max(state.position + tokens, mode.kv_capacity)
+                    : attention.max_position_embeddings;
+                cache = KVCache(batch, attention.kv_heads, capacity, attention.attention_head_dim,
+                    false, hidden.device(), ::tyloi::kFloat16, attention.kv_quantization);
+            }
+            cache.quantization = attention.kv_quantization;
+            const std::array<AttentionKvView, 1> kv{cache.view()};
+            const std::array<Task, 2> tasks{{
+                {task::Attention{0, 1, 2, attention, 0}, attention.layer},
 #ifdef TYLOINFER_NATIVE_CUDA
-                    {task::FullFfn{1, 2, 0, layer.ffn, *layer.ffn_norm, attention}, attention.layer},
+                {task::FullFfn{1, 2, 0, layer.ffn, *layer.ffn_norm, attention}, attention.layer},
 #else
-                    {task::FullFfn{1, 2, 0, layer.ffn, layer.ffn_norm, attention}, attention.layer},
+                {task::FullFfn{1, 2, 0, layer.ffn, layer.ffn_norm, attention}, attention.layer},
 #endif
-                }};
-                Inputs inputs;
-                inputs.values = {std::move(hidden), {}, {}};
-                inputs.kv = kv;
-                inputs.attention.positions = positions.first;
-                inputs.attention.sequence_lengths = positions.second;
-                inputs.attention.cache_position = state.position;
+            }};
+            Inputs inputs;
+            inputs.values = {std::move(hidden), {}, {}};
+            inputs.kv = kv;
+            inputs.attention.positions = positions;
+            inputs.attention.sequence_lengths = sequence_length;
+            inputs.attention.cache_position = state.position;
 #ifdef TYLOINFER_NATIVE_CUDA
-                inputs.rope = rope;
+            inputs.rope = rope;
 #else
-                inputs.rope = &rope;
+            inputs.rope = &rope;
 #endif
-                inputs.trace = mode.trace;
-                inputs.trace_scope = mode.trace_layer;
-                inputs.scratch_offset = 2 * attention.layer;
-                return executor.run(tasks, std::move(inputs), mode);
-            },
-            [&](auto hidden) {
-                auto flat = hidden.reshape(
-                    {batch * tokens, config.hidden_size});
-                auto normalized_f32 = flat.to(::tyloi::kFloat32);
-                normalized_f32 = normalized_f32 * ::tyloi::cuda::rsqrt(
-                    ::tyloi::cuda::mean(normalized_f32.square(), -1, true) +
-                    config.rms_norm_eps);
+            inputs.trace = mode.trace;
+            inputs.trace_scope = mode.trace_layer;
+            inputs.scratch_offset = 2 * attention.layer;
+            hidden = executor.run(tasks, std::move(inputs), mode);
+        }
+        state.position += tokens;
+        auto flat = hidden.reshape({batch * tokens, config.hidden_size});
+        auto normalized_f32 = flat.to(::tyloi::kFloat32);
+        normalized_f32 = normalized_f32 * ::tyloi::cuda::rsqrt(
+            ::tyloi::cuda::mean(normalized_f32.square(), -1, true) + config.rms_norm_eps);
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(*output_norm);
+        const auto& weight = output_norm.dense();
 #else
-                const auto& weight = output_norm;
+        const auto& weight = output_norm;
 #endif
-                return (
-                    normalized_f32.to(flat.scalar_type()) *
-                    weight.to(flat.scalar_type()))
-                    .reshape({batch, tokens, config.hidden_size})
-                    .contiguous();
-            });
+        return (normalized_f32.to(flat.scalar_type()) * weight.to(flat.scalar_type()))
+            .reshape({batch, tokens, config.hidden_size})
+            .contiguous();
     }
 
     ::tyloi::DenseTensor logits(::tyloi::DenseTensor hidden) const {

@@ -446,6 +446,12 @@ std::shared_ptr<Tensor> project(const Tensor& value_tensor, const ::tyloi::Tenso
     input(value);
     return owner(cuda::ops::project(value, weight));
 }
+Tensor low_rank(const Tensor& value_tensor, const Tensor& output_a, const Tensor& output_b,
+                std::int64_t groups, bool groupwise, bool profile) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    input(value);
+    return owner(cuda::ops::low_rank(value, output_a, output_b, groups, groupwise, profile));
+}
 std::shared_ptr<Tensor> linear(const Tensor& value_tensor, const ::tyloi::Tensor& weight, const Tensor* bias_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
@@ -470,6 +476,15 @@ std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& value_tensor, s
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     return owners(cuda::ops::project_group(value, group));
+}
+bool grouped(std::span<const Tensor> weights) {
+    return cuda::ops::grouped(weights);
+}
+std::vector<Tensor> project_group(const Tensor& value_tensor, std::span<const Tensor> weights,
+                                  std::size_t prefix) {
+    const auto& value = ::tyloi::ops::dense(value_tensor);
+    input(value);
+    return owners(cuda::ops::project_group(value, weights, prefix));
 }
 std::shared_ptr<Tensor> sigmoid_project(const Tensor& value_tensor, const Tensor& gate_tensor, const ::tyloi::Tensor& weight) {
     const auto& value = ::tyloi::ops::dense(value_tensor);

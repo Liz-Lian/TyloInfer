@@ -449,7 +449,11 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 auto floating = target_hidden.to(::tyloi::kFloat32);
                 auto scale = (floating.abs().amax(-1, true) / 64.0).clamp_min(1.0);
                 return weighted_rms(
-                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*main_projection, (floating / scale).to(::tyloi::kFloat16).contiguous()),
+#ifdef TYLOINFER_NATIVE_CUDA
+                    tyloi::ops::project((floating / scale).to(::tyloi::kFloat16).contiguous(), main_projection).dense(),
+#else
+                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(main_projection, (floating / scale).to(::tyloi::kFloat16).contiguous()),
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
                     *main_norm, config.rms_eps);
 #else
@@ -457,7 +461,12 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 #endif
             },
             [&](size_t index, const DenseTensor &main_x) {
-                auto key_value = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stages[index]->key_value, main_x),
+                auto key_value = weighted_rms(
+#ifdef TYLOINFER_NATIVE_CUDA
+                    tyloi::ops::project(main_x, stages[index]->key_value).dense(),
+#else
+                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stages[index]->key_value, main_x),
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
                                               *stages[index]->key_value_norm, config.rms_eps);
 #else
@@ -485,13 +494,23 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         return tyloi::models::deepseek_v41::dspark_attention(
             active,
             [&] {
-                auto q_rank = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stage.query_a, input),
+                auto q_rank = weighted_rms(
+#ifdef TYLOINFER_NATIVE_CUDA
+                                           tyloi::ops::project(input, stage.query_a).dense(),
+#else
+                                           execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.query_a, input),
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
                                            *stage.query_a_norm, config.rms_eps);
 #else
                                            stage.query_a_norm, config.rms_eps);
 #endif
-                auto query = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stage.query_b, q_rank)
+                auto query =
+#ifdef TYLOINFER_NATIVE_CUDA
+                    tyloi::ops::project(q_rank, stage.query_b).dense()
+#else
+                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.query_b, q_rank)
+#endif
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
@@ -505,7 +524,12 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 return query;
             },
             [&] {
-                auto current_keys = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*stage.key_value, input),
+                auto current_keys = weighted_rms(
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                 tyloi::ops::project(input, stage.key_value).dense(),
+#else
+                                                 execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.key_value, input),
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
                                                  *stage.key_value_norm, config.rms_eps);
 #else
@@ -543,7 +567,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     .transpose(1, 2)
                     .contiguous();
             },
-            [&](DenseTensor attended) { return stage.output_projection(*execution, attended); });
+            [&](DenseTensor attended) { return stage.output_projection(attended); });
     }
 
     std::shared_ptr<tyloi::Tensor> draft_block(const tyloi::Tensor& input_ids, int requested) override {
@@ -569,8 +593,16 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         return std::make_shared<DenseTensor>(tyloi::models::deepseek_v41::dspark_draft(
             physical_width, requested, stages.size(),
             [&](int64_t) {
-                return tyloi::cuda::embed(*embedding, draft_ids, execution->executor().collectives(),
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto local_ids = tyloi::ops::copy(draft_ids, ::tyloi::Device(::tyloi::kCUDA, primary));
+                return tyloi::ops::measure("model.embed", [&] {
+                    return tyloi::ops::embedding(local_ids, embedding).dense()
+                        .to(::tyloi::kFloat16);
+                });
+#else
+                return tyloi::cuda::embed(embedding, draft_ids, execution->executor().collectives(),
                     execution->executor().profiler(), primary).to(::tyloi::kFloat16);
+#endif
             },
             [&](DenseTensor embedded) {
                 return embedded.unsqueeze(2)
@@ -586,47 +618,52 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
             },
             [&](size_t index, DenseTensor hidden, DenseTensor &previous_pre, int64_t output_rows) {
                 auto &stage = *stages[index];
-                return tyloi::models::deepseek_v41::mega_layer(
-                    std::move(hidden), previous_pre,
-                    [&](DenseTensor value, const DenseTensor &pre, int branch) {
-                        // The last attention still sees the complete block.
-                        // Its following FFN is independent for each token.
-                        const auto rows = branch == 0 ? physical_width : output_rows;
-                        return stage.collapse(
-                            execution->executor().profiler(), value.narrow(1, 0, rows), pre.narrow(1, 0, rows),
+                // Keep the two MHC branches explicit here. Attention consumes
+                // the complete physical block, while the following FFN only
+                // produces the requested rows on the final predictor stage.
+                auto attention_mix = stage.collapse(
+                            hidden.narrow(1, 0, physical_width),
+                            previous_pre.narrow(1, 0, physical_width),
 #ifdef TYLOINFER_NATIVE_CUDA
-                            *(branch == 0 ? stage.attention_mhc_function : stage.mlp_mhc_function),
-                            *(branch == 0 ? stage.attention_mhc_scale : stage.mlp_mhc_scale),
-                            *(branch == 0 ? stage.attention_mhc_base : stage.mlp_mhc_base),
-                            *(branch == 0 ? stage.attention_norm : stage.mlp_norm),
+                            stage.attention_mhc_function, stage.attention_mhc_scale,
+                            stage.attention_mhc_base, stage.attention_norm,
 #else
-                            branch == 0 ? stage.attention_mhc_function : stage.mlp_mhc_function,
-                            branch == 0 ? stage.attention_mhc_scale : stage.mlp_mhc_scale,
-                            branch == 0 ? stage.attention_mhc_base : stage.mlp_mhc_base,
-                            branch == 0 ? stage.attention_norm : stage.mlp_norm,
+                            stage.attention_mhc_function, stage.attention_mhc_scale,
+                            stage.attention_mhc_base, stage.attention_norm,
 #endif
-                            branch == 0 ? "deepseek_v41.dspark.mhc.attention.collapse"
-                                        : "deepseek_v41.dspark.mhc.mlp.collapse");
-                    },
-                    [&](DenseTensor value) { return attention(value, stage, rings[index]); },
-                    [&](DenseTensor value, DenseTensor residual, const auto &mix, int branch) {
-                        return stage.expand(execution->executor().profiler(), value,
-                                            residual.narrow(1, 0, value.size(1)), mix,
-                                            branch == 0 ? "deepseek_v41.dspark.mhc.attention.expand"
-                                                        : "deepseek_v41.dspark.mhc.mlp.expand");
-                    },
-                    [&](DenseTensor value) {
-                        const auto rows = value.size(1);
+                            "deepseek_v41.dspark.mhc.attention.collapse");
+                const auto attended = attention(attention_mix.branch, stage, rings[index]);
+                auto after_attention = stage.expand(
+                    attended, hidden.narrow(1, 0, attended.size(1)), attention_mix,
+                    "deepseek_v41.dspark.mhc.attention.expand");
+                const auto mlp_rows = output_rows;
+                auto mlp_mix = stage.collapse(
+                    after_attention.narrow(1, 0, mlp_rows),
+                    attention_mix.next_pre.narrow(1, 0, mlp_rows),
 #ifdef TYLOINFER_NATIVE_CUDA
-                        return stage.mlp.forward(value.reshape({-1, config.hidden}),
+                    stage.mlp_mhc_function, stage.mlp_mhc_scale, stage.mlp_mhc_base,
+                    stage.mlp_norm,
+#else
+                    stage.mlp_mhc_function, stage.mlp_mhc_scale, stage.mlp_mhc_base,
+                    stage.mlp_norm,
+#endif
+                    "deepseek_v41.dspark.mhc.mlp.collapse");
+                const auto rows = mlp_mix.branch.size(1);
+                auto mlp = [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+                        return stage.mlp.forward(mlp_mix.branch.reshape({-1, config.hidden}),
 #else
                         auto executor = execution->executor().fork(model_parallel_primary_device(execution->config));
-                        return stage.mlp.forward(value.reshape({-1, config.hidden}), *executor,
+                        return stage.mlp.forward(mlp_mix.branch.reshape({-1, config.hidden}), *executor,
 #endif
                                      execution->executor().forward_mode(execution->config.layer_placement.primary_device()).ffn,
                                      draft_ids.narrow(1, 0, rows))
                             .reshape({batch, rows, config.hidden});
-                    });
+                }();
+                auto result = stage.expand(mlp, after_attention.narrow(1, 0, rows), mlp_mix,
+                                           "deepseek_v41.dspark.mhc.mlp.expand");
+                previous_pre = std::move(mlp_mix.next_pre);
+                return result;
             },
             [&](DenseTensor hidden, const DenseTensor &previous_pre) {
                 return (previous_pre.to(::tyloi::kFloat32).unsqueeze(-1) *
@@ -636,27 +673,46 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     .contiguous();
             },
             [&](DenseTensor head_hidden) {
-                return tyloi::cuda::logits(*output, weighted_rms(head_hidden,
+                auto normalized = weighted_rms(head_hidden,
 #ifdef TYLOINFER_NATIVE_CUDA
-                    *output_norm, config.rms_eps),
+                    output_norm, config.rms_eps);
 #else
-                    output_norm, config.rms_eps),
+                    output_norm, config.rms_eps);
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto logits = tyloi::ops::measure("model.lm_head", [&] {
+                    return tyloi::ops::project(normalized, output).dense();
+                });
+                if (softcap > 0.0)
+                    logits = ::tyloi::cuda::tanh(logits / softcap) * softcap;
+                return logits
+                    .to(::tyloi::kFloat32)
+                    .contiguous();
+#else
+                return tyloi::cuda::logits(output, std::move(normalized),
                     execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)), execution->executor().profiler(), softcap)
                     .to(::tyloi::kFloat32)
                     .contiguous();
+#endif
             },
             [](DenseTensor logits, int64_t count) { return logits.narrow(1, 0, count); }));
     }
 
     std::shared_ptr<tyloi::Tensor> draft_next(const tyloi::Tensor& input_logits,
                                               const tyloi::Tensor& input_previous) override {
-        const auto& logits = dynamic_cast<const DenseTensor&>(input_logits);
-        const auto& previous = dynamic_cast<const DenseTensor&>(input_previous);
-        auto markov = quant_embedding_lookup(*markov_embedding, previous)
+        const auto& logits = input_logits.dense();
+        const auto& previous = input_previous.dense();
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto markov = tyloi::ops::embedding(previous, markov_embedding);
+        auto projected = tyloi::ops::project(markov.dense().to(::tyloi::kFloat16).contiguous(), markov_output).dense()
+                             .to(::tyloi::kFloat32);
+#else
+        auto markov = quant_embedding_lookup(markov_embedding, previous)
                           .to(::tyloi::kFloat16)
                           .contiguous();
-        return std::make_shared<DenseTensor>(logits + execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*markov_output, markov).to(::tyloi::kFloat32));
+        auto projected = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(markov_output, markov).to(::tyloi::kFloat32);
+#endif
+        return std::make_shared<DenseTensor>(logits + projected);
     }
 };
 

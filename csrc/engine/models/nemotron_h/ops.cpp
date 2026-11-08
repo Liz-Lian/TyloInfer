@@ -19,7 +19,6 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_selective_state_scan_ops.h"
 #include "engine/models/common/recurrent_attention.h"
-#include "engine/models/common/transformer_layer.h"
 
 #include <algorithm>
 #include <array>

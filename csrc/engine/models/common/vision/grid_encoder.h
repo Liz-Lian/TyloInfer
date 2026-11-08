@@ -9,7 +9,6 @@
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/ops.h"
-#include "engine/models/common/transformer_layer.h"
 #include "engine/models/common/vision/grid_forward.h"
 #include "engine/models/common/vision/grid_vision.h"
 #include "engine/requests/media.h"
@@ -130,28 +129,20 @@ class CudaGridVisionEncoder {
 #endif
                           const std::vector<std::int32_t>& positions,
                           const std::vector<std::int32_t>& segment_lengths) const {
-            return tyloi::models::pre_norm_layer(
 #ifdef TYLOINFER_NATIVE_CUDA
-                std::move(input), [&](const std::shared_ptr<tyloi::Tensor>& x, int stage) { return stage == 0 ? norm1(*x) : norm2(*x); },
-                [&](std::shared_ptr<tyloi::Tensor> x) { return attention(*x, positions, segment_lengths); },
-                [&](std::shared_ptr<tyloi::Tensor> x) {
-                    return tyloi::ops::affine(*tyloi::ops::gelu(
-                        *tyloi::ops::affine(*x, *mlp_up.weight, mlp_up.bias.get()), true),
-                        *mlp_down.weight, mlp_down.bias.get());
-                },
-                [](std::shared_ptr<tyloi::Tensor> residual, std::shared_ptr<tyloi::Tensor> branch) {
-                    return tyloi::ops::add(*residual, *tyloi::ops::cast(*branch, residual->scalar_type()));
-                });
+            auto branch = attention(norm1(input), positions, segment_lengths);
+            input = tyloi::ops::add(input, tyloi::ops::cast(branch, input.scalar_type()));
+            branch = tyloi::ops::affine(tyloi::ops::gelu(
+                tyloi::ops::affine(norm2(input), mlp_up.weight, mlp_up.bias), true),
+                mlp_down.weight, mlp_down.bias);
+            return tyloi::ops::add(input, tyloi::ops::cast(branch, input.scalar_type()));
 #else
-                input, [&](const DenseTensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
-                [&](DenseTensor x) { return attention(projector, x, positions, segment_lengths); },
-                [&](DenseTensor x) {
-                    return tyloi::cuda::affine(projector, mlp_down, ::tyloi::cuda::gelu(
-                        tyloi::cuda::affine(projector, mlp_up, std::move(x)), "tanh"));
-                },
-                [](DenseTensor residual, DenseTensor branch) {
-                    return residual + branch.to(residual.scalar_type());
-                });
+            auto hidden = input;
+            auto branch = attention(projector, norm1(hidden), positions, segment_lengths);
+            hidden = hidden + branch.to(hidden.scalar_type());
+            branch = tyloi::cuda::affine(projector, mlp_down, ::tyloi::cuda::gelu(
+                tyloi::cuda::affine(projector, mlp_up, norm2(hidden)), "tanh"));
+            return hidden + branch.to(hidden.scalar_type());
 #endif
         }
     };

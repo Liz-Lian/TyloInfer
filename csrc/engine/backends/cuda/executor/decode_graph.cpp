@@ -9,6 +9,17 @@
 #include <algorithm>
 #include <exception>
 
+#ifdef TYLOINFER_NATIVE_CUDA
+DecodeGraphBranchScope::DecodeGraphBranchScope(bool& value)
+    : setting(value), previous(value) {
+    auto mode = tyloi::cuda::Executor::current_ffn();
+    mode.serial = true;
+    scope_ = tyloi::cuda::Executor::current().enter(mode);
+    setting = true;
+}
+DecodeGraphBranchScope::~DecodeGraphBranchScope() { setting = previous; }
+#endif
+
 namespace {
 
 #ifdef TYLOINFER_NATIVE_CUDA

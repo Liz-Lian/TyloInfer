@@ -3,14 +3,15 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/check.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/loader.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/deepseek_v41/components.h"
 #include "engine/weights/cache.h"
 
+#include <iostream>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace tyloi::cuda::deepseek_v41 {
@@ -44,7 +45,7 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
         std::move(definition), model.graph.backbone, context_size);
     read(model, model.source, definition, context_size);
     model.execution = &execution;
-    model.adapter_validate_load_options();
+    deepseek_v41_runtime::validate_load_options(execution);
     if (execution.config.expert_parallel.enabled() && model.metadata.num_experts <= 0)
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
     execution.config.layer_placement.prepare(model.num_hidden_layers());
@@ -55,8 +56,38 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
     auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
          execution.config.tensor_parallel, moe_parallel_config(execution.config)});
-    detail::ModelLoader<Model> weights{model, tensors};
-    model.load_weights(weights, load_blocks);
+    constexpr auto embedding = "model.token_embedding.weight";
+    constexpr auto output = "model.output.weight";
+    const bool independent_output = !model.tie_word_embeddings() && tensors.has(output);
+    model.embed = tensors.embedding(embedding, independent_output);
+#ifdef TYLOINFER_NATIVE_CUDA
+    model.output_norm = tensors.tensor("model.output_norm.weight");
+#else
+    model.output_norm = tensors.tensor("model.output_norm.weight").dense();
+#endif
+    model.lm_head = model.tie_word_embeddings() || !tensors.has(output)
+        ? (tensors.placement.tensor.enabled() ? tensors.weight(embedding, TensorParallelAxis::Output) : model.embed)
+        : tensors.weight(output, TensorParallelAxis::Output);
+    if (load_blocks) {
+        model.tables.engram_parameters = deepseek_v41_runtime::EngramHashState::load_parameters(tensors.source, model.config);
+        model.blocks.reserve(static_cast<std::size_t>(model.num_hidden_layers()));
+        for (int layer = 0; layer < model.num_hidden_layers(); ++layer) {
+            const auto type = std::string(model.metadata.layer_types.at(static_cast<std::size_t>(layer)));
+            const int device = execution.config.layer_placement.device_for_layer(layer);
+            const bool cpu_offloaded = layer < execution.config.dense_cpu_layer_count;
+            MfqCudaGuard layer_guard(device);
+            std::cerr << "loading layer " << layer << ' ' << type << ' '
+                      << (cpu_offloaded ? "CPU" : "CUDA") << std::endl;
+            auto placed = tensors.for_layer(device, cpu_offloaded);
+            TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && model.tables.engram_parameters,
+                                    "invalid DeepSeek-V4.1 block loader state");
+            auto block = deepseek_v41_runtime::load_block(execution.executor().pipelines(), placed,
+                layer, model.config, model.tables, execution.config.deepseek_v41_engram_cache_rows);
+            block->cuda_device = device;
+            block->cpu_offloaded = cpu_offloaded;
+            model.blocks.push_back(std::move(block));
+        }
+    }
     if (!defer_moe_cache_finalize)
         execution.weights.finalize();
     if (load_optional_components)

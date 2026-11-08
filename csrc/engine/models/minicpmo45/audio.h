@@ -110,29 +110,22 @@ struct MiniCPMO45WhisperLayer {
                                        ::tyloi::DenseTensor input,
                                        MfqOptional<::tyloi::DenseTensor> mask,
                                        bool use_cache) {
-        using DenseTensor = ::tyloi::DenseTensor;
-        return tyloi::models::pre_norm_layer(
-            input,
-            [&](const DenseTensor &x, int stage) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                return minicpmo45_layer_norm(
-                    x, *(stage == 0 ? attention_norm_weight : final_norm_weight),
-                    *(stage == 0 ? attention_norm_bias : final_norm_bias), 1e-5);
+        auto normalized = minicpmo45_layer_norm(input, *attention_norm_weight, *attention_norm_bias, 1e-5);
 #else
-                return minicpmo45_layer_norm(
-                    x, stage == 0 ? attention_norm_weight : final_norm_weight,
-                    stage == 0 ? attention_norm_bias : final_norm_bias, 1e-5);
+        auto normalized = minicpmo45_layer_norm(input, attention_norm_weight, attention_norm_bias, 1e-5);
 #endif
-            },
-            [&](DenseTensor x) {
-                return attention.forward(projector, x, mask, use_cache ? &key_cache : nullptr,
-                                         use_cache ? &value_cache : nullptr);
-            },
-            [&](DenseTensor x) {
-                return tyloi::cuda::biased(projector, fc2,
-                    ::tyloi::cuda::gelu(tyloi::cuda::biased(projector, fc1, x)));
-            },
-            [](DenseTensor x, DenseTensor branch) { return (x + branch).contiguous(); });
+        auto branch = attention.forward(projector, normalized, mask, use_cache ? &key_cache : nullptr,
+                                        use_cache ? &value_cache : nullptr);
+        input = (input + branch).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+        normalized = minicpmo45_layer_norm(input, *final_norm_weight, *final_norm_bias, 1e-5);
+#else
+        normalized = minicpmo45_layer_norm(input, final_norm_weight, final_norm_bias, 1e-5);
+#endif
+        branch = tyloi::cuda::biased(projector, fc2,
+            ::tyloi::cuda::gelu(tyloi::cuda::biased(projector, fc1, normalized)));
+        return (input + branch).contiguous();
     }
 };
 

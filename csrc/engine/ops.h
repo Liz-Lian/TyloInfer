@@ -135,12 +135,22 @@ std::shared_ptr<Tensor> divide(const Tensor& input, double divisor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
 std::shared_ptr<Tensor> embedding(const Tensor& ids, const ::tyloi::Tensor& weight);
 std::shared_ptr<Tensor> project(const Tensor& input, const ::tyloi::Tensor& weight);
+// Input starts with [batch,tokens]; each group has output_a.size(1) values.
+// Two projections preserve those axes and return output_b.size(0) channels.
+Tensor low_rank(const Tensor& input, const Tensor& output_a, const Tensor& output_b,
+                std::int64_t groups, bool groupwise, bool profile);
 // linear uses dense weight dtype for dense projection and bias; otherwise it adds
 // bias in the projection result dtype. It restores input dtype and makes contiguous.
 // affine adds bias in the projection result dtype without restoring input dtype.
 std::shared_ptr<Tensor> linear(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor* bias = nullptr);
 std::shared_ptr<Tensor> affine(const Tensor& input, const ::tyloi::Tensor& weight, const Tensor* bias = nullptr);
 std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& input, std::span<const std::shared_ptr<const Tensor>> group);
+// Capability depends on prepared weights and the current execution policy.
+bool grouped(std::span<const Tensor> weights);
+// Ordered projections; combine the first prefix outputs into one. The backend
+// may group compatible weights while retaining separate unsupported projections.
+std::vector<Tensor> project_group(const Tensor& input, std::span<const Tensor> weights,
+                                  std::size_t prefix);
 // Computes project(input * sigmoid(gate)).
 std::shared_ptr<Tensor> sigmoid_project(const Tensor& input, const Tensor& gate, const ::tyloi::Tensor& weight);
 // Copy, cast, views and allocation support CPU as well as CUDA, subject to dtype support.

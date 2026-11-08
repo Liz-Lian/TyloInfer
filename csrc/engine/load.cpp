@@ -670,6 +670,9 @@ void setup_cuda_load(
         options.parallel_test_duplicates);
     configure_layer_placement(
         config, options.layer_parallel_arg, options.layer_split_arg);
+#ifdef TYLOINFER_NATIVE_CUDA
+    executor.set_primary(model_parallel_primary_device(config));
+#endif
     if (!options.cpu_offload_layers_arg.empty()) {
         config.dsv4_cpu_offload_layers =
             parse_layer_ranges(options.cpu_offload_layers_arg);

@@ -7,9 +7,14 @@
 namespace tyloi::cuda::ops {
 tyloi::DenseTensor embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight);
 tyloi::DenseTensor project(tyloi::DenseTensor input, const ::tyloi::Tensor& weight);
+tyloi::DenseTensor low_rank(tyloi::DenseTensor input, const ::tyloi::Tensor& output_a,
+                           const ::tyloi::Tensor& output_b, int64_t groups, bool groupwise, bool profile);
 tyloi::DenseTensor linear(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor* bias);
 tyloi::DenseTensor affine(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor* bias);
 std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input, std::span<const std::shared_ptr<const tyloi::Tensor>> group);
+bool grouped(std::span<const ::tyloi::Tensor> weights);
+std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input,
+    std::span<const ::tyloi::Tensor> weights, std::size_t prefix);
 tyloi::DenseTensor sigmoid_project(tyloi::DenseTensor input, tyloi::DenseTensor gate, const ::tyloi::Tensor& weight);
 }
 #endif

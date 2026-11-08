@@ -7,8 +7,7 @@
 #include "engine/models/deepseek_v41/hash.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
-#include "engine/backends/cuda/ops/projection/projection.h"
-#include "engine/backends/cuda/native/profile.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"
 
 #include <algorithm>
@@ -382,8 +381,7 @@ class Engram {
             std::size_t(hashes.batch) * hashes.tokens * hashes.columns);
     }
 
-    EngramTensor forward(State& state, const Projector& projector, CudaProfiler& profiler,
-                         const EngramTensor &hidden, const EngramHashBatch &hashes,
+    EngramTensor forward(State& state, const EngramTensor &hidden, const EngramHashBatch &hashes,
                          const EngramTensor& text_rows={},
                          const std::vector<int64_t>* host_rows=nullptr) const {
         if(text_rows.defined()) {
@@ -391,8 +389,7 @@ class Engram {
             TYLOINFER_RUNTIME_CHECK(host_rows && host_rows->size()==std::size_t(text_rows.numel()),
                               "DeepSeek-V4.1 Engram image participation is incomplete");
             auto flat=hidden.reshape({1,-1,config_.hc_mult,config_.hidden});
-            auto selected=forward(state, projector, profiler,
-                                  flat.index_select(1,text_rows).contiguous(),
+            auto selected=forward(state, flat.index_select(1,text_rows).contiguous(),
                                   select_hash_rows(hashes,*host_rows));
             auto result=flat.clone();result.index_copy_(1,text_rows,selected);
             return result.reshape(hidden.sizes());
@@ -405,14 +402,14 @@ class Engram {
             hashes.columns != (config_.engram_max_ngram_size - 1) * config_.engram_n_heads) {
             throw std::invalid_argument("DeepSeek-V4.1 Engram activation geometry disagrees");
         }
-        auto embeddings = profiler.measure("deepseek_v41.engram.rows", [&] {
+        auto embeddings = tyloi::ops::measure("deepseek_v41.engram.rows", [&] {
             return table_->gather(state, hashes.layer_data(hash_layer_), batch, tokens,
                                   hashes.columns, hidden.device());
         });
-        auto projected = profiler.measure("deepseek_v41.engram.projection", [&] {
-            return projector.run(*projection_, embeddings);
+        auto projected = tyloi::ops::measure("deepseek_v41.engram.projection", [&] {
+            return tyloi::ops::project(embeddings, projection_).dense();
         });
-        return profiler.measure("deepseek_v41.engram.gate_add", [&] {
+        return tyloi::ops::measure("deepseek_v41.engram.gate_add", [&] {
             return deepseek_v41_engram_gate_add_cuda(hidden, projected.contiguous(),
 #ifdef TYLOINFER_NATIVE_CUDA
                                                        dynamic_cast<const EngramTensor&>(*query_key_weight_), config_.rms_eps);

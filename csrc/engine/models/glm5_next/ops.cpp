@@ -10,7 +10,6 @@
 #include "engine/models/common/load.h"
 #include "engine/models/common/session/paged.h"
 #include "engine/ops.h"
-#include "engine/models/common/transformer_layer.h"
 
 namespace tyloi::cuda::glm5_next {
 using Config = tyloi::models::glm5_next::Config;
@@ -130,22 +129,15 @@ static DenseTensor execute(const Layer& layer, LayerState& activity, const Proje
     if (mla)
         TYLOINFER_RUNTIME_CHECK(std::get<MlaState>(activity).position() == position,
                                "GLM MLA/model cache positions diverged");
-    return tyloi::models::glm5_next::decoder_layer(
-        x, bool(kda), [&](const DenseTensor &hidden) { return attention_hc.pre(hidden, config); },
-        [&](DenseTensor branch, int role) {
-#ifdef TYLOINFER_NATIVE_CUDA
-            return rms_norm(branch, *(role == 0 ? attention_norm : ffn_norm), config.eps);
-#else
-            return rms_norm(branch, role == 0 ? attention_norm : ffn_norm, config.eps);
-#endif
-        },
-        [&](DenseTensor branch) { return kda->forward(project, std::get<KdaState>(activity), branch, true, confirmed); },
-        [&](DenseTensor branch) { return mla->forward(project, std::get<MlaState>(activity), branch, true); },
-        [](DenseTensor branch, const DenseTensor &residual, const auto &mix) {
-            return mfq_glm5_next::mhc_post(branch, residual, mix[0], mix[1]);
-        },
-        [&](const DenseTensor &hidden) { return ffn_hc.pre(hidden, config); },
-        [&](DenseTensor branch) { return ffn(project, branch); });
+    auto attention_mix = attention_hc.pre(x, config);
+    auto normalized = rms_norm(attention_mix[2], attention_norm, config.eps);
+    auto branch = kda ? kda->forward(project, std::get<KdaState>(activity), std::move(normalized), true, confirmed)
+                      : mla->forward(project, std::get<MlaState>(activity), std::move(normalized), true);
+    auto hidden = mfq_glm5_next::mhc_post(branch, x, attention_mix[0], attention_mix[1]);
+    auto ffn_mix = ffn_hc.pre(hidden, config);
+    normalized = rms_norm(ffn_mix[2], ffn_norm, config.eps);
+    branch = ffn(project, normalized);
+    return mfq_glm5_next::mhc_post(branch, hidden, ffn_mix[0], ffn_mix[1]);
 }
 
 Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config, int index) {
@@ -455,24 +447,12 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
         [&](DenseTensor x, int64_t layer, const auto &pos) {
             auto &block = layers[layer];
             dtype = x.scalar_type() == ::tyloi::kFloat32 ? ::tyloi::kFloat32 : ::tyloi::kFloat16;
-            return tyloi::models::pre_norm_layer(
-                std::move(x),
-                [&](const DenseTensor &value, int stage) {
-                    auto normalized = rms_norm(value,
-#ifdef TYLOINFER_NATIVE_CUDA
-                        *(stage == 0 ? block.attention_norm : block.ffn_norm), config.eps);
-#else
-                        stage == 0 ? block.attention_norm : block.ffn_norm, config.eps);
-#endif
-                    return stage == 0 ? normalized : normalized.to(dtype);
-                },
-                [&](DenseTensor value) {
-                    return block.attention->forward(project_, states[layer], value, cache);
-                },
-                [&](DenseTensor value) { return block.ffn(project_, value); },
-                [](DenseTensor residual, DenseTensor branch) {
-                    return residual.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
-                });
+            auto normalized = rms_norm(x, block.attention_norm, config.eps);
+            auto branch = block.attention->forward(project_, states[layer], normalized, cache);
+            x = x.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
+            normalized = rms_norm(x, block.ffn_norm, config.eps).to(dtype);
+            branch = block.ffn(project_, normalized);
+            return x.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
         },
 #ifdef TYLOINFER_NATIVE_CUDA
         [&](const DenseTensor &multi) { return rms_norm(multi, *output_norm, config.eps).to(dtype); },

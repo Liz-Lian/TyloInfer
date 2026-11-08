@@ -5,7 +5,6 @@
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/weights/format.h"
 #include "engine/weights/loader.h"
-#include "engine/models/common/transformer_layer.h"
 #include "engine/models/minicpmo45/media.h"
 
 #include "engine/generation/sequence.h"

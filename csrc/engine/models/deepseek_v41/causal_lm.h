@@ -2,43 +2,11 @@
 #include "config.h"
 #include "../common/causal_metadata.h"
 #include "../common/check.h"
-#include "../common/transformer_layer.h"
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace tyloi::models::deepseek_v41 {
-
-// Both the target and DSpark pass the new pre-weights from attention into
-// the FFN collapse, and commit them only after the layer completes.
-template <class DenseTensor, class Collapse, class Attention, class Expand, class Ffn>
-auto mega_layer(DenseTensor hidden, DenseTensor &previous_pre, Collapse collapse, Attention attention,
-                Expand expand, Ffn ffn) {
-    return hyperconnection_layer(
-        std::move(hidden), [&](auto value) { return collapse(std::move(value), previous_pre, 0); },
-        [&](const auto &mix) { return attention(mix.branch); },
-        [&](auto branch, auto residual, const auto &mix) {
-            return expand(std::move(branch), std::move(residual), mix, 0);
-        },
-        [&](auto value, const auto &attention_mix) {
-            return collapse(std::move(value), attention_mix.next_pre, 1);
-        },
-        [&](const auto &mix) { return ffn(mix.branch); },
-        [&](auto branch, auto residual, const auto &mix) {
-            return expand(std::move(branch), std::move(residual), mix, 1);
-        },
-        [&](auto &mix) { previous_pre = std::move(mix.next_pre); });
-}
-
-template <class DenseTensor, class Engram, class Capture, class Collapse, class Attention, class Expand,
-          class Ffn>
-auto decoder_layer(DenseTensor hidden, bool has_engram, DenseTensor &previous_pre, Engram engram,
-                   Capture capture, Collapse collapse, Attention attention, Expand expand,
-                   Ffn ffn) {
-    if (has_engram)
-        hidden = engram(std::move(hidden));
-    capture(hidden);
-    return mega_layer(std::move(hidden), previous_pre, collapse, attention, expand, ffn);
-}
 
 template <class State, class Direct, class Project, class Pool, class Save, class Write,
           class PartialPool, class Concat>

@@ -4,6 +4,7 @@
 #include "engine/requests/sampling.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
+#include "engine/executor.h"
 #endif
 
 #include <cstdint>
@@ -41,6 +42,12 @@ struct DecodeGraphBranchScope {
     bool& setting;
     bool previous;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    explicit DecodeGraphBranchScope(bool& value);
+    ~DecodeGraphBranchScope();
+private:
+    std::unique_ptr<tyloi::Executor::Scope> scope_;
+#else
     explicit DecodeGraphBranchScope(bool& value)
         : setting(value), previous(value) {
         setting = true;
@@ -48,6 +55,7 @@ struct DecodeGraphBranchScope {
     ~DecodeGraphBranchScope() {
         setting = previous;
     }
+#endif
 };
 
 struct DecodeGraphCache {

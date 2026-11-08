@@ -140,6 +140,19 @@ tyloi::DenseTensor tyloi::cuda::ops::project(tyloi::DenseTensor input, const ::t
         weight, input);
 }
 
+tyloi::DenseTensor tyloi::cuda::ops::low_rank(tyloi::DenseTensor input, const ::tyloi::Tensor& output_a,
+                                            const ::tyloi::Tensor& output_b, int64_t groups,
+                                            bool groupwise, bool profile) {
+    TYLOINFER_RUNTIME_CHECK(input.dim() >= 2 && groups > 0 && output_a && output_b &&
+        output_a.dim() == 2 && output_b.dim() == 2 && output_a.size(0) > 0 &&
+        output_a.size(0) % groups == 0 && output_b.size(1) == output_a.size(0),
+        "invalid grouped low-rank projection geometry");
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
+    return Executor::current().projector(Executor::current_ffn()).low_rank(
+        std::move(input), output_a, output_b, groups, groupwise, profile);
+}
+
 tyloi::DenseTensor tyloi::cuda::ops::linear(tyloi::DenseTensor input, const ::tyloi::Tensor& weight,
                                   const tyloi::DenseTensor* bias) {
     std::optional<MfqCudaGuard> guard;
@@ -192,6 +205,17 @@ std::vector<tyloi::DenseTensor> tyloi::cuda::ops::project_group(tyloi::DenseTens
     if (index != group.size())
         throw std::runtime_error("grouped projection output count mismatch");
     return result;
+}
+
+bool tyloi::cuda::ops::grouped(std::span<const ::tyloi::Tensor> weights) {
+    return Executor::current().projector(Executor::current_ffn()).grouped(weights);
+}
+
+std::vector<tyloi::DenseTensor> tyloi::cuda::ops::project_group(tyloi::DenseTensor input,
+    std::span<const ::tyloi::Tensor> weights, std::size_t prefix) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
+    return Executor::current().projector(Executor::current_ffn()).run(weights, std::move(input), prefix);
 }
 
 tyloi::DenseTensor tyloi::cuda::ops::sigmoid_project(tyloi::DenseTensor input, tyloi::DenseTensor gate,

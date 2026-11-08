@@ -1,10 +1,10 @@
 #include "engine/models/qwen4_exp/ops.h"
+#include "engine/models/qwen4_exp/loader.h"
 
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/check.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/loader.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/models/source.h"
@@ -45,7 +45,8 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
         std::move(definition), model.graph.backbone, context_size);
     read(model, model.source, definition, context_size);
     model.execution = &execution;
-    model.adapter_validate_load_options();
+    validate_native_placement(execution.config.tensor_parallel, execution.config.layer_placement,
+                              execution.config.n_gpu_layers);
     if (execution.config.expert_parallel.enabled() && model.metadata.num_experts <= 0)
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
     execution.config.layer_placement.prepare(model.num_hidden_layers());
@@ -69,8 +70,33 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
     auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
          execution.config.tensor_parallel, moe_parallel_config(execution.config)});
-    detail::ModelLoader<Model> weights{model, tensors};
-    model.load_weights(weights, load_blocks);
+    constexpr auto embedding = "model.token_embedding.weight";
+    constexpr auto output = "model.output.weight";
+    const bool independent = !model.tie_word_embeddings() && tensors.has(output);
+    model.embed = tensors.embedding(embedding, independent);
+    BlockLoader loader{tensors, execution};
+    loader.role = "qwen4_exp";
+    model.final_mixer = loader.final_mixer(
+        tyloi::models::qwen4_exp::load_residual(loader, model.config, "model.mhc.pre", false));
+    model.lm_head = independent ? tensors.weight(output, TensorParallelAxis::Output)
+        : tensors.placement.tensor.enabled() ? tensors.weight(embedding, TensorParallelAxis::Output)
+                                              : model.embed;
+    if (load_blocks) {
+        model.blocks.reserve(static_cast<std::size_t>(model.num_hidden_layers()));
+        for (int layer = 0; layer < model.num_hidden_layers(); ++layer) {
+            const int device = execution.config.layer_placement.device_for_layer(layer);
+            const bool cpu = layer < execution.config.dense_cpu_layer_count;
+            MfqCudaGuard layer_guard(device);
+            std::cerr << "loading layer " << layer << ' '
+                      << model.metadata.layer_types.at(static_cast<std::size_t>(layer)) << ' '
+                      << (cpu ? "CPU" : "CUDA") << std::endl;
+            auto placed = tensors.for_layer(device, cpu);
+            auto block = std::make_unique<Qwen4Block>(execution, placed, model.config, layer);
+            block->cuda_device = device;
+            block->cpu_offloaded = cpu;
+            model.blocks.push_back(std::move(block));
+        }
+    }
     if (!defer_moe_cache_finalize)
         execution.weights.finalize();
 }

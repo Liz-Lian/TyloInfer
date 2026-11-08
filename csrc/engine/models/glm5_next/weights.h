@@ -3,7 +3,6 @@
 #include "../common/causal_metadata.h"
 #include "../common/predictor.h"
 #include "../common/recurrent_attention.h"
-#include "../common/transformer_layer.h"
 #include <memory>
 
 namespace tyloi::models::glm5_next {
@@ -202,22 +201,6 @@ auto sparse_mla(int64_t length, int64_t budget, bool cache, Project project, Cac
             rollback();
         throw;
     }
-}
-
-template <class DenseTensor, class AttentionPre, class Normalize, class LinearAttention,
-          class SparseAttention, class Post, class FfnPre, class Ffn>
-auto decoder_layer(DenseTensor hidden, bool linear, AttentionPre attention_pre, Normalize normalize,
-                   LinearAttention linear_attention, SparseAttention sparse_attention, Post post,
-                   FfnPre ffn_pre, Ffn ffn) {
-    return hyperconnection_layer(
-        std::move(hidden), attention_pre,
-        [&](const auto &mix) {
-            auto branch = normalize(mix[2], 0);
-            return linear ? linear_attention(std::move(branch))
-                          : sparse_attention(std::move(branch));
-        },
-        post, [&](const auto &value, const auto &) { return ffn_pre(value); },
-        [&](const auto &mix) { return ffn(normalize(mix[2], 1)); }, post, [](const auto &) {});
 }
 
 inline void load_config(std::string_view payload, Config& config, models::CausalLmMetadata& metadata) {
