@@ -614,70 +614,79 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
                       "Qwen4-Exp MTP input geometry mismatch");
 #endif
     const auto b = ids.size(0), t = ids.size(1);
-    return tyloi::models::projected_predictor(
-        *this, b, t, depth, cache, [&](int64_t next) { reset(next); },
-        [&] {
-            auto embeds =
-                supplied_embeddings.defined() ? supplied_embeddings : embed(ids);
-            TYLOINFER_RUNTIME_CHECK(embeds.sizes().vec() ==
-                                  std::vector<int64_t>({b, t, config.hidden}),
-                              "Qwen4-Exp MTP embedding shape mismatch");
-            return embeds;
-        },
-        [&](tyloi::models::PredictorCursor cursor) {
-            // Full positions persist across predictor priming tiles and must
-            // not occupy expert storage borrowed by this prefill phase.
-            tyloi::cuda::ResidentAllocationScope persistent_positions;
-            auto current = supplied_positions.defined()
-                               ? supplied_positions
-                               : ::tyloi::cuda::arange(cursor.start, cursor.start + t,
-                                            ids.options().dtype(::tyloi::kInt32));
-            if (current.dim() == 1)
-                current = current.reshape({1, 1, t}).expand({3, 1, t}).contiguous();
-            else if (current.dim() == 2)
-                current = current.unsqueeze(1);
-            if (current.dim() == 3 && current.size(0) == 4)
-                current = current.narrow(0, 1, 3);
-            TYLOINFER_RUNTIME_CHECK(current.dim() == 3 && current.size(0) == 3 &&
-                                  current.size(-1) == t &&
-                                  (current.size(1) == 1 || current.size(1) == b),
-                              "Qwen4 MTP positions require [T]/[3,T]/[3,B,T]");
-            current = current.to(::tyloi::kInt32).expand({3, b, t}).contiguous();
-            auto full = cache && positions[cursor.layer].defined()
-                            ? ::tyloi::cuda::cat({positions[cursor.layer], current}, -1)
-                            : current;
-            return std::array<DenseTensor, 2>{current, full};
-        },
-        [&](DenseTensor embeds, const auto &pos) {
-            return execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*embedding_fusion,
+    const auto capacity = config.maximum;
+    const auto count = int64_t(lengths.size());
+    tyloi::models::require_model(count > 0 && b > 0 && t > 0, "invalid predictor geometry");
+    const auto layer = (depth % count + count) % count;
+    if (cache && batch && batch != b)
+        reset(b);
+    const auto start = cache ? lengths[layer] : 0;
+    tyloi::models::require_model(start >= 0 && t <= capacity - start,
+                                 "predictor history exceeds context capacity");
+    auto embeds =
+        supplied_embeddings.defined() ? supplied_embeddings : embed(ids);
+    TYLOINFER_RUNTIME_CHECK(embeds.sizes().vec() ==
+                          std::vector<int64_t>({b, t, config.hidden}),
+                      "Qwen4-Exp MTP embedding shape mismatch");
+    std::array<DenseTensor, 2> pos;
+    {
+        // Full positions persist across predictor priming tiles and must
+        // not occupy expert storage borrowed by this prefill phase.
+        tyloi::cuda::ResidentAllocationScope persistent_positions;
+        auto current = supplied_positions.defined()
+                           ? supplied_positions
+                           : ::tyloi::cuda::arange(start, start + t,
+                                        ids.options().dtype(::tyloi::kInt32));
+        if (current.dim() == 1)
+            current = current.reshape({1, 1, t}).expand({3, 1, t}).contiguous();
+        else if (current.dim() == 2)
+            current = current.unsqueeze(1);
+        if (current.dim() == 3 && current.size(0) == 4)
+            current = current.narrow(0, 1, 3);
+        TYLOINFER_RUNTIME_CHECK(current.dim() == 3 && current.size(0) == 3 &&
+                              current.size(-1) == t &&
+                              (current.size(1) == 1 || current.size(1) == b),
+                          "Qwen4 MTP positions require [T]/[3,T]/[3,B,T]");
+        current = current.to(::tyloi::kInt32).expand({3, b, t}).contiguous();
+        auto full = cache && positions[layer].defined()
+                        ? ::tyloi::cuda::cat({positions[layer], current}, -1)
+                        : current;
+        pos = {current, full};
+    }
+    DenseTensor x;
+    {
+        DenseTensor e;
+        {
+            e = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*embedding_fusion,
 #ifdef TYLOINFER_NATIVE_CUDA
                                     rms_norm(embeds, dynamic_cast<const DenseTensor&>(*embedding_norm) + 1, config.eps));
 #else
                                     rms_norm(embeds, embedding_norm + 1, config.eps));
 #endif
-        },
-        [&] {
-            return execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*hidden_fusion,
+        }
+        // Release prior-stage tensors before later projections allocate.
+        embeds = {};
+        DenseTensor streams;
+        streams = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(*hidden_fusion,
 #ifdef TYLOINFER_NATIVE_CUDA
-                                 rms_norm(hidden, dynamic_cast<const DenseTensor&>(*hidden_norm) + 1, config.eps)
+                                         rms_norm(hidden, dynamic_cast<const DenseTensor&>(*hidden_norm) + 1, config.eps)
 #else
-                                 rms_norm(hidden, hidden_norm + 1, config.eps)
+                                         rms_norm(hidden, hidden_norm + 1, config.eps)
 #endif
-                                     .reshape({b, t, config.streams, config.hidden}));
-        },
-        [&](DenseTensor e, DenseTensor streams) {
-            return (streams + e.unsqueeze(-2)).reshape({b, t, config.streams * config.hidden});
-        },
-        [&](DenseTensor x, int64_t layer, const auto &pos) {
-            auto &block = *layers[layer];
-            // Teacher-forced rows each receive the target hidden state. Only
-            // the attention input contributes persistent predictor history;
-            // attention readout, FFN and final mixer have no consumer here.
-            if(history_only) {
-                auto mix=block.attention_gr.pre(x);
-                block.qsa->forward(*layer_states[layer]->qsa,mix.mixed,pos[0],pos[1],true,nullptr,{},true,true);
-                return DenseTensor{};
-            }
+                                             .reshape({b, t, config.streams, config.hidden}));
+        x = (streams + e.unsqueeze(-2)).reshape({b, t, config.streams * config.hidden});
+    }
+    DenseTensor multi;
+    {
+        auto &block = *layers[layer];
+        // Teacher-forced rows each receive the target hidden state. Only
+        // the attention input contributes persistent predictor history;
+        // attention readout, FFN and final mixer have no consumer here.
+        if(history_only) {
+            auto mix=block.attention_gr.pre(x);
+            block.qsa->forward(*layer_states[layer]->qsa,mix.mixed,pos[0],pos[1],true,nullptr,{},true,true);
+            multi = DenseTensor{};
+        } else {
             auto [attention_input,attention_residual,attention_gate]=block.attention_gr.pre(x);
             auto attention_output=block.qsa->forward(*layer_states[layer]->qsa,attention_input,pos[0],pos[1],cache);
             x=block.attention_gr.post(attention_output,attention_residual,attention_gate);
@@ -688,10 +697,17 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
                 *execution,
 #endif
                 ffn_input);
-            return block.ffn_gr.post(ffn_output,ffn_residual,ffn_gate);
-        },
-        [&](const DenseTensor &multi) { return history_only?DenseTensor{}:final_mixer->pre(multi).mixed; },
-        [&](int64_t layer, const auto &pos) { positions[layer] = pos[1]; });
+            multi = block.ffn_gr.post(ffn_output,ffn_residual,ffn_gate);
+        }
+    }
+    x = {};
+    auto result = history_only?DenseTensor{}:final_mixer->pre(multi).mixed;
+    if (cache) {
+        positions[layer] = pos[1];
+        batch = b;
+        lengths[layer] = start + t;
+    }
+    return {std::move(result), std::move(multi)};
 }
 
 tyloi::models::MtpStep Predictor::step(const tyloi::Tensor& input_hidden, const tyloi::Tensor& input_ids,

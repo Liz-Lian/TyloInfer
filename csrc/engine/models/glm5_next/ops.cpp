@@ -408,59 +408,78 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
 #endif
     const auto b = ids.size(0), t = ids.size(1);
     auto dtype = ::tyloi::kFloat16;
-    return tyloi::models::projected_predictor(
-        *this, b, t, depth, cache, [&](int64_t next) { reset(next); },
-        [&] {
-            auto embeds =
-                supplied_embeddings.defined() ? supplied_embeddings : tyloi::cuda::embed(*embedding_, ids, copies_, profiler_, primary_);
-            TYLOINFER_RUNTIME_CHECK(embeds.sizes().vec() ==
-                                  std::vector<int64_t>({b, t, config.hidden}),
-                              "GLM5-Next MTP embedding shape mismatch");
-            return embeds;
-        },
-        [&](tyloi::models::PredictorCursor cursor) {
-            auto current = supplied_positions.defined()
-                               ? supplied_positions
-                               : ::tyloi::cuda::arange(cursor.start, cursor.start + t,
-                                            ids.options().dtype(::tyloi::kInt32));
-            TYLOINFER_RUNTIME_CHECK((current.dim() == 1 || current.dim() == 2) &&
-                                  current.size(-1) == t &&
-                                  (current.dim() == 1 || current.size(0) == b),
-                              "GLM MTP positions require [T] or [B,T]");
-            current = current.to(::tyloi::kInt32);
-            return current;
-        },
-        [&](DenseTensor embeds, const auto &current) {
-            auto mask = (current == 0).reshape({current.dim() == 1 ? 1 : b, t, 1});
+    const auto capacity = config.maximum;
+    const auto count = int64_t(lengths.size());
+    tyloi::models::require_model(count > 0 && b > 0 && t > 0, "invalid predictor geometry");
+    const auto layer = (depth % count + count) % count;
+    if (cache && batch && batch != b)
+        reset(b);
+    const auto start = cache ? lengths[layer] : 0;
+    tyloi::models::require_model(start >= 0 && t <= capacity - start,
+                                 "predictor history exceeds context capacity");
+    auto embeds =
+        supplied_embeddings.defined() ? supplied_embeddings : tyloi::cuda::embed(*embedding_, ids, copies_, profiler_, primary_);
+    TYLOINFER_RUNTIME_CHECK(embeds.sizes().vec() ==
+                          std::vector<int64_t>({b, t, config.hidden}),
+                      "GLM5-Next MTP embedding shape mismatch");
+    DenseTensor pos;
+    {
+        auto current = supplied_positions.defined()
+                           ? supplied_positions
+                           : ::tyloi::cuda::arange(start, start + t,
+                                        ids.options().dtype(::tyloi::kInt32));
+        TYLOINFER_RUNTIME_CHECK((current.dim() == 1 || current.dim() == 2) &&
+                              current.size(-1) == t &&
+                              (current.dim() == 1 || current.size(0) == b),
+                          "GLM MTP positions require [T] or [B,T]");
+        current = current.to(::tyloi::kInt32);
+        pos = std::move(current);
+    }
+    DenseTensor x;
+    {
+        DenseTensor e;
+        {
+            auto mask = (pos == 0).reshape({pos.dim() == 1 ? 1 : b, t, 1});
             auto masked = ::tyloi::cuda::where(mask, ::tyloi::cuda::zeros_like(embeds), embeds);
 #ifdef TYLOINFER_NATIVE_CUDA
-            return rms_norm(masked, *embedding_norm, config.eps);
+            e = rms_norm(masked, *embedding_norm, config.eps);
 #else
-            return rms_norm(masked, embedding_norm, config.eps);
+            e = rms_norm(masked, embedding_norm, config.eps);
 #endif
-        },
+        }
+        // Release prior-stage tensors before later projections allocate.
+        embeds = {};
+        DenseTensor streams;
 #ifdef TYLOINFER_NATIVE_CUDA
-        [&] { return rms_norm(hidden, *hidden_norm, config.eps); },
+        streams = rms_norm(hidden, *hidden_norm, config.eps);
 #else
-        [&] { return rms_norm(hidden, hidden_norm, config.eps); },
+        streams = rms_norm(hidden, hidden_norm, config.eps);
 #endif
-        [&](DenseTensor e, DenseTensor streams) { return project_.run(*fusion, ::tyloi::cuda::cat({e, streams}, -1)); },
-        [&](DenseTensor x, int64_t layer, const auto &pos) {
-            auto &block = layers[layer];
-            dtype = x.scalar_type() == ::tyloi::kFloat32 ? ::tyloi::kFloat32 : ::tyloi::kFloat16;
-            auto normalized = rms_norm(x, block.attention_norm, config.eps);
-            auto branch = block.attention->forward(project_, states[layer], normalized, cache);
-            x = x.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
-            normalized = rms_norm(x, block.ffn_norm, config.eps).to(dtype);
-            branch = block.ffn(project_, normalized);
-            return x.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
-        },
+        x = project_.run(*fusion, ::tyloi::cuda::cat({e, streams}, -1));
+    }
+    DenseTensor multi;
+    {
+        auto &block = layers[layer];
+        dtype = x.scalar_type() == ::tyloi::kFloat32 ? ::tyloi::kFloat32 : ::tyloi::kFloat16;
+        auto normalized = rms_norm(x, block.attention_norm, config.eps);
+        auto branch = block.attention->forward(project_, states[layer], normalized, cache);
+        x = x.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
+        normalized = rms_norm(x, block.ffn_norm, config.eps).to(dtype);
+        branch = block.ffn(project_, normalized);
+        multi = x.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
+    }
+    x = {};
+    DenseTensor result;
 #ifdef TYLOINFER_NATIVE_CUDA
-        [&](const DenseTensor &multi) { return rms_norm(multi, *output_norm, config.eps).to(dtype); },
+    result = rms_norm(multi, *output_norm, config.eps).to(dtype);
 #else
-        [&](const DenseTensor &multi) { return rms_norm(multi, output_norm, config.eps).to(dtype); },
+    result = rms_norm(multi, output_norm, config.eps).to(dtype);
 #endif
-        [&](int64_t layer, const auto &pos) {});
+    if (cache) {
+        batch = b;
+        lengths[layer] = start + t;
+    }
+    return {std::move(result), std::move(multi)};
 }
 
 tyloi::models::MtpStep Mtp::step(const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,

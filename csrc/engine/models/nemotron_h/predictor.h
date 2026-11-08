@@ -1,6 +1,9 @@
 #pragma once
 
-#include "engine/models/common/predictor.h"
+#include "engine/models/common/check.h"
+
+#include <cstdint>
+#include <utility>
 
 namespace tyloi::models::nemotron_h {
 
@@ -39,26 +42,27 @@ auto mtp_predictor(Ops &ops, typename Ops::DenseTensor hidden, typename Ops::Den
     require_model(config.num_nextn_predict_layers == 1 && !config.mtp_mixers.empty(),
                   "Nemotron-H MTP requires one declared predictor stage");
     const auto batch = ops.size(hidden, 0), tokens = ops.size(hidden, 1);
-    return tyloi::models::projected_predictor(
-        model, batch, tokens, depth, cache, [&](int64_t next) { model.reset(next); },
-        [&] { return ops.embed(std::move(ids), hidden); },
-        [&](tyloi::models::PredictorCursor cursor) {
-            return ops.positions(std::move(positions), cursor.start, tokens);
-        },
-        [&](typename Ops::DenseTensor embeds, const typename Ops::DenseTensor &) {
-            return ops.normalize(std::move(embeds), PredictorNorm::embedding);
-        },
-        [&] { return ops.normalize(hidden, PredictorNorm::hidden); },
-        [&](typename Ops::DenseTensor e, typename Ops::DenseTensor h) {
-            return ops.fuse(std::move(e), std::move(h));
-        },
-        [&](typename Ops::DenseTensor x, int64_t stage, const typename Ops::DenseTensor &pos) {
-            return ops.mixer_blocks(std::move(x), stage, pos);
-        },
-        [&](const typename Ops::DenseTensor &x) {
-            return ops.normalize(x, PredictorNorm::output);
-        },
-        [&](int64_t, const typename Ops::DenseTensor &) {});
+    const auto capacity = model.predictor_capacity();
+    const auto count = int64_t(model.lengths.size());
+    tyloi::models::require_model(count > 0 && batch > 0 && tokens > 0, "invalid predictor geometry");
+    const auto layer = (depth % count + count) % count;
+    if (cache && model.batch && model.batch != batch)
+        model.reset(batch);
+    const auto start = cache ? model.lengths[layer] : 0;
+    tyloi::models::require_model(start >= 0 && tokens <= capacity - start,
+                                 "predictor history exceeds context capacity");
+    auto embeds = ops.embed(std::move(ids), hidden);
+    auto pos = ops.positions(std::move(positions), start, tokens);
+    auto e = ops.normalize(std::move(embeds), PredictorNorm::embedding);
+    embeds = {};
+    auto h = ops.normalize(hidden, PredictorNorm::hidden);
+    auto multi = ops.mixer_blocks(ops.fuse(std::move(e), std::move(h)), layer, std::as_const(pos));
+    auto result = ops.normalize(std::as_const(multi), PredictorNorm::output);
+    if (cache) {
+        model.batch = batch;
+        model.lengths[layer] = start + tokens;
+    }
+    return std::pair{std::move(result), std::move(multi)};
 }
 
 } // namespace tyloi::models::nemotron_h

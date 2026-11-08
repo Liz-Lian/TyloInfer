@@ -19,8 +19,8 @@
 namespace tyloi::cuda::nemotron_h {
 
 // Nemotron-H's predictor is one multi-token-prediction head whose sub-blocks
-// are listed in mtp_layers_block_type; both blocks run inside the single stage
-// of the shared projected_predictor graph. The attention sub-block owns the
+// are listed in mtp_layers_block_type; both blocks run inside the single stage.
+// The attention sub-block owns the
 // predictor history; the MoE sub-block is stateless.
 // The semantics follow llama.cpp (src/models/nemotron-h-moe.cpp), vLLM and
 // SGLang rather than DeepSeek-V3: the backbone hands over its post-output_norm

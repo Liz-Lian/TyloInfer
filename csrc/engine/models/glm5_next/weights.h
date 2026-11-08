@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
 #include "engine/models/metadata.h"
-#include "../common/predictor.h"
+#include "../common/check.h"
 #include "../common/recurrent_attention.h"
 #include <memory>
 
