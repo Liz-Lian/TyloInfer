@@ -114,8 +114,7 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
             const auto selected_session = match->session_id;
             snapshots_.erase(*match);
             state.reset(1);
-            if (mtp != nullptr)
-                mtp->reset(1);
+            Backend::reset_predictor(state, mtp);
             std::cerr << "runtime_session_cache action=invalidate session=" << selected_session
                       << " error=" << error.what() << std::endl;
             return {};
@@ -358,7 +357,7 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
             state.reset(1);
             std::cerr << "runtime_session_cache action=" << action
                       << " session=" << requested_session << " error=" << error.what() << std::endl;
-            if(mtp)mtp->reset(1);
+            Backend::reset_predictor(state, mtp);
             return Restore{};
         };
         const char *invalid_action = "paged_codec_invalidate";

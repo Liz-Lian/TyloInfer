@@ -6,8 +6,8 @@
 namespace tyloi::cuda::qwen35 {
 
 
-MtpState::MtpState(std::vector<Layout> layout, int64_t hidden)
-    : layout_(std::move(layout)), kv_(layout_.size()), hidden_(hidden) {}
+MtpState::MtpState(const tyloi::models::Mtp& owner, std::vector<Layout> layout, int64_t hidden)
+    : tyloi::models::MtpState(owner), layout_(std::move(layout)), kv_(layout_.size()), hidden_(hidden) {}
 
 void MtpState::prepare(int64_t batch, int64_t tokens, int64_t kl_capacity) {
     TYLOINFER_RUNTIME_CHECK(batch > 0 && tokens > 0, "invalid MTP state dimensions");

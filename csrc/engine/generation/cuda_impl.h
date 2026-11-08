@@ -640,8 +640,9 @@ template <class Model, class State, class Predictor> struct RequestOps {
     void reset() {
         if (batching) return;
         state.reset(1);
-        if (mtp)
-            mtp->reset(1);
+        if constexpr (requires { state.predictor; }) {
+            if (mtp) mtp->reset(*state.predictor,1);
+        }
     }
     void release() {
         if (batching) return; // Each row owns its slot cleanup.
@@ -708,6 +709,14 @@ Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
     std::optional<tyloi::models::Prepared> prepared,
     tyloi::engine::Batch* batching, std::string request_id,
     bool decode_ready) {
+    if (mtp) {
+        if constexpr (requires { state.predictor; }) {
+            if (!state.predictor || !state.predictor->belongs_to(*mtp))
+                throw std::invalid_argument("predictor state is unavailable or belongs to another model");
+        } else {
+            throw std::invalid_argument("model state has no predictor state");
+        }
+    }
     return tyloi::engine::generate_request(
         generation_detail::RequestOps<Model, State, Predictor>{model, state, executor, collectives, mode,
                                      profiler, weights, budget, serial_branches, report_memory, graph_allowed,

@@ -18,6 +18,18 @@
 
 namespace tyloi::cuda::nemotron_h {
 
+struct PredictorState final : tyloi::models::MtpState {
+    explicit PredictorState(const tyloi::models::Mtp& owner) : MtpState(owner) {}
+
+    int64_t position() const noexcept override {
+        return lengths.empty() ? 0 : lengths.front();
+    }
+
+    std::vector<LayerState> states;
+    std::vector<int64_t> lengths;
+    int64_t batch = 0;
+};
+
 // Nemotron-H's predictor is one multi-token-prediction head whose sub-blocks
 // are listed in mtp_layers_block_type; both blocks run inside the single stage.
 // The attention sub-block owns the
@@ -40,11 +52,8 @@ struct Mtp final : tyloi::models::Mtp {
     DenseTensor embedding_norm, hidden_norm, output_norm;
 #endif
     std::vector<Layer> layers;
-    std::vector<LayerState> states;
-    std::vector<int64_t> lengths;
     CudaExecutionContext *execution = nullptr;
     std::unique_ptr<Executor> executor;
-    int64_t batch = 0;
 
     // The predictor history shares the backbone context limit, which the
     // loader may have overridden with --ctx-size.
@@ -99,11 +108,16 @@ struct Mtp final : tyloi::models::Mtp {
             result.layers.push_back(load_layer(execution.executor().pipelines(), weights, main,
                                                static_cast<int>(index), type, "predictor"));
         }
-        result.states = std::vector<LayerState>(result.layers.size());
-        for (std::size_t index = 0; index < result.layers.size(); ++index) {
-            const auto &layer = result.layers[index];
+        return result;
+    }
+
+    std::unique_ptr<tyloi::models::MtpState> make_state() const override {
+        auto result = std::make_unique<PredictorState>(*this);
+        result->states.resize(layers.size());
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            const auto &layer = layers[index];
             if (const auto *full = std::get_if<FullAttention>(&layer.weights)) {
-                auto &cache = result.states[index].emplace<KVCache>();
+                auto &cache = result->states[index].emplace<KVCache>();
                 if (::tyloi::cuda::options::kv_vram_preallocated()) {
                     MfqCudaGuard guard(layer.device);
                     cache = KVCache(1, full->kv_heads,
@@ -116,26 +130,30 @@ struct Mtp final : tyloi::models::Mtp {
                 }
             }
         }
-        result.lengths.assign(1, 0);
+        result->lengths.assign(1, 0);
         return result;
     }
 
-    void reset(int64_t next_batch = 1) override {
+    void reset(tyloi::models::MtpState& value, int64_t next_batch = 1) const override {
+        auto& state = this->state<PredictorState>(value);
         TYLOINFER_RUNTIME_CHECK(next_batch > 0, "Nemotron-H MTP batch must be positive");
-        for (auto &state : states)
-            if (auto *cache = std::get_if<KVCache>(&state))
+        for (auto &layer : state.states)
+            if (auto *cache = std::get_if<KVCache>(&layer))
                 if (!cache->defined() || cache->batch_size() != next_batch)
                     *cache = KVCache();
-        std::fill(lengths.begin(), lengths.end(), 0);
-        batch = next_batch;
+        std::fill(state.lengths.begin(), state.lengths.end(), 0);
+        state.batch = next_batch;
     }
 
-    std::pair<DenseTensor, DenseTensor> evaluate(const DenseTensor &hidden,
+    std::pair<DenseTensor, DenseTensor> evaluate(tyloi::models::MtpState& value,
+                                       const DenseTensor &hidden,
                                        const DenseTensor &ids, int64_t depth = 0,
-                                       const DenseTensor &supplied_positions = {}) {
+                                       const DenseTensor &supplied_positions = {}) const {
+        auto& state = this->state<PredictorState>(value);
         struct Ops {
             using DenseTensor = ::tyloi::DenseTensor;
-            Mtp &model;
+            const Mtp &model;
+            PredictorState& state;
             Executor::Mode mode;
             static int rank(const DenseTensor &x) { return x.dim(); }
             static int64_t size(const DenseTensor &x, int axis) { return x.size(axis); }
@@ -181,16 +199,22 @@ struct Mtp final : tyloi::models::Mtp {
             DenseTensor mixer_blocks(DenseTensor x, int64_t stage, const DenseTensor &pos) {
                 const int64_t tokens = x.size(1);
                 std::optional<DenseTensor> sequence_lengths;
-                if (tokens == 1 && model.lengths[stage] > 0)
-                    sequence_lengths = lengths(x.size(0), model.lengths[stage] + 1, pos);
-                AttentionStep step{pos, sequence_lengths, mfq_nullopt,
-                                   model.lengths[stage], 0, 0};
+                if (tokens == 1 && state.lengths[stage] > 0)
+                    sequence_lengths = lengths(x.size(0), state.lengths[stage] + 1, pos);
+#ifdef TYLOINFER_NATIVE_CUDA
+                AttentionStep step{pos, sequence_lengths.value_or(::tyloi::DenseTensor()), ::tyloi::Tensor{},
+                                   state.lengths[stage], 0, 0};
+#else
+                AttentionStep step{pos, sequence_lengths.value_or(::tyloi::DenseTensor()), mfq_nullopt,
+                                   state.lengths[stage], 0, 0};
+#endif
                 for (std::size_t index = 0; index < model.layers.size(); ++index)
-                    x = forward_layer(model.layers[index], model.states[index], *model.executor,
+                    x = forward_layer(model.layers[index], state.states[index], *model.executor,
                                       index, std::move(x), step, 0, mode);
                 return x;
             }
-        } ops{*this, execution->executor().forward_mode(execution->config.layer_placement.primary_device())};
+        } ops{*this, state,
+              execution->executor().forward_mode(execution->config.layer_placement.primary_device())};
         return tyloi::models::nemotron_h::mtp_predictor(ops, hidden, ids, supplied_positions, depth,
                                                      true);
     }
@@ -199,27 +223,25 @@ struct Mtp final : tyloi::models::Mtp {
     // step's hidden state (llama.cpp/vLLM/SGLang), so the chain value is the
     // same normalized tensor the lm_head consumes. The backbone's output_norm
     // is not applied again.
-    tyloi::models::MtpStep step(const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
-                                const ::tyloi::Tensor* positions = nullptr) override {
-        auto result = evaluate(dynamic_cast<const DenseTensor&>(hidden),
-                               dynamic_cast<const DenseTensor&>(ids), 0,
-                               positions && positions->defined() ? dynamic_cast<const DenseTensor&>(*positions)
+    tyloi::models::MtpStep step(tyloi::models::MtpState& value,
+                                const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
+                                const ::tyloi::Tensor& positions = {}) const override {
+        auto result = evaluate(value, hidden.dense(),
+                               ids.dense(), 0,
+                               positions.defined() ? positions.dense()
                                                                  : DenseTensor{});
         auto output = std::make_shared<DenseTensor>(std::move(result.first));
         return {output, output};
     }
 
-    int64_t cache_position() const noexcept override {
-        return lengths.empty() ? 0 : lengths.front();
-    }
-
-    void trim_cache_to(int64_t position) override {
-        TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= cache_position(),
+    void trim_cache_to(tyloi::models::MtpState& value, int64_t position) const override {
+        auto& state = this->state<PredictorState>(value);
+        TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= state.position(),
                           "Nemotron-H MTP cache trim position is invalid");
         // The attention sub-block's KV storage is position addressed. Lowering
         // the logical boundary overwrites the rejected draft suffix without
         // copying history-sized tensors.
-        lengths.front() = position;
+        state.lengths.front() = position;
     }
 
     bool teacher_forced_prompt_prime() const noexcept override { return true; }
@@ -230,40 +252,44 @@ struct Mtp final : tyloi::models::Mtp {
     bool supports_session_state() const noexcept override { return true; }
 
     MtpSessionState
-    capture_session_state(int64_t target_cache_position,
+    capture_session_state(const tyloi::models::MtpState& value,
+                          int64_t target_cache_position,
                           const ::tyloi::Tensor &last_target) const override {
-        const auto& last_target_hidden = dynamic_cast<const DenseTensor&>(last_target);
+        const auto& state = this->state<PredictorState>(value);
+        const auto& last_target_hidden = last_target.dense();
         const int64_t predictor_position = target_cache_position - 1;
-        if (predictor_position <= 0 || predictor_position > cache_position() ||
+        if (predictor_position <= 0 || predictor_position > state.position() ||
             !last_target_hidden.defined() || last_target_hidden.dim() != 3 ||
             last_target_hidden.size(0) != 1 || last_target_hidden.size(1) != 1 ||
             last_target_hidden.size(2) != config.hidden_size) {
             throw std::runtime_error("Nemotron-H MTP session boundary is unavailable");
         }
-        MtpSessionState state;
-        state.cache_pos = predictor_position;
-        auto& snapshots = std::get<std::vector<KvSnapshot>>(state.payload);
+        MtpSessionState result;
+        result.cache_pos = predictor_position;
+        auto& snapshots = std::get<std::vector<KvSnapshot>>(result.payload);
         for (std::size_t index = 0; index < layers.size(); ++index) {
             if (!std::holds_alternative<FullAttention>(layers[index].weights))
                 continue;
             MfqCudaGuard guard(layers[index].device);
             snapshots.push_back(
-                capture_kv(std::get<KVCache>(states[index]), predictor_position, state.bytes));
+                capture_kv(std::get<KVCache>(state.states[index]), predictor_position, result.bytes));
         }
         auto hidden = last_target_hidden.clone();
-        state.bytes += session_tensor_bytes(hidden);
-        state.last_target_hidden = std::make_shared<::tyloi::DenseTensor>(std::move(hidden));
-        return state;
+        result.bytes += session_tensor_bytes(hidden);
+        result.last_target_hidden = std::make_shared<::tyloi::DenseTensor>(std::move(hidden));
+        return result;
     }
 
-    void restore_session_state(const MtpSessionState &state) override {
+    void restore_session_state(tyloi::models::MtpState& value,
+                               const MtpSessionState &snapshot) const override {
+        auto& state = this->state<PredictorState>(value);
         std::vector<std::size_t> saved;
         for (std::size_t index = 0; index < layers.size(); ++index)
             if (std::holds_alternative<FullAttention>(layers[index].weights))
                 saved.push_back(index);
-        const auto *blocks = std::get_if<std::vector<KvSnapshot>>(&state.payload);
-        const auto *hidden = dynamic_cast<const ::tyloi::DenseTensor*>(state.last_target_hidden.get());
-        if (state.cache_pos <= 0 || blocks == nullptr || blocks->size() != saved.size() ||
+        const auto *blocks = std::get_if<std::vector<KvSnapshot>>(&snapshot.payload);
+        const auto *hidden = snapshot.last_target_hidden.representation<::tyloi::DenseTensor>();
+        if (snapshot.cache_pos <= 0 || blocks == nullptr || blocks->size() != saved.size() ||
             !hidden || !hidden->defined() || hidden->dim() != 3 ||
             hidden->size(0) != 1 || hidden->size(1) != 1 || hidden->size(2) != config.hidden_size) {
             throw std::runtime_error("Nemotron-H MTP session state is incompatible");
@@ -272,12 +298,12 @@ struct Mtp final : tyloi::models::Mtp {
             const auto layer_index = saved[index];
             MfqCudaGuard guard(layers[layer_index].device);
             const auto& attention = std::get<FullAttention>(layers[layer_index].weights);
-            restore_kv(std::get<KVCache>(states[layer_index]), (*blocks)[index],
+            restore_kv(std::get<KVCache>(state.states[layer_index]), (*blocks)[index],
                 attention.attention_head_dim,
                 attention.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16,
                 attention.kv_quantization);
         }
-        lengths.front() = state.cache_pos;
+        state.lengths.front() = snapshot.cache_pos;
     }
 };
 

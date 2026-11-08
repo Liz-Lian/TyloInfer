@@ -43,12 +43,13 @@ auto mtp_predictor(Ops &ops, typename Ops::DenseTensor hidden, typename Ops::Den
                   "Nemotron-H MTP requires one declared predictor stage");
     const auto batch = ops.size(hidden, 0), tokens = ops.size(hidden, 1);
     const auto capacity = model.predictor_capacity();
-    const auto count = int64_t(model.lengths.size());
+    auto &state = ops.state;
+    const auto count = int64_t(state.lengths.size());
     tyloi::models::require_model(count > 0 && batch > 0 && tokens > 0, "invalid predictor geometry");
     const auto layer = (depth % count + count) % count;
-    if (cache && model.batch && model.batch != batch)
-        model.reset(batch);
-    const auto start = cache ? model.lengths[layer] : 0;
+    if (cache && state.batch && state.batch != batch)
+        model.reset(state, batch);
+    const auto start = cache ? state.lengths[layer] : 0;
     tyloi::models::require_model(start >= 0 && tokens <= capacity - start,
                                  "predictor history exceeds context capacity");
     auto embeds = ops.embed(std::move(ids), hidden);
@@ -59,8 +60,8 @@ auto mtp_predictor(Ops &ops, typename Ops::DenseTensor hidden, typename Ops::Den
     auto multi = ops.mixer_blocks(ops.fuse(std::move(e), std::move(h)), layer, std::as_const(pos));
     auto result = ops.normalize(std::as_const(multi), PredictorNorm::output);
     if (cache) {
-        model.batch = batch;
-        model.lengths[layer] = start + tokens;
+        state.batch = batch;
+        state.lengths[layer] = start + tokens;
     }
     return std::pair{std::move(result), std::move(multi)};
 }

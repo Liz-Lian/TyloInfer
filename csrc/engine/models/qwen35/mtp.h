@@ -29,14 +29,14 @@ public:
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate);
 
-    void reset(int64_t batch = 1) override;
-    tyloi::models::MtpStep step(const ::tyloi::Tensor& hidden,
-        const ::tyloi::Tensor& next_ids, const ::tyloi::Tensor* positions = nullptr) override;
+    std::unique_ptr<tyloi::models::MtpState> make_state() const override;
+    void reset(tyloi::models::MtpState& state, int64_t batch = 1) const override;
+    tyloi::models::MtpStep step(tyloi::models::MtpState& state, const ::tyloi::Tensor& hidden,
+        const ::tyloi::Tensor& next_ids, const ::tyloi::Tensor& positions = {}) const override;
 
-    int64_t cache_position() const noexcept override { return state_.position(); }
-    void trim_cache_to(int64_t position) override;
+    void trim_cache_to(tyloi::models::MtpState& state, int64_t position) const override;
     bool supports_session_state() const noexcept override { return true; }
-    MtpSessionState capture_session_state(int64_t target_cache_position,
+    MtpSessionState capture_session_state(const tyloi::models::MtpState& state, int64_t target_cache_position,
         const ::tyloi::Tensor& last_target_hidden) const override;
 
     bool teacher_forced_prompt_prime() const noexcept override { return true; }
@@ -49,8 +49,8 @@ private:
         const std::function<void()>&);
 
     ::tyloi::DenseTensor evaluate(
-        ::tyloi::DenseTensor hidden, ::tyloi::DenseTensor next_ids,
-        ::tyloi::DenseTensor positions);
+        MtpState& state, ::tyloi::DenseTensor hidden, ::tyloi::DenseTensor next_ids,
+        ::tyloi::DenseTensor positions) const;
 
     Predictor model_;
     std::shared_ptr<const ::tyloi::Tensor> embedding_;
@@ -59,7 +59,6 @@ private:
 #else
     RopeCache rope_;
 #endif
-    MtpState state_;
     std::vector<Task> tasks_;
     std::unique_ptr<Executor> executor_;
     Collectives& copies_;
@@ -67,6 +66,7 @@ private:
     const int64_t& kv_capacity_;
     Trace* const& trace_;
     const int& trace_scope_;
+    bool preallocate_;
 };
 
 } // namespace tyloi::cuda::qwen35

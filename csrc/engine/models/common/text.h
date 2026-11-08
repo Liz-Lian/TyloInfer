@@ -89,6 +89,40 @@ struct Text {
     int graph_draft_depth=3;
     bool preparing_graph_depth=true;
 
+    tyloi::models::MtpState& predictor_state() {
+        if constexpr (requires { state.predictor; }) {
+            if (!state.predictor)
+                throw std::logic_error("MTP predictor state is unavailable");
+            return *state.predictor;
+        } else {
+            throw std::logic_error("model state has no MTP predictor owner");
+        }
+    }
+
+    const tyloi::models::MtpState* predictor_state_if_present() const noexcept {
+        if constexpr (requires { state.predictor; })
+            return state.predictor.get();
+        else
+            return nullptr;
+    }
+
+    void release_request_resources() noexcept {
+        if constexpr (std::is_same_v<Model, qwen4_exp::Model>) {
+            if (components.mtp) {
+                try {
+                    qwen4_release_decode_graphs(language, state, components.mtp.get());
+                } catch (...) {
+                }
+            }
+        }
+        try {
+            graph.invalidate();
+        } catch (...) {
+        }
+        owned_state.reset();
+        components = Parts{};
+    }
+
     void configure_decode_budget() {
         std::size_t spare = 0;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -124,7 +158,8 @@ struct Text {
                 graph.invalidate();
                 qwen4_release_decode_graphs(language,state,components.mtp.get());
                 weights.retire_decode();
-                state.reset(1);components.mtp->reset(1);
+                state.reset(1);
+                components.mtp->reset(predictor_state(), 1);
                 auto context=tyloi::cuda::default_context(execution->config.layer_placement.primary_device());
                 context->reclaim_idle_memory();
                 budget->reclaim((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth));
@@ -235,7 +270,7 @@ struct Text {
                                                    nullptr,0,{},nullptr,0,nullptr);
                 while(generation.next()) {}
                 learning.drain();
-                predictor.reset(1);
+                predictor.reset(predictor_state(), 1);
                 state.reset(1);
                 mtp_state.policy=saved_policy;
                 mtp_state.stats={};
@@ -258,6 +293,8 @@ struct Text {
                            execution->config.tensor_parallel, execution->config.expert_parallel);
             }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
+            batching.reset();
+            release_request_resources();
             clear_bindings();
             std::rethrow_exception(failure);
         }
@@ -276,6 +313,7 @@ struct Text {
     ~Text() {
         clear_bindings();
         batching.reset();
+        release_request_resources();
     }
     SessionResult session(const SessionCommand& command) {
         if(command.kind!=SessionCommand::Kind::memory_budget)return cache.control(command);
@@ -286,7 +324,7 @@ struct Text {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             qwen4_release_decode_graphs(language,state,components.mtp.get());
         if(batching)batching->release_idle_buffers();
-        if(auto* mtp=component_predictor(components))mtp->reset(1);
+        if(auto* mtp=component_predictor(components))mtp->reset(predictor_state(), 1);
         state.reset(1);
         return change.apply();
     }
@@ -357,7 +395,7 @@ struct Text {
                 // Exclusive MTP generation has ended before a batch starts.
                 // Its graph consumers must retire before idle batch buffers.
                 qwen4_release_decode_graphs(language,state,components.mtp.get());
-                if (components.mtp) components.mtp->reset(1);
+                if (components.mtp) components.mtp->reset(predictor_state(), 1);
             }
         }
         return generate_prepared(*this, state, input, output, id, batched);
@@ -384,7 +422,9 @@ struct Text {
             Metrics predictor_metrics;
             if (mtp) {
                 tyloi::engine::mtp::append_generation_metrics(predictor_metrics, mtp_state.stats);
-                predictor_metrics.emplace_back("mtp_predictor_graph_replays", double(mtp->graph_replay_count()));
+                const auto* predictor_state = predictor_state_if_present();
+                predictor_metrics.emplace_back("mtp_predictor_graph_replays",
+                    double(predictor_state ? predictor_state->graph_replay_count() : 0));
             }
             return tyloi::engine::resource_metrics(component_values,profile_metrics,std::move(memory),streamed_kv,
                 graph_draft_depth,batch_metrics,kv_metrics,offload_metrics,predictor_metrics,source.get(),

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/session/snapshot.h"
+#include "engine/models/state.h"
 #include "engine/state/kv_cache.h"
 #include "engine/state/recurrent.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
@@ -86,6 +87,7 @@ public:
     const std::vector<Layout>& layout() const noexcept { return layout_; }
 
     std::vector<LayerState> layers;
+    std::unique_ptr<tyloi::models::MtpState> predictor;
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
     std::int64_t speculative_start = -1;

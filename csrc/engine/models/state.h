@@ -12,6 +12,21 @@
 namespace tyloi::models {
 
 struct ForwardOptions;
+struct Mtp;
+
+class MtpState {
+public:
+    explicit MtpState(const Mtp& model) : model_(&model) {}
+    virtual ~MtpState() = default;
+    MtpState(const MtpState&) = delete;
+    MtpState& operator=(const MtpState&) = delete;
+    bool belongs_to(const Mtp& model) const noexcept { return model_ == &model; }
+    virtual std::int64_t position() const noexcept = 0;
+    virtual bool take_graph_initialization() noexcept { return false; }
+    virtual std::uint64_t graph_replay_count() const noexcept { return 0; }
+private:
+    const Mtp* model_;
+};
 
 struct CausalState {
     int64_t position() const noexcept { return cache_pos; }
@@ -27,7 +42,13 @@ struct CausalState {
 
 class State {
 public:
+    State() = default;
+    State(State&&) noexcept = default;
+    State& operator=(State&&) noexcept = default;
+    State(const State&) = delete;
+    State& operator=(const State&) = delete;
     virtual ~State() = default;
+    std::unique_ptr<MtpState> predictor;
     virtual void preallocate() = 0;
     virtual void reset(std::int64_t batch) = 0;
     virtual std::int64_t position() const noexcept = 0;

@@ -2,12 +2,13 @@
 
 #include "engine/state/kv_cache.h"
 #include "engine/models/session/snapshot.h"
+#include "engine/models/state.h"
 
 #include <vector>
 
 namespace tyloi::cuda::qwen35 {
 
-class MtpState {
+class MtpState final : public tyloi::models::MtpState {
 public:
     struct Restore {
         std::vector<KVCache> kv;
@@ -21,8 +22,8 @@ public:
         KvQuantization quantization;
     };
 
-    MtpState(std::vector<Layout> layout, int64_t hidden);
-    int64_t position() const noexcept { return position_; }
+    MtpState(const tyloi::models::Mtp& owner, std::vector<Layout> layout, int64_t hidden);
+    int64_t position() const noexcept override { return position_; }
     void prepare(int64_t batch, int64_t tokens, int64_t kl_capacity = 0);
     void reset(int64_t batch);
     void advance(int64_t tokens);

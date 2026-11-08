@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/common/attention_ops.h"
+#include "engine/models/state.h"
 #include "engine/models/session/snapshot.h"
 #include <cstdint>
 #include <variant>
@@ -62,6 +63,7 @@ public:
     void restore_text_session_state(const TextSessionState&);
 
     std::vector<LayerState> layers;
+    std::unique_ptr<tyloi::models::MtpState> predictor;
     int64_t cache_pos = 0, decode_position_delta = 0, batch = 0;
     int64_t speculative_start = -1, speculative_confirmed = 0;
 };

@@ -57,6 +57,18 @@ struct CudaSessionOps {
     static void release_host_cache();
 
     template <class State, class Predictor>
+    static void reset_predictor(State& state, Predictor* mtp) {
+        if (!mtp) return;
+        if constexpr (requires { state.predictor; }) {
+            if (!state.predictor)
+                throw CudaSessionStateError("predictor state is unavailable");
+            mtp->reset(*state.predictor, 1);
+        } else {
+            throw CudaSessionStateError("model state has no predictor state");
+        }
+    }
+
+    template <class State, class Predictor>
     static void restore(
         State& state, const Snapshot& snapshot, const std::function<void()>& drain,
         Predictor* mtp) {
@@ -86,7 +98,12 @@ struct CudaSessionOps {
             } else {
                 throw CudaSessionStateError("text session state is unsupported by this model");
             }
-            if (mtp) mtp->restore_session_state(*snapshot.mtp);
+            if (mtp) {
+                if constexpr (requires { state.predictor; })
+                    mtp->restore_session_state(*state.predictor, *snapshot.mtp);
+                else
+                    throw CudaSessionStateError("model state has no predictor state");
+            }
         }
     }
 };

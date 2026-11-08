@@ -2,6 +2,7 @@
 
 #include "engine/state/recurrent.h"
 #include "engine/state/kv_cache.h"
+#include "engine/models/state.h"
 #include "engine/models/session/snapshot.h"
 
 #include <cstdint>
@@ -57,6 +58,7 @@ public:
     const std::vector<Layout>& layout() const noexcept { return layout_; }
 
     std::vector<LayerState> layers;
+    std::unique_ptr<tyloi::models::MtpState> predictor;
     std::int64_t cache_pos = 0, decode_position_delta = 0, batch = 0;
     std::int64_t speculative_start = -1, speculative_confirmed = 0;
 

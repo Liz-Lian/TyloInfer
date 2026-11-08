@@ -253,8 +253,6 @@ std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execut
     loader.role = "qwen4_exp";
     if (!tyloi::models::qwen4_exp::load_predictor(result, loader, main))
         return std::nullopt;
-    for (const auto& layer : result.layers)
-        result.layer_states.push_back(std::make_unique<LayerState>(*layer));
     return result;
 }
 

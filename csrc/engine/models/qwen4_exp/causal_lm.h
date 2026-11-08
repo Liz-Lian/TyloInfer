@@ -121,8 +121,6 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
                       result.hidden_norm.sizes().vec() == std::vector<int64_t>{c.hidden * c.streams},
 #endif
                   "Qwen4-Exp MTP normalization width disagrees with backbone");
-    result.positions.resize(count);
-    result.lengths.resize(count, 0);
     return true;
 }
 

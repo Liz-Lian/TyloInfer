@@ -172,7 +172,6 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
                       result.output_norm.numel() == c.hidden,
 #endif
                   "GLM5-Next MTP normalization width disagrees with backbone");
-    result.lengths.resize(count, 0);
     return true;
 }
 

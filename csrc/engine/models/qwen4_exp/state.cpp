@@ -23,11 +23,12 @@ tyloi::models::SnapshotSize snapshot_size(const State& state,const tyloi::models
         if(block.ple)bytes+=session_tensor_bytes(block.ple->conv_state(layer.ple));
     };
     for(std::size_t i=0;i<model.blocks.size();++i)count_block(*model.blocks[i],*state.layers[i],state.cache_pos);
-    if(const auto* predictor=dynamic_cast<const Predictor*>(mtp)) {
+    if(const auto* predictor=dynamic_cast<const Predictor*>(mtp); predictor && state.predictor && state.predictor->belongs_to(*predictor)) {
+        const auto& request=static_cast<const PredictorState&>(*state.predictor);
         for(std::size_t i=0;i<predictor->layers.size();++i) {
-            const auto count=std::min(state.cache_pos-1,predictor->lengths[i]);
-            count_block(*predictor->layers[i],*predictor->layer_states[i],count);
-            if(count>0)bytes+=std::size_t(count)*3*predictor->positions[i].element_size();
+            const auto count=std::min(state.cache_pos-1,request.lengths[i]);
+            count_block(*predictor->layers[i],*request.layer_states[i],count);
+            if(count>0)bytes+=std::size_t(count)*3*request.positions[i].element_size();
         }
         bytes+=std::size_t(model.config.hidden)*model.config.streams*sizeof(float);
     }

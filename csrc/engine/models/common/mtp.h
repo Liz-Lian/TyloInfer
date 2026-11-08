@@ -2,6 +2,7 @@
 
 #include "engine/models/session/snapshot.h"
 #include "engine/tensor.h"
+#include "engine/models/state.h"
 #include "engine/generation/mtp/policy.h"
 #include "engine/requests/sampling.h"
 
@@ -19,21 +20,20 @@ struct MtpStep {
     int32_t greedy_token=-1;
 };
 
-// Predictors provide model math, cache state and speculative policy behavior.
+// Predictor weights and math use the explicit state owned by the request.
 struct Mtp {
     virtual ~Mtp() = default;
-    virtual void reset(int64_t batch = 1) = 0;
+    virtual std::unique_ptr<MtpState> make_state() const = 0;
+    virtual void reset(MtpState& state, int64_t batch = 1) const = 0;
     virtual MtpStep step(
+        MtpState& state,
         const Tensor& previous_hidden,
         const Tensor& next_ids,
-        const Tensor* positions = nullptr) = 0;
-    virtual int64_t cache_position() const noexcept = 0;
-    virtual void trim_cache_to(int64_t position) = 0;
+        const Tensor& positions = {}) const = 0;
+    virtual void trim_cache_to(MtpState& state, int64_t position) const = 0;
     virtual bool teacher_forced_prompt_prime() const noexcept = 0;
     virtual bool target_bootstrap_decode() const noexcept = 0;
     virtual bool preserve_output_dtype() const noexcept = 0;
-    virtual bool take_graph_initialization() noexcept { return false; }
-    virtual uint64_t graph_replay_count() const noexcept { return 0; }
     virtual int maximum_draft_depth() const noexcept {
         return tyloi::engine::mtp::kMaximumDraftDepth;
     }
@@ -51,38 +51,50 @@ struct Mtp {
     }
     virtual bool supports_session_state() const noexcept { return false; }
     virtual MtpSessionState capture_session_state(
+        const MtpState&,
         std::int64_t,
         const Tensor&) const {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
-    virtual void restore_session_state(const MtpSessionState&) {
+    virtual void restore_session_state(MtpState&, const MtpSessionState&) const {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
-    virtual void seed_target_context(const Tensor& hidden, std::int64_t tokens) {
+    virtual void seed_target_context(MtpState& state, const Tensor& hidden, std::int64_t tokens) const {
         if (hidden.dim() != 3 || hidden.size(1) != tokens)
             throw std::runtime_error("this CUDA MTP predictor requires complete prompt context");
-        append_target_context(hidden, 0);
+        append_target_context(state, hidden, 0);
     }
     virtual void append_target_context(
+        MtpState&,
         const Tensor&,
-        std::int64_t) {
+        std::int64_t) const {
         throw std::runtime_error(
             "this CUDA MTP predictor has no target-context adapter");
     }
-    virtual std::shared_ptr<Tensor> draft_block(
+    virtual Tensor draft_block(
+        MtpState&,
         const Tensor&,
-        int) {
+        int) const {
         throw std::runtime_error(
             "this CUDA MTP predictor has no block-draft adapter");
     }
     virtual std::shared_ptr<Tensor> draft_next(
         const Tensor&,
-        const Tensor&) {
+        const Tensor&) const {
         throw std::runtime_error("this CUDA MTP predictor has no block-draft adapter");
     }
 
+protected:
+    template<class T> T& state(MtpState& value) const {
+        if (!value.belongs_to(*this)) throw std::invalid_argument("predictor state belongs to another model");
+        return static_cast<T&>(value);
+    }
+    template<class T> const T& state(const MtpState& value) const {
+        if (!value.belongs_to(*this)) throw std::invalid_argument("predictor state belongs to another model");
+        return static_cast<const T&>(value);
+    }
 };
 
 }  // namespace tyloi::models

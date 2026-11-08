@@ -58,6 +58,12 @@ inline constexpr auto with_model = []<typename F>(
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             Executor::prepare(model.metadata.vocab_size);
+        if (auto* predictor = component_predictor(components)) {
+            if constexpr (requires { state->predictor; })
+                state->predictor = predictor->make_state();
+            else
+                throw std::logic_error("model state has no predictor state");
+        }
         tyloi::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
         std::size_t graph_reserve=0;

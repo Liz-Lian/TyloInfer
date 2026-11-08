@@ -377,24 +377,24 @@ std::optional<Mtp> Mtp::load_if_present(const ::tyloi::weights::Loader& weights,
     loader.role = "glm5_next";
     if (!tyloi::models::glm5_next::load_predictor(result, loader, main))
         return std::nullopt;
-    result.states.reserve(result.layers.size());
-    for (size_t i = 0; i < result.layers.size(); ++i)
-        result.states.emplace_back(main.maximum, main.latent, main.index_width);
     return result;
 }
 
-void Mtp::reset(int64_t next_batch) {
+void Mtp::reset(tyloi::models::MtpState& value, int64_t next_batch) const {
+    auto& state = this->state<PredictorState>(value);
     TYLOINFER_RUNTIME_CHECK(next_batch > 0, "GLM5-Next MTP batch must be positive");
-    for (auto &state : states)
-        state.reset();
-    std::fill(lengths.begin(), lengths.end(), 0);
-    batch = next_batch;
+    for (auto &layer : state.states)
+        layer.reset();
+    std::fill(state.lengths.begin(), state.lengths.end(), 0);
+    state.batch = next_batch;
 }
 
-std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
+std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value,
+                                       const DenseTensor &hidden,
                                        const DenseTensor &ids, int64_t depth, bool cache,
                                        const DenseTensor &supplied_positions,
-                                       const DenseTensor &supplied_embeddings) {
+                                       const DenseTensor &supplied_embeddings) const {
+    auto& state = this->state<PredictorState>(value);
 #ifdef TYLOINFER_NATIVE_CUDA
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
                           hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
@@ -409,12 +409,12 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
     const auto b = ids.size(0), t = ids.size(1);
     auto dtype = ::tyloi::kFloat16;
     const auto capacity = config.maximum;
-    const auto count = int64_t(lengths.size());
+    const auto count = int64_t(state.lengths.size());
     tyloi::models::require_model(count > 0 && b > 0 && t > 0, "invalid predictor geometry");
     const auto layer = (depth % count + count) % count;
-    if (cache && batch && batch != b)
-        reset(b);
-    const auto start = cache ? lengths[layer] : 0;
+    if (cache && state.batch && state.batch != b)
+        reset(state, b);
+    const auto start = cache ? state.lengths[layer] : 0;
     tyloi::models::require_model(start >= 0 && t <= capacity - start,
                                  "predictor history exceeds context capacity");
     auto embeds =
@@ -462,7 +462,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
         auto &block = layers[layer];
         dtype = x.scalar_type() == ::tyloi::kFloat32 ? ::tyloi::kFloat32 : ::tyloi::kFloat16;
         auto normalized = rms_norm(x, block.attention_norm, config.eps);
-        auto branch = block.attention->forward(project_, states[layer], normalized, cache);
+        auto branch = block.attention->forward(project_, state.states[layer], normalized, cache);
         x = x.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
         normalized = rms_norm(x, block.ffn_norm, config.eps).to(dtype);
         branch = block.ffn(project_, normalized);
@@ -476,33 +476,31 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(const DenseTensor &hidden,
     result = rms_norm(multi, output_norm, config.eps).to(dtype);
 #endif
     if (cache) {
-        batch = b;
-        lengths[layer] = start + t;
+        state.batch = b;
+        state.lengths[layer] = start + t;
     }
     return {std::move(result), std::move(multi)};
 }
 
-tyloi::models::MtpStep Mtp::step(const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
-                                  const ::tyloi::Tensor* positions) {
-    if (positions && positions->defined())
+tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value,
+                                  const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
+                                  const ::tyloi::Tensor& positions) const {
+    if (positions.defined())
         throw std::runtime_error("this CUDA MTP predictor does not accept explicit positions");
-    auto result = evaluate(dynamic_cast<const DenseTensor&>(hidden),
-                           dynamic_cast<const DenseTensor&>(ids));
+    auto result = evaluate(value, hidden.dense(),
+                           ids.dense());
     return {std::make_shared<DenseTensor>(std::move(result.first)),
             std::make_shared<DenseTensor>(std::move(result.second))};
 }
 
-int64_t Mtp::cache_position() const noexcept {
-    return lengths.empty() ? 0 : lengths.front();
-}
-
-void Mtp::trim_cache_to(int64_t position) {
-    TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= cache_position(),
+void Mtp::trim_cache_to(tyloi::models::MtpState& value, int64_t position) const {
+    auto& state = this->state<PredictorState>(value);
+    TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= state.position(),
                       "GLM5-Next MTP cache trim position is invalid");
     constexpr size_t index = 0;
     if (index < layers.size() && layers[index].attention)
-        states[index].truncate(position);
-    lengths[index] = position;
+        state.states[index].truncate(position);
+    state.lengths[index] = position;
 }
 
 bool Mtp::teacher_forced_prompt_prime() const noexcept { return false; }

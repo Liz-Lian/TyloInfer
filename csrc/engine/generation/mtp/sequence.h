@@ -35,6 +35,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     auto &state = ops.state;
     const auto &metadata = ops.info;
     auto &mtp = ops.mtp;
+    auto &predictor = ops.predictor;
     auto &mtp_state = ops.mtp_state;
     const auto *prepared = ops.prepared;
     using Clock = std::chrono::steady_clock;
@@ -66,7 +67,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     require_execution(
         reused_tokens == 0 || (mtp.supports_session_state() && ops.defined(restored_last_hidden) &&
                                   state.cache_pos == static_cast<int64_t>(reused_tokens) &&
-                                  mtp.cache_position() == static_cast<int64_t>(reused_tokens) -
+                                  predictor.position() == static_cast<int64_t>(reused_tokens) -
                                       (mtp.blockwise_drafting()?0:1)),
         "restored MTP session boundary is incompatible");
     mtp_state.stats = {};
@@ -136,10 +137,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 const auto elapsed=ops.blockwise_prompt_context(context,position,seed);
                 prefill_ms+=elapsed;predictor_prefill_ms+=elapsed;
             } else if(seed) {
-                if constexpr(requires { mtp.seed_target_context(context,position); })
-                    mtp.seed_target_context(context,position);
-                else mtp.append_target_context(context,0);
-            } else mtp.append_target_context(context,position-ops.size(context,1));
+                if constexpr(requires { mtp.seed_target_context(predictor, context,position); })
+                    mtp.seed_target_context(predictor, context,position);
+                else mtp.append_target_context(predictor, context,0);
+            } else mtp.append_target_context(predictor, context,position-ops.size(context,1));
         };
         const bool stream_prompt_history = mtp.teacher_forced_prompt_prime() && !mtp.blockwise_drafting() && [&] {
             if constexpr (requires { ops.stream_prompt_history(ops.size(input_ids, 1)); })
@@ -377,7 +378,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 co_return;
         }
 
-        int64_t predictor_history_position = mtp.cache_position();
+        int64_t predictor_history_position = predictor.position();
         auto bounded_depth = [&](int desired) {
             const auto context_depth =
                 std::max<int64_t>(0, metadata.max_context - state.cache_pos - 1);
@@ -415,7 +416,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if constexpr(requires { ops.prefetch_target_first(next_ids.back()); }) {
                 if(requested_depth>0)ops.prefetch_target_first(next_ids.back());
             }
-            mtp.trim_cache_to(predictor_history_position);
+            mtp.trim_cache_to(predictor, predictor_history_position);
             auto prospective_counts = penalties ? ops.clone(counts) : Tensor{};
             DraftChain result;
             result.tokens.reserve(static_cast<size_t>(requested_depth));
@@ -445,13 +446,13 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             };
             if (mtp.blockwise_drafting()) {
                 if (!initial) {
-                    mtp.append_target_context(hidden_rows, predictor_history_position);
+                    mtp.append_target_context(predictor, hidden_rows, predictor_history_position);
                     predictor_history_position += static_cast<int64_t>(next_ids.size());
                 }
-                require_execution(mtp.cache_position() == predictor_history_position,
+                require_execution(predictor.position() == predictor_history_position,
                     "block predictor cache did not advance");
                 if (requested_depth > 0) {
-                    auto block_result = mtp.draft_block(
+                    auto block_result = mtp.draft_block(predictor,
                         ops.ids_for({next_ids.back()}), requested_depth);
 #ifdef TYLOINFER_NATIVE_CUDA
                     const auto& block = block_result;
@@ -504,7 +505,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                                          history_rows)
                                    : Tensor{});
             predictor_history_position += history_rows;
-            require_execution(mtp.cache_position() == predictor_history_position,
+            require_execution(predictor.position() == predictor_history_position,
                 "MTP predictor cache did not advance");
 #ifdef TYLOINFER_NATIVE_CUDA
             const auto& sample = head.sample_hidden;
@@ -787,7 +788,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     require_execution(rows>=0 && rows<=ops.size(verified_raw,1),
                         "block predictor final target boundary is incompatible");
                     if(rows>0) {
-                        mtp.append_target_context(ops.slice(verified_raw,1,0,rows),predictor_history_position);
+                        mtp.append_target_context(predictor, ops.slice(verified_raw,1,0,rows),predictor_history_position);
                         predictor_history_position+=rows;
                     }
                 } else if (mtp.teacher_forced_prompt_prime() && !delta.token_ids.empty()) {

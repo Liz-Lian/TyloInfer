@@ -117,10 +117,10 @@ protected:
                 clear_bindings();
                 batching_.reset();
                 graph_.reset();
-                components_.reset();
                 images_.clear();
                 executor_.reset();
                 state_.reset();
+                components_.reset();
                 model_.reset();
                 mtp_state_ = {};
                 execution_->executor().pipelines().clear();
@@ -311,7 +311,8 @@ private:
         weights_.settle();
         graph_->invalidate();
         if (batching_) batching_->release_idle_buffers();
-        if (components().mtp) components().mtp->reset(1);
+        if (components().mtp && state().predictor)
+            components().mtp->reset(*state().predictor, 1);
         state().reset(1);
         return change.apply();
     }
@@ -375,6 +376,8 @@ private:
                 execution_->executor().mmq().kv_cache_capacity,
                 execution_->executor().mode().trace, execution_->executor().mode().trace_layer,
                 true, !execution_->config.dsv4_cpu_offload_layers.empty(), preallocate));
+            if (components().mtp)
+                state_->predictor = components().mtp->make_state();
             model_info_ = tyloi::models::model_info(language());
             finalize_kv(kv_.get(), weights_, offload_);
             finish_load(kv_.get(), weights_, 0,
@@ -476,7 +479,8 @@ private:
             engine::Metrics predictor_metrics;
             if (mtp) {
                 engine::mtp::append_generation_metrics(predictor_metrics, mtp_state_.stats);
-                predictor_metrics.emplace_back("mtp_predictor_graph_replays", double(mtp->graph_replay_count()));
+                predictor_metrics.emplace_back("mtp_predictor_graph_replays",
+                    double(state().predictor ? state().predictor->graph_replay_count() : 0));
             }
             return engine::resource_metrics(
                 component_metrics, profile_metrics, std::move(memory), streamed_kv, 3,

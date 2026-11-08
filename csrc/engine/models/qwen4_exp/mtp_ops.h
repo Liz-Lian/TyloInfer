@@ -49,7 +49,7 @@ template<class Ops> bool mtp_cache_only_prompt_history(qwen4_exp::Model&, Ops& o
 }
 template<class Ops> void mtp_initialize(qwen4_exp::Model&, Ops& ops) {
     if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp))
-        predictor->compact_graph_sampling=ops.captured_compact_requested();
+        predictor->set_compact_graph_sampling(*ops.state.predictor,ops.captured_compact_requested());
 }
 
 template<class Ops, class Tensor, class Finish>
@@ -135,10 +135,10 @@ std::optional<tyloi::models::MtpStep> mtp_predictor_step(qwen4_exp::Model& model
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
         static thread_local std::array<bool,129> checked{};
         Tensor expected_hidden,expected_chain;
-        const auto check_start=mtp.cache_position();
+        const auto check_start=ops.state.predictor->position();
         if(!checked[ids.size(1)]) {
-          const auto start=mtp.cache_position();
-          auto expected=mtp.step(hidden,ids,positions);
+          const auto start=ops.state.predictor->position();
+          auto expected=mtp.step(*ops.state.predictor,hidden,ids,positions);
           #ifdef TYLOINFER_NATIVE_CUDA
           expected_hidden=ops.clone(ops.slice(expected.sample_hidden,1,prefix,1));
           expected_chain=ops.clone(ops.slice(expected.chain_hidden,1,prefix,1));
@@ -146,7 +146,7 @@ std::optional<tyloi::models::MtpStep> mtp_predictor_step(qwen4_exp::Model& model
           expected_hidden=expected.sample_hidden.dense().narrow(1,prefix,1).clone();
           expected_chain=expected.chain_hidden.dense().narrow(1,prefix,1).clone();
 #endif
-          mtp.trim_cache_to(start);
+          mtp.trim_cache_to(*ops.state.predictor,start);
         }
 #endif
         // Earlier teacher-forced rows contribute only predictor attention KV.
@@ -185,11 +185,11 @@ std::optional<tyloi::models::MtpStep> mtp_predictor_step(qwen4_exp::Model& model
           const auto [batch_error,batch_close]=difference({expected_hidden,expected_chain});
           double scalar_error=0;
           if(!batch_close) {
-            mtp.trim_cache_to(check_start);
+            mtp.trim_cache_to(*ops.state.predictor,check_start);
             tyloi::models::MtpStep scalar;
             for(int64_t row=0;row<ids.size(1);++row) {
               auto row_positions=positions.defined()?ops.slice(positions,-1,row,1):Tensor{};
-              scalar=mtp.step(ops.slice(hidden,1,row,1),ops.slice(ids,1,row,1),
+              scalar=mtp.step(*ops.state.predictor,ops.slice(hidden,1,row,1),ops.slice(ids,1,row,1),
                               row_positions);
             }
             const auto [error,close]=difference(scalar);scalar_error=error;
@@ -220,8 +220,8 @@ std::optional<tyloi::models::MtpStep> mtp_predictor_step(qwen4_exp::Model& model
 
 template<class Ops>
 void mtp_predictor_compact(qwen4_exp::Model&, Ops& ops, tyloi::models::MtpStep& result) {
-    if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp);predictor && result.sample_logits && result.sample_logits->defined())
-        ops.projected_predictor_compact=predictor->graph_compact_topk();
+    if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(&ops.mtp);predictor && result.sample_logits && result.sample_logits.defined())
+        ops.projected_predictor_compact=predictor->graph_compact_topk(*ops.state.predictor);
 }
 
 template<class Ops, class Tensor>
@@ -233,13 +233,13 @@ bool mtp_predictor_history_step(qwen4_exp::Model& model, Ops& ops, Tensor& hidde
 #ifdef TYLOINFER_NATIVE_CUDA
             auto h=ops.slice(hidden,1,offset,rows), i=ops.slice(ids,1,offset,rows);
             auto p=positions.defined()?ops.slice(positions,-1,offset,rows):Tensor{};
-            predictor->history_step(h.dense(),i.dense(),p ? p.dense() : ::tyloi::DenseTensor{},scalar_chain);
+            predictor->history_step(*ops.state.predictor,h.dense(),i.dense(),p ? p.dense() : ::tyloi::DenseTensor{},scalar_chain);
 #else
-            predictor->history_step(ops.slice(hidden,1,offset,rows),ops.slice(ids,1,offset,rows),
+            predictor->history_step(*ops.state.predictor,ops.slice(hidden,1,offset,rows),ops.slice(ids,1,offset,rows),
                 positions.defined()?ops.slice(positions,-1,offset,rows):Tensor{},scalar_chain);
 #endif
         }
-        ops.target_maintenance=ops.mtp.take_graph_initialization() || ops.target_maintenance;
+        ops.target_maintenance=ops.state.predictor->take_graph_initialization() || ops.target_maintenance;
         return true;
     }
     return false;
@@ -274,11 +274,11 @@ void mtp_predictor_prefill(qwen4_exp::Model& model, Ops& ops, Tensor& hidden, Te
         {
 #ifdef TYLOINFER_NATIVE_CUDA
             auto resident_hidden=tyloi::ops::copy(hidden,tyloi::Device(tyloi::kCUDA,ops.mode.primary));
-            (void)predictor.evaluate(resident_hidden.dense(),ids.dense(),0,true,
+            (void)predictor.evaluate(*ops.state.predictor,resident_hidden.dense(),ids.dense(),0,true,
                                      positions ? positions.dense() : ::tyloi::DenseTensor{}, {},true);
 #else
             auto resident_hidden=hidden.to(::tyloi::kCUDA);
-            (void)predictor.evaluate(resident_hidden,ids,0,true,positions,{},true);
+            (void)predictor.evaluate(*ops.state.predictor,resident_hidden,ids,0,true,positions,{},true);
 #endif
         }
         TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));

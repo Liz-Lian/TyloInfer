@@ -132,6 +132,7 @@ template <class Model, class State> struct CudaMtpOps {
   const tyloi::models::Info &info;
   const tyloi::ModelSource* source;
   tyloi::models::Mtp &mtp;
+  tyloi::models::MtpState &predictor;
   tyloi::engine::mtp::State &mtp_state;
   const tyloi::models::Prepared *prepared;
   bool transformed_prompt;
@@ -300,7 +301,7 @@ template <class Model, class State> struct CudaMtpOps {
              int64_t compute_chunk, InferenceOutput* output,
              tyloi::engine::Budget* budget = nullptr)
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
-        weights(weights), info(info), source(source), mtp(mtp), mtp_state(mtp_state), prepared(prepared),
+        weights(weights), info(info), source(source), mtp(mtp), predictor(*state.predictor), mtp_state(mtp_state), prepared(prepared),
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt &&
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -463,10 +464,10 @@ template <class Model, class State> struct CudaMtpOps {
   };
   double blockwise_prompt_context(Tensor hidden,int64_t position,bool seed) {
     PrefillCudaTimer timer;
-    if(seed)mtp.seed_target_context(hidden,position);
+    if(seed)mtp.seed_target_context(predictor,hidden,position);
     else {
       const auto start=position-hidden.size(1);
-      mtp.append_target_context(hidden,start);
+      mtp.append_target_context(predictor,hidden,start);
     }
     TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
     return timer.elapsed_ms();
@@ -579,8 +580,8 @@ template <class Model, class State> struct CudaMtpOps {
 #endif
     if(auto result=mtp_predictor_step(model,*this,hidden,ids,positions))
       return std::move(*result);
-    auto result=mtp.step(hidden, ids, positions.defined() ? &positions : nullptr);
-    const bool initialized=mtp.take_graph_initialization();
+    auto result=mtp.step(predictor,hidden, ids, positions);
+    const bool initialized=predictor.take_graph_initialization();
     target_maintenance=target_maintenance || initialized;
 #ifdef TYLOINFER_NATIVE_CUDA
     projected_predictor_logits = result.sample_logits;
@@ -888,6 +889,8 @@ run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
                    std::shared_ptr<const tyloi::Tensor> restored_last_hidden,
                    std::shared_ptr<tyloi::Tensor> *session_last_hidden,
                    std::size_t stable_prefix_tokens, tyloi::engine::Budget* budget) {
+  if (!state.predictor || !state.predictor->belongs_to(mtp))
+    throw std::invalid_argument("predictor state is unavailable or belongs to another model");
   auto logical_chunk=prefill_chunk_size;
   if constexpr(requires { prefill_span(model,state,request.prompt.size(),prefill_chunk_size,reused_tokens,0,false,false); }) {
     logical_chunk=prefill_span(model,state,request.prompt.size(),prefill_chunk_size,reused_tokens,0,

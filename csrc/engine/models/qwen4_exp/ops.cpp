@@ -426,34 +426,34 @@ struct Qwen4MtpGraph {
     int64_t capacity=0;
     bool failed=false;
     DenseTensor last_compact;
-    bool reusable(const Predictor& predictor) const {
-        return predictor.reuse_decode_graphs && !failed && streamed_decode_graphs(*predictor.execution) &&
-            !predictor.layers.empty() && predictor.layers[0]->qsa && predictor.layers[0]->qsa->graph_capacity(*predictor.layer_states[0]->qsa)>0;
+    bool reusable(const Predictor& predictor, const PredictorState& request) const {
+        return request.reuse_decode_graphs && !failed && streamed_decode_graphs(*predictor.execution) &&
+            !predictor.layers.empty() && predictor.layers[0]->qsa && predictor.layers[0]->qsa->graph_capacity(*request.layer_states[0]->qsa)>0;
     }
-    void restore_legacy(Predictor& predictor) {
-        last_compact={};cells.clear();predictor.layers[0]->qsa->leave_graph(*predictor.layer_states[0]->qsa);
+    void restore_legacy(const Predictor& predictor, PredictorState& request) {
+        last_compact={};cells.clear();predictor.layers[0]->qsa->leave_graph(*request.layer_states[0]->qsa);
     }
-    tyloi::models::MtpStep run(Predictor& predictor,const DenseTensor& hidden,const DenseTensor& ids,
+    tyloi::models::MtpStep run(const Predictor& predictor,PredictorState& request,const DenseTensor& hidden,const DenseTensor& ids,
                const DenseTensor& positions = {},bool history_only=false,bool scalar_history=false) {
         using ProfileTime=std::chrono::steady_clock;
         const auto profile_started=ProfileTime::now();
         const auto profile_transfer_before=predictor.execution->weights.activity().streamed_bytes;
         TYLOINFER_RUNTIME_CHECK(!failed && stream.stream()==mfq_current_cuda_stream(),"MTP predictor graph is unavailable");
         auto& execution=*predictor.execution;auto& block=*predictor.layers[0];
-        auto& layer_state=*predictor.layer_states[0];
+        auto& layer_state=*request.layer_states[0];
         last_compact={};
         // Predictor prefill may retain a multi-GiB expert image. Retire it
         // before graph replay so the first draft does not page graph buffers.
         execution.weights.retire_prefill();
         const auto profile_released=ProfileTime::now();
-        const int64_t tokens=ids.size(1),start=predictor.lengths[0],required=start+tokens;
+        const int64_t tokens=ids.size(1),start=request.lengths[0],required=start+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=predictor.config.maximum,"MTP predictor exceeds context capacity");
         if(block.qsa->graph_capacity(*layer_state.qsa)) {
             execution.kv->ensure(required);
             capacity=block.qsa->graph_capacity(*layer_state.qsa);
         }
         if(required>capacity) {
-            execution.weights.finish_exchange();restore_legacy(predictor);
+            execution.weights.finish_exchange();restore_legacy(predictor,request);
             capacity=std::min<int64_t>(predictor.config.maximum,std::max<int64_t>(2048,capacity));
             while(capacity<required)capacity=std::min(predictor.config.maximum,capacity*2);
         }
@@ -461,9 +461,9 @@ struct Qwen4MtpGraph {
         const auto key=std::make_tuple(int(tokens),int(hidden.scalar_type()),history_only?(scalar_chain?2:1):0);
         auto& owner=cells[key];if(!owner)owner=std::make_unique<Cell>(hidden,ids,stream.stream());
         auto& cell=*owner;cell.hidden.copy_(hidden);cell.ids.copy_(ids);
-        if(!history_only)cell.compact_control.set(predictor.compact_graph_sampling,"predictor",int(tokens));
+        if(!history_only)cell.compact_control.set(request.compact_graph_sampling,"predictor",int(tokens));
         cell.window.set_profile_geometry(scalar_chain?"mtp_history_scalar_chain":history_only?"mtp_history":"mtp_predictor",int(tokens));
-        predictor.graph_initialized=predictor.graph_initialized || !cell.used_in_request;
+        request.graph_initialized=request.graph_initialized || !cell.used_in_request;
         mfq_qwen4_exp::fill_decode_positions(cell.cache_positions,cell.positions,start);
         if (positions.defined()) cell.positions.copy_(positions);
         try {
@@ -474,10 +474,10 @@ struct Qwen4MtpGraph {
                 execution.weights.finish_exchange();
             else if(!history_only)execution.weights.prepare_predictor();
             const auto profile_exchange_end=ProfileTime::now();
-            block.qsa->prepare_graph(*layer_state.qsa,predictor.positions[0],capacity);
+            block.qsa->prepare_graph(*layer_state.qsa,request.positions[0],capacity);
             if(!cell.window.valid()) {
                 DecodeGraphBranchScope branch_scope(execution.executor().mode().ffn.serial);
-                predictor.graph_initialized=true;
+                request.graph_initialized=true;
                 const auto capture_started=std::chrono::steady_clock::now();
                 cell.window.capture([&] {
                     cell.window.mark(-1,"window_begin");
@@ -524,19 +524,19 @@ struct Qwen4MtpGraph {
                     }
                     cell.window.mark(-1,"window_end");
                 },[]{},[&]{cell.multi={};cell.normalized={};cell.logits={};});
-                ++predictor.graph_captures;
+                ++request.graph_captures;
                 std::cerr<<"runtime_qwen4_graph_capture role=predictor rows="<<tokens
                     <<" history_only="<<history_only<<" scalar_chain="<<scalar_chain<<" segments="<<cell.window.segments()
-                    <<" count="<<predictor.graph_captures<<" ms="
+                    <<" count="<<request.graph_captures<<" ms="
                     <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-capture_started).count()<<'\n';
             }
             const auto profile_run_begin=ProfileTime::now();
             cell.window.run();
             const auto profile_run_end=ProfileTime::now();
-            cell.used_in_request=true;++predictor.graph_replays;block.qsa->advance_graph(*layer_state.qsa,tokens);
-            predictor.positions[0]=append_decode_positions(predictor.positions[0],cell.positions,
+            cell.used_in_request=true;++request.graph_replays;block.qsa->advance_graph(*layer_state.qsa,tokens);
+            request.positions[0]=append_decode_positions(request.positions[0],cell.positions,
                 position_storage,predictor.config.maximum,"TYLOINFER_MTP_POSITION_BUFFER");
-            predictor.lengths[0]=required;predictor.batch=1;
+            request.lengths[0]=required;request.batch=1;
             const auto* profile_option=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
             if(profile_option && profile_option[0]=='1' && ++cell.profile_replays<=(history_only?2:16)) {
                 const auto ms=[](auto begin,auto end){return std::chrono::duration<double,std::milli>(end-begin).count();};
@@ -548,17 +548,32 @@ struct Qwen4MtpGraph {
                     (execution.weights.activity().streamed_bytes-profile_transfer_before)/1048576.0);
             }
             if(history_only)return {};
-            if(predictor.compact_graph_sampling && cell.logits.size(-1)>=64)last_compact=cell.compact_host;
+            if(request.compact_graph_sampling && cell.logits.size(-1)>=64)last_compact=cell.compact_host;
             return {std::make_shared<DenseTensor>(cell.normalized.clone()),
                 std::make_shared<DenseTensor>(cell.multi.clone()), std::make_shared<DenseTensor>(cell.logits.clone()),
                 static_cast<int32_t>(*cell.greedy_host.data_ptr<int64_t>())};
         } catch(...) {failed=true;throw;}
     }
 };
-DenseTensor Predictor::graph_compact_topk() const {
-    return graph_registry?graph_registry->last_compact:DenseTensor{};
+DenseTensor Predictor::graph_compact_topk(const tyloi::models::MtpState& value) const {
+    const auto& request=state<PredictorState>(value);
+    return request.graph_registry?request.graph_registry->last_compact:DenseTensor{};
 }
-
+void Predictor::set_compact_graph_sampling(tyloi::models::MtpState& value, bool enabled) const {
+    state<PredictorState>(value).compact_graph_sampling=enabled;
+}
+PredictorState::PredictorState(const Predictor& owner)
+    : MtpState(owner), positions(owner.layers.size()), lengths(owner.layers.size(),0) {
+    for (const auto& layer : owner.layers)
+        layer_states.push_back(std::make_unique<LayerState>(*layer));
+}
+PredictorState::~PredictorState() = default;
+int64_t PredictorState::position() const noexcept {
+    return lengths.empty() ? 0 : lengths.front();
+}
+std::unique_ptr<tyloi::models::MtpState> Predictor::make_state() const {
+    return std::make_unique<PredictorState>(*this);
+}
 Predictor::Predictor() = default;
 Predictor::~Predictor() = default;
 Predictor::Predictor(Predictor&&) noexcept = default;
@@ -574,31 +589,33 @@ DenseTensor Predictor::logits(DenseTensor hidden) const {
                             execution->executor().profiler(), softcap);
 }
 
-void Predictor::reset(int64_t next_batch) {
+void Predictor::reset(tyloi::models::MtpState& value, int64_t next_batch) const {
+    auto& request=state<PredictorState>(value);
     TYLOINFER_RUNTIME_CHECK(next_batch > 0, "Qwen4-Exp MTP batch must be positive");
-    const bool retain=next_batch==1 && graph_registry && graph_registry->reusable(*this);
-    if(!retain)graph_registry.reset();
-    else for(auto& [key,cell]:graph_registry->cells) {cell->used_in_request=false;cell->profile_replays=0;}
-    graph_initialized=false;
+    const bool retain=next_batch==1 && request.graph_registry && request.graph_registry->reusable(*this,request);
+    if(!retain)request.graph_registry.reset();
+    else for(auto& [key,cell]:request.graph_registry->cells) {cell->used_in_request=false;cell->profile_replays=0;}
+    request.graph_initialized=false;
     for (std::size_t i=0; i<layers.size(); ++i) {
-        layer_states[i]->retain_graph_storage=retain;
-        layers[i]->reset(*layer_states[i], next_batch);
+        request.layer_states[i]->retain_graph_storage=retain;
+        layers[i]->reset(*request.layer_states[i], next_batch);
     }
-    for (auto &pos : positions)
+    for (auto &pos : request.positions)
         pos = DenseTensor();
-    std::fill(lengths.begin(), lengths.end(), 0);
-    batch = next_batch;
+    std::fill(request.lengths.begin(), request.lengths.end(), 0);
+    request.batch = next_batch;
 }
 
-std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidden,
+std::pair<DenseTensor, DenseTensor> Predictor::evaluate(tyloi::models::MtpState& value, const DenseTensor &hidden,
                                        const DenseTensor &ids, int64_t depth, bool cache,
                                        const DenseTensor &supplied_positions,
-                                       const DenseTensor &supplied_embeddings, bool history_only) {
+                                       const DenseTensor &supplied_embeddings, bool history_only) const {
+    auto& request=state<PredictorState>(value);
     TYLOINFER_RUNTIME_CHECK(!history_only || (cache && layers.size()==1),
         "cache-only MTP priming requires a single predictor layer");
-    if(graph_registry) {
-        if(graph_registry->reusable(*this) && ids.size(0)==1 && cache)layers[0]->qsa->leave_graph(*layer_states[0]->qsa);
-        else {graph_registry->restore_legacy(*this);graph_registry.reset();}
+    if(request.graph_registry) {
+        if(request.graph_registry->reusable(*this,request) && ids.size(0)==1 && cache)layers[0]->qsa->leave_graph(*request.layer_states[0]->qsa);
+        else {request.graph_registry->restore_legacy(*this,request);request.graph_registry.reset();}
     }
 #ifdef TYLOINFER_NATIVE_CUDA
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
@@ -615,12 +632,12 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
 #endif
     const auto b = ids.size(0), t = ids.size(1);
     const auto capacity = config.maximum;
-    const auto count = int64_t(lengths.size());
+    const auto count = int64_t(request.lengths.size());
     tyloi::models::require_model(count > 0 && b > 0 && t > 0, "invalid predictor geometry");
     const auto layer = (depth % count + count) % count;
-    if (cache && batch && batch != b)
-        reset(b);
-    const auto start = cache ? lengths[layer] : 0;
+    if (cache && request.batch && request.batch != b)
+        reset(value,b);
+    const auto start = cache ? request.lengths[layer] : 0;
     tyloi::models::require_model(start >= 0 && t <= capacity - start,
                                  "predictor history exceeds context capacity");
     auto embeds =
@@ -648,8 +665,8 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
                               (current.size(1) == 1 || current.size(1) == b),
                           "Qwen4 MTP positions require [T]/[3,T]/[3,B,T]");
         current = current.to(::tyloi::kInt32).expand({3, b, t}).contiguous();
-        auto full = cache && positions[layer].defined()
-                        ? ::tyloi::cuda::cat({positions[layer], current}, -1)
+        auto full = cache && request.positions[layer].defined()
+                        ? ::tyloi::cuda::cat({request.positions[layer], current}, -1)
                         : current;
         pos = {current, full};
     }
@@ -684,11 +701,11 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
         // attention readout, FFN and final mixer have no consumer here.
         if(history_only) {
             auto mix=block.attention_gr.pre(x);
-            block.qsa->forward(*layer_states[layer]->qsa,mix.mixed,pos[0],pos[1],true,nullptr,{},true,true);
+            block.qsa->forward(*request.layer_states[layer]->qsa,mix.mixed,pos[0],pos[1],true,nullptr,{},true,true);
             multi = DenseTensor{};
         } else {
             auto [attention_input,attention_residual,attention_gate]=block.attention_gr.pre(x);
-            auto attention_output=block.qsa->forward(*layer_states[layer]->qsa,attention_input,pos[0],pos[1],cache);
+            auto attention_output=block.qsa->forward(*request.layer_states[layer]->qsa,attention_input,pos[0],pos[1],cache);
             x=block.attention_gr.post(attention_output,attention_residual,attention_gate);
             attention_output={};
             auto [ffn_input,ffn_residual,ffn_gate]=block.ffn_gr.pre(x);
@@ -703,18 +720,19 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(const DenseTensor &hidde
     x = {};
     auto result = history_only?DenseTensor{}:final_mixer->pre(multi).mixed;
     if (cache) {
-        positions[layer] = pos[1];
-        batch = b;
-        lengths[layer] = start + t;
+        request.positions[layer] = pos[1];
+        request.batch = b;
+        request.lengths[layer] = start + t;
     }
     return {std::move(result), std::move(multi)};
 }
 
-tyloi::models::MtpStep Predictor::step(const tyloi::Tensor& input_hidden, const tyloi::Tensor& input_ids,
-                                      const tyloi::Tensor* input_positions) {
-    const auto& hidden=dynamic_cast<const DenseTensor&>(input_hidden);
-    const auto& ids=dynamic_cast<const DenseTensor&>(input_ids);
-    auto positions=input_positions?dynamic_cast<const DenseTensor&>(*input_positions):DenseTensor{};
+tyloi::models::MtpStep Predictor::step(tyloi::models::MtpState& value, const tyloi::Tensor& input_hidden, const tyloi::Tensor& input_ids,
+                                      const tyloi::Tensor& input_positions) const {
+    auto& request=state<PredictorState>(value);
+    const auto& hidden=input_hidden.dense();
+    const auto& ids=input_ids.dense();
+    auto positions=input_positions.defined()?input_positions.dense():DenseTensor{};
     if (positions.defined()) {
         if (positions.dim()==1) positions=positions.reshape({1,1,-1}).expand({3,ids.size(0),ids.size(1)});
         else if (positions.dim()==2) positions=positions.unsqueeze(1);
@@ -726,23 +744,24 @@ tyloi::models::MtpStep Predictor::step(const tyloi::Tensor& input_hidden, const 
     if((!graph || *graph) && execution->config.cache.pipeline && execution->executor().options().moe_ffn.two_stage &&
         execution->executor().mmq().mode==KlMmqMode::Default &&
         execution->weights.transfer()==::tyloi::weights::Cache::Transfer::coordinated &&
-        streamed_decode_graphs(*execution) && batch==1 && ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
+        streamed_decode_graphs(*execution) && request.batch==1 && ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
 #ifdef TYLOINFER_NATIVE_CUDA
         hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) && hidden.size(2)==hidden_norm->numel() &&
 #else
         hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) && hidden.size(2)==hidden_norm.numel() &&
 #endif
-        ids.is_cuda() && hidden.is_cuda() && !lengths.empty() && lengths[0]>0 &&
-        layers[0]->qsa && layers[0]->prefetch && this->positions[0].dim()==3 && this->positions[0].size(1)==1) {
-        if(!graph_registry)graph_registry=std::make_unique<Qwen4MtpGraph>();
-        return graph_registry->run(*this,hidden,ids,positions);
+        ids.is_cuda() && hidden.is_cuda() && !request.lengths.empty() && request.lengths[0]>0 &&
+        layers[0]->qsa && layers[0]->prefetch && request.positions[0].dim()==3 && request.positions[0].size(1)==1) {
+        if(!request.graph_registry)request.graph_registry=std::make_unique<Qwen4MtpGraph>();
+        return request.graph_registry->run(*this,request,hidden,ids,positions);
     }
-    auto result = evaluate(hidden, ids, 0, true, positions);
+    auto result = evaluate(value,hidden, ids, 0, true, positions);
     return {std::make_shared<DenseTensor>(std::move(result.first)),
             std::make_shared<DenseTensor>(std::move(result.second))};
 }
 
-void Predictor::history_step(DenseTensor hidden,DenseTensor ids,DenseTensor positions,bool scalar_chain) {
+void Predictor::history_step(tyloi::models::MtpState& value,DenseTensor hidden,DenseTensor ids,DenseTensor positions,bool scalar_chain) const {
+    auto& request=state<PredictorState>(value);
     if(ids.dim()==1)ids=ids.unsqueeze(0);
     if(positions.defined()) {
         if(positions.dim()==1)positions=positions.reshape({1,1,-1}).expand({3,ids.size(0),ids.size(1)});
@@ -752,9 +771,9 @@ void Predictor::history_step(DenseTensor hidden,DenseTensor ids,DenseTensor posi
         positions=positions.to(::tyloi::kInt32).contiguous();
     }
     const auto graph=::tyloi::cuda::options::mtp_predictor_graph();
-    if(reuse_decode_graphs && (!graph || *graph) && execution->config.cache.pipeline &&
+    if(request.reuse_decode_graphs && (!graph || *graph) && execution->config.cache.pipeline &&
             execution->executor().options().moe_ffn.two_stage && execution->executor().mmq().mode==KlMmqMode::Default &&
-            execution->weights.transfer()==::tyloi::weights::Cache::Transfer::coordinated && streamed_decode_graphs(*execution) && layers.size()==1 && batch==1 &&
+            execution->weights.transfer()==::tyloi::weights::Cache::Transfer::coordinated && streamed_decode_graphs(*execution) && layers.size()==1 && request.batch==1 &&
             ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
             hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) &&
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -762,32 +781,29 @@ void Predictor::history_step(DenseTensor hidden,DenseTensor ids,DenseTensor posi
 #else
             hidden.size(2)==hidden_norm.numel() && ids.is_cuda() && hidden.is_cuda() &&
 #endif
-            !lengths.empty() && lengths[0]>0 && layers[0]->qsa && layers[0]->prefetch &&
-            this->positions[0].dim()==3 && this->positions[0].size(1)==1) {
-        if(!graph_registry)graph_registry=std::make_unique<Qwen4MtpGraph>();
-        (void)graph_registry->run(*this,hidden,ids,positions,true,scalar_chain);
+            !request.lengths.empty() && request.lengths[0]>0 && layers[0]->qsa && layers[0]->prefetch &&
+            request.positions[0].dim()==3 && request.positions[0].size(1)==1) {
+        if(!request.graph_registry)request.graph_registry=std::make_unique<Qwen4MtpGraph>();
+        (void)request.graph_registry->run(*this,request,hidden,ids,positions,true,scalar_chain);
     } else if(scalar_chain && ids.size(1)>1) {
         for(int64_t row=0;row<ids.size(1);++row) {
             auto row_positions=positions.defined()?positions.narrow(-1,row,1):DenseTensor{};
-            (void)step(hidden.narrow(1,row,1),ids.narrow(1,row,1),
+            (void)step(value,hidden.narrow(1,row,1),ids.narrow(1,row,1),
                        row_positions.defined()?&row_positions:nullptr);
         }
-    } else (void)step(hidden,ids,positions.defined()?&positions:nullptr);
+    } else (void)step(value,hidden,ids,positions.defined()?&positions:nullptr);
 }
 
-int64_t Predictor::cache_position() const noexcept {
-    return lengths.empty() ? 0 : lengths.front();
-}
-
-void Predictor::trim_cache_to(int64_t position) {
-    TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= cache_position(),
+void Predictor::trim_cache_to(tyloi::models::MtpState& value, int64_t position) const {
+    auto& request=state<PredictorState>(value);
+    TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= request.position(),
                       "Qwen4-Exp MTP cache trim position is invalid");
     constexpr size_t index = 0;
     if (index < layers.size() && layers[index]->qsa)
-        layers[index]->qsa->truncate(*layer_states[index]->qsa,position);
-    if (positions[index].defined())
-        positions[index] = positions[index].narrow(-1, 0, position);
-    lengths[index] = position;
+        layers[index]->qsa->truncate(*request.layer_states[index]->qsa,position);
+    if (request.positions[index].defined())
+        request.positions[index] = request.positions[index].narrow(-1, 0, position);
+    request.lengths[index] = position;
 }
 
 bool Predictor::teacher_forced_prompt_prime() const noexcept { return true; }
@@ -844,27 +860,28 @@ bool Predictor::supports_session_state() const noexcept {
     return execution && !execution->offload && !layers.empty();
 }
 
-MtpSessionState Predictor::capture_session_state(int64_t target_position,const tyloi::Tensor& input_hidden) const {
-    const auto& hidden=dynamic_cast<const DenseTensor&>(input_hidden);
+MtpSessionState Predictor::capture_session_state(const tyloi::models::MtpState& value, int64_t target_position,const tyloi::Tensor& input_hidden) const {
+    const auto& request=this->state<PredictorState>(value);
+    const auto& hidden=input_hidden.dense();
     const auto position=target_position-1;
 #ifdef TYLOINFER_NATIVE_CUDA
-    TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=cache_position() &&
+    TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=request.position() &&
         hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm->numel(),
         "Qwen4 MTP session boundary is unavailable");
 #else
-    TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=cache_position() &&
+    TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=request.position() &&
         hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm.numel(),
         "Qwen4 MTP session boundary is unavailable");
 #endif
     MtpSessionState state;state.cache_pos=position;
     auto& snapshot=state.payload.emplace<tyloi::models::qwen4_exp::MtpSnapshot>();
     for(std::size_t i=0;i<layers.size();++i) {
-        const auto count=std::min(position,lengths[i]);
+        const auto count=std::min(position,request.lengths[i]);
         snapshot.lengths.push_back(count);
-        snapshot.blocks.push_back(count?capture_block_session(*layers[i],*layer_states[i],count,state.bytes):tyloi::models::qwen4_exp::BlockSnapshot{});
+        snapshot.blocks.push_back(count?capture_block_session(*layers[i],*request.layer_states[i],count,state.bytes):tyloi::models::qwen4_exp::BlockSnapshot{});
         ::tyloi::Tensor pos;
         if(count) {
-            pos=std::make_shared<DenseTensor>(positions[i].narrow(-1,0,count).clone());
+            pos=std::make_shared<DenseTensor>(request.positions[i].narrow(-1,0,count).clone());
             state.bytes+=session_tensor_bytes(*pos);
         }
         snapshot.positions.push_back(std::move(pos));
@@ -874,7 +891,8 @@ MtpSessionState Predictor::capture_session_state(int64_t target_position,const t
     return state;
 }
 
-void Predictor::restore_session_state(const MtpSessionState& state) {
+void Predictor::restore_session_state(tyloi::models::MtpState& value, const MtpSessionState& state) const {
+    auto& request=this->state<PredictorState>(value);
     const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::MtpSnapshot>(&state.payload);
     const auto* hidden=dynamic_cast<const DenseTensor*>(state.last_target_hidden.get());
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -892,12 +910,12 @@ void Predictor::restore_session_state(const MtpSessionState& state) {
         hidden->size(0)==1 && hidden->size(1)==1 &&
         hidden->size(2)==hidden_norm.numel(),"incompatible Qwen4 MTP session state");
 #endif
-    reset(1);
+    reset(value,1);
     for(std::size_t i=0;i<layers.size();++i)if(snapshot->lengths[i]) {
-        restore_block_session(*layers[i],*layer_states[i],snapshot->blocks[i],snapshot->lengths[i]);
+        restore_block_session(*layers[i],*request.layer_states[i],snapshot->blocks[i],snapshot->lengths[i]);
         const auto* position=snapshot->positions[i].representation<DenseTensor>();
         TYLOINFER_RUNTIME_CHECK(position && position->defined(),"incompatible Qwen4 MTP session state");
-        positions[i]=position->clone();lengths[i]=snapshot->lengths[i];
+        request.positions[i]=position->clone();request.lengths[i]=snapshot->lengths[i];
     }
 }
 
@@ -1444,7 +1462,10 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(
     };
     if(state.graph_registry)append(state.graph_registry->cells,"target","kind","confirmed");
     const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp);
-    if(predictor && predictor->graph_registry)append(predictor->graph_registry->cells,"predictor","dtype","mode");
+    if(predictor && state.predictor && state.predictor->belongs_to(*predictor)) {
+        const auto& request=static_cast<const qwen4_exp::PredictorState&>(*state.predictor);
+        if(request.graph_registry)append(request.graph_registry->cells,"predictor","dtype","mode");
+    }
     return result;
 }
 
@@ -1488,10 +1509,11 @@ void qwen4_release_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state
     if(state.graph_registry)state.graph_registry->restore_legacy();
     state.graph_registry.reset();
     for(auto& layer:state.layers)layer->retain_graph_storage=false;
-    if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(mtp)) {
-        if(predictor->graph_registry)predictor->graph_registry->restore_legacy(*predictor);
-        predictor->graph_registry.reset();
-        for(auto& layer:predictor->layer_states)layer->retain_graph_storage=false;
+    if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(mtp); predictor && state.predictor && state.predictor->belongs_to(*predictor)) {
+        auto& request=static_cast<qwen4_exp::PredictorState&>(*state.predictor);
+        if(request.graph_registry)request.graph_registry->restore_legacy(*predictor,request);
+        request.graph_registry.reset();
+        for(auto& layer:request.layer_states)layer->retain_graph_storage=false;
     }
 }
 
@@ -1517,7 +1539,10 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state,
     const auto* reuse=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     state.reuse_decode_graphs=!reuse || reuse[0]!='0';
     auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(mtp);
-    if(predictor)predictor->reuse_decode_graphs=state.reuse_decode_graphs;
+    auto* predictor_state=predictor && state.predictor && state.predictor->belongs_to(*predictor)
+        ? static_cast<qwen4_exp::PredictorState*>(state.predictor.get()) : nullptr;
+    if(predictor_state)predictor_state->reuse_decode_graphs=state.reuse_decode_graphs;
+    if(!predictor_state)predictor=nullptr;
     const auto decode=model.execution->weights.decode(model.execution->config.cache.pipeline);
     const bool tq=decode==::tyloi::weights::Cache::Decode::routed;
     // Keep TQ startup to the target decode window. Wider verification shapes
@@ -1575,40 +1600,40 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state,
     // Capture the normal greedy path and the common MTP verification widths.
     // Synthetic state is cleared afterwards; no prompt or sampling history is saved.
     if(predictor) {
-        predictor->reset(1);
+        predictor->reset(*predictor_state,1);
         // Full predictor drafts consume one row. Bootstrap the same shape so
         // startup does not retain multi-row expert and pinned transfer arenas.
         for(int row=0;row<16;++row)
-            (void)predictor->evaluate(raw.narrow(1,row,1),ids.narrow(1,row,1));
+            (void)predictor->evaluate(*predictor_state,raw.narrow(1,row,1),ids.narrow(1,row,1));
         cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), true);
         // Production drafts run one full predictor row. Committed history
         // appends KV without an FFN/head; multi-row full-predictor graphs
         // retain scratch and driver metadata with no production consumer.
-        predictor->trim_cache_to(16);
-        (void)predictor->step(raw.narrow(1,0,1),ids.narrow(1,0,1));
+        predictor->trim_cache_to(*predictor_state,16);
+        (void)predictor->step(*predictor_state,raw.narrow(1,0,1),ids.narrow(1,0,1));
         const int verification_rows=std::min({8,predictor->maximum_draft_depth()+1,maximum_draft_depth+1});
         for(int rows=4;rows>=1;--rows) {
-            predictor->trim_cache_to(16);
-            predictor->history_step(raw.narrow(1,0,rows),ids.narrow(1,0,rows));
+            predictor->trim_cache_to(*predictor_state,16);
+            predictor->history_step(*predictor_state,raw.narrow(1,0,rows),ids.narrow(1,0,rows));
         }
         const auto* chain_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_HISTORY_CHAIN");
         const bool history_chain=!chain_option || chain_option[0]!='0';
         const auto* chain_check=tyloi::cuda::env_lookup("TYLOINFER_VERIFY_MTP_HISTORY_CHAIN");
-        const bool verify_chain=chain_check && chain_check[0]=='1' && predictor->layers[0]->qsa->supports_session(*predictor->layer_states[0]->qsa);
+        const bool verify_chain=chain_check && chain_check[0]=='1' && predictor->layers[0]->qsa->supports_session(*predictor_state->layer_states[0]->qsa);
         if(history_chain)for(int rows=2;rows<=std::min(4,verification_rows-1);++rows) {
             tyloi::models::qwen4_exp::BlockSnapshot expected;
             if(verify_chain) {
-                predictor->trim_cache_to(16);
+                predictor->trim_cache_to(*predictor_state,16);
                 for(int row=0;row<rows;++row)
-                    predictor->history_step(raw.narrow(1,row,1),ids.narrow(1,row,1));
+                    predictor->history_step(*predictor_state,raw.narrow(1,row,1),ids.narrow(1,row,1));
                 std::size_t bytes=0;
-                predictor->layers[0]->qsa->capture_session(*predictor->layer_states[0]->qsa,expected,16+rows,bytes);
+                predictor->layers[0]->qsa->capture_session(*predictor_state->layer_states[0]->qsa,expected,16+rows,bytes);
             }
-            predictor->trim_cache_to(16);
-            predictor->history_step(raw.narrow(1,0,rows),ids.narrow(1,0,rows),{},true);
+            predictor->trim_cache_to(*predictor_state,16);
+            predictor->history_step(*predictor_state,raw.narrow(1,0,rows),ids.narrow(1,0,rows),{},true);
             if(verify_chain) {
                 tyloi::models::qwen4_exp::BlockSnapshot actual;std::size_t bytes=0;
-                predictor->layers[0]->qsa->capture_session(*predictor->layer_states[0]->qsa,actual,16+rows,bytes);
+                predictor->layers[0]->qsa->capture_session(*predictor_state->layer_states[0]->qsa,actual,16+rows,bytes);
                 for(const auto& pair:{std::pair{actual.keys,expected.keys},std::pair{actual.values,expected.values},
                                      std::pair{actual.index,expected.index}}) {
                     const auto a=dynamic_cast<const DenseTensor&>(*pair.first).cpu().contiguous(),b=dynamic_cast<const DenseTensor&>(*pair.second).cpu().contiguous();
@@ -1635,21 +1660,21 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state,
             if(state.cache_pos+rows+2>model.max_position_embeddings())break;
             const auto offset=4+pass*4;
             auto tokens=ids.narrow(1,offset,rows);
-            predictor->trim_cache_to(16);
+            predictor->trim_cache_to(*predictor_state,16);
             if(history_chain && rows>2) {
                 for(int first=0;first<rows-1;first+=4) {
                     const auto count=std::min(4,rows-1-first);
-                    predictor->history_step(raw.narrow(1,offset+first,count),tokens.narrow(1,first,count),{},true);
+                    predictor->history_step(*predictor_state,raw.narrow(1,offset+first,count),tokens.narrow(1,first,count),{},true);
                 }
             }
             else for(int row=0;row+1<rows;++row)
-                predictor->history_step(raw.narrow(1,offset+row,1),tokens.narrow(1,row,1));
-            (void)predictor->step(raw.narrow(1,offset+rows-1,1),tokens.narrow(1,rows-1,1));
+                predictor->history_step(*predictor_state,raw.narrow(1,offset+row,1),tokens.narrow(1,row,1));
+            (void)predictor->step(*predictor_state,raw.narrow(1,offset+rows-1,1),tokens.narrow(1,rows-1,1));
             ::tyloi::Tensor hidden,logits;
             (void)qwen4_decode_graph_hidden(model,state,tokens,&hidden,rows>1?1:0,nullptr,{},&logits);
             if(rows>1)state.commit_speculative();
         }
-        predictor->reset(1);
+        predictor->reset(*predictor_state,1);
     }
     (void)qwen4_decode_graph_logits(model,state,ids.narrow(1,0,1),2);
     (void)qwen4_decode_graph_logits(model,state,ids.narrow(1,0,1),1);
@@ -1667,7 +1692,7 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state,
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     std::cerr<<"runtime_qwen4_graph_warmup target_captures="<<state.decode_graph_captures
         <<" maximum_draft_depth="<<(predictor?maximum_draft_depth:0)
-        <<" predictor_captures="<<(predictor?predictor->graph_captures:0)<<" ms="
+        <<" predictor_captures="<<(predictor?predictor_state->graph_captures:0)<<" ms="
         <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
     cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), false);
 }
@@ -1727,11 +1752,12 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
             for(const auto& tensor:checkpoint.gdn_state)add(tensor);
             for(const auto& tensor:checkpoint.ple_conv)add(tensor);
         }
-    if(const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp)) {
+    if(const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp); predictor && state.predictor && state.predictor->belongs_to(*predictor)) {
+        const auto& request=static_cast<const qwen4_exp::PredictorState&>(*state.predictor);
         for(std::size_t i=0;i<predictor->layers.size();++i)
-            block_cache(*predictor->layers[i],*predictor->layer_states[i]);
-        for(const auto& positions:predictor->positions)add(positions);
-        if(predictor->graph_registry)add(predictor->graph_registry->position_storage);
+            block_cache(*predictor->layers[i],*request.layer_states[i]);
+        for(const auto& positions:request.positions)add(positions);
+        if(request.graph_registry)add(request.graph_registry->position_storage);
     }
     std::size_t bytes=0;
     std::map<int,std::size_t> devices;

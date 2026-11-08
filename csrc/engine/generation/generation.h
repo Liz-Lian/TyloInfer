@@ -125,7 +125,10 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
                 if (use_mtp) {
                     if (!ops.has_hidden(last_target_hidden) || position <= 1)
                         return;
-                    saved.mtp = mtp->capture_session_state(position, *last_target_hidden);
+                    if constexpr (requires { state.predictor; })
+                        saved.mtp = mtp->capture_session_state(*state.predictor, position, last_target_hidden);
+                    else
+                        throw std::invalid_argument("model state has no predictor state");
                     saved.bytes += saved.mtp->bytes;
                 }
                 session_cache.store(cache_plan.session_id, std::move(saved));
