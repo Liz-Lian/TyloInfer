@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/batch.h"
+#include "engine/models/batch.h"
 #include "engine/backends/cuda/executor/batch_graph.h"
 #include "engine/config.h"
 #include "engine/generation/batch.h"
@@ -39,7 +39,7 @@ class BatchOps {
     using DenseTensor = ::tyloi::DenseTensor;
     using Request = BatchRequest;
     using State = tyloi::engine::BatchState<Request>;
-    using Sample = tyloi::cuda::BatchSample;
+    using Sample = tyloi::models::BatchSample;
     struct Decoded {
 #ifdef TYLOINFER_NATIVE_CUDA
         ::tyloi::Tensor logits, greedy_tokens;

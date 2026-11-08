@@ -9,6 +9,8 @@
 #include <variant>
 #include <vector>
 
+namespace tyloi::engine { class Batch; class Budget; struct ContinuousBatchConfig; }
+
 namespace tyloi::cuda::qwen35 {
 
 // A copyable snapshot is only needed for paused recurrent decode rows. KV state
@@ -109,3 +111,14 @@ class Batch {
 };
 
 } // namespace tyloi::cuda::qwen35
+
+namespace tyloi::cuda {
+
+// serial is startup-only: release idle preallocated KV; running independent serial state is omitted.
+std::unique_ptr<tyloi::engine::Batch> make_batch(
+    std::shared_ptr<const qwen35::Model> model, qwen35::State* serial,
+    std::unique_ptr<Executor> executor, Collectives& copies, Executor::Mode mode,
+    tyloi::engine::Budget& budget, tyloi::engine::ContinuousBatchConfig config,
+    std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots);
+
+} // namespace tyloi::cuda

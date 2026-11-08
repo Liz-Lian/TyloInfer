@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/batch.h"
+#include "engine/models/batch.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/config.h"
@@ -38,7 +38,7 @@ class BatchOps {
     using DenseTensor = ::tyloi::DenseTensor;
     using Request = BatchRequest;
     using State = tyloi::engine::BatchState<Request>;
-    using Sample = tyloi::cuda::BatchSample;
+    using Sample = tyloi::models::BatchSample;
     struct Decoded {
 #ifdef TYLOINFER_NATIVE_CUDA
         ::tyloi::Tensor logits, greedy_tokens;
@@ -92,3 +92,11 @@ class BatchOps {
 };
 
 } // namespace tyloi::cuda::qwen4_exp
+
+namespace tyloi::cuda {
+
+std::unique_ptr<tyloi::engine::Batch> make_batch(
+    qwen4_exp::Model& model, CudaExecutionContext& execution, tyloi::engine::Budget& budget,
+    const tyloi::engine::ContinuousBatchConfig& config, std::int64_t chunk_size);
+
+} // namespace tyloi::cuda

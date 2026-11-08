@@ -5,6 +5,8 @@
 #include "engine/drain.h"
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/components.h"
+#include "engine/models/qwen4_exp/batch.h"
+#include "engine/models/qwen35/batch.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/nemotron_h/components.h"
 #include "engine/models/common/mtp.h"
@@ -46,6 +48,7 @@ namespace tyloi::cuda::engine_detail {
 
 using namespace tyloi::engine;
 using namespace tyloi::cuda::internal;
+using tyloi::cuda::make_batch;
 
 template <class M, class S>
 std::unique_ptr<engine::Batch> make_batch(

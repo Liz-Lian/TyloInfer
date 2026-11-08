@@ -13,6 +13,7 @@
 #include "engine/requests/output.h"
 #include "engine/models/prepare.h"
 #include "engine/models/causal_model.h"
+#include "engine/models/qwen35/batch.h"
 #include "engine/models/metadata.h"
 #include "engine/models/common/components.h"
 #include "engine/models/common/mtp.h"
