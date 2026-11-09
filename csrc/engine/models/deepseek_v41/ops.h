@@ -1,6 +1,7 @@
 #pragma once
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/cache.h"
+#include "engine/state/media.h"
 #include "engine/backends/cuda/executor/execution.h"
 #endif
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
@@ -1088,7 +1089,7 @@ struct Model : tyloi::models::CausalModel {
     std::vector<std::unique_ptr<deepseek_v41_runtime::Block>> blocks;
     deepseek_v41_runtime::ModelTables tables;
     std::unique_ptr<deepseek_v41_runtime::Vision> vision;
-    tyloi::cuda::MediaCache media;
+    tyloi::cache::Media media;
 
     // ---- helpers absorbed from the retired CausalLm plumbing
 #ifndef TYLOINFER_NATIVE_CUDA

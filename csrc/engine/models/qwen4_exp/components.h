@@ -3,6 +3,7 @@
 #include "engine/metrics.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/vision/grid_encoder.h"
+#include "engine/state/media.h"
 
 #include <memory>
 #include <optional>
@@ -22,7 +23,7 @@ struct Components {
     tyloi::engine::Metrics profile_metrics(const Model& language, const State& state) const;
     std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language, const State& state) const;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(
-        Model& language, MediaCache& images,
+        Model& language, tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif

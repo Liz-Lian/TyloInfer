@@ -7,21 +7,20 @@
 #include <utility>
 #include <vector>
 
-namespace tyloi::cuda::fields {
+namespace tyloi::weights::fields {
 
-using DenseTensor = ::tyloi::DenseTensor;
-
-// Read-only enumeration of the buffers a record needs, for byte accounting.
+// Read-only enumeration of the owning tensor handles a record needs.
 template <class Visitor>
 void tensors(const std::shared_ptr<const ::tyloi::Tensor>& weight, Visitor visit) {
     TYLOINFER_RUNTIME_CHECK(
         dynamic_cast<const ::tyloi::ShardedTensor*>(weight.get()) == nullptr,
         "streamed vision weights require one CUDA device");
-    for (const auto* buffer : weight->buffers()) visit(*buffer);
+    if (!weight || !weight->defined()) return;
+    visit(weight);
 }
 
 template <class Visitor>
-void tensors(const weights::BiasWeight& weight, Visitor visit) {
+void tensors(const ::tyloi::weights::BiasWeight& weight, Visitor visit) {
     tensors(weight.weight, visit);
     if (weight.bias && weight.bias->defined()) tensors(weight.bias, visit);
 }
@@ -38,7 +37,7 @@ inline void to_device(std::shared_ptr<const ::tyloi::Tensor>& weight, ::tyloi::D
     weight = weight->relocated(device);
 }
 
-inline void to_device(weights::BiasWeight& weight, ::tyloi::Device device) {
+inline void to_device(::tyloi::weights::BiasWeight& weight, ::tyloi::Device device) {
     to_device(weight.weight, device);
     if (weight.bias && weight.bias->defined()) to_device(weight.bias, device);
 }
@@ -49,16 +48,13 @@ void to_device(Weights& weights, ::tyloi::Device device) {
 }
 
 template <class Weights>
-Weights to_cuda(Weights weights) {
-    to_device(weights, ::tyloi::Device(::tyloi::kCUDA, 0));
-    return weights;
-}
-
-template <class Weights>
 std::size_t bytes(const Weights& weights) {
-    std::vector<const DenseTensor*> buffers;
-    tensors(weights, [&](const DenseTensor& tensor) { buffers.push_back(&tensor); });
+    std::vector<const ::tyloi::DenseTensor*> buffers;
+    tensors(weights, [&](const std::shared_ptr<const ::tyloi::Tensor>& tensor) {
+        const auto parts = tensor->buffers();
+        buffers.insert(buffers.end(), parts.begin(), parts.end());
+    });
     return ::tyloi::backing_bytes(buffers);
 }
 
-} // namespace tyloi::cuda::fields
+} // namespace tyloi::weights::fields

@@ -118,7 +118,7 @@ struct LayerLoader : tyloi::weights::Loader {
         return w;
     }
     auto gdn(GdnWeights weights, const Config &c) const {
-        weights.input_projection=pack_projections(std::move(weights.input_projection),
+        weights.input_projection=tyloi::weights::pack_projections(std::move(weights.input_projection),
             options.grouped,placement.cpu);
         auto shared=std::make_shared<const GdnWeights>(std::move(weights));
         return std::make_unique<Gdn>(std::move(shared), c.key_heads, c.value_heads, c.linear_width,
@@ -127,7 +127,7 @@ struct LayerLoader : tyloi::weights::Loader {
                                      execution.executor().options().gdn_fused_core);
     }
     auto qsa(QsaWeights weights, const Config &c) const {
-        weights.input_projection=pack_projections(std::move(weights.input_projection),
+        weights.input_projection=tyloi::weights::pack_projections(std::move(weights.input_projection),
             options.grouped,placement.cpu);
         QsaConfig geometry{c.heads, c.kv_heads, c.width, c.index_heads, c.index_width,
                            c.pool, c.budget, c.maximum, c.eps};

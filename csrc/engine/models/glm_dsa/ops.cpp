@@ -2,7 +2,7 @@
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/weights/group.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #endif
 #include "engine/models/glm_dsa/snapshot.h"
 #include "engine/models/glm_dsa/model.h"

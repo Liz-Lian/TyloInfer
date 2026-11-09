@@ -2,6 +2,7 @@
 
 #include "engine/models/common/mtp.h"
 #include "engine/models/nemotron_h/radio_vision.h"
+#include "engine/state/media.h"
 
 #include <memory>
 #include <optional>
@@ -18,7 +19,7 @@ struct Components {
     std::optional<CudaRadioPromptComponent> radio_vision;
     std::unique_ptr<tyloi::models::Mtp> mtp;
 
-    tyloi::StepSequence<tyloi::models::Prepared> prepare(Model& language, MediaCache& images,
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(Model& language, tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif

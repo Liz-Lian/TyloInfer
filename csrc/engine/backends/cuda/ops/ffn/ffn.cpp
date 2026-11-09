@@ -16,7 +16,7 @@
 #include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
 #ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/weights/group.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #endif
 #include "engine/ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"

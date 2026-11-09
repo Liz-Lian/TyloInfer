@@ -1,7 +1,7 @@
 #include "engine/models/common/attention.h"
 #include "engine/ops.h"
 #ifndef TYLOINFER_NATIVE_CUDA
-#include "engine/weights/group.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/attention/kv.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"

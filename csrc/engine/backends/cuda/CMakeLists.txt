@@ -274,6 +274,7 @@ set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/quant_linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/projection.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/expert_projection.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mmq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)

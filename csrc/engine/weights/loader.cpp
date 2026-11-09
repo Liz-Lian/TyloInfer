@@ -845,8 +845,7 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vec
     });
     if (all_nint && options.grouped && !placement.cpu && !preserve_boundaries) {
         MfqCudaGuard guard(placement.device);
-        auto group = make_quant_group(layers, true, false);
-        return cuda::nint_aliases(layers, group.nint);
+        return pack_nint(std::move(layers));
     }
 #endif
     return layers;

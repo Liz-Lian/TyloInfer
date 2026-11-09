@@ -6,7 +6,7 @@
 #include "engine/models/common/load.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/group.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/models/deepseek_v4/load.h"
 #include "engine/models/deepseek_v4/forward.h"

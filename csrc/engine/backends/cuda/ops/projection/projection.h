@@ -27,6 +27,20 @@ namespace tyloi::cuda {
 
 class Branches;
 
+DenseLinearGroup make_fp32_quant_group(
+    Collectives& collectives,
+    int primary,
+    std::span<const std::shared_ptr<const tyloi::Tensor>> weights);
+
+QuantLinearGroup make_quant_group(
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers,
+    bool group_nint,
+    bool cpu_layer,
+    bool preserve_projection_boundaries = false);
+
+DenseLinearGroup make_dense_group(
+    const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& weights);
+
 // Bound resources and options must outlive this object; drain before resetting them.
 class Projector {
 public:

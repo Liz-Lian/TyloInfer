@@ -50,7 +50,7 @@ void Components::describe(tyloi::engine::EngineInfo& info) const {
 }
 
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
-    Model& language, MediaCache& images,
+    Model& language, tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
     Projector projector, Collectives& collectives,
 #endif

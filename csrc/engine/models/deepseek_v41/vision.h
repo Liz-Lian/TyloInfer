@@ -4,6 +4,7 @@
 #include "ops.h"
 #include "engine/requests/media.h"
 #include "engine/generation/sequence.h"
+#include "engine/state/media.h"
 
 namespace tyloi::weights { class Cache; }
 
@@ -15,7 +16,7 @@ public:
     using DenseTensor = ::tyloi::DenseTensor;
 #endif
     static Vision load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,const CommonConfig& config);
-    tyloi::StepSequence<tyloi::models::Prepared> prepare(deepseek_v41::Model& language, MediaCache& images,
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(deepseek_v41::Model& language, tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector,
 #endif

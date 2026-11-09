@@ -50,14 +50,14 @@ struct RmsNorm {
     template <class Visitor>
     void visit_tensors(Visitor visit) const {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) fields::tensors(weight, visit);
+        if (weight && weight->defined()) ::tyloi::weights::fields::tensors(weight, visit);
 #else
-        visit(weight);
+        if (weight.defined()) visit(weight);
 #endif
     }
     void to_device(::tyloi::Device device) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) fields::to_device(weight, device);
+        if (weight && weight->defined()) ::tyloi::weights::fields::to_device(weight, device);
 #else
         if (weight.defined()) weight = weight.to(device);
 #endif
@@ -98,17 +98,17 @@ struct LayerNorm {
     template <class Visitor>
     void visit_tensors(Visitor visit) const {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) fields::tensors(weight, visit);
-        if (bias && bias->defined()) fields::tensors(bias, visit);
+        if (weight && weight->defined()) ::tyloi::weights::fields::tensors(weight, visit);
+        if (bias && bias->defined()) ::tyloi::weights::fields::tensors(bias, visit);
 #else
-        visit(weight);
-        visit(bias);
+        if (weight.defined()) visit(weight);
+        if (bias.defined()) visit(bias);
 #endif
     }
     void to_device(::tyloi::Device device) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) fields::to_device(weight, device);
-        if (bias && bias->defined()) fields::to_device(bias, device);
+        if (weight && weight->defined()) ::tyloi::weights::fields::to_device(weight, device);
+        if (bias && bias->defined()) ::tyloi::weights::fields::to_device(bias, device);
 #else
         if (weight.defined()) weight = weight.to(device);
         if (bias.defined()) bias = bias.to(device);

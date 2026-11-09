@@ -20,6 +20,7 @@
 #include "engine/weights/loader.h"
 #include "engine/state/kv_offload.h"
 #include "engine/state/kv_memory.h"
+#include "engine/state/media.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/batch.h"
 #include "engine/models/session/cache.h"
@@ -75,7 +76,7 @@ struct Text {
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
-    MediaCache images;
+    tyloi::cache::Media images;
     Parts components;
     Model& language;
     State& state;

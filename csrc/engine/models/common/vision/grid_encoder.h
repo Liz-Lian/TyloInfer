@@ -13,6 +13,7 @@
 #include "engine/models/common/vision/grid_vision.h"
 #include "engine/requests/media.h"
 #include "engine/state/session/prefix_cache.h"
+#include "engine/state/media.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -103,21 +104,21 @@ class CudaGridVisionEncoder {
 
         template <class Visitor>
         void visit_tensors(Visitor visit) const {
-            fields::tensors(norm1, visit);
-            fields::tensors(norm2, visit);
-            fields::tensors(attention.qkv, visit);
-            fields::tensors(attention.output, visit);
-            fields::tensors(mlp_up, visit);
-            fields::tensors(mlp_down, visit);
+            ::tyloi::weights::fields::tensors(norm1, visit);
+            ::tyloi::weights::fields::tensors(norm2, visit);
+            ::tyloi::weights::fields::tensors(attention.qkv, visit);
+            ::tyloi::weights::fields::tensors(attention.output, visit);
+            ::tyloi::weights::fields::tensors(mlp_up, visit);
+            ::tyloi::weights::fields::tensors(mlp_down, visit);
         }
 
         void to_device(::tyloi::Device device) {
             norm1.to_device(device);
             norm2.to_device(device);
-            fields::to_device(attention.qkv, device);
-            fields::to_device(attention.output, device);
-            fields::to_device(mlp_up, device);
-            fields::to_device(mlp_down, device);
+            ::tyloi::weights::fields::to_device(attention.qkv, device);
+            ::tyloi::weights::fields::to_device(attention.output, device);
+            ::tyloi::weights::fields::to_device(mlp_up, device);
+            ::tyloi::weights::fields::to_device(mlp_down, device);
         }
 
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -175,7 +176,7 @@ class CudaGridVisionPromptComponent {
 
     template <typename Model>
     tyloi::StepSequence<tyloi::models::Prepared> prepare(
-        const Model &language, MediaCache &images,
+        const Model &language, tyloi::cache::Media &images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives &collectives,
 #endif
@@ -278,9 +279,9 @@ class CudaGridVisionPromptComponent {
 #endif
             };
             if (encoder_.host_weights()) {
-                const auto bytes = fields::bytes(merger_norm_) +
-                                   fields::bytes(merger_up_) +
-                                   fields::bytes(merger_down_);
+                const auto bytes = ::tyloi::weights::fields::bytes(merger_norm_) +
+                                   ::tyloi::weights::fields::bytes(merger_up_) +
+                                   ::tyloi::weights::fields::bytes(merger_down_);
 #ifdef TYLOINFER_NATIVE_CUDA
                 tyloi::weights::Loan loan(weights_, bytes + patches->nbytes() * 12 + (std::size_t(16) << 20));
                 std::shared_ptr<tyloi::Tensor> output;
@@ -294,9 +295,9 @@ class CudaGridVisionPromptComponent {
                     auto up = merger_up_;
                     auto down = merger_down_;
                     const auto device = tyloi::Device{tyloi::kCUDA, primary};
-                    fields::to_device(norm, device);
-                    fields::to_device(up, device);
-                    fields::to_device(down, device);
+                    ::tyloi::weights::fields::to_device(norm, device);
+                    ::tyloi::weights::fields::to_device(up, device);
+                    ::tyloi::weights::fields::to_device(down, device);
                     output = merge(norm, up, down);
                 }
 #ifdef TYLOINFER_NATIVE_CUDA

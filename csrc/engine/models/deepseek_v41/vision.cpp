@@ -99,7 +99,7 @@ tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
     }
 }
 
-tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(deepseek_v41::Model& language, MediaCache& images,
+tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(deepseek_v41::Model& language, tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector,
 #endif

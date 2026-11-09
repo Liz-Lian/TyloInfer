@@ -4,6 +4,7 @@
 
 #include "engine/engine.h"
 #include "engine/models/common/vision/grid_encoder.h"
+#include "engine/state/media.h"
 #include "engine/models/qwen35/model.h"
 #include "engine/models/qwen35/mtp.h"
 #include "engine/backends/cuda/native/profile.h"
@@ -52,7 +53,7 @@ struct Components {
     void describe(tyloi::engine::EngineInfo& info) const;
 
     tyloi::StepSequence<tyloi::models::Prepared> prepare(
-        Model& language, MediaCache& images,
+        Model& language, tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif

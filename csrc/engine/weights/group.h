@@ -1,32 +1,20 @@
 #pragma once
 
-#include "engine/backends/cuda/ops/projection/projection.h"
+#include "engine/tensor.h"
 
-namespace tyloi::cuda {
+#include <memory>
+#include <vector>
 
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
-    const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& weights,
-    const NintLinearGroup& group);
-#endif
+namespace tyloi::weights {
 
 std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_projections(
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights,
     bool group_nint,
     bool cpu_layer);
 
-}
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_nint(
+    std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights);
+#endif
 
-DenseLinearGroup make_fp32_quant_group(
-    tyloi::cuda::Collectives& collectives,
-    int primary,
-    std::span<const std::shared_ptr<const tyloi::Tensor>> weights);
-
-QuantLinearGroup make_quant_group(
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers,
-    bool group_nint,
-    bool cpu_layer,
-    bool preserve_projection_boundaries = false);
-
-DenseLinearGroup make_dense_group(
-    const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& weights);
+} // namespace tyloi::weights

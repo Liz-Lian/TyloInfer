@@ -20,7 +20,7 @@ std::optional<tyloi::engine::Metrics> Components::memory_metrics(const Model& la
 }
 
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
-        Model& language, MediaCache& images,
+        Model& language, tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif

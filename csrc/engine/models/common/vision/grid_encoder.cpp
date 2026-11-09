@@ -257,12 +257,12 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                 std::max<int64_t>(3 * config_.hidden_size, config_.intermediate_size);
             if (host_weights()) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                tyloi::weights::Loan loan(weights_, fields::bytes(block) + value->nbytes() * 16 + projection_scratch +
+                tyloi::weights::Loan loan(weights_, ::tyloi::weights::fields::bytes(block) + value->nbytes() * 16 + projection_scratch +
                            std::size_t(value->size(0) * config_.intermediate_size) * 12 +
                            (std::size_t(16) << 20));
                 std::shared_ptr<tyloi::Tensor> output;
 #else
-                tyloi::weights::Loan loan(weights_, fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
+                tyloi::weights::Loan loan(weights_, ::tyloi::weights::fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
                            std::size_t(value.size(0) * config_.intermediate_size) * 12 +
                            (std::size_t(16) << 20));
                 DenseTensor output;
@@ -271,9 +271,9 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                     // Block weights stage on the same device as the hidden state.
                     auto resident = block;
 #ifdef TYLOINFER_NATIVE_CUDA
-                    fields::to_device(resident, value->device());
+                    ::tyloi::weights::fields::to_device(resident, value->device());
 #else
-                    fields::to_device(resident, value.device());
+                    ::tyloi::weights::fields::to_device(resident, value.device());
 #endif
                     output = resident(
 #ifndef TYLOINFER_NATIVE_CUDA

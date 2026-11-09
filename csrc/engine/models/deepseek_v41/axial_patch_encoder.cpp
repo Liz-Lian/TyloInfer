@@ -40,13 +40,13 @@ struct BlockWeights {
     weights::BiasWeight qkv, output, gate_up, down;
     template<class F> void visit_tensors(F visit) const {
         norm1.visit_tensors(visit); norm2.visit_tensors(visit);
-        fields::tensors(qkv, visit); fields::tensors(output, visit);
-        fields::tensors(gate_up, visit); fields::tensors(down, visit);
+        ::tyloi::weights::fields::tensors(qkv, visit); ::tyloi::weights::fields::tensors(output, visit);
+        ::tyloi::weights::fields::tensors(gate_up, visit); ::tyloi::weights::fields::tensors(down, visit);
     }
     void to_device(::tyloi::Device device) {
         norm1.to_device(device); norm2.to_device(device);
-        fields::to_device(qkv, device); fields::to_device(output, device);
-        fields::to_device(gate_up, device); fields::to_device(down, device);
+        ::tyloi::weights::fields::to_device(qkv, device); ::tyloi::weights::fields::to_device(output, device);
+        ::tyloi::weights::fields::to_device(gate_up, device); ::tyloi::weights::fields::to_device(down, device);
     }
 };
 
@@ -54,12 +54,12 @@ struct AlignerWeights {
     RmsNorm norm;
     weights::BiasWeight input, output;
     template<class F> void visit_tensors(F visit) const {
-        norm.visit_tensors(visit); fields::tensors(input, visit);
-        fields::tensors(output, visit);
+        norm.visit_tensors(visit); ::tyloi::weights::fields::tensors(input, visit);
+        ::tyloi::weights::fields::tensors(output, visit);
     }
     void to_device(::tyloi::Device device) {
-        norm.to_device(device); fields::to_device(input, device);
-        fields::to_device(output, device);
+        norm.to_device(device); ::tyloi::weights::fields::to_device(input, device);
+        ::tyloi::weights::fields::to_device(output, device);
     }
 };
 
@@ -110,7 +110,7 @@ struct CudaAxialPatchVisionTower::Impl {
 #endif
         {
             auto patch = affine(host, "vision.patch_embedding", config.patch_width(), hidden);
-            auto loan = ::tyloi::weights::Loan(cache, fields::bytes(patch) + activations);
+            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(patch) + activations);
 #ifdef TYLOINFER_NATIVE_CUDA
             std::shared_ptr<tyloi::Tensor> output;
 #else
@@ -119,10 +119,10 @@ struct CudaAxialPatchVisionTower::Impl {
             {
                 auto staged = std::move(patch);
 #ifdef TYLOINFER_NATIVE_CUDA
-                fields::to_device(staged, patches->device());
+                ::tyloi::weights::fields::to_device(staged, patches->device());
                 output = tyloi::ops::affine(*patches, *staged.weight, staged.bias.get());
 #else
-                fields::to_device(staged, patches.device());
+                ::tyloi::weights::fields::to_device(staged, patches.device());
                 output = tyloi::cuda::affine(projector, staged, patches);
 #endif
             }
@@ -148,7 +148,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, prefix + ".attention.output", hidden, hidden),
                 affine(host, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate),
                 affine(host, prefix + ".mlp.down", config.intermediate, hidden)};
-            auto loan = ::tyloi::weights::Loan(cache, fields::bytes(block) + activations);
+            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(block) + activations);
 #ifdef TYLOINFER_NATIVE_CUDA
             std::shared_ptr<tyloi::Tensor> output;
 #else
@@ -157,7 +157,7 @@ struct CudaAxialPatchVisionTower::Impl {
             {
                 auto weights = std::move(block);
 #ifdef TYLOINFER_NATIVE_CUDA
-                fields::to_device(weights, value->device());
+                ::tyloi::weights::fields::to_device(weights, value->device());
                 auto normalized = weights.norm1(*value);
                 auto qkv = tyloi::ops::affine(*normalized, *weights.qkv.weight, weights.qkv.bias.get());
                 const auto rope = [&](int index) {
@@ -181,7 +181,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto down = tyloi::ops::affine(*product, *weights.down.weight, weights.down.bias.get());
                 output = tyloi::ops::add(*result, *down);
 #else
-                fields::to_device(weights, value.device());
+                ::tyloi::weights::fields::to_device(weights, value.device());
                 auto qkv = tyloi::cuda::affine(projector, weights.qkv, weights.norm1(value));
                 const auto rope = [&](int index) {
                     return vision::apply_axial_rope(
@@ -212,7 +212,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 norm(host, "vision.output_norm.weight", hidden, config.rms_eps),
                 affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
                 affine(host, "vision.aligner.output", config.output_hidden, config.output_hidden)};
-            auto loan = ::tyloi::weights::Loan(cache, fields::bytes(weights) + activations);
+            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(weights) + activations);
 #ifdef TYLOINFER_NATIVE_CUDA
             std::shared_ptr<tyloi::Tensor> output;
 #else
@@ -221,7 +221,7 @@ struct CudaAxialPatchVisionTower::Impl {
             {
                 auto staged = std::move(weights);
 #ifdef TYLOINFER_NATIVE_CUDA
-                fields::to_device(staged, value->device());
+                ::tyloi::weights::fields::to_device(staged, value->device());
                 auto normalized = staged.norm(*value);
                 auto zero = tyloi::ops::zeros({1, hidden}, value->options());
                 auto padded = tyloi::ops::cat({normalized.get(), zero.get()}, 0);
@@ -234,7 +234,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto contiguous = tyloi::ops::contiguous(*transposed);
                 auto gathered = tyloi::ops::reshape(*contiguous, {grid.count(), hidden * ratio * ratio});
 #else
-                fields::to_device(staged, value.device());
+                ::tyloi::weights::fields::to_device(staged, value.device());
                 auto padded = ::tyloi::cuda::cat({staged.norm(value), ::tyloi::cuda::zeros({1, hidden}, value.options())}, 0);
                 auto index = ::tyloi::cuda::tensor(indices,
                     ::tyloi::TensorOptions().dtype(::tyloi::kInt32).device(::tyloi::kCPU))

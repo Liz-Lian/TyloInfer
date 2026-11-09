@@ -10,7 +10,7 @@
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/weights/loader.h"
-#include "engine/weights/group.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/weights/quant.h"
 #include "engine/weights/source/read.h"
 
