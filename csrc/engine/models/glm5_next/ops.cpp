@@ -6,7 +6,6 @@
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/scope.h"
 #include <algorithm>
-#include <span>
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #include "engine/models/session/paged.h"
@@ -232,10 +231,10 @@ static DenseTensor normalize_ids(Collectives& copies, int primary, DenseTensor i
 #else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
-    Inputs inputs;
-    inputs.values = {normalize_ids(copies, primary, std::move(ids))};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
+    auto normalized = normalize_ids(copies, primary, std::move(ids));
+    return executor.profiler().measure("model.embed", [&] {
+        return quant_embedding_lookup(model.embed, std::move(normalized));
+    });
 #endif
 }
 

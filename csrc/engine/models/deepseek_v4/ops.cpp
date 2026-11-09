@@ -21,7 +21,6 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <span>
 #include "engine/models/deepseek_v4/snapshot.h"
 #include "engine/models/session/codec.h"
 
@@ -384,15 +383,19 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
              ::tyloi::Tensor input_ids, const Executor::Mode& mode) {
-    auto ids = input_ids.dense();
+    auto ids = normalize_ids(collectives, primary, std::move(input_ids).dense());
+    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+    return ::tyloi::ops::measure("model.embed", ids.device(), [&] {
+        return ::tyloi::ops::embedding(ids, model.embed);
+    });
 #else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
+    auto normalized = normalize_ids(collectives, primary, std::move(ids));
+    return executor.profiler().measure("model.embed", [&] {
+        return quant_embedding_lookup(model.embed, std::move(normalized));
+    });
 #endif
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
-    Inputs inputs;
-    inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -430,17 +433,20 @@ DenseTensor softcap(const Model& model, Executor&, DenseTensor value) {
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor logits(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, bool capped,
               const Executor::Mode& mode) {
-    auto hidden = input_hidden.dense();
+    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+    auto value = ::tyloi::ops::measure("model.lm_head", input_hidden.device(), [&] {
+        return ::tyloi::ops::project(input_hidden, model.lm_head);
+    });
+    return capped ? softcap(model, executor, std::move(value)) : value;
 #else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
-#endif
-    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
-    Inputs inputs;
-    inputs.values = {std::move(hidden)};
-    auto value = executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
+    auto value = executor.profiler().measure("model.lm_head", [&] {
+        return executor.projector(mode.ffn).run(model.lm_head, std::move(hidden));
+    });
     if (capped) return softcap(model, executor, std::move(value));
     return value;
+#endif
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA

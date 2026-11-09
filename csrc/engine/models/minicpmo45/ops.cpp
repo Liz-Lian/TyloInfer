@@ -8,6 +8,7 @@
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 
 #include <algorithm>
 #include <iostream>
@@ -240,11 +241,18 @@ DenseTensor token_ids(Collectives& copies, int primary, DenseTensor ids) {
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              DenseTensor ids, const Executor::Mode& mode) {
 #endif
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
-    Inputs inputs;
-    inputs.values = {token_ids(copies, primary, std::move(ids))};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
-        .to(::tyloi::kBFloat16).contiguous();
+    auto normalized = token_ids(copies, primary, std::move(ids));
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = executor.enter(primary, mode.ffn);
+    auto result = ::tyloi::ops::measure("model.embed", normalized.device(), [&] {
+        return ::tyloi::ops::embedding(normalized, model.embed);
+    });
+    return ::tyloi::ops::contiguous(::tyloi::ops::cast(result, ::tyloi::kBFloat16));
+#else
+    return executor.profiler().measure("model.embed", [&] {
+        return ::tyloi::cuda::quant_embedding_lookup(model.embed, std::move(normalized));
+    }).to(::tyloi::kBFloat16).contiguous();
+#endif
 }
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, int64_t batch, int64_t tokens) {
@@ -252,17 +260,22 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, i
 #else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = executor.enter(hidden.device().index, Ffn::Mode{});
+    return ::tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
+        return ::tyloi::ops::rms_norm(
+            hidden.reshape({batch, tokens, model.metadata.hidden_size}), model.output_norm,
+            model.metadata.rms_norm_eps, model.metadata.norm_weight_offset,
+            ::tyloi::kBFloat16);
+    });
+#else
     return executor.profiler().measure("model.output_norm", [&] {
         return qwen_rms_norm_bf16(executor.attention_options().fused_norm,
             hidden.reshape({batch * tokens, model.metadata.hidden_size}),
-#ifdef TYLOINFER_NATIVE_CUDA
-            model.output_norm,
-#else
-            model.output_norm,
-#endif
-            model.metadata.rms_norm_eps, model.metadata.norm_weight_offset)
+            model.output_norm, model.metadata.rms_norm_eps, model.metadata.norm_weight_offset)
             .reshape({batch, tokens, model.metadata.hidden_size});
     });
+#endif
 }
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool,
@@ -272,11 +285,17 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
 #endif
-    const Task task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"};
-    Inputs inputs;
-    inputs.values = {std::move(hidden)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = executor.enter(hidden.device().index, mode.ffn);
+    auto result = ::tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
+        return ::tyloi::ops::project(hidden, model.lm_head);
+    });
+    return ::tyloi::ops::contiguous(::tyloi::ops::cast(result, ::tyloi::kBFloat16));
+#else
+    return ::tyloi::cuda::logits(model.lm_head, std::move(hidden),
+        executor.projector(mode.ffn), executor.profiler(), 0.0)
         .to(::tyloi::kBFloat16).contiguous();
+#endif
 }
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
@@ -357,22 +376,21 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
                 attention.sliding, hidden.device(), ::tyloi::kBFloat16,
                 attention.kv_quantization);
         cache.quantization = attention.kv_quantization;
-        const tyloi::state::KvView& kv = cache;
         const auto* rope = layer.cpu ? &model.cpu_rope : &model.rope;
         if (!layer.cpu && !model.device_ropes.empty()) rope = &model.device_ropes.at(layer.device);
-        Inputs values;
-        values.values = {std::move(hidden), {}, {}};
-        values.kv = std::span<const tyloi::state::KvView>{&kv, 1};
-        values.attention = std::move(step);
+        auto* layer_trace = mode.trace_layer == attention.layer ? mode.trace : nullptr;
 #ifdef TYLOINFER_NATIVE_CUDA
-        values.rope = *rope;
+        auto scope = executor.enter(layer.device, mode.ffn);
+        auto output = attention.forward(::tyloi::Tensor(std::move(hidden)), step, cache, *rope, layer_trace);
+        hidden = executor.full_ffn(layer.ffn, layer.ffn_norm, attention,
+            output[0].dense(), output[1].dense(), mode.ffn, layer_trace);
 #else
-        values.rope = rope;
+        auto output = attention.forward(executor.projector(mode.ffn), executor.profiler(),
+            executor.attention_options(), std::move(hidden), step, cache,
+            executor.attention_scratch(2 * i), *rope, layer_trace);
+        hidden = executor.full_ffn(layer.ffn, layer.ffn_norm, attention,
+            std::move(output[0]), std::move(output[1]), mode.ffn, layer_trace);
 #endif
-        values.trace = mode.trace_layer == attention.layer ? mode.trace : nullptr;
-        values.trace_scope = mode.trace_layer;
-        values.scratch_offset = 2 * i;
-        hidden = executor.run(layer.tasks(), std::move(values), mode);
         trace();
     }
     if (!input.positions || input.advance) state.cache_pos += T;

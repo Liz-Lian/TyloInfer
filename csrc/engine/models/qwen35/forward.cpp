@@ -1,10 +1,12 @@
 #include "engine/models/qwen35/forward.h"
 
 #include "engine/backends/cuda/native/collectives.h"
+#ifndef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/ops/norm/rms.h"
+#include "engine/backends/cuda/ops/tensor.h"
+#endif
 
 #include <algorithm>
-#include <array>
-#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -80,11 +82,17 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
              int primary, DenseTensor ids, const Executor::Mode& mode) {
 #endif
     auto normalized = normalize_ids(collectives, primary, std::move(ids));
-    const Task task{task::Embed{0, 0, *model.embed}, -1, {}, "model.embed"};
-    Inputs inputs;
-    inputs.values = {std::move(normalized)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+    auto result = tyloi::ops::measure("model.embed", normalized.device(), [&] {
+        return tyloi::ops::embedding(::tyloi::Tensor(std::move(normalized)), model.embed);
+    });
+    return tyloi::ops::contiguous(tyloi::ops::cast(result, tyloi::ScalarType::float16));
+#else
+    return ::tyloi::cuda::embed(model.embed, std::move(normalized), collectives,
+                                executor.profiler(), primary)
         .to(::tyloi::kFloat16).contiguous();
+#endif
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -96,30 +104,34 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
                  std::int64_t batch, std::int64_t tokens) {
 #endif
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
-    const Task task{task::Norm{0, 0,
 #ifdef TYLOINFER_NATIVE_CUDA
-                               *model.output_norm,
+    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    return tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
+        return tyloi::ops::rms_norm(::tyloi::Tensor(std::move(hidden)), model.output_norm,
+                                    model.metadata.rms_norm_eps,
+                                    model.metadata.norm_weight_offset);
+    });
 #else
-                               model.output_norm,
+    return executor.profiler().measure("model.output_norm", [&] {
+        return qwen_rms_norm(hidden.reshape({-1, hidden.size(-1)}).to(::tyloi::kFloat32),
+                             model.output_norm, model.metadata.rms_norm_eps,
+                             model.metadata.norm_weight_offset)
+            .reshape(hidden.sizes());
+    });
 #endif
-                               model.metadata.rms_norm_eps,
-                               model.metadata.norm_weight_offset},
-                    -1, {}, "model.output_norm"};
-    Inputs inputs;
-    inputs.values = {std::move(hidden)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& logits_handle) {
-    auto logits = logits_handle.dense();
 #else
 DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) {
 #endif
-    const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
-    Inputs inputs;
-    inputs.values = {std::move(logits)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    return tyloi::ops::softcap(logits_handle, model.metadata.final_logit_softcapping);
+#else
+    return ::tyloi::cuda::ops::softcap(std::move(logits), model.metadata.final_logit_softcapping);
+#endif
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -130,13 +142,19 @@ DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) 
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
 #endif
-    std::array<Task, 2> tasks{
-        Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
-        Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
-    Inputs inputs;
-    inputs.values = {std::move(hidden)};
-    return executor.run(std::span<const Task>{tasks.data(), capped ? tasks.size() : 1},
-                        std::move(inputs), mode);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+    auto result = tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
+        return tyloi::ops::project(::tyloi::Tensor(std::move(hidden)), model.lm_head);
+    });
+    return capped ? tyloi::ops::softcap(result, model.metadata.final_logit_softcapping)
+                  : result;
+#else
+    auto project = executor.projector(mode.ffn);
+    return ::tyloi::cuda::logits(model.lm_head, std::move(hidden), project,
+                                 executor.profiler(),
+                                 capped ? model.metadata.final_logit_softcapping : 0.0);
+#endif
 }
 
 namespace {
@@ -323,15 +341,14 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
             MfqCudaGuard guard(model.layers[index].device);
             const auto* layer = std::get_if<Linear>(&model.layers[index].weights);
             require_forward(layer != nullptr, "Qwen3.5 recurrent layer weight kind mismatch");
-            const auto replay_task = layer->replay(keep - state.speculative_start);
-            const LinearStateView linear_view{
-                {linear->mixer.view().convolution, linear->mixer.view().recurrent,
-                 linear->mixer.view().transposed},
-                &linear->projected};
-            Inputs inputs;
-            inputs.output = std::nullopt;
-            inputs.linear = std::span<const LinearStateView>{&linear_view, 1};
-            executor.run(std::span<const Task>{&replay_task, 1}, std::move(inputs), {});
+            auto& state_view = linear->mixer.view();
+            const LinearView linear_view{
+                state_view.convolution, state_view.recurrent, state_view.transposed};
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+#endif
+            layer->attention.replay(linear_view, linear->projected,
+                                    keep - state.speculative_start);
         }
         state.commit_speculative();
         state.cache_pos = keep;
@@ -354,24 +371,15 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
     auto local_step = layer_step(collectives, layer, step);
     input = layer.cpu ? input.to(::tyloi::kCPU).contiguous()
                       : collectives.copy(input, layer.device).contiguous();
-    const auto tasks = layer.tasks();
-    const auto trace = options.trace_layer >= 0 && options.trace_layer == tasks[0].scope
-                           ? options.trace
-                           : nullptr;
-    const auto execute = [&](std::span<const tyloi::state::KvView> kv,
-                             std::span<const LinearStateView> linear,
-                             LinearAttention::Options linear_options) {
-        Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step,
+    const auto* full = std::get_if<Full>(&layer.weights);
+    auto* trace = full != nullptr && options.trace_layer >= 0 &&
+                                options.trace_layer == full->attention.layer
+                            ? options.trace
+                            : nullptr;
 #ifdef TYLOINFER_NATIVE_CUDA
-                      rope,
-#else
-                      &rope,
+    auto scope = executor.enter(mfq_current_cuda_device(), options.ffn);
 #endif
-                      trace,
-                      options.trace_layer, linear, linear_options, scratch_offset};
-        return executor.run(tasks, std::move(inputs), options);
-    };
-    if (const auto* full = std::get_if<Full>(&layer.weights)) {
+    if (full != nullptr) {
         auto* cache = std::get_if<tyloi::state::KvView>(&state);
         require_forward(cache != nullptr, "Qwen3.5 full layer state kind mismatch");
         const auto& attention = full->attention;
@@ -391,8 +399,22 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
                 attention.kv_quantization);
         }
         cache->quantization = attention.kv_quantization;
-        const std::array<tyloi::state::KvView, 1> kv{*cache};
-        return execute(kv, std::span<const LinearStateView>{}, {});
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto output = attention.forward(::tyloi::Tensor(std::move(input)), local_step, *cache,
+                                        rope, trace);
+        auto residual = output[0].dense();
+        auto attention_output = output[1].dense();
+#else
+        auto output = attention.forward(executor.projector(options.ffn), executor.profiler(),
+                                        executor.attention_options(), std::move(input), local_step,
+                                        *cache, executor.attention_scratch(scratch_offset), rope,
+                                        trace);
+        auto residual = std::move(output[0]);
+        auto attention_output = std::move(output[1]);
+#endif
+        return executor.full_ffn(full->ffn, full->ffn_norm, attention,
+                                 std::move(residual), std::move(attention_output), options.ffn,
+                                 trace);
     }
     const auto* linear = std::get_if<Linear>(&layer.weights);
     auto* linear_state = std::get_if<LinearState>(&state);
@@ -412,11 +434,14 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
     }
     auto& state_view = linear_state->mixer.view();
     const auto captured = confirmed_prefix > 0 ? &linear_state->projected : nullptr;
-    const LinearStateView linear_view{
-        {state_view.convolution, state_view.recurrent, state_view.transposed}, captured};
-    const std::array<LinearStateView, 1> linear_views{linear_view};
+    const LinearView linear_view{
+        state_view.convolution, state_view.recurrent, state_view.transposed};
     try {
-        auto result = execute(std::span<const tyloi::state::KvView>{}, linear_views, options.linear);
+        auto output = linear->attention.forward(
+            executor.projector(options.ffn), executor.profiler(), options.linear,
+            std::move(input), linear_view, captured);
+        auto result = executor.linear_ffn(linear->ffn, linear->ffn_norm, linear->attention,
+                                          std::move(output[0]), std::move(output[1]), options.ffn);
         if (confirmed_prefix > 0) {
             ++linear_state->speculative_projection_batches;
             ++linear_state->speculative_ffn_batches;

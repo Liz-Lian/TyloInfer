@@ -1,4 +1,5 @@
 #include "executor.h"
+#include "engine/models/common/attention.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
 #include "engine/backends/cuda/ops/ffn/residual.h"

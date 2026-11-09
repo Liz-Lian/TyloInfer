@@ -11,17 +11,6 @@
 
 namespace tyloi::cuda::minicpmo45 {
 
-std::array<Task, 2> Layer::tasks() const {
-    return {{
-        {task::Attention{0, 1, 2, attention, 0}, attention.layer},
-#ifdef TYLOINFER_NATIVE_CUDA
-        {task::FullFfn{1, 2, 0, ffn, *ffn_norm, attention}, attention.layer},
-#else
-        {task::FullFfn{1, 2, 0, ffn, ffn_norm, attention}, attention.layer},
-#endif
-    }};
-}
-
 Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition, int64_t context) {
     validate_model_source(*source);
     Model model;

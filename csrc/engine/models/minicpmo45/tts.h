@@ -320,30 +320,25 @@ struct Tts {
                     ::tyloi::kFloat16, attention.kv_quantization);
             }
             cache.quantization = attention.kv_quantization;
-            const std::array<tyloi::state::KvView, 1> kv{cache};
-            const std::array<Task, 2> tasks{{
-                {task::Attention{0, 1, 2, attention, 0}, attention.layer},
+            auto* layer_trace = mode.trace_layer == attention.layer ? mode.trace : nullptr;
 #ifdef TYLOINFER_NATIVE_CUDA
-                {task::FullFfn{1, 2, 0, layer.ffn, *layer.ffn_norm, attention}, attention.layer},
+            auto scope = executor.enter(device, mode.ffn);
+            AttentionStep step{
+                ::tyloi::Tensor(positions),
+                sequence_length ? ::tyloi::Tensor(*sequence_length) : ::tyloi::Tensor{},
+                {}, state.position, 0, 0};
+            auto output = attention.forward(::tyloi::Tensor(std::move(hidden)), step,
+                cache, rope, layer_trace);
+            hidden = executor.full_ffn(layer.ffn, layer.ffn_norm, attention,
+                output[0].dense(), output[1].dense(), mode.ffn, layer_trace);
 #else
-                {task::FullFfn{1, 2, 0, layer.ffn, layer.ffn_norm, attention}, attention.layer},
+            AttentionStep step{positions, sequence_length, {}, state.position, 0, 0};
+            auto output = attention.forward(executor.projector(mode.ffn), executor.profiler(),
+                executor.attention_options(), std::move(hidden), step, cache,
+                executor.attention_scratch(2 * attention.layer), rope, layer_trace);
+            hidden = executor.full_ffn(layer.ffn, layer.ffn_norm, attention,
+                std::move(output[0]), std::move(output[1]), mode.ffn, layer_trace);
 #endif
-            }};
-            Inputs inputs;
-            inputs.values = {std::move(hidden), {}, {}};
-            inputs.kv = kv;
-            inputs.attention.positions = positions;
-            inputs.attention.sequence_lengths = sequence_length;
-            inputs.attention.cache_position = state.position;
-#ifdef TYLOINFER_NATIVE_CUDA
-            inputs.rope = rope;
-#else
-            inputs.rope = &rope;
-#endif
-            inputs.trace = mode.trace;
-            inputs.trace_scope = mode.trace_layer;
-            inputs.scratch_offset = 2 * attention.layer;
-            hidden = executor.run(tasks, std::move(inputs), mode);
         }
         state.position += tokens;
         auto flat = hidden.reshape({batch * tokens, config.hidden_size});

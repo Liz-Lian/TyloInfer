@@ -1,7 +1,6 @@
 #pragma once
 
 #include "engine/models/qwen35/config.h"
-#include "engine/backends/cuda/executor/task.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/models/common/attention.h"
 
@@ -28,8 +27,6 @@ struct Predictor {
     ::tyloi::DenseTensor hidden_norm, embedding_norm, output_norm;
 #endif
     std::vector<Layer> layers;
-
-    std::vector<Task> tasks() const;
 };
 
 } // namespace tyloi::cuda::qwen35

@@ -59,7 +59,6 @@ private:
 #else
     RopeCache rope_;
 #endif
-    std::vector<Task> tasks_;
     std::unique_ptr<Executor> executor_;
     Collectives& copies_;
     int device_;

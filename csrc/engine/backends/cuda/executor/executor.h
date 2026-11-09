@@ -1,7 +1,9 @@
 #pragma once
 
-#include "engine/backends/cuda/executor/task.h"
 #include "engine/backends/cuda/native/context.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
+#include "engine/backends/cuda/ops/attention/linear.h"
+#include "engine/backends/cuda/ops/ffn/dense.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
 #include "engine/executor.h"
@@ -21,6 +23,7 @@ namespace tyloi::cuda {
 class Branches;
 class Collectives;
 class RouteStats;
+struct FullAttention;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -101,8 +104,6 @@ public:
     ContextSet& contexts() noexcept { return contexts_; }
     const ContextSet& contexts() const noexcept { return contexts_; }
 
-    ::tyloi::DenseTensor run(std::span<const Task> tasks, Inputs inputs,
-                                   const Mode& mode);
 #ifdef TYLOINFER_NATIVE_CUDA
     std::vector<std::shared_ptr<const ::tyloi::Tensor>> storage() const;
 #else

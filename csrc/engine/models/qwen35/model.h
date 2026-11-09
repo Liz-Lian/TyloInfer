@@ -3,7 +3,6 @@
 #include "engine/models/qwen35/config.h"
 #include "engine/models/metadata.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
-#include "engine/backends/cuda/executor/task.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/common/attention.h"
@@ -12,7 +11,6 @@
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/models/source.h"
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -42,16 +40,12 @@ struct Linear {
     DenseTensor ffn_norm;
 #endif
     Ffn ffn;
-
-    Task replay(std::int64_t tokens) const;
 };
 
 struct Layer {
     std::variant<Full, Linear> weights;
     int device = 0;
     bool cpu = false;
-
-    std::array<tyloi::cuda::Task, 2> tasks() const;
 };
 
 struct Model {

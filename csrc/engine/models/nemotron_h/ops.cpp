@@ -23,7 +23,6 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -427,67 +426,76 @@ std::shared_ptr<tyloi::Tensor> Model::embedding(const tyloi::Tensor& ids, int pr
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
-    auto ids = ids_handle.dense();
+    auto ids = normalize_ids(collectives, primary, ids_handle.dense());
+    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+    return ::tyloi::ops::measure("model.embed", ids.device(), [&] {
+        return ::tyloi::ops::embedding(ids, model.embed);
+    });
 #else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
+    auto normalized = normalize_ids(collectives, primary, std::move(ids));
+    return executor.profiler().measure("model.embed", [&] {
+        return quant_embedding_lookup(model.embed, std::move(normalized));
+    });
 #endif
-    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
-    Inputs inputs;
-    inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle,
                  std::int64_t batch, std::int64_t tokens) {
     auto hidden = hidden_handle.dense();
+    hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
+    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    return ::tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
+        return ::tyloi::ops::rms_norm(hidden, model.output_norm,
+                                      model.metadata.rms_norm_eps,
+                                      model.metadata.norm_weight_offset);
+    });
 #else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
-#endif
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
-    const Task task{task::Norm{0, 0,
-#ifdef TYLOINFER_NATIVE_CUDA
-                               *model.output_norm,
-#else
-                               model.output_norm,
+    return executor.profiler().measure("model.output_norm", [&] {
+        return qwen_rms_norm(hidden.reshape({-1, hidden.size(-1)}).to(::tyloi::kFloat32),
+                             model.output_norm, model.metadata.rms_norm_eps,
+                             model.metadata.norm_weight_offset)
+            .reshape(hidden.sizes());
+    });
 #endif
-                               model.metadata.rms_norm_eps,
-                               model.metadata.norm_weight_offset},
-                    -1, {}, "model.output_norm"};
-    Inputs inputs;
-    inputs.values = {std::move(hidden)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& value_handle) {
-    auto value = value_handle.dense();
+    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    return ::tyloi::ops::softcap(value_handle, model.metadata.final_logit_softcapping);
 #else
-DenseTensor softcap(const Model& model, Executor& executor, DenseTensor value) {
+DenseTensor softcap(const Model& model, Executor&, DenseTensor value) {
+    const double cap = model.metadata.final_logit_softcapping;
+    return cap > 0.0 ? ::tyloi::cuda::tanh(value / cap) * cap : std::move(value);
 #endif
-    const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
-    Inputs inputs;
-    inputs.values = {std::move(value)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool capped,
               const Executor::Mode& mode) {
-    auto hidden = hidden_handle.dense();
+    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+    auto value = ::tyloi::ops::measure("model.lm_head", hidden_handle.device(), [&] {
+        return ::tyloi::ops::project(hidden_handle, model.lm_head);
+    });
+    return capped ? ::tyloi::ops::softcap(value, model.metadata.final_logit_softcapping) : value;
 #else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
+    auto value = executor.profiler().measure("model.lm_head", [&] {
+        return executor.projector(mode.ffn).run(model.lm_head, std::move(hidden));
+    });
+    if (capped) {
+        const double cap = model.metadata.final_logit_softcapping;
+        if (cap > 0.0) return ::tyloi::cuda::tanh(value / cap) * cap;
+    }
+    return value;
 #endif
-    std::array<Task, 2> tasks{
-        Task{task::Project{0, 0, *model.lm_head}, -1, {}, "model.lm_head"},
-        Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
-    Inputs inputs;
-    inputs.values = {std::move(hidden)};
-    return executor.run(std::span<const Task>{tasks.data(), capped ? tasks.size() : 1},
-                        std::move(inputs), mode);
 }
 
 bool supports_speculation(const Model& model) noexcept {
