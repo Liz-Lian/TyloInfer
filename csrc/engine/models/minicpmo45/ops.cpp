@@ -262,7 +262,7 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, i
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(hidden.device().index, Ffn::Mode{});
+    auto scope = executor.enter(hidden.device().index, FfnMode{});
     return ::tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
         return ::tyloi::ops::rms_norm(
             hidden.reshape({batch, tokens, model.metadata.hidden_size}), model.output_norm,

@@ -275,11 +275,11 @@ Executor::Mode Executor::forward_mode(int primary) const {
     return snapshot;
 }
 
-Projector Executor::projector(const Ffn::Mode& mode) {
+Projector Executor::projector(const FfnMode& mode) {
     return projector(mode, primary_);
 }
 
-Projector Executor::projector(const Ffn::Mode& mode, int primary) {
+Projector Executor::projector(const FfnMode& mode, int primary) {
     return {profiler_, mmq_, *tq_, branches_, collectives_, mfe_scratch_, moe_scratch_, options_.projection,
             primary, mode.serial, mode.projection_major, mode.independent};
 }
@@ -338,14 +338,14 @@ class ExecutorScope final : public tyloi::Executor::Scope {
 public:
     Executor& owner;
 #ifdef TYLOINFER_NATIVE_CUDA
-    ExecutorScope(Executor& executor, int primary, ContextSet& contexts, const Ffn::Mode& mode)
+    ExecutorScope(Executor& executor, int primary, ContextSet& contexts, const FfnMode& mode)
         : owner(executor), ffn(mode), native_(std::in_place, primary, contexts),
           no_grad_(std::in_place), previous_(active_scope) {
         if (previous_ && &previous_->owner == &executor)
             ffn.serial = ffn.serial || previous_->ffn.serial;
         active_scope = this;
     }
-    ExecutorScope(Executor& executor, const Ffn::Mode& mode)
+    ExecutorScope(Executor& executor, const FfnMode& mode)
         : owner(executor), ffn(mode), previous_(active_scope) {
         if (!previous_ || &previous_->owner != &executor)
             throw std::logic_error("CUDA executor is not active");
@@ -353,7 +353,7 @@ public:
         ffn.serial = ffn.serial || previous_->ffn.serial;
         active_scope = this;
     }
-    Ffn::Mode ffn;
+    FfnMode ffn;
 #else
     ExecutorScope(Executor& executor, int primary, ContextSet& contexts)
         : owner(executor), native_(primary, contexts), previous_(active_scope) {
@@ -397,15 +397,15 @@ std::unique_ptr<tyloi::Executor::Profile> Executor::profile(const char* name) {
     return std::make_unique<ExecutorProfile>(profiler_, name);
 }
 
-std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device, const Ffn::Mode& mode) {
+std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device, const FfnMode& mode) {
     return std::make_unique<ExecutorScope>(*this, device, contexts_, mode);
 }
 
-std::unique_ptr<tyloi::Executor::Scope> Executor::enter(const Ffn::Mode& mode) {
+std::unique_ptr<tyloi::Executor::Scope> Executor::enter(const FfnMode& mode) {
     return std::make_unique<ExecutorScope>(*this, mode);
 }
 
-const Ffn::Mode& Executor::current_ffn() {
+const FfnMode& Executor::current_ffn() {
     if (!active_scope) throw std::runtime_error("no active CUDA executor scope");
     return active_scope->ffn;
 }

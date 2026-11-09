@@ -9,9 +9,6 @@
 #include "engine/weights/encoding/mfe.h"
 #include "engine/weights/tq/routed.h"
 #include "engine/backends/cuda/ops/ffn/tq.h"
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-#include "engine/weights/moe/cached_source_internal.h"
-#endif
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
@@ -121,7 +118,7 @@ DenseTensor local(const Mlp& mlp, DenseTensor x, Executor& executor, const Proje
 
 } // namespace
 
-DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& mode_,
+DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const FfnMode& mode_,
                             const Projector& project_, const MoeRoutePlan& route,
                             DenseTensor route_weights) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -205,7 +202,7 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const Mode& 
 #endif
 }
 
-DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const Mode& mode_,
+DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& mode_,
                          const Projector& project_, MfqOptional<DenseTensor> input_ids,
                          bool allow_important_neurons,
                          MfqOptional<DenseTensor> router_bias) const {
@@ -760,7 +757,7 @@ DenseTensor Ffn::forward(DenseTensor x, MfqOptional<DenseTensor> input_ids,
     auto& executor = Executor::current();
     const auto& mode = Executor::current_ffn();
 #else
-DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
+DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const FfnMode& mode,
                     MfqOptional<DenseTensor> input_ids,
                     MfqOptional<DenseTensor> router_bias) const {
 #endif
@@ -778,201 +775,3 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const Mode& mode,
 }
 
 } // namespace tyloi::cuda
-
-#ifdef TYLOINFER_NATIVE_CUDA
-namespace tyloi::cuda::ops {
-
-tyloi::DenseTensor mlp(tyloi::DenseTensor input, std::span<const std::shared_ptr<const tyloi::Tensor>> gate_up,
-                const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,
-                double swiglu_limit) {
-    std::optional<MfqCudaGuard> guard;
-    if (input.is_cuda()) guard.emplace(input.device().index);
-    auto& executor = Executor::current();
-    const auto project = executor.projector(Executor::current_ffn());
-    const Mlp weights{project.group(gate_up), down, activation,
-                      activation == tyloi::ops::MlpActivation::gelu_gated, swiglu_limit};
-    weights.check(DenseTensor(input), project.primary_device());
-    auto x = half(DenseTensor(input), executor.profiler());
-    return weights.parallel() ? sharded(weights, x, executor, project)
-                              : local(weights, x, executor, project);
-}
-
-tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count,
-                               const tyloi::ops::MoeRouting& routing, const tyloi::DenseTensor* bias) {
-    MfqCudaGuard guard(logits.device().index);
-    MfqOptional<DenseTensor> selection_bias = mfq_nullopt;
-    if (bias) selection_bias = *bias;
-    auto result = moe_topk_cuda(logits.dense().contiguous(), count,
-        routing.activation == tyloi::ops::RouterActivation::sigmoid,
-        routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
-        routing.normalize, routing.delayed_softmax, selection_bias, 1e-20, routing.scale);
-    return {std::make_shared<DenseTensor>(result.at(0)), std::make_shared<DenseTensor>(result.at(1))};
-}
-tyloi::DenseTensor expert_scale(tyloi::DenseTensor weights, tyloi::DenseTensor ids, const tyloi::DenseTensor& scales) {
-    MfqCudaGuard guard(weights.device().index);
-    return moe_apply_expert_scale_cuda(DenseTensor(weights), DenseTensor(ids), DenseTensor(scales));
-}
-tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor weights) {
-    MfqCudaGuard guard(pairs.device().index);
-    return moe_weighted_reduce_cuda(DenseTensor(pairs), DenseTensor(weights));
-}
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-static weights::Placement geglu_placement(const MfeTensor& weight) {
-    weights::Placement result;
-    if (!weight.shards.empty()) {
-        std::int64_t end = 0;
-        for (const auto& shard : weight.shards) {
-            if (!shard.weight || shard.device < 0 || shard.expert_begin != end ||
-                shard.expert_end <= end || shard.expert_end > weight.n_experts ||
-                shard.weight->size(0) != weight.size(0) || shard.weight->size(1) != weight.size(1) ||
-                shard.weight->size(2) != weight.size(2))
-                throw std::invalid_argument("invalid expert-parallel MFE shard");
-            check_placement(geglu_placement(*shard.weight), Device(DeviceType::cuda, shard.device));
-            result.devices.emplace_back(DeviceType::cuda, shard.device);
-            end = shard.expert_end;
-        }
-        if (end != weight.n_experts) throw std::invalid_argument("incomplete expert-parallel MFE shards");
-    } else if (weight.cached_source) return weight.cached_source->placement();
-    else {
-        const auto add_payload = [&](const Tensor& payload) {
-            for (const auto* buffer : payload.buffers()) {
-                if (!buffer || !buffer->defined()) continue;
-                if (!buffer->is_cuda()) throw std::invalid_argument("expert weight is not prepared for CUDA execution");
-                if (std::find(result.devices.begin(), result.devices.end(), buffer->device()) == result.devices.end())
-                    result.devices.push_back(buffer->device());
-            }
-        };
-        if (weight.compact) for (const auto& pool : *weight.compact) add_payload(pool.weight);
-        for (const auto& pool : weight.pools) if (const auto* payload = pool.payload()) add_payload(*payload);
-        if (result.devices.empty()) throw std::invalid_argument("expert weight is not prepared");
-        if (result.devices.size() != 1) throw std::invalid_argument("expert weight fields are on different devices");
-    }
-    return result;
-}
-
-static bool supports_glu(const MfeTensor& weight) {
-    if (!weight.shards.empty()) return std::all_of(weight.shards.begin(), weight.shards.end(),
-        [](const auto& shard) { return shard.weight && supports_glu(*shard.weight); });
-    return (weight.compact && !weight.compact->empty()) ||
-        (weight.cached_source ? weight.cached_source->source_tensor().nint_only() : weight.nint_only());
-}
-#endif
-
-tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
-    const ::tyloi::Tensor& gate_bank, const ::tyloi::Tensor& down_bank, bool trace) {
-    const auto* dense_gate = dynamic_cast<const DenseTensor*>(&gate_bank);
-    const auto* dense_down = dynamic_cast<const DenseTensor*>(&down_bank);
-    const auto* tq_gate = dynamic_cast<const TqBank*>(&gate_bank);
-    const auto* tq_down = dynamic_cast<const TqBank*>(&down_bank);
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    const auto* gate = dynamic_cast<const MfeTensor*>(&gate_bank);
-    const auto* down = dynamic_cast<const MfeTensor*>(&down_bank);
-    if (gate) check_placement(geglu_placement(*gate), input.device());
-    if (down) check_placement(geglu_placement(*down), input.device());
-#else
-    constexpr const MfeTensor* gate = nullptr;
-    constexpr const MfeTensor* down = nullptr;
-#endif
-    if ((!dense_gate && !tq_gate && !gate) || (!dense_down && !tq_down && !down))
-        throw std::invalid_argument("unsupported routed GEGLU expert tensor layout");
-    for (const auto* bank : {dense_gate, dense_down}) {
-        if (!bank) continue;
-        if (bank->is_encoded() || !bank->is_contiguous() || bank->device() != input.device() ||
-            (bank->scalar_type() != kFloat16 && bank->scalar_type() != kBFloat16 &&
-             bank->scalar_type() != kFloat32))
-            throw std::invalid_argument("dense expert bank must be contiguous CUDA F16/BF16/F32 on the input device");
-    }
-    for (const auto* bank : {tq_gate, tq_down}) {
-        if (bank && (!bank->defined() || !bank->slices.empty()))
-            throw std::invalid_argument("routed GEGLU does not support TQ expert-parallel slices");
-    }
-    if (gate_bank.size(0) > INT_MAX || gate_bank.size(1) > INT_MAX ||
-        gate_bank.size(2) > INT_MAX || down_bank.size(1) > INT_MAX ||
-        ids.size(0) > INT_MAX / ids.size(1) ||
-        ((tq_gate || tq_down) && ids.size(1) > 65535))
-        throw std::invalid_argument("routed GEGLU geometry exceeds CUDA limits");
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if ((gate && gate->shards.empty() && gate->partial_experts) ||
-        (down && down->shards.empty() && down->partial_experts))
-        throw std::invalid_argument("routed GEGLU requires complete expert banks");
-#endif
-    MfqCudaGuard guard(input.device().index);
-    auto& executor = Executor::current();
-    const auto project = executor.projector(Executor::current_ffn());
-    auto& profiler = executor.profiler();
-    input = input.contiguous();
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if ((gate && !gate->shards.empty()) || (down && !down->shards.empty())) {
-        if (project.primary_device() != input.device().index)
-            throw std::invalid_argument("expert-parallel projection must reduce to the input device");
-    }
-    if (gate && down) {
-        auto route = profiler.measure("gemma.route_map", [&] {
-            return build_moe_route_plan(DenseTensor(ids), gate->n_experts);
-        });
-        const bool prefetched = gate->cached_source && down->cached_source &&
-            MoeCachedSource::prefetch_bundle({gate->cached_source, down->cached_source}, route);
-        auto prefetch_down = [&] { if (!prefetched && down->cached_source) down->cached_source->prefetch(route); };
-        tyloi::ops::RoutedGeglu result;
-        if (!trace && supports_glu(*gate)) {
-            auto hidden = profiler.measure("gemma.moe_gate_up_geglu", [&] {
-                return project.glu(*gate, DenseTensor(input), route, true);
-            });
-            prefetch_down();
-            result.pairs = std::make_shared<DenseTensor>(profiler.measure("gemma.moe_down", [&] {
-                return project.run(*down, hidden, route);
-            }));
-            return result;
-        }
-        auto packed = profiler.measure("gemma.moe_gate_up", [&] {
-            return project.run(*gate, DenseTensor(input), route);
-        });
-        prefetch_down();
-        if (trace) result.gate_up = std::make_shared<DenseTensor>(packed.to(::tyloi::kFloat32).contiguous().clone());
-        if (!trace && packed.size(0) <= 4) {
-            result.pairs = std::make_shared<DenseTensor>(profiler.measure("gemma.moe_geglu_down", [&] {
-                return project.gated(*down, packed, route, true);
-            }));
-            return result;
-        }
-        auto hidden = profiler.measure("gemma.moe_geglu", [&] { return moe_geglu_split_cuda(packed); });
-        if (trace) result.hidden = std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).contiguous().clone());
-        result.pairs = std::make_shared<DenseTensor>(profiler.measure("gemma.moe_down", [&] { return project.run(*down, hidden, route); }));
-        return result;
-    }
-#endif
-    tyloi::ops::RoutedGeglu result;
-    if (tq_gate || tq_down) {
-        const auto host_ids = ids.contiguous().cpu().to(kInt64);
-        const auto* selected = host_ids.data_ptr<std::int64_t>();
-        for (std::int64_t i = 0; i < host_ids.numel(); ++i)
-            if (selected[i] < 0 || selected[i] >= gate_bank.size(0))
-                throw std::out_of_range("routed GEGLU expert ID is out of bounds");
-    }
-    DenseTensor packed;
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    std::optional<MoeRoutePlan> route;
-    if (gate || down) route.emplace(profiler.measure("gemma.route_map", [&] {
-        return build_moe_route_plan(DenseTensor(ids), static_cast<int>(gate_bank.size(0)));
-    }));
-    if (gate) packed = project.run(*gate, input, *route);
-    else
-#endif
-    if (dense_gate) packed = dense_routed_projection(*dense_gate, input, ids);
-    else packed = tq_ops::routed_projection(*tq_gate, input, ids);
-    if (trace) result.gate_up = std::make_shared<DenseTensor>(packed.to(kFloat32).contiguous().clone());
-    auto hidden = moe_geglu_split_cuda(packed.to(kFloat16).contiguous());
-    if (trace) result.hidden = std::make_shared<DenseTensor>(hidden.to(kFloat32).contiguous().clone());
-    DenseTensor pairs;
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (down) pairs = project.run(*down, hidden, *route);
-    else
-#endif
-    if (dense_down) pairs = dense_routed_projection(*dense_down, hidden, ids);
-    else pairs = tq_ops::routed_projection(*tq_down, hidden, ids);
-    result.pairs = std::make_shared<DenseTensor>(std::move(pairs));
-    return result;
-}
-
-} // namespace tyloi::cuda::ops
-#endif

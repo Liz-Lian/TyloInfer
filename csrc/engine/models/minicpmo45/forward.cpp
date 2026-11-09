@@ -49,7 +49,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 #endif
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(hidden.device().index, Ffn::Mode{});
+    auto scope = executor.enter(hidden.device().index, FfnMode{});
     return ::tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
         return ::tyloi::ops::rms_norm(hidden.to(::tyloi::kFloat32), model.output_norm,
             model.metadata.rms_norm_eps, 1.0);

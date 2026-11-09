@@ -734,7 +734,7 @@ template <class Model, class State> struct CudaMtpOps {
     auto input=tyloi::ops::contiguous(mtp.preserve_output_dtype()?normalized:tyloi::ops::cast(normalized,tyloi::kFloat16));
     if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).logits(input,true); }) {
       const tyloi::models::CausalModel& causal=model;
-      auto scope=tyloi::cuda::Executor::current().enter(tyloi::cuda::Ffn::Mode{});
+      auto scope=tyloi::cuda::Executor::current().enter(tyloi::cuda::FfnMode{});
       auto result=causal.logits(input,true);
       TYLOINFER_RUNTIME_CHECK(result.defined(),"CUDA model logits returned no tensor");
       return result;

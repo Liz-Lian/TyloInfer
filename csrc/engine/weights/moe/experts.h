@@ -1,9 +1,20 @@
 #pragma once
 
+#include "engine/weights/placement.h"
+
 #include <memory>
 
 namespace tyloi { class MfeTensor; }
 struct MoeRoutePlan;
+
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+namespace tyloi::weights {
+
+Placement expert_placement(const MfeTensor& weight);
+bool supports_geglu(const MfeTensor& weight);
+
+} // namespace tyloi::weights
+#endif
 
 namespace tyloi::cuda {
 

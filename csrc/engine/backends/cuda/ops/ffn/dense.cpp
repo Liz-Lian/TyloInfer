@@ -40,6 +40,22 @@ DenseTensor run_mlp(const Mlp& op, DenseTensor input, Executor& executor,
 
 } // namespace
 
+DenseTensor mlp(DenseTensor input, std::span<const ::tyloi::Tensor> gate_up,
+        const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,
+        double swiglu_limit) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
+    auto& executor = Executor::current();
+    const auto project = executor.projector(Executor::current_ffn());
+    const auto weights = make_mlp(project, gate_up, down, activation, swiglu_limit);
+    weights.check(input, project.primary_device());
+    if (input.scalar_type() != ::tyloi::kFloat16)
+        input = executor.profiler().measure("ffn.input_cast", [&] {
+            return input.to(::tyloi::kFloat16);
+        });
+    return run_mlp(weights, std::move(input), executor, project);
+}
+
 DenseTensor bf16_mlp(DenseTensor input, std::span<const ::tyloi::Tensor> gate_up,
         const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,
         double swiglu_limit) {

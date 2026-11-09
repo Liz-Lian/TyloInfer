@@ -1318,7 +1318,7 @@ static ::tyloi::DenseTensor batch_ffn(const qwen4_exp::Moe& ffn,CudaExecutionCon
     const int previous_profile_tile=window ? window->set_profile_tile(-1) : -1;
     auto& mode = execution.executor().mode().ffn;
     struct TileScope {
-        tyloi::cuda::Ffn::Mode& mode;
+        tyloi::cuda::FfnMode& mode;
         int tile,tiles;
         DecodeWindow* window;
         int profile_tile;

@@ -8,7 +8,7 @@
 #include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/encoding/format_features.h"
 #include "engine/weights/encoding/tq.h"
-#include "engine/weights/weights.h"
+#include "engine/weights/placement.h"
 #include "engine/weights/sharded.h"
 
 #include "mmq.h"
@@ -83,7 +83,6 @@ void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& inp
 tyloi::weights::Placement projection_placement(const ::tyloi::Tensor& weight, std::size_t index = 0);
 
 // Where a weight's buffers actually live, matched against the running device.
-void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device device);
 // Every buffer of a representation is defined and resident on `device`.
 void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true);
 

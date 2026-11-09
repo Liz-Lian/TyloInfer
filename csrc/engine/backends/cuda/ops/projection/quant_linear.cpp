@@ -18,15 +18,6 @@ void check_width(int64_t width, int64_t expected, bool padded) {
 
 }  // namespace
 
-void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device device) {
-    if (placement.caller && *placement.caller == (device.is_cuda() ? tyloi::DeviceType::cuda : tyloi::DeviceType::cpu))
-        return;
-    for (const auto& place : placement.devices)
-        if (device == (place.is_cuda() ? ::tyloi::Device(::tyloi::kCUDA, place.index)
-                                      : ::tyloi::Device(::tyloi::kCPU))) return;
-    throw std::invalid_argument("projection weight and input devices do not match");
-}
-
 void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device) {
     for (const auto* field : weight.buffers()) {
         field->require_dense();
@@ -67,7 +58,7 @@ void check_projection_width(const ::tyloi::Tensor& weight, int64_t width) {
 void check_projection_device(const ::tyloi::Tensor& weight, ::tyloi::Device device) {
     const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&weight);
     if (!sharded) {
-        check_placement(projection_placement(weight), device);
+        tyloi::weights::check_placement(projection_placement(weight), device);
         const bool cpu_tq = dynamic_cast<const tyloi::encoding::TqTensor*>(&weight) && !weight.is_cuda();
         check_fields(weight, device, !cpu_tq);
         return;
@@ -107,7 +98,7 @@ void check_projection(const QuantLinearGroup& group, const ::tyloi::DenseTensor&
         throw std::invalid_argument("projection group is not prepared for input");
     for (size_t i = 0; i < group.outs.size(); ++i) {
         check_width(input.size(-1), group.cols[i], true);
-        check_placement(group.placements[i], input.device());
+        tyloi::weights::check_placement(group.placements[i], input.device());
     }
     const auto check_nint_weight = [&](const tyloi::NintTensor& weight) {
         if (!weight.q_packed.defined())

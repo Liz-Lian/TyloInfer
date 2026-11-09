@@ -79,7 +79,7 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
         "Qwen MTP history exceeds context capacity");
     const int device = device_;
     MfqCudaGuard guard(device);
-    const Ffn::Mode mode{};
+    const FfnMode mode{};
 #ifdef TYLOINFER_NATIVE_CUDA
     auto executor_scope = executor_->enter(device, mode);
 #else

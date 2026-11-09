@@ -3,7 +3,6 @@
 #include "engine/models/gemma4/config.h"
 #include "engine/models/common/attention.h"
 #include "engine/ops.h"
-#include "engine/weights/weights.h"
 #include "engine/models/source.h"
 #include "engine/models/input.h"
 #include "engine/models/causal_model.h"

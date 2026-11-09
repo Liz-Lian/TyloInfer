@@ -106,7 +106,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 #endif
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
     return tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
         return tyloi::ops::rms_norm(::tyloi::Tensor(std::move(hidden)), model.output_norm,
                                     model.metadata.rms_norm_eps,
@@ -128,7 +128,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) {
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
     return tyloi::ops::softcap(logits_handle, model.metadata.final_logit_softcapping);
 #else
     return ::tyloi::cuda::ops::softcap(std::move(logits), model.metadata.final_logit_softcapping);
@@ -346,7 +346,7 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
             const LinearView linear_view{
                 state_view.convolution, state_view.recurrent, state_view.transposed};
 #ifdef TYLOINFER_NATIVE_CUDA
-            auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+            auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
 #endif
             layer->attention.replay(linear_view, linear->projected,
                                     keep - state.speculative_start);

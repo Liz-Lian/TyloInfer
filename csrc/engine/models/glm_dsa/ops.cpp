@@ -327,7 +327,7 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
                  std::int64_t batch, std::int64_t tokens) {
     auto hidden = input_hidden.dense();
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
-    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
     return ::tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
         return ::tyloi::ops::rms_norm(hidden, model.output_norm,
                                       model.metadata.rms_norm_eps,
@@ -348,7 +348,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor softcap(const Model& model, Executor& executor, ::tyloi::Tensor input_logits) {
-    auto scope = executor.enter(mfq_current_cuda_device(), Ffn::Mode{});
+    auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
     return ::tyloi::ops::softcap(input_logits, model.metadata.final_logit_softcapping);
 #else
 DenseTensor softcap(const Model& model, Executor&, DenseTensor logits) {

@@ -3,7 +3,6 @@
 #include "engine/tensor.h"
 #include "engine/requests/constraint.h"
 #include "engine/state/kv_view.h"
-#include "engine/weights/weights.h"
 
 #include <cstdint>
 #include <array>

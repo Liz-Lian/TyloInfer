@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
-#include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/ffn/options.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
 #include "engine/executor.h"
 
@@ -23,6 +23,7 @@ namespace tyloi::cuda {
 class Branches;
 class Collectives;
 class RouteStats;
+class Ffn;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -49,18 +50,18 @@ public:
     static Executor& current();
 #ifdef TYLOINFER_NATIVE_CUDA
     void wait();
-    static const Ffn::Mode& current_ffn();
-    std::unique_ptr<tyloi::Executor::Scope> enter(int device, const Ffn::Mode& mode);
+    static const FfnMode& current_ffn();
+    std::unique_ptr<tyloi::Executor::Scope> enter(int device, const FfnMode& mode);
     // Override only the policy on this active executor; retain its device and stream.
     // Nested policy scopes retain an outer serial-branch requirement.
-    std::unique_ptr<tyloi::Executor::Scope> enter(const Ffn::Mode& mode);
+    std::unique_ptr<tyloi::Executor::Scope> enter(const FfnMode& mode);
 #else
     void wait(const std::unordered_set<int>& devices);
 #endif
     Collectives& collectives() noexcept { return collectives_; }
     const Collectives& collectives() const noexcept { return collectives_; }
     struct Mode {
-        Ffn::Mode ffn;
+        FfnMode ffn;
         LinearAttention::Options linear;
         std::int64_t kv_capacity = 0;
         bool transposed = true;
@@ -78,7 +79,7 @@ public:
                 .bf16_gqa_decode = true, .decode_aten = false,
                 .mma_prefill = true, .mma_decode = true, .split_k = true}};
         DenseOptions dense;
-        Ffn::Options ffn;
+        FfnOptions ffn;
         GatedResidual::Options residual;
         bool gdn_fused_output = true;
         bool gdn_fused_preparation = true;
@@ -108,8 +109,8 @@ public:
 #else
     std::vector<::tyloi::DenseTensor> storage() const;
 #endif
-    Projector projector(const Ffn::Mode& mode);
-    Projector projector(const Ffn::Mode& mode, int primary);
+    Projector projector(const FfnMode& mode);
+    Projector projector(const FfnMode& mode, int primary);
     CudaProfiler& profiler() noexcept { return profiler_; }
     KlMmqState& mmq() noexcept { return mmq_; }
     const KlMmqState& mmq() const noexcept { return mmq_; }

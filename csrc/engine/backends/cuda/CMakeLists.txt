@@ -256,6 +256,7 @@ set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mlp.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/dense.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/routed.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/residual.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/profile.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/vmm.cpp

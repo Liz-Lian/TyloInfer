@@ -21,6 +21,11 @@ struct DenseOptions {
 #ifdef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::ops {
 
+tyloi::DenseTensor mlp(
+    tyloi::DenseTensor input, std::span<const ::tyloi::Tensor> gate_up,
+    const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,
+    double swiglu_limit);
+
 tyloi::DenseTensor bf16_mlp(
     tyloi::DenseTensor input, std::span<const ::tyloi::Tensor> gate_up,
     const ::tyloi::Tensor& down, tyloi::ops::MlpActivation activation,

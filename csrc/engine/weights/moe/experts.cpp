@@ -155,6 +155,52 @@ std::shared_ptr<const tyloi::Tensor> tyloi::MfeTensor::relocated(Device target) 
     return moved;
 }
 
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+namespace tyloi::weights {
+
+Placement expert_placement(const MfeTensor& weight) {
+    Placement result;
+    if (!weight.shards.empty()) {
+        std::int64_t end = 0;
+        for (const auto& shard : weight.shards) {
+            if (!shard.weight || shard.device < 0 || shard.expert_begin != end ||
+                shard.expert_end <= end || shard.expert_end > weight.n_experts ||
+                shard.weight->size(0) != weight.size(0) || shard.weight->size(1) != weight.size(1) ||
+                shard.weight->size(2) != weight.size(2))
+                throw std::invalid_argument("invalid expert-parallel MFE shard");
+            check_placement(expert_placement(*shard.weight), Device(DeviceType::cuda, shard.device));
+            result.devices.emplace_back(DeviceType::cuda, shard.device);
+            end = shard.expert_end;
+        }
+        if (end != weight.n_experts) throw std::invalid_argument("incomplete expert-parallel MFE shards");
+    } else if (weight.cached_source) return weight.cached_source->placement();
+    else {
+        const auto add_payload = [&](const Tensor& payload) {
+            for (const auto* buffer : payload.buffers()) {
+                if (!buffer || !buffer->defined()) continue;
+                if (!buffer->is_cuda()) throw std::invalid_argument("expert weight is not prepared for CUDA execution");
+                if (std::find(result.devices.begin(), result.devices.end(), buffer->device()) == result.devices.end())
+                    result.devices.push_back(buffer->device());
+            }
+        };
+        if (weight.compact) for (const auto& pool : *weight.compact) add_payload(pool.weight);
+        for (const auto& pool : weight.pools) if (const auto* payload = pool.payload()) add_payload(*payload);
+        if (result.devices.empty()) throw std::invalid_argument("expert weight is not prepared");
+        if (result.devices.size() != 1) throw std::invalid_argument("expert weight fields are on different devices");
+    }
+    return result;
+}
+
+bool supports_geglu(const MfeTensor& weight) {
+    if (!weight.shards.empty()) return std::all_of(weight.shards.begin(), weight.shards.end(),
+        [](const auto& shard) { return shard.weight && supports_geglu(*shard.weight); });
+    return (weight.compact && !weight.compact->empty()) ||
+        (weight.cached_source ? weight.cached_source->source_tensor().nint_only() : weight.nint_only());
+}
+
+} // namespace tyloi::weights
+#endif
+
 namespace tyloi::cuda {
 
 bool supports_projection_glu_epilogue(const MfeTensor& weight) {
