@@ -4,7 +4,6 @@
 #include "engine/models/source/model_config.h"
 #include "engine/ops.h"
 #include "engine/models/metadata.h"
-#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/models/common/capabilities.h"

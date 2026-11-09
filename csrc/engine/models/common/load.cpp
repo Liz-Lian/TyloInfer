@@ -1,6 +1,7 @@
 #include "engine/models/source.h"
 #include "engine/ops.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/mlp.h"
 #include "engine/models/common/attention.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/models/source/model_graph.h"
@@ -18,10 +19,22 @@
 std::vector<std::int64_t> TransformerWeightLoader::shape(const ::tyloi::DenseTensor& value) { return value.sizes().vec(); }
 int64_t TransformerWeightLoader::elements(const ::tyloi::DenseTensor& value) { return value.numel(); }
 
-void load_important_neuron_branch(const tyloi::weights::Loader& weights,
-                                  int64_t hidden_size, int64_t intermediate_size, tyloi::cuda::Ffn &f,
-                                  const std::string &down_name, const std::string &gate_name,
-                                  const std::string &up_name) {
+namespace {
+
+void copy_important_neuron_settings(const tyloi::cuda::Ffn& low, tyloi::cuda::Ffn& high) {
+    high.geglu = low.geglu;
+    high.swiglu_limit = low.swiglu_limit;
+}
+
+void copy_important_neuron_settings(const tyloi::models::Mlp& low, tyloi::models::Mlp& high) {
+    high.swiglu_limit = low.swiglu_limit;
+}
+
+template <class Ffn>
+void load_important_branch(const tyloi::weights::Loader& weights,
+    int64_t hidden_size, int64_t intermediate_size, Ffn& f,
+    bool routed, const std::string& down_name,
+    const std::string& gate_name, const std::string& up_name) {
     const std::string down_high = down_name + ".in_high";
     const std::string gate_high = gate_name + ".in_high";
     const std::string up_high = up_name + ".in_high";
@@ -35,15 +48,14 @@ void load_important_neuron_branch(const tyloi::weights::Loader& weights,
         throw std::runtime_error(
             "important-neuron FFN requires matching gate/up/down .in_high records");
     }
-    if (f.is_moe) {
+    if (routed) {
         throw std::runtime_error("important-neuron records are unsupported on routed MoE FFNs");
     }
 
-    auto high = std::make_unique<tyloi::cuda::Ffn>();
+    auto high = std::make_unique<Ffn>();
     high->down = weights.weight(down_high, TensorParallelAxis::Input);
-    high->gate_up = weights.gate_up({gate_high, up_high}, *high->down);
-    high->geglu = f.geglu;
-    high->swiglu_limit = f.swiglu_limit;
+    high->gate_up = weights.gate_up({gate_high, up_high}, high->down);
+    copy_important_neuron_settings(f, *high);
 
     if (f.gate_up.size() != 2 || high->gate_up.size() != 2 ||
         f.gate_up[0]->size(0) != f.gate_up[1]->size(0) || high->gate_up[0]->size(0) != high->gate_up[1]->size(0) ||
@@ -54,6 +66,16 @@ void load_important_neuron_branch(const tyloi::weights::Loader& weights,
         throw std::runtime_error("important-neuron FFN tensor shapes disagree with model config");
     }
     f.important_neurons = std::move(high);
+}
+
+} // namespace
+
+void load_important_neuron_branch(const tyloi::weights::Loader& weights,
+                                  int64_t hidden_size, int64_t intermediate_size, tyloi::cuda::Ffn& f,
+                                  const std::string& down_name, const std::string& gate_name,
+                                  const std::string& up_name) {
+    load_important_branch(weights, hidden_size, intermediate_size, f, f.is_moe,
+        down_name, gate_name, up_name);
 }
 
 ::tyloi::DenseTensor TransformerWeightLoader::dense(const std::string& name) const {
@@ -102,6 +124,12 @@ void TransformerWeightLoader::output(tyloi::cuda::FullAttention& block, const st
 void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, tyloi::cuda::Ffn& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {
     load_important_neuron_branch(weights, hidden, intermediate, ffn, down, gate, up);
+}
+void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate,
+    tyloi::models::Mlp& ffn, const std::string& down,
+    const std::string& gate, const std::string& up) const {
+    load_important_branch(weights, hidden, intermediate, ffn, false,
+        down, gate, up);
 }
 void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                                      const std::string& name, int layer) const {

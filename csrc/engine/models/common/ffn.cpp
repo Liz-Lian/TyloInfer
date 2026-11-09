@@ -7,8 +7,8 @@
 namespace tyloi::models {
 namespace {
 
-Tensor feed_forward(const cuda::Ffn& weights, const Tensor& input, bool bf16) {
-    if (weights.is_moe && !bf16) return weights.forward(input.dense());
+template <class Weights>
+Tensor dense_ffn(const Weights& weights, const Tensor& input, bool bf16) {
     if (!weights.down) throw std::runtime_error("FFN down projection is missing");
     if (bf16)
         return ops::bf16_mlp(input, weights.gate_up, weights.down,
@@ -24,9 +24,17 @@ Tensor feed_forward(const cuda::Ffn& weights, const Tensor& input, bool bf16) {
         weights.activation, weights.swiglu_limit);
 }
 
-} // namespace
+Tensor feed_forward(const Mlp& weights, const Tensor& input, bool bf16) {
+    return dense_ffn(weights, input, bf16);
+}
 
-Tensor full_ffn(const cuda::Ffn& weights, const Tensor& norm,
+Tensor feed_forward(const cuda::Ffn& weights, const Tensor& input, bool bf16) {
+    if (weights.is_moe && !bf16) return weights.forward(input.dense());
+    return dense_ffn(weights, input, bf16);
+}
+
+template <class Weights>
+Tensor full(const Weights& weights, bool routed, const Tensor& norm,
     const Tensor& residual, const Tensor& attention_output,
     double epsilon, double offset, bool bf16, bool trace,
     ops::Trace* trace_output) {
@@ -36,7 +44,7 @@ Tensor full_ffn(const cuda::Ffn& weights, const Tensor& norm,
     if (trace && trace_output)
         trace_output->emplace_back("qwen.ffn_norm", ops::clone(ops::contiguous(
             ops::cast(ops::reshape(input, {batch, tokens, width}), ScalarType::float32))));
-    if (!weights.is_moe && !bf16 && !weights.important_neurons) {
+    if (!routed && !bf16 && !weights.important_neurons) {
         auto flat_residual = ops::reshape(pair[0], {batch * tokens, width});
         if (auto fused = ops::mlp_residual(input, flat_residual, weights.gate_up,
                 weights.down, weights.activation, weights.swiglu_limit))
@@ -47,6 +55,30 @@ Tensor full_ffn(const cuda::Ffn& weights, const Tensor& norm,
         trace_output->emplace_back("qwen.ffn_output", ops::clone(ops::contiguous(
             ops::cast(output, ScalarType::float32))));
     return ops::residual_add(pair[0], output);
+}
+
+} // namespace
+
+Tensor mlp(const Mlp& weights, const Tensor& input) {
+    if (weights.gate_up.empty() || !weights.down)
+        throw std::logic_error("MLP weights are missing");
+    return dense_ffn(weights, input, false);
+}
+
+Tensor full_ffn(const Mlp& weights, const Tensor& norm,
+    const Tensor& residual, const Tensor& attention_output,
+    double epsilon, double offset, bool bf16, bool trace,
+    ops::Trace* trace_output) {
+    return full(weights, false, norm, residual, attention_output,
+        epsilon, offset, bf16, trace, trace_output);
+}
+
+Tensor full_ffn(const cuda::Ffn& weights, const Tensor& norm,
+    const Tensor& residual, const Tensor& attention_output,
+    double epsilon, double offset, bool bf16, bool trace,
+    ops::Trace* trace_output) {
+    return full(weights, weights.is_moe, norm, residual, attention_output,
+        epsilon, offset, bf16, trace, trace_output);
 }
 
 Tensor linear_ffn(const cuda::Ffn& weights, const Tensor& norm,

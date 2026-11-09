@@ -95,7 +95,7 @@ void load(Model& model, const tyloi::weights::Loader& weights, const LayerPlacem
 #else
         layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
 #endif
-        layer.ffn = tyloi::models::load_dense_ffn<Ffn>(loader, config, prefix + "mlp.");
+        layer.ffn = tyloi::models::load_dense_ffn<tyloi::models::Mlp>(loader, config, prefix + "mlp.");
     }
 }
 

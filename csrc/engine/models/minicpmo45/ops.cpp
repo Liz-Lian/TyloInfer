@@ -1,6 +1,7 @@
 #include "engine/models/minicpmo45/text/load.h"
 #include "engine/models/minicpmo45/text/forward.h"
 #include "engine/models/common/ffn.h"
+#include "engine/models/common/mlp.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/causal_forward.h"
@@ -77,7 +78,7 @@ Layer load_layer(const tyloi::weights::Loader& weights, const Config& config, in
 #else
     layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
 #endif
-    layer.ffn = tyloi::models::load_dense_ffn<Ffn>(loader, config, prefix + "mlp.");
+    layer.ffn = tyloi::models::load_dense_ffn<tyloi::models::Mlp>(loader, config, prefix + "mlp.");
     return layer;
 }
 

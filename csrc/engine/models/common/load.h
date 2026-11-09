@@ -11,6 +11,8 @@
 
 namespace tyloi::models {
 
+struct Mlp;
+
 enum class ExpertProjection { gate, up, gate_up, down };
 
 // Canonical parameter relationships are shared; the loader materializes native
@@ -177,6 +179,8 @@ struct TransformerWeightLoader {
     void qkv(tyloi::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
     void output(tyloi::cuda::FullAttention& attention, const std::string& name) const;
     void important_neurons(int64_t hidden, int64_t intermediate, tyloi::cuda::Ffn& ffn,
+        const std::string& down, const std::string& gate, const std::string& up) const;
+    void important_neurons(int64_t hidden, int64_t intermediate, tyloi::models::Mlp& ffn,
         const std::string& down, const std::string& gate, const std::string& up) const;
     void experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                  const std::string& name, int layer) const;

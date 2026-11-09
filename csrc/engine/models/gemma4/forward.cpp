@@ -86,8 +86,8 @@ static std::shared_ptr<tyloi::Tensor> forward_ffn(
         });
     };
     auto result = measure("gemma.ffn_dense", [&] {
-        auto dense = weights.ffn.forward(*dense_input);
-        return ops::reshape(*dense, flat_shape);
+        auto dense = tyloi::models::mlp(weights.ffn, dense_input);
+        return ops::reshape(dense, flat_shape);
     });
     if (weights.gemma4_moe) {
         if (!fused_norms) {

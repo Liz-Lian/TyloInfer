@@ -2,13 +2,12 @@
 
 #include "engine/models/gemma4/config.h"
 #include "engine/models/common/attention.h"
-#include "engine/ops.h"
+#include "engine/models/common/mlp.h"
 #include "engine/models/source.h"
 #include "engine/models/input.h"
 #include "engine/models/causal_model.h"
 
 #include <memory>
-#include <stdexcept>
 #include <utility>
 #include <string_view>
 #include <vector>
@@ -17,24 +16,12 @@ namespace tyloi::cuda::gemma4 {
 
 using Config = tyloi::models::gemma4::Config;
 
-struct Mlp {
-    std::vector<std::shared_ptr<const Tensor>> gate_up;
-    std::shared_ptr<const ::tyloi::Tensor> down;
-    tyloi::ops::MlpActivation activation = tyloi::ops::MlpActivation::silu_gated;
-    double swiglu_limit = 0.0;
-
-    std::shared_ptr<Tensor> forward(const Tensor& input) const {
-        if (gate_up.empty() || !down) throw std::logic_error("MLP weights are missing");
-        return tyloi::ops::mlp(input, gate_up, *down, activation, swiglu_limit);
-    }
-};
-
 class State;
 
 struct Layer {
     FullAttention attention;
     std::shared_ptr<const tyloi::Tensor> ffn_norm;
-    Mlp ffn;
+    tyloi::models::Mlp ffn;
     std::shared_ptr<const tyloi::Tensor> attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
     std::shared_ptr<const tyloi::Tensor> layer_scale;
     std::shared_ptr<const tyloi::Tensor> gemma_router, gemma_router_norm_scale, gemma_expert_scale;

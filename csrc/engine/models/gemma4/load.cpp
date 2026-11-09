@@ -57,9 +57,9 @@ struct LayerLoader {
     }
     auto mlp(const std::vector<std::string>& names, const std::string& down_name) {
         auto down = weights.weight(down_name);
-        auto group = weights.gate_up(names, *down, 2);
-        return Mlp{std::move(group), std::move(down),
-                                tyloi::ops::MlpActivation::gelu_gated};
+        auto group = weights.gate_up(names, down, 2);
+        return tyloi::models::Mlp{std::move(group), std::move(down),
+                                  tyloi::ops::MlpActivation::gelu_gated, 0.0};
     }
     auto experts(const std::string &name, int layer, const char *projection) {
         if (weights.placement.experts.enabled()) {

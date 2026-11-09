@@ -10,7 +10,7 @@
 #include "engine/models/common/load.h"
 #include "engine/models/common/attention.h"
 #include "engine/models/common/ffn.h"
-#include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/models/common/mlp.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/state/kv_view.h"
@@ -89,7 +89,7 @@ struct Tts {
 #else
         ::tyloi::DenseTensor ffn_norm;
 #endif
-        Ffn ffn;
+        tyloi::models::Mlp ffn;
     };
 
     struct State {
@@ -193,7 +193,7 @@ struct Tts {
 #else
             layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
 #endif
-            layer.ffn = tyloi::models::load_dense_ffn<Ffn>(loader, result.config, prefix + "mlp.");
+            layer.ffn = tyloi::models::load_dense_ffn<tyloi::models::Mlp>(loader, result.config, prefix + "mlp.");
         }
         return result;
     }
