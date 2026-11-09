@@ -209,7 +209,7 @@ std::array<std::shared_ptr<tyloi::Tensor>, 2> FullAttention::forward(
 std::array<::tyloi::DenseTensor, 2> FullAttention::forward(
         const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
         ::tyloi::DenseTensor x,
-        const AttentionStep& step, AttentionKvView cache,
+        const AttentionStep& step, tyloi::state::KvView cache,
         AttentionScratch& scratch, const RopeCache& rope, Trace* trace) const {
     using DenseTensor = ::tyloi::DenseTensor;
     auto measure = [&](const char* name, auto&& operation) {

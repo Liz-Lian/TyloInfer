@@ -19,7 +19,8 @@ void State::preallocate() {
         const auto& layout = layout_[index];
         if (layout.cpu || layers[index].defined()) continue;
         MfqCudaGuard guard(layout.device);
-        layers[index] = KVCache(1, layout.heads, layout.capacity, layout.head_dim, false,
+        layers[index] = tyloi::state::allocate_kv(
+            1, layout.heads, layout.capacity, layout.head_dim, false,
             ::tyloi::Device(::tyloi::kCUDA, layout.device), ::tyloi::kFloat16);
     }
 }
@@ -30,18 +31,18 @@ void State::reset(int64_t next_batch) {
     batch = next_batch;
     for (size_t index = 0; index < layers.size(); ++index) {
         auto& cache = layers[index];
-        if (cache.defined() && cache.batch_size() != batch) {
+        if (cache.defined() && cache.batch != batch) {
             MfqCudaGuard guard(layout_[index].device);
             cache = {};
         }
     }
 }
 
-std::vector<DenseTensor> State::storage() const {
-    std::vector<DenseTensor> result;
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
     for (const auto& cache : layers) {
-        if (cache.k.defined()) result.push_back(cache.k);
-        if (cache.v.defined()) result.push_back(cache.v);
+        if (cache.physical_key.defined()) result.push_back(cache.physical_key);
+        if (cache.physical_value.defined()) result.push_back(cache.physical_value);
     }
     return result;
 }
@@ -87,7 +88,8 @@ State::Restore State::prepare(const TextSessionState& state) const {
             cache.k->size(2) != state.cache_pos || cache.capacity < state.cache_pos)
             throw CudaSessionStateError("MiniCPM TTS session cache geometry changed");
     }
-    return {std::vector<KVCache>(layers.size()), state.cache_pos, state.decode_position_delta};
+    return {std::vector<tyloi::state::KvView>(layers.size()), state.cache_pos,
+            state.decode_position_delta};
 }
 
 void State::stage(Restore& restore, const TextSessionState& state) const {

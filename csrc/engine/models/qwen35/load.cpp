@@ -334,7 +334,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
 
 std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
                                          const Config& config,
-                                         KvQuantization quantization) {
+                                         tyloi::state::KvQuantization quantization) {
     const bool fusion_present = loader.has("predictor.fusion.weight");
     const bool any = fusion_present || loader.has("predictor.hidden_norm.weight") ||
         loader.has("predictor.embedding_norm.weight") ||

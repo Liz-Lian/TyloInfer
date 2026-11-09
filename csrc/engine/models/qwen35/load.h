@@ -5,6 +5,7 @@
 #include "engine/models/qwen35/predictor.h"
 #include "engine/ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
+#include "engine/state/kv_view.h"
 
 #include <cstdint>
 #include <memory>
@@ -39,6 +40,6 @@ Layer load_layer(const ::tyloi::weights::Loader&, const Config&,
                  std::string_view tensor_root = "model");
 
 std::optional<Predictor> load_predictor(
-    TransformerWeightLoader&, const Config&, KvQuantization);
+    TransformerWeightLoader&, const Config&, tyloi::state::KvQuantization);
 
 } // namespace tyloi::cuda::qwen35

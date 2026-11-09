@@ -128,10 +128,11 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         if (!cache.defined()) {
             const auto capacity = mode.kv_capacity > 0
                 ? std::max(state.cache_pos + tokens, mode.kv_capacity) : attention.max_position_embeddings;
-            cache = KVCache(batch, attention.kv_heads, capacity, attention.attention_head_dim,
+            cache = tyloi::state::allocate_kv(
+                batch, attention.kv_heads, capacity, attention.attention_head_dim,
                 false, hidden.device(), ::tyloi::kFloat16);
         }
-        const AttentionKvView kv = cache.view();
+        const tyloi::state::KvView& kv = cache;
         const auto* rope = layer.cpu ? &model.cpu_rope : &model.rope;
         if (!layer.cpu) {
             const auto found = model.device_ropes.find(layer.device);
@@ -139,7 +140,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         }
         Inputs values;
         values.values = {std::move(hidden), {}, {}};
-        values.kv = std::span<const AttentionKvView>{&kv, 1};
+        values.kv = std::span<const tyloi::state::KvView>{&kv, 1};
         values.attention = std::move(step);
 #ifdef TYLOINFER_NATIVE_CUDA
         values.rope = *rope;

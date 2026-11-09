@@ -358,7 +358,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
     const auto trace = options.trace_layer >= 0 && options.trace_layer == tasks[0].scope
                            ? options.trace
                            : nullptr;
-    const auto execute = [&](std::span<const AttentionKvView> kv,
+    const auto execute = [&](std::span<const tyloi::state::KvView> kv,
                              std::span<const LinearStateView> linear,
                              LinearAttention::Options linear_options) {
         Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step,
@@ -372,7 +372,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
         return executor.run(tasks, std::move(inputs), options);
     };
     if (const auto* full = std::get_if<Full>(&layer.weights)) {
-        auto* cache = std::get_if<KVCache>(&state);
+        auto* cache = std::get_if<tyloi::state::KvView>(&state);
         require_forward(cache != nullptr, "Qwen3.5 full layer state kind mismatch");
         const auto& attention = full->attention;
         const auto capacity = attention.sliding
@@ -383,7 +383,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
                                                options.kv_capacity)
                                          : attention.max_position_embeddings);
         if (!cache->defined()) {
-            *cache = KVCache(
+            *cache = tyloi::state::allocate_kv(
                 input.size(0), attention.kv_heads, capacity, attention.attention_head_dim,
                 attention.sliding, input.device(),
                 attention.official_bf16 ? ::tyloi::kBFloat16
@@ -391,7 +391,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
                 attention.kv_quantization);
         }
         cache->quantization = attention.kv_quantization;
-        const std::array<AttentionKvView, 1> kv{cache->view()};
+        const std::array<tyloi::state::KvView, 1> kv{*cache};
         return execute(kv, std::span<const LinearStateView>{}, {});
     }
     const auto* linear = std::get_if<Linear>(&layer.weights);
@@ -416,7 +416,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
         {state_view.convolution, state_view.recurrent, state_view.transposed}, captured};
     const std::array<LinearStateView, 1> linear_views{linear_view};
     try {
-        auto result = execute(std::span<const AttentionKvView>{}, linear_views, options.linear);
+        auto result = execute(std::span<const tyloi::state::KvView>{}, linear_views, options.linear);
         if (confirmed_prefix > 0) {
             ++linear_state->speculative_projection_batches;
             ++linear_state->speculative_ffn_batches;

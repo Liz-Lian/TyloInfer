@@ -539,7 +539,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
         return moe_forward(*moe, executor, std::move(input), mode);
 #endif
     const auto& attention = std::get<FullAttention>(layer.weights);
-    auto& cache = std::get<KVCache>(state);
+    auto& cache = std::get<tyloi::state::KvView>(state);
     const auto B = input.size(0), T = input.size(1), H = input.size(2);
     TYLOINFER_RUNTIME_CHECK(confirmed == 0 || !attention.sliding,
                             "block does not support speculative verification");
@@ -547,20 +547,19 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
         : (mode.kv_capacity > 0 ? std::max<std::int64_t>(step.cache_position + T, mode.kv_capacity)
                                 : attention.max_position_embeddings);
     if (!cache.defined())
-        cache = KVCache(B, attention.kv_heads, capacity, attention.attention_head_dim,
-                        attention.sliding, input.device(),
-                        attention.official_bf16 ? ::tyloi::kBFloat16 :
-                                                 ::tyloi::kFloat16,
-                        attention.kv_quantization);
+        cache = tyloi::state::allocate_kv(B, attention.kv_heads, capacity,
+                        attention.attention_head_dim, attention.sliding,
+                        input.device(), attention.official_bf16 ? ::tyloi::kBFloat16 :
+                        ::tyloi::kFloat16, attention.kv_quantization);
     cache.quantization = attention.kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA
     auto output = attention.forward(::tyloi::Tensor(std::move(input)), step,
-        cache.view(), attention.attention_rope,
+        cache, attention.attention_rope,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
     return attention_residual(output[0].dense(), output[1].dense(), B, T, H);
 #else
     auto mixed = attention.forward(executor.projector(mode.ffn), executor.profiler(),
-        executor.attention_options(), std::move(input), step, cache.view(),
+        executor.attention_options(), std::move(input), step, cache,
         executor.attention_scratch(scratch_index), attention.attention_rope,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
     return attention_residual(executor, std::move(mixed[0]), std::move(mixed[1]), B, T, H);
@@ -822,7 +821,7 @@ State::State(const Model& model) : layers(model.layers.size()) {
                 full->sliding ? full->attention_window : full->max_position_embeddings,
                 full->sliding, full->official_bf16 ? ::tyloi::kBFloat16 :
                 ::tyloi::kFloat16, full->kv_quantization}});
-            layers[index].emplace<KVCache>();
+            layers[index].emplace<tyloi::state::KvView>();
         } else {
             layout_.push_back({layer.device, std::monostate{}});
         }
@@ -832,12 +831,13 @@ State::State(const Model& model) : layers(model.layers.size()) {
 void State::preallocate() {
     if (!::tyloi::cuda::options::kv_vram_preallocated()) return;
     for (std::size_t index = 0; index < layers.size(); ++index) {
-        auto* cache = std::get_if<KVCache>(&layers[index]);
+        auto* cache = std::get_if<tyloi::state::KvView>(&layers[index]);
         if (cache == nullptr || cache->defined()) continue;
         const auto& layer = layout_[index];
         const auto& full = std::get<FullLayout>(layer.mixer);
         MfqCudaGuard guard(layer.device);
-        *cache = KVCache(1, full.heads, full.capacity, full.head_dim, full.sliding,
+        *cache = tyloi::state::allocate_kv(1, full.heads, full.capacity,
+            full.head_dim, full.sliding,
             ::tyloi::Device(::tyloi::kCUDA, layer.device),
             full.dtype, full.quantization);
     }
@@ -850,8 +850,8 @@ void State::reset(std::int64_t next_batch) {
     batch = next_batch;
     for (std::size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
-        if (auto* cache = std::get_if<KVCache>(&layers[index])) {
-            if (cache->defined() && cache->batch_size() != next_batch) *cache = KVCache();
+        if (auto* cache = std::get_if<tyloi::state::KvView>(&layers[index])) {
+            if (cache->defined() && cache->batch != next_batch) *cache = {};
         } else if (auto* mamba = std::get_if<MambaState>(&layers[index])) {
             mamba->speculative_xbc = DenseTensor();
             mamba->speculative_dt = DenseTensor();
@@ -871,20 +871,20 @@ void State::commit_speculative() {
     speculative_confirmed = 0;
 }
 
-std::vector<DenseTensor> State::storage() const {
-    std::vector<DenseTensor> result;
-    const auto append = [&result](const DenseTensor& tensor) {
-        if (tensor.defined()) result.push_back(tensor);
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
+    const auto append = [&result](const ::tyloi::Tensor& tensor) {
+        if (tensor && tensor.defined()) result.push_back(tensor);
     };
     for (const auto& layer : layers) {
-        if (const auto* cache = std::get_if<KVCache>(&layer)) {
-            if (cache->is_paged()) {
-                append(cache->k_chunk_ptrs);
-                append(cache->v_chunk_ptrs);
+        if (const auto* cache = std::get_if<tyloi::state::KvView>(&layer)) {
+            if (cache->paged()) {
+                append(cache->key_chunk_ptrs);
+                append(cache->value_chunk_ptrs);
                 append(cache->page_table);
             } else {
-                append(cache->k);
-                append(cache->v);
+                append(cache->physical_key);
+                append(cache->physical_value);
             }
         } else if (const auto* mamba = std::get_if<MambaState>(&layer)) {
             append(mamba->mixer.view().convolution);
@@ -912,7 +912,7 @@ TextSessionStateKind State::text_session_state_kind() const {
     bool all_full = true;
     for (std::size_t index = 0; index < layers.size(); ++index) {
         const auto& mixer = layout_[index].mixer;
-        if (std::holds_alternative<FullLayout>(mixer) && std::holds_alternative<KVCache>(layers[index]))
+        if (std::holds_alternative<FullLayout>(mixer) && std::holds_alternative<tyloi::state::KvView>(layers[index]))
             continue;
         all_full = false;
         if ((std::holds_alternative<MambaLayout>(mixer) &&
@@ -952,7 +952,7 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
         snapshots.reserve(layers.size());
         for (std::size_t index = 0; index < layers.size(); ++index) {
             MfqCudaGuard guard(layout_[index].device);
-            snapshots.push_back(capture_kv(std::get<KVCache>(layers[index]), cache_pos, saved.bytes));
+            snapshots.push_back(capture_kv(std::get<tyloi::state::KvView>(layers[index]), cache_pos, saved.bytes));
         }
         return saved;
     }
@@ -962,7 +962,7 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     for (std::size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
         HybridBlockSessionState snapshot;
-        if (const auto* cache = std::get_if<KVCache>(&layers[index])) {
+        if (const auto* cache = std::get_if<tyloi::state::KvView>(&layers[index])) {
             snapshot.kind = HybridBlockSessionStateKind::FullAttention;
             snapshot.full_attention = capture_kv(*cache, cache_pos, saved.bytes);
         } else if (const auto* mamba = std::get_if<MambaState>(&layers[index])) {
@@ -996,7 +996,7 @@ void State::restore_text_session_state(const TextSessionState& saved) {
         for (std::size_t index = 0; index < layers.size(); ++index) {
             MfqCudaGuard guard(layout_[index].device);
             const auto& full = std::get<FullLayout>(layout_[index].mixer);
-            restore_kv(std::get<KVCache>(layers[index]), (*snapshots)[index],
+            restore_kv(std::get<tyloi::state::KvView>(layers[index]), (*snapshots)[index],
                        full.head_dim, full.dtype, full.quantization);
         }
     } else {
@@ -1010,7 +1010,7 @@ void State::restore_text_session_state(const TextSessionState& saved) {
             const auto& layout = layout_[index];
             MfqCudaGuard guard(layout.device);
             if (snapshot.kind == HybridBlockSessionStateKind::FullAttention) {
-                if (!std::holds_alternative<KVCache>(layers[index]))
+                if (!std::holds_alternative<tyloi::state::KvView>(layers[index]))
                     throw CudaSessionStateError("Nemotron-H full-attention layer changed");
                 validate_kv(snapshot.full_attention);
                 continue;
@@ -1041,7 +1041,7 @@ void State::restore_text_session_state(const TextSessionState& saved) {
         for (std::size_t index = 0; index < layers.size(); ++index) {
             const auto& snapshot = (*snapshots)[index];
             MfqCudaGuard guard(layout_[index].device);
-            if (auto* cache = std::get_if<KVCache>(&layers[index])) {
+            if (auto* cache = std::get_if<tyloi::state::KvView>(&layers[index])) {
                 const auto& full = std::get<FullLayout>(layout_[index].mixer);
                 restore_kv(*cache, snapshot.full_attention, full.head_dim, full.dtype, full.quantization);
             } else if (auto* mamba = std::get_if<MambaState>(&layers[index])) {

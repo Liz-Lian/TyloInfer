@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/session/snapshot.h"
-#include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 
 #include <cstdint>
 #include <vector>
@@ -13,7 +13,7 @@ struct Model;
 class State {
 public:
     struct Restore {
-        std::vector<KVCache> layers;
+        std::vector<tyloi::state::KvView> layers;
         int64_t cache_pos = 0;
         int64_t decode_position_delta = 0;
     };
@@ -29,8 +29,8 @@ public:
     int64_t position() const noexcept { return cache_pos; }
     void advance(int64_t tokens) noexcept { cache_pos += tokens; }
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
-    std::vector<::tyloi::DenseTensor> storage() const;
-    std::vector<::tyloi::DenseTensor*> graph_state() { return {}; }
+    std::vector<::tyloi::Tensor> storage() const;
+    std::vector<::tyloi::Tensor*> graph_state() { return {}; }
 
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
@@ -40,7 +40,7 @@ public:
     void stage(Restore&, const TextSessionState&) const;
     void publish(Restore&&) noexcept;
 
-    std::vector<KVCache> layers;
+    std::vector<tyloi::state::KvView> layers;
     int64_t cache_pos = 0;
     int64_t decode_position_delta = 0;
     int64_t batch = 0;

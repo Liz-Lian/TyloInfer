@@ -230,7 +230,7 @@ CacheView view(const ::tyloi::DenseTensor& data,const ::tyloi::DenseTensor& chun
 }
 }
 
-KvQuantization cuda_kv_quantization() {
+tyloi::state::KvQuantization cuda_kv_quantization() {
     const char* text=tyloi::cuda::env_lookup("TYLOINFER_KV_TURBOQUANT_BITS");if(!text||!*text)return {};
     size_t consumed=0;double bits=std::stod(text,&consumed);
     TYLOINFER_RUNTIME_CHECK(consumed==std::string(text).size()&&valid_bits(bits),"invalid TurboQuant KV bit width");return {bits};
@@ -268,7 +268,7 @@ void cuda_kv_write_paged(const QuantizedKvPages& pages,const ::tyloi::DenseTenso
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 ::tyloi::DenseTensor cuda_kv_attention(const ::tyloi::DenseTensor& query,const ::tyloi::DenseTensor& keys,const ::tyloi::DenseTensor& values,
-        KvQuantization quant,const ::tyloi::DenseTensor& selected,const ::tyloi::DenseTensor& positions,int64_t offset,
+        tyloi::state::KvQuantization quant,const ::tyloi::DenseTensor& selected,const ::tyloi::DenseTensor& positions,int64_t offset,
         const QuantizedKvPages& pages,int64_t capacity,const ::tyloi::DenseTensor& lengths,const ::tyloi::DenseTensor& mask,double scale,HotKvView hot) {
     TYLOINFER_RUNTIME_CHECK(quant.enabled()&&valid_bits(quant.bits)&&query.is_cuda()&&query.dim()==4,"invalid TurboQuant attention");
     MfqCudaGuard guard(query.get_device());

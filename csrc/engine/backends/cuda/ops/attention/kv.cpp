@@ -28,7 +28,7 @@ std::pair<tyloi::DenseTensor, tyloi::DenseTensor> ops::append_kv(
     const auto page_table = dense_kv_buffer(cache.page_table);
 #else
 std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
-        AttentionKvView cache, bool aten_write,
+        tyloi::state::KvView cache, bool aten_write,
         ::tyloi::DenseTensor kk, ::tyloi::DenseTensor vv,
         ::tyloi::DenseTensor pos, int64_t start_pos, int64_t end_pos,
         bool contiguous_prefill_prefix) {

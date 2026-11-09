@@ -36,7 +36,7 @@ struct NativeAttentionInput {
 struct NativeKvView {
     ::tyloi::DenseTensor visible_key, visible_value, physical_key, physical_value;
     ::tyloi::DenseTensor key_chunk_ptrs, value_chunk_ptrs, page_table;
-    KvQuantization quantization;
+    tyloi::state::KvQuantization quantization;
     std::int64_t page_size, pages_per_chunk, heads;
     bool paged() const noexcept { return page_size > 0; }
 };
@@ -198,7 +198,7 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
     const auto pages = quantized_pages(public_kv);
 #else
 AttentionResult dispatch_attention(const AttentionInput& request,
-                                   const AttentionKvView& kv,
+                                   const tyloi::state::KvView& kv,
                                    const AttentionConfig& config,
                                    AttentionScratch& scratch,
                                    CudaProfiler& profiler) {

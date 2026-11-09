@@ -35,7 +35,7 @@ function(mfq_configure_cuda_engine_target target)
 endfunction()
 
 set(TYLOINFER_CUDA_LOADING_SOURCES
-    ${PROJECT_SOURCE_DIR}/engine/state/kv_cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/state/kv_view.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/recurrent.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/paged_kv.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/kv_offload.cpp

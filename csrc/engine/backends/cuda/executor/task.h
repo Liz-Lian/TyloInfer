@@ -125,7 +125,7 @@ struct LinearStateView {
 struct Inputs {
     std::vector<::tyloi::DenseTensor> values;
     std::optional<size_t> output = 0;
-    std::span<const AttentionKvView> kv;
+    std::span<const tyloi::state::KvView> kv;
     AttentionStep attention;
 #ifdef TYLOINFER_NATIVE_CUDA
     std::optional<tyloi::ops::RopeTable> rope;

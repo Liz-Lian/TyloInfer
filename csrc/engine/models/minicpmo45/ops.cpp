@@ -155,29 +155,31 @@ void State::preallocate() {
         const auto& l = layout_[i];
         if (l.cpu || layers[i].defined()) continue;
         MfqCudaGuard guard(l.device);
-        layers[i] = KVCache(1, l.heads, l.capacity, l.head_dim, l.sliding,
-                            ::tyloi::Device(::tyloi::kCUDA, l.device), ::tyloi::kBFloat16, l.quantization);
+        layers[i] = tyloi::state::allocate_kv(
+            1, l.heads, l.capacity, l.head_dim, l.sliding,
+            ::tyloi::Device(::tyloi::kCUDA, l.device), ::tyloi::kBFloat16,
+            l.quantization);
     }
 }
 void State::reset(int64_t next_batch) {
     cache_pos = decode_position_delta = 0;
     batch = next_batch;
     for (size_t i = 0; i < layers.size(); ++i)
-        if (layers[i].defined() && layers[i].batch_size() != batch) {
+        if (layers[i].defined() && layers[i].batch != batch) {
             MfqCudaGuard guard(layout_[i].device);
             layers[i] = {};
         }
 }
-std::vector<DenseTensor> State::storage() const {
-    std::vector<DenseTensor> result;
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
     for (const auto& cache : layers) {
-        if (cache.is_paged()) {
-            if (cache.k_chunk_ptrs.defined()) result.push_back(cache.k_chunk_ptrs);
-            if (cache.v_chunk_ptrs.defined()) result.push_back(cache.v_chunk_ptrs);
+        if (cache.paged()) {
+            if (cache.key_chunk_ptrs.defined()) result.push_back(cache.key_chunk_ptrs);
+            if (cache.value_chunk_ptrs.defined()) result.push_back(cache.value_chunk_ptrs);
             if (cache.page_table.defined()) result.push_back(cache.page_table);
         } else {
-            if (cache.k.defined()) result.push_back(cache.k);
-            if (cache.v.defined()) result.push_back(cache.v);
+            if (cache.physical_key.defined()) result.push_back(cache.physical_key);
+            if (cache.physical_value.defined()) result.push_back(cache.physical_value);
         }
     }
     return result;
@@ -350,15 +352,17 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
             (mode.kv_capacity > 0 ? std::max(state.cache_pos + T, mode.kv_capacity)
                                   : attention.max_position_embeddings);
         if (!cache.defined())
-            cache = KVCache(B, attention.kv_heads, capacity, attention.attention_head_dim,
-                            attention.sliding, hidden.device(), ::tyloi::kBFloat16, attention.kv_quantization);
+            cache = tyloi::state::allocate_kv(
+                B, attention.kv_heads, capacity, attention.attention_head_dim,
+                attention.sliding, hidden.device(), ::tyloi::kBFloat16,
+                attention.kv_quantization);
         cache.quantization = attention.kv_quantization;
-        const AttentionKvView kv = cache.view();
+        const tyloi::state::KvView& kv = cache;
         const auto* rope = layer.cpu ? &model.cpu_rope : &model.rope;
         if (!layer.cpu && !model.device_ropes.empty()) rope = &model.device_ropes.at(layer.device);
         Inputs values;
         values.values = {std::move(hidden), {}, {}};
-        values.kv = std::span<const AttentionKvView>{&kv, 1};
+        values.kv = std::span<const tyloi::state::KvView>{&kv, 1};
         values.attention = std::move(step);
 #ifdef TYLOINFER_NATIVE_CUDA
         values.rope = *rope;

@@ -33,7 +33,7 @@ bool full_layout(const State& state) {
     if (state.layers.empty() || state.layers.size() != state.layout().size()) return false;
     for (std::size_t index = 0; index < state.layers.size(); ++index) {
         if (!std::holds_alternative<FullLayout>(state.layout()[index].attention) ||
-            !std::holds_alternative<KVCache>(state.layers[index]))
+            !std::holds_alternative<tyloi::state::KvView>(state.layers[index]))
             return false;
     }
     return true;
@@ -43,7 +43,7 @@ bool hybrid_layout(const State& state) {
     if (state.layers.empty() || state.layers.size() != state.layout().size()) return false;
     for (std::size_t index = 0; index < state.layers.size(); ++index) {
         const bool full = std::holds_alternative<FullLayout>(state.layout()[index].attention) &&
-                          std::holds_alternative<KVCache>(state.layers[index]);
+                          std::holds_alternative<tyloi::state::KvView>(state.layers[index]);
         const bool linear = std::holds_alternative<LinearLayout>(state.layout()[index].attention) &&
                             std::holds_alternative<LinearState>(state.layers[index]);
         if (!full && !linear) return false;
@@ -98,7 +98,7 @@ void validate_full_snapshot_length(const KvSnapshot& state, std::int64_t cache_p
         throw CudaSessionStateError("Qwen full-attention session length changed");
 }
 
-void validate_cache_configuration(const FullLayout& layer, const KVCache& cache) {
+void validate_cache_configuration(const FullLayout& layer, const tyloi::state::KvView& cache) {
     if (!cache.defined()) return;
     if (cache.quantization.bits != layer.quantization.bits || cache.ring != layer.sliding)
         throw CudaSessionStateError("Qwen full-attention cache configuration changed");
@@ -152,10 +152,10 @@ void State::preallocate() {
         const auto& layer = layout_[index];
         const auto* full = std::get_if<FullLayout>(&layer.attention);
         if (layer.cpu || full == nullptr) continue;
-        auto& cache = std::get<KVCache>(layers[index]);
+        auto& cache = std::get<tyloi::state::KvView>(layers[index]);
         if (cache.defined()) continue;
         MfqCudaGuard guard(layer.device);
-        cache = KVCache(
+        cache = tyloi::state::allocate_kv(
             1, full->kv_heads, full->capacity, full->head_dim, full->sliding,
             ::tyloi::Device(::tyloi::kCUDA, layer.device), full->dtype,
             full->quantization);
@@ -172,8 +172,8 @@ void State::reset(std::int64_t new_batch) {
     for (std::size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
         auto& state = layers[index];
-        if (auto* cache = std::get_if<KVCache>(&state)) {
-            if (cache->defined() && cache->batch_size() != new_batch) *cache = KVCache();
+        if (auto* cache = std::get_if<tyloi::state::KvView>(&state)) {
+            if (cache->defined() && cache->batch != new_batch) *cache = {};
             continue;
         }
         auto& linear = std::get<LinearState>(state);
@@ -239,20 +239,20 @@ std::vector<::tyloi::DenseTensor*> State::graph_state() {
     return result;
 }
 
-std::vector<::tyloi::DenseTensor> State::storage() const {
-    std::vector<::tyloi::DenseTensor> result;
-    const auto append = [&result](const ::tyloi::DenseTensor& tensor) {
-        if (tensor.defined()) result.push_back(tensor);
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
+    const auto append = [&result](const ::tyloi::Tensor& tensor) {
+        if (tensor && tensor.defined()) result.push_back(tensor);
     };
     for (const auto& state : layers) {
-        if (const auto* cache = std::get_if<KVCache>(&state)) {
-            if (cache->is_paged()) {
-                append(cache->k_chunk_ptrs);
-                append(cache->v_chunk_ptrs);
+        if (const auto* cache = std::get_if<tyloi::state::KvView>(&state)) {
+            if (cache->paged()) {
+                append(cache->key_chunk_ptrs);
+                append(cache->value_chunk_ptrs);
                 append(cache->page_table);
             } else {
-                append(cache->k);
-                append(cache->v);
+                append(cache->physical_key);
+                append(cache->physical_value);
             }
         } else {
             const auto& linear = std::get<LinearState>(state);
@@ -299,7 +299,7 @@ TextSessionState State::capture_text_session_state(
         for (std::size_t index = 0; index < layout_.size(); ++index) {
             const auto& layout = layout_[index];
             const auto& full = std::get<FullLayout>(layout.attention);
-            const auto& cache = std::get<KVCache>(layers[index]);
+            const auto& cache = std::get<tyloi::state::KvView>(layers[index]);
             validate_cache_configuration(full, cache);
             MfqCudaGuard guard(layout.device);
             auto saved = capture_kv(cache, cache_pos, state.bytes);
@@ -318,7 +318,7 @@ TextSessionState State::capture_text_session_state(
         MfqCudaGuard guard(layout.device);
         HybridBlockSessionState saved;
         if (const auto* full = std::get_if<FullLayout>(&layout.attention)) {
-            const auto& cache = std::get<KVCache>(layers[index]);
+            const auto& cache = std::get<tyloi::state::KvView>(layers[index]);
             validate_cache_configuration(*full, cache);
             saved.kind = HybridBlockSessionStateKind::FullAttention;
             saved.full_attention = capture_kv(cache, cache_pos, state.bytes);
@@ -360,7 +360,7 @@ State::Restore State::prepare(const TextSessionState& state) const {
         for (std::size_t index = 0; index < layout_.size(); ++index) {
             const auto& layout = layout_[index];
             const auto& full = std::get<FullLayout>(layout.attention);
-            validate_cache_configuration(full, std::get<KVCache>(layers[index]));
+            validate_cache_configuration(full, std::get<tyloi::state::KvView>(layers[index]));
             validate_full_snapshot(layout, full, full_layers->at(index));
             validate_full_snapshot_length(full_layers->at(index), state.cache_pos);
         }
@@ -374,7 +374,7 @@ State::Restore State::prepare(const TextSessionState& state) const {
             if (const auto* full = std::get_if<FullLayout>(&layout.attention)) {
                 if (saved.kind != HybridBlockSessionStateKind::FullAttention)
                     throw CudaSessionStateError("Qwen hybrid full-attention layer changed");
-                validate_cache_configuration(*full, std::get<KVCache>(layers[index]));
+                validate_cache_configuration(*full, std::get<tyloi::state::KvView>(layers[index]));
                 validate_full_snapshot(layout, *full, saved.full_attention);
                 validate_full_snapshot_length(saved.full_attention, state.cache_pos);
             } else {
@@ -414,7 +414,7 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
             const auto& saved = full_layers != nullptr
                                     ? full_layers->at(index)
                                     : hybrid_layers->at(index).full_attention;
-            auto& cache = std::get<KVCache>(restore.layers[index]);
+            auto& cache = std::get<tyloi::state::KvView>(restore.layers[index]);
             restore_kv(cache, saved, full->head_dim, full->dtype, full->quantization);
         } else {
             const auto& saved = hybrid_layers->at(index);

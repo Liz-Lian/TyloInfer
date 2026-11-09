@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/state/recurrent.h"
-#include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 #include "engine/models/state.h"
 #include "engine/models/session/snapshot.h"
 
@@ -18,7 +18,7 @@ struct MambaState {
     ::tyloi::DenseTensor speculative_xbc, speculative_dt;
 };
 
-using LayerState = std::variant<std::monostate, MambaState, KVCache>;
+using LayerState = std::variant<std::monostate, MambaState, tyloi::state::KvView>;
 
 class State {
 public:
@@ -34,7 +34,7 @@ public:
     void set_position_delta(std::int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate();
     void commit_speculative();
-    std::vector<::tyloi::DenseTensor> storage() const;
+    std::vector<::tyloi::Tensor> storage() const;
     std::vector<::tyloi::DenseTensor*> graph_state();
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
@@ -49,7 +49,7 @@ public:
         std::int64_t heads, head_dim, capacity;
         bool sliding;
         ::tyloi::ScalarType dtype;
-        KvQuantization quantization;
+        tyloi::state::KvQuantization quantization;
     };
     struct Layout {
         int device;

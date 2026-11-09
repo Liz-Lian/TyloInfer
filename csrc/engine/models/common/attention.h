@@ -64,12 +64,12 @@ struct FullAttention {
         tyloi::state::KvView cache, const tyloi::ops::RopeTable& rope,
         tyloi::ops::Trace* trace = nullptr) const;
 #else
-    tyloi::cuda::KvQuantization kv_quantization;
+    tyloi::state::KvQuantization kv_quantization;
     std::array<::tyloi::DenseTensor, 2> forward(
         const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
         ::tyloi::DenseTensor input,
         const AttentionStep& step,
-        AttentionKvView cache,
+        tyloi::state::KvView cache,
         AttentionScratch& scratch,
         const RopeCache& rope,
         Trace* trace = nullptr) const;

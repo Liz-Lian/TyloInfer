@@ -6,8 +6,7 @@
 #include <string>
 
 namespace tyloi::cuda {
-using KvQuantization = tyloi::state::KvQuantization;
-KvQuantization cuda_kv_quantization();
+tyloi::state::KvQuantization cuda_kv_quantization();
 int cuda_kv_packed_width(int dimension, int bits);
 std::string cuda_kv_quantization_tag();
 ::tyloi::DenseTensor cuda_kv_encode(const ::tyloi::DenseTensor&, int bits, bool value);
@@ -28,7 +27,7 @@ void cuda_kv_write_paged(const QuantizedKvPages&, const ::tyloi::DenseTensor& ke
 // Output [B,T,H,D], FP32. Indexer and recurrent state are never quantized.
 ::tyloi::DenseTensor cuda_kv_attention(const ::tyloi::DenseTensor& query,
     const ::tyloi::DenseTensor& keys, const ::tyloi::DenseTensor& values,
-    KvQuantization quantization, const ::tyloi::DenseTensor& selected = {},
+    tyloi::state::KvQuantization quantization, const ::tyloi::DenseTensor& selected = {},
     const ::tyloi::DenseTensor& positions = {}, int64_t query_offset = 0,
     const QuantizedKvPages& pages = {}, int64_t capacity = 0,
     const ::tyloi::DenseTensor& lengths = {}, const ::tyloi::DenseTensor& mask = {},

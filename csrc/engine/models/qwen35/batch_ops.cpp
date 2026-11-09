@@ -443,7 +443,7 @@ std::unique_ptr<tyloi::engine::Batch> make_batch(
     std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots) {
     if (serial && preallocate) {
         for (auto& layer_state : serial->layers)
-            if (auto* cache = std::get_if<KVCache>(&layer_state)) *cache = KVCache();
+            if (auto* cache = std::get_if<tyloi::state::KvView>(&layer_state)) *cache = {};
     }
     const qwen35::Batch::Options options{config.max_sequences, config.paged_kv, preallocate,
                                          cpu_offload, cached_slots};

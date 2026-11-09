@@ -14,35 +14,10 @@
 
 namespace tyloi::cuda {
 
-// The visible pair is the logical KV view returned by a cache append.  The
-// physical pair and page metadata are kept separate because decode kernels
-// consume the cache storage directly.
 #ifdef TYLOINFER_NATIVE_CUDA
-using AttentionKvView = tyloi::state::KvView;
 using AttentionInput = tyloi::ops::AttentionInput;
 using AttentionResult = tyloi::ops::AttentionResult;
 #else
-struct AttentionKvView {
-    ::tyloi::DenseTensor visible_key;
-    ::tyloi::DenseTensor visible_value;
-    ::tyloi::DenseTensor physical_key;
-    ::tyloi::DenseTensor physical_value;
-    ::tyloi::DenseTensor key_chunk_ptrs;
-    ::tyloi::DenseTensor value_chunk_ptrs;
-    ::tyloi::DenseTensor page_table;
-    KvQuantization quantization;
-    std::int64_t page_size = 0;
-    std::int64_t pages_per_chunk = 0;
-    std::int64_t heads = 0;
-    bool ring = false;
-    std::int64_t batch = 0;
-    std::int64_t head_dim = 0;
-    ::tyloi::ScalarType dtype = ::tyloi::kFloat16;
-
-    bool paged() const noexcept { return page_size > 0; }
-
-};
-
 struct AttentionInput {
     ::tyloi::DenseTensor query;
     ::tyloi::DenseTensor key;
@@ -66,7 +41,7 @@ inline ::tyloi::DenseTensor dense_kv_buffer(const std::shared_ptr<::tyloi::Tenso
 }
 #endif
 
-inline QuantizedKvPages quantized_pages(const AttentionKvView& kv) {
+inline QuantizedKvPages quantized_pages(const tyloi::state::KvView& kv) {
 #ifdef TYLOINFER_NATIVE_CUDA
     return kv.paged() ? QuantizedKvPages{dense_kv_buffer(kv.key_chunk_ptrs), dense_kv_buffer(kv.value_chunk_ptrs),
                                         dense_kv_buffer(kv.page_table), static_cast<int>(kv.page_size),
@@ -115,7 +90,7 @@ struct AttentionResult {
 };
 
 AttentionResult dispatch_attention(const AttentionInput& request,
-                                   const AttentionKvView& kv,
+                                   const tyloi::state::KvView& kv,
                                    const AttentionConfig& config,
                                    AttentionScratch& scratch,
                                    CudaProfiler& profiler);

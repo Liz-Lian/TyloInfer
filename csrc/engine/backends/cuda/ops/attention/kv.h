@@ -9,7 +9,7 @@ namespace tyloi::cuda {
 
 #ifndef TYLOINFER_NATIVE_CUDA
 std::pair<::tyloi::DenseTensor, ::tyloi::DenseTensor> append_kv(
-    AttentionKvView cache, bool aten_write,
+    tyloi::state::KvView cache, bool aten_write,
     ::tyloi::DenseTensor key, ::tyloi::DenseTensor value,
     ::tyloi::DenseTensor positions, int64_t start_position, int64_t end_position,
     bool contiguous_prefill_prefix = false);

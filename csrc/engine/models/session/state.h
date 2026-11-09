@@ -2,6 +2,7 @@
 
 #include "engine/tensor.h"
 #include "engine/models/session/paged.h"
+#include "engine/state/kv_view.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,9 +14,6 @@
 
 struct TextSessionState;
 enum class TextSessionStateKind : int;
-struct KVCache;
-namespace tyloi::state { struct KvQuantization; }
-namespace tyloi::cuda { using KvQuantization = tyloi::state::KvQuantization; }
 
 struct KvSnapshot {
     std::shared_ptr<const ::tyloi::Tensor> k;
@@ -98,7 +96,6 @@ bool session_tensor_layout_matches(
     const ::tyloi::Tensor& target,
     const ::tyloi::Tensor& source);
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor restore_session_tensor(
     ::tyloi::Tensor target,
     const ::tyloi::Tensor& source);
@@ -108,28 +105,17 @@ bool session_tensor_layout_matches(
     const ::tyloi::Tensor& source,
     int64_t dimension,
     int64_t capacity);
-#else
-void restore_session_tensor(
-    ::tyloi::DenseTensor& target,
-    const ::tyloi::Tensor* source);
-
-void restore_session_prefix_tensor(
-    ::tyloi::DenseTensor& target,
-    const ::tyloi::Tensor& source,
-    int64_t dimension,
-    int64_t capacity);
-#endif
 
 KvSnapshot capture_kv(
-    const KVCache& cache,
+    const tyloi::state::KvView& cache,
     int64_t cache_pos,
     size_t& bytes);
 
 void validate_kv(const KvSnapshot& state);
 
 void restore_kv(
-    KVCache& cache,
+    tyloi::state::KvView& cache,
     const KvSnapshot& state,
     int64_t head_dim,
     ::tyloi::ScalarType dtype,
-    tyloi::cuda::KvQuantization quantization);
+    tyloi::state::KvQuantization quantization);

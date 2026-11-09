@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/session/snapshot.h"
-#include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 
 #include <vector>
 
@@ -21,15 +21,15 @@ public:
     int64_t position() const noexcept { return cache_pos; }
     void advance(int64_t tokens) noexcept { cache_pos += tokens; }
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
-    std::vector<::tyloi::DenseTensor> storage() const;
-    std::vector<::tyloi::DenseTensor*> graph_state() { return {}; }
+    std::vector<::tyloi::Tensor> storage() const;
+    std::vector<::tyloi::Tensor*> graph_state() { return {}; }
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
     bool supports_paged_text_session_state() const;
     TextSessionState capture_text_session_state(const std::vector<int64_t>&) const;
     void restore_text_session_state(const TextSessionState&);
 
-    std::vector<KVCache> layers;
+    std::vector<tyloi::state::KvView> layers;
     int64_t cache_pos = 0, decode_position_delta = 0, batch = 0;
 
 private:
@@ -37,7 +37,7 @@ private:
         int device;
         bool cpu, sliding;
         int64_t heads, head_dim, capacity;
-        KvQuantization quantization;
+        tyloi::state::KvQuantization quantization;
     };
     std::vector<Layout> layout_;
 };

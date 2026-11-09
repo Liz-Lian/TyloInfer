@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 #include "engine/models/session/snapshot.h"
 #include "engine/models/state.h"
 
@@ -11,7 +11,7 @@ namespace tyloi::cuda::qwen35 {
 class MtpState final : public tyloi::models::MtpState {
 public:
     struct Restore {
-        std::vector<KVCache> kv;
+        std::vector<tyloi::state::KvView> kv;
         int64_t position;
     };
 
@@ -19,7 +19,7 @@ public:
         int device;
         int64_t heads, head_dim, capacity;
         ::tyloi::ScalarType dtype;
-        KvQuantization quantization;
+        tyloi::state::KvQuantization quantization;
     };
 
     MtpState(const tyloi::models::Mtp& owner, std::vector<Layout> layout, int64_t hidden);
@@ -28,7 +28,7 @@ public:
     void reset(int64_t batch);
     void advance(int64_t tokens);
     void trim(int64_t position);
-    std::vector<AttentionKvView> views() const;
+    std::vector<tyloi::state::KvView> views() const;
     MtpSessionState capture(int64_t target_position,
         const ::tyloi::DenseTensor& hidden) const;
     Restore prepare(const MtpSessionState& saved) const;
@@ -37,7 +37,7 @@ public:
 
 private:
     std::vector<Layout> layout_;
-    std::vector<KVCache> kv_;
+    std::vector<tyloi::state::KvView> kv_;
     int64_t hidden_;
     int64_t position_ = 0;
 };

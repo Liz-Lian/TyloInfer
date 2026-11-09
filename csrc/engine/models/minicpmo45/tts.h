@@ -12,7 +12,7 @@
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
-#include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 
 #include <array>
 
@@ -93,13 +93,13 @@ struct Tts {
 
     struct State {
         explicit State(const Tts& model) : kv(model.layers.size()) {}
-        std::vector<KVCache> kv;
+        std::vector<tyloi::state::KvView> kv;
         int64_t position = 0;
 
         void reset(int64_t batch) {
             position = 0;
             for (auto& cache : kv)
-                if (cache.defined() && cache.batch_size() != batch) cache = {};
+                if (cache.defined() && cache.batch != batch) cache = {};
         }
     };
 
@@ -314,11 +314,13 @@ struct Tts {
                 const auto capacity = mode.kv_capacity > 0
                     ? std::max(state.position + tokens, mode.kv_capacity)
                     : attention.max_position_embeddings;
-                cache = KVCache(batch, attention.kv_heads, capacity, attention.attention_head_dim,
-                    false, hidden.device(), ::tyloi::kFloat16, attention.kv_quantization);
+                cache = tyloi::state::allocate_kv(
+                    batch, attention.kv_heads, capacity,
+                    attention.attention_head_dim, false, hidden.device(),
+                    ::tyloi::kFloat16, attention.kv_quantization);
             }
             cache.quantization = attention.kv_quantization;
-            const std::array<AttentionKvView, 1> kv{cache.view()};
+            const std::array<tyloi::state::KvView, 1> kv{cache};
             const std::array<Task, 2> tasks{{
                 {task::Attention{0, 1, 2, attention, 0}, attention.layer},
 #ifdef TYLOINFER_NATIVE_CUDA

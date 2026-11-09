@@ -12,6 +12,7 @@
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/predictor.h"
+#include "engine/state/kv_view.h"
 
 #include <algorithm>
 #include <array>
@@ -129,10 +130,10 @@ struct Mtp final : tyloi::models::Mtp {
         for (std::size_t index = 0; index < layers.size(); ++index) {
             const auto &layer = layers[index];
             if (const auto *full = std::get_if<FullAttention>(&layer.weights)) {
-                auto &cache = result->states[index].emplace<KVCache>();
+                auto &cache = result->states[index].emplace<tyloi::state::KvView>();
                 if (::tyloi::cuda::options::kv_vram_preallocated()) {
                     MfqCudaGuard guard(layer.device);
-                    cache = KVCache(1, full->kv_heads,
+                    cache = tyloi::state::allocate_kv(1, full->kv_heads,
                         full->sliding ? full->attention_window : full->max_position_embeddings,
                         full->attention_head_dim, full->sliding,
                         ::tyloi::Device(::tyloi::kCUDA, layer.device),
@@ -150,9 +151,9 @@ struct Mtp final : tyloi::models::Mtp {
         auto& state = this->state<PredictorState>(value);
         TYLOINFER_RUNTIME_CHECK(next_batch > 0, "Nemotron-H MTP batch must be positive");
         for (auto &layer : state.states)
-            if (auto *cache = std::get_if<KVCache>(&layer))
-                if (!cache->defined() || cache->batch_size() != next_batch)
-                    *cache = KVCache();
+            if (auto *cache = std::get_if<tyloi::state::KvView>(&layer))
+                if (!cache->defined() || cache->batch != next_batch)
+                    *cache = {};
         std::fill(state.lengths.begin(), state.lengths.end(), 0);
         state.batch = next_batch;
     }
@@ -329,7 +330,7 @@ struct Mtp final : tyloi::models::Mtp {
                 continue;
             MfqCudaGuard guard(layers[index].device);
             snapshots.push_back(
-                capture_kv(std::get<KVCache>(state.states[index]), predictor_position, result.bytes));
+                capture_kv(std::get<tyloi::state::KvView>(state.states[index]), predictor_position, result.bytes));
         }
         auto hidden = last_target_hidden.clone();
         result.bytes += session_tensor_bytes(hidden);
@@ -355,7 +356,7 @@ struct Mtp final : tyloi::models::Mtp {
             const auto layer_index = saved[index];
             MfqCudaGuard guard(layers[layer_index].device);
             const auto& attention = std::get<FullAttention>(layers[layer_index].weights);
-            restore_kv(std::get<KVCache>(state.states[layer_index]), (*blocks)[index],
+            restore_kv(std::get<tyloi::state::KvView>(state.states[layer_index]), (*blocks)[index],
                 attention.attention_head_dim,
                 attention.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16,
                 attention.kv_quantization);

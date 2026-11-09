@@ -17,7 +17,7 @@ namespace tyloi::cuda::qwen35 {
 // remains owned by the aggregate state and is copied into its stable slot in place.
 struct BatchState {
     std::int64_t batch = 0;
-    std::vector<std::variant<KVCache, Recurrent::State>> layers;
+    std::vector<std::variant<tyloi::state::KvView, Recurrent::State>> layers;
 };
 
 // A request owns its prefill state and executor. The batch only copies state

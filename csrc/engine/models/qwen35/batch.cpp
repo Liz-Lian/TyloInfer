@@ -1,4 +1,5 @@
 #include "engine/models/qwen35/batch.h"
+#include "engine/ops.h"
 
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "components/error.h"
@@ -241,7 +242,7 @@ void Batch::bind_paged(State &state, const std::vector<const PagedKv::Sequence *
                 using T = std::decay_t<decltype(value)>;
                 if constexpr (std::is_same_v<T, Full>) {
                     MfqCudaGuard guard(layer.device);
-                    auto *cache = std::get_if<KVCache>(&state.layers[state_index]);
+                    auto *cache = std::get_if<tyloi::state::KvView>(&state.layers[state_index]);
                     TYLOINFER_RUNTIME_CHECK(cache, "continuous batching full state layout changed");
                     *cache = paged_kv_->view(paged_layer++, static_cast<int64_t>(sequences.size()));
                 }
@@ -255,8 +256,8 @@ void Batch::detach_paged(State &state) noexcept {
     if (!paged_kv_)
         return;
     for (auto &layer_state : state.layers)
-        if (auto *cache = std::get_if<KVCache>(&layer_state))
-            *cache = KVCache();
+        if (auto *cache = std::get_if<tyloi::state::KvView>(&layer_state))
+            *cache = {};
 }
 
 void Batch::bind_paged_slots() {
@@ -332,41 +333,46 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
         const auto &origin = source.layers[index];
         TYLOINFER_RUNTIME_CHECK(destination.index() == origin.index(),
                                 "continuous batching stable slot layout changed");
-        if (auto *cache = std::get_if<KVCache>(&destination)) {
-            const auto &from = std::get<KVCache>(origin);
-            TYLOINFER_RUNTIME_CHECK(from.defined() && from.batch_size() == 1,
+        if (auto *cache = std::get_if<tyloi::state::KvView>(&destination)) {
+            const auto &from = std::get<tyloi::state::KvView>(origin);
+            TYLOINFER_RUNTIME_CHECK(from.defined() && from.batch == 1,
                                     "continuous batching KV state is unavailable");
-            TYLOINFER_RUNTIME_CHECK(cache->is_paged() == from.is_paged(),
+            TYLOINFER_RUNTIME_CHECK(cache->paged() == from.paged(),
                                     "continuous batching stable slot KV layout changed");
-            if (!cache->is_paged()) {
-                TYLOINFER_RUNTIME_CHECK(from.k.dim() == 4 && from.v.dim() == 4 &&
-                                            from.k.size(0) == 1 && from.v.size(0) == 1 &&
+            if (!cache->paged()) {
+                const auto& from_key = from.physical_key;
+                const auto& from_value = from.physical_value;
+                TYLOINFER_RUNTIME_CHECK(from_key.dim() == 4 && from_value.dim() == 4 &&
+                                            from_key.size(0) == 1 && from_value.size(0) == 1 &&
                                             !from.ring &&
-                                            session_kv_geometry_matches(from.k, from.v),
+                                            session_kv_geometry_matches(from_key, from_value),
                                         "continuous batching KV cache geometry changed");
                 if (cache->defined())
                     TYLOINFER_RUNTIME_CHECK(
-                        cache->batch_size() == target.batch && !cache->ring &&
-                            cache->k.dim() == 4 && cache->v.dim() == 4 &&
-                            session_kv_geometry_matches(cache->k, cache->v) &&
-                            cache->k.size(1) == from.k.size(1) &&
-                            cache->v.size(1) == from.v.size(1) &&
-                            cache->k.size(2) == from.k.size(2) &&
-                            cache->v.size(2) == from.v.size(2) &&
-                            cache->k.size(3) == from.k.size(3) &&
-                            cache->v.size(3) == from.v.size(3),
+                        cache->batch == target.batch && !cache->ring &&
+                            cache->physical_key.dim() == 4 && cache->physical_value.dim() == 4 &&
+                            session_kv_geometry_matches(cache->physical_key, cache->physical_value) &&
+                            cache->physical_key.size(1) == from_key.size(1) &&
+                            cache->physical_value.size(1) == from_value.size(1) &&
+                            cache->physical_key.size(2) == from_key.size(2) &&
+                            cache->physical_value.size(2) == from_value.size(2) &&
+                            cache->physical_key.size(3) == from_key.size(3) &&
+                            cache->physical_value.size(3) == from_value.size(3),
                         "continuous batching stable slot KV geometry changed");
                 if (!cache->defined()) {
                     *cache = from;
-                    auto key_shape = from.k.sizes().vec();
-                    auto value_shape = from.v.sizes().vec();
+                    auto key_shape = from_key.sizes().vec();
+                    auto value_shape = from_value.sizes().vec();
                     key_shape[0] = target.batch;
                     value_shape[0] = target.batch;
-                    cache->k = ::tyloi::cuda::zeros(key_shape, from.k.options());
-                    cache->v = ::tyloi::cuda::zeros(value_shape, from.v.options());
+                    cache->physical_key = tyloi::ops::zeros(key_shape, from_key.options());
+                    cache->physical_value = tyloi::ops::zeros(value_shape, from_value.options());
+                    cache->batch = target.batch;
                 }
-                cache->k.narrow(0, slot, 1).copy_(from.k);
-                cache->v.narrow(0, slot, 1).copy_(from.v);
+                auto key_row = tyloi::ops::slice(cache->physical_key, 0, slot, slot + 1);
+                auto value_row = tyloi::ops::slice(cache->physical_value, 0, slot, slot + 1);
+                tyloi::ops::copy_into(key_row, from_key);
+                tyloi::ops::copy_into(value_row, from_value);
             }
         } else {
             auto &state = std::get<LinearState>(destination);

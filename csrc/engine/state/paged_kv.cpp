@@ -1,4 +1,6 @@
 #include "engine/state/paged_kv.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include <cuda_runtime_api.h>
 
@@ -158,13 +160,20 @@ void PagedKv::update(const std::vector<const Sequence*>& sequences) {
     page_table_updates_metric_.fetch_add(1, std::memory_order_relaxed);
 }
 
-KVCache PagedKv::view(size_t index, int64_t batch) const {
+tyloi::state::KvView PagedKv::view(size_t index, int64_t batch) const {
     TYLOINFER_RUNTIME_CHECK(batch > 0 && batch <= maximum_sequences_,
         "Paged KV view batch size is invalid");
     const auto& pool = layers_.at(index);
-    auto cache = KVCache::paged_view(pool.k_chunk_ptrs, pool.v_chunk_ptrs,
-        device_page_tables_.at(pool.layout.device), batch, pool.layout.heads,
-        pool.layout.head_dim, kPageSize, kPagesPerChunk, ::tyloi::kFloat16);
+    tyloi::state::KvView cache;
+    cache.key_chunk_ptrs = pool.k_chunk_ptrs;
+    cache.value_chunk_ptrs = pool.v_chunk_ptrs;
+    cache.page_table = device_page_tables_.at(pool.layout.device);
+    cache.batch = batch;
+    cache.heads = pool.layout.heads;
+    cache.head_dim = pool.layout.head_dim;
+    cache.page_size = kPageSize;
+    cache.pages_per_chunk = kPagesPerChunk;
+    cache.dtype = ::tyloi::kFloat16;
     cache.quantization = pool.layout.quantization;
     return cache;
 }

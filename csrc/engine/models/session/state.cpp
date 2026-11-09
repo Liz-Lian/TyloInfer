@@ -1,7 +1,7 @@
 #include "engine/models/session/state.h"
 #include "backend.h"
 #include "engine/models/session/snapshot.h"
-#include "engine/state/kv_cache.h"
+#include "engine/ops.h"
 
 #include <algorithm>
 #include <array>
@@ -174,94 +174,61 @@ bool session_tensor_layout_matches(const ::tyloi::Tensor &target,
     return true;
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor restore_session_tensor(::tyloi::Tensor target,
                                        const ::tyloi::Tensor &source) {
-#else
-void restore_session_tensor(::tyloi::DenseTensor &target,
-                            const ::tyloi::Tensor &source) {
-#endif
     if (!source.defined()) {
-#ifdef TYLOINFER_NATIVE_CUDA
         return {};
-#else
-        target = ::tyloi::DenseTensor();
-        return;
-#endif
     }
     const auto* dense = source.representation<::tyloi::DenseTensor>();
     if (!dense) throw CudaSessionStateError("session tensor is not dense");
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto* current = target.representation<::tyloi::DenseTensor>();
     if (!current || !session_tensor_layout_matches(target, source)) {
-#else
-    if (!session_tensor_layout_matches(target, source)) {
-#endif
-        target = ::tyloi::cuda::empty(dense->sizes(), dense->options());
+        target = tyloi::ops::empty(source.sizes(), source.options());
     }
-#ifdef TYLOINFER_NATIVE_CUDA
-    target.dense().copy_(*dense);
+    tyloi::ops::copy_into(target, source);
     return target;
-#else
-    target.copy_(*dense);
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor restore_session_prefix_tensor(::tyloi::Tensor target,
                                                const ::tyloi::Tensor &tensor, int64_t dimension,
                                                int64_t capacity) {
-#else
-void restore_session_prefix_tensor(::tyloi::DenseTensor &target,
-                                   const ::tyloi::Tensor &tensor, int64_t dimension,
-                                   int64_t capacity) {
-#endif
     const auto* dense = tensor.representation<::tyloi::DenseTensor>();
     if (!dense) throw CudaSessionStateError("session prefix tensor is not dense");
-    const auto& source = *dense;
+    const auto& source = tensor;
     if (!source.defined() || dimension < 0 || dimension >= source.dim() || capacity <= 0 ||
         source.size(dimension) > capacity) {
         throw CudaSessionStateError("session prefix tensor layout is invalid");
     }
     auto target_shape = source.sizes().vec();
     target_shape.at(static_cast<size_t>(dimension)) = capacity;
-#ifdef TYLOINFER_NATIVE_CUDA
     const auto* current = target.representation<::tyloi::DenseTensor>();
     const bool compatible =
         current && current->defined() && current->sizes() == ::tyloi::IntArrayRef(target_shape) &&
         current->scalar_type() == source.scalar_type() && current->device() == source.device();
-#else
-    const bool compatible =
-        target.defined() && target.sizes() == ::tyloi::IntArrayRef(target_shape) &&
-        target.scalar_type() == source.scalar_type() && target.device() == source.device();
-#endif
     if (!compatible) {
-        target = ::tyloi::cuda::empty(target_shape, source.options());
+        target = tyloi::ops::empty(target_shape, source.options());
     }
     if (source.size(dimension) > 0) {
-#ifdef TYLOINFER_NATIVE_CUDA
-        target.dense().narrow(dimension, 0, source.size(dimension)).copy_(source);
-#else
-        target.narrow(dimension, 0, source.size(dimension)).copy_(source);
-#endif
+        auto prefix = tyloi::ops::slice(target, dimension, 0, source.size(dimension));
+        tyloi::ops::copy_into(prefix, source);
     }
-#ifdef TYLOINFER_NATIVE_CUDA
     return target;
-#endif
 }
 
-KvSnapshot capture_kv(const KVCache &cache, int64_t cache_pos, size_t &bytes) {
-    if (!cache.k.defined() || !cache.v.defined() || cache.k.dim() != 4 ||
-        !session_kv_geometry_matches(cache.k,cache.v) || cache.k.size(0) != 1) {
+KvSnapshot capture_kv(const tyloi::state::KvView &cache, int64_t cache_pos, size_t &bytes) {
+    if (!cache.physical_key.representation<::tyloi::DenseTensor>() ||
+        !cache.physical_value.representation<::tyloi::DenseTensor>() ||
+        !cache.physical_key.defined() || !cache.physical_value.defined() || cache.physical_key.dim() != 4 ||
+        !session_kv_geometry_matches(cache.physical_key,cache.physical_value) || cache.physical_key.size(0) != 1) {
         throw std::runtime_error("full-attention KV cache is unavailable");
     }
     KvSnapshot state;
-    state.capacity = cache.k.size(2);
+    state.capacity = cache.physical_key.size(2);
     state.ring = cache.ring;
     const int64_t saved_tokens =
         state.ring ? state.capacity : std::min<int64_t>(cache_pos, state.capacity);
-    state.k = std::make_shared<::tyloi::DenseTensor>(cache.k.narrow(2, 0, saved_tokens).clone());
-    state.v = std::make_shared<::tyloi::DenseTensor>(cache.v.narrow(2, 0, saved_tokens).clone());
+    state.k = tyloi::ops::clone(tyloi::ops::slice(cache.physical_key, 2, 0, saved_tokens));
+    state.v = tyloi::ops::clone(tyloi::ops::slice(cache.physical_value, 2, 0, saved_tokens));
     bytes += session_tensor_bytes(*state.k);
     bytes += session_tensor_bytes(*state.v);
     return state;
@@ -277,24 +244,21 @@ void validate_kv(const KvSnapshot& state) {
     }
 }
 
-void restore_kv(KVCache &cache, const KvSnapshot &state, int64_t head_dim,
-                ::tyloi::ScalarType dtype, tyloi::cuda::KvQuantization quantization) {
+void restore_kv(tyloi::state::KvView &cache, const KvSnapshot &state, int64_t head_dim,
+                ::tyloi::ScalarType dtype, tyloi::state::KvQuantization quantization) {
     validate_kv(state);
-#ifdef TYLOINFER_NATIVE_CUDA
-    cache.k = restore_session_prefix_tensor(cache.k, state.k, 2, state.capacity).dense();
-    cache.v = restore_session_prefix_tensor(cache.v, state.v, 2, state.capacity).dense();
-#else
-    restore_session_prefix_tensor(cache.k, state.k, 2, state.capacity);
-    restore_session_prefix_tensor(cache.v, state.v, 2, state.capacity);
-#endif
+    cache.physical_key = restore_session_prefix_tensor(cache.physical_key, state.k, 2, state.capacity);
+    cache.physical_value = restore_session_prefix_tensor(cache.physical_value, state.v, 2, state.capacity);
+    cache.visible_key = {};
+    cache.visible_value = {};
     cache.ring = state.ring;
     cache.quantization = quantization;
-    cache.paged_batch = state.k->size(0);
-    cache.paged_heads = state.k->size(1);
-    cache.paged_head_dim = head_dim;
-    cache.paged_dtype = dtype;
-    cache.k_chunk_ptrs = {};
-    cache.v_chunk_ptrs = {};
+    cache.batch = state.k->size(0);
+    cache.heads = state.k->size(1);
+    cache.head_dim = head_dim;
+    cache.dtype = dtype;
+    cache.key_chunk_ptrs = {};
+    cache.value_chunk_ptrs = {};
     cache.page_table = {};
     cache.page_size = 0;
     cache.pages_per_chunk = 0;

@@ -1,5 +1,7 @@
 #include "engine/models/qwen35/mtp_state.h"
 #include "engine/models/session/snapshot.h"
+#include "engine/ops.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 
 #include <algorithm>
 
@@ -16,18 +18,22 @@ void MtpState::prepare(int64_t batch, int64_t tokens, int64_t kl_capacity) {
         TYLOINFER_RUNTIME_CHECK(position_ <= layout.capacity - tokens,
             "Qwen MTP history exceeds context capacity");
         if (kv_[index].defined()) {
-            TYLOINFER_RUNTIME_CHECK(kv_[index].batch_size() == batch,
+            TYLOINFER_RUNTIME_CHECK(kv_[index].batch == batch,
                 "MTP batch changed without resetting state");
-            if (kv_[index].k.size(2) >= position_ + tokens) continue;
+            if (kv_[index].physical_key.size(2) >= position_ + tokens) continue;
         }
         MfqCudaGuard guard(layout.device);
         const auto capacity = kl_capacity > 0
             ? std::min(layout.capacity, std::max(position_ + tokens, kl_capacity)) : layout.capacity;
-        KVCache grown(batch, layout.heads, capacity, layout.head_dim, false,
+        auto grown = tyloi::state::allocate_kv(batch, layout.heads, capacity, layout.head_dim, false,
             ::tyloi::Device(::tyloi::kCUDA, layout.device), layout.dtype, layout.quantization);
         if (kv_[index].defined() && position_ > 0) {
-            grown.k.narrow(2, 0, position_).copy_(kv_[index].k.narrow(2, 0, position_));
-            grown.v.narrow(2, 0, position_).copy_(kv_[index].v.narrow(2, 0, position_));
+            auto key_prefix = tyloi::ops::slice(grown.physical_key, 2, 0, position_);
+            auto value_prefix = tyloi::ops::slice(grown.physical_value, 2, 0, position_);
+            tyloi::ops::copy_into(key_prefix,
+                tyloi::ops::slice(kv_[index].physical_key, 2, 0, position_));
+            tyloi::ops::copy_into(value_prefix,
+                tyloi::ops::slice(kv_[index].physical_value, 2, 0, position_));
         }
         kv_[index] = std::move(grown);
     }
@@ -36,7 +42,7 @@ void MtpState::prepare(int64_t batch, int64_t tokens, int64_t kl_capacity) {
 void MtpState::reset(int64_t batch) {
     position_ = 0;
     for (auto& cache : kv_)
-        if (!cache.defined() || cache.batch_size() != batch) cache = {};
+        if (!cache.defined() || cache.batch != batch) cache = {};
 }
 
 void MtpState::advance(int64_t tokens) {
@@ -50,12 +56,12 @@ void MtpState::trim(int64_t position) {
     position_ = position;
 }
 
-std::vector<AttentionKvView> MtpState::views() const {
-    std::vector<AttentionKvView> result;
+std::vector<tyloi::state::KvView> MtpState::views() const {
+    std::vector<tyloi::state::KvView> result;
     result.reserve(kv_.size());
     for (const auto& cache : kv_) {
         TYLOINFER_RUNTIME_CHECK(cache.defined(), "MTP KV state is unavailable");
-        result.push_back(cache.view());
+        result.push_back(cache);
     }
     return result;
 }
@@ -104,7 +110,7 @@ MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
             block.k->get_device() != layout.device || block.v->get_device() != layout.device)
             throw CudaSessionStateError("Qwen MTP session KV topology changed");
     }
-    return {std::vector<KVCache>(kv_.size()), saved.cache_pos};
+    return {std::vector<tyloi::state::KvView>(kv_.size()), saved.cache_pos};
 }
 
 void MtpState::stage(Restore& restore, const MtpSessionState& saved) const {

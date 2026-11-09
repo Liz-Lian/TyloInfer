@@ -2,7 +2,7 @@
 
 #include "engine/models/session/snapshot.h"
 #include "engine/models/state.h"
-#include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 #include "engine/state/recurrent.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
@@ -24,14 +24,14 @@ struct LinearState {
     std::int64_t speculative_projection_batches = 0;
 };
 
-using LayerState = std::variant<KVCache, LinearState>;
+using LayerState = std::variant<tyloi::state::KvView, LinearState>;
 
 struct FullLayout {
     std::int64_t kv_heads = 0;
     std::int64_t head_dim = 0;
     bool sliding = false;
     ::tyloi::ScalarType dtype = ::tyloi::kFloat16;
-    KvQuantization quantization;
+    tyloi::state::KvQuantization quantization;
     std::int64_t capacity = 0;
 };
 
@@ -73,7 +73,7 @@ public:
     void abort_speculative() noexcept;
 
     std::vector<::tyloi::DenseTensor*> graph_state();
-    std::vector<::tyloi::DenseTensor> storage() const;
+    std::vector<::tyloi::Tensor> storage() const;
 
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;

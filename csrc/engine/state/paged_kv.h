@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/state/pages.h"
-#include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 
 #include <atomic>
 #include <cstdint>
@@ -19,7 +19,7 @@ public:
         int device = 0;
         int64_t heads = 0;
         int64_t head_dim = 0;
-        KvQuantization quantization;
+        tyloi::state::KvQuantization quantization;
     };
     struct Sequence {
     private:
@@ -49,7 +49,7 @@ public:
     void release(Sequence& sequence);
     void update(const std::vector<const Sequence*>& sequences);
     // Views borrow chunk backing and must retire before this store.
-    KVCache view(size_t layer, int64_t batch) const;
+    tyloi::state::KvView view(size_t layer, int64_t batch) const;
     Stats stats() const noexcept;
 
 private:
