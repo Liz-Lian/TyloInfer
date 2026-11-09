@@ -1,7 +1,5 @@
-namespace mfq::cuda::commands {
-int run_diagnostics(int argc, char** argv);
-}
+#include "commands/run.h"
 
 int main(int argc, char** argv) {
-    return mfq::cuda::commands::run_diagnostics(argc, argv);
+    return tyloi::cuda::commands::run_diagnostics(argc, argv);
 }

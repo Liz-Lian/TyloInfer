@@ -137,6 +137,59 @@ set_target_properties(mfq-cuda-engine PROPERTIES
 option(TYLOINFER_BUILD_CLI_TOOLS
     "Build the native CLI tools (mfq-runtime, mfq-diagnostics, mfq-eval)" OFF)
 if(TYLOINFER_BUILD_CLI_TOOLS)
+    option(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME
+        "Build the optional LibTorch CUDA runtime used only for A/B validation"
+        OFF)
+    if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
+        if(NOT TARGET mfq-transport)
+            message(FATAL_ERROR
+                "TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME requires TYLOINFER_BUILD_TRANSPORT=ON")
+        endif()
+        find_package(Python REQUIRED COMPONENTS Interpreter Development)
+        if(NOT TARGET CUDA::nvToolsExt)
+            find_library(NVTOOLSEXT_LIBRARY
+                NAMES nvToolsExt nvToolsExt64_1
+                PATHS "${CUDAToolkit_LIBRARY_DIR}" "$ENV{CUDA_PATH}/lib/x64"
+                NO_DEFAULT_PATH)
+            if(NVTOOLSEXT_LIBRARY)
+                add_library(CUDA::nvToolsExt UNKNOWN IMPORTED)
+                set_target_properties(CUDA::nvToolsExt PROPERTIES
+                    IMPORTED_LOCATION "${NVTOOLSEXT_LIBRARY}")
+            else()
+                add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+            endif()
+        endif()
+        find_package(Torch REQUIRED)
+        add_library(mfq-cuda-torch-engine STATIC
+            ${TYLOINFER_CUDA_OP_SOURCES}
+            ${TYLOINFER_CUDA_EXECUTION_SOURCES}
+            ${TYLOINFER_CUDA_LOADING_SOURCES}
+            ${TYLOINFER_CUDA_ENGINE_SOURCES}
+            ${TYLOINFER_MODELS_CUDA_SOURCES}
+            ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/ggml.cu
+            ${TYLOINFER_CUDA_KERNEL_SOURCES}
+        )
+        mfq_configure_cuda_engine_target(mfq-cuda-torch-engine)
+        target_link_libraries(mfq-cuda-torch-engine
+            PUBLIC ${TORCH_LIBRARIES} Python::Python
+            PRIVATE
+                CUDA::cuda_driver
+                CUDA::cudart
+                CUDA::cublas
+                mfq-cuda-storage
+        )
+        target_compile_definitions(mfq-cuda-torch-engine PRIVATE NOMINMAX)
+        target_compile_options(mfq-cuda-torch-engine PRIVATE
+            "$<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>"
+        )
+        set_target_properties(mfq-cuda-torch-engine PROPERTIES
+            CUDA_ARCHITECTURES "${TYLOINFER_CUDA_ARCHITECTURES}"
+            CUDA_RUNTIME_LIBRARY Shared
+            CUDA_STANDARD 20
+            CUDA_STANDARD_REQUIRED ON
+        )
+    endif()
     include(${PROJECT_SOURCE_DIR}/diagnostics/cuda.cmake)
+    include(${PROJECT_SOURCE_DIR}/eval/cuda.cmake)
     include(${PROJECT_SOURCE_DIR}/apps/cuda.cmake)
 endif()

@@ -8,13 +8,6 @@ if(TARGET mfq-transport)
     )
     target_link_libraries(mfq-runtime PRIVATE
         mfq-cuda-engine mfq-transport)
-    target_include_directories(mfq-runtime PRIVATE
-        ${PROJECT_SOURCE_DIR}
-    )
-    target_compile_features(mfq-runtime PRIVATE cxx_std_20)
-    set_target_properties(mfq-runtime PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
-    )
 endif()
 
 add_executable(mfq-diagnostics
@@ -23,76 +16,45 @@ add_executable(mfq-diagnostics
     ${PROJECT_SOURCE_DIR}/commands/cli.cpp
     ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
 )
-mfq_configure_cuda_engine_target(mfq-diagnostics)
-target_compile_definitions(mfq-diagnostics PRIVATE TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
 target_link_libraries(mfq-diagnostics PRIVATE mfq-cuda-diagnostics)
-target_compile_features(mfq-diagnostics PRIVATE cxx_std_20)
-if(MSVC)
-    target_compile_options(mfq-diagnostics PRIVATE /utf-8 /EHsc /bigobj)
-endif()
-set_target_properties(mfq-diagnostics PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
-)
 
-option(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME
-    "Build the optional LibTorch CUDA runtime used only for A/B validation"
-    OFF)
-if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
-    if(NOT TARGET mfq-transport)
-        message(FATAL_ERROR
-            "TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME requires TYLOINFER_BUILD_TRANSPORT=ON")
-    endif()
-    find_package(Python REQUIRED COMPONENTS Interpreter Development)
-    if(NOT TARGET CUDA::nvToolsExt)
-        find_library(NVTOOLSEXT_LIBRARY
-            NAMES nvToolsExt nvToolsExt64_1
-            PATHS "${CUDAToolkit_LIBRARY_DIR}" "$ENV{CUDA_PATH}/lib/x64"
-            NO_DEFAULT_PATH)
-        if(NVTOOLSEXT_LIBRARY)
-            add_library(CUDA::nvToolsExt UNKNOWN IMPORTED)
-            set_target_properties(CUDA::nvToolsExt PROPERTIES
-                IMPORTED_LOCATION "${NVTOOLSEXT_LIBRARY}")
-        else()
-            add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
-        endif()
-    endif()
-    find_package(Torch REQUIRED)
+add_executable(mfq-eval
+    ${PROJECT_SOURCE_DIR}/apps/eval_main.cpp
+    ${PROJECT_SOURCE_DIR}/commands/eval.cpp
+    ${PROJECT_SOURCE_DIR}/commands/cli.cpp
+)
+target_link_libraries(mfq-eval PRIVATE mfq-cuda-eval)
+
+if(TARGET mfq-cuda-torch-engine)
     add_executable(mfq-runtime-torch
         ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
         ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
         ${PROJECT_SOURCE_DIR}/commands/cli.cpp
         ${PROJECT_SOURCE_DIR}/commands/reference.cpp
-        ${TYLOINFER_CUDA_OP_SOURCES}
-        ${TYLOINFER_CUDA_EXECUTION_SOURCES}
-        ${TYLOINFER_CUDA_LOADING_SOURCES}
-        ${TYLOINFER_CUDA_ENGINE_SOURCES}
-        ${TYLOINFER_MODELS_CUDA_SOURCES}
-        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/ggml.cu
-        ${TYLOINFER_CUDA_KERNEL_SOURCES}
+        ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     )
-    mfq_configure_cuda_engine_target(mfq-runtime-torch)
-    target_include_directories(mfq-runtime-torch PRIVATE ${Python_INCLUDE_DIRS})
     target_link_libraries(mfq-runtime-torch PRIVATE
-        mfq-transport
-        ${TORCH_LIBRARIES}
-        Python::Python
-        CUDA::cuda_driver
-        CUDA::cudart
-        CUDA::cublas
-        mfq-cuda-storage
-    )
-    target_compile_definitions(mfq-runtime-torch PRIVATE NOMINMAX)
-    target_compile_options(mfq-runtime-torch PRIVATE
-        "$<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>"
-    )
+        mfq-cuda-torch-engine mfq-transport)
     set_target_properties(mfq-runtime-torch PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
         CUDA_ARCHITECTURES "${TYLOINFER_CUDA_ARCHITECTURES}"
         CUDA_RUNTIME_LIBRARY Shared
         CUDA_STANDARD 20
         CUDA_STANDARD_REQUIRED ON
     )
 endif()
+
+foreach(target mfq-runtime mfq-diagnostics mfq-eval mfq-runtime-torch)
+    if(TARGET ${target})
+        mfq_configure_cuda_engine_target(${target})
+        target_compile_definitions(${target} PRIVATE NOMINMAX)
+        if(MSVC)
+            target_compile_options(${target} PRIVATE /utf-8 /EHsc /bigobj)
+        endif()
+        set_target_properties(${target} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
+        )
+    endif()
+endforeach()
 
 if(NOT WIN32 AND TARGET mfq-runtime)
     set(TYLOINFER_SYSTEM_RUNTIME_DIR

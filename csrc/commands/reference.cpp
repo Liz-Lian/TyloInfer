@@ -1,4 +1,5 @@
 #include "cli.h"
+#include "run.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/common/components.h"

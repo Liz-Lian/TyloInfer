@@ -2,6 +2,7 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "cli.h"
+#include "run.h"
 #include "engine/engine.h"
 #include "engine/load.h"
 #include "minicpmo45.h"
@@ -269,6 +270,8 @@ int execute_runtime(RuntimeCommandOptions options) {
 } // namespace
 
 int run_runtime(int argc, char** argv) {
+    if (argc > 1 && std::string_view(argv[1]) == "--wt2-reference")
+        return run_reference(argc, argv);
     try {
         ArgCursor args(argc, argv);
         auto options = parse_runtime(args);

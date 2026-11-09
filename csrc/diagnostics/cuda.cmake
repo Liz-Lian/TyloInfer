@@ -9,3 +9,7 @@ add_library(mfq-cuda-diagnostics STATIC
 mfq_configure_cuda_engine_target(mfq-cuda-diagnostics)
 target_compile_definitions(mfq-cuda-diagnostics PRIVATE TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
 target_link_libraries(mfq-cuda-diagnostics PUBLIC mfq-cuda-engine)
+
+if(MSVC)
+    target_compile_options(mfq-cuda-diagnostics PRIVATE /utf-8 /EHsc /bigobj)
+endif()
