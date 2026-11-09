@@ -1,4 +1,5 @@
 #include "engine/models/qwen35/forward.h"
+#include "engine/models/common/ffn.h"
 
 #include "engine/backends/cuda/native/collectives.h"
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -402,19 +403,20 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
 #ifdef TYLOINFER_NATIVE_CUDA
         auto output = attention.forward(::tyloi::Tensor(std::move(input)), local_step, *cache,
                                         rope, trace);
-        auto residual = output[0].dense();
-        auto attention_output = output[1].dense();
+        return ::tyloi::models::full_ffn(
+            full->ffn, full->ffn_norm, output[0], output[1],
+            attention.rms_norm_eps, attention.norm_weight_offset,
+            attention.official_bf16, attention.attention_output_gate, trace).dense();
 #else
         auto output = attention.forward(executor.projector(options.ffn), executor.profiler(),
                                         executor.attention_options(), std::move(input), local_step,
                                         *cache, executor.attention_scratch(scratch_offset), rope,
                                         trace);
-        auto residual = std::move(output[0]);
-        auto attention_output = std::move(output[1]);
+        return ::tyloi::models::full_ffn(
+            full->ffn, full->ffn_norm, std::move(output[0]), std::move(output[1]),
+            attention.rms_norm_eps, attention.norm_weight_offset,
+            attention.official_bf16, attention.attention_output_gate, trace).dense();
 #endif
-        return executor.full_ffn(full->ffn, full->ffn_norm, attention,
-                                 std::move(residual), std::move(attention_output), options.ffn,
-                                 trace);
     }
     const auto* linear = std::get_if<Linear>(&layer.weights);
     auto* linear_state = std::get_if<LinearState>(&state);
@@ -440,8 +442,9 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
         auto output = linear->attention.forward(
             executor.projector(options.ffn), executor.profiler(), options.linear,
             std::move(input), linear_view, captured);
-        auto result = executor.linear_ffn(linear->ffn, linear->ffn_norm, linear->attention,
-                                          std::move(output[0]), std::move(output[1]), options.ffn);
+        auto result = ::tyloi::models::linear_ffn(
+            linear->ffn, linear->ffn_norm, std::move(output[0]), std::move(output[1]),
+            attention.rms_norm_eps, attention.norm_weight_offset).dense();
         if (confirmed_prefix > 0) {
             ++linear_state->speculative_projection_batches;
             ++linear_state->speculative_ffn_batches;

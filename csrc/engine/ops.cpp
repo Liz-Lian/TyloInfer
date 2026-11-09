@@ -6,6 +6,8 @@
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/ffn/dense.h"
+#include "engine/backends/cuda/ops/ffn/residual.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/tensor.h"
 #include "engine/backends/cuda/native/tensor/tensor.h"
@@ -61,6 +63,11 @@ void compatible(const Tensor& left_tensor, const Tensor& right_tensor) {
     input(right);
     if (left.device() != right.device())
         throw std::invalid_argument("tensor devices do not match");
+}
+void residual_inputs(const Tensor& residual, const Tensor& value) {
+    compatible(residual, value);
+    if (residual.dim() != 3 || residual.sizes() != value.sizes())
+        throw std::invalid_argument("residual inputs must have matching [batch,tokens,width] shapes");
 }
 void require_cuda(const Tensor& value_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
@@ -271,6 +278,33 @@ Tensor add_residual(const Tensor& residual_tensor, const Tensor& value_tensor, R
     compatible(residual, value);
     require_cuda(residual);
     return owner(cuda::ops::add_residual(residual, value, mode == ResidualMode::configured));
+}
+
+std::array<Tensor, 2> residual_norm(const Tensor& residual, const Tensor& value,
+        const Tensor& weight, double eps, double offset, bool bf16) {
+    residual_inputs(residual, value);
+    compatible(residual, weight);
+    if (weight.numel() != residual.size(2))
+        throw std::invalid_argument("residual norm weight has the wrong width");
+    auto result = cuda::ops::residual_norm(dense(residual), dense(value), weight, eps, offset, bf16);
+    return {owner(std::move(result[0])), owner(std::move(result[1]))};
+}
+std::array<Tensor, 2> recurrent_norm(const Tensor& residual, const Tensor& value,
+        const Tensor& weight, double eps, double offset) {
+    residual_inputs(residual, value);
+    compatible(residual, weight);
+    if (weight.numel() != residual.size(2))
+        throw std::invalid_argument("residual norm weight has the wrong width");
+    auto result = cuda::ops::recurrent_norm(dense(residual), dense(value), weight, eps, offset);
+    return {owner(std::move(result[0])), owner(std::move(result[1]))};
+}
+Tensor residual_add(const Tensor& residual, const Tensor& value) {
+    residual_inputs(residual, value);
+    return owner(cuda::ops::residual_add(dense(residual), dense(value)));
+}
+Tensor recurrent_add(const Tensor& residual, const Tensor& value) {
+    residual_inputs(residual, value);
+    return owner(cuda::ops::recurrent_add(dense(residual), dense(value)));
 }
 std::optional<ResidualNorms> residual_norms(const Tensor& residual_tensor, const Tensor& attention_tensor, const Tensor& attention_weight_tensor,
                                             const Tensor& dense_weight_tensor, const Tensor& router_weight_tensor,
@@ -537,6 +571,30 @@ std::shared_ptr<Tensor> mlp(const Tensor& value_tensor, std::span<const std::sha
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
     return owner(cuda::ops::mlp(value, gate_up, down, activation, swiglu_limit));
+}
+Tensor bf16_mlp(const Tensor& value, std::span<const Tensor> gate_up, const Tensor& down,
+        MlpActivation activation, double swiglu_limit) {
+    input(value);
+    return owner(cuda::ops::bf16_mlp(dense(value), gate_up, down, activation, swiglu_limit));
+}
+Tensor additive_mlp(const Tensor& value,
+        std::span<const Tensor> gate_up, const Tensor& down, MlpActivation activation, double limit,
+        std::span<const Tensor> extra_gate_up, const Tensor& extra_down,
+        MlpActivation extra_activation, double extra_limit) {
+    input(value);
+    return owner(cuda::ops::additive_mlp(dense(value), gate_up, down, activation, limit,
+        extra_gate_up, extra_down, extra_activation, extra_limit));
+}
+std::optional<Tensor> mlp_residual(const Tensor& value, const Tensor& residual,
+        std::span<const Tensor> gate_up, const Tensor& down, MlpActivation activation,
+        double swiglu_limit, bool recurrent) {
+    compatible(value, residual);
+    if (value.dim() != 2 || value.sizes() != residual.sizes())
+        throw std::invalid_argument("fused MLP residual inputs must have matching [rows,width] shapes");
+    auto result = cuda::ops::mlp_residual(dense(value), dense(residual), gate_up, down,
+        activation, swiglu_limit, recurrent);
+    if (!result) return std::nullopt;
+    return owner(std::move(*result));
 }
 std::vector<std::shared_ptr<Tensor>> project_group(const Tensor& value_tensor, std::span<const std::shared_ptr<const Tensor>> group) {
     const auto& value = ::tyloi::ops::dense(value_tensor);

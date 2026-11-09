@@ -1,5 +1,6 @@
 #include "engine/models/qwen35/mtp.h"
 #include "engine/models/session/snapshot.h"
+#include "engine/models/common/ffn.h"
 
 #include "engine/models/qwen35/state.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -174,16 +175,20 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
 #ifdef TYLOINFER_NATIVE_CUDA
         auto attention_output = full_attention.forward(current, attention, kv[index], rope_,
             trace_for(full_attention.layer));
-        current = ::tyloi::Tensor(executor_->full_ffn(layer.ffn, layer.ffn_norm, full_attention,
-            std::move(attention_output[0].dense()), std::move(attention_output[1].dense()),
-            mode, trace_for(full_attention.layer)));
+        current = ::tyloi::models::full_ffn(
+            layer.ffn, layer.ffn_norm, attention_output[0], attention_output[1],
+            full_attention.rms_norm_eps, full_attention.norm_weight_offset,
+            full_attention.official_bf16, full_attention.attention_output_gate,
+            trace_for(full_attention.layer));
 #else
         auto attention_output = full_attention.forward(project, executor_->profiler(),
             executor_->attention_options(), std::move(current), attention, kv[index],
             executor_->attention_scratch(index), rope_, trace_for(full_attention.layer));
-        current = executor_->full_ffn(layer.ffn, layer.ffn_norm, full_attention,
-            std::move(attention_output[0]), std::move(attention_output[1]), mode,
-            trace_for(full_attention.layer));
+        current = ::tyloi::models::full_ffn(
+            layer.ffn, layer.ffn_norm, std::move(attention_output[0]),
+            std::move(attention_output[1]), full_attention.rms_norm_eps,
+            full_attention.norm_weight_offset, full_attention.official_bf16,
+            full_attention.attention_output_gate, trace_for(full_attention.layer)).dense();
 #endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA

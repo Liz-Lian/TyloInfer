@@ -29,6 +29,7 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 set(TYLOINFER_CUDA_MODEL_SOURCES "${TYLOINFER_CUDA_MODEL_SOURCES}" PARENT_SCOPE)
 
 set(TYLOINFER_MODELS_CUDA_SOURCES
+    ${PROJECT_SOURCE_DIR}/engine/models/common/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/model.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/state.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/forward.cpp

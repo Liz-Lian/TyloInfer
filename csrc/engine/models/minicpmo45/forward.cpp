@@ -1,4 +1,5 @@
 #include "engine/models/minicpmo45/forward.h"
+#include "engine/models/common/ffn.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
@@ -158,14 +159,18 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
 #ifdef TYLOINFER_NATIVE_CUDA
         auto scope = executor.enter(layer.device, mode.ffn);
         auto output = attention.forward(::tyloi::Tensor(std::move(hidden)), step, cache, *rope, layer_trace);
-        hidden = executor.full_ffn(layer.ffn, layer.ffn_norm, attention,
-            output[0].dense(), output[1].dense(), mode.ffn, layer_trace);
+        hidden = ::tyloi::models::full_ffn(
+            layer.ffn, layer.ffn_norm, output[0], output[1],
+            attention.rms_norm_eps, attention.norm_weight_offset,
+            attention.official_bf16, attention.attention_output_gate, layer_trace).dense();
 #else
         auto output = attention.forward(executor.projector(mode.ffn), executor.profiler(),
             executor.attention_options(), std::move(hidden), step, cache,
             executor.attention_scratch(2 * index), *rope, layer_trace);
-        hidden = executor.full_ffn(layer.ffn, layer.ffn_norm, attention,
-            std::move(output[0]), std::move(output[1]), mode.ffn, layer_trace);
+        hidden = ::tyloi::models::full_ffn(
+            layer.ffn, layer.ffn_norm, std::move(output[0]), std::move(output[1]),
+            attention.rms_norm_eps, attention.norm_weight_offset,
+            attention.official_bf16, attention.attention_output_gate, layer_trace).dense();
 #endif
         trace();
     }

@@ -1,11 +1,17 @@
 #include "residual.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/native/profile.h"
 
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/executor/executor.h"
+#endif
+
+#include <optional>
 #include <vector>
 
 namespace tyloi::cuda {
-
+namespace {
 
 std::array<DenseTensor, 2> full_norm(
     CudaProfiler& profiler,
@@ -162,4 +168,51 @@ DenseTensor linear_add(CudaProfiler& profiler, bool fp32, DenseTensor residual, 
     });
 }
 
+} // namespace
 } // namespace tyloi::cuda
+
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace tyloi::cuda::ops {
+
+std::array<DenseTensor, 2> residual_norm(
+    DenseTensor residual, DenseTensor value, const ::tyloi::Tensor& weight,
+    double eps, double offset, bool bf16) {
+    std::optional<MfqCudaGuard> guard;
+    if (residual.is_cuda()) guard.emplace(residual.device().index);
+    auto& executor = Executor::current();
+    return full_norm(executor.profiler(), weight, eps, offset, bf16,
+                     executor.attention_options().fused_norm,
+                     executor.options().dense.fp32_residual,
+                     std::move(residual), std::move(value));
+}
+
+std::array<DenseTensor, 2> recurrent_norm(
+    DenseTensor residual, DenseTensor value, const ::tyloi::Tensor& weight,
+    double eps, double offset) {
+    std::optional<MfqCudaGuard> guard;
+    if (residual.is_cuda()) guard.emplace(residual.device().index);
+    auto& executor = Executor::current();
+    return linear_norm(executor.profiler(), weight, eps, offset,
+                       executor.options().dense.fp32_residual,
+                       std::move(residual), std::move(value));
+}
+
+DenseTensor residual_add(DenseTensor residual, DenseTensor value) {
+    std::optional<MfqCudaGuard> guard;
+    if (residual.is_cuda()) guard.emplace(residual.device().index);
+    auto& executor = Executor::current();
+    return full_add(executor.profiler(), executor.options().dense.fp32_residual,
+                    executor.options().dense.bf16_residual,
+                    std::move(residual), std::move(value));
+}
+
+DenseTensor recurrent_add(DenseTensor residual, DenseTensor value) {
+    std::optional<MfqCudaGuard> guard;
+    if (residual.is_cuda()) guard.emplace(residual.device().index);
+    auto& executor = Executor::current();
+    return linear_add(executor.profiler(), executor.options().dense.fp32_residual,
+                      std::move(residual), std::move(value));
+}
+
+} // namespace tyloi::cuda::ops
+#endif

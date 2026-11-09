@@ -102,6 +102,15 @@ enum class ResidualMode { preserve, configured };
 Tensor add_residual(const Tensor& residual, const Tensor& value,
                     ResidualMode mode = ResidualMode::preserve);
 
+// Residual and value are [batch,tokens,width]. Both results preserve that shape.
+// Recurrent normalization retains its existing precision and accumulation policy.
+std::array<Tensor, 2> residual_norm(const Tensor& residual, const Tensor& value,
+    const Tensor& weight, double eps, double offset, bool bf16);
+std::array<Tensor, 2> recurrent_norm(const Tensor& residual, const Tensor& value,
+    const Tensor& weight, double eps, double offset);
+Tensor residual_add(const Tensor& residual, const Tensor& value);
+Tensor recurrent_add(const Tensor& residual, const Tensor& value);
+
 struct ResidualNorms {
     std::shared_ptr<Tensor> residual, dense, router, experts;
 };
@@ -278,6 +287,18 @@ enum class MlpActivation { silu_gated, gelu_gated, relu_squared };
 // Prepared weights determine supported host and sharded MLP paths.
 std::shared_ptr<Tensor> mlp(const Tensor& input, std::span<const std::shared_ptr<const Tensor>> gate_up, const ::tyloi::Tensor& down,
            MlpActivation activation, double swiglu_limit);
+// BF16 MLP retains its source-precision projection and activation path.
+Tensor bf16_mlp(const Tensor& input, std::span<const Tensor> gate_up, const Tensor& down,
+                MlpActivation activation, double swiglu_limit);
+// Add two prepared MLP branches using the configured parallel and accumulation policy.
+Tensor additive_mlp(const Tensor& input,
+    std::span<const Tensor> gate_up, const Tensor& down, MlpActivation activation, double limit,
+    std::span<const Tensor> extra_gate_up, const Tensor& extra_down,
+    MlpActivation extra_activation, double extra_limit);
+// Flattened [rows,width] inputs; a declined fusion does not compute or write.
+std::optional<Tensor> mlp_residual(const Tensor& input, const Tensor& residual,
+    std::span<const Tensor> gate_up, const Tensor& down, MlpActivation activation,
+    double swiglu_limit, bool recurrent = false);
 
 enum class RouterActivation { softmax, sigmoid, sqrt_softplus };
 struct MoeRouting {

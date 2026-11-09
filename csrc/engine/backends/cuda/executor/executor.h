@@ -23,7 +23,6 @@ namespace tyloi::cuda {
 class Branches;
 class Collectives;
 class RouteStats;
-struct FullAttention;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -78,7 +77,7 @@ public:
             .kernels = {.bf16_flash128 = true, .flash128_casts = true,
                 .bf16_gqa_decode = true, .decode_aten = false,
                 .mma_prefill = true, .mma_decode = true, .split_k = true}};
-        Dense::Options dense;
+        DenseOptions dense;
         Ffn::Options ffn;
         GatedResidual::Options residual;
         bool gdn_fused_output = true;
@@ -111,24 +110,6 @@ public:
 #endif
     Projector projector(const Ffn::Mode& mode);
     Projector projector(const Ffn::Mode& mode, int primary);
-    ::tyloi::DenseTensor full_ffn(
-        const Ffn& ffn,
-#ifdef TYLOINFER_NATIVE_CUDA
-        const ::tyloi::Tensor& ffn_norm,
-#else
-        const ::tyloi::DenseTensor& ffn_norm,
-#endif
-        const FullAttention& attention, ::tyloi::DenseTensor residual,
-        ::tyloi::DenseTensor output, const Ffn::Mode& mode, Trace* trace = nullptr);
-    ::tyloi::DenseTensor linear_ffn(
-        const Ffn& ffn,
-#ifdef TYLOINFER_NATIVE_CUDA
-        const ::tyloi::Tensor& ffn_norm,
-#else
-        const ::tyloi::DenseTensor& ffn_norm,
-#endif
-        const LinearAttention& attention, ::tyloi::DenseTensor residual,
-        ::tyloi::DenseTensor output, const Ffn::Mode& mode);
     CudaProfiler& profiler() noexcept { return profiler_; }
     KlMmqState& mmq() noexcept { return mmq_; }
     const KlMmqState& mmq() const noexcept { return mmq_; }

@@ -303,7 +303,6 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/executor.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/batch_graph.cpp
-    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/tq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/tq_moe.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_window.cpp
