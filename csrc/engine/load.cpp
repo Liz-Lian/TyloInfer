@@ -32,18 +32,13 @@
 #include "engine/weights/moe/profile.h"
 
 #include <algorithm>
-#include <charconv>
-#include <cctype>
 #include <cmath>
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <numeric>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <typeinfo>
-#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -221,29 +216,6 @@ using tyloi::engine::environment_uint64;
 using tyloi::engine::environment_enabled;
 namespace {
 
-int strict_int(const std::string& text, const char* option) {
-    int result = 0;
-    const auto [end, error] = std::from_chars(
-        text.data(), text.data() + text.size(), result);
-    if (error != std::errc{} || end != text.data() + text.size()) {
-        throw std::runtime_error(std::string(option) + " requires integers");
-    }
-    return result;
-}
-
-double strict_double(const std::string& text, const char* option) {
-    double result = 0.0;
-    const auto [end, error] = std::from_chars(
-        text.data(), text.data() + text.size(), result,
-        std::chars_format::general);
-    if (error != std::errc{} || end != text.data() + text.size() ||
-            !std::isfinite(result)) {
-        throw std::runtime_error(
-            std::string(option) + " requires finite numbers");
-    }
-    return result;
-}
-
 std::int32_t graph_minimum(const char* name) {
     const auto value = std::max<std::uint64_t>(
         2, environment_uint64(name, 16));
@@ -291,258 +263,6 @@ tyloi::engine::Config resolve_cuda_config(
     return config;
 }
 
-static std::vector<std::string> split_csv_values(
-        const std::string & value,
-        const char * option) {
-    std::vector<std::string> result;
-    std::stringstream stream(value);
-    std::string item;
-    while (std::getline(stream, item, ',')) {
-        const auto first = item.find_first_not_of(" \t\r\n");
-        const auto last = item.find_last_not_of(" \t\r\n");
-        if (first == std::string::npos) {
-            throw std::runtime_error(
-                std::string(option) + " contains an empty item");
-        }
-        result.push_back(item.substr(first, last - first + 1));
-    }
-    if (result.empty()) {
-        throw std::runtime_error(
-            std::string(option) +
-            " requires at least one value");
-    }
-    if (value.ends_with(',')) {
-        throw std::runtime_error(
-            std::string(option) + " contains an empty item");
-    }
-    return result;
-}
-
-static ParallelConfig parse_parallel_config(
-        const std::string & devices_arg,
-        const std::string & split_arg,
-        const char * devices_option,
-        const char * split_option,
-        int available_devices,
-        bool allow_duplicate_devices) {
-    ParallelConfig config;
-    if (devices_arg.empty()) {
-        if (!split_arg.empty()) {
-            throw std::runtime_error(
-                std::string(split_option) + " requires " + devices_option);
-        }
-        return config;
-    }
-
-    const auto values = split_csv_values(
-        devices_arg, devices_option);
-    if (values.size() == 1 &&
-            devices_arg.find(',') == std::string::npos) {
-        const int count = strict_int(values.front(), devices_option);
-        if (count < 2) {
-            throw std::runtime_error(
-                std::string(devices_option) +
-                " device count must be at least two");
-        }
-        config.devices.resize(static_cast<size_t>(count));
-        std::iota(config.devices.begin(), config.devices.end(), 0);
-    } else {
-        for (const auto & item : values) {
-            config.devices.push_back(strict_int(item, devices_option));
-        }
-        if (config.devices.size() < 2) {
-            throw std::runtime_error(
-                std::string(devices_option) +
-                " requires at least two devices");
-        }
-    }
-    config.allow_duplicate_devices = allow_duplicate_devices;
-
-    std::unordered_set<int> unique_devices;
-    for (const int device : config.devices) {
-        if (device < 0 || device >= available_devices) {
-            throw std::runtime_error(
-                std::string(devices_option) +
-                " CUDA device is unavailable: " +
-                std::to_string(device));
-        }
-        const bool inserted = unique_devices.insert(device).second;
-        if (!allow_duplicate_devices && !inserted) {
-            throw std::runtime_error(
-                std::string(devices_option) +
-                " CUDA devices must be unique");
-        }
-    }
-
-    if (!split_arg.empty()) {
-        for (const auto & item :
-             split_csv_values(split_arg, split_option)) {
-            const double weight = strict_double(item, split_option);
-            if (!std::isfinite(weight) || weight <= 0.0) {
-                throw std::runtime_error(
-                    std::string(split_option) +
-                    " values must be finite and positive");
-            }
-            config.split.push_back(weight);
-        }
-        if (config.split.size() != config.devices.size()) {
-            throw std::runtime_error(
-                std::string(split_option) + " count must match " +
-                devices_option + " devices");
-        }
-    }
-    return config;
-}
-
-static void print_parallel_config(
-        const char * label,
-        const ParallelConfig & config) {
-    if (!config.enabled()) return;
-    std::cerr << label << " devices=";
-    for (size_t index = 0; index < config.devices.size(); ++index) {
-        if (index) std::cerr << ',';
-        std::cerr << config.devices[index];
-    }
-    if (!config.split.empty()) {
-        std::cerr << " split=";
-        for (size_t index = 0; index < config.split.size(); ++index) {
-            if (index) std::cerr << ',';
-            std::cerr << config.split[index];
-        }
-    }
-    std::cerr << '\n';
-}
-
-static void configure_model_parallel(
-        CudaLoadConfig& config, Collectives& collectives,
-        const std::string & tensor_devices_arg,
-        const std::string & tensor_split_arg,
-        const std::string & expert_devices_arg,
-        const std::string & expert_split_arg,
-        bool allow_duplicate_devices = false) {
-    collectives.reset();
-    config.tensor_parallel = {};
-    config.expert_parallel = {};
-
-    int available = 0;
-    TYLOINFER_CUDA_CHECK(cudaGetDeviceCount(&available));
-    config.tensor_parallel = parse_parallel_config(
-        tensor_devices_arg, tensor_split_arg,
-        "--tensor-parallel", "--tensor-split",
-        available, allow_duplicate_devices);
-    config.expert_parallel = parse_parallel_config(
-        expert_devices_arg, expert_split_arg,
-        "--expert-parallel", "--expert-split",
-        available, allow_duplicate_devices);
-
-    if (config.tensor_parallel.enabled() &&
-            config.expert_parallel.enabled() &&
-            config.tensor_parallel.devices !=
-                config.expert_parallel.devices) {
-        throw std::runtime_error(
-            "combined tensor and expert parallelism requires the same "
-            "ordered CUDA device group");
-    }
-    if (!config.tensor_parallel.enabled() &&
-            !config.expert_parallel.enabled()) {
-        TYLOINFER_CUDA_CHECK(cudaSetDevice(0));
-        return;
-    }
-
-    const auto& group = config.tensor_parallel.enabled()
-        ? config.tensor_parallel : config.expert_parallel;
-    Collectives::enable_peer_access(group.devices);
-    collectives.configure(
-        group.devices, allow_duplicate_devices);
-    TYLOINFER_CUDA_CHECK(cudaSetDevice(group.primary_device()));
-    print_parallel_config(
-        "tensor_parallel", config.tensor_parallel);
-    print_parallel_config(
-        "expert_parallel", config.expert_parallel);
-    std::cerr << "model_parallel ranks=" << group.devices.size()
-              << " collective_backend="
-              << (collectives.enabled()
-                  ? "nccl" : "serial")
-              << '\n';
-}
-
-static void configure_layer_placement(
-        CudaLoadConfig& config,
-        const std::string & devices_arg,
-        const std::string & split_arg) {
-    auto& placement = config.layer_placement;
-    placement = {};
-    if (devices_arg.empty()) {
-        if (!split_arg.empty()) {
-            throw std::runtime_error(
-                "--layer-split requires --layer-parallel");
-        }
-        placement.devices = {
-            model_parallel_primary_device(config)};
-        return;
-    }
-    if (config.tensor_parallel.enabled() ||
-            config.expert_parallel.enabled()) {
-        throw std::runtime_error(
-            "--layer-parallel cannot be combined with tensor/expert parallelism");
-    }
-
-    int available = 0;
-    TYLOINFER_CUDA_CHECK(cudaGetDeviceCount(&available));
-    auto parsed = parse_parallel_config(devices_arg, split_arg,
-        "--layer-parallel", "--layer-split", available, false);
-    TYLOINFER_CUDA_CHECK(cudaSetDevice(parsed.primary_device()));
-    print_parallel_config("layer_parallel", parsed);
-    placement.devices = std::move(parsed.devices);
-    placement.split = std::move(parsed.split);
-}
-
-static std::unordered_set<int> parse_layer_ranges(
-        const std::string & value) {
-    std::unordered_set<int> result;
-    std::stringstream stream(value);
-    std::string item;
-    while (std::getline(stream, item, ',')) {
-        item.erase(
-            std::remove_if(
-                item.begin(), item.end(),
-                [](unsigned char ch) { return std::isspace(ch) != 0; }),
-            item.end());
-        if (item.empty()) {
-            throw std::runtime_error(
-                "--cpu-offload-layers contains an empty item");
-        }
-        const size_t dash = item.find('-');
-        int first = 0;
-        int last = 0;
-        if (dash == std::string::npos) {
-            first = last = strict_int(item, "--cpu-offload-layers");
-        } else {
-            if (dash == 0 || dash + 1 >= item.size() ||
-                item.find('-', dash + 1) != std::string::npos) {
-                throw std::runtime_error(
-                    "invalid --cpu-offload-layers range: " + item);
-            }
-            first = strict_int(
-                item.substr(0, dash), "--cpu-offload-layers");
-            last = strict_int(
-                item.substr(dash + 1), "--cpu-offload-layers");
-        }
-        if (first < 0 || last < first) {
-            throw std::runtime_error(
-                "invalid --cpu-offload-layers range: " + item);
-        }
-        for (int layer = first; layer <= last; ++layer) {
-            result.insert(layer);
-        }
-    }
-    if (result.empty()) {
-        throw std::runtime_error(
-            "--cpu-offload-layers requires at least one layer");
-    }
-    return result;
-}
-
 void setup_cuda_load(
         const tyloi::cuda::CudaLoadOptions& options,
         CudaLoadConfig& config, Executor& executor, tyloi::weights::Cache& weights,
@@ -584,22 +304,21 @@ void setup_cuda_load(
         mfq_set_num_threads(options.cpu_threads);
     }
     config.yarn_context_extension=options.yarn_context_extension;
-    configure_model_parallel(
-        config, executor.collectives(), options.tensor_parallel_arg, options.tensor_split_arg,
-        options.expert_parallel_arg, options.expert_split_arg,
-        options.parallel_test_duplicates);
-    configure_layer_placement(
-        config, options.layer_parallel_arg, options.layer_split_arg);
+    config.tensor_parallel = options.tensor_parallel;
+    config.expert_parallel = options.expert_parallel;
+    config.layer_placement = options.layer_placement;
+    configure_placement(config, executor.collectives());
 #ifdef TYLOINFER_NATIVE_CUDA
     executor.set_primary(model_parallel_primary_device(config));
 #endif
-    if (!options.cpu_offload_layers_arg.empty()) {
-        config.dsv4_cpu_offload_layers =
-            parse_layer_ranges(options.cpu_offload_layers_arg);
+    if (!options.cpu_offload_layers.empty()) {
+        config.dsv4_cpu_offload_layers = options.cpu_offload_layers;
         std::vector<int> ordered(
             config.dsv4_cpu_offload_layers.begin(),
             config.dsv4_cpu_offload_layers.end());
         std::sort(ordered.begin(), ordered.end());
+        if (ordered.front() < 0)
+            throw std::runtime_error("--cpu-offload-layers must be non-negative");
         std::cerr << "cpu_offload_layers=";
         for (size_t index = 0; index < ordered.size(); ++index) {
             if (index) std::cerr << ',';
@@ -610,7 +329,7 @@ void setup_cuda_load(
     if (options.n_gpu_layers_set && config.n_gpu_layers < 0) {
         throw std::runtime_error("--n-gpu-layers must be non-negative");
     }
-    if (options.n_gpu_layers_set && !options.cpu_offload_layers_arg.empty()) {
+    if (options.n_gpu_layers_set && !options.cpu_offload_layers.empty()) {
         throw std::runtime_error(
             "--n-gpu-layers cannot be combined with --cpu-offload-layers");
     }
@@ -620,7 +339,7 @@ void setup_cuda_load(
             "--moe-gpu-cache-gb must be finite and non-negative");
     }
     if (options.moe_gpu_cache_gb > 0.0 &&
-            !options.cpu_offload_layers_arg.empty()) {
+            !options.cpu_offload_layers.empty()) {
         throw std::runtime_error(
             "--moe-gpu-cache-gb cannot be combined with "
             "--cpu-offload-layers");

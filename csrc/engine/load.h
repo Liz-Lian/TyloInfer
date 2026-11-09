@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 namespace tyloi::engine { class Engine; }
 namespace tyloi::weights { class Cache; }
@@ -18,14 +19,13 @@ class KvOffloadStore;
 
 struct CudaLoadOptions {
     std::string model_path, config_path, tokenizer_model;
-    std::string cpu_offload_layers_arg, moe_cache_profile_path;
-    std::string tensor_parallel_arg, tensor_split_arg;
-    std::string expert_parallel_arg, expert_split_arg;
-    std::string layer_parallel_arg, layer_split_arg;
+    std::string moe_cache_profile_path;
+    std::unordered_set<int> cpu_offload_layers;
+    ParallelConfig tensor_parallel, expert_parallel;
+    LayerPlacementConfig layer_placement;
     double moe_gpu_cache_gb = 0.0;
     int cpu_threads = 0;
     int64_t context_size = 0;
-    bool parallel_test_duplicates = false;
     bool yarn_context_extension = false;
     bool n_gpu_layers_set = false;
     bool cpu_threads_set = false;

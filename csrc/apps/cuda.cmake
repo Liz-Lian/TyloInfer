@@ -2,6 +2,7 @@ if(TARGET mfq-transport)
     add_executable(mfq-runtime
         ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
         ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
+        ${PROJECT_SOURCE_DIR}/commands/cli.cpp
         ${PROJECT_SOURCE_DIR}/commands/reference.cpp
         ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     )
@@ -19,6 +20,7 @@ endif()
 add_executable(mfq-diagnostics
     ${PROJECT_SOURCE_DIR}/apps/diagnostics_main.cpp
     ${PROJECT_SOURCE_DIR}/commands/diagnostics.cpp
+    ${PROJECT_SOURCE_DIR}/commands/cli.cpp
     ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
 )
 mfq_configure_cuda_engine_target(mfq-diagnostics)
@@ -58,6 +60,7 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
     add_executable(mfq-runtime-torch
         ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
         ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
+        ${PROJECT_SOURCE_DIR}/commands/cli.cpp
         ${PROJECT_SOURCE_DIR}/commands/reference.cpp
         ${TYLOINFER_CUDA_OP_SOURCES}
         ${TYLOINFER_CUDA_EXECUTION_SOURCES}

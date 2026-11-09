@@ -16,6 +16,8 @@ namespace tyloi::weights { class Cache; }
 
 namespace tyloi::cuda {
 
+class Collectives;
+
 // Read once at owner construction; controls read on access stay in options.h.
 struct CudaLoadConfig {
     tyloi::weights::Loader::Options weights;
@@ -37,6 +39,8 @@ struct CudaLoadConfig {
     ParallelConfig expert_parallel;
     LayerPlacementConfig layer_placement;
 };
+
+void configure_placement(CudaLoadConfig& config, Collectives& collectives);
 
 std::pair<CudaLoadConfig, Executor::Options> load_cuda_execution_config();
 std::vector<tyloi::Device> cuda_devices(const CudaLoadConfig& config);

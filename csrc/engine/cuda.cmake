@@ -93,7 +93,6 @@ set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
-    ${PROJECT_SOURCE_DIR}/commands/cli.cpp
     ${PROJECT_SOURCE_DIR}/engine/load.cpp
     ${TYLOINFER_CUDA_MODEL_SOURCES}
 )
