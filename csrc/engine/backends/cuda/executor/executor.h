@@ -23,7 +23,6 @@ namespace tyloi::cuda {
 class Branches;
 class Collectives;
 class RouteStats;
-class Ffn;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -137,7 +136,6 @@ private:
     Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
              Branches& branches, Collectives& collectives, RouteStats& routes,
              const Options& options, Mode& mode, int primary);
-    friend class Ffn;
     std::unique_ptr<ContextSet> owned_contexts_;
     ContextSet& contexts_;
     std::unique_ptr<Options> owned_options_;

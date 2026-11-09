@@ -155,9 +155,44 @@ std::shared_ptr<const tyloi::Tensor> tyloi::MfeTensor::relocated(Device target) 
     return moved;
 }
 
-#if TYLOINFER_ENABLE_MFQ_COMPAT
 namespace tyloi::weights {
 
+bool cached(const ::tyloi::Tensor& bank) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    const auto* weight = bank.representation<::tyloi::MfeTensor>();
+    return weight && bool(weight->cached_source);
+#else
+    (void)bank;
+    return false;
+#endif
+}
+
+bool expert_parallel(const ::tyloi::Tensor& gate_up,
+                     const ::tyloi::Tensor& down) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    const auto* gate = gate_up.representation<::tyloi::MfeTensor>();
+    const auto* output = down.representation<::tyloi::MfeTensor>();
+    if (!gate || !output ||
+        gate->shards.size() != output->shards.size() || gate->shards.empty())
+        return false;
+    for (std::size_t index = 0; index < gate->shards.size(); ++index) {
+        const auto& gate_shard = gate->shards[index];
+        const auto& down_shard = output->shards[index];
+        if (!gate_shard.weight || !down_shard.weight ||
+            gate_shard.device != down_shard.device ||
+            gate_shard.expert_begin != down_shard.expert_begin ||
+            gate_shard.expert_end != down_shard.expert_end)
+            return false;
+    }
+    return true;
+#else
+    (void)gate_up;
+    (void)down;
+    return false;
+#endif
+}
+
+#if TYLOINFER_ENABLE_MFQ_COMPAT
 Placement expert_placement(const MfeTensor& weight) {
     Placement result;
     if (!weight.shards.empty()) {
@@ -198,8 +233,9 @@ bool supports_geglu(const MfeTensor& weight) {
         (weight.cached_source ? weight.cached_source->source_tensor().nint_only() : weight.nint_only());
 }
 
-} // namespace tyloi::weights
 #endif
+
+} // namespace tyloi::weights
 
 namespace tyloi::cuda {
 

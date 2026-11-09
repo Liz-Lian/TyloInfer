@@ -1,18 +1,17 @@
 #pragma once
 
-#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/ops/ffn/options.h"
-#include "engine/weights/moe/experts.h"
 #include "engine/ops.h"
 
 #include <memory>
+#include <optional>
+#include <vector>
 
 struct MoeRoutePlan;
 
 namespace tyloi::cuda {
 
 class Executor;
-struct Mlp;
 class Projector;
 
 class Ffn {
@@ -52,30 +51,25 @@ public:
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::DenseTensor forward(
         ::tyloi::DenseTensor input,
-        MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt,
-        MfqOptional<::tyloi::DenseTensor> router_bias = mfq_nullopt) const;
+        std::optional<::tyloi::DenseTensor> input_ids = std::nullopt,
+        std::optional<::tyloi::DenseTensor> router_bias = std::nullopt) const;
 #else
     ::tyloi::DenseTensor forward(
         ::tyloi::DenseTensor input, Executor& executor, const FfnMode& mode,
-        MfqOptional<::tyloi::DenseTensor> input_ids = mfq_nullopt,
-        MfqOptional<::tyloi::DenseTensor> router_bias = mfq_nullopt) const;
+        std::optional<::tyloi::DenseTensor> input_ids = std::nullopt,
+        std::optional<::tyloi::DenseTensor> router_bias = std::nullopt) const;
 #endif
 
 private:
     ::tyloi::DenseTensor forward_impl(
         ::tyloi::DenseTensor input, Executor& executor, const FfnMode& mode,
-        const Projector& project, MfqOptional<::tyloi::DenseTensor> input_ids,
+        const Projector& project, std::optional<::tyloi::DenseTensor> input_ids,
         bool allow_important_neurons,
-        MfqOptional<::tyloi::DenseTensor> router_bias) const;
+        std::optional<::tyloi::DenseTensor> router_bias) const;
     ::tyloi::DenseTensor forward_experts(
         ::tyloi::DenseTensor input, Executor& executor, const FfnMode& mode,
         const Projector& project, const MoeRoutePlan& route,
         ::tyloi::DenseTensor route_weights) const;
 };
-
-Mlp dense(const Ffn& ffn, const Projector& project);
-std::shared_ptr<const ::tyloi::MfeTensor> cpu_expert(const std::shared_ptr<const ::tyloi::Tensor>& weight);
-bool uses_expert_cache(const Ffn& ffn);
-bool expert_parallel(const Ffn& ffn);
 
 } // namespace tyloi::cuda

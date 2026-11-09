@@ -1,7 +1,7 @@
 #include "engine/models/qwen35/batch.h"
 #include "engine/ops.h"
 
-#include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/weights/moe/experts.h"
 #include "components/error.h"
 
 #include <algorithm>
@@ -13,6 +13,17 @@
 namespace tyloi::cuda::qwen35 {
 
 using DenseTensor = ::tyloi::DenseTensor;
+
+static bool has_cached_experts(const Ffn& ffn) {
+    if (!ffn.is_moe)
+        return false;
+    if (ffn.moe_split_gate_up)
+        return ::tyloi::weights::cached(ffn.moe_gate) ||
+            ::tyloi::weights::cached(ffn.moe_up) ||
+            ::tyloi::weights::cached(ffn.moe_down);
+    return ::tyloi::weights::cached(ffn.moe_gate_up) ||
+        ::tyloi::weights::cached(ffn.moe_down);
+}
 
 Batch::~Batch() {
     if (state_)
@@ -288,7 +299,7 @@ bool Batch::has_cached_moe() const { return has_cached_moe(*weights_); }
 bool Batch::has_cached_moe(const Model &model) {
     for (const auto &layer : model.layers) {
         const bool result = std::visit(
-            [](const auto &value) { return tyloi::cuda::uses_expert_cache(value.ffn); },
+            [](const auto &value) { return has_cached_experts(value.ffn); },
             layer.weights);
         if (result)
             return true;
@@ -310,7 +321,7 @@ std::string Batch::incompatibility(bool cpu_offload, int cached_slots) const {
                     if (value.attention.sliding)
                         return "continuous batching requires non-sliding Qwen attention";
                 }
-                if (tyloi::cuda::uses_expert_cache(value.ffn) &&
+                if (has_cached_experts(value.ffn) &&
                     value.ffn.moe_top_k > cached_slots)
                     return "continuous batching requires one cached slot per routed expert";
                 return {};

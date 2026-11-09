@@ -32,54 +32,23 @@ namespace tyloi::cuda {
 
 using ActivationKind = tyloi::ops::MlpActivation;
 
+namespace {
+
 std::shared_ptr<const ::tyloi::MfeTensor> cpu_expert(const std::shared_ptr<const ::tyloi::Tensor>& weight) {
     auto mfe = std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(weight);
     return mfe && !mfe->cached_source && mfe->device().is_cpu() ? mfe : nullptr;
 }
 
-static std::shared_ptr<const ::tyloi::MfeTensor> mfe_runtime(const std::shared_ptr<const ::tyloi::Tensor>& weight) {
+std::shared_ptr<const ::tyloi::MfeTensor> mfe_runtime(const std::shared_ptr<const ::tyloi::Tensor>& weight) {
     return std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(weight);
 }
 
 bool uses_expert_cache(const Ffn& f) {
-    const auto moe_gate = mfe_runtime(f.moe_gate);
-    const auto moe_up = mfe_runtime(f.moe_up);
-    const auto moe_gate_up = mfe_runtime(f.moe_gate_up);
-    const auto moe_down = mfe_runtime(f.moe_down);
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (!f.is_moe)
-        return false;
-    if (f.moe_split_gate_up) {
-        return (moe_gate && moe_gate->cached_source) || (moe_up && moe_up->cached_source) ||
-            (moe_down && moe_down->cached_source);
-    }
-    return (moe_gate_up && moe_gate_up->cached_source) || (moe_down && moe_down->cached_source);
-#else
-    return false;
-#endif
-}
-
-bool expert_parallel(const Ffn& f) {
-    const auto moe_gate_up = mfe_runtime(f.moe_gate_up);
-    const auto moe_down = mfe_runtime(f.moe_down);
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (!f.is_moe || f.moe_split_gate_up || !moe_gate_up || !moe_down ||
-        moe_gate_up->shards.size() != moe_down->shards.size() ||
-        moe_gate_up->shards.empty()) {
-        return false;
-    }
-    for (size_t index = 0; index < moe_gate_up->shards.size(); ++index) {
-        const auto &gate = moe_gate_up->shards[index];
-        const auto &down = moe_down->shards[index];
-        if (!gate.weight || !down.weight || gate.device != down.device ||
-            gate.expert_begin != down.expert_begin || gate.expert_end != down.expert_end) {
-            return false;
-        }
-    }
-    return true;
-#else
-    return false;
-#endif
+    if (!f.is_moe) return false;
+    if (f.moe_split_gate_up)
+        return weights::cached(f.moe_gate) || weights::cached(f.moe_up) ||
+            weights::cached(f.moe_down);
+    return weights::cached(f.moe_gate_up) || weights::cached(f.moe_down);
 }
 
 Mlp dense(const Ffn& f, const Projector& project) {
@@ -90,8 +59,6 @@ Mlp dense(const Ffn& f, const Projector& project) {
     return {make_quant_group(f.gate_up, true, false), *f.down, f.activation, f.geglu, f.swiglu_limit};
 #endif
 }
-
-namespace {
 
 DenseTensor half(DenseTensor x, CudaProfiler& profiler) {
     if (x.scalar_type() == ::tyloi::kFloat16) return x;
@@ -125,10 +92,10 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const FfnMod
     const auto& f = *this;
     const auto moe_gate_up = mfe_runtime(f.moe_gate_up);
     const auto moe_down = mfe_runtime(f.moe_down);
-    auto& stats = executor.routes_;
-    auto& collectives_ = executor.collectives_;
-    const auto& projection_ = executor.options_.projection;
-    const auto& options_ = executor.options_.ffn;
+    auto& stats = executor.routes();
+    auto& collectives_ = executor.collectives();
+    const auto& projection_ = executor.options().projection;
+    const auto& options_ = executor.options().ffn;
     const size_t shard_count = moe_gate_up->shards.size();
     std::vector<::tyloi::DenseTensor> routed_partials(shard_count);
     std::vector<::tyloi::DenseTensor> down_partials;
@@ -203,9 +170,9 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const FfnMod
 }
 
 DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& mode_,
-                         const Projector& project_, MfqOptional<DenseTensor> input_ids,
+                         const Projector& project_, std::optional<DenseTensor> input_ids,
                          bool allow_important_neurons,
-                         MfqOptional<DenseTensor> router_bias) const {
+                         std::optional<DenseTensor> router_bias) const {
     const auto& f = *this;
     const auto moe_gate = mfe_runtime(f.moe_gate);
     const auto moe_up = mfe_runtime(f.moe_up);
@@ -219,13 +186,13 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
     const auto dense_up = std::dynamic_pointer_cast<const ::tyloi::DenseTensor>(f.moe_up);
     const auto dense_down = std::dynamic_pointer_cast<const ::tyloi::DenseTensor>(f.moe_down);
     const auto tq = tq_banks(f.moe_gate, f.moe_up, f.moe_down);
-    auto &profiler = executor.profiler_;
-    auto& stats = executor.routes_;
-    auto& mmq_ = executor.mmq_;
-    auto& branches_ = executor.branches_;
-    const auto& projection_ = executor.options_.projection;
-    const auto& dense_ = executor.options_.dense;
-    const auto& options_ = executor.options_.ffn;
+    auto &profiler = executor.profiler();
+    auto& stats = executor.routes();
+    auto& mmq_ = executor.mmq();
+    auto& branches_ = executor.branches();
+    const auto& projection_ = executor.options().projection;
+    const auto& dense_ = executor.options().dense;
+    const auto& options_ = executor.options().ffn;
     auto xh = half(x, profiler);
     if (allow_important_neurons && f.important_neurons) {
         if (f.is_moe) {
@@ -241,7 +208,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
                         "FP32-output IN diagnostic requires a local dense SiLU FFN");
                     return dense(branch, project_).kld(project_, profiler, mmq_, xh);
                 }
-                return branch.forward_impl(xh, executor, mode_, project_, input_ids, false, mfq_nullopt);
+                return branch.forward_impl(xh, executor, mode_, project_, input_ids, false, std::nullopt);
         };
         std::vector<DenseTensor> outputs;
         const bool ran_parallel = !use_f32_down &&
@@ -295,7 +262,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
                 } else {
                     auto bias=router_bias;
                     if(bias.has_value() && bias->dim()==2)bias=bias->narrow(0,row,1);
-                    outputs.push_back(forward_impl(row_input, executor, mode_, project_, mfq_nullopt, false, bias));
+                    outputs.push_back(forward_impl(row_input, executor, mode_, project_, std::nullopt, false, bias));
                 }
             }
             return ::tyloi::cuda::cat(outputs, 0).reshape(xh.sizes());
@@ -311,7 +278,8 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
         MoeRoutePlan route;
         DenseTensor shared_gate_logits;
         bool projection_bundle_prefetched = false;
-        const bool sharded_experts = expert_parallel(f);
+        const bool sharded_experts = !f.moe_split_gate_up &&
+            weights::expert_parallel(f.moe_gate_up, f.moe_down);
         struct ExpertOutput {
             DenseTensor values;
             bool reduced;
@@ -381,8 +349,8 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
                         router_logits.contiguous(), f.moe_top_k, f.moe_use_sigmoid,
                         f.moe_use_sqrt_softplus, f.moe_normalize, f.moe_delayed_softmax,
                         router_bias.has_value()?router_bias:f.moe_router_bias
-                            ? MfqOptional<::tyloi::DenseTensor>(dynamic_cast<const DenseTensor&>(*f.moe_router_bias))
-                            : mfq_nullopt,
+                            ? std::optional<::tyloi::DenseTensor>(dynamic_cast<const DenseTensor&>(*f.moe_router_bias))
+                            : std::nullopt,
                         1e-20, f.moe_router_scale);
                 });
             }
@@ -427,7 +395,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
             auto shared_output = profiler.measure(
                 "moe.shared", [&]() {
                     return f.shared->forward_impl(xf, executor, mode_, project_,
-                                                  mfq_nullopt, true, mfq_nullopt);
+                                                  std::nullopt, true, std::nullopt);
                 });
             if (!f.moe_split_gate_up && !f.moe_shared_ungated) {
                 shared_gate_logits = profiler.measure("moe.shared_gate", [&]() {
@@ -752,14 +720,14 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-DenseTensor Ffn::forward(DenseTensor x, MfqOptional<DenseTensor> input_ids,
-                    MfqOptional<DenseTensor> router_bias) const {
+DenseTensor Ffn::forward(DenseTensor x, std::optional<DenseTensor> input_ids,
+                    std::optional<DenseTensor> router_bias) const {
     auto& executor = Executor::current();
     const auto& mode = Executor::current_ffn();
 #else
 DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const FfnMode& mode,
-                    MfqOptional<DenseTensor> input_ids,
-                    MfqOptional<DenseTensor> router_bias) const {
+                    std::optional<DenseTensor> input_ids,
+                    std::optional<DenseTensor> router_bias) const {
 #endif
     const auto& f = *this;
     if (router_bias.has_value()) {

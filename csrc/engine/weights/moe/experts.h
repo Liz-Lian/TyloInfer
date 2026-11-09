@@ -7,14 +7,18 @@
 namespace tyloi { class MfeTensor; }
 struct MoeRoutePlan;
 
-#if TYLOINFER_ENABLE_MFQ_COMPAT
 namespace tyloi::weights {
 
+bool cached(const ::tyloi::Tensor& bank);
+bool expert_parallel(const ::tyloi::Tensor& gate_up,
+                     const ::tyloi::Tensor& down);
+
+#if TYLOINFER_ENABLE_MFQ_COMPAT
 Placement expert_placement(const MfeTensor& weight);
 bool supports_geglu(const MfeTensor& weight);
+#endif
 
 } // namespace tyloi::weights
-#endif
 
 namespace tyloi::cuda {
 
