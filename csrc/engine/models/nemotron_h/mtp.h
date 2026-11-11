@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -157,6 +159,47 @@ struct Mtp final : tyloi::models::Mtp {
         std::fill(state.lengths.begin(), state.lengths.end(), 0);
         state.batch = next_batch;
     }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Plan new predictor KV backing for the next step without allocating it. */
+    std::vector<std::pair<::tyloi::Device, std::size_t>> growth(
+            const tyloi::models::MtpState& value, const ::tyloi::Tensor& next_ids) const override {
+        const auto& state = this->state<PredictorState>(value);
+        TYLOINFER_RUNTIME_CHECK(next_ids.defined() && next_ids.dim() == 2 &&
+            next_ids.size(0) > 0 && next_ids.size(1) > 0 && !state.lengths.empty() &&
+            state.states.size() == layers.size(), "invalid predictor geometry");
+        const auto batch = next_ids.size(0), tokens = next_ids.size(1);
+        const bool reset_batch = state.batch && state.batch != batch;
+        const auto start = reset_batch ? 0 : state.lengths.front();
+        TYLOINFER_RUNTIME_CHECK(start >= 0 && start <= predictor_capacity() &&
+            tokens <= predictor_capacity() - start, "predictor history exceeds context capacity");
+        std::size_t bytes = 0;
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            const auto* full = std::get_if<FullAttention>(&layers[index].weights);
+            if (!full) continue;
+            const auto& cache = std::get<tyloi::state::KvView>(state.states[index]);
+            const bool retained = cache.defined() && (!reset_batch || cache.batch == batch);
+            if (retained) {
+                TYLOINFER_RUNTIME_CHECK(cache.batch == batch && cache.physical_key.device() ==
+                    ::tyloi::Device(::tyloi::kCUDA, primary), "predictor KV cache batch or device differs");
+                TYLOINFER_RUNTIME_CHECK(full->sliding || cache.physical_key.size(2) >= start + tokens,
+                    "predictor KV cache capacity is insufficient");
+                continue;
+            }
+            const auto capacity = full->sliding ? full->attention_window
+                : std::max(start + tokens, config.max_position_embeddings);
+            const auto growth = tyloi::state::kv_bytes(batch, full->kv_heads, capacity,
+                full->attention_head_dim, full->sliding,
+                full->official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16, full->kv_quantization);
+            if (bytes > std::numeric_limits<std::size_t>::max() - growth)
+                throw std::overflow_error("predictor KV allocation size overflow");
+            bytes += growth;
+        }
+        return bytes ? std::vector<std::pair<::tyloi::Device, std::size_t>>{
+            {::tyloi::Device(::tyloi::kCUDA, primary), bytes}} :
+            std::vector<std::pair<::tyloi::Device, std::size_t>>{};
+    }
+#endif
 
     std::pair<DenseTensor, DenseTensor> evaluate(tyloi::models::MtpState& value,
                                        const DenseTensor &hidden,

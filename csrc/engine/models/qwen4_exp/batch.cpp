@@ -1,6 +1,9 @@
 #include "engine/weights/cache.h"
 #include "engine/models/qwen4_exp/batch.h"
 #include "engine/models/batch.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops.h"
+#endif
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/native/scope.h"
@@ -146,8 +149,15 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
 #else
         request->sampler.emplace(request->sampling);
 #endif
-        if (request->sampler->has_penalties())
+        if (request->sampler->has_penalties()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            request->counts = tyloi::ops::zeros({model_.metadata.vocab_size},
+                tyloi::TensorOptions().device(request->prefill_ids.device()).dtype(tyloi::kInt32));
+            tyloi::ops::add_token_counts(request->counts, request->prefill_ids);
+#else
             request->counts = SamplingOps::token_counts(request->prefill_ids, model_.metadata.vocab_size);
+#endif
+        }
     }
     TYLOINFER_RUNTIME_CHECK(request->cache->position() == chunk.offset,
                             "Flash-Next batch prefill position mismatch");

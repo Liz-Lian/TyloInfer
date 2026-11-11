@@ -1,6 +1,9 @@
 #include "engine/models/qwen35/batch_ops.h"
 #include "engine/models/batch.h"
 #include "engine/models/input.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops.h"
+#endif
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
@@ -85,8 +88,15 @@ void BatchOps::initialize_sampling(Request& request, const DenseTensor& prompt_i
 #else
     request.sampler.emplace(request.sampling);
 #endif
-    if (request.sampler->has_penalties())
+    if (request.sampler->has_penalties()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        request.counts = tyloi::ops::zeros({vocab_size()},
+            tyloi::TensorOptions().device(prompt_ids.device()).dtype(tyloi::kInt32));
+        tyloi::ops::add_token_counts(request.counts, prompt_ids);
+#else
         request.counts = SamplingOps::token_counts(prompt_ids, vocab_size());
+#endif
+    }
 }
 
 void BatchOps::suspend_decode() { invalidate_decode_graph(); }

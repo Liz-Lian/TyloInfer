@@ -295,7 +295,9 @@ inline constexpr auto with_model = []<typename F>(
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
 #ifdef TYLOINFER_NATIVE_CUDA
-            auto components = nemotron_h::load_components(*owner, weights, load_optional_components);
+            owner->parts = std::make_unique<nemotron_h::Components>(
+                nemotron_h::load_components(*owner, weights, load_optional_components));
+            std::monostate components;
 #else
             auto components = nemotron_h::load_components(*owner, weights, load_optional_components,
                 execution);

@@ -19,15 +19,13 @@ struct Components {
     std::optional<CudaRadioPromptComponent> radio_vision;
     std::unique_ptr<tyloi::models::Mtp> mtp;
 
+#ifndef TYLOINFER_NATIVE_CUDA
     tyloi::StepSequence<tyloi::models::Prepared> prepare(Model& language, tyloi::cache::Media& images,
-#ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
-#endif
         int primary,
-#ifndef TYLOINFER_NATIVE_CUDA
         Executor* executor,
-#endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media);
+#endif
 };
 
 Components load_components(Model& model, const tyloi::weights::Loader& weights,

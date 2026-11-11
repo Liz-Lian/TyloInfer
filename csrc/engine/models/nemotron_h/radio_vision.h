@@ -529,8 +529,11 @@ class CudaRadioPromptComponent {
                                         std::move(input_contract));
     }
 
-    tyloi::StepSequence<tyloi::models::Prepared> prepare(Model &language,
-#ifndef TYLOINFER_NATIVE_CUDA
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                  const Model &language,
+#else
+                                                  Model &language,
                                                   Projector projector,
                                                   Executor &executor, Collectives &collectives,
 #endif

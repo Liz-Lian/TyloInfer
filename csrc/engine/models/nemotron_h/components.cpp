@@ -3,11 +3,62 @@
 #include "engine/models/source/model_config.h"
 #include "engine/models/nemotron_h/model.h"
 #include "engine/models/nemotron_h/mtp.h"
+#include "engine/models/nemotron_h/state.h"
 
 #include <stdexcept>
 #include <utility>
 
 namespace tyloi::cuda::nemotron_h {
+
+#ifdef TYLOINFER_NATIVE_CUDA
+Model::Model() = default;
+Model::~Model() = default;
+Model::Model(Model&&) noexcept = default;
+Model& Model::operator=(Model&&) noexcept = default;
+
+tyloi::models::Info Model::info() const {
+    auto result = tyloi::models::model_info(metadata);
+    result.graph_weights = tyloi::models::GraphWeights::resident;
+    return result;
+}
+
+MfqModelCapabilities Model::capabilities() const {
+    const bool vision = parts && parts->radio_vision.has_value();
+    const auto state = cuda_component_state(graph, plan, vision, mtp() != nullptr);
+    const auto caps = cuda_runtime_capabilities(graph, plan, state, vision, false);
+    return {graph.architecture, caps.text, caps.image_input, caps.video_input,
+        caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
+}
+
+tyloi::engine::Metrics Model::metrics() const {
+    const bool vision = parts && parts->radio_vision.has_value();
+    const auto state = cuda_component_state(graph, plan, vision, mtp() != nullptr);
+    return {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
+        {"kv_quantization_bits", 0.0}, {"vision_declared", double(state.vision_declared)},
+        {"vision_supported", double(state.vision_supported)}, {"vision_available", double(state.vision_available)},
+        {"mtp_declared", double(state.mtp_declared)}, {"mtp_supported", double(state.mtp_supported)},
+        {"mtp_available", double(state.mtp_available)}};
+}
+
+tyloi::models::Mtp* Model::mtp() const noexcept { return parts ? parts->mtp.get() : nullptr; }
+
+std::unique_ptr<tyloi::models::State> Model::make_state() const {
+    auto state = std::make_unique<State>(*this);
+    if (auto* predictor = mtp()) state->predictor = predictor->make_state();
+    return state;
+}
+
+tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
+        const std::vector<std::int64_t>& tokens, const MfqMultimodalInput& media,
+        tyloi::models::State& state_value) const {
+    const auto* state = dynamic_cast<const State*>(&state_value);
+    if (!state || !state->belongs_to(*this))
+        throw std::invalid_argument("Nemotron-H state belongs to a different model");
+    if (!parts || !parts->radio_vision)
+        throw std::invalid_argument("model has no multimodal component");
+    return parts->radio_vision->prepare(*this, primary, tokens, media);
+}
+#endif
 
 Components load_components(Model& model, const tyloi::weights::Loader& weights,
         bool load_optional_components
@@ -46,22 +97,18 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
     return result;
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(Model& language, tyloi::cache::Media&,
-#ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
-#endif
         int primary,
-#ifndef TYLOINFER_NATIVE_CUDA
         Executor* executor,
-#endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
     if (radio_vision)
         return radio_vision->prepare(language,
-#ifndef TYLOINFER_NATIVE_CUDA
             projector, *executor, collectives,
-#endif
             primary, tokens, media);
     throw std::invalid_argument("model has no multimodal component");
 }
+#endif
 
 } // namespace tyloi::cuda::nemotron_h

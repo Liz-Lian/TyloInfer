@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -241,8 +242,8 @@ static DenseTensor mamba_forward(const Mamba& weights, MambaState& activity, Exe
 }
 
 static void clear_speculative(MambaState& activity) noexcept {
-    activity.speculative_xbc = DenseTensor();
-    activity.speculative_dt = DenseTensor();
+    activity.speculative_xbc = {};
+    activity.speculative_dt = {};
     activity.mixer.commit();
 }
 
@@ -263,8 +264,8 @@ static void replay_recurrent(const Mamba& weights, MambaState& activity, int64_t
     const int64_t inner = mamba_heads * mamba_head_dim;
     const int64_t groups = mamba_groups;
     const int64_t state_width = ssm_state_size;
-    const auto xbc = speculative_xbc.narrow(1, 0, retained_tokens).contiguous();
-    const auto dt = speculative_dt.narrow(1, 0, retained_tokens).contiguous();
+    const auto xbc = speculative_xbc.dense().narrow(1, 0, retained_tokens).contiguous();
+    const auto dt = speculative_dt.dense().narrow(1, 0, retained_tokens).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA
     std::optional<DenseTensor> empty_bias;
     const auto& bias = conv_bias_value && conv_bias_value.defined()
@@ -312,7 +313,7 @@ static void replay_recurrent(const Mamba& weights, MambaState& activity, int64_t
     recurrent.copy_(scanned[1]);
 }
 
-static void rollback_speculative(const Mamba& weights, MambaState& activity, int64_t keep_position) {
+static void rollback_mamba(const Mamba& weights, MambaState& activity, int64_t keep_position) {
     auto& mixer = activity.mixer;
     try {
         const int64_t retained = mixer.rewind(keep_position);
@@ -412,28 +413,11 @@ static DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTen
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::embedding(const tyloi::Tensor& ids, int primary) const {
-    tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
-                               "token IDs must have shape [tokens] or [batch,tokens]");
-    auto shaped = ids.dim() == 1 ? tyloi::Tensor(tyloi::ops::unsqueeze(ids, 0)) : tyloi::Tensor{};
-    const auto& input = shaped ? shaped : ids;
-    tyloi::models::require_model(input.size(0) > 0 && input.size(1) > 0,
-                               "token IDs must not be empty");
-    auto normalized = tyloi::ops::contiguous(tyloi::ops::copy(
-        tyloi::ops::cast(input, tyloi::ScalarType::int64),
-        tyloi::Device{tyloi::DeviceType::cuda, primary}));
-    return tyloi::ops::measure("model.embed", normalized.device(), [&] {
-        return tyloi::ops::embedding(normalized, embed);
-    });
-}
-#endif
-
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
-    auto ids = normalize_ids(collectives, primary, ids_handle.dense());
-    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
-    return ::tyloi::ops::measure("model.embed", ids.device(), [&] {
-        return ::tyloi::ops::embedding(ids, model.embed);
+    auto& executor = Executor::current();
+    auto normalized = normalize_ids(executor.collectives(), primary, ids.dense());
+    auto scope = executor.enter(mfq_current_cuda_device(), Executor::current_ffn());
+    return ::tyloi::ops::measure("model.embed", normalized.device(), [&] {
+        return ::tyloi::ops::embedding(normalized, embed);
     });
 #else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
@@ -446,8 +430,10 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle,
-                 std::int64_t batch, std::int64_t tokens) {
+::tyloi::Tensor Model::normalize(const ::tyloi::Tensor& hidden_handle,
+                 std::int64_t batch, std::int64_t tokens) const {
+    const auto& model = *this;
+    auto& executor = Executor::current();
     auto hidden = hidden_handle.dense();
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
     auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
@@ -470,7 +456,9 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& value_handle) {
+::tyloi::Tensor Model::softcap(const ::tyloi::Tensor& value_handle) const {
+    const auto& model = *this;
+    auto& executor = Executor::current();
     auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
     return ::tyloi::ops::softcap(value_handle, model.metadata.final_logit_softcapping);
 #else
@@ -481,9 +469,10 @@ DenseTensor softcap(const Model& model, Executor&, DenseTensor value) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool capped,
-              const Executor::Mode& mode) {
-    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+::tyloi::Tensor Model::logits(const ::tyloi::Tensor& hidden_handle, bool capped) const {
+    const auto& model = *this;
+    auto& executor = Executor::current();
+    auto scope = executor.enter(mfq_current_cuda_device(), Executor::current_ffn());
     auto value = ::tyloi::ops::measure("model.lm_head", hidden_handle.device(), [&] {
         return ::tyloi::ops::project(hidden_handle, model.lm_head);
     });
@@ -579,8 +568,20 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& mode, tyloi::models::Input input) {
+::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+               const tyloi::models::ForwardOptions& forward_options) const {
+    auto* state_ptr = dynamic_cast<State*>(&state_value);
+    tyloi::models::require_model(state_ptr && state_ptr->belongs_to(*this),
+                               "Nemotron-H state belongs to a different model");
+    auto& state = *state_ptr;
+    const auto& model = *this;
+    auto& executor = Executor::current();
+    auto& collectives = executor.collectives();
+    auto mode = executor.forward_mode(forward_options.primary);
+    mode.ffn = Executor::current_ffn();
+    mode.kv_capacity = forward_options.kv_capacity;
+    mode.trace = forward_options.trace;
+    mode.trace_layer = forward_options.trace_layer;
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, tyloi::models::Input input) {
@@ -589,7 +590,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids).dense());
 #ifdef TYLOINFER_NATIVE_CUDA
     auto embeddings = input.embeddings ? input.embeddings.dense()
-        : embed(model, executor, collectives, mode.primary, ids, mode).dense();
+        : embedding(ids, mode.primary).dense();
 #else
     auto embeddings = input.embeddings ? *input.embeddings
         : embed(model, executor, collectives, mode.primary, ids, mode);
@@ -665,24 +666,28 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     }
     if (!input.positions.defined() || input.advance) state.cache_pos += T;
     hidden = collectives.copy(std::move(hidden), mode.primary);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto finalized = normalize(hidden, B, T);
+#else
     auto finalized = normalize(model, executor, std::move(hidden), B, T);
+#endif
     if (input.raw_hidden) *input.raw_hidden = finalized;
     return finalized;
 }
 
-void replay(const Model& model, State& state, Executor&, std::int64_t accepted) {
-    tyloi::models::require_model(state.speculative_start >= 0 && accepted >= 0,
+void State::rollback_speculative(std::int64_t accepted) {
+    tyloi::models::require_model(speculative_start >= 0 && accepted >= 0,
                                "no speculative transaction");
-    const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
-    for (std::size_t index = 0; index < state.layers.size(); ++index) {
-        auto* activity = std::get_if<MambaState>(&state.layers[index]);
+    const auto keep = speculative_start + speculative_confirmed + accepted;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        auto* activity = std::get_if<MambaState>(&layers[index]);
         if (activity == nullptr) continue;
-        MfqCudaGuard guard(model.layers[index].device);
-        rollback_speculative(std::get<Mamba>(model.layers[index].weights), *activity, keep);
+        MfqCudaGuard guard(model_->layers[index].device);
+        rollback_mamba(std::get<Mamba>(model_->layers[index].weights), *activity, keep);
     }
-    state.cache_pos = keep;
-    state.speculative_start = -1;
-    state.speculative_confirmed = 0;
+    cache_pos = keep;
+    speculative_start = -1;
+    speculative_confirmed = 0;
 }
 
 struct LayerLoader : TransformerWeightLoader {
@@ -784,6 +789,9 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
     if (expert_parallel && config.num_routed_experts <= 0)
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
     placement.prepare(config.num_hidden_layers);
+#ifdef TYLOINFER_NATIVE_CUDA
+    model.primary = placement.primary_device();
+#endif
     const int cpu_layers = gpu_layers < 0 ? 0 :
         static_cast<int>(std::max<int64_t>(config.num_hidden_layers - gpu_layers, 0));
     if (cpu_layers > 0) {
@@ -826,7 +834,7 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
     }
 }
 
-State::State(const Model& model) : layers(model.layers.size()) {
+State::State(const Model& model) : layers(model.layers.size()), model_(&model) {
     layout_.reserve(model.layers.size());
     for (std::size_t index = 0; index < layers.size(); ++index) {
         const auto& layer = model.layers[index];
@@ -862,6 +870,9 @@ void State::preallocate() {
 }
 
 void State::reset(std::int64_t next_batch) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    graph_views_.clear();
+#endif
     cache_pos = decode_position_delta = 0;
     speculative_start = -1;
     speculative_confirmed = 0;
@@ -871,11 +882,73 @@ void State::reset(std::int64_t next_batch) {
         if (auto* cache = std::get_if<tyloi::state::KvView>(&layers[index])) {
             if (cache->defined() && cache->batch != next_batch) *cache = {};
         } else if (auto* mamba = std::get_if<MambaState>(&layers[index])) {
-            mamba->speculative_xbc = DenseTensor();
-            mamba->speculative_dt = DenseTensor();
+            mamba->speculative_xbc = {};
+            mamba->speculative_dt = {};
             mamba->mixer.reset(next_batch);
         }
     }
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
+        std::int64_t tokens, const tyloi::models::ForwardOptions& options, std::int64_t confirmed) const {
+    if (batch <= 0 || tokens <= 0 || confirmed < 0 || confirmed >= tokens || cache_pos < 0)
+        throw std::invalid_argument("Nemotron-H cache planning requires a positive batch and valid token window");
+    if (cache_pos > std::numeric_limits<std::int64_t>::max() - tokens)
+        throw std::overflow_error("Nemotron-H cache planning position overflow");
+    const auto multiply = [](std::size_t a, std::size_t b) {
+        if (b && a > std::numeric_limits<std::size_t>::max() / b)
+            throw std::overflow_error("Nemotron-H cache planning byte count overflow");
+        return a * b;
+    };
+    const auto sum = [](std::size_t a, std::size_t b) {
+        if (a > std::numeric_limits<std::size_t>::max() - b)
+            throw std::overflow_error("Nemotron-H cache planning byte count overflow");
+        return a + b;
+    };
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const auto& layout = layout_[i];
+        std::size_t bytes = 0;
+        if (const auto* cache = std::get_if<tyloi::state::KvView>(&layers[i])) {
+            if (!cache->defined()) {
+                const auto& full = std::get<FullLayout>(layout.mixer);
+                const auto capacity = full.sliding ? full.capacity :
+                    (options.kv_capacity > 0 ? std::max(cache_pos + tokens, options.kv_capacity) : full.capacity);
+                bytes = tyloi::state::kv_bytes(batch, full.heads, capacity, full.head_dim,
+                                               full.sliding, full.dtype, full.quantization);
+            }
+        } else if (const auto* mamba = std::get_if<MambaState>(&layers[i])) {
+            const auto& m = std::get<MambaLayout>(layout.mixer);
+            const auto inner = multiply(std::size_t(m.heads), std::size_t(m.head_dim));
+            const auto width = sum(inner, multiply(multiply(2, std::size_t(m.groups)), std::size_t(m.state_size)));
+            const auto row = multiply(multiply(std::size_t(batch), width), sizeof(float));
+            const auto convolution = multiply(row, std::size_t(m.conv_kernel - 1));
+            const auto recurrent = multiply(multiply(multiply(std::size_t(batch), inner),
+                                                       std::size_t(m.state_size)), sizeof(float));
+            if (!mamba->mixer.defined()) bytes = sum(convolution, recurrent);
+            if (tokens > 1) {
+                bytes = sum(bytes, multiply(row, sum(std::size_t(tokens), std::size_t(m.conv_kernel - 1))));
+                bytes = sum(bytes, recurrent);
+            }
+            if (confirmed > 0) {
+                bytes = sum(bytes, sum(convolution, recurrent));
+                const auto projection_width = sum(sum(width, inner), std::size_t(m.heads));
+                bytes = sum(bytes, multiply(multiply(multiply(std::size_t(batch), std::size_t(tokens)),
+                                                     projection_width), sizeof(float)));
+                bytes = sum(bytes, multiply(multiply(multiply(std::size_t(batch), std::size_t(tokens)),
+                                                     sum(width, std::size_t(m.heads))), sizeof(float)));
+                bytes = sum(bytes, multiply(row, sum(std::size_t(tokens), std::size_t(m.conv_kernel - 1))));
+                bytes = sum(bytes, recurrent);
+            }
+        }
+        if (!bytes) continue;
+        const tyloi::Device device(tyloi::DeviceType::cuda, layout.device);
+        auto entry = std::find_if(result.begin(), result.end(),
+            [device](const auto& item) { return item.first == device; });
+        if (entry == result.end()) result.emplace_back(device, bytes);
+        else entry->second = sum(entry->second, bytes);
+    }
+    return result;
 }
 
 void State::commit_speculative() {
@@ -905,8 +978,9 @@ std::vector<::tyloi::Tensor> State::storage() const {
                 append(cache->physical_value);
             }
         } else if (const auto* mamba = std::get_if<MambaState>(&layer)) {
-            append(mamba->mixer.view().convolution);
-            append(mamba->mixer.view().recurrent);
+            for (const auto& tensor : mamba->mixer.storage()) append(tensor);
+            append(mamba->speculative_xbc);
+            append(mamba->speculative_dt);
         }
     }
     return result;
@@ -914,7 +988,27 @@ std::vector<::tyloi::Tensor> State::storage() const {
 
 std::vector<::tyloi::Tensor*> State::graph_state() {
     std::vector<::tyloi::Tensor*> result;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::vector<::tyloi::Tensor> views;
+    views.reserve(layers.size() * 2);
+#endif
     for (auto& layer : layers) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (const auto* cache = std::get_if<tyloi::state::KvView>(&layer)) {
+            if (cache_pos <= 0 || cache->paged() || !cache->defined() ||
+                cache->physical_key.dim() != 4 || cache->physical_value.dim() != 4 ||
+                cache->physical_key.size(2) <= 0 ||
+                cache->physical_value.size(2) != cache->physical_key.size(2))
+                throw std::runtime_error("Nemotron-H graph warmup requires prefilled non-paged KV caches with matching capacities");
+            const auto capacity = cache->physical_key.size(2);
+            if (!cache->ring && cache_pos >= capacity)
+                throw std::runtime_error("Nemotron-H graph warmup exceeds KV cache capacity");
+            const auto position = cache->ring ? cache_pos % capacity : cache_pos;
+            views.push_back(tyloi::ops::slice(cache->physical_key, 2, position, position + 1));
+            views.push_back(tyloi::ops::slice(cache->physical_value, 2, position, position + 1));
+            continue;
+        }
+#endif
         auto* mamba = std::get_if<MambaState>(&layer);
         if (mamba == nullptr) continue;
         TYLOINFER_RUNTIME_CHECK(!mamba->mixer.pending() && mamba->mixer.defined(),
@@ -922,6 +1016,11 @@ std::vector<::tyloi::Tensor*> State::graph_state() {
         result.push_back(&mamba->mixer.view().convolution);
         result.push_back(&mamba->mixer.view().recurrent);
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    graph_views_ = std::move(views);
+    result.reserve(result.size() + graph_views_.size());
+    for (auto& view : graph_views_) result.push_back(&view);
+#endif
     return result;
 }
 
@@ -1001,7 +1100,78 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     return saved;
 }
 
+std::vector<std::pair<tyloi::Device, std::size_t>> State::restore_growth(const TextSessionState& saved) const {
+    const auto kind = text_session_state_kind();
+    if (kind == TextSessionStateKind::Unsupported || saved.kind() != kind || saved.cache_pos <= 0 ||
+        static_cast<std::size_t>(saved.cache_pos) != saved.tokens.size())
+        throw CudaSessionStateError("Nemotron-H session state is incompatible");
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    const auto add = [&](const tyloi::Tensor& source, std::size_t bytes) {
+        if (!bytes) return;
+        const auto device = source.device();
+        auto entry = std::find_if(result.begin(), result.end(),
+            [device](const auto& item) { return item.first == device; });
+        if (entry == result.end()) result.emplace_back(device, bytes);
+        else {
+            if (entry->second > std::numeric_limits<std::size_t>::max() - bytes)
+                throw std::overflow_error("Nemotron-H session planning byte count overflow");
+            entry->second += bytes;
+        }
+    };
+    const auto kv = [&](const tyloi::state::KvView& cache, const KvSnapshot& snapshot) {
+        validate_kv(snapshot);
+        add(snapshot.k, restore_prefix_bytes(cache.physical_key, snapshot.k, 2, snapshot.capacity));
+        add(snapshot.v, restore_prefix_bytes(cache.physical_value, snapshot.v, 2, snapshot.capacity));
+    };
+    if (kind == TextSessionStateKind::FullAttention) {
+        const auto* snapshots = std::get_if<std::vector<KvSnapshot>>(&saved.payload);
+        if (!snapshots || snapshots->size() != layers.size())
+            throw CudaSessionStateError("full-attention text session state is incompatible");
+        for (std::size_t i = 0; i < layers.size(); ++i)
+            kv(std::get<tyloi::state::KvView>(layers[i]), (*snapshots)[i]);
+    } else {
+        const auto* snapshots = std::get_if<std::vector<HybridBlockSessionState>>(&saved.payload);
+        if (!snapshots || snapshots->size() != layers.size())
+            throw CudaSessionStateError("Nemotron-H session state is incompatible");
+        for (std::size_t i = 0; i < layers.size(); ++i) {
+            const auto& snapshot = (*snapshots)[i];
+            const auto& layout = layout_[i];
+            if (snapshot.kind == HybridBlockSessionStateKind::FullAttention) {
+                const auto* cache = std::get_if<tyloi::state::KvView>(&layers[i]);
+                if (!cache) throw CudaSessionStateError("Nemotron-H full-attention layer changed");
+                kv(*cache, snapshot.full_attention);
+                continue;
+            }
+            if (snapshot.kind == HybridBlockSessionStateKind::Stateless) {
+                if (!std::holds_alternative<std::monostate>(layers[i]))
+                    throw CudaSessionStateError("Nemotron-H stateless layer changed");
+                continue;
+            }
+            const auto* m = std::get_if<MambaLayout>(&layout.mixer);
+            const auto* activity = std::get_if<MambaState>(&layers[i]);
+            const auto width = m ? m->heads * m->head_dim + 2 * m->groups * m->state_size : 0;
+            const auto* conv = snapshot.convolution.representation<DenseTensor>();
+            const auto* recurrent = snapshot.recurrent.representation<DenseTensor>();
+            if (snapshot.kind != HybridBlockSessionStateKind::Recurrent || !m || !activity ||
+                !conv || !recurrent || !conv->defined() || !recurrent->defined() ||
+                conv->scalar_type() != ::tyloi::kFloat32 || recurrent->scalar_type() != ::tyloi::kFloat32 ||
+                conv->dim() != 3 || conv->size(0) != 1 || conv->size(1) != m->conv_kernel - 1 ||
+                conv->size(2) != width || recurrent->dim() != 4 || recurrent->size(0) != 1 ||
+                recurrent->size(1) != m->heads || recurrent->size(2) != m->head_dim ||
+                recurrent->size(3) != m->state_size || !conv->is_cuda() || !recurrent->is_cuda() ||
+                conv->get_device() != layout.device || recurrent->get_device() != layout.device)
+                throw CudaSessionStateError("Nemotron-H mamba session topology changed");
+            add(snapshot.convolution, restore_tensor_bytes(activity->mixer.view().convolution, snapshot.convolution));
+            add(snapshot.recurrent, restore_tensor_bytes(activity->mixer.view().recurrent, snapshot.recurrent));
+        }
+    }
+    return result;
+}
+
 void State::restore_text_session_state(const TextSessionState& saved) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    graph_views_.clear();
+#endif
     const auto kind = text_session_state_kind();
     if (kind != TextSessionStateKind::HybridAttention ||
         saved.kind() != TextSessionStateKind::HybridAttention) {

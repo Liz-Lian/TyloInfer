@@ -26,6 +26,15 @@ bool matches(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source) {
 }
 } // namespace
 
+std::vector<::tyloi::Tensor> Recurrent::storage() const {
+    std::vector<::tyloi::Tensor> result;
+    for (const auto* state : {&state_, &saved_}) {
+        if (state->convolution.defined()) result.push_back(state->convolution);
+        if (state->recurrent.defined()) result.push_back(state->recurrent);
+    }
+    return result;
+}
+
 void Recurrent::reset(int64_t batch) {
     const bool reuse = defined() && state_.convolution.size(0) == batch && state_.recurrent.size(0) == batch;
     if (reuse) {

@@ -7,6 +7,13 @@ namespace tyloi::cuda::engine_detail {
 
 template <class M, class S, class P>
 tyloi::StepSequence<tyloi::models::Prepared> Text<M, S, P>::prepare(InferenceRequest& input, State& state) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (std::is_same_v<Parts, std::monostate> &&
+                  std::is_base_of_v<tyloi::models::CausalModel, Model>) {
+        const tyloi::models::CausalModel& causal = language;
+        return causal.prepare(input.prompt, *input.vision, state);
+    } else
+#endif
     if constexpr (std::is_same_v<Parts, std::unique_ptr<tyloi::cuda::minicpmo45::Components>>) {
         if (!components) throw std::invalid_argument("model has no multimodal component");
         return components->prepare(input.prompt, *input.vision);

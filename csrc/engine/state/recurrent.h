@@ -3,6 +3,7 @@
 #include "engine/tensor.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace tyloi::cuda {
 
@@ -22,6 +23,10 @@ public:
     Recurrent() = default;
     Recurrent(const Recurrent&) = delete;
     Recurrent& operator=(const Recurrent&) = delete;
+    /** Transfer the recurrent payloads and any pending checkpoint. */
+    Recurrent(Recurrent&&) noexcept = default;
+    /** Replace the recurrent payloads and any pending checkpoint by moving them. */
+    Recurrent& operator=(Recurrent&&) noexcept = default;
 
     /** Borrow the owned payload objects without replacing their identity. */
     State& view() noexcept { return state_; }
@@ -31,6 +36,8 @@ public:
     bool defined() const noexcept { return state_.defined(); }
     /** Return whether a verification checkpoint remains uncommitted. */
     bool pending() const noexcept { return start_ >= 0; }
+    /** Return owning handles for live state and any speculative checkpoint. */
+    std::vector<::tyloi::Tensor> storage() const;
 
     /** Zero compatible batch storage, releasing incompatible storage and speculative history. */
     void reset(int64_t batch);
