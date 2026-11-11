@@ -3,9 +3,12 @@
 #include "engine/models/common/ffn.h"
 
 #include "engine/models/qwen35/state.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
+#endif
+#include "engine/ops.h"
 
 #include <array>
 #include <exception>
@@ -28,6 +31,16 @@ std::vector<MtpState::Layout> layout(const Predictor& model, int device) {
 
 } // namespace
 
+#ifdef TYLOINFER_NATIVE_CUDA
+Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding, tyloi::ops::RopeTable rope,
+        int device, bool preallocate)
+    : model_(std::move(model)), embedding_(std::move(embedding)), rope_(std::move(rope)),
+      device_(device), preallocate_(preallocate) {
+    for (const auto& layer : model_.layers)
+        if (layer.ffn.is_moe || (layer.ffn.important_neurons && layer.ffn.important_neurons->is_moe))
+            throw std::runtime_error("Qwen MTP requires dense predictor projections");
+}
+#else
 Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding,
 #ifdef TYLOINFER_NATIVE_CUDA
         tyloi::ops::RopeTable rope,
@@ -46,6 +59,8 @@ Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding,
             "Qwen MTP requires dense predictor projections");
 }
 
+#endif
+
 std::unique_ptr<tyloi::models::MtpState> Mtp::make_state() const {
     auto result = std::make_unique<MtpState>(*this, layout(model_, device_), model_.config.hidden_size);
     if (preallocate_) result->prepare(1, 1);
@@ -56,8 +71,88 @@ void Mtp::reset(tyloi::models::MtpState& value, int64_t batch) const {
     state<MtpState>(value).reset(batch);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+std::vector<std::pair<Device, std::size_t>> Mtp::growth(
+        const tyloi::models::MtpState& value, const tyloi::models::Mtp::Input& input) const {
+    const auto* step = std::get_if<tyloi::models::Mtp::Step>(&input);
+    if (!step || !step->ids.defined() || step->ids.dim()!=2)
+        throw std::invalid_argument("unsupported Qwen MTP growth input");
+    return state<MtpState>(value).growth(step->ids.size(0), step->ids.size(1), step->options.kv_capacity);
+}
+std::unique_ptr<tyloi::models::Restore> Mtp::prepare_restore(
+        tyloi::models::MtpState& value, const MtpSessionState& snapshot) const {
+    return state<MtpState>(value).prepare_restore(snapshot);
+}
+tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const Tensor& hidden,
+        const Tensor& next_ids, const Tensor& positions, const tyloi::models::ForwardOptions& options) const {
+    auto output = evaluate(state<MtpState>(value), hidden, next_ids, positions, options);
+    return {output, output};
+}
+Tensor Mtp::evaluate(MtpState& state, const Tensor& hidden, const Tensor& next_ids,
+                     const Tensor& positions, const tyloi::models::ForwardOptions& options) const {
+    const auto& config = model_.config;
+    if (hidden.dim()!=3 || next_ids.dim()!=2 || hidden.size(0)!=next_ids.size(0) ||
+        hidden.size(1)!=next_ids.size(1) || hidden.size(2)!=config.hidden_size ||
+        hidden.size(0)<=0 || hidden.size(1)<=0)
+        throw std::runtime_error("Qwen MTP inputs must be matching [B,T,H] hidden states and [B,T] next-token IDs");
+    const auto batch=hidden.size(0), tokens=hidden.size(1);
+    if (state.position()>config.max_position_embeddings-tokens)
+        throw std::runtime_error("Qwen MTP history exceeds context capacity");
+    tyloi::ops::FfnScope stage(tyloi::ops::FfnScope::Role::predictor);
+    const Device device{kCUDA,device_};
+    const bool explicit_positions=positions.defined();
+    auto pos=explicit_positions ? ops::contiguous(ops::cast(ops::copy(positions,device),kInt64))
+        : ops::arange(state.position(),state.position()+tokens,device);
+    if (!((pos.dim()==1 && pos.numel()==tokens) ||
+          (pos.dim()==2 && pos.size(1)==tokens && (pos.size(0)==batch ||
+           (pos.size(0)==3 && !config.mrope_sections.empty())))))
+        throw std::runtime_error("Qwen MTP positions must have shape [T], [B,T], or configured grid-MRoPE [3,T]");
+    state.prepare(batch,tokens,options.kv_capacity);
+    const auto kv=state.views();
+    const auto trace_for=[&](int layer) -> ops::Trace* {
+        return options.trace && options.trace_layer==layer ? options.trace : nullptr;
+    };
+    const auto record=[&](ops::Trace* trace,const char* name,const Tensor& value) {
+        if (trace) trace->emplace_back(name,ops::clone(ops::contiguous(ops::cast(value,kFloat32))));
+    };
+    auto normalized_ids=ops::contiguous(ops::copy(ops::cast(next_ids,kInt64),device));
+    auto embedded=ops::measure("model.embed",normalized_ids.device(),[&] {
+        return ops::embedding(normalized_ids,embedding_);
+    });
+    embedded=ops::cast(ops::contiguous(ops::cast(embedded,kFloat16)),hidden.scalar_type());
+    auto embedded_norm=ops::rms_norm(embedded,model_.embedding_norm,config.rms_norm_eps,
+                                     config.legacy_tensor_layout.norm_weight_offset);
+    auto hidden_norm=ops::rms_norm(hidden,model_.hidden_norm,config.rms_norm_eps,
+                                   config.legacy_tensor_layout.norm_weight_offset);
+    record(trace_for(0),"mtp.embedding_norm",embedded_norm);
+    record(trace_for(0),"mtp.hidden_norm",hidden_norm);
+    std::array<Tensor,2> fusion_inputs{embedded_norm,hidden_norm};
+    auto current=ops::project(ops::cat(fusion_inputs,-1),model_.fusion);
+    record(trace_for(0),"mtp.fusion",current);
+    AttentionStep attention;
+    attention.positions=pos;
+    attention.cache_position=state.position();
+    if (tokens==1 && state.position()>0)
+        attention.sequence_lengths=ops::full(std::array{batch},state.position()+1,device);
+    if (explicit_positions)
+        attention.cache_positions=ops::arange(state.position(),state.position()+tokens,device);
+    for (std::size_t index=0;index<model_.layers.size();++index) {
+        const auto& layer=model_.layers[index];
+        const auto& full=layer.attention;
+        auto output=full.forward(current,attention,kv[index],rope_,trace_for(full.layer));
+        current=tyloi::models::full_ffn(layer.ffn,layer.ffn_norm,output[0],output[1],
+            full.rms_norm_eps,full.norm_weight_offset,full.official_bf16,full.attention_output_gate,trace_for(full.layer));
+    }
+    auto output=ops::rms_norm(current,model_.output_norm,config.rms_norm_eps,
+                              config.legacy_tensor_layout.norm_weight_offset);
+    record(trace_for(0),"mtp.output_norm",output);
+    state.advance(tokens);
+    return output;
+}
+#else
 tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::Tensor& hidden,
-        const ::tyloi::Tensor& next_ids, const ::tyloi::Tensor& positions) const {
+        const ::tyloi::Tensor& next_ids, const ::tyloi::Tensor& positions,
+        const tyloi::models::ForwardOptions&) const {
     auto output = std::make_shared<::tyloi::DenseTensor>(evaluate(
         state<MtpState>(value),
         hidden.dense(),
@@ -207,13 +302,17 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
     return result;
 }
 
+#endif
+
 void Mtp::trim_cache_to(tyloi::models::MtpState& value, int64_t position) const {
     state<MtpState>(value).trim(position);
 }
 
 MtpSessionState Mtp::capture_session_state(const tyloi::models::MtpState& value,
                                            int64_t position, const ::tyloi::Tensor& hidden) const {
+#ifndef TYLOINFER_NATIVE_CUDA
     MfqCudaGuard guard(device_);
+#endif
     return state<MtpState>(value).capture(position, hidden.dense());
 }
 

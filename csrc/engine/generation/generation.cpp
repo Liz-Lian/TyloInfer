@@ -51,8 +51,8 @@ struct Plain {
         auto last = ops::contiguous(ops::cast(ops::select(hidden, 1, -1), kFloat16));
         return model.logits(last, capped);
     }
-    void reserve(int64_t tokens) {
-        for (const auto& [device, growth] : state.growth(tokens, forward_options))
+    void reserve(int64_t batch, int64_t tokens) {
+        for (const auto& [device, growth] : state.growth(batch, tokens, forward_options))
             if (growth) budget.reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
     }
     double prefill(const PrefillChunk& chunk) {
@@ -99,11 +99,12 @@ struct Plain {
         }
     }
     int64_t advance() {
-        reserve(1);
+        auto ids = ops::reshape(pending, {1, 1});
+        reserve(ids.size(0), ids.size(1));
         if (config.decode_graph.enabled && info.decode_graph && info.graph == models::GraphOwner::model &&
             (!prepared || !prepared->transformed())) {
             models::Input step;
-            step.ids = ops::reshape(pending, {1, 1});
+            step.ids = ids;
             step.host_ids = host_ids;
             models::DecodeOptions decode;
             decode.routed = weights.decode() == ::tyloi::weights::Cache::Decode::routed;
@@ -123,7 +124,7 @@ struct Plain {
         }
         if (!graph_active) {
             models::Input model_input;
-            model_input.ids = ops::reshape(pending, {1, 1});
+            model_input.ids = ids;
             model_input.advance = true;
             auto profile = config.profile_decode ? executor.profile("runtime.decode") : nullptr;
             if (state.position() == 0) weights.finish_exchange();

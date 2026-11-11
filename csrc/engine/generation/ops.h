@@ -32,7 +32,7 @@ template <class State>
 concept PlannedState = std::derived_from<State, tyloi::models::State> && requires {
     requires std::same_as<decltype(&State::growth),
         std::vector<std::pair<tyloi::Device, std::size_t>> (State::*)(
-            std::int64_t, const tyloi::models::ForwardOptions&, std::int64_t) const>;
+            std::int64_t, std::int64_t, const tyloi::models::ForwardOptions&, std::int64_t) const>;
 };
 
 #ifdef TYLOINFER_NATIVE_CUDA

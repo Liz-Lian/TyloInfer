@@ -84,7 +84,7 @@ public:
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Plan per-device cache and checkpoint allocations for a forward window. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t batch, std::int64_t tokens, const tyloi::models::ForwardOptions& options,
         std::int64_t confirmed = 0) const override;
     /** Reset releases or clears existing backing without allocating new device storage. */
     std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t batch) const override;

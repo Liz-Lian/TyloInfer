@@ -310,6 +310,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
                const Executor::Mode& options, tyloi::models::Input input) {
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
+    require_forward(state.belongs_to(model), "Qwen3.5 state belongs to another model");
     auto ids = normalize_ids(collectives, options.primary, input.ids.dense());
     auto embeddings = input.embeddings ? input.embeddings.dense()
         : embed(model, executor, collectives, options.primary, ids, options).dense();
@@ -341,6 +342,9 @@ bool supports_speculation(const Model& model) noexcept {
 }
 
 void replay(const Model& model, State& state, Executor& executor, std::int64_t accepted) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    require_forward(state.belongs_to(model), "Qwen3.5 state belongs to another model");
+#endif
     require_forward(state.speculative_start >= 0 && accepted >= 0,
                     "no speculative transaction");
     try {

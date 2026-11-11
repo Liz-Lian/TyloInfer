@@ -84,9 +84,9 @@ public:
     virtual void begin_speculative_suffix(std::int64_t) {
         throw std::logic_error("speculative suffix is unsupported by this model");
     }
-    /** Plan per-device allocation reservations for an ordinary or confirmed verification step. */
+    /** Plan per-device allocations for the requested batch and token count. */
     virtual std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t, const ForwardOptions&, std::int64_t confirmed = 0) const {
+        std::int64_t, std::int64_t, const ForwardOptions&, std::int64_t confirmed = 0) const {
         throw std::logic_error("state allocation planning is not implemented");
     }
     /** Return actual device bytes that reset will newly allocate for the batch. */

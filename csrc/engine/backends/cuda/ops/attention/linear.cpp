@@ -20,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <optional>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -884,6 +885,47 @@ Linear::Linear(LinearWeights weights, LinearConfig config)
 Linear::~Linear() = default;
 Linear::Linear(Linear&&) noexcept = default;
 Linear& Linear::operator=(Linear&&) noexcept = default;
+std::size_t Linear::growth(const State& state, std::int64_t batch, std::int64_t tokens,
+                           std::int64_t confirmed, bool reset) const {
+    if (batch <= 0 || tokens <= 0 || confirmed < 0 || confirmed >= tokens)
+        throw std::invalid_argument("invalid linear-attention growth geometry");
+    if (state.pending()) throw std::runtime_error("linear attention has a pending speculative pass");
+    if (reset && confirmed) throw std::invalid_argument("speculative linear attention requires existing history");
+    const auto view = state.view();
+    const bool retained = state.defined() && (!reset ||
+        (view.convolution.size(0) == batch && view.recurrent.size(0) == batch));
+    const auto mul = [](std::size_t a, std::size_t b) {
+        if (b && a > std::numeric_limits<std::size_t>::max()/b) throw std::overflow_error("linear-attention growth overflow");
+        return a*b;
+    };
+    const auto add = [](std::size_t a, std::size_t b) {
+        if (a > std::numeric_limits<std::size_t>::max()-b) throw std::overflow_error("linear-attention growth overflow");
+        return a+b;
+    };
+    const auto& c=impl_->core;
+    const auto width=add(mul(2,mul(c.key_heads,c.key_dim)),mul(c.value_heads,c.value_dim));
+    const auto conv=mul(mul(mul(batch,c.conv_kernel-1),width),4);
+    const auto recurrent=mul(mul(mul(mul(batch,c.value_heads),c.value_dim),c.value_dim),4);
+    std::size_t result=retained?0:add(conv,recurrent);
+    if (!confirmed) return result;
+    if (retained) {
+        result=add(result,mul(view.convolution.numel(),view.convolution.element_size()));
+        result=add(result,mul(view.recurrent.numel(),view.recurrent.element_size()));
+    } else result=add(result,add(conv,recurrent));
+    std::size_t projected=0;
+    const auto count=[&](const std::vector<Tensor>& weights) {
+        for (const auto& weight:weights) projected=add(projected,weight.size(0));
+    };
+    count(c.in_proj); count(c.qkv_proj); count(c.ab_nint_proj);
+    if (c.z_proj) projected=add(projected,c.z_proj.size(0));
+    for (const auto n:c.ab_proj.outs) projected=add(projected,n);
+    for (const auto n:c.zab_proj.outs) projected=add(projected,n);
+    // A grouped projection can retain non-tape outputs through shared backing;
+    // a non-split qkv cast can additionally allocate a separate F32 tensor.
+    if (!c.split_in_proj) projected=add(projected,width);
+    projected=add(projected,mul(2,c.value_heads));
+    return add(result,mul(mul(mul(batch,tokens),projected),4));
+}
 std::array<Tensor, 2> Linear::forward(State& state, const Tensor& input,
                                       std::int64_t position, std::int64_t confirmed) const {
     std::optional<MfqCudaGuard> guard;

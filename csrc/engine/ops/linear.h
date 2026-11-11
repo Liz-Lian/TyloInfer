@@ -74,6 +74,9 @@ public:
     Linear& operator=(Linear&&) noexcept;
     Linear(const Linear&) = delete;
     Linear& operator=(const Linear&) = delete;
+    /** Estimate new recurrent and retained verification backing after an optional reset. */
+    std::size_t growth(const State& state, std::int64_t batch, std::int64_t tokens,
+                       std::int64_t confirmed, bool reset = false) const;
     /** Execute attention, optionally checkpointing a confirmed prefix for replay. */
     std::array<Tensor, 2> forward(State& state, const Tensor& input,
                                   std::int64_t cache_position, std::int64_t confirmed) const;

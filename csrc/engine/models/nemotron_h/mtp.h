@@ -332,7 +332,8 @@ struct Mtp final : tyloi::models::Mtp {
     // is not applied again.
     tyloi::models::MtpStep step(tyloi::models::MtpState& value,
                                 const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
-                                const ::tyloi::Tensor& positions = {}) const override {
+                                const ::tyloi::Tensor& positions = {},
+                                const tyloi::models::ForwardOptions& = {}) const override {
         auto result = evaluate(value, hidden.dense(),
                                ids.dense(), 0,
                                positions.defined() ? positions.dense()

@@ -379,3 +379,19 @@ void restore_kv(tyloi::state::KvView &cache, const KvSnapshot &state, int64_t he
     cache.page_size = 0;
     cache.pages_per_chunk = 0;
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+void stage_kv(tyloi::state::KvView& cache, const KvSnapshot& state, int64_t head_dim,
+              ::tyloi::ScalarType dtype, tyloi::state::KvQuantization quantization) {
+    validate_kv(state);
+    auto shape = [](const ::tyloi::Tensor& tensor, int64_t capacity) {
+        std::vector<int64_t> result;
+        for (int64_t axis = 0; axis < tensor.dim(); ++axis)
+            result.push_back(axis == 2 ? capacity : tensor.size(axis));
+        return result;
+    };
+    cache.physical_key = tyloi::ops::empty(shape(state.k, state.capacity), state.k.options());
+    cache.physical_value = tyloi::ops::empty(shape(state.v, state.capacity), state.v.options());
+    restore_kv(cache, state, head_dim, dtype, quantization);
+}
+#endif

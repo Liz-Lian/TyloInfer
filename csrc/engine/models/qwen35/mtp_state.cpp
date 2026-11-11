@@ -4,12 +4,72 @@
 #include "engine/backends/cuda/native/tensor/backend.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace tyloi::cuda::qwen35 {
 
 
 MtpState::MtpState(const tyloi::models::Mtp& owner, std::vector<Layout> layout, int64_t hidden)
     : tyloi::models::MtpState(owner), layout_(std::move(layout)), kv_(layout_.size()), hidden_(hidden) {}
+
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace {
+void add_bytes(std::vector<std::pair<tyloi::Device, std::size_t>>& result,
+               tyloi::Device device, std::size_t bytes) {
+    auto found = std::find_if(result.begin(), result.end(),
+        [device](const auto& value) { return value.first == device; });
+    if (found == result.end()) result.emplace_back(device, bytes);
+    else {
+        if (found->second > std::numeric_limits<std::size_t>::max() - bytes)
+            throw std::overflow_error("Qwen MTP allocation size overflow");
+        found->second += bytes;
+    }
+}
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> MtpState::growth(
+        int64_t batch, int64_t tokens, int64_t requested_capacity) const {
+    TYLOINFER_RUNTIME_CHECK(batch > 0 && tokens > 0, "invalid MTP state dimensions");
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    for (size_t index = 0; index < kv_.size(); ++index) {
+        const auto& layout = layout_[index];
+        TYLOINFER_RUNTIME_CHECK(tokens <= layout.capacity && position_ <= layout.capacity - tokens,
+            "Qwen MTP history exceeds context capacity");
+        if (kv_[index].defined()) {
+            TYLOINFER_RUNTIME_CHECK(kv_[index].batch == batch,
+                "MTP batch changed without resetting state");
+            if (kv_[index].physical_key.size(2) >= position_ + tokens) continue;
+        }
+        const auto capacity = requested_capacity > 0
+            ? std::min(layout.capacity, std::max(position_ + tokens, requested_capacity)) : layout.capacity;
+        add_bytes(result, tyloi::Device(tyloi::kCUDA, layout.device),
+            tyloi::state::kv_bytes(batch, layout.heads, capacity, layout.head_dim, false,
+                                   layout.dtype, layout.quantization));
+    }
+    return result;
+}
+
+std::unique_ptr<tyloi::models::Restore> MtpState::prepare_restore(const MtpSessionState& snapshot) {
+    struct Candidate final : tyloi::models::Restore {
+        MtpState& owner;
+        MtpSessionState snapshot;
+        MtpState::Restore staged;
+        Candidate(MtpState& value, const MtpSessionState& saved)
+            : owner(value), snapshot(saved), staged(value.prepare(snapshot)) {}
+        std::vector<std::pair<tyloi::Device, std::size_t>> growth() const override {
+            std::vector<std::pair<tyloi::Device, std::size_t>> result;
+            for (const auto& block : std::get<std::vector<KvSnapshot>>(snapshot.payload)) {
+                add_bytes(result, block.k.device(), restore_prefix_bytes({}, block.k, 2, block.capacity));
+                add_bytes(result, block.v.device(), restore_prefix_bytes({}, block.v, 2, block.capacity));
+            }
+            return result;
+        }
+        void stage() override { owner.stage(staged, snapshot); }
+        void publish() noexcept override { owner.publish(std::move(staged)); }
+    };
+    return std::make_unique<Candidate>(*this, snapshot);
+}
+#endif
 
 void MtpState::prepare(int64_t batch, int64_t tokens, int64_t kl_capacity) {
     TYLOINFER_RUNTIME_CHECK(batch > 0 && tokens > 0, "invalid MTP state dimensions");
@@ -118,7 +178,11 @@ void MtpState::stage(Restore& restore, const MtpSessionState& saved) const {
     for (size_t index = 0; index < restore.kv.size(); ++index) {
         const auto& layout = layout_[index];
         MfqCudaGuard guard(layout.device);
+#ifdef TYLOINFER_NATIVE_CUDA
+        stage_kv(restore.kv[index], blocks[index], layout.head_dim,
+#else
         restore_kv(restore.kv[index], blocks[index], layout.head_dim,
+#endif
             layout.dtype, layout.quantization);
     }
 }

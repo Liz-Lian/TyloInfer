@@ -101,13 +101,15 @@ struct Predictor final : tyloi::models::Mtp {
                                        bool history_only = false) const;
 
     tyloi::models::MtpStep step(tyloi::models::MtpState&, const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
-                                const tyloi::Tensor& positions = {}) const override;
+                                const tyloi::Tensor& positions = {},
+                                const tyloi::models::ForwardOptions& options = {}) const override;
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Resolve prompt history behavior from frozen model policy and available memory. */
     History history(std::int64_t tokens, std::int64_t requested, std::size_t available) const override;
     /** Prime predictor history while optionally omitting output computation. */
     void prime(tyloi::models::MtpState&, const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
-        const tyloi::Tensor& positions, bool cache_only) const override;
+        const tyloi::Tensor& positions, bool cache_only,
+        const tyloi::models::ForwardOptions& options = {}) const override;
 #endif
     void history_step(tyloi::models::MtpState&, DenseTensor hidden, DenseTensor ids, DenseTensor positions = {},
                       bool scalar_chain = false) const;

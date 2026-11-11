@@ -3,6 +3,7 @@
 #include "engine/models/session/snapshot.h"
 #include "engine/tensor.h"
 #include "engine/models/state.h"
+#include "engine/models/input.h"
 #include "engine/generation/mtp/policy.h"
 #include "engine/requests/sampling.h"
 
@@ -32,7 +33,8 @@ struct Mtp {
         std::size_t merge = 0, flush = 512, parked = 512;
         std::size_t workspace_fixed = 0, workspace_per_row = 0;
     };
-    struct Step { Tensor ids; };
+    /** Describe a predictor step and its actual request execution options. */
+    struct Step { Tensor ids; ForwardOptions options{}; };
     struct Context { Tensor hidden; std::int64_t position; bool seed; };
     struct Draft { Tensor ids; int depth; };
     /** Describe the actual predictor operation whose allocations are being planned. */
@@ -47,22 +49,23 @@ struct Mtp {
         const MtpState&, const Input&) const {
         throw std::logic_error("predictor allocation planning is unsupported");
     }
+    /** Advance predictor state using the current request execution options. */
     virtual MtpStep step(
         MtpState& state,
         const Tensor& previous_hidden,
         const Tensor& next_ids,
-        const Tensor& positions = {}) const = 0;
+        const Tensor& positions = {}, const ForwardOptions& options = {}) const = 0;
     /** Describe prompt history handling for the available device budget. */
     virtual History history(std::int64_t, std::int64_t requested, std::size_t) const {
         History result;
         result.chunk = std::min<std::int64_t>(512, requested);
         return result;
     }
-    /** Prime predictor history, optionally retaining only its cache. */
+    /** Prime predictor history with request options, optionally retaining only its cache. */
     virtual void prime(MtpState& state, const Tensor& hidden, const Tensor& ids,
-                       const Tensor& positions, bool cache_only) const {
+                       const Tensor& positions, bool cache_only, const ForwardOptions& options = {}) const {
         if (cache_only) throw std::invalid_argument("cache-only predictor priming is unsupported");
-        (void)step(state, hidden, ids, positions);
+        (void)step(state, hidden, ids, positions, options);
     }
     virtual void trim_cache_to(MtpState& state, int64_t position) const = 0;
     virtual bool teacher_forced_prompt_prime() const noexcept = 0;

@@ -57,7 +57,11 @@ struct Layout {
     std::variant<FullLayout, LinearLayout> attention;
 };
 
-class State {
+class State
+#ifdef TYLOINFER_NATIVE_CUDA
+    : public tyloi::models::State
+#endif
+{
 public:
     struct Restore {
         std::vector<LayerState> layers;
@@ -71,6 +75,23 @@ public:
     State& operator=(const State&) = delete;
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
+
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Check that this request state was created for the supplied model. */
+    bool belongs_to(const Model& model) const noexcept { return model_ == &model; }
+    /** Plan new persistent and speculative backing for a forward step. */
+    std::vector<std::pair<tyloi::Device, std::size_t>> growth(
+        std::int64_t batch, std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t confirmed = 0) const override;
+    /** Reset only reuses or releases existing backing. */
+    std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t batch) const override;
+    /** Replay the accepted part of a pending verification window. */
+    void rollback_speculative(std::int64_t accepted) override;
+    /** Report that replay retains the accepted verification prefix. */
+    bool retains_partial_prefix(std::int64_t) const noexcept override { return true; }
+    /** Validate and retain a snapshot for independent staged restoration. */
+    std::unique_ptr<tyloi::models::Restore> prepare_restore(const TextSessionState&) override;
+#endif
 
     void preallocate();
     /** Reset request state for a batch, retaining compatible storage. */
@@ -106,7 +127,9 @@ public:
     const std::vector<Layout>& layout() const noexcept { return layout_; }
 
     std::vector<LayerState> layers;
+#ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<tyloi::models::MtpState> predictor;
+#endif
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
     std::int64_t speculative_start = -1;
@@ -117,6 +140,7 @@ private:
     std::vector<Layout> layout_;
     std::int64_t max_position_embeddings_;
 #ifdef TYLOINFER_NATIVE_CUDA
+    const Model* model_;
     bool transposed_;
 #else
     const bool* transposed_;

@@ -24,6 +24,13 @@ public:
 
     MtpState(const tyloi::models::Mtp& owner, std::vector<Layout> layout, int64_t hidden);
     int64_t position() const noexcept override { return position_; }
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Plan new KV backing for the next predictor operation. */
+    std::vector<std::pair<tyloi::Device, std::size_t>> growth(
+        int64_t batch, int64_t tokens, int64_t capacity) const;
+    /** Validate and retain an independent predictor restore candidate. */
+    std::unique_ptr<tyloi::models::Restore> prepare_restore(const MtpSessionState& saved);
+#endif
     void prepare(int64_t batch, int64_t tokens, int64_t kl_capacity = 0);
     void reset(int64_t batch);
     void advance(int64_t tokens);

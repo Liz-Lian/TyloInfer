@@ -131,7 +131,7 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::suffix_growth(std::int
 }
 
 std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
-    std::int64_t tokens,const tyloi::models::ForwardOptions&,std::int64_t confirmed) const {
+    std::int64_t, std::int64_t tokens,const tyloi::models::ForwardOptions&,std::int64_t confirmed) const {
     if(batch<=0 || tokens<=0 || confirmed<0 || confirmed>=tokens)
         throw std::invalid_argument("DeepSeek-V4.1 invalid forward allocation window");
     Growth result=confirmed>0 ? suffix_growth(tokens) : Growth{};

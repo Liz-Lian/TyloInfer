@@ -2,10 +2,12 @@
 #include "engine/models/session/snapshot.h"
 
 #include "engine/models/qwen35/model.h"
+#include "engine/models/input.h"
 #include "engine/ops.h"
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -124,7 +126,7 @@ void initialize_layers(std::vector<LayerState>& layers,
 State::State(const Model& model, const bool& transposed)
     : max_position_embeddings_(model.metadata.max_position_embeddings),
 #ifdef TYLOINFER_NATIVE_CUDA
-      transposed_(transposed) {
+      model_(&model), transposed_(transposed) {
 #else
       transposed_(&transposed) {
 #endif
@@ -476,7 +478,11 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
                                     ? full_layers->at(index)
                                     : hybrid_layers->at(index).full_attention;
             auto& cache = std::get<tyloi::state::KvView>(restore.layers[index]);
+#ifdef TYLOINFER_NATIVE_CUDA
+            stage_kv(cache, saved, full->head_dim, full->dtype, full->quantization);
+#else
             restore_kv(cache, saved, full->head_dim, full->dtype, full->quantization);
+#endif
         } else {
             const auto& saved = hybrid_layers->at(index);
             const auto& current = std::get<LinearState>(layers[index]);
@@ -507,5 +513,111 @@ void State::publish(Restore&& restore) noexcept {
     speculative_confirmed = 0;
     batch = 1;
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace {
+void add_bytes(std::vector<std::pair<tyloi::Device, std::size_t>>& result,
+               tyloi::Device device, std::size_t bytes) {
+    if (!device.is_cuda()) return;
+    auto found = std::find_if(result.begin(), result.end(),
+        [device](const auto& value) { return value.first == device; });
+    if (found == result.end()) result.emplace_back(device, bytes);
+    else {
+        if (found->second > std::numeric_limits<std::size_t>::max() - bytes)
+            throw std::overflow_error("Qwen state allocation size overflow");
+        found->second += bytes;
+    }
+}
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> State::reset_growth(std::int64_t next_batch) const {
+    require_state(next_batch > 0, "Qwen3.5 batch must be positive");
+    return {};
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
+        std::int64_t next_batch, std::int64_t tokens,
+        const tyloi::models::ForwardOptions& options, std::int64_t confirmed) const {
+    require_state(next_batch > 0 && tokens > 0 && cache_pos >= 0,
+                  "invalid Qwen3.5 forward geometry");
+    require_state(confirmed >= 0 && confirmed < tokens, "invalid Qwen3.5 verification window");
+    require_state(speculative_start < 0, "commit or roll back the pending speculative pass before forwarding");
+    require_state(tokens <= max_position_embeddings_ && cache_pos <= max_position_embeddings_ - tokens,
+                  "Qwen3.5 history exceeds context capacity");
+    if (cache_pos > 0) require_state(batch == next_batch, "Qwen3.5 cache batch does not match input batch");
+    const auto end = cache_pos + tokens;
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        const auto& layout = layout_[index];
+        const auto device = layout.cpu ? tyloi::Device(tyloi::kCPU) : tyloi::Device(tyloi::kCUDA, layout.device);
+        if (const auto* full = std::get_if<FullLayout>(&layout.attention)) {
+            const auto& cache = std::get<tyloi::state::KvView>(layers[index]);
+            if (cache.defined() && (cache_pos != 0 || cache.batch == next_batch)) continue;
+            const auto capacity = full->sliding ? full->capacity :
+                (options.kv_capacity > 0 ? std::max(end, options.kv_capacity) : full->capacity);
+            add_bytes(result, device, tyloi::state::kv_bytes(next_batch, full->kv_heads,
+                capacity, full->head_dim, full->sliding, full->dtype, full->quantization));
+        } else {
+            const auto& layer = std::get<Linear>(model_->layers[index].weights);
+            const auto& state = std::get<LinearState>(layers[index]);
+            require_state(bool(layer.attention), "Qwen3.5 recurrent layer weight kind mismatch");
+            add_bytes(result, device, layer.attention->growth(state.attention, next_batch, tokens,
+                                                              confirmed, cache_pos == 0));
+        }
+    }
+    return result;
+}
+
+void State::rollback_speculative(std::int64_t accepted) {
+    require_state(speculative_start >= 0 && accepted >= 0, "no speculative transaction");
+    try {
+        const auto keep = rewind(accepted);
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            auto* linear = std::get_if<LinearState>(&layers[index]);
+            if (!linear) continue;
+            const auto* layer = std::get_if<Linear>(&model_->layers[index].weights);
+            require_state(layer && layer->attention, "Qwen3.5 recurrent layer weight kind mismatch");
+            layer->attention->replay(linear->attention, keep - speculative_start);
+        }
+        commit_speculative();
+        cache_pos = keep;
+    } catch (...) {
+        abort_speculative();
+        throw;
+    }
+}
+
+std::unique_ptr<tyloi::models::Restore> State::prepare_restore(const TextSessionState& snapshot) {
+    struct Candidate final : tyloi::models::Restore {
+        State& owner;
+        TextSessionState snapshot;
+        State::Restore staged;
+        Candidate(State& value, const TextSessionState& saved)
+            : owner(value), snapshot(saved), staged(value.prepare(snapshot)) {}
+        std::vector<std::pair<tyloi::Device, std::size_t>> growth() const override {
+            std::vector<std::pair<tyloi::Device, std::size_t>> result;
+            const auto add_kv = [&](const KvSnapshot& block) {
+                add_bytes(result, block.k.device(), restore_prefix_bytes({}, block.k, 2, block.capacity));
+                add_bytes(result, block.v.device(), restore_prefix_bytes({}, block.v, 2, block.capacity));
+            };
+            if (const auto* blocks = std::get_if<std::vector<KvSnapshot>>(&snapshot.payload)) {
+                for (const auto& block : *blocks) add_kv(block);
+            } else {
+                for (const auto& block : std::get<std::vector<HybridBlockSessionState>>(snapshot.payload)) {
+                    if (block.kind == HybridBlockSessionStateKind::FullAttention) add_kv(block.full_attention);
+                    else {
+                        add_bytes(result, block.convolution.device(), restore_tensor_bytes({}, block.convolution));
+                        add_bytes(result, block.recurrent.device(), restore_tensor_bytes({}, block.recurrent));
+                    }
+                }
+            }
+            return result;
+        }
+        void stage() override { owner.stage(staged, snapshot); }
+        void publish() noexcept override { owner.publish(std::move(staged)); }
+    };
+    return std::make_unique<Candidate>(*this, snapshot);
+}
+#endif
 
 } // namespace tyloi::cuda::qwen35

@@ -895,7 +895,7 @@ void State::reset(std::int64_t next_batch) {
 }
 
 std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options, std::int64_t confirmed) const {
+        std::int64_t, std::int64_t tokens, const tyloi::models::ForwardOptions& options, std::int64_t confirmed) const {
     if (batch <= 0 || tokens <= 0 || confirmed < 0 || confirmed >= tokens || cache_pos < 0)
         throw std::invalid_argument("Nemotron-H cache planning requires a positive batch and valid token window");
     if (cache_pos > std::numeric_limits<std::int64_t>::max() - tokens)

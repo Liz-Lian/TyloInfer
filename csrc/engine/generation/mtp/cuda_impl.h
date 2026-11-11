@@ -452,7 +452,7 @@ template <class Model, class State> struct CudaMtpOps
       if (state.position() == 0) weights.finish_exchange();
     if constexpr (tyloi::cuda::PlannedState<State>) {
       if (budget)
-        for (const auto& [device, bytes] : state.growth(ids.size(1), tyloi::cuda::forward_options(mode), confirmed))
+        for (const auto& [device, bytes] : state.growth(ids.size(0), ids.size(1), tyloi::cuda::forward_options(mode), confirmed))
           if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
     }
 #endif
@@ -502,7 +502,7 @@ template <class Model, class State> struct CudaMtpOps
     if constexpr (std::derived_from<Model, tyloi::models::CausalModel> &&
                   tyloi::cuda::PlannedState<State>) {
       if (budget)
-        for (const auto& [device, bytes] : state.growth(ids.size(1), tyloi::cuda::forward_options(mode), 0))
+        for (const auto& [device, bytes] : state.growth(ids.size(0), ids.size(1), tyloi::cuda::forward_options(mode), 0))
           if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
       projected_target_hidden = {}; projected_target_logits = {};
       projected_target_compact = {}; projected_target_greedy.clear();
@@ -564,7 +564,7 @@ template <class Model, class State> struct CudaMtpOps
     auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
     if constexpr (tyloi::cuda::PlannedState<State>) {
       if (budget)
-        for (const auto& [device, bytes] : state.growth(chunk.count, tyloi::cuda::forward_options(mode), 0))
+        for (const auto& [device, bytes] : state.growth(input_ids.size(0), chunk.count, tyloi::cuda::forward_options(mode), 0))
           if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
     }
 #endif
@@ -670,7 +670,7 @@ template <class Model, class State> struct CudaMtpOps
 #ifdef TYLOINFER_NATIVE_CUDA
     if constexpr (tyloi::cuda::PlannedState<State>) {
       if (budget)
-        for (const auto& [device, bytes] : mtp.growth(predictor, tyloi::models::Mtp::Step{ids}))
+        for (const auto& [device, bytes] : mtp.growth(predictor, tyloi::models::Mtp::Step{ids, tyloi::cuda::forward_options(mode)}))
           if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
     }
 #endif
@@ -680,7 +680,11 @@ template <class Model, class State> struct CudaMtpOps
     auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
 #endif
     reserve_predictor(ids);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto result=mtp.step(predictor,hidden, ids, positions, tyloi::cuda::forward_options(mode));
+#else
     auto result=mtp.step(predictor,hidden, ids, positions);
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
     projected_predictor_logits = result.sample_logits;
 #else

@@ -37,7 +37,7 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
     try {
         for (const auto& [device, bytes] : state.reset_growth(input.ids.size(0)))
             if (bytes) budget.reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
-        for (const auto& [device, bytes] : state.growth(input.ids.size(1), options, input.confirmed))
+        for (const auto& [device, bytes] : state.growth(input.ids.size(0), input.ids.size(1), options, input.confirmed))
             if (bytes) budget.reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
         const auto tokens = input.ids.size(1);
         const bool transformed = bool(input.embeddings) || bool(input.positions) || bool(input.lengths) ||

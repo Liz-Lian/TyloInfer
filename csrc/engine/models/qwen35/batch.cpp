@@ -373,8 +373,9 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
                         "continuous batching stable slot KV geometry changed");
                 if (!cache->defined()) {
                     *cache = from;
-                    auto key_shape = from_key.sizes().vec();
-                    auto value_shape = from_value.sizes().vec();
+                    std::vector<int64_t> key_shape(from_key.dim()), value_shape(from_value.dim());
+                    for (int64_t axis = 0; axis < from_key.dim(); ++axis) key_shape[axis] = from_key.size(axis);
+                    for (int64_t axis = 0; axis < from_value.dim(); ++axis) value_shape[axis] = from_value.size(axis);
                     key_shape[0] = target.batch;
                     value_shape[0] = target.batch;
                     cache->physical_key = tyloi::ops::zeros(key_shape, from_key.options());

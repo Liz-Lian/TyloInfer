@@ -522,7 +522,8 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 #endif
 
     tyloi::models::MtpStep step(tyloi::models::MtpState&, const tyloi::Tensor&,
-                                const tyloi::Tensor&, const tyloi::Tensor& = {}) const override {
+                                const tyloi::Tensor&, const tyloi::Tensor& = {},
+                                const tyloi::models::ForwardOptions& = {}) const override {
         throw std::runtime_error("DeepSeek-V4.1 DSpark uses blockwise drafting");
     }
 

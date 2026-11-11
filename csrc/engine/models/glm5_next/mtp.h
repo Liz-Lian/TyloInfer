@@ -72,7 +72,8 @@ struct Mtp final : tyloi::models::Mtp {
 
     tyloi::models::MtpStep step(tyloi::models::MtpState& state,
                                 const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
-                                const ::tyloi::Tensor& positions = {}) const override;
+                                const ::tyloi::Tensor& positions = {},
+                                const tyloi::models::ForwardOptions& options = {}) const override;
 
     void trim_cache_to(tyloi::models::MtpState& state, int64_t position) const override;
 

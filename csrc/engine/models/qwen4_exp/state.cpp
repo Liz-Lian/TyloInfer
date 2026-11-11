@@ -62,7 +62,7 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::suffix_growth(std::int
 }
 
 std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options, std::int64_t confirmed) const {
+        std::int64_t, std::int64_t tokens, const tyloi::models::ForwardOptions& options, std::int64_t confirmed) const {
     if (batch <= 0 || tokens <= 0 || confirmed < 0 || confirmed >= tokens || cache_pos < 0 ||
         tokens > model_.max_position_embeddings() - cache_pos)
         throw std::invalid_argument("Qwen4 invalid forward allocation window");

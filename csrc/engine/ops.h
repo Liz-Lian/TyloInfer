@@ -129,6 +129,9 @@ class FfnScope {
 public:
     /** Apply positive batch geometry until the parent policy is restored. */
     explicit FfnScope(std::int64_t rows);
+    /** Run a predictor stage with its default numerical scheduling policy. */
+    enum class Role { predictor };
+    explicit FfnScope(Role role);
     ~FfnScope();
 private:
     struct Impl;

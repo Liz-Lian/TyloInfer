@@ -71,7 +71,7 @@ public:
     void rollback_speculative(std::int64_t accepted) override;
     /** Estimate cache allocations, conservatively including KDA convolution backing and temporary input. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t batch, std::int64_t tokens, const tyloi::models::ForwardOptions& options,
         std::int64_t confirmed = 0) const override;
     /** Return the state storage handles available to Graph capture. */
     std::vector<::tyloi::Tensor> storage() const override;

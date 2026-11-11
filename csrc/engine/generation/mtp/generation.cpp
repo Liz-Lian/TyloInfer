@@ -97,7 +97,7 @@ struct Ops : Sampling {
         return result;
     }
     Tensor forward(models::Input input) {
-        reserve(state.growth(input.ids.size(1), options, input.confirmed));
+        reserve(state.growth(input.ids.size(0), input.ids.size(1), options, input.confirmed));
         const auto before = weights.activity().streamed_bytes;
         const auto old = profiling ? costs() : std::array<double, 6>{};
         target_hidden = {}; target_logits = {}; target_compact = {}; target_tokens.clear();
@@ -173,8 +173,8 @@ struct Ops : Sampling {
         return positions;
     }
     models::MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
-        reserve(mtp.growth(predictor, models::Mtp::Step{ids}));
-        auto result = mtp.step(predictor, hidden, ids, positions);
+        reserve(mtp.growth(predictor, models::Mtp::Step{ids, options}));
+        auto result = mtp.step(predictor, hidden, ids, positions, options);
         projected_logits = result.sample_logits;
         projected_greedy = result.greedy_token;
         projected_hidden = projected_logits ? slice(result.sample_hidden, 1, result.sample_hidden.size(1) - 1, 1) : Tensor{};
@@ -183,12 +183,12 @@ struct Ops : Sampling {
     double predictor_prefill(Tensor hidden, Tensor ids, Tensor positions) {
         auto timer = executor.timer();
         const auto policy = history(ids.size(1), compute_chunk);
-        reserve(mtp.growth(predictor, models::Mtp::Step{ids}));
+        reserve(mtp.growth(predictor, models::Mtp::Step{ids, options}));
         ::tyloi::weights::Loan workspace(weights);
         if (policy.cache_only && ids.size(1) > 128)
             workspace.begin(policy.workspace_fixed + std::size_t(ids.size(1)) * policy.workspace_per_row);
         hidden = ops::copy(hidden, executor.device());
-        mtp.prime(predictor, hidden, ids, positions, policy.cache_only);
+        mtp.prime(predictor, hidden, ids, positions, policy.cache_only, options);
         timer->stop();
         workspace.finish();
         return timer->elapsed_ms();

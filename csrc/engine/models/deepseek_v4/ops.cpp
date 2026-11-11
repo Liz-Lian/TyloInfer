@@ -916,7 +916,7 @@ void State::reset(int64_t next_batch) {
 }
 
 std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions&, std::int64_t confirmed) const {
+        std::int64_t, std::int64_t tokens, const tyloi::models::ForwardOptions&, std::int64_t confirmed) const {
     if (confirmed) throw std::invalid_argument("DeepSeek V4 does not support speculative verification");
     if (tokens <= 0 || cache_pos < 0)
         throw std::invalid_argument("DeepSeek V4 cache planning requires positive tokens and a nonnegative position");

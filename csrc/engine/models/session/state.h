@@ -137,3 +137,10 @@ void restore_kv(
     int64_t head_dim,
     ::tyloi::ScalarType dtype,
     tyloi::state::KvQuantization quantization);
+
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Stage KV into independent targets retained before any asynchronous copy. */
+void stage_kv(tyloi::state::KvView& cache, const KvSnapshot& state,
+              int64_t head_dim, ::tyloi::ScalarType dtype,
+              tyloi::state::KvQuantization quantization);
+#endif

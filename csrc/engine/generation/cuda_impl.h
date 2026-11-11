@@ -252,7 +252,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         auto scope = Executor::current().enter(mode.ffn);
         if constexpr (tyloi::cuda::PlannedState<State>) {
             if (budget)
-                for (const auto& [device, bytes] : state.growth(chunk.count, tyloi::cuda::forward_options(mode), 0))
+                for (const auto& [device, bytes] : state.growth(full_ids.size(0), chunk.count, tyloi::cuda::forward_options(mode), 0))
                     if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
         }
 #endif
@@ -492,7 +492,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 #ifdef TYLOINFER_NATIVE_CUDA
         if constexpr (tyloi::cuda::PlannedState<State>) {
             if (budget)
-                for (const auto& [device, bytes] : state.growth(1, tyloi::cuda::forward_options(mode), 0))
+                for (const auto& [device, bytes] : state.growth(tyloi::ops::reshape(pending, {1, 1}).size(0), 1, tyloi::cuda::forward_options(mode), 0))
                     if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
         }
 #endif

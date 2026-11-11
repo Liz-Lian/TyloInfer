@@ -119,11 +119,17 @@ Components Components::load(
             auto predictor = load_predictor(
                 loader, model.config, cuda_kv_quantization());
             if (predictor) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                components.mtp = std::make_unique<Mtp>(
+                    std::move(*predictor), model.embed, model.rope,
+                    weights.placement.device, preallocate);
+#else
                 // Mtp retains these references, so they must outlive the result.
                 components.mtp = std::make_unique<Mtp>(
                     std::move(*predictor), model.embed, model.rope,
                     executor.fork(), copies, weights.placement.device,
                     kv_capacity, trace, trace_scope, preallocate);
+#endif
             }
         } else {
             std::cerr

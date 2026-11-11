@@ -39,7 +39,7 @@ public:
     std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t batch) const override;
     /** Conservatively plan retained speculative allocations for a forward pass. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t batch, std::int64_t tokens, const tyloi::models::ForwardOptions& options,
         std::int64_t confirmed = 0) const override;
     /** Conservatively plan the speculative journal before it is created. */
     std::vector<std::pair<tyloi::Device, std::size_t>> suffix_growth(std::int64_t tokens) const override;

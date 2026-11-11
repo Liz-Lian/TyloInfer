@@ -462,7 +462,12 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
 #else
         layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        layer.ffn = tyloi::models::qwen35::load_ffn<tyloi::ops::FfnWeights>(loader, config, index, "predictor");
+        layer.ffn.target = tyloi::Device(tyloi::kCUDA, loader.weights.placement.device);
+#else
         layer.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, "predictor");
+#endif
         model.layers.push_back(std::move(layer));
     }
     return model;

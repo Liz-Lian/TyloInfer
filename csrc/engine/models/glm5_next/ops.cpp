@@ -211,7 +211,7 @@ State::State(const Model& model) : model_(&model) {
 }
 
 std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions&, std::int64_t confirmed) const {
+        std::int64_t, std::int64_t tokens, const tyloi::models::ForwardOptions&, std::int64_t confirmed) const {
     if (batch <= 0 || tokens <= 0 || confirmed < 0 || confirmed >= tokens || cache_pos < 0)
         throw std::invalid_argument("GLM5 cache planning requires a positive batch and valid token window");
     if (cache_pos > std::numeric_limits<std::int64_t>::max() - tokens)
@@ -615,7 +615,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
 
 tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value,
                                   const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
-                                  const ::tyloi::Tensor& positions) const {
+                                  const ::tyloi::Tensor& positions, const tyloi::models::ForwardOptions&) const {
     if (positions.defined())
         throw std::runtime_error("this CUDA MTP predictor does not accept explicit positions");
     auto result = evaluate(value, hidden.dense(),

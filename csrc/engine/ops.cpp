@@ -351,6 +351,11 @@ FfnScope::FfnScope(std::int64_t rows) {
     impl_ = std::make_unique<Impl>();
     impl_->scope = cuda::Executor::current().enter(policy);
 }
+FfnScope::FfnScope(Role role) {
+    if (role != Role::predictor) throw std::invalid_argument("invalid FFN stage");
+    impl_ = std::make_unique<Impl>();
+    impl_->scope = cuda::Executor::current().enter(cuda::FfnMode{});
+}
 FfnScope::~FfnScope() = default;
 
 struct ProfileRange::Impl {

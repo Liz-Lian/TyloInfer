@@ -1,7 +1,11 @@
 #pragma once
 
 #include "engine/models/qwen35/config.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/ffn.h"
+#else
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#endif
 #include "engine/models/common/attention.h"
 
 #include <vector>
@@ -16,7 +20,11 @@ struct Predictor {
 #else
         ::tyloi::DenseTensor ffn_norm;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::FfnWeights ffn;
+#else
         Ffn ffn;
+#endif
     };
 
     tyloi::models::qwen35::Config config;
