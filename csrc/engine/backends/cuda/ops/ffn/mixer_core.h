@@ -14,6 +14,7 @@
 #include "engine/backends/cuda/executor/residual_trace.h"
 #include <algorithm>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -35,7 +36,8 @@ public:
     static Projection projection(::tyloi::Tensor, Part);
     ResidualCore(::tyloi::ops::ResidualWeights weights,::tyloi::ops::ResidualConfig config)
         : norm(std::move(weights.norm)), hidden(config.hidden),streams(config.streams),eps(config.eps),initialized_(true) {
-        const MfqCudaGuard guard(norm.device());
+        std::optional<MfqCudaGuard> guard;
+        if (config.target.is_cuda()) guard.emplace(config.target);
         down=projection(std::move(weights.down),config.final?Part::final_down:Part::generic);
         up=projection(std::move(weights.up),config.final?Part::final_up:Part::generic);
         if(weights.injection.defined()) injection=projection(std::move(weights.injection),Part::generic);

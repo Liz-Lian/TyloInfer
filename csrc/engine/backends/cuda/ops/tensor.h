@@ -33,6 +33,9 @@ tyloi::DenseTensor clone(tyloi::DenseTensor input);
 tyloi::DenseTensor cat(std::span<const tyloi::DenseTensor> inputs, std::int64_t dim);
 tyloi::DenseTensor zeros(std::span<const std::int64_t> shape, const TensorOptions& options);
 tyloi::DenseTensor index_select(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices);
+tyloi::DenseTensor where(tyloi::DenseTensor condition, tyloi::DenseTensor yes, tyloi::DenseTensor no);
+tyloi::DenseTensor sharded_embedding(std::span<const Tensor> shards, tyloi::DenseTensor global_ids,
+                                     std::span<const std::int64_t> used_shards, std::int64_t rows);
 tyloi::DenseTensor sum(tyloi::DenseTensor input, std::int64_t dim, bool keepdim);
 void index_copy(tyloi::DenseTensor input, std::int64_t dim, tyloi::DenseTensor indices, tyloi::DenseTensor source);
 tyloi::DenseTensor arange(std::int64_t first, std::int64_t last, Device device);

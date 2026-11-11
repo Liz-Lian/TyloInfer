@@ -17,6 +17,31 @@
 
 namespace tyloi::cuda::ops {
 
+tyloi::DenseTensor where(tyloi::DenseTensor condition, tyloi::DenseTensor yes, tyloi::DenseTensor no) {
+    std::optional<MfqCudaGuard> guard;
+    if (yes.device().is_cuda()) guard.emplace(yes.device().index);
+    return ::tyloi::cuda::where(condition, yes, no);
+}
+
+tyloi::DenseTensor sharded_embedding(std::span<const Tensor> shards, tyloi::DenseTensor ids,
+                                     std::span<const std::int64_t> used, std::int64_t rows) {
+    std::optional<MfqCudaGuard> guard;
+    if (ids.device().is_cuda()) guard.emplace(ids.device().index);
+    DenseTensor result;
+    for (const auto shard : used) {
+        if (shard < 0 || static_cast<std::size_t>(shard) >= shards.size())
+            throw std::out_of_range("embedding shard index out of range");
+        auto mask = (ids >= shard * rows) & (ids < (shard + 1) * rows);
+        auto local = ::tyloi::cuda::where(mask, ids - shard * rows, ::tyloi::cuda::zeros_like(ids));
+        auto values = ::tyloi::ops::embedding(local, shards[static_cast<std::size_t>(shard)]).dense();
+        if (values.sizes().vec() != std::vector<int64_t>({ids.size(0), ids.size(1), ids.size(2), shards[static_cast<std::size_t>(shard)].size(1)}))
+            throw std::runtime_error("Qwen4 ngram embedding shape mismatch");
+        values = values * mask.unsqueeze(-1).to(values.scalar_type());
+        result = result.defined() ? result + values : values;
+    }
+    return result;
+}
+
 std::vector<float> floats(const tyloi::DenseTensor& input) {
     std::optional<MfqCudaGuard> guard;
     if (input.device().is_cuda()) guard.emplace(input.device().index);

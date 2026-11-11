@@ -174,6 +174,11 @@ Tensor scale(const Tensor& input, double factor);
 Tensor divide(const Tensor& input, double divisor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
 Tensor embedding(const Tensor& ids, const ::tyloi::Tensor& weight);
+/** Select broadcast values according to a condition, using the promoted value dtype. */
+Tensor where(const Tensor& condition, const Tensor& yes, const Tensor& no);
+/** Gather and sum the supplied ordered embedding shards for global IDs. */
+Tensor sharded_embedding(std::span<const Tensor> shards, const Tensor& global_ids,
+                         std::span<const std::int64_t> used_shards, std::int64_t rows);
 Tensor project(const Tensor& input, const ::tyloi::Tensor& weight);
 // Select one weight bank per route; keep the route axis in the result.
 Tensor project(const Tensor& input, const Tensor& weight, const Tensor& ids);

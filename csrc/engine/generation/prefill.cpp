@@ -10,6 +10,7 @@
 #include "engine/weights/workspace.h"
 
 #include <array>
+#include <chrono>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -114,6 +115,22 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
             }
             observed = true;
             if (!step.value) continue;
+            if (step.value->phase == models::Prefill::Phase::progress) {
+                if (!step.value->progress) throw std::logic_error("prefill progress data is missing");
+                const auto& report = *step.value->progress;
+                executor.synchronize();
+                const std::array<Device, 1> devices{report.device};
+                const auto memory = executor.memory(devices, Executor::MemoryDetail::diagnostic).at(0);
+                std::cout << "prefill_layer_major_memory tokens=" << report.tokens << " chunk=" << report.chunk
+                          << " completed_layers=" << report.completed << " owned_bytes=" << memory.allocated
+                          << " process_local_bytes=" << memory.local << " pool_used_bytes=" << memory.default_pool_used
+                          << " pool_reserved_bytes=" << memory.default_pool_reserved << std::endl;
+                std::cout << "prefill_layer_major_progress tokens=" << report.tokens << " chunk=" << report.chunk
+                          << " completed_layers=" << report.completed << " total_layers=" << report.total
+                          << " elapsed_ms=" << std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - report.started).count() << std::endl;
+                continue;
+            }
             result = std::move(*step.value);
             if (result.phase == models::Prefill::Phase::computed) {
                 timer->stop();

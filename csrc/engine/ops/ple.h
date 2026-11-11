@@ -32,9 +32,9 @@ public:
         std::unique_ptr<Impl> impl_;
         friend class Ple;
     };
-    /** Construct PLE from weights, channel geometry and numerical policy. */
+    /** Construct PLE from weights, channel geometry and an execution target. */
     Ple(PleWeights weights, std::int64_t hidden, std::int64_t streams,
-        std::int64_t dilation, double eps);
+        std::int64_t dilation, double eps, Device target = Device(kCUDA, 0));
     ~Ple();
     Ple(Ple&&) noexcept;
     Ple& operator=(Ple&&) noexcept;

@@ -147,7 +147,11 @@ struct SharedState {
         TYLOINFER_RUNTIME_CHECK(slot < dspark_target_hiddens.size() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden,
                           "DeepSeek-V4.1 DSpark target geometry mismatch");
+#ifdef TYLOINFER_NATIVE_CUDA
+        dspark_target_hiddens[slot] = tyloi::ops::contiguous(tyloi::ops::mean(hidden,2)).dense();
+#else
         dspark_target_hiddens[slot] = hidden.mean(2).contiguous();
+#endif
     }
 
     /** Combine captured target layers on the primary device. */
@@ -219,11 +223,18 @@ struct SharedState {
             batch = current_batch;
             tokens = current_tokens;
             next_layer = 0;
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto pre=tyloi::ops::zeros({current_batch,current_tokens,4},
+                ::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat32));
+            auto first=tyloi::ops::slice(pre,2,0,1);
+            tyloi::ops::fill(first,1.0); previous_pre=pre.dense();
+#else
             previous_pre =
                 ::tyloi::cuda::zeros({current_batch, current_tokens, 4},
                                           ::tyloi::TensorOptions().device(device).dtype(
                                               ::tyloi::kFloat32));
             previous_pre.narrow(2, 0, 1).fill_(1.0);
+#endif
             TYLOINFER_RUNTIME_CHECK(engram_hash && token_ids.dim() == 2 &&
                                   token_ids.size(0) == current_batch &&
                                   token_ids.size(1) == current_tokens,
@@ -1126,13 +1137,20 @@ struct Block final {
                             hidden.device(), ids);
 
         const auto batch = hidden.size(0), tokens = hidden.size(1);
+        const auto measure=[&](const char* name,auto&& operation) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            return tyloi::ops::measure(name,tyloi::Device(tyloi::kCUDA,cuda_device),std::forward<decltype(operation)>(operation));
+#else
+            return tyloi::ops::measure(name,std::forward<decltype(operation)>(operation));
+#endif
+        };
 #ifdef TYLOINFER_NATIVE_CUDA
         const bool truncated_local = std::exchange(layer_state.attention.replay_local_window, false);
 #else
         const bool truncated_local = std::exchange(layer_state.replay_local_window, false);
 #endif
         if (engram) {
-            hidden = tyloi::ops::measure("deepseek_v41.engram", [&] {
+            hidden = measure("deepseek_v41.engram", [&] {
                 return engram->forward(*shared.engram_states.at(static_cast<std::size_t>(layer)),
                                        hidden, shared.engram_hashes, shared.text_rows, &shared.text_row_ids);
             });
@@ -1140,7 +1158,7 @@ struct Block final {
         shared.capture_dspark_target(layer, config, hidden);
 #ifdef TYLOINFER_NATIVE_CUDA
         const tyloi::ops::MhcConfig mhc{config.hc_sinkhorn_iters,config.rms_eps,config.hc_eps};
-        auto attention_mix=tyloi::ops::measure("deepseek_v41.mhc.attention.collapse",[&] {
+        auto attention_mix=measure("deepseek_v41.mhc.attention.collapse",[&] {
             return tyloi::ops::mhc_collapse(hidden,shared.previous_pre,attention_mhc_function,
                 attention_mhc_scale,attention_mhc_base,attention_norm,mhc);
         });
@@ -1154,7 +1172,7 @@ struct Block final {
         shared.attention_positions.dense()=positions;
         shared.attention_lengths.dense()=sequence_lengths.has_value()?sequence_lengths.value():DenseTensor{};
 #endif
-        auto attended = tyloi::ops::measure("deepseek_v41.attention", [&] {
+        auto attended = measure("deepseek_v41.attention", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
             return attention->forward(layer_state.attention,shared.attention,shared.attention_input,shared.attention_positions,
                 cache_position,shared.attention_lengths,truncated_local).dense();
@@ -1167,10 +1185,10 @@ struct Block final {
         shared.attention_input.dense()={}; shared.attention_positions.dense()={}; shared.attention_lengths.dense()={};
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-        hidden=tyloi::ops::measure("deepseek_v41.mhc.attention.expand",[&] {
+        hidden=measure("deepseek_v41.mhc.attention.expand",[&] {
             return tyloi::ops::mhc_expand(attended,hidden,attention_mix).dense();
         });
-        auto ffn_mix=tyloi::ops::measure("deepseek_v41.mhc.mlp.collapse",[&] {
+        auto ffn_mix=measure("deepseek_v41.mhc.mlp.collapse",[&] {
             return tyloi::ops::mhc_collapse(hidden,attention_mix.next_pre,mlp_mhc_function,
                 mlp_mhc_scale,mlp_mhc_base,mlp_norm,mhc);
         });
@@ -1180,7 +1198,7 @@ struct Block final {
             mlp_mhc_function, mlp_mhc_scale, mlp_mhc_base, mlp_norm,
             "deepseek_v41.mhc.mlp.collapse");
 #endif
-        auto output = tyloi::ops::measure("deepseek_v41.mlp", [&] {
+        auto output = measure("deepseek_v41.mlp", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
             const auto& value = ffn_mix.branch.dense();
 #else
@@ -1194,7 +1212,7 @@ struct Block final {
 #endif
                 TYLOINFER_RUNTIME_CHECK(mlp.moe_router_bias, "DeepSeek-V4.1 router bias is missing");
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto bias=::tyloi::cuda::where(shared.routing_mask,vision_router_bias.dense(),mlp.moe_router_bias.dense()).contiguous();
+                auto bias=tyloi::ops::contiguous(tyloi::ops::where(shared.routing_mask,vision_router_bias,mlp.moe_router_bias)).dense();
 #else
                 auto bias=::tyloi::cuda::where(shared.routing_mask,vision_router_bias,mlp.moe_router_bias.dense()).contiguous();
 #endif
@@ -1219,7 +1237,7 @@ struct Block final {
                 .reshape({batch, tokens, config.hidden});
         });
 #ifdef TYLOINFER_NATIVE_CUDA
-        hidden=tyloi::ops::measure("deepseek_v41.mhc.mlp.expand",[&] {
+        hidden=measure("deepseek_v41.mhc.mlp.expand",[&] {
             return tyloi::ops::mhc_expand(output,hidden,ffn_mix).dense();
         });
         shared.previous_pre = ffn_mix.next_pre.dense();

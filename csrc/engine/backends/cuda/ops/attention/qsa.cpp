@@ -66,7 +66,11 @@ std::int64_t Qsa::position(const State& state) const { return impl_->core.positi
 bool Qsa::managed_memory(const State& state) const { return impl_->core.managed_memory(state.impl_->cache); }
 std::int64_t Qsa::graph_capacity(const State& state) const { return impl_->core.graph_capacity(state.impl_->cache); }
 std::vector<Tensor*> Qsa::graph_state(State& state) const { return impl_->core.graph_state(state.impl_->cache); }
-void Qsa::activate_memory(State& state) const { impl_->core.activate_memory(state.impl_->cache); }
+void Qsa::activate_memory(State& state) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
+    impl_->core.activate_memory(state.impl_->cache);
+}
 std::size_t Qsa::growth_bytes(const State& state, std::int64_t tokens) const {
     return impl_->core.growth_bytes(state.impl_->cache, tokens);
 }
@@ -126,13 +130,21 @@ std::vector<Tensor> Qsa::storage(const State& state) const {
     if (state.impl_->failed_output.defined()) result.push_back(hold(state.impl_->failed_output));
     return result;
 }
-void Qsa::leave_graph(State& state) const { impl_->core.leave_graph(state.impl_->cache); }
+void Qsa::leave_graph(State& state) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
+    impl_->core.leave_graph(state.impl_->cache);
+}
 void Qsa::reset(State& state) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     impl_->core.reset(state.impl_->cache);
     state.impl_->failed_trace.clear();
     state.impl_->failed_output = {};
 }
 void Qsa::prepare_graph(State& state, const Tensor& positions, std::int64_t capacity) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     if (positions.defined() && !positions.representation<DenseTensor>())
         throw std::invalid_argument("QSA positions must be dense");
     impl_->core.prepare_graph(state.impl_->cache,
@@ -141,6 +153,8 @@ void Qsa::prepare_graph(State& state, const Tensor& positions, std::int64_t capa
 void Qsa::advance_graph(State& state, std::int64_t tokens) const { impl_->core.advance_graph(state.impl_->cache, tokens); }
 void Qsa::truncate(State& state, std::int64_t keep) const { impl_->core.truncate(state.impl_->cache, keep); }
 std::vector<Tensor> Qsa::project_inputs(const Tensor& input) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     std::vector<Tensor> result;
     result.reserve(4);
     for (int i=0; i<4; ++i) result.emplace_back(DenseTensor{});
@@ -150,6 +164,8 @@ std::vector<Tensor> Qsa::project_inputs(const Tensor& input) const {
     return result;
 }
 Tensor Qsa::project_output(const Tensor& input) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     Tensor result{DenseTensor{}};
     result.dense()=impl_->core.project_output(input.dense());
     return result;
@@ -157,6 +173,8 @@ Tensor Qsa::project_output(const Tensor& input) const {
 Tensor Qsa::forward(State& state, const Tensor& hidden, const Tensor& positions, const Tensor& full_positions,
         bool cache, std::vector<Tensor>* selection_trace, std::vector<Tensor> projections,
         bool project_output, bool history_only) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     auto trace = selection_trace ? views(*selection_trace) : std::vector<DenseTensor>{};
     DenseTensor result;
     try {
@@ -172,6 +190,8 @@ Tensor Qsa::forward(State& state, const Tensor& hidden, const Tensor& positions,
 }
 Tensor Qsa::forward_graph(State& state, const Tensor& hidden, const Tensor& positions, const Tensor& cache_positions,
         std::vector<Tensor> projections, bool project_output, bool history_only) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     Tensor result{DenseTensor{}};
     result.dense()=impl_->core.forward_graph(state.impl_->cache, hidden.dense(), positions.dense(), cache_positions.dense(),
         views(projections), project_output, history_only);

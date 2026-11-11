@@ -41,7 +41,10 @@ public:
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
     std::unique_ptr<tyloi::Executor::Graph> graph() override;
     /** Query device memory snapshots within this executor's scope. */
-    std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices) const override;
+    std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices,
+        tyloi::Executor::MemoryDetail detail = tyloi::Executor::MemoryDetail::basic) const override;
+    /** Wait for the current CUDA execution stream. */
+    void synchronize() override;
     /** Report the configured KV manager and offload store metrics. */
     tyloi::engine::Metrics metrics() const override;
     /** Reclaim idle allocator memory on the device. */
@@ -59,7 +62,10 @@ public:
 #else
     std::unique_ptr<tyloi::Executor::Scope> enter();
     /** Query device memory snapshots within this executor's scope. */
-    std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices) const;
+    std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices,
+        tyloi::Executor::MemoryDetail detail = tyloi::Executor::MemoryDetail::basic) const;
+    /** Wait for the current CUDA execution stream. */
+    void synchronize();
     /** Reclaim idle allocator memory on the device. */
     void trim(tyloi::Device device);
     /** Set the device allocation limit; zero removes it. */

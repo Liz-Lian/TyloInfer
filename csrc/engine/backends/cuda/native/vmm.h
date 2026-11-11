@@ -33,6 +33,7 @@ public:
     /// Unmaps and frees every chunk, then the addresses.
     void release();
     uint8_t* base() const { return (uint8_t*) (uintptr_t) base_; }
+    uint64_t granularity() const { return gran_; }
     int64_t chunks() const { return (int64_t) h_.size(); }
     bool mapped(int64_t i) const { return i >= 0 && i < chunks() && h_[(std::size_t) i] != 0; }
     int64_t mapped_count() const;
@@ -43,12 +44,15 @@ public:
     VmmChunk unmap(int64_t i);
 
 private:
+    VmmChunk new_chunk() const;
     bool map_one(int64_t i, VmmChunk h);
     bool set_access(int64_t lo, int64_t hi);
     /// Readable and writable [lo, hi) (all newly mapped); when that fails they are unmapped and freed again, so no
     /// chunk counts as mapped without access.
     bool commit_run(int64_t lo, int64_t hi);
     unsigned long long base_ = 0;
+    uint64_t gran_ = 0;
+    int device_ = -1;
     std::vector<VmmChunk> h_;   // per chunk: its physical chunk, 0 = unmapped
 };
 
@@ -63,7 +67,7 @@ template <class Take> bool VmmRange::map_range(int64_t lo, int64_t hi, Take take
             continue;
         }
         VmmChunk h = take();
-        if (h == 0) h = vmm_chunk_new();
+        if (h == 0) h = new_chunk();
         if (h == 0 || !map_one(i, h)) {
             if (h != 0) vmm_chunk_free(h);
             if (run >= 0) commit_run(run, i);

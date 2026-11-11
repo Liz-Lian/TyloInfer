@@ -4,8 +4,10 @@
 #include "engine/ops.h"
 
 #include <cstdint>
+#include <chrono>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -90,7 +92,14 @@ struct Decoded {
 
 /** Model-owned prefill phase boundaries and final owning outputs. */
 struct Prefill {
-    enum class Phase { encode, decode, computed, complete };
+    enum class Phase { encode, decode, computed, complete, progress };
+    /** Describe a layerwise diagnostic boundary without observing execution resources. */
+    struct Progress {
+        Device device;
+        std::int64_t tokens = 0, chunk = 0;
+        int completed = 0, total = 0;
+        std::chrono::steady_clock::time_point started;
+    };
     Phase phase = Phase::complete;
     /** Half-open weight layer range prioritised during this phase, or an empty range. */
     int first = 0, last = 0;
@@ -100,6 +109,8 @@ struct Prefill {
     Tensor raw;
     /** Driver-measured computation time before workspace restoration, or a negative value if unmarked. */
     double elapsed_ms = -1;
+    /** Present only for a progress event; the driver owns synchronization and observation. */
+    std::optional<Progress> progress;
 };
 
 struct Prepared {

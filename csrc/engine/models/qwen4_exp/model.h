@@ -887,6 +887,13 @@ class NgramEmbedding {
         for (auto value : global)
             used.insert(value / rows_);
         DenseTensor result;
+#ifdef TYLOINFER_NATIVE_CUDA
+        if(global_tensor.is_cuda()) {
+            std::vector<int64_t> selected(used.begin(),used.end());
+            result=tyloi::ops::sharded_embedding(shards_,global_tensor,selected,rows_).dense();
+        } else
+#endif
+        {
         for (auto shard : used) {
             auto mask = (global_tensor >= shard * rows_) & (global_tensor < (shard + 1) * rows_);
             auto local =
@@ -900,6 +907,7 @@ class NgramEmbedding {
                               "Qwen4 ngram embedding shape mismatch");
             values = values * mask.unsqueeze(-1).to(values.scalar_type());
             result = result.defined() ? result + values : values;
+        }
         }
         if (cache)
             restore(state,std::move(hashes.next));
@@ -969,8 +977,8 @@ public:
     };
     /** Bind immutable numeric weights to the n-gram row source. */
     Ple(NgramEmbedding embedding, tyloi::ops::PleWeights weights, int64_t hidden, int64_t streams,
-        int64_t dilation, double eps)
-        : embedding_(std::move(embedding)), numeric_(std::move(weights),hidden,streams,dilation,eps),
+        int64_t dilation, double eps, tyloi::Device target)
+        : embedding_(std::move(embedding)), numeric_(std::move(weights),hidden,streams,dilation,eps,target),
           hidden_(hidden),streams_(streams) {}
     /** Reset the request history, optionally retaining graph storage. */
     void reset(State& state,bool retain=false) const {

@@ -96,9 +96,15 @@ GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp
         };
     };
 #endif
-    if(weights.ple)x=x+(confirmed
-        ? weights.ple->forward_graph(state.ple, x,ids,ple_rows,confirmed,checkpoint->ple_conv)
-        : weights.ple->forward_chunk(state.ple, x,ids,true,{},ple_rows));
+    if(weights.ple) {
+        auto ple=confirmed ? weights.ple->forward_graph(state.ple, x,ids,ple_rows,confirmed,checkpoint->ple_conv)
+            : weights.ple->forward_chunk(state.ple, x,ids,true,{},ple_rows);
+#ifdef TYLOINFER_NATIVE_CUDA
+        x=tyloi::ops::add(x,ple).dense();
+#else
+        x=x+ple;
+#endif
+    }
 #ifdef TYLOINFER_NATIVE_CUDA
     auto [attention_input,attention_residual,attention_gate]=pending_residual
         ? weights.attention_gr.pre_after(x,pending_residual->residual,pending_residual->gate,tyloi::ops::ResidualRole::attention)
@@ -989,7 +995,12 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
         input.trace->push_back(std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).clone()));
     for (std::size_t i=0;i<model.layers.size();++i) {
         auto& block = model.layers[i];
+#ifdef TYLOINFER_NATIVE_CUDA
+        std::optional<MfqCudaGuard> guard;
+        if(block->cpu_offloaded)guard.emplace(block->cuda_device);
+#else
         MfqCudaGuard guard(block->cuda_device);
+#endif
         auto local_ids = block->cpu_offloaded
             ? host_ids
             : tyloi::ops::copy(ids, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();
@@ -2406,8 +2417,12 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                         auto& layer = *requests[row]->state_->layers[i];
                         graph.ple[row][i]->decode();
                         auto rows = graph.ple[row][i]->output().dense().reshape({1,1,model.hidden_size()});
-                        positional.push_back(x + block.ple->forward_chunk(
-                            layer.ple,x,graph.ids.narrow(0,row,1),true,{},rows));
+                        auto ple=block.ple->forward_chunk(layer.ple,x,graph.ids.narrow(0,row,1),true,{},rows);
+#ifdef TYLOINFER_NATIVE_CUDA
+                        positional.push_back(tyloi::ops::add(x,ple).dense());
+#else
+                        positional.push_back(x+ple);
+#endif
                     }
                     hidden = join_request_outputs(positional,0);
                     graph.window->mark(static_cast<int>(i),"ple_end");
@@ -2623,7 +2638,11 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
                         return block.ple->forward(layer.ple,x,chunks[row],true,0,
                             host_ids.narrow(1,offsets[row],chunks[row].size(1)));
                     });
+#ifdef TYLOINFER_NATIVE_CUDA
+                positional.push_back(tyloi::ops::add(x,ple).dense());
+#else
                 positional.push_back(x+ple);
+#endif
             }
             hidden=join_request_outputs(positional,1);
         }
@@ -2744,8 +2763,12 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             for (int64_t row = 0; row < batch; ++row) {
                 auto& layer = *requests[row]->state_->layers[i];
                 auto x = hidden.narrow(0,row,1);
-                positional.push_back(x + block.ple->forward(layer.ple,x,ids.narrow(0,row,1),true,0,
-                                                           host_ids.narrow(0,row,1)));
+                auto ple=block.ple->forward(layer.ple,x,ids.narrow(0,row,1),true,0,host_ids.narrow(0,row,1));
+#ifdef TYLOINFER_NATIVE_CUDA
+                positional.push_back(tyloi::ops::add(x,ple).dense());
+#else
+                positional.push_back(x+ple);
+#endif
             }
             hidden = join_request_outputs(positional,0);
         }
@@ -3402,22 +3425,19 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         hidden=std::move(next_hidden);
         ++layer;
         if(trace && (layer%4==0 || layer==int(model.layers.size()))) {
-            TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_get_current_cuda_stream()));
 #ifdef TYLOINFER_NATIVE_CUDA
-            const auto memory=tyloi::cuda::default_context(ids.get_device())->memory_stats();
-            const auto local=tyloi::cuda::default_context(ids.get_device())->local_memory_usage();
-            cudaMemPool_t pool=nullptr;uint64_t reserved=0,used=0;
-            TYLOINFER_CUDA_CHECK(cudaDeviceGetDefaultMemPool(&pool,ids.get_device()));
-            TYLOINFER_CUDA_CHECK(cudaMemPoolGetAttribute(pool,cudaMemPoolAttrReservedMemCurrent,&reserved));
-            TYLOINFER_CUDA_CHECK(cudaMemPoolGetAttribute(pool,cudaMemPoolAttrUsedMemCurrent,&used));
-            std::cout<<"prefill_layer_major_memory tokens="<<tokens<<" chunk="<<compute_chunk
-                <<" completed_layers="<<layer<<" owned_bytes="<<memory.allocated
-                <<" process_local_bytes="<<local<<" pool_used_bytes="<<used<<" pool_reserved_bytes="<<reserved<<std::endl;
-#endif
+            tyloi::models::Prefill report;
+            report.phase=tyloi::models::Prefill::Phase::progress;
+            report.progress=tyloi::models::Prefill::Progress{ids.device(),tokens,compute_chunk,layer,
+                static_cast<int>(model.layers.size()),started};
+            co_yield std::move(report);
+#else
+            TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_get_current_cuda_stream()));
             std::cout<<"prefill_layer_major_progress tokens="<<tokens<<" chunk="<<compute_chunk
                 <<" completed_layers="<<layer<<" total_layers="<<model.layers.size()
                 <<" elapsed_ms="<<std::chrono::duration<double,std::milli>(
                     std::chrono::steady_clock::now()-started).count()<<std::endl;
+#endif
         }
     }
     resume_profile();

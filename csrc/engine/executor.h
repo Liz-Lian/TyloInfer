@@ -13,6 +13,8 @@ namespace tyloi {
 
 class Executor {
 public:
+    /** Select whether memory snapshots include diagnostic process and default-pool values. */
+    enum class MemoryDetail { basic, diagnostic };
     struct Memory {
         /** Device represented by this snapshot. */
         Device device;
@@ -32,6 +34,12 @@ public:
         std::size_t usable = 0;
         /** Bytes currently available in the active workspace loan. */
         std::size_t workspace = 0;
+        /** Process-local device use, available only in diagnostic snapshots. */
+        std::size_t local = 0;
+        /** Bytes used by the device default pool in a diagnostic snapshot. */
+        std::size_t default_pool_used = 0;
+        /** Bytes reserved by the device default pool in a diagnostic snapshot. */
+        std::size_t default_pool_reserved = 0;
     };
 
     class Scope {
@@ -80,8 +88,11 @@ public:
     virtual std::unique_ptr<Timer> timer() = 0;
     virtual std::unique_ptr<Profile> profile(const char* name) = 0;
     virtual std::unique_ptr<Graph> graph() = 0;
-    /** Query one snapshot per device, in order, within a scope borrowing this executor's resources. */
-    virtual std::vector<Memory> memory(std::span<const Device> devices) const = 0;
+    /** Query one snapshot per device in order; diagnostic details are opt-in. */
+    virtual std::vector<Memory> memory(std::span<const Device> devices,
+        MemoryDetail detail = MemoryDetail::basic) const = 0;
+    /** Wait for the current execution stream within this executor's active scope. */
+    virtual void synchronize() = 0;
     /** Return metrics owned by this executor's execution resources. */
     virtual engine::Metrics metrics() const { return {}; }
     /** Reclaim idle memory within a scope borrowing this executor's resources. */

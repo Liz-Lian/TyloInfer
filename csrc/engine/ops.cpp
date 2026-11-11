@@ -552,6 +552,21 @@ Tensor embedding(const Tensor& ids_tensor, const ::tyloi::Tensor& weight) {
     input(ids);
     return owner(cuda::ops::embedding(ids, weight));
 }
+Tensor where(const Tensor& condition, const Tensor& yes, const Tensor& no) {
+    input(condition);
+    input(yes);
+    input(no);
+    Tensor result{DenseTensor{}};
+    result.dense() = cuda::ops::where(dense(condition), dense(yes), dense(no));
+    return result;
+}
+Tensor sharded_embedding(std::span<const Tensor> shards, const Tensor& global_ids,
+                         std::span<const std::int64_t> used_shards, std::int64_t rows) {
+    input(global_ids);
+    Tensor result{DenseTensor{}};
+    result.dense() = cuda::ops::sharded_embedding(shards, dense(global_ids), used_shards, rows);
+    return result;
+}
 Tensor project(const Tensor& value_tensor, const ::tyloi::Tensor& weight) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);

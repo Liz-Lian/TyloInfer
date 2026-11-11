@@ -87,10 +87,9 @@ bool discrete_device() {
 
 namespace {
 std::set<int64_t> virtual_pages(int64_t maximum, int64_t heads, int64_t width,
-        std::size_t element, int64_t tokens) {
+        std::size_t element, int64_t tokens, std::size_t g) {
     std::set<int64_t> result;
     tokens=std::min(maximum,((tokens+8191)/8192)*8192);
-    const auto g=vmm::vmm_granularity();
     for(int64_t head=0;head<heads;++head) {
         const auto begin=std::size_t(head)*maximum*width*element;
         const auto end=begin+std::size_t(tokens)*width*element;
@@ -104,29 +103,43 @@ struct KvMemoryAllocation::Virtual {
     vmm::VmmRange range;
     int64_t maximum, heads, width, committed = 0;
     std::size_t element;
-    Virtual(int64_t maximum, int64_t heads, int64_t width, std::size_t element)
-        : maximum(maximum), heads(heads), width(width), element(element) {
+    ::tyloi::Device target;
+    Virtual(int64_t maximum, int64_t heads, int64_t width, std::size_t element, ::tyloi::Device device)
+        : maximum(maximum), heads(heads), width(width), element(element), target(device) {
+        std::optional<MfqCudaGuard> guard;
+        if (target.is_cuda()) guard.emplace(target.index);
         if (!range.reserve(std::size_t(maximum)*heads*width*element))
             throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory reservation failed");
     }
-    ~Virtual() { (void)cudaDeviceSynchronize(); }
+    ~Virtual() {
+        try {
+            std::optional<MfqCudaGuard> guard;
+            if (target.is_cuda()) guard.emplace(target.index);
+            (void)cudaDeviceSynchronize();
+            range.release();
+        } catch (...) {
+            // Destruction remains best effort if the device is unavailable.
+        }
+    }
     std::set<int64_t> missing(int64_t tokens) const {
         tokens=std::min(maximum,((tokens+8191)/8192)*8192);
         if (tokens <= committed) return {};
-        auto result=virtual_pages(maximum,heads,width,element,tokens);
+        auto result=virtual_pages(maximum,heads,width,element,tokens,range.granularity());
         for(auto it=result.begin();it!=result.end();)
             if(range.mapped(*it))it=result.erase(it);else ++it;
         return result;
     }
     void ensure(int64_t tokens) {
+        std::optional<MfqCudaGuard> guard;
+        if (target.is_cuda()) guard.emplace(target.index);
         tokens=std::min(maximum,((tokens+8191)/8192)*8192);
         const auto fresh = missing(tokens);
         if (!fresh.empty()) TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(current_stream().stream()));
         for (const auto page : fresh) {
             if (!range.map_range(page,page+1,[]{return vmm::VmmChunk(0);}))
                 throw std::runtime_error(insufficient);
-            TYLOINFER_NATIVE_CUDA_CHECK(cudaMemsetAsync(range.base()+page*vmm::vmm_granularity(),0,
-                vmm::vmm_granularity(),current_stream().stream()));
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaMemsetAsync(range.base()+page*range.granularity(),0,
+                range.granularity(),current_stream().stream()));
         }
         committed = std::max(committed,tokens);
     }
@@ -134,10 +147,14 @@ struct KvMemoryAllocation::Virtual {
 
 namespace {
 std::size_t initial_virtual_bytes(const KvMemoryAllocation& a) {
+    std::optional<MfqCudaGuard> guard;
+    if (a.options.target_device().is_cuda()) guard.emplace(a.options.target_device().index);
+    const auto granularity = vmm::vmm_granularity();
+    if (!granularity) throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
     const auto tokens=std::min<int64_t>(a.maximum,16384);
-    const auto pages=virtual_pages(a.maximum,a.heads,a.key_width,width_bytes(a.options),tokens).size()
-        +virtual_pages(a.maximum,a.heads,a.value_width,width_bytes(a.options),tokens).size();
-    return pages*vmm::vmm_granularity();
+    const auto pages=virtual_pages(a.maximum,a.heads,a.key_width,width_bytes(a.options),tokens,granularity).size()
+        +virtual_pages(a.maximum,a.heads,a.value_width,width_bytes(a.options),tokens,granularity).size();
+    return pages*granularity;
 }
 }
 
@@ -169,7 +186,7 @@ std::size_t KvMemoryAllocation::raw_bytes() const {return std::size_t(maximum)*h
 std::size_t KvMemoryAllocation::index_bytes() const {return std::size_t(maximum+(maximum+pool-1)/pool)*index_width*2;}
 std::size_t KvMemoryAllocation::gpu_bytes() const {
     if (!ready) return 0;
-    if (virtual_keys) return index_bytes() + std::size_t(virtual_keys->range.mapped_count()+virtual_values->range.mapped_count())*vmm::vmm_granularity();
+    if (virtual_keys) return index_bytes() + std::size_t(virtual_keys->range.mapped_count())*virtual_keys->range.granularity() + std::size_t(virtual_values->range.mapped_count())*virtual_values->range.granularity();
     return index_bytes() + hot.bytes() + (host || offload ? 0 : raw_bytes());
 }
 std::size_t KvMemoryAllocation::ram_bytes() const {
@@ -179,9 +196,11 @@ std::size_t KvMemoryAllocation::ram_bytes() const {
 }
 std::size_t KvMemoryAllocation::growth_bytes(int64_t tokens) const {
     tokens=std::min(maximum,tokens);
-    return virtual_keys ? (virtual_keys->missing(tokens).size()+virtual_values->missing(tokens).size())*vmm::vmm_granularity() : 0;
+    return virtual_keys ? virtual_keys->missing(tokens).size()*virtual_keys->range.granularity() + virtual_values->missing(tokens).size()*virtual_values->range.granularity() : 0;
 }
 void KvMemoryAllocation::ensure(int64_t tokens) {
+    std::optional<MfqCudaGuard> guard;
+    if (options.target_device().is_cuda()) guard.emplace(options.target_device().index);
     if (tokens<0 || tokens>maximum) throw std::invalid_argument("KV growth exceeds configured context");
     if(!expert_regions.empty())expert_regions.front().advance(tokens+pool-1);
     if (virtual_keys) {virtual_keys->ensure(tokens); virtual_values->ensure(tokens);}
@@ -270,11 +289,22 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
     }
     const bool automatic=options_.placement=="auto" || options_.placement=="auto_ssd";
     const bool tiered_budget=options_.budget_policy && discrete_device();
+    const auto vmm_supported = [&] {
+        bool found = false;
+        for (const auto& weak : allocations_) if (auto allocation = weak.lock()) {
+            found = true;
+            std::optional<MfqCudaGuard> guard;
+            if (allocation->options.target_device().is_cuda())
+                guard.emplace(allocation->options.target_device().index);
+            if (!vmm::vmm_available()) return false;
+        }
+        return found || vmm::vmm_available();
+    };
     std::size_t initial_mapped=0;
     if(admission && options_.dynamic) {
         if(tiered_budget && options_.gpu_budget && options_.gpu_budget<index)
             throw std::runtime_error("kv_budget_below_indexer: VRAM KV budget must cover the complete target indexer cache");
-        if(!vmm::vmm_available())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
+        if(!vmm_supported())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
         for(const auto& weak:allocations_)if(auto a=weak.lock())
             initial_mapped=engine::prefill_budget_add(initial_mapped,initial_virtual_bytes(*a));
     }
@@ -352,7 +382,7 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
         if(options_.placement=="vram" && (!admission || !options_.dynamic) && raw>gpu)throw std::runtime_error("kv_vram_insufficient: configured KV cache does not fit in available VRAM");
         if(options_.placement=="ram" && raw>ram)throw std::runtime_error(insufficient);
         if(options_.placement=="auto" && (!admission || !options_.dynamic) && (raw>gpu && raw-gpu>ram))throw std::runtime_error(insufficient);
-        if(options_.dynamic && !vmm::vmm_available())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
+        if(options_.dynamic && !vmm_supported())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
         if(options_.dynamic && !admission && raw>gpu)throw std::runtime_error("kv_dynamic_unavailable: experimental dynamic KV currently requires a GPU-resident cache");
         if(admission && options_.dynamic && initial_mapped>gpu)
             throw std::runtime_error("kv_dynamic_unavailable: initial dynamic KV pages exceed available VRAM");
@@ -447,14 +477,18 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
         lending_=true;
     }
     for(auto& weak:allocations_)if(auto a=weak.lock()) {
+        std::optional<MfqCudaGuard> allocation_guard;
+        if (a->options.target_device().is_cuda()) allocation_guard.emplace(a->options.target_device().index);
         const auto shape=[&](int64_t w){return std::vector<int64_t>{1,a->heads,a->maximum,w};};
         auto index_options=a->options;index_options.dtype(::tyloi::kFloat16);
         a->index=::tyloi::cuda::zeros({1,a->maximum,a->index_width},index_options);
         a->pooled=::tyloi::cuda::zeros({1,(a->maximum+a->pool-1)/a->pool,a->index_width},index_options);
         a->host=options_.placement=="ram" || automatic_ram_ || exclusive || raw_host_only;a->offload=offload_;
         if(options_.dynamic) {
-            a->virtual_keys=std::make_shared<KvMemoryAllocation::Virtual>(a->maximum,a->heads,a->key_width,width_bytes(a->options));
-            a->virtual_values=std::make_shared<KvMemoryAllocation::Virtual>(a->maximum,a->heads,a->value_width,width_bytes(a->options));
+            const auto target = a->options.target_device().is_cuda() ? a->options.target_device()
+                : ::tyloi::Device(::tyloi::kCUDA, mfq_current_cuda_device());
+            a->virtual_keys=std::make_shared<KvMemoryAllocation::Virtual>(a->maximum,a->heads,a->key_width,width_bytes(a->options),target);
+            a->virtual_values=std::make_shared<KvMemoryAllocation::Virtual>(a->maximum,a->heads,a->value_width,width_bytes(a->options),target);
             a->keys=external(a->virtual_keys->range.base(),a->virtual_keys,shape(a->key_width),a->options);
             a->values=external(a->virtual_values->range.base(),a->virtual_values,shape(a->value_width),a->options);
             a->ensure(std::min<int64_t>(a->maximum,16384));

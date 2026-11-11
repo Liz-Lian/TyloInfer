@@ -12,11 +12,19 @@ using DenseTensor = ::tyloi::DenseTensor;
 using HashBatch = tyloi::models::deepseek_v41::EngramHashBatch;
 
 DenseTensor append_tail(const DenseTensor& previous, const DenseTensor& current, int64_t window) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (current.size(1) >= window)
+        return tyloi::ops::clone(current.narrow(1,current.size(1)-window,window)).dense();
+    auto combined = previous.defined() ? tyloi::ops::cat(std::vector<tyloi::Tensor>{previous,current},1).dense() : current;
+    const auto count=std::min(window,combined.size(1));
+    return tyloi::ops::clone(combined.narrow(1,combined.size(1)-count,count)).dense();
+#else
     if (current.size(1) >= window)
         return current.narrow(1, current.size(1) - window, window).clone();
     auto combined = previous.defined() ? ::tyloi::cuda::cat({previous, current}, 1) : current;
     const auto count = std::min(window, combined.size(1));
     return combined.narrow(1, combined.size(1) - count, count).clone();
+#endif
 }
 
 HashBatch append_hash_tail(const HashBatch& previous, const HashBatch& current, int window) {
@@ -54,7 +62,9 @@ DenseTensor forward_layer(const Model& model, State& state, const DenseTensor& i
     try {
 #endif
         auto& block=*model.blocks.at(layer);
+#ifndef TYLOINFER_NATIVE_CUDA
         MfqCudaGuard guard(block.cuda_device);
+#endif
         auto local_ids = block.cpu_offloaded
             ? host_ids
             : tyloi::ops::copy(ids, ::tyloi::Device(::tyloi::kCUDA, block.cuda_device)).dense();
@@ -281,7 +291,6 @@ tyloi::StepSequence<tyloi::models::Prefill> Model::prefill(
             for (std::size_t slot = 0; slot < encoder_targets.size(); ++slot) {
                 const auto layer = config.dspark_target_layer_ids[slot];
                 if (layer >= split) continue;
-                MfqCudaGuard guard(blocks.at(static_cast<std::size_t>(layer))->cuda_device);
                 encoder_targets[slot] = append_tail(encoder_targets[slot],
                     state.shared->dspark_target_hiddens[slot], config.sliding_window);
             }
@@ -292,7 +301,7 @@ tyloi::StepSequence<tyloi::models::Prefill> Model::prefill(
             auto& source=state.shared->ced_source;
             source.dense() = tyloi::ops::mhc_input(hidden,state.shared->previous_pre,
                 block.attention_norm,config.rms_eps).dense();
-            tyloi::ops::measure("deepseek_v41.ced.global_kv", [&] {
+            tyloi::ops::measure("deepseek_v41.ced.global_kv",tyloi::Device(tyloi::kCUDA,block.cuda_device), [&] {
                 block.attention->publish_compressed(state.shared->layers.at(static_cast<std::size_t>(layer)).attention,
                     state.shared->attention,source,state.cache_pos);
                 return source.dense();

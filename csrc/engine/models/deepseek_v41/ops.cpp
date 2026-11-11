@@ -533,7 +533,9 @@ void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cac
             tyloi::ops::copy(hidden, primary).dense().to(::tyloi::kFloat32).clone()));
     };
     for (auto& block : blocks) {
+#ifndef TYLOINFER_NATIVE_CUDA
         MfqCudaGuard guard(block->cuda_device);
+#endif
         auto local_ids = block->cpu_offloaded
             ? host_ids
             : tyloi::ops::copy(ids, ::tyloi::Device(::tyloi::kCUDA, block->cuda_device)).dense();

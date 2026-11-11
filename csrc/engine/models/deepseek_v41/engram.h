@@ -408,7 +408,7 @@ class Engram {
             selected_hashes.layers!=static_cast<int>(config_.engram_layer_ids.size()) ||
             selected_hashes.columns!=(config_.engram_max_ngram_size-1)*config_.engram_n_heads)
             throw std::invalid_argument("DeepSeek-V4.1 Engram activation geometry disagrees");
-        state.gathered.dense()=tyloi::ops::measure("deepseek_v41.engram.rows", [&] {
+        state.gathered.dense()=tyloi::ops::measure("deepseek_v41.engram.rows",hidden.device(), [&] {
             return table_->gather(*state.table,selected_hashes.layer_data(hash_layer_),batch,tokens,
                                   selected_hashes.columns,hidden.device());
         }).dense();

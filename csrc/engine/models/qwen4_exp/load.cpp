@@ -77,7 +77,7 @@ struct LayerLoader : tyloi::weights::Loader {
         ::tyloi::Tensor up, ::tyloi::Tensor injection, const Config &c) const {
         const bool final=!injection.defined();
         return {tyloi::ops::ResidualWeights{std::move(norm),std::move(down),std::move(up),std::move(injection)},
-                tyloi::ops::ResidualConfig{c.hidden,c.streams,c.eps,final}};
+                tyloi::ops::ResidualConfig{c.hidden,c.streams,c.eps,final,tyloi::Device(tyloi::kCUDA,placement.device)}};
     }
     static auto final_mixer(tyloi::ops::Residual weights) { return std::make_unique<tyloi::ops::Residual>(std::move(weights)); }
 #else
@@ -153,7 +153,7 @@ struct LayerLoader : tyloi::weights::Loader {
             options.grouped,placement.cpu);
 #ifdef TYLOINFER_NATIVE_CUDA
         return std::make_unique<tyloi::ops::Gdn>(std::move(weights),c.key_heads,c.value_heads,
-            c.linear_width,c.kernel,c.eps,c.silu_gate);
+            c.linear_width,c.kernel,c.eps,c.silu_gate,tyloi::Device(tyloi::kCUDA,placement.device));
 #else
         auto shared=std::make_shared<const GdnWeights>(std::move(weights));
         auto& executor=execution.executor();
@@ -253,9 +253,15 @@ struct LayerLoader : tyloi::weights::Loader {
         TYLOINFER_RUNTIME_CHECK(host.dim() == 1, "Qwen4 PLE metadata must be a vector");
         return {host.data_ptr<int64_t>(), host.data_ptr<int64_t>() + host.numel()};
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto ple(std::vector<Embedding> shards, int64_t rows, int64_t width, const Config &c,
+             std::vector<int64_t> multipliers, std::vector<int64_t> offsets,
+             std::vector<int64_t> sizes, PleWeights weights) const {
+#else
     static auto ple(std::vector<Embedding> shards, int64_t rows, int64_t width, const Config &c,
                     std::vector<int64_t> multipliers, std::vector<int64_t> offsets,
                     std::vector<int64_t> sizes, PleWeights weights) {
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
         NgramEmbedding embedding(std::move(shards), rows, width, c.ngram, c.ngram_heads, c.eos,
                                  std::move(multipliers), std::move(offsets), std::move(sizes));
@@ -282,7 +288,11 @@ struct LayerLoader : tyloi::weights::Loader {
                                  std::move(multipliers), std::move(offsets), std::move(sizes),std::move(ranges),std::move(row_lookup),std::move(stage_factory));
 #endif
         return std::make_unique<Ple>(std::move(embedding), std::move(weights), c.hidden, c.streams,
-                                     c.ngram, c.eps);
+                                     c.ngram, c.eps
+#ifdef TYLOINFER_NATIVE_CUDA
+                                     ,tyloi::Device(tyloi::kCUDA,placement.device)
+#endif
+                                     );
     }
     std::unique_ptr<Layer> layer(const Config &c, int layer, bool predictor);
 };

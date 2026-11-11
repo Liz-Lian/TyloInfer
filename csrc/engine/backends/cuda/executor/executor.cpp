@@ -25,7 +25,8 @@
 
 namespace tyloi::cuda {
 
-std::vector<tyloi::Executor::Memory> Executor::memory(std::span<const tyloi::Device> devices) const {
+std::vector<tyloi::Executor::Memory> Executor::memory(std::span<const tyloi::Device> devices,
+        tyloi::Executor::MemoryDetail detail) const {
     if (&current().contexts_ != &contexts_)
         throw std::runtime_error("CUDA executor scope belongs to another resource owner");
     std::vector<tyloi::Executor::Memory> result;
@@ -38,11 +39,28 @@ std::vector<tyloi::Executor::Memory> Executor::memory(std::span<const tyloi::Dev
         TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&available, &total));
         const auto stats = mfq_cuda_memory_stats(device.index);
         const auto context = default_context(device.index);
-        result.push_back({device, stats.allocated_bytes, stats.reserved_bytes, available, total,
+        tyloi::Executor::Memory snapshot{device, stats.allocated_bytes, stats.reserved_bytes, available, total,
             context->memory_stats().limit, context->resident_memory_usage(),
-            context->available_memory(), context->workspace_available()});
+            context->available_memory(), context->workspace_available()};
+        if (detail == tyloi::Executor::MemoryDetail::diagnostic) {
+            snapshot.local = context->local_memory_usage();
+            cudaMemPool_t pool = nullptr;
+            std::uint64_t used = 0, reserved = 0;
+            TYLOINFER_CUDA_CHECK(cudaDeviceGetDefaultMemPool(&pool, device.index));
+            TYLOINFER_CUDA_CHECK(cudaMemPoolGetAttribute(pool, cudaMemPoolAttrUsedMemCurrent, &used));
+            TYLOINFER_CUDA_CHECK(cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemCurrent, &reserved));
+            snapshot.default_pool_used = used;
+            snapshot.default_pool_reserved = reserved;
+        }
+        result.push_back(snapshot);
     }
     return result;
+}
+
+void Executor::synchronize() {
+    if (&current().contexts_ != &contexts_)
+        throw std::runtime_error("CUDA executor scope belongs to another resource owner");
+    TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
 }
 
 void Executor::trim(tyloi::Device device) {

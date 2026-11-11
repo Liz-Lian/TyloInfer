@@ -20,21 +20,24 @@ struct Ple::Impl {
     PleWeights weights;
     std::int64_t hidden, streams, dilation;
     double eps;
+    Device target;
     bool fused;
-    Impl(PleWeights value, std::int64_t h, std::int64_t s, std::int64_t d, double e)
-        : weights(std::move(value)), hidden(h), streams(s), dilation(d), eps(e),
+    Impl(PleWeights value, std::int64_t h, std::int64_t s, std::int64_t d, double e, Device device)
+        : weights(std::move(value)), hidden(h), streams(s), dilation(d), eps(e), target(device),
           fused([] { const auto value = cuda::options::ple_native_fusion(); return !value || *value; }()) {}
 };
 Ple::State::State() : conv(DenseTensor{}), saved_conv(DenseTensor{}), impl_(std::make_unique<Impl>()) {}
 Ple::State::~State() = default;
 Ple::State::State(State&&) noexcept = default;
 Ple::State& Ple::State::operator=(State&&) noexcept = default;
-Ple::Ple(PleWeights weights, std::int64_t hidden, std::int64_t streams, std::int64_t dilation, double eps)
-    : impl_(std::make_unique<Impl>(std::move(weights), hidden, streams, dilation, eps)) {}
+Ple::Ple(PleWeights weights, std::int64_t hidden, std::int64_t streams, std::int64_t dilation, double eps, Device target)
+    : impl_(std::make_unique<Impl>(std::move(weights), hidden, streams, dilation, eps, target)) {}
 Ple::~Ple() = default;
 Ple::Ple(Ple&&) noexcept = default;
 Ple& Ple::operator=(Ple&&) noexcept = default;
 void Ple::reset(State& state, bool retain_storage) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
     if (retain_storage && state.conv.defined()) state.conv.dense().zero_();
     else state.conv = {};
     commit(state);
@@ -48,6 +51,8 @@ void Ple::commit(State& state) const {
     state.saved_prefix_position = -1;
 }
 void Ple::rollback(State& state, std::int64_t keep) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
     TYLOINFER_RUNTIME_CHECK(state.saved, "Qwen4 PLE has no speculative checkpoint");
     if (keep >= 0 && state.saved_prefix_position >= 0) {
         const auto index = keep - state.saved_prefix_position;
@@ -60,6 +65,8 @@ void Ple::rollback(State& state, std::int64_t keep) const {
     commit(state);
 }
 void Ple::checkpoint(State& state) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
     TYLOINFER_RUNTIME_CHECK(!state.saved && state.conv.defined(), "PLE checkpoint requires committed convolution state");
     std::optional<MfqCudaGuard> guard;
     if (state.conv.device().is_cuda()) guard.emplace(state.conv.device());
@@ -80,6 +87,8 @@ void Ple::bind_graph_checkpoint(State& state, const std::vector<Tensor>& conv, s
     state.saved = true;
 }
 void Ple::restore_session(State& state, const Tensor& convolution, bool retain_storage) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
     TYLOINFER_RUNTIME_CHECK(convolution.defined(), "missing Qwen4 PLE session state");
     if (retain_storage) {
         TYLOINFER_RUNTIME_CHECK(state.conv.defined() && state.conv.dense().sizes() == convolution.dense().sizes(),
@@ -120,6 +129,8 @@ std::size_t Ple::growth_bytes(const State& state, std::int64_t batch) const {
 }
 Tensor Ple::forward_chunk(State& state, const Tensor& input, const Tensor& embeddings, bool cache,
         std::vector<Tensor>* checkpoints, std::size_t checkpoint_offset) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
     Tensor result{DenseTensor{}}, next{DenseTensor{}};
     std::vector<Tensor> owners;
     owners.reserve(4 + (checkpoints ? checkpoints->size() : 0));
@@ -184,6 +195,8 @@ Tensor Ple::forward_chunk(State& state, const Tensor& input, const Tensor& embed
 }
 Tensor Ple::forward_graph(State& state, const Tensor& input, const Tensor& embeddings, std::int64_t confirmed,
         std::vector<Tensor>& checkpoints) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
     Tensor result{DenseTensor{}}, prefix{DenseTensor{}}, suffix{DenseTensor{}};
     std::vector<Tensor> owners;
     owners.reserve(5 + checkpoints.size());

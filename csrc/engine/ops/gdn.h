@@ -49,9 +49,10 @@ public:
         std::int64_t previous_;
     };
 
-    /** Freeze backend numerical policy for the supplied weights and recurrence geometry. */
+    /** Freeze numerical policy for the supplied weights, recurrence geometry and execution target. */
     Gdn(GdnWeights weights, std::int64_t key_heads, std::int64_t value_heads,
-        std::int64_t width, std::int64_t kernel, double eps, bool silu_gate);
+        std::int64_t width, std::int64_t kernel, double eps, bool silu_gate,
+        Device target = Device(kCUDA, 0));
     ~Gdn();
     Gdn(Gdn&&) noexcept;
     Gdn& operator=(Gdn&&) noexcept;

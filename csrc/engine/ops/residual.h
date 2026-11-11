@@ -7,7 +7,13 @@ namespace tyloi::ops {
 /** Immutable projections and normalization for gated residual mixing. */
 struct ResidualWeights { Tensor norm, down, up, injection; };
 /** Geometry and numerical policy for gated residual mixing. */
-struct ResidualConfig { std::int64_t hidden = 0, streams = 0; double eps = 0; bool final = false; };
+struct ResidualConfig {
+    std::int64_t hidden = 0, streams = 0;
+    double eps = 0;
+    bool final = false;
+    /** Execution device, independent of weight residency. */
+    Device target = Device(kCUDA, 0);
+};
 /** Identify the numerical stage in graph profiling. */
 enum class ResidualRole { none, attention, ffn, final };
 /** Execute gated residual mixing with prepared immutable projections. */
