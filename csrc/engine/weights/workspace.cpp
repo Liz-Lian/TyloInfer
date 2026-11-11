@@ -15,6 +15,7 @@
 #include <exception>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -302,9 +303,19 @@ void Cache::append_workspace_metrics(
 tyloi::weights::Loan::Loan(Cache& cache, std::size_t bytes) : Loan(cache) { begin(bytes); }
 
 void tyloi::weights::Loan::finish(Tensor& output) {
+    Tensor* slot = &output;
+    finish(std::span<Tensor* const>(&slot, 1));
+}
+
+void tyloi::weights::Loan::finish(std::span<Tensor* const> outputs) {
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+        if (!outputs[i]) throw std::invalid_argument("loan output slot is null");
+        for (std::size_t j = 0; j < i; ++j)
+            if (outputs[i] == outputs[j]) throw std::invalid_argument("duplicate loan output slot");
+    }
     if (active_) {
         suspend();
-        output = ops::clone(output);
+        for (auto* output : outputs) *output = ops::clone(*output);
         finish();
     }
 }

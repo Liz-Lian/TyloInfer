@@ -2,6 +2,7 @@
 
 #include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <optional>
 #include <stdexcept>
@@ -15,10 +16,23 @@ enum class StepState { waiting, advanced, complete };
 
 /** Request a workspace loan or detach its final output before the next visible quantum. */
 struct Workspace {
+    /** Describe a numerical tile whose admitted row count is written before resuming. */
+    struct Tile {
+        /** Total rows available in this numerical span. */
+        std::int64_t tokens = 0;
+        /** Temporary workspace required per admitted row. */
+        std::size_t row_bytes = 0;
+        /** Coroutine-owned output slot, valid until the next resume. */
+        std::int64_t* compute = nullptr;
+    };
     /** Positive bytes begin a loan; zero bytes finish the current loan. */
     std::size_t bytes = 0;
     /** Owning output slot to detach on finish; valid until the sequence resumes. */
     Tensor* output = nullptr;
+    /** Optional tiled allocation geometry; bytes then describes fixed live storage. */
+    std::optional<Tile> tile = std::nullopt;
+    /** Additional output that shares the loan and must detach before its return. */
+    Tensor* extra = nullptr;
 };
 
 template <class T> struct StepResult {

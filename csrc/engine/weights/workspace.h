@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 
 namespace tyloi::weights {
 class Cache;
@@ -43,6 +44,8 @@ public:
     void finish();
     /** Replace the output in place before returning borrowed storage; preserve it if cloning fails. */
     void finish(Tensor& output);
+    /** Detach distinct non-null output slots in place before returning borrowed storage. */
+    void finish(std::span<Tensor* const> outputs);
 private:
     friend class Cache;
     struct Impl;

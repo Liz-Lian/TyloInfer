@@ -58,7 +58,12 @@ public:
         const ::tyloi::TensorOptions& options,int64_t selected_columns=0);
     // Cache outlives the manager and its allocations; call before expert arenas.
     void finalize(tyloi::weights::Cache& cache, std::size_t minimum_experts = 0);
+    /** Reserve and advance live KV allocations for the requested token count. */
+#ifdef TYLOINFER_NATIVE_CUDA
+    static void ensure(int64_t tokens);
+#else
     void ensure(int64_t tokens);
+#endif
     /** Bind the budget to this manager and its live offload stores. */
     void bind_budget(tyloi::engine::Budget* budget) noexcept;
     /** Flush all live offload stores, continuing after an individual failure. */

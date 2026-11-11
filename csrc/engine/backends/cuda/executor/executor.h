@@ -160,6 +160,7 @@ public:
 
 private:
 #ifdef TYLOINFER_NATIVE_CUDA
+    friend class KvMemoryManager;
     friend std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t, int64_t, int64_t, int64_t,
         int64_t, int64_t, const ::tyloi::TensorOptions&, int64_t);
 #endif

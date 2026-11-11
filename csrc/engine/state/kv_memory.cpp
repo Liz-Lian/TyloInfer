@@ -501,9 +501,16 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
         <<" ram_preallocated="<<options_.ram_preallocated<<" exclusive="<<exclusive<<"\n";
 }
 void KvMemoryManager::ensure(int64_t tokens) {
-    if(lending_)cache_->protect_kv(tokens);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto* owner = Executor::current().kv_.get();
+    if (!owner) return;
+#else
+    auto* owner = this;
+#endif
+    std::erase_if(owner->allocations_, [](const auto& allocation) { return allocation.expired(); });
+    if(owner->lending_)owner->cache_->protect_kv(tokens);
     std::vector<std::pair<tyloi::Device, std::size_t>> growth;
-    for(auto& weak:allocations_)if(auto a=weak.lock()) {
+    for(auto& weak:owner->allocations_)if(auto a=weak.lock()) {
         const auto bytes=a->growth_bytes(std::min(a->maximum,tokens));
         if(!bytes)continue;
         const auto device=a->options.target_device();
@@ -511,9 +518,9 @@ void KvMemoryManager::ensure(int64_t tokens) {
         if(entry==growth.end())growth.emplace_back(device,bytes);
         else entry->second=engine::prefill_budget_add(entry->second,bytes);
     }
-    if(budget_)for(const auto& [device,bytes]:growth)
-        budget_->reserve_kv(device,engine::prefill_budget_add(bytes,64ULL<<20));
-    for(auto& weak:allocations_)if(auto a=weak.lock())a->ensure(std::min(a->maximum,tokens));
+    if(owner->budget_)for(const auto& [device,bytes]:growth)
+        owner->budget_->reserve_kv(device,engine::prefill_budget_add(bytes,64ULL<<20));
+    for(auto& weak:owner->allocations_)if(auto a=weak.lock())a->ensure(std::min(a->maximum,tokens));
 }
 std::size_t KvMemoryManager::growth_reserve() const {
     std::size_t result=0;

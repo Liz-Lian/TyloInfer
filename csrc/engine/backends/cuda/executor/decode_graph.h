@@ -43,7 +43,8 @@ struct DecodeGraphBranchScope {
     bool previous;
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    explicit DecodeGraphBranchScope(bool& value);
+    /** Borrow and restore serial branch policy from the active execution owner. */
+    DecodeGraphBranchScope();
     ~DecodeGraphBranchScope();
 private:
     std::unique_ptr<tyloi::Executor::Scope> scope_;

@@ -37,6 +37,8 @@ StepResult<models::Prepared> Preparation::next() {
             if (step.state != StepState::advanced || step.value)
                 throw std::logic_error("invalid preparation workspace event");
             const auto request = *step.workspace;
+            if (request.tile || request.extra)
+                throw std::logic_error("preparation does not support tiled or multiple-output workspace");
             if (request.bytes) {
                 if (loan_ || request.output) throw std::logic_error("invalid preparation workspace acquisition");
                 loan_ = std::make_unique<weights::Loan>(weights_);

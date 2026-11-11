@@ -436,7 +436,13 @@ template <typename Model, typename State> struct CudaGenerationOps {
         } else {
             graph.invalidate();
             std::optional<DecodeGraphBranchScope> branch_scope;
-            if constexpr (causal<Model>) branch_scope.emplace(serial_branches);
+            if constexpr (causal<Model>) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                branch_scope.emplace();
+#else
+                branch_scope.emplace(serial_branches);
+#endif
+            }
             graph.graph = std::make_unique<MfqCudaGraph>();
             try {
                 const bool double_warmup = info.double_warmup;

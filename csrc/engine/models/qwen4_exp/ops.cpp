@@ -1110,7 +1110,11 @@ struct Qwen4DecodeGraph {
         const auto required=request.cache_pos+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=model.max_position_embeddings(),"Qwen4 graph exceeds context capacity");
         if(!qsa.empty() && qsa.front().first->graph_capacity(*qsa.front().second)) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            KvMemoryManager::ensure(required);
+#else
             model.execution->kv->ensure(required);
+#endif
             kv_capacity=qsa.front().first->graph_capacity(*qsa.front().second);
         }
         if(required>kv_capacity) {
@@ -1164,8 +1168,11 @@ struct Qwen4DecodeGraph {
                 kv_capacity);
             if(!cell.window.valid()) {
                 model.execution->weights.prepare_graph(::tyloi::Device{::tyloi::kCUDA,mfq_current_cuda_device()});
-                DecodeGraphBranchScope branch_scope(
-                    model.execution->executor().mode().ffn.serial);
+#ifdef TYLOINFER_NATIVE_CUDA
+                DecodeGraphBranchScope branch_scope;
+#else
+                DecodeGraphBranchScope branch_scope(model.execution->executor().mode().ffn.serial);
+#endif
                 const auto capture_started=std::chrono::steady_clock::now();
                 struct Saved {::tyloi::Tensor* target;::tyloi::DenseTensor saved;const void* address;};
                 std::vector<Saved> states;
@@ -1783,10 +1790,18 @@ std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
     // as the single-request window does.
     model.execution->weights.retire_prefill();
     const auto batch = static_cast<int64_t>(requests.size());
+#ifdef TYLOINFER_NATIVE_CUDA
+    {
+#else
     if(model.execution->kv) {
+#endif
         int64_t required=0;
         for(auto* request:requests)required=std::max(required,request->position()+1);
+#ifdef TYLOINFER_NATIVE_CUDA
+        KvMemoryManager::ensure(required);
+#else
         model.execution->kv->ensure(required);
+#endif
     }
     graph.ready.record(mfq_get_current_cuda_stream());
     MfqCudaStreamGuard stream_guard(graph.stream);
@@ -1921,7 +1936,11 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                     save(tensor);
             }
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        DecodeGraphBranchScope branch_scope;
+#else
         DecodeGraphBranchScope branch_scope(model.execution->executor().mode().ffn.serial);
+#endif
         try { graph.window->capture([&] {
             auto& execution = *model.execution;
             graph.window->mark(-1,"window_begin");
@@ -2400,6 +2419,12 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
     const auto resume_profile=[&] { profiler.enabled=restore.enabled; };
 #endif
     compute_chunk=std::min(compute_chunk,tokens);
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto row_bytes=std::size_t(model.config.hidden)*model.config.streams*sizeof(float)*8;
+    const auto fixed=(std::size_t(1)<<30)+
+        std::size_t(tokens)*model.config.hidden*model.config.streams*sizeof(float)*3;
+    co_yield tyloi::Workspace{fixed,nullptr,tyloi::Workspace::Tile{tokens,row_bytes,&compute_chunk}};
+#else
     tyloi::weights::Loan workspace_loan(model.execution->weights);
     bool borrowed_workspace=false;
     {
@@ -2428,6 +2453,7 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         if(compute_chunk!=requested)std::cerr<<"runtime_prefill_chunk_budget requested="<<requested
             <<" compute="<<compute_chunk<<" available_bytes="<<available<<'\n';
     }
+#endif
     tyloi::cuda::ResidentAllocationScope persistent_preamble;
     qwen4_validate_forward(model,tokens,cache_start,false);
     if(cache_start==0)state.reset(1);
@@ -2729,16 +2755,22 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #else
         co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::computed};
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::Tensor final_output(std::move(result));
+        hidden={};
+        co_yield tyloi::Workspace{0,&final_output};
+#else
         if(borrowed_workspace) {
             workspace_loan.suspend();
             result=result.clone();
             hidden={};
             workspace_loan.finish();
         }
+#endif
         state.finish_forward(prepared_full,1,tokens);
         state.cache_pos=cache_start+tokens;
 #ifdef TYLOINFER_NATIVE_CUDA
-        co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete, 0, 0, std::move(result), {}};
+        co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete, 0, 0, std::move(final_output), {}};
         co_return;
 #else
         return result;
@@ -2764,6 +2796,14 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #else
     co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::computed};
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::Tensor final_output(std::move(finalized));
+    tyloi::Tensor raw_output;
+    if(raw_hidden) raw_output=std::move(hidden);
+    else hidden={};
+    co_yield tyloi::Workspace{0,&final_output,std::nullopt,
+        raw_hidden && !raw_hidden_host ? &raw_output : nullptr};
+#else
     if(borrowed_workspace) {
         // The final mixer also needs sequence-sized scratch. Finish it inside
         // the loan, then retain only the outputs consumed by MTP/the caller.
@@ -2772,13 +2812,15 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         finalized=finalized.clone();
         workspace_loan.finish();
     }
+#endif
     state.finish_forward(prepared_full,1,tokens);
     state.cache_pos=cache_start+tokens;
-    if(raw_hidden)*raw_hidden=hidden;
 #ifdef TYLOINFER_NATIVE_CUDA
+    if(raw_hidden)*raw_hidden=raw_output;
     co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete, 0, 0,
-        std::move(finalized), raw_hidden ? ::tyloi::Tensor(hidden) : ::tyloi::Tensor{}};
+        std::move(final_output), std::move(raw_output)};
 #else
+    if(raw_hidden)*raw_hidden=hidden;
     return finalized;
 #endif
 }
