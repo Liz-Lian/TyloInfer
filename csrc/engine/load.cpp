@@ -1,4 +1,5 @@
 #include "engine/load.h"
+#include "engine/config.h"
 #include "engine/ops.h"
 #include "engine/models/load.h"
 #include "engine/models/assemble.h"
@@ -131,7 +132,9 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             root->profiler().enabled = false;
             ledger = std::make_shared<tyloi::weights::Memory>();
             tyloi::weights::LoadScope memory_load(*ledger);
-            config = internal::resolve_cuda_config(options);
+            config = engine::resolve_config(options.prefill_chunk_size, options.continuous_batching);
+            config.profile_decode = load.profile_decode;
+            config.trace_moe = load.trace_moe;
             if (config.continuous_batch.max_sequences)
                 throw std::invalid_argument("continuous batching is unavailable for this model");
             const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
@@ -214,57 +217,6 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
 } // namespace tyloi::cuda
 
 namespace tyloi::cuda::internal {
-using tyloi::engine::environment_uint64;
-using tyloi::engine::environment_enabled;
-namespace {
-
-std::int32_t graph_minimum(const char* name) {
-    const auto value = std::max<std::uint64_t>(
-        2, environment_uint64(name, 16));
-    if (value > static_cast<std::uint64_t>(
-            std::numeric_limits<std::int32_t>::max())) {
-        throw std::runtime_error(std::string(name) + " exceeds int32");
-    }
-    return static_cast<std::int32_t>(value);
-}
-
-} // namespace
-
-tyloi::engine::Config resolve_cuda_config(
-        const CudaEngineOptions& options) {
-    const auto* profile_decode = env_lookup("TYLOINFER_PROFILE_DECODE");
-    const bool profile_decode_enabled = profile_decode && profile_decode[0] == '1';
-    const auto* trace_moe = env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
-    const bool trace_moe_enabled = trace_moe && trace_moe[0] && trace_moe[0] != '0';
-    if(options.prefill_chunk_size < 0 || options.prefill_chunk_size > 8192)
-        throw std::invalid_argument("prefill chunk size must be Auto (0) or in [1, 8192]");
-    const bool prefill_chunk_auto = options.prefill_chunk_size == 0;
-    const auto chunk_limit = prefill_chunk_auto ? int64_t(8192) : options.prefill_chunk_size;
-    auto config = tyloi::engine::resolve_config(chunk_limit);
-    config.prefill_chunk_auto = prefill_chunk_auto;
-    config.profile_decode = profile_decode_enabled;
-    config.trace_moe = trace_moe_enabled;
-    config.continuous_batch =
-        tyloi::engine::resolve_batch_config(options.continuous_batching, chunk_limit);
-    config.decode_graph.enabled = environment_enabled(
-        "TYLOINFER_RUNTIME_CUDA_GRAPH", true);
-    config.decode_graph.trace = environment_enabled(
-        "TYLOINFER_RUNTIME_TRACE_CUDA_GRAPH", false);
-    config.decode_graph.minimum_generation_tokens = graph_minimum(
-        "TYLOINFER_RUNTIME_CUDA_GRAPH_MIN_TOKENS");
-
-    config.continuous_batch.greedy = environment_enabled(
-        "TYLOINFER_CONTINUOUS_BATCH_GREEDY", true);
-    config.continuous_batch.cuda_graph =
-        config.decode_graph.enabled && environment_enabled(
-            "TYLOINFER_CONTINUOUS_BATCH_CUDA_GRAPH", true);
-    config.continuous_batch.paged_kv = environment_enabled(
-        "TYLOINFER_CONTINUOUS_PAGED_KV", true);
-    config.continuous_batch.cuda_graph_minimum_tokens = graph_minimum(
-        "TYLOINFER_CONTINUOUS_BATCH_CUDA_GRAPH_MIN_TOKENS");
-    return config;
-}
-
 void setup_cuda_load(
         const tyloi::cuda::CudaLoadOptions& options,
         CudaLoadConfig& config, Executor& executor, tyloi::weights::Cache& weights,

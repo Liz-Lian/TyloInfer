@@ -70,11 +70,20 @@ static std::size_t checked_size(std::uint64_t value, const char* name) {
     return static_cast<std::size_t>(value);
 }
 
-Config resolve_config(std::int64_t prefill_chunk_size) {
-    if (prefill_chunk_size <= 0)
-        throw std::invalid_argument("prefill chunk size must be positive");
+static std::int32_t graph_minimum(const char* name) {
+    const auto value = std::max<std::uint64_t>(2, environment_uint64(name, 16));
+    if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+        throw std::runtime_error(std::string(name) + " exceeds int32");
+    return static_cast<std::int32_t>(value);
+}
+
+Config resolve_config(std::int64_t prefill_chunk_size, int continuous_batching) {
+    if (prefill_chunk_size < 0 || prefill_chunk_size > 8192)
+        throw std::invalid_argument("prefill chunk size must be Auto (0) or in [1, 8192]");
     Config config;
-    config.generation.prefill_chunk_size = prefill_chunk_size;
+    config.prefill_chunk_auto = prefill_chunk_size == 0;
+    const auto chunk_limit = config.prefill_chunk_auto ? std::int64_t(8192) : prefill_chunk_size;
+    config.generation.prefill_chunk_size = chunk_limit;
     auto& sessions = config.session_cache;
     sessions.snapshots.max_sessions = checked_size(environment_uint64(
         "TYLOINFER_RUNTIME_MAX_KV_SESSIONS", sessions.snapshots.max_sessions),
@@ -111,6 +120,23 @@ Config resolve_config(std::int64_t prefill_chunk_size) {
         "TYLOINFER_RUNTIME_PREFIX_CACHE_PENDING_WRITES");
     prefix.pending_bytes = environment_uint64(
         "TYLOINFER_RUNTIME_PREFIX_CACHE_PENDING_BYTES", prefix.pending_bytes);
+
+    config.continuous_batch = resolve_batch_config(continuous_batching, chunk_limit);
+    config.decode_graph.enabled = environment_enabled(
+        "TYLOINFER_RUNTIME_CUDA_GRAPH", true);
+    config.decode_graph.trace = environment_enabled(
+        "TYLOINFER_RUNTIME_TRACE_CUDA_GRAPH", false);
+    config.decode_graph.minimum_generation_tokens = graph_minimum(
+        "TYLOINFER_RUNTIME_CUDA_GRAPH_MIN_TOKENS");
+    config.continuous_batch.greedy = environment_enabled(
+        "TYLOINFER_CONTINUOUS_BATCH_GREEDY", true);
+    config.continuous_batch.cuda_graph =
+        config.decode_graph.enabled && environment_enabled(
+            "TYLOINFER_CONTINUOUS_BATCH_CUDA_GRAPH", true);
+    config.continuous_batch.paged_kv = environment_enabled(
+        "TYLOINFER_CONTINUOUS_PAGED_KV", true);
+    config.continuous_batch.cuda_graph_minimum_tokens = graph_minimum(
+        "TYLOINFER_CONTINUOUS_BATCH_CUDA_GRAPH_MIN_TOKENS");
     return config;
 }
 

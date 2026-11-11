@@ -4,6 +4,7 @@
 #include <map>
 
 #include "engine/load.h"
+#include "engine/config.h"
 #include "engine/generation/cuda.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/models/session/cache.h"
@@ -38,7 +39,7 @@ int run_qwen35_mtp_bench(
             diagnostic_max_position_embeddings(model) >= generated_tokens + 17,
         "MTP benchmark requires gen>=2, reps1-100 and context>=gen+17");
     DecodeGraphCache graph_cache(diagnostic_max_position_embeddings(model));
-    const auto runtime_config = resolve_cuda_config({});
+    const auto runtime_config = tyloi::engine::resolve_config();
     TextSessionCache session_cache(
         runtime_config.session_cache, runtime_config.prefix_cache);
     MfqSamplingParams params;
@@ -377,12 +378,12 @@ int run_cuda_continuous_batching_check(
     auto owner = std::make_shared<tyloi::cuda::qwen35::Model>(std::move(model));
     return run_qwen_continuous_batching_check(
         *owner, state, executor, execution, owner->metadata,
-        resolve_cuda_config({}), requests, owner);
+        tyloi::engine::resolve_config(), requests, owner);
 }
 int run_cuda_continuous_batching_check(tyloi::cuda::Qwen4CausalLm& model,int requests) {
     return run_qwen_continuous_batching_check(
         model, model, nullptr, *model.execution, model.metadata,
-        resolve_cuda_config({}),requests);
+        tyloi::engine::resolve_config(),requests);
 }
 
 int run_cuda_engine_isolation_check(CudaEngineOptions options) {

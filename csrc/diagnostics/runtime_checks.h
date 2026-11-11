@@ -2,6 +2,7 @@
 #include "env.h"
 
 #include "engine/generation/cuda.h"
+#include "engine/config.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "generation_result.h"
 #include "engine/models/deepseek_v4/ops.h"
@@ -400,7 +401,7 @@ static int run_prefill_sweep(
                     if(quant_pair_sweep)mfq::cuda::env_set("TYLOINFER_NVQ_PREFILL_M256",engine_mode?"1":"0");
                     if(gr_mix_pair_sweep)mfq::cuda::env_set("TYLOINFER_GR_PREFILL_FUSED_MIX",engine_mode?engine_mix.c_str():engine_mix_baseline.c_str());
                 }
-                auto config=resolve_cuda_config({});
+                auto config=tyloi::engine::resolve_config();
                 config.generation.prefill_chunk_size=engine_chunk;
                 DecodeGraphCache graph(
                     mfq::cuda::internal::diagnostic_max_position_embeddings(model));
@@ -1359,7 +1360,7 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
     const auto* active=gr_only?gr_integer_variants:dense_only?dense_variants:nint_only?nint_variants:short_capacity?capacity_variants:variants;
     const auto variant_count=gr_only?std::size(gr_integer_variants):dense_only?std::size(dense_variants):nint_only?std::size(nint_variants):
         short_capacity?std::size(short_capacity_variants):std::size(variants);
-    const auto config=resolve_cuda_config({});
+    const auto config=tyloi::engine::resolve_config();
     std::vector<int64_t> expected;
     std::cout<<std::unitbuf;
     const auto* decode_option=mfq::cuda::env_lookup("TYLOINFER_SHORT_DECODE_VARIANTS");
@@ -1909,7 +1910,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
     result["accepted"]=mtp_state.accepted;
     result["rejected"]=mtp_state.rejected;
     TYLOINFER_RUNTIME_CHECK(mtp_state.stats.cycles>0,"Nemotron-H MTP diagnostic ran no speculative cycle");
-    const auto config=resolve_cuda_config({});
+    const auto config=tyloi::engine::resolve_config();
     const auto ordinary=[&](MtpModule *predictor,bool enable_mtp) {
         DecodeGraphCache graph(model.max_position_embeddings());
         TextSessionCache cache(config.session_cache,config.prefix_cache);

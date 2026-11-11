@@ -1,7 +1,6 @@
 #pragma once
 
-#include "engine/config.h"
-#include "engine/backends/cuda/executor/config.h"
+#include "engine/weights/placement.h"
 
 #include <chrono>
 #include <cstdint>
@@ -14,6 +13,8 @@ namespace tyloi::weights { class Cache; }
 
 namespace tyloi::cuda {
 
+class Executor;
+struct CudaLoadConfig;
 class KvMemoryManager;
 class KvOffloadStore;
 
@@ -47,7 +48,6 @@ void reload_cuda_engine(tyloi::engine::Engine& engine, CudaEngineOptions options
 
 namespace tyloi::cuda::internal {
 
-tyloi::engine::Config resolve_cuda_config(const CudaEngineOptions& options);
 void setup_cuda_load(
     const CudaLoadOptions& options,
     CudaLoadConfig& config, Executor& executor, tyloi::weights::Cache& weights,

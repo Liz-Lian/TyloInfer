@@ -151,7 +151,9 @@ class EngineInstance final : public Engine {
                 execution->executor().profiler().enabled = false;
                 auto weight_memory=std::make_shared<tyloi::weights::Memory>();
                 const tyloi::weights::LoadScope memory_load(*weight_memory);
-                auto config = resolve_cuda_config(options);
+                auto config = engine::resolve_config(options.prefill_chunk_size, options.continuous_batching);
+                config.profile_decode = execution->config.profile_decode;
+                config.trace_moe = execution->config.trace_moe;
                 const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
                 kv=std::make_shared<KvMemoryManager>();
                 if (kv_options.gpu_budget_bytes) {

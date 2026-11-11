@@ -59,7 +59,8 @@ struct Config {
 
 std::uint64_t environment_uint64(const char* name, std::uint64_t fallback);
 bool environment_enabled(const char* name, bool fallback = true);
-Config resolve_config(std::int64_t prefill_chunk_size);
+/** Resolve runtime settings; zero prefill size selects automatic chunking. */
+Config resolve_config(std::int64_t prefill_chunk_size = 0, int continuous_batching = 0);
 ContinuousBatchConfig resolve_batch_config(int capacity, std::int64_t prefill_chunk_size);
 
 } // namespace tyloi::engine
