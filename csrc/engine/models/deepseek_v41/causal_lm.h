@@ -8,6 +8,7 @@
 
 namespace tyloi::models::deepseek_v41 {
 
+#ifndef TYLOINFER_NATIVE_CUDA
 template <class State, class Direct, class Project, class Pool, class Save, class Write,
           class PartialPool, class Concat>
 auto compress(State &state, int64_t tokens, int64_t position, int64_t ratio, Direct direct,
@@ -83,6 +84,7 @@ auto attention(bool source, int64_t ratio, Rank rank, Query query, Local local, 
     return output(std::move(hidden));
 }
 
+#endif
 template <class Gather, class Project, class Gate, class Add>
 auto engram(Gather gather, Project project, Gate gate, Add add) {
     auto key_value = project(gather());

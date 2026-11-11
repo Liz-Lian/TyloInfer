@@ -9,6 +9,8 @@
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
+#include "engine/ops/csa.h"
+#include "engine/ops/mhc.h"
 #else
 #include "engine/backends/cuda/ops/rope/tail.h"
 #endif
@@ -61,23 +63,18 @@ using Parameter = DenseTensor;
 // Per-request, per-layer runtime: the KV ring, checkpoints and layer flags.
 struct LayerState {
 #ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
+    tyloi::ops::Csa::State attention;
+    ::tyloi::Tensor current_ids;
 #else
     DenseTensor local_kv;
     DenseTensor compressed_kv;
     DenseTensor index_k;
     DenseTensor partial_kv;
     DenseTensor partial_score;
-#endif
     std::int64_t position = 0;
     std::int64_t compressed_length = 0;
     std::int64_t partial_length = 0;
 
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor speculative_local_slots, speculative_slot_ids;
-    ::tyloi::Tensor speculative_partial_kv, speculative_partial_score;
-    ::tyloi::Tensor speculative_projected_kv, speculative_projected_score, current_ids;
-#else
     DenseTensor speculative_local_slots;
     DenseTensor speculative_slot_ids;
     DenseTensor speculative_partial_kv;
@@ -85,13 +82,13 @@ struct LayerState {
     DenseTensor speculative_projected_kv;
     DenseTensor speculative_projected_score;
     DenseTensor current_ids;
-#endif
     std::int64_t speculative_position = -1;
     std::int64_t speculative_compressed_length = 0;
     std::int64_t speculative_partial_length = 0;
     std::int64_t prefilled_global_end = -1;
     bool speculative_pending = false;
     bool replay_local_window = false;
+#endif
 };
 
 struct ModelTables {
@@ -104,10 +101,18 @@ struct SharedState {
     const ModelTables& tables;
     SharedState(const CommonConfig& config, const ModelTables& tables);
     std::vector<LayerState> layers;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::Csa::Shared attention;
+    /** Retain an in-flight causal encoder source until publication completes. */
+    tyloi::Tensor ced_source{DenseTensor{}};
+    /** Retain attention inputs until their numerical operation completes. */
+    tyloi::Tensor attention_input{DenseTensor{}}, attention_positions{DenseTensor{}}, attention_lengths{DenseTensor{}};
+#else
     DenseTensor compressed_kv;
     DenseTensor index_k;
     DenseTensor topk;
     DenseTensor candidate_blocks;
+#endif
     DenseTensor previous_pre;
 #ifndef TYLOINFER_NATIVE_CUDA
     DenseTensor attention_meta;
@@ -119,8 +124,10 @@ struct SharedState {
     bool capture_dspark_targets = false;
     DenseTensor image_mask, text_rows, routing_mask;
     std::vector<int64_t> text_row_ids;
+#ifndef TYLOINFER_NATIVE_CUDA
     std::int64_t compressed_length = 0;
     std::int64_t ratio = 0;
+#endif
     std::int64_t cache_position = -1;
     std::int64_t batch = 0;
     std::int64_t tokens = 0;
@@ -164,16 +171,24 @@ struct SharedState {
     }
 
     void reset_session(std::int64_t current_batch) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        attention = {};
+        ced_source.dense() = {};
+        attention_input.dense() = {}; attention_positions.dense() = {}; attention_lengths.dense() = {};
+#else
         compressed_kv = DenseTensor();
         index_k = DenseTensor();
         topk = DenseTensor();
         candidate_blocks = DenseTensor();
+#endif
         previous_pre = DenseTensor();
         engram_hashes = {};
         dspark_target_hiddens.clear();
         capture_dspark_targets = false;
+#ifndef TYLOINFER_NATIVE_CUDA
         compressed_length = 0;
         ratio = 0;
+#endif
         cache_position = -1;
         batch = 0;
         tokens = 0;
@@ -188,12 +203,16 @@ struct SharedState {
                      std::int64_t current_tokens, std::int64_t current_position,
                      const ::tyloi::Device &device, const DenseTensor &token_ids) {
         if (layer == 0) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            attention = {};
+#else
             compressed_kv = DenseTensor();
             index_k = DenseTensor();
             topk = DenseTensor();
             candidate_blocks = DenseTensor();
             compressed_length = 0;
             ratio = 0;
+#endif
             cache_position = current_position;
             batch = current_batch;
             tokens = current_tokens;
@@ -251,6 +270,7 @@ struct SharedState {
     }
 };
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct AttentionState {
     DenseTensor local_kv;
     DenseTensor compressed_kv;
@@ -261,6 +281,7 @@ struct AttentionState {
     std::int64_t compressed_length = 0;
     std::int64_t partial_length = 0;
 };
+#endif
 
 inline DenseTensor weighted_rms(const DenseTensor &input,
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -301,6 +322,7 @@ inline DenseTensor rotate_token_major_tail(DenseTensor input, const DenseTensor 
 #endif
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 inline DenseTensor empty_topk(std::int64_t batch, std::int64_t tokens,
                          const ::tyloi::Device &device) {
     return ::tyloi::cuda::empty(
@@ -386,6 +408,7 @@ inline DenseTensor candidate_blocks_from_scores(const DenseTensor &scores, std::
         .contiguous();
 }
 
+#endif
 inline DenseTensor candidate_positions(const DenseTensor &blocks, std::int64_t block_size,
                                   std::int64_t pool_length) {
     const auto count = blocks.size(-1);
@@ -401,12 +424,14 @@ inline DenseTensor candidate_positions(const DenseTensor &blocks, std::int64_t b
         .contiguous();
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct MhcResult {
     DenseTensor branch;
     DenseTensor next_pre;
     DenseTensor post;
     DenseTensor combination;
 };
+#endif
 
 struct Block final {
     // Placement, as the layer loop sets it for CPU-offloaded blocks.
@@ -419,15 +444,18 @@ struct Block final {
     std::int64_t max_context = 0;
     Parameter attention_norm;
     Parameter mlp_norm;
+#ifndef TYLOINFER_NATIVE_CUDA
     Parameter query_a_norm;
     Parameter key_value_norm;
     Parameter sinks;
+#endif
     Parameter attention_mhc_function;
     Parameter attention_mhc_scale;
     Parameter attention_mhc_base;
     Parameter mlp_mhc_function;
     Parameter mlp_mhc_scale;
     Parameter mlp_mhc_base;
+#ifndef TYLOINFER_NATIVE_CUDA
     Parameter compressor_norm;
     Parameter index_key_norm;
 
@@ -441,11 +469,12 @@ struct Block final {
     ::tyloi::Tensor index_query;
     ::tyloi::Tensor index_key;
     ::tyloi::Tensor index_score;
+#else
+    std::unique_ptr<tyloi::ops::Csa> attention;
+#endif
     tyloi::cuda::Ffn mlp;
     Parameter vision_router_bias;
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::ops::TailRopeTable rope;
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
     TailRope rope;
 #endif
     std::unique_ptr<Engram> engram;
@@ -454,6 +483,9 @@ struct Block final {
 
     bool index_source() const noexcept { return config.is_index_source(layer); }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    bool supports_speculation() const noexcept { return true; }
+#else
     /** Reset this layer's caches, reusing compatible backing storage. */
     void reset(SharedState& shared, std::int64_t batch) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
@@ -637,11 +669,13 @@ struct Block final {
         commit_speculative(shared);
     }
 
+#endif
     /** Retain token IDs for the next layer invocation. */
     void set_token_ids(SharedState& shared, const DenseTensor &ids) { shared.layers.at(static_cast<std::size_t>(layer)).current_ids = ids; }
     // No dense warmup state: the recurrent cache lives in AttentionState.
     std::vector<DenseTensor*> graph_warmup_state() { return {}; }
 
+#ifndef TYLOINFER_NATIVE_CUDA
     MhcResult collapse(const DenseTensor &residual, const DenseTensor &previous_pre,
 #ifdef TYLOINFER_NATIVE_CUDA
                        const ::tyloi::Tensor &function_tensor, const ::tyloi::Tensor &scale_tensor,
@@ -1042,6 +1076,7 @@ struct Block final {
             [&](DenseTensor attended) { return output_projection(attended); });
     }
 
+#endif
     DenseTensor forward(SharedState& shared,
 #ifndef TYLOINFER_NATIVE_CUDA
                    CudaExecutionContext &execution,
@@ -1053,7 +1088,11 @@ struct Block final {
         if(confirmed_prefix>0) {
             // A joint pass writes pending and draft rows. Protect their whole
             // physical window; rollback retains the confirmed prefix as well.
+#ifdef TYLOINFER_NATIVE_CUDA
+            attention->begin_speculative(shared.layers.at(static_cast<std::size_t>(layer)).attention,hidden.size(1));
+#else
             begin_speculative(shared, hidden.size(1));
+#endif
             if(layer==0) {
                 TYLOINFER_RUNTIME_CHECK(shared.engram_hash, "DeepSeek-V4.1 Engram state is unavailable");
                 shared.engram_hash->begin_speculative();
@@ -1066,7 +1105,11 @@ struct Block final {
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
                               positions.dim() == 1 && positions.numel() == hidden.size(1) &&
                               !cache_positions.has_value() &&
+#ifdef TYLOINFER_NATIVE_CUDA
+                              layer_state.attention.position == cache_position,
+#else
                               layer_state.position == cache_position,
+#endif
                           "DeepSeek-V4.1 block input/cache mismatch");
 #ifdef TYLOINFER_NATIVE_CUDA
         const auto& ids = layer_state.current_ids.dense();
@@ -1077,7 +1120,11 @@ struct Block final {
                             hidden.device(), ids);
 
         const auto batch = hidden.size(0), tokens = hidden.size(1);
+#ifdef TYLOINFER_NATIVE_CUDA
+        const bool truncated_local = std::exchange(layer_state.attention.replay_local_window, false);
+#else
         const bool truncated_local = std::exchange(layer_state.replay_local_window, false);
+#endif
         if (engram) {
             hidden = tyloi::ops::measure("deepseek_v41.engram", [&] {
                 return engram->forward(*shared.engram_states.at(static_cast<std::size_t>(layer)),
@@ -1085,19 +1132,54 @@ struct Block final {
             });
         }
         shared.capture_dspark_target(layer, config, hidden);
+#ifdef TYLOINFER_NATIVE_CUDA
+        const tyloi::ops::MhcConfig mhc{config.hc_sinkhorn_iters,config.rms_eps,config.hc_eps};
+        auto attention_mix=tyloi::ops::measure("deepseek_v41.mhc.attention.collapse",[&] {
+            return tyloi::ops::mhc_collapse(hidden,shared.previous_pre,attention_mhc_function,
+                attention_mhc_scale,attention_mhc_base,attention_norm,mhc);
+        });
+#else
         auto attention_mix = collapse(hidden, shared.previous_pre,
             attention_mhc_function, attention_mhc_scale, attention_mhc_base, attention_norm,
             "deepseek_v41.mhc.attention.collapse");
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        shared.attention_input.dense()=attention_mix.branch.dense();
+        shared.attention_positions.dense()=positions;
+        shared.attention_lengths.dense()=sequence_lengths.has_value()?sequence_lengths.value():DenseTensor{};
+#endif
         auto attended = tyloi::ops::measure("deepseek_v41.attention", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+            return attention->forward(layer_state.attention,shared.attention,shared.attention_input,shared.attention_positions,
+                cache_position,shared.attention_lengths,truncated_local).dense();
+#else
             return attention_forward(shared, attention_mix.branch, positions, cache_position,
                                      sequence_lengths, truncated_local);
+#endif
         });
+#ifdef TYLOINFER_NATIVE_CUDA
+        shared.attention_input.dense()={}; shared.attention_positions.dense()={}; shared.attention_lengths.dense()={};
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        hidden=tyloi::ops::measure("deepseek_v41.mhc.attention.expand",[&] {
+            return tyloi::ops::mhc_expand(attended,hidden,attention_mix).dense();
+        });
+        auto ffn_mix=tyloi::ops::measure("deepseek_v41.mhc.mlp.collapse",[&] {
+            return tyloi::ops::mhc_collapse(hidden,attention_mix.next_pre,mlp_mhc_function,
+                mlp_mhc_scale,mlp_mhc_base,mlp_norm,mhc);
+        });
+#else
         hidden = expand(attended, hidden, attention_mix, "deepseek_v41.mhc.attention.expand");
         auto ffn_mix = collapse(hidden, attention_mix.next_pre,
             mlp_mhc_function, mlp_mhc_scale, mlp_mhc_base, mlp_norm,
             "deepseek_v41.mhc.mlp.collapse");
+#endif
         auto output = tyloi::ops::measure("deepseek_v41.mlp", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto& value = ffn_mix.branch.dense();
+#else
             const auto& value = ffn_mix.branch;
+#endif
             if(shared.image_mask.defined()) {
 #ifdef TYLOINFER_NATIVE_CUDA
                 TYLOINFER_RUNTIME_CHECK(vision_router_bias && vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
@@ -1130,8 +1212,15 @@ struct Block final {
 #endif
                 .reshape({batch, tokens, config.hidden});
         });
+#ifdef TYLOINFER_NATIVE_CUDA
+        hidden=tyloi::ops::measure("deepseek_v41.mhc.mlp.expand",[&] {
+            return tyloi::ops::mhc_expand(output,hidden,ffn_mix).dense();
+        });
+        shared.previous_pre = ffn_mix.next_pre.dense();
+#else
         hidden = expand(output, hidden, ffn_mix, "deepseek_v41.mhc.mlp.expand");
         shared.previous_pre = std::move(ffn_mix.next_pre);
+#endif
         return hidden;
     }
 };

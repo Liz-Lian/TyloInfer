@@ -42,15 +42,17 @@ std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
         tables.engram_prefetch.push_back(result->engram.get());
     }
 #ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::CsaWeights csa_weights;
+    auto& attention_weights=csa_weights;
     result->attention_norm = std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.norm.weight").dense()
                                  .to(::tyloi::kFloat32).contiguous());
     result->mlp_norm = std::make_shared<DenseTensor>(weights.tensor(prefix + "mlp.norm.weight").dense()
                            .to(::tyloi::kFloat32).contiguous());
-    result->query_a_norm =
+    attention_weights.query_a_norm =
         weights.tensor(prefix + "attention.query_a_norm.weight");
-    result->key_value_norm =
+    attention_weights.key_value_norm =
         weights.tensor(prefix + "attention.key_value_norm.weight");
-    result->sinks = std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.sink").dense()
+    attention_weights.sinks = std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.sink").dense()
                         .to(::tyloi::kFloat32)
                         .contiguous());
     result->attention_mhc_function =
@@ -74,6 +76,7 @@ std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
                                .to(::tyloi::kFloat32)
                                .contiguous());
 #else
+    auto& attention_weights=*result;
     result->attention_norm = weights.tensor(prefix + "attention.norm.weight").dense()
                                  .to(::tyloi::kFloat32).contiguous();
     result->mlp_norm = weights.tensor(prefix + "mlp.norm.weight").dense()
@@ -106,37 +109,37 @@ std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
                                .to(::tyloi::kFloat32)
                                .contiguous();
 #endif
-    result->query_a = weights.weight(prefix + "attention.query_a.weight");
-    result->query_b = weights.weight(prefix + "attention.query_b.weight");
-    result->key_value = weights.weight(prefix + "attention.key_value.weight");
-    result->output_a = weights.weight(prefix + "attention.output_a.weight");
-    result->output_b = weights.weight(prefix + "attention.output_b.weight");
+    attention_weights.query_a = weights.weight(prefix + "attention.query_a.weight");
+    attention_weights.query_b = weights.weight(prefix + "attention.query_b.weight");
+    attention_weights.key_value = weights.weight(prefix + "attention.key_value.weight");
+    attention_weights.output_a = weights.weight(prefix + "attention.output_a.weight");
+    attention_weights.output_b = weights.weight(prefix + "attention.output_b.weight");
     if (result->kv_source()) {
-        result->compressor_key_value =
+        attention_weights.compressor_key_value =
             weights.weight(prefix + "attention.compressor.key_value.weight");
 #ifdef TYLOINFER_NATIVE_CUDA
-        result->compressor_norm = weights.tensor(prefix + "attention.compressor.norm.weight");
+        attention_weights.compressor_norm = weights.tensor(prefix + "attention.compressor.norm.weight");
 #else
-        result->compressor_norm =
+        attention_weights.compressor_norm =
             weights.tensor(prefix + "attention.compressor.norm.weight").dense();
 #endif
-        result->index_key =
+        attention_weights.index_key =
             weights.weight(prefix + "attention.indexer.key.weight");
 #ifdef TYLOINFER_NATIVE_CUDA
-        result->index_key_norm = weights.tensor(prefix + "attention.indexer.key_norm.weight");
+        attention_weights.index_key_norm = weights.tensor(prefix + "attention.indexer.key_norm.weight");
 #else
-        result->index_key_norm =
+        attention_weights.index_key_norm =
             weights.tensor(prefix + "attention.indexer.key_norm.weight").dense();
 #endif
         if (result->ratio > 1) {
-            result->compressor_gate =
+            attention_weights.compressor_gate =
                 weights.weight(prefix + "attention.compressor.gate.weight");
         }
     }
     if (result->index_source()) {
-        result->index_query =
+        attention_weights.index_query =
             weights.weight(prefix + "attention.indexer.query.weight");
-        result->index_score =
+        attention_weights.index_score =
             weights.weight(prefix + "attention.indexer.score.weight");
     }
     result->mlp = load_moe_at(weights, config, prefix + "mlp.", layer, config.top_k);
@@ -154,13 +157,7 @@ std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
                           "DeepSeek-V4.1 vision router bias shape mismatch");
 #endif
     }
-#ifdef TYLOINFER_NATIVE_CUDA
-    result->rope = ::tyloi::ops::tail_rope_table(
-        config.max_position_embeddings, config.rope_theta, result->ratio,
-        ::tyloi::Device(::tyloi::kCUDA, weights.placement.device),
-        config.compress_rope_theta, config.rope_scaling.original_max_position_embeddings,
-        config.rope_scaling.factor, config.rope_scaling.beta_fast, config.rope_scaling.beta_slow);
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
     result->rope = TailRope(
         config.max_position_embeddings, config.rope_theta, result->ratio,
         config.compress_rope_theta, config.rope_scaling.original_max_position_embeddings,
@@ -189,28 +186,28 @@ std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
                   result->attention_mhc_base, result->attention_norm) &&
         valid_mhc(result->mlp_mhc_function, result->mlp_mhc_scale, result->mlp_mhc_base,
                   result->mlp_norm) &&
-        result->query_a_norm.numel() == config.q_lora_rank &&
-        result->key_value_norm.numel() == config.head_dim &&
-        result->sinks.numel() == config.n_heads && result->query_a.size(1) == config.hidden &&
-        result->query_a.size(0) == config.q_lora_rank &&
-        result->query_b.size(1) == config.q_lora_rank &&
-        result->query_b.size(0) == config.n_heads * config.head_dim &&
-        result->key_value.size(1) == config.hidden &&
-        result->key_value.size(0) == config.head_dim &&
-        result->output_a.size(1) == config.n_heads * config.head_dim / config.o_groups &&
-        result->output_a.size(0) == config.o_groups * config.o_lora_rank &&
-        result->output_b.size(1) == config.o_groups * config.o_lora_rank &&
-        result->output_b.size(0) == config.hidden;
+        attention_weights.query_a_norm.numel() == config.q_lora_rank &&
+        attention_weights.key_value_norm.numel() == config.head_dim &&
+        attention_weights.sinks.numel() == config.n_heads && attention_weights.query_a.size(1) == config.hidden &&
+        attention_weights.query_a.size(0) == config.q_lora_rank &&
+        attention_weights.query_b.size(1) == config.q_lora_rank &&
+        attention_weights.query_b.size(0) == config.n_heads * config.head_dim &&
+        attention_weights.key_value.size(1) == config.hidden &&
+        attention_weights.key_value.size(0) == config.head_dim &&
+        attention_weights.output_a.size(1) == config.n_heads * config.head_dim / config.o_groups &&
+        attention_weights.output_a.size(0) == config.o_groups * config.o_lora_rank &&
+        attention_weights.output_b.size(1) == config.o_groups * config.o_lora_rank &&
+        attention_weights.output_b.size(0) == config.hidden;
     const bool source_shapes =
         !result->kv_source() ||
-        (result->compressor_key_value.size(1) == config.hidden &&
-         result->compressor_key_value.size(0) == config.head_dim &&
-         result->compressor_norm.numel() == config.head_dim &&
-         result->index_key.size(1) == config.head_dim &&
-         result->index_key.size(0) == config.index_head_dim &&
-         result->index_key_norm.numel() == config.index_head_dim &&
-         (result->ratio == 1 || (result->compressor_gate.size(1) == config.hidden &&
-                                 result->compressor_gate.size(0) == config.head_dim)));
+        (attention_weights.compressor_key_value.size(1) == config.hidden &&
+         attention_weights.compressor_key_value.size(0) == config.head_dim &&
+         attention_weights.compressor_norm.numel() == config.head_dim &&
+         attention_weights.index_key.size(1) == config.head_dim &&
+         attention_weights.index_key.size(0) == config.index_head_dim &&
+         attention_weights.index_key_norm.numel() == config.index_head_dim &&
+         (result->ratio == 1 || (attention_weights.compressor_gate.size(1) == config.hidden &&
+                                 attention_weights.compressor_gate.size(0) == config.head_dim)));
 #else
     const bool base_shapes =
         valid_mhc(result->attention_mhc_function, result->attention_mhc_scale,
@@ -242,15 +239,32 @@ std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
 #endif
     const bool index_shapes =
         !result->index_source() ||
-        (result->index_query.size(1) == config.q_lora_rank &&
-         result->index_query.size(0) == config.index_n_heads * config.index_head_dim &&
-         result->index_score.size(1) == config.hidden &&
-         result->index_score.size(0) == config.index_n_heads);
+        (attention_weights.index_query.size(1) == config.q_lora_rank &&
+         attention_weights.index_query.size(0) == config.index_n_heads * config.index_head_dim &&
+         attention_weights.index_score.size(1) == config.hidden &&
+         attention_weights.index_score.size(0) == config.index_n_heads);
     TYLOINFER_RUNTIME_CHECK(config.hc_mult == 4 && config.n_heads == 64 && config.head_dim == 512 &&
                           config.rope_head_dim == 64 && config.index_n_heads == 32 &&
                           config.index_head_dim == 128 && base_shapes && source_shapes &&
                           index_shapes,
                       "DeepSeek-V4.1 CUDA tensor geometry disagrees at layer ", layer);
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::CsaConfig csa_config;
+    csa_config.hidden=config.hidden; csa_config.n_heads=config.n_heads; csa_config.head_dim=config.head_dim;
+    csa_config.o_groups=config.o_groups; csa_config.sliding_window=config.sliding_window;
+    csa_config.maximum=config.max_position_embeddings; csa_config.index_n_heads=config.index_n_heads;
+    csa_config.index_head_dim=config.index_head_dim; csa_config.index_topk=config.index_topk;
+    csa_config.candidate_source_layer=config.candidate_source_layer;
+    csa_config.candidate_topk_blocks=config.candidate_topk_blocks; csa_config.candidate_block_size=config.candidate_block_size;
+    csa_config.layer=layer; csa_config.ratio=result->ratio; csa_config.device=weights.placement.device;
+    csa_config.rms_eps=config.rms_eps; csa_config.rope_theta=config.rope_theta;
+    csa_config.compress_rope_theta=config.compress_rope_theta;
+    csa_config.rope_original=config.rope_scaling.original_max_position_embeddings;
+    csa_config.rope_factor=config.rope_scaling.factor; csa_config.rope_beta_fast=config.rope_scaling.beta_fast;
+    csa_config.rope_beta_slow=config.rope_scaling.beta_slow;
+    csa_config.kv_source=result->kv_source(); csa_config.index_source=result->index_source();
+    result->attention=std::make_unique<tyloi::ops::Csa>(std::move(csa_weights),csa_config);
+#endif
     return result;
 }
 

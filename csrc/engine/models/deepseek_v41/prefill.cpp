@@ -289,13 +289,16 @@ tyloi::StepSequence<tyloi::models::Prefill> Model::prefill(
         for (int64_t layer = split; layer < num_hidden_layers(); ++layer) {
             auto& block = *blocks.at(layer);
             if (!block.kv_source()) continue;
-            auto source = deepseek_v41_hc_input_cuda(hidden, state.shared->previous_pre,
-                block.attention_norm.dense(), config.rms_eps);
+            auto& source=state.shared->ced_source;
+            source.dense() = tyloi::ops::mhc_input(hidden,state.shared->previous_pre,
+                block.attention_norm,config.rms_eps).dense();
             tyloi::ops::measure("deepseek_v41.ced.global_kv", [&] {
-                block.publish_compressed_source(*state.shared, source, state.cache_pos);
-                return source;
+                block.attention->publish_compressed(state.shared->layers.at(static_cast<std::size_t>(layer)).attention,
+                    state.shared->attention,source,state.cache_pos);
+                return source.dense();
             });
-            state.shared->layers.at(static_cast<std::size_t>(layer)).prefilled_global_end = state.cache_pos + count;
+            source.dense() = {};
+            state.shared->layers.at(static_cast<std::size_t>(layer)).attention.prefilled_global_end = state.cache_pos + count;
             co_yield tyloi::StepState::advanced;
         }
         tail_hidden = append_tail(tail_hidden, hidden, config.sliding_window);
@@ -326,8 +329,8 @@ tyloi::StepSequence<tyloi::models::Prefill> Model::prefill(
     for (int64_t layer = split; layer < num_hidden_layers(); ++layer) {
         if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=decoder layer="<<layer<<" tokens="<<replay_tokens<<'\n';
         auto& layer_state = state.shared->layers.at(static_cast<std::size_t>(layer));
-        layer_state.position = replay_begin;
-        layer_state.replay_local_window = truncated_local;
+        layer_state.attention.position = replay_begin;
+        layer_state.attention.replay_local_window = truncated_local;
         tail_hidden = forward_layer(*this,state,tail_ids,layer,std::move(tail_hidden),replay_positions,replay_host_ids);
         co_yield tyloi::StepState::advanced;
     }

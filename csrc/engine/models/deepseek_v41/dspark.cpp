@@ -10,6 +10,9 @@
 
 #include "engine/models/common/mtp.h"
 #include "engine/ops.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/mhc.h"
+#endif
 #include "ops.h"
 
 #include <algorithm>
@@ -71,6 +74,18 @@ struct DsState final : tyloi::models::MtpState {
     std::int64_t position_ = 0;
 };
 
+#ifdef TYLOINFER_NATIVE_CUDA
+struct Stage {
+    tyloi::Tensor query_a, query_b, key_value, output_a, output_b;
+    tyloi::Tensor query_a_norm, key_value_norm, sinks;
+    tyloi::Tensor attention_norm, mlp_norm;
+    tyloi::Tensor attention_mhc_function, attention_mhc_scale, attention_mhc_base;
+    tyloi::Tensor mlp_mhc_function, mlp_mhc_scale, mlp_mhc_base;
+    tyloi::ops::TailRopeTable rope;
+    tyloi::cuda::Ffn mlp;
+};
+#endif
+
 struct DeepseekV41Dspark final : tyloi::models::Mtp {
 #ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext *execution = nullptr;
@@ -85,20 +100,32 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     ::tyloi::Tensor markov_embedding;
     ::tyloi::Tensor markov_output;
     ::tyloi::Tensor confidence_projection;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::vector<std::unique_ptr<Stage>> stages;
+#else
     std::vector<std::unique_ptr<Block>> stages;
+#endif
 
     std::unique_ptr<tyloi::models::MtpState> make_state() const override {
         return std::make_unique<DsState>(*this);
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    static std::unique_ptr<Stage> load_stage(const tyloi::weights::Loader& weights,
+#else
     static std::unique_ptr<Block> load_stage(const tyloi::weights::Loader& weights,
+#endif
                                              const CommonConfig &config, std::int64_t stage) {
         const auto prefix = "predictor.stage." + std::to_string(stage) + ".";
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto result = std::make_unique<Stage>();
+#else
         auto result = std::make_unique<Block>();
         result->config = config;
         result->layer = config.n_layers + stage;
         result->ratio = 0;
         result->max_context = config.max_position_embeddings;
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
         result->attention_norm = std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.norm.weight").dense()
                                      .to(::tyloi::kFloat32).contiguous());
@@ -184,7 +211,9 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 #else
         result->rope = TailRope(config.max_position_embeddings, config.rope_theta, 0);
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
         result->cuda_device = weights.placement.device;
+#endif
 
         const auto function_width = config.hc_mult * config.hidden;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -745,7 +774,11 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     }
 
     DenseTensor attention(const DsState& state, const DenseTensor &input,
+#ifdef TYLOINFER_NATIVE_CUDA
+                          const Stage &stage, const DenseTensor &ring) const {
+#else
                           const Block &stage, const DenseTensor &ring) const {
+#endif
         const auto tokens = input.size(1);
         auto positions = ::tyloi::cuda::arange(state.position_, state.position_ + tokens,
                                                     ::tyloi::TensorOptions()
@@ -835,7 +868,13 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     .transpose(1, 2)
                     .contiguous();
             },
-            [&](DenseTensor attended) { return stage.output_projection(attended); });
+            [&](DenseTensor attended) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                return tyloi::ops::low_rank(attended, stage.output_a, stage.output_b, config.o_groups, true, false).dense();
+#else
+                return stage.output_projection(attended);
+#endif
+            });
     }
 
     ::tyloi::Tensor draft_block(tyloi::models::MtpState& value,
@@ -897,6 +936,32 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 // Keep the two MHC branches explicit here. Attention consumes
                 // the complete physical block, while the following FFN only
                 // produces the requested rows on the final predictor stage.
+#ifdef TYLOINFER_NATIVE_CUDA
+                const tyloi::ops::MhcConfig mhc{config.hc_sinkhorn_iters, config.rms_eps, config.hc_eps};
+                auto attention_mix = tyloi::ops::measure("deepseek_v41.dspark.mhc.attention.collapse", [&] {
+                    return tyloi::ops::mhc_collapse(hidden.narrow(1, 0, physical_width),
+                        previous_pre.narrow(1, 0, physical_width), stage.attention_mhc_function,
+                        stage.attention_mhc_scale, stage.attention_mhc_base, stage.attention_norm, mhc);
+                });
+                const auto attended = attention(state, attention_mix.branch.dense(), stage, state.rings[index].dense());
+                auto after_attention = tyloi::ops::measure("deepseek_v41.dspark.mhc.attention.expand", [&] {
+                    return tyloi::ops::mhc_expand(attended, hidden.narrow(1, 0, attended.size(1)), attention_mix).dense();
+                });
+                const auto mlp_rows = output_rows;
+                auto mlp_mix = tyloi::ops::measure("deepseek_v41.dspark.mhc.mlp.collapse", [&] {
+                    return tyloi::ops::mhc_collapse(after_attention.narrow(1, 0, mlp_rows),
+                        attention_mix.next_pre.dense().narrow(1, 0, mlp_rows), stage.mlp_mhc_function,
+                        stage.mlp_mhc_scale, stage.mlp_mhc_base, stage.mlp_norm, mhc);
+                });
+                const auto rows = mlp_mix.branch.size(1);
+                auto mlp = stage.mlp.forward(mlp_mix.branch.dense().reshape({-1, config.hidden}),
+                    draft_ids.narrow(1, 0, rows)).reshape({state.batch, rows, config.hidden});
+                auto result = tyloi::ops::measure("deepseek_v41.dspark.mhc.mlp.expand", [&] {
+                    return tyloi::ops::mhc_expand(mlp, after_attention.narrow(1, 0, rows), mlp_mix).dense();
+                });
+                previous_pre = std::move(mlp_mix.next_pre.dense());
+                return result;
+#else
                 auto attention_mix = stage.collapse(
                             hidden.narrow(1, 0, physical_width),
                             previous_pre.narrow(1, 0, physical_width),
@@ -946,6 +1011,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                                            "deepseek_v41.dspark.mhc.mlp.expand");
                 previous_pre = std::move(mlp_mix.next_pre);
                 return result;
+#endif
             },
             [&](DenseTensor hidden, const DenseTensor &previous_pre) {
                 return (previous_pre.to(::tyloi::kFloat32).unsqueeze(-1) *

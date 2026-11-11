@@ -40,6 +40,7 @@
 #include "engine/ops.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/compact.h"
+#include "engine/ops/positions.h"
 #endif
 #include "engine/backends/cuda/ops/ffn/gated.h"
 #include "engine/weights/nint_cache.h"
@@ -467,6 +468,13 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(tyloi::models::MtpState&
                           std::vector<int64_t>({b, t, config.hidden}),
                       "Qwen4-Exp MTP embedding shape mismatch");
     std::array<DenseTensor, 2> pos;
+#ifdef TYLOINFER_NATIVE_CUDA
+    {
+        auto positions = tyloi::ops::position_axes(start,t,b,3,supplied_positions,
+            cache ? request.positions[layer] : tyloi::Tensor{},ids.options().dtype(tyloi::kInt32));
+        pos = {positions[0].dense(),positions[1].dense()};
+    }
+#else
     {
         // Full positions persist across predictor priming tiles and must
         // not occupy expert storage borrowed by this prefill phase.
@@ -495,6 +503,7 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(tyloi::models::MtpState&
                         : current;
         pos = {current, full};
     }
+#endif
     DenseTensor x;
     {
         DenseTensor e;
@@ -2937,26 +2946,31 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #ifdef TYLOINFER_NATIVE_CUDA
     if(cache_start==0) co_yield tyloi::GraphPhase::ready;
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
     tyloi::cuda::ResidentAllocationScope persistent_preamble;
+#endif
     qwen4_validate_forward(model,tokens,cache_start,false);
     if(cache_start==0) state.reset(1);
     state.begin_forward();
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto positions=tyloi::ops::position_span(cache_start,tokens,state.decode_position_delta,state.positions,ids.options());
+    auto prepared=positions[0].dense();
+    auto prepared_full=positions[1].dense();
+#else
     auto current=::tyloi::cuda::arange(cache_start,cache_start+tokens,ids.options());
     if(state.decode_position_delta)current=current+state.decode_position_delta;
     auto prepared=std::move(current);
     if ((prepared.dim() == 2 || prepared.dim() == 3) && prepared.size(0) == 4)
         prepared = prepared.narrow(0,1,3);
-    auto prepared_full=state.positions.defined()?
-#ifdef TYLOINFER_NATIVE_CUDA
-        ::tyloi::cuda::cat({state.positions.dense(),prepared},-1):prepared;
-#else
-        ::tyloi::cuda::cat({state.positions,prepared},-1):prepared;
+    auto prepared_full=state.positions.defined()?::tyloi::cuda::cat({state.positions,prepared},-1):prepared;
 #endif
     tyloi::models::require_model((prepared.dim() == 1 || (prepared.dim() == 2 && prepared.size(0) == 3) ||
         (prepared.dim() == 3 && prepared.size(0) == 3 && prepared.size(1) == 1)) && prepared.size(-1) == tokens,
         "Qwen4 positions require [T], [3,T], [4,T], [3,B,T] or [4,B,T]");
     auto cpu_ids=ids.to(::tyloi::kCPU,::tyloi::kInt64).contiguous();
+#ifndef TYLOINFER_NATIVE_CUDA
     persistent_preamble.finish();
+#endif
     DenseTensor hidden=::tyloi::cuda::empty({1,tokens,model.metadata.hidden_size*model.metadata.hc_mult},
                            ids.options().dtype(::tyloi::kFloat16));
     for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {

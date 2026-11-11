@@ -66,7 +66,12 @@ tyloi::models::SnapshotSize snapshot_size(const State& state,const tyloi::models
         TYLOINFER_RUNTIME_CHECK(state.shared && item->layer >= 0 &&
                                   item->layer < std::int64_t(state.shared->layers.size()),
                               "DeepSeek-V4.1 layer state is not allocated");
-        const auto& layer=state.shared->layers[static_cast<std::size_t>(item->layer)];
+        const auto& entry=state.shared->layers[static_cast<std::size_t>(item->layer)];
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& layer=entry.attention;
+#else
+        const auto& layer=entry;
+#endif
         incoming+=session_tensor_bytes(layer.local_kv)+session_tensor_bytes(layer.partial_kv)+
             session_tensor_bytes(layer.partial_score)+prefix_bytes(layer.compressed_kv,layer.compressed_length)+
             prefix_bytes(layer.index_k,layer.compressed_length);
@@ -87,11 +92,6 @@ State::~State() = default;
 namespace {
 #ifdef TYLOINFER_NATIVE_CUDA
 using Growth = std::vector<std::pair<tyloi::Device, std::size_t>>;
-std::size_t mul(std::size_t a, std::size_t b) {
-    if (b && a > std::numeric_limits<std::size_t>::max() / b)
-        throw std::overflow_error("DeepSeek-V4.1 allocation planning overflow");
-    return a * b;
-}
 void add(Growth& result, tyloi::Device device, std::size_t bytes) {
     if (!bytes) return;
     auto it=std::find_if(result.begin(),result.end(),[device](const auto& item){return item.first==device;});
@@ -111,24 +111,9 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::reset_growth(std::int6
     Growth result;
     for(const auto& item:model_.blocks) {
         const auto& b=*item;
-        const auto& layer=shared->layers.at(static_cast<std::size_t>(b.layer));
+        const auto& layer=shared->layers.at(static_cast<std::size_t>(b.layer)).attention;
         const tyloi::Device device(tyloi::DeviceType::cuda,b.cuda_device);
-        const auto plan=[&](const tyloi::Tensor& target,std::int64_t length,std::int64_t width,tyloi::ScalarType type,std::size_t element) {
-            const bool same=target.defined() && target.representation<DenseTensor>() && target.dense().is_contiguous() && target.device()==device &&
-                target.scalar_type()==type && target.dim()==3 && target.size(0)==next_batch &&
-                target.size(1)==length && target.size(2)==width;
-            if(!same) add(result,device,mul(mul(mul(std::size_t(next_batch),std::size_t(length)),std::size_t(width)),element));
-        };
-        plan(layer.local_kv,b.config.sliding_window,b.config.head_dim,tyloi::kFloat16,2);
-        if(b.kv_source()) {
-            const auto capacity=std::max<std::int64_t>(1,b.max_context/b.ratio);
-            plan(layer.compressed_kv,capacity,b.config.head_dim,tyloi::kFloat16,2);
-            plan(layer.index_k,capacity,b.config.index_head_dim,tyloi::kFloat16,2);
-            if(b.ratio>1) {
-                plan(layer.partial_kv,b.ratio,b.config.head_dim,tyloi::kFloat32,4);
-                plan(layer.partial_score,b.ratio,b.config.head_dim,tyloi::kFloat32,4);
-            }
-        }
+        add(result,device,b.attention->reset_growth(layer,next_batch));
     }
     return result;
 }
@@ -138,15 +123,9 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::suffix_growth(std::int
     Growth result;
     for(const auto& item:model_.blocks) {
         const auto& b=*item;
-        const auto& layer=shared->layers.at(static_cast<std::size_t>(b.layer));
-        if(tokens>b.config.sliding_window || layer.speculative_pending || !layer.local_kv.defined())
-            throw std::invalid_argument("DeepSeek-V4.1 invalid speculative checkpoint");
+        const auto& layer=shared->layers.at(static_cast<std::size_t>(b.layer)).attention;
         const auto device=tyloi::Device(tyloi::DeviceType::cuda,b.cuda_device);
-        const auto rows=mul(std::size_t(batch),std::size_t(tokens));
-        add(result,device,mul(mul(std::size_t(tokens),sizeof(std::int64_t)),3));
-        add(result,device,mul(mul(rows,std::size_t(b.config.head_dim)),4));
-        if(layer.partial_kv.defined())
-            add(result,device,mul(mul(mul(std::size_t(batch),std::size_t(b.ratio)),std::size_t(b.config.head_dim)),8));
+        add(result,device,b.attention->suffix_growth(layer,batch,tokens));
     }
     return result;
 }
@@ -160,10 +139,8 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
         for(const auto& item:model_.blocks) {
             const auto& b=*item;
             const auto device=tyloi::Device(tyloi::DeviceType::cuda,b.cuda_device);
-            const auto rows=mul(std::size_t(batch),std::size_t(tokens));
-            if(b.kv_source() && b.ratio>1) {
-                add(result,device,mul(mul(rows,std::size_t(b.config.head_dim)),8));
-            }
+            const auto& layer=shared->layers.at(static_cast<std::size_t>(b.layer)).attention;
+            add(result,device,b.attention->growth(layer,batch,tokens,true));
         }
     }
     return result;
@@ -207,14 +184,24 @@ void State::reset(std::int64_t next_batch) {
     speculative_confirmed = 0;
     speculative_suffix_forward = false;
     batch = next_batch;
-    for (auto& block : model_.blocks)
+    for (auto& block : model_.blocks) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        block->attention->reset(shared->layers.at(static_cast<std::size_t>(block->layer)).attention, next_batch);
+        if (block->layer == 0) shared->reset_session(next_batch);
+#else
         block->reset(*shared, next_batch);
+#endif
+    }
 }
 
 std::vector<::tyloi::Tensor> State::storage() const {
     std::vector<::tyloi::Tensor> result;
     for (const auto& block : model_.blocks) {
         const auto& state = shared->layers.at(static_cast<std::size_t>(block->layer));
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto tensors = block->attention->storage(state.attention);
+        result.insert(result.end(), tensors.begin(), tensors.end());
+#else
         if (state.local_kv.defined()) result.push_back(state.local_kv);
         if (state.compressed_kv.defined()) result.push_back(state.compressed_kv);
         if (state.index_k.defined()) result.push_back(state.index_k);
@@ -226,12 +213,24 @@ std::vector<::tyloi::Tensor> State::storage() const {
         if (state.speculative_partial_score.defined()) result.push_back(state.speculative_partial_score);
         if (state.speculative_projected_kv.defined()) result.push_back(state.speculative_projected_kv);
         if (state.speculative_projected_score.defined()) result.push_back(state.speculative_projected_score);
+#endif
         if (state.current_ids.defined()) result.push_back(state.current_ids);
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto& attention = shared->attention;
+    if (attention.compressed_kv.defined()) result.push_back(attention.compressed_kv);
+    if (attention.index_k.defined()) result.push_back(attention.index_k);
+    if (attention.topk.defined()) result.push_back(attention.topk);
+    if (attention.candidate_blocks.defined()) result.push_back(attention.candidate_blocks);
+    for (const auto* tensor : {&shared->ced_source, &shared->attention_input,
+                               &shared->attention_positions, &shared->attention_lengths})
+        if (tensor->defined()) result.emplace_back(tensor->dense());
+#else
     if (shared->compressed_kv.defined()) result.push_back(shared->compressed_kv);
     if (shared->index_k.defined()) result.push_back(shared->index_k);
     if (shared->topk.defined()) result.push_back(shared->topk);
     if (shared->candidate_blocks.defined()) result.push_back(shared->candidate_blocks);
+#endif
     if (shared->previous_pre.defined()) result.push_back(shared->previous_pre);
 #ifndef TYLOINFER_NATIVE_CUDA
     if (shared->attention_meta.defined()) result.push_back(shared->attention_meta);
@@ -261,15 +260,24 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
     std::size_t begun = 0;
     try {
         for (auto& block : model_.blocks) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            block->attention->begin_speculative(shared->layers.at(static_cast<std::size_t>(block->layer)).attention, draft_tokens);
+#else
             MfqCudaGuard guard(block->cuda_device);
             block->begin_speculative(*shared, draft_tokens);
+#endif
             ++begun;
         }
     } catch (...) {
         for (std::size_t i = 0; i < begun; ++i) {
             try {
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto& block = *model_.blocks[i];
+                block.attention->commit_speculative(shared->layers.at(static_cast<std::size_t>(block.layer)).attention);
+#else
                 MfqCudaGuard guard(model_.blocks[i]->cuda_device);
                 model_.blocks[i]->commit_speculative(*shared);
+#endif
             } catch (...) {
             }
         }
@@ -286,8 +294,12 @@ void State::commit_speculative() {
     using tyloi::models::require_model;
     require_model(speculative_start >= 0, "no speculative transaction");
     for (auto& block : model_.blocks) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        block->attention->commit_speculative(shared->layers.at(static_cast<std::size_t>(block->layer)).attention);
+#else
         MfqCudaGuard guard(block->cuda_device);
         block->commit_speculative(*shared);
+#endif
     }
     if (shared->engram_hash) shared->engram_hash->commit_speculative();
     speculative_start = -1;
@@ -298,8 +310,13 @@ void State::rollback_speculative(std::int64_t accepted) {
     using tyloi::models::require_model;
     require_model(speculative_start >= 0 && accepted >= 0, "no speculative transaction");
     const auto keep = speculative_start + speculative_confirmed + accepted;
-    for (auto& block : model_.blocks)
+    for (auto& block : model_.blocks) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        block->attention->rollback_speculative(shared->layers.at(static_cast<std::size_t>(block->layer)).attention, keep);
+#else
         block->rollback_speculative(*shared, keep);
+#endif
+    }
     TYLOINFER_RUNTIME_CHECK(shared->engram_hash, "DeepSeek-V4.1 Engram state is unavailable");
     shared->engram_hash->rollback_speculative(keep);
     cache_pos = keep;
@@ -338,7 +355,12 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     for(const auto& item:model_.blocks) {
         const Block& block=*item;
         MfqCudaGuard guard(block.cuda_device);
-        const auto& source=shared->layers.at(static_cast<std::size_t>(block.layer));
+        const auto& entry=shared->layers.at(static_cast<std::size_t>(block.layer));
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& source=entry.attention;
+#else
+        const auto& source=entry;
+#endif
         if(source.speculative_pending || source.position!=cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
@@ -388,7 +410,7 @@ public:
         hash_->restore(*saved->engram);
         for(std::size_t i=0;i<saved->blocks.size();++i) {
             const auto& b=*owner.model_.blocks[i];
-            auto& layer=layers_.at(static_cast<std::size_t>(b.layer));
+            auto& layer=layers_.at(static_cast<std::size_t>(b.layer)).attention;
             const auto& entry=saved->blocks[i];
             if(layer.speculative_pending) throw CudaSessionStateError("DeepSeek-V4.1 speculative state is pending");
             validate_layer(b,entry,snapshot_.cache_pos);
@@ -415,7 +437,8 @@ public:
         for(std::size_t i=0;i<saved.blocks.size();++i) {
             const auto& b=*owner_.model_.blocks[i];
             MfqCudaGuard guard(b.cuda_device);
-            auto& layer=layers_.at(static_cast<std::size_t>(b.layer));
+            auto& current=layers_.at(static_cast<std::size_t>(b.layer));
+            auto& layer=current.attention;
             const auto& entry=saved.blocks[i];
             copy(layer.local_kv,entry.local_kv);
             if(b.kv_source()) {
@@ -430,19 +453,20 @@ public:
             layer.speculative_position=-1; layer.prefilled_global_end=-1; layer.replay_local_window=false;
             layer.speculative_local_slots={}; layer.speculative_slot_ids={}; layer.speculative_partial_kv={};
             layer.speculative_partial_score={}; layer.speculative_projected_kv={}; layer.speculative_projected_score={};
-            layer.current_ids={};
+            current.current_ids={};
         }
     }
     void publish() noexcept override {
         auto& s=*owner_.shared;
         s.layers.swap(layers_); s.engram_hash.swap(hash_);
-        std::swap(s.compressed_kv,compressed_kv_); std::swap(s.index_k,index_k_);
-        std::swap(s.topk,topk_); std::swap(s.candidate_blocks,candidate_blocks_);
+        std::swap(s.attention,attention_);
+        std::swap(s.ced_source,ced_source_); std::swap(s.attention_input,attention_input_);
+        std::swap(s.attention_positions,attention_positions_); std::swap(s.attention_lengths,attention_lengths_);
         std::swap(s.previous_pre,previous_pre_); std::swap(s.engram_hashes,engram_hashes_);
         s.dspark_target_hiddens.swap(hiddens_); s.capture_dspark_targets=false;
         std::swap(s.image_mask,image_mask_); std::swap(s.text_rows,text_rows_);
         std::swap(s.routing_mask,routing_mask_); s.text_row_ids.swap(text_row_ids_);
-        s.compressed_length=0; s.ratio=0; s.cache_position=-1; s.batch=0; s.tokens=0; s.next_layer=0;
+        s.cache_position=-1; s.batch=0; s.tokens=0; s.next_layer=0;
         owner_.cache_pos=snapshot_.cache_pos; owner_.decode_position_delta=0; owner_.batch=1;
         owner_.speculative_start=-1; owner_.speculative_confirmed=0; owner_.speculative_suffix_forward=false;
     }
@@ -464,7 +488,10 @@ private:
     std::vector<deepseek_v41_runtime::LayerState> layers_;
     std::unique_ptr<deepseek_v41_runtime::EngramHashState> hash_;
     Growth growth_;
-    DenseTensor compressed_kv_,index_k_,topk_,candidate_blocks_,previous_pre_,image_mask_,text_rows_,routing_mask_;
+    tyloi::ops::Csa::Shared attention_;
+    tyloi::Tensor ced_source_{DenseTensor{}}, attention_input_{DenseTensor{}},
+        attention_positions_{DenseTensor{}}, attention_lengths_{DenseTensor{}};
+    DenseTensor previous_pre_,image_mask_,text_rows_,routing_mask_;
     deepseek_v41_runtime::EngramHashBatch engram_hashes_;
     std::vector<DenseTensor> hiddens_;
     std::vector<std::int64_t> text_row_ids_;
