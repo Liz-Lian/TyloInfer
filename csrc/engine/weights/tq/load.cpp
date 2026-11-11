@@ -1,7 +1,7 @@
 #include "engine/weights/tq/load.h"
 
 #include "engine/weights/tq/source.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache_resources.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/tq/cache.h"
 #include "engine/weights/tq/image.h"
@@ -30,22 +30,18 @@
     return result;
 }
 
-std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
-        tyloi::weights::Cache& weights, const std::shared_ptr<TqExec>& exec,
-        const tyloi::source::Source& source,
-        const std::string& name) {
+tyloi::Tensor tyloi::weights::Cache::routed_tq(
+        const tyloi::source::Source& source, const std::string& name,
+        const ParallelConfig& parallel) {
     const auto shape = tyloi::tq_shape(source, name);
-    if (shape.size() != 3) {
-        throw std::invalid_argument(
-            "TQ expert bank must be [experts,out,in]: " + name);
-    }
-    return load_tq_routed_weight(weights, exec, source, name, shape[0], shape[1], shape[2]);
+    if (shape.size() != 3)
+        throw std::invalid_argument("TQ expert bank must be [experts,out,in]: " + name);
+    return routed_tq(source, name, parallel, shape[0], shape[1], shape[2]);
 }
 
-std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
-        tyloi::weights::Cache& weights, const std::shared_ptr<TqExec>& exec,
-        const tyloi::source::Source& source,
-        const std::string& name, std::int64_t experts, std::int64_t output,
+tyloi::Tensor tyloi::weights::Cache::routed_tq(
+        const tyloi::source::Source& source, const std::string& name,
+        const ParallelConfig& parallel, std::int64_t experts, std::int64_t output,
         std::int64_t input) {
     auto table = tyloi::tq_table(source, name);
     if (experts < 1 || experts > UINT32_MAX || output < 1 || input < 1 ||
@@ -53,18 +49,21 @@ std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
         table->width() != input) {
         throw std::invalid_argument("TQ routed projection shape differs: " + name);
     }
-    auto& data = tyloi::weights::detail::cache(weights);
-    if (!data.tq) {
-        const auto bytes = data.device_bytes.value_or(moe_expert_cache_budget_bytes(data.moe));
-        const bool explicit_budget = data.device_bytes.has_value() || bool(data.moe);
-        data.tq = std::make_shared<TqCache>(bytes, data.host_bytes, data.host_limit, !explicit_budget, exec);
+    auto slices = parallel.enabled()
+        ? plan_slices(experts, 1, parallel)
+        : std::vector<tyloi::TensorParallelSlice>{};
+    if (!data_->tq) {
+        const auto bytes = data_->device_bytes.value_or(moe_expert_cache_budget_bytes(data_->moe));
+        const bool explicit_budget = data_->device_bytes.has_value() || bool(data_->moe);
+        data_->tq = std::make_shared<TqCache>(bytes, data_->host_bytes, data_->host_limit, !explicit_budget, data_->exec);
     }
-    auto cache = data.tq;
+    auto cache = data_->tq;
     auto result = std::make_shared<tyloi::TqBank>();
     result->cache = cache;
     result->experts = experts;
     result->out = output;
     result->input = input;
+    result->slices = std::move(slices);
     result->source_id = cache->add(std::move(table), output);
     return result;
 }

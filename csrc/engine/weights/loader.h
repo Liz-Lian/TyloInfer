@@ -91,7 +91,7 @@ private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
     Loader(const tyloi::source::Source& source, Options options, Placement placement,
-           Cache& cache);
+           std::shared_ptr<Impl> impl);
     friend class Cache;
     ::tyloi::DenseTensor host_value(const std::string& name) const;
 };

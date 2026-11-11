@@ -1,5 +1,5 @@
 #include "engine/weights/workspace.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache_resources.h"
 #include "engine/weights/moe/expert_cache.h"
 
 MoePrefillWorkspaceBudget moe_prefill_workspace_budget(const std::shared_ptr<MoeExpertCache>& cache, bool allow_borrow) { return {}; }
@@ -77,7 +77,8 @@ void print_moe_expert_cache_stats(const std::shared_ptr<MoeExpertCache>& cache, 
 void set_moe_expert_cache_profile(MoeExpertCache& cache, tyloi::MoeCacheProfile profile) {}
 
 struct tyloi::weights::Loan::Impl {};
-tyloi::weights::Loan::Loan(Cache&) : impl_(std::make_unique<Impl>()) {}
+tyloi::weights::Loan::Loan(Cache& cache) { cache.lend(*this); }
+void tyloi::weights::Cache::lend(Loan& loan) { loan.impl_ = std::make_unique<Loan::Impl>(); }
 tyloi::weights::Loan::~Loan() = default;
 std::size_t tyloi::weights::Loan::begin(std::size_t) { return 0; }
 std::size_t tyloi::weights::Loan::predictor(std::size_t) { return 0; }
@@ -89,6 +90,6 @@ struct tyloi::weights::Cache::Priority::Impl {
     std::vector<int> previous;
 };
 tyloi::weights::Cache::Priority::Priority(Cache& owner, int, int)
-    : impl_(std::make_unique<Impl>()) { impl_->cache = detail::cache(owner).moe; }
+    : impl_(std::make_unique<Impl>()) { impl_->cache = owner.data_->moe; }
 tyloi::weights::Cache::Priority::~Priority() = default;
 void tyloi::weights::Cache::Priority::finish() {}

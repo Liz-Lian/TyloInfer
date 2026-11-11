@@ -1,5 +1,5 @@
 #include "engine/weights/workspace.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache_resources.h"
 #include "engine/budget.h"
 #include "engine/weights/moe/prepare.h"
 #include "engine/weights/moe/load.h"
@@ -1276,11 +1276,15 @@ void MoeExpertCache::end_prefill_loan() {
 }
 
 struct tyloi::weights::Loan::Impl {
-    explicit Impl(Cache& owner) : cache(detail::cache(owner).moe) {}
+    explicit Impl(std::shared_ptr<MoeExpertCache> owner) : cache(std::move(owner)) {}
     std::shared_ptr<MoeExpertCache> cache;
 };
 
-tyloi::weights::Loan::Loan(Cache& cache) : impl_(std::make_unique<Impl>(cache)) {}
+tyloi::weights::Loan::Loan(Cache& cache) { cache.lend(*this); }
+
+void tyloi::weights::Cache::lend(Loan& loan) {
+    loan.impl_ = std::make_unique<Loan::Impl>(data_->moe);
+}
 
 tyloi::weights::Loan::~Loan() {
     if(active_)try{finish();}catch(const std::exception& e) {
@@ -2924,7 +2928,7 @@ struct tyloi::weights::Cache::Priority::Impl {
 };
 
 tyloi::weights::Cache::Priority::Priority(Cache& owner, int first, int last) {
-    auto cache = detail::cache(owner).moe;
+    auto cache = owner.data_->moe;
     if(!cache || !cache->ssd_experts())return;
     auto impl = std::make_unique<Impl>();
     impl->previous=cache->prioritize_prefill_layers(first,last);impl->cache=std::move(cache);

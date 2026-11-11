@@ -1,4 +1,4 @@
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache_resources.h"
 
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/executor/executor.h"
@@ -27,7 +27,7 @@ Cache::Routes::~Routes() {
 
 void Cache::Routes::begin(Cache& owner, int rows) {
     if (!impl_) impl_ = std::make_unique<Impl>();
-    auto cache = detail::cache(owner).moe;
+    auto cache = owner.data_->moe;
     begin_moe_speculative_routes(cache, rows);
     impl_->cache = std::move(cache);
 }
@@ -47,7 +47,7 @@ struct Cache::Warmup::Impl {
 };
 
 Cache::Warmup::Warmup(Cache& owner, bool suspend_residency) : impl_(std::make_unique<Impl>()) {
-    impl_->cache = detail::cache(owner).moe;
+    impl_->cache = owner.data_->moe;
     impl_->suspended = suspend_residency;
     if (suspend_residency) impl_->previous_residency = suspend_moe_residency(impl_->cache, true);
     impl_->previous_learning = set_moe_reuse_learning(impl_->cache, false);
@@ -68,11 +68,6 @@ void Cache::Warmup::release(Device device, bool decode) {
     if (decode) release_moe_decode_buffers(impl_->cache);
     else release_moe_prefill_buffers(impl_->cache);
     cuda::default_context(device.index)->reclaim_idle_memory();
-}
-
-Loader Cache::loader(const source::Source& source, Loader::Options options,
-        Loader::Placement placement) {
-    return Loader(source, std::move(options), std::move(placement), *this);
 }
 
 void Cache::begin_load() {

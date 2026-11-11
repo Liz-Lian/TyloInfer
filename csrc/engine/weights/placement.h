@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/tensor.h"
+#include "engine/weights/tensor_parallel.h"
 
 #include <cstdint>
 #include <optional>
@@ -38,6 +39,20 @@ struct LayerPlacementConfig {
 };
 
 namespace tyloi::weights {
+
+/** Plan contiguous slices with a granularity supported by the configured ranks. */
+inline std::vector<TensorParallelSlice> plan_slices(
+    std::int64_t extent, std::int64_t preferred_granularity, const ParallelConfig& config) {
+    if (!config.enabled())
+        throw std::runtime_error("parallel slice planning requires at least two ranks");
+    auto granularity = std::max<std::int64_t>(1, std::min<std::int64_t>(
+        preferred_granularity, extent / static_cast<std::int64_t>(config.devices.size())));
+    while (granularity > 1 && extent < static_cast<std::int64_t>(config.devices.size()) * granularity)
+        granularity /= 2;
+    auto slices = plan_tensor_parallel_slices(extent, granularity, config.devices, config.split);
+    validate_tensor_parallel_slices(slices, extent, granularity);
+    return slices;
+}
 
 struct Shape { std::int64_t rows, cols; };
 struct Placement {

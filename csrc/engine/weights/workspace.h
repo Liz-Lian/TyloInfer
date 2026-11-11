@@ -44,6 +44,7 @@ public:
     // Move the output out of borrowed storage before returning it to the cache.
     Tensor finish(Tensor output);
 private:
+    friend class Cache;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     bool active_=false;

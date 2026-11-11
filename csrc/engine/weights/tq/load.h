@@ -9,16 +9,6 @@
 #include <string>
 #include <vector>
 
-namespace tyloi::weights { class Cache; }
-class TqExec;
-
+/** Load a TQ projection into the requested device representation. */
 ::tyloi::encoding::TqTensor load_tq_weight(
     const tyloi::source::Source&, const std::string&, int device, bool cuda = true);
-
-std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
-    tyloi::weights::Cache&, const std::shared_ptr<TqExec>&,
-    const tyloi::source::Source&, const std::string&);
-std::shared_ptr<tyloi::TqBank> load_tq_routed_weight(
-    tyloi::weights::Cache&, const std::shared_ptr<TqExec>&,
-    const tyloi::source::Source&, const std::string&,
-    std::int64_t experts, std::int64_t output, std::int64_t input);

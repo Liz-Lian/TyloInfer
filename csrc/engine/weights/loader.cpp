@@ -3,8 +3,7 @@
 #include "engine/backends/cuda/native/allocation.h"
 #include <iostream>
 #include "engine/weights/moe/load.h"
-#include "engine/weights/cache_internal.h"
-#include "engine/weights/tq/routed.h"
+#include "engine/weights/cache_resources.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "env.h"
 #include "engine/weights/loader.h"
@@ -34,16 +33,22 @@
 
 struct tyloi::weights::Loader::Impl {
     tyloi::weights::Cache& cache;
-    std::shared_ptr<TqExec> tq;
+    std::shared_ptr<MoeExpertCache> moe;
     std::shared_ptr<const ::tyloi::MfeTensor> experts(
         const Loader& loader, const std::string& name, bool cacheable,
         int layer, const std::string& role) const;
 };
 
 tyloi::weights::Loader::Loader(const tyloi::source::Source& source, Options options,
-        Placement placement, Cache& cache)
+        Placement placement, std::shared_ptr<Impl> impl)
     : source(source), options(std::move(options)), placement(std::move(placement)),
-      impl_(std::make_shared<Impl>(Impl{cache, detail::cache(cache).exec})) {}
+      impl_(std::move(impl)) {}
+
+tyloi::weights::Loader tyloi::weights::Cache::loader(const source::Source& source,
+        Loader::Options options, Loader::Placement placement) {
+    auto impl = std::make_shared<Loader::Impl>(Loader::Impl{*this, data_->moe});
+    return Loader(source, std::move(options), std::move(placement), std::move(impl));
+}
 
 void LayerPlacementConfig::prepare(int64_t layers) {
     layer_devices.assign(static_cast<size_t>(layers), primary_device());
@@ -173,41 +178,6 @@ static TensorParallelAxis infer_tensor_parallel_axis(
     return TensorParallelAxis::Output;
 }
 
-static std::vector<tyloi::TensorParallelSlice>
-plan_parallel_slices(
-        int64_t extent,
-        int64_t preferred_granularity,
-        const ParallelConfig & config,
-        const std::string & name) {
-    (void)name;
-    if (!config.enabled()) {
-        throw std::runtime_error(
-            "parallel slice planning requires at least two ranks");
-    }
-    int64_t granularity = std::max<int64_t>(
-        1, std::min<int64_t>(
-            preferred_granularity,
-            extent / static_cast<int64_t>(config.devices.size())));
-    while (granularity > 1 &&
-           extent < static_cast<int64_t>(config.devices.size()) *
-               granularity) {
-        granularity /= 2;
-    }
-    auto slices = tyloi::plan_tensor_parallel_slices(
-        extent, granularity, config.devices, config.split);
-    tyloi::validate_tensor_parallel_slices(
-        slices, extent, granularity);
-    return slices;
-}
-
-static std::vector<tyloi::TensorParallelSlice>
-plan_moe_expert_parallel_slices(
-        const ParallelConfig& parallel,
-        int64_t extent,
-        const std::string & name) {
-    return plan_parallel_slices(extent, 1, parallel, name);
-}
-
 ::tyloi::Tensor tyloi::weights::Loader::weight(const std::string & name,
         std::optional<TensorParallelAxis> axis_override,
         const std::vector<tyloi::TensorParallelSlice> *
@@ -232,8 +202,7 @@ plan_moe_expert_parallel_slices(
             int64_t extent,
             int64_t preferred) {
         if (slices_override == nullptr) {
-            return plan_parallel_slices(
-                extent, preferred, placement.tensor, name);
+            return tyloi::weights::plan_slices(extent, preferred, placement.tensor);
         }
         auto slices = *slices_override;
         tyloi::validate_tensor_parallel_slices(
@@ -651,7 +620,7 @@ std::shared_ptr<const tyloi::MfeTensor> tyloi::weights::Loader::Impl::experts(co
     MfqCudaGuard guard(placement.device);
     const auto& quant = options.quant;
     const tyloi::cuda::AllocationScope weight_memory;
-    auto& cache = tyloi::weights::detail::cache(this->cache).moe;
+    const auto& cache = moe;
     if (cache && cacheable &&
             !placement.experts.enabled() &&
             options.ranges) {
@@ -719,8 +688,7 @@ std::shared_ptr<const tyloi::MfeTensor> tyloi::weights::Loader::Impl::experts(co
                 tyloi::fp8sq::is_dtype(pool.dtype);
         });
     if (placement.experts.enabled()) {
-        auto slices = plan_moe_expert_parallel_slices(
-            placement.experts, cpu.n_experts, name);
+        auto slices = tyloi::weights::plan_slices(cpu.n_experts, 1, placement.experts);
         auto result = std::make_shared<tyloi::MfeTensor>();
         result->n_experts = cpu.n_experts;
         result->out_per_expert =
@@ -777,13 +745,13 @@ std::shared_ptr<::tyloi::MfeTensor> load_mfe_cpu_offloaded(
 
 namespace tyloi::weights {
 bool Cache::needs_finalize() const {
-    const auto& moe = detail::cache(*this).moe;
+    const auto& moe = data_->moe;
     return moe_expert_cache_has_sources(moe) && !moe_expert_cache_finalized(moe);
 }
 
 void Cache::finalize(std::size_t reserve, std::size_t kv_charge) {
     if (needs_finalize())
-        finalize_moe_expert_cache(detail::cache(*this).moe, reserve, kv_charge);
+        finalize_moe_expert_cache(data_->moe, reserve, kv_charge);
 }
 
 std::vector<::tyloi::Tensor> Loader::group(const std::vector<std::string>& names,
@@ -824,10 +792,7 @@ std::vector<::tyloi::Tensor> Loader::gate_up(const std::vector<std::string>& nam
     int layer, const std::string& role) const {
     if (tyloi::is_tq_table(source, name)) {
         MfqCudaGuard guard(placement.device);
-        auto bank = load_tq_routed_weight(impl_->cache, impl_->tq, source, name);
-        if (placement.experts.enabled())
-            bank->slices = plan_moe_expert_parallel_slices(placement.experts, bank->experts, name);
-        return bank;
+        return impl_->cache.routed_tq(source, name, placement.experts);
     }
     const auto& dtype = tyloi::require_tensor(source, name).dtype;
     if (dtype == "F32" || dtype == "F16" || dtype == "BF16") {
@@ -861,10 +826,7 @@ std::vector<::tyloi::Tensor> Loader::gate_up(const std::vector<std::string>& nam
     const auto& dtype=tyloi::require_tensor(file, name).dtype;
     if(dtype=="TQ") {
         MfqCudaGuard guard(placement.device);
-        auto weight=load_tq_routed_weight(impl_->cache,impl_->tq,file,name,experts,output,input);
-        if (placement.experts.enabled())
-            weight->slices = plan_moe_expert_parallel_slices(placement.experts, weight->experts, name);
-        return weight;
+        return impl_->cache.routed_tq(file, name, placement.experts, experts, output, input);
     }
     if (dtype=="F32" || dtype=="F16" || dtype=="BF16") {
         TYLOINFER_RUNTIME_CHECK(!placement.experts.enabled(),

@@ -3,7 +3,7 @@
 #include "engine/ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/kv_expert_loan.h"
-#include "engine/weights/cache_internal.h"
+#include "engine/weights/cache_resources.h"
 #include "env.h"
 #include "resident_allocations.h"
 #include "engine/weights/source/source.h"
@@ -36,7 +36,7 @@ bool is_memory_pressure(const std::exception& error) {
 
 } // namespace
 
-struct detail::Workspace {
+struct PrefillWorkspace {
     struct PrefillRegion {
         ::tyloi::DenseTensor storage;
         std::size_t region = 0;
@@ -47,13 +47,13 @@ struct detail::Workspace {
     std::uint64_t prefill_reclaimed_used_bytes = 0;
 };
 
-struct detail::KvOwner {
+struct KvLoanState {
     std::shared_ptr<KvExpertLoan> loan = std::make_shared<KvExpertLoan>();
     std::weak_ptr<MoeExpertCache> moe;
 };
 
 struct KvRegion::Impl {
-    std::weak_ptr<detail::KvOwner> owner;
+    std::weak_ptr<KvLoanState> owner;
     std::size_t region = 0;
 };
 
@@ -94,16 +94,13 @@ std::size_t KvRegion::bytes() const {
     return 0;
 }
 
-detail::CacheData::CacheData() = default;
-detail::CacheData::~CacheData() = default;
-Cache::Cache() : data_(std::make_unique<detail::CacheData>()) {}
+Cache::Resources::Resources() = default;
+Cache::Resources::~Resources() = default;
+Cache::Cache() : data_(std::make_unique<Resources>()) {}
 Cache::~Cache() { reset(); }
 
-detail::CacheData& detail::cache(Cache& value) { return *value.data_; }
-const detail::CacheData& detail::cache(const Cache& value) { return *value.data_; }
-
 void Cache::prepare_kv() {
-    if (!data_->kv) data_->kv = std::make_shared<detail::KvOwner>();
+    if (!data_->kv) data_->kv = std::make_shared<KvLoanState>();
     data_->kv->moe = data_->moe;
 }
 
@@ -151,7 +148,7 @@ void Cache::bind(engine::Budget& budget, Device device, bool predictor) {
     }
     if (data_->kv) {
         clear_workspace();
-        data_->workspace = std::make_unique<detail::Workspace>();
+        data_->workspace = std::make_unique<PrefillWorkspace>();
         data_->workspace->device = device.index;
     }
     bind_moe_budget(data_->moe, &budget);
