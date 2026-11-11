@@ -35,7 +35,8 @@ public:
     void preallocate();
     void commit_speculative();
     std::vector<::tyloi::Tensor> storage() const;
-    std::vector<::tyloi::DenseTensor*> graph_state();
+    /** Borrow the owning recurrent tensor handles for Graph warmup. */
+    std::vector<::tyloi::Tensor*> graph_state();
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
     bool supports_paged_text_session_state() const;

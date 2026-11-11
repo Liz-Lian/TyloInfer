@@ -72,7 +72,8 @@ public:
     std::int64_t rewind(std::int64_t accepted_suffix);
     void abort_speculative() noexcept;
 
-    std::vector<::tyloi::DenseTensor*> graph_state();
+    /** Return stable recurrent tensor members for decode graph warmup. */
+    std::vector<::tyloi::Tensor*> graph_state();
     std::vector<::tyloi::Tensor> storage() const;
 
     TextSessionStateKind text_session_state_kind() const;

@@ -81,7 +81,9 @@ class Batch {
     ::tyloi::DenseTensor logits_from_last_hidden(::tyloi::DenseTensor hidden, const Executor::Mode&);
 #endif
     std::vector<const void *> decode_state_addresses();
+    /** Clone recurrent state for the selected batch slots. */
     BatchState capture_recurrent_slots(const std::vector<std::int32_t> &slots) const;
+    /** Restore recurrent state into the selected batch slots. */
     void restore_recurrent_slots(const std::vector<std::int32_t> &slots,
                                  const BatchState &state);
 

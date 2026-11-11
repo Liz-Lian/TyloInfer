@@ -344,7 +344,7 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
             require_forward(layer != nullptr, "Qwen3.5 recurrent layer weight kind mismatch");
             auto& state_view = linear->mixer.view();
             const LinearView linear_view{
-                state_view.convolution, state_view.recurrent, state_view.transposed};
+                state_view.convolution.dense(), state_view.recurrent.dense(), state_view.transposed};
 #ifdef TYLOINFER_NATIVE_CUDA
             auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
 #endif
@@ -437,7 +437,7 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
     auto& state_view = linear_state->mixer.view();
     const auto captured = confirmed_prefix > 0 ? &linear_state->projected : nullptr;
     const LinearView linear_view{
-        state_view.convolution, state_view.recurrent, state_view.transposed};
+        state_view.convolution.dense(), state_view.recurrent.dense(), state_view.transposed};
     try {
         auto output = linear->attention.forward(
             executor.projector(options.ffn), executor.profiler(), options.linear,

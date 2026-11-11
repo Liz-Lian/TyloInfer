@@ -2,6 +2,7 @@
 #include "engine/models/session/snapshot.h"
 
 #include "engine/models/qwen35/model.h"
+#include "engine/ops.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -225,8 +226,8 @@ void State::abort_speculative() noexcept {
     speculative_confirmed = 0;
 }
 
-std::vector<::tyloi::DenseTensor*> State::graph_state() {
-    std::vector<::tyloi::DenseTensor*> result;
+std::vector<::tyloi::Tensor*> State::graph_state() {
+    std::vector<::tyloi::Tensor*> result;
     for (auto& state : layers) {
         auto* linear = std::get_if<LinearState>(&state);
         if (linear == nullptr) continue;
@@ -332,8 +333,8 @@ TextSessionState State::capture_text_session_state(
             validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention), snapshot,
                                      !layout.cpu && *transposed_);
             saved.kind = HybridBlockSessionStateKind::Recurrent;
-            saved.convolution = std::make_shared<DenseTensor>(snapshot.convolution);
-            saved.recurrent = std::make_shared<DenseTensor>(snapshot.recurrent);
+            saved.convolution = snapshot.convolution;
+            saved.recurrent = snapshot.recurrent;
             saved.transposed = snapshot.transposed;
             state.bytes += session_tensor_bytes(snapshot.convolution);
             state.bytes += session_tensor_bytes(snapshot.recurrent);
@@ -380,12 +381,11 @@ State::Restore State::prepare(const TextSessionState& state) const {
             } else {
                 if (saved.kind != HybridBlockSessionStateKind::Recurrent)
                     throw CudaSessionStateError("Qwen hybrid recurrent layer changed");
-                const auto* convolution = saved.convolution.representation<DenseTensor>();
-                const auto* recurrent = saved.recurrent.representation<DenseTensor>();
-                if (!convolution || !recurrent)
+                if (!saved.convolution.representation<DenseTensor>() ||
+                    !saved.recurrent.representation<DenseTensor>())
                     throw CudaSessionStateError("Qwen recurrent session topology changed");
                 validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention),
-                                         Recurrent::State{*convolution, *recurrent, saved.transposed},
+                                         Recurrent::State{saved.convolution, saved.recurrent, saved.transposed},
                                          !layout.cpu && *transposed_);
             }
         }
@@ -422,13 +422,13 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
             auto& linear = std::get<LinearState>(restore.layers[index]);
             linear.speculative_ffn_batches = current.speculative_ffn_batches;
             linear.speculative_projection_batches = current.speculative_projection_batches;
-            const auto& convolution = saved.convolution.dense();
-            const auto& recurrent = saved.recurrent.dense();
+            const auto& convolution = saved.convolution;
+            const auto& recurrent = saved.recurrent;
             // Candidate owns copy targets through the caller's asynchronous drain.
-            linear.mixer.view().convolution = ::tyloi::cuda::empty(
-                convolution.sizes(), convolution.options());
-            linear.mixer.view().recurrent = ::tyloi::cuda::empty(
-                recurrent.sizes(), recurrent.options());
+            linear.mixer.view().convolution = ::tyloi::ops::empty(
+                convolution.dense().sizes(), convolution.options());
+            linear.mixer.view().recurrent = ::tyloi::ops::empty(
+                recurrent.dense().sizes(), recurrent.options());
             linear.mixer.restore(Recurrent::State{convolution, recurrent, saved.transposed});
         }
     }
