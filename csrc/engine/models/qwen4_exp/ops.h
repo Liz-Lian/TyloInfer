@@ -1,6 +1,9 @@
 #pragma once
 
 #include "engine/ops.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/qsa.h"
+#endif
 #include "engine/models/causal_model.h"
 #include "engine/models/batch.h"
 #include "engine/models/metadata.h"
@@ -88,6 +91,9 @@ class Qwen4BatchDecodeGraph {
         std::vector<int64_t> capacities;
         std::size_t growth = 0;
         bool rebuild = false;
+#ifdef TYLOINFER_NATIVE_CUDA
+        std::unique_ptr<tyloi::ops::Qsa::Graph> attention;
+#endif
     };
     explicit Qwen4BatchDecodeGraph(qwen4_exp::Model&);
     ~Qwen4BatchDecodeGraph();

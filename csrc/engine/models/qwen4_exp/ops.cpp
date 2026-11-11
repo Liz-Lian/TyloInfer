@@ -6,7 +6,9 @@
 #include "engine/backends/cuda/executor/execution.h"
 #endif
 #include "engine/backends/cuda/executor/decode_graph.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/state/kv_memory.h"
+#endif
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/tq.h"
@@ -1143,8 +1145,14 @@ struct Qwen4DecodeGraph {
         for(auto& layer:request.layers)layer->retain_graph_storage=false;
     }
     bool reusable() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::Qsa::Graph::Request row;
+        for(auto [attention,state]:qsa)row.layers.emplace_back(attention,state);
+        return !failed && tyloi::ops::Qsa::Graph({std::move(row)},false).reusable();
+#else
         return !failed && !qsa.empty() && std::all_of(qsa.begin(),qsa.end(),
             [](const auto& attention){return attention.first->graph_capacity(*attention.second)>0;});
+#endif
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -1176,20 +1184,26 @@ struct Qwen4DecodeGraph {
 #endif
         const auto required=request.cache_pos+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=model.max_position_embeddings(),"Qwen4 graph exceeds context capacity");
-        if(!qsa.empty() && qsa.front().first->graph_capacity(*qsa.front().second)) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            KvMemoryManager::ensure(required);
+        tyloi::ops::Qsa::Graph::Request row;
+        for(auto [attention,state]:qsa)row.layers.emplace_back(attention,state);
+        row.position=request.cache_pos;row.maximum=model.max_position_embeddings();row.reserve=request.decode_reserve_until;
+        tyloi::ops::Qsa::Graph attention({std::move(row)},false);
+        attention.admit(tokens,kv_capacity,raw_hidden!=nullptr);
+        kv_capacity=attention.rows().front().capacity;
+        if(attention.clear_required()) {
+            co_yield tyloi::GraphPhase::ready;
+            restore_legacy();
+            attention.layout();
+            kv_capacity=attention.rows().front().capacity;
+        }
 #else
+        if(!qsa.empty() && qsa.front().first->graph_capacity(*qsa.front().second)) {
             model.execution->kv->ensure(required);
-#endif
             kv_capacity=qsa.front().first->graph_capacity(*qsa.front().second);
         }
         if(required>kv_capacity) {
-#ifdef TYLOINFER_NATIVE_CUDA
-            co_yield tyloi::GraphPhase::ready;
-#else
             model.execution->weights.finish_exchange();
-#endif
             restore_legacy();
             // Small growing chunks preserve dynamic KV allocation without
             // recapturing all MTP batch shapes at every few decode tokens.
@@ -1203,6 +1217,7 @@ struct Qwen4DecodeGraph {
                 std::cerr<<"runtime_qwen4_graph_capacity position="<<request.cache_pos
                     <<" required="<<required<<" planned="<<planned<<" capacity="<<kv_capacity<<'\n';
         }
+#endif
         auto& owner=cells[{tokens,kind,confirmed}];
         if(!owner)owner=std::make_unique<Cell>(tokens,model.config.hidden,model.layers,request.layers,
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -1250,13 +1265,11 @@ struct Qwen4DecodeGraph {
 #endif
             // Prefix restoration and eager prefill update the same KV/index
             // storage; refresh pooled keys even when this graph is already valid.
-            for(auto [attention,state]:qsa)attention->prepare_graph(*state,
 #ifdef TYLOINFER_NATIVE_CUDA
-                request.positions.defined() ? request.positions.dense() : DenseTensor{},
+            attention.prepare(0,request.positions);
 #else
-                request.positions,
+            for(auto [attention,state]:qsa)attention->prepare_graph(*state,request.positions,kv_capacity);
 #endif
-                kv_capacity);
             if(!cell.window.valid()) {
 #ifdef TYLOINFER_NATIVE_CUDA
                 cell.window.prepare();
@@ -1585,7 +1598,11 @@ tyloi::StepSequence<tyloi::models::Decoded> qwen4_exp::Model::decode(
         input.image_mask || input.suffix || input.trace || input.kv_length || input.attention_parts)
         co_return;
     const bool tq=options.routed;
-    if (!info().decode_graph || !options.routed || !KvMemoryManager::graph_supported() || state->speculative_start>=0) co_return;
+    tyloi::ops::Qsa::Graph::Request graph_row;
+    for(std::size_t i=0;i<layers.size();++i)
+        if(layers[i]->qsa)graph_row.layers.emplace_back(layers[i]->qsa.get(),state->layers[i]->qsa.get());
+    tyloi::ops::Qsa::Graph graph_policy({std::move(graph_row)},false);
+    if (!info().decode_graph || !options.routed || !graph_policy.eligible() || state->speculative_start>=0) co_return;
     const bool hidden=options.projection==tyloi::models::DecodeOptions::Projection::hidden;
     if (hidden) {
         if(state->cache_pos==0 && (!state->graph_registry || !state->graph_registry->reusable())) co_return;
@@ -1650,6 +1667,10 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     state.reuse_decode_graphs=!reuse || reuse[0]!='0';
 #ifdef TYLOINFER_NATIVE_CUDA
     const bool tq=decode_options.routed;
+    tyloi::ops::Qsa::Graph::Request graph_row;
+    for(std::size_t i=0;i<model.layers.size();++i)
+        if(model.layers[i]->qsa)graph_row.layers.emplace_back(model.layers[i]->qsa.get(),state.layers[i]->qsa.get());
+    tyloi::ops::Qsa::Graph graph_policy({std::move(graph_row)},false);
 #else
     const auto decode=model.execution->weights.decode();
     const bool tq=decode==::tyloi::weights::Cache::Decode::routed;
@@ -1658,13 +1679,17 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     if(!state.reuse_decode_graphs || (warmup && warmup[0]=='0') ||
         model.max_position_embeddings()<32 ||
 #ifdef TYLOINFER_NATIVE_CUDA
-        !model.info().decode_graph || !decode_options.routed || !KvMemoryManager::graph_supported())co_return;
+        !model.info().decode_graph || !decode_options.routed || !graph_policy.eligible() || !graph_policy.warmup_supported())co_return;
 #else
         !streamed_decode_graphs(*model.execution) || decode==::tyloi::weights::Cache::Decode::none)return;
 #endif
     for(std::size_t i=0;i<model.layers.size();++i) {
         const auto& b=*model.layers[i];
-        if(!b.ffn.tq || (b.qsa && !b.qsa->graph_capacity(*state.layers[i]->qsa)) || (b.ple && !b.ple->graph_supported()))
+        if(!b.ffn.tq ||
+#ifndef TYLOINFER_NATIVE_CUDA
+            (b.qsa && !b.qsa->graph_capacity(*state.layers[i]->qsa)) ||
+#endif
+            (b.ple && !b.ple->graph_supported()))
 #ifdef TYLOINFER_NATIVE_CUDA
             co_return;
 #else
@@ -2009,7 +2034,18 @@ std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
     auto& graph = *graph_;
     auto& model = graph.model;
 #ifdef TYLOINFER_NATIVE_CUDA
-    if (!KvMemoryManager::graph_supported(true) || !mfq_cuda_graph_capture_supported()) co_return;
+    std::vector<tyloi::ops::Qsa::Graph::Request> attention_rows;
+    attention_rows.reserve(requests.size());
+    for(auto* request:requests) {
+        tyloi::ops::Qsa::Graph::Request row;
+        row.position=request->position();row.maximum=model.max_position_embeddings();
+        for(std::size_t i=0;i<request->state_->layers.size();++i)
+            if(model.layers[i]->qsa)
+                row.layers.emplace_back(model.layers[i]->qsa.get(),request->state_->layers[i]->qsa.get());
+        attention_rows.push_back(std::move(row));
+    }
+    auto attention=std::make_unique<tyloi::ops::Qsa::Graph>(std::move(attention_rows),true);
+    if (!attention->eligible()) co_return;
 #else
     if (model.execution->offload || !mfq_cuda_graph_capture_supported()) return {};
 #endif
@@ -2034,18 +2070,14 @@ std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
 #endif
     const auto batch = static_cast<int64_t>(requests.size());
 #ifdef TYLOINFER_NATIVE_CUDA
-    {
+    attention->admit();
 #else
     if(model.execution->kv) {
-#endif
         int64_t required=0;
         for(auto* request:requests)required=std::max(required,request->position()+1);
-#ifdef TYLOINFER_NATIVE_CUDA
-        KvMemoryManager::ensure(required);
-#else
         model.execution->kv->ensure(required);
-#endif
     }
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope=graph.window->enter();
 #else
@@ -2081,6 +2113,17 @@ std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
     plan.rebuild = !graph.window;
 #endif
     if (plan.rebuild) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        attention->layout();
+        for(const auto& row:attention->rows()) {
+            plan.capacities.push_back(row.capacity);
+            plan.growth+=row.growth;
+        }
+        for(auto* request:requests) for(std::size_t i=0;i<request->state_->layers.size();++i) {
+            const auto& weights=*model.layers[i];
+            if(weights.gdn)plan.growth+=weights.gdn->request_cache_growth_bytes(request->state_->layers[i]->gdn);
+        }
+#else
         for (auto* request : requests) {
             const auto maximum = model.max_position_embeddings();
             const auto required = request->position() + 1;
@@ -2109,8 +2152,10 @@ std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
                 if (weights.gdn) plan.growth += weights.gdn->request_cache_growth_bytes(state.gdn);
             }
         }
+#endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA
+    plan.attention=std::move(attention);
     co_yield std::move(plan);
 #else
     return plan;
@@ -2140,6 +2185,9 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
         graph.ple.resize(batch);
         for (int64_t row = 0; row < batch; ++row) {
             auto& state = *requests[row]->state_;
+#ifdef TYLOINFER_NATIVE_CUDA
+            std::size_t qsa_index=0;
+#endif
             graph.positions.push_back(::tyloi::cuda::empty({1},ids.options()));
             graph.cache_positions.push_back(::tyloi::cuda::empty({1},ids.options()));
             graph.ple[row].resize(state.layers.size());
@@ -2147,7 +2195,12 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                 const auto& weights = *model.layers[i];
                 auto& layer = *state.layers[i];
                 if (weights.gdn) weights.gdn->initialize_request_cache(layer.gdn);
-                if (weights.qsa) weights.qsa->prepare_graph(*layer.qsa,state.positions,graph.capacities[row]);
+                if (weights.qsa)
+#ifdef TYLOINFER_NATIVE_CUDA
+                    plan.attention->prepare(std::size_t(row),qsa_index++,state.positions);
+#else
+                    weights.qsa->prepare_graph(*layer.qsa,state.positions,graph.capacities[row]);
+#endif
                 if (weights.ple) graph.ple[row][i] = weights.ple->graph_stage(layer.ple,1,ids.device());
             }
         }

@@ -150,12 +150,11 @@ struct SharedState {
                                           [](const DenseTensor &value) { return value.defined(); }),
                           "DeepSeek-V4.1 DSpark target layers were not fully captured");
 #ifdef TYLOINFER_NATIVE_CUDA
-        MfqCudaGuard guard(primary);
-        std::vector<DenseTensor> values;
+        std::vector<tyloi::Tensor> values;
         values.reserve(dspark_target_hiddens.size());
         for (const auto& hidden : dspark_target_hiddens)
-            values.push_back(tyloi::ops::copy(hidden, ::tyloi::Device(::tyloi::kCUDA, primary)).dense());
-        return values.size() == 1 ? values.front() : ::tyloi::cuda::cat(values, -1).contiguous();
+            values.push_back(tyloi::ops::copy(hidden, ::tyloi::Device(::tyloi::kCUDA, primary)));
+        return values.size() == 1 ? values.front().dense() : tyloi::ops::cat(values, -1).dense();
 #else
         (void)primary;
         return dspark_target_hiddens.size() == 1

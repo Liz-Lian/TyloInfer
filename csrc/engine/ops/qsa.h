@@ -46,6 +46,46 @@ public:
         friend class Qsa;
     };
 
+    /** Plan and prepare graph cache layouts for transient request states. */
+    class Graph {
+    public:
+        /** Describe one request and its attention layers in execution order. */
+        struct Request {
+            std::vector<std::pair<const Qsa*, State*>> layers;
+            std::int64_t position = 0, maximum = 0, reserve = 0;
+        };
+        /** Describe the planned cache capacity and admission growth for a request. */
+        struct Row { std::int64_t capacity = 0; std::size_t growth = 0; };
+        /** Borrow the supplied operators and states for this plan's lifetime. */
+        Graph(std::vector<Request> requests, bool independent);
+        ~Graph();
+        Graph(Graph&&) noexcept;
+        Graph& operator=(Graph&&) noexcept;
+        Graph(const Graph&) = delete;
+        Graph& operator=(const Graph&) = delete;
+        /** Report graph eligibility under the active execution policy. */
+        bool eligible() const;
+        /** Report whether a single-request graph has reusable managed backing. */
+        bool reusable() const;
+        /** Report whether startup warmup has eligible managed attention backing. */
+        bool warmup_supported() const;
+        /** Admit the window and provision shared backing at the execution boundary. */
+        void admit(std::int64_t tokens = 1, std::int64_t previous_capacity = 0, bool hidden = false);
+        /** Report whether single-request graph storage must be retired. */
+        bool clear_required() const;
+        /** Complete the numeric layout after any previous graph is retired. */
+        void layout();
+        /** Return the planned capacity and QSA growth for each request. */
+        const std::vector<Row>& rows() const;
+        /** Prepare one attention layer at its original execution boundary. */
+        void prepare(std::size_t request_index, std::size_t qsa_index, const Tensor& positions) const;
+        /** Prepare all attention layers of a request in order. */
+        void prepare(std::size_t request_index, const Tensor& positions) const;
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+
     /** Own the three numerical tensors in a session snapshot. */
     struct Snapshot { Tensor keys, values, index; };
 
