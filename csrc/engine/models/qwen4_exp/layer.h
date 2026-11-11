@@ -3,7 +3,11 @@
 // Read-only weights and configuration shared by one Qwen4 layer.
 
 #include "engine/models/qwen4_exp/model.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/ffn.h"
+#else
 #include "engine/models/qwen4_exp/moe.h"
+#endif
 #include "engine/models/qwen4_exp/config.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
 
@@ -19,7 +23,11 @@ struct Layer final {
     bool cpu_offloaded = false;
     tyloi::models::qwen4_exp::Config config;
     GatedResidual attention_gr, ffn_gr;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::FfnWeights ffn;
+#else
     Moe ffn;
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<tyloi::ops::Gdn> gdn;
 #else

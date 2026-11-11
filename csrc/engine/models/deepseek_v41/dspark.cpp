@@ -3,7 +3,9 @@
 #endif
 #include "engine/models/session/snapshot.h"
 #include "engine/weights/loader.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#endif
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "dspark.h"
 #include "engine/models/deepseek_v41/policy.h"
@@ -82,7 +84,7 @@ struct Stage {
     tyloi::Tensor attention_mhc_function, attention_mhc_scale, attention_mhc_base;
     tyloi::Tensor mlp_mhc_function, mlp_mhc_scale, mlp_mhc_base;
     tyloi::ops::TailRopeTable rope;
-    tyloi::cuda::Ffn mlp;
+    tyloi::ops::FfnWeights mlp;
 };
 #endif
 
@@ -954,8 +956,8 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                         stage.mlp_mhc_scale, stage.mlp_mhc_base, stage.mlp_norm, mhc);
                 });
                 const auto rows = mlp_mix.branch.size(1);
-                auto mlp = stage.mlp.forward(mlp_mix.branch.dense().reshape({-1, config.hidden}),
-                    draft_ids.narrow(1, 0, rows)).reshape({state.batch, rows, config.hidden});
+                auto mlp = tyloi::ops::ffn(stage.mlp, mlp_mix.branch.dense().reshape({-1, config.hidden}),
+                    draft_ids.narrow(1, 0, rows)).dense().reshape({state.batch, rows, config.hidden});
                 auto result = tyloi::ops::measure("deepseek_v41.dspark.mhc.mlp.expand", [&] {
                     return tyloi::ops::mhc_expand(mlp, after_attention.narrow(1, 0, rows), mlp_mix).dense();
                 });
@@ -965,20 +967,11 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 auto attention_mix = stage.collapse(
                             hidden.narrow(1, 0, physical_width),
                             previous_pre.narrow(1, 0, physical_width),
-#ifdef TYLOINFER_NATIVE_CUDA
                             stage.attention_mhc_function, stage.attention_mhc_scale,
                             stage.attention_mhc_base, stage.attention_norm,
-#else
-                            stage.attention_mhc_function, stage.attention_mhc_scale,
-                            stage.attention_mhc_base, stage.attention_norm,
-#endif
                             "deepseek_v41.dspark.mhc.attention.collapse");
                 const auto attended = attention(state, attention_mix.branch, stage,
-#ifdef TYLOINFER_NATIVE_CUDA
-                    state.rings[index].dense());
-#else
                     state.rings[index]);
-#endif
                 auto after_attention = stage.expand(
                     attended, hidden.narrow(1, 0, attended.size(1)), attention_mix,
                     "deepseek_v41.dspark.mhc.attention.expand");
@@ -986,25 +979,15 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 auto mlp_mix = stage.collapse(
                     after_attention.narrow(1, 0, mlp_rows),
                     attention_mix.next_pre.narrow(1, 0, mlp_rows),
-#ifdef TYLOINFER_NATIVE_CUDA
                     stage.mlp_mhc_function, stage.mlp_mhc_scale, stage.mlp_mhc_base,
                     stage.mlp_norm,
-#else
-                    stage.mlp_mhc_function, stage.mlp_mhc_scale, stage.mlp_mhc_base,
-                    stage.mlp_norm,
-#endif
                     "deepseek_v41.dspark.mhc.mlp.collapse");
                 const auto rows = mlp_mix.branch.size(1);
                 auto mlp = [&] {
-#ifdef TYLOINFER_NATIVE_CUDA
-                        return stage.mlp.forward(mlp_mix.branch.reshape({-1, config.hidden}),
-                                     draft_ids.narrow(1, 0, rows))
-#else
                         auto executor = execution->executor().fork(model_parallel_primary_device(execution->config));
                         return stage.mlp.forward(mlp_mix.branch.reshape({-1, config.hidden}), *executor,
                                      execution->executor().forward_mode(execution->config.layer_placement.primary_device()).ffn,
                                      draft_ids.narrow(1, 0, rows))
-#endif
                             .reshape({state.batch, rows, config.hidden});
                 }();
                 auto result = stage.expand(mlp, after_attention.narrow(1, 0, rows), mlp_mix,

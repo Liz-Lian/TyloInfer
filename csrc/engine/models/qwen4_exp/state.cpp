@@ -355,7 +355,6 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
     for (std::size_t i=0; i<model_.layers.size(); ++i) {
         const auto& weights=*model_.layers[i];
         auto& layer=*layers[i];
-        MfqCudaGuard guard(weights.cuda_device);
         if (weights.gdn) {
             layer.gdn.saved_conv=tyloi::ops::clone(layer.gdn.conv);
             layer.gdn.saved_state=tyloi::ops::clone(layer.gdn.recurrent);

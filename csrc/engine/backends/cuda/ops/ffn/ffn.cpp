@@ -1,4 +1,5 @@
 #include "ffn.h"
+#include "engine/ops/ffn.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -43,7 +44,8 @@ std::shared_ptr<const ::tyloi::MfeTensor> mfe_runtime(const ::tyloi::Tensor& wei
     return std::dynamic_pointer_cast<const ::tyloi::MfeTensor>(weight.implementation());
 }
 
-bool uses_expert_cache(const Ffn& f) {
+template<class Weights>
+bool uses_expert_cache(const Weights& f) {
     if (!f.is_moe) return false;
     if (f.moe_split_gate_up)
         return weights::cached(f.moe_gate) || weights::cached(f.moe_up) ||
@@ -51,7 +53,8 @@ bool uses_expert_cache(const Ffn& f) {
     return weights::cached(f.moe_gate_up) || weights::cached(f.moe_down);
 }
 
-Mlp dense(const Ffn& f, const Projector& project) {
+template<class Weights>
+Mlp dense(const Weights& f, const Projector& project) {
     TYLOINFER_RUNTIME_CHECK(f.down, "FFN down projection is missing");
 #ifdef TYLOINFER_NATIVE_CUDA
     return {project.group(f.gate_up), f.down, f.activation, f.geglu, f.swiglu_limit};
@@ -85,11 +88,11 @@ DenseTensor local(const Mlp& mlp, DenseTensor x, Executor& executor, const Proje
 
 } // namespace
 
-DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const FfnMode& mode_,
+template<class Weights>
+DenseTensor ffn_forward_experts(const Weights& f, DenseTensor x, Executor& executor, const FfnMode& mode_,
                             const Projector& project_, const MoeRoutePlan& route,
-                            DenseTensor route_weights) const {
+                            DenseTensor route_weights) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    const auto& f = *this;
     const auto moe_gate_up = mfe_runtime(f.moe_gate_up);
     const auto moe_down = mfe_runtime(f.moe_down);
     auto& stats = executor.routes();
@@ -169,11 +172,11 @@ DenseTensor Ffn::forward_experts(DenseTensor x, Executor& executor, const FfnMod
 #endif
 }
 
-DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& mode_,
+template<class Weights>
+DenseTensor ffn_forward_impl(const Weights& f, DenseTensor x, Executor& executor, const FfnMode& mode_,
                          const Projector& project_, std::optional<DenseTensor> input_ids,
                          bool allow_important_neurons,
-                         std::optional<DenseTensor> router_bias) const {
-    const auto& f = *this;
+                         std::optional<DenseTensor> router_bias) {
     const auto moe_gate = mfe_runtime(f.moe_gate);
     const auto moe_up = mfe_runtime(f.moe_up);
     const auto moe_gate_up = mfe_runtime(f.moe_gate_up);
@@ -208,7 +211,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
                         "FP32-output IN diagnostic requires a local dense SiLU FFN");
                     return dense(branch, project_).kld(project_, profiler, mmq_, xh);
                 }
-                return branch.forward_impl(xh, executor, mode_, project_, input_ids, false, std::nullopt);
+                return ffn_forward_impl(branch, xh, executor, mode_, project_, input_ids, false, std::nullopt);
         };
         std::vector<DenseTensor> outputs;
         const bool ran_parallel = !use_f32_down &&
@@ -258,11 +261,11 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
                     auto row_ids = input_ids.value().reshape({rows}).narrow(0, row, 1).contiguous();
                     auto bias=router_bias;
                     if(bias.has_value() && bias->dim()==2)bias=bias->narrow(0,row,1);
-                    outputs.push_back(forward_impl(row_input, executor, mode_, project_, row_ids, false, bias));
+                    outputs.push_back(ffn_forward_impl(f, row_input, executor, mode_, project_, row_ids, false, bias));
                 } else {
                     auto bias=router_bias;
                     if(bias.has_value() && bias->dim()==2)bias=bias->narrow(0,row,1);
-                    outputs.push_back(forward_impl(row_input, executor, mode_, project_, std::nullopt, false, bias));
+                    outputs.push_back(ffn_forward_impl(f, row_input, executor, mode_, project_, std::nullopt, false, bias));
                 }
             }
             return ::tyloi::cuda::cat(outputs, 0).reshape(xh.sizes());
@@ -394,7 +397,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
             }
             auto shared_output = profiler.measure(
                 "moe.shared", [&]() {
-                    return f.shared->forward_impl(xf, executor, mode_, project_,
+                    return ffn_forward_impl(*f.shared, xf, executor, mode_, project_,
                                                   std::nullopt, true, std::nullopt);
                 });
             if (!f.moe_split_gate_up && !f.moe_shared_ungated) {
@@ -561,7 +564,7 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
             }
             else if (sharded_experts) {
                 auto result = profiler.measure("moe.sharded_experts", [&] {
-                    return forward_experts(routed_input, executor, mode_, project_, route,
+                    return ffn_forward_experts(f, routed_input, executor, mode_, project_, route,
                                            selected.at(1));
                 });
                 if (latent_routed && result.dim() == 3)
@@ -719,6 +722,20 @@ DenseTensor Ffn::forward_impl(DenseTensor x, Executor& executor, const FfnMode& 
     return local(*mlp, xh, executor, project_);
 }
 
+template<class Weights>
+DenseTensor ffn_run(const Weights& f, DenseTensor x, Executor& executor, const FfnMode& mode,
+                    std::optional<DenseTensor> input_ids, std::optional<DenseTensor> router_bias) {
+    if (router_bias.has_value()) {
+        const auto& bias = router_bias.value();
+        TYLOINFER_RUNTIME_CHECK(f.is_moe && !f.moe_hash_ids && f.moe_router && bias.defined() &&
+            ((bias.dim()==1 && bias.size(0)==f.moe_router.size(0)) ||
+             (bias.dim()==2 && bias.size(0)==x.numel()/x.size(-1) && bias.size(1)==f.moe_router.size(0))),
+                          "MoE router correction bias shape mismatch");
+    }
+    const auto project = executor.projector(mode);
+    return ffn_forward_impl(f, std::move(x), executor, mode, project, std::move(input_ids),
+                            true, std::move(router_bias));
+}
 #ifdef TYLOINFER_NATIVE_CUDA
 DenseTensor Ffn::forward(DenseTensor x, std::optional<DenseTensor> input_ids,
                     std::optional<DenseTensor> router_bias) const {
@@ -729,17 +746,71 @@ DenseTensor Ffn::forward(DenseTensor x, Executor& executor, const FfnMode& mode,
                     std::optional<DenseTensor> input_ids,
                     std::optional<DenseTensor> router_bias) const {
 #endif
-    const auto& f = *this;
-    if (router_bias.has_value()) {
-        const auto& bias = router_bias.value();
-        TYLOINFER_RUNTIME_CHECK(f.is_moe && !f.moe_hash_ids && f.moe_router && bias.defined() &&
-            ((bias.dim()==1 && bias.size(0)==f.moe_router.size(0)) ||
-             (bias.dim()==2 && bias.size(0)==x.numel()/x.size(-1) && bias.size(1)==f.moe_router.size(0))),
-                          "MoE router correction bias shape mismatch");
-    }
-    const auto project = executor.projector(mode);
-    return forward_impl(std::move(x), executor, mode, project, std::move(input_ids),
-                        true, std::move(router_bias));
+    return ffn_run(*this, std::move(x), executor, mode, std::move(input_ids), std::move(router_bias));
 }
 
 } // namespace tyloi::cuda
+
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace tyloi::ops {
+namespace {
+DenseTensor qwen_router(const DenseTensor& source, const Tensor& router, std::int64_t rows) {
+    if (rows<=0 || source.size(0)<=rows) return ops::project(source,router).dense();
+    DenseTensor output;
+    for (std::int64_t begin=0;begin<source.size(0);begin+=rows) {
+        const auto count=std::min<std::int64_t>(rows,source.size(0)-begin);
+        auto part=ops::project(source.narrow(0,begin,count),router).dense();
+        if (!output.defined()) {
+            auto shape=part.sizes().vec();shape[0]=source.size(0);
+            output=cuda::empty(shape,part.options());
+        }
+        output.narrow(0,begin,count).copy_(part);
+    }
+    return output;
+}
+DenseTensor qwen_ffn(const FfnWeights& f, const DenseTensor& x, std::int64_t rows) {
+    auto source=x.reshape({-1,f.qwen_hidden}).to(kFloat16);
+    auto selected=moe_topk_cuda(qwen_router(source,f.moe_router,rows).contiguous(),f.moe_top_k,
+        f.moe_use_sigmoid,f.moe_use_sqrt_softplus,f.moe_normalize,f.moe_delayed_softmax,
+        mfq_nullopt,1e-20,f.moe_router_scale);
+    const std::array<Tensor,3> shared{f.shared->gate_up[0],f.shared->gate_up[1],f.shared->down};
+    return ops::moe(source,selected[0],selected[1],f.gate_up,f.down,shared,
+        f.moe_shared_gate,f.qwen_moe_width,rows).dense().reshape(x.sizes());
+}
+std::optional<DenseTensor> optional_dense(const Tensor& value) {
+    if (!value.defined()) return std::nullopt;
+    if (!value.representation<DenseTensor>()) throw std::invalid_argument("FFN input must be dense");
+    return value.dense();
+}
+}
+FfnWeights qwen4_ffn_weights(FfnWeights weights) {
+    TYLOINFER_RUNTIME_CHECK(weights.shared && weights.shared->gate_up.size()==2 &&
+        weights.shared->gate_up[0] && weights.shared->gate_up[1] && weights.shared->down && weights.moe_shared_gate,
+        "Qwen shared expert requires projection weights");
+    auto banks=tq_banks(weights.gate_up.empty()?Tensor{}:weights.gate_up.front(),
+        weights.gate_up.empty()?Tensor{}:weights.gate_up.back(),weights.down);
+    if (banks.gate || banks.up || banks.down) {
+        TYLOINFER_RUNTIME_CHECK(weights.gate_up.size()==2 && weights.down && banks.gate && banks.up && banks.down,
+            "TQ MoE requires separate Gate, Up and Down banks");
+        weights.qwen_tq=true;
+    } else weights.qwen_tq=false;
+    weights.policy=FfnPolicy::qwen4;
+    return weights;
+}
+Tensor ffn(const FfnWeights& weights, const Tensor& input, const Tensor& ids,
+        const Tensor& router_bias, std::int64_t projection_rows) {
+    Tensor result{DenseTensor{}};
+    auto& executor=cuda::Executor::current();
+    const auto& source=input.dense();
+    std::optional<MfqCudaGuard> device_guard;
+    if (source.is_cuda()) device_guard.emplace(source.device());
+    if (weights.policy==FfnPolicy::qwen4) {
+        result.dense()=qwen_ffn(weights,source,projection_rows);
+    } else {
+        result.dense()=cuda::ffn_run(weights,source,executor,cuda::Executor::current_ffn(),
+            optional_dense(ids),optional_dense(router_bias));
+    }
+    return result;
+}
+} // namespace tyloi::ops
+#endif

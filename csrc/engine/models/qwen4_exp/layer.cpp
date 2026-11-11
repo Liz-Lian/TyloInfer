@@ -43,7 +43,11 @@ DenseTensor forward(const Layer& weights, LayerState& request,
         });
     attention_output = {};
     auto ffn_output = measure("prefill.ffn", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return tyloi::ops::ffn(weights.ffn,ffn_input).dense();
+#else
         return weights.ffn.forward(ffn_input);
+#endif
     });
     return measure("prefill.gr_ffn_post", [&] {
         return weights.ffn_gr.post(ffn_output, ffn_residual, ffn_gate);

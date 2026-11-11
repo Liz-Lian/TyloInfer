@@ -5,6 +5,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/kernels/ple_fused.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -60,6 +61,8 @@ void Ple::rollback(State& state, std::int64_t keep) const {
 }
 void Ple::checkpoint(State& state) const {
     TYLOINFER_RUNTIME_CHECK(!state.saved && state.conv.defined(), "PLE checkpoint requires committed convolution state");
+    std::optional<MfqCudaGuard> guard;
+    if (state.conv.device().is_cuda()) guard.emplace(state.conv.device());
     Tensor saved{DenseTensor{}};
     saved.dense() = state.conv.dense().clone();
     state.saved_conv = std::move(saved);

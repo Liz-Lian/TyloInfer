@@ -8,6 +8,7 @@
 
 namespace tyloi::cuda::qwen4_exp {
 
+#ifndef TYLOINFER_NATIVE_CUDA
 class Moe {
   public:
     tyloi::models::qwen4_exp::Config config{};
@@ -23,5 +24,6 @@ class Moe {
         const tyloi::models::qwen4_exp::Config&);
     ::tyloi::DenseTensor forward(const ::tyloi::DenseTensor&) const;
 };
+#endif
 
 } // namespace tyloi::cuda::qwen4_exp

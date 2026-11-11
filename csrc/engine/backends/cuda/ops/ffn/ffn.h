@@ -60,16 +60,6 @@ public:
         std::optional<::tyloi::DenseTensor> router_bias = std::nullopt) const;
 #endif
 
-private:
-    ::tyloi::DenseTensor forward_impl(
-        ::tyloi::DenseTensor input, Executor& executor, const FfnMode& mode,
-        const Projector& project, std::optional<::tyloi::DenseTensor> input_ids,
-        bool allow_important_neurons,
-        std::optional<::tyloi::DenseTensor> router_bias) const;
-    ::tyloi::DenseTensor forward_experts(
-        ::tyloi::DenseTensor input, Executor& executor, const FfnMode& mode,
-        const Projector& project, const MoeRoutePlan& route,
-        ::tyloi::DenseTensor route_weights) const;
 };
 
 } // namespace tyloi::cuda

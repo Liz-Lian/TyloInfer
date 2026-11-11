@@ -195,8 +195,23 @@ struct LayerLoader : tyloi::weights::Loader {
     }
     auto moe(std::vector<Linear> gate_up, Linear down, Linear router,
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::FfnWeights weights;
+        weights.gate_up=std::move(gate_up); weights.down=std::move(down);
+        weights.moe_router=std::move(router); weights.moe_shared_gate=std::move(shared_gate);
+        weights.shared=std::make_unique<tyloi::ops::FfnWeights>();
+        weights.shared->gate_up={std::move(sg),std::move(su)}; weights.shared->down=std::move(sd);
+        const auto routing=c.routing();
+        weights.moe_top_k=c.topk; weights.moe_use_sigmoid=routing.activation==tyloi::ops::RouterActivation::sigmoid;
+        weights.moe_use_sqrt_softplus=routing.activation==tyloi::ops::RouterActivation::sqrt_softplus;
+        weights.moe_normalize=routing.normalize; weights.moe_delayed_softmax=routing.delayed_softmax;
+        weights.moe_router_scale=routing.scale; weights.policy=tyloi::ops::FfnPolicy::qwen4;
+        weights.qwen_hidden=c.hidden; weights.qwen_moe_width=c.moe_width;
+        return tyloi::ops::qwen4_ffn_weights(std::move(weights));
+#else
         return Moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
                    std::move(sg), std::move(su), std::move(sd), c);
+#endif
     }
     auto embedding(const std::string &name) const {
 #ifdef TYLOINFER_NATIVE_CUDA

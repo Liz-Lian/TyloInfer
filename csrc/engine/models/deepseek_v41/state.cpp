@@ -354,7 +354,9 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     layers.reserve(model_.blocks.size());
     for(const auto& item:model_.blocks) {
         const Block& block=*item;
+#ifndef TYLOINFER_NATIVE_CUDA
         MfqCudaGuard guard(block.cuda_device);
+#endif
         const auto& entry=shared->layers.at(static_cast<std::size_t>(block.layer));
 #ifdef TYLOINFER_NATIVE_CUDA
         const auto& source=entry.attention;
@@ -436,7 +438,6 @@ public:
         const auto& saved=std::get<tyloi::models::deepseek_v41::Snapshot>(snapshot_.payload);
         for(std::size_t i=0;i<saved.blocks.size();++i) {
             const auto& b=*owner_.model_.blocks[i];
-            MfqCudaGuard guard(b.cuda_device);
             auto& current=layers_.at(static_cast<std::size_t>(b.layer));
             auto& layer=current.attention;
             const auto& entry=saved.blocks[i];

@@ -6,12 +6,13 @@
 #endif
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
-#include "engine/backends/cuda/ops/ffn/ffn.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #include "engine/ops/csa.h"
+#include "engine/ops/ffn.h"
 #include "engine/ops/mhc.h"
 #else
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/rope/tail.h"
 #endif
 #include "engine/models/deepseek_v41/causal_lm.h"
@@ -472,7 +473,11 @@ struct Block final {
 #else
     std::unique_ptr<tyloi::ops::Csa> attention;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::FfnWeights mlp;
+#else
     tyloi::cuda::Ffn mlp;
+#endif
     Parameter vision_router_bias;
 #ifndef TYLOINFER_NATIVE_CUDA
     TailRope rope;
@@ -1193,8 +1198,8 @@ struct Block final {
                 auto bias=::tyloi::cuda::where(shared.routing_mask,vision_router_bias,mlp.moe_router_bias.dense()).contiguous();
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-                return mlp.forward(
-                    value.reshape({-1,config.hidden}), ids, bias)
+                return tyloi::ops::ffn(mlp,
+                    value.reshape({-1,config.hidden}), ids, bias).dense()
 #else
                 auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
                 return mlp.forward(
@@ -1203,8 +1208,8 @@ struct Block final {
                     .reshape({batch,tokens,config.hidden});
             }
 #ifdef TYLOINFER_NATIVE_CUDA
-            return mlp.forward(
-                    value.reshape({-1, config.hidden}), ids)
+            return tyloi::ops::ffn(mlp,
+                    value.reshape({-1, config.hidden}), ids).dense()
 #else
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return mlp.forward(
@@ -1225,7 +1230,12 @@ struct Block final {
     }
 };
 
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Load one DeepSeek routed FFN with its numerical policy. */
+tyloi::ops::FfnWeights load_moe_at(const tyloi::weights::Loader& weights,
+#else
 tyloi::cuda::Ffn load_moe_at(const tyloi::weights::Loader& weights,
+#endif
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 

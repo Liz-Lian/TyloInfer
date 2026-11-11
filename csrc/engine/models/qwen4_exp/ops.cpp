@@ -159,6 +159,7 @@ namespace tyloi::cuda::qwen4_exp {
 using Config = tyloi::models::qwen4_exp::Config;
 
 // Preserve router and shared-expert arithmetic while regrouping routed experts.
+#ifndef TYLOINFER_NATIVE_CUDA
 static thread_local int64_t qwen_prefill_reference_rows=0;
 struct QwenPrefillReferenceRowsScope {
     int64_t previous;
@@ -183,6 +184,7 @@ static DenseTensor qwen_prefill_preserve_rows(const DenseTensor& source,Projecti
     }
     return output;
 }
+#endif
 
 #ifndef TYLOINFER_NATIVE_CUDA
 // This scope is active only while an entire GDN layer is evaluated. Retain
@@ -301,6 +303,7 @@ DenseTensor Gdn::project_output(const DenseTensor& source) const {
 
 
 
+#ifndef TYLOINFER_NATIVE_CUDA
 Moe::Moe(std::vector<Linear> gate_up, Linear down, Linear router,
          Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c)
     : config(c), gate_up(std::move(gate_up)), down(std::move(down)), router(std::move(router)),
@@ -332,6 +335,7 @@ DenseTensor Moe::forward(const DenseTensor &x) const {
                            shared_gate, c.moe_width, qwen_prefill_reference_rows)
         .dense().reshape(x.sizes());
 }
+#endif
 
 
 PredictorState::PredictorState(const Predictor& owner)
@@ -549,7 +553,11 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(tyloi::models::MtpState&
             x=block.attention_gr.post(attention_output,attention_residual,attention_gate);
             attention_output={};
             auto [ffn_input,ffn_residual,ffn_gate]=block.ffn_gr.pre(x);
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto ffn_output=tyloi::ops::ffn(block.ffn,ffn_input).dense();
+#else
             auto ffn_output=block.ffn.forward(ffn_input);
+#endif
             multi = block.ffn_gr.post(ffn_output,ffn_residual,ffn_gate);
         }
     }
@@ -1368,7 +1376,11 @@ struct Qwen4DecodeGraph {
                             auto ffn_result=graph_attention(b,layer_state,std::move(hidden),cell.ids,cell.positions,
                                 cell.cache_positions,rows,layer,confirmed,confirmed?&cell.checkpoints[layer]:nullptr,pending_residual);
                             const auto& ffn_input=ffn_result.mixed;
+#ifdef TYLOINFER_NATIVE_CUDA
+                            auto ffn_output=tyloi::ops::ffn(b.ffn,ffn_input).dense();
+#else
                             auto ffn_output=b.ffn.forward(ffn_input);
+#endif
                             if(defer) {
                                 next_residual=std::move(ffn_result);
                                 hidden=std::move(ffn_output);
@@ -1625,7 +1637,7 @@ tyloi::StepSequence<tyloi::models::Decoded> qwen4_exp::Model::decode(
     if(!hidden && input.raw_hidden && ids.size(1)!=1) co_return;
     if(tq && !tq_graph_supports_tokens(ids.size(1))) co_return;
     if(hidden || tq) for(const auto& block:layers)
-        if(!block->ffn.tq || (block->ple && !block->ple->graph_supported())) co_return;
+        if(!block->ffn.qwen_tq || (block->ple && !block->ple->graph_supported())) co_return;
     TYLOINFER_RUNTIME_CHECK(state->cache_pos+ids.size(1)<=max_position_embeddings(), "MFQ window exceeds context");
     co_yield tyloi::GraphPhase::prepare;
     if(!state->graph_registry) state->graph_registry=std::make_unique<Qwen4DecodeGraph>(*this,*state);
@@ -1694,7 +1706,12 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
 #endif
     for(std::size_t i=0;i<model.layers.size();++i) {
         const auto& b=*model.layers[i];
-        if(!b.ffn.tq ||
+        if(!b.ffn.
+#ifdef TYLOINFER_NATIVE_CUDA
+            qwen_tq ||
+#else
+            tq ||
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
             (b.qsa && !b.qsa->graph_capacity(*state.layers[i]->qsa)) ||
 #endif
@@ -1855,12 +1872,20 @@ namespace tyloi::cuda {
 Model::Model(Model&&) noexcept = default;
 Model& Model::operator=(Model&&) noexcept = default;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+static ::tyloi::DenseTensor batch_ffn(const tyloi::ops::FfnWeights& ffn,
+#else
 static ::tyloi::DenseTensor batch_ffn(const qwen4_exp::Moe& ffn,
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
                                       CudaExecutionContext& execution,
 #endif
                                       const ::tyloi::DenseTensor& input) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if(input.size(0)<=8)return tyloi::ops::ffn(ffn,input).dense();
+#else
     if(input.size(0)<=8)return ffn.forward(input);
+#endif
     const auto option=::tyloi::cuda::options::continuous_ffn_tile();
     const int64_t rows=option?*option:8;
     TYLOINFER_RUNTIME_CHECK(rows==8 || rows==16,"continuous FFN tile must be 8 or 16 rows");
@@ -1892,7 +1917,11 @@ static ::tyloi::DenseTensor batch_ffn(const qwen4_exp::Moe& ffn,
 #ifndef TYLOINFER_NATIVE_CUDA
         mode.tile=int(start/rows);
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        outputs.push_back(tyloi::ops::ffn(ffn,input.narrow(0,start,std::min(rows,input.size(0)-start))).dense());
+#else
         outputs.push_back(ffn.forward(input.narrow(0,start,std::min(rows,input.size(0)-start))));
+#endif
     }
     return ::tyloi::cuda::cat(outputs,0);
 }
@@ -2573,8 +2602,13 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             measure("prefill.gr_ffn_pre",[&] {
                 return block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
             });
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto ffn_output=packed ? tyloi::ops::ffn(block.ffn,ffn_mix.mixed).dense() :
+            measure("prefill.ffn",[&] { return tyloi::ops::ffn(block.ffn,ffn_mix.mixed).dense(); });
+#else
         auto ffn_output=packed ? block.ffn.forward(ffn_mix.mixed) :
             measure("prefill.ffn",[&] { return block.ffn.forward(ffn_mix.mixed); });
+#endif
         hidden=packed ? block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate) :
             measure("prefill.gr_ffn_post",[&] {
                 return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
@@ -3001,7 +3035,11 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #else
     const bool bulk_gdn=bulk_gr && bulk_gdn_option && *bulk_gdn_option;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto reference_rows=batch_experts?std::min<int64_t>(1024,compute_chunk):0;
+#else
     const qwen4_exp::QwenPrefillReferenceRowsScope reference_rows(batch_experts?std::min<int64_t>(1024,compute_chunk):0);
+#endif
     const auto batch_tokens_option=::tyloi::cuda::options::moe_prefill_expert_batch_tokens();
     const int64_t batch_tokens=batch_tokens_option?*batch_tokens_option:8192;
     const auto append_tail_option=::tyloi::cuda::options::moe_prefill_append_tail();
@@ -3148,7 +3186,7 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #ifdef TYLOINFER_NATIVE_CUDA
             DenseTensor ffn_output;
             if(expert_batch_count(tokens)==tokens) {
-                ffn_output=profile_measure("prefill.ffn",[&] { return qwen_block.ffn.forward(ffn_inputs); });
+                ffn_output=profile_measure("prefill.ffn",[&] { return tyloi::ops::ffn(qwen_block.ffn,ffn_inputs,{}, {},reference_rows).dense(); });
             } else {
                 for(int64_t begin=0;begin<tokens;) {
                     co_yield tyloi::StepState::advanced;
@@ -3156,7 +3194,7 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
                     const auto tail=tokens-begin-count;
                     if(tail>0 && tail<=8)count-=16-tail;
                     auto part=profile_measure("prefill.ffn",[&] {
-                        return qwen_block.ffn.forward(ffn_inputs.narrow(1,begin,count));
+                        return tyloi::ops::ffn(qwen_block.ffn,ffn_inputs.narrow(1,begin,count),{}, {},reference_rows).dense();
                     });
                     if(!ffn_output.defined()) {
                         auto shape=part.sizes().vec();shape[1]=tokens;
@@ -3196,7 +3234,11 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
                 for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
                     const auto count=std::min(compute_chunk,tokens-begin);
                     expected.narrow(1,begin,count).copy_(
+#ifdef TYLOINFER_NATIVE_CUDA
+                        tyloi::ops::ffn(qwen_block.ffn,ffn_inputs.narrow(1,begin,count),{}, {},reference_rows).dense());
+#else
                         qwen_block.ffn.forward(ffn_inputs.narrow(1,begin,count)));
+#endif
                 }
                 auto a=ffn_output.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
                 auto b=expected.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
