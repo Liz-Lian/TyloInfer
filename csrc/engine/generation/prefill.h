@@ -10,10 +10,6 @@ namespace tyloi::engine { class Budget; class InferenceOutput; }
 
 namespace tyloi::engine {
 
-/** Select the logical prefill span while preserving the compute chunk width. */
-std::int64_t prefill_span(const models::Info& info, std::int64_t tokens,
-    std::int64_t compute, bool transformed, bool retained);
-
 /** Drive a model's prefill job or its ordinary forward path with allocation reservations. */
 models::Prefill prefill(models::CausalModel& model, models::State& state, Executor& executor,
     weights::Cache& weights, Budget& budget, const models::ForwardOptions& options,

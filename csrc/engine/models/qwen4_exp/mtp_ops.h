@@ -25,6 +25,7 @@
 
 namespace tyloi::cuda {
 
+#ifndef TYLOINFER_NATIVE_CUDA
 inline bool mtp_stream_prompt_history(qwen4_exp::Model&, int64_t tokens, const char* option) {
     return tokens>16384 && (!option || option[0]!='0');
 }
@@ -35,10 +36,12 @@ inline bool mtp_host_prompt_history(qwen4_exp::Model& model, int64_t tokens) {
     return bytes+(std::size_t(32)<<20)>default_context(mfq_current_cuda_device())->available_memory();
 }
 inline bool mtp_bootstrap_before_publication(qwen4_exp::Model&, const char* option) { return !option || option[0]!='0'; }
+#endif
 template<class Mtp> bool mtp_retains_partial_target_prefix(qwen4_exp::Model& model, qwen4_exp::State& state, Mtp& mtp, int accepted) {
     if(state.speculative_prefix_retention && accepted>=0)return true;
     return mtp.retains_partial_target_prefix();
 }
+#ifndef TYLOINFER_NATIVE_CUDA
 inline std::size_t mtp_history_merge_limit(qwen4_exp::Model&) { return 128; }
 inline std::size_t mtp_history_flush_threshold(qwen4_exp::Model&, const char* option) { return !option || option[0]!='0'?4:512; }
 inline std::size_t mtp_parked_history_flush_threshold(qwen4_exp::Model&, const char* option) { return !option || option[0]!='0'?16:512; }
@@ -48,6 +51,7 @@ template<class Ops> bool mtp_cache_only_prompt_history(qwen4_exp::Model&, Ops& o
     const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(&ops.mtp);
     return (!option || option[0]!='0') && predictor && predictor->layers.size()==1;
 }
+#endif
 template<class Ops, class Tensor, class Finish>
 std::optional<Tensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops, Tensor& ids, Tensor* raw,
                                          int64_t confirmed, std::uint64_t transfer_before, const Finish& finish_profile) {
@@ -60,24 +64,33 @@ std::optional<Tensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops, Tens
             ids.data_ptr() == ops.known_ids_device.data_ptr() && ids.sizes() == ops.known_ids_device.sizes()
             ? ops.known_ids_host : Tensor{};
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::models::Input input;
+        input.ids=ids; input.host_ids=host_ids; input.raw_hidden=raw; input.confirmed=confirmed;
+        tyloi::models::DecodeOptions options;
+        options.projection=tyloi::models::DecodeOptions::Projection::hidden;
+        options.compact=ops.captured_compact_requested();
+        if(auto result=model.decode(std::move(input),ops.state,tyloi::cuda::forward_options(ops.mode),options)) {
+            ops.target_transfer_bytes=ops.weights.activity().streamed_bytes-transfer_before;
+            ops.target_maintenance=ops.target_maintenance || result->initialized;
+            ops.projected_target_hidden=result->hidden; ops.projected_target_logits=std::move(result->logits);
+            ops.projected_target_compact=std::move(result->compact);
+            ops.projected_target_greedy=std::move(result->tokens);
+            finish_profile();
+            return result->hidden;
+        }
+#else
         ::tyloi::Tensor raw_result, logits;
         if(auto hidden=qwen4_decode_graph_hidden(model,ops.state,ids,raw ? &raw_result : nullptr,confirmed,&initialized,host_ids,&logits,&ops.projected_target_greedy,ops.captured_compact_requested())) {
             ops.target_transfer_bytes=ops.weights.activity().streamed_bytes-transfer_before;
             ops.target_maintenance=ops.target_maintenance || initialized;
-#ifdef TYLOINFER_NATIVE_CUDA
-            if (raw) *raw = raw_result;
-            ops.projected_target_hidden = *hidden; ops.projected_target_logits = logits;
-            ops.projected_target_compact=qwen4_decode_graph_compact_topk(model,ops.state);
-            finish_profile();
-            return *hidden;
-#else
             if (raw) *raw = raw_result.dense();
             ops.projected_target_hidden = hidden->dense(); ops.projected_target_logits = logits.dense();
             ops.projected_target_compact=qwen4_decode_graph_compact_topk(model,ops.state).dense();
             finish_profile();
             return hidden->dense();
-#endif
         }
+#endif
     }
     return std::nullopt;
 }
@@ -86,6 +99,18 @@ template<class Ops, class Chunk, class Tensor, class Timer, class Finish>
 std::optional<typename Ops::PrefillResult> mtp_prefill(qwen4_exp::Model& model, Ops& ops, const Chunk& chunk,
                                                       Tensor& ids, Tensor& raw, Timer& timer, const Finish& finish_prefill) {
     if(!ops.transformed_prompt && ops.state.reuse_decode_graphs && ops.state.graph_registry && chunk.count<=128) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        TYLOINFER_RUNTIME_CHECK(ops.executor && ops.budget && ops.output, "staged prefill requires its execution owners");
+        ::tyloi::Tensor raw_result;
+        tyloi::models::Input input;
+        input.ids=ids; input.raw_hidden=&raw_result; input.host_raw=ops.host_prompt_history(chunk.count);
+        auto result=tyloi::engine::prefill(model,ops.state,*ops.executor,ops.weights,*ops.budget,
+            tyloi::cuda::forward_options(ops.mode),std::move(input),ops.prefill_compute_chunk,*ops.output);
+        raw=std::move(result.raw);
+        finish_prefill();
+        return typename Ops::PrefillResult{std::move(result.hidden),std::move(raw),
+            result.elapsed_ms>=0?result.elapsed_ms:timer.elapsed_ms()};
+#else
         std::vector<Tensor> hidden_rows,raw_rows;
         for(int64_t offset=0;offset<chunk.count;) {
             const auto rows=ops.state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
@@ -99,6 +124,7 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(qwen4_exp::Model& model, 
         raw=raw_rows.size()==1?std::move(raw_rows.front()):ops.concatenate(raw_rows,1);
         TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
         return typename Ops::PrefillResult{std::move(hidden),std::move(raw),timer.elapsed_ms()};
+#endif
     }
     if(!ops.transformed_prompt && qwen4_layer_major_prefill_eligible(model,ops.state,chunk.count)) {
         const bool host_history=ops.host_prompt_history(chunk.count);
@@ -138,8 +164,7 @@ void mtp_predictor_prefill(qwen4_exp::Model& model, Ops& ops, Tensor& hidden, Te
         {
 #ifdef TYLOINFER_NATIVE_CUDA
             auto resident_hidden=tyloi::ops::copy(hidden,tyloi::Device(tyloi::kCUDA,ops.mode.primary));
-            (void)predictor.evaluate(*ops.state.predictor,resident_hidden.dense(),ids.dense(),0,true,
-                                     positions ? positions.dense() : ::tyloi::DenseTensor{}, {},true);
+            predictor.prime(*ops.state.predictor,resident_hidden,ids,positions,true);
 #else
             auto resident_hidden=hidden.to(::tyloi::kCUDA);
             (void)predictor.evaluate(*ops.state.predictor,resident_hidden,ids,0,true,positions,{},true);

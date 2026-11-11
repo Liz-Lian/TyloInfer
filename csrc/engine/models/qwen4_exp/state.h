@@ -78,6 +78,10 @@ public:
     std::vector<std::pair<tyloi::Device, std::size_t>> suffix_growth(std::int64_t tokens) const override;
 #endif
     std::int64_t position() const noexcept override { return cache_pos; }
+    /** Report whether the active speculative prefix remains available. */
+    bool retains_partial_prefix(std::int64_t accepted) const noexcept override {
+        return speculative_prefix_retention && accepted >= 0;
+    }
     void advance(std::int64_t tokens) noexcept override { cache_pos += tokens; }
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
     std::vector<::tyloi::Tensor> storage() const override;

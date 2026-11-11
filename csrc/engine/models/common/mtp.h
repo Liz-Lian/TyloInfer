@@ -6,6 +6,8 @@
 #include "engine/generation/mtp/policy.h"
 #include "engine/requests/sampling.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -23,6 +25,13 @@ struct MtpStep {
 
 // Predictor weights and math use the explicit state owned by the request.
 struct Mtp {
+    /** Prompt history and priming policy expressed as execution-independent data. */
+    struct History {
+        bool stream = false, host = false, bootstrap = false, cache_only = false;
+        std::int64_t chunk = 512;
+        std::size_t merge = 0, flush = 512, parked = 512;
+        std::size_t workspace_fixed = 0, workspace_per_row = 0;
+    };
     struct Step { Tensor ids; };
     struct Context { Tensor hidden; std::int64_t position; bool seed; };
     struct Draft { Tensor ids; int depth; };
@@ -43,6 +52,18 @@ struct Mtp {
         const Tensor& previous_hidden,
         const Tensor& next_ids,
         const Tensor& positions = {}) const = 0;
+    /** Describe prompt history handling for the available device budget. */
+    virtual History history(std::int64_t, std::int64_t requested, std::size_t) const {
+        History result;
+        result.chunk = std::min<std::int64_t>(512, requested);
+        return result;
+    }
+    /** Prime predictor history, optionally retaining only its cache. */
+    virtual void prime(MtpState& state, const Tensor& hidden, const Tensor& ids,
+                       const Tensor& positions, bool cache_only) const {
+        if (cache_only) throw std::invalid_argument("cache-only predictor priming is unsupported");
+        (void)step(state, hidden, ids, positions);
+    }
     virtual void trim_cache_to(MtpState& state, int64_t position) const = 0;
     virtual bool teacher_forced_prompt_prime() const noexcept = 0;
     virtual bool target_bootstrap_decode() const noexcept = 0;

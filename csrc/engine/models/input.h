@@ -4,11 +4,21 @@
 #include "engine/ops.h"
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace tyloi::models {
+
+/** Describe a full prompt and the compute and reuse boundaries for prefill. */
+struct PrefillOptions {
+    /** Full prompt length and preferred compute quantum, in tokens. */
+    std::int64_t tokens = 0, compute = 0;
+    /** Reused prefix and the exact boundary requested for a session checkpoint. */
+    std::size_t reused = 0, stable = 0;
+    bool transformed = false, retained = false;
+};
 
 struct Input {
     using Trace = std::vector<Tensor>;
@@ -34,6 +44,8 @@ struct Input {
     bool suffix = false;
     /** Return raw prefill hidden states in host memory when requested. */
     bool host_raw = false;
+    /** Optional known host token IDs for model-owned decode prefetch and graph uploads. */
+    Tensor host_ids;
 };
 
 struct ForwardOptions {
@@ -41,6 +53,23 @@ struct ForwardOptions {
     ops::Trace* trace = nullptr;
     int trace_layer = -1;
     int primary = 0;
+};
+
+/** Select the projection required from a model-owned decode operation. */
+struct DecodeOptions {
+    enum class Projection { hidden, logits, greedy };
+    Projection projection = Projection::hidden;
+    /** Allow a reusable compact top-k projection for stochastic verification. */
+    bool compact = false;
+};
+
+/** Hold decode results, which may alias replay buffers until the next model step. */
+struct Decoded {
+    Tensor hidden, logits, compact, ids;
+    /** Greedy verification tokens copied to host memory. */
+    std::vector<std::int32_t> tokens;
+    /** Report graph preparation so generation can exclude maintenance from its policy timing. */
+    bool initialized = false;
 };
 
 /** Model-owned prefill phase boundaries and final owning outputs. */

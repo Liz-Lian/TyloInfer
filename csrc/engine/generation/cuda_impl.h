@@ -353,7 +353,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 
     bool graph_eligible() const {
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
-               info.decode_graph && mfq_cuda_graph_capture_supported() &&
+               info.decode_graph && info.graph == tyloi::models::GraphOwner::executor && mfq_cuda_graph_capture_supported() &&
                weights.graph_safe(::tyloi::weights::Cache::Graph::legacy) &&
                generation_limit >= graph_config.minimum_generation_tokens &&
                generation_limit <= graph.generated_capacity;
@@ -530,7 +530,12 @@ template <typename Model, typename State> struct CudaGenerationOps {
             sample_token_counts_add_cuda(counts, pending.contiguous());
 #endif
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (std::is_base_of_v<tyloi::models::CausalModel, Model>) {
+            if (!info.row_prefetch) return;
+#else
         if constexpr(requires {model.prefetch_token_rows(state,known_token_host);}) {
+#endif
             const auto* option=tyloi::cuda::env_lookup("TYLOINFER_DECODE_EARLY_PLE");
             if((option && option[0]=='0') || (prepared && prepared->transformed()) ||
                (output && output->stopped()))return;
@@ -543,7 +548,11 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
             known_token_host.template data_ptr<int64_t>()[0]=token;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+            if(model.prefetch(state,known_token_host)) {
+#else
             if(model.prefetch_token_rows(state,known_token_host)) {
+#endif
                 static bool reported=false;
                 if(!reported) {
                     reported=true;
@@ -705,11 +714,20 @@ template <class Model, class State, class Predictor> struct RequestOps {
         prepare_prefill_workspace(input.prompt.size()-reused);
         const auto compute_chunk=prefill_chunk(input.prompt.size()-reused);
         auto logical_chunk=compute_chunk;
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (std::derived_from<Model, tyloi::models::CausalModel> &&
+                      std::derived_from<State, tyloi::models::State>) {
+            logical_chunk=model.prefill_span(state, {static_cast<std::int64_t>(input.prompt.size()), compute_chunk, reused, stable,
+                prepared && prepared->transformed(),
+                weights.prefill_mode(input.prompt.size()-reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained});
+        }
+#else
         if constexpr(requires { prefill_span(model,state,input.prompt.size(),compute_chunk,reused,stable,false,false); }) {
             logical_chunk=prefill_span(model,state,input.prompt.size(),compute_chunk,reused,stable,
                 prepared && prepared->transformed(),
                 weights.prefill_mode(input.prompt.size()-reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
         }
+#endif
         auto graph_options = config.decode_graph;
         graph_options.enabled &= graph_allowed;
         return tyloi::engine::generate_sequence(

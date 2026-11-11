@@ -10,6 +10,7 @@
 #include "engine/models/source.h"
 #include "engine/ops.h"
 #include "engine/weights/cache.h"
+#include "engine/weights/workspace.h"
 
 #include <array>
 #include <iostream>
@@ -38,6 +39,9 @@ struct Ops : Sampling {
     InferenceOutput& output;
     ::tyloi::weights::Cache::Routes routes;
     Tensor projected_hidden, projected_logits, host_ids;
+    Tensor target_hidden, target_logits, target_compact;
+    std::vector<std::int32_t> target_tokens;
+    bool target_initialized = false;
     int32_t projected_greedy = -1;
     std::uint64_t target_transfer_bytes = 0;
     std::array<double, 6> target_profile{};
@@ -62,6 +66,19 @@ struct Ops : Sampling {
         for (const auto& [device, bytes] : growth)
             if (bytes) budget.reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
     }
+    models::Mtp::History history(std::int64_t tokens, std::int64_t requested) const {
+        const std::array<Device, 1> devices{executor.device()};
+        const auto memory = executor.memory(devices);
+        return mtp.history(tokens, requested, memory.at(0).usable);
+    }
+    bool stream_prompt_history(std::int64_t tokens) const { return history(tokens, compute_chunk).stream; }
+    bool bootstrap_before_publication() const { return history(input_ids.size(1), compute_chunk).bootstrap; }
+    std::size_t predictor_history_merge_limit() const { return history(input_ids.size(1), compute_chunk).merge; }
+    std::size_t predictor_history_flush_threshold() const { return history(input_ids.size(1), compute_chunk).flush; }
+    std::size_t predictor_parked_history_flush_threshold() const { return history(input_ids.size(1), compute_chunk).parked; }
+    std::int64_t predictor_prefill_chunk_size(std::int64_t requested) const {
+        return history(input_ids.size(1), requested).chunk;
+    }
     std::array<double, 6> costs() const {
         std::array<double, 6> result{};
         for (const auto& [name, value] : weights.metrics()) {
@@ -81,7 +98,24 @@ struct Ops : Sampling {
         reserve(state.growth(input.ids.size(1), options, input.confirmed));
         const auto before = weights.activity().streamed_bytes;
         const auto old = profiling ? costs() : std::array<double, 6>{};
-        auto result = model.forward(std::move(input), state, options);
+        target_hidden = {}; target_logits = {}; target_compact = {}; target_tokens.clear();
+        Tensor result;
+        if (info.graph == models::GraphOwner::model && !input.suffix && (!prepared || !prepared->transformed())) {
+            if (known_ids_device && input.ids.same_view(known_ids_device)) input.host_ids = known_ids_host;
+            models::DecodeOptions decode;
+            const auto& parameters = sampler().params();
+            decode.compact = !sampler().greedy() && !penalties && parameters.top_k > 0 && parameters.top_k <= 64;
+            if (auto decoded = model.decode(input, state, options, decode)) {
+                result = std::move(decoded->hidden);
+                if (!result) throw std::runtime_error("model decode returned no hidden tensor");
+                target_hidden = result;
+                target_logits = std::move(decoded->logits);
+                target_compact = std::move(decoded->compact);
+                target_tokens = std::move(decoded->tokens);
+                target_initialized = target_initialized || decoded->initialized;
+            }
+        }
+        if (!result) result = model.forward(std::move(input), state, options);
         target_transfer_bytes = weights.activity().streamed_bytes - before;
         if (!result) throw std::runtime_error("model forward returned no hidden tensor");
         if (profiling) {
@@ -104,6 +138,8 @@ struct Ops : Sampling {
         models::Input input;
         input.ids = slice(input_ids, 1, chunk.offset, chunk.count);
         input.raw_hidden = &raw;
+        const bool host_raw = history(chunk.count, compute_chunk).host;
+        input.host_raw = host_raw;
         if (prepared && prepared->transformed()) {
             if (prepared->embeddings) input.embeddings = slice(prepared->embeddings, 1, chunk.offset, chunk.count);
             if (prepared->positions) input.positions = slice(prepared->positions, -1, chunk.offset, chunk.count);
@@ -113,6 +149,8 @@ struct Ops : Sampling {
             input.image_mask = slice(prepared->image_mask, 1, chunk.offset, chunk.count);
         auto result = engine::prefill(model, state, executor, weights, budget, options,
             std::move(input), compute_chunk, output);
+        if (host_raw && result.raw && result.raw.is_cuda())
+            result.raw = ops::copy(result.raw, Device(kCPU));
         timer->stop();
         return {std::move(result.hidden), std::move(result.raw),
             result.elapsed_ms >= 0 ? result.elapsed_ms : timer->elapsed_ms()};
@@ -137,10 +175,24 @@ struct Ops : Sampling {
     }
     double predictor_prefill(Tensor hidden, Tensor ids, Tensor positions) {
         auto timer = executor.timer();
+        const auto policy = history(ids.size(1), compute_chunk);
+        reserve(mtp.growth(predictor, models::Mtp::Step{ids}));
+        ::tyloi::weights::Loan workspace(weights);
+        if (policy.cache_only && ids.size(1) > 128)
+            workspace.begin(policy.workspace_fixed + std::size_t(ids.size(1)) * policy.workspace_per_row);
         hidden = ops::copy(hidden, executor.device());
-        (void)predictor_step(std::move(hidden), std::move(ids), std::move(positions));
+        mtp.prime(predictor, hidden, ids, positions, policy.cache_only);
         timer->stop();
+        workspace.finish();
         return timer->elapsed_ms();
+    }
+    void predictor_history_step(Tensor hidden, Tensor ids, Tensor positions, bool scalar_chain = false) {
+        if (scalar_chain && ids.size(1) > 1) {
+            for (std::int64_t row = 0; row < ids.size(1); ++row) {
+                auto position = positions ? slice(positions, -1, row, 1) : Tensor{};
+                (void)predictor_step(slice(hidden, 1, row, 1), slice(ids, 1, row, 1), std::move(position));
+            }
+        } else (void)predictor_step(std::move(hidden), std::move(ids), std::move(positions));
     }
     /** Reserve and append or seed the blockwise predictor's target context. */
     double blockwise_prompt_context(Tensor hidden, std::int64_t position, bool seed) {
@@ -179,6 +231,9 @@ struct Ops : Sampling {
         return 0;
     }
     void rollback_target(std::int64_t accepted) { state.rollback_speculative(accepted); }
+    bool retains_partial_target_prefix(std::int64_t accepted) const {
+        return state.retains_partial_prefix(accepted) || mtp.retains_partial_target_prefix();
+    }
     bool prefetch_target_ids(int32_t token, const std::vector<int32_t>& drafts) {
         if (!info.row_prefetch || !prefetch.mtp || (prepared && prepared->transformed()) || output.stopped()) return false;
         const auto count = std::int64_t(1 + (mtp.split_target_verification() ? 0 : drafts.size()));
@@ -206,7 +261,7 @@ struct Ops : Sampling {
         const auto captures = weights.activity().graph_captures;
         const bool changed = captures != graph_captures;
         graph_captures = captures;
-        return changed;
+        return std::exchange(target_initialized, false) || changed;
     }
     void trace_prompt_prefill(double target, double predictor_ms, double workspace) {
         if (!mtp.teacher_forced_prompt_prime()) weights.prepare(::tyloi::weights::Cache::Stage::decode, executor.device(), source);
@@ -228,17 +283,40 @@ struct Ops : Sampling {
     }
     Tensor logits_for(Tensor hidden) {
         if (projected_hidden && hidden.same_view(projected_hidden)) return projected_logits;
+        if (target_hidden && target_logits && hidden.same_view(target_hidden)) return target_logits;
         auto input = ops::contiguous(mtp.preserve_output_dtype() ? hidden : ops::cast(hidden, kFloat16));
         auto result = model.logits(input, true);
         if (!result) throw std::runtime_error("model logits returned no tensor");
         return result;
     }
     int32_t sample_normal(Tensor logits, Tensor token_counts) {
+        if (sampler().greedy() && !penalties && target_tokens.size() == 1 && same_logits(logits, target_logits))
+            return target_tokens.front();
         if (sampler().greedy() && !penalties && projected_greedy >= 0 && projected_logits &&
             logits.numel() == projected_logits.numel() &&
             ops::reshape(logits, {1, -1}).same_view(ops::reshape(projected_logits, {1, -1})))
             return projected_greedy;
         return Sampling::sample_normal(std::move(logits), std::move(token_counts));
+    }
+    static bool same_logits(const Tensor& left, const Tensor& right) {
+        return left && right && left.numel() == right.numel() &&
+            ops::reshape(left, {1, -1}).same_view(ops::reshape(right, {1, -1}));
+    }
+    std::vector<std::int32_t> greedy_tokens(Tensor logits) {
+        if (!penalties && sampler().greedy() && logits.dim() == 2 &&
+            target_tokens.size() == std::size_t(logits.size(0)) && same_logits(logits, target_logits))
+            return target_tokens;
+        return Sampling::greedy_tokens(std::move(logits));
+    }
+    CompactDistribution compact_probabilities(Tensor logits, Tensor token_counts, const MfqSamplingParams& parameters) {
+        if (!penalties && target_compact && target_compact.size(0) == 1 && same_logits(logits, target_logits))
+            return std::move(Sampling::compact_from_host(target_compact, parameters).front());
+        return Sampling::compact_probabilities(std::move(logits), std::move(token_counts), parameters);
+    }
+    std::vector<CompactDistribution> compact_probability_rows(Tensor logits, const MfqSamplingParams& parameters) {
+        if (!penalties && target_compact && target_compact.size(0) == logits.size(0) && same_logits(logits, target_logits))
+            return Sampling::compact_from_host(target_compact, parameters);
+        return Sampling::compact_probability_rows(std::move(logits), parameters);
     }
     int32_t sample_constrained(Tensor logits, Tensor token_counts, const MfqTokenConstraintPtr& constraint) {
         if (!constraint && sampler().greedy() && !penalties)
@@ -258,9 +336,9 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
     auto* predictor = model.mtp();
     if (!predictor || !state.predictor || !state.predictor->belongs_to(*predictor))
         throw std::invalid_argument("predictor state is unavailable or belongs to another model");
-    const auto logical = prefill_span(model.info(), input.prompt.size() - reused, chunk,
+    const auto logical = model.prefill_span(state, {static_cast<std::int64_t>(input.prompt.size()), chunk, reused, stable,
         prepared && prepared->transformed(),
-        weights.prefill_mode(input.prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
+        weights.prefill_mode(input.prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained});
     return speculative_sequence(Ops(model, state, executor, budget, weights, policy, options,
         *predictor, *state.predictor, prepared, source, profile, prefetch, chunk, output), input, output, logical, reused,
         std::move(restored), committed, stable);

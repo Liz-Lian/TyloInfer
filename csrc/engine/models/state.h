@@ -72,6 +72,8 @@ public:
     virtual void rollback_speculative(std::int64_t) {
         throw std::logic_error("speculative rollback is unsupported by this model");
     }
+    /** Report whether the current transaction retains the accepted prefix. */
+    virtual bool retains_partial_prefix(std::int64_t) const noexcept { return false; }
     /** Begin journaling an uncommitted speculative suffix. */
     virtual void begin_speculative_suffix(std::int64_t) {
         throw std::logic_error("speculative suffix is unsupported by this model");

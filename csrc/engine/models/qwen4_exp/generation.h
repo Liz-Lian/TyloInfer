@@ -42,33 +42,32 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         // The same bounded prompt windows as MTP avoid materializing
         // a whole expert layer before a short prompt has any scratch.
         short_windows=true;
+#ifdef TYLOINFER_NATIVE_CUDA
+        TYLOINFER_RUNTIME_CHECK(ops.executor && ops.budget && output, "staged prefill requires its execution owners");
+        tyloi::models::Input input;
+        input.ids=ids;
+        auto result=tyloi::engine::prefill(model,state,*ops.executor,weights,*ops.budget,
+            tyloi::cuda::forward_options(ops.mode),std::move(input),ops.prefill_compute_chunk,*output);
+        hidden=std::move(result.hidden);
+        ops.prefill_elapsed=result.elapsed_ms;
+        finish_prefill();
+#else
         for(int64_t offset=0;offset<chunk.count;) {
             if(output && output->stopped())break;
             const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto part=tyloi::ops::slice(ids,1,offset,offset+rows);
-#else
             auto part=ids.narrow(1,offset,rows);
-#endif
             ::tyloi::Tensor window_logits;
             if(auto result=qwen4_decode_graph_hidden(model,ops.state,part,nullptr,rows>1?1:0,
                     nullptr,{},&window_logits))
-#ifdef TYLOINFER_NATIVE_CUDA
-                hidden=std::move(*result);
-            else
-                hidden = model.forward(tyloi::models::Input{part, {}, {}, {}, {}, nullptr, nullptr,
-                                                            false, rows>1?1:0, 0, 0},
-                                       ops.state);
-#else
                 hidden=result->dense();
             else
                 hidden = model.forward(tyloi::models::Input{part, {}, {}, {}, {}, nullptr, nullptr,
                                                             false, rows>1?1:0, 0, 0},
                                        ops.state).dense();
-#endif
             if(rows>1)state.commit_speculative();
             offset+=rows;
         }
+#endif
     } else if((!prepared || !prepared->transformed()) &&
         qwen4_layer_major_prefill_eligible(model,ops.state,chunk.count)) {
         layer_major=true;
@@ -101,9 +100,16 @@ std::optional<int64_t> generation_decode(qwen4_exp::Model& model, Ops& ops) {
     if(ops.known_token_host.defined()) {
         const bool greedy=ops.sampler.greedy() && !ops.has_penalties && !ops.constraint;
 #ifdef TYLOINFER_NATIVE_CUDA
-        if(auto result=qwen4_decode_graph_logits(model,ops.state,tyloi::ops::reshape(ops.pending,{1,1}),greedy?2:1,ops.known_token_host)) {
-            ops.pending=greedy?std::move(*result):tyloi::engine::sample_logits(ops.sampler,
-                tyloi::ops::reshape(tyloi::ops::contiguous(*result),{1,-1}),ops.counts,ops.constraint);
+        tyloi::models::Input input;
+        input.ids=tyloi::ops::reshape(ops.pending,{1,1}); input.host_ids=ops.known_token_host;
+        tyloi::models::DecodeOptions options;
+        options.projection=greedy?tyloi::models::DecodeOptions::Projection::greedy:
+            tyloi::models::DecodeOptions::Projection::logits;
+        if(auto result=model.decode(std::move(input),ops.state,tyloi::cuda::forward_options(ops.mode),options)) {
+            if(greedy) {
+                ops.pending=std::move(result->ids);
+            } else ops.pending=tyloi::engine::sample_logits(ops.sampler,
+                tyloi::ops::reshape(tyloi::ops::contiguous(result->logits),{1,-1}),ops.counts,ops.constraint);
             return tyloi::ops::item(ops.pending);
         }
 #else

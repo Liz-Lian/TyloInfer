@@ -73,22 +73,26 @@ class Qwen4BatchDecodeGraph {
     struct Impl;
     std::unique_ptr<Impl> graph_;
 };
+#ifndef TYLOINFER_NATIVE_CUDA
 std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(
     qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,int,const ::tyloi::Tensor& host_ids={});
 std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
     qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,::tyloi::Tensor* raw_hidden,int64_t confirmed=0,
     bool* initialized=nullptr,const ::tyloi::Tensor& host_ids={},
     ::tyloi::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
+::tyloi::Tensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model&,const qwen4_exp::State&);
+#endif
 void qwen4_report_decode_graph(const qwen4_exp::Model&,const qwen4_exp::State&,std::ostream&);
 std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const qwen4_exp::State&);
-::tyloi::Tensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model&,const qwen4_exp::State&);
 void qwen4_release_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&);
 void qwen4_warmup_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&);
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
 bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp::State&, int64_t tokens);
+#ifndef TYLOINFER_NATIVE_CUDA
 std::int64_t prefill_span(const qwen4_exp::Model&, const qwen4_exp::State&, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,
                           std::size_t stable, bool transformed, bool);
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor qwen4_layer_major_prefill_hidden(
     qwen4_exp::Model&, qwen4_exp::State&, ::tyloi::Tensor ids, int64_t compute_chunk = 1024,
@@ -112,6 +116,10 @@ struct Model : tyloi::models::CausalModel {
     // ---- tyloi::models::CausalModel
     /** Report this model's dimensions and execution policy. */
     tyloi::models::Info info() const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Select the bounded or layer-major logical prefill span for this request. */
+    std::int64_t prefill_span(const tyloi::models::State&, const tyloi::models::PrefillOptions&) const override;
+#endif
     /** Report capabilities of the components actually loaded. */
     MfqModelCapabilities capabilities() const override;
     /** Report component availability and supported KV memory policy. */
@@ -131,6 +139,11 @@ struct Model : tyloi::models::CausalModel {
     ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
                                  const tyloi::models::ForwardOptions& options = {}) const override;
 #ifdef TYLOINFER_NATIVE_CUDA
+    /** Run an eligible model-owned decode graph and return its requested projection. */
+    std::optional<tyloi::models::Decoded> decode(tyloi::models::Input input, tyloi::models::State& state,
+        const tyloi::models::ForwardOptions& options, const tyloi::models::DecodeOptions& decode) const override;
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
     /** Run eligible layer-major prefill in resumable model-owned steps. */
     tyloi::StepSequence<tyloi::models::Prefill> prefill(tyloi::models::Input input,
         tyloi::models::State& state, const tyloi::models::ForwardOptions& options,
@@ -144,7 +157,12 @@ struct Model : tyloi::models::CausalModel {
     ::tyloi::Tensor hidden_forward_speculative_suffix(State& state, ::tyloi::Tensor ids,
                                                       ::tyloi::Tensor* raw_hidden = nullptr);
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Begin row prefetch for the creating request's upcoming host token IDs. */
+    bool prefetch(tyloi::models::State& state, const ::tyloi::Tensor& ids) const override;
+#else
     bool prefetch_token_rows(State& state, const ::tyloi::Tensor& ids);
+#endif
 
     // ---- weights and load-time state
     tyloi::models::CausalLmMetadata metadata;

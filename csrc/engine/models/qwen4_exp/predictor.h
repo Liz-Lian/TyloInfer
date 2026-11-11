@@ -47,6 +47,10 @@ struct Predictor final : tyloi::models::Mtp {
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<Layer>> layers;
     CudaExecutionContext *execution = nullptr;
+#ifdef TYLOINFER_NATIVE_CUDA
+    bool history_stream = true, history_bootstrap = true, history_early_flush = true, history_cache_only = true;
+    int history_host = -1;
+#endif
 
     Predictor();
     ~Predictor() override;
@@ -78,6 +82,13 @@ struct Predictor final : tyloi::models::Mtp {
 
     tyloi::models::MtpStep step(tyloi::models::MtpState&, const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
                                 const tyloi::Tensor& positions = {}) const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Resolve prompt history behavior from frozen model policy and available memory. */
+    History history(std::int64_t tokens, std::int64_t requested, std::size_t available) const override;
+    /** Prime predictor history while optionally omitting output computation. */
+    void prime(tyloi::models::MtpState&, const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
+        const tyloi::Tensor& positions, bool cache_only) const override;
+#endif
     void history_step(tyloi::models::MtpState&, DenseTensor hidden, DenseTensor ids, DenseTensor positions = {},
                       bool scalar_chain = false) const;
 

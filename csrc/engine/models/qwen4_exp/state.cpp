@@ -70,6 +70,12 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
     const auto primary = tyloi::Device(tyloi::DeviceType::cuda, options.primary);
     add(result, primary, multiply(multiply(multiply(std::size_t(batch), 3),
         std::size_t(cache_pos + tokens)), sizeof(std::int64_t)));
+    // Short prefill may bootstrap once, then verify windows of up to four rows.
+    const auto remaining = tokens - (cache_pos == 0 ? 1 : 0);
+    const auto internal_copies = confirmed == 0 && batch == 1 && reuse_decode_graphs &&
+        graph_registry && tokens <= 128 && remaining > 1
+        ? std::size_t(std::min<std::int64_t>(3, remaining - 1)) : 0;
+    const auto copies = confirmed > 0 ? std::size_t(tokens <= 8 ? tokens - confirmed : 1) : internal_copies;
     for (std::size_t i = 0; i < layers.size(); ++i) {
         const auto& weights = *model_.layers[i];
         const auto& layer = *layers[i];
@@ -81,10 +87,12 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
         }
         if (weights.gdn) {
             add(result, device, multiply(weights.gdn->request_cache_growth_bytes(layer.gdn), std::size_t(batch)));
-            if (confirmed > 0) {
-                const auto copies = std::size_t(tokens <= 8 ? tokens - confirmed : 1);
+            if (copies) {
                 add(result, device, multiply(copies, session_tensor_bytes(layer.gdn.conv)));
                 add(result, device, multiply(copies, session_tensor_bytes(layer.gdn.recurrent)));
+                // A bootstrap may allocate the recurrent backing before verification.
+                if (internal_copies)
+                    add(result, device, multiply(copies, weights.gdn->growth_bytes(layer.gdn)));
             }
         }
         if (weights.ple) {
@@ -93,7 +101,7 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
                     std::size_t(weights.config.ngram)), std::size_t(weights.config.hidden)),
                     multiply(std::size_t(weights.config.streams), sizeof(float)));
             if (!layer.ple.conv.defined()) add(result, device, bytes);
-            if (confirmed > 0) add(result, device, multiply(bytes, std::size_t(tokens <= 8 ? tokens - confirmed : 1)));
+            if (copies) add(result, device, multiply(bytes, copies));
         }
     }
     return result;

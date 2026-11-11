@@ -23,6 +23,8 @@ namespace tyloi::models {
 enum class GraphWeights { captured, resident };
 /** Select ordinary chunks or a merged logical span with model-owned internal tiles. */
 enum class PrefillPolicy { chunked, merged };
+/** Identify who organises model-specific decode graph execution. */
+enum class GraphOwner { executor, model };
 
 struct Info {
     std::int64_t vocab_size;
@@ -35,6 +37,7 @@ struct Info {
     PrefillPolicy prefill = PrefillPolicy::chunked;
     /** Whether the model supports early host-token row prefetch. */
     bool row_prefetch = false;
+    GraphOwner graph = GraphOwner::executor;
 };
 
 struct CausalLmMetadata {

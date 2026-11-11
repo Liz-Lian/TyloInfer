@@ -81,6 +81,7 @@ struct Plain {
         const auto token = ops::item(pending);
         weights.prepare(::tyloi::weights::Cache::Stage::decode, executor.device(), source);
         graph_active = config.decode_graph.enabled &&
+            info.graph == models::GraphOwner::executor &&
             (!prepared || !prepared->transformed()) && !input.token_constraint && info.decode_graph &&
             graph.graph && input.sampling.max_tokens >= config.decode_graph.minimum_generation_tokens &&
             input.sampling.max_tokens <= graph.generated_capacity;
@@ -88,15 +89,34 @@ struct Plain {
     }
     void accept(int64_t token) {
         if (penalties && !graph_active) ops::add_token_counts(graph.counts, ops::contiguous(pending));
-        if (info.row_prefetch && config.prefetch.decode &&
+        if (((info.row_prefetch && config.prefetch.decode) || info.graph == models::GraphOwner::model) &&
             !(prepared && prepared->transformed()) && !output.stopped()) {
             if (!host_ids) host_ids = ops::empty({1, 1}, TensorOptions().device(kCPU).dtype(kInt64));
             ops::fill(host_ids, token);
-            model.prefetch(state, host_ids);
+            if (info.row_prefetch && config.prefetch.decode) model.prefetch(state, host_ids);
         }
     }
     int64_t advance() {
         reserve(1);
+        if (info.graph == models::GraphOwner::model && (!prepared || !prepared->transformed())) {
+            models::Input step;
+            step.ids = ops::reshape(pending, {1, 1});
+            step.host_ids = host_ids;
+            models::DecodeOptions decode;
+            const bool greedy = sampler.greedy() && !penalties && !input.token_constraint;
+            decode.projection = greedy ? models::DecodeOptions::Projection::greedy : models::DecodeOptions::Projection::logits;
+            if (auto decoded = model.decode(std::move(step), state, forward_options, decode)) {
+                if (greedy) {
+                    if (!decoded->ids) throw std::runtime_error("model decode returned no token IDs");
+                    pending = std::move(decoded->ids);
+                } else {
+                    if (!decoded->logits) throw std::runtime_error("model decode returned no logits");
+                    pending = sample_logits(sampler, ops::reshape(ops::contiguous(decoded->logits), {1, -1}),
+                        graph.counts, input.token_constraint);
+                }
+                return ops::item(pending);
+            }
+        }
         if (!graph_active) {
             models::Input model_input;
             model_input.ids = ops::reshape(pending, {1, 1});
@@ -252,9 +272,9 @@ struct Native {
         Plain plain{model, state, executor, budget, graph, weights, info, config,
                     forward_options, source, input, output, prepared, chunk_size,
                     std::move(full_ids), std::move(sampler), penalties};
-        const auto logical = prefill_span(info, prompt.size() - reused, chunk_size,
+        const auto logical = model.prefill_span(state, {static_cast<std::int64_t>(prompt.size()), chunk_size, reused, stable,
             prepared && prepared->transformed(),
-            weights.prefill_mode(prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
+            weights.prefill_mode(prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained});
         auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), reused, stable, logical);
         while (auto step = sequence.next()) co_yield std::move(step);
     }

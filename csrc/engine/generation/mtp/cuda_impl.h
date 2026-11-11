@@ -221,7 +221,12 @@ template <class Model, class State> struct CudaMtpOps
     return std::exchange(target_maintenance,false) || initialized;
   }
   bool prefetch_target_ids(int32_t token,const std::vector<int32_t>& drafts) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (std::is_base_of_v<tyloi::models::CausalModel, Model>) {
+      if (!info.row_prefetch) return false;
+#else
     if constexpr(requires {model.prefetch_token_rows(state,early_ple_ids_host);}) {
+#endif
       const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_EARLY_PLE");
       if(option && option[0]=='0')return false;
       const int tokens=mtp.split_target_verification()?1:1+int(drafts.size());
@@ -235,7 +240,11 @@ template <class Model, class State> struct CudaMtpOps
       auto* ids=early_ple_ids_host.template data_ptr<int64_t>();ids[0]=token;
 #endif
       for(int i=1;i<tokens;++i)ids[i]=drafts[std::size_t(i-1)];
+#ifdef TYLOINFER_NATIVE_CUDA
+      if(model.prefetch(state,slice(early_ple_ids_host,1,0,tokens))) {
+#else
       if(model.prefetch_token_rows(state,slice(early_ple_ids_host,1,0,tokens))) {
+#endif
         static bool reported=false;
         if(!reported) {
           reported=true;std::cerr<<"runtime_mtp_early_token_rows enabled=1 prefix_tokens=1\n";
@@ -267,12 +276,28 @@ template <class Model, class State> struct CudaMtpOps
       }
     }
   }
+#ifdef TYLOINFER_NATIVE_CUDA
+  tyloi::models::Mtp::History history(int64_t tokens, int64_t requested) const {
+    TYLOINFER_RUNTIME_CHECK(executor != nullptr, "MTP history requires an executor");
+    const std::array<tyloi::Device, 1> devices{tyloi::Device(tyloi::kCUDA, mode.primary)};
+    const auto memory = executor->memory(devices);
+    return mtp.history(tokens, requested, memory.at(0).usable);
+  }
+#endif
   bool stream_prompt_history(int64_t tokens) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(tokens,prefill_compute_chunk).stream;
+#else
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_STREAM_PROMPT_HISTORY");
     return mtp_stream_prompt_history(model,tokens,option);
+#endif
   }
   bool host_prompt_history(int64_t tokens) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(tokens,prefill_compute_chunk).host;
+#else
     return mtp_host_prompt_history(model,tokens);
+#endif
   }
   void trace_prompt_prefill(double target_ms,double predictor_ms,double workspace_ms) const {
     // Block predictors seed only their bounded target window and skip the
@@ -283,22 +308,38 @@ template <class Model, class State> struct CudaMtpOps
         <<" predictor_workspace_ms="<<workspace_ms<<" streamed="<<stream_prompt_history(input_ids.size(1))<<std::endl;
   }
   bool bootstrap_before_publication() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(input_ids.size(1),prefill_compute_chunk).bootstrap;
+#else
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_EARLY_BOOTSTRAP");
     return mtp_bootstrap_before_publication(model,option);
+#endif
   }
   bool retains_partial_target_prefix(int accepted) const {
     return mtp_retains_partial_target_prefix(model,state,mtp,accepted);
   }
   std::size_t predictor_history_merge_limit() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(input_ids.size(1),prefill_compute_chunk).merge;
+#else
     return mtp_history_merge_limit(model);
+#endif
   }
   std::size_t predictor_history_flush_threshold() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(input_ids.size(1),prefill_compute_chunk).flush;
+#else
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
     return mtp_history_flush_threshold(model,option);
+#endif
   }
   std::size_t predictor_parked_history_flush_threshold() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(input_ids.size(1),prefill_compute_chunk).parked;
+#else
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
     return mtp_parked_history_flush_threshold(model,option);
+#endif
   }
   void trace_cycle(uint64_t cycle,int depth,int accepted,double draft_ms,double verify_ms,double commit_ms) {
       const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
@@ -658,10 +699,18 @@ template <class Model, class State> struct CudaMtpOps
     (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
   }
   int64_t predictor_prefill_chunk_size(int64_t requested) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(input_ids.size(1),requested).chunk;
+#else
     return mtp_predictor_prefill_chunk_size(model,requested);
+#endif
   }
   bool cache_only_prompt_history() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return history(input_ids.size(1),prefill_compute_chunk).cache_only;
+#else
     return mtp_cache_only_prompt_history(model,*this);
+#endif
   }
   double begin_predictor_prefill(int64_t pairs) {
     const auto started=std::chrono::steady_clock::now();
@@ -918,10 +967,18 @@ run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
   if (!state.predictor || !state.predictor->belongs_to(mtp))
     throw std::invalid_argument("predictor state is unavailable or belongs to another model");
   auto logical_chunk=prefill_chunk_size;
+#ifdef TYLOINFER_NATIVE_CUDA
+  if constexpr (std::derived_from<Model, tyloi::models::CausalModel> &&
+                std::derived_from<State, tyloi::models::State>) {
+    logical_chunk=model.prefill_span(state, {static_cast<std::int64_t>(request.prompt.size()), prefill_chunk_size,
+        reused_tokens, 0, prepared && prepared->transformed(), reused_tokens>0 && prefill_chunk_size<=8});
+  }
+#else
   if constexpr(requires { prefill_span(model,state,request.prompt.size(),prefill_chunk_size,reused_tokens,0,false,false); }) {
     logical_chunk=prefill_span(model,state,request.prompt.size(),prefill_chunk_size,reused_tokens,0,
         prepared && prepared->transformed(),reused_tokens>0 && prefill_chunk_size<=8);
   }
+#endif
   return tyloi::engine::speculative_sequence(
       mtp_detail::CudaMtpOps<Model, State>{model, state, executor, collectives, mode, weights, info, source, mtp, mtp_state, prepared,
                                prefill_chunk_size, &output, budget},

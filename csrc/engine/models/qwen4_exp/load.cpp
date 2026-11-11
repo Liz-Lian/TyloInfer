@@ -14,6 +14,7 @@
 #include "engine/weights/tq/rows.h"
 #include "engine/weights/nint_row_pipeline.h"
 #include "engine/models/qwen4_exp/predictor.h"
+#include "env.h"
 
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
@@ -234,6 +235,18 @@ std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execut
     result.output = std::move(output);
     result.softcap = softcap;
     result.primary = weights.placement.device;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto enabled = [](const char* name) {
+        const auto* value = tyloi::cuda::env_lookup(name);
+        return !value || value[0] != '0';
+    };
+    result.history_stream = enabled("TYLOINFER_MTP_STREAM_PROMPT_HISTORY");
+    result.history_bootstrap = enabled("TYLOINFER_MTP_EARLY_BOOTSTRAP");
+    result.history_early_flush = enabled("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
+    result.history_cache_only = enabled("TYLOINFER_MTP_CACHE_ONLY_PRIME");
+    if (const auto* host = tyloi::cuda::env_lookup("TYLOINFER_MTP_HOST_PROMPT_HISTORY"))
+        result.history_host = host[0] != '0';
+#endif
     LayerLoader loader{weights,execution};
     loader.role = "qwen4_exp";
     if (!tyloi::models::qwen4_exp::load_predictor(result, loader, main))
