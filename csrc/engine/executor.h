@@ -11,6 +11,8 @@ namespace tyloi::engine { class Budget; }
 
 namespace tyloi {
 
+struct LayerEvent;
+
 class Executor {
 public:
     /** Select whether memory snapshots include diagnostic process and default-pool values. */
@@ -45,6 +47,18 @@ public:
     class Scope {
     public:
         virtual ~Scope() = default;
+    };
+
+    /** Own one prefill job's layer working set across synchronous execution steps. */
+    class Work {
+    public:
+        virtual ~Work() = default;
+        /** Activate this job's working set until the returned scope is destroyed. */
+        virtual std::unique_ptr<Scope> enter() = 0;
+        /** Apply a model-produced layer boundary outside the active scope. */
+        virtual void step(const LayerEvent& event) = 0;
+        /** Finish a normally completed job after its last layer boundary. */
+        virtual void finish() = 0;
     };
 
     // Starts on creation; stop records completion and elapsed_ms waits for it.
@@ -88,6 +102,8 @@ public:
     virtual std::unique_ptr<Timer> timer() = 0;
     virtual std::unique_ptr<Profile> profile(const char* name) = 0;
     virtual std::unique_ptr<Graph> graph() = 0;
+    /** Create a working-set owner for one synchronously driven prefill job. */
+    virtual std::unique_ptr<Work> work() = 0;
     /** Query one snapshot per device in order; diagnostic details are opt-in. */
     virtual std::vector<Memory> memory(std::span<const Device> devices,
         MemoryDetail detail = MemoryDetail::basic) const = 0;

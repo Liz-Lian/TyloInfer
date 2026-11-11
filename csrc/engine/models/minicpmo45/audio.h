@@ -3,6 +3,7 @@
 #include "engine/models/minicpmo45/media.h"
 #include "engine/ops.h"
 #include "vision.h"
+#include <stdexcept>
 
 struct MiniCPMO45WhisperAttention {
     tyloi::weights::BiasWeight q;
@@ -473,6 +474,7 @@ struct MiniCPMO45AudioEncoder {
                     .contiguous();
             });
         while (auto step = encoding.next()) {
+            if (step.layer || step.graph) throw std::logic_error("audio encoding does not support layer or graph events");
 #ifdef TYLOINFER_NATIVE_CUDA
             if (step.value) co_yield ::tyloi::Tensor(std::move(*step.value));
 #else

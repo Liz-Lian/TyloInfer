@@ -6,7 +6,11 @@
 #include "engine/weights/format.h"
 #include "engine/backends/cpu/ops/projection/packed_nint.h"
 #include "cpu_rows.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/executor/working_set.h"
+#else
 #include "engine/weights/nint_cache.h"
+#endif
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/executor/options.h"
 
@@ -424,11 +428,18 @@ static ::tyloi::DenseTensor nint_matmul_cpu(
     return result;
 }
 namespace {
+bool decoded_reuse_active() noexcept {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return tyloi::cuda::decoded_work_active();
+#else
+    return NintCache::active();
+#endif
+}
 bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
     // Batched decode projects directly from packed weights. Preserve
     // prefill's GEMM path and its layer decode cache.
     return !w.q8_zero && (rows <= 8 || (rows <= 32 && w.gs>=4 && w.gs<=64 &&
-        !NintCache::active() && tyloi::cuda::DecodeWindow::recording() &&
+        !decoded_reuse_active() && tyloi::cuda::DecodeWindow::recording() &&
         (::tyloi::cuda::options::nint_compressed_decode_batch() ||
          (rows>16 && ::tyloi::cuda::options::nint_compressed_large_batch(w.out>=65536)))));
 }
@@ -441,7 +452,7 @@ bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
     x = x.contiguous();
     const bool packed_rows=nint_packed_decode_rows(w,x.size(0));
     if (!packed_rows && !w.q8_zero && w.out>=65536 && x.size(0)>8 && x.size(0)<=32 &&
-        !NintCache::active() && ::tyloi::cuda::options::nint_large_output_tiling()) {
+        !decoded_reuse_active() && ::tyloi::cuda::options::nint_large_output_tiling()) {
         // Large vocabulary heads otherwise materialize over a GiB of FP16
         // weights. Reuse compressed GEMV across up to eight activation rows.
         x=x.to(::tyloi::kFloat16);
@@ -491,7 +502,15 @@ bool nint_packed_decode_rows(const tyloi::NintTensor& w,int64_t rows) {
                 w.sub_scale, w.sub_min, w.neuron_scale, w.neuron_min,
                 w.neuron_len, w.gs);});
         };
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto dense = tyloi::cuda::decoded_work_find(w);
+        if (!dense.defined()) {
+            dense = decode();
+            tyloi::cuda::decoded_work_store(w, dense);
+        }
+#else
         auto dense=NintCache::get(w,decode);
+#endif
         return profiler.measure("nint.gemm", [&]() {
             return ::tyloi::cuda::matmul(x, dense.transpose(0, 1));
         });

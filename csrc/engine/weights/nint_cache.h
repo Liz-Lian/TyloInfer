@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct NintCacheState;
 
 // Reuse the existing temporary dense projection within one prefill layer.
@@ -30,3 +31,5 @@ public:
     NintCache(const NintCache&)=delete;
     NintCache& operator=(const NintCache&)=delete;
 };
+
+#endif // !TYLOINFER_NATIVE_CUDA

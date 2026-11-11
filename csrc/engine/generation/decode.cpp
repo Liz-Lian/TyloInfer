@@ -18,6 +18,7 @@ void Capture::step(GraphPhase phase) {
     switch (phase) {
     case GraphPhase::prepare: weights_.retire_prefill(); break;
     case GraphPhase::ready: weights_.finish_exchange(); break;
+    case GraphPhase::settle: executor_.synchronize(); break;
     case GraphPhase::warmup:
         if (warmup_) throw std::logic_error("duplicate graph warmup phase");
         warmup_ = std::make_unique<weights::Cache::Warmup>(weights_, true);
@@ -52,7 +53,7 @@ std::optional<models::Decoded> drive(StepSequence<models::Decoded> job, Executor
     try {
         for (;;) {
             auto step = job.next();
-            if (step.workspace || (step.state == StepState::complete && (step.value || step.graph)) ||
+            if (step.layer || step.workspace || (step.state == StepState::complete && (step.value || step.graph)) ||
                 (step.graph && step.value))
                 throw std::logic_error("invalid decode job event");
             if (!step) break;

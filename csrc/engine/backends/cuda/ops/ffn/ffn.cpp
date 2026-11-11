@@ -804,6 +804,7 @@ Tensor ffn(const FfnWeights& weights, const Tensor& input, const Tensor& ids,
     const auto& source=input.dense();
     std::optional<MfqCudaGuard> device_guard;
     if (source.is_cuda()) device_guard.emplace(source.device());
+    else if(weights.target.is_cuda()) device_guard.emplace(weights.target);
     if (weights.policy==FfnPolicy::qwen4) {
         result.dense()=qwen_ffn(weights,source,projection_rows);
     } else {

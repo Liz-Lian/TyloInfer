@@ -15,7 +15,15 @@ class Tensor;
 enum class StepState { waiting, advanced, complete };
 
 /** Report graph allocation, input readiness and synthetic startup boundaries. */
-enum class GraphPhase { prepare, ready, warmup, target };
+enum class GraphPhase { prepare, ready, warmup, target, settle };
+
+/** Describe the lifetime of one numerical prefill layer's working set. */
+struct LayerEvent {
+    enum class Phase { begin, clear, end };
+    enum class Mode { tiled, packed, single };
+    Phase phase;
+    Mode mode = Mode::tiled;
+};
 
 /** Request a workspace loan or detach its final output before the next visible quantum. */
 struct Workspace {
@@ -43,6 +51,7 @@ template <class T> struct StepResult {
     std::optional<T> value;
     std::optional<Workspace> workspace;
     std::optional<GraphPhase> graph = std::nullopt;
+    std::optional<LayerEvent> layer = std::nullopt;
     explicit operator bool() const { return state != StepState::complete; }
 };
 
@@ -72,6 +81,10 @@ template <class T> class StepSequence {
         }
         std::suspend_always yield_value(GraphPhase phase) {
             step = {StepState::advanced, {}, {}, phase};
+            return {};
+        }
+        std::suspend_always yield_value(LayerEvent event) {
+            step = {StepState::advanced, {}, {}, {}, event};
             return {};
         }
         std::suspend_always yield_value(StepResult<T> value) {
@@ -109,7 +122,7 @@ template <class T> class StepSequence {
 template <class T> T finish_steps(StepSequence<T> sequence) {
     std::optional<T> result;
     while (auto step = sequence.next())
-        if (step.workspace || step.graph) throw std::logic_error("resource requests require an execution owner");
+        if (step.workspace || step.graph || step.layer) throw std::logic_error("resource requests require an execution owner");
         else if (step.value) result = std::move(step.value);
     return std::move(result.value());
 }

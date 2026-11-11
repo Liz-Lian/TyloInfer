@@ -46,7 +46,7 @@ Generation generate_prepared(Operations operations, State &state, Execution& exe
                     step = preparation->next();
                 else {
                     step = job.next();
-                    if (step.workspace || step.graph) throw std::logic_error("resource requests require a public executor");
+                    if (step.workspace || step.graph || step.layer) throw std::logic_error("resource requests require a public executor");
                 }
                 timer->stop();
                 output.metrics.multimodal_ms += timer->elapsed_ms();

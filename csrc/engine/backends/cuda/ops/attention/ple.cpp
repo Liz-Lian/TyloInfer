@@ -68,8 +68,6 @@ void Ple::checkpoint(State& state) const {
     std::optional<MfqCudaGuard> guard;
     if (impl_->target.is_cuda()) guard.emplace(impl_->target);
     TYLOINFER_RUNTIME_CHECK(!state.saved && state.conv.defined(), "PLE checkpoint requires committed convolution state");
-    std::optional<MfqCudaGuard> guard;
-    if (state.conv.device().is_cuda()) guard.emplace(state.conv.device());
     Tensor saved{DenseTensor{}};
     saved.dense() = state.conv.dense().clone();
     state.saved_conv = std::move(saved);

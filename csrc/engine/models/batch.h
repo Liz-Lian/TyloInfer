@@ -51,9 +51,9 @@ public:
     virtual std::unique_ptr<BatchState> make_state() = 0;
     /** Return numerical workspace bytes per prompt row for runtime admission. */
     virtual std::size_t prefill_row_bytes() const = 0;
-    /** Compute independent prompt spans in row order. */
-    virtual std::vector<Tensor> prefill(std::span<BatchState* const> states,
-        const std::vector<Tensor>& ids) = 0;
+    /** Compute independent prompt spans in row order, yielding resource boundaries. */
+    virtual StepSequence<std::vector<Tensor>> prefill(std::vector<BatchState*> states,
+        std::vector<Tensor> ids) = 0;
     /** Compute one ordinary decode step for each supplied row. */
     virtual Tensor decode(std::span<BatchState* const> states, Tensor ids,
         const Tensor& host_ids) = 0;

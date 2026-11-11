@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace tyloi::models::minicpmo45 {
@@ -62,6 +63,7 @@ encode(Ops &ops, MultimodalInputs<typename Ops::DenseTensor> &input) {
                       "image bounds require image tensors");
         auto vision = ops.vision(input.pixels, input.patch_mask, input.target_sizes);
         while (auto step = vision.next()) {
+            if (step.layer || step.graph) throw std::logic_error("vision encoding does not support layer or graph events");
             if (step.value) result.vision_states = std::move(*step.value);
             else co_yield step.state;
         }
@@ -79,6 +81,7 @@ encode(Ops &ops, MultimodalInputs<typename Ops::DenseTensor> &input) {
         ops.reset_audio();
         auto audio = ops.audio(input.audio_features, input.audio_lengths);
         while (auto step = audio.next()) {
+            if (step.layer || step.graph) throw std::logic_error("audio encoding does not support layer or graph events");
             if (step.value) result.audio_embeddings = std::move(*step.value);
             else co_yield step.state;
         }

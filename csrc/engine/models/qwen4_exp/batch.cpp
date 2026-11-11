@@ -54,9 +54,9 @@ public:
         return std::size_t(model_.metadata.hidden_size) * model_.metadata.hc_mult * sizeof(float) * 8;
     }
     /** Prefill the validated request states with their token rows. */
-    std::vector<tyloi::Tensor> prefill(std::span<tyloi::models::BatchState* const> states,
-                                      const std::vector<tyloi::Tensor>& ids) override {
-        return qwen4_batch_prefill(model_,checked(states),ids);
+    tyloi::StepSequence<std::vector<tyloi::Tensor>> prefill(std::vector<tyloi::models::BatchState*> states,
+                                      std::vector<tyloi::Tensor> ids) override {
+        return qwen4_batch_prefill(model_,checked(states),std::move(ids));
     }
     /** Decode one batch under its current execution policy. */
     tyloi::Tensor decode(std::span<tyloi::models::BatchState* const> states, tyloi::Tensor ids,
@@ -91,6 +91,7 @@ private:
         if(!graph_) co_return;
         auto job=graph_->plan(requests,greedy);
         while(auto step=job.next()) {
+            if(step.layer) throw std::logic_error("unexpected batch graph layer event");
             if(step.graph) co_yield *step.graph;
             if(step.value) {
                 std::unique_ptr<Plan> result=std::make_unique<GraphPlan>(*this,std::move(requests),greedy,std::move(*step.value));

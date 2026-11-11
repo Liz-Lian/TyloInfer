@@ -27,6 +27,7 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
     models::Input input, std::int64_t compute, InferenceOutput& output) {
     Capture capture(executor, weights);
     std::unique_ptr<weights::Loan> loan;
+    auto work = executor.work();
     tyloi::StepSequence<models::Prefill> job;
     std::optional<weights::Cache::Priority> priority;
     models::Prefill result;
@@ -49,7 +50,15 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
             weights.split_prefill(tokens)};
         job = model.prefill(input, state, options, policy);
         while (!output.stopped()) {
-            auto step = job.next();
+            StepResult<models::Prefill> step;
+            { auto scope = work->enter(); step = job.next(); }
+            if (step.layer) {
+                if (step.state != StepState::advanced || step.value || step.workspace || step.graph)
+                    throw std::logic_error("invalid prefill layer event");
+                observed = true;
+                work->step(*step.layer);
+                continue;
+            }
             if (step.graph) {
                 if (step.state != StepState::advanced || step.value || step.workspace)
                     throw std::logic_error("invalid prefill graph event");
@@ -107,6 +116,7 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
                 if (loan) throw std::logic_error("prefill job ended while workspace is borrowed");
                 if (observed) throw std::runtime_error("prefill job ended without a result");
                 capture.finish();
+                work->finish();
                 auto* raw = input.raw_hidden;
                 if (state.position() == 0) weights.finish_exchange();
                 result.hidden = model.forward(std::move(input), state, options);
@@ -146,6 +156,7 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
                 if (result.phase == models::Prefill::Phase::complete) {
                     if (loan) throw std::logic_error("prefill completed while workspace is borrowed");
                     capture.finish();
+                    work->finish();
                     if (computed) result.elapsed_ms = timer->elapsed_ms();
                     return result;
                 }
@@ -154,6 +165,7 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
         capture.drain();
         job = {};
         if (observed) state.release_graphs();
+        work.reset();
         loan.reset();
         return {};
     } catch (...) {
@@ -161,6 +173,7 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
         try { capture.drain(); } catch (...) {}
         job = {};
         if (observed) try { state.release_graphs(); } catch (...) {}
+        work.reset();
         loan.reset();
         std::rethrow_exception(failure);
     }

@@ -249,7 +249,9 @@ tyloi::cuda::Ffn load_moe_weights(const tyloi::weights::Loader& weights,
 #ifdef TYLOINFER_NATIVE_CUDA
 tyloi::ops::FfnWeights load_moe_data(const tyloi::weights::Loader& weights,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
-    return load_moe<tyloi::ops::FfnWeights>(weights, prefix, options);
+    auto result=load_moe<tyloi::ops::FfnWeights>(weights, prefix, options);
+    result.target=tyloi::Device(tyloi::kCUDA,weights.placement.device);
+    return result;
 }
 #endif
 

@@ -74,16 +74,27 @@ class Qwen4BatchRequestState
     struct Impl;
     std::unique_ptr<Impl> state_;
     friend class Qwen4BatchDecodeGraph;
+#ifdef TYLOINFER_NATIVE_CUDA
+    friend tyloi::StepSequence<std::vector<::tyloi::Tensor>> qwen4_batch_prefill(
+        qwen4_exp::Model&,std::vector<Qwen4BatchRequestState*>,std::vector<::tyloi::Tensor>);
+#else
     friend std::vector<::tyloi::Tensor> qwen4_batch_prefill(
         qwen4_exp::Model&,const std::vector<Qwen4BatchRequestState*>&,
         const std::vector<::tyloi::Tensor>&);
+#endif
     friend ::tyloi::Tensor qwen4_batch_decode(
         qwen4_exp::Model&, const std::vector<Qwen4BatchRequestState*>&,
         ::tyloi::Tensor, const ::tyloi::Tensor&);
 };
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Run batch prefill while yielding per-layer resource boundaries. */
+tyloi::StepSequence<std::vector<::tyloi::Tensor>> qwen4_batch_prefill(
+    qwen4_exp::Model&,std::vector<Qwen4BatchRequestState*>,std::vector<::tyloi::Tensor>);
+#else
 std::vector<::tyloi::Tensor> qwen4_batch_prefill(
     qwen4_exp::Model&,const std::vector<Qwen4BatchRequestState*>&,
     const std::vector<::tyloi::Tensor>&);
+#endif
 ::tyloi::Tensor qwen4_batch_decode(
     qwen4_exp::Model&, const std::vector<Qwen4BatchRequestState*>&,
     ::tyloi::Tensor ids, const ::tyloi::Tensor& host_ids);

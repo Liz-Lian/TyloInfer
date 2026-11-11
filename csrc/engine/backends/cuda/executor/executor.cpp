@@ -1,4 +1,7 @@
 #include "executor.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/executor/working_set.h"
+#endif
 
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/native/branches.h"
@@ -488,6 +491,8 @@ std::unique_ptr<tyloi::Executor::Timer> Executor::timer() {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
+std::unique_ptr<tyloi::Executor::Work> Executor::work() { return make_working_set(*this); }
+
 std::unique_ptr<tyloi::Executor::Profile> Executor::profile(const char* name) {
     return std::make_unique<ExecutorProfile>(profiler_, name);
 }

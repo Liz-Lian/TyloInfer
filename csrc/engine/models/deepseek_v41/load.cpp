@@ -78,7 +78,9 @@ void load_weights(Model& model, const tyloi::weights::Loader& tensors,
             const auto type = std::string(model.metadata.layer_types.at(static_cast<std::size_t>(layer)));
             const int device = placement.device_for_layer(layer);
             const bool cpu_offloaded = false;
+#ifndef TYLOINFER_NATIVE_CUDA
             MfqCudaGuard layer_guard(device);
+#endif
             std::cerr << "loading layer " << layer << ' ' << type << ' '
                       << (cpu_offloaded ? "CPU" : "CUDA") << std::endl;
             auto placed = tensors.for_layer(device, cpu_offloaded);

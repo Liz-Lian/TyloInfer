@@ -262,6 +262,7 @@ class CudaGridVisionPromptComponent {
             DenseTensor patches;
 #endif
             while (auto step = encoding.next()) {
+                if (step.layer || step.graph) throw std::logic_error("vision encoding does not support layer or graph events");
 #ifdef TYLOINFER_NATIVE_CUDA
                 if (step.workspace) {
                     co_yield *step.workspace;

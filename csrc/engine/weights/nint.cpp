@@ -12,7 +12,7 @@
 
 using namespace tyloi::cuda::quant_format;
 
-#if TYLOINFER_ENABLE_MFQ_COMPAT
+#if TYLOINFER_ENABLE_MFQ_COMPAT && !defined(TYLOINFER_NATIVE_CUDA)
 struct NintCacheState {
     using Key=std::array<uintptr_t,11>;
     std::map<Key,::tyloi::DenseTensor> decoded;

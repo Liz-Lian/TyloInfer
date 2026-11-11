@@ -289,6 +289,7 @@ struct MiniCPMO45VisionEncoder {
 #endif
             });
         while (auto step = encoding.next()) {
+            if (step.layer || step.graph) throw std::logic_error("vision encoding does not support layer or graph events");
 #ifdef TYLOINFER_NATIVE_CUDA
             if (step.value) co_yield ::tyloi::Tensor(std::move(*step.value));
 #else

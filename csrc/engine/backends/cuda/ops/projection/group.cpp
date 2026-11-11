@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -171,6 +172,11 @@ QuantLinearGroup make_quant_group(
         group_nint && !cpu_layer && !any_tensor_parallel) {
         result.nint_grouped = true;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+#ifdef TYLOINFER_NATIVE_CUDA
+        std::optional<MfqCudaGuard> guard;
+        if (!nint_weights.empty() && nint_weights.front().q_packed.is_cuda())
+            guard.emplace(nint_weights.front().q_packed.device());
+#endif
         result.nint = make_linear_group(nint_weights);
 #endif
     } else {

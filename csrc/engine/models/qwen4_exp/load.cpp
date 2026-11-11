@@ -210,6 +210,7 @@ struct LayerLoader : tyloi::weights::Loader {
         weights.moe_normalize=routing.normalize; weights.moe_delayed_softmax=routing.delayed_softmax;
         weights.moe_router_scale=routing.scale; weights.policy=tyloi::ops::FfnPolicy::qwen4;
         weights.qwen_hidden=c.hidden; weights.qwen_moe_width=c.moe_width;
+        weights.target=tyloi::Device(tyloi::kCUDA,placement.device);
         return tyloi::ops::qwen4_ffn_weights(std::move(weights));
 #else
         return Moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
@@ -394,7 +395,6 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
     }
     if (model.plan.vision == CudaVisionAdapter::grid_vit && cpu_layers > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
-    MfqCudaGuard model_guard(weights.placement.device);
     constexpr auto embedding = "model.token_embedding.weight";
     constexpr auto output = "model.output.weight";
     const bool independent = !model.tie_word_embeddings() && weights.has(output);
@@ -410,7 +410,6 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
         for (int layer=0; layer<model.num_hidden_layers(); ++layer) {
             const int device=placement.device_for_layer(layer);
             const bool cpu=layer<cpu_layers;
-            MfqCudaGuard layer_guard(device);
             std::cerr << "loading layer " << layer << ' '
                       << model.metadata.layer_types.at(static_cast<std::size_t>(layer)) << ' '
                       << (cpu ? "CPU" : "CUDA") << std::endl;

@@ -38,6 +38,8 @@ public:
     /** Returns the primary CUDA device selected before publication. */
     tyloi::Device device() const noexcept override { return tyloi::Device(tyloi::kCUDA, primary_); }
     std::unique_ptr<tyloi::Executor::Scope> enter() override;
+    /** Create the working set for one prefill job. */
+    std::unique_ptr<tyloi::Executor::Work> work() override;
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
     std::unique_ptr<tyloi::Executor::Graph> graph() override;
     /** Query device memory snapshots within this executor's scope. */

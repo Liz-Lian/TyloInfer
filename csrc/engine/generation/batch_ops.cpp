@@ -115,7 +115,7 @@ public:
                 request->state->prefill_growth_bytes(chunk.count), std::size_t(256) << 20));
             std::vector<models::BatchState*> states{request->state.get()};
             std::vector<Tensor> ids{ops::contiguous(ops::slice(request->ids,1,chunk.offset,chunk.offset+chunk.count))};
-            auto hidden = batch_->prefill(states, ids).at(0);
+            auto hidden = run_prefill(std::move(states), std::move(ids)).at(0);
             Tensor next;
             if (chunk.offset + chunk.count == std::int64_t(request->prompt.size()))
                 next = sample_logits(*request->sampler,
@@ -167,7 +167,7 @@ public:
                 }
                 auto timer=executor_.timer();
                 if (tokens>1024) weights_.workspace(workspace_);
-                auto hidden=batch_->prefill(states,ids);
+                auto hidden=run_prefill(std::move(states),std::move(ids));
                 if (hidden.size()!=rows.size()) throw std::runtime_error("invalid packed prefill output count");
                 std::vector<Tensor> last, next(items.size());
                 std::vector<std::size_t> finished;
@@ -283,6 +283,37 @@ public:
     }
 
 private:
+    std::vector<Tensor> run_prefill(std::vector<models::BatchState*> states, std::vector<Tensor> ids) {
+        auto work=executor_.work();
+        StepSequence<std::vector<Tensor>> job;
+        std::optional<std::vector<Tensor>> result;
+        try {
+            job=batch_->prefill(std::move(states),std::move(ids));
+            for (;;) {
+                StepResult<std::vector<Tensor>> step;
+                { auto scope=work->enter(); step=job.next(); }
+                if (step.workspace || step.graph ||
+                    (step.state==StepState::complete && (step.value || step.layer)) ||
+                    (step.layer && step.value))
+                    throw std::logic_error("invalid batch prefill event");
+                if (!step) break;
+                if (step.state!=StepState::advanced || result)
+                    throw std::logic_error("invalid batch prefill event");
+                if (step.layer) work->step(*step.layer);
+                else if (step.value) result=std::move(*step.value);
+            }
+            if (!result) throw std::runtime_error("batch prefill ended without a result");
+            work->finish();
+            job={};
+            return std::move(*result);
+        } catch (...) {
+            const auto failure=std::current_exception();
+            try { weights_.drain(); } catch (...) {}
+            try { executor_.drain(); } catch (...) {}
+            job={};
+            std::rethrow_exception(failure);
+        }
+    }
     std::unique_ptr<models::Batch::Plan> plan_graph(
             const std::vector<models::BatchState*>& states, bool greedy) {
         Capture capture(executor_,weights_);
@@ -293,7 +324,7 @@ private:
             job=batch_->plan(states,greedy);
             for (;;) {
                 auto step=job.next();
-                if (step.workspace || (step.graph && step.value) ||
+                if (step.layer || step.workspace || (step.graph && step.value) ||
                     (step.state==StepState::complete && (step.graph || step.value)))
                     throw std::logic_error("invalid batch graph plan event");
                 if (!step) break;

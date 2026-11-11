@@ -125,6 +125,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
     tyloi::models::minicpmo45::MultimodalResult<::tyloi::DenseTensor> result;
 #endif
     while (auto step = encoding.next()) {
+        if (step.layer || step.graph) throw std::logic_error("media encoding does not support layer or graph events");
         if (step.value) result = std::move(*step.value);
         else co_yield step.state;
     }

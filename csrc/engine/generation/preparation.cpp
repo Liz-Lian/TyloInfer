@@ -30,7 +30,7 @@ StepResult<models::Prepared> Preparation::next() {
     try {
         for (;;) {
             step = job_.next();
-            if (step.graph) throw std::logic_error("preparation does not support graph events");
+            if (step.graph || step.layer) throw std::logic_error("preparation does not support graph or layer events");
             if (!step.workspace) {
                 if (loan_) throw std::logic_error("preparation yielded while workspace is borrowed");
                 return step;

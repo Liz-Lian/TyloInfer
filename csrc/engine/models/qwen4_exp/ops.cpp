@@ -45,7 +45,9 @@
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/ffn/gated.h"
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/nint_cache.h"
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "matmul_rows.h"
 #include "engine/backends/cuda/native/graph.h"
@@ -995,10 +997,7 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
         input.trace->push_back(std::make_shared<DenseTensor>(hidden.to(::tyloi::kFloat32).clone()));
     for (std::size_t i=0;i<model.layers.size();++i) {
         auto& block = model.layers[i];
-#ifdef TYLOINFER_NATIVE_CUDA
-        std::optional<MfqCudaGuard> guard;
-        if(block->cpu_offloaded)guard.emplace(block->cuda_device);
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
         MfqCudaGuard guard(block->cuda_device);
 #endif
         auto local_ids = block->cpu_offloaded
@@ -1716,6 +1715,7 @@ tyloi::StepSequence<tyloi::models::Decoded> qwen4_exp::Model::decode(
         kind==1 ? nullptr : &result.tokens, compact);
     tyloi::Tensor output;
     while(auto step=job.next()) {
+        if(step.layer)throw std::logic_error("unexpected decode layer event");
         if(step.graph) co_yield *step.graph;
         if(step.value) output=std::move(step.value->hidden);
     }
@@ -1852,19 +1852,27 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     graph_options.routed=decode_options.routed;
     graph_options.projection=tyloi::models::DecodeOptions::Projection::greedy;
     auto greedy=model.decode(graph_input,state,{},graph_options);
-    while(auto step=greedy.next())
+    while(auto step=greedy.next()) {
+        if(step.layer)throw std::logic_error("unexpected warmup decode layer event");
         if(step.graph) co_yield *step.graph;
+    }
     graph_options.projection=tyloi::models::DecodeOptions::Projection::logits;
     auto logits=model.decode(std::move(graph_input),state,{},graph_options);
-    while(auto step=logits.next())
+    while(auto step=logits.next()) {
+        if(step.layer)throw std::logic_error("unexpected warmup decode layer event");
         if(step.graph) co_yield *step.graph;
+    }
     co_yield tyloi::GraphPhase::ready;
 #else
     (void)qwen4_decode_graph_logits(model,state,ids.narrow(1,0,1),2);
     (void)qwen4_decode_graph_logits(model,state,ids.narrow(1,0,1),1);
 #endif
     state.reset(1);
+#ifdef TYLOINFER_NATIVE_CUDA
+    co_yield tyloi::GraphPhase::settle;
+#else
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
+#endif
     std::cerr<<"runtime_qwen4_graph_warmup target_captures="<<state.decode_graph_captures<<" ms="
         <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -2578,9 +2586,15 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
     return ::tyloi::Tensor(graph.logits);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::StepSequence<std::vector<::tyloi::Tensor>> qwen4_batch_prefill(qwen4_exp::Model& model,
+        std::vector<Qwen4BatchRequestState*> requests,
+        std::vector<::tyloi::Tensor> chunk_handles) {
+#else
 std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         const std::vector<Qwen4BatchRequestState*>& requests,
         const std::vector<::tyloi::Tensor>& chunk_handles) {
+#endif
     std::vector<::tyloi::DenseTensor> chunks;
     chunks.reserve(chunk_handles.size());
     for (const auto& chunk : chunk_handles) chunks.push_back(chunk.dense());
@@ -2625,7 +2639,15 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
     }
     auto hidden=model.repeat_hidden(model.embed_tokens(ids),model.metadata.hc_mult);
     for (std::size_t i=0;i<model.layers.size();++i) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        co_yield tyloi::LayerEvent{tyloi::LayerEvent::Phase::begin,
+            packed?tyloi::LayerEvent::Mode::packed:tyloi::LayerEvent::Mode::single};
+#else
         NintCache decode_reuse(packed);
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        {
+#endif
         const auto& block=*model.layers[i];
         if (block.ple) {
             std::vector<::tyloi::DenseTensor> positional;
@@ -2728,6 +2750,11 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
                 return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
             });
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        }
+        co_yield tyloi::LayerEvent{tyloi::LayerEvent::Phase::end,
+            packed?tyloi::LayerEvent::Mode::packed:tyloi::LayerEvent::Mode::single};
+#endif
     }
     hidden=qwen4_finalize_hidden(model, std::move(hidden),1,tokens);
     std::vector<::tyloi::Tensor> result;
@@ -2736,7 +2763,11 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         requests[row]->state_->positions=std::move(full[row]);
         requests[row]->state_->cache_position+=chunks[row].size(1);
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    co_yield std::move(result);
+#else
     return result;
+#endif
 }
 
 ::tyloi::Tensor qwen4_batch_decode(qwen4_exp::Model& model,
@@ -2987,6 +3018,7 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
             auto job=decode(window,state,options,decode_options);
             std::optional<tyloi::models::Decoded> decoded;
             while(auto step=job.next()) {
+                if(step.layer)throw std::logic_error("unexpected prefill decode layer event");
                 if(step.graph) co_yield *step.graph;
                 if(step.value) decoded=std::move(*step.value);
             }
@@ -3187,9 +3219,16 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
     const auto started=std::chrono::steady_clock::now();
     int layer=0;
     for(auto& block:model.layers) {
-        auto& layer_state=*state.layers[layer];
+#ifdef TYLOINFER_NATIVE_CUDA
+        co_yield tyloi::LayerEvent{tyloi::LayerEvent::Phase::begin};
+#else
         const auto decode_reuse_option=::tyloi::cuda::options::nint_prefill_decode_reuse();
         NintCache decode_reuse(!decode_reuse_option || *decode_reuse_option);
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        {
+#endif
+        auto& layer_state=*state.layers[layer];
         DenseTensor next_hidden=hidden;
         DenseTensor ffn_inputs,ffn_gate;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -3306,7 +3345,12 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         }
         // Attention's decoded matrices are no longer needed by FFN. Keep
         // reuse within each phase, without retaining both sets at peak memory.
-        if(tokens>9216)decode_reuse.clear();
+        if(tokens>9216)
+#ifdef TYLOINFER_NATIVE_CUDA
+            co_yield tyloi::LayerEvent{tyloi::LayerEvent::Phase::clear};
+#else
+            decode_reuse.clear();
+#endif
         if(bulk_gr) {
             auto& qwen_block=*block;
             auto mix=profile_measure("prefill.gr_ffn_pre",[&] {
@@ -3321,7 +3365,12 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #endif
             attention_result={};attention_output={};
         }
-        if(tokens>9216)decode_reuse.clear();
+        if(tokens>9216)
+#ifdef TYLOINFER_NATIVE_CUDA
+            co_yield tyloi::LayerEvent{tyloi::LayerEvent::Phase::clear};
+#else
+            decode_reuse.clear();
+#endif
         // The new residual owns the next layer's values. Prior hidden readers
         // have already been submitted before this stream-ordered release.
         if(tokens>9216)hidden={};
@@ -3439,6 +3488,10 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
                     std::chrono::steady_clock::now()-started).count()<<std::endl;
 #endif
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        }
+        co_yield tyloi::LayerEvent{tyloi::LayerEvent::Phase::end};
+#endif
     }
     resume_profile();
     if(last_only && !raw_hidden) {

@@ -24,6 +24,8 @@ struct FfnWeights {
     double moe_router_scale = 1.0, swiglu_limit = 0.0;
     int moe_layer = -1;
     FfnPolicy policy = FfnPolicy::standard;
+    /** CUDA execution device used when the input is on the host. */
+    Device target;
     std::int64_t qwen_hidden = 0, qwen_moe_width = 0;
     bool qwen_tq = false;
 };

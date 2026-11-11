@@ -5,6 +5,7 @@
 #include "vision.h"
 #include "engine/models/deepseek_v41/axial_patch_encoder.h"
 #include "engine/state/session/prefix_cache.h"
+#include <stdexcept>
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #endif
@@ -106,6 +107,7 @@ tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
 #endif
         std::move(patches),height,width);
     while(auto step=steps.next()) {
+        if(step.layer || step.graph) throw std::logic_error("vision encoding does not support layer or graph events");
         if(step.workspace)co_yield *step.workspace;
         else if(step.value)co_yield std::move(*step.value);
         else co_yield step.state;
@@ -164,6 +166,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(
 #endif
                 std::move(patches),int(span.height),int(span.width));
             while(auto step=encoding.next()) {
+                if(step.layer || step.graph) throw std::logic_error("vision encoding does not support layer or graph events");
                 if(step.workspace)co_yield *step.workspace;
                 else if(step.value)visual=std::move(*step.value);
                 else co_yield step.state;

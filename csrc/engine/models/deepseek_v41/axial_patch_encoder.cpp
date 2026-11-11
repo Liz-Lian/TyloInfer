@@ -318,7 +318,10 @@ DenseTensor CudaAxialPatchVisionTower::encode(
     Projector projector, DenseTensor patches, int height, int width) const {
     auto steps = encode_steps(projector, std::move(patches), height, width);
     DenseTensor output;
-    while (auto step = steps.next()) if (step.value) output = std::move(*step.value);
+    while (auto step = steps.next()) {
+        if (step.layer || step.graph) throw std::logic_error("vision encoding does not support layer or graph events");
+        if (step.value) output = std::move(*step.value);
+    }
     return output;
 }
 #endif
