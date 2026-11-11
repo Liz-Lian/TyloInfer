@@ -70,19 +70,7 @@ struct CudaSessionOps {
         State& state, const Snapshot& snapshot, const std::function<void()>& drain,
         Predictor* mtp) {
         // The caller owns the CUDA scope for the entire restore operation.
-        if constexpr (std::is_same_v<std::remove_cvref_t<State>, tyloi::models::State>) {
-            if (mtp)
-                throw CudaSessionStateError("public model state has no joint predictor restore");
-            drain();
-            try {
-                state.restore_text_session_state(snapshot);
-                drain();
-            } catch (...) {
-                const auto error = std::current_exception();
-                try { drain(); } catch (...) {}
-                std::rethrow_exception(error);
-            }
-        } else if constexpr (requires { restore_session(state, mtp, snapshot, drain); }) {
+        if constexpr (requires { restore_session(state, mtp, snapshot, drain); }) {
             restore_session(state, mtp, snapshot, drain);
         } else {
             if constexpr (requires(decltype(state.prepare(snapshot))& candidate) {

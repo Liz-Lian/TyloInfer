@@ -8,7 +8,9 @@
 #include "engine/models/qwen4_exp/batch.h"
 #include "engine/models/qwen35/batch.h"
 #include "engine/models/qwen4_exp/ops.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/nemotron_h/components.h"
+#endif
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/metadata.h"

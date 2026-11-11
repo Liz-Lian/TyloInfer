@@ -182,7 +182,7 @@ std::vector<int64_t> restore_prefix_shape(const ::tyloi::Tensor& source, int64_t
     if (!source.defined() || dimension < 0 || dimension >= source.dim() || capacity <= 0 ||
         source.size(dimension) > capacity)
         throw CudaSessionStateError("session prefix tensor layout is invalid");
-    auto shape = source.sizes().vec();
+    auto shape = source.dense().sizes().vec();
     shape.at(static_cast<size_t>(dimension)) = capacity;
     return shape;
 }
@@ -210,7 +210,7 @@ std::size_t restore_tensor_bytes(const ::tyloi::Tensor& target, const ::tyloi::T
     if (!source.representation<::tyloi::DenseTensor>())
         throw CudaSessionStateError("session tensor is not dense");
     if (target.representation<::tyloi::DenseTensor>() && session_tensor_layout_matches(target, source)) return 0;
-    return restore_shape_bytes(source.sizes().vec(), source.element_size());
+    return restore_shape_bytes(source.dense().sizes().vec(), source.element_size());
 }
 
 std::size_t restore_prefix_bytes(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source,
@@ -227,7 +227,7 @@ std::size_t restore_prefix_bytes(const ::tyloi::Tensor& target, const ::tyloi::T
     if (!source.representation<::tyloi::DenseTensor>())
         throw CudaSessionStateError("session tensor is not dense");
     if (!target.representation<::tyloi::DenseTensor>() || !session_tensor_layout_matches(target, source)) {
-        target = tyloi::ops::empty(source.sizes(), source.options());
+        target = tyloi::ops::empty(source.dense().sizes(), source.options());
     }
     tyloi::ops::copy_into(target, source);
     return target;

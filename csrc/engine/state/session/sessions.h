@@ -18,6 +18,10 @@ namespace tyloi::engine { class Budget; }
 
 namespace tyloi::state {
 
+/** Restore target and optional predictor state after reserving and draining their device work. */
+void restore(models::State& state, const TextSessionState& snapshot, Executor& executor,
+    weights::Cache& weights, engine::Budget& budget, models::Mtp* mtp = nullptr);
+
 class Sessions {
 public:
     /** Restored prefix length and the predictor's last target hidden state, if any. */

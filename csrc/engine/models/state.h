@@ -16,6 +16,18 @@ namespace tyloi::models {
 struct ForwardOptions;
 struct Mtp;
 
+/** Own validated restore payloads and staged storage until device consumers have drained. */
+class Restore {
+public:
+    virtual ~Restore() = default;
+    /** Return per-device backing that staging will newly allocate. */
+    virtual std::vector<std::pair<Device, std::size_t>> growth() const = 0;
+    /** Stage copies in the owner's quiescent execution scope without publishing positions. */
+    virtual void stage() = 0;
+    /** Publish the staged state after all copies have completed. */
+    virtual void publish() noexcept = 0;
+};
+
 class MtpState {
 public:
     explicit MtpState(const Mtp& model) : model_(&model) {}
@@ -84,6 +96,8 @@ public:
     /** Return actual device bytes newly allocated when restoring the snapshot. */
     virtual std::vector<std::pair<tyloi::Device, std::size_t>> restore_growth(
         const TextSessionState& snapshot) const;
+    /** Validate and own a staged restore, or return null when only direct restoration is available. */
+    virtual std::unique_ptr<Restore> prepare_restore(const TextSessionState&) { return {}; }
     /** Restore a compatible text session snapshot into this state. */
     virtual void restore_text_session_state(const TextSessionState& snapshot);
 };

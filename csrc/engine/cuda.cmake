@@ -89,6 +89,7 @@ set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/generation/decode.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/mtp/cuda.cpp
     ${PROJECT_SOURCE_DIR}/engine/engine.cpp
+    ${PROJECT_SOURCE_DIR}/engine/state/session/sessions.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/session/paged.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/session/state.cpp

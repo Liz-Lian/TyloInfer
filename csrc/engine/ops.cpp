@@ -67,7 +67,8 @@ void compatible(const Tensor& left_tensor, const Tensor& right_tensor) {
 }
 void residual_inputs(const Tensor& residual, const Tensor& value) {
     compatible(residual, value);
-    if (residual.dim() != 3 || residual.sizes() != value.sizes())
+    if (residual.dim() != 3 || value.dim() != 3 ||
+        residual.size(0) != value.size(0) || residual.size(1) != value.size(1) || residual.size(2) != value.size(2))
         throw std::invalid_argument("residual inputs must have matching [batch,tokens,width] shapes");
 }
 void require_cuda(const Tensor& value_tensor) {

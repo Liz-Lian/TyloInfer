@@ -13,6 +13,9 @@
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/predictor.h"
 #include "engine/state/kv_view.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -381,6 +384,122 @@ struct Mtp final : tyloi::models::Mtp {
         return result;
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Validate a predictor snapshot and retain its staged transaction. */
+    std::unique_ptr<tyloi::models::Restore> prepare_restore(
+            tyloi::models::MtpState& value, const MtpSessionState& snapshot) const override {
+        auto& state = this->state<PredictorState>(value);
+        struct Candidate final : tyloi::models::Restore {
+            const Mtp& model;
+            PredictorState& state;
+            MtpSessionState saved;
+            std::vector<std::size_t> indices;
+            std::vector<tyloi::state::KvView> caches;
+            std::vector<std::int64_t> lengths;
+
+            Candidate(const Mtp& model, PredictorState& state, const MtpSessionState& snapshot)
+                : model(model), state(state), saved(snapshot), lengths(state.lengths.size(), 0) {
+                const auto* blocks = std::get_if<std::vector<KvSnapshot>>(&saved.payload);
+                const auto* hidden = saved.last_target_hidden.representation<DenseTensor>();
+                if (saved.cache_pos <= 0 || saved.cache_pos > model.predictor_capacity() ||
+                    state.lengths.size() != 1 || state.states.size() != model.layers.size() ||
+                    !blocks || !hidden || !hidden->defined() || hidden->dim() != 3 ||
+                    hidden->size(0) != 1 || hidden->size(1) != 1 ||
+                    hidden->size(2) != model.config.hidden_size ||
+                    hidden->scalar_type() != ::tyloi::kFloat32 ||
+                    hidden->device() != ::tyloi::Device(::tyloi::kCUDA, model.primary))
+                    throw CudaSessionStateError("Nemotron-H MTP session state is incompatible");
+                for (std::size_t index = 0; index < model.layers.size(); ++index) {
+                    if (std::holds_alternative<FullAttention>(model.layers[index].weights))
+                        indices.push_back(index);
+                    else if (!std::holds_alternative<Moe>(model.layers[index].weights) ||
+                             !std::holds_alternative<std::monostate>(state.states[index]))
+                        throw CudaSessionStateError("Nemotron-H MTP session layer topology changed");
+                }
+                if (blocks->size() != indices.size())
+                    throw CudaSessionStateError("Nemotron-H MTP session layer count differs");
+                for (std::size_t i = 0; i < indices.size(); ++i) {
+                    const auto index = indices[i];
+                    const auto& layer = model.layers[index];
+                    const auto& full = std::get<FullAttention>(layer.weights);
+                    const auto* existing = std::get_if<tyloi::state::KvView>(&state.states[index]);
+                    const auto& block = (*blocks)[i];
+                    validate_kv(block);
+                    if (!existing || full.attention_head_dim <= 0 ||
+                        full.attention_head_dim > std::numeric_limits<int>::max())
+                        throw CudaSessionStateError("Nemotron-H MTP session topology changed");
+                    const auto key_width = full.kv_quantization.enabled()
+                        ? cuda_kv_packed_width(int(full.attention_head_dim), full.kv_quantization.key_bits()) : full.attention_head_dim;
+                    const auto value_width = full.kv_quantization.enabled()
+                        ? cuda_kv_packed_width(int(full.attention_head_dim), full.kv_quantization.value_bits()) : full.attention_head_dim;
+                    const auto dtype = full.kv_quantization.enabled() ? ::tyloi::kInt32
+                        : (full.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16);
+                    const auto capacity = full.sliding ? full.attention_window : model.predictor_capacity();
+                    const auto saved_tokens = full.sliding ? block.capacity : saved.cache_pos;
+                    const auto device = ::tyloi::Device(::tyloi::kCUDA, layer.device);
+                    if (block.ring != full.sliding || block.capacity > capacity ||
+                        (full.sliding && block.capacity != capacity) ||
+                        (!full.sliding && block.capacity < saved.cache_pos) ||
+                        block.k.size(1) != full.kv_heads || block.k.size(2) != saved_tokens ||
+                        block.k.size(3) != key_width || block.v.size(3) != value_width ||
+                        block.k.scalar_type() != dtype || block.k.device() != device || block.v.device() != device)
+                        throw CudaSessionStateError("Nemotron-H MTP session KV topology changed");
+                    caches.push_back(*existing);
+                }
+                lengths.front() = saved.cache_pos;
+            }
+
+            std::vector<std::pair<::tyloi::Device, std::size_t>> growth() const override {
+                std::vector<std::pair<::tyloi::Device, std::size_t>> result;
+                const auto& blocks = std::get<std::vector<KvSnapshot>>(saved.payload);
+                for (std::size_t i = 0; i < indices.size(); ++i) {
+                    const auto& block = blocks[i];
+                    const auto key = restore_prefix_bytes(caches[i].physical_key, block.k, 2, block.capacity);
+                    const auto val = restore_prefix_bytes(caches[i].physical_value, block.v, 2, block.capacity);
+                    if (key > std::numeric_limits<std::size_t>::max() - val)
+                        throw std::overflow_error("Nemotron-H MTP session allocation size overflow");
+                    const auto bytes = key + val;
+                    if (!bytes) continue;
+                    const auto device = block.k.device();
+                    auto entry = std::find_if(result.begin(), result.end(),
+                        [device](const auto& item) { return item.first == device; });
+                    if (entry == result.end()) result.emplace_back(device, bytes);
+                    else {
+                        if (entry->second > std::numeric_limits<std::size_t>::max() - bytes)
+                            throw std::overflow_error("Nemotron-H MTP session allocation size overflow");
+                        entry->second += bytes;
+                    }
+                }
+                return result;
+            }
+            void stage() override {
+                const auto& blocks = std::get<std::vector<KvSnapshot>>(saved.payload);
+                for (std::size_t i = 0; i < indices.size(); ++i) {
+                    const auto& layer = model.layers[indices[i]];
+                    const auto& full = std::get<FullAttention>(layer.weights);
+                    MfqCudaGuard guard(layer.device);
+                    const auto allocate = [&](::tyloi::Tensor& target, const ::tyloi::Tensor& source) {
+                        if (!restore_prefix_bytes(target, source, 2, blocks[i].capacity)) return;
+                        std::array<std::int64_t, 4> shape{
+                            source.size(0), source.size(1), blocks[i].capacity, source.size(3)};
+                        target = tyloi::ops::empty(shape, source.options());
+                    };
+                    allocate(caches[i].physical_key, blocks[i].k);
+                    allocate(caches[i].physical_value, blocks[i].v);
+                    restore_kv(caches[i], blocks[i], full.attention_head_dim,
+                        full.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16, full.kv_quantization);
+                }
+            }
+            void publish() noexcept override {
+                for (std::size_t i = 0; i < indices.size(); ++i)
+                    std::swap(std::get<tyloi::state::KvView>(state.states[indices[i]]), caches[i]);
+                state.lengths.swap(lengths);
+                state.batch = 1;
+            }
+        };
+        return std::make_unique<Candidate>(*this, state, snapshot);
+    }
+#else
     void restore_session_state(tyloi::models::MtpState& value,
                                const MtpSessionState &snapshot) const override {
         auto& state = this->state<PredictorState>(value);
@@ -406,6 +525,7 @@ struct Mtp final : tyloi::models::Mtp {
         }
         state.lengths.front() = snapshot.cache_pos;
     }
+#endif
 };
 
 } // namespace tyloi::cuda::nemotron_h

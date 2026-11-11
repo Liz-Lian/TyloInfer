@@ -66,6 +66,8 @@ struct Mtp {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
+    /** Validate and own a staged restore, or return null when joint restoration is unavailable. */
+    virtual std::unique_ptr<Restore> prepare_restore(MtpState&, const MtpSessionState&) const { return {}; }
     virtual void seed_target_context(MtpState& state, const Tensor& hidden, std::int64_t tokens) const {
         if (hidden.dim() != 3 || hidden.size(1) != tokens)
             throw std::runtime_error("this CUDA MTP predictor requires complete prompt context");

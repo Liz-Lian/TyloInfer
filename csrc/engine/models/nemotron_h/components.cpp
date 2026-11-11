@@ -4,6 +4,9 @@
 #include "engine/models/nemotron_h/model.h"
 #include "engine/models/nemotron_h/mtp.h"
 #include "engine/models/nemotron_h/state.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/load.h"
+#endif
 
 #include <stdexcept>
 #include <utility>
@@ -96,6 +99,19 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
     result.mtp = std::make_unique<Mtp>(std::move(*predictor));
     return result;
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+std::unique_ptr<tyloi::models::CausalModel> load(std::shared_ptr<const tyloi::ModelSource> source,
+        std::string_view definition, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+        const tyloi::models::LoadOptions& options) {
+    if (!options.cpu_offload_layers.empty())
+        throw std::invalid_argument("Nemotron-H does not support --cpu-offload-layers");
+    auto model = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    load(*model, weights, placement, options.gpu_layers, options.expert_parallel);
+    model->parts = std::make_unique<Components>(load_components(*model, weights, true));
+    return model;
+}
+#endif
 
 #ifndef TYLOINFER_NATIVE_CUDA
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(Model& language, tyloi::cache::Media&,

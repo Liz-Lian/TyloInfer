@@ -9,9 +9,11 @@
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm5_next/components.h"
 #include "engine/models/glm5_next/load.h"
+#include "engine/models/nemotron_h/components.h"
+#include "engine/models/nemotron_h/load.h"
+#include "engine/models/nemotron_h/state.h"
 #endif
 #include "engine/models/deepseek_v41/components.h"
-#include "engine/models/nemotron_h/components.h"
 #include "engine/models/common/load.h"
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
@@ -24,8 +26,6 @@
 #endif
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/deepseek_v41/state.h"
-#include "engine/models/nemotron_h/load.h"
-#include "engine/models/nemotron_h/state.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
@@ -278,6 +278,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
+#ifndef TYLOINFER_NATIVE_CUDA
         case CudaBackbone::nemotron_h: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
@@ -294,16 +295,11 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<nemotron_h::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-#ifdef TYLOINFER_NATIVE_CUDA
-            owner->parts = std::make_unique<nemotron_h::Components>(
-                nemotron_h::load_components(*owner, weights, load_optional_components));
-            std::monostate components;
-#else
             auto components = nemotron_h::load_components(*owner, weights, load_optional_components,
                 execution);
-#endif
             return finish(owner, state, executor, components, started);
         }
+#endif
         case CudaBackbone::unsupported:
             throw std::runtime_error("unsupported CUDA model backbone");
     }

@@ -17,7 +17,7 @@ bool matches(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source) {
     return true;
 }
 
-::tyloi::Tensor storage(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source) {
+::tyloi::Tensor allocate(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source) {
     if (matches(target, source)) return target;
     std::vector<int64_t> shape;
     shape.reserve(source.dim());
@@ -63,8 +63,8 @@ void Recurrent::copy(const State& source) {
     if (state_.convolution.defined()) state_.convolution.require_dense();
     if (state_.recurrent.defined()) state_.recurrent.require_dense();
     // Prepare both allocations before changing either live tensor.
-    auto convolution = storage(state_.convolution, source.convolution);
-    auto recurrent = storage(state_.recurrent, source.recurrent);
+    auto convolution = allocate(state_.convolution, source.convolution);
+    auto recurrent = allocate(state_.recurrent, source.recurrent);
     ::tyloi::ops::copy_into(convolution, source.convolution);
     ::tyloi::ops::copy_into(recurrent, source.recurrent);
     state_ = {std::move(convolution), std::move(recurrent), source.transposed};

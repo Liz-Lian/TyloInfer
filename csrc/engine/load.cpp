@@ -11,8 +11,8 @@
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/deepseek_v4/forward.h"
 #include "engine/models/glm5_next/forward.h"
-#endif
 #include "engine/models/nemotron_h/forward.h"
+#endif
 #include "engine/models/source/model_graph.h"
 #include "engine/instance_impl.h"
 #include "engine/drain.h"
@@ -56,17 +56,13 @@ using State = std::variant<
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
+    std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, nemotron_h::Components>>,
 #endif
     std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State, std::monostate>>,
 #endif
-    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>,
-#ifdef TYLOINFER_NATIVE_CUDA
-    std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, std::monostate>>>;
-#else
-    std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, nemotron_h::Components>>>;
-#endif
+    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>>;
 
 } // namespace tyloi::cuda::engine_detail
 
