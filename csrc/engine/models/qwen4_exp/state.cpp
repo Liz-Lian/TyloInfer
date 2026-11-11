@@ -457,7 +457,6 @@ public:
         layers_.reserve(snapshot.layers.size());
         for(std::size_t i=0;i<snapshot.layers.size();++i) {
             const auto& block=*owner_.model_.layers[i];
-            MfqCudaGuard guard(block.cuda_device);
             layers_.push_back(std::make_unique<LayerState>(block));
             stage_layer_session(block,*layers_.back(),snapshot.layers[i],saved_.cache_pos);
         }

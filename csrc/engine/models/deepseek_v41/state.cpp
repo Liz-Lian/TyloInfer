@@ -242,8 +242,13 @@ std::vector<::tyloi::Tensor> State::storage() const {
         if (hidden.defined()) result.push_back(hidden);
     for (const auto& engram : shared->engram_states) {
         if (!engram) continue;
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto buffers = engram->storage();
+        result.insert(result.end(),buffers.begin(),buffers.end());
+#else
         auto buffer = engram->storage();
         if (buffer.defined()) result.push_back(std::move(buffer));
+#endif
     }
     return result;
 }
@@ -410,6 +415,10 @@ public:
             throw CudaSessionStateError("DeepSeek-V4.1 text session state is incompatible");
         hash_=std::make_unique<deepseek_v41_runtime::EngramHashState>(*owner.shared->engram_hash);
         hash_->restore(*saved->engram);
+        for(const auto& engram:owner.shared->engram_states)if(engram) {
+            auto buffers=engram->storage();
+            engram_storage_.insert(engram_storage_.end(),buffers.begin(),buffers.end());
+        }
         for(std::size_t i=0;i<saved->blocks.size();++i) {
             const auto& b=*owner.model_.blocks[i];
             auto& layer=layers_.at(static_cast<std::size_t>(b.layer)).attention;
@@ -460,6 +469,7 @@ public:
     void publish() noexcept override {
         auto& s=*owner_.shared;
         s.layers.swap(layers_); s.engram_hash.swap(hash_);
+        for(auto& engram:s.engram_states)if(engram)engram->clear();
         std::swap(s.attention,attention_);
         std::swap(s.ced_source,ced_source_); std::swap(s.attention_input,attention_input_);
         std::swap(s.attention_positions,attention_positions_); std::swap(s.attention_lengths,attention_lengths_);
@@ -489,6 +499,7 @@ private:
     std::vector<deepseek_v41_runtime::LayerState> layers_;
     std::unique_ptr<deepseek_v41_runtime::EngramHashState> hash_;
     Growth growth_;
+    std::vector<tyloi::Tensor> engram_storage_;
     tyloi::ops::Csa::Shared attention_;
     tyloi::Tensor ced_source_{DenseTensor{}}, attention_input_{DenseTensor{}},
         attention_positions_{DenseTensor{}}, attention_lengths_{DenseTensor{}};

@@ -819,7 +819,6 @@ std::unique_ptr<tyloi::models::Restore> Predictor::prepare_restore(
         void stage() override {
             const auto& data = std::get<tyloi::models::qwen4_exp::MtpSnapshot>(saved.payload);
             for (std::size_t i = 0; i < owner.layers.size(); ++i) {
-                MfqCudaGuard guard(owner.layers[i]->cuda_device);
                 layers[i] = std::make_unique<LayerState>(*owner.layers[i]);
                 if (!lengths[i]) continue;
                 stage_layer_session(*owner.layers[i], *layers[i], data.layers[i], lengths[i]);

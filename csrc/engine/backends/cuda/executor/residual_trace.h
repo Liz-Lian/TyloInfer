@@ -12,6 +12,14 @@ public:
     ~ResidualTrace() { if (window_) window_->commit_residual_trace(data_); }
     ResidualTrace(const ResidualTrace&) = delete;
     ResidualTrace& operator=(const ResidualTrace&) = delete;
+    /** Publish recorded points and enforce the profiling capacity. */
+    void finish() {
+        if (!window_) return;
+        auto* window=window_;
+        window_=nullptr;
+        window->commit_residual_trace(data_);
+        window->validate_residual_trace();
+    }
     ResidualTraceData& data() noexcept { return data_; }
 private:
     DecodeWindow* window_;

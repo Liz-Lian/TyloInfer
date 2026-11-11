@@ -271,6 +271,7 @@ ResidualCore::Result ResidualCore::fused(const DenseTensor& input,const DenseTen
         payload_as<tyloi::NintTensor>(up.weight),
         injection_nint,streams,eps,after,
         injection_dense ? *injection_dense : DenseTensor{},injection.prepared_right,&trace.data(),up.up_group_coefficients);
+    trace.finish();
     return {std::move(result[0]),std::move(result[1]),std::move(result[2])};
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");

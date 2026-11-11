@@ -256,6 +256,7 @@ set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rows.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/compact.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/mhc.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/engram.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mlp.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/dense.cpp

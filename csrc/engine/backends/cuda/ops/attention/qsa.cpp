@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
+#include <optional>
 #include <utility>
 
 namespace tyloi::ops {
@@ -30,9 +31,11 @@ void publish(std::vector<Tensor>& owners, const std::vector<DenseTensor>& values
 } // namespace
 
 struct Qsa::Impl {
+    Device device;
     detail::QsaCore core;
     Impl(QsaWeights weights, QsaConfig config)
-        : core(std::make_shared<const QsaWeights>(std::move(weights)), config,
+        : device(config.device),
+          core(std::make_shared<const QsaWeights>(std::move(weights)), config,
                std::make_shared<cuda::RotaryEmbedding>(config.rotary, config.maximum, config.rope_base,
                    config.sections, config.interleaved, cuda::options::rotary_fusion().value_or(true), config.yarn),
                true, true) {}
@@ -50,7 +53,11 @@ Qsa::Qsa(QsaWeights weights, QsaConfig config)
 Qsa::~Qsa() = default;
 Qsa::Qsa(Qsa&&) noexcept = default;
 Qsa& Qsa::operator=(Qsa&&) noexcept = default;
-Qsa::State::State(const Qsa& model) : impl_(std::make_unique<Impl>(model.impl_->core)) {}
+Qsa::State::State(const Qsa& model) {
+    std::optional<MfqCudaGuard> guard;
+    if (model.impl_->device.is_cuda()) guard.emplace(model.impl_->device);
+    impl_ = std::make_unique<Impl>(model.impl_->core);
+}
 Qsa::State::~State() = default;
 Qsa::State::State(State&&) noexcept = default;
 Qsa::State& Qsa::State::operator=(State&&) noexcept = default;
@@ -80,15 +87,21 @@ std::size_t Qsa::fresh_session_growth(const State& state, std::int64_t count) co
     return impl_->core.fresh_session_growth(state.impl_->cache, count);
 }
 void Qsa::stage_session(State& state, const Snapshot& snapshot, std::int64_t count) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     impl_->core.stage_session(state.impl_->cache, snapshot, count);
 }
 std::size_t Qsa::session_bytes(const State& state, std::int64_t count) const {
     return impl_->core.session_bytes(state.impl_->cache, count);
 }
 void Qsa::capture_session(const State& state, Snapshot& snapshot, std::int64_t count, std::size_t& bytes) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     impl_->core.capture_session(state.impl_->cache, snapshot, count, bytes);
 }
 void Qsa::restore_session(State& state, const Snapshot& snapshot, std::int64_t count) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->device.is_cuda()) guard.emplace(impl_->device);
     impl_->core.restore_session(state.impl_->cache, snapshot, count);
 }
 std::vector<Tensor> Qsa::resident_cache_tensors(const State& state) const {

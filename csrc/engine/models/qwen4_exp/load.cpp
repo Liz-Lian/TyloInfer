@@ -173,6 +173,7 @@ struct LayerLoader : tyloi::weights::Loader {
 #ifdef TYLOINFER_NATIVE_CUDA
         tyloi::ops::QsaConfig geometry{c.heads,c.kv_heads,c.width,c.index_heads,c.index_width,
             c.pool,c.budget,c.maximum,c.eps,c.rotary,c.rope_base,c.sections,c.interleaved,yarn};
+        geometry.device=tyloi::Device(tyloi::kCUDA,placement.device);
 #else
         QsaConfig geometry{c.heads, c.kv_heads, c.width, c.index_heads, c.index_width,
                            c.pool, c.budget, c.maximum, c.eps};

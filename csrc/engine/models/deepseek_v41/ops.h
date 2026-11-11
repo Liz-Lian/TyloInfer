@@ -176,6 +176,7 @@ struct SharedState {
         attention = {};
         ced_source.dense() = {};
         attention_input.dense() = {}; attention_positions.dense() = {}; attention_lengths.dense() = {};
+        for(auto& engram:engram_states)if(engram)engram->clear();
 #else
         compressed_kv = DenseTensor();
         index_k = DenseTensor();

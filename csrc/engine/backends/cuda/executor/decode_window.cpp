@@ -114,9 +114,14 @@ struct DecodeWindow::LayerPoint {
 DecodeWindow* DecodeWindow::recording() noexcept { return active; }
 struct DecodeWindow::ProfileClock {
     static constexpr std::size_t capacity=32768;
+#ifdef TYLOINFER_NATIVE_CUDA
+    static constexpr std::size_t physical_capacity=capacity+ResidualTraceData::count;
+#else
+    static constexpr std::size_t physical_capacity=capacity;
+#endif
     uint64_t* device=nullptr;
-    std::vector<uint64_t> host=std::vector<uint64_t>(capacity);
-    ProfileClock(){TYLOINFER_NATIVE_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device),capacity*sizeof(uint64_t)));}
+    std::vector<uint64_t> host=std::vector<uint64_t>(physical_capacity);
+    ProfileClock(){TYLOINFER_NATIVE_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device),physical_capacity*sizeof(uint64_t)));}
     ~ProfileClock(){if(device)(void)cudaFree(device);}
 };
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -225,16 +230,19 @@ void DecodeWindow::mark(int layer,const char* phase) {
     auto found=layer_point_index_.find(key);
     if(found==layer_point_index_.end()) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if(profile_clock_ && free_profile_slots_.empty() && next_profile_slot_>=ProfileClock::capacity)
+        if(profile_clock_ && free_profile_slots_.empty() && next_profile_slot_>=ProfileClock::physical_capacity)
 #else
         if(profile_clock_ && layer_points_.size()>=ProfileClock::capacity)
 #endif
             throw std::runtime_error("GPU stage profile exceeds timestamp capacity");
         auto point=std::make_unique<LayerPoint>(layer,profile_tile_,phase,bool(profile_clock_));
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (free_profile_slots_.empty()) point->slot=next_profile_slot_++;
-        else { point->slot=free_profile_slots_.back(); free_profile_slots_.pop_back(); }
-        found=layer_point_index_.emplace(key,point.get()).first;pending_points_.push_back(std::move(point));
+        pending_points_.reserve(pending_points_.size()+1);
+        const bool fresh=free_profile_slots_.empty();
+        point->slot=fresh ? next_profile_slot_ : free_profile_slots_.back();
+        found=layer_point_index_.emplace(key,point.get()).first;
+        if (fresh) ++next_profile_slot_; else free_profile_slots_.pop_back();
+        pending_points_.push_back(std::move(point));
 #else
         found=layer_point_index_.emplace(key,point.get()).first;layer_points_.push_back(std::move(point));
 #endif
@@ -254,6 +262,8 @@ void DecodeWindow::publish_point(LayerPoint* point) noexcept {
 void DecodeWindow::mark(int layer,const char* phase) {
     auto* point=declare_point(layer,phase);
     if (!point) return;
+    if (profile_clock_ && !point->published && layer_points_.size()>=ProfileClock::capacity)
+        throw std::runtime_error("GPU stage profile exceeds timestamp capacity");
     layer_points_.reserve(layer_points_.size()+1);
     publish_point(point);
     if(profile_clock_) { record_gpu_timestamp(profile_clock_->device,point->slot,stream_); return; }
@@ -295,6 +305,10 @@ void DecodeWindow::commit_residual_trace(const ResidualTraceData& trace) noexcep
         free_profile_slots_.push_back(point->slot);
         pending_points_.erase(it);
     }
+}
+void DecodeWindow::validate_residual_trace() const {
+    if (profile_clock_ && layer_points_.size()>ProfileClock::capacity)
+        throw std::runtime_error("GPU stage profile exceeds timestamp capacity");
 }
 #else
     if(profile_clock_) {

@@ -111,6 +111,8 @@ public:
     ResidualTraceData prepare_residual_trace(tyloi::ops::ResidualRole role);
     /** Publish the points actually recorded by the fused launch. */
     void commit_residual_trace(const ResidualTraceData& trace) noexcept;
+    /** Reject a fused launch that published more profiling points than the clock supports. */
+    void validate_residual_trace() const;
 #endif
     int set_profile_tile(int tile) noexcept {const int previous=profile_tile_;profile_tile_=tile;return previous;}
     void set_profile_geometry(const char* role,int rows) {profile_role_=role;profile_rows_=rows;}

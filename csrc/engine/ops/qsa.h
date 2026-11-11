@@ -26,6 +26,8 @@ struct QsaConfig {
     std::vector<std::int64_t> sections;
     bool interleaved;
     YarnScaling yarn;
+    /** Execution target, independent of host-resident projection weights. */
+    Device device = Device(kCUDA, 0);
 };
 
 /** Execute pooled sparse attention using an independently owned request state. */
