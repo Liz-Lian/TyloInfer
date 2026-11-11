@@ -28,11 +28,6 @@ void publish(std::vector<Tensor>& owners, const std::vector<DenseTensor>& values
     for (const auto& value : values) result.push_back(hold(value));
     owners = std::move(result);
 }
-std::vector<Tensor> hold(std::vector<DenseTensor> values) {
-    std::vector<Tensor> result;
-    publish(result, std::move(values));
-    return result;
-}
 DenseTensor optional_view(const Tensor& value) {
     if (value.defined() && !value.representation<DenseTensor>())
         throw std::invalid_argument("GDN activation must be dense");
@@ -106,18 +101,32 @@ std::vector<Tensor> Gdn::storage(const State& state) const {
     return result;
 }
 std::vector<Tensor> Gdn::project_inputs(const Tensor& input) const {
-    return hold(impl_->core.project_inputs(input.dense()));
+    std::vector<Tensor> result;
+    result.reserve(4);
+    for (int i=0; i<4; ++i) result.emplace_back(DenseTensor{});
+    auto values=impl_->core.project_inputs(input.dense());
+    if (values.size()!=result.size()) throw std::logic_error("GDN projection count changed");
+    for (std::size_t i=0; i<values.size(); ++i) result[i].dense()=std::move(values[i]);
+    return result;
 }
-Tensor Gdn::project_output(const Tensor& input) const { return hold(impl_->core.project_output(input.dense())); }
+Tensor Gdn::project_output(const Tensor& input) const {
+    Tensor result{DenseTensor{}};
+    result.dense()=impl_->core.project_output(input.dense());
+    return result;
+}
 Tensor Gdn::prepare_independent_batch(const std::vector<std::pair<const Gdn*, State*>>& rows) {
+    Tensor result{DenseTensor{}};
     std::vector<std::pair<const detail::GdnCore*, State*>> cores;
     cores.reserve(rows.size());
     for (const auto& [gdn, state] : rows) cores.emplace_back(&gdn->impl_->core, state);
-    return hold(detail::GdnCore::prepare_independent_batch(cores));
+    result.dense()=detail::GdnCore::prepare_independent_batch(cores);
+    return result;
 }
 Tensor Gdn::forward_independent_batch(State& state, const Tensor& input,
         const std::vector<Tensor>& projections, const Tensor& addresses) const {
-    return hold(impl_->core.forward_independent_batch(state, input.dense(), views(projections), optional_view(addresses)));
+    Tensor result{DenseTensor{}};
+    result.dense()=impl_->core.forward_independent_batch(state, input.dense(), views(projections), optional_view(addresses));
+    return result;
 }
 Tensor Gdn::forward_graph(State& state, const Tensor& input, std::int64_t confirmed,
         std::vector<Tensor>& checkpoint_conv, std::vector<Tensor>& checkpoint_state) const {
@@ -142,12 +151,16 @@ void Gdn::bind_graph_checkpoint(State& state, const std::vector<Tensor>& conv,
 }
 Tensor Gdn::forward(State& state, const Tensor& input, bool cache, std::int64_t confirmed,
                     std::int64_t cache_position) const {
-    return hold(impl_->core.forward(state, input.dense(), cache, confirmed, cache_position));
+    Tensor result{DenseTensor{}};
+    result.dense()=impl_->core.forward(state, input.dense(), cache, confirmed, cache_position);
+    return result;
 }
 Tensor Gdn::forward_chunk(State& state, const Tensor& input, bool cache, std::vector<Tensor> projections,
         bool project_output, Tensor checkpoint_conv, Tensor checkpoint_state, bool* snapshot_written) const {
-    return hold(impl_->core.forward_chunk(state, input.dense(), cache, views(projections), project_output,
-        optional_view(checkpoint_conv), optional_view(checkpoint_state), snapshot_written));
+    Tensor result{DenseTensor{}};
+    result.dense()=impl_->core.forward_chunk(state, input.dense(), cache, views(projections), project_output,
+        optional_view(checkpoint_conv), optional_view(checkpoint_state), snapshot_written);
+    return result;
 }
 } // namespace tyloi::ops
 #endif

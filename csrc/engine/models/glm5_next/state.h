@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/common/attention_ops.h"
+#include "engine/backends/cuda/ops/attention/sequence.h"
 #include "engine/models/state.h"
 #include "engine/models/session/snapshot.h"
 #include <cstdint>
@@ -28,7 +29,7 @@ struct KdaState {
 };
 
 struct MlaState {
-    attention_ops::SequenceCache latent, index;
+    ::tyloi::cuda::SequenceCache latent, index;
     MlaState(int64_t maximum, int64_t width, int64_t index_width)
         : latent(maximum, width), index(maximum, 2 * index_width) {}
     void reset() { latent.reset(); index.reset(); }

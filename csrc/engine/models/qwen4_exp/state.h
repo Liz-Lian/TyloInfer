@@ -25,7 +25,11 @@ struct LayerState {
 #else
     Gdn::State gdn;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<tyloi::ops::Qsa::State> qsa;
+#else
     std::unique_ptr<Qsa::State> qsa;
+#endif
     Ple::State ple;
     bool retain_graph_storage = false, retained_prefix = false;
 

@@ -25,7 +25,11 @@ struct Layer final {
 #else
     std::unique_ptr<Gdn> gdn;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<tyloi::ops::Qsa> qsa;
+#else
     std::unique_ptr<Qsa> qsa;
+#endif
     std::unique_ptr<Ple> ple;
 };
 

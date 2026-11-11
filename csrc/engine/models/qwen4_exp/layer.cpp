@@ -31,7 +31,11 @@ DenseTensor forward(const Layer& weights, LayerState& request,
         })
         : measure("prefill.qsa", [&] {
             return weights.qsa->forward(*request.qsa, attention_input, positions,
-                                        full_positions, true);
+                                        full_positions, true)
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                ;
         });
     auto [ffn_input, ffn_residual, ffn_gate] = measure(
         "prefill.gr_ffn_pre", [&] {
@@ -70,7 +74,11 @@ DenseTensor prefill_attention_core(const Layer& weights, LayerState& request,
                 ;
         })
         : measure("prefill.qsa", [&] {
-            return weights.qsa->forward(*request.qsa, input, positions, full_positions, true);
+            return weights.qsa->forward(*request.qsa, input, positions, full_positions, true)
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                ;
         });
 }
 

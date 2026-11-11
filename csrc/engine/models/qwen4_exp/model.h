@@ -10,18 +10,24 @@
 #include "engine/ops.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/gdn.h"
+#include "engine/ops/qsa.h"
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/rope/rope.h"
+#include "engine/backends/cuda/ops/attention/sequence.h"
+#endif
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/kernels/ple_fused.h"
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/nint_row_pipeline.h"
 #endif
 #include "engine/weights/row_stage.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/state/kv_offload.h"
 #include "engine/state/kv_memory.h"
-#include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
+#endif
+#include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/models/session/snapshot.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 #include <array>
@@ -39,8 +45,6 @@ using attention_ops::DenseTensor;
 using attention_ops::Linear;
 using attention_ops::Embedding;
 using attention_ops::rms_norm;
-using attention_ops::SequenceCache;
-using attention_ops::select_pooled_blocks;
 
 #ifndef TYLOINFER_NATIVE_CUDA
 struct GdnWeights {
@@ -1211,6 +1215,7 @@ class Ple {
     double eps_;
 };
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct QsaWeights {
     std::vector<::tyloi::Tensor> input_projection;
     ::tyloi::Tensor output;
@@ -2219,4 +2224,5 @@ class Qsa {
     std::shared_ptr<KvMemoryManager> memory_manager_;
 #endif
 };
+#endif
 } // namespace tyloi::cuda::qwen4_exp

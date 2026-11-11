@@ -42,7 +42,9 @@ struct LayerLoader : tyloi::weights::Loader {
 #ifndef TYLOINFER_NATIVE_CUDA
     using GdnWeights = qwen4_exp::GdnWeights;
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
     using QsaWeights = qwen4_exp::QsaWeights;
+#endif
     using PleWeights = qwen4_exp::PleWeights;
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::YarnScaling yarn;
@@ -113,7 +115,11 @@ struct LayerLoader : tyloi::weights::Loader {
         return w;
     }
     auto qsa_weights(const std::string &p) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::QsaWeights w;
+#else
         QsaWeights w;
+#endif
         for(const auto* name:{"query","key","value"})
             w.input_projection.push_back(weight(p+"."+name+".weight"));
         w.input_projection.push_back(weight(p+".indexer.query_key.weight"));
@@ -154,22 +160,23 @@ struct LayerLoader : tyloi::weights::Loader {
                                      executor.options().gdn_fused_core);
 #endif
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto qsa(tyloi::ops::QsaWeights weights, const Config &c) const {
+#else
     auto qsa(QsaWeights weights, const Config &c) const {
+#endif
         weights.input_projection=tyloi::weights::pack_projections(std::move(weights.input_projection),
             options.grouped,placement.cpu);
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::QsaConfig geometry{c.heads,c.kv_heads,c.width,c.index_heads,c.index_width,
+            c.pool,c.budget,c.maximum,c.eps,c.rotary,c.rope_base,c.sections,c.interleaved,yarn};
+#else
         QsaConfig geometry{c.heads, c.kv_heads, c.width, c.index_heads, c.index_width,
                            c.pool, c.budget, c.maximum, c.eps};
-#ifdef TYLOINFER_NATIVE_CUDA
-        constexpr bool default_rotary_fusion = true;
-#else
         constexpr bool default_rotary_fusion = false;
-#endif
         auto rotary = std::make_shared<RotaryEmbedding>(c.rotary, c.maximum, c.rope_base,
             c.sections, c.interleaved,
             ::tyloi::cuda::options::rotary_fusion().value_or(default_rotary_fusion),
-#ifdef TYLOINFER_NATIVE_CUDA
-            yarn);
-#else
             execution.config.yarn);
 #endif
         for(auto* norm:{&weights.query_norm,&weights.key_norm,&weights.index_query_norm,&weights.index_key_norm})
@@ -178,10 +185,10 @@ struct LayerLoader : tyloi::weights::Loader {
 #else
             if(norm->defined())*norm=norm->to(::tyloi::kFloat32).contiguous();
 #endif
-        auto shared=std::make_shared<const QsaWeights>(std::move(weights));
 #ifdef TYLOINFER_NATIVE_CUDA
-        return std::make_unique<Qsa>(std::move(shared), geometry, std::move(rotary), true, true);
+        return std::make_unique<tyloi::ops::Qsa>(std::move(weights),std::move(geometry));
 #else
+        auto shared=std::make_shared<const QsaWeights>(std::move(weights));
         return std::make_unique<Qsa>(std::move(shared), geometry, std::move(rotary), true, true, execution.offload, execution.kv);
 #endif
     }

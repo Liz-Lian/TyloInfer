@@ -19,8 +19,6 @@ using attention_ops::DenseTensor;
 using attention_ops::Linear;
 using attention_ops::Embedding;
 using attention_ops::rms_norm;
-using attention_ops::SequenceCache;
-using attention_ops::select_pooled_blocks;
 
 #ifdef TYLOINFER_NATIVE_CUDA
 using Parameter = ::tyloi::Tensor;

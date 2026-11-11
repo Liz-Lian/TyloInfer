@@ -82,8 +82,7 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
         const auto device = tyloi::Device(tyloi::DeviceType::cuda, weights.cuda_device);
         if (weights.qsa) {
             add(result, device, multiply(weights.qsa->growth_bytes(*layer.qsa, tokens), std::size_t(batch)));
-            if (layer.qsa->graph_keys.defined() && !weights.qsa->managed_memory(*layer.qsa))
-                add(result, device, multiply(weights.qsa->session_bytes(*layer.qsa,cache_pos+tokens),2));
+            add(result, device, weights.qsa->exit_growth(*layer.qsa,tokens));
         }
         if (weights.gdn) {
             add(result, device, multiply(weights.gdn->request_cache_growth_bytes(layer.gdn), std::size_t(batch)));
@@ -110,7 +109,11 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
 
 LayerState::LayerState(const Layer& layer) {
     if (layer.qsa)
+#ifdef TYLOINFER_NATIVE_CUDA
+        qsa = std::make_unique<tyloi::ops::Qsa::State>(*layer.qsa);
+#else
         qsa = std::make_unique<Qsa::State>(*layer.qsa);
+#endif
 }
 
 void LayerState::reset(const Layer& layer) {
@@ -159,7 +162,15 @@ tyloi::models::qwen4_exp::LayerSnapshot capture_layer_session(
         return saved;
     };
     if (layer.qsa)
+#ifdef TYLOINFER_NATIVE_CUDA
+    {
+        tyloi::ops::Qsa::Snapshot saved;
+        layer.qsa->capture_session(*state.qsa,saved,position,bytes);
+        snapshot.keys=std::move(saved.keys);snapshot.values=std::move(saved.values);snapshot.index=std::move(saved.index);
+    }
+#else
         layer.qsa->capture_session(*state.qsa, snapshot, position, bytes);
+#endif
     if (layer.gdn) {
         snapshot.convolution = save(state.gdn.conv.dense());
         snapshot.recurrent = save(state.gdn.recurrent.dense());
@@ -208,7 +219,7 @@ void validate_layer_session(const Layer& layer, const LayerState& current,
     };
     if (layer.qsa) {
         TYLOINFER_RUNTIME_CHECK(current.qsa, "Qwen4 QSA state is unavailable");
-        layer.qsa->validate_session(*current.qsa,saved,position,device);
+        layer.qsa->validate_session(*current.qsa,{saved.keys,saved.values,saved.index},position,device);
     } else TYLOINFER_RUNTIME_CHECK(!saved.keys && !saved.values && !saved.index,
         "unexpected Qwen4 QSA snapshot");
     const auto& c=layer.config;
@@ -241,7 +252,7 @@ std::size_t layer_restore_growth(const Layer& layer, const LayerState& current,
 
 void stage_layer_session(const Layer& layer, LayerState& candidate,
         const tyloi::models::qwen4_exp::LayerSnapshot& saved, std::int64_t position) {
-    if (layer.qsa) layer.qsa->stage_session(*candidate.qsa,saved,position);
+    if (layer.qsa) layer.qsa->stage_session(*candidate.qsa,{saved.keys,saved.values,saved.index},position);
     const auto copy=[](tyloi::Tensor& target,const tyloi::Tensor& source) {
         target=tyloi::ops::empty(source.dense().sizes(),source.options());
         tyloi::ops::copy_into(target,source);
@@ -306,6 +317,9 @@ std::vector<::tyloi::Tensor> State::storage() const {
             for(const auto& value:ple.saved_prefix_conv)add(value);
         }
         if(block.qsa) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            for(const auto& value:block.qsa->storage(*layer.qsa)) add(value);
+#else
             const auto& qsa=*layer.qsa;
             add(qsa.keys.storage());add(qsa.values.storage());add(qsa.index.storage());
             add(qsa.graph_keys);add(qsa.graph_values);add(qsa.graph_pooled);add(qsa.graph_index);
@@ -316,6 +330,7 @@ std::vector<::tyloi::Tensor> State::storage() const {
                 add(hot.epochs);add(hot.queue);add(hot.control);add(hot.cold_keys);add(hot.cold_values);
                 add(hot.cold_mapping);add(hot.free_cold);add(hot.free_gpu);add(hot.cold_control);
             }
+#endif
         }
     }
     return result;
