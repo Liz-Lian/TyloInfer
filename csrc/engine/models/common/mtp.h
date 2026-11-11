@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <variant>
 
 namespace tyloi::models {
 
@@ -22,6 +23,11 @@ struct MtpStep {
 
 // Predictor weights and math use the explicit state owned by the request.
 struct Mtp {
+    struct Step { Tensor ids; };
+    struct Context { Tensor hidden; std::int64_t position; bool seed; };
+    struct Draft { Tensor ids; int depth; };
+    /** Describe the actual predictor operation whose allocations are being planned. */
+    using Input = std::variant<Step, Context, Draft>;
     virtual ~Mtp() = default;
     virtual std::unique_ptr<MtpState> make_state() const = 0;
     virtual void reset(MtpState& state, int64_t batch = 1) const = 0;
@@ -29,7 +35,7 @@ struct Mtp {
     virtual std::vector<std::pair<Device, std::size_t>> reset_growth(const MtpState&, int64_t) const { return {}; }
     /** Estimate device backing allocated by the next predictor step. */
     virtual std::vector<std::pair<Device, std::size_t>> growth(
-        const MtpState&, const Tensor&) const {
+        const MtpState&, const Input&) const {
         throw std::logic_error("predictor allocation planning is unsupported");
     }
     virtual MtpStep step(

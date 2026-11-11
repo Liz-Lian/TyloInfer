@@ -21,6 +21,8 @@ namespace tyloi::models {
 
 /** State whether decode capture needs resident weights or can capture managed weight access. */
 enum class GraphWeights { captured, resident };
+/** Select ordinary chunks or a merged logical span with model-owned internal tiles. */
+enum class PrefillPolicy { chunked, merged };
 
 struct Info {
     std::int64_t vocab_size;
@@ -30,6 +32,7 @@ struct Info {
     bool decode_graph;
     bool double_warmup;
     GraphWeights graph_weights = GraphWeights::captured;
+    PrefillPolicy prefill = PrefillPolicy::chunked;
 };
 
 struct CausalLmMetadata {

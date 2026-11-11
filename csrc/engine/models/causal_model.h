@@ -42,6 +42,8 @@ public:
     virtual Tensor logits(const Tensor& hidden, bool capped = true) const = 0;
     /** Run a model step in the owner's execution scope, updating only the supplied request State. */
     virtual Tensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
+    /** Run model-owned prefill phases; an empty sequence selects the ordinary forward path. */
+    virtual tyloi::StepSequence<Prefill> prefill(Input, State&, const ForwardOptions&, std::int64_t) const { return {}; }
 };
 
 } // namespace tyloi::models

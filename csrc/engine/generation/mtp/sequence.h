@@ -189,6 +189,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 PrefillActivity activity;
                 return ops.prefill(chunk);
             }();
+            if (output.stopped()) co_return;
             hidden = std::move(step.hidden);
             if (stream_prompt_history) {
                 if (offset == static_cast<int64_t>(reused_tokens) && reused_tokens > 0)
@@ -446,14 +447,20 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             };
             if (mtp.blockwise_drafting()) {
                 if (!initial) {
-                    mtp.append_target_context(predictor, hidden_rows, predictor_history_position);
+                    if constexpr (requires { ops.append_target_context(hidden_rows, predictor_history_position); })
+                        ops.append_target_context(hidden_rows, predictor_history_position);
+                    else mtp.append_target_context(predictor, hidden_rows, predictor_history_position);
                     predictor_history_position += static_cast<int64_t>(next_ids.size());
                 }
                 require_execution(predictor.position() == predictor_history_position,
                     "block predictor cache did not advance");
                 if (requested_depth > 0) {
-                    auto block_result = mtp.draft_block(predictor,
-                        ops.ids_for({next_ids.back()}), requested_depth);
+                    auto block_result = [&] {
+                        auto ids = ops.ids_for({next_ids.back()});
+                        if constexpr (requires { ops.draft_block(ids, requested_depth); })
+                            return ops.draft_block(std::move(ids), requested_depth);
+                        else return mtp.draft_block(predictor, ids, requested_depth);
+                    }();
 #ifdef TYLOINFER_NATIVE_CUDA
                     const auto& block = block_result;
 #else
@@ -790,7 +797,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     require_execution(rows>=0 && rows<=ops.size(verified_raw,1),
                         "block predictor final target boundary is incompatible");
                     if(rows>0) {
-                        mtp.append_target_context(predictor, ops.slice(verified_raw,1,0,rows),predictor_history_position);
+                        auto context = ops.slice(verified_raw,1,0,rows);
+                        if constexpr (requires { ops.append_target_context(context, predictor_history_position); })
+                            ops.append_target_context(std::move(context), predictor_history_position);
+                        else mtp.append_target_context(predictor, context, predictor_history_position);
                         predictor_history_position+=rows;
                     }
                 } else if (mtp.teacher_forced_prompt_prime() && !delta.token_ids.empty()) {

@@ -7,6 +7,7 @@
 namespace tyloi::cuda::deepseek_v41 {
 using Model = deepseek_v41::Model;
 
+#ifndef TYLOINFER_NATIVE_CUDA
 template<class Ops, class Chunk, class Tensor, class Timer, class Finish>
 std::optional<typename Ops::PrefillResult> mtp_prefill(Model& model, Ops& ops, const Chunk& chunk,
                                                       Tensor& ids, Tensor& raw, Timer& timer, const Finish& finish_prefill) {
@@ -19,12 +20,6 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(Model& model, Ops& ops, c
         auto encoded=deepseek_v41_prefill_encode(model,ops.state,input,ops.prefill_compute_chunk,stopped,true);
         if(encoded && priority) priority->finish();
         priority.reset();
-#ifdef TYLOINFER_NATIVE_CUDA
-        auto hidden=encoded ? deepseek_v41_prefill_decode(model,ops.state,std::move(*encoded),stopped,&raw)
-                            : ::tyloi::Tensor{};
-        finish_prefill();
-        return typename Ops::PrefillResult{std::move(hidden),std::move(raw),timer.elapsed_ms()};
-#else
         ::tyloi::Tensor raw_result;
         auto hidden=encoded ? deepseek_v41_prefill_decode(model,ops.state,std::move(*encoded),stopped,&raw_result)
                             : ::tyloi::Tensor{};
@@ -32,9 +27,9 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(Model& model, Ops& ops, c
         finish_prefill();
         return typename Ops::PrefillResult{hidden ? std::move(hidden.dense()) : Tensor{},
                                            std::move(raw),timer.elapsed_ms()};
-#endif
     }
     return std::nullopt;
 }
+#endif
 
 } // namespace tyloi::cuda::deepseek_v41

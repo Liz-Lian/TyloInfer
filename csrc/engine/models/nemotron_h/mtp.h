@@ -166,7 +166,10 @@ struct Mtp final : tyloi::models::Mtp {
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Plan new predictor KV backing for the next step without allocating it. */
     std::vector<std::pair<::tyloi::Device, std::size_t>> growth(
-            const tyloi::models::MtpState& value, const ::tyloi::Tensor& next_ids) const override {
+            const tyloi::models::MtpState& value, const tyloi::models::Mtp::Input& input) const override {
+        const auto* step = std::get_if<tyloi::models::Mtp::Step>(&input);
+        if (!step) throw std::invalid_argument("Nemotron-H predictor requires a step operation");
+        const auto& next_ids = step->ids;
         const auto& state = this->state<PredictorState>(value);
         TYLOINFER_RUNTIME_CHECK(next_ids.defined() && next_ids.dim() == 2 &&
             next_ids.size(0) > 0 && next_ids.size(1) > 0 && !state.lengths.empty() &&

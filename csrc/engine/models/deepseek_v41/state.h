@@ -3,6 +3,9 @@
 #include "engine/models/state.h"
 #include "engine/models/session/snapshot.h"
 #include "engine/models/session/size.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/state/media.h"
+#endif
 
 #include <memory>
 #include <vector>
@@ -73,6 +76,9 @@ public:
     void rollback_speculative(std::int64_t accepted) override;
 
     std::unique_ptr<deepseek_v41_runtime::SharedState> shared;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::cache::Media media;
+#endif
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
     std::int64_t batch = 0;

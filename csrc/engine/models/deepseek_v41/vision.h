@@ -16,7 +16,14 @@ public:
     using DenseTensor = ::tyloi::DenseTensor;
 #endif
     static Vision load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,const CommonConfig& config);
-    tyloi::StepSequence<tyloi::models::Prepared> prepare(deepseek_v41::Model& language, tyloi::cache::Media& images,
+    /** Prepare vision embeddings and participation masks using the owning request's media cache. */
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(
+#ifdef TYLOINFER_NATIVE_CUDA
+        const deepseek_v41::Model& language,
+#else
+        deepseek_v41::Model& language,
+#endif
+        tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector,
 #endif

@@ -185,9 +185,9 @@ void State::set_image_mask(::tyloi::Tensor mask) {
     const auto* flags=dense.data_ptr<uint8_t>();
     for(int64_t i=0;i<dense.numel();++i)(flags[i]?images:state.text_row_ids).push_back(i);
     if(images.empty()) { set_image_mask({}); return; }
-    auto options=::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64);
+    auto options=::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, model_.primary_device)).dtype(::tyloi::kInt64);
     auto text=::tyloi::cuda::tensor(state.text_row_ids,options);
-    auto routing=dense.reshape({-1,1}).to(::tyloi::kCUDA).to(::tyloi::kBool);
+    auto routing=dense.reshape({-1,1}).to(::tyloi::Device(::tyloi::kCUDA, model_.primary_device), ::tyloi::kBool);
     state.image_mask=dense; state.text_rows=std::move(text); state.routing_mask=std::move(routing);
 }
 
@@ -199,6 +199,9 @@ void State::begin_forward(bool capture_raw_hidden) {
 }
 
 void State::reset(std::int64_t next_batch) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    set_image_mask({});
+#endif
     cache_pos = decode_position_delta = 0;
     speculative_start = -1;
     speculative_confirmed = 0;

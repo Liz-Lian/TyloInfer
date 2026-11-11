@@ -486,7 +486,10 @@ void Mtp::reset(tyloi::models::MtpState& value, int64_t next_batch) const {
 }
 
 std::vector<std::pair<tyloi::Device, std::size_t>> Mtp::growth(
-        const tyloi::models::MtpState& value, const ::tyloi::Tensor& ids) const {
+        const tyloi::models::MtpState& value, const tyloi::models::Mtp::Input& input) const {
+    const auto* step = std::get_if<tyloi::models::Mtp::Step>(&input);
+    if (!step) throw std::invalid_argument("GLM5-Next predictor requires a step operation");
+    const auto& ids = step->ids;
     const auto& state = this->state<PredictorState>(value);
     TYLOINFER_RUNTIME_CHECK(ids.representation<DenseTensor>() && ids.defined() && ids.dim() == 2 &&
                           ids.size(0) > 0 && ids.size(1) > 0,

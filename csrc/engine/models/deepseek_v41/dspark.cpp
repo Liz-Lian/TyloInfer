@@ -15,9 +15,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -395,6 +397,96 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
             ring.size(0) == batch && ring.size(1) == config.sliding_window &&
             ring.size(2) == config.head_dim && ring.scalar_type() == ::tyloi::kFloat16 &&
             ring.device() == ::tyloi::Device(::tyloi::kCUDA, primary) && ring.is_contiguous();
+    }
+
+    /** Plan model-side temporary storage for a context update or physical draft block. */
+    std::vector<std::pair<::tyloi::Device, std::size_t>> growth(
+            const tyloi::models::MtpState& value, const tyloi::models::Mtp::Input& input) const override {
+        const auto& state = this->state<DsState>(value);
+        if (std::holds_alternative<Step>(input))
+            throw std::runtime_error("DeepSeek-V4.1 DSpark uses blockwise drafting");
+        const auto checked = [](std::size_t a, std::size_t b) {
+            if (b && a > std::numeric_limits<std::size_t>::max() / b)
+                throw std::overflow_error("DeepSeek-V4.1 DSpark workspace size overflow");
+            return a * b;
+        };
+        const auto dimension = [](std::int64_t n) {
+            if (n <= 0 || std::uint64_t(n) > std::numeric_limits<std::size_t>::max())
+                throw std::invalid_argument("DeepSeek-V4.1 DSpark workspace geometry is invalid");
+            return std::size_t(n);
+        };
+        const auto device = ::tyloi::Device(::tyloi::kCUDA, primary);
+        if (state.batch != 1 || state.position_ < 0 || state.position_ > config.max_position_embeddings ||
+            state.rings.size() != stages.size() || stages.empty())
+            throw std::invalid_argument("DeepSeek-V4.1 DSpark state is unavailable");
+        for (const auto& ring : state.rings)
+            if (!compatible_ring(ring, state.batch))
+                throw std::invalid_argument("DeepSeek-V4.1 DSpark ring geometry is incompatible");
+        std::size_t bytes = 0;
+        const auto add = [&](std::initializer_list<std::size_t> dimensions) {
+            std::size_t term = 1;
+            for (const auto n : dimensions) term = checked(term, n);
+            if (bytes > std::numeric_limits<std::size_t>::max() - term)
+                throw std::overflow_error("DeepSeek-V4.1 DSpark workspace size overflow");
+            bytes += term;
+        };
+        const auto hidden_width = dimension(config.hidden);
+        const auto head_width = dimension(config.head_dim);
+        if (const auto* context = std::get_if<Context>(&input)) {
+            const auto& hidden = context->hidden;
+            const auto target_width = checked(hidden_width, config.dspark_target_layer_ids.size());
+            if (!target_width || !hidden.defined() || !hidden.representation<DenseTensor>() ||
+                hidden.dim() != 3 || hidden.size(0) != state.batch || hidden.size(1) <= 0 ||
+                std::uint64_t(hidden.size(2)) != target_width || hidden.device() != device)
+                throw std::invalid_argument("invalid DeepSeek-V4.1 DSpark context append");
+            const auto tokens = hidden.size(1);
+            std::int64_t start = context->position;
+            if (context->seed) {
+                if (state.position_ != 0 || context->position < tokens ||
+                    context->position > config.max_position_embeddings ||
+                    tokens < std::min(context->position, config.sliding_window))
+                    throw std::invalid_argument("invalid DeepSeek-V4.1 DSpark prompt tail");
+                start = context->position - tokens;
+            }
+            if (start < state.position_ || state.position_ < 0 ||
+                (start != state.position_ && tokens < config.sliding_window) ||
+                start > config.max_position_embeddings || tokens > config.max_position_embeddings - start)
+                throw std::invalid_argument("invalid DeepSeek-V4.1 DSpark context append");
+            const auto rows = dimension(std::min(tokens, config.sliding_window));
+            // Account for conversions, normalization, projection and each stage's key temporaries.
+            add({rows, target_width, 32});
+            add({rows, hidden_width, 32});
+            add({rows, head_width, stages.size(), 32});
+            add({rows, 64});
+        } else {
+            const auto& draft = std::get<Draft>(input);
+            const auto physical = std::min(config.dspark_block_size, config.max_position_embeddings - state.position_);
+            if (!draft.ids.defined() || !draft.ids.representation<DenseTensor>() || draft.ids.dim() != 2 ||
+                draft.ids.size(0) != state.batch || draft.ids.size(1) != 1 ||
+                draft.depth <= 0 || draft.depth > config.dspark_block_size || draft.depth > physical ||
+                state.position_ <= 0)
+                throw std::invalid_argument("invalid DeepSeek-V4.1 DSpark draft input");
+            const auto rows = dimension(physical);
+            const auto active = std::min(state.position_, config.sliding_window);
+            const auto keys = checked(dimension(active + physical), 1);
+            if (keys > std::numeric_limits<std::size_t>::max() - 31)
+                throw std::overflow_error("DeepSeek-V4.1 DSpark workspace size overflow");
+            const auto aligned = (keys + 31) / 32 * 32;
+            // The block retains MHC activations while attention and expert workspaces run.
+            add({rows, dimension(config.hc_mult), hidden_width, 64});
+            add({rows, dimension(config.n_heads), head_width, 64});
+            add({keys, head_width, 16});
+            add({rows, aligned, 16});
+            add({rows, dimension(config.q_lora_rank), 32});
+            add({rows, dimension(config.o_groups), dimension(config.o_lora_rank), 32});
+            add({rows, dimension(config.dspark_n_experts), 16});
+            add({rows, dimension(config.dspark_top_k), dimension(config.moe_inter), 32});
+            add({rows, dimension(config.n_shared), dimension(config.moe_inter), 32});
+            add({rows, dimension(config.vocab), 16});
+            add({rows, dimension(config.dspark_markov_rank), 16});
+            add({rows, 64});
+        }
+        return {{device, bytes}};
     }
 #endif
 

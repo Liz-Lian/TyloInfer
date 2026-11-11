@@ -106,13 +106,15 @@ void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
     }
     if (!defer_moe_cache_finalize)
         execution.weights.finalize();
-    if (load_optional_components)
-        load_components(model, tensors, true,
+    if (load_optional_components) {
 #ifdef TYLOINFER_NATIVE_CUDA
+        model.predictor = load_components(model, tensors, true,
                         execution.weights);
 #else
+        load_components(model, tensors, true,
                         execution);
 #endif
+    }
 }
 
 } // namespace tyloi::cuda::deepseek_v41

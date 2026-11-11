@@ -99,14 +99,20 @@ tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
     }
 }
 
-tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(deepseek_v41::Model& language, tyloi::cache::Media& images,
+tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(
+#ifdef TYLOINFER_NATIVE_CUDA
+        const deepseek_v41::Model& language,
+#else
+        deepseek_v41::Model& language,
+#endif
+        tyloi::cache::Media& images,
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector,
 #endif
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const {
     auto spans=validate_media(config_,tokens,media);
 #ifdef TYLOINFER_NATIVE_CUDA
-    const tyloi::Device device{tyloi::DeviceType::cuda, 0};
+    const tyloi::Device device{tyloi::DeviceType::cuda, language.primary_device};
     auto token_ids=tyloi::ops::tensor(tokens,device);
     auto ids=tyloi::ops::reshape(token_ids,{1,-1});
     auto embedded=language.embedding(ids);

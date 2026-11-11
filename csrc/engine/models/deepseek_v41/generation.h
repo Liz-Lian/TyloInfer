@@ -11,18 +11,12 @@
 namespace tyloi::cuda::deepseek_v41 {
 using Model = deepseek_v41::Model;
 
+#ifndef TYLOINFER_NATIVE_CUDA
 template<class Ops, class Finish>
-#ifdef TYLOINFER_NATIVE_CUDA
-std::tuple<::tyloi::Tensor, bool, bool> generation_prefill(
-        Model& model, Ops& ops, const tyloi::engine::PrefillChunk&,
-        ::tyloi::Tensor& ids, const Finish&) {
-    ::tyloi::Tensor hidden;
-#else
 std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         Model& model, Ops& ops, const tyloi::engine::PrefillChunk&,
         ::tyloi::DenseTensor& ids, const Finish&) {
     ::tyloi::DenseTensor hidden;
-#endif
     if(!ops.prepared || !ops.prepared->transformed()) {
         auto input=deepseek_v41_prefill_input(model,ops.state,ids,ops.prefill_compute_chunk);
         std::optional<tyloi::weights::Cache::Priority> priority;
@@ -34,14 +28,11 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
         priority.reset();
         auto result=encoded ? deepseek_v41_prefill_decode(model,ops.state,std::move(*encoded),stopped)
                             : ::tyloi::Tensor{};
-#ifdef TYLOINFER_NATIVE_CUDA
-        if(result) hidden=std::move(result);
-#else
         if(result) hidden=result.dense();
-#endif
     }
     return {std::move(hidden),false,false};
 }
+#endif
 
 inline bool generation_prefill_begin(Model&, DecodeGraphCache& graph, bool streamed) {
     if(streamed)graph.invalidate();

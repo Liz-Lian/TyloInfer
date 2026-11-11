@@ -28,6 +28,8 @@ struct Input {
     std::int64_t kv_length = 0;
     /** Optional decode attention partition count selected for the planned KV length. */
     std::int64_t attention_parts = 0;
+    /** Optional CPU uint8 participation mask for this input's media token rows. */
+    Tensor image_mask;
 };
 
 struct ForwardOptions {
@@ -35,6 +37,18 @@ struct ForwardOptions {
     ops::Trace* trace = nullptr;
     int trace_layer = -1;
     int primary = 0;
+};
+
+/** Model-owned prefill phase boundaries and final owning outputs. */
+struct Prefill {
+    enum class Phase { encode, decode, complete };
+    Phase phase = Phase::complete;
+    /** Half-open weight layer range prioritised during this phase, or an empty range. */
+    int first = 0, last = 0;
+    /** Final normalized hidden rows used for the output projection. */
+    Tensor hidden;
+    /** Model-specific predictor context, which may be a bounded tail of the input span. */
+    Tensor raw;
 };
 
 struct Prepared {

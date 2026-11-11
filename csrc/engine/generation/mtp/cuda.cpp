@@ -23,8 +23,8 @@
 #ifndef TYLOINFER_NATIVE_CUDA
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State);
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::nemotron_h::Model, tyloi::cuda::nemotron_h::State);
+TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::deepseek_v41::Model, tyloi::cuda::deepseek_v41::State);
 #endif
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::qwen4_exp::Model, tyloi::cuda::qwen4_exp::State);
-TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::deepseek_v41::Model, tyloi::cuda::deepseek_v41::State);
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::qwen35::Model, tyloi::cuda::qwen35::State);
 #undef TYLOINFER_INSTANTIATE_MTP

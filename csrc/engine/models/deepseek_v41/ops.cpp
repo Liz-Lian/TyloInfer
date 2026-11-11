@@ -289,12 +289,14 @@ void Model::load_config(std::string_view payload) {
 }
 
 tyloi::models::Info Model::info() const {
-    return {metadata.vocab_size, config.max_position_embeddings, config.text_model_type,
+    auto result = tyloi::models::Info{metadata.vocab_size, config.max_position_embeddings, config.text_model_type,
             std::size_t(metadata.hidden_size) * sizeof(float) * 8, true, true};
+    result.prefill = tyloi::models::PrefillPolicy::merged;
+    return result;
 }
 
 MfqModelCapabilities Model::capabilities() const {
-    const auto state = cuda_component_state(graph, plan, bool(vision), false);
+    const auto state = cuda_component_state(graph, plan, bool(vision), mtp() != nullptr);
     const auto caps = cuda_runtime_capabilities(graph, plan, state, bool(vision), false);
     return {graph.architecture, caps.text, caps.image_input, caps.video_input,
         caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp,
@@ -302,7 +304,7 @@ MfqModelCapabilities Model::capabilities() const {
 }
 
 tyloi::engine::Metrics Model::metrics() const {
-    const auto state = cuda_component_state(graph, plan, bool(vision), false);
+    const auto state = cuda_component_state(graph, plan, bool(vision), mtp() != nullptr);
     return {{"kv_memory_supported", 0.0},
         {"kv_quantization_supported", 0.0},
         {"kv_quantization_bits", 0.0},
@@ -315,17 +317,24 @@ tyloi::engine::Metrics Model::metrics() const {
 }
 
 std::unique_ptr<tyloi::models::State> Model::make_state() const {
-    return std::make_unique<State>(const_cast<Model&>(*this));
+    auto state = std::make_unique<State>(const_cast<Model&>(*this));
+    if (auto* head = mtp()) state->predictor = head->make_state();
+    return state;
 }
 
 tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     const std::vector<std::int64_t>& tokens, const MfqMultimodalInput& media,
     tyloi::models::State& state) const {
-    const auto* target = dynamic_cast<const State*>(&state);
+    auto* target = dynamic_cast<State*>(&state);
     require_model(target && target->belongs_to(*this), "DeepSeek-V4.1 state belongs to a different model");
     if (!vision)
         throw std::invalid_argument("model has no multimodal component");
-    return vision->prepare(const_cast<Model&>(*this), const_cast<Model&>(*this).media, tokens, media);
+#ifdef TYLOINFER_NATIVE_CUDA
+    return vision->prepare(*this, target->media, tokens, media);
+#else
+    return vision->prepare(const_cast<Model&>(*this), const_cast<Model&>(*this).media,
+        execution->executor().projector(execution->executor().mode().ffn, primary_device), tokens, media);
+#endif
 }
 
 ::tyloi::Tensor Model::embedding(const tyloi::Tensor& ids, int) const {
@@ -464,6 +473,9 @@ void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cac
     }
     if (state.cache_pos == 0)
         state.reset(B);
+#ifdef TYLOINFER_NATIVE_CUDA
+    state.set_image_mask(std::move(input.image_mask));
+#endif
     auto positions = ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T,
                                            ::tyloi::TensorOptions()
                                                .device(::tyloi::kCUDA)
@@ -509,7 +521,7 @@ void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cac
     hidden = tyloi::ops::copy(hidden, primary).dense();
     auto finalized = finalize_hidden(state, std::move(hidden), B, T);
     if (input.raw_hidden)
-        *input.raw_hidden = state.shared->dspark_target_hidden();
+        *input.raw_hidden = state.shared->dspark_target_hidden(primary_device);
     return std::make_shared<DenseTensor>(std::move(finalized));
 }
 

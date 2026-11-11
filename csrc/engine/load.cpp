@@ -62,7 +62,11 @@ using State = std::variant<
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State, std::monostate>>,
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::monostate>>>;
+#else
     std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>>;
+#endif
 
 } // namespace tyloi::cuda::engine_detail
 

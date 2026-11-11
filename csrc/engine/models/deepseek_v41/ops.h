@@ -16,6 +16,7 @@
 
 #include "engine/models/common/capabilities.h"
 #include "engine/models/causal_model.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/metadata.h"
 #include "engine/metrics.h"
@@ -139,15 +140,26 @@ struct SharedState {
         dspark_target_hiddens[slot] = hidden.mean(2).contiguous();
     }
 
-    DenseTensor dspark_target_hidden() const {
+    /** Combine captured target layers on the primary device. */
+    DenseTensor dspark_target_hidden(int primary = 0) const {
         TYLOINFER_RUNTIME_CHECK(capture_dspark_targets && !dspark_target_hiddens.empty() &&
                               std::all_of(dspark_target_hiddens.begin(),
                                           dspark_target_hiddens.end(),
                                           [](const DenseTensor &value) { return value.defined(); }),
                           "DeepSeek-V4.1 DSpark target layers were not fully captured");
+#ifdef TYLOINFER_NATIVE_CUDA
+        MfqCudaGuard guard(primary);
+        std::vector<DenseTensor> values;
+        values.reserve(dspark_target_hiddens.size());
+        for (const auto& hidden : dspark_target_hiddens)
+            values.push_back(tyloi::ops::copy(hidden, ::tyloi::Device(::tyloi::kCUDA, primary)).dense());
+        return values.size() == 1 ? values.front() : ::tyloi::cuda::cat(values, -1).contiguous();
+#else
+        (void)primary;
         return dspark_target_hiddens.size() == 1
                    ? dspark_target_hiddens.front()
                    : ::tyloi::cuda::cat(dspark_target_hiddens, -1).contiguous();
+#endif
     }
 
     void reset_session(std::int64_t current_batch) {
@@ -1168,6 +1180,10 @@ struct Model : tyloi::models::CausalModel {
     tyloi::models::Info info() const override;
     MfqModelCapabilities capabilities() const override;
     tyloi::engine::Metrics metrics() const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Borrow this model's assembled DSpark predictor. */
+    tyloi::models::Mtp* mtp() const noexcept override { return predictor.get(); }
+#endif
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
@@ -1178,6 +1194,12 @@ struct Model : tyloi::models::CausalModel {
     ::tyloi::Tensor logits(const tyloi::Tensor& hidden, bool capped = true) const override;
     ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
                                  const tyloi::models::ForwardOptions& options = {}) const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Run the staged causal encoder and decoder prefill. */
+    tyloi::StepSequence<tyloi::models::Prefill> prefill(tyloi::models::Input input,
+        tyloi::models::State& state, const tyloi::models::ForwardOptions& options,
+        std::int64_t compute_chunk) const override;
+#endif
 
     // ---- speculative contract used by the MTP sequence
     bool supports_speculation() const;
@@ -1207,7 +1229,11 @@ struct Model : tyloi::models::CausalModel {
     std::vector<std::unique_ptr<deepseek_v41_runtime::Block>> blocks;
     deepseek_v41_runtime::ModelTables tables;
     std::unique_ptr<deepseek_v41_runtime::Vision> vision;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<tyloi::models::Mtp> predictor;
+#else
     tyloi::cache::Media media;
+#endif
 
     // ---- helpers absorbed from the retired CausalLm plumbing
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -1258,6 +1284,7 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
 void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
           bool defer_moe_cache_finalize, bool load_blocks, bool load_optional_components);
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct CedEncoding {
     ::tyloi::DenseTensor ids, tail_hidden, tail_pre, tail_ids;
     tyloi::models::deepseek_v41::EngramHashBatch tail_hashes;
@@ -1274,6 +1301,7 @@ std::optional<CedEncoding> deepseek_v41_prefill_encode(
 std::int64_t prefill_span(const Model&, const State&, std::size_t tokens,
                           std::int64_t chunk, std::size_t, std::size_t,
                           bool transformed, bool retained);
+#endif
 
 } // namespace deepseek_v41
 } // namespace tyloi::cuda

@@ -4,6 +4,10 @@
 #include "engine/generation/cuda.h"
 #include "engine/budget.h"
 #include "engine/generation/prefill_budget.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/generation/prefill.h"
+#include "engine/generation/mtp/generation.h"
+#endif
 #include "engine/weights/cache.h"
 #include "engine/weights/workspace.h"
 #include "engine/config.h"
@@ -263,6 +267,26 @@ template <typename Model, typename State> struct CudaGenerationOps {
 #endif
         ImageMaskScope image_scope(state,prepared,chunk.offset,chunk.count);
         auto [hidden,layer_major,short_windows]=generation_prefill(model,*this,chunk,ids,finish_prefill);
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (tyloi::cuda::PhasedModel<Model>) {
+            TYLOINFER_RUNTIME_CHECK(executor && budget && output, "staged prefill requires its execution owners");
+            tyloi::models::Input input;
+            input.ids = ids;
+            input.advance = true;
+            if (prepared) {
+                if (prepared->embeddings) input.embeddings = tyloi::ops::contiguous(tyloi::ops::slice(
+                    prepared->embeddings, 1, chunk.offset, chunk.offset + chunk.count));
+                if (prepared->positions) input.positions = tyloi::ops::contiguous(tyloi::ops::slice(
+                    prepared->positions, -1, chunk.offset, chunk.offset + chunk.count));
+                if (prepared->image_mask) input.image_mask = tyloi::ops::contiguous(tyloi::ops::slice(
+                    prepared->image_mask, 1, chunk.offset, chunk.offset + chunk.count));
+            }
+            hidden = tyloi::engine::prefill(model, state, *executor, weights, *budget,
+                tyloi::cuda::forward_options(mode), std::move(input), prefill_compute_chunk, *output).hidden;
+            finish_prefill();
+            if (output->stopped()) return timer.elapsed_ms();
+        }
+#endif
         if(output && output->stopped()) {
             finish_prefill();
             return timer.elapsed_ms();
@@ -694,6 +718,12 @@ template <class Model, class State, class Predictor> struct RequestOps {
                 prepared && prepared->transformed(),
                 weights.prefill_mode(input.prompt.size()-reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (tyloi::cuda::PhasedModel<Model>)
+            logical_chunk = tyloi::engine::prefill_span(info, input.prompt.size() - reused, compute_chunk,
+                prepared && prepared->transformed(),
+                weights.prefill_mode(input.prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
+#endif
         auto graph_options = config.decode_graph;
         graph_options.enabled &= graph_allowed;
         return tyloi::engine::generate_sequence(
@@ -711,6 +741,14 @@ template <class Model, class State, class Predictor> struct RequestOps {
             throw std::invalid_argument("this CUDA model has no speculative predictor");
         } else {
             prepare_prefill_workspace(input.prompt.size()-reused);
+#ifdef TYLOINFER_NATIVE_CUDA
+            if constexpr (tyloi::cuda::PhasedModel<Model>) {
+                TYLOINFER_RUNTIME_CHECK(executor != nullptr, "public MTP generation requires an executor");
+                return tyloi::engine::mtp::generate(model, state, *executor, budget, weights, mtp_state,
+                    tyloi::cuda::forward_options(mode), input, output, prefill_chunk(input.prompt.size()-reused),
+                    prepared ? &*prepared : nullptr, reused, restored, committed, prefix_boundary, source, config.profile_mtp);
+            } else
+#endif
             return ::run_mtp_generation(model, state, executor, collectives,
                 mode, weights, info, source,
                 *mtp, mtp_state,

@@ -4,6 +4,7 @@
 #include "engine/generation/mtp/sampling.h"
 #include "engine/generation/mtp/sequence.h"
 #include "engine/generation/prefill_budget.h"
+#include "engine/generation/prefill.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/source.h"
 #include "engine/ops.h"
@@ -31,6 +32,8 @@ struct Ops : Sampling {
     const models::Prepared* prepared;
     const ModelSource* source;
     const bool profiling;
+    const std::int64_t compute_chunk;
+    InferenceOutput& output;
     ::tyloi::weights::Cache::Routes routes;
     Tensor projected_hidden, projected_logits;
     int32_t projected_greedy = -1;
@@ -41,10 +44,10 @@ struct Ops : Sampling {
     Ops(models::CausalModel& model, models::State& state, Executor& executor,
         Budget& budget, ::tyloi::weights::Cache& weights, State& policy, const models::ForwardOptions& options,
         models::Mtp& mtp, models::MtpState& predictor, const models::Prepared* prepared,
-        const ModelSource* source, bool profiling)
+        const ModelSource* source, bool profiling, std::int64_t compute_chunk, InferenceOutput& output)
         : Sampling(executor.device()), model(model), state(state), executor(executor), budget(budget),
           weights(weights), mtp_state(policy), options(options), info(model.info()), mtp(mtp),
-          predictor(predictor), prepared(prepared), source(source), profiling(profiling),
+          predictor(predictor), prepared(prepared), source(source), profiling(profiling), compute_chunk(compute_chunk), output(output),
           graph_captures(weights.activity().graph_captures) {}
 
     void initialize(const std::vector<int64_t>& prompt, const MfqSamplingParams& sampling) {
@@ -102,9 +105,12 @@ struct Ops : Sampling {
             if (prepared->positions) input.positions = slice(prepared->positions, -1, chunk.offset, chunk.count);
             input.advance = true;
         }
-        auto hidden = forward(std::move(input));
+        if (prepared && prepared->image_mask)
+            input.image_mask = slice(prepared->image_mask, 1, chunk.offset, chunk.count);
+        auto result = engine::prefill(model, state, executor, weights, budget, options,
+            std::move(input), compute_chunk, output);
         timer->stop();
-        return {std::move(hidden), std::move(raw), timer->elapsed_ms()};
+        return {std::move(result.hidden), std::move(result.raw), timer->elapsed_ms()};
     }
     Tensor decode_positions(int64_t start, int64_t tokens) {
         if (tokens <= 0) throw std::runtime_error("MTP position span must be positive");
@@ -117,7 +123,7 @@ struct Ops : Sampling {
         return positions;
     }
     models::MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
-        reserve(mtp.growth(predictor, ids));
+        reserve(mtp.growth(predictor, models::Mtp::Step{ids}));
         auto result = mtp.step(predictor, hidden, ids, positions);
         projected_logits = result.sample_logits;
         projected_greedy = result.greedy_token;
@@ -130,6 +136,26 @@ struct Ops : Sampling {
         (void)predictor_step(std::move(hidden), std::move(ids), std::move(positions));
         timer->stop();
         return timer->elapsed_ms();
+    }
+    /** Reserve and append or seed the blockwise predictor's target context. */
+    double blockwise_prompt_context(Tensor hidden, std::int64_t position, bool seed) {
+        auto timer = executor.timer();
+        if (seed) {
+            reserve(mtp.growth(predictor, models::Mtp::Context{hidden, position, true}));
+            mtp.seed_target_context(predictor, hidden, position);
+        } else append_target_context(hidden, position - hidden.size(1));
+        timer->stop();
+        return timer->elapsed_ms();
+    }
+    /** Reserve and append committed target rows to the blockwise predictor. */
+    void append_target_context(const Tensor& hidden, std::int64_t start) {
+        reserve(mtp.growth(predictor, models::Mtp::Context{hidden, start, false}));
+        mtp.append_target_context(predictor, hidden, start);
+    }
+    /** Reserve predictor storage before blockwise drafting. */
+    Tensor draft_block(Tensor ids, int depth) {
+        reserve(mtp.growth(predictor, models::Mtp::Draft{ids, depth}));
+        return mtp.draft_block(predictor, ids, depth);
     }
     Tensor target_suffix(Tensor, Tensor*) {
         throw std::runtime_error("model does not support speculative suffix forwarding");
@@ -203,10 +229,11 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
         throw std::invalid_argument("predictor state is unavailable or belongs to another model");
     if (predictor->split_target_verification())
         throw std::invalid_argument("model does not support speculative suffix forwarding");
-    if (predictor->blockwise_drafting())
-        throw std::invalid_argument("model blockwise context allocation is not connected");
+    const auto logical = prefill_span(model.info(), input.prompt.size() - reused, chunk,
+        prepared && prepared->transformed(),
+        weights.prefill_mode(input.prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
     return speculative_sequence(Ops(model, state, executor, budget, weights, policy, options,
-        *predictor, *state.predictor, prepared, source, profile), input, output, chunk, reused,
+        *predictor, *state.predictor, prepared, source, profile, chunk, output), input, output, logical, reused,
         std::move(restored), committed, stable);
 }
 

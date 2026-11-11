@@ -54,6 +54,7 @@ Generation generate_sequence(Operations operations, InferenceOutput &output, std
             PrefillActivity activity;
             elapsed += ops.prefill(chunk);
         }
+        if (output.stopped()) co_return;
         offset += chunk.count;
         co_yield PrefillProgress{
             {static_cast<std::size_t>(offset - reused_tokens), elapsed, 0.0, elapsed}};

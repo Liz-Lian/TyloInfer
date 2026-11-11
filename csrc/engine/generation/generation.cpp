@@ -5,6 +5,7 @@
 #include "engine/generation/generation.h"
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill_budget.h"
+#include "engine/generation/prefill.h"
 #include "engine/generation/mtp/generation.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/mtp.h"
@@ -61,12 +62,14 @@ struct Plain {
             if (prepared->embeddings) model_input.embeddings = ops::contiguous(ops::slice(prepared->embeddings, 1, chunk.offset, chunk.offset + chunk.count));
             if (prepared->positions) model_input.positions = ops::contiguous(ops::slice(prepared->positions, -1, chunk.offset, chunk.offset + chunk.count));
         }
-        reserve(chunk.count);
-        auto hidden = model.forward(std::move(model_input), state, forward_options);
+        if (prepared && prepared->image_mask)
+            model_input.image_mask = ops::contiguous(ops::slice(prepared->image_mask, 1, chunk.offset, chunk.offset + chunk.count));
+        auto result = engine::prefill(model, state, executor, weights, budget, forward_options,
+            std::move(model_input), chunk_size, output);
         if (prepared && prepared->transformed()) state.set_position_delta(prepared->decode_position_delta);
         timer->stop();
         if (!output.stopped() && chunk.offset + chunk.count == int64_t(input.prompt.size()))
-            pending = sample_logits(sampler, project(hidden, true), graph.counts, input.token_constraint);
+            pending = sample_logits(sampler, project(result.hidden, true), graph.counts, input.token_constraint);
         const auto ms = timer->elapsed_ms();
         if (config.decode_graph.trace) std::cerr << "runtime_prefill_chunk offset=" << chunk.offset
             << " tokens=" << chunk.count << " layer_major=0 short_windows=0 compute_chunk=" << chunk_size
@@ -200,10 +203,7 @@ struct Native {
     StepSequence<Prepared> prepare(InferenceRequest& input, models::State& target) {
         return model.prepare(input.prompt, *input.vision, target);
     }
-    void validate_prepared() const {
-        if (prepared && prepared->image_mask && prepared->image_mask.defined())
-            throw std::invalid_argument("model cannot apply an image participation mask");
-    }
+    void validate_prepared() const {}
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, models::State&,
                              std::optional<Prepared> value, const RequestId&, bool) {
         prepared = std::move(value);
@@ -245,7 +245,10 @@ struct Native {
         Plain plain{model, state, executor, budget, graph, weights, info, config,
                     forward_options, source, input, output, prepared, chunk_size,
                     std::move(full_ids), std::move(sampler), penalties};
-        auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), reused, stable, chunk_size);
+        const auto logical = prefill_span(info, prompt.size() - reused, chunk_size,
+            prepared && prepared->transformed(),
+            weights.prefill_mode(prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
+        auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), reused, stable, logical);
         while (auto step = sequence.next()) co_yield std::move(step);
     }
 };
