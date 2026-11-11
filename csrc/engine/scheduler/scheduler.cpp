@@ -31,7 +31,6 @@ std::size_t event_bytes(const EventData& data) {
 }
 }
 
-void Engine::reset_states(std::int64_t batch) { scheduler_->reset_states(batch); }
 void Engine::start() {
     try { scheduler_ = std::make_unique<Scheduler>(*this); }
     catch (...) {
@@ -292,11 +291,6 @@ EngineStatus Scheduler::execution_status() const {
         ++active;
     }
     return {info_.max_requests - active, true};
-}
-
-void Scheduler::reset_states(std::int64_t batch) {
-    for (auto& [id, request] : requests_)
-        if (request.state) request.state->reset(batch);
 }
 
 std::pair<bool, std::vector<EngineEvent>> Scheduler::advance(const std::vector<RequestId>& eligible) {

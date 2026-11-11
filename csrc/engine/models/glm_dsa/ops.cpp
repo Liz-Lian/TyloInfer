@@ -21,6 +21,8 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 
 using ::tyloi::indexing::Slice;
 
@@ -62,10 +64,11 @@ auto indexed_attention(bool indexed, int64_t tokens, int64_t prefix, int64_t spa
 
 namespace tyloi::cuda::glm_dsa {
 
-State::State(const Model& model) : layers(model.layers.size()) {
+State::State(const Model& model) : layers(model.layers.size()), model_(&model) {
     layout_.reserve(model.layers.size());
     for (const auto& layer : model.layers) {
-        layout_.push_back({layer.device, layer.full_indexer});
+        layout_.push_back({layer.device, layer.full_indexer,
+                           layer.config.max_position_embeddings, layer.config.index_head_dim});
         selections.try_emplace(layer.device);
     }
 }
@@ -83,6 +86,45 @@ void State::reset(int64_t next_batch) {
         MfqCudaGuard guard(layout_[i].device);
         layer = {};
     }
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
+    std::int64_t tokens, const tyloi::models::ForwardOptions&) const {
+    if (batch <= 0 || tokens <= 0 || cache_pos < 0)
+        throw std::invalid_argument("GLM DSA cache planning requires positive batch and tokens and a nonnegative position");
+    if (cache_pos > std::numeric_limits<std::int64_t>::max() - tokens)
+        throw std::overflow_error("GLM DSA cache planning position overflow");
+    const auto multiply = [](std::size_t a, std::size_t b) {
+        if (b && a > std::numeric_limits<std::size_t>::max() / b)
+            throw std::overflow_error("GLM DSA cache planning byte count overflow");
+        return a * b;
+    };
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        if (layers[i].kv_cache.defined()) continue;
+        const auto& layout = layout_[i];
+        if (layout.capacity <= 0 || (layout.full_indexer && layout.index_width <= 0))
+            throw std::invalid_argument("GLM DSA cache planning requires a positive layout");
+        auto rows = multiply(static_cast<std::size_t>(batch), static_cast<std::size_t>(layout.capacity));
+        auto width = std::size_t(576);
+        if (layout.full_indexer) {
+            const auto index_width = static_cast<std::size_t>(layout.index_width);
+            if (index_width > std::numeric_limits<std::size_t>::max() - width)
+                throw std::overflow_error("GLM DSA cache planning byte count overflow");
+            width += index_width;
+        }
+        const auto bytes = multiply(multiply(rows, width), sizeof(std::uint16_t));
+        const tyloi::Device device(tyloi::DeviceType::cuda, layout.device);
+        auto entry = std::find_if(result.begin(), result.end(),
+            [device](const auto& item) { return item.first == device; });
+        if (entry == result.end()) result.emplace_back(device, bytes);
+        else {
+            if (entry->second > std::numeric_limits<std::size_t>::max() - bytes)
+                throw std::overflow_error("GLM DSA cache planning byte count overflow");
+            entry->second += bytes;
+        }
+    }
+    return result;
 }
 
 std::vector<::tyloi::Tensor> State::storage() const {
@@ -305,10 +347,39 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, LayerPlacementC
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, const ::tyloi::Tensor& input_ids, const Executor::Mode& mode) {
+tyloi::models::Info Model::info() const { return tyloi::models::model_info(metadata); }
+
+MfqModelCapabilities Model::capabilities() const {
+    return {graph.architecture, graph.has_component("text"), false, false,
+        false, false, false, false, "model-graph+cuda-adapters"};
+}
+
+tyloi::engine::Metrics Model::metrics() const {
+    const auto state = cuda_component_state(graph, plan, false, false);
+    return {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
+        {"kv_quantization_bits", 0.0}, {"vision_declared", double(state.vision_declared)},
+        {"vision_supported", double(state.vision_supported)}, {"vision_available", 0.0},
+        {"mtp_declared", double(state.mtp_declared)}, {"mtp_supported", double(state.mtp_supported)},
+        {"mtp_available", 0.0}};
+}
+
+std::unique_ptr<tyloi::models::State> Model::make_state() const {
+    return std::make_unique<State>(*this);
+}
+
+tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
+        const std::vector<std::int64_t>&, const MfqMultimodalInput&, tyloi::models::State&) const {
+    throw std::invalid_argument("model has no multimodal component");
+}
+#endif
+
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor Model::embedding(const ::tyloi::Tensor& input_ids, int primary) const {
+    const auto& model = *this;
+    auto& executor = Executor::current();
+    auto& collectives = executor.collectives();
     auto ids = normalize_ids(collectives, primary, input_ids.dense());
-    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+    auto scope = executor.enter(mfq_current_cuda_device(), Executor::current_ffn());
     return ::tyloi::ops::measure("model.embed", ids.device(), [&] {
         return ::tyloi::ops::embedding(ids, model.embed);
     });
@@ -323,8 +394,10 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden,
-                 std::int64_t batch, std::int64_t tokens) {
+::tyloi::Tensor Model::normalize(const ::tyloi::Tensor& input_hidden,
+                 std::int64_t batch, std::int64_t tokens) const {
+    const auto& model = *this;
+    auto& executor = Executor::current();
     auto hidden = input_hidden.dense();
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
     auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
@@ -347,7 +420,9 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& input_logits) {
+::tyloi::Tensor Model::softcap(const ::tyloi::Tensor& input_logits) const {
+    const auto& model = *this;
+    auto& executor = Executor::current();
     auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
     return ::tyloi::ops::softcap(input_logits, model.metadata.final_logit_softcapping);
 #else
@@ -358,9 +433,10 @@ DenseTensor softcap(const Model& model, Executor&, DenseTensor logits) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden, bool capped,
-              const Executor::Mode& mode) {
-    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
+::tyloi::Tensor Model::logits(const ::tyloi::Tensor& input_hidden, bool capped) const {
+    const auto& model = *this;
+    auto& executor = Executor::current();
+    auto scope = executor.enter(mfq_current_cuda_device(), Executor::current_ffn());
     auto value = ::tyloi::ops::measure("model.lm_head", input_hidden.device(), [&] {
         return ::tyloi::ops::project(input_hidden, model.lm_head);
     });
@@ -379,8 +455,20 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 #endif
 }
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& mode, tyloi::models::Input input) {
+::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+               const tyloi::models::ForwardOptions& forward_options) const {
+    auto* state_ptr = dynamic_cast<State*>(&state_value);
+    tyloi::models::require_model(state_ptr && state_ptr->belongs_to(*this),
+                               "GLM DSA state belongs to a different model");
+    auto& state = *state_ptr;
+    const auto& model = *this;
+    auto& executor = Executor::current();
+    auto& collectives = executor.collectives();
+    auto mode = executor.forward_mode(forward_options.primary);
+    mode.ffn = Executor::current_ffn();
+    mode.kv_capacity = forward_options.kv_capacity;
+    mode.trace = forward_options.trace;
+    mode.trace_layer = forward_options.trace_layer;
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, tyloi::models::Input input) {
@@ -389,7 +477,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids).dense());
 #ifdef TYLOINFER_NATIVE_CUDA
     auto embeddings = input.embeddings.defined() ? input.embeddings.dense()
-        : embed(model, executor, collectives, mode.primary, ids, mode).dense();
+        : embedding(ids, mode.primary).dense();
 #else
     auto embeddings = input.embeddings.has_value() ? DenseTensor(std::move(*input.embeddings))
         : embed(model, executor, collectives, mode.primary, ids, mode);
@@ -475,7 +563,11 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     if (!input.positions.has_value() || input.advance) state.cache_pos += T;
 #endif
     hidden = collectives.copy(std::move(hidden), mode.primary);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto finalized = normalize(hidden, B, T);
+#else
     auto finalized = normalize(model, executor, hidden, B, T);
+#endif
     if (input.raw_hidden) *input.raw_hidden = std::move(hidden);
     return finalized;
 }

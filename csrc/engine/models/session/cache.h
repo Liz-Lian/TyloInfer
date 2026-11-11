@@ -2,6 +2,7 @@
 
 #include "backend.h"
 #include "engine/models/session/snapshot.h"
+#include "engine/models/state.h"
 #include "engine/state/session/cache.h"
 
 #include <cstddef>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -30,14 +32,9 @@ namespace tyloi::cuda::internal {
 
 bool cuda_has_separate_memory();
 
-struct TextSessionRestore {
-    std::size_t tokens = 0;
-    ::tyloi::Tensor mtp_last_target_hidden;
-};
-
 struct CudaSessionOps {
     using Snapshot = TextSessionState;
-    using Restore = TextSessionRestore;
+    using Restore = tyloi::state::Sessions::Restore;
     using StateError = CudaSessionStateError;
 
     static TextSessionState decode(
@@ -73,7 +70,19 @@ struct CudaSessionOps {
         State& state, const Snapshot& snapshot, const std::function<void()>& drain,
         Predictor* mtp) {
         // The caller owns the CUDA scope for the entire restore operation.
-        if constexpr (requires { restore_session(state, mtp, snapshot, drain); }) {
+        if constexpr (std::is_same_v<std::remove_cvref_t<State>, tyloi::models::State>) {
+            if (mtp)
+                throw CudaSessionStateError("public model state has no joint predictor restore");
+            drain();
+            try {
+                state.restore_text_session_state(snapshot);
+                drain();
+            } catch (...) {
+                const auto error = std::current_exception();
+                try { drain(); } catch (...) {}
+                std::rethrow_exception(error);
+            }
+        } else if constexpr (requires { restore_session(state, mtp, snapshot, drain); }) {
             restore_session(state, mtp, snapshot, drain);
         } else {
             if constexpr (requires(decltype(state.prepare(snapshot))& candidate) {

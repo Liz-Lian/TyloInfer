@@ -6,8 +6,11 @@
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/models/causal_model.h"
+#include "engine/models/common/mtp.h"
+#include "engine/models/session/snapshot.h"
 #include "engine/scheduler/request.h"
 #include "engine/models/source.h"
+#include "engine/state/session/sessions.h"
 #include "engine/weights/cache.h"
 
 #include <algorithm>
@@ -158,18 +161,33 @@ struct Plain {
 
 struct Native {
     using Prepared = models::Prepared;
+    using Hidden = Tensor;
+    using Restore = ::tyloi::state::Sessions::Restore;
     models::CausalModel& model;
     models::State& state;
     tyloi::Executor& executor;
     Budget& budget;
     Decode& graph;
     weights::Cache& weights;
+    ::tyloi::state::Sessions& cache;
     const models::Info& info;
     const Config& config;
     const models::ForwardOptions& forward_options;
     const ModelSource* source;
     std::optional<Prepared> prepared;
+    models::Mtp* mtp = nullptr;
 
+    bool batched() const { return false; }
+    Restore restore_session(const std::string& session_id, const std::vector<std::int64_t>& prompt,
+        std::size_t maximum_prefix, const std::string& input_key, bool use_mtp) {
+        return cache.restore(state, executor, weights, use_mtp ? mtp : nullptr,
+            session_id, prompt, maximum_prefix, input_key);
+    }
+    bool has_hidden(const Hidden& value) const { return value && value.defined(); }
+    void invalidate_plan() { graph.invalidate(); }
+    Generation speculate(InferenceRequest&, InferenceOutput&, std::size_t, const Tensor&, Hidden*) {
+        throw std::invalid_argument("this CUDA model has no speculative predictor");
+    }
     StepSequence<Prepared> prepare(InferenceRequest& input, models::State& target) {
         return model.prepare(input.prompt, *input.vision, target);
     }
@@ -187,16 +205,20 @@ struct Native {
         weights.trace(boundary, wait, source);
     }
     void prepare_request(const InferenceRequest&) { trace_expert_cache("begin"); }
-    void reset() { state.reset(1); }
+    void reset() {
+        for (const auto& [device, growth] : state.reset_growth(1))
+            if (growth) budget.reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
+        state.reset(1);
+    }
     void release() {
         trace_expert_cache("end");
         try { reset(); }
         catch (...) { graph.invalidate(); throw; }
         if (std::uncaught_exceptions()) graph.invalidate();
     }
-    Generation plain(InferenceRequest& input, InferenceOutput& output, std::size_t, std::size_t) {
+    Generation plain(InferenceRequest& input, InferenceOutput& output, std::size_t reused, std::size_t stable) {
         const auto& prompt = input.prompt;
-        const auto chunk_size = budget.prefill(prompt.size(), config.generation.prefill_chunk_size,
+        const auto chunk_size = budget.prefill(prompt.size() - reused, config.generation.prefill_chunk_size,
             info.prefill_row_bytes, state.position() > 0, config.prefill_chunk_auto);
         auto full_ids = ops::reshape(ops::tensor(std::span<const int64_t>(prompt),
             executor.device()), {1, -1});
@@ -207,16 +229,8 @@ struct Native {
         Plain plain{model, state, executor, budget, graph, weights, info, config,
                     forward_options, source, input, output, prepared, chunk_size,
                     std::move(full_ids), std::move(sampler), penalties};
-        auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), 0, 0, chunk_size);
-        bool traced_decode = false;
-        while (auto step = sequence.next()) {
-            if (auto* delta = step.value ? std::get_if<OutputDelta>(&*step.value) : nullptr;
-                delta && !traced_decode && !delta->token_ids.empty()) {
-                trace_expert_cache("decode_begin", false);
-                traced_decode = true;
-            }
-            co_yield std::move(step);
-        }
+        auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), reused, stable, chunk_size);
+        while (auto step = sequence.next()) co_yield std::move(step);
     }
 };
 
@@ -224,7 +238,7 @@ struct Native {
 
 StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
     return generate_prepared(
-        Native{*model_, *request.state, *executor_, *budget_, *graph_, *weights_, model_info_,
+        Native{*model_, *request.state, *executor_, *budget_, *graph_, *weights_, *cache_, model_info_,
                config_, forward_options_, source_.get()},
         *request.state, *executor_, request.input, *request.output, id, request.batched);
 }

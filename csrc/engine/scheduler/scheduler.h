@@ -51,7 +51,6 @@ private:
     EngineStatus execution_status() const;
     std::pair<bool, std::vector<EngineEvent>> advance(const std::vector<RequestId>& eligible);
     void retire_failed() noexcept;
-    void reset_states(std::int64_t batch);
     void refresh_snapshot(bool healthy, bool blocked, bool metrics);
 
     Engine& engine_;

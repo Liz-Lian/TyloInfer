@@ -87,13 +87,12 @@ Generation generate_session(Ops& ops, InferenceRequest& request, InferenceOutput
         ops.set_prefix_boundary(caching?std::min(plan.stable_prefix_tokens,prompt.size()-1):0);
     typename Ops::Restore restored;
     if (caching && (!use_mtp || mtp->supports_session_state()))
-        restored = session_cache.restore_best(state,
-            ops.drain,
-            use_mtp ? mtp : nullptr,
+        restored = ops.restore_session(
             cache_plan.session_id,
             prompt,
             plan.stable_prefix_tokens,
-            input_key);
+            input_key,
+            use_mtp);
     if (restored.tokens || use_mtp)
         ops.invalidate_plan();
     if (!restored.tokens) ops.reset();
@@ -204,7 +203,7 @@ Generation generate_request(Operations operations, InferenceRequest& request, In
     sampling.max_tokens = plan.generation_tokens;
     if (output.stopped())
         co_return;
-    if constexpr (requires { ops.mtp; }) {
+    if constexpr (requires { ops.mtp_state; }) {
         if (ops.mtp) {
             ops.mtp_state.stats = {};
             ops.mtp_state.stats.available = true;

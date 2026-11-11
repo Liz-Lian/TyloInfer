@@ -71,16 +71,19 @@ template <typename Model, typename State>
 auto hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
               Collectives& collectives, const Executor::Mode& mode, tyloi::models::Input input) {
     static_assert(has_forward<Model, State>);
-    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                            "CUDA model forward requires an executor");
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope = Executor::current().enter(mode.ffn);
     if constexpr (causal<Model>) {
-        return model.forward(std::move(input), state, forward_options(mode));
+        const tyloi::models::CausalModel& causal = model;
+        return causal.forward(std::move(input), state, forward_options(mode));
     } else {
+        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                                "CUDA model forward requires an executor");
         return forward(model, state, *executor, collectives, mode, std::move(input));
     }
 #else
+    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                            "CUDA model forward requires an executor");
     return forward(model, state, *executor, collectives, mode, std::move(input));
 #endif
 }
@@ -89,16 +92,19 @@ template <typename Model, typename Value>
 auto project(Model& model, tyloi::cuda::Executor* executor,
                const Executor::Mode& mode, Value value, bool capped) {
     static_assert(has_logits<Model>);
-    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                            "CUDA model logits requires an executor");
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope = Executor::current().enter(mode.ffn);
     if constexpr (causal<Model>) {
-        return model.logits(value, capped);
+        const tyloi::models::CausalModel& causal = model;
+        return causal.logits(value, capped);
     } else {
+        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                                "CUDA model logits requires an executor");
         return logits(model, *executor, value, capped, mode);
     }
 #else
+    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                            "CUDA model logits requires an executor");
     return logits(model, *executor, std::move(value), capped, mode);
 #endif
 }
@@ -551,7 +557,7 @@ namespace generation_detail {
 
 template <class Model, class State, class Predictor> struct RequestOps {
     using Hidden = ::tyloi::Tensor;
-    using Restore = TextSessionRestore;
+    using Restore = tyloi::state::Sessions::Restore;
     Model &model;
     State &state;
     tyloi::cuda::Executor* executor;
@@ -576,6 +582,10 @@ template <class Model, class State, class Predictor> struct RequestOps {
     std::string request_id;
 
     bool batched() const { return batching != nullptr; }
+    Restore restore_session(const std::string& id, const std::vector<std::int64_t>& prompt,
+        std::size_t prefix, const std::string& key, bool use_mtp) {
+        return cache.restore_best(state, drain, use_mtp ? mtp : nullptr, id, prompt, prefix, key);
+    }
     void trace_expert_cache(const char* boundary, bool wait = true) {
         // Request/first-token boundaries only: existing counters need no
         // events or per-token synchronization. Full summaries drain exchanges.

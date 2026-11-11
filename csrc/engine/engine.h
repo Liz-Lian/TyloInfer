@@ -117,6 +117,7 @@ protected:
     virtual tyloi::StepSequence<EventData> generate(const RequestId& id, Request& request) = 0;
 #endif
     virtual void retire_request(Request& request) noexcept;
+    /** Reset active request states after reserving any model-reported allocation growth. */
     void reset_states(std::int64_t batch);
 #ifdef TYLOINFER_NATIVE_CUDA
     virtual void execute(const std::vector<RequestId>& eligible);

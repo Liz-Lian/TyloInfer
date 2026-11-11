@@ -12,6 +12,7 @@
 #include "engine/models/source.h"
 #include "engine/scheduler/request.h"
 #include "engine/budget.h"
+#include "engine/generation/prefill_budget.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/cache.h"
@@ -23,6 +24,20 @@
 namespace tyloi::engine {
 
 Engine::Engine() = default;
+
+void Engine::reset_states(std::int64_t batch) {
+    for (auto& [id, request] : scheduler_->requests_) {
+        if (!request.state) continue;
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (budget_) {
+            for (const auto& [device, bytes] : request.state->reset_growth(batch))
+                if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
+        }
+#endif
+        request.state->reset(batch);
+    }
+}
+
 #ifdef TYLOINFER_NATIVE_CUDA
 Engine::Engine(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
         Config config, std::shared_ptr<const ModelSource> source,
@@ -233,7 +248,11 @@ SessionResult Engine::set_budget(const SessionCommand& command) {
     weights_->settle();
     graph_->invalidate();
     if (ready_) reset_states(1);
-    if (idle_state_) idle_state_->reset(1);
+    if (idle_state_) {
+        for (const auto& [device, bytes] : idle_state_->reset_growth(1))
+            if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
+        idle_state_->reset(1);
+    }
     return change.apply();
 }
 

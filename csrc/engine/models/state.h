@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+struct TextSessionState;
+
 namespace tyloi::models {
 
 struct ForwardOptions;
@@ -56,12 +58,20 @@ public:
         std::int64_t, const ForwardOptions&) const {
         throw std::logic_error("state allocation planning is not implemented");
     }
+    /** Return actual device bytes that reset will newly allocate for the batch. */
+    virtual std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t) const {
+        return {};
+    }
     // Owners keep storage alive; deduplicate using backing identity, not object identity.
     virtual std::vector<::tyloi::Tensor> storage() const = 0;
     // Borrow writable objects from this state; their lifetime remains tied to it.
     virtual std::vector<tyloi::Tensor*> graph_state() = 0;
     virtual bool supports_text_session_state() const = 0;
     virtual bool supports_paged_text_session_state() const = 0;
+    /** Capture a text session snapshot for the committed tokens. */
+    virtual TextSessionState capture_text_session_state(const std::vector<std::int64_t>& tokens) const;
+    /** Restore a compatible text session snapshot into this state. */
+    virtual void restore_text_session_state(const TextSessionState& snapshot);
 };
 
 } // namespace tyloi::models

@@ -56,8 +56,10 @@ public:
     bool supports_text_session_state() const override;
     bool supports_paged_text_session_state() const override;
     TextSessionStateKind text_session_state_kind() const;
-    TextSessionState capture_text_session_state(const std::vector<std::int64_t>& tokens) const;
-    void restore_text_session_state(const TextSessionState& state);
+    /** Capture a text session snapshot for the committed tokens. */
+    TextSessionState capture_text_session_state(const std::vector<std::int64_t>& tokens) const override;
+    /** Restore a compatible text session snapshot. */
+    void restore_text_session_state(const TextSessionState& state) override;
 
     // Speculative suffix journal; the layer records hold the checkpoints.
     void begin_speculative_suffix(std::int64_t draft_tokens);

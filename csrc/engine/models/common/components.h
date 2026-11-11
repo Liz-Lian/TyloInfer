@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <type_traits>
+#include <variant>
 
 namespace tyloi::cuda {
 
@@ -31,9 +32,17 @@ bool component_vision(const Model& model, const Parts& parts) {
     else return false;
 }
 
+/** Describe assembled capabilities through the public model contract when no optional parts are held. */
 template <class Model, class Parts>
 void describe_model(const Model& model, const Parts& parts, tyloi::engine::EngineInfo& info) {
-    if constexpr (requires { parts.describe(info); }) {
+    if constexpr (std::is_same_v<Parts, std::monostate> &&
+                  std::is_base_of_v<tyloi::models::CausalModel, Model>) {
+        info.capabilities = model.capabilities();
+        const auto& caps = info.capabilities;
+        info.multimodal = caps.image_input || caps.video_input || caps.audio_input ||
+            caps.audio_output || caps.full_duplex;
+        info.duplex = caps.full_duplex;
+    } else if constexpr (requires { parts.describe(info); }) {
         parts.describe(info);
     } else {
         const bool vision = component_vision(model, parts);
@@ -47,9 +56,13 @@ void describe_model(const Model& model, const Parts& parts, tyloi::engine::Engin
     }
 }
 
+/** Collect model-owned capability metrics and any remaining optional-part accounting. */
 template <class Model, class Parts>
 tyloi::engine::Metrics component_metrics(const Model& model, const Parts& parts) {
-    if constexpr (requires { parts.metrics(); }) {
+    if constexpr (std::is_same_v<Parts, std::monostate> &&
+                  std::is_base_of_v<tyloi::models::CausalModel, Model>) {
+        return model.metrics();
+    } else if constexpr (requires { parts.metrics(); }) {
         return parts.metrics();
     } else {
         tyloi::engine::Metrics metrics;
