@@ -222,7 +222,13 @@ inline constexpr auto with_model = []<typename F>(
             auto weights = execution.weights.loader(*owner->source, execution.config.weights,
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
+#ifdef TYLOINFER_NATIVE_CUDA
+            owner->components = std::make_unique<qwen4_exp::Components>(
+                qwen4_exp::load_components(*owner, weights, load_optional_components));
+            std::monostate components;
+#else
             auto components = qwen4_exp::load_components(*owner, weights, load_optional_components);
+#endif
             auto state = std::unique_ptr<qwen4_exp::State>(static_cast<qwen4_exp::State*>(
                 owner->make_state().release()));
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));

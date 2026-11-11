@@ -22,8 +22,13 @@ struct Components {
     static constexpr bool streamed_kv() noexcept { return true; }
     tyloi::engine::Metrics profile_metrics(const Model& language, const State& state) const;
     std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language, const State& state) const;
+    /** Prepare supported media using the request's cache and model weights. */
     tyloi::StepSequence<tyloi::models::Prepared> prepare(
+#ifdef TYLOINFER_NATIVE_CUDA
+        const Model& language, tyloi::cache::Media& images,
+#else
         Model& language, tyloi::cache::Media& images,
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif
@@ -31,7 +36,11 @@ struct Components {
 #ifndef TYLOINFER_NATIVE_CUDA
         Executor* executor,
 #endif
-        const std::vector<int64_t>& tokens, const MfqMultimodalInput& media);
+        const std::vector<int64_t>& tokens, const MfqMultimodalInput& media)
+#ifdef TYLOINFER_NATIVE_CUDA
+        const
+#endif
+        ;
 };
 
 Components load_components(Model& model, const tyloi::weights::Loader& weights,

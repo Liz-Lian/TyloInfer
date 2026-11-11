@@ -102,7 +102,7 @@ struct Text {
 
     void release_request_resources() noexcept {
         if constexpr (std::is_same_v<Model, qwen4_exp::Model>) {
-            if (components.mtp) {
+            if (component_predictor(language, components)) {
                 try {
                     qwen4_release_decode_graphs(language, state);
                 } catch (...) {
@@ -200,7 +200,7 @@ struct Text {
     bool can_batch(const EngineRequest& request) const {
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
             return batching && !request.input.media && request.input.cache_plan.session_id.empty() &&
-                !(request.input.sampling.enable_mtp && components.mtp);
+                !(request.input.sampling.enable_mtp && component_predictor(language, components));
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), mtp_available());
     }
     void clear_bindings() noexcept {
@@ -253,12 +253,26 @@ struct Text {
             const auto& parts = std::as_const(components);
             const auto component_values = tyloi::cuda::component_metrics(model, parts);
             Metrics profile_metrics;
+#ifdef TYLOINFER_NATIVE_CUDA
+            if constexpr (std::is_same_v<Model, qwen4_exp::Model> && std::is_same_v<Parts, std::monostate>)
+                profile_metrics = qwen4_decode_graph_profile_metrics(model,state);
+            else
+#endif
             if constexpr (requires { parts.profile_metrics(model,state); })
                 profile_metrics = parts.profile_metrics(model,state);
             std::optional<Metrics> memory;
+#ifdef TYLOINFER_NATIVE_CUDA
+            if constexpr (std::is_same_v<Model, qwen4_exp::Model> && std::is_same_v<Parts, std::monostate>)
+                memory = qwen4_cache_memory_metrics(model,state,component_predictor(model,parts));
+            else
+#endif
             if constexpr (requires { parts.memory_metrics(model,state); })
                 memory = parts.memory_metrics(model,state);
             const bool streamed_kv = [] {
+#ifdef TYLOINFER_NATIVE_CUDA
+                if constexpr (std::is_same_v<Model, qwen4_exp::Model> && std::is_same_v<Parts, std::monostate>) return true;
+                else
+#endif
                 if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
                 else return false;
             }();

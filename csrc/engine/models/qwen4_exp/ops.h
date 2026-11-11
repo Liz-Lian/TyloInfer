@@ -17,7 +17,7 @@
 #include <iosfwd>
 #include <vector>
 
-namespace tyloi::cuda::qwen4_exp { struct Layer; }
+namespace tyloi::cuda::qwen4_exp { struct Layer; struct Components; }
 namespace tyloi::cuda { class GatedResidual; }
 namespace tyloi::models { struct Mtp; }
 
@@ -89,6 +89,7 @@ bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp
 std::int64_t prefill_span(const qwen4_exp::Model&, const qwen4_exp::State&, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,
                           std::size_t stable, bool transformed, bool);
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor qwen4_layer_major_prefill_hidden(
     qwen4_exp::Model&, qwen4_exp::State&, ::tyloi::Tensor ids, int64_t compute_chunk = 1024,
     bool last_only = true, const std::function<bool()>& cancelled = {},
@@ -99,6 +100,7 @@ std::int64_t prefill_span(const qwen4_exp::Model&, const qwen4_exp::State&, std:
     bool last_only, const std::function<bool()>& cancelled,
     ::tyloi::Tensor* raw_hidden, bool raw_hidden_host,
     const std::function<void()>& computation_finished);
+#endif
 
 namespace qwen4_exp {
 
@@ -108,10 +110,17 @@ struct Model : tyloi::models::CausalModel {
     static bool accepts_backbone(std::string_view backbone) { return backbone == "qwen4_exp"; }
 
     // ---- tyloi::models::CausalModel
+    /** Report this model's dimensions and execution policy. */
     tyloi::models::Info info() const override;
+    /** Report capabilities of the components actually loaded. */
     MfqModelCapabilities capabilities() const override;
+    /** Report component availability and supported KV memory policy. */
     tyloi::engine::Metrics metrics() const override;
+    /** Borrow the predictor owned by this model, when present. */
+    tyloi::models::Mtp* mtp() const noexcept override;
+    /** Create request state and its predictor state for this model. */
     std::unique_ptr<tyloi::models::State> make_state() const override;
+    /** Prepare media using the creating model's request-owned cache. */
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
     ::tyloi::Tensor embedding(const ::tyloi::Tensor& ids, int primary = 0) const override;
@@ -121,6 +130,12 @@ struct Model : tyloi::models::CausalModel {
     ::tyloi::Tensor logits(const ::tyloi::Tensor& hidden, bool capped = true) const override;
     ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
                                  const tyloi::models::ForwardOptions& options = {}) const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Run eligible layer-major prefill in resumable model-owned steps. */
+    tyloi::StepSequence<tyloi::models::Prefill> prefill(tyloi::models::Input input,
+        tyloi::models::State& state, const tyloi::models::ForwardOptions& options,
+        std::int64_t compute_chunk) const override;
+#endif
 
     // ---- speculative contract used by the MTP sequence
     bool supports_speculation() const noexcept { return true; }
@@ -142,6 +157,10 @@ struct Model : tyloi::models::CausalModel {
     CausalConfig config;
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<qwen4_exp::Layer>> layers;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Loaded optional weights remain owned by the shared model. */
+    std::unique_ptr<Components> components;
+#endif
 
     // ---- helpers absorbed from the retired CausalLm plumbing
 #ifndef TYLOINFER_NATIVE_CUDA

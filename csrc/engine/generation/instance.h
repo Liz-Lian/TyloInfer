@@ -69,7 +69,7 @@ Generation Text<M, S, P>::generate(const RequestId& id, InferenceRequest& input,
             // Exclusive MTP generation has ended before a batch starts.
             // Its graph consumers must retire before idle batch buffers.
             qwen4_release_decode_graphs(language,state);
-            if (components.mtp) components.mtp->reset(predictor_state(), 1);
+            if (auto* predictor=component_predictor(language,components)) predictor->reset(predictor_state(), 1);
         }
     }
     return generate_prepared(std::ref(*this), state, *executor, input, output, id, batched);

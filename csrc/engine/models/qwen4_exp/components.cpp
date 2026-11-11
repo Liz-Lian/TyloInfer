@@ -20,7 +20,11 @@ std::optional<tyloi::engine::Metrics> Components::memory_metrics(const Model& la
 }
 
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
+#ifdef TYLOINFER_NATIVE_CUDA
+        const Model& language, tyloi::cache::Media& images,
+#else
         Model& language, tyloi::cache::Media& images,
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
         Projector projector, Collectives& collectives,
 #endif
@@ -28,7 +32,11 @@ tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
 #ifndef TYLOINFER_NATIVE_CUDA
         Executor* executor,
 #endif
-        const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
+        const std::vector<int64_t>& tokens, const MfqMultimodalInput& media)
+#ifdef TYLOINFER_NATIVE_CUDA
+        const
+#endif
+        {
     if (grid_vision) return grid_vision->prepare(language, images,
 #ifndef TYLOINFER_NATIVE_CUDA
         projector, collectives,
@@ -78,7 +86,11 @@ Components load_components(
         const auto* component = model.graph.component("vision");
         result.grid_vision.emplace(
             tyloi::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                weights, model.execution->weights, config, image, video,
+                weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+                model.execution->weights,
+#endif
+                config, image, video,
                 component->input_contract, component->position_policy));
     } else if (model.plan.vision != tyloi::cuda::CudaVisionAdapter::none) {
         throw std::runtime_error("unsupported Qwen4 CUDA vision adapter");

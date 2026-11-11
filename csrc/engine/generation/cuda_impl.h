@@ -198,6 +198,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     bool graph_active = false;
     bool graph_prepared = false;
     int64_t prefill_compute_chunk=1024;
+    double prefill_elapsed=-1;
     tyloi::engine::InferenceOutput* output=nullptr;
     tyloi::engine::Budget* budget=nullptr;
     const tyloi::ModelSource* source=nullptr;
@@ -246,6 +247,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     }
 
     double prefill(const tyloi::engine::PrefillChunk &chunk) {
+        prefill_elapsed=-1;
 #ifdef TYLOINFER_NATIVE_CUDA
         auto scope = Executor::current().enter(mode.ffn);
         if constexpr (tyloi::cuda::PlannedState<State>) {
@@ -329,7 +331,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 #endif
             pending = tyloi::engine::sample_logits(sampler, std::move(logits), counts, constraint);
         }
-        const auto elapsed=timer.elapsed_ms();
+        const auto elapsed=prefill_elapsed>=0?prefill_elapsed:timer.elapsed_ms();
         if(graph_config.trace)std::cerr<<"runtime_prefill_chunk offset="<<chunk.offset
             <<" tokens="<<chunk.count<<" layer_major="<<layer_major
             <<" short_windows="<<short_windows

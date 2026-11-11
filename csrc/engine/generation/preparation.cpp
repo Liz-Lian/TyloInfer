@@ -43,7 +43,7 @@ StepResult<models::Prepared> Preparation::next() {
                 loan_->begin(request.bytes);
             } else {
                 if (!loan_ || !request.output) throw std::logic_error("invalid preparation workspace completion");
-                *request.output = loan_->finish(std::move(*request.output));
+                loan_->finish(*request.output);
                 loan_.reset();
             }
         }

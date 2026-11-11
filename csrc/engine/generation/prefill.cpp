@@ -26,6 +26,8 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
     std::optional<weights::Cache::Priority> priority;
     models::Prefill result;
     bool observed = false;
+    bool computed = false;
+    auto timer = executor.timer();
     const auto drain = [&] {
         std::exception_ptr failure;
         try { weights.drain(); } catch (...) { failure = std::current_exception(); }
@@ -50,14 +52,20 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
             observed = true;
             if (!step.value) continue;
             result = std::move(*step.value);
-            if (result.phase == models::Prefill::Phase::encode) {
+            if (result.phase == models::Prefill::Phase::computed) {
+                timer->stop();
+                computed = true;
+            } else if (result.phase == models::Prefill::Phase::encode) {
                 if (result.first < result.last) {
                     if (priority) { priority->finish(); priority.reset(); }
                     priority.emplace(weights, result.first, result.last);
                 }
             } else {
                 if (priority) { priority->finish(); priority.reset(); }
-                if (result.phase == models::Prefill::Phase::complete) return result;
+                if (result.phase == models::Prefill::Phase::complete) {
+                    if (computed) result.elapsed_ms = timer->elapsed_ms();
+                    return result;
+                }
             }
         }
         drain();

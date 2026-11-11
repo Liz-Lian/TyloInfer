@@ -114,7 +114,8 @@ struct Ops : Sampling {
         auto result = engine::prefill(model, state, executor, weights, budget, options,
             std::move(input), compute_chunk, output);
         timer->stop();
-        return {std::move(result.hidden), std::move(result.raw), timer->elapsed_ms()};
+        return {std::move(result.hidden), std::move(result.raw),
+            result.elapsed_ms >= 0 ? result.elapsed_ms : timer->elapsed_ms()};
     }
     Tensor decode_positions(int64_t start, int64_t tokens) {
         if (tokens <= 0) throw std::runtime_error("MTP position span must be positive");

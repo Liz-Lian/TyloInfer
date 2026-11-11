@@ -32,6 +32,8 @@ struct Input {
     Tensor image_mask;
     /** Execute an uncommitted suffix inside an active speculative transaction. */
     bool suffix = false;
+    /** Return raw prefill hidden states in host memory when requested. */
+    bool host_raw = false;
 };
 
 struct ForwardOptions {
@@ -43,7 +45,7 @@ struct ForwardOptions {
 
 /** Model-owned prefill phase boundaries and final owning outputs. */
 struct Prefill {
-    enum class Phase { encode, decode, complete };
+    enum class Phase { encode, decode, computed, complete };
     Phase phase = Phase::complete;
     /** Half-open weight layer range prioritised during this phase, or an empty range. */
     int first = 0, last = 0;
@@ -51,6 +53,8 @@ struct Prefill {
     Tensor hidden;
     /** Model-specific predictor context, which may be a bounded tail of the input span. */
     Tensor raw;
+    /** Driver-measured computation time before workspace restoration, or a negative value if unmarked. */
+    double elapsed_ms = -1;
 };
 
 struct Prepared {

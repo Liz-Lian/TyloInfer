@@ -2,8 +2,10 @@
 #include "engine/models/common/prompt.h"
 
 #include "engine/weights/fields.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/cache.h"
 #include "engine/weights/workspace.h"
+#endif
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
@@ -38,12 +40,16 @@ using DenseTensor = ::tyloi::DenseTensor;
 
 class CudaGridVisionEncoder {
   public:
-    static CudaGridVisionEncoder load(const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
+    /** Load the grid encoder weights for the selected placement. */
+    static CudaGridVisionEncoder load(const ::tyloi::weights::Loader& weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+                                      ::tyloi::weights::Cache& cache,
+#endif
                                       const GridVisionConfig &config);
 
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::StepSequence<::tyloi::Tensor> encode(
-                                   ::tyloi::Tensor pixels, const std::vector<GridShape> &grids) const;
+                                   ::tyloi::Tensor pixels, std::vector<GridShape> grids) const;
 #else
     tyloi::StepSequence<DenseTensor> encode(
                                    Projector projector,
@@ -149,7 +155,7 @@ class CudaGridVisionEncoder {
     };
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    CudaGridVisionEncoder(::tyloi::weights::Cache& weights, GridVisionConfig config,
+    CudaGridVisionEncoder(GridVisionConfig config,
                           ::tyloi::Tensor patch_weight, ::tyloi::Tensor patch_bias,
                           ::tyloi::Tensor position_weight, std::vector<Layer> blocks);
 #else
@@ -157,7 +163,9 @@ class CudaGridVisionEncoder {
                           DenseTensor position_weight, std::vector<Layer> blocks);
 #endif
 
+#ifndef TYLOINFER_NATIVE_CUDA
     ::tyloi::weights::Cache& weights_;
+#endif
     GridVisionConfig config_;
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor patch_weight_, patch_bias_, position_weight_;
@@ -170,7 +178,10 @@ class CudaGridVisionEncoder {
 class CudaGridVisionPromptComponent {
   public:
     static CudaGridVisionPromptComponent
-    load(const ::tyloi::weights::Loader& weights, ::tyloi::weights::Cache& cache,
+    load(const ::tyloi::weights::Loader& weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+         ::tyloi::weights::Cache& cache,
+#endif
          const GridVisionConfig &vision, int64_t image_token_id, int64_t video_token_id,
          std::string input_contract, std::string position_policy);
 
@@ -251,6 +262,12 @@ class CudaGridVisionPromptComponent {
             DenseTensor patches;
 #endif
             while (auto step = encoding.next()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                if (step.workspace) {
+                    co_yield *step.workspace;
+                    continue;
+                }
+#endif
                 if (step.value)
                     patches = std::move(*step.value);
                 else
@@ -283,7 +300,7 @@ class CudaGridVisionPromptComponent {
                                    ::tyloi::weights::fields::bytes(merger_up_) +
                                    ::tyloi::weights::fields::bytes(merger_down_);
 #ifdef TYLOINFER_NATIVE_CUDA
-                tyloi::weights::Loan loan(weights_, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
+                co_yield tyloi::Workspace{bytes + patches.nbytes() * 12 + (std::size_t(16) << 20)};
                 ::tyloi::Tensor output;
 #else
                 tyloi::weights::Loan loan(weights_, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
@@ -301,9 +318,12 @@ class CudaGridVisionPromptComponent {
                     output = merge(norm, up, down);
                 }
 #ifdef TYLOINFER_NATIVE_CUDA
-                merged = loan.finish(std::move(output));
+                co_yield tyloi::Workspace{0, &output};
+                merged = std::move(output);
 #else
-                merged = loan.finish(std::make_shared<DenseTensor>(std::move(output))).dense();
+                ::tyloi::Tensor result(std::move(output));
+                loan.finish(result);
+                merged = result.dense();
 #endif
             } else {
                 merged = merge(merger_norm_, merger_up_, merger_down_);
@@ -385,12 +405,18 @@ class CudaGridVisionPromptComponent {
     const std::string &position_policy() const noexcept { return position_policy_; }
 
   private:
-    CudaGridVisionPromptComponent(::tyloi::weights::Cache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm,
+    CudaGridVisionPromptComponent(
+#ifndef TYLOINFER_NATIVE_CUDA
+                                  ::tyloi::weights::Cache& weights,
+#endif
+                                  CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm,
                                   tyloi::weights::BiasWeight merger_up, tyloi::weights::BiasWeight merger_down,
                                   int64_t image_token_id, int64_t video_token_id,
                                   std::string input_contract, std::string position_policy);
 
+#ifndef TYLOINFER_NATIVE_CUDA
     ::tyloi::weights::Cache& weights_;
+#endif
     CudaGridVisionEncoder encoder_;
     vision::LayerNorm merger_norm_;
     weights::BiasWeight merger_up_;

@@ -101,7 +101,11 @@ Components Components::load(
         }
         components.grid_vision.emplace(
             grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                weights, cache, *config.grid_vision,
+                weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+                cache,
+#endif
+                *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
     } else if (components.plan.vision != CudaVisionAdapter::none) {

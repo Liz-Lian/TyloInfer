@@ -41,8 +41,8 @@ public:
     std::size_t transfer_bytes() const;
     void suspend();
     void finish();
-    // Move the output out of borrowed storage before returning it to the cache.
-    Tensor finish(Tensor output);
+    /** Replace the output in place before returning borrowed storage; preserve it if cloning fails. */
+    void finish(Tensor& output);
 private:
     friend class Cache;
     struct Impl;

@@ -17,6 +17,7 @@
 #include "ops.h"
 #include "model.h"
 #include "engine/models/qwen4_exp/snapshot.h"
+#include "engine/models/qwen4_exp/components.h"
 #include "predictor.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/encoding/quant/nint_rows.h"
@@ -2115,6 +2116,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
     return logical_chunk;
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor qwen4_layer_major_prefill_hidden(
         qwen4_exp::Model& model,qwen4_exp::State& state,::tyloi::Tensor ids_handle,int64_t compute_chunk,
         bool last_only,const std::function<bool()>& cancelled,::tyloi::Tensor* raw_hidden,
@@ -2127,6 +2129,23 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         qwen4_exp::Model& model,qwen4_exp::State& state,::tyloi::Tensor ids_handle,int64_t compute_chunk,
         bool last_only,const std::function<bool()>& cancelled,::tyloi::Tensor* raw_hidden,
         bool raw_hidden_host,const std::function<void()>& computation_finished) {
+#else
+tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
+        tyloi::models::Input input, tyloi::models::State& state_value,
+        const tyloi::models::ForwardOptions&, std::int64_t compute_chunk) const {
+    auto* target = dynamic_cast<qwen4_exp::State*>(&state_value);
+    tyloi::models::require_model(target && target->belongs_to(*this),
+        "Qwen4 state belongs to a different model");
+    auto& state = *target;
+    const auto& model = *this;
+    if (input.embeddings || input.positions || input.cache_positions || input.lengths || input.image_mask ||
+        input.confirmed || input.suffix || !input.ids || input.ids.dim()!=2 || input.ids.size(0)!=1 ||
+        !qwen4_layer_major_prefill_eligible(model,state,input.ids.size(1))) co_return;
+    auto ids_handle = std::move(input.ids);
+    auto* raw_hidden = input.raw_hidden;
+    const bool raw_hidden_host = input.host_raw;
+    const bool last_only = true;
+#endif
     using DenseTensor=::tyloi::DenseTensor;
     auto ids = ids_handle.dense();
     TYLOINFER_RUNTIME_CHECK(ids.dim()==2 && ids.size(0)==1 &&
@@ -2225,7 +2244,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
     DenseTensor hidden=::tyloi::cuda::empty({1,tokens,model.metadata.hidden_size*model.metadata.hc_mult},
                            ids.options().dtype(::tyloi::kFloat16));
     for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        co_yield tyloi::StepState::advanced;
+#else
         if(cancelled && cancelled())return {};
+#endif
         const auto count=std::min(compute_chunk,tokens-begin);
         auto input=model.repeat_hidden(model.embed_tokens(ids.narrow(1,begin,count)),model.metadata.hc_mult);
         TYLOINFER_RUNTIME_CHECK(input.scalar_type()==hidden.scalar_type() &&
@@ -2277,7 +2300,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
             DenseTensor source=hidden;
             if(qwen_block.ple) {
                 for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                    co_yield tyloi::StepState::advanced;
+#else
                     if(cancelled && cancelled())return {};
+#endif
                     const auto count=std::min(compute_chunk,tokens-begin);
                     auto chunk_ids=ids.narrow(1,begin,count);
                     auto host_ids=cpu_ids.narrow(1,begin,count);
@@ -2292,7 +2319,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                 return qwen_block.attention_gr.pre(source);
             });
             if(bulk_gdn && qwen_block.gdn) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                co_yield tyloi::StepState::advanced;
+#else
                 if(cancelled && cancelled())return {};
+#endif
                 const qwen4_exp::QwenGdnPrefillProjectionRowsScope projection_rows(compute_chunk);
                 attention_output=profile_measure("prefill.gdn",[&] {
                     return qwen_block.gdn->forward(layer_state.gdn,attention_result.mixed,true,0);
@@ -2300,7 +2331,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
             }
         }
         for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            co_yield tyloi::StepState::advanced;
+#else
             if(cancelled && cancelled())return {};
+#endif
             if(bulk_gdn && block->gdn)continue;
             const auto count=std::min(compute_chunk,tokens-begin);
             resume_profile();
@@ -2365,9 +2400,35 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         // have already been submitted before this stream-ordered release.
         if(tokens>9216)hidden={};
         if(batch_experts) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            co_yield tyloi::StepState::advanced;
+#else
             if(cancelled && cancelled())return {};
+#endif
             auto& qwen_block=*block;
             resume_profile();
+#ifdef TYLOINFER_NATIVE_CUDA
+            DenseTensor ffn_output;
+            if(expert_batch_count(tokens)==tokens) {
+                ffn_output=profile_measure("prefill.ffn",[&] { return qwen_block.ffn.forward(ffn_inputs); });
+            } else {
+                for(int64_t begin=0;begin<tokens;) {
+                    co_yield tyloi::StepState::advanced;
+                    auto count=expert_batch_count(tokens-begin);
+                    const auto tail=tokens-begin-count;
+                    if(tail>0 && tail<=8)count-=16-tail;
+                    auto part=profile_measure("prefill.ffn",[&] {
+                        return qwen_block.ffn.forward(ffn_inputs.narrow(1,begin,count));
+                    });
+                    if(!ffn_output.defined()) {
+                        auto shape=part.sizes().vec();shape[1]=tokens;
+                        ffn_output=::tyloi::cuda::empty(shape,part.options());
+                    }
+                    ffn_output.narrow(1,begin,count).copy_(part);
+                    begin+=count;
+                }
+            }
+#else
             auto ffn_output=profile_measure("prefill.ffn",[&] {
                 if(expert_batch_count(tokens)==tokens)return qwen_block.ffn.forward(ffn_inputs);
                 DenseTensor result;
@@ -2391,6 +2452,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
                 return result;
             });
             if(!ffn_output.defined())return {};
+#endif
             if(audit_batch) {
                 auto expected=::tyloi::cuda::empty(ffn_output.sizes(),ffn_output.options());
                 for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
@@ -2455,7 +2517,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
             auto finalized=qwen4_finalize_hidden(model, hidden.narrow(1,begin,tokens-begin),1,tokens-begin);
             result=qwen4_last_hidden(std::move(finalized)).unsqueeze(1);
         }
+#ifndef TYLOINFER_NATIVE_CUDA
         if(computation_finished)computation_finished();
+#else
+        co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::computed};
+#endif
         if(borrowed_workspace) {
             workspace_loan.suspend();
             result=result.clone();
@@ -2464,7 +2530,12 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         }
         state.finish_forward(prepared_full,1,tokens);
         state.cache_pos=cache_start+tokens;
+#ifdef TYLOINFER_NATIVE_CUDA
+        co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete, 0, 0, std::move(result), {}};
+        co_return;
+#else
         return result;
+#endif
     }
     DenseTensor finalized;
     if(last_only) {
@@ -2481,7 +2552,11 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         }
     }
     if(raw_hidden && raw_hidden_host)hidden=hidden.to(::tyloi::kCPU);
+#ifndef TYLOINFER_NATIVE_CUDA
     if(computation_finished)computation_finished();
+#else
+    co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::computed};
+#endif
     if(borrowed_workspace) {
         // The final mixer also needs sequence-sized scratch. Finish it inside
         // the loan, then retain only the outputs consumed by MTP/the caller.
@@ -2493,7 +2568,12 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
     state.finish_forward(prepared_full,1,tokens);
     state.cache_pos=cache_start+tokens;
     if(raw_hidden)*raw_hidden=hidden;
+#ifdef TYLOINFER_NATIVE_CUDA
+    co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete, 0, 0,
+        std::move(finalized), raw_hidden ? ::tyloi::Tensor(hidden) : ::tyloi::Tensor{}};
+#else
     return finalized;
+#endif
 }
 
 namespace qwen4_exp {
@@ -2504,18 +2584,33 @@ tyloi::models::Info Model::info() const {
 }
 
 MfqModelCapabilities Model::capabilities() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    const bool vision = components && components->grid_vision.has_value();
+    const auto state = cuda_component_state(graph, plan, vision, mtp() != nullptr);
+    const auto caps = cuda_runtime_capabilities(graph, plan, state, vision, false);
+#else
     const auto state = cuda_component_state(graph, plan, false, false);
     const auto caps = cuda_runtime_capabilities(graph, plan, state, false, false);
+#endif
     return {graph.architecture, caps.text, caps.image_input, caps.video_input,
         caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp,
         "model-graph+cuda-adapters"};
 }
 
 tyloi::engine::Metrics Model::metrics() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto state = cuda_component_state(graph, plan,
+        components && components->grid_vision.has_value(), mtp() != nullptr);
+    const auto quantization = cuda_kv_quantization();
+    return {{"kv_memory_supported", 1.0},
+        {"kv_quantization_supported", 1.0},
+        {"kv_quantization_bits", double(quantization.bits)},
+#else
     const auto state = cuda_component_state(graph, plan, false, false);
     return {{"kv_memory_supported", 0.0},
         {"kv_quantization_supported", 0.0},
         {"kv_quantization_bits", 0.0},
+#endif
         {"vision_declared", double(state.vision_declared)},
         {"vision_supported", double(state.vision_supported)},
         {"vision_available", double(state.vision_available)},
@@ -2524,12 +2619,30 @@ tyloi::engine::Metrics Model::metrics() const {
         {"mtp_available", double(state.mtp_available)}};
 }
 
+tyloi::models::Mtp* Model::mtp() const noexcept {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return components ? components->mtp.get() : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 std::unique_ptr<tyloi::models::State> Model::make_state() const {
-    return std::make_unique<State>(*this);
+    auto state=std::make_unique<State>(*this);
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (auto* predictor=mtp()) state->predictor=predictor->make_state();
+#endif
+    return state;
 }
 
 tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
-    const std::vector<std::int64_t>&, const MfqMultimodalInput&, tyloi::models::State&) const {
+    const std::vector<std::int64_t>& tokens, const MfqMultimodalInput& media, tyloi::models::State& state) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto* target=dynamic_cast<State*>(&state);
+    tyloi::models::require_model(target && target->belongs_to(*this), "Qwen4 state belongs to another model");
+    if (components)
+        return components->prepare(*this, target->images, execution->config.layer_placement.primary_device(), tokens, media);
+#endif
     throw std::invalid_argument("model has no multimodal component");
 }
 

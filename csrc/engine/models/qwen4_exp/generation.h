@@ -4,6 +4,7 @@
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/budget.h"
 #include "engine/generation/sampling.h"
+#include "engine/generation/prefill.h"
 #include "engine/requests/output.h"
 #include "engine/weights/cache.h"
 
@@ -71,11 +72,18 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
     } else if((!prepared || !prepared->transformed()) &&
         qwen4_layer_major_prefill_eligible(model,ops.state,chunk.count)) {
         layer_major=true;
+#ifdef TYLOINFER_NATIVE_CUDA
+        TYLOINFER_RUNTIME_CHECK(ops.executor && ops.budget && output, "staged prefill requires its execution owners");
+        tyloi::models::Input input;
+        input.ids=ids;
+        auto result=tyloi::engine::prefill(model,ops.state,*ops.executor,weights,*ops.budget,
+            tyloi::cuda::forward_options(ops.mode),std::move(input),ops.prefill_compute_chunk,*output);
+        hidden=std::move(result.hidden);
+        ops.prefill_elapsed=result.elapsed_ms;
+        finish_prefill();
+#else
         auto result=qwen4_layer_major_prefill_hidden(model,ops.state,ids,ops.prefill_compute_chunk,true,
             [&] {return output && output->stopped();},nullptr,false,finish_prefill);
-#ifdef TYLOINFER_NATIVE_CUDA
-        if (result) hidden=std::move(result);
-#else
         if (result) hidden=result.dense();
 #endif
     }

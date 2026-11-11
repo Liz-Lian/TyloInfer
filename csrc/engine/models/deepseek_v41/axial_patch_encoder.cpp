@@ -135,7 +135,9 @@ struct CudaAxialPatchVisionTower::Impl {
             co_yield tyloi::Workspace{0, &output};
             value = std::move(output);
 #else
-            value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))).implementation());
+            ::tyloi::Tensor result(std::move(output));
+            loan.finish(result);
+            value = result.dense();
 #endif
         }
         co_yield tyloi::StepState::advanced;
@@ -208,7 +210,9 @@ struct CudaAxialPatchVisionTower::Impl {
             co_yield tyloi::Workspace{0, &output};
             value = std::move(output);
 #else
-            value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))).implementation());
+            ::tyloi::Tensor result(std::move(output));
+            loan.finish(result);
+            value = result.dense();
 #endif
             co_yield tyloi::StepState::advanced;
         }
@@ -264,7 +268,9 @@ struct CudaAxialPatchVisionTower::Impl {
             co_yield tyloi::Workspace{0, &output};
             value = std::move(output);
 #else
-            value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))).implementation());
+            ::tyloi::Tensor result(std::move(output));
+            loan.finish(result);
+            value = result.dense();
 #endif
         }
         co_yield std::move(value);

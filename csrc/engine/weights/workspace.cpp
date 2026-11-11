@@ -301,11 +301,10 @@ void Cache::append_workspace_metrics(
 
 tyloi::weights::Loan::Loan(Cache& cache, std::size_t bytes) : Loan(cache) { begin(bytes); }
 
-::tyloi::Tensor tyloi::weights::Loan::finish(Tensor output) {
+void tyloi::weights::Loan::finish(Tensor& output) {
     if (active_) {
         suspend();
         output = ops::clone(output);
         finish();
     }
-    return output;
 }

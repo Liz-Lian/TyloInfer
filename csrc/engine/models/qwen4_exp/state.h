@@ -5,6 +5,9 @@
 #include "engine/models/session/size.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 #include "engine/models/qwen4_exp/layer.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/state/media.h"
+#endif
 
 #include <memory>
 #include <vector>
@@ -114,6 +117,8 @@ public:
     bool speculative_suffix_forward = false;
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor positions;
+    /** Request-owned prepared media cache. */
+    tyloi::cache::Media images;
 #else
     ::tyloi::DenseTensor positions;
 #endif

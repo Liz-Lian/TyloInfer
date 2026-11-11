@@ -71,7 +71,7 @@ struct Plain {
         timer->stop();
         if (!output.stopped() && chunk.offset + chunk.count == int64_t(input.prompt.size()))
             pending = sample_logits(sampler, project(result.hidden, true), graph.counts, input.token_constraint);
-        const auto ms = timer->elapsed_ms();
+        const auto ms = result.elapsed_ms >= 0 ? result.elapsed_ms : timer->elapsed_ms();
         if (config.decode_graph.trace) std::cerr << "runtime_prefill_chunk offset=" << chunk.offset
             << " tokens=" << chunk.count << " layer_major=0 short_windows=0 compute_chunk=" << chunk_size
             << " elapsed_ms=" << ms << " timing=before_cache_restore\n";

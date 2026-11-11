@@ -2,6 +2,7 @@
 
 #include "engine/weights/cache.h"
 #include "engine/generation/mtp/ops.h"
+#include "engine/generation/prefill.h"
 #include "engine/models/qwen4_exp/generation.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/backends/cuda/native/context.h"
@@ -102,13 +103,19 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(qwen4_exp::Model& model, 
     if(!ops.transformed_prompt && qwen4_layer_major_prefill_eligible(model,ops.state,chunk.count)) {
         const bool host_history=ops.host_prompt_history(chunk.count);
         ::tyloi::Tensor raw_result;
+#ifdef TYLOINFER_NATIVE_CUDA
+        TYLOINFER_RUNTIME_CHECK(ops.executor && ops.budget && ops.output, "staged prefill requires its execution owners");
+        tyloi::models::Input input;
+        input.ids=ids; input.raw_hidden=&raw_result; input.host_raw=host_history;
+        auto result=tyloi::engine::prefill(model,ops.state,*ops.executor,ops.weights,*ops.budget,
+            tyloi::cuda::forward_options(ops.mode),std::move(input),ops.prefill_compute_chunk,*ops.output);
+        raw = std::move(result.raw);
+        finish_prefill();
+        return typename Ops::PrefillResult{std::move(result.hidden),std::move(raw),
+            result.elapsed_ms>=0?result.elapsed_ms:timer.elapsed_ms()};
+#else
         auto hidden=qwen4_layer_major_prefill_hidden(model,ops.state,ids,ops.prefill_compute_chunk,true,
             [&] { return ops.output && ops.output->stopped(); }, &raw_result,host_history,finish_prefill);
-#ifdef TYLOINFER_NATIVE_CUDA
-        raw = std::move(raw_result);
-        finish_prefill();
-        return typename Ops::PrefillResult{std::move(hidden),std::move(raw),timer.elapsed_ms()};
-#else
         if (raw_result) raw = raw_result.dense();
         finish_prefill();
         return typename Ops::PrefillResult{hidden ? hidden.dense() : Tensor{},std::move(raw),timer.elapsed_ms()};
