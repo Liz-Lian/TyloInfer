@@ -61,6 +61,8 @@ public:
     /** Reserve and advance live KV allocations for the requested token count. */
 #ifdef TYLOINFER_NATIVE_CUDA
     static void ensure(int64_t tokens);
+    /** Check whether the active KV owner permits the requested graph layout. */
+    static bool graph_supported(bool independent = false);
 #else
     void ensure(int64_t tokens);
 #endif

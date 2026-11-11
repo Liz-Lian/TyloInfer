@@ -340,6 +340,18 @@ Tensor merge_norms(const Tensor& dense_tensor, const Tensor& experts_tensor, con
     return owner(cuda::ops::merge_norms(dense, experts, residual,
                                   dense_weight, expert_weight, output_weight, scale, eps));
 }
+struct FfnScope::Impl {
+    std::unique_ptr<tyloi::Executor::Scope> scope;
+};
+FfnScope::FfnScope(std::int64_t rows) {
+    if (rows <= 0) throw std::invalid_argument("FFN batch rows must be positive");
+    auto policy = cuda::Executor::current_ffn();
+    policy.batch_serial = rows > 8;
+    impl_ = std::make_unique<Impl>();
+    impl_->scope = cuda::Executor::current().enter(policy);
+}
+FfnScope::~FfnScope() = default;
+
 struct ProfileRange::Impl {
     std::optional<cuda::DeviceGuard> guard;
     std::optional<CudaProfiler::Range> range;

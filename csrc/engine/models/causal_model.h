@@ -31,8 +31,8 @@ public:
     virtual Mtp* mtp() const noexcept { return nullptr; }
     /** Create request state that must be retired before this model is replaced or destroyed. */
     virtual std::unique_ptr<State> make_state() const = 0;
-    /** Initialize supported startup graphs using disposable request state in the owner's scope. */
-    virtual void warmup(State&) const {}
+    /** Initialize startup graphs from disposable request state and the owner's weight access policy. */
+    virtual void warmup(State&, const DecodeOptions&) const {}
     /** Create supported batch computation, or return null for single-request execution. */
     virtual std::unique_ptr<Batch> batch(bool) { return {}; }
     /** Prefetch rows for host token IDs using the supplied owning request state. */

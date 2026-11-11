@@ -68,6 +68,7 @@ std::optional<Tensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops, Tens
         tyloi::models::Input input;
         input.ids=ids; input.host_ids=host_ids; input.raw_hidden=raw; input.confirmed=confirmed;
         tyloi::models::DecodeOptions options;
+        options.routed=ops.weights.decode()==tyloi::weights::Cache::Decode::routed;
         options.projection=tyloi::models::DecodeOptions::Projection::hidden;
         options.compact=ops.captured_compact_requested();
         if(auto result=model.decode(std::move(input),ops.state,tyloi::cuda::forward_options(ops.mode),options)) {

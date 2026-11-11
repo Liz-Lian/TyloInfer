@@ -60,9 +60,7 @@ public:
     tyloi::Tensor decode(std::span<tyloi::models::BatchState* const> states, tyloi::Tensor ids,
                          const tyloi::Tensor& host_ids) override {
         auto requests=checked(states);
-        auto policy=Executor::current_ffn();
-        policy.batch_serial=requests.size()>8;
-        auto scope=Executor::current().enter(policy);
+        tyloi::ops::FfnScope scope(requests.size());
         return qwen4_batch_decode(model_,requests,std::move(ids),host_ids);
     }
     /** Plan an eligible graph for these request states. */
@@ -80,9 +78,7 @@ public:
         const auto* plan=dynamic_cast<const GraphPlan*>(&value);
         if(!graph_ || !plan || plan->owner!=this || plan->states!=requests || plan->greedy!=greedy)
             throw std::invalid_argument("Qwen4 batch graph plan belongs to another request or model");
-        auto policy=Executor::current_ffn();
-        policy.batch_serial=requests.size()>8;
-        auto scope=Executor::current().enter(policy);
+        tyloi::ops::FfnScope scope(requests.size());
         return graph_->run(requests,ids,host_ids,greedy,plan->layout);
     }
     /** Retire graph references before releasing request states. */

@@ -123,6 +123,16 @@ Tensor merge_norms(const Tensor& dense, const Tensor& experts, const Tensor& res
                    const Tensor& expert_weight, const Tensor& output_weight,
                    const Tensor& scale, double eps);
 
+/** Scope numerical FFN batch policy without exposing execution resources. */
+class FfnScope {
+public:
+    /** Apply positive batch geometry until the parent policy is restored. */
+    explicit FfnScope(std::int64_t rows);
+    ~FfnScope();
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 // A CUDA target selects the measurement device; by default the current execution scope is used.
 class ProfileRange {
 public:

@@ -103,6 +103,7 @@ struct Ops : Sampling {
         if (info.graph == models::GraphOwner::model && !input.suffix && (!prepared || !prepared->transformed())) {
             if (known_ids_device && input.ids.same_view(known_ids_device)) input.host_ids = known_ids_host;
             models::DecodeOptions decode;
+            decode.routed = weights.decode() == ::tyloi::weights::Cache::Decode::routed;
             const auto& parameters = sampler().params();
             decode.compact = !sampler().greedy() && !penalties && parameters.top_k > 0 && parameters.top_k <= 64;
             if (auto decoded = model.decode(input, state, options, decode)) {

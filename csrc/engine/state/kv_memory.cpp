@@ -522,6 +522,23 @@ void KvMemoryManager::ensure(int64_t tokens) {
         owner->budget_->reserve_kv(device,engine::prefill_budget_add(bytes,64ULL<<20));
     for(auto& weak:owner->allocations_)if(auto a=weak.lock())a->ensure(std::min(a->maximum,tokens));
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+bool KvMemoryManager::graph_supported(bool independent) {
+    const auto& executor = Executor::current();
+    const auto* owner = executor.kv_.get();
+    bool streamed = bool(executor.offload_);
+    if (owner) {
+        streamed = streamed || bool(owner->offload_);
+        for (const auto& weak : owner->allocations_)
+            if (auto allocation = weak.lock(); allocation && allocation->offload) streamed = true;
+    }
+    if (!streamed) return true;
+    if (independent || !owner || !owner->offload_ ||
+        (executor.offload_ && executor.offload_ != owner->offload_)) return false;
+    const auto* option = tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
+    return !option || option[0] != '0';
+}
+#endif
 std::size_t KvMemoryManager::growth_reserve() const {
     std::size_t result=0;
     for(auto& weak:allocations_)if(auto a=weak.lock())result+=a->growth_bytes(a->maximum);

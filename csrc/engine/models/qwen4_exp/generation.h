@@ -112,6 +112,7 @@ std::optional<int64_t> generation_decode(qwen4_exp::Model& model, Ops& ops) {
         tyloi::models::Input input;
         input.ids=tyloi::ops::reshape(ops.pending,{1,1}); input.host_ids=ops.known_token_host;
         tyloi::models::DecodeOptions options;
+        options.routed=ops.weights.decode()==tyloi::weights::Cache::Decode::routed;
         options.projection=greedy?tyloi::models::DecodeOptions::Projection::greedy:
             tyloi::models::DecodeOptions::Projection::logits;
         if(auto result=model.decode(std::move(input),ops.state,tyloi::cuda::forward_options(ops.mode),options)) {

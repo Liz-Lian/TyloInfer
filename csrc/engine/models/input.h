@@ -75,6 +75,8 @@ struct DecodeOptions {
     Projection projection = Projection::hidden;
     /** Allow a reusable compact top-k projection for stochastic verification. */
     bool compact = false;
+    /** Routed weight access is available for this execution owner. */
+    bool routed = false;
 };
 
 /** Hold decode results, which may alias replay buffers until the next model step. */

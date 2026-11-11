@@ -83,11 +83,13 @@ GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp
 
 } // namespace
 
+#ifndef TYLOINFER_NATIVE_CUDA
 static bool streamed_decode_graphs(const CudaExecutionContext& execution) {
     if(!execution.offload)return true;
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
     return execution.kv && execution.kv->offload() && (!option || option[0]!='0');
 }
+#endif
 static ::tyloi::DenseTensor join_request_outputs(
         const std::vector<::tyloi::DenseTensor>& outputs,int64_t axis) {
     const auto option=::tyloi::cuda::options::single_output_view();
@@ -1434,10 +1436,8 @@ std::optional<tyloi::models::Decoded> qwen4_exp::Model::decode(
     if (!input.ids || input.embeddings || input.positions || input.lengths || input.cache_positions ||
         input.image_mask || input.suffix || input.trace || input.kv_length || input.attention_parts)
         return {};
-    const auto mode=execution->weights.decode();
-    const bool tq=mode==::tyloi::weights::Cache::Decode::routed;
-    if (!streamed_decode_graphs(*execution) || mode==::tyloi::weights::Cache::Decode::none ||
-        state->speculative_start>=0) return {};
+    const bool tq=options.routed;
+    if (!options.routed || !KvMemoryManager::graph_supported() || state->speculative_start>=0) return {};
     const bool hidden=options.projection==tyloi::models::DecodeOptions::Projection::hidden;
     if (hidden) {
         if(state->cache_pos==0 && (!state->graph_registry || !state->graph_registry->reusable())) return {};
@@ -1483,7 +1483,7 @@ void qwen4_release_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State&
 #endif
 
 #ifdef TYLOINFER_NATIVE_CUDA
-void qwen4_exp::Model::warmup(tyloi::models::State& target) const {
+void qwen4_exp::Model::warmup(tyloi::models::State& target, const tyloi::models::DecodeOptions& decode_options) const {
     auto* request=dynamic_cast<qwen4_exp::State*>(&target);
     tyloi::models::require_model(request && request->belongs_to(*this), "Qwen4 state belongs to another model");
     auto& state=*request;
@@ -1493,12 +1493,20 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
 #endif
     const auto* reuse=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     state.reuse_decode_graphs=!reuse || reuse[0]!='0';
+#ifdef TYLOINFER_NATIVE_CUDA
+    const bool tq=decode_options.routed;
+#else
     const auto decode=model.execution->weights.decode();
     const bool tq=decode==::tyloi::weights::Cache::Decode::routed;
+#endif
     const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
     if(!state.reuse_decode_graphs || (warmup && warmup[0]=='0') ||
-        model.max_position_embeddings()<32 || !streamed_decode_graphs(*model.execution) ||
-        decode==::tyloi::weights::Cache::Decode::none)return;
+        model.max_position_embeddings()<32 ||
+#ifdef TYLOINFER_NATIVE_CUDA
+        !decode_options.routed || !KvMemoryManager::graph_supported())return;
+#else
+        !streamed_decode_graphs(*model.execution) || decode==::tyloi::weights::Cache::Decode::none)return;
+#endif
     for(std::size_t i=0;i<model.layers.size();++i) {
         const auto& b=*model.layers[i];
         if(!b.ffn.tq || (b.qsa && !b.qsa->graph_capacity(*state.layers[i]->qsa)) || (b.ple && !b.ple->graph_supported()))return;
@@ -1538,12 +1546,18 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     }
     // Bootstrap cells are not the retained whole-model windows. Retire their
     // staging and captured scratch before preparing target windows.
-    cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), true);
+    cache_warmup.release(tyloi::Device(tyloi::kCUDA,
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.primary_device), true);
+#else
+        model.execution->config.layer_placement.primary_device()), true);
+#endif
     if(tyloi::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=target\n";
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::models::Input graph_input;
     graph_input.ids=ids.narrow(1,0,1);
     tyloi::models::DecodeOptions graph_options;
+    graph_options.routed=decode_options.routed;
     graph_options.projection=tyloi::models::DecodeOptions::Projection::greedy;
     (void)model.decode(graph_input,state,{},graph_options);
     graph_options.projection=tyloi::models::DecodeOptions::Projection::logits;
@@ -1556,7 +1570,12 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     std::cerr<<"runtime_qwen4_graph_warmup target_captures="<<state.decode_graph_captures<<" ms="
         <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
-    cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), false);
+    cache_warmup.release(tyloi::Device(tyloi::kCUDA,
+#ifdef TYLOINFER_NATIVE_CUDA
+        model.primary_device), false);
+#else
+        model.execution->config.layer_placement.primary_device()), false);
+#endif
 }
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
         const qwen4_exp::Model& model,const qwen4_exp::State& state,const tyloi::models::Mtp* mtp) {
@@ -1622,7 +1641,10 @@ namespace tyloi::cuda {
 Model::Model(Model&&) noexcept = default;
 Model& Model::operator=(Model&&) noexcept = default;
 
-static ::tyloi::DenseTensor batch_ffn(const qwen4_exp::Moe& ffn,CudaExecutionContext& execution,
+static ::tyloi::DenseTensor batch_ffn(const qwen4_exp::Moe& ffn,
+#ifndef TYLOINFER_NATIVE_CUDA
+                                      CudaExecutionContext& execution,
+#endif
                                       const ::tyloi::DenseTensor& input) {
     if(input.size(0)<=8)return ffn.forward(input);
     const auto option=::tyloi::cuda::options::continuous_ffn_tile();
@@ -1630,25 +1652,31 @@ static ::tyloi::DenseTensor batch_ffn(const qwen4_exp::Moe& ffn,CudaExecutionCon
     TYLOINFER_RUNTIME_CHECK(rows==8 || rows==16,"continuous FFN tile must be 8 or 16 rows");
     auto* window=DecodeWindow::recording();
     const int previous_profile_tile=window ? window->set_profile_tile(-1) : -1;
-    auto& mode = execution.executor().mode().ffn;
     struct TileScope {
+#ifndef TYLOINFER_NATIVE_CUDA
         tyloi::cuda::FfnMode& mode;
         int tile,tiles;
+#endif
         DecodeWindow* window;
         int profile_tile;
-        ~TileScope() {mode.tile=tile;mode.tiles=tiles;
+        ~TileScope() {
+#ifndef TYLOINFER_NATIVE_CUDA
+            mode.tile=tile;mode.tiles=tiles;
+#endif
             if(window)window->set_profile_tile(profile_tile);}
-    } scope{mode,mode.tile,mode.tiles,window,previous_profile_tile};
+    };
+#ifndef TYLOINFER_NATIVE_CUDA
+    auto& mode = execution.executor().mode().ffn;
+    TileScope scope{mode,mode.tile,mode.tiles,window,previous_profile_tile};
     mode.tiles=int((input.size(0)+rows-1)/rows);
+#else
+    TileScope scope{window,previous_profile_tile};
+#endif
     std::vector<::tyloi::DenseTensor> outputs;
     for(int64_t start=0;start<input.size(0);start+=rows) {
-        mode.tile=int(start/rows);
         if(window)window->set_profile_tile(int(start/rows));
-#ifdef TYLOINFER_NATIVE_CUDA
-        auto tile_mode=Executor::current_ffn();
-        tile_mode.tile=mode.tile;
-        tile_mode.tiles=mode.tiles;
-        auto tile_scope=Executor::current().enter(tile_mode);
+#ifndef TYLOINFER_NATIVE_CUDA
+        mode.tile=int(start/rows);
 #endif
         outputs.push_back(ffn.forward(input.narrow(0,start,std::min(rows,input.size(0)-start))));
     }
@@ -1778,7 +1806,11 @@ std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
         const std::vector<Qwen4BatchRequestState*>& requests, bool greedy) {
     auto& graph = *graph_;
     auto& model = graph.model;
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (!KvMemoryManager::graph_supported(true) || !mfq_cuda_graph_capture_supported()) return {};
+#else
     if (model.execution->offload || !mfq_cuda_graph_capture_supported()) return {};
+#endif
     for (auto* request : requests) {
         for (std::size_t i = 0; i < request->state_->layers.size(); ++i) {
             const auto& weights = *model.layers[i];
@@ -1814,7 +1846,12 @@ std::optional<Qwen4BatchDecodeGraph::Plan> Qwen4BatchDecodeGraph::plan(
         // Prefill and previous widths leave asynchronously freed pool pages
         // charged to WDDM. Retire transfers and trim before preparing a graph.
         model.execution->weights.finish_exchange();
-        default_context(model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+        default_context(
+#ifdef TYLOINFER_NATIVE_CUDA
+            model.primary_device)->reclaim_idle_memory();
+#else
+            model.execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+#endif
     }
     Plan plan;
     plan.rebuild = !graph.window;
@@ -1942,7 +1979,9 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
         DecodeGraphBranchScope branch_scope(model.execution->executor().mode().ffn.serial);
 #endif
         try { graph.window->capture([&] {
+#ifndef TYLOINFER_NATIVE_CUDA
             auto& execution = *model.execution;
+#endif
             graph.window->mark(-1,"window_begin");
             auto hidden = model.repeat_hidden(model.embed_tokens(graph.ids),model.metadata.hc_mult);
             std::optional<GatedResidual::Result> pending_residual;
@@ -1998,7 +2037,11 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                 graph.window->mark(static_cast<int>(i),"attention_core_end");
                 auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate,marker("ffn_mhc_"));
                 graph.window->mark(static_cast<int>(i),"ffn_pre_end");
-                auto ffn_output=batch_ffn(block.ffn,execution,ffn_mix.mixed);
+                auto ffn_output=batch_ffn(block.ffn,
+#ifndef TYLOINFER_NATIVE_CUDA
+                    execution,
+#endif
+                    ffn_mix.mixed);
                 bool defer=false;
                 if(chain_post && i+1<model.layers.size()) {
                     const auto& next=*model.layers[i+1];
@@ -2200,7 +2243,11 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         if(project_batch)attention=block.gdn->project_output(attention);
         auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
         // Tiles share the expert transfer cache across all eligible rows.
-        hidden = block.ffn_gr.post(batch_ffn(block.ffn,execution,ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
+        hidden = block.ffn_gr.post(batch_ffn(block.ffn,
+#ifndef TYLOINFER_NATIVE_CUDA
+            *model.execution,
+#endif
+            ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
     }
     auto logits = qwen4_logits_from_hidden(model, qwen4_finalize_hidden(model, std::move(hidden),batch,1)).reshape({batch,-1});
     for (int64_t row = 0; row < batch; ++row) {
@@ -2359,7 +2406,9 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
             tyloi::models::Input window;
             window.ids=ids; window.confirmed=rows>1?1:0;
             window.raw_hidden=input.raw_hidden?&raw:nullptr;
-            auto decoded=decode(window,state,options,{});
+            tyloi::models::DecodeOptions decode_options;
+            decode_options.routed=prefill.routed;
+            auto decoded=decode(window,state,options,decode_options);
             auto hidden=decoded?std::move(decoded->hidden):forward(std::move(window),state,options);
             if(input.raw_hidden) {
                 hidden_rows.push_back(tyloi::ops::clone(hidden));

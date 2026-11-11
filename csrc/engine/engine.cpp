@@ -99,7 +99,9 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
-        model_->warmup(*idle_state_);
+        models::DecodeOptions warmup;
+        warmup.routed = weights_->decode() == ::tyloi::weights::Cache::Decode::routed;
+        model_->warmup(*idle_state_, warmup);
         weights_->prepare(::tyloi::weights::Cache::Stage::loaded, executor_->device(), source_.get());
         ready_ = true;
     } catch (...) {

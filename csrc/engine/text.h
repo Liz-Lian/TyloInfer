@@ -201,7 +201,9 @@ struct Text {
         }
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            language.warmup(state);
+            tyloi::models::DecodeOptions warmup;
+            warmup.routed=weights.decode()==::tyloi::weights::Cache::Decode::routed;
+            language.warmup(state,warmup);
 #else
             qwen4_warmup_decode_graphs(language,state);
 #endif

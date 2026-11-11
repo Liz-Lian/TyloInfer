@@ -159,7 +159,7 @@ struct Model : tyloi::models::CausalModel {
     std::unique_ptr<tyloi::models::State> make_state() const override;
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Warm eligible model graphs using this model's request state. */
-    void warmup(tyloi::models::State& state) const override;
+    void warmup(tyloi::models::State& state, const tyloi::models::DecodeOptions& options) const override;
     /** Create model-owned batch computation and optional decode graph state. */
     std::unique_ptr<tyloi::models::Batch> batch(bool graph) override;
 #endif

@@ -104,6 +104,7 @@ struct Plain {
             step.ids = ops::reshape(pending, {1, 1});
             step.host_ids = host_ids;
             models::DecodeOptions decode;
+            decode.routed = weights.decode() == ::tyloi::weights::Cache::Decode::routed;
             const bool greedy = sampler.greedy() && !penalties && !input.token_constraint;
             decode.projection = greedy ? models::DecodeOptions::Projection::greedy : models::DecodeOptions::Projection::logits;
             if (auto decoded = model.decode(std::move(step), state, forward_options, decode)) {
