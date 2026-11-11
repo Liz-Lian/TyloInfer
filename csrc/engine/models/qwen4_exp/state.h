@@ -68,8 +68,10 @@ public:
     void preallocate() override {}
     void reset(std::int64_t batch) override;
 #ifdef TYLOINFER_NATIVE_CUDA
-    /** Finish graph exchanges and retire this request's graph references. */
+    /** Restore and retire graph references after the runtime finishes exchanges. */
     void release_graphs() override;
+    /** Report request-owned cache and graph telemetry. */
+    std::optional<tyloi::engine::Metrics> metrics() const override;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Plan per-device cache and checkpoint allocations for a forward window. */

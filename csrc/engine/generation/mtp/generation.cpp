@@ -36,6 +36,7 @@ struct Ops : Sampling {
     const ModelSource* source;
     const bool profiling;
     const PrefetchConfig& prefetch;
+    const bool graph_enabled;
     const std::int64_t compute_chunk;
     InferenceOutput& output;
     ::tyloi::weights::Cache::Routes routes;
@@ -51,11 +52,11 @@ struct Ops : Sampling {
     Ops(models::CausalModel& model, models::State& state, Executor& executor,
         Budget& budget, ::tyloi::weights::Cache& weights, State& policy, const models::ForwardOptions& options,
         models::Mtp& mtp, models::MtpState& predictor, const models::Prepared* prepared,
-        const ModelSource* source, bool profiling, const PrefetchConfig& prefetch,
+        const ModelSource* source, bool profiling, const PrefetchConfig& prefetch, bool graph_enabled,
         std::int64_t compute_chunk, InferenceOutput& output)
         : Sampling(executor.device()), model(model), state(state), executor(executor), budget(budget),
           weights(weights), mtp_state(policy), options(options), info(model.info()), mtp(mtp),
-          predictor(predictor), prepared(prepared), source(source), profiling(profiling), prefetch(prefetch),
+          predictor(predictor), prepared(prepared), source(source), profiling(profiling), prefetch(prefetch), graph_enabled(graph_enabled),
           compute_chunk(compute_chunk), output(output),
           graph_captures(weights.activity().graph_captures) {}
 
@@ -101,7 +102,8 @@ struct Ops : Sampling {
         const auto old = profiling ? costs() : std::array<double, 6>{};
         target_hidden = {}; target_logits = {}; target_compact = {}; target_tokens.clear();
         Tensor result;
-        if (info.graph == models::GraphOwner::model && !input.suffix && (!prepared || !prepared->transformed())) {
+        if (graph_enabled && info.decode_graph && info.graph == models::GraphOwner::model &&
+            !input.suffix && (!prepared || !prepared->transformed())) {
             if (known_ids_device && input.ids.same_view(known_ids_device)) input.host_ids = known_ids_host;
             models::DecodeOptions decode;
             decode.routed = weights.decode() == ::tyloi::weights::Cache::Decode::routed;
@@ -117,7 +119,10 @@ struct Ops : Sampling {
                 target_initialized = target_initialized || decoded->initialized;
             }
         }
-        if (!result) result = model.forward(std::move(input), state, options);
+        if (!result) {
+            if (state.position() == 0) weights.finish_exchange();
+            result = model.forward(std::move(input), state, options);
+        }
         target_transfer_bytes = weights.activity().streamed_bytes - before;
         if (!result) throw std::runtime_error("model forward returned no hidden tensor");
         if (profiling) {
@@ -334,7 +339,7 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
     InferenceRequest& input, InferenceOutput& output, std::int64_t chunk,
     const models::Prepared* prepared, std::size_t reused, Tensor restored,
     Tensor* committed, std::size_t stable, const ModelSource* source, bool profile,
-    const PrefetchConfig& prefetch) {
+    const PrefetchConfig& prefetch, bool graph_enabled) {
     auto* predictor = model.mtp();
     if (!predictor || !state.predictor || !state.predictor->belongs_to(*predictor))
         throw std::invalid_argument("predictor state is unavailable or belongs to another model");
@@ -346,7 +351,7 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
         weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
         weights.split_prefill(remaining)}).span;
     return speculative_sequence(Ops(model, state, executor, budget, weights, policy, options,
-        *predictor, *state.predictor, prepared, source, profile, prefetch, chunk, output), input, output, logical, reused,
+        *predictor, *state.predictor, prepared, source, profile, prefetch, graph_enabled, chunk, output), input, output, logical, reused,
         std::move(restored), committed, stable);
 }
 

@@ -22,8 +22,11 @@ struct Components {
     std::unique_ptr<tyloi::models::Mtp> mtp;
 
     static constexpr bool streamed_kv() noexcept { return true; }
+#ifndef TYLOINFER_NATIVE_CUDA
+    /** Return graph profiling metrics for the request state. */
     tyloi::engine::Metrics profile_metrics(const Model& language, const State& state) const;
     std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language, const State& state) const;
+#endif
     /** Prepare supported media using the request's cache and model weights. */
     tyloi::StepSequence<tyloi::models::Prepared> prepare(
 #ifdef TYLOINFER_NATIVE_CUDA

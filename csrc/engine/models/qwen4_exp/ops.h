@@ -120,7 +120,9 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(co
 void qwen4_release_decode_graphs(const qwen4_exp::Model&,qwen4_exp::State&);
 void qwen4_warmup_decode_graphs(const qwen4_exp::Model&,qwen4_exp::State&);
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
 bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp::State&, int64_t tokens);
 std::int64_t prefill_span(const qwen4_exp::Model&, const qwen4_exp::State&, std::size_t tokens,
@@ -206,7 +208,9 @@ struct Model : tyloi::models::CausalModel {
 
     // ---- weights and load-time state
     tyloi::models::CausalLmMetadata metadata;
+#ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext* execution = nullptr;
+#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;
@@ -274,6 +278,10 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
 /** Load weights into an already configured model using the selected placement. */
 void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           const tyloi::models::LoadOptions& options, bool load_layers = true);
+/** Assemble a configured model and its optional components from the supplied source. */
+std::unique_ptr<tyloi::models::CausalModel> load(std::shared_ptr<const tyloi::ModelSource> source,
+    std::string_view definition, const tyloi::weights::Loader& weights,
+    LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options);
 #else
 void load(Model& model, CudaExecutionContext& execution, std::int64_t context_size,
           bool defer_moe_cache_finalize, bool load_layers);

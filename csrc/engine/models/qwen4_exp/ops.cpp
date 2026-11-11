@@ -20,6 +20,7 @@
 #include "engine/models/qwen4_exp/components.h"
 #include "predictor.h"
 #include "engine/models/common/load.h"
+#include "engine/models/load.h"
 #include "engine/weights/encoding/quant/nint_rows.h"
 #include "engine/weights/encoding/tq.h"
 #include "engine/weights/tq/source.h"
@@ -1471,7 +1472,7 @@ tyloi::StepSequence<tyloi::models::Decoded> qwen4_exp::Model::decode(
         input.image_mask || input.suffix || input.trace || input.kv_length || input.attention_parts)
         co_return;
     const bool tq=options.routed;
-    if (!options.routed || !KvMemoryManager::graph_supported() || state->speculative_start>=0) co_return;
+    if (!info().decode_graph || !options.routed || !KvMemoryManager::graph_supported() || state->speculative_start>=0) co_return;
     const bool hidden=options.projection==tyloi::models::DecodeOptions::Projection::hidden;
     if (hidden) {
         if(state->cache_pos==0 && (!state->graph_registry || !state->graph_registry->reusable())) co_return;
@@ -1544,7 +1545,7 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     if(!state.reuse_decode_graphs || (warmup && warmup[0]=='0') ||
         model.max_position_embeddings()<32 ||
 #ifdef TYLOINFER_NATIVE_CUDA
-        !decode_options.routed || !KvMemoryManager::graph_supported())co_return;
+        !model.info().decode_graph || !decode_options.routed || !KvMemoryManager::graph_supported())co_return;
 #else
         !streamed_decode_graphs(*model.execution) || decode==::tyloi::weights::Cache::Decode::none)return;
 #endif
@@ -1590,6 +1591,9 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     std::vector<int64_t> warm_ids(16);
     for(std::size_t i=0;i<warm_ids.size();++i)warm_ids[i]=int64_t((i*7919+17)%model.metadata.vocab_size);
     auto ids=::tyloi::cuda::tensor(warm_ids,options.device(::tyloi::kCPU)).to(::tyloi::kCUDA).reshape({1,16});
+#ifdef TYLOINFER_NATIVE_CUDA
+    co_yield tyloi::GraphPhase::ready;
+#endif
     state.reset(1);
     if(tyloi::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=bootstrap\n";
     // Bootstrap with single-token rows. A sixteen-row eager forward otherwise
@@ -1641,8 +1645,15 @@ void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& 
     cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), false);
 #endif
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+std::optional<tyloi::engine::Metrics> qwen4_exp::State::metrics() const {
+    const auto& model=model_;
+    const auto& state=*this;
+    const auto* mtp=model.mtp();
+#else
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
         const qwen4_exp::Model& model,const qwen4_exp::State& state,const tyloi::models::Mtp* mtp) {
+#endif
     // Shared checkpoint views and recurrent state aliases count once. These
     // are existing cache tensors; collecting telemetry never copies GPU data.
     std::map<std::pair<int,std::uintptr_t>,std::size_t> allocations;
@@ -1678,21 +1689,13 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
     std::size_t bytes=0;
     std::map<int,std::size_t> devices;
     for(const auto& [address,size]:allocations) { bytes+=size; devices[address.first]+=size; }
-    if(model.execution->kv)
-        for(const auto& metric:model.execution->kv->metrics())
-            if(metric.first=="kv_memory_gpu_bytes") {
-                bytes+=std::size_t(metric.second);
-                devices[model.execution->config.layer_placement.primary_device()]+=std::size_t(metric.second);
-            }
-    if(model.execution->offload)
-        for(const auto& metric:model.execution->offload->metrics())
-            if(metric.first=="qsa_kv_resident_bytes") {
-                bytes+=std::size_t(metric.second);
-                devices[model.execution->config.layer_placement.primary_device()]+=std::size_t(metric.second);
-            }
     std::vector<std::pair<std::string,double>> result{{"kv_cache_bytes",double(bytes)},
         {"kv_cache_contexts",state.cache_pos>0?double(state.batch):0.0}};
     for(const auto& [device,size]:devices)result.emplace_back("gpu_"+std::to_string(device)+"_live_kv_bytes",double(size));
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto profile=qwen4_decode_graph_profile_metrics(model,state);
+    result.insert(result.end(),profile.begin(),profile.end());
+#endif
     return result;
 }
 
@@ -2363,8 +2366,6 @@ void qwen4_exp::State::retire_graphs() noexcept { graph_registry.reset(); }
 
 void qwen4_exp::State::release_graphs() {
     std::exception_ptr failure;
-    try { model_.execution->weights.finish_exchange(); }
-    catch (...) { failure=std::current_exception(); }
     try { if(graph_registry) graph_registry->restore_legacy(); }
     catch (...) { if(!failure) failure=std::current_exception(); }
     graph_registry.reset();
@@ -2379,7 +2380,9 @@ void qwen4_exp::State::reset(int64_t new_batch) {
     speculative_confirmed = 0;
     speculative_suffix_forward = false;
     speculative_prefix_retention = false;
+#ifndef TYLOINFER_NATIVE_CUDA
     if(model_.execution)model_.execution->weights.finish_exchange();
+#endif
     const bool retain=reuse_decode_graphs && new_batch==1 && graph_registry && graph_registry->reusable();
     for(auto& layer:layers)layer->retain_graph_storage=retain;
     if(!retain)graph_registry.reset();
@@ -2512,7 +2515,12 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
                 if(step.graph) co_yield *step.graph;
                 if(step.value) decoded=std::move(*step.value);
             }
-            auto hidden=decoded?std::move(decoded->hidden):forward(std::move(window),state,options);
+            tyloi::Tensor hidden;
+            if(decoded) hidden=std::move(decoded->hidden);
+            else {
+                if(state.position()==0) co_yield tyloi::GraphPhase::ready;
+                hidden=forward(std::move(window),state,options);
+            }
             if(input.raw_hidden) {
                 hidden_rows.push_back(tyloi::ops::clone(hidden));
                 raw_rows.push_back(std::move(raw));
@@ -2625,9 +2633,12 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
             <<" compute="<<compute_chunk<<" available_bytes="<<available<<'\n';
     }
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    if(cache_start==0) co_yield tyloi::GraphPhase::ready;
+#endif
     tyloi::cuda::ResidentAllocationScope persistent_preamble;
     qwen4_validate_forward(model,tokens,cache_start,false);
-    if(cache_start==0)state.reset(1);
+    if(cache_start==0) state.reset(1);
     state.begin_forward();
     auto current=::tyloi::cuda::arange(cache_start,cache_start+tokens,ids.options());
     if(state.decode_position_delta)current=current+state.decode_position_delta;
@@ -3002,6 +3013,8 @@ tyloi::models::Info Model::info() const {
     auto result=tyloi::models::Info{metadata.vocab_size, config.maximum, "qwen4_exp",
             std::size_t(metadata.hidden_size) * metadata.hc_mult * sizeof(float) * 8, true, true};
 #ifdef TYLOINFER_NATIVE_CUDA
+    result.decode_graph=std::none_of(layers.begin(),layers.end(),
+        [](const auto& layer) { return layer->cpu_offloaded; });
     result.graph=tyloi::models::GraphOwner::model;
     result.row_prefetch=true;
     result.streamed_kv=true;
@@ -3187,6 +3200,19 @@ void Model::load_config(std::string_view payload) {
     metadata.layer_types = config.layer_types;
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+std::unique_ptr<tyloi::models::CausalModel> load(std::shared_ptr<const tyloi::ModelSource> source,
+        std::string_view definition, const tyloi::weights::Loader& weights,
+        LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options) {
+    if (!options.cpu_offload_layers.empty())
+        throw std::invalid_argument("Qwen4 does not support --cpu-offload-layers");
+    auto model=std::make_unique<Model>();
+    read(*model,std::move(source),definition,options.context);
+    load(*model,weights,placement,options);
+    model->components=std::make_unique<Components>(load_components(*model,weights,true,definition,options.yarn));
+    return model;
+}
+#endif
 
 } // namespace qwen4_exp
 } // namespace tyloi::cuda

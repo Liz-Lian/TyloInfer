@@ -97,6 +97,7 @@ public:
     void resume_decode(std::int64_t) {}
     PrefillChunk prefill_chunk(const std::shared_ptr<Request>& request, PrefillChunk chunk) {
         auto scope = executor_.enter();
+        if (!request->state) weights_.finish_exchange();
         initialize(request, chunk);
         return budget_.batch(executor_.device(), batch_->prefill_row_bytes(), chunk,
             request->state->prefill_growth_bytes(chunk.count));

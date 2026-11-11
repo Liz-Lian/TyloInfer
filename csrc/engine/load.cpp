@@ -52,19 +52,15 @@ namespace tyloi::cuda::engine_detail {
 using State = std::variant<
     std::unique_ptr<Text<qwen35::Model, qwen35::State, qwen35::Components>>,
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State, std::unique_ptr<minicpmo45::Components>>>,
-    std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>,
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
     std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, nemotron_h::Components>>,
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State, std::monostate>>,
     std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>,
+    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA
-    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, std::monostate>>>;
-#else
-    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>>;
-#endif
+    std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>>;
 
 } // namespace tyloi::cuda::engine_detail
 
@@ -147,12 +143,17 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 config.continuous_batch.packed_prefill = ::tyloi::cuda::options::batch_packed_prefill();
                 config.continuous_batch.packed_tokens = ::tyloi::cuda::options::batch_packed_prefill_token_budget();
             }
-            if (config.continuous_batch.max_sequences)
-                throw std::invalid_argument("continuous batching is unavailable for this model");
             const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
-            if (kv_options.gpu_budget_bytes)
-                throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             kv = std::make_shared<KvMemoryManager>();
+            if (kv_options.gpu_budget_bytes) {
+                kv.reset();
+                KvOffloadConfig config;
+                config.gpu_budget_bytes = kv_options.gpu_budget_bytes;
+                config.ram_budget_bytes = cuda_has_separate_memory() ? kv_options.ram_budget_bytes : 0;
+                config.buffer_bytes = std::min<std::size_t>(config.buffer_bytes, config.gpu_budget_bytes / 4);
+                config.directory = kv_options.directory;
+                offload = std::make_shared<KvOffloadStore>(std::move(config));
+            }
             root->configure_kv(kv, offload);
             {
                 auto scope = root->enter(load.layer_placement.primary_device());
@@ -168,12 +169,16 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                     models::LoadOptions{options.context_size, load.n_gpu_layers,
                         load.expert_parallel.enabled(), load.yarn, load.dsv4_cpu_offload_layers,
                         load.deepseek_v41_engram_cache_rows, load.cache.pipeline});
+                if (offload && !model->info().streamed_kv)
+                    throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 state = model->make_state();
                 if (::tyloi::cuda::options::kv_vram_preallocated()) state->preallocate();
+                Executor::prepare(model->info().vocab_size);
                 finalize_kv(kv.get(), *weights, offload);
                 finish_load(kv.get(), *weights, load.report_cuda_memory);
                 root->configure_kv(kv, offload);
-                if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
+                if (offload && !model->info().streamed_kv)
+                    throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             }
             graph = root->graph();
             sessions = internal::make_sessions(*source, config.session_cache, config.prefix_cache,
@@ -187,7 +192,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         const auto model_info = model->info();
         const auto graph_weights = model_info.graph_weights == models::GraphWeights::resident
             ? tyloi::weights::Cache::Graph::legacy : tyloi::weights::Cache::Graph::native;
-        const bool graph_allowed = !root->attention_options().kernels.decode_aten && load.dense_cpu_layer_count == 0 &&
+        const bool graph_allowed = model_info.decode_graph && !root->attention_options().kernels.decode_aten && load.dense_cpu_layer_count == 0 &&
             model_parallel_cuda_graph_enabled(load, *root, *weights) &&
             weights->graph_safe(graph_weights, moe_parallel_config(load).enabled());
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
@@ -195,6 +200,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         config.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
         config.resident_budget_bytes = ::tyloi::cuda::options::resident_budget_bytes();
         config.decode_graph.enabled &= graph_allowed;
+        config.continuous_batch.cuda_graph &= graph_allowed;
         models::ForwardOptions forward{mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
         if (target) {
             target->rebind(std::move(model), std::move(root), std::move(config), std::move(source),

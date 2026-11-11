@@ -243,6 +243,16 @@ void Executor::reset() {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
+tyloi::engine::Metrics Executor::metrics() const {
+    tyloi::engine::Metrics result;
+    if (kv_) result = kv_->metrics();
+    if (offload_) {
+        const auto values = offload_->metrics();
+        result.insert(result.end(), values.begin(), values.end());
+    }
+    return result;
+}
+
 void Executor::configure_kv(std::shared_ptr<KvMemoryManager> kv, std::shared_ptr<KvOffloadStore> offload) {
     kv_ = std::move(kv);
     offload_ = std::move(offload);

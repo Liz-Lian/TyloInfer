@@ -107,6 +107,7 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
                 if (observed) throw std::runtime_error("prefill job ended without a result");
                 capture.finish();
                 auto* raw = input.raw_hidden;
+                if (state.position() == 0) weights.finish_exchange();
                 result.hidden = model.forward(std::move(input), state, options);
                 if (raw) result.raw = *raw;
                 return result;

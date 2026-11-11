@@ -1,10 +1,12 @@
 #pragma once
 
 #include "engine/tensor.h"
+#include "engine/metrics.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -65,6 +67,8 @@ public:
     virtual void reset(std::int64_t batch) = 0;
     /** Retire model-owned graphs before changing request backing or runtime policy. */
     virtual void release_graphs() {}
+    /** Return optional request cache and graph telemetry without accessing runtime resources. */
+    virtual std::optional<tyloi::engine::Metrics> metrics() const { return std::nullopt; }
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;

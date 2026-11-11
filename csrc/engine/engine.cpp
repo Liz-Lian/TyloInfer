@@ -101,7 +101,8 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         }
         models::DecodeOptions warmup;
         warmup.routed = weights_->decode() == ::tyloi::weights::Cache::Decode::routed;
-        engine::warmup(*model_, *idle_state_, *executor_, *weights_, warmup);
+        if (config_.decode_graph.enabled && model_info_.decode_graph)
+            engine::warmup(*model_, *idle_state_, *executor_, *weights_, warmup);
         weights_->prepare(::tyloi::weights::Cache::Stage::loaded, executor_->device(), source_.get());
         ready_ = true;
     } catch (...) {
@@ -253,8 +254,14 @@ ControlResult Engine::control_command(ControlRequest request) {
         } else if constexpr (std::is_same_v<T, engine::GetMetrics>) {
             Metrics predictor;
             if (model_->mtp()) mtp::append_generation_metrics(predictor, mtp_state_.stats);
-            return resource_metrics(model_->metrics(), {}, std::nullopt, model_info_.streamed_kv,
-                batch_ ? batch_->metrics() : Metrics{}, {}, std::nullopt, predictor, source_.get(),
+            const auto* state = idle_state_.get();
+            if (!state) {
+                for (const auto& [id, active] : scheduler_->requests_) {
+                    if (active.state) { state = active.state.get(); break; }
+                }
+            }
+            return resource_metrics(model_->metrics(), {}, state ? state->metrics() : std::nullopt, model_info_.streamed_kv,
+                batch_ ? batch_->metrics() : Metrics{}, executor_->metrics(), predictor, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
                 executor_->memory(config_.devices), executor_->device(), config_.online_budget);
         } else throw std::invalid_argument("model has no duplex component");

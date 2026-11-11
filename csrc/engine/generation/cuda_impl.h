@@ -269,6 +269,10 @@ template <typename Model, typename State> struct CudaGenerationOps {
         auto ids = full_ids.narrow(1, chunk.offset, chunk.count).contiguous();
 #endif
         ImageMaskScope image_scope(state,prepared,chunk.offset,chunk.count);
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (std::derived_from<State, tyloi::models::State>)
+            if (state.position() == 0) weights.finish_exchange();
+#endif
         auto [hidden,layer_major,short_windows]=generation_prefill(model,*this,chunk,ids,finish_prefill);
         if(output && output->stopped()) {
             finish_prefill();
@@ -708,6 +712,9 @@ template <class Model, class State, class Predictor> struct RequestOps {
         if constexpr (std::derived_from<State, tyloi::models::State>)
             for (const auto& [device, bytes] : state.reset_growth(1))
                 if (bytes) budget.reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        weights.finish_exchange();
 #endif
         state.reset(1);
         if constexpr (requires { state.predictor; }) {

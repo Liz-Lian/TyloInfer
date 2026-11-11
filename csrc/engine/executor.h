@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/tensor.h"
+#include "engine/metrics.h"
 
 #include <memory>
 #include <span>
@@ -81,6 +82,8 @@ public:
     virtual std::unique_ptr<Graph> graph() = 0;
     /** Query one snapshot per device, in order, within a scope borrowing this executor's resources. */
     virtual std::vector<Memory> memory(std::span<const Device> devices) const = 0;
+    /** Return metrics owned by this executor's execution resources. */
+    virtual engine::Metrics metrics() const { return {}; }
     /** Reclaim idle memory within a scope borrowing this executor's resources. */
     virtual void trim(Device device) = 0;
     /** Set the device allocation limit within its resource scope; zero removes it. */

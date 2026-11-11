@@ -4,9 +4,9 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/common/components.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen4_exp/components.h"
 #include "engine/models/qwen4_exp/ops.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm5_next/components.h"
 #include "engine/models/glm5_next/load.h"
 #include "engine/models/nemotron_h/components.h"
@@ -64,8 +64,10 @@ inline constexpr auto with_model = []<typename F>(
     auto finish = [&](auto& owner, auto& state, auto& executor, auto& components, auto started) {
         auto& model = *owner;
         using Model = std::remove_cvref_t<decltype(model)>;
+#ifndef TYLOINFER_NATIVE_CUDA
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             Executor::prepare(model.metadata.vocab_size);
+#endif
         if (auto* predictor = component_predictor(model, components)) {
             if constexpr (requires { state->predictor; }) {
                 if (!state->predictor) state->predictor = predictor->make_state();
@@ -216,46 +218,22 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
-#endif
         case CudaBackbone::qwen4_exp: {
             auto started = std::chrono::steady_clock::now();
             auto owner = std::make_shared<qwen4_exp::Model>();
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto definition = tyloi::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
-            qwen4_exp::read(*owner, source, definition, options.context_size);
-#else
             qwen4_exp::read(*owner, source, tyloi::models::config_json(*source, options.config_path),
                             options.context_size);
-#endif
             owner->execution = &execution;
-#ifndef TYLOINFER_NATIVE_CUDA
             qwen4_exp::load(*owner, execution, options.context_size, true, true);
-#endif
             auto weights = execution.weights.loader(*owner->source, execution.config.weights,
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
-#ifdef TYLOINFER_NATIVE_CUDA
-            qwen4_exp::load(*owner, weights, execution.config.layer_placement,
-                tyloi::models::LoadOptions{options.context_size, execution.config.n_gpu_layers,
-                    execution.config.expert_parallel.enabled(), execution.config.yarn,
-                    execution.config.dsv4_cpu_offload_layers, execution.config.deepseek_v41_engram_cache_rows,
-                    execution.config.cache.pipeline});
-            execution.config.dense_cpu_layer_count = static_cast<int>(std::count_if(
-                owner->layers.begin(), owner->layers.end(), [](const auto& layer) { return layer->cpu_offloaded; }));
-            owner->components = std::make_unique<qwen4_exp::Components>(
-                qwen4_exp::load_components(*owner, weights, load_optional_components, definition, execution.config.yarn));
-            std::monostate components;
-#else
             auto components = qwen4_exp::load_components(*owner, weights, load_optional_components);
-#endif
             auto state = std::unique_ptr<qwen4_exp::State>(static_cast<qwen4_exp::State*>(
                 owner->make_state().release()));
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
-#ifndef TYLOINFER_NATIVE_CUDA
         case CudaBackbone::deepseek_v4: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);

@@ -448,6 +448,8 @@ template <class Model, class State> struct CudaMtpOps
   Tensor target_forward(Tensor ids, Tensor *raw = nullptr,
                         int64_t confirmed = 0) {
 #ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (std::derived_from<State, tyloi::models::State>)
+      if (state.position() == 0) weights.finish_exchange();
     if constexpr (tyloi::cuda::PlannedState<State>) {
       if (budget)
         for (const auto& [device, bytes] : state.growth(ids.size(1), tyloi::cuda::forward_options(mode), confirmed))
@@ -576,6 +578,10 @@ template <class Model, class State> struct CudaMtpOps
     Tensor raw;
     auto ids = slice(input_ids, 1, chunk.offset, chunk.count);
     tyloi::cuda::ImageMaskScope image_scope(state,prepared,chunk.offset,chunk.count);
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (std::derived_from<State, tyloi::models::State>)
+      if (state.position() == 0) weights.finish_exchange();
+#endif
     if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
       return std::move(*result);
     tyloi::weights::Loan workspace(weights);

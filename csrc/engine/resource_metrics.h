@@ -17,17 +17,18 @@
 
 namespace tyloi::engine {
 
+/** Combine model, request and execution telemetry without counting managed KV backing twice. */
 inline Metrics resource_metrics(
         const Metrics& component_metrics, const Metrics& profile_metrics,
         std::optional<Metrics> memory, bool streamed_kv,
-        const Metrics& batch_metrics, const Metrics& kv_metrics,
-        std::optional<Metrics> offload_metrics, const Metrics& predictor_metrics,
+        const Metrics& batch_metrics, const Metrics& execution_metrics, const Metrics& predictor_metrics,
         const source::Source* source, const weights::Memory& ledger,
         const weights::Cache& weights, const state::Sessions& cache,
         const Budget& budget, std::span<const tyloi::Executor::Memory> devices,
         Device primary, bool online_budget_supported) {
     Metrics metrics;
     metrics.insert(metrics.end(), component_metrics.begin(), component_metrics.end());
+    metrics.insert(metrics.end(), execution_metrics.begin(), execution_metrics.end());
     auto experts = weights.metrics();
     metrics.insert(metrics.end(), experts.begin(), experts.end());
     metrics.insert(metrics.end(), profile_metrics.begin(), profile_metrics.end());
@@ -43,7 +44,6 @@ inline Metrics resource_metrics(
             {"model_io_cached_staging_bytes", double(io.staging_cached_bytes)},
             {"model_io_staging_allocations", double(io.staging_allocations)}});
     }
-    metrics.insert(metrics.end(), kv_metrics.begin(), kv_metrics.end());
     std::size_t resident_weights = ledger.resident_bytes();
     for (const auto& metric : experts)
         if (metric.first == "resident_expert_cache_bytes")
@@ -54,6 +54,17 @@ inline Metrics resource_metrics(
         {"ssd_ple_enabled", ple > 0 ? 1.0 : 0.0},
         {"ssd_ple_payload_bytes", double(ple)}});
     if (memory) {
+        double execution_kv = 0;
+        for (const auto& [name, value] : execution_metrics)
+            if (name == "kv_memory_gpu_bytes" || name == "qsa_kv_resident_bytes") execution_kv += value;
+        const auto primary_live = "gpu_" + std::to_string(primary.index) + "_live_kv_bytes";
+        bool has_primary_live = false;
+        for (auto& [name, value] : *memory)
+            if (name == "kv_cache_bytes" || name == primary_live) {
+                value += execution_kv;
+                if (name == primary_live) has_primary_live = true;
+            }
+        if (!has_primary_live && execution_kv) memory->emplace_back(primary_live, execution_kv);
         for (auto& [name, value] : *memory)
             for (const auto& [batch_name, batch_value] : batch_metrics) {
                 if (name == "kv_cache_bytes" && batch_name == "continuous_batching_request_kv_bytes")
@@ -120,9 +131,9 @@ inline Metrics resource_metrics(
         {"resident_memory_used_bytes", double(std::max(allocated, reserved))},
         {"resident_reclaimable_weight_bytes", double(expert_bytes > minimum ? expert_bytes - minimum : 0)}});
     metrics.emplace_back("qsa_kv_offload_supported", streamed_kv ? 1.0 : 0.0);
-    if (offload_metrics) {
-        metrics.insert(metrics.end(), offload_metrics->begin(), offload_metrics->end());
-    } else {
+    if (std::none_of(execution_metrics.begin(), execution_metrics.end(), [](const auto& metric) {
+            return metric.first == "qsa_kv_offload_enabled";
+        })) {
         metrics.insert(metrics.end(), {{"qsa_kv_offload_enabled", 0.0},
             {"qsa_kv_ram_enabled", 0.0}, {"qsa_kv_ram_bytes", 0.0},
             {"qsa_kv_ssd_bytes", 0.0}});

@@ -43,6 +43,8 @@ public:
     std::unique_ptr<tyloi::Executor::Graph> graph() override;
     /** Query device memory snapshots within this executor's scope. */
     std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices) const override;
+    /** Report the configured KV manager and offload store metrics. */
+    tyloi::engine::Metrics metrics() const override;
     /** Reclaim idle allocator memory on the device. */
     void trim(tyloi::Device device) override;
     /** Set the device allocation limit; zero removes it. */

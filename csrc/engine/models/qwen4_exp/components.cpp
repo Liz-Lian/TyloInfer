@@ -13,6 +13,7 @@
 
 namespace tyloi::cuda::qwen4_exp {
 
+#ifndef TYLOINFER_NATIVE_CUDA
 tyloi::engine::Metrics Components::profile_metrics(const Model& language, const State& state) const {
     return qwen4_decode_graph_profile_metrics(language, state);
 }
@@ -20,6 +21,7 @@ tyloi::engine::Metrics Components::profile_metrics(const Model& language, const 
 std::optional<tyloi::engine::Metrics> Components::memory_metrics(const Model& language, const State& state) const {
     return qwen4_cache_memory_metrics(language, state, mtp.get());
 }
+#endif
 
 tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
 #ifdef TYLOINFER_NATIVE_CUDA

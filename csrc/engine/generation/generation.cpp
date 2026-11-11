@@ -90,7 +90,8 @@ struct Plain {
     }
     void accept(int64_t token) {
         if (penalties && !graph_active) ops::add_token_counts(graph.counts, ops::contiguous(pending));
-        if (((info.row_prefetch && config.prefetch.decode) || info.graph == models::GraphOwner::model) &&
+        if (((info.row_prefetch && config.prefetch.decode) ||
+             (config.decode_graph.enabled && info.decode_graph && info.graph == models::GraphOwner::model)) &&
             !(prepared && prepared->transformed()) && !output.stopped()) {
             if (!host_ids) host_ids = ops::empty({1, 1}, TensorOptions().device(kCPU).dtype(kInt64));
             ops::fill(host_ids, token);
@@ -99,7 +100,8 @@ struct Plain {
     }
     int64_t advance() {
         reserve(1);
-        if (info.graph == models::GraphOwner::model && (!prepared || !prepared->transformed())) {
+        if (config.decode_graph.enabled && info.decode_graph && info.graph == models::GraphOwner::model &&
+            (!prepared || !prepared->transformed())) {
             models::Input step;
             step.ids = ops::reshape(pending, {1, 1});
             step.host_ids = host_ids;
@@ -124,6 +126,7 @@ struct Plain {
             model_input.ids = ops::reshape(pending, {1, 1});
             model_input.advance = true;
             auto profile = config.profile_decode ? executor.profile("runtime.decode") : nullptr;
+            if (state.position() == 0) weights.finish_exchange();
             auto hidden = model.forward(std::move(model_input), state, forward_options);
             pending = sample_logits(sampler,
                 project(hidden, !(sampler.greedy() && !penalties && !input.token_constraint)),
@@ -242,7 +245,8 @@ struct Native {
         const auto chunk = prefill_chunk(input, reused, prefix_boundary);
         return tyloi::engine::mtp::generate(model, state, executor, budget, weights, mtp_state,
             forward_options, input, output, chunk, prepared ? &*prepared : nullptr,
-            reused, restored, committed, prefix_boundary, source, config.profile_mtp, config.prefetch);
+            reused, restored, committed, prefix_boundary, source, config.profile_mtp, config.prefetch,
+            config.decode_graph.enabled);
     }
     StepSequence<Prepared> prepare(InferenceRequest& input, models::State& target) {
         return model.prepare(input.prompt, *input.vision, target);
@@ -263,6 +267,7 @@ struct Native {
             throw std::invalid_argument("predictor state is unavailable or belongs to another model");
         for (const auto& [device, growth] : state.reset_growth(1))
             if (growth) budget.reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
+        weights.finish_exchange();
         state.reset(1);
         if (mtp) {
             for (const auto& [device, growth] : mtp->reset_growth(*state.predictor, 1))
@@ -305,6 +310,7 @@ struct Native {
 StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
     if (request.batched) {
         graph_->invalidate();
+        weights_->finish_exchange();
         idle_state_->release_graphs();
         if (auto* predictor = model_->mtp()) {
             if (!idle_state_->predictor || !idle_state_->predictor->belongs_to(*predictor))
