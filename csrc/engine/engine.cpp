@@ -101,7 +101,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         }
         models::DecodeOptions warmup;
         warmup.routed = weights_->decode() == ::tyloi::weights::Cache::Decode::routed;
-        model_->warmup(*idle_state_, warmup);
+        engine::warmup(*model_, *idle_state_, *executor_, *weights_, warmup);
         weights_->prepare(::tyloi::weights::Cache::Stage::loaded, executor_->device(), source_.get());
         ready_ = true;
     } catch (...) {

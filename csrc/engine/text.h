@@ -8,6 +8,7 @@
 #include "engine/models/qwen4_exp/batch.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/generation/batch_ops.h"
+#include "engine/generation/decode.h"
 #endif
 #include "engine/models/qwen35/batch.h"
 #include "engine/models/qwen4_exp/ops.h"
@@ -203,7 +204,7 @@ struct Text {
 #ifdef TYLOINFER_NATIVE_CUDA
             tyloi::models::DecodeOptions warmup;
             warmup.routed=weights.decode()==::tyloi::weights::Cache::Decode::routed;
-            language.warmup(state,warmup);
+            tyloi::engine::warmup(language,state,*executor,weights,warmup);
 #else
             qwen4_warmup_decode_graphs(language,state);
 #endif

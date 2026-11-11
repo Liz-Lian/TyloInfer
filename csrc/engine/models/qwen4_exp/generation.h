@@ -5,6 +5,7 @@
 #include "engine/budget.h"
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill.h"
+#include "engine/generation/decode.h"
 #include "engine/requests/output.h"
 #include "engine/weights/cache.h"
 
@@ -115,7 +116,9 @@ std::optional<int64_t> generation_decode(qwen4_exp::Model& model, Ops& ops) {
         options.routed=ops.weights.decode()==tyloi::weights::Cache::Decode::routed;
         options.projection=greedy?tyloi::models::DecodeOptions::Projection::greedy:
             tyloi::models::DecodeOptions::Projection::logits;
-        if(auto result=model.decode(std::move(input),ops.state,tyloi::cuda::forward_options(ops.mode),options)) {
+        TYLOINFER_RUNTIME_CHECK(ops.executor, "model decode requires an executor");
+        if(auto result=tyloi::engine::decode(model,ops.state,*ops.executor,ops.weights,
+                tyloi::cuda::forward_options(ops.mode),std::move(input),options)) {
             if(greedy) {
                 ops.pending=std::move(result->ids);
             } else ops.pending=tyloi::engine::sample_logits(ops.sampler,

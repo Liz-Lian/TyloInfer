@@ -265,6 +265,7 @@ void Executor::drain() {
 
 void Executor::clear() {
     bind_budget(nullptr);
+    weights_ = nullptr;
     kv_.reset();
     offload_.reset();
     if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
@@ -329,6 +330,7 @@ std::unique_ptr<Executor> Executor::fork(int primary) const {
         collectives_, routes_, options_, mode_, primary));
 #ifdef TYLOINFER_NATIVE_CUDA
     result->configure_kv(kv_, offload_);
+    result->weights_ = weights_;
 #endif
     return result;
 }
@@ -480,6 +482,9 @@ Executor& Executor::current() {
     if (!active_scope) throw std::runtime_error("no active CUDA executor scope");
     return active_scope->owner;
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+Executor* Executor::active() noexcept { return active_scope ? &active_scope->owner : nullptr; }
+#endif
 
 void Executor::prepare(std::int64_t vocabulary) {
     const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());

@@ -89,7 +89,12 @@ class Qwen4BatchDecodeGraph {
     };
     explicit Qwen4BatchDecodeGraph(qwen4_exp::Model&);
     ~Qwen4BatchDecodeGraph();
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Plan a graph while yielding required runtime resource boundaries. */
+    tyloi::StepSequence<Plan> plan(std::vector<Qwen4BatchRequestState*>, bool greedy);
+#else
     std::optional<Plan> plan(const std::vector<Qwen4BatchRequestState*>&, bool greedy);
+#endif
     std::optional<::tyloi::Tensor> run(
         const std::vector<Qwen4BatchRequestState*>&,
         const ::tyloi::Tensor&,const ::tyloi::Tensor&,bool greedy,const Plan&);
@@ -159,7 +164,7 @@ struct Model : tyloi::models::CausalModel {
     std::unique_ptr<tyloi::models::State> make_state() const override;
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Warm eligible model graphs using this model's request state. */
-    void warmup(tyloi::models::State& state, const tyloi::models::DecodeOptions& options) const override;
+    tyloi::StepSequence<tyloi::models::Decoded> warmup(tyloi::models::State& state, tyloi::models::DecodeOptions options) const override;
     /** Create model-owned batch computation and optional decode graph state. */
     std::unique_ptr<tyloi::models::Batch> batch(bool graph) override;
 #endif
@@ -175,8 +180,8 @@ struct Model : tyloi::models::CausalModel {
                                  const tyloi::models::ForwardOptions& options = {}) const override;
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Run an eligible model-owned decode graph and return its requested projection. */
-    std::optional<tyloi::models::Decoded> decode(tyloi::models::Input input, tyloi::models::State& state,
-        const tyloi::models::ForwardOptions& options, const tyloi::models::DecodeOptions& decode) const override;
+    tyloi::StepSequence<tyloi::models::Decoded> decode(tyloi::models::Input input, tyloi::models::State& state,
+        tyloi::models::ForwardOptions options, tyloi::models::DecodeOptions decode) const override;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Run eligible layer-major prefill in resumable model-owned steps. */

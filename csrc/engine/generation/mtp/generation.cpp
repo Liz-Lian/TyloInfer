@@ -6,6 +6,7 @@
 #include "engine/generation/mtp/sequence.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/generation/prefill.h"
+#include "engine/generation/decode.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/source.h"
 #include "engine/ops.h"
@@ -106,7 +107,7 @@ struct Ops : Sampling {
             decode.routed = weights.decode() == ::tyloi::weights::Cache::Decode::routed;
             const auto& parameters = sampler().params();
             decode.compact = !sampler().greedy() && !penalties && parameters.top_k > 0 && parameters.top_k <= 64;
-            if (auto decoded = model.decode(input, state, options, decode)) {
+            if (auto decoded = engine::decode(model, state, executor, weights, options, input, decode)) {
                 result = std::move(decoded->hidden);
                 if (!result) throw std::runtime_error("model decode returned no hidden tensor");
                 target_hidden = result;

@@ -2,6 +2,7 @@
 
 #include "engine/budget.h"
 #include "engine/executor.h"
+#include "engine/generation/decode.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/models/causal_model.h"
 #include "engine/requests/output.h"
@@ -23,6 +24,7 @@ namespace tyloi::engine {
 models::Prefill prefill(models::CausalModel& model, models::State& state, Executor& executor,
     weights::Cache& weights, Budget& budget, const models::ForwardOptions& options,
     models::Input input, std::int64_t compute, InferenceOutput& output) {
+    Capture capture(executor, weights);
     std::unique_ptr<weights::Loan> loan;
     tyloi::StepSequence<models::Prefill> job;
     std::optional<weights::Cache::Priority> priority;
@@ -30,12 +32,6 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
     bool observed = false;
     bool computed = false;
     auto timer = executor.timer();
-    const auto drain = [&] {
-        std::exception_ptr failure;
-        try { weights.drain(); } catch (...) { failure = std::current_exception(); }
-        try { executor.drain(); } catch (...) { if (!failure) failure = std::current_exception(); }
-        if (failure) std::rethrow_exception(failure);
-    };
     try {
         for (const auto& [device, bytes] : state.reset_growth(input.ids.size(0)))
             if (bytes) budget.reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
@@ -53,6 +49,13 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
         job = model.prefill(input, state, options, policy);
         while (!output.stopped()) {
             auto step = job.next();
+            if (step.graph) {
+                if (step.state != StepState::advanced || step.value || step.workspace)
+                    throw std::logic_error("invalid prefill graph event");
+                observed = true;
+                capture.step(*step.graph);
+                continue;
+            }
             if (step.workspace) {
                 if (step.state != StepState::advanced || step.value)
                     throw std::logic_error("invalid prefill workspace event");
@@ -99,8 +102,10 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
                 continue;
             }
             if (!step) {
+                if (step.value) throw std::logic_error("invalid prefill completion event");
                 if (loan) throw std::logic_error("prefill job ended while workspace is borrowed");
                 if (observed) throw std::runtime_error("prefill job ended without a result");
+                capture.finish();
                 auto* raw = input.raw_hidden;
                 result.hidden = model.forward(std::move(input), state, options);
                 if (raw) result.raw = *raw;
@@ -117,23 +122,27 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
                     if (priority) { priority->finish(); priority.reset(); }
                     priority.emplace(weights, result.first, result.last);
                 }
-            } else {
+            } else if (result.phase == models::Prefill::Phase::decode ||
+                       result.phase == models::Prefill::Phase::complete) {
                 if (priority) { priority->finish(); priority.reset(); }
                 if (result.phase == models::Prefill::Phase::complete) {
                     if (loan) throw std::logic_error("prefill completed while workspace is borrowed");
+                    capture.finish();
                     if (computed) result.elapsed_ms = timer->elapsed_ms();
                     return result;
                 }
-            }
+            } else throw std::logic_error("unknown prefill job phase");
         }
-        drain();
+        capture.drain();
         job = {};
+        if (observed) state.release_graphs();
         loan.reset();
         return {};
     } catch (...) {
         auto failure = std::current_exception();
-        try { drain(); } catch (...) {}
+        try { capture.drain(); } catch (...) {}
         job = {};
+        if (observed) try { state.release_graphs(); } catch (...) {}
         loan.reset();
         std::rethrow_exception(failure);
     }

@@ -3,6 +3,7 @@
 #include "engine/weights/cache.h"
 #include "engine/generation/mtp/ops.h"
 #include "engine/generation/prefill.h"
+#include "engine/generation/decode.h"
 #include "engine/models/qwen4_exp/generation.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/backends/cuda/native/context.h"
@@ -71,7 +72,9 @@ std::optional<Tensor> mtp_target_forward(qwen4_exp::Model& model, Ops& ops, Tens
         options.routed=ops.weights.decode()==tyloi::weights::Cache::Decode::routed;
         options.projection=tyloi::models::DecodeOptions::Projection::hidden;
         options.compact=ops.captured_compact_requested();
-        if(auto result=model.decode(std::move(input),ops.state,tyloi::cuda::forward_options(ops.mode),options)) {
+        TYLOINFER_RUNTIME_CHECK(ops.executor, "model decode requires an executor");
+        if(auto result=tyloi::engine::decode(model,ops.state,*ops.executor,ops.weights,
+                tyloi::cuda::forward_options(ops.mode),std::move(input),options)) {
             ops.target_transfer_bytes=ops.weights.activity().streamed_bytes-transfer_before;
             ops.target_maintenance=ops.target_maintenance || result->initialized;
             ops.projected_target_hidden=result->hidden; ops.projected_target_logits=std::move(result->logits);

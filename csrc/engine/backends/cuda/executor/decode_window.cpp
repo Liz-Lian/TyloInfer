@@ -4,6 +4,10 @@
 #include "context.h"
 #include "engine/backends/cuda/native/graph.h"
 #include "engine/backends/cuda/native/device.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/weights/cache.h"
+#endif
 #include "components/error.h"
 #include "engine/backends/cpu/executor/expert_pool.h"
 #include <algorithm>
@@ -110,14 +114,31 @@ struct DecodeWindow::ProfileClock {
     ProfileClock(){TYLOINFER_NATIVE_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device),capacity*sizeof(uint64_t)));}
     ~ProfileClock(){if(device)(void)cudaFree(device);}
 };
-DecodeWindow::DecodeWindow(cudaStream_t stream,bool layer_profile,bool independent_sequences)
+DecodeWindow::DecodeWindow(cudaStream_t stream,bool layer_profile,bool independent_sequences,bool eager)
     :stream_(stream),graphs_(stream),layer_profile_(layer_profile),independent_sequences_(independent_sequences) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (auto* executor = Executor::active()) weights_ = executor->weights_;
+    if (eager) prepare();
+#else
+    (void)eager;
+#endif
     // External CUDA timing events split Windows graph submissions. Device
     // timestamps preserve the graph's submission and use the same clock as
     // Strata's verifier profiler. This storage exists only when tracing.
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_TRACE_LAYER_TIMINGS_CLOCK");
     if(layer_profile_ && (!option || option[0]!='0'))profile_clock_=std::make_unique<ProfileClock>();
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+void DecodeWindow::prepare() {
+    if (prepared_) return;
+    if (!weights_ || !weights_->prepare_graph(::tyloi::Device{::tyloi::kCUDA, mfq_current_cuda_device()})) {
+        memory_pool_ = std::make_unique<Graph>();
+        memory_pool_->prepare_memory();
+        default_context(mfq_current_cuda_device())->end_graph_warmup(mfq_current_cuda_stream());
+    }
+    prepared_ = true;
+}
+#endif
 void DecodeWindow::mark(int layer,const char* phase) {
     profile_layer_=layer;
     if(!layer_profile_)return;
@@ -218,6 +239,12 @@ DecodeWindow::~DecodeWindow() {
             <<" total_ns="<<phase.total_ns<<" min_ns="<<phase.min_ns<<" max_ns="<<phase.max_ns
             <<" from_tile="<<phase.from_tile<<" tile="<<phase.tile
             <<" kind="<<(profile_kinds_.count(phase.layer)?profile_kinds_.at(phase.layer):"unknown")<<std::endl;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tasks_.clear();
+    barriers_.clear();
+    workspaces_.clear();
+    memory_pool_.reset();
+#endif
 }
 void DecodeWindow::enroll(Task task) {
     if(active!=this)throw std::logic_error("MFQ task outside window capture");

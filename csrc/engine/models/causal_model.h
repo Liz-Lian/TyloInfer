@@ -31,8 +31,8 @@ public:
     virtual Mtp* mtp() const noexcept { return nullptr; }
     /** Create request state that must be retired before this model is replaced or destroyed. */
     virtual std::unique_ptr<State> make_state() const = 0;
-    /** Initialize startup graphs from disposable request state and the owner's weight access policy. */
-    virtual void warmup(State&, const DecodeOptions&) const {}
+    /** Report startup graph phases using disposable request state and weight access policy. */
+    virtual tyloi::StepSequence<Decoded> warmup(State&, DecodeOptions) const { return {}; }
     /** Create supported batch computation, or return null for single-request execution. */
     virtual std::unique_ptr<Batch> batch(bool) { return {}; }
     /** Prefetch rows for host token IDs using the supplied owning request state. */
@@ -55,8 +55,8 @@ public:
         return {info().prefill == PrefillPolicy::merged && !options.transformed && !options.retained
             ? options.tokens - static_cast<std::int64_t>(options.reused) : options.compute};
     }
-    /** Run supported model-owned decode, or return no result so generation uses ordinary execution. */
-    virtual std::optional<Decoded> decode(Input, State&, const ForwardOptions&, const DecodeOptions& = {}) const {
+    /** Report decode boundaries and outputs, or return an empty job for ordinary execution. */
+    virtual tyloi::StepSequence<Decoded> decode(Input, State&, ForwardOptions, DecodeOptions = {}) const {
         return {};
     }
     /** Run model-owned prefill phases; an empty sequence selects the ordinary forward path. */

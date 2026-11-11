@@ -3,6 +3,7 @@
 #include "engine/tensor.h"
 #include "engine/requests/result.h"
 #include "engine/metrics.h"
+#include "engine/generation/sequence.h"
 
 #include <cstdint>
 #include <memory>
@@ -57,7 +58,7 @@ public:
     virtual Tensor decode(std::span<BatchState* const> states, Tensor ids,
         const Tensor& host_ids) = 0;
     /** Prepare an eligible graph layout without executing the numerical step. */
-    virtual std::unique_ptr<Plan> plan(std::span<BatchState* const> states, bool greedy) = 0;
+    virtual tyloi::StepSequence<std::unique_ptr<Plan>> plan(std::span<BatchState* const> states, bool greedy) = 0;
     /** Execute an admitted graph, returning no result when ordinary decode is required. */
     virtual std::optional<Tensor> capture(std::span<BatchState* const> states,
         const Tensor& ids, const Tensor& host_ids, bool greedy, const Plan& plan) = 0;

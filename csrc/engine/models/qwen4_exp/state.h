@@ -132,6 +132,10 @@ public:
 #endif
     std::vector<std::unique_ptr<LayerState>> layers;
     std::unique_ptr<Qwen4DecodeGraph> graph_registry;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Mark synthetic startup capture for this request only. */
+    bool warming = false;
+#endif
     bool reuse_decode_graphs = false;
     std::uint64_t decode_graph_captures = 0;
     std::int64_t decode_reserve_until = 0;

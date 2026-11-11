@@ -64,12 +64,8 @@ public:
         return qwen4_batch_decode(model_,requests,std::move(ids),host_ids);
     }
     /** Plan an eligible graph for these request states. */
-    std::unique_ptr<Plan> plan(std::span<tyloi::models::BatchState* const> states, bool greedy) override {
-        auto requests=checked(states);
-        if(!graph_) return {};
-        auto layout=graph_->plan(requests,greedy);
-        if(!layout) return {};
-        return std::make_unique<GraphPlan>(*this,std::move(requests),greedy,std::move(*layout));
+    tyloi::StepSequence<std::unique_ptr<Plan>> plan(std::span<tyloi::models::BatchState* const> states, bool greedy) override {
+        return plan_job(checked(states),greedy);
     }
     /** Capture or replay a graph using the matching plan. */
     std::optional<tyloi::Tensor> capture(std::span<tyloi::models::BatchState* const> states,
@@ -89,6 +85,18 @@ public:
                 {"continuous_batching_cuda_graph_replays",double(graph_?graph_->replays():0)}};
     }
 private:
+    tyloi::StepSequence<std::unique_ptr<Plan>> plan_job(std::vector<Qwen4BatchRequestState*> requests, bool greedy) {
+        if(!graph_) co_return;
+        auto job=graph_->plan(requests,greedy);
+        while(auto step=job.next()) {
+            if(step.graph) co_yield *step.graph;
+            if(step.value) {
+                std::unique_ptr<Plan> result=std::make_unique<GraphPlan>(*this,std::move(requests),greedy,std::move(*step.value));
+                co_yield std::move(result);
+                co_return;
+            }
+        }
+    }
     std::vector<Qwen4BatchRequestState*> checked(std::span<tyloi::models::BatchState* const> states) const {
         std::vector<Qwen4BatchRequestState*> result;
         result.reserve(states.size());

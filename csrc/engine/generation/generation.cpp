@@ -107,7 +107,7 @@ struct Plain {
             decode.routed = weights.decode() == ::tyloi::weights::Cache::Decode::routed;
             const bool greedy = sampler.greedy() && !penalties && !input.token_constraint;
             decode.projection = greedy ? models::DecodeOptions::Projection::greedy : models::DecodeOptions::Projection::logits;
-            if (auto decoded = model.decode(std::move(step), state, forward_options, decode)) {
+            if (auto decoded = engine::decode(model, state, executor, weights, forward_options, std::move(step), decode)) {
                 if (greedy) {
                     if (!decoded->ids) throw std::runtime_error("model decode returned no token IDs");
                     pending = std::move(decoded->ids);

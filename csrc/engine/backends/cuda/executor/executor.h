@@ -17,6 +17,7 @@
 #include <unordered_set>
 
 class TqExec;
+namespace tyloi::weights { class Cache; }
 
 namespace tyloi::cuda {
 
@@ -26,6 +27,7 @@ class RouteStats;
 class KvMemoryManager;
 class KvOffloadStore;
 struct KvMemoryAllocation;
+class DecodeWindow;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -160,6 +162,9 @@ public:
 
 private:
 #ifdef TYLOINFER_NATIVE_CUDA
+    friend class ::tyloi::weights::Cache;
+    friend class DecodeWindow;
+    static Executor* active() noexcept;
     friend class KvMemoryManager;
     friend std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t, int64_t, int64_t, int64_t,
         int64_t, int64_t, const ::tyloi::TensorOptions&, int64_t);
@@ -189,6 +194,7 @@ private:
     MfeScratch mfe_scratch_;
     MoeScratchCache moe_scratch_;
 #ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::weights::Cache* weights_ = nullptr;
     std::shared_ptr<KvMemoryManager> kv_;
     std::shared_ptr<KvOffloadStore> offload_;
     mutable std::mutex attention_scratch_mutex_;

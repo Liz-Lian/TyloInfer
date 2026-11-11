@@ -8,7 +8,9 @@
 #include <tuple>
 #include <vector>
 
+namespace tyloi::weights { class Cache; }
 namespace tyloi::cuda {
+class Graph;
 void wait_route_publication(const uint32_t* flag,cudaStream_t stream,int timeout_ms=60000);
 void publish_mapped_flag(uint32_t* flag) noexcept;
 void check_stream_progress(cudaStream_t stream);
@@ -31,11 +33,16 @@ public:
         int64_t total_ns,min_ns,max_ns;
         int from_tile=-1,tile=-1;
     };
-    explicit DecodeWindow(cudaStream_t stream,bool layer_profile=false,bool independent_sequences=false);
+    /** When eager, prepare capture memory before initializing profiling storage. */
+    explicit DecodeWindow(cudaStream_t stream,bool layer_profile=false,bool independent_sequences=false,bool eager=false);
     bool independent_sequences() const noexcept {return independent_sequences_;}
     ~DecodeWindow();
     DecodeWindow(const DecodeWindow&)=delete;
     DecodeWindow& operator=(const DecodeWindow&)=delete;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Prepare graph weights or own a fallback pool before snapshot allocation. */
+    void prepare();
+#endif
     void capture(const std::function<void()>& body,
                  const std::function<void()>& restore,
                  const std::function<void()>& release_output = {});
@@ -63,6 +70,11 @@ public:
 private:
     cudaStream_t stream_;
     GraphRegistry graphs_;
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::weights::Cache* weights_ = nullptr;
+    std::unique_ptr<Graph> memory_pool_;
+    bool prepared_ = false;
+#endif
     struct LayerPoint;
     struct ProfileClock;
     std::unique_ptr<ProfileClock> profile_clock_;

@@ -6,6 +6,7 @@
 #include "engine/config.h"
 #include "engine/executor.h"
 #include "engine/generation/batch.h"
+#include "engine/generation/decode.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/generation/sampling.h"
 #include "engine/models/batch.h"
@@ -87,7 +88,12 @@ public:
         result.emplace_back("continuous_batching_request_contexts", contexts);
         return result;
     }
-    void suspend_decode() { batch_->clear(); }
+    void suspend_decode() {
+        std::exception_ptr failure;
+        try { weights_.finish_exchange(); } catch (...) { failure=std::current_exception(); }
+        try { batch_->clear(); } catch (...) { if (!failure) failure=std::current_exception(); }
+        if (failure) std::rethrow_exception(failure);
+    }
     void resume_decode(std::int64_t) {}
     PrefillChunk prefill_chunk(const std::shared_ptr<Request>& request, PrefillChunk chunk) {
         auto scope = executor_.enter();
@@ -197,7 +203,7 @@ public:
 
     void activate(const std::shared_ptr<Request>& request, const Sample& sample) { accept(request,sample); }
     void discard_prefill(const std::shared_ptr<Request>& request) {
-        batch_->clear(); weights_.finish_exchange();
+        suspend_decode();
         request->state.reset(); request->ids={}; request->timers.clear(); request->packed_ms=0;
     }
     void retire(const std::vector<std::shared_ptr<Request>>& retired, std::int64_t) {
@@ -227,9 +233,12 @@ public:
         std::optional<Tensor> captured;
         try {
             if (config_.cuda_graph) {
-                auto plan=batch_->plan(states,greedy);
+                auto plan=plan_graph(states,greedy);
                 if (plan) {
-                    if (plan->rebuild) budget_.reserve_kv(executor_.device(),prefill_budget_add(plan->growth,std::size_t(64)<<20));
+                    if (plan->rebuild) {
+                        executor_.trim(executor_.device());
+                        budget_.reserve_kv(executor_.device(),prefill_budget_add(plan->growth,std::size_t(64)<<20));
+                    }
                     captured=batch_->capture(states,ids,host,greedy,*plan);
                 }
             }
@@ -273,6 +282,42 @@ public:
     }
 
 private:
+    std::unique_ptr<models::Batch::Plan> plan_graph(
+            const std::vector<models::BatchState*>& states, bool greedy) {
+        Capture capture(executor_,weights_);
+        std::unique_ptr<models::Batch::Plan> plan;
+        StepSequence<std::unique_ptr<models::Batch::Plan>> job;
+        bool observed=false;
+        try {
+            job=batch_->plan(states,greedy);
+            for (;;) {
+                auto step=job.next();
+                if (step.workspace || (step.graph && step.value) ||
+                    (step.state==StepState::complete && (step.graph || step.value)))
+                    throw std::logic_error("invalid batch graph plan event");
+                if (!step) break;
+                if (step.state!=StepState::advanced)
+                    throw std::logic_error("invalid batch graph plan event");
+                observed=true;
+                if (step.graph) {
+                    if (plan) throw std::logic_error("batch graph plan continued after its result");
+                    capture.step(*step.graph);
+                } else if (step.value) {
+                    if (plan || !*step.value) throw std::logic_error("invalid batch graph plan result");
+                    plan=std::move(*step.value);
+                } else if (plan) throw std::logic_error("batch graph plan continued after its result");
+            }
+            if (observed && !plan) throw std::logic_error("batch graph plan ended without a result");
+            capture.finish();
+            job={};
+            return plan;
+        } catch (...) {
+            const auto failure=std::current_exception();
+            try { capture.drain(); } catch (...) {}
+            job={};
+            std::rethrow_exception(failure);
+        }
+    }
     void initialize(const std::shared_ptr<Request>& request, PrefillChunk chunk) {
         if (!request->state) {
             if (chunk.offset!=0) throw std::runtime_error("batch lost request state");
