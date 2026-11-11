@@ -336,9 +336,13 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
     auto* predictor = model.mtp();
     if (!predictor || !state.predictor || !state.predictor->belongs_to(*predictor))
         throw std::invalid_argument("predictor state is unavailable or belongs to another model");
-    const auto logical = model.prefill_span(state, {static_cast<std::int64_t>(input.prompt.size()), chunk, reused, stable,
-        prepared && prepared->transformed(),
-        weights.prefill_mode(input.prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained});
+    const auto remaining = input.prompt.size() - reused;
+    const auto logical = model.prefill_plan(state, {static_cast<std::int64_t>(input.prompt.size()), chunk, reused, stable,
+        prepared && (prepared->transformed() || bool(prepared->image_mask)),
+        weights.prefill_mode(remaining, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained,
+        weights.decode() == ::tyloi::weights::Cache::Decode::routed,
+        weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
+        weights.split_prefill(remaining)}).span;
     return speculative_sequence(Ops(model, state, executor, budget, weights, policy, options,
         *predictor, *state.predictor, prepared, source, profile, prefetch, chunk, output), input, output, logical, reused,
         std::move(restored), committed, stable);

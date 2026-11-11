@@ -1200,7 +1200,7 @@ struct Model : tyloi::models::CausalModel {
     /** Run the staged causal encoder and decoder prefill. */
     tyloi::StepSequence<tyloi::models::Prefill> prefill(tyloi::models::Input input,
         tyloi::models::State& state, const tyloi::models::ForwardOptions& options,
-        std::int64_t compute_chunk) const override;
+        tyloi::models::PrefillOptions prefill) const override;
 #endif
 
     // ---- speculative contract used by the MTP sequence

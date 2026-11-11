@@ -37,6 +37,16 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
     // layer. Splitting these batches into verification windows would
     // repeatedly transfer the same expert when it is not resident.
     const bool verification_windows=weights.split_prefill(chunk.count);
+#ifdef TYLOINFER_NATIVE_CUDA
+    const bool layer_eligible=model.prefill_plan(state, {chunk.count,ops.prefill_compute_chunk,0,0,
+        prepared && (prepared->transformed() || bool(prepared->image_mask)),
+        weights.prefill_mode(chunk.count,state.position()>0)==tyloi::weights::Cache::Prefill::retained,
+        weights.decode()==tyloi::weights::Cache::Decode::routed,
+        weights.transfer()==tyloi::weights::Cache::Transfer::coordinated,verification_windows}).workspace;
+#else
+    const bool layer_eligible=(!prepared || !prepared->transformed()) &&
+        qwen4_layer_major_prefill_eligible(model,state,chunk.count);
+#endif
     if(verification_windows && (!prepared || !prepared->transformed()) && ops.state.reuse_decode_graphs &&
             ops.state.graph_registry && chunk.count<=128) {
         // The same bounded prompt windows as MTP avoid materializing
@@ -68,8 +78,7 @@ std::tuple<::tyloi::DenseTensor, bool, bool> generation_prefill(
             offset+=rows;
         }
 #endif
-    } else if((!prepared || !prepared->transformed()) &&
-        qwen4_layer_major_prefill_eligible(model,ops.state,chunk.count)) {
+    } else if(layer_eligible) {
         layer_major=true;
 #ifdef TYLOINFER_NATIVE_CUDA
         TYLOINFER_RUNTIME_CHECK(ops.executor && ops.budget && output, "staged prefill requires its execution owners");
@@ -135,9 +144,11 @@ void generation_request(qwen4_exp::Model& model, Ops& ops, const tyloi::engine::
 #endif
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 inline bool generation_borrow(qwen4_exp::Model& model, qwen4_exp::State& state, std::size_t tokens, const tyloi::models::Prepared* prepared) {
     return qwen4_layer_major_prefill_eligible(model,state,std::min<std::size_t>(tokens,8192)) &&
         (!prepared || !prepared->transformed());
 }
+#endif
 
 } // namespace tyloi::cuda

@@ -18,6 +18,20 @@ struct PrefillOptions {
     /** Reused prefix and the exact boundary requested for a session checkpoint. */
     std::size_t reused = 0, stable = 0;
     bool transformed = false, retained = false;
+    /** Routed weight access is available for this execution owner. */
+    bool routed = false;
+    /** Weight transfers are coordinated by the runtime cache. */
+    bool coordinated = false;
+    /** Permit bounded verification windows for this input span. */
+    bool split = true;
+};
+
+/** Select logical prompt work and whether numerical workspace can be borrowed. */
+struct PrefillPlan {
+    /** Logical token span advanced before publishing prompt progress. */
+    std::int64_t span = 0;
+    /** Admit compute tiles using reclaimable expert workspace. */
+    bool workspace = false;
 };
 
 struct Input {

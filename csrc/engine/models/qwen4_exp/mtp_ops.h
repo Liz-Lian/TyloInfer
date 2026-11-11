@@ -126,7 +126,17 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(qwen4_exp::Model& model, 
         return typename Ops::PrefillResult{std::move(hidden),std::move(raw),timer.elapsed_ms()};
 #endif
     }
-    if(!ops.transformed_prompt && qwen4_layer_major_prefill_eligible(model,ops.state,chunk.count)) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    const bool layer_eligible=model.prefill_plan(ops.state, {chunk.count,ops.prefill_compute_chunk,0,0,
+        ops.transformed_prompt || (ops.prepared && bool(ops.prepared->image_mask)),
+        ops.weights.prefill_mode(chunk.count,ops.state.position()>0)==tyloi::weights::Cache::Prefill::retained,
+        ops.weights.decode()==tyloi::weights::Cache::Decode::routed,
+        ops.weights.transfer()==tyloi::weights::Cache::Transfer::coordinated,
+        ops.weights.split_prefill(chunk.count)}).workspace;
+#else
+    const bool layer_eligible=!ops.transformed_prompt && qwen4_layer_major_prefill_eligible(model,ops.state,chunk.count);
+#endif
+    if(layer_eligible) {
         const bool host_history=ops.host_prompt_history(chunk.count);
         ::tyloi::Tensor raw_result;
 #ifdef TYLOINFER_NATIVE_CUDA

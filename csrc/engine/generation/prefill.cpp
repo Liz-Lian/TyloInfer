@@ -41,7 +41,16 @@ models::Prefill prefill(models::CausalModel& model, models::State& state, Execut
             if (bytes) budget.reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
         for (const auto& [device, bytes] : state.growth(input.ids.size(1), options, input.confirmed))
             if (bytes) budget.reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
-        job = model.prefill(input, state, options, compute);
+        const auto tokens = input.ids.size(1);
+        const bool transformed = bool(input.embeddings) || bool(input.positions) || bool(input.lengths) ||
+            bool(input.cache_positions) || bool(input.image_mask) || input.suffix || input.confirmed != 0;
+        const auto mode = weights.prefill_mode(tokens, state.position() > 0);
+        models::PrefillOptions policy{tokens, compute, 0, 0, transformed,
+            mode == ::tyloi::weights::Cache::Prefill::retained,
+            weights.decode() == ::tyloi::weights::Cache::Decode::routed,
+            weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
+            weights.split_prefill(tokens)};
+        job = model.prefill(input, state, options, policy);
         while (!output.stopped()) {
             auto step = job.next();
             if (step.workspace) {

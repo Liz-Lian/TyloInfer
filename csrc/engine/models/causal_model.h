@@ -50,17 +50,17 @@ public:
     virtual Tensor logits(const Tensor& hidden, bool capped = true) const = 0;
     /** Run a model step in the owner's execution scope; reject unsupported speculative suffixes. */
     virtual Tensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
-    /** Select the logical prefill span for the full prompt and its reuse boundaries. */
-    virtual std::int64_t prefill_span(const State&, const PrefillOptions& options) const {
-        return info().prefill == PrefillPolicy::merged && !options.transformed && !options.retained
-            ? options.tokens - static_cast<std::int64_t>(options.reused) : options.compute;
+    /** Plan logical prefill work and workspace admission from prompt and access policy. */
+    virtual PrefillPlan prefill_plan(const State&, const PrefillOptions& options) const {
+        return {info().prefill == PrefillPolicy::merged && !options.transformed && !options.retained
+            ? options.tokens - static_cast<std::int64_t>(options.reused) : options.compute};
     }
     /** Run supported model-owned decode, or return no result so generation uses ordinary execution. */
     virtual std::optional<Decoded> decode(Input, State&, const ForwardOptions&, const DecodeOptions& = {}) const {
         return {};
     }
     /** Run model-owned prefill phases; an empty sequence selects the ordinary forward path. */
-    virtual tyloi::StepSequence<Prefill> prefill(Input, State&, const ForwardOptions&, std::int64_t) const { return {}; }
+    virtual tyloi::StepSequence<Prefill> prefill(Input, State&, const ForwardOptions&, PrefillOptions) const { return {}; }
 };
 
 } // namespace tyloi::models

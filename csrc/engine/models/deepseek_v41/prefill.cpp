@@ -234,7 +234,8 @@ std::optional<CedEncoding> deepseek_v41_prefill_encode(
 #else
 tyloi::StepSequence<tyloi::models::Prefill> Model::prefill(
         tyloi::models::Input input, tyloi::models::State& state_value,
-        const tyloi::models::ForwardOptions&, std::int64_t compute_chunk) const {
+        const tyloi::models::ForwardOptions&, tyloi::models::PrefillOptions prefill) const {
+    auto compute_chunk = prefill.compute;
     using tyloi::models::Prefill;
     auto* target = dynamic_cast<State*>(&state_value);
     tyloi::models::require_model(target && target->belongs_to(*this),

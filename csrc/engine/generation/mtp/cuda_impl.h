@@ -970,8 +970,12 @@ run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
 #ifdef TYLOINFER_NATIVE_CUDA
   if constexpr (std::derived_from<Model, tyloi::models::CausalModel> &&
                 std::derived_from<State, tyloi::models::State>) {
-    logical_chunk=model.prefill_span(state, {static_cast<std::int64_t>(request.prompt.size()), prefill_chunk_size,
-        reused_tokens, 0, prepared && prepared->transformed(), reused_tokens>0 && prefill_chunk_size<=8});
+    logical_chunk=model.prefill_plan(state, {static_cast<std::int64_t>(request.prompt.size()), prefill_chunk_size,
+        reused_tokens, 0, prepared && (prepared->transformed() || bool(prepared->image_mask)),
+        weights.prefill_mode(request.prompt.size()-reused_tokens, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained,
+        weights.decode() == ::tyloi::weights::Cache::Decode::routed,
+        weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
+        weights.split_prefill(request.prompt.size()-reused_tokens)}).span;
   }
 #else
   if constexpr(requires { prefill_span(model,state,request.prompt.size(),prefill_chunk_size,reused_tokens,0,false,false); }) {

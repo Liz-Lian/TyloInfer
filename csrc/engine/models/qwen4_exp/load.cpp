@@ -340,6 +340,7 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
         std::max<std::int64_t>(model.num_hidden_layers()-options.gpu_layers, 0));
     model.primary_device=placement.primary_device();
     model.needs_host_tokens=options.host_tokens || cpu_layers>0;
+    model.parallel=weights.placement.tensor.enabled() || options.expert_parallel;
     if (cpu_layers > 0) {
         if (weights.placement.tensor.enabled() || options.expert_parallel || placement.enabled())
             throw std::runtime_error("--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");

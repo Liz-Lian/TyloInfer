@@ -650,9 +650,22 @@ template <class Model, class State, class Predictor> struct RequestOps {
             return std::min<int64_t>(4,limit);
         if(tokens<=128)return std::min<int64_t>(std::max<std::size_t>(1,tokens),limit);
 #ifdef TYLOINFER_NATIVE_CUDA
+        bool borrow = false;
+        if constexpr (std::derived_from<Model, tyloi::models::CausalModel> &&
+                      std::derived_from<State, tyloi::models::State>) {
+            const auto mode = weights.prefill_mode(tokens, state.position() > 0);
+            borrow = model.prefill_plan(state, {static_cast<std::int64_t>(tokens), limit, 0, 0,
+                prepared && (prepared->transformed() || bool(prepared->image_mask)),
+                mode == ::tyloi::weights::Cache::Prefill::retained,
+                weights.decode() == ::tyloi::weights::Cache::Decode::routed,
+                weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
+                weights.split_prefill(tokens)}).workspace;
+        } else {
+            borrow = generation_borrow(model, state, tokens, prepared ? &*prepared : nullptr);
+        }
         return budget.chunk(tyloi::Device(tyloi::kCUDA, mfq_current_cuda_device()),
             tokens, limit, info.prefill_row_bytes, state.position() > 0,
-            config.prefill_chunk_auto, generation_borrow(model, state, tokens, prepared ? &*prepared : nullptr));
+            config.prefill_chunk_auto, borrow);
 #else
         return std::min<int64_t>(tokens,limit);
 #endif
@@ -723,9 +736,12 @@ template <class Model, class State, class Predictor> struct RequestOps {
 #ifdef TYLOINFER_NATIVE_CUDA
         if constexpr (std::derived_from<Model, tyloi::models::CausalModel> &&
                       std::derived_from<State, tyloi::models::State>) {
-            logical_chunk=model.prefill_span(state, {static_cast<std::int64_t>(input.prompt.size()), compute_chunk, reused, stable,
-                prepared && prepared->transformed(),
-                weights.prefill_mode(input.prompt.size()-reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained});
+            logical_chunk=model.prefill_plan(state, {static_cast<std::int64_t>(input.prompt.size()), compute_chunk, reused, stable,
+                prepared && (prepared->transformed() || bool(prepared->image_mask)),
+                weights.prefill_mode(input.prompt.size()-reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained,
+                weights.decode() == ::tyloi::weights::Cache::Decode::routed,
+                weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
+                weights.split_prefill(input.prompt.size()-reused)}).span;
         }
 #else
         if constexpr(requires { prefill_span(model,state,input.prompt.size(),compute_chunk,reused,stable,false,false); }) {

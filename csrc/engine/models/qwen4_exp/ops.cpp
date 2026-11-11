@@ -2265,6 +2265,21 @@ void qwen4_exp::State::finish_forward(const ::tyloi::DenseTensor &full_positions
 
 // Keep each compressed expert image resident while advancing all prompt chunks
 // through that layer. Attention and PLE still advance in causal token order.
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace {
+bool layer_prefill(const qwen4_exp::Model& model, const qwen4_exp::State& state,
+                   const tyloi::models::PrefillOptions& options, int64_t tokens) {
+    const auto enabled=::tyloi::cuda::options::moe_prefill_layer_major();
+    const auto whole=::tyloi::cuda::options::moe_prefill_layer();
+    if((enabled && *enabled==0) || (whole && *whole==0) || (!options.routed && !whole) ||
+       tokens<=128 || tokens>16384 || state.speculative_start>=0 ||
+       (!options.routed && !model.needs_host_tokens) || !options.coordinated || model.parallel) return false;
+    for(const auto& block:model.layers)
+        if(block->cpu_offloaded || block->cuda_device!=model.primary_device)return false;
+    return true;
+}
+}
+#else
 bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model& model, const qwen4_exp::State& state, int64_t tokens) {
     const auto enabled=::tyloi::cuda::options::moe_prefill_layer_major();
     const auto whole=::tyloi::cuda::options::moe_prefill_layer();
@@ -2282,24 +2297,22 @@ bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model& model, const qwe
         if(block->cpu_offloaded || block->cuda_device!=primary)return false;
     return true;
 }
+#endif
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::int64_t qwen4_exp::Model::prefill_span(const tyloi::models::State& value,
+tyloi::models::PrefillPlan qwen4_exp::Model::prefill_plan(const tyloi::models::State& value,
                                             const tyloi::models::PrefillOptions& options) const {
     const auto* request = dynamic_cast<const qwen4_exp::State*>(&value);
     tyloi::models::require_model(request && request->belongs_to(*this), "Qwen4 state belongs to a different model");
-    const auto& model = *this;
-    const auto& state = *request;
-    const auto tokens = static_cast<std::size_t>(options.tokens);
-    const auto chunk = options.compute;
-    const auto reused = options.reused;
-    const auto stable = options.stable;
-    const auto transformed = options.transformed;
+    auto span=std::min<int64_t>(options.compute,8192);
+    if(options.compute>8 && options.reused==0 && (options.stable==0 || options.stable==static_cast<std::size_t>(options.tokens)) &&
+       !options.transformed && layer_prefill(*this,*request,options,options.tokens)) span=options.tokens;
+    return {span,!options.transformed && layer_prefill(*this,*request,options,std::min<int64_t>(options.tokens,8192))};
+}
 #else
 std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State& state, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,
                           std::size_t stable, bool transformed, bool) {
-#endif
     // Bound residual/FFN storage as well as projection tiles. Long
     // prompts advance each bounded chunk through all layers.
     auto logical_chunk=std::min<int64_t>(chunk,8192);
@@ -2308,6 +2321,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
         logical_chunk=tokens;
     return logical_chunk;
 }
+#endif
 
 #ifndef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor qwen4_layer_major_prefill_hidden(
@@ -2325,7 +2339,7 @@ std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State&
 #else
 tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         tyloi::models::Input input, tyloi::models::State& state_value,
-        const tyloi::models::ForwardOptions& options, std::int64_t compute_chunk) const {
+        const tyloi::models::ForwardOptions& options, tyloi::models::PrefillOptions prefill) const {
     auto* target = dynamic_cast<qwen4_exp::State*>(&state_value);
     tyloi::models::require_model(target && target->belongs_to(*this),
         "Qwen4 state belongs to a different model");
@@ -2335,7 +2349,7 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         input.confirmed || input.suffix || !input.ids || input.ids.dim()!=2 || input.ids.size(0)!=1) co_return;
     const auto count=input.ids.size(1);
     if (state.reuse_decode_graphs && state.graph_registry && count>0 && count<=128 &&
-        (input.raw_hidden || execution->weights.split_prefill(count))) {
+        (input.raw_hidden || prefill.split)) {
         std::vector<tyloi::Tensor> hidden_rows, raw_rows;
         tyloi::Tensor last;
         for(std::int64_t offset=0;offset<count;) {
@@ -2366,7 +2380,8 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete,0,0,std::move(last),std::move(raw)};
         co_return;
     }
-    if (!qwen4_layer_major_prefill_eligible(model,state,count)) co_return;
+    if (!layer_prefill(model,state,prefill,count)) co_return;
+    auto compute_chunk=prefill.compute;
     auto ids_handle = std::move(input.ids);
     auto* raw_hidden = input.raw_hidden;
     const bool raw_hidden_host = input.host_raw;
@@ -2375,7 +2390,11 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
     using DenseTensor=::tyloi::DenseTensor;
     auto ids = ids_handle.dense();
     TYLOINFER_RUNTIME_CHECK(ids.dim()==2 && ids.size(0)==1 &&
+#ifdef TYLOINFER_NATIVE_CUDA
+        layer_prefill(model,state,prefill,ids.size(1)),
+#else
         qwen4_layer_major_prefill_eligible(model,state,ids.size(1)),
+#endif
         "layer-major prefill requires a bounded single-device Qwen4 chunk and whole-layer cache");
     TYLOINFER_RUNTIME_CHECK(compute_chunk>8,"layer-major compute chunk must exceed decode width");
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -2829,7 +2848,7 @@ namespace qwen4_exp {
 
 tyloi::models::Info Model::info() const {
     auto result=tyloi::models::Info{metadata.vocab_size, config.maximum, "qwen4_exp",
-            std::size_t(metadata.hidden_size) * sizeof(float) * 8, true, true};
+            std::size_t(metadata.hidden_size) * metadata.hc_mult * sizeof(float) * 8, true, true};
 #ifdef TYLOINFER_NATIVE_CUDA
     result.graph=tyloi::models::GraphOwner::model;
     result.row_prefetch=true;

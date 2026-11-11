@@ -220,10 +220,25 @@ struct Native {
     void invalidate_plan() { graph.invalidate(); }
     std::size_t prefix_boundary = 0;
     void set_prefix_boundary(std::size_t tokens) { prefix_boundary = tokens; }
+    std::int64_t prefill_chunk(const InferenceRequest& input, std::size_t reused, std::size_t stable) {
+        const auto remaining = input.prompt.size() - reused;
+        const bool resumed = state.position() > 0;
+        const auto mode = weights.prefill_mode(remaining, resumed);
+        const bool transformed = prepared && (prepared->transformed() || bool(prepared->image_mask));
+        const auto limit = config.generation.prefill_chunk_size;
+        budget.prepare_prefill(executor.device(), remaining, limit, mode);
+        models::PrefillOptions policy{static_cast<std::int64_t>(input.prompt.size()), limit, reused, stable,
+            transformed, weights.prefill_mode(remaining, resumed) == ::tyloi::weights::Cache::Prefill::retained,
+            weights.decode() == ::tyloi::weights::Cache::Decode::routed,
+            weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
+            weights.split_prefill(remaining)};
+        const auto plan = model.prefill_plan(state, policy);
+        return budget.chunk(executor.device(), remaining, limit, info.prefill_row_bytes,
+            resumed, config.prefill_chunk_auto, plan.workspace);
+    }
     Generation speculate(InferenceRequest& input, InferenceOutput& output, std::size_t reused,
         const Tensor& restored, Hidden* committed) {
-        const auto chunk = budget.prefill(input.prompt.size() - reused, config.generation.prefill_chunk_size,
-            info.prefill_row_bytes, state.position() > 0, config.prefill_chunk_auto);
+        const auto chunk = prefill_chunk(input, reused, prefix_boundary);
         return tyloi::engine::mtp::generate(model, state, executor, budget, weights, mtp_state,
             forward_options, input, output, chunk, prepared ? &*prepared : nullptr,
             reused, restored, committed, prefix_boundary, source, config.profile_mtp, config.prefetch);
@@ -262,8 +277,7 @@ struct Native {
     }
     Generation plain(InferenceRequest& input, InferenceOutput& output, std::size_t reused, std::size_t stable) {
         const auto& prompt = input.prompt;
-        const auto chunk_size = budget.prefill(prompt.size() - reused, config.generation.prefill_chunk_size,
-            info.prefill_row_bytes, state.position() > 0, config.prefill_chunk_auto);
+        const auto chunk_size = prefill_chunk(input, reused, stable);
         auto full_ids = ops::reshape(ops::tensor(std::span<const int64_t>(prompt),
             executor.device()), {1, -1});
         graph.ensure_storage(info.vocab_size);
@@ -273,9 +287,13 @@ struct Native {
         Plain plain{model, state, executor, budget, graph, weights, info, config,
                     forward_options, source, input, output, prepared, chunk_size,
                     std::move(full_ids), std::move(sampler), penalties};
-        const auto logical = model.prefill_span(state, {static_cast<std::int64_t>(prompt.size()), chunk_size, reused, stable,
-            prepared && prepared->transformed(),
-            weights.prefill_mode(prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained});
+        const auto remaining = prompt.size() - reused;
+        const auto logical = model.prefill_plan(state, {static_cast<std::int64_t>(prompt.size()), chunk_size, reused, stable,
+            prepared && (prepared->transformed() || bool(prepared->image_mask)),
+            weights.prefill_mode(remaining, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained,
+            weights.decode() == ::tyloi::weights::Cache::Decode::routed,
+            weights.transfer() == ::tyloi::weights::Cache::Transfer::coordinated,
+            weights.split_prefill(remaining)}).span;
         auto sequence = generate_sequence(std::ref(plain), output, prompt.size(), reused, stable, logical);
         while (auto step = sequence.next()) co_yield std::move(step);
     }

@@ -116,8 +116,8 @@ void qwen4_release_decode_graphs(const qwen4_exp::Model&,qwen4_exp::State&);
 void qwen4_warmup_decode_graphs(const qwen4_exp::Model&,qwen4_exp::State&);
 #endif
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
-bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp::State&, int64_t tokens);
 #ifndef TYLOINFER_NATIVE_CUDA
+bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp::State&, int64_t tokens);
 std::int64_t prefill_span(const qwen4_exp::Model&, const qwen4_exp::State&, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,
                           std::size_t stable, bool transformed, bool);
@@ -146,8 +146,8 @@ struct Model : tyloi::models::CausalModel {
     /** Report this model's dimensions and execution policy. */
     tyloi::models::Info info() const override;
 #ifdef TYLOINFER_NATIVE_CUDA
-    /** Select the bounded or layer-major logical prefill span for this request. */
-    std::int64_t prefill_span(const tyloi::models::State&, const tyloi::models::PrefillOptions&) const override;
+    /** Select the logical span and workspace policy for this request. */
+    tyloi::models::PrefillPlan prefill_plan(const tyloi::models::State&, const tyloi::models::PrefillOptions&) const override;
 #endif
     /** Report capabilities of the components actually loaded. */
     MfqModelCapabilities capabilities() const override;
@@ -182,7 +182,7 @@ struct Model : tyloi::models::CausalModel {
     /** Run eligible layer-major prefill in resumable model-owned steps. */
     tyloi::StepSequence<tyloi::models::Prefill> prefill(tyloi::models::Input input,
         tyloi::models::State& state, const tyloi::models::ForwardOptions& options,
-        std::int64_t compute_chunk) const override;
+        tyloi::models::PrefillOptions prefill) const override;
 #endif
 
     // ---- speculative contract used by the MTP sequence
@@ -215,6 +215,8 @@ struct Model : tyloi::models::CausalModel {
     int primary_device = 0;
     /** Retain host token IDs for configured prefetch and CPU layer placement. */
     bool needs_host_tokens = false;
+    /** Tensor or expert parallel placement prevents layer-major prefill. */
+    bool parallel = false;
     /** Loaded optional weights remain owned by the shared model. */
     std::unique_ptr<Components> components;
 #endif
