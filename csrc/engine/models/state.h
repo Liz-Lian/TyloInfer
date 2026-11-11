@@ -54,8 +54,19 @@ public:
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;
+    /** Commit a completed speculative verification pass. */
+    virtual void commit_speculative() { throw std::logic_error("speculative state is unsupported by this model"); }
+    /** Roll back a speculative pass while retaining the accepted suffix. */
+    virtual void rollback_speculative(std::int64_t) {
+        throw std::logic_error("speculative rollback is unsupported by this model");
+    }
+    /** Begin journaling an uncommitted speculative suffix. */
+    virtual void begin_speculative_suffix(std::int64_t) {
+        throw std::logic_error("speculative suffix is unsupported by this model");
+    }
+    /** Plan per-device allocation reservations for an ordinary or confirmed verification step. */
     virtual std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t, const ForwardOptions&) const {
+        std::int64_t, const ForwardOptions&, std::int64_t confirmed = 0) const {
         throw std::logic_error("state allocation planning is not implemented");
     }
     /** Return actual device bytes that reset will newly allocate for the batch. */

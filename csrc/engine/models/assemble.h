@@ -63,11 +63,14 @@ inline constexpr auto with_model = []<typename F>(
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             Executor::prepare(model.metadata.vocab_size);
-        if (auto* predictor = component_predictor(components)) {
-            if constexpr (requires { state->predictor; })
-                state->predictor = predictor->make_state();
-            else
+        if (auto* predictor = component_predictor(model, components)) {
+            if constexpr (requires { state->predictor; }) {
+                if (!state->predictor) state->predictor = predictor->make_state();
+                else if (!state->predictor->belongs_to(*predictor))
+                    throw std::logic_error("predictor state belongs to another model");
+            } else {
                 throw std::logic_error("model state has no predictor state");
+            }
         }
         tyloi::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
@@ -201,10 +204,17 @@ inline constexpr auto with_model = []<typename F>(
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
             execution.config.dense_cpu_layer_count = 0;
             glm5_next::load(*owner, weights, execution.config.layer_placement, execution.config.n_gpu_layers);
+#ifdef TYLOINFER_NATIVE_CUDA
+            owner->predictor = glm5_next::load_components(*owner, weights, load_optional_components);
+            std::monostate components;
+            auto state = std::unique_ptr<glm5_next::State>(
+                static_cast<glm5_next::State*>(owner->make_state().release()));
+#else
             auto state = std::make_unique<glm5_next::State>(*owner);
+            auto components = glm5_next::load_components(*owner, weights, load_optional_components);
+#endif
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            auto components = glm5_next::load_components(*owner, weights, load_optional_components);
             return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::qwen4_exp: {

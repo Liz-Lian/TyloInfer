@@ -84,10 +84,11 @@ constexpr bool has_forward =
 };
 
 template <typename Model, typename State>
-constexpr bool has_replay = requires(
-    Model& model, State& state, tyloi::cuda::Executor& executor) {
-  replay(model, state, executor, std::int64_t{});
-};
+constexpr bool has_replay =
+  tyloi::cuda::SpeculativeState<State> ||
+  requires(Model& model, State& state, tyloi::cuda::Executor& executor) {
+    replay(model, state, executor, std::int64_t{});
+  };
 
 template <typename Model, typename State>
 Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
@@ -114,9 +115,13 @@ template <typename Model, typename State>
 void replay_target(Model& model, State& state, tyloi::cuda::Executor* executor,
                    std::int64_t accepted) {
   static_assert(has_replay<Model, State>);
-  TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                          "CUDA model replay requires an executor");
-  replay(model, state, *executor, accepted);
+  if constexpr (tyloi::cuda::SpeculativeState<State>) {
+    state.rollback_speculative(accepted);
+  } else {
+    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                            "CUDA model replay requires an executor");
+    replay(model, state, *executor, accepted);
+  }
 }
 
 template <class Model, class State> struct CudaMtpOps {

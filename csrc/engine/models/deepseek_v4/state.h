@@ -43,7 +43,8 @@ public:
     std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t batch) const override;
     /** Report incremental allocation required by a forward step. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options) const override;
+        std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t confirmed = 0) const override;
     /** Return owning handles for the current state storage. */
     std::vector<::tyloi::Tensor> storage() const override;
     /** Return recurrent tensors that require graph warmup restoration. */

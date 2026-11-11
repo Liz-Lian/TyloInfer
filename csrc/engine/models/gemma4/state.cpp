@@ -45,7 +45,8 @@ void State::reset(std::int64_t next_batch) {
 }
 
 std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
-    std::int64_t tokens, const tyloi::models::ForwardOptions& options) const {
+    std::int64_t tokens, const tyloi::models::ForwardOptions& options, std::int64_t confirmed) const {
+    if (confirmed) throw std::invalid_argument("Gemma4 does not support speculative verification");
     if (batch <= 0 || tokens <= 0 || cache_pos < 0)
         throw std::invalid_argument("Gemma4 KV planning requires positive batch and tokens and a nonnegative position");
     if (cache_pos > std::numeric_limits<std::int64_t>::max() - tokens)

@@ -3,6 +3,10 @@
 #include "engine/models/glm5_next/weights.h"
 #include "engine/models/glm5_next/state.h"
 #include "engine/models/metadata.h"
+#include "engine/models/common/mtp.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/causal_model.h"
+#endif
 #include "engine/models/common/capabilities.h"
 #include "engine/models/source.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
@@ -62,7 +66,7 @@ class Kda {
                               (state.conv.size(0) == b && state.conv.device() == hidden.device()),
                           "reset GLM KDA before changing batch/device");
         auto previous = use_cache && state.conv.defined()
-                            ? state.conv
+                            ? state.conv.dense()
                             : ::tyloi::cuda::zeros({b, kernel_ - 1, 3 * channels}, options);
         return tyloi::models::gated_delta_attention(
             use_cache,
@@ -121,7 +125,7 @@ class Kda {
                 auto q = convolution[0], k = convolution[1], v = convolution[2];
                 auto forget = gates[0], beta = gates[1];
                 DenseTensor attended, next_recurrent;
-                auto initial = use_cache && state.recurrent.defined() ? state.recurrent : DenseTensor{};
+                auto initial = use_cache && state.recurrent.defined() ? state.recurrent.dense() : DenseTensor{};
                 if (width_ == 32 || width_ == 64 || width_ == 128) {
                     auto result =
                         gdn_cuda(q, k, v, forget, beta,
@@ -354,7 +358,39 @@ struct Layer {
     int device = 0;
 };
 
-struct Model {
+/** Shared GLM5-Next weights and optional predictor. */
+struct Model
+#ifdef TYLOINFER_NATIVE_CUDA
+    : public tyloi::models::CausalModel
+#endif
+{
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Return model dimensions and execution capabilities. */
+    tyloi::models::Info info() const override;
+    /** Return assembled model capabilities. */
+    MfqModelCapabilities capabilities() const override;
+    /** Return model and optional component metrics. */
+    tyloi::engine::Metrics metrics() const override;
+    /** Create request state and predictor state for this model. */
+    std::unique_ptr<tyloi::models::State> make_state() const override;
+    /** Reject unsupported media preparation. */
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>&,
+        const MfqMultimodalInput&, tyloi::models::State&) const override;
+    /** Return the assembled predictor, if any. */
+    tyloi::models::Mtp* mtp() const noexcept override { return predictor.get(); }
+    /** Embed token IDs on the primary device. */
+    ::tyloi::Tensor embedding(const ::tyloi::Tensor& ids, int primary = 0) const override;
+    /** Normalize output hidden states. */
+    ::tyloi::Tensor normalize(const ::tyloi::Tensor& hidden, std::int64_t batch, std::int64_t tokens) const override;
+    /** Return logits unchanged because this model has no soft cap. */
+    ::tyloi::Tensor softcap(const ::tyloi::Tensor& logits) const override;
+    /** Project hidden states to logits. */
+    ::tyloi::Tensor logits(const ::tyloi::Tensor& hidden, bool capped = true) const override;
+    /** Run a model step using state created by this model. */
+    ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
+        const tyloi::models::ForwardOptions& options = {}) const override;
+    std::unique_ptr<tyloi::models::Mtp> predictor;
+#endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;

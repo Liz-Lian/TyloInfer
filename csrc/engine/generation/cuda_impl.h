@@ -682,9 +682,9 @@ template <class Model, class State, class Predictor> struct RequestOps {
     }
     Generation speculate(tyloi::engine::InferenceRequest &input, tyloi::engine::InferenceOutput &output,
         size_t reused, const ::tyloi::Tensor& restored, Hidden *committed) {
-        if constexpr (has_forward<Model, State> && !requires {
-            replay(model, state, *executor, int64_t{});
-        }) {
+        if constexpr (has_forward<Model, State> &&
+                      !tyloi::cuda::SpeculativeState<State> &&
+                      !requires { replay(model, state, *executor, int64_t{}); }) {
             throw std::invalid_argument("this CUDA model has no speculative predictor");
         } else {
             prepare_prefill_workspace(input.prompt.size()-reused);

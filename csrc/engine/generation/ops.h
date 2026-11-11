@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/common/prompt.h"
+#include "engine/models/state.h"
 #include "engine/requests/policy.h"
 #include "engine/requests/request.h"
 #include "engine/weights/workspace.h"
@@ -9,6 +10,7 @@
 #include "engine/models/input.h"
 #endif
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -17,6 +19,12 @@
 struct DecodeGraphCache;
 
 namespace tyloi::cuda {
+
+/** Identify public states that declare their own speculative rollback. */
+template <class State>
+concept SpeculativeState = std::derived_from<State, tyloi::models::State> && requires {
+    requires std::same_as<decltype(&State::rollback_speculative), void (State::*)(std::int64_t)>;
+};
 
 #ifdef TYLOINFER_NATIVE_CUDA
 inline tyloi::models::ForwardOptions forward_options(const Executor::Mode& mode) {

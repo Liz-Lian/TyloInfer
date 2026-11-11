@@ -1253,15 +1253,19 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
     // Shared checkpoint views and recurrent state aliases count once. These
     // are existing cache tensors; collecting telemetry never copies GPU data.
     std::map<std::pair<int,std::uintptr_t>,std::size_t> allocations;
-    const auto add=[&](const ::tyloi::DenseTensor& tensor) {
-        if(!tensor.defined() || !tensor.is_cuda())return;
-        auto& bytes=allocations[{tensor.get_device(),reinterpret_cast<std::uintptr_t>(tensor.data_ptr())}];
-        bytes=std::max(bytes,std::size_t(tensor.numel())*tensor.element_size());
+    const auto add=[&](const ::tyloi::Tensor& tensor) {
+        for (const auto& storage : tensor.backings()) {
+            if (!storage->device.is_cuda()) continue;
+            const void* identity = storage->owner ? storage->owner.get() : storage->base;
+            if (!identity) continue;
+            auto& bytes=allocations[{storage->device.index,reinterpret_cast<std::uintptr_t>(identity)}];
+            bytes=std::max(bytes,storage->bytes);
+        }
     };
     const auto block_cache=[&](const qwen4_exp::Layer& block,const qwen4_exp::LayerState& layer) {
         if(block.qsa)for(const auto& tensor:block.qsa->resident_cache_tensors(*layer.qsa))add(tensor);
-        if(block.gdn) { add(layer.gdn.conv.dense()); add(layer.gdn.recurrent.dense()); }
-        if(block.ple && layer.ple.conv.defined())add(layer.ple.conv.dense());
+        if(block.gdn) { add(layer.gdn.conv); add(layer.gdn.recurrent); }
+        if(block.ple && layer.ple.conv.defined())add(layer.ple.conv);
     };
     for(std::size_t i=0;i<model.layers.size();++i)block_cache(*model.layers[i],*state.layers[i]);
     add(state.positions);
@@ -1391,10 +1395,14 @@ std::size_t Qwen4BatchRequestState::prefill_growth_bytes(int64_t tokens) const {
 }
 std::size_t Qwen4BatchRequestState::resident_bytes() const {
     std::map<std::pair<int,std::uintptr_t>,std::size_t> allocations;
-    const auto add = [&](const ::tyloi::DenseTensor& tensor) {
-        if (!tensor.defined() || !tensor.is_cuda()) return;
-        auto& bytes = allocations[{tensor.get_device(),reinterpret_cast<std::uintptr_t>(tensor.data_ptr())}];
-        bytes = std::max(bytes, std::size_t(tensor.numel()) * tensor.element_size());
+    const auto add = [&](const ::tyloi::Tensor& tensor) {
+        for (const auto& storage : tensor.backings()) {
+            if (!storage->device.is_cuda()) continue;
+            const void* identity = storage->owner ? storage->owner.get() : storage->base;
+            if (!identity) continue;
+            auto& bytes = allocations[{storage->device.index,reinterpret_cast<std::uintptr_t>(identity)}];
+            bytes = std::max(bytes, storage->bytes);
+        }
     };
     add(state_->positions);
     add(state_->position_storage);
@@ -1402,8 +1410,8 @@ std::size_t Qwen4BatchRequestState::resident_bytes() const {
         const auto& weights = *state_->model.layers[i];
         const auto& state = *state_->layers[i];
         if (weights.qsa) for (const auto& tensor : weights.qsa->resident_cache_tensors(*state.qsa)) add(tensor);
-        if (weights.gdn) { add(state.gdn.conv.dense()); add(state.gdn.recurrent.dense()); }
-        if (weights.ple && state.ple.conv.defined()) add(state.ple.conv.dense());
+        if (weights.gdn) { add(state.gdn.conv); add(state.gdn.recurrent); }
+        if (weights.ple && state.ple.conv.defined()) add(state.ple.conv);
     }
     std::size_t bytes = 0;
     for (const auto& [address,size] : allocations) bytes += size;

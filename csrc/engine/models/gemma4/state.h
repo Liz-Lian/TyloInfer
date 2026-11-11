@@ -34,7 +34,8 @@ public:
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
     /** Estimate per-device bytes needed for missing KV caches. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options) const override;
+        std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t confirmed = 0) const override;
     /** Return owning handles to the cache backing used by Graph capture. */
     std::vector<::tyloi::Tensor> storage() const override;
     /** Borrow writable warmup views until the next call, move assignment, or state destruction. */

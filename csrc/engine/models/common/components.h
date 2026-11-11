@@ -13,9 +13,13 @@
 
 namespace tyloi::cuda {
 
-template <class Parts>
-tyloi::models::Mtp* component_predictor(const Parts& parts) {
-    if constexpr (requires { static_cast<tyloi::models::Mtp*>(parts.get()); })
+/** Borrow predictor weights from the public model or its remaining assembly owner. */
+template <class Model, class Parts>
+tyloi::models::Mtp* component_predictor(const Model& model, const Parts& parts) {
+    if constexpr (std::is_same_v<Parts, std::monostate> &&
+                  std::is_base_of_v<tyloi::models::CausalModel, Model>)
+        return model.mtp();
+    else if constexpr (requires { static_cast<tyloi::models::Mtp*>(parts.get()); })
         return parts.get();
     else if constexpr (requires { static_cast<tyloi::models::Mtp*>(parts.mtp.get()); })
         return parts.mtp.get();
@@ -47,7 +51,7 @@ void describe_model(const Model& model, const Parts& parts, tyloi::engine::Engin
     } else {
         const bool vision = component_vision(model, parts);
         const bool duplex = std::is_same_v<Parts, std::unique_ptr<minicpmo45::Components>> && vision;
-        const auto state = cuda_component_state(model.graph, model.plan, vision, component_predictor(parts));
+        const auto state = cuda_component_state(model.graph, model.plan, vision, component_predictor(model, parts));
         const auto caps = cuda_runtime_capabilities(model.graph, model.plan, state, vision || duplex, duplex);
         info.multimodal = vision || duplex;
         info.duplex = caps.full_duplex;
@@ -72,7 +76,7 @@ tyloi::engine::Metrics component_metrics(const Model& model, const Parts& parts)
             metrics = {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
                        {"kv_quantization_bits", 0.0}};
         const auto state = cuda_component_state(model.graph, model.plan,
-            component_vision(model, parts), component_predictor(parts));
+            component_vision(model, parts), component_predictor(model, parts));
         const auto set = [&](const char* name, double value) {
             for (auto& metric : metrics) if (metric.first == name) { metric.second = value; return; }
             metrics.emplace_back(name, value);

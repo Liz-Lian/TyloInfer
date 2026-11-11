@@ -10,6 +10,8 @@
 #include "engine/weights/loader.h"
 #include "engine/models/session/paged.h"
 #include "engine/ops.h"
+#include <limits>
+#include <stdexcept>
 
 namespace tyloi::cuda::glm5_next {
 using Config = tyloi::models::glm5_next::Config;
@@ -179,13 +181,73 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
     }
 }
 
-State::State(const Model& model) {
+State::State(const Model& model) : model_(&model) {
     layers.reserve(model.layers.size());
+    layout_.reserve(model.layers.size());
     for (const auto& layer : model.layers) {
+        layout_.push_back({layer.device, layer.config.kda_heads, layer.config.kda_width, layer.config.kda_kernel});
         if (layer.kda) layers.emplace_back(std::in_place_type<KdaState>);
         else layers.emplace_back(std::in_place_type<MlaState>, model.config.maximum,
                                  model.config.latent, model.config.index_width);
     }
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
+        std::int64_t tokens, const tyloi::models::ForwardOptions&, std::int64_t confirmed) const {
+    if (batch <= 0 || tokens <= 0 || confirmed < 0 || confirmed >= tokens || cache_pos < 0)
+        throw std::invalid_argument("GLM5 cache planning requires a positive batch and valid token window");
+    if (cache_pos > std::numeric_limits<std::int64_t>::max() - tokens)
+        throw std::overflow_error("GLM5 cache planning position overflow");
+    const auto multiply = [](std::size_t a, std::size_t b) {
+        if (b && a > std::numeric_limits<std::size_t>::max() / b)
+            throw std::overflow_error("GLM5 cache planning byte count overflow");
+        return a * b;
+    };
+    const auto sum = [](std::size_t a, std::size_t b) {
+        if (a > std::numeric_limits<std::size_t>::max() - b)
+            throw std::overflow_error("GLM5 cache planning byte count overflow");
+        return a + b;
+    };
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const auto& layout = layout_[i];
+        std::size_t bytes = 0;
+        if (const auto* kda = std::get_if<KdaState>(&layers[i])) {
+            const auto channels = multiply(multiply(std::size_t(layout.heads), std::size_t(layout.width)), 3);
+            const auto row = multiply(multiply(std::size_t(batch), channels), sizeof(float));
+            const auto taps = std::size_t(layout.kernel - 1);
+            const auto recurrent = multiply(multiply(multiply(std::size_t(batch), std::size_t(layout.heads)),
+                                                       std::size_t(layout.width)), multiply(std::size_t(layout.width), sizeof(float)));
+            const auto chunks = confirmed > 0 ? std::size_t(2) : std::size_t(1);
+            bytes = sum(multiply(row, sum(std::size_t(tokens), multiply(taps, chunks))), multiply(recurrent, chunks));
+            if (batch > 1) bytes = sum(bytes, multiply(multiply(row, taps), chunks));
+            if (!kda->conv.defined()) bytes = sum(bytes, multiply(row, taps));
+        } else {
+            const auto& mla = std::get<MlaState>(layers[i]);
+            bytes = sum(mla.latent.growth(batch, tokens), mla.index.growth(batch, tokens));
+        }
+        if (!bytes) continue;
+        const tyloi::Device device(tyloi::DeviceType::cuda, layout.device);
+        auto entry = std::find_if(result.begin(), result.end(),
+            [device](const auto& item) { return item.first == device; });
+        if (entry == result.end()) result.emplace_back(device, bytes);
+        else entry->second = sum(entry->second, bytes);
+    }
+    return result;
+}
+
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
+    const auto add = [&](const ::tyloi::Tensor& value) { if (value.defined()) result.push_back(value); };
+    for (const auto& layer : layers) {
+        if (const auto* kda = std::get_if<KdaState>(&layer)) {
+            add(kda->conv); add(kda->recurrent); add(kda->rollback_conv); add(kda->rollback_recurrent);
+        } else {
+            const auto& mla = std::get<MlaState>(layer);
+            add(mla.latent.storage()); add(mla.index.storage());
+        }
+    }
+    return result;
 }
 
 void State::reset(int64_t next_batch) {
@@ -221,12 +283,41 @@ static DenseTensor normalize_ids(Collectives& copies, int primary, DenseTensor i
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
-             const ::tyloi::Tensor& input_ids, const Executor::Mode& mode) {
+tyloi::models::Info Model::info() const { return tyloi::models::model_info(metadata); }
+
+MfqModelCapabilities Model::capabilities() const {
+    const auto state = cuda_component_state(graph, plan, false, bool(predictor));
+    const auto caps = cuda_runtime_capabilities(graph, plan, state, false, false);
+    return {graph.architecture, caps.text, caps.image_input, caps.video_input,
+        caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
+}
+
+tyloi::engine::Metrics Model::metrics() const {
+    const auto state = cuda_component_state(graph, plan, false, bool(predictor));
+    return {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
+        {"kv_quantization_bits", 0.0}, {"vision_declared", double(state.vision_declared)},
+        {"vision_supported", double(state.vision_supported)}, {"vision_available", double(state.vision_available)},
+        {"mtp_declared", double(state.mtp_declared)}, {"mtp_supported", double(state.mtp_supported)},
+        {"mtp_available", double(state.mtp_available)}};
+}
+
+std::unique_ptr<tyloi::models::State> Model::make_state() const {
+    auto state = std::make_unique<State>(*this);
+    if (predictor) state->predictor = predictor->make_state();
+    return state;
+}
+
+tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
+    const std::vector<std::int64_t>&, const MfqMultimodalInput&, tyloi::models::State&) const {
+    throw std::invalid_argument("model has no multimodal component");
+}
+
+::tyloi::Tensor Model::embedding(const ::tyloi::Tensor& input_ids, int primary) const {
+    auto& copies = Executor::current().collectives();
     auto ids = input_ids.dense();
     auto normalized = normalize_ids(copies, primary, std::move(ids));
     return ::tyloi::ops::measure("model.embed", normalized.device(), [&] {
-        return ::tyloi::ops::embedding(normalized, model.embed);
+        return ::tyloi::ops::embedding(normalized, embed);
     });
 #else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
@@ -239,7 +330,8 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, i
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor normalize(const Model& model, Executor&, const ::tyloi::Tensor& input_hidden, int64_t, int64_t) {
+::tyloi::Tensor Model::normalize(const ::tyloi::Tensor& input_hidden, int64_t, int64_t) const {
+    const auto& model = *this;
     auto hidden = input_hidden.dense();
 #else
 DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t, int64_t) {
@@ -252,15 +344,14 @@ DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor softcap(const Model&, Executor&, const ::tyloi::Tensor& value) { return value; }
+::tyloi::Tensor Model::softcap(const ::tyloi::Tensor& value) const { return value; }
 #else
 DenseTensor softcap(const Model&, Executor&, DenseTensor value) { return value; }
 #endif
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden, bool,
-              const Executor::Mode& mode) {
-    return ::tyloi::ops::project(input_hidden, model.lm_head);
+::tyloi::Tensor Model::logits(const ::tyloi::Tensor& input_hidden, bool) const {
+    return ::tyloi::ops::project(input_hidden, lm_head);
 #else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool,
               const Executor::Mode& mode) {
@@ -271,8 +362,18 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 bool supports_speculation(const Model& model) noexcept { return !model.layers.empty(); }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
-               const Executor::Mode& mode, tyloi::models::Input input) {
+::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+               const tyloi::models::ForwardOptions& options) const {
+    auto& state = dynamic_cast<State&>(state_value);
+    tyloi::models::require_model(state.belongs_to(*this), "GLM5 state belongs to a different model");
+    const auto& model = *this;
+    auto& executor = Executor::current();
+    auto& copies = executor.collectives();
+    auto mode = executor.forward_mode(options.primary);
+    mode.ffn = Executor::current_ffn();
+    mode.kv_capacity = options.kv_capacity;
+    mode.trace = options.trace;
+    mode.trace_layer = options.trace_layer;
 #else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, tyloi::models::Input input) {
@@ -281,7 +382,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     auto ids = normalize_ids(copies, mode.primary, std::move(input.ids).dense());
     auto embeddings = input.embeddings.defined() ? std::move(input.embeddings).dense()
 #ifdef TYLOINFER_NATIVE_CUDA
-        : embed(model, executor, copies, mode.primary, ids, mode).dense();
+        : embedding(ids, mode.primary).dense();
 #else
         : embed(model, executor, copies, mode.primary, ids, mode);
 #endif
@@ -319,24 +420,27 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     }
     state.cache_pos += T;
     hidden = copies.copy(std::move(hidden), mode.primary);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto finalized = normalize(hidden, B, T);
+#else
     auto finalized = normalize(model, executor, std::move(hidden), B, T);
+#endif
     if (input.raw_hidden) *input.raw_hidden = finalized;
     return finalized;
 }
 
-void replay(const Model& model, State& state, Executor&, int64_t accepted) {
-    tyloi::models::require_model(state.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
-    const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
-    for (size_t index = 0; index < state.layers.size(); ++index) {
-        MfqCudaGuard guard(model.layers[index].device);
-        if (auto* kda = std::get_if<KdaState>(&state.layers[index])) kda->rollback();
-        else std::get<MlaState>(state.layers[index]).truncate(keep);
+void State::rollback_speculative(int64_t accepted) {
+    tyloi::models::require_model(speculative_start >= 0 && accepted >= 0, "no speculative transaction");
+    const auto keep = speculative_start + speculative_confirmed + accepted;
+    for (size_t index = 0; index < layers.size(); ++index) {
+        MfqCudaGuard guard(model_->layers[index].device);
+        if (auto* kda = std::get_if<KdaState>(&layers[index])) kda->rollback();
+        else std::get<MlaState>(layers[index]).truncate(keep);
     }
-    state.cache_pos = keep;
-    state.speculative_start = -1;
-    state.speculative_confirmed = 0;
+    cache_pos = keep;
+    speculative_start = -1;
+    speculative_confirmed = 0;
 }
-
 
 Mtp::Mtp(::tyloi::Tensor embedding, int primary)
     : embedding_(std::move(embedding)), primary_(primary) {}

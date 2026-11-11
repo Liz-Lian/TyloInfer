@@ -48,7 +48,7 @@ Generation Text<M, S, P>::generate_text(InferenceRequest& input, InferenceOutput
         },
         info, source.get(), graph, cache, config, input, output,
         mtp_state,
-        batched ? nullptr : component_predictor(components), std::move(prepared),
+        batched ? nullptr : component_predictor(language, components), std::move(prepared),
         batched ? batching.get() : nullptr, id);
 }
 

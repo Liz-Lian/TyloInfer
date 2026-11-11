@@ -9,14 +9,16 @@
 
 namespace tyloi::cuda::glm5_next {
 
-using DenseTensor = ::tyloi::DenseTensor;
 struct Model;
 
 struct KdaState {
-    DenseTensor conv, recurrent, rollback_conv, rollback_recurrent;
-    void reset() { conv = DenseTensor(); recurrent = DenseTensor(); commit(); }
+    ::tyloi::Tensor conv, recurrent, rollback_conv, rollback_recurrent;
+    /** Release recurrent state and any speculative checkpoint. */
+    void reset() { conv = {}; recurrent = {}; commit(); }
     bool pending() const { return rollback_conv.defined(); }
-    void commit() { rollback_conv = DenseTensor(); rollback_recurrent = DenseTensor(); }
+    /** Retire the speculative checkpoint after its prefix is committed. */
+    void commit() { rollback_conv = {}; rollback_recurrent = {}; }
+    /** Restore the checkpoint and retire its rollback handles. */
     void rollback() {
         TYLOINFER_RUNTIME_CHECK(pending(), "GLM KDA has no speculative checkpoint");
         conv = rollback_conv;
@@ -41,33 +43,56 @@ struct MlaState {
 
 using LayerState = std::variant<KdaState, MlaState>;
 
-class State {
+/** Request-owned GLM5 state; the creating model must outlive it at a stable address. */
+class State : public tyloi::models::State {
 public:
+    /** Capture the model identity and construct its layer states. */
     explicit State(const Model&);
     State(const State&) = delete;
     State& operator=(const State&) = delete;
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
-    void reset(int64_t batch);
-    int64_t position() const noexcept { return cache_pos; }
-    void advance(int64_t tokens) noexcept { cache_pos += tokens; }
-    void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
-    void preallocate() {}
-    void commit_speculative();
+    /** Return whether this state was created by the given model. */
+    bool belongs_to(const Model& model) const noexcept { return model_ == &model; }
+    /** Reset the layer caches and position for a new batch. */
+    void reset(int64_t batch) override;
+    /** Return the committed cache position. */
+    int64_t position() const noexcept override { return cache_pos; }
+    /** Advance the committed cache position. */
+    void advance(int64_t tokens) noexcept override { cache_pos += tokens; }
+    /** Set the semantic decode position offset. */
+    void set_position_delta(int64_t delta) noexcept override { decode_position_delta = delta; }
+    /** Leave cache allocation to forward. */
+    void preallocate() override {}
+    /** Commit the pending speculative checkpoint. */
+    void commit_speculative() override;
+    /** Roll back a speculative suffix while retaining the accepted prefix. */
+    void rollback_speculative(std::int64_t accepted) override;
+    /** Estimate cache allocations, conservatively including KDA convolution backing and temporary input. */
+    std::vector<std::pair<tyloi::Device, std::size_t>> growth(
+        std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t confirmed = 0) const override;
     /** Return the state storage handles available to Graph capture. */
-    std::vector<::tyloi::Tensor> storage() const { return {}; }
+    std::vector<::tyloi::Tensor> storage() const override;
     /** Return writable state handles available for Graph warmup. */
-    std::vector<::tyloi::Tensor*> graph_state() { return {}; }
+    std::vector<::tyloi::Tensor*> graph_state() override { return {}; }
     TextSessionStateKind text_session_state_kind() const { return TextSessionStateKind::Unsupported; }
-    bool supports_text_session_state() const { return false; }
-    bool supports_paged_text_session_state() const { return false; }
-    TextSessionState capture_text_session_state(const std::vector<int64_t>&) const;
-    void restore_text_session_state(const TextSessionState&);
+    /** Report that text sessions are unsupported. */
+    bool supports_text_session_state() const override { return false; }
+    /** Report that paged text sessions are unsupported. */
+    bool supports_paged_text_session_state() const override { return false; }
+    /** Reject unsupported session capture. */
+    TextSessionState capture_text_session_state(const std::vector<int64_t>&) const override;
+    /** Reject unsupported session restoration. */
+    void restore_text_session_state(const TextSessionState&) override;
 
     std::vector<LayerState> layers;
-    std::unique_ptr<tyloi::models::MtpState> predictor;
     int64_t cache_pos = 0, decode_position_delta = 0, batch = 0;
     int64_t speculative_start = -1, speculative_confirmed = 0;
+private:
+    const Model* model_;
+    struct Layout { int device; std::int64_t heads, width, kernel; };
+    std::vector<Layout> layout_;
 };
 
 } // namespace tyloi::cuda::glm5_next

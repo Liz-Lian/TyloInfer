@@ -166,7 +166,7 @@ struct Text {
             }
         }
 #ifdef TYLOINFER_NATIVE_CUDA
-        budget->bind(component_predictor(components) != nullptr);
+        budget->bind(component_predictor(language, components) != nullptr);
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
             if(kv)kv->bind_budget(&*budget);
 #endif
@@ -219,12 +219,12 @@ struct Text {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             qwen4_release_decode_graphs(language,state);
         if(batching)batching->release_idle_buffers();
-        if(auto* mtp=component_predictor(components))mtp->reset(predictor_state(), 1);
+        if(auto* mtp=component_predictor(language, components))mtp->reset(predictor_state(), 1);
         state.reset(1);
         return change.apply();
     }
     bool exclusive() const { return duplex_active; }
-    bool mtp_available() const { return component_predictor(components) != nullptr; }
+    bool mtp_available() const { return component_predictor(language, components) != nullptr; }
     void execute(const std::vector<RequestId>& eligible) {
         if (batching) batching->step(eligible);
     }
@@ -248,7 +248,7 @@ struct Text {
                 if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
                 else return false;
             }();
-            const auto* mtp = component_predictor(parts);
+            const auto* mtp = component_predictor(model, parts);
             const auto batch_metrics = batching ? batching->metrics() : Metrics{};
             const auto kv_metrics = kv ? kv->metrics() : Metrics{};
             const auto offload_metrics = offload ? std::optional<Metrics>{offload->metrics()} : std::nullopt;

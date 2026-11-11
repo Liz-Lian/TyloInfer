@@ -25,6 +25,8 @@ public:
     virtual MfqModelCapabilities capabilities() const = 0;
     /** Return model-owned capability and resource metrics. */
     virtual tyloi::engine::Metrics metrics() const = 0;
+    /** Borrow assembled predictor weights; each request owns its mutable predictor State. */
+    virtual Mtp* mtp() const noexcept { return nullptr; }
     /** Create request state that must be retired before this model is replaced or destroyed. */
     virtual std::unique_ptr<State> make_state() const = 0;
     /** Prepare supported media for the owning request, yielding progress and owned Tensor payloads. */

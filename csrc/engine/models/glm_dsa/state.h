@@ -34,7 +34,8 @@ public:
     void preallocate() override {}
     /** Estimate missing fixed-capacity MLA and index cache bytes per device. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
-        std::int64_t tokens, const tyloi::models::ForwardOptions& options) const override;
+        std::int64_t tokens, const tyloi::models::ForwardOptions& options,
+        std::int64_t confirmed = 0) const override;
     /** Return owning handles for the current state storage. */
     std::vector<::tyloi::Tensor> storage() const override;
     /** Return recurrent tensors that require graph warmup restoration. */

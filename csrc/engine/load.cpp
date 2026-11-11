@@ -56,7 +56,11 @@ using State = std::variant<
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::monostate>>,
+#else
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
+#endif
     std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State, std::monostate>>,

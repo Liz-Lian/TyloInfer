@@ -62,9 +62,12 @@ public:
     void restore_text_session_state(const TextSessionState& state) override;
 
     // Speculative suffix journal; the layer records hold the checkpoints.
-    void begin_speculative_suffix(std::int64_t draft_tokens);
-    void commit_speculative();
-    void rollback_speculative(std::int64_t accepted);
+    /** Begin journaling an uncommitted speculative suffix. */
+    void begin_speculative_suffix(std::int64_t draft_tokens) override;
+    /** Commit the completed speculative verification pass. */
+    void commit_speculative() override;
+    /** Roll back a speculative pass while retaining accepted tokens. */
+    void rollback_speculative(std::int64_t accepted) override;
     void begin_forward();
     void finish_forward(const ::tyloi::DenseTensor& full_positions, std::int64_t batch,
                         std::int64_t tokens);

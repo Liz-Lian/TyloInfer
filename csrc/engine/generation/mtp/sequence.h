@@ -66,7 +66,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         "prepared MTP prompt is missing embeddings or valid position metadata");
     require_execution(
         reused_tokens == 0 || (mtp.supports_session_state() && ops.defined(restored_last_hidden) &&
-                                  state.cache_pos == static_cast<int64_t>(reused_tokens) &&
+                                  state.position() == static_cast<int64_t>(reused_tokens) &&
                                   predictor.position() == static_cast<int64_t>(reused_tokens) -
                                       (mtp.blockwise_drafting()?0:1)),
         "restored MTP session boundary is incompatible");
@@ -221,7 +221,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         if (output.result.cancelled)
             co_return;
         if (transformed_prompt)
-            state.decode_position_delta = prepared->decode_position_delta;
+            state.set_position_delta(prepared->decode_position_delta);
         if (!stream_prompt_history)
             raw = raw_chunks.size() == 1 ? std::move(raw_chunks.front()) : ops.concatenate(raw_chunks, 1);
         raw_chunks.clear();
@@ -321,7 +321,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         auto bootstrap = [&](Tensor token_counts,const MfqTokenConstraintPtr& cursor) {
             if(mtp.teacher_forced_prompt_prime()) {
                 (void)ops.predictor_step(initial_hidden,ops.ids_for({pending}),
-                    positioned_prompt ? ops.decode_positions(state.cache_pos,1) : Tensor{});
+                    positioned_prompt ? ops.decode_positions(state.position(),1) : Tensor{});
             }
             auto next_hidden=ops.target_forward(ops.ids_for({pending}),&raw);
             committed_last_hidden=ops.slice(raw,1,ops.size(raw,1)-1,1);
@@ -381,7 +381,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         int64_t predictor_history_position = predictor.position();
         auto bounded_depth = [&](int desired) {
             const auto context_depth =
-                std::max<int64_t>(0, metadata.max_context - state.cache_pos - 1);
+                std::max<int64_t>(0, metadata.max_context - state.position() - 1);
             const auto output_depth =
                 std::max<int64_t>(0, static_cast<int64_t>(limit - generated - 1));
             return static_cast<int>(
@@ -784,7 +784,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     // Block predictors retain the committed target rows rather
                     // than shifted input/hidden pairs. EOS can truncate an
                     // accepted draft, so use the target's actual cache boundary.
-                    const auto rows=state.cache_pos-predictor_history_position;
+                    const auto rows=state.position()-predictor_history_position;
                     require_execution(rows>=0 && rows<=ops.size(verified_raw,1),
                         "block predictor final target boundary is incompatible");
                     if(rows>0) {
