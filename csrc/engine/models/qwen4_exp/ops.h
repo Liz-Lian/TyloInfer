@@ -125,8 +125,10 @@ struct Model : tyloi::models::CausalModel {
     // ---- speculative contract used by the MTP sequence
     bool supports_speculation() const noexcept { return true; }
     bool supports_suffix_speculation() const noexcept { return true; }
+#ifndef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor hidden_forward_speculative_suffix(State& state, ::tyloi::Tensor ids,
                                                       ::tyloi::Tensor* raw_hidden = nullptr);
+#endif
     bool prefetch_token_rows(State& state, const ::tyloi::Tensor& ids);
 
     // ---- weights and load-time state

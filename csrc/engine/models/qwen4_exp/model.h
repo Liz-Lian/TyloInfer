@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <set>
@@ -1262,6 +1263,53 @@ class Qsa {
         return bytes;
     }
     bool supports_session(const State& request) const { return !request.offload && !(request.memory && request.memory->offload); }
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Validate a QSA snapshot against this layer's cache geometry and device. */
+    void validate_session(const State& request, const tyloi::models::qwen4_exp::LayerSnapshot& state,
+                          int64_t count, tyloi::Device device) const {
+        const auto check = [&](const tyloi::Tensor& tensor, int64_t width, tyloi::ScalarType type) {
+            return tensor.defined() && tensor.representation<DenseTensor>() && tensor.device()==device &&
+                tensor.scalar_type()==type && tensor.dim()==3 && tensor.size(0)==1 &&
+                tensor.size(1)==count && tensor.size(2)==width;
+        };
+        TYLOINFER_RUNTIME_CHECK(supports_session(request) && count>0 && count<=c_.maximum &&
+            check(state.keys,c_.kv_heads*key_width(),cache_dtype()) &&
+            check(state.values,c_.kv_heads*value_width(),cache_dtype()) &&
+            check(state.index,c_.index_width,::tyloi::kFloat16), "incompatible Qwen4 QSA session state");
+    }
+    /** Estimate fresh unmanaged sequence backing; managed allocation has its own admission. */
+    std::size_t fresh_session_growth(const State& current, int64_t count) const {
+        if (memory_manager_) {
+            TYLOINFER_RUNTIME_CHECK(managed_memory(current), "Qwen4 managed session storage is not ready");
+            return 0;
+        }
+        SequenceCache keys(c_.maximum,c_.kv_heads*key_width(),cache_dtype());
+        SequenceCache values(c_.maximum,c_.kv_heads*value_width(),cache_dtype());
+        SequenceCache index(c_.maximum,c_.index_width);
+        const auto a=keys.growth(1,count), b=values.growth(1,count), c=index.growth(1,count);
+        if (a>std::numeric_limits<std::size_t>::max()-b || a+b>std::numeric_limits<std::size_t>::max()-c)
+            throw std::overflow_error("Qwen4 session allocation planning overflow");
+        return a+b+c;
+    }
+    /** Stage a snapshot into independently owned sequence or managed KV storage. */
+    void stage_session(State& request, const tyloi::models::qwen4_exp::LayerSnapshot& saved,
+                       int64_t count) {
+        if (managed_memory(request)) { restore_session(request,saved,count); return; }
+        const auto stage = [&](SequenceCache& cache, const ::tyloi::Tensor& source) {
+            int64_t capacity=std::min<int64_t>(16,c_.maximum);
+            while(capacity<count)
+                capacity=std::min(c_.maximum,capacity>c_.maximum/2?c_.maximum:capacity*2);
+            auto shape=source.dense().sizes().vec(); shape[1]=capacity;
+            cache.replace_storage(tyloi::ops::empty(shape,source.options()));
+            auto view=tyloi::ops::slice(cache.storage(),1,0,count);
+            tyloi::ops::copy_into(view,source);
+            cache.advance_fixed(count);
+        };
+        stage(request.keys,saved.keys);
+        stage(request.values,saved.values);
+        stage(request.index,saved.index);
+    }
+#endif
     std::size_t session_bytes(const State& request,int64_t count) const {
         if(count<=0)return 0;
         return std::size_t(count)*(c_.kv_heads*(key_width()+value_width())*(quantization_.enabled()?4:2)+

@@ -1,6 +1,7 @@
 #pragma once
 #include "config.h"
 #include "engine/models/metadata.h"
+#include "engine/ops.h"
 #include "../common/check.h"
 #include "../common/recurrent_attention.h"
 
@@ -96,12 +97,10 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     }
     result.config = c;
 #ifdef TYLOINFER_NATIVE_CUDA
-    result.embedding_norm = std::make_shared<::tyloi::DenseTensor>(
-        ops.dense("predictor.embedding_norm.weight").dense()
-            .to(::tyloi::kFloat32).contiguous());
-    result.hidden_norm = std::make_shared<::tyloi::DenseTensor>(
-        ops.dense("predictor.hidden_norm.weight").dense()
-            .to(::tyloi::kFloat32).contiguous());
+    result.embedding_norm = ::tyloi::ops::contiguous(::tyloi::ops::cast(
+        ops.dense("predictor.embedding_norm.weight"), ::tyloi::kFloat32));
+    result.hidden_norm = ::tyloi::ops::contiguous(::tyloi::ops::cast(
+        ops.dense("predictor.hidden_norm.weight"), ::tyloi::kFloat32));
 #else
     result.embedding_norm = ops.dense("predictor.embedding_norm.weight").dense()
                                 .to(::tyloi::kFloat32).contiguous();
@@ -114,8 +113,8 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     for (int64_t i = 0; i < count; ++i)
         result.layers.push_back(ops.layer(c, int(i), true));
 #ifdef TYLOINFER_NATIVE_CUDA
-    require_model(result.embedding_norm->dim() == 1 && result.embedding_norm->size(0) == c.hidden &&
-                      result.hidden_norm->dim() == 1 && result.hidden_norm->size(0) == c.hidden * c.streams,
+    require_model(result.embedding_norm.dim() == 1 && result.embedding_norm.size(0) == c.hidden &&
+                      result.hidden_norm.dim() == 1 && result.hidden_norm.size(0) == c.hidden * c.streams,
 #else
     require_model(result.embedding_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
                       result.hidden_norm.sizes().vec() == std::vector<int64_t>{c.hidden * c.streams},

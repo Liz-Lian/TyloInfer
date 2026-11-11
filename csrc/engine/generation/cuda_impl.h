@@ -248,6 +248,11 @@ template <typename Model, typename State> struct CudaGenerationOps {
     double prefill(const tyloi::engine::PrefillChunk &chunk) {
 #ifdef TYLOINFER_NATIVE_CUDA
         auto scope = Executor::current().enter(mode.ffn);
+        if constexpr (tyloi::cuda::PlannedState<State>) {
+            if (budget)
+                for (const auto& [device, bytes] : state.growth(chunk.count, tyloi::cuda::forward_options(mode), 0))
+                    if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+        }
 #endif
         PrefillCudaTimer timer;
         bool prefill_finished=false;
@@ -472,6 +477,13 @@ template <typename Model, typename State> struct CudaGenerationOps {
         }
     }
     std::int64_t advance() {
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (tyloi::cuda::PlannedState<State>) {
+            if (budget)
+                for (const auto& [device, bytes] : state.growth(1, tyloi::cuda::forward_options(mode), 0))
+                    if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+        }
+#endif
         if (!graph_active) {
             if(auto result=generation_decode(model,*this))return *result;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -585,6 +597,16 @@ template <class Model, class State, class Predictor> struct RequestOps {
     bool batched() const { return batching != nullptr; }
     Restore restore_session(const std::string& id, const std::vector<std::int64_t>& prompt,
         std::size_t prefix, const std::string& key, bool use_mtp) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (std::is_base_of_v<tyloi::models::State, State>) {
+            if constexpr (!std::is_same_v<decltype(&State::prepare_restore),
+                                          decltype(&tyloi::models::State::prepare_restore)>) {
+                TYLOINFER_RUNTIME_CHECK(executor, "staged session restore requires an executor");
+                return cache.restore(state, *executor, weights, budget, use_mtp ? mtp : nullptr,
+                    id, prompt, prefix, key);
+            }
+        }
+#endif
         return cache.restore_best(state, drain, use_mtp ? mtp : nullptr, id, prompt, prefix, key);
     }
     void trace_expert_cache(const char* boundary, bool wait = true) {

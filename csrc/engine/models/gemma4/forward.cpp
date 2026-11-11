@@ -224,6 +224,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
 
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                                               const Options& mode) const {
+    tyloi::models::require_model(!input.suffix, "Gemma4 does not support speculative suffix forwarding");
     auto& state = dynamic_cast<State&>(state_value);
     tyloi::models::require_model(state.belongs_to(*this),
                                "Gemma4 state belongs to a different model");

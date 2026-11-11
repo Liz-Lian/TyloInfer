@@ -505,6 +505,7 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                const tyloi::models::ForwardOptions& options_value) const {
+    tyloi::models::require_model(!input.suffix, "DeepSeek V4 does not support speculative suffix forwarding");
     auto& state = dynamic_cast<State&>(state_value);
     tyloi::models::require_model(state.belongs_to(*this), "DeepSeek V4 state belongs to a different model");
     const auto& model = *this;

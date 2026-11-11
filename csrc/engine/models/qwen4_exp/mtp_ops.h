@@ -122,6 +122,9 @@ void mtp_predictor_prefill(qwen4_exp::Model& model, Ops& ops, Tensor& hidden, Te
                            Timer& timer, bool& prefill_finished) {
     if(ops.cache_only_prompt_history()) {
         auto& predictor=static_cast<qwen4_exp::Predictor&>(ops.mtp);
+#ifdef TYLOINFER_NATIVE_CUDA
+        ops.reserve_predictor(ids);
+#endif
         tyloi::weights::Loan workspace(ops.weights);
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
             std::size_t(ids.size(1))*model.metadata.hidden_size*model.metadata.hc_mult*sizeof(float)*12);

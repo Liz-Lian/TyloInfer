@@ -7,6 +7,7 @@
 #endif
 #include "engine/weights/workspace.h"
 #include "engine/budget.h"
+#include "engine/generation/prefill_budget.h"
 
 #include "env.h"
 #include "engine/weights/cache.h"
@@ -405,6 +406,13 @@ template <class Model, class State> struct CudaMtpOps
 #endif
   Tensor target_forward(Tensor ids, Tensor *raw = nullptr,
                         int64_t confirmed = 0) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (tyloi::cuda::PlannedState<State>) {
+      if (budget)
+        for (const auto& [device, bytes] : state.growth(ids.size(1), tyloi::cuda::forward_options(mode), confirmed))
+          if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+    }
+#endif
     projected_target_hidden = {}; projected_target_logits = {};
     projected_target_compact={};
     projected_target_greedy.clear();
@@ -430,6 +438,13 @@ template <class Model, class State> struct CudaMtpOps
   /** Begin the target model's uncommitted suffix. */
   void begin_target_suffix(int64_t tokens) {
     if constexpr (requires { state.begin_speculative_suffix(tokens); }) {
+#ifdef TYLOINFER_NATIVE_CUDA
+      if constexpr (tyloi::cuda::PlannedState<State>) {
+        if (budget)
+          for (const auto& [device, bytes] : state.suffix_growth(tokens))
+            if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+      }
+#endif
       state.begin_speculative_suffix(tokens);
     } else {
       throw std::runtime_error("target model does not support speculative suffix forwarding");
@@ -440,6 +455,27 @@ template <class Model, class State> struct CudaMtpOps
       TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation(),
                               "model does not support speculative suffix forwarding");
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (std::derived_from<Model, tyloi::models::CausalModel> &&
+                  tyloi::cuda::PlannedState<State>) {
+      if (budget)
+        for (const auto& [device, bytes] : state.growth(ids.size(1), tyloi::cuda::forward_options(mode), 0))
+          if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+      projected_target_hidden = {}; projected_target_logits = {};
+      projected_target_compact = {}; projected_target_greedy.clear();
+      const auto transfer_before = weights.activity().streamed_bytes;
+      const auto costs_before = profile_target() ? target_costs() : std::array<double,6>{};
+      tyloi::models::Input input;
+      input.ids = std::move(ids); input.raw_hidden = raw; input.suffix = true;
+      auto hidden = model.forward(std::move(input), state, tyloi::cuda::forward_options(mode));
+      target_transfer_bytes += weights.activity().streamed_bytes - transfer_before;
+      if (profile_target()) {
+        const auto costs_after = target_costs();
+        for (std::size_t i = 0; i < target_profile.size(); ++i) target_profile[i] += costs_after[i] - costs_before[i];
+      }
+      return hidden;
+    } else
+#endif
     if constexpr (requires(Model& value, State& value_state, ::tyloi::Tensor value_ids, ::tyloi::Tensor* value_raw) {
                     value.hidden_forward_speculative_suffix(value_state,std::move(value_ids), value_raw);
                   }) {
@@ -483,6 +519,11 @@ template <class Model, class State> struct CudaMtpOps
   PrefillResult prefill(tyloi::engine::PrefillChunk chunk) {
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
+    if constexpr (tyloi::cuda::PlannedState<State>) {
+      if (budget)
+        for (const auto& [device, bytes] : state.growth(chunk.count, tyloi::cuda::forward_options(mode), 0))
+          if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+    }
 #endif
     PrefillCudaTimer timer;
     bool prefill_finished=false;
@@ -577,10 +618,21 @@ template <class Model, class State> struct CudaMtpOps
                : result;
   }
 #endif
+  /** Reserve planned predictor storage before a step or cache-only prime. */
+  void reserve_predictor(const Tensor& ids) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (tyloi::cuda::PlannedState<State>) {
+      if (budget)
+        for (const auto& [device, bytes] : mtp.growth(predictor, tyloi::models::Mtp::Step{ids}))
+          if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+    }
+#endif
+  }
   tyloi::models::MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
 #ifdef TYLOINFER_NATIVE_CUDA
     auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
 #endif
+    reserve_predictor(ids);
     auto result=mtp.step(predictor,hidden, ids, positions);
 #ifdef TYLOINFER_NATIVE_CUDA
     projected_predictor_logits = result.sample_logits;

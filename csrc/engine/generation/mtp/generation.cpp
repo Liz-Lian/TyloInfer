@@ -161,8 +161,12 @@ struct Ops : Sampling {
         reserve(mtp.growth(predictor, models::Mtp::Draft{ids, depth}));
         return mtp.draft_block(predictor, ids, depth);
     }
-    Tensor target_suffix(Tensor, Tensor*) {
-        throw std::runtime_error("model does not support speculative suffix forwarding");
+    Tensor target_suffix(Tensor ids, Tensor* raw) {
+        models::Input input;
+        input.ids = std::move(ids);
+        input.raw_hidden = raw;
+        input.suffix = true;
+        return forward(std::move(input));
     }
     /** Reserve the owning state's checkpoint before beginning a suffix transaction. */
     void begin_target_suffix(int64_t tokens) {
@@ -253,8 +257,6 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
     auto* predictor = model.mtp();
     if (!predictor || !state.predictor || !state.predictor->belongs_to(*predictor))
         throw std::invalid_argument("predictor state is unavailable or belongs to another model");
-    if (predictor->split_target_verification())
-        throw std::invalid_argument("model does not support speculative suffix forwarding");
     const auto logical = prefill_span(model.info(), input.prompt.size() - reused, chunk,
         prepared && prepared->transformed(),
         weights.prefill_mode(input.prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);

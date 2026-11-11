@@ -574,6 +574,7 @@ DenseTensor forward_layer(const Layer& layer, LayerState& state, Executor& execu
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                const tyloi::models::ForwardOptions& forward_options) const {
+    tyloi::models::require_model(!input.suffix, "Nemotron-H does not support speculative suffix forwarding");
     auto* state_ptr = dynamic_cast<State*>(&state_value);
     tyloi::models::require_model(state_ptr && state_ptr->belongs_to(*this),
                                "Nemotron-H state belongs to a different model");

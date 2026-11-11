@@ -22,7 +22,11 @@ struct PredictorState final : tyloi::models::MtpState {
     int64_t position() const noexcept override;
 
     std::vector<std::unique_ptr<LayerState>> layer_states;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::vector<::tyloi::Tensor> positions;
+#else
     std::vector<::tyloi::DenseTensor> positions;
+#endif
     std::vector<int64_t> lengths;
     int64_t batch = 0;
 };
@@ -60,6 +64,11 @@ struct Predictor final : tyloi::models::Mtp {
 
     std::unique_ptr<tyloi::models::MtpState> make_state() const override;
     void reset(tyloi::models::MtpState&, int64_t next_batch = 1) const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Plan persistent cache and position backing for a predictor step. */
+    std::vector<std::pair<::tyloi::Device, std::size_t>> growth(
+        const tyloi::models::MtpState&, const tyloi::models::Mtp::Input&) const override;
+#endif
 
     std::pair<DenseTensor, DenseTensor> evaluate(tyloi::models::MtpState&, const DenseTensor &hidden,
                                        const DenseTensor &ids, int64_t depth = 0, bool cache = true,
@@ -83,7 +92,13 @@ struct Predictor final : tyloi::models::Mtp {
         int maximum_depth, tyloi::engine::mtp::PolicyState& state) const override;
     bool supports_session_state() const noexcept override;
     MtpSessionState capture_session_state(const tyloi::models::MtpState&, int64_t,const tyloi::Tensor&) const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Prepare an owned predictor snapshot for a joint session restore. */
+    std::unique_ptr<tyloi::models::Restore> prepare_restore(
+        tyloi::models::MtpState&, const MtpSessionState&) const override;
+#else
     void restore_session_state(tyloi::models::MtpState&, const MtpSessionState&) const override;
+#endif
 };
 
 } // namespace tyloi::cuda::qwen4_exp

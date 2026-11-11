@@ -30,6 +30,8 @@ struct Input {
     std::int64_t attention_parts = 0;
     /** Optional CPU uint8 participation mask for this input's media token rows. */
     Tensor image_mask;
+    /** Execute an uncommitted suffix inside an active speculative transaction. */
+    bool suffix = false;
 };
 
 struct ForwardOptions {

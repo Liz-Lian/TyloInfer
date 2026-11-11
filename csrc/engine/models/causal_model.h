@@ -42,7 +42,7 @@ public:
     virtual Tensor softcap(const Tensor& logits) const = 0;
     /** Project borrowed hidden states to an owning logits handle. */
     virtual Tensor logits(const Tensor& hidden, bool capped = true) const = 0;
-    /** Run a model step in the owner's execution scope, updating only the supplied request State. */
+    /** Run a model step in the owner's execution scope; reject unsupported speculative suffixes. */
     virtual Tensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
     /** Run model-owned prefill phases; an empty sequence selects the ordinary forward path. */
     virtual tyloi::StepSequence<Prefill> prefill(Input, State&, const ForwardOptions&, std::int64_t) const { return {}; }

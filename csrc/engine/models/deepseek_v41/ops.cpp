@@ -454,6 +454,7 @@ void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cac
 // device placement of the walked tensors.
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                                     const tyloi::models::ForwardOptions&) const {
+    require_model(!input.suffix, "DeepSeek V4.1 does not support public speculative suffix forwarding");
     auto* target = dynamic_cast<State*>(&state_value);
     require_model(target && target->belongs_to(*this), "DeepSeek-V4.1 state belongs to a different model");
     auto& state = *target;

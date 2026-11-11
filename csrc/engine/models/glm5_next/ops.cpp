@@ -382,6 +382,7 @@ bool supports_speculation(const Model& model) noexcept { return !model.layers.em
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                const tyloi::models::ForwardOptions& options) const {
+    tyloi::models::require_model(!input.suffix, "GLM5 does not support speculative suffix forwarding");
     auto& state = dynamic_cast<State&>(state_value);
     tyloi::models::require_model(state.belongs_to(*this), "GLM5 state belongs to a different model");
     const auto& model = *this;
