@@ -1,3 +1,4 @@
+#include "execution_fixture.h"
 #include "quant_linear.h"
 #include <cmath>
 #include <fstream>
@@ -7,11 +8,12 @@
 #include <stdexcept>
 
 namespace {
-using namespace mfq::cuda;
-using namespace mfq::cuda::internal;
+using namespace tyloi::cuda;
+using namespace tyloi;
+using namespace tyloi::cuda::internal;
 Mxfp4SqWeight weight(const std::vector<std::uint8_t>& bytes, bool cuda) {
-    const auto layout = mfq::sq::parse(bytes.data(), bytes.size());
-    const auto rows = mfq::sq::row_metadata(bytes.data(), layout);
+    const auto layout = tyloi::sq::parse(bytes.data(), bytes.size());
+    const auto rows = tyloi::sq::row_metadata(bytes.data(), layout);
     Mxfp4SqWeight result;
     result.blob = tensor(bytes);
     result.row_q = tensor(rows.q);
@@ -28,11 +30,11 @@ Mxfp4SqWeight weight(const std::vector<std::uint8_t>& bytes, bool cuda) {
     result.q_sum=std::accumulate(rows.q.begin(),rows.q.end(),std::int64_t{0});
     return result;
 }
-std::vector<float> host(const Tensor& value) {
+std::vector<float> host(const DenseTensor& value) {
     auto cpu=value.contiguous().to(kCPU,kFloat32);
     return {cpu.data_ptr<float>(),cpu.data_ptr<float>()+cpu.numel()};
 }
-void close(const Tensor& value, const std::vector<float>& reference, float tolerance) {
+void close(const DenseTensor& value, const std::vector<float>& reference, float tolerance) {
     auto actual=host(value);
     if (actual.size()!=reference.size()) throw std::runtime_error("SQ linear output shape differs");
     for (std::size_t i=0;i<actual.size();++i)
@@ -64,8 +66,8 @@ void fp8_cpu(CudaExecutionContext& execution, bool mx) {
         expected[m*n+r]+=values[m*k+c]*dense[r*k+c];
     Fp8SqWeight w;
     w.dtype=mx?"MXFP8-SQ":"FP8-128SQ"; w.blob=tensor(bytes);
-    const auto layout=mfq::fp8sq::parse(w.dtype,bytes.data(),bytes.size());
-    const auto rows=mfq::fp8sq::row_metadata(bytes.data(),layout);
+    const auto layout=tyloi::fp8sq::parse(w.dtype,bytes.data(),bytes.size());
+    const auto rows=tyloi::fp8sq::row_metadata(bytes.data(),layout);
     w.row_q=tensor(rows.q);
     w.row_symbol_byte_offsets=tensor(std::vector<std::int32_t>(rows.symbol_byte_offsets.begin(),rows.symbol_byte_offsets.end()));
     w.out=n; w.neuron_len=k;
@@ -90,8 +92,7 @@ int main(int argc, char** argv) try {
     for (int m=0;m<3;++m) for (int n=0;n<7;++n) for (int k=0;k<96;++k)
         expected[m*7+n]+=values[m*96+k]*dense[n*96+k];
     auto x=tensor(values).reshape({3,96});
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     Mxfp4SqLinear cpu{weight(bytes,false)};
     close(cpu.forward(x),expected,1e-5f);
     QuantLinear cpu_layer; cpu_layer.kind=QuantLinearKind::Mxfp4Sq; cpu_layer.mxfp4_sq=cpu;
@@ -116,7 +117,7 @@ int main(int argc, char** argv) try {
             shard.input_end=axis==TensorParallelAxis::Input?(index==0?32:96):96;
             std::vector<std::int64_t> rows(shard.output_end-shard.output_begin);
             std::iota(rows.begin(),rows.end(),shard.output_begin);
-            shard.mxfp4_sq.weight=weight(mfq::sq::select_rows(bytes,rows,shard.input_begin,shard.input_end),true);
+            shard.mxfp4_sq.weight=weight(tyloi::sq::select_rows(bytes,rows,shard.input_begin,shard.input_end),true);
             layer.tensor_parallel_shards.push_back(std::move(shard));
         }
         close(layer.forward_tensor_parallel_flat(

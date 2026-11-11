@@ -33,9 +33,9 @@ struct Model {
     RopeCache rope, cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
 #endif
-    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
+    ::tyloi::Tensor embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+    ::tyloi::Tensor output_norm;
 #else
     DenseTensor output_norm;
 #endif

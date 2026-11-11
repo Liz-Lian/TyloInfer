@@ -1,5 +1,6 @@
+#include "execution_fixture.h"
 #include "models/deepseek_v41/ops.h"
-#include "storage/session/state.h"
+#include "engine/models/common/session/state.h"
 #include "storage/session/text_cache.h"
 #include "runtime_config.h"
 #include "mfq_paged_prefix_cache.h"
@@ -9,38 +10,39 @@
 #include <iostream>
 
 namespace {
-namespace tb=mfq_tensor_backend;
-using namespace mfq::cuda;
-using namespace mfq::cuda::deepseek_v41_runtime;
+namespace tb=tyloi::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
+using namespace tyloi::cuda::deepseek_v41_runtime;
 
 void require(bool value,const char* message) {
     if(!value)throw std::runtime_error(message);
 }
-tb::Tensor fp32(std::vector<int64_t> shape) {
-    return tb::ones(shape,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32));
+DenseTensor fp32(std::vector<int64_t> shape) {
+    return tb::ones(shape,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32));
 }
 QuantLinear dense(int out,int in) {
     QuantLinear linear;
     linear.kind=QuantLinearKind::Dense;
     linear.dense=(tb::randn({out,in},fp32({1}).options())/std::sqrt(double(in)))
-        .to(tb::kFloat16).contiguous();
+        .to(tyloi::kFloat16).contiguous();
     return linear;
 }
 
 void check_tail_rope() {
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32);
     int cases=0;
-    for(auto dtype:{tb::kFloat16,tb::kFloat32})for(int tokens:{1,6,129,4080}) {
+    for(auto dtype:{tyloi::kFloat16,tyloi::kFloat32})for(int tokens:{1,6,129,4080}) {
         const int heads=tokens==4080?64:3,width=tokens==4080?512:96;
         auto x=tb::full({1,tokens,heads,width},.25,options.dtype(dtype)).transpose(1,2);
-        auto positions=tb::arange(tokens,options.dtype(tb::kInt64));
+        auto positions=tb::arange(tokens,options.dtype(tyloi::kInt64));
         auto angles=tb::arange(tokens*32,options).reshape({tokens,32})*.013;
         auto cosine=tb::cos(angles),sine=tb::sin(angles);
         auto head=x.slice(-1,0,width-64).contiguous(),tail=x.slice(-1,width-64,width).contiguous();
         auto rotated=glm_interleaved_rope_cuda(tail,positions,cosine,sine,64);
         auto expected=tb::cat({head,rotated},-1).contiguous();
         auto actual=dsv4_tail_rope_cuda(x,positions,cosine,sine,64);
-        require((actual.to(tb::kFloat32)-expected.to(tb::kFloat32)).abs().max().item<float>()==0,
+        require((actual.to(tyloi::kFloat32)-expected.to(tyloi::kFloat32)).abs().max().item<float>()==0,
             "fused strided tail RoPE differs from materialized rotation");
         ++cases;
     }
@@ -49,8 +51,8 @@ void check_tail_rope() {
 
 void check_modality_routing() {
     int cases=0;
-    for(auto dtype:{tb::kFloat16,tb::kFloat32})for(int experts:{384,641})for(int rows:{2,5}) {
-        auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+    for(auto dtype:{tyloi::kFloat16,tyloi::kFloat32})for(int experts:{384,641})for(int rows:{2,5}) {
+        auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32);
         auto logits=(tb::arange(int64_t(rows)*experts,options)*.001).reshape({rows,experts}).to(dtype).contiguous();
         std::vector<float> biases(rows*experts,0.f);
         for(int row=0;row<rows;++row)biases[row*experts+(row*53+7)%experts]=1000.f;
@@ -59,13 +61,13 @@ void check_modality_routing() {
         auto shared_bias=bias.narrow(0,0,1).contiguous();
         auto shared=moe_topk_cuda(logits,6,false,true,true,false,shared_bias,1e-20,1.0);
         auto flat_bias=moe_topk_cuda(logits,6,false,true,true,false,shared_bias.reshape({experts}),1e-20,1.0);
-        require((shared[0].to(tb::kFloat32)-flat_bias[0].to(tb::kFloat32)).abs().max().item<float>()==0 &&
+        require((shared[0].to(tyloi::kFloat32)-flat_bias[0].to(tyloi::kFloat32)).abs().max().item<float>()==0 &&
             (shared[1]-flat_bias[1]).abs().max().item<float>()<1e-6,
             "per-token routing removed the existing shared correction bias broadcast");
         for(int row=0;row<rows;++row) {
             auto expected=moe_topk_cuda(logits.narrow(0,row,1).contiguous(),6,false,true,true,false,
                 bias.narrow(0,row,1).reshape({experts}),1e-20,1.0);
-            require((batch[0].narrow(0,row,1).to(tb::kFloat32)-expected[0].to(tb::kFloat32)).abs().max().item<float>()==0,
+            require((batch[0].narrow(0,row,1).to(tyloi::kFloat32)-expected[0].to(tyloi::kFloat32)).abs().max().item<float>()==0,
                     "per-token vision bias selected another token's experts");
             require((batch[1].narrow(0,row,1)-expected[1]).abs().max().item<float>()<1e-6,
                     "vision correction bias changed unbiased routing weights");
@@ -121,9 +123,9 @@ DeepseekV41CausalLm make_model(CudaExecutionContext& execution,int ratio=2) {
     model.reset(1);
     return model;
 }
-tb::Tensor ids(int tokens) {
-    return tb::arange(tokens,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64))
-        .remainder(8.).to(tb::kInt64).reshape({1,tokens}).contiguous();
+DenseTensor ids(int tokens) {
+    return tb::arange(tokens,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kInt64))
+        .remainder(8.).to(tyloi::kInt64).reshape({1,tokens}).contiguous();
 }
 void check_positions(const DeepseekV41CausalLm& model,int64_t expected) {
     require(model.cache_pos==expected,"CED logical cache position changed");
@@ -136,8 +138,7 @@ void check_positions(const DeepseekV41CausalLm& model,int64_t expected) {
 }
 
 void check_session_snapshots() {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     int cases=0;
     for(int ratio:{1,2,16})for(int length:{3,257}) {
         auto model=make_model(execution,ratio);
@@ -171,21 +172,20 @@ void check_session_snapshots() {
                 "invalid Engram snapshot changed rolling history");
         ++cases;
     }
-    mfq::models::deepseek_v41::EngramHashState hash(8,3,2,0,{1},{36},{5,7,11,13},{0,5,12,23},{3,5,7},{0,1,2,3,4,5,6,7});
+    tyloi::models::deepseek_v41::EngramHashState hash(8,3,2,0,{1},{36},{5,7,11,13},{0,5,12,23},{3,5,7},{0,1,2,3,4,5,6,7});
     const std::array<int64_t,3> prefix{1,2,3};const std::array<uint8_t,3> image{0,1,0};
     hash.forward(prefix.data(),1,3,0,image.data());
     auto saved=hash.snapshot();const std::array<int64_t,2> suffix{4,5};
     auto expected=hash.forward(suffix.data(),1,2,3);
     hash.restore(saved);
     auto actual=hash.forward(suffix.data(),1,2,3);
-    require(expected.values==actual.values && saved.context.front()==mfq::models::deepseek_v41::kDeadToken,
+    require(expected.values==actual.values && saved.context.front()==tyloi::models::deepseek_v41::kDeadToken,
             "Engram session lost an image-span ngram boundary");
     std::cout<<"session_snapshot_cases="<<cases<<" compressor/ring/Engram/immutable/rejection PASS\n";
 }
 void check_paged_sessions() {
-    using mfq::cuda::internal::TextSessionCache;
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    using tyloi::cuda::internal::TextSessionCache;
+    TestExecution execution;
     const auto directory=std::filesystem::temp_directory_path()/
         ("mfq-v41-prefix-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     int cases=0;
@@ -214,13 +214,13 @@ void check_paged_sessions() {
         }
         // Real tier transitions, including complete RAM eviction with SSD disabled.
         for(int storage:{0,1,2,3}) {
-            mfq::cache::PagedPrefixCacheConfig config;
+            tyloi::cache::PagedPrefixCacheConfig config;
             config.cache_dir=directory/(std::to_string(ratio)+"-"+std::to_string(length)+"-"+std::to_string(storage));
             config.compatibility_key="cuda-v41-prefix-test";config.block_size_tokens=64;
             config.spill_hot_on_eviction=true;config.max_hot_bytes=32ULL<<20;
             config.max_disk_bytes=(storage&1)?64ULL<<20:0;
-            auto paged=std::make_shared<mfq::cache::PagedPrefixCache>(config);
-            mfq::engine::PrefixCacheConfig prefix;prefix.hot_bytes=0;prefix.ram_bytes=config.max_hot_bytes;
+            auto paged=std::make_shared<tyloi::cache::PagedPrefixCache>(config);
+            tyloi::engine::PrefixCacheConfig prefix;prefix.hot_bytes=0;prefix.ram_bytes=config.max_hot_bytes;
             TextSessionCache cache({},prefix,paged,true,0,true);
             auto state=saved;
             if(storage>=2)state.input_key="image-A";
@@ -235,7 +235,7 @@ void check_paged_sessions() {
             require(cache.restore_best(model,nullptr,"",prompt,tokens.size(),"different-image").tokens==0,
                 "DeepSeek-V4.1 prefix crossed image identities");
             auto& mtp=state.mtp.emplace();mtp.cache_pos=length;
-            mtp.last_target_hidden=tb::ones({1,1,128},fp32({1}).options().dtype(tb::kFloat16));
+            mtp.last_target_hidden=tb::ones({1,1,128},fp32({1}).options().dtype(tyloi::kFloat16));
             mtp.deepseek_v41_rings={tb::ones({1,128,512},mtp.last_target_hidden.options())};
             mtp.bytes=session_tensor_bytes(mtp.last_target_hidden)+session_tensor_bytes(mtp.deepseek_v41_rings.front());
             state.bytes+=mtp.bytes;
@@ -255,7 +255,7 @@ void check_paged_sessions() {
             if(storage&1) {
                 require(model.hidden_forward(ids(3)).equal(expected),"SSD prefix changed continuation");
                 config.max_hot_bytes=0;
-                auto reopened=std::make_shared<mfq::cache::PagedPrefixCache>(config);
+                auto reopened=std::make_shared<tyloi::cache::PagedPrefixCache>(config);
                 TextSessionCache restored({},prefix,reopened,true,0,true);
                 require(restored.restore_best(model,nullptr,"",prompt,tokens.size(),state.input_key).tokens==tokens.size(),
                     "persisted DeepSeek-V4.1 prefix was not reusable after reopening");
@@ -266,19 +266,18 @@ void check_paged_sessions() {
     std::cout<<"paged_session_cases="<<cases<<" compression/ring/Engram/RAM/SSD/media/MTP-upgrade/corruption PASS\n";
 }
 void check_prefix_tail_retention() {
-    using mfq::cuda::internal::TextSessionCache;
-    CudaStores stores;
-    CudaExecutionContext execution(stores);auto model=make_model(execution);
+    using tyloi::cuda::internal::TextSessionCache;
+    TestExecution execution;auto model=make_model(execution);
     std::vector<int64_t> tokens(62);for(int i=0;i<62;++i)tokens[i]=i%8;
     deepseek_v41_prefill_hidden(model,ids(62),64);
-    mfq::cache::PagedPrefixCacheConfig config;
+    tyloi::cache::PagedPrefixCacheConfig config;
     config.cache_dir=std::filesystem::temp_directory_path()/
         ("mfq-v41-prefix-retention-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     config.compatibility_key="v41-checkpoint-retention";config.block_size_tokens=64;
     config.max_hot_bytes=32ULL<<20;config.max_disk_bytes=64ULL<<20;
     config.spill_hot_on_eviction=true;config.retain_tail_versions=0;
-    auto paged=std::make_shared<mfq::cache::PagedPrefixCache>(config);
-    mfq::engine::PrefixCacheConfig prefix;prefix.hot_bytes=0;prefix.ram_bytes=config.max_hot_bytes;
+    auto paged=std::make_shared<tyloi::cache::PagedPrefixCache>(config);
+    tyloi::engine::PrefixCacheConfig prefix;prefix.hot_bytes=0;prefix.ram_bytes=config.max_hot_bytes;
     TextSessionCache cache({},prefix,paged,true,0,true);
     cache.store("",model.capture_text_session_state(tokens));
     model.hidden_forward(ids(1));tokens.push_back(0);
@@ -298,40 +297,38 @@ void check_prefix_tail_retention() {
     std::cout<<"prefix_tail_retention RAM/SSD/short-checkpoint/full-block/retry PASS\n";
 }
 void check_exact_short() {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     auto model=make_model(execution);
     auto input=ids(17);
     auto expected=model.hidden_forward(input);
     model.reset(1);
     auto actual=deepseek_v41_prefill_hidden(model,input,17);
     require(actual.sizes()==expected.sizes(),"CED short prompt geometry changed");
-    const auto error=(actual.to(tb::kFloat32)-expected.to(tb::kFloat32)).abs().max().item<double>();
+    const auto error=(actual.to(tyloi::kFloat32)-expected.to(tyloi::kFloat32)).abs().max().item<double>();
     std::cerr<<"CED short maximum error="<<error<<'\n';
     require(std::isfinite(error) && error<.003,"CED short prompt differs from complete forward");
     check_positions(model,17);
     model.hidden_forward(ids(1));check_positions(model,18);
 }
 void check_short_prefill_tiles(int tile_tokens=8) {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     int cases=0;
     for(int ratio:{2,16})for(int context:{127,128,129})for(int tokens:{9,15,32,128}) {
         auto reference=make_model(execution,ratio),candidate=make_model(execution,ratio);
         auto prompt=ids(context),suffix=ids(tokens);
         reference.hidden_forward(prompt);candidate.hidden_forward(prompt);
-        std::vector<tb::Tensor> hidden,raw,expected,expected_raw;
+        std::vector<DenseTensor> hidden,raw,expected,expected_raw;
         for(int offset=0;offset<tokens;offset+=tile_tokens) {
             auto tile=suffix.narrow(1,offset,std::min(tile_tokens,tokens-offset));
-            tb::Tensor wanted_raw,tile_raw;
+            DenseTensor wanted_raw,tile_raw;
             expected.push_back(reference.hidden_forward(tile,mfq_nullopt,mfq_nullopt,nullptr,mfq_nullopt,&wanted_raw));
             expected_raw.push_back(std::move(wanted_raw));
             hidden.push_back(deepseek_v41_prefill_hidden(candidate,tile,tile_tokens,{},&tile_raw));
             raw.push_back(std::move(tile_raw));
         }
-        const auto same=[](const tb::Tensor& actual,const tb::Tensor& wanted) {
+        const auto same=[](const DenseTensor& actual,const DenseTensor& wanted) {
             require(actual.sizes()==wanted.sizes(),"retained short-prefill geometry differs from ordinary tiles");
-            const auto error=(actual.to(tb::kFloat32)-wanted.to(tb::kFloat32)).abs().max().item<double>();
+            const auto error=(actual.to(tyloi::kFloat32)-wanted.to(tyloi::kFloat32)).abs().max().item<double>();
             require(std::isfinite(error) && error<.003,
                 "retained short-prefill differs from ordinary causal forward or DSpark history");
         };
@@ -346,14 +343,13 @@ void check_short_prefill_tiles(int tile_tokens=8) {
         <<" ring/compressor/Engram/DSpark/decode PASS\n";
 }
 void check_long_and_cancel() {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     auto model=make_model(execution);
-    tb::Tensor raw;
+    DenseTensor raw;
     auto result=deepseek_v41_prefill_hidden(model,ids(257),64,{},&raw);
     require(raw.sizes()==tb::IntArrayRef({1,128,2*64}),"CED DSpark target tail geometry changed");
     require(result.size(1)==128,"CED did not limit Decoder replay to the local window");
-    require(std::isfinite(result.to(tb::kFloat32).abs().max().item<double>()),"CED output is not finite");
+    require(std::isfinite(result.to(tyloi::kFloat32).abs().max().item<double>()),"CED output is not finite");
     check_positions(model,257);
     model.hidden_forward(ids(1));check_positions(model,258);
     deepseek_v41_prefill_hidden(model,ids(3),2);check_positions(model,261);
@@ -363,11 +359,10 @@ void check_long_and_cancel() {
     check_positions(model,0);
 }
 void check_retained_prefix() {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     int cases=0;
-    const auto same=[](const tb::Tensor& a,const tb::Tensor& b,const char* message) {
-        const auto error=(a.to(tb::kFloat32)-b.to(tb::kFloat32)).abs().max().item<double>();
+    const auto same=[](const DenseTensor& a,const DenseTensor& b,const char* message) {
+        const auto error=(a.to(tyloi::kFloat32)-b.to(tyloi::kFloat32)).abs().max().item<double>();
         require(std::isfinite(error) && error<.005,message);
     };
     for(bool joint:{false,true})for(int ratio:{2,4})for(int context:{15,16,127,128,129})for(int kept:{0,1,2,3}) {
@@ -375,7 +370,7 @@ void check_retained_prefix() {
         const int confirmed=joint?1:0;
         auto prompt=ids(context),draft=ids(3+confirmed);
         reference.hidden_forward(prompt);candidate.hidden_forward(prompt);
-        tb::Tensor expected,pending,verified;
+        DenseTensor expected,pending,verified;
         if(joint)pending=reference.hidden_forward(draft.narrow(1,0,1));
         if(kept)expected=reference.hidden_forward(draft.narrow(1,confirmed,kept));
         if(joint) {
@@ -393,8 +388,8 @@ void check_retained_prefix() {
             const auto& actual=dynamic_cast<const deepseek_v41_runtime::Block&>(*candidate.blocks[layer]);
             const auto& wanted=dynamic_cast<const deepseek_v41_runtime::Block&>(*reference.blocks[layer]);
             const int64_t end=context+confirmed+kept,begin=std::max<int64_t>(0,end-128);
-            auto slots=tb::arange(begin,end,actual.state.local_kv.options().dtype(tb::kInt64))
-                .remainder(128.).to(tb::kInt64);
+            auto slots=tb::arange(begin,end,actual.state.local_kv.options().dtype(tyloi::kInt64))
+                .remainder(128.).to(tyloi::kInt64);
             same(actual.state.local_kv.index_select(1,slots),wanted.state.local_kv.index_select(1,slots),
                  "retained local KV ring changed accepted rows");
             if(actual.kv_source()) {

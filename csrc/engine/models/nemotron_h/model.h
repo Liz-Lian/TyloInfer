@@ -25,24 +25,24 @@ struct Mamba {
     int64_t mamba_groups = 0, conv_kernel = 0;
     double rms_norm_eps = 1e-6, time_step_limit_lo = 0.0, time_step_limit_hi = 0.0;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> mixer_norm;
+    ::tyloi::Tensor mixer_norm;
 #else
     DenseTensor mixer_norm;
 #endif
-    std::shared_ptr<const ::tyloi::Tensor> in_proj;
+    ::tyloi::Tensor in_proj;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
+    ::tyloi::Tensor conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
 #else
     DenseTensor conv_weight, conv_bias, a_log, d, dt_bias, scan_norm;
 #endif
-    std::shared_ptr<const ::tyloi::Tensor> out_proj;
+    ::tyloi::Tensor out_proj;
 };
 
 struct Moe {
     int layer = -1;
     double rms_norm_eps = 1e-6;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+    ::tyloi::Tensor ffn_norm;
 #else
     DenseTensor ffn_norm;
 #endif
@@ -60,15 +60,15 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
+    ::tyloi::Tensor embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+    ::tyloi::Tensor output_norm;
 #else
     DenseTensor output_norm;
 #endif
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const;
+    ::tyloi::Tensor embedding(const tyloi::Tensor& ids, int primary = 0) const;
 #endif
 };
 

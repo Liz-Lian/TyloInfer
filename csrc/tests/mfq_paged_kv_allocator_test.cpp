@@ -1,4 +1,4 @@
-#include "paged_kv_allocator.h"
+#include "engine/state/pages.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -16,7 +16,7 @@ void require(bool condition, const char * message) {
 } // namespace
 
 int main() {
-    using mfq::engine::PagedKvPageAllocator;
+    using tyloi::engine::PagedKvPageAllocator;
 
     PagedKvPageAllocator allocator(8);
     const auto pages = allocator.allocate(8);

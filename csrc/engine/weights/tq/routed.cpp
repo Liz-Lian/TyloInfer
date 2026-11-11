@@ -29,6 +29,6 @@ std::int64_t tyloi::TqBank::size(std::int64_t dimension) const {
     }
 }
 
-std::shared_ptr<const tyloi::Tensor> tyloi::TqBank::relocated(Device) const {
+std::shared_ptr<::tyloi::TensorImpl> tyloi::TqBank::relocated(Device) const {
     throw std::invalid_argument("TQ source relocation is unsupported");
 }

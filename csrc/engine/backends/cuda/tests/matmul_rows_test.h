@@ -1,7 +1,8 @@
 #pragma once
 
 void verify_matmul_rows() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     const Device device{DeviceType::cuda,0};
     int cases=0;
     for(auto dtype:{kFloat16,kBFloat16,kFloat32})for(int columns:{48,640,2560,6144})
@@ -13,14 +14,14 @@ void verify_matmul_rows() {
         auto x=tensor(xs).reshape({rows,width}).to(device).to(dtype);
         auto w=tensor(ws).reshape({columns,width}).to(device).to(dtype).transpose(0,1);
         const auto serial=[&] {
-            std::vector<Tensor> parts;
+            std::vector<DenseTensor> parts;
             for(int begin=0;begin<rows;begin+=tile)
                 parts.push_back(matmul(x.narrow(0,begin,std::min(tile,rows-begin)),w));
             return cat(parts,0);
         };
         auto expected=serial().to(kCPU).contiguous();
         for(int streams:{1,2,4}) {
-            Tensor result;
+            DenseTensor result;
             {
                 const MatmulRowsScope scope(tile,streams);
                 result=matmul(x,w);
@@ -52,7 +53,8 @@ void verify_matmul_rows() {
 }
 
 void verify_parallel_row_chains() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     const Device device{DeviceType::cuda,0};
     constexpr int width=256,columns=64,tile=256;
     int cases=0;
@@ -68,8 +70,8 @@ void verify_parallel_row_chains() {
         auto g=tensor(gs).reshape({columns,width}).to(device).to(dtype).transpose(0,1);
         auto u=tensor(us).reshape({columns,width}).to(device).to(dtype).transpose(0,1);
         auto d=tensor(ds).reshape({width,columns}).to(device).to(dtype).transpose(0,1);
-        const auto project=[&](const Tensor& part){return matmul(matmul(part,g)*matmul(part,u),d);};
-        std::vector<Tensor> expected_parts;
+        const auto project=[&](const DenseTensor& part){return matmul(matmul(part,g)*matmul(part,u),d);};
+        std::vector<DenseTensor> expected_parts;
         for(int begin=0;begin<rows;begin+=tile)
             expected_parts.push_back(project(x.narrow(0,begin,std::min(tile,rows-begin))));
         auto expected=cat(expected_parts,0).to(kCPU).contiguous();

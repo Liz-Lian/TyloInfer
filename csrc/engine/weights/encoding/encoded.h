@@ -11,7 +11,7 @@ namespace tyloi {
 // Shared plumbing for encoded weight representations: logical [rows, columns]
 // shape, the declared logical dtype, and the buffer list that keeps every
 // backing alive. Format fields and their validation stay in each representation.
-class EncodedTensor : public Tensor {
+class EncodedTensor : public TensorImpl {
 public:
     bool defined() const noexcept override { return primary().defined(); }
     std::int64_t dim() const noexcept override { return defined() ? 2 : 0; }
@@ -35,7 +35,7 @@ public:
             if (buffer && buffer->defined()) buffer->record_stream(stream);
     }
 
-    std::shared_ptr<const Tensor> relocated(Device target) const override {
+    std::shared_ptr<TensorImpl> relocated(Device target) const override {
         auto moved = cloned();
         // The copy belongs to the preparation step, so its buffers may move.
         for (const auto* buffer : moved->buffers()) {

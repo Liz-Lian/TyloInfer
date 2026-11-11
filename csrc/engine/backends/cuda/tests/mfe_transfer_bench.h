@@ -3,7 +3,7 @@
 #include "mfe_ffn_prepare.h"
 
 static void benchmark_mfe_transfer(bool timings=true) {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     for(int tokens:{1,2,6,32}) {
         constexpr int experts=1536,routes=10;const int pairs=tokens*routes;
@@ -29,8 +29,8 @@ static void benchmark_mfe_transfer(bool timings=true) {
         auto* descriptors=table+snapshot_words;
         auto* mapped_descriptors=mapped_table+snapshot_words;
         for(uint64_t word=0;word<descriptor_words;++word)descriptors[word]=(word+1)*812733719;
-        auto ids=tb::tensor(routes_host).to(tb::kCUDA);
-        auto snapshot=tb::empty({snapshot_words},ids.options().dtype(tb::kInt64));
+        auto ids=tb::tensor(routes_host).to(tyloi::kCUDA);
+        auto snapshot=tb::empty({snapshot_words},ids.options().dtype(tyloi::kInt64));
         auto device_descriptors=tb::empty({int64_t(descriptor_words+1)},snapshot.options());
         auto kinds=tb::empty({experts},ids.options()),indices=tb::empty_like(kinds),abort=tb::empty({1},ids.options());
         MfeFfnBatch batch;batch.tokens=tokens;batch.routes=routes;batch.experts=experts;
@@ -42,7 +42,7 @@ static void benchmark_mfe_transfer(bool timings=true) {
         batch.host_aborted=reinterpret_cast<uint32_t*>(mapped+flag_offset+32);
         for(bool cancelled:{false,true}) {
             values[flag_offset+32]=cancelled;
-            tb::Tensor reference_kinds,reference_indices;
+            tyloi::DenseTensor reference_kinds,reference_indices;
             for(int arm:{0,1,2,3,0}) {
                 table[2]=arm==3?descriptor_words:0;
                 const auto body=[&]{
@@ -114,15 +114,15 @@ static void benchmark_mfe_transfer(bool timings=true) {
         TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&gpu),cpu,0));
         auto* packet=reinterpret_cast<int32_t*>(cpu+64);auto* table=reinterpret_cast<uint64_t*>(cpu+96);
         std::vector<int32_t> input(routes);for(int i=0;i<routes;++i)input[i]=i%7;
-        auto ids=tb::tensor(input).to(tb::kCUDA);
+        auto ids=tb::tensor(input).to(tyloi::kCUDA);
         auto kinds=tb::empty({experts},ids.options()),indices=tb::empty_like(kinds);
-        auto abort=tb::zeros({1},ids.options()),snapshot=tb::empty({words},ids.options().dtype(tb::kInt64));
+        auto abort=tb::zeros({1},ids.options()),snapshot=tb::empty({words},ids.options().dtype(tyloi::kInt64));
         MfeFfnBatch batch;batch.tokens=1;batch.routes=routes;batch.experts=experts;
         batch.ids=ids.data_ptr<int32_t>();batch.kinds=kinds.data_ptr<int32_t>();batch.transfer_index=indices.data_ptr<int32_t>();
         batch.aborted=reinterpret_cast<uint32_t*>(abort.data_ptr());batch.resident_plan_overlap=true;
         batch.transfer_ready=gpu;batch.host_aborted=gpu+16;cpu[0]=1;
         const auto select=[&](bool enabled) {
-            mfq::cuda::env_set("TYLOINFER_MFE_DEVICE_RESIDENT_PACKET",enabled?"1":"0");
+            tyloi::cuda::env_set("TYLOINFER_MFE_DEVICE_RESIDENT_PACKET",enabled?"1":"0");
         };
         for(bool enabled:{false,true}) {
             select(enabled);

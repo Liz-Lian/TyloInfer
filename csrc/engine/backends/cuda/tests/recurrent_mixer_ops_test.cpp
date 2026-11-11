@@ -23,8 +23,8 @@
 
 namespace {
 
-namespace tb = mfq_tensor_backend;
-using tb::Tensor;
+namespace tb = tyloi::cuda;
+using DenseTensor = ::tyloi::DenseTensor;
 
 constexpr double kUnboundedLimit = std::numeric_limits<double>::infinity();
 
@@ -91,15 +91,15 @@ std::vector<float> pattern(std::size_t count, float amplitude, float salt)
     return values;
 }
 
-Tensor upload(const std::vector<float>& values,
+DenseTensor upload(const std::vector<float>& values,
               std::initializer_list<std::int64_t> shape)
 {
-    return tb::tensor(values).reshape(shape).to(tb::kCUDA).contiguous();
+    return tb::tensor(values).reshape(shape).to(tyloi::kCUDA).contiguous();
 }
 
-std::vector<float> download(const Tensor& tensor)
+std::vector<float> download(const DenseTensor& tensor)
 {
-    auto host = tensor.contiguous().to(tb::kFloat32).cpu();
+    auto host = tensor.contiguous().to(tyloi::kFloat32).cpu();
     return std::vector<float>(
         host.data_ptr<float>(), host.data_ptr<float>() + host.numel());
 }
@@ -108,17 +108,17 @@ std::vector<float> download(const Tensor& tensor)
 // kernel reads: storage quantization belongs to the caller, not to the op.
 std::vector<float> round_to(const std::vector<float>& values,
                             std::initializer_list<std::int64_t> shape,
-                            tb::ScalarType dtype)
+                            tyloi::ScalarType dtype)
 {
-    if (dtype == tb::kFloat32) {
+    if (dtype == tyloi::kFloat32) {
         return values;
     }
     return download(upload(values, shape).to(dtype));
 }
 
-Tensor upload_as(const std::vector<float>& values,
+DenseTensor upload_as(const std::vector<float>& values,
                  std::initializer_list<std::int64_t> shape,
-                 tb::ScalarType dtype)
+                 tyloi::ScalarType dtype)
 {
     return upload(values, shape).to(dtype).contiguous();
 }
@@ -221,7 +221,7 @@ ScanReference reference_scan(const ScanData& data,
     return result;
 }
 
-ScanData make_scan_data(const ScanShape& shape, tb::ScalarType dtype,
+ScanData make_scan_data(const ScanShape& shape, tyloi::ScalarType dtype,
                         float x_scale, float dt_scale)
 {
     require(shape.heads % shape.groups == 0, "test head/group mismatch");
@@ -304,19 +304,19 @@ std::vector<float> gather_gate(const std::vector<double>& source,
     return values;
 }
 
-Tensor upload_parameter(const std::vector<float>& values, int count)
+DenseTensor upload_parameter(const std::vector<float>& values, int count)
 {
     return upload(values, {(std::int64_t)count});
 }
 
 struct ScanTensors {
-    Tensor x;   // [B,T,H,P]
-    Tensor dt;  // [B,T,H]
-    Tensor b;   // [B,T,G,N]
-    Tensor c;   // [B,T,G,N]
+    DenseTensor x;   // [B,T,H,P]
+    DenseTensor dt;  // [B,T,H]
+    DenseTensor b;   // [B,T,G,N]
+    DenseTensor c;   // [B,T,G,N]
 };
 
-ScanTensors upload_scan(const ScanData& data, tb::ScalarType dtype)
+ScanTensors upload_scan(const ScanData& data, tyloi::ScalarType dtype)
 {
     const ScanShape& shape = data.shape;
     return {
@@ -331,9 +331,9 @@ ScanTensors upload_scan(const ScanData& data, tb::ScalarType dtype)
 }
 
 struct ScanParameters {
-    Tensor dt_bias;  // [H] f32
-    Tensor a_log;    // [H] f32
-    Tensor skip;     // [H] f32
+    DenseTensor dt_bias;  // [H] f32
+    DenseTensor a_log;    // [H] f32
+    DenseTensor skip;     // [H] f32
 };
 
 ScanParameters upload_parameters(const ScanData& data)
@@ -368,7 +368,7 @@ std::vector<Value> step_major(const std::vector<Value>& values,
 
 // Compare decode steps with the double reference, including the in-place state
 // evolution and the grouped (G < H) B/C broadcast.
-void check_decode(const ScanShape& shape, tb::ScalarType dtype,
+void check_decode(const ScanShape& shape, tyloi::ScalarType dtype,
                   float x_scale, float dt_scale)
 {
     const ScanData data = make_scan_data(shape, dtype, x_scale, dt_scale);
@@ -399,7 +399,7 @@ void check_decode(const ScanShape& shape, tb::ScalarType dtype,
             kUnboundedLimit);
         require(y.sizes().vec() == std::vector<std::int64_t>(
             {shape.batches, shape.heads, shape.columns}), "decode y shape");
-        require(y.scalar_type() == tb::kFloat32, "decode y must be f32");
+        require(y.scalar_type() == tyloi::kFloat32, "decode y must be f32");
         const std::size_t step = (std::size_t)shape.batches * shape.heads *
             shape.columns;
         close_vector(download(y),
@@ -419,7 +419,7 @@ void check_decode(const ScanShape& shape, tb::ScalarType dtype,
 
 // Prefill must equal the token-by-token recurrence for any T, with and without
 // an initial state, and must return the carried final state.
-void check_prefill(const ScanShape& shape, tb::ScalarType dtype,
+void check_prefill(const ScanShape& shape, tyloi::ScalarType dtype,
                    bool with_initial_state)
 {
     const ScanData data = make_scan_data(shape, dtype, 0.9f, 0.7f);
@@ -432,8 +432,8 @@ void check_prefill(const ScanShape& shape, tb::ScalarType dtype,
 
     const ScanTensors inputs = upload_scan(data, dtype);
     const ScanParameters parameters = upload_parameters(data);
-    Tensor initial_state;
-    Tensor initial_copy;
+    DenseTensor initial_state;
+    DenseTensor initial_copy;
     if (with_initial_state) {
         initial_state = upload(initial_values,
             {(std::int64_t)shape.batches, (std::int64_t)shape.heads,
@@ -444,14 +444,14 @@ void check_prefill(const ScanShape& shape, tb::ScalarType dtype,
         parameters.dt_bias, parameters.a_log, inputs.b, inputs.c, parameters.skip,
         initial_state, 0.0, kUnboundedLimit);
     require(result.size() == 2, "prefill must return y and final_state");
-    const Tensor& y = result[0];
-    const Tensor& final_state = result[1];
+    const DenseTensor& y = result[0];
+    const DenseTensor& final_state = result[1];
     require(y.sizes().vec() == std::vector<std::int64_t>({shape.batches,
         shape.tokens, shape.heads, shape.columns}), "prefill y shape");
     require(final_state.sizes().vec() == std::vector<std::int64_t>({shape.batches,
         shape.heads, shape.columns, shape.state_width}), "prefill final state shape");
-    require(y.scalar_type() == tb::kFloat32 &&
-        final_state.scalar_type() == tb::kFloat32, "prefill outputs must be f32");
+    require(y.scalar_type() == tyloi::kFloat32 &&
+        final_state.scalar_type() == tyloi::kFloat32, "prefill outputs must be f32");
     close_vector(download(y), reference.y, 1.0e-5f, 1.0e-4f, "prefill y");
     close_vector(download(final_state), reference.state, 1.0e-5f, 1.0e-4f,
         "prefill final state");
@@ -467,7 +467,7 @@ void check_prefill(const ScanShape& shape, tb::ScalarType dtype,
              (std::int64_t)shape.columns, (std::int64_t)shape.state_width})
         : tb::zeros({(std::int64_t)shape.batches, (std::int64_t)shape.heads,
             (std::int64_t)shape.columns, (std::int64_t)shape.state_width},
-            tb::TensorOptions().dtype(tb::kFloat32).device(tb::kCUDA));
+            tyloi::TensorOptions().dtype(tyloi::kFloat32).device(tyloi::kCUDA));
     std::vector<double> stepwise_y(reference.y.size(), 0.0);
     const std::size_t step = (std::size_t)shape.batches * shape.heads *
         shape.columns;
@@ -504,9 +504,9 @@ void check_dt_clamp()
     shape.columns = 3;
     shape.state_width = 32;
     shape.groups = 2;
-    const ScanData data = make_scan_data(shape, tb::kFloat32, 1.1f, 6.0f);
+    const ScanData data = make_scan_data(shape, tyloi::kFloat32, 1.1f, 6.0f);
     const std::vector<float> initial_values = make_state(shape, 0.3f);
-    const ScanTensors inputs = upload_scan(data, tb::kFloat32);
+    const ScanTensors inputs = upload_scan(data, tyloi::kFloat32);
     const ScanParameters parameters = upload_parameters(data);
     auto initial_state = upload(initial_values,
         {shape.batches, shape.heads, shape.columns, shape.state_width});
@@ -593,7 +593,7 @@ std::vector<double> reference_norm_then_gate(const std::vector<double>& x,
     return output;
 }
 
-void check_gated_norm(tb::ScalarType x_dtype, tb::ScalarType gate_dtype)
+void check_gated_norm(tyloi::ScalarType x_dtype, tyloi::ScalarType gate_dtype)
 {
     const int rows = 5, width = 16, group = 4;
     const double eps = 1.0e-6;
@@ -621,7 +621,7 @@ void check_gated_norm(tb::ScalarType x_dtype, tb::ScalarType gate_dtype)
     const std::vector<double> expected = reference_gated_norm(
         widen(rounded_x), widen(rounded_gate), widen(weight_values),
         rows, width, group, eps);
-    const bool wide_output = x_dtype != tb::kFloat32;
+    const bool wide_output = x_dtype != tyloi::kFloat32;
     close_vector(download(y), expected, wide_output ? 5.0e-3f : 1.0e-5f,
         wide_output ? 1.0e-2f : 1.0e-4f, "gated norm");
 
@@ -639,7 +639,7 @@ void check_gated_norm(tb::ScalarType x_dtype, tb::ScalarType gate_dtype)
 // relu^2
 // ---------------------------------------------------------------------------
 
-void check_relu_squared(tb::ScalarType dtype)
+void check_relu_squared(tyloi::ScalarType dtype)
 {
     const std::vector<float> values = {
         -8.0f, -3.5f, -1.0f, -0.25f, 0.0f, 0.125f, 1.0f, 2.5f, 7.75f,
@@ -656,7 +656,7 @@ void check_relu_squared(tb::ScalarType dtype)
         const double relu = std::max((double)rounded[index], 0.0);
         expected[index] = relu * relu;
     }
-    const bool wide_output = dtype != tb::kFloat32;
+    const bool wide_output = dtype != tyloi::kFloat32;
     close_vector(download(y), expected, wide_output ? 2.0e-2f : 1.0e-6f,
         wide_output ? 2.0e-2f : 1.0e-6f, "relu_squared");
 }
@@ -674,7 +674,7 @@ int main()
 
     int cases = 0;
     // Decode: grouped B/C (G < H), several successive in-place steps.
-    for (auto dtype : {tb::kFloat32, tb::kBFloat16}) {
+    for (auto dtype : {tyloi::kFloat32, tyloi::kBFloat16}) {
         ScanShape shape;
         shape.batches = 2;
         shape.tokens = 3;
@@ -704,15 +704,15 @@ int main()
         single.columns = 4;
         single.state_width = 32;
         single.groups = 2;
-        check_prefill(single, tb::kFloat32, with_initial);
+        check_prefill(single, tyloi::kFloat32, with_initial);
         ++cases;
         ScanShape long_form = single;
         long_form.tokens = 257;
-        check_prefill(long_form, tb::kFloat32, with_initial);
+        check_prefill(long_form, tyloi::kFloat32, with_initial);
         ++cases;
         ScanShape bf16_form = long_form;
         bf16_form.tokens = 65;
-        check_prefill(bf16_form, tb::kBFloat16, with_initial);
+        check_prefill(bf16_form, tyloi::kBFloat16, with_initial);
         ++cases;
     }
     {
@@ -725,20 +725,20 @@ int main()
         long_form.columns = 4;
         long_form.state_width = 32;
         long_form.groups = 2;
-        check_prefill(long_form, tb::kFloat32, true);
+        check_prefill(long_form, tyloi::kFloat32, true);
         ++cases;
     }
     check_dt_clamp();
     ++cases;
-    check_gated_norm(tb::kFloat32, tb::kFloat32);
+    check_gated_norm(tyloi::kFloat32, tyloi::kFloat32);
     ++cases;
-    check_gated_norm(tb::kFloat32, tb::kBFloat16);
+    check_gated_norm(tyloi::kFloat32, tyloi::kBFloat16);
     ++cases;
-    check_gated_norm(tb::kBFloat16, tb::kBFloat16);
+    check_gated_norm(tyloi::kBFloat16, tyloi::kBFloat16);
     ++cases;
-    check_gated_norm(tb::kFloat16, tb::kFloat16);
+    check_gated_norm(tyloi::kFloat16, tyloi::kFloat16);
     ++cases;
-    for (auto dtype : {tb::kFloat32, tb::kFloat16, tb::kBFloat16}) {
+    for (auto dtype : {tyloi::kFloat32, tyloi::kFloat16, tyloi::kBFloat16}) {
         check_relu_squared(dtype);
         ++cases;
     }

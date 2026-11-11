@@ -37,8 +37,8 @@ inline ::tyloi::DenseTensor minicpmo45_layer_norm(
         ::tyloi::DenseTensor input, const ::tyloi::Tensor &weight,
         const ::tyloi::Tensor &bias, double eps) {
     return tyloi::cuda::vision_layer_norm(std::move(input),
-        dynamic_cast<const ::tyloi::DenseTensor&>(weight),
-        dynamic_cast<const ::tyloi::DenseTensor&>(bias), eps);
+        weight.dense(),
+        bias.dense(), eps);
 #else
         ::tyloi::DenseTensor input, const ::tyloi::DenseTensor &weight,
         const ::tyloi::DenseTensor &bias, double eps) {
@@ -53,7 +53,7 @@ struct MiniCPMO45VisionEncoder {
         tyloi::weights::BiasWeight value;
         tyloi::weights::BiasWeight output;
 #ifdef TYLOINFER_NATIVE_CUDA
-        std::shared_ptr<const ::tyloi::Tensor> norm1_weight, norm1_bias, norm2_weight, norm2_bias;
+        ::tyloi::Tensor norm1_weight, norm1_bias, norm2_weight, norm2_bias;
 #else
         ::tyloi::DenseTensor norm1_weight;
         ::tyloi::DenseTensor norm1_bias;
@@ -117,10 +117,10 @@ struct MiniCPMO45VisionEncoder {
         result.norm2_weight = weights.native(prefix + ".norm2.weight");
         result.norm2_bias = weights.native(prefix + ".norm2.bias");
 #else
-        result.norm1_weight = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".norm1.weight"));
-        result.norm1_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".norm1.bias"));
-        result.norm2_weight = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".norm2.weight"));
-        result.norm2_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".norm2.bias"));
+        result.norm1_weight = weights.native(prefix + ".norm1.weight").dense();
+        result.norm1_bias = weights.native(prefix + ".norm1.bias").dense();
+        result.norm2_weight = weights.native(prefix + ".norm2.weight").dense();
+        result.norm2_bias = weights.native(prefix + ".norm2.bias").dense();
 #endif
         result.fc1 = weights.biased(prefix + ".mlp.up.weight", prefix + ".mlp.up.bias");
         result.fc2 = weights.biased(prefix + ".mlp.down.weight", prefix + ".mlp.down.bias");
@@ -131,7 +131,7 @@ struct MiniCPMO45VisionEncoder {
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> patch_weight, patch_bias, position_embedding;
+    ::tyloi::Tensor patch_weight, patch_bias, position_embedding;
 #else
     ::tyloi::DenseTensor patch_weight;
     ::tyloi::DenseTensor patch_bias;
@@ -140,7 +140,7 @@ struct MiniCPMO45VisionEncoder {
     // SigLIP blocks: 16 heads of 1152/16 = 72 features each.
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> post_norm_weight, post_norm_bias;
+    ::tyloi::Tensor post_norm_weight, post_norm_bias;
 #else
     ::tyloi::DenseTensor post_norm_weight;
     ::tyloi::DenseTensor post_norm_bias;
@@ -158,13 +158,13 @@ struct MiniCPMO45VisionEncoder {
         result.post_norm_bias = weights.native("vision.output_norm.bias");
 #else
         result.patch_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.patch_embedding.weight"));
-        result.patch_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.patch_embedding.bias"));
+            weights.native("vision.patch_embedding.weight").dense();
+        result.patch_bias = weights.native("vision.patch_embedding.bias").dense();
         result.position_embedding =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.position_embedding.weight"));
+            weights.native("vision.position_embedding.weight").dense();
         result.post_norm_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.output_norm.weight"));
-        result.post_norm_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.output_norm.bias"));
+            weights.native("vision.output_norm.weight").dense();
+        result.post_norm_bias = weights.native("vision.output_norm.bias").dense();
 #endif
         result.layers.reserve(27);
         for (int index = 0; index < 27; ++index) {
@@ -219,8 +219,8 @@ struct MiniCPMO45VisionEncoder {
             pixels, layers,
             [&](DenseTensor pixels) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& patch_weight_value = dynamic_cast<const DenseTensor&>(*patch_weight);
-                const auto& patch_bias_value = dynamic_cast<const DenseTensor&>(*patch_bias);
+                const auto& patch_weight_value = patch_weight.dense();
+                const auto& patch_bias_value = patch_bias.dense();
 #else
                 const auto& patch_weight_value = patch_weight;
                 const auto& patch_bias_value = patch_bias;
@@ -256,7 +256,7 @@ struct MiniCPMO45VisionEncoder {
                         .clone()
                         .to(::tyloi::kCUDA);
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& position_value = dynamic_cast<const DenseTensor&>(*position_embedding);
+                const auto& position_value = position_embedding.dense();
 #else
                 const auto& position_value = position_embedding;
 #endif
@@ -312,17 +312,17 @@ struct MiniCPMO45VisionEncoder {
 
 struct MiniCPMO45Resampler {
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> query, position_embedding;
+    ::tyloi::Tensor query, position_embedding;
 #else
     ::tyloi::DenseTensor query;
     ::tyloi::DenseTensor position_embedding;
 #endif
     tyloi::weights::BiasWeight kv_projection;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> q_norm_weight, q_norm_bias, kv_norm_weight, kv_norm_bias;
-    std::shared_ptr<const ::tyloi::Tensor> post_norm_weight, post_norm_bias;
-    std::shared_ptr<const ::tyloi::Tensor> in_projection_weight, in_projection_bias;
-    std::shared_ptr<const ::tyloi::Tensor> out_projection_weight, out_projection_bias, final_projection;
+    ::tyloi::Tensor q_norm_weight, q_norm_bias, kv_norm_weight, kv_norm_bias;
+    ::tyloi::Tensor post_norm_weight, post_norm_bias;
+    ::tyloi::Tensor in_projection_weight, in_projection_bias;
+    ::tyloi::Tensor out_projection_weight, out_projection_bias, final_projection;
 #else
     ::tyloi::DenseTensor q_norm_weight;
     ::tyloi::DenseTensor q_norm_bias;
@@ -394,31 +394,31 @@ struct MiniCPMO45Resampler {
             result.in_projection_weight->dim() != 2 || result.in_projection_weight->size(0) != 12288 ||
             result.in_projection_weight->size(1) != 4096) {
 #else
-        result.query = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.query"));
+        result.query = weights.native("vision.resampler.query").dense();
         result.kv_projection =
             weights.biased("vision.resampler.key_value.weight");
         result.q_norm_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.query_norm.weight"));
+            weights.native("vision.resampler.query_norm.weight").dense();
         result.q_norm_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.query_norm.bias"));
+            weights.native("vision.resampler.query_norm.bias").dense();
         result.kv_norm_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.key_value_norm.weight"));
+            weights.native("vision.resampler.key_value_norm.weight").dense();
         result.kv_norm_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.key_value_norm.bias"));
+            weights.native("vision.resampler.key_value_norm.bias").dense();
         result.post_norm_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.output_norm.weight"));
+            weights.native("vision.resampler.output_norm.weight").dense();
         result.post_norm_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.output_norm.bias"));
+            weights.native("vision.resampler.output_norm.bias").dense();
         result.in_projection_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.attention.qkv.weight"));
+            weights.native("vision.resampler.attention.qkv.weight").dense();
         result.in_projection_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.attention.qkv.bias"));
+            weights.native("vision.resampler.attention.qkv.bias").dense();
         result.out_projection_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.attention.output.weight"));
+            weights.native("vision.resampler.attention.output.weight").dense();
         result.out_projection_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.attention.output.bias"));
+            weights.native("vision.resampler.attention.output.bias").dense();
         result.final_projection =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("vision.resampler.output.weight"));
+            weights.native("vision.resampler.output.weight").dense();
         if (result.query.sizes().vec() != std::vector<int64_t>({64, 4096}) ||
             result.in_projection_weight.sizes().vec() != std::vector<int64_t>({12288, 4096})) {
 #endif
@@ -472,7 +472,7 @@ struct MiniCPMO45Resampler {
                 throw std::runtime_error("MiniCPM-o Resampler target size is invalid");
             }
 #ifdef TYLOINFER_NATIVE_CUDA
-            const auto& position_value = dynamic_cast<const ::tyloi::DenseTensor&>(*position_embedding);
+            const auto& position_value = position_embedding.dense();
 #else
             const auto& position_value = position_embedding;
 #endif
@@ -500,8 +500,8 @@ struct MiniCPMO45Resampler {
         const auto dtype = input.scalar_type();
         auto project = [&](::tyloi::DenseTensor value, int64_t offset) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            const auto& projection_weight = dynamic_cast<const ::tyloi::DenseTensor&>(*in_projection_weight);
-            const auto& projection_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*in_projection_bias);
+            const auto& projection_weight = in_projection_weight.dense();
+            const auto& projection_bias = in_projection_bias.dense();
 #else
             const auto& projection_weight = in_projection_weight;
             const auto& projection_bias = in_projection_bias;
@@ -522,7 +522,7 @@ struct MiniCPMO45Resampler {
             },
             [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto normalized = minicpmo45_layer_norm(dynamic_cast<const DenseTensor&>(*query), *q_norm_weight, *q_norm_bias, 1e-6);
+                auto normalized = minicpmo45_layer_norm(query.dense(), *q_norm_weight, *q_norm_bias, 1e-6);
 #else
                 auto normalized = minicpmo45_layer_norm(query, q_norm_weight, q_norm_bias, 1e-6);
 #endif
@@ -571,8 +571,8 @@ struct MiniCPMO45Resampler {
             },
             [&](DenseTensor attended) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& weight = dynamic_cast<const DenseTensor&>(*out_projection_weight);
-                const auto& bias = dynamic_cast<const DenseTensor&>(*out_projection_bias);
+                const auto& weight = out_projection_weight.dense();
+                const auto& bias = out_projection_bias.dense();
 #else
                 const auto& weight = out_projection_weight;
                 const auto& bias = out_projection_bias;
@@ -590,7 +590,7 @@ struct MiniCPMO45Resampler {
             },
             [&](DenseTensor attended) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& weight = dynamic_cast<const DenseTensor&>(*final_projection);
+                const auto& weight = final_projection.dense();
 #else
                 const auto& weight = final_projection;
 #endif

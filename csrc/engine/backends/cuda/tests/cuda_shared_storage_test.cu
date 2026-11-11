@@ -7,9 +7,9 @@
 #include <memory>
 #include <stdexcept>
 
-using mfq::cuda::MfePackedProjection;
-using mfq::cuda::MoeMappedCopyDescriptor;
-using mfq::cuda::SharedStorage;
+using tyloi::cuda::MfePackedProjection;
+using tyloi::cuda::MoeMappedCopyDescriptor;
+using tyloi::cuda::SharedStorage;
 
 static_assert(alignof(SharedStorage<MfePackedProjection,3>)==alignof(MfePackedProjection));
 static_assert(alignof(SharedStorage<MoeMappedCopyDescriptor>)==alignof(MoeMappedCopyDescriptor));
@@ -31,10 +31,10 @@ int main() {
     try {
         int devices=0;
         if(cudaGetDeviceCount(&devices)!=cudaSuccess || !devices)return 77;
-        auto context=std::make_shared<mfq::cuda::Context>(0);
-        mfq::cuda::Buffer source(context,3*sizeof(MfePackedProjection));
-        mfq::cuda::Buffer output(context,3*sizeof(MfePackedProjection));
-        mfq::cuda::Buffer copied(context,sizeof(MoeMappedCopyDescriptor));
+        auto context=std::make_shared<tyloi::cuda::Context>(0);
+        tyloi::cuda::Buffer source(context,3*sizeof(MfePackedProjection));
+        tyloi::cuda::Buffer output(context,3*sizeof(MfePackedProjection));
+        tyloi::cuda::Buffer copied(context,sizeof(MoeMappedCopyDescriptor));
         const auto stream=context->stream().get();
         for(int pass=0;pass<2;++pass) {
             std::array<MfePackedProjection,3> inputs{},results{};

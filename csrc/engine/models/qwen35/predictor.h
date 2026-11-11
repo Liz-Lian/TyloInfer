@@ -12,7 +12,7 @@ struct Predictor {
     struct Layer {
         FullAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA
-        std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+        ::tyloi::Tensor ffn_norm;
 #else
         ::tyloi::DenseTensor ffn_norm;
 #endif
@@ -20,9 +20,9 @@ struct Predictor {
     };
 
     tyloi::models::qwen35::Config config;
-    std::shared_ptr<const ::tyloi::Tensor> fusion;
+    ::tyloi::Tensor fusion;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> hidden_norm, embedding_norm, output_norm;
+    ::tyloi::Tensor hidden_norm, embedding_norm, output_norm;
 #else
     ::tyloi::DenseTensor hidden_norm, embedding_norm, output_norm;
 #endif

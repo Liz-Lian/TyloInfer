@@ -114,12 +114,12 @@ struct Model : tyloi::models::CausalModel {
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
-    std::shared_ptr<::tyloi::Tensor> embedding(const ::tyloi::Tensor& ids, int primary = 0) const override;
-    std::shared_ptr<::tyloi::Tensor> normalize(const ::tyloi::Tensor& hidden, std::int64_t batch,
+    ::tyloi::Tensor embedding(const ::tyloi::Tensor& ids, int primary = 0) const override;
+    ::tyloi::Tensor normalize(const ::tyloi::Tensor& hidden, std::int64_t batch,
         std::int64_t tokens) const override;
-    std::shared_ptr<::tyloi::Tensor> softcap(const ::tyloi::Tensor& logits) const override;
-    std::shared_ptr<::tyloi::Tensor> logits(const ::tyloi::Tensor& hidden, bool capped = true) const override;
-    std::shared_ptr<::tyloi::Tensor> forward(tyloi::models::Input input, tyloi::models::State& state,
+    ::tyloi::Tensor softcap(const ::tyloi::Tensor& logits) const override;
+    ::tyloi::Tensor logits(const ::tyloi::Tensor& hidden, bool capped = true) const override;
+    ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
                                  const tyloi::models::ForwardOptions& options = {}) const override;
 
     // ---- speculative contract used by the MTP sequence
@@ -135,8 +135,8 @@ struct Model : tyloi::models::CausalModel {
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;
-    std::shared_ptr<const ::tyloi::Tensor> embed;
-    std::shared_ptr<const ::tyloi::Tensor> lm_head;
+    ::tyloi::Tensor embed;
+    ::tyloi::Tensor lm_head;
     CausalConfig config;
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<qwen4_exp::Layer>> layers;

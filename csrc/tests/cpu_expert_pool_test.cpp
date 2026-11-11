@@ -1,4 +1,4 @@
-#include "tyloinfer/cpu_expert_pool.h"
+#include "engine/backends/cpu/executor/expert_pool.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -14,8 +14,8 @@
 
 namespace {
 void verify_host_placement() {
-    const auto first=mfq::cpu::detect_cpu_topology(true);
-    const auto last=mfq::cpu::detect_cpu_topology(true,mfq::cpu::PoolAffinity::All,mfq::cpu::HostCore::Last);
+    const auto first=tyloi::cpu::detect_cpu_topology(true);
+    const auto last=tyloi::cpu::detect_cpu_topology(true,tyloi::cpu::PoolAffinity::All,tyloi::cpu::HostCore::Last);
     assert(first.worker_cores.size()==last.worker_cores.size());
     if(first.is_hybrid)assert(first.host_core==last.host_core);
 #ifdef _WIN32
@@ -31,17 +31,17 @@ void verify_host_placement() {
     const auto original=selected();GROUP_AFFINITY original_group{};
     assert(GetThreadGroupAffinity(GetCurrentThread(),&original_group));
     {
-        mfq::cpu::ScopedHostAffinity outer(last.host_core);
+        tyloi::cpu::ScopedHostAffinity outer(last.host_core);
         const auto outer_sets=selected();assert(outer_sets.size()==1);
-        {mfq::cpu::ScopedHostAffinity inner(first.host_core);assert(selected().size()==1);}
+        {tyloi::cpu::ScopedHostAffinity inner(first.host_core);assert(selected().size()==1);}
         assert(selected()==outer_sets);
-        {mfq::cpu::ScopedHostAffinity noop(-1);assert(selected()==outer_sets);}
-        assert(!mfq::cpu::pin_current_thread(100000).valid);assert(selected()==outer_sets);
+        {tyloi::cpu::ScopedHostAffinity noop(-1);assert(selected()==outer_sets);}
+        assert(!tyloi::cpu::pin_current_thread(100000).valid);assert(selected()==outer_sets);
         GROUP_AFFINITY current{};assert(GetThreadGroupAffinity(GetCurrentThread(),&current));
         assert(current.Group==original_group.Group && current.Mask==original_group.Mask);
     }
     assert(selected()==original);
-    try {mfq::cpu::ScopedHostAffinity guard(last.host_core);throw std::runtime_error("placement unwind");}
+    try {tyloi::cpu::ScopedHostAffinity guard(last.host_core);throw std::runtime_error("placement unwind");}
     catch(const std::runtime_error&) {}
     assert(selected()==original);
     GROUP_AFFINITY restored{};assert(GetThreadGroupAffinity(GetCurrentThread(),&restored));
@@ -59,7 +59,7 @@ int main() {
 #else
     setenv("TYLOINFER_EXPERT_POOL_SPIN_US","0",1);
 #endif
-    mfq::cpu::ExpertPool pool(5,false);
+    tyloi::cpu::ExpertPool pool(5,false);
     std::vector<std::atomic<int>> seen(8192);
     for(int epoch=0;epoch<2000;++epoch) {
         const int n=epoch%3==0 ? 1 : epoch%3==1 ? 7 : 8192;
@@ -77,7 +77,7 @@ int main() {
     auto client=[&] { for(int i=0;i<100;++i) pool.rows(17,[&](auto b,auto e){completed+=static_cast<int>(e-b);}); };
     std::thread a(client),b(client); a.join();b.join();
     assert(completed==3400);
-    mfq::HostParallelProfile profile;
+    tyloi::HostParallelProfile profile;
     pool.rows(8192,[&](auto begin,auto end){completed+=static_cast<int>(end-begin);},&profile);
     if(profile.rows!=8192 || profile.participants!=6 || profile.worker_arrivals>5 ||
             profile.failed || completed!=3400+8192)

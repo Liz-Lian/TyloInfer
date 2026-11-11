@@ -42,7 +42,7 @@ public:
     void suspend();
     void finish();
     // Move the output out of borrowed storage before returning it to the cache.
-    std::shared_ptr<Tensor> finish(std::shared_ptr<Tensor> output);
+    Tensor finish(Tensor output);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

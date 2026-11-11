@@ -15,7 +15,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct EvalCommandOptions : CudaLoadOptions {
     std::string kl_base, kl_save_logits_f16;
@@ -30,9 +30,9 @@ struct EvalCommandOptions : CudaLoadOptions {
     int kl_stream_batch = 1;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-using namespace mfq::cuda::internal;
+using namespace tyloi::cuda::internal;
 
 namespace {
 KlEvaluator parse_kl_evaluator(const std::string& value) {
@@ -42,15 +42,15 @@ KlEvaluator parse_kl_evaluator(const std::string& value) {
         "--kl-evaluator must be legacy or optimized");
 }
 
-struct EvalCommand : mfq::cuda::EvalCommandOptions {
-    explicit EvalCommand(mfq::cuda::EvalCommandOptions options)
-        : mfq::cuda::EvalCommandOptions(std::move(options)) {}
+struct EvalCommand : tyloi::cuda::EvalCommandOptions {
+    explicit EvalCommand(tyloi::cuda::EvalCommandOptions options)
+        : tyloi::cuda::EvalCommandOptions(std::move(options)) {}
     int run() { return with_command_errors([&]() -> int {
         auto tq = std::make_shared<TqExec>();
-        std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
-        mfq::cuda::RoutedCache weights;
-        std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        mfq::cuda::ContextSet contexts;
+        std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
+        tyloi::cuda::RoutedCache weights;
+        std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
+        tyloi::cuda::ContextSet contexts;
         CudaExecutionContext execution(contexts, weights, kv, offload, tq);
         CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         setup_cuda_load(*this, execution);
@@ -94,7 +94,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 "--kl-reference-n-batch");
         }
         const auto active_env = [](const char * name) {
-            const char * value = mfq::cuda::env_lookup(name);
+            const char * value = tyloi::cuda::env_lookup(name);
             return value != nullptr && value[0] != '\0';
         };
         if (!kl_base.empty() && active_env("TYLOINFER_KL_WINDOW_M")) {
@@ -153,7 +153,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
             }
         }
         execution.profiler.enabled = false;
-        mfq_tensor_backend::NoGradGuard no_grad;
+        tyloi::cuda::NoGradGuard no_grad;
         if (!kl_base.empty()) std::cout << std::unitbuf;
         if (!kl_base.empty()) {
             std::cout << "cpp_kl_contract"
@@ -187,7 +187,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 kl_stream_layers, kl_stream_batch,
                 kl_score_count, kl_reference_contract);
         }
-        return mfq::cuda::with_model<>(execution, *this, false,
+        return tyloi::cuda::with_model<>(execution, *this, false,
             [&](auto& owner, auto& owned_state, auto& executor, auto&, auto, auto, auto&) -> int {
         auto& model = *owner;
         auto& state = *owned_state;
@@ -254,13 +254,13 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
 };
 
 } // namespace
-namespace mfq::cuda {
+namespace tyloi::cuda {
 int execute_eval_command(EvalCommandOptions options) {
     return EvalCommand(std::move(options)).run();
 }
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda::commands {
+namespace tyloi::cuda::commands {
 namespace {
 
 void print_eval_help() {
@@ -398,7 +398,7 @@ int run_eval(int argc, char** argv) {
         }
         ArgCursor args(argc, argv, 2);
         auto options = parse_eval(args);
-        return mfq::cuda::execute_eval_command(std::move(options));
+        return tyloi::cuda::execute_eval_command(std::move(options));
     } catch (const HelpRequested&) {
         return 0;
     } catch (const UsageError& error) {
@@ -406,4 +406,4 @@ int run_eval(int argc, char** argv) {
     }
 }
 
-} // namespace mfq::cuda::commands
+} // namespace tyloi::cuda::commands

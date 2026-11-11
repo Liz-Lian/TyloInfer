@@ -9,13 +9,14 @@
 #include <vector>
 
 namespace {
-using namespace mfq::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
 const Device gpu{DeviceType::cuda, 0};
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 void environment(const char* name, const char* value) {
-    mfq::cuda::env_set(name, value);
+    tyloi::cuda::env_set(name, value);
 }
-void close(const Tensor& actual, const Tensor& reference, float atol, float rtol) {
+void close(const DenseTensor& actual, const DenseTensor& reference, float atol, float rtol) {
     require(actual.sizes() == reference.sizes(), "shape mismatch");
     auto a = actual.contiguous().to(kCPU, kFloat32);
     auto b = reference.contiguous().to(kCPU, kFloat32);
@@ -27,7 +28,7 @@ void close(const Tensor& actual, const Tensor& reference, float atol, float rtol
         }
     }
 }
-Tensor pattern(std::vector<std::int64_t> shape, float scale, int phase = 0) {
+DenseTensor pattern(std::vector<std::int64_t> shape, float scale, int phase = 0) {
     std::int64_t count = 1;
     for (auto d : shape) count *= d;
     std::vector<float> values(count);
@@ -53,10 +54,10 @@ void fp8(bool mx) {
     const std::string dtype = mx ? "MXFP8-SQ" : "FP8-128SQ";
     const int n = mx ? 17 : 257, k = mx ? 96 : 257;
     const int br = mx ? 1 : 128, bc = mx ? 32 : 128;
-    const auto q_bytes = (mfq::fp8sq::packed_nbytes(n, 3) + 3) & ~std::size_t{3};
+    const auto q_bytes = (tyloi::fp8sq::packed_nbytes(n, 3) + 3) & ~std::size_t{3};
     const auto palettes = 44 + q_bytes, symbols = palettes + 256;
     std::size_t scales = symbols;
-    for (int row = 0; row < n; ++row) scales += mfq::fp8sq::packed_nbytes(k, row % 8 + 1);
+    for (int row = 0; row < n; ++row) scales += tyloi::fp8sq::packed_nbytes(k, row % 8 + 1);
     const int sr = (n + br - 1) / br, sc = (k + bc - 1) / bc;
     std::vector<std::uint8_t> raw(scales + sr * sc * (mx ? 1 : 2), 0);
     raw[0] = mx ? 'M' : 'F'; raw[1] = '8'; raw[2] = 'S'; raw[3] = 'Q'; raw[4] = 1;
@@ -82,15 +83,15 @@ void fp8(bool mx) {
             if (bits == 8 && (code & 127) == 127) code ^= 1;
             put(offset, col, code, bits);
         }
-        offset += mfq::fp8sq::packed_nbytes(k, bits);
+        offset += tyloi::fp8sq::packed_nbytes(k, bits);
     }
     for (int i = 0; i < sr * sc; ++i) {
         if (mx) raw[scales + i] = 120 + i % 3;
         else { raw[scales + 2 * i] = 128; raw[scales + 2 * i + 1] = 60; }
     }
     const auto decode = [&](const std::vector<std::uint8_t>& bytes) {
-        const auto layout = mfq::fp8sq::parse(dtype, bytes.data(), bytes.size());
-        const auto metadata = mfq::fp8sq::row_metadata(bytes.data(), layout);
+        const auto layout = tyloi::fp8sq::parse(dtype, bytes.data(), bytes.size());
+        const auto metadata = tyloi::fp8sq::row_metadata(bytes.data(), layout);
         auto blob = tensor(bytes).to(gpu), q = tensor(metadata.q).to(gpu);
         std::vector<std::int32_t> offsets(metadata.symbol_byte_offsets.begin(), metadata.symbol_byte_offsets.end());
         auto off = tensor(offsets).to(gpu);
@@ -99,32 +100,32 @@ void fp8(bool mx) {
             : fp8_128_sq_dequant_cuda(blob,q,off,layout.outputs,layout.width,2,layout.palettes,layout.symbols,layout.scales,true);
         auto host = dense.to(kCPU);
         for (int row = 0; row < layout.outputs; ++row) for (int col = 0; col < layout.width; ++col)
-            require(host.data_ptr<float>()[row * layout.width + col] == mfq::fp8sq::decode_cpu(
+            require(host.data_ptr<float>()[row * layout.width + col] == tyloi::fp8sq::decode_cpu(
                 bytes.data(), layout, metadata.q[row], offsets[row], row, col), "FP8 CPU decode differs");
         return dense;
     };
     const auto original = decode(raw);
     const int row_begin = mx ? 8 : 128, col_begin = mx ? 32 : 128;
-    const auto sliced = mfq::fp8sq::slice(dtype, raw, row_begin, n, col_begin, k);
+    const auto sliced = tyloi::fp8sq::slice(dtype, raw, row_begin, n, col_begin, k);
     close(decode(sliced), original.narrow(0, row_begin, n-row_begin).narrow(1,col_begin,k-col_begin), 0, 0);
 }
 
 void mxfp4_benchmark(int n, int m = 128) {
     environment("TYLOINFER_FORCE_SQ_TENSOR_CORE", "1");
     constexpr int k = 4096;
-    const auto layout = mfq::sq::adaptive_layout(n, k, 120, n / 4 * 10, n / 4);
+    const auto layout = tyloi::sq::adaptive_layout(n, k, 120, n / 4 * 10, n / 4);
     std::vector<std::uint8_t> bytes(layout.bytes, 0);
     bytes[0]='S'; bytes[1]='Q'; bytes[2]='V'; bytes[3]='2'; bytes[4]=2; bytes[5]=120;
     for (int i=0;i<8;++i) { bytes[8+i]=std::uint64_t(n)>>(8*i); bytes[16+i]=std::uint64_t(k)>>(8*i); }
     auto offset = layout.symbols;
     for (int row=0;row<n;++row) {
         const int bits=row%4+1;
-        mfq::sq::write_packed_bits(bytes,layout.q_selectors,row,2,bits-1);
-        for (int col=0;col<k;++col) mfq::sq::write_packed_bits(bytes,offset,col,bits,(col*17+row*13)&((1<<bits)-1));
+        tyloi::sq::write_packed_bits(bytes,layout.q_selectors,row,2,bits-1);
+        for (int col=0;col<k;++col) tyloi::sq::write_packed_bits(bytes,offset,col,bits,(col*17+row*13)&((1<<bits)-1));
         offset+=std::size_t(k)*bits/8;
     }
     std::fill(bytes.begin()+layout.native_scales, bytes.end(), 120);
-    const auto rows=mfq::sq::row_metadata(bytes.data(),layout);
+    const auto rows=tyloi::sq::row_metadata(bytes.data(),layout);
     auto blob=tensor(bytes).to(gpu), q=tensor(rows.q).to(gpu);
     auto offsets=tensor(std::vector<std::int32_t>(rows.symbol_byte_offsets.begin(),rows.symbol_byte_offsets.end())).to(gpu);
     auto auxiliary=tensor(std::vector<std::int32_t>(rows.auxiliary_rows.begin(),rows.auxiliary_rows.end())).to(gpu);
@@ -149,7 +150,7 @@ void native_benchmark() {
             auto stream = stream_from_pool(false, 0);
             StreamGuard guard(stream);
             Graph graph;
-            std::tuple<Tensor, Tensor> captured;
+            std::tuple<DenseTensor, DenseTensor> captured;
             graph.prepare_memory();
             captured = selected();
             TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));

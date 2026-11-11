@@ -1,7 +1,7 @@
 // Native ABI numerical-test bridge: tests/test_cuda_flash_next.py supplies the
 // same NumPy oracle cases to this executable and the production Torch module.
-#include "mfq_cuda_attention_ops.h"
-#include "csrc/backends/cuda/kernels/glm5_next.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
+#include "engine/backends/cuda/kernels/glm5_next.h"
 #include "csrc/backends/cuda/kernels/qwen4_exp.h"
 #include "glm5_next/model.h"
 #include "qwen4_exp/model.h"
@@ -15,22 +15,23 @@
 #include <memory>
 #include <string>
 
-mfq_tensor_backend::Tensor attention_glm_mla_sparse_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor kv,
-    mfq_tensor_backend::Tensor indices, mfq_tensor_backend::Tensor meta,
+DenseTensor attention_glm_mla_sparse_cuda(
+    DenseTensor q, DenseTensor kv,
+    DenseTensor indices, DenseTensor meta,
     double scale);
-mfq_tensor_backend::Tensor attention_dsv4_sparse_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor kv,
-    mfq_tensor_backend::Tensor indices, mfq_tensor_backend::Tensor mask,
-    mfq_tensor_backend::Tensor sinks, mfq_tensor_backend::Tensor meta,
+DenseTensor attention_dsv4_sparse_cuda(
+    DenseTensor q, DenseTensor kv,
+    DenseTensor indices, DenseTensor mask,
+    DenseTensor sinks, DenseTensor meta,
     double scale);
 
 namespace {
-using namespace mfq::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
 using Json = nlohmann::json;
 
 void require_constant(
-    const Tensor& value, float expected, float tolerance, const char * name) {
+    const DenseTensor& value, float expected, float tolerance, const char * name) {
     const auto host = value.to(kFloat32).contiguous().cpu();
     float maximum_error = 0.0f;
     for (int64_t index = 0; index < host.numel(); ++index) {
@@ -46,7 +47,7 @@ void require_constant(
 }
 
 void require_qsa_gqa_means(
-    const Tensor& value, float first, float second, float tolerance) {
+    const DenseTensor& value, float first, float second, float tolerance) {
     const auto host = value.to(kFloat32).contiguous().cpu();
     float maximum_error = 0.0f;
     for (int head = 0; head < 24; ++head) {
@@ -132,7 +133,7 @@ void check_shared_sparse_attention() {
         0.0f, 0.0f, "fully masked DSV4 sparse attention");
 }
 
-Tensor input(const Json& j) {
+DenseTensor input(const Json& j) {
     if (j.is_null()) return {};
     const auto shape = j.at("shape").get<std::vector<int64_t>>();
     const auto dtype = j.value("dtype", "float32");
@@ -155,22 +156,22 @@ Tensor input(const Json& j) {
     return value;
 }
 
-std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, const Json& p) {
+std::vector<DenseTensor> run(const std::string& op, const std::vector<DenseTensor>& a, const Json& p) {
     CudaStores stores;
     CudaExecutionContext execution(stores);
-    const auto optional = [&](size_t i) -> std::optional<Tensor> {
-        return a.at(i).defined() ? std::optional<Tensor>(a.at(i)) : std::nullopt;
+    const auto optional = [&](size_t i) -> std::optional<DenseTensor> {
+        return a.at(i).defined() ? std::optional<DenseTensor>(a.at(i)) : std::nullopt;
     };
     std::optional<double> scale;
     if (p.contains("scale") && !p.at("scale").is_null()) scale = p.at("scale").get<double>();
     if (op == "runtime_gdn") {
-        const auto linear = [&](int index) -> mfq::cuda::qwen4_exp::Linear {
-            auto w=a.at(index);return [w](CudaExecutionContext&, const Tensor& x) {return matmul(x.to(w.scalar_type()),w.transpose(-1,-2));};
+        const auto linear = [&](int index) -> tyloi::cuda::qwen4_exp::Linear {
+            auto w=a.at(index);return [w](CudaExecutionContext&, const DenseTensor& x) {return matmul(x.to(w.scalar_type()),w.transpose(-1,-2));};
         };
-        mfq::cuda::qwen4_exp::GdnWeights w{linear(1),linear(2),linear(3),linear(4),linear(5),a.at(6),a.at(7),a.at(8),a.at(9)};
-        mfq::cuda::qwen4_exp::Gdn block(std::move(w),p.at("key_heads"),p.at("value_heads"),p.at("width"),
+        tyloi::cuda::qwen4_exp::GdnWeights w{linear(1),linear(2),linear(3),linear(4),linear(5),a.at(6),a.at(7),a.at(8),a.at(9)};
+        tyloi::cuda::qwen4_exp::Gdn block(std::move(w),p.at("key_heads"),p.at("value_heads"),p.at("width"),
             p.at("kernel"),p.value("eps",1e-6),p.value("silu_gate",false));
-        std::vector<Tensor> out;
+        std::vector<DenseTensor> out;
         for (const auto& step:p.at("steps")) {
             if (step.value("reset",false)) block.reset();
             else if (step.value("commit",false)) block.commit();
@@ -184,33 +185,33 @@ std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, con
     }
     if (op == "runtime_ngram" || op == "runtime_ple") {
         const auto weights=a.at(op=="runtime_ngram"?1:2);
-        std::vector<mfq::cuda::qwen4_exp::Embedding> shards;
+        std::vector<tyloi::cuda::qwen4_exp::Embedding> shards;
         for (int64_t i=0;i<weights.size(0);++i) {
             auto w=weights.select(0,i);
-            shards.push_back([w](const Tensor& ids) {
+            shards.push_back([w](const DenseTensor& ids) {
                 auto shape=ids.sizes().vec();shape.push_back(w.size(1));
                 return w.index_select(0,ids.reshape({-1}).to(kInt64)).reshape(shape);
             });
         }
-        mfq::cuda::qwen4_exp::NgramEmbedding embedding(std::move(shards),weights.size(1),weights.size(2),p.at("ngram"),
+        tyloi::cuda::qwen4_exp::NgramEmbedding embedding(std::move(shards),weights.size(1),weights.size(2),p.at("ngram"),
             p.at("heads_per_ngram"),p.at("eos"),p.at("multipliers").get<std::vector<int64_t>>(),
             p.at("offsets").get<std::vector<int64_t>>(),p.at("vocab").get<std::vector<int64_t>>());
-        std::vector<Tensor> out;
+        std::vector<DenseTensor> out;
         if (op=="runtime_ngram") {
             for (const auto& step:p.at("steps")) {
                 if (step.value("reset",false)) embedding.reset();
                 else {
-                    Tensor ids;
+                    DenseTensor ids;
                     out.push_back(embedding.forward(a.at(0).narrow(1,step.at("begin"),step.at("count")),step.value("cache",true),&ids));
                     out.push_back(ids);
                 }
             }
         } else {
-            const auto linear=[&](int i)->mfq::cuda::qwen4_exp::Linear {
-                auto w=a.at(i);return [w](CudaExecutionContext&, const Tensor& x) {return matmul(x.to(w.scalar_type()),w.transpose(-1,-2));};
+            const auto linear=[&](int i)->tyloi::cuda::qwen4_exp::Linear {
+                auto w=a.at(i);return [w](CudaExecutionContext&, const DenseTensor& x) {return matmul(x.to(w.scalar_type()),w.transpose(-1,-2));};
             };
-            mfq::cuda::qwen4_exp::PleWeights w{linear(3),linear(4),a.at(5),a.at(6),a.at(7),a.at(8)};
-            mfq::cuda::qwen4_exp::Ple block(std::move(embedding),std::move(w),p.at("hidden"),p.at("streams"),p.at("ngram"),p.value("eps",1e-6));
+            tyloi::cuda::qwen4_exp::PleWeights w{linear(3),linear(4),a.at(5),a.at(6),a.at(7),a.at(8)};
+            tyloi::cuda::qwen4_exp::Ple block(std::move(embedding),std::move(w),p.at("hidden"),p.at("streams"),p.at("ngram"),p.value("eps",1e-6));
             for (const auto& step:p.at("steps")) {
                 if (step.value("reset",false)) block.reset();
                 else if (step.value("commit",false)) block.commit();
@@ -225,18 +226,18 @@ std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, con
         return out;
     }
     if (op == "runtime_qsa") {
-        const auto linear = [&](int index) -> mfq::cuda::qwen4_exp::Linear {
+        const auto linear = [&](int index) -> tyloi::cuda::qwen4_exp::Linear {
             auto weight=a.at(index);
-            return [weight](CudaExecutionContext&, const Tensor& x) {return matmul(x.to(weight.scalar_type()),weight.transpose(-1,-2));};
+            return [weight](CudaExecutionContext&, const DenseTensor& x) {return matmul(x.to(weight.scalar_type()),weight.transpose(-1,-2));};
         };
-        auto rotary=std::make_shared<mfq::cuda::RotaryEmbedding>(p.at("rotary"),p.at("maximum"),p.value("base",1e7),
+        auto rotary=std::make_shared<tyloi::cuda::RotaryEmbedding>(p.at("rotary"),p.at("maximum"),p.value("base",1e7),
             p.value("sections",std::vector<int64_t>{}),p.value("interleaved",false));
-        mfq::cuda::qwen4_exp::QsaWeights weights{linear(1),linear(2),linear(3),linear(4),linear(5),a.at(6),a.at(7),a.at(8),a.at(9)};
-        mfq::cuda::qwen4_exp::QsaConfig config{p.at("heads"),p.at("kv_heads"),p.at("width"),p.at("index_heads"),
+        tyloi::cuda::qwen4_exp::QsaWeights weights{linear(1),linear(2),linear(3),linear(4),linear(5),a.at(6),a.at(7),a.at(8),a.at(9)};
+        tyloi::cuda::qwen4_exp::QsaConfig config{p.at("heads"),p.at("kv_heads"),p.at("width"),p.at("index_heads"),
             p.at("index_width"),p.at("pool"),p.at("budget"),p.at("maximum"),p.value("eps",1e-6)};
-        mfq::cuda::qwen4_exp::Qsa block(std::move(weights),config,rotary);
-        Tensor history;
-        std::vector<Tensor> out;
+        tyloi::cuda::qwen4_exp::Qsa block(std::move(weights),config,rotary);
+        DenseTensor history;
+        std::vector<DenseTensor> out;
         for (const auto& step:p.at("steps")) {
             if (step.value("reset",false)) {block.reset();history={};}
             else if (step.contains("truncate")) {
@@ -246,7 +247,7 @@ std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, con
                 auto pos=a.at(10).narrow(-1,step.at("begin"),step.at("count"));
                 const bool cache=step.value("cache",true);
                 auto full=cache && history.defined()?cat({history,pos},-1):pos;
-                std::vector<Tensor> trace;
+                std::vector<DenseTensor> trace;
                 out.push_back(block.forward(execution,a.at(0).narrow(1,step.at("begin"),step.at("count")),pos,full,cache,
                     p.value("trace",false)?&trace:nullptr));
                 out.insert(out.end(),trace.begin(),trace.end());
@@ -255,11 +256,11 @@ std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, con
         }
         return out;
     }
-    if (op == "runtime_select_pooled_blocks") return {mfq::cuda::attention_ops::select_pooled_blocks(
+    if (op == "runtime_select_pooled_blocks") return {tyloi::cuda::attention_ops::select_pooled_blocks(
         a.at(0), p.at("query_offset"), p.at("logical_length"), p.at("pool"), p.at("budget"), p.at("tail"))};
     if (op == "runtime_sequence_cache") {
-        mfq::cuda::attention_ops::SequenceCache cache(p.at("maximum"), a.at(0).size(-1));
-        std::vector<Tensor> out;
+        tyloi::cuda::attention_ops::SequenceCache cache(p.at("maximum"), a.at(0).size(-1));
+        std::vector<DenseTensor> out;
         for (const auto& step : p.at("steps")) {
             if (step.contains("truncate")) cache.truncate(step.at("truncate"));
             else if (step.value("reset", false)) cache.reset();
@@ -268,15 +269,15 @@ std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, con
         return out;
     }
     if (op == "runtime_kda") {
-        const auto linear = [&](int index) -> mfq::cuda::glm5_next::Linear {
+        const auto linear = [&](int index) -> tyloi::cuda::glm5_next::Linear {
             auto weight = a.at(index);
-            return [weight](CudaExecutionContext&, const Tensor& x) { return matmul(x.to(weight.scalar_type()), weight.transpose(-1,-2)); };
+            return [weight](CudaExecutionContext&, const DenseTensor& x) { return matmul(x.to(weight.scalar_type()), weight.transpose(-1,-2)); };
         };
-        mfq::cuda::glm5_next::KdaWeights weights{linear(1),linear(2),linear(3),linear(4),linear(5),linear(6),linear(7),
+        tyloi::cuda::glm5_next::KdaWeights weights{linear(1),linear(2),linear(3),linear(4),linear(5),linear(6),linear(7),
             a.at(8),a.at(9),a.at(10),a.at(11),a.at(12),a.at(13)};
-        mfq::cuda::glm5_next::Kda block(std::move(weights), p.at("heads"), p.at("width"), p.at("kernel"),
+        tyloi::cuda::glm5_next::Kda block(std::move(weights), p.at("heads"), p.at("width"), p.at("kernel"),
             p.value("lower_bound", -5.0), p.value("eps", 1e-5));
-        std::vector<Tensor> out;
+        std::vector<DenseTensor> out;
         for (const auto& step : p.at("steps")) {
             if (step.value("rollback", false)) block.rollback();
             else if (step.value("commit", false)) block.commit();
@@ -307,7 +308,7 @@ std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, con
     throw std::runtime_error("unknown Flash-Next operation");
 }
 
-Json output(const std::vector<Tensor>& tensors) {
+Json output(const std::vector<DenseTensor>& tensors) {
     Json result = Json::array();
     for (const auto& value : tensors) {
         if (!value.defined()) { result.push_back(nullptr); continue; }
@@ -323,9 +324,10 @@ Json output(const std::vector<Tensor>& tensors) {
 } // namespace
 
 void check_rotary_fusion() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     int ordinary_cases=0,graph_cases=0,switch_cases=0;
-    const auto exact=[](const Tensor& actual,const Tensor& expected) {
+    const auto exact=[](const DenseTensor& actual,const DenseTensor& expected) {
         const auto a=actual.cpu().contiguous(),b=expected.cpu().contiguous();
         if(a.sizes()!=b.sizes() || a.scalar_type()!=b.scalar_type() ||
             std::memcmp(a.data_ptr(),b.data_ptr(),size_t(a.numel()*a.element_size())))
@@ -359,13 +361,13 @@ void check_rotary_fusion() {
             exact(fused.forward(x,p),original.forward(x,p));++ordinary_cases;
             if(mode==2 && layout==3) {
                 std::array<StreamHandle,2> streams{stream_from_pool(false),stream_from_pool(false)};
-                std::array<Graph,2> graphs;std::array<Tensor,2> outputs;
+                std::array<Graph,2> graphs;std::array<DenseTensor,2> outputs;
                 for(int variant=0;variant<2;++variant) {
                     StreamGuard guard(streams[variant]);
                     auto& operation=variant?fused:original;
                     graphs[variant].prepare_memory();outputs[variant]=operation.forward(x,p);
                     TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(current_stream(0).stream()));
-                    outputs[variant]=Tensor{};
+                    outputs[variant]=DenseTensor{};
                     graphs[variant].capture_begin();outputs[variant]=operation.forward(x,p);graphs[variant].capture_end();
                 }
                 for(int step=0;step<3;++step) {
@@ -390,9 +392,10 @@ void check_rotary_fusion() {
 }
 
 void check_rotary_normalized_fusion() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     int ordinary_cases=0,cache_cases=0,graph_cases=0;
-    const auto exact=[](const Tensor& actual,const Tensor& expected,const char* label) {
+    const auto exact=[](const DenseTensor& actual,const DenseTensor& expected,const char* label) {
         const auto a=actual.cpu().contiguous(),b=expected.cpu().contiguous();
         if(a.sizes()!=b.sizes() || a.scalar_type()!=b.scalar_type() ||
             std::memcmp(a.data_ptr(),b.data_ptr(),size_t(a.numel()*a.element_size())))
@@ -434,9 +437,9 @@ void check_rotary_normalized_fusion() {
             RotaryEmbedding original(rotary,512,1e7,sections,mode==2,false);
             RotaryEmbedding fused(rotary,512,1e7,sections,mode==2,true);
             const auto options=x.options().dtype(kFloat16);
-            std::array<Tensor,2> keys{full({b,h,3*t+8,d},-.17,options),full({b,h,3*t+8,d},-.17,options)};
-            std::array<Tensor,2> cached_values{full({b,h,3*t+8,d},.23,options),full({b,h,3*t+8,d},.23,options)};
-            std::array<Tensor,2> outputs;
+            std::array<DenseTensor,2> keys{full({b,h,3*t+8,d},-.17,options),full({b,h,3*t+8,d},-.17,options)};
+            std::array<DenseTensor,2> cached_values{full({b,h,3*t+8,d},.23,options),full({b,h,3*t+8,d},.23,options)};
+            std::array<DenseTensor,2> outputs;
             const auto forward=[&](int variant) {
                 if(variant) {
                     outputs[1]=fused.forward_normalized(x,weight,p,1e-6);
@@ -457,7 +460,7 @@ void check_rotary_normalized_fusion() {
                 std::array<Graph,2> graphs;
                 for(int variant=0;variant<2;++variant) {
                     StreamGuard guard(streams[variant]);graphs[variant].prepare_memory();forward(variant);
-                    TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(streams[variant].stream()));outputs[variant]=Tensor{};
+                    TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(streams[variant].stream()));outputs[variant]=DenseTensor{};
                     graphs[variant].capture_begin();forward(variant);graphs[variant].capture_end();
                 }
                 for(int step=0;step<3;++step) {
@@ -486,9 +489,10 @@ void check_rotary_normalized_fusion() {
 }
 
 void check_attention_fusion() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     int ordinary_cases=0,gate_cases=0,graph_cases=0;
-    const auto exact=[](const Tensor& actual,const Tensor& expected,const char* label) {
+    const auto exact=[](const DenseTensor& actual,const DenseTensor& expected,const char* label) {
         const auto a=actual.cpu().contiguous(),b=expected.cpu().contiguous();
         if(a.sizes()!=b.sizes() || a.scalar_type()!=b.scalar_type() ||
             std::memcmp(a.data_ptr(),b.data_ptr(),size_t(a.numel()*a.element_size())))
@@ -539,7 +543,7 @@ void check_attention_fusion() {
                 <<" gate_dtype="<<int(gate_dtype)<<" half_output="<<half_output<<" layout="<<layout<<'\n';throw;}
             ++ordinary_cases;
             if(layout && gate_dtype==kFloat16) {
-                auto stream=stream_from_pool(false);Graph graph;Tensor output;
+                auto stream=stream_from_pool(false);Graph graph;DenseTensor output;
                 {StreamGuard guard(stream);graph.prepare_memory();output=candidate();
                     TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));output={};
                     graph.capture_begin();output=candidate();graph.capture_end();}
@@ -561,15 +565,15 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     try {
-        const auto context = mfq::cuda::default_context(0);
-        auto stream = mfq::cuda::stream_from_pool(false, 0);
-        mfq::cuda::StreamGuard stream_guard(stream);
+        const auto context = tyloi::cuda::default_context(0);
+        auto stream = tyloi::cuda::stream_from_pool(false, 0);
+        tyloi::cuda::StreamGuard stream_guard(stream);
         if(argc==2 && std::string(argv[1])=="--rotary-fused-check") {check_rotary_fusion();return 0;}
         if(argc==2 && std::string(argv[1])=="--rotary-normalized-check") {check_rotary_normalized_fusion();return 0;}
         if(argc==2 && std::string(argv[1])=="--attention-fused-check") {check_attention_fusion();return 0;}
         if (argc == 1) {
-            auto q = mfq::cuda::ones({1,1,2,4}, mfq::cuda::TensorOptions{}.device(mfq::cuda::kCUDA));
-            auto k = mfq::cuda::ones({1,3,4}, q.options());
+            auto q = tyloi::cuda::ones({1,1,2,4}, tyloi::cuda::TensorOptions{}.device(tyloi::cuda::kCUDA));
+            auto k = tyloi::cuda::ones({1,3,4}, q.options());
             auto got = mfq_qwen4_exp::block_scores(q,k).cpu();
             for (int i = 0; i < 3; ++i)
                 if (got.data_ptr<float>()[i] != 4.f) throw std::runtime_error("QSA smoke mismatch");
@@ -582,7 +586,7 @@ int main(int argc, char** argv) {
         while (std::getline(std::cin, line)) {
             try {
                 const auto request = Json::parse(line);
-                std::vector<Tensor> tensors;
+                std::vector<DenseTensor> tensors;
                 for (const auto& item : request.at("inputs")) tensors.push_back(input(item));
                 const auto op = request.at("op").get<std::string>();
                 const auto params = request.value("params", Json::object());
@@ -594,18 +598,18 @@ int main(int argc, char** argv) {
                         params.at("rotary"), params.at("maximum"), params.value("base", 1e7),
                         params.value("sections", std::vector<int64_t>{}), params.value("interleaved", false));
                 }
-                const auto execute = [&]() -> std::vector<Tensor> {
+                const auto execute = [&]() -> std::vector<DenseTensor> {
                     if (rotary) return {rotary->forward(tensors.at(0), tensors.at(1))};
                     return run(op, tensors, params);
                 };
-                std::vector<Tensor> result;
-                mfq::cuda::Graph graph;
+                std::vector<DenseTensor> result;
+                tyloi::cuda::Graph graph;
                 if (request.value("graph", false)) {
                     result = execute();
-                    TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(mfq::cuda::current_stream(0).stream()));
+                    TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(tyloi::cuda::current_stream(0).stream()));
                     graph.prepare_memory();
                     result = execute();
-                    TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(mfq::cuda::current_stream(0).stream()));
+                    TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(tyloi::cuda::current_stream(0).stream()));
                     result.clear();
                     graph.capture_begin();
                     result = execute();

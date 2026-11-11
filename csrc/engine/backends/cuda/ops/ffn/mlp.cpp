@@ -88,10 +88,10 @@ void Mlp::check(const DenseTensor& input, int primary) const {
     }
     auto device = input.device();
     if (!gate_up.layers.empty()) {
-        const auto& first = *gate_up.layers.front();
-        if (dynamic_cast<const ::tyloi::ShardedTensor*>(&first)) device = ::tyloi::Device(::tyloi::kCUDA, primary);
+        const auto& first = gate_up.layers.front();
+        if (first.representation<::tyloi::ShardedTensor>()) device = ::tyloi::Device(::tyloi::kCUDA, primary);
         for (const auto& layer : gate_up.layers) {
-            const auto local_device = dynamic_cast<const ::tyloi::ShardedTensor*>(layer.get())
+            const auto local_device = layer.representation<::tyloi::ShardedTensor>()
                 ? ::tyloi::Device(::tyloi::kCUDA, primary) : input.device();
             if (local_device != device)
                 throw std::invalid_argument("MLP gate and up devices do not match");
@@ -103,9 +103,9 @@ void Mlp::check(const DenseTensor& input, int primary) const {
 
 bool Mlp::parallel() const {
     if (gate_up.layers.size() != 2) return false;
-    const auto* gate = dynamic_cast<const ::tyloi::ShardedTensor*>(gate_up.layers[0].get());
-    const auto* up = dynamic_cast<const ::tyloi::ShardedTensor*>(gate_up.layers[1].get());
-    const auto* down_sharded = dynamic_cast<const ::tyloi::ShardedTensor*>(&down);
+    const auto* gate = gate_up.layers[0].representation<::tyloi::ShardedTensor>();
+    const auto* up = gate_up.layers[1].representation<::tyloi::ShardedTensor>();
+    const auto* down_sharded = down.representation<::tyloi::ShardedTensor>();
     if (!gate || !up || !down_sharded ||
         gate->axis != TensorParallelAxis::Output || up->axis != TensorParallelAxis::Output ||
         down_sharded->axis != TensorParallelAxis::Input ||
@@ -133,9 +133,9 @@ bool Mlp::parallel() const {
         ::tyloi::DenseTensor xh) const {
     auto shape = xh.sizes().vec();
     auto flat = xh.reshape({-1, xh.size(-1)});
-    const auto& gate = static_cast<const ::tyloi::ShardedTensor&>(*gate_up.layers[0]);
-    const auto& up = static_cast<const ::tyloi::ShardedTensor&>(*gate_up.layers[1]);
-    const auto& down_sharded = static_cast<const ::tyloi::ShardedTensor&>(down);
+    const auto& gate = *gate_up.layers[0].representation<::tyloi::ShardedTensor>();
+    const auto& up = *gate_up.layers[1].representation<::tyloi::ShardedTensor>();
+    const auto& down_sharded = *down.representation<::tyloi::ShardedTensor>();
     const size_t shard_count = down_sharded.shards.size();
     std::vector<::tyloi::DenseTensor> partials(shard_count);
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
@@ -187,10 +187,10 @@ bool Mlp::parallel() const {
                                 [&]() { return project.run(down, hidden); });
     }
     const double limit = geglu ? 0.0 : swiglu_limit;
-    const auto* gate0 = dynamic_cast<const tyloi::NvqTensor*>(gate_up.layers[0].get());
+    const auto* gate0 = gate_up.layers[0].representation<tyloi::NvqTensor>();
     const auto* gate1 = gate_up.layers.size() == 2
-        ? dynamic_cast<const tyloi::NvqTensor*>(gate_up.layers[1].get()) : nullptr;
-    const auto* down_nvq = dynamic_cast<const tyloi::NvqTensor*>(&down);
+        ? gate_up.layers[1].representation<tyloi::NvqTensor>() : nullptr;
+    const auto* down_nvq = down.representation<tyloi::NvqTensor>();
     if (!geglu && !(limit > 0.0) && tyloi::mfq_compat_enabled && options.nvq_fusion &&
         xh.numel() / xh.size(-1) == 1 && gate_up.nvq_prefix2 && gate_up.layers.size() == 2 &&
         gate0 != nullptr && gate1 != nullptr && down_nvq != nullptr &&
@@ -221,8 +221,8 @@ bool Mlp::parallel() const {
     if (parts.size() != 2)
         throw std::runtime_error("gated MLP requires gate and up projections");
     if (!geglu && !(limit > 0.0) &&
-        dynamic_cast<const ::tyloi::DenseTensor*>(&down) == nullptr &&
-        dynamic_cast<const tyloi::Mxfp8Tensor*>(&down) == nullptr)
+        down.representation<::tyloi::DenseTensor>() == nullptr &&
+        down.representation<tyloi::Mxfp8Tensor>() == nullptr)
         return profiler.measure("ffn.down", [&] {
             return project.gated(down, parts[1], parts[0], InputGateMode::Silu);
         });
@@ -288,7 +288,7 @@ bool Mlp::parallel() const {
 namespace {
 // The fused NVQ FFN path needs all three weights as NVQ, unsharded.
 const tyloi::NvqTensor* nvq_of(const ::tyloi::Tensor& linear) {
-    return dynamic_cast<const tyloi::NvqTensor*>(&linear);
+    return linear.representation<tyloi::NvqTensor>();
 }
 }  // namespace
 #endif

@@ -1,7 +1,7 @@
-#include "mx.h"
+#include "engine/weights/mx.h"
 #include "mfq_cuda_quant_ops.h"
 #include "mfq_cuda_moe_ops.h"
-#include "tyloinfer/runtime.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace tb=mfq_tensor_backend;
+namespace tb=tyloi::cuda;
 namespace {
 void require(bool value,const char* message) {if(!value)throw std::runtime_error(message);}
 float decode(uint8_t raw) {
@@ -17,8 +17,8 @@ float decode(uint8_t raw) {
     const float magnitude=exponent?std::ldexp(1+float(mantissa)/8,exponent-7):std::ldexp(float(mantissa),-9);
     return raw&128?-magnitude:magnitude;
 }
-void verify(const tb::Tensor& value,const std::vector<float>& expected) {
-    const auto actual=value.to(tb::kCPU).to(tb::kFloat32).contiguous();
+void verify(const tyloi::DenseTensor& value,const std::vector<float>& expected) {
+    const auto actual=value.to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
     require(actual.numel()==expected.size(),"MXFP8 output shape differs");
     for(std::size_t i=0;i<expected.size();++i)
         if(!std::isfinite(actual.data_ptr<float>()[i]) ||
@@ -27,7 +27,7 @@ void verify(const tb::Tensor& value,const std::vector<float>& expected) {
                 " actual="+std::to_string(actual.data_ptr<float>()[i])+" expected="+std::to_string(expected[i]));
 }
 template <typename Project>
-void verify_token_rows(const tb::Tensor& value,const tb::Tensor& input,Project project) {
+void verify_token_rows(const tyloi::DenseTensor& value,const tyloi::DenseTensor& input,Project project) {
     const auto actual=value.cpu().contiguous();
     const auto row_bytes=std::size_t(actual.size(1))*actual.element_size();
     for(int64_t row=0;row<input.size(0);++row) {
@@ -74,7 +74,7 @@ void check(int block_rows,int block_columns,int outputs,int width,int groups=1,
             for(int k=0;k<width;++k)sum+=double(input[(std::size_t(row)*groups+n/per)*width+k])*dense[std::size_t(n)*width+k];
             expected[std::size_t(row)*outputs+n]=float(sum);
         }
-        auto x=tb::tensor(input).reshape({m,groups,width}).to(tb::kFloat16).to(tb::kCUDA);
+        auto x=tb::tensor(input).reshape({m,groups,width}).to(tyloi::kFloat16).to(tyloi::kCUDA);
         if(shifted_input) {
             auto backing=tb::empty({x.numel()+1},x.options());
             auto shifted_x=backing.narrow(0,1,x.numel()).reshape(x.sizes().vec());
@@ -86,13 +86,13 @@ void check(int block_rows,int block_columns,int outputs,int width,int groups=1,
             const auto precise=mxfp8_matmul_f32(profiler,weight,x);
             verify(precise,expected);
             if(m<=8)verify_token_rows(precise,x,[&](const auto& row){return mxfp8_matmul_f32(profiler,weight,row);});
-            verify(mxfp8_matmul(profiler,to_device_mxfp8(cpu,false),x.to(tb::kCPU)),expected);
+            verify(mxfp8_matmul(profiler,to_device_mxfp8(cpu,false),x.to(tyloi::kCPU)),expected);
         } else {
             verify(mxfp8_groupwise_matmul(profiler,weight,x,groups),expected);
             const auto precise=mxfp8_groupwise_matmul_f32(profiler,weight,x,groups);
             verify(precise,expected);
             if(m<=8)verify_token_rows(precise,x,[&](const auto& row){return mxfp8_groupwise_matmul_f32(profiler,weight,row,groups);});
-            if(m>8)verify(mxfp8_groupwise_matmul(profiler,to_device_mxfp8(cpu,false),x.to(tb::kCPU),groups),expected);
+            if(m>8)verify(mxfp8_groupwise_matmul(profiler,to_device_mxfp8(cpu,false),x.to(tyloi::kCPU),groups),expected);
         }
     }
     auto input_slice=slice_mxfp8_cpu(cpu,TensorParallelAxis::Input,block_columns,width);
@@ -136,18 +136,18 @@ void check_mxfp4_routes(int tokens,int outputs,int width,bool routed) {
         }
         expected[std::size_t(pair)*outputs+n]=float(sum);
     }
-    const auto u8=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
-    auto packed=tb::tensor(values).reshape({pool*outputs,width/2}).to(tb::kCUDA);
-    auto scale=tb::tensor(scales).reshape({pool*outputs,width/32}).to(tb::kCUDA);
-    auto x=tb::tensor(input).to(tb::kFloat16).to(tb::kCUDA);
+    const auto u8=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
+    auto packed=tb::tensor(values).reshape({pool*outputs,width/2}).to(tyloi::kCUDA);
+    auto scale=tb::tensor(scales).reshape({pool*outputs,width/32}).to(tyloi::kCUDA);
+    auto x=tb::tensor(input).to(tyloi::kFloat16).to(tyloi::kCUDA);
     x=routed?x.reshape({tokens,routes,width}):x.reshape({tokens,width});
-    auto route_ids=tb::tensor(ids).reshape({tokens,routes}).to(tb::kCUDA);
-    auto locals=tb::tensor(local).to(tb::kCUDA);
-    auto positions=tb::tensor(compact).to(tb::kCUDA),starts=tb::tensor(bounds).to(tb::kCUDA);
-    auto tiles=tb::tensor(tile_bounds).to(tb::kCUDA),owners=tb::tensor(tile_experts).to(tb::kCUDA);
-    auto empty=tb::empty({0},u8.dtype(tb::kInt32));
+    auto route_ids=tb::tensor(ids).reshape({tokens,routes}).to(tyloi::kCUDA);
+    auto locals=tb::tensor(local).to(tyloi::kCUDA);
+    auto positions=tb::tensor(compact).to(tyloi::kCUDA),starts=tb::tensor(bounds).to(tyloi::kCUDA);
+    auto tiles=tb::tensor(tile_bounds).to(tyloi::kCUDA),owners=tb::tensor(tile_experts).to(tyloi::kCUDA);
+    auto empty=tb::empty({0},u8.dtype(tyloi::kInt32));
     for(bool grouped:{false,true}) {
-        auto output=tb::full({tokens,routes,outputs},-7,u8.dtype(tb::kFloat16));
+        auto output=tb::full({tokens,routes,outputs},-7,u8.dtype(tyloi::kFloat16));
         auto result=mxfp4_moe_grouped_matmul_pool_f16_cuda(packed,scale,x,route_ids,locals,
             experts,pool,outputs,width,output,grouped?positions:empty,starts,tiles,owners);
         verify(result,expected);
@@ -167,16 +167,16 @@ void benchmark_mxfp4_prefill() {
         tile_bounds.push_back(tile_bounds.back()+(count+7)/8);
         for(int i=0;i<(count+7)/8;++i)tile_experts.push_back(e);
     }
-    auto gpu=[](const auto& values){return tb::tensor(values).to(tb::kCUDA);};
+    auto gpu=[](const auto& values){return tb::tensor(values).to(tyloi::kCUDA);};
     auto route_ids=gpu(ids).reshape({tokens,routes}),locals=gpu(local),positions=gpu(compact);
     auto starts=gpu(bounds),tiles=gpu(tile_bounds),owners=gpu(tile_experts);
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
     for(const auto shape:{std::array<int,2>{5120,2304},std::array<int,2>{2304,5120}}) {
         const auto [width,outputs]=shape;
         auto packed=tb::full({pool*outputs,width/2},0x22,options);
         auto scales=tb::full({pool*outputs,width/32},127,options);
-        auto input=tb::full({tokens,width},.03125,options.dtype(tb::kFloat16));
-        auto output=tb::full({tokens,routes,outputs},-7,options.dtype(tb::kFloat16));
+        auto input=tb::full({tokens,width},.03125,options.dtype(tyloi::kFloat16));
+        auto output=tb::full({tokens,routes,outputs},-7,options.dtype(tyloi::kFloat16));
         const auto launch=[&] {
             mxfp4_moe_grouped_matmul_pool_f16_cuda(packed,scales,input,route_ids,locals,
                 experts,pool,outputs,width,output,positions,starts,tiles,owners);
@@ -189,7 +189,7 @@ void benchmark_mxfp4_prefill() {
         for(int i=0;i<iterations;++i)launch();
         TYLOINFER_CUDA_CHECK(cudaEventRecord(stop,mfq_current_cuda_stream()));TYLOINFER_CUDA_CHECK(cudaEventSynchronize(stop));
         float ms=0;TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&ms,start,stop));
-        auto sample=output.select(0,0).to(tb::kCPU).to(tb::kFloat32).contiguous();
+        auto sample=output.select(0,0).to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
         for(int r=0;r<routes;++r)for(int n=0;n<outputs;++n)
             require(sample.data_ptr<float>()[r*outputs+n]==width*.03125f,"MXFP4 prefill independent oracle differs");
         std::cout<<"mxfp4_prefill rows="<<tokens<<" width="<<width<<" outputs="<<outputs
@@ -199,19 +199,19 @@ void benchmark_mxfp4_prefill() {
 }
 
 void benchmark_prefill(bool only_ffn=false) {
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
     for(const auto shape:{std::array<int,3>{4080,1536,32768},std::array<int,3>{4080,5120,2304}}) {
         const auto [rows,width,outputs]=shape;
         if(only_ffn && outputs==32768)continue;
         auto values=tb::full({outputs,width},0x38,options);
         auto scales=tb::full({outputs/32,width/32},127,options);
-        auto input=tb::full({rows,width},.03125,options.dtype(tb::kFloat16));
+        auto input=tb::full({rows,width},.03125,options.dtype(tyloi::kFloat16));
         cudaEvent_t start,stop;TYLOINFER_CUDA_CHECK(cudaEventCreate(&start));TYLOINFER_CUDA_CHECK(cudaEventCreate(&stop));
         TYLOINFER_CUDA_CHECK(cudaEventRecord(start,mfq_current_cuda_stream()));
         auto result=mxfp8_matmul_f16_cuda(values,scales,input);
         TYLOINFER_CUDA_CHECK(cudaEventRecord(stop,mfq_current_cuda_stream()));TYLOINFER_CUDA_CHECK(cudaEventSynchronize(stop));
         float ms=0;TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&ms,start,stop));
-        auto sample=result.select(0,0).to(tb::kCPU).to(tb::kFloat32).contiguous();
+        auto sample=result.select(0,0).to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
         for(int n=0;n<outputs;++n)require(sample.data_ptr<float>()[n]==width*.03125f,"MXFP8 large prefill oracle differs");
         std::cout<<"mxfp8_prefill rows="<<rows<<" width="<<width<<" outputs="<<outputs<<" ms="<<ms<<'\n';
         TYLOINFER_CUDA_CHECK(cudaEventDestroy(start));TYLOINFER_CUDA_CHECK(cudaEventDestroy(stop));
@@ -221,7 +221,7 @@ enum class Mxfp8BenchPath { PackedSimt, PackedTensorCore };
 enum class Mxfp8BenchBatch { Decode, Draft, Prefill };
 void benchmark_native_mxfp8(Mxfp8BenchPath path,Mxfp8BenchBatch batch=Mxfp8BenchBatch::Decode) {
     const bool prefill=batch==Mxfp8BenchBatch::Prefill;
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
     for(const auto shape:{std::array<int,3>{1280,32768,1}, {5120,2304,1},
             {2304,5120,1}, {5120,512,1}, {5120,1280,1},
             {4096,8192,8}, {8192,5120,1}, {15360,5120,1}}) {
@@ -240,7 +240,7 @@ void benchmark_native_mxfp8(Mxfp8BenchPath path,Mxfp8BenchBatch batch=Mxfp8Bench
             }
             sums[n]=float(sum);
         }
-        auto values=tb::tensor(bytes).reshape({outputs,width}).to(tb::kCUDA);
+        auto values=tb::tensor(bytes).reshape({outputs,width}).to(tyloi::kCUDA);
         auto scales=tb::full({(outputs+31)/32,width/32},127,options);
         Mxfp8Weight weight;weight.values=values;weight.scales=scales;
         weight.out=outputs;weight.neuron_len=width;
@@ -249,7 +249,7 @@ void benchmark_native_mxfp8(Mxfp8BenchPath path,Mxfp8BenchBatch batch=Mxfp8Bench
             batch==Mxfp8BenchBatch::Draft?std::vector<int>{2,3,4,5,6,8}:std::vector<int>{1,2,4,8};
         const int repeats=prefill?3:40;
         for(const int rows:row_counts) {
-            auto input=tb::full({rows,groups,width},.03125,options.dtype(tb::kFloat16));
+            auto input=tb::full({rows,groups,width},.03125,options.dtype(tyloi::kFloat16));
             const auto run=[&] {
                 if(path==Mxfp8BenchPath::PackedTensorCore) {
                     if(groups!=1)return mxfp8_groupwise_matmul(profiler,weight,input,groups);

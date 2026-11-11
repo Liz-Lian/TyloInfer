@@ -297,7 +297,7 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
                 auto logits = tyloi::ops::reshape(model_.logits(::tyloi::cuda::cat(last, 0)),
                                                    {int64_t(last.size()), -1});
 #else
-                auto logits = dynamic_cast<const DenseTensor&>(*model_.logits(::tyloi::cuda::cat(last, 0)))
+                auto logits = model_.logits(::tyloi::cuda::cat(last, 0)).dense()
                                   .reshape({int64_t(last.size()), -1});
 #endif
                 for (std::size_t i = 0; i < finished.size(); ++i) {

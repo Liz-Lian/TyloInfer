@@ -23,11 +23,11 @@ namespace tyloi::cuda::deepseek_v41 {
 using deepseek_v41_runtime::Block;
 
 namespace {
-bool session_tensor(const std::shared_ptr<const ::tyloi::Tensor>& value,int64_t tokens,int64_t width,
+bool session_tensor(const ::tyloi::Tensor& value,int64_t tokens,int64_t width,
                     ::tyloi::ScalarType dtype) {
-    return value && value->defined() && value->is_cuda() && value->dim()==3 && value->size(0)==1 &&
-        value->size(1)==tokens && value->size(2)==width && value->scalar_type()==dtype &&
-        dynamic_cast<const DenseTensor*>(value.get());
+    return value && value.defined() && value.is_cuda() && value.dim()==3 && value.size(0)==1 &&
+        value.size(1)==tokens && value.size(2)==width && value.scalar_type()==dtype &&
+        value.representation<DenseTensor>();
 }
 
 void validate_layer(const Block& block,const tyloi::models::deepseek_v41::BlockSnapshot& saved,
@@ -120,8 +120,8 @@ void State::reset(std::int64_t next_batch) {
         block->reset(*shared, next_batch);
 }
 
-std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
-    std::vector<std::shared_ptr<const tyloi::Tensor>> result;
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
     for (const auto& block : model_.blocks) {
         const auto& state = shared->layers.at(static_cast<std::size_t>(block->layer));
         if (state.local_kv.defined()) result.push_back(std::make_shared<tyloi::DenseTensor>(state.local_kv));
@@ -251,7 +251,7 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
         if(source.speculative_pending || source.position!=cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
         tyloi::models::deepseek_v41::BlockSnapshot saved;
-        const auto copy=[&](const DenseTensor& value) -> std::shared_ptr<const ::tyloi::Tensor> {
+        const auto copy=[&](const DenseTensor& value) -> ::tyloi::Tensor {
             if(!value.defined())return {};
             auto result=std::make_shared<DenseTensor>(value.clone());
             state.bytes+=session_tensor_bytes(*result);return result;
@@ -302,7 +302,7 @@ void State::restore_text_session_state(const TextSessionState& state) {
 #else
             restore_session_prefix_tensor(target.compressed_kv,saved.compressed_kv,1,
                                           std::max<int64_t>(1,block.max_context/block.ratio));
-            restore_session_prefix_tensor(target.index_k,*saved.index_k,1,
+            restore_session_prefix_tensor(target.index_k,saved.index_k,1,
                                           std::max<int64_t>(1,block.max_context/block.ratio));
 #endif
             if(block.ratio>1) {

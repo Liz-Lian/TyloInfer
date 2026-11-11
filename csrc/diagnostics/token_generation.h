@@ -251,7 +251,7 @@ int generate_diagnostic_tokens(
             }
             return diagnostic_next_token(model, state, executor, execution, ids);
         }();
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         auto t2 = std::chrono::steady_clock::now();
         report_cuda_memory(execution.config, "prefill");
         report_source_file_io(source, "prefill");
@@ -405,20 +405,20 @@ int generate_diagnostic_tokens(
                     break;
                 }
                 if(i==1 && metadata->flash_next && stop_token_ids.empty()) {
-                    mfq_cuda_synchronize();first_decode_done=std::chrono::steady_clock::now();
+                    cudaStreamSynchronize(::tyloi::cuda::current_stream());first_decode_done=std::chrono::steady_clock::now();
                     measured_first_decode=true;
                 }
                 if(gen>=4 && i==gen/2 && metadata->flash_next && stop_token_ids.empty()) {
-                    mfq_cuda_synchronize();halfway_done=std::chrono::steady_clock::now();
+                    cudaStreamSynchronize(::tyloi::cuda::current_stream());halfway_done=std::chrono::steady_clock::now();
                     measured_halfway=true;
                 }
                 if(gen>256 && i==gen-1-128 && metadata->flash_next && stop_token_ids.empty()) {
-                    mfq_cuda_synchronize();last_window_done=std::chrono::steady_clock::now();
+                    cudaStreamSynchronize(::tyloi::cuda::current_stream());last_window_done=std::chrono::steady_clock::now();
                     measured_last_window=true;
                 }
             }
         }
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         if (cuda_profiler_range) TYLOINFER_CUDA_CHECK(cudaProfilerStop());
         auto t3 = std::chrono::steady_clock::now();
         report_cuda_memory(execution.config, "decode_complete");

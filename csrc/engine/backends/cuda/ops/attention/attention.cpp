@@ -101,7 +101,7 @@ MfqOptional<::tyloi::DenseTensor> minicpmo45_attention_mask(
 #ifdef TYLOINFER_NATIVE_CUDA
 namespace {
 const tyloi::DenseTensor& dense(const tyloi::Tensor& tensor) {
-    const auto* result = dynamic_cast<const tyloi::DenseTensor*>(&tensor);
+    const auto* result = tensor.representation<tyloi::DenseTensor>();
     if (!result) throw std::invalid_argument("attention requires dense tensors");
     return *result;
 }
@@ -113,7 +113,7 @@ bool rope_kv_supported(const tyloi::ops::AttentionInput& input,
         input.query.device().is_cuda() &&
         input.write_positions.dim() == 1 && input.positions.dim() == 1 && input.query.size(2) == 1 &&
         !kv.paged() && !kv.ring && table.rotary_dim == 128 &&
-        (!table.sections || !table.sections->defined() || table.sections->numel() == 0) &&
+        (!table.sections || !table.sections.defined() || table.sections.numel() == 0) &&
         input.query.size(1) == 32 && input.key.size(1) == 8 && input.query.size(3) == 128 &&
         kv.dtype == tyloi::ScalarType::bfloat16;
 }
@@ -123,10 +123,10 @@ void check_device(const tyloi::Tensor& query, const tyloi::Tensor& tensor) {
 }
 void check_rope_kv_devices(const tyloi::ops::AttentionInput& input,
                            const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
-    for (const tyloi::Tensor* tensor : std::initializer_list<const tyloi::Tensor*>{
-             &input.key, &input.value, &input.write_positions, table.cos.get(), table.sin.get(),
-             kv.physical_key.get(), kv.physical_value.get()})
-        if (tensor) check_device(input.query, *tensor);
+    for (const auto& tensor : std::array<tyloi::Tensor, 7>{
+             input.key, input.value, input.write_positions, table.cos, table.sin,
+             kv.physical_key, kv.physical_value})
+        if (tensor.defined()) check_device(input.query, tensor);
 }
 }
 
@@ -147,7 +147,7 @@ std::optional<tyloi::DenseTensor> ops::norm_rope_kv(const tyloi::ops::AttentionI
         return minicpm_qk_norm_rope_cache_write_bf16_cuda(
             q.contiguous(), dense(input.key).contiguous(), dense(input.value).contiguous(), T(q_norm), T(k_norm),
             dense(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
-            dense(input.write_positions), dense(*table.cos), dense(*table.sin), dense_kv_buffer(kv.physical_key), dense_kv_buffer(kv.physical_value),
+            dense(input.write_positions), dense(table.cos), dense(table.sin), dense_kv_buffer(kv.physical_key), dense_kv_buffer(kv.physical_value),
             eps, offset);
     });
 }
@@ -164,7 +164,7 @@ std::optional<tyloi::DenseTensor> ops::rope_kv(const tyloi::ops::AttentionInput&
         return minicpm_bf16_rope_cache_write_cuda(
             q.contiguous(), dense(input.key).contiguous(), dense(input.value).contiguous(),
             dense(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
-            dense(input.write_positions), dense(*table.cos), dense(*table.sin), dense_kv_buffer(kv.physical_key), dense_kv_buffer(kv.physical_value),
+            dense(input.write_positions), dense(table.cos), dense(table.sin), dense_kv_buffer(kv.physical_key), dense_kv_buffer(kv.physical_value),
             table.rotary_dim);
     });
 }
@@ -177,8 +177,8 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
     const NativeAttentionInput request{
         dense(input.query), dense(input.key), dense(input.value), dense(input.positions),
         dense(input.write_positions),
-        input.sequence_lengths ? MfqOptional<DenseTensor>{dense(*input.sequence_lengths)} : mfq_nullopt,
-        input.attention_mask ? MfqOptional<DenseTensor>{dense(*input.attention_mask)} : mfq_nullopt,
+        input.sequence_lengths ? MfqOptional<DenseTensor>{dense(input.sequence_lengths)} : mfq_nullopt,
+        input.attention_mask ? MfqOptional<DenseTensor>{dense(input.attention_mask)} : mfq_nullopt,
         input.cache_position, input.planned_kv_length, input.decode_attention_parts};
     const NativeKvView kv{dense_kv_buffer(public_kv.visible_key), dense_kv_buffer(public_kv.visible_value),
         dense_kv_buffer(public_kv.physical_key), dense_kv_buffer(public_kv.physical_value),

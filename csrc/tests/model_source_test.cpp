@@ -190,8 +190,8 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
         const auto last = root / precision / ("model-EW-" + precision + "-00003-of-00003" + suffix);
         write_shared_fixture(first, 0, "model.token_embedding.weight");
         write_shared_fixture(last, 2, "model.output.weight");
-        for (auto mode : {mfq::FileReadMode::Buffered, mfq::FileReadMode::Direct}) {
-            mfq::MfqModelSource source(last, mode);
+        for (auto mode : {tyloi::FileReadMode::Buffered, tyloi::FileReadMode::Direct}) {
+            tyloi::MfqModelSource source(last, mode);
             require(source.source_paths().size() == 3, "shared checkpoint lost shards");
             require(source.source_paths()[1] == std::filesystem::canonical(shared), "shared table was copied or not resolved");
             const auto bytes = source.read(table_name);
@@ -201,14 +201,14 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
         const auto entrypoint = root / precision / ("model-EW-" + precision + suffix);
         std::filesystem::rename(first, entrypoint);
         for (const auto& entry : {entrypoint, last}) {
-            mfq::MfqModelSource source(entry);
+            tyloi::MfqModelSource source(entry);
             require(source.source_paths().size() == 3, "root entrypoint lost shards");
             require(source.source_paths()[0] == std::filesystem::canonical(entrypoint), "root entrypoint was not resolved");
             require(source.source_paths()[1] == std::filesystem::canonical(shared), "root entrypoint lost shared table");
         }
         write_shared_fixture(first, 0, "model.token_embedding.weight");
         bool duplicate_rejected = false;
-        try { mfq::MfqModelSource source(entrypoint); }
+        try { tyloi::MfqModelSource source(entrypoint); }
         catch (const std::runtime_error&) { duplicate_rejected = true; }
         require(duplicate_rejected, "ambiguous root entrypoint was accepted");
         std::filesystem::remove(first);
@@ -216,7 +216,7 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
     }
     const auto first = root / "Q3" / ("model-EW-Q3-00001-of-00003" + suffix);
     auto rejects = [&] {
-        try { mfq::MfqModelSource source(first); return false; }
+        try { tyloi::MfqModelSource source(first); return false; }
         catch (const std::runtime_error&) { return true; }
     };
     const auto duplicate = root / "Engram" / ("model-EW-Engram-MXFP4-00002-of-00003" + suffix);
@@ -238,14 +238,14 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
     // An ordinary complete checkpoint remains loadable beside unusable tables.
     write_shared_fixture(root / "Q3" / ("model-EW-Q3-00002-of-00003" + suffix), 1, table_name);
     write_shared_fixture(shared, 1, "invalid.weight");
-    mfq::MfqModelSource legacy(first);
+    tyloi::MfqModelSource legacy(first);
     require(legacy.source_paths()[1].parent_path().filename() == "Q3", "legacy shard was replaced");
 }
 
 void test_tinfer_assets(const std::filesystem::path& root) {
     const auto file = root / "tinfer-assets.tq";
     write_mfq(file, "model.token_embedding.weight", 1, "__tinfer_asset__/model_config.json");
-    mfq::MfqModelSource source(file);
+    tyloi::MfqModelSource source(file);
     require(source.has_asset("__mfq_asset__/model_config.json"), "Tinfer config asset was not normalized");
     require(source.tensors().size() == 1, "Tinfer assets leaked into tensor enumeration");
     require(source.assets() == std::vector<std::string>{"__mfq_asset__/model_config.json"}, "Tinfer asset list differs");
@@ -257,17 +257,17 @@ void test_tinfer_assets(const std::filesystem::path& root) {
 void test_tq_reserved_descriptor_bits() {
     std::vector<std::uint8_t> payload(64 + 8 + 8 + 32);
     std::memcpy(payload.data(), "RTRELL05", 8);
-    mfq::TqLayout::integer(payload.data() + 8, 5, 4);
-    mfq::TqLayout::integer(payload.data() + 12, 1, 4);
-    mfq::TqLayout::integer(payload.data() + 16, 256, 4);
-    mfq::TqLayout::integer(payload.data() + 24, 16, 4);
-    mfq::TqLayout::integer(payload.data() + 28, 32, 4);
-    mfq::TqRows rows(payload.size(), [&](auto offset, auto* output, auto bytes) {
+    tyloi::TqLayout::integer(payload.data() + 8, 5, 4);
+    tyloi::TqLayout::integer(payload.data() + 12, 1, 4);
+    tyloi::TqLayout::integer(payload.data() + 16, 256, 4);
+    tyloi::TqLayout::integer(payload.data() + 24, 16, 4);
+    tyloi::TqLayout::integer(payload.data() + 28, 32, 4);
+    tyloi::TqRows rows(payload.size(), [&](auto offset, auto* output, auto bytes) {
         std::memcpy(output, payload.data() + offset, bytes);
     });
     require(rows.slice_rows(0, 1) == payload, "valid TQ row changed");
     for (const int bit : {35, 36, 37, 38, 39, 56, 63}) {
-        mfq::TqLayout::integer(payload.data() + 64, std::uint64_t(1) << bit, 8);
+        tyloi::TqLayout::integer(payload.data() + 64, std::uint64_t(1) << bit, 8);
         bool rejected = false;
         try { rows.slice_rows(0, 1); }
         catch (const std::invalid_argument&) { rejected = true; }
@@ -304,22 +304,22 @@ int main() {
         write_hf_fp8_128(root / "hf-fp8-128-explicit", true);
 
         {
-        mfq::MfqModelSource mfq_source(mfq_path);
-        mfq::MfqModelSource legacy_mfq_source(legacy_mfq_path);
-        mfq::MfqModelSource legacy_gguf_source(legacy_gguf_path);
-        mfq::HfModelSource hf_source(hf_path);
-        const mfq::ModelSource& generic_hf = hf_source;
+        tyloi::MfqModelSource mfq_source(mfq_path);
+        tyloi::MfqModelSource legacy_mfq_source(legacy_mfq_path);
+        tyloi::MfqModelSource legacy_gguf_source(legacy_gguf_path);
+        tyloi::HfModelSource hf_source(hf_path);
+        const tyloi::ModelSource& generic_hf = hf_source;
         require(!generic_hf.mapped_tensor_reader("model.token_embedding.weight"),
                 "unmapped source must advertise an empty mapped reader");
         require(!generic_hf.mapped_tensor_batch_reader("model.token_embedding.weight"),
                 "unmapped source must advertise an empty mapped batch reader");
-        const auto opened_mfq = mfq::open_model_source(mfq_path);
-        const auto opened_hf = mfq::open_model_source(hf_path);
+        const auto opened_mfq = tyloi::open_model_source(mfq_path);
+        const auto opened_hf = tyloi::open_model_source(hf_path);
 
         // The retained reader must outlive the source and preserve canonical
         // legacy-name binding, including strict tensor-relative bounds.
         auto retained = [&] {
-            mfq::MfqModelSource temporary(legacy_gguf_path);
+            tyloi::MfqModelSource temporary(legacy_gguf_path);
             return temporary.tensor_reader("model.token_embedding.weight");
         }();
         std::vector<std::byte> retained_bytes(14);
@@ -331,9 +331,9 @@ int main() {
         require(range_rejected, "retained reader accepted out-of-range bytes");
         retained = {}; // Close the independently owned file before cleanup.
 
-        for(auto mode:{mfq::FileReadMode::Buffered,mfq::FileReadMode::Direct}) {
+        for(auto mode:{tyloi::FileReadMode::Buffered,tyloi::FileReadMode::Direct}) {
             auto batch=[&] {
-                mfq::MfqModelSource temporary(legacy_gguf_path,mode);
+                tyloi::MfqModelSource temporary(legacy_gguf_path,mode);
                 return temporary.tensor_batch_reader("model.token_embedding.weight");
             }();
             require(bool(batch),"retained source is missing its batch reader");
@@ -347,7 +347,7 @@ int main() {
 
         {
             auto mapped=[&] {
-                mfq::MfqModelSource temporary(legacy_gguf_path);
+                tyloi::MfqModelSource temporary(legacy_gguf_path);
                 return temporary.mapped_tensor_reader("model.token_embedding.weight");
             }();
             std::vector<std::byte> all(14);mapped(0,all.data(),all.size());require_bytes(all);
@@ -368,9 +368,9 @@ int main() {
             for(auto& worker:readers)worker.get();
         }
         {
-            mfq::MfqModelSource large(root/"mapped-large.mfq");
+            tyloi::MfqModelSource large(root/"mapped-large.mfq");
             auto ordinary=large.tensor_reader("model.token_embedding.weight");
-            const mfq::ModelSource& generic=large;
+            const tyloi::ModelSource& generic=large;
             auto mapped=generic.mapped_tensor_reader("model.token_embedding.weight");
             for(std::size_t offset:{0u,4093u,65521u,65536u,131071u,262143u}) {
                 const auto count=std::min<std::size_t>(67,262156-offset);
@@ -378,7 +378,7 @@ int main() {
                 ordinary(offset,expected.data(),count);mapped(offset,actual.data(),count);
                 require(actual==expected,"mapped tensor crossing page/granularity boundary differs");
             }
-            require(mfq::release_mapped_tensor_pages()>0,"mapped source trim did not retain any live reader");
+            require(tyloi::release_mapped_tensor_pages()>0,"mapped source trim did not retain any live reader");
             std::vector<std::byte> expected(8197),actual(8197);
             ordinary(65521,expected.data(),expected.size());mapped(65521,actual.data(),actual.size());
             require(actual==expected,"mapped reader changed after releasing clean source pages");
@@ -386,17 +386,17 @@ int main() {
 
         {
             auto batch=[&] {
-                mfq::MfqModelSource temporary(legacy_gguf_path);
+                tyloi::MfqModelSource temporary(legacy_gguf_path);
                 return temporary.mapped_tensor_batch_reader("model.token_embedding.weight");
             }();
             require(bool(batch),"retained mapped batch reader missing");
             std::vector<std::byte> actual(14);
             {
-                mfq::MappedPrefetchScope prefetch(true);
+                tyloi::MappedPrefetchScope prefetch(true);
                 batch({{8,actual.data()+8,6},{0,actual.data(),5},{5,actual.data()+5,3},{14,nullptr,0}});
             }
             require_bytes(actual);batch({});
-            for(const auto bad:std::vector<mfq::ReadSpan>{{13,actual.data(),2},{UINT64_MAX,actual.data(),0},{0,nullptr,1}}) {
+            for(const auto bad:std::vector<tyloi::ReadSpan>{{13,actual.data(),2},{UINT64_MAX,actual.data(),0},{0,nullptr,1}}) {
                 std::fill(actual.begin(),actual.end(),std::byte{0x7f});
                 bool rejected=false;
                 try{batch({{0,actual.data(),1},bad});}catch(const std::exception&){rejected=true;}
@@ -405,7 +405,7 @@ int main() {
             }
             std::vector<std::future<void>> readers;
             for(int worker=0;worker<8;++worker)readers.push_back(std::async(std::launch::async,[batch] {
-                mfq::MappedPrefetchScope transient(false,true);
+                tyloi::MappedPrefetchScope transient(false,true);
                 for(int i=0;i<32;++i) {
                     std::vector<std::byte> bytes(14);
                     batch({{7,bytes.data()+7,7},{0,bytes.data(),7}});require_bytes(bytes);
@@ -413,30 +413,30 @@ int main() {
             }));
             for(auto& worker:readers)worker.get();
             auto large_batch=[&] {
-                mfq::MfqModelSource temporary(root/"mapped-large.mfq");
+                tyloi::MfqModelSource temporary(root/"mapped-large.mfq");
                 return temporary.mapped_tensor_batch_reader("model.token_embedding.weight");
             }();
-            mfq::MfqModelSource large(root/"mapped-large.mfq");
+            tyloi::MfqModelSource large(root/"mapped-large.mfq");
             const auto expected=large.read("model.token_embedding.weight");
             constexpr size_t count=4357,width=67;
             std::vector<std::byte> received(count*width);
-            std::vector<mfq::ReadSpan> spans;
+            std::vector<tyloi::ReadSpan> spans;
             for(size_t i=0;i<count;++i)spans.push_back({(i*4093)%(expected.size()-width+1),received.data()+i*width,width});
             {
-                mfq::MappedPrefetchScope transient(true,true);
+                tyloi::MappedPrefetchScope transient(true,true);
                 large_batch(spans);
             }
-            require(mfq::release_mapped_tensor_pages()>0,"mapped batch trim lost its independent owner");
+            require(tyloi::release_mapped_tensor_pages()>0,"mapped batch trim lost its independent owner");
             std::fill(received.begin(),received.end(),std::byte{0});large_batch(spans);
             for(const auto& span:spans)require(std::equal(span.destination,span.destination+span.size,expected.begin()+span.offset),
                     "mapped batch across pages/prefetch chunks differs");
-            auto sparse=std::vector<mfq::ReadSpan>(spans.begin(),spans.begin()+64);
+            auto sparse=std::vector<tyloi::ReadSpan>(spans.begin(),spans.begin()+64);
             std::reverse(sparse.begin(),sparse.end());
             sparse.push_back(sparse.front());
             sparse.push_back({0,nullptr,0});
             for(int repeat=0;repeat<2;++repeat) {
                 std::fill(received.begin(),received.end(),std::byte{0});
-                mfq::MappedPrefetchScope transient(false,true);
+                tyloi::MappedPrefetchScope transient(false,true);
                 large_batch(sparse);
                 for(const auto& span:sparse)if(span.size)
                     require(std::equal(span.destination,span.destination+span.size,expected.begin()+span.offset),
@@ -445,17 +445,17 @@ int main() {
         }
 
         {
-            mfq::MfqModelSource direct(legacy_gguf_path,mfq::FileReadMode::Direct);
+            tyloi::MfqModelSource direct(legacy_gguf_path,tyloi::FileReadMode::Direct);
             require(direct.supports_parallel_tensor_reads(), "direct source refused independent reads");
-            mfq::MfqModelSource buffered(legacy_gguf_path,mfq::FileReadMode::Buffered);
+            tyloi::MfqModelSource buffered(legacy_gguf_path,tyloi::FileReadMode::Buffered);
             require(!buffered.supports_parallel_tensor_reads(), "seek-based source advertised parallel reads");
             require_bytes(direct.read("model.token_embedding.weight"));
             require(direct.model_config_json()==legacy_gguf_source.model_config_json(),"direct assets differ");
             const auto stats=direct.file_read_stats();
-            require(stats.mode==mfq::FileReadMode::Direct && stats.files==1 && stats.calls>0 &&
+            require(stats.mode==tyloi::FileReadMode::Direct && stats.files==1 && stats.calls>0 &&
                     stats.staging_bytes==0 && stats.errors==0,"direct model source accounting differs");
             auto direct_retained=[&] {
-                mfq::MfqModelSource temporary(legacy_gguf_path,mfq::FileReadMode::Direct);
+                tyloi::MfqModelSource temporary(legacy_gguf_path,tyloi::FileReadMode::Direct);
                 return temporary.tensor_reader("model.token_embedding.weight");
             }();
             direct_retained(0,retained_bytes.data(),retained_bytes.size());
@@ -488,8 +488,8 @@ int main() {
         require_bytes(
             legacy_gguf_source.read("model.token_embedding.weight"));
 
-        for (const mfq::ModelSource* source :
-             std::vector<const mfq::ModelSource*>{
+        for (const tyloi::ModelSource* source :
+             std::vector<const tyloi::ModelSource*>{
                  opened_mfq.get(), opened_hf.get()}) {
             const auto* tensor = source->find_tensor(
                 "model.token_embedding.weight");
@@ -548,7 +548,7 @@ int main() {
                     std::to_integer<char>(mfe_bytes[3]) == '1',
                 "virtual MFE payload is invalid");
 
-        mfq::HfModelSource fp8_128_source(root / "hf-fp8-128");
+        tyloi::HfModelSource fp8_128_source(root / "hf-fp8-128");
         const auto* fp8_128 = fp8_128_source.find_tensor("block.weight");
         require(fp8_128 != nullptr && fp8_128->dtype == "FP8-128SQ" &&
                     fp8_128->stored_dtype == "FP8-128SQ" &&
@@ -557,18 +557,18 @@ int main() {
         require(fp8_128_source.find_tensor("block.weight_scale_inv") == nullptr,
                 "consumed block FP8 scale leaked into tensor enumeration");
         const auto fp8_128_bytes = fp8_128_source.read(fp8_128->name);
-        const auto fp8_128_layout = mfq::fp8sq::parse(
+        const auto fp8_128_layout = tyloi::fp8sq::parse(
             fp8_128->dtype,
             reinterpret_cast<const std::uint8_t*>(fp8_128_bytes.data()),
             fp8_128_bytes.size());
-        const auto fp8_128_rows = mfq::fp8sq::row_metadata(
+        const auto fp8_128_rows = tyloi::fp8sq::row_metadata(
             reinterpret_cast<const std::uint8_t*>(fp8_128_bytes.data()),
             fp8_128_layout);
         require(fp8_128_layout.outputs == 128 &&
                     fp8_128_layout.width == 128 &&
                     fp8_128_layout.block_rows == 128 &&
                     fp8_128_layout.block_columns == 128 &&
-                    fp8_128_layout.scale_kind == mfq::fp8sq::ScaleKind::Bf16 &&
+                    fp8_128_layout.scale_kind == tyloi::fp8sq::ScaleKind::Bf16 &&
                     std::all_of(
                         fp8_128_rows.q.begin(), fp8_128_rows.q.end(),
                         [](std::uint8_t q) { return q == 8; }) &&
@@ -582,7 +582,7 @@ int main() {
                         fp8_128_bytes[fp8_128_layout.scales + 1]) == 0x3f,
                 "lossless FP8-128SQ payload differs from HF source bytes");
 
-        mfq::HfModelSource fp8_128_explicit_source(
+        tyloi::HfModelSource fp8_128_explicit_source(
             root / "hf-fp8-128-explicit");
         const auto* fp8_128_explicit = fp8_128_explicit_source.find_tensor(
             "model.block.0.linear_attention.gate.weight");
@@ -595,7 +595,7 @@ int main() {
                     "model.block.0.linear_attention.gate.weight_scale") == nullptr,
                 "explicit block FP8 scale leaked into tensor enumeration");
 
-        mfq::HfModelSource mxfp8_source(root / "hf-mxfp8");
+        tyloi::HfModelSource mxfp8_source(root / "hf-mxfp8");
         for (const auto& [name, nbytes] :
              std::array<std::pair<const char*, std::uint64_t>, 3>{{
                  {"block128.weight", 16441},

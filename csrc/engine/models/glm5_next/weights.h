@@ -24,10 +24,10 @@ auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, boo
     auto shared = load_dense_ffn(ops, p + ".shared_expert", c.swiglu_limit);
 #ifdef TYLOINFER_NATIVE_CUDA
     auto bias = std::make_shared<typename Loader::DenseTensor>(
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".router.bias"))
+        ops.dense(p + ".router.bias").dense()
             .to(::tyloi::kFloat32).contiguous());
 #else
-    auto bias = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".router.bias"))
+    auto bias = ops.dense(p + ".router.bias").dense()
                     .to(::tyloi::kFloat32).contiguous();
 #endif
     return ops.moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
@@ -51,12 +51,12 @@ auto load_mla(Loader &ops, const Config &c, int layer, const std::string &a) {
         ops.dense(a + ".indexer.pool.gate"),
         ops.dense(a + ".indexer.pool.position")};
 #else
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".query_a_norm.weight")),
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".key_value_a_norm.weight")),
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.key_norm.weight")),
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.key_norm.bias")),
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.pool.gate")),
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".indexer.pool.position"))};
+        ops.dense(a + ".query_a_norm.weight").dense(),
+        ops.dense(a + ".key_value_a_norm.weight").dense(),
+        ops.dense(a + ".indexer.key_norm.weight").dense(),
+        ops.dense(a + ".indexer.key_norm.bias").dense(),
+        ops.dense(a + ".indexer.pool.gate").dense(),
+        ops.dense(a + ".indexer.pool.position").dense()};
 #endif
     return ops.mla(std::move(w), c);
 }
@@ -68,9 +68,9 @@ auto load_mhc(Loader &ops, const std::string &p) {
     auto base = ops.dense(p + ".base");
     auto scale = ops.dense(p + ".scale");
 #else
-    auto function = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".function"));
-    auto base = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".base"));
-    auto scale = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".scale"));
+    auto function = ops.dense(p + ".function").dense();
+    auto base = ops.dense(p + ".base").dense();
+    auto scale = ops.dense(p + ".scale").dense();
 #endif
     return ops.mhc(std::move(function), std::move(base), std::move(scale));
 }
@@ -85,8 +85,8 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
     b.attention_norm = ops.dense(p + ".attention.norm.weight");
     b.ffn_norm = ops.dense(p + ".mlp.norm.weight");
 #else
-    b.attention_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".attention.norm.weight"));
-    b.ffn_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".mlp.norm.weight"));
+    b.attention_norm = ops.dense(p + ".attention.norm.weight").dense();
+    b.ffn_norm = ops.dense(p + ".mlp.norm.weight").dense();
 #endif
     b.ffn = load_ffn(ops, c, layer, p + ".mlp", false);
     if (c.linear_layer(layer)) {
@@ -106,14 +106,14 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
             ops.dense(a + ".a"),
             ops.dense(a + ".output_norm.weight")};
 #else
-            ops.concat({dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".query_conv.weight")),
-                        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".key_conv.weight")),
-                        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".value_conv.weight"))}),
-            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".forget_a.weight")),
-            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".forget_b.weight")),
-            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".dt_bias")),
-            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".a")),
-            dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(a + ".output_norm.weight"))};
+            ops.concat({ops.dense(a + ".query_conv.weight").dense(),
+                        ops.dense(a + ".key_conv.weight").dense(),
+                        ops.dense(a + ".value_conv.weight").dense()}),
+            ops.dense(a + ".forget_a.weight").dense(),
+            ops.dense(a + ".forget_b.weight").dense(),
+            ops.dense(a + ".dt_bias").dense(),
+            ops.dense(a + ".a").dense(),
+            ops.dense(a + ".output_norm.weight").dense()};
 #endif
         b.kda = ops.kda(std::move(w), c);
     } else {
@@ -132,18 +132,16 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     result.config = c;
 #ifdef TYLOINFER_NATIVE_CUDA
     result.embedding_norm = std::make_shared<typename Loader::DenseTensor>(
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight"))
+        ops.dense("predictor.embedding_norm.weight").dense()
             .to(::tyloi::kFloat32).contiguous());
     result.hidden_norm = std::make_shared<typename Loader::DenseTensor>(
-        dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight"))
+        ops.dense("predictor.hidden_norm.weight").dense()
             .to(::tyloi::kFloat32).contiguous());
     result.output_norm = ops.dense("predictor.output_norm.weight");
 #else
-    result.embedding_norm = dynamic_cast<const typename Loader::DenseTensor&>(
-        *ops.dense("predictor.embedding_norm.weight")).to(::tyloi::kFloat32).contiguous();
-    result.hidden_norm = dynamic_cast<const typename Loader::DenseTensor&>(
-        *ops.dense("predictor.hidden_norm.weight")).to(::tyloi::kFloat32).contiguous();
-    result.output_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense("predictor.output_norm.weight"));
+    result.embedding_norm = ops.dense("predictor.embedding_norm.weight").dense().to(::tyloi::kFloat32).contiguous();
+    result.hidden_norm = ops.dense("predictor.hidden_norm.weight").dense().to(::tyloi::kFloat32).contiguous();
+    result.output_norm = ops.dense("predictor.output_norm.weight").dense();
 #endif
     result.fusion = ops.weight("predictor.fusion.weight");
     for (int64_t i = 0; i < count; ++i) {
@@ -153,17 +151,17 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
         layer.attention_norm = ops.dense(p + ".attention.norm.weight");
         layer.ffn_norm = ops.dense(p + ".mlp.norm.weight");
 #else
-        layer.attention_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".attention.norm.weight"));
-        layer.ffn_norm = dynamic_cast<const typename Loader::DenseTensor&>(*ops.dense(p + ".mlp.norm.weight"));
+        layer.attention_norm = ops.dense(p + ".attention.norm.weight").dense();
+        layer.ffn_norm = ops.dense(p + ".mlp.norm.weight").dense();
 #endif
         layer.ffn = load_ffn(ops, c, int(i), p + ".mlp", true);
         layer.attention = load_mla(ops, c, int(i), p + ".attention");
         result.layers.push_back(std::move(layer));
     }
 #ifdef TYLOINFER_NATIVE_CUDA
-    require_model(result.embedding_norm->dim() == 1 && result.embedding_norm->size(0) == c.hidden &&
-                      result.hidden_norm->dim() == 1 && result.hidden_norm->size(0) == c.hidden &&
-                      result.output_norm->numel() == c.hidden,
+    require_model(result.embedding_norm.dim() == 1 && result.embedding_norm.size(0) == c.hidden &&
+                      result.hidden_norm.dim() == 1 && result.hidden_norm.size(0) == c.hidden &&
+                      result.output_norm.numel() == c.hidden,
 #else
     require_model(result.embedding_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&
                       result.hidden_norm.sizes().vec() == std::vector<int64_t>{c.hidden} &&

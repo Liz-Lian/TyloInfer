@@ -74,7 +74,7 @@ void load(Model& model, const tyloi::weights::Loader& weights, const LayerPlacem
 #ifdef TYLOINFER_NATIVE_CUDA
     model.output_norm = weights.tensor("model.output_norm.weight");
 #else
-    model.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+    model.output_norm = weights.tensor("model.output_norm.weight").dense();
 #endif
     model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
         : weights.placement.tensor.enabled()

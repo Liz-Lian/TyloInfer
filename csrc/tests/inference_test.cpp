@@ -3,7 +3,7 @@
 #include "gguf.h"
 #include <cassert>
 int main() {
-    using namespace mfq::engine;
+    using namespace tyloi::engine;
     InferenceMetrics metrics;
     metrics.mark_token();
     assert(metrics.saw_token && metrics.first_token == metrics.last_token);

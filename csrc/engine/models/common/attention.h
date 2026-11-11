@@ -17,9 +17,9 @@ namespace tyloi::cuda {
 
 struct AttentionStep {
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const tyloi::Tensor> positions;
-    std::shared_ptr<const tyloi::Tensor> sequence_lengths;
-    std::shared_ptr<const tyloi::Tensor> cache_positions;
+    ::tyloi::Tensor positions;
+    ::tyloi::Tensor sequence_lengths;
+    ::tyloi::Tensor cache_positions;
 #else
     ::tyloi::DenseTensor positions;
     MfqOptional<::tyloi::DenseTensor> sequence_lengths = mfq_nullopt;
@@ -48,18 +48,18 @@ struct FullAttention {
     bool no_rope = false;
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::RopeTable attention_rope;
-    std::shared_ptr<const tyloi::Tensor> attn_norm, q_norm, k_norm, v_norm;
+    ::tyloi::Tensor attn_norm, q_norm, k_norm, v_norm;
 #else
     RopeCache attention_rope;
     ::tyloi::DenseTensor attn_norm, q_norm, k_norm, v_norm;
 #endif
-    std::vector<std::shared_ptr<const tyloi::Tensor>> qkv;
+    std::vector<::tyloi::Tensor> qkv;
     bool attention_output_gate = false;
     bool split_q_kv_projections = false;
-    std::shared_ptr<const ::tyloi::Tensor> q_projection, k_projection, v_projection, o;
+    ::tyloi::Tensor q_projection, k_projection, v_projection, o;
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::state::KvQuantization kv_quantization;
-    std::array<std::shared_ptr<tyloi::Tensor>, 2> forward(
+    std::array<::tyloi::Tensor, 2> forward(
         const tyloi::Tensor& input, const AttentionStep& step,
         tyloi::state::KvView cache, const tyloi::ops::RopeTable& rope,
         tyloi::ops::Trace* trace = nullptr) const;

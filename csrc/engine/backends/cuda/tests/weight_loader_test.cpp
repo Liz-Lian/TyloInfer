@@ -1,4 +1,5 @@
-#include "storage/weights/loaders/weight.h"
+#include "execution_fixture.h"
+#include "engine/weights/loader.h"
 #include "memory_tensor_source.h"
 
 #include <iostream>
@@ -8,15 +9,15 @@ static void check(bool ok, const char* message) {
 }
 
 static void check_dense_loading() {
-    using namespace mfq_tensor_backend;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     MemoryTensorSource source;
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     CudaScope scope(execution);
     const uint32_t rank = 2;
     const int64_t shape[] = {2, 2};
     const size_t header = sizeof(rank) + sizeof(shape);
-    auto same = [](Tensor value, const Tensor &expected) {
+    auto same = [](DenseTensor value, const DenseTensor &expected) {
         value = value.cpu().contiguous();
         return value.scalar_type() == expected.scalar_type() && value.sizes() == expected.sizes() &&
                std::memcmp(value.data_ptr(), expected.data_ptr(), expected.nbytes()) == 0;

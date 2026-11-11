@@ -3,15 +3,16 @@
 #include <limits>
 
 void check_contiguous_convert() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     int checks=0,graphs=0;
-    const auto exact=[](const Tensor& actual,const Tensor& expected) {
+    const auto exact=[](const DenseTensor& actual,const DenseTensor& expected) {
         auto a=actual.contiguous().to(kCPU),b=expected.contiguous().to(kCPU);
         require(a.scalar_type()==b.scalar_type() && a.sizes()==b.sizes() &&
             (!a.numel() || std::memcmp(a.data_ptr(),b.data_ptr(),a.nbytes())==0),
             "contiguous conversion changed reference bytes");
     };
-    const auto run=[](const Tensor& input,ScalarType destination,bool old) {
+    const auto run=[](const DenseTensor& input,ScalarType destination,bool old) {
         set_test_environment("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_CONVERT",old?"1":"0");
         return input.to(destination);
     };

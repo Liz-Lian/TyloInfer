@@ -87,7 +87,7 @@ MtpSessionState MtpState::capture(int64_t target_position, const ::tyloi::DenseT
 
 MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
     const auto* blocks = std::get_if<std::vector<KvSnapshot>>(&saved.payload);
-    const auto* hidden = dynamic_cast<const ::tyloi::DenseTensor*>(saved.last_target_hidden.get());
+    const auto* hidden = saved.last_target_hidden.representation<::tyloi::DenseTensor>();
     if (saved.cache_pos <= 0 || blocks == nullptr || blocks->size() != kv_.size() ||
         !hidden || !hidden->defined() || hidden->dim() != 3 ||
         hidden->size(0) != 1 || hidden->size(1) != 1 || hidden->size(2) != hidden_)
@@ -104,10 +104,10 @@ MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
             ? cuda_kv_packed_width(int(layout.head_dim), layout.quantization.value_bits()) : layout.head_dim;
         const auto dtype = layout.quantization.enabled() ? ::tyloi::kInt32 : layout.dtype;
         if (block.capacity > layout.capacity || block.ring ||
-            block.k->size(1) != layout.heads || block.k->size(2) != saved.cache_pos ||
-            block.k->size(3) != key_width || block.v->size(3) != value_width ||
-            block.k->scalar_type() != dtype || !block.k->is_cuda() || !block.v->is_cuda() ||
-            block.k->get_device() != layout.device || block.v->get_device() != layout.device)
+            block.k.size(1) != layout.heads || block.k.size(2) != saved.cache_pos ||
+            block.k.size(3) != key_width || block.v.size(3) != value_width ||
+            block.k.scalar_type() != dtype || !block.k.is_cuda() || !block.v.is_cuda() ||
+            block.k.get_device() != layout.device || block.v.get_device() != layout.device)
             throw CudaSessionStateError("Qwen MTP session KV topology changed");
     }
     return {std::vector<tyloi::state::KvView>(kv_.size()), saved.cache_pos};

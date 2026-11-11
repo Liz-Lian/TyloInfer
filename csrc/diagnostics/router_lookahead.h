@@ -15,7 +15,7 @@ public:
         if(layers<=0||hidden<=0||samples<=0)
             throw std::invalid_argument("invalid router lookahead audit geometry");
         latest_=tyloi::ops::zeros({layers,hidden},tyloi::TensorOptions()
-            .device(tyloi::Device(tyloi::kCUDA,0)).dtype(tyloi::kFloat16));
+            .device(tyloi::Device(tyloi::kCUDA,0)).dtype(tyloi::kFloat16)).dense();
         samples_.reserve(samples);
     }
     void input(int layer,const tyloi::DenseTensor& value) {
@@ -33,9 +33,9 @@ public:
     tyloi::DenseTensor rows(int layer) const {
         if(layer<0||layer>=layers_||samples_.empty())
             throw std::invalid_argument("router lookahead audit has no input rows");
-        std::vector<tyloi::DenseTensor> values;values.reserve(samples_.size());
+        std::vector<tyloi::Tensor> values;values.reserve(samples_.size());
         for(const auto& sample:samples_)values.push_back(sample.narrow(0,layer,1));
-        return tyloi::ops::contiguous(tyloi::ops::cat(values,0));
+        return tyloi::ops::contiguous(tyloi::ops::cat(values,0)).dense();
     }
 private:
     int layers_,hidden_,limit_;

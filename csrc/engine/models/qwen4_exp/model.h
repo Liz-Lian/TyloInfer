@@ -37,10 +37,10 @@ using attention_ops::SequenceCache;
 using attention_ops::select_pooled_blocks;
 
 struct GdnWeights {
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> input_projection;
-    std::shared_ptr<const ::tyloi::Tensor> output;
+    std::vector<::tyloi::Tensor> input_projection;
+    ::tyloi::Tensor output;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> conv, dt_bias, a_log, norm;
+    ::tyloi::Tensor conv, dt_bias, a_log, norm;
 #else
     DenseTensor conv, dt_bias, a_log, norm;
 #endif
@@ -111,7 +111,7 @@ class Gdn {
         ResidentAllocationScope resident;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-        auto options=w_->norm->options().dtype(::tyloi::kFloat32);
+        auto options=w_->norm.options().dtype(::tyloi::kFloat32);
 #else
         auto options=w_->norm.options().dtype(::tyloi::kFloat32);
 #endif
@@ -204,7 +204,7 @@ class Gdn {
         if(::tyloi::cuda::options::gdn_independent_batch_trace())
             std::fprintf(stderr,"gdn_batch_core rows=%lld\n",(long long)x.size(0));
 #ifdef TYLOINFER_NATIVE_CUDA
-        auto weight=dynamic_cast<const DenseTensor&>(*w_->conv).to(::tyloi::kFloat32).contiguous();
+        auto weight=w_->conv.dense().to(::tyloi::kFloat32).contiguous();
 #else
         auto weight=w_->conv.to(::tyloi::kFloat32).contiguous();
 #endif
@@ -246,7 +246,7 @@ class Gdn {
             (projected[1].scalar_type()==::tyloi::kFloat16 || projected[1].scalar_type()==::tyloi::kFloat32) &&
             (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32)) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            auto weight=dynamic_cast<const DenseTensor&>(*w_->conv).to(::tyloi::kFloat32).contiguous();
+            auto weight=w_->conv.dense().to(::tyloi::kFloat32).contiguous();
 #else
             auto weight=w_->conv.to(::tyloi::kFloat32).contiguous();
 #endif
@@ -369,7 +369,7 @@ class Gdn {
                 projections[2].scalar_type()==projections[3].scalar_type() &&
                 (projections[1].scalar_type()==::tyloi::kFloat16 || projections[1].scalar_type()==::tyloi::kFloat32)) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto weight=dynamic_cast<const DenseTensor&>(*w_->conv).to(::tyloi::kFloat32).contiguous();
+                auto weight=w_->conv.dense().to(::tyloi::kFloat32).contiguous();
 #else
                 auto weight=w_->conv.to(::tyloi::kFloat32).contiguous();
 #endif
@@ -383,8 +383,8 @@ class Gdn {
                   auto alpha=projections[2].reshape({b,t,nv_}),beta=projections[3].reshape({b,t,nv_});
                   if(checkpoint)return gdn_decode_core_checkpoint_cuda(qkv,gate,alpha,beta,previous,request.recurrent.dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                    weight,dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),
-                    dynamic_cast<const DenseTensor&>(*w_->norm).to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
+                    weight,w_->dt_bias.dense().to(::tyloi::kFloat32).contiguous(),w_->a_log.dense().to(::tyloi::kFloat32).contiguous(),
+                    w_->norm.dense().to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
 #else
                     weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
                     w_->norm.to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
@@ -393,8 +393,8 @@ class Gdn {
                   return gdn_decode_core_cuda(qkv,gate,
                     projections[2].reshape({b,t,nv_}),projections[3].reshape({b,t,nv_}),previous,request.recurrent.dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                    weight,dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),
-                    dynamic_cast<const DenseTensor&>(*w_->norm).to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
+                    weight,w_->dt_bias.dense().to(::tyloi::kFloat32).contiguous(),w_->a_log.dense().to(::tyloi::kFloat32).contiguous(),
+                    w_->norm.dense().to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
 #else
                     weight,w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
                     w_->norm.to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
@@ -440,7 +440,7 @@ class Gdn {
                 if(prefill_fused && projected.scalar_type()==::tyloi::kFloat16) {
                     return ::tyloi::ops::measure("prefill.gdn_conv_qkv",[&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                        auto weight=dynamic_cast<const DenseTensor&>(*w_->conv).to(::tyloi::kFloat32).contiguous();
+                        auto weight=w_->conv.dense().to(::tyloi::kFloat32).contiguous();
 #else
                         auto weight=w_->conv.to(::tyloi::kFloat32).contiguous();
 #endif
@@ -455,7 +455,7 @@ class Gdn {
                             auto qkv=linear_conv_qkv_gate_short_cuda(previous,direct(projected),weight,
                                 direct(projections[2].reshape({b,t,nv_})),direct(projections[3].reshape({b,t,nv_})),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6);
+                                w_->dt_bias.dense().to(::tyloi::kFloat32).contiguous(),w_->a_log.dense().to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6);
 #else
                                 w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),nk_,nv_,d_,1e-6);
 #endif
@@ -471,7 +471,7 @@ class Gdn {
                 }
                 if (fused_decode_ && t == 1 && d_ <= 256 && projected.scalar_type() == ::tyloi::kFloat16) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                    auto weight = dynamic_cast<const DenseTensor&>(*w_->conv).to(::tyloi::kFloat32).contiguous();
+                    auto weight = w_->conv.dense().to(::tyloi::kFloat32).contiguous();
 #else
                     auto weight = w_->conv.to(::tyloi::kFloat32).contiguous();
 #endif
@@ -492,7 +492,7 @@ class Gdn {
                         qkv=linear_conv_qkv_gate_decode_cuda(next_conv,qk,v,weight,
                             alpha.reshape({b,t,nv_}),beta.reshape({b,t,nv_}),
 #ifdef TYLOINFER_NATIVE_CUDA
-                            dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(),
+                            w_->dt_bias.dense().to(::tyloi::kFloat32).contiguous(),w_->a_log.dense().to(::tyloi::kFloat32).contiguous(),
 #else
                             w_->dt_bias.to(::tyloi::kFloat32).contiguous(),w_->a_log.to(::tyloi::kFloat32).contiguous(),
 #endif
@@ -504,7 +504,7 @@ class Gdn {
                 }
                 auto joined = ::tyloi::cuda::cat({previous, projected.to(::tyloi::kFloat32)}, 1).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto convolved = ssm_conv_silu_cuda(joined, dynamic_cast<const DenseTensor&>(*w_->conv).to(::tyloi::kFloat32).contiguous(),
+                auto convolved = ssm_conv_silu_cuda(joined, w_->conv.dense().to(::tyloi::kFloat32).contiguous(),
 #else
                 auto convolved = ssm_conv_silu_cuda(joined, w_->conv.to(::tyloi::kFloat32).contiguous(),
 #endif
@@ -534,8 +534,8 @@ class Gdn {
                         alpha.to(::tyloi::kFloat32).reshape({b, t, nv_}),
                         raw_beta.to(::tyloi::kFloat32).reshape({b, t, nv_}),
 #ifdef TYLOINFER_NATIVE_CUDA
-                        dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).contiguous(),
-                        dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).contiguous(), true);
+                        w_->dt_bias.dense().to(::tyloi::kFloat32).contiguous(),
+                        w_->a_log.dense().to(::tyloi::kFloat32).contiguous(), true);
 #else
                         w_->dt_bias.to(::tyloi::kFloat32).contiguous(),
                         w_->a_log.to(::tyloi::kFloat32).contiguous(), true);
@@ -544,14 +544,14 @@ class Gdn {
                 }
                 auto gate_input = alpha.to(::tyloi::kFloat32).reshape({b, t, nv_}) +
 #ifdef TYLOINFER_NATIVE_CUDA
-                                  dynamic_cast<const DenseTensor&>(*w_->dt_bias).to(::tyloi::kFloat32).reshape({1, 1, nv_});
+                                  w_->dt_bias.dense().to(::tyloi::kFloat32).reshape({1, 1, nv_});
 #else
                                   w_->dt_bias.to(::tyloi::kFloat32).reshape({1, 1, nv_});
 #endif
                 auto softplus =
                     ::tyloi::cuda::clamp_min(gate_input, 0) + ::tyloi::cuda::log1p(::tyloi::cuda::exp(-gate_input.abs()));
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto decay = (-dynamic_cast<const DenseTensor&>(*w_->a_log).to(::tyloi::kFloat32).exp().reshape({1, 1, nv_}) * softplus)
+                auto decay = (-w_->a_log.dense().to(::tyloi::kFloat32).exp().reshape({1, 1, nv_}) * softplus)
 #else
                 auto decay = (-w_->a_log.to(::tyloi::kFloat32).exp().reshape({1, 1, nv_}) * softplus)
 #endif
@@ -612,7 +612,7 @@ class Gdn {
                     (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32))
                     return gdn_rms_norm_gate_cuda(attended,projected_gate,
 #ifdef TYLOINFER_NATIVE_CUDA
-                        dynamic_cast<const DenseTensor&>(*w_->norm).to(::tyloi::kFloat32).contiguous(),eps_,silu_gate_,x.scalar_type()==::tyloi::kFloat16);
+                        w_->norm.dense().to(::tyloi::kFloat32).contiguous(),eps_,silu_gate_,x.scalar_type()==::tyloi::kFloat16);
 #else
                         w_->norm.to(::tyloi::kFloat32).contiguous(),eps_,silu_gate_,x.scalar_type()==::tyloi::kFloat16);
 #endif
@@ -624,7 +624,7 @@ class Gdn {
                 if (silu_gate_)
                     gate = z * gate;
 #ifdef TYLOINFER_NATIVE_CUDA
-                return rms_norm(attended, dynamic_cast<const DenseTensor&>(*w_->norm), eps_) * gate;
+                return rms_norm(attended, w_->norm.dense(), eps_) * gate;
 #else
                 return rms_norm(attended, w_->norm, eps_) * gate;
 #endif
@@ -668,7 +668,7 @@ class Gdn {
 class NgramEmbedding {
   public:
     using Context = tyloi::models::qwen4_exp::NgramContext;
-    using RowLookup = std::function<std::shared_ptr<::tyloi::Tensor>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
+    using RowLookup = std::function<::tyloi::Tensor(const std::vector<int64_t>&,const ::tyloi::Device&)>;
     using StageFactory = std::function<std::shared_ptr<RowStage>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
     struct State {
         State() = default;
@@ -855,7 +855,7 @@ class NgramEmbedding {
 struct PleWeights {
     Linear key, value;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> key_norm, query_norm, conv_norm, conv;
+    ::tyloi::Tensor key_norm, query_norm, conv_norm, conv;
 #else
     DenseTensor key_norm, query_norm, conv_norm, conv;
 #endif
@@ -1054,13 +1054,13 @@ class Ple {
                 auto value=::tyloi::ops::project(embeddings,w_.value).dense();
                 auto prepared=mfq_qwen4_exp::ple_gate_norm_cuda(key,query,value,
 #ifdef TYLOINFER_NATIVE_CUDA
-                    dynamic_cast<const DenseTensor&>(*w_.conv_norm).to(::tyloi::kFloat32).contiguous(),hidden_,streams_,eps_);
+                    w_.conv_norm.dense().to(::tyloi::kFloat32).contiguous(),hidden_,streams_,eps_);
 #else
                     w_.conv_norm.to(::tyloi::kFloat32).contiguous(),hidden_,streams_,eps_);
 #endif
                 save_prefixes(prepared[1]);
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto output=mfq_qwen4_exp::ple_conv_add_cuda(prepared[1],dynamic_cast<const DenseTensor&>(*w_.conv),
+                auto output=mfq_qwen4_exp::ple_conv_add_cuda(prepared[1],w_.conv.dense(),
 #else
                 auto output=mfq_qwen4_exp::ple_conv_add_cuda(prepared[1],w_.conv,
 #endif
@@ -1076,7 +1076,7 @@ class Ple {
             [&](const DenseTensor &embeddings) {
                 auto key = mfq_qwen4_exp::grouped_rms_norm(::tyloi::ops::project(embeddings,w_.key).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                                           dynamic_cast<const DenseTensor&>(*w_.key_norm), hidden_, eps_)
+                                                           w_.key_norm.dense(), hidden_, eps_)
 #else
                                                            w_.key_norm, hidden_, eps_)
 #endif
@@ -1085,7 +1085,7 @@ class Ple {
             },
             [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto query = mfq_qwen4_exp::grouped_rms_norm(x, dynamic_cast<const DenseTensor&>(*w_.query_norm), hidden_, eps_)
+                auto query = mfq_qwen4_exp::grouped_rms_norm(x, w_.query_norm.dense(), hidden_, eps_)
 #else
                 auto query = mfq_qwen4_exp::grouped_rms_norm(x, w_.query_norm, hidden_, eps_)
 #endif
@@ -1104,7 +1104,7 @@ class Ple {
             },
             [&](const DenseTensor &gated) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                return mfq_qwen4_exp::grouped_rms_norm(gated, dynamic_cast<const DenseTensor&>(*w_.conv_norm), hidden_, eps_);
+                return mfq_qwen4_exp::grouped_rms_norm(gated, w_.conv_norm.dense(), hidden_, eps_);
 #else
                 return mfq_qwen4_exp::grouped_rms_norm(gated, w_.conv_norm, hidden_, eps_);
 #endif
@@ -1113,7 +1113,7 @@ class Ple {
                 save_prefixes(normalized);
                 return mfq_qwen4_exp::ple_dilated_conv_silu(
 #ifdef TYLOINFER_NATIVE_CUDA
-                    normalized, dynamic_cast<const DenseTensor&>(*w_.conv),
+                    normalized, w_.conv.dense(),
 #else
                     normalized, w_.conv,
 #endif
@@ -1133,10 +1133,10 @@ class Ple {
 };
 
 struct QsaWeights {
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> input_projection;
-    std::shared_ptr<const ::tyloi::Tensor> output;
+    std::vector<::tyloi::Tensor> input_projection;
+    ::tyloi::Tensor output;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> query_norm, key_norm, index_query_norm, index_key_norm;
+    ::tyloi::Tensor query_norm, key_norm, index_query_norm, index_key_norm;
 #else
     DenseTensor query_norm, key_norm, index_query_norm, index_key_norm;
 #endif
@@ -1345,7 +1345,7 @@ class Qsa {
             if(pools) {
                 auto pooled=request.index.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(request.index.storage().scalar_type());
 #ifdef TYLOINFER_NATIVE_CUDA
-                pooled=rms_norm(pooled,dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32)+1,c_.eps);
+                pooled=rms_norm(pooled,w_->index_key_norm.dense().to(::tyloi::kFloat32)+1,c_.eps);
 #else
                 pooled=rms_norm(pooled,w_->index_key_norm.to(::tyloi::kFloat32)+1,c_.eps);
 #endif
@@ -1370,7 +1370,7 @@ class Qsa {
         if(pools) {
             auto pooled=request.index.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(request.index.storage().scalar_type());
 #ifdef TYLOINFER_NATIVE_CUDA
-            pooled=rms_norm(pooled,dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32)+1,c_.eps);
+            pooled=rms_norm(pooled,w_->index_key_norm.dense().to(::tyloi::kFloat32)+1,c_.eps);
 #else
             pooled=rms_norm(pooled,w_->index_key_norm.to(::tyloi::kFloat32)+1,c_.eps);
 #endif
@@ -1478,7 +1478,7 @@ class Qsa {
             auto prepared=mfq_qwen4_exp::live_index_pool(request.index.storage(),positions,cache_positions,c_.pool,c_.maximum);
             block=prepared[1];
 #ifdef TYLOINFER_NATIVE_CUDA
-            pooled=rotary_->forward_normalized(prepared[0].unsqueeze(2),dynamic_cast<const DenseTensor&>(*w_->index_key_norm),prepared[2],c_.eps).squeeze(1);
+            pooled=rotary_->forward_normalized(prepared[0].unsqueeze(2),w_->index_key_norm.dense(),prepared[2],c_.eps).squeeze(1);
 #else
             pooled=rotary_->forward_normalized(prepared[0].unsqueeze(2),w_->index_key_norm,prepared[2],c_.eps).squeeze(1);
 #endif
@@ -1487,7 +1487,7 @@ class Qsa {
             auto row=(block.unsqueeze(-1)*c_.pool+::tyloi::cuda::arange(c_.pool,block.options())).clamp(0,c_.maximum-1);
             pooled=request.index.storage().index_select(1,row.reshape({-1})).reshape({1,t,c_.pool,c_.index_width}).to(::tyloi::kFloat32).mean(2).to(request.index.storage().scalar_type());
 #ifdef TYLOINFER_NATIVE_CUDA
-            pooled=rms_norm(pooled,dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32)+1,c_.eps);
+            pooled=rms_norm(pooled,w_->index_key_norm.dense().to(::tyloi::kFloat32)+1,c_.eps);
 #else
             pooled=rms_norm(pooled,w_->index_key_norm.to(::tyloi::kFloat32)+1,c_.eps);
 #endif
@@ -1627,7 +1627,7 @@ class Qsa {
                 auto gate = pair.narrow(-1, c_.width, c_.width);
                 auto query = rms_norm(pair.narrow(-1, 0, c_.width),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                      dynamic_cast<const DenseTensor&>(*w_->query_norm).to(::tyloi::kFloat32) + 1, c_.eps)
+                                      w_->query_norm.dense().to(::tyloi::kFloat32) + 1, c_.eps)
 #else
                                       w_->query_norm.to(::tyloi::kFloat32) + 1, c_.eps)
 #endif
@@ -1635,7 +1635,7 @@ class Qsa {
                 auto key =
                     rms_norm(::tyloi::ops::project(hidden,w_->input_projection[1]).dense().reshape({b, t, c_.kv_heads, c_.width}),
 #ifdef TYLOINFER_NATIVE_CUDA
-                             dynamic_cast<const DenseTensor&>(*w_->key_norm).to(::tyloi::kFloat32) + 1, c_.eps)
+                             w_->key_norm.dense().to(::tyloi::kFloat32) + 1, c_.eps)
 #else
                              w_->key_norm.to(::tyloi::kFloat32) + 1, c_.eps)
 #endif
@@ -1647,7 +1647,7 @@ class Qsa {
                 auto iq = rms_norm(iqk.narrow(-1, 0, c_.index_heads * c_.index_width)
                                        .reshape({b, t, c_.index_heads, c_.index_width}),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                   dynamic_cast<const DenseTensor&>(*w_->index_query_norm).to(::tyloi::kFloat32) + 1, c_.eps)
+                                   w_->index_query_norm.dense().to(::tyloi::kFloat32) + 1, c_.eps)
 #else
                                    w_->index_query_norm.to(::tyloi::kFloat32) + 1, c_.eps)
 #endif
@@ -1716,7 +1716,7 @@ class Qsa {
                                   .mean(2)
                                   .to(raw.scalar_type());
 #ifdef TYLOINFER_NATIVE_CUDA
-                pooled = rms_norm(pooled, dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32) + 1, c_.eps);
+                pooled = rms_norm(pooled, w_->index_key_norm.dense().to(::tyloi::kFloat32) + 1, c_.eps);
 #else
                 pooled = rms_norm(pooled, w_->index_key_norm.to(::tyloi::kFloat32) + 1, c_.eps);
 #endif
@@ -1823,8 +1823,8 @@ class Qsa {
                     cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
             } catch(...) {request.offloaded_kv->truncate(start);throw;}
         });
-        const auto rows=stage->gather->rows->size(0);
-        const auto& gathered=dynamic_cast<const DenseTensor&>(*stage->gather->rows);
+        const auto rows=stage->gather->rows.size(0);
+        const auto& gathered=stage->gather->rows.dense();
         auto flat=gathered.reshape({-1});
         auto keys=flat.narrow(0,0,rows*key_row).reshape({1,c_.kv_heads,rows,key_width()});
         auto values=flat.narrow(0,rows*key_row,rows*value_row).reshape({1,c_.kv_heads,rows,value_width()});
@@ -1860,7 +1860,7 @@ class Qsa {
             else request.offloaded_index->append(p.raw.reshape({tokens,c_.index_width}));
             const auto new_pools = length / c_.pool - first_pool;
             if (new_pools) {
-                std::shared_ptr<::tyloi::Tensor> raw_owner;
+                ::tyloi::Tensor raw_owner;
                 DenseTensor raw;
                 if(managed_memory(request))
                     raw=request.index.storage().narrow(1,first_pool*c_.pool,new_pools*c_.pool).reshape({new_pools*c_.pool,c_.index_width});
@@ -1870,7 +1870,7 @@ class Qsa {
                 }
                 auto pooled = raw.reshape({1, new_pools, c_.pool, c_.index_width}).to(::tyloi::kFloat32).mean(2).to(::tyloi::kFloat16);
 #ifdef TYLOINFER_NATIVE_CUDA
-                pooled = rms_norm(pooled, dynamic_cast<const DenseTensor&>(*w_->index_key_norm).to(::tyloi::kFloat32) + 1, c_.eps);
+                pooled = rms_norm(pooled, w_->index_key_norm.dense().to(::tyloi::kFloat32) + 1, c_.eps);
 #else
                 pooled = rms_norm(pooled, w_->index_key_norm.to(::tyloi::kFloat32) + 1, c_.eps);
 #endif
@@ -1891,7 +1891,7 @@ class Qsa {
                 auto value = packed.narrow(1,key_row,value_row).reshape({1,length,c_.kv_heads,value_width()}).permute({0,2,1,3});
                 DenseTensor ids;
                 if (length > c_.budget) {
-                    std::shared_ptr<::tyloi::Tensor> pooled_owner;
+                    ::tyloi::Tensor pooled_owner;
                     auto pooled = pool_range(0,length / c_.pool,pooled_owner).reshape({1,length / c_.pool,c_.index_width});
                     auto scores = mfq_qwen4_exp::block_scores(p.iq, pooled);
                     ids = select_pooled_blocks(scores, offset, length, c_.pool, c_.budget, true);
@@ -1920,7 +1920,7 @@ class Qsa {
                         request.offload->config().buffer_bytes / 8 / (c_.index_width * 2 + count * 4)));
                     for (int64_t start = 0; start < pools; start += pool_chunk) {
                         const auto n = std::min(pool_chunk, pools - start);
-                        std::shared_ptr<::tyloi::Tensor> pooled_owner;
+                        ::tyloi::Tensor pooled_owner;
                         auto pooled = pool_range(start, n, pooled_owner).reshape({1, n, c_.index_width});
                         auto scores = mfq_qwen4_exp::block_scores(p.iq.narrow(1, begin, count), pooled);
                         auto ids = ::tyloi::cuda::arange(start, start + n, cache_positions.options());
@@ -1975,8 +1975,8 @@ class Qsa {
         if(fused_projection_ && rotary_->fused() &&
                 (source.scalar_type()==::tyloi::kFloat16 || source.scalar_type()==::tyloi::kFloat32))
 #ifdef TYLOINFER_NATIVE_CUDA
-            key=rotary_->forward_normalized_grouped({source},{dynamic_cast<const DenseTensor&>(*w_->key_norm)},positions,c_.eps,1)[0].permute({0,2,1,3});
-        else key=rotary_->forward(project_norm(source,dynamic_cast<const DenseTensor&>(*w_->key_norm)).permute({0,2,1,3}),positions).permute({0,2,1,3});
+            key=rotary_->forward_normalized_grouped({source},{w_->key_norm.dense()},positions,c_.eps,1)[0].permute({0,2,1,3});
+        else key=rotary_->forward(project_norm(source,w_->key_norm.dense()).permute({0,2,1,3}),positions).permute({0,2,1,3});
 #else
             key=rotary_->forward_normalized_grouped({source},{w_->key_norm},positions,c_.eps,1)[0].permute({0,2,1,3});
         else key=rotary_->forward(project_norm(source,w_->key_norm).permute({0,2,1,3}),positions).permute({0,2,1,3});
@@ -2011,14 +2011,14 @@ class Qsa {
         if(fused) {
             std::vector<DenseTensor> inputs{pair.narrow(-1,0,c_.width),key_source};
 #ifdef TYLOINFER_NATIVE_CUDA
-            std::vector<DenseTensor> weights{dynamic_cast<const DenseTensor&>(*w_->query_norm),dynamic_cast<const DenseTensor&>(*w_->key_norm)};
+            std::vector<DenseTensor> weights{w_->query_norm.dense(),w_->key_norm.dense()};
 #else
             std::vector<DenseTensor> weights{w_->query_norm,w_->key_norm};
 #endif
             if(index_query_needed) {
                 auto source=iqk.narrow(-1,0,c_.index_heads*c_.index_width).reshape({b,t,c_.index_heads,c_.index_width});
 #ifdef TYLOINFER_NATIVE_CUDA
-                if(supported(source)){inputs.push_back(source);weights.push_back(dynamic_cast<const DenseTensor&>(*w_->index_query_norm));}
+                if(supported(source)){inputs.push_back(source);weights.push_back(w_->index_query_norm.dense());}
 #else
                 if(supported(source)){inputs.push_back(source);weights.push_back(w_->index_query_norm);}
 #endif
@@ -2031,8 +2031,8 @@ class Qsa {
             if(normalized.size()==3)iq=normalized[2].permute({0,2,1,3});
         } else {
 #ifdef TYLOINFER_NATIVE_CUDA
-            query=project_norm(pair.narrow(-1,0,c_.width),dynamic_cast<const DenseTensor&>(*w_->query_norm)).permute({0,2,1,3});
-            key=project_norm(key_source,dynamic_cast<const DenseTensor&>(*w_->key_norm)).permute({0,2,1,3});
+            query=project_norm(pair.narrow(-1,0,c_.width),w_->query_norm.dense()).permute({0,2,1,3});
+            key=project_norm(key_source,w_->key_norm.dense()).permute({0,2,1,3});
 #else
             query=project_norm(pair.narrow(-1,0,c_.width),w_->query_norm).permute({0,2,1,3});
             key=project_norm(key_source,w_->key_norm).permute({0,2,1,3});
@@ -2042,13 +2042,13 @@ class Qsa {
         if(index_query_needed && !iq.defined()) {
             auto source=iqk.narrow(-1,0,c_.index_heads*c_.index_width).reshape({b,t,c_.index_heads,c_.index_width});
 #ifdef TYLOINFER_NATIVE_CUDA
-            if(fused && supported(source))iq=rotary_->forward_normalized(source,dynamic_cast<const DenseTensor&>(*w_->index_query_norm),positions,c_.eps).permute({0,2,1,3});
+            if(fused && supported(source))iq=rotary_->forward_normalized(source,w_->index_query_norm.dense(),positions,c_.eps).permute({0,2,1,3});
 #else
             if(fused && supported(source))iq=rotary_->forward_normalized(source,w_->index_query_norm,positions,c_.eps).permute({0,2,1,3});
 #endif
             else {
 #ifdef TYLOINFER_NATIVE_CUDA
-                iq=project_norm(source,dynamic_cast<const DenseTensor&>(*w_->index_query_norm)).permute({0,2,1,3});
+                iq=project_norm(source,w_->index_query_norm.dense()).permute({0,2,1,3});
 #else
                 iq=project_norm(source,w_->index_query_norm).permute({0,2,1,3});
 #endif

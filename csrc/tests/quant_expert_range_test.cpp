@@ -32,13 +32,13 @@ std::vector<std::uint8_t> nvq(int begin,int end) {
     constexpr int width=53,groups=3,vectors=7;
     const auto rows=end-begin;
     std::vector<std::uint8_t> blob{'N','Q','1','L',1,3,24,0};
-    mfq::test::append<std::int32_t>(blob,0);
-    mfq::test::append<std::int32_t>(blob,width);
-    mfq::test::append<std::uint32_t>(blob,2);
-    mfq::test::append<std::int64_t>(blob,rows);
-    mfq::test::append<std::int64_t>(blob,width);
-    mfq::test::append<std::uint32_t>(blob,rows);
-    for (int row=begin; row<end; ++row) mfq::test::append<std::uint16_t>(blob,0x3c00+row);
+    tyloi::test::append<std::int32_t>(blob,0);
+    tyloi::test::append<std::int32_t>(blob,width);
+    tyloi::test::append<std::uint32_t>(blob,2);
+    tyloi::test::append<std::int64_t>(blob,rows);
+    tyloi::test::append<std::int64_t>(blob,width);
+    tyloi::test::append<std::uint32_t>(blob,rows);
+    for (int row=begin; row<end; ++row) tyloi::test::append<std::uint16_t>(blob,0x3c00+row);
     for (auto geometry: {std::pair<int,int>{groups,3},{vectors,11},{groups,1}}) {
         std::vector<unsigned> values;
         for (int row=begin; row<end; ++row)
@@ -53,14 +53,14 @@ void check_group64_fields(int width) {
     const int groups=(width+23)/24,vectors=(width+7)/8;
     constexpr std::size_t anchor_offset=40+64+4096*8,record_offset=anchor_offset+rows*2;
     std::vector<std::uint8_t> blob{'N','V','Q','1',37,4,24,0};
-    mfq::test::append<std::int32_t>(blob,0);
-    mfq::test::append<std::int32_t>(blob,width);
-    mfq::test::append<std::uint32_t>(blob,2);
-    mfq::test::append<std::int64_t>(blob,rows);
-    mfq::test::append<std::int64_t>(blob,width);
-    mfq::test::append<std::uint32_t>(blob,rows);
+    tyloi::test::append<std::int32_t>(blob,0);
+    tyloi::test::append<std::int32_t>(blob,width);
+    tyloi::test::append<std::uint32_t>(blob,2);
+    tyloi::test::append<std::int64_t>(blob,rows);
+    tyloi::test::append<std::int64_t>(blob,width);
+    tyloi::test::append<std::uint32_t>(blob,rows);
     blob.resize(anchor_offset,0);blob[40]=2;blob[41]=1;blob[42]=16;blob[92]=1;
-    for(int row=0;row<rows;++row)mfq::test::append<std::uint16_t>(blob,0x3c00+row);
+    for(int row=0;row<rows;++row)tyloi::test::append<std::uint16_t>(blob,0x3c00+row);
     for(int row=0;row<rows;++row)for(int group=0;group<groups;++group) {
         std::uint64_t record=std::uint64_t((row*5+group*3)&15)<<60;
         for(int local=0;local<3;++local) {
@@ -71,14 +71,14 @@ void check_group64_fields(int width) {
             const auto segment=std::uint64_t(index)|std::uint64_t(sign|(parity<<7))<<12;
             record|=segment<<(local*20);
         }
-        mfq::test::append<std::uint64_t>(blob,record);
+        tyloi::test::append<std::uint64_t>(blob,record);
     }
     const auto read=[&](std::size_t offset,std::uint8_t* output,std::size_t count) {
         require(offset<=blob.size() && count<=blob.size()-offset,"group64 read exceeded source");
         std::memcpy(output,blob.data()+offset,count);
     };
     int batches=0;
-    const mfq::NvqRows source(blob.size(),read,[&](const std::vector<mfq::ReadSpan>& spans) {
+    const tyloi::NvqRows source(blob.size(),read,[&](const std::vector<tyloi::ReadSpan>& spans) {
         require(spans.size()==2,"group64 fields were not read together");++batches;
         for(const auto& span:spans)read(span.offset,reinterpret_cast<std::uint8_t*>(span.destination),span.size);
     });
@@ -105,7 +105,7 @@ void check_group64_fields(int width) {
             "group64 fields differ from independent packed oracle");
         const std::array<std::size_t,4> sizes{std::size_t(range.second-range.first)*2,a.size(),b.size(),c.size()};
         std::array<std::vector<std::uint8_t>,4> direct;
-        std::array<mfq::NvqRows::FieldTarget,4> targets;
+        std::array<tyloi::NvqRows::FieldTarget,4> targets;
         for(std::size_t f=0;f<4;++f) {
             direct[f].assign(sizes[f]+2,0xa5);targets[f]={direct[f].data()+1,sizes[f]};
         }
@@ -135,14 +135,14 @@ void check_group64_fields(int width) {
 }
 void check_nint_direct_fields(int width,int gs,bool adaptive,int k=6) {
     constexpr int rows=34;
-    auto fixture=mfq::test::fixture(rows,width,gs,k,adaptive);
+    auto fixture=tyloi::test::fixture(rows,width,gs,k,adaptive);
     const int groups=(width+gs-1)/gs,padded=groups*gs;
     std::size_t read_bytes=0;
     const auto read=[&](std::size_t offset,std::uint8_t* output,std::size_t bytes) {
         require(offset<=fixture.blob.size() && bytes<=fixture.blob.size()-offset,"NINT direct read exceeded source");
         std::memcpy(output,fixture.blob.data()+offset,bytes);read_bytes+=bytes;
     };
-    const mfq::NintRows source(fixture.blob.size(),read,false,[&](const std::vector<mfq::ReadSpan>& spans) {
+    const tyloi::NintRows source(fixture.blob.size(),read,false,[&](const std::vector<tyloi::ReadSpan>& spans) {
         for(const auto& span:spans)read(span.offset,reinterpret_cast<std::uint8_t*>(span.destination),span.size);
     });
     for(const auto range:{std::pair<int,int>{0,1},{1,18},{17,34},{0,34}}) {
@@ -150,12 +150,12 @@ void check_nint_direct_fields(int width,int gs,bool adaptive,int k=6) {
         const std::array<std::size_t,7> sizes={count*std::size_t(padded)+8,count,count*8,
             count*groups,count*groups,count*2,count*2};
         std::array<std::vector<std::uint8_t>,7> fields;
-        std::array<mfq::QuantFieldTarget,7> targets;
+        std::array<tyloi::QuantFieldTarget,7> targets;
         for(std::size_t f=0;f<7;++f) {
             fields[f].assign(sizes[f]+2,0xa5);targets[f]={fields[f].data()+1,sizes[f]};
         }
         const auto selected=source.slice_rows_blob(range.first,range.second);
-        mfq::copy_nint_runtime_fields(selected,targets);
+        tyloi::copy_nint_runtime_fields(selected,targets);
         std::vector<std::uint8_t> expected_q(sizes[0],0);
         std::uint64_t qbit=0;
         for(int row=range.first;row<range.second;++row) {
@@ -179,34 +179,34 @@ void check_nint_direct_fields(int width,int gs,bool adaptive,int k=6) {
         }
         require(std::memcmp(targets[0].data,expected_q.data(),sizes[0])==0,"NINT direct packed q or its guard changed");
         for(const auto& field:fields)require(field.front()==0xa5 && field.back()==0xa5,"NINT direct copy overwrote its neighbour");
-        --targets[3].bytes;rejected([&]{mfq::copy_nint_runtime_fields(selected,targets);});++targets[3].bytes;
+        --targets[3].bytes;rejected([&]{tyloi::copy_nint_runtime_fields(selected,targets);});++targets[3].bytes;
         auto malformed=selected;malformed.pop_back();
-        rejected([&]{mfq::copy_nint_runtime_fields(malformed,targets);});
+        rejected([&]{tyloi::copy_nint_runtime_fields(malformed,targets);});
         malformed=selected;malformed.push_back(0);
-        rejected([&]{mfq::copy_nint_runtime_fields(malformed,targets);});
+        rejected([&]{tyloi::copy_nint_runtime_fields(malformed,targets);});
         malformed=selected;malformed[43]=0x7c;
-        rejected([&]{mfq::copy_nint_runtime_fields(malformed,targets);});
+        rejected([&]{tyloi::copy_nint_runtime_fields(malformed,targets);});
     }
 }
 
 void append_pool(std::vector<std::uint8_t>& blob,const std::vector<int>& ids,
         const char* dtype,const std::vector<std::uint8_t>& body) {
-    mfq::test::append<std::uint32_t>(blob,ids.size());
-    mfq::test::append<std::uint32_t>(blob,std::strlen(dtype));
-    mfq::test::append<std::uint64_t>(blob,body.size());
-    mfq::test::append<std::uint64_t>(blob,0);
-    for (int id:ids) mfq::test::append<std::int32_t>(blob,id);
+    tyloi::test::append<std::uint32_t>(blob,ids.size());
+    tyloi::test::append<std::uint32_t>(blob,std::strlen(dtype));
+    tyloi::test::append<std::uint64_t>(blob,body.size());
+    tyloi::test::append<std::uint64_t>(blob,0);
+    for (int id:ids) tyloi::test::append<std::int32_t>(blob,id);
     blob.insert(blob.end(),dtype,dtype+std::strlen(dtype));
     blob.insert(blob.end(),body.begin(),body.end());
 }
 std::vector<std::uint8_t> mixed() {
     std::vector<std::uint8_t> blob{'M','F','E','1'};
-    for (unsigned value: {4,17,53,2}) mfq::test::append<std::uint32_t>(blob,value);
-    append_pool(blob,{3,0},"NINT",mfq::test::fixture(34,53,5,6).blob);
+    for (unsigned value: {4,17,53,2}) tyloi::test::append<std::uint32_t>(blob,value);
+    append_pool(blob,{3,0},"NINT",tyloi::test::fixture(34,53,5,6).blob);
     append_pool(blob,{2,1},"NVQ",nvq(0,34));
     return blob;
 }
-mfq::MfeQuantExpertStore memory_store(std::vector<std::uint8_t> blob,
+tyloi::MfeQuantExpertStore memory_store(std::vector<std::uint8_t> blob,
         std::shared_ptr<std::atomic<std::size_t>> bytes=std::make_shared<std::atomic<std::size_t>>(0),bool batched=false) {
     auto source=std::make_shared<const std::vector<std::uint8_t>>(std::move(blob));
     const auto read=[source,bytes](std::size_t offset,std::uint8_t* out,std::size_t size) {
@@ -214,8 +214,8 @@ mfq::MfeQuantExpertStore memory_store(std::vector<std::uint8_t> blob,
             bytes->fetch_add(size);
             std::memcpy(out,source->data()+offset,size);
         };
-    mfq::NintRows::ReadBatch batch;
-    if(batched)batch=[read](const std::vector<mfq::ReadSpan>& spans) {
+    tyloi::NintRows::ReadBatch batch;
+    if(batched)batch=[read](const std::vector<tyloi::ReadSpan>& spans) {
         for(const auto& span:spans)read(span.offset,reinterpret_cast<std::uint8_t*>(span.destination),span.size);
     };
     return {source->size(),read,std::move(batch)};
@@ -223,13 +223,13 @@ mfq::MfeQuantExpertStore memory_store(std::vector<std::uint8_t> blob,
 void self_test() {
     {
         std::vector<std::uint8_t> mx{'M','X','T','1',1,4,0,0};
-        for(std::uint64_t dimension:{6,64,6,32,6,2})mfq::test::append(mx,dimension);
+        for(std::uint64_t dimension:{6,64,6,32,6,2})tyloi::test::append(mx,dimension);
         for(int i=0;i<192;++i)mx.push_back(std::uint8_t(i));
         for(int i=0;i<12;++i)mx.push_back(std::uint8_t(120+i));
         std::vector<std::uint8_t> blob{'M','F','E','1'};
-        for(unsigned dimension:{3,3,64,2})mfq::test::append(blob,dimension);
+        for(unsigned dimension:{3,3,64,2})tyloi::test::append(blob,dimension);
         append_pool(blob,{2,0},"MXFP4",mx);
-        append_pool(blob,{1},"NINT",mfq::test::fixture(3,64,16,6).blob);
+        append_pool(blob,{1},"NINT",tyloi::test::fixture(3,64,16,6).blob);
         auto bytes=std::make_shared<std::atomic<std::size_t>>(0);
         auto store=memory_store(blob,bytes,true);
         require(bytes->load()<blob.size(),"MXFP4 registration read payloads");
@@ -241,7 +241,7 @@ void self_test() {
             std::memcmp(leaf.payload.data()+152,mx.data()+248+6,6)==0,"MXFP4 ownership or scales changed");
         std::array<std::vector<std::uint8_t>,2> fields{std::vector<std::uint8_t>(98,0xa5),
             std::vector<std::uint8_t>(8,0xa5)};
-        std::array<mfq::QuantFieldTarget,2> targets{{{fields[0].data()+1,96},{fields[1].data()+1,6}}};
+        std::array<tyloi::QuantFieldTarget,2> targets{{{fields[0].data()+1,96},{fields[1].data()+1,6}}};
         require(store.copy_mxfp4_fields(0,targets),"MXFP4 direct fields unavailable");
         require(std::memcmp(targets[0].data,leaf.payload.data()+56,96)==0 &&
             std::memcmp(targets[1].data,leaf.payload.data()+152,6)==0 &&
@@ -250,26 +250,26 @@ void self_test() {
         const auto untouched=fields;
         require(!store.copy_mxfp4_fields(1,targets) && fields==untouched,"NINT source overwrote MXFP4 fields");
         --targets[0].bytes;rejected([&]{store.copy_mxfp4_fields(0,targets);});
-        int visited=0;store.visit_pool_experts(0,[&](int id,mfq::MfeQuantExpert expert) {
+        int visited=0;store.visit_pool_experts(0,[&](int id,tyloi::MfeQuantExpert expert) {
             require(expert.payload==store.read_expert(id).payload,"MXFP4 preload changed rows");++visited;
         });
         require(visited==2,"MXFP4 preload omitted experts");
         mx.back()=255;
         std::vector<std::uint8_t> bad{'M','F','E','1'};
-        for(unsigned dimension:{2,3,64,1})mfq::test::append(bad,dimension);
+        for(unsigned dimension:{2,3,64,1})tyloi::test::append(bad,dimension);
         append_pool(bad,{0,1},"MXFP4",mx);
         auto invalid=memory_store(bad);rejected([&]{invalid.read_expert(1);});
     }
     {
         const std::vector<int> ids{5,2,7,0,6,1,4,3};
         std::vector<std::uint8_t> blob{'M','F','E','1'};
-        for(unsigned value:{8,8,53,1})mfq::test::append<std::uint32_t>(blob,value);
+        for(unsigned value:{8,8,53,1})tyloi::test::append<std::uint32_t>(blob,value);
         append_pool(blob,ids,"NVQ",nvq(0,64));
         auto store=memory_store(blob,std::make_shared<std::atomic<std::size_t>>(0),true);
         const auto first=store.read_nvq_fields(ids[1]);
         const std::array<std::size_t,4> leaf={first->neuron_scale.size()*2,first->states.size(),first->indices.size(),first->aux.size()};
         std::array<std::vector<std::uint8_t>,4> bytes;
-        std::array<mfq::NvqRows::FieldTarget,4> targets;
+        std::array<tyloi::NvqRows::FieldTarget,4> targets;
         for(int f=0;f<4;++f) {bytes[f].assign(3*leaf[f]+2,0xa5);targets[f]={bytes[f].data()+1,3*leaf[f]};}
         const auto untouched=bytes;
         const std::vector<int> skipped{ids[1],ids[3]};
@@ -296,10 +296,10 @@ void self_test() {
     for(int width:{1,7,8,9,23,24,25,53,64,127,128,191,192,193,200,640,2560})check_group64_fields(width);
     for(bool adaptive:{false,true})for(int width:{53,128,640})for(int gs:{5,21,24,28})
         check_nint_direct_fields(width,gs,adaptive);
-    const auto flat = mfq::test::fixture(52, 53, 5, 6).blob;
+    const auto flat = tyloi::test::fixture(52, 53, 5, 6).blob;
     auto packed = std::make_shared<std::vector<std::uint8_t>>(flat.begin(), flat.begin() + 14);
-    mfq::test::append<std::uint32_t>(*packed, 3);
-    for (std::int64_t dimension : {4, 13, 53}) mfq::test::append<std::int64_t>(*packed, dimension);
+    tyloi::test::append<std::uint32_t>(*packed, 3);
+    for (std::int64_t dimension : {4, 13, 53}) tyloi::test::append<std::int64_t>(*packed, dimension);
     packed->insert(packed->end(), flat.begin() + 34, flat.end());
     auto packed_reads = std::make_shared<std::size_t>(0);
     auto read_packed = [packed, packed_reads](std::size_t offset, std::uint8_t* out, std::size_t count) {
@@ -307,17 +307,17 @@ void self_test() {
         *packed_reads += count;
         std::memcpy(out, packed->data() + offset, count);
     };
-    const auto packed_store = mfq::make_packed_nint_expert_store(packed->size(), read_packed);
+    const auto packed_store = tyloi::make_packed_nint_expert_store(packed->size(), read_packed);
     require(packed_store->num_experts() == 4 && packed_store->out_per_expert() == 13 && packed_store->neuron_len() == 53,
         "packed NINT expert geometry changed");
     require(*packed_reads < packed->size() / 4, "packed NINT index read weight payloads");
     int packed_batches=0;
-    const auto packed_batch_store=mfq::make_packed_nint_expert_store(packed->size(),read_packed,
-        [&](const std::vector<mfq::ReadSpan>& spans) {
+    const auto packed_batch_store=tyloi::make_packed_nint_expert_store(packed->size(),read_packed,
+        [&](const std::vector<tyloi::ReadSpan>& spans) {
             ++packed_batches;require(spans.size()>2,"packed NINT did not batch its independent fields");
             for(const auto& span:spans)read_packed(span.offset,reinterpret_cast<std::uint8_t*>(span.destination),span.size);
         });
-    mfq::NintRows flat_rows(flat.data(), flat.size());
+    tyloi::NintRows flat_rows(flat.data(), flat.size());
     for (int expert = 0; expert < 4; ++expert) {
         require(packed_store->read_expert(expert).payload == flat_rows.slice_rows_blob(expert * 13, (expert + 1) * 13),
             "packed NINT expert bytes changed");
@@ -325,9 +325,9 @@ void self_test() {
             "packed NINT batched field offsets or rebasing changed bytes");
     }
     require(packed_batches==4,"packed NINT did not read each expert's fields in one batch");
-    rejected([&] { mfq::make_packed_nint_expert_store(49, read_packed); });
+    rejected([&] { tyloi::make_packed_nint_expert_store(49, read_packed); });
     (*packed)[14] = 2;
-    rejected([&] { mfq::make_packed_nint_expert_store(packed->size(), read_packed); });
+    rejected([&] { tyloi::make_packed_nint_expert_store(packed->size(), read_packed); });
     (*packed)[14] = 3;
 
     const auto original=mixed();
@@ -338,7 +338,7 @@ void self_test() {
         "mixed expert geometry changed");
     require(bytes->load()<original.size()/4 && store.index_nbytes()<original.size()/4,
         "mixed expert index read or retained weight payloads");
-    const auto reference=mfq::test::fixture(34,53,5,6);
+    const auto reference=tyloi::test::fixture(34,53,5,6);
     for (int expert: {0,1,2,3}) {
         bytes->store(0);
         const auto budget=store.expert_payload_nbytes(expert);
@@ -354,13 +354,13 @@ void self_test() {
         if (expert==0 || expert==3) {
             require(!fields,"NINT expert was exposed as NVQ fields");
             require(result.dtype=="NINT","mixed expert dtype changed");
-            mfq::NintRows rows(result.payload.data(),result.payload.size());
-            mfq::NintRowBatch decoded;
+            tyloi::NintRows rows(result.payload.data(),result.payload.size());
+            tyloi::NintRowBatch decoded;
             for (int row=0; row<17; ++row) rows.append_row(row,decoded);
             const int begin=expert==3 ? 0 : 17;
             for (int row=0; row<17; ++row)
                 for (int column=0; column<53; ++column)
-                    require(mfq::test::row_value(decoded,row,column)==reference.reference[(row+begin)*53+column],
+                    require(tyloi::test::row_value(decoded,row,column)==reference.reference[(row+begin)*53+column],
                         "adaptive NINT expert differs from independent code oracle");
         } else {
             const auto expected=nvq(expert==2 ? 0 : 17,expert==2 ? 17 : 34);
@@ -377,9 +377,9 @@ void self_test() {
     }
     std::vector<std::future<std::vector<std::uint8_t>>> concurrent;
     for (std::size_t pool=0; pool<store.pool_count(); ++pool) {
-        std::vector<std::pair<int,mfq::MfeQuantExpert>> leaves;
+        std::vector<std::pair<int,tyloi::MfeQuantExpert>> leaves;
         bytes->store(0);
-        store.visit_pool_experts(pool,[&](int expert,mfq::MfeQuantExpert encoded) {
+        store.visit_pool_experts(pool,[&](int expert,tyloi::MfeQuantExpert encoded) {
             leaves.emplace_back(expert,std::move(encoded));
         });
         require(leaves.size()==store.pool_expert_ids(pool).size(),"startup pool expert coverage changed");
@@ -391,9 +391,9 @@ void self_test() {
                 leaves[i].second.dtype==expected.dtype && leaves[i].second.payload==expected.payload,
                 "startup sequential pool differs from canonical independent expert slices");
         }
-        mfq::HostParallelPool workers({},false);
-        std::vector<mfq::MfeQuantExpert> parallel(leaves.size());
-        const auto visit=[&](int expert,mfq::MfeQuantExpert encoded) {
+        tyloi::HostParallelPool workers({},false);
+        std::vector<tyloi::MfeQuantExpert> parallel(leaves.size());
+        const auto visit=[&](int expert,tyloi::MfeQuantExpert encoded) {
             const auto& ids=store.pool_expert_ids(pool);
             const auto row=std::find(ids.begin(),ids.end(),expert)-ids.begin();
             parallel.at(row)=std::move(encoded);
@@ -402,14 +402,14 @@ void self_test() {
         for(std::size_t i=0;i<leaves.size();++i)
             require(parallel[i].dtype==leaves[i].second.dtype && parallel[i].payload==leaves[i].second.payload,
                 "parallel startup slicing changed canonical expert bytes");
-        rejected([&] {store.visit_pool_experts(pool,[](int,mfq::MfeQuantExpert) {
+        rejected([&] {store.visit_pool_experts(pool,[](int,tyloi::MfeQuantExpert) {
             throw std::runtime_error("parallel visitor failed");
         },&workers,4);});
         store.visit_pool_experts(pool,visit,&workers,4);
     }
-    rejected([&] { store.visit_pool_experts(store.pool_count(),[](int,mfq::MfeQuantExpert) {}); });
+    rejected([&] { store.visit_pool_experts(store.pool_count(),[](int,tyloi::MfeQuantExpert) {}); });
     rejected([&] { store.visit_pool_experts(0,{}); });
-    rejected([&] { store.visit_pool_experts(0,[](int,mfq::MfeQuantExpert) { throw std::runtime_error("visitor failed"); }); });
+    rejected([&] { store.visit_pool_experts(0,[](int,tyloi::MfeQuantExpert) { throw std::runtime_error("visitor failed"); }); });
     for (int i=0; i<12; ++i) concurrent.push_back(std::async(std::launch::async,[&store,i] {
         return store.read_expert(i%4).payload;
     }));
@@ -434,17 +434,17 @@ void self_test() {
         require(offset<=single.size() && size<=single.size()-offset,"NVQ read exceeded source");
         std::memcpy(out,single.data()+offset,size);
     };
-    const mfq::NvqRows rows(single.size(),nvq_reader);
+    const tyloi::NvqRows rows(single.size(),nvq_reader);
     for(const bool batch:{false,true}) {
-        mfq::NvqRows::ReadBatch read_batch;
-        if(batch)read_batch=[&](const std::vector<mfq::ReadSpan>& spans) {
+        tyloi::NvqRows::ReadBatch read_batch;
+        if(batch)read_batch=[&](const std::vector<tyloi::ReadSpan>& spans) {
             require(spans.size()==4,"direct NVQ fields were not read together");
             for(const auto& span:spans)nvq_reader(span.offset,reinterpret_cast<std::uint8_t*>(span.destination),span.size);
         };
-        const mfq::NvqRows direct(single.size(),nvq_reader,read_batch);
+        const tyloi::NvqRows direct(single.size(),nvq_reader,read_batch);
         const auto expected=nvq(8,16);
         std::array<std::vector<std::uint8_t>,4> buffers;
-        std::array<mfq::NvqRows::FieldTarget,4> targets;
+        std::array<tyloi::NvqRows::FieldTarget,4> targets;
         const std::array<std::size_t,4> sizes={16,9,77,3};
         std::size_t cursor=40;
         for(int f=0;f<4;++f) {
@@ -464,7 +464,7 @@ void self_test() {
     }
     for(const std::uint16_t anchor:{0x7c00,0x7e01,0x8000,0xbc00}) {
         auto bad=single;std::memcpy(bad.data()+40,&anchor,2);
-        mfq::NvqRows invalid(bad.size(),[&](std::size_t offset,std::uint8_t* output,std::size_t count) {
+        tyloi::NvqRows invalid(bad.size(),[&](std::size_t offset,std::uint8_t* output,std::size_t count) {
             std::memcpy(output,bad.data()+offset,count);
         });
         rejected([&]{invalid.slice_rows_fields(0,1);});
@@ -484,7 +484,7 @@ void self_test() {
         if (kind==5) bad[6]=25;
         if (kind==6) bad[36]=0;
         if (kind==7) bad[5]=9;
-        rejected([&] { mfq::NvqRows invalid(bad.size(),[&](std::size_t offset,std::uint8_t* out,std::size_t size) {
+        rejected([&] { tyloi::NvqRows invalid(bad.size(),[&](std::size_t offset,std::uint8_t* out,std::size_t size) {
             require(offset<=bad.size() && size<=bad.size()-offset,"invalid NVQ read exceeded source");
             std::memcpy(out,bad.data()+offset,size);
         }); });
@@ -492,14 +492,14 @@ void self_test() {
     std::cout << "mixed quant expert range self-test passed\n";
 }
 void index_model(const char* path) {
-    const auto source=mfq::open_model_source(path);
+    const auto source=tyloi::open_model_source(path);
     const auto start=std::chrono::steady_clock::now();
     std::uint64_t bytes=0,calls=0,index=0,payload=0,experts=0;
-    std::vector<std::unique_ptr<mfq::MfeQuantExpertStore>> stores;
+    std::vector<std::unique_ptr<tyloi::MfeQuantExpertStore>> stores;
     for (const auto& tensor:source->tensors()) {
         if (tensor.dtype!="MFE") continue;
         const auto reader=source->tensor_reader(tensor.name);
-        auto store=std::make_unique<mfq::MfeQuantExpertStore>(tensor.nbytes,
+        auto store=std::make_unique<tyloi::MfeQuantExpertStore>(tensor.nbytes,
             [reader,&bytes,&calls](std::size_t offset,std::uint8_t* out,std::size_t size) {
                 reader(offset,reinterpret_cast<std::byte*>(out),size);
                 bytes+=size; ++calls;
@@ -515,14 +515,14 @@ void index_model(const char* path) {
 }
 void dump(int argc,char** argv) {
     require(argc>=5,"expected MODEL TENSOR OUTPUT_DIRECTORY EXPERT_ID...");
-    auto source=mfq::open_model_source(argv[1]);
+    auto source=tyloi::open_model_source(argv[1]);
     const auto* metadata=source->find_tensor(argv[2]);
     require(metadata!=nullptr,"mixed tensor not found");
     std::uint64_t bytes=0,calls=0;
     const auto reader=source->tensor_reader(argv[2]);
     require(metadata->dtype=="MFE","expected MFE tensor dtype");
     const auto start=std::chrono::steady_clock::now();
-    const mfq::MfeQuantExpertStore store(metadata->nbytes,
+    const tyloi::MfeQuantExpertStore store(metadata->nbytes,
         [reader,&bytes,&calls](std::size_t offset,std::uint8_t* out,std::size_t size) {
             reader(offset,reinterpret_cast<std::byte*>(out),size);
             bytes+=size; ++calls;

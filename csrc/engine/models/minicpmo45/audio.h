@@ -64,8 +64,8 @@ struct MiniCPMO45WhisperAttention {
 struct MiniCPMO45WhisperLayer {
     MiniCPMO45WhisperAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> attention_norm_weight, attention_norm_bias;
-    std::shared_ptr<const ::tyloi::Tensor> final_norm_weight, final_norm_bias;
+    ::tyloi::Tensor attention_norm_weight, attention_norm_bias;
+    ::tyloi::Tensor final_norm_weight, final_norm_bias;
 #else
     ::tyloi::DenseTensor attention_norm_weight;
     ::tyloi::DenseTensor attention_norm_bias;
@@ -89,12 +89,12 @@ struct MiniCPMO45WhisperLayer {
         result.final_norm_bias = weights.native(prefix + ".mlp.norm.bias");
 #else
         result.attention_norm_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".attention.norm.weight"));
+            weights.native(prefix + ".attention.norm.weight").dense();
         result.attention_norm_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".attention.norm.bias"));
+            weights.native(prefix + ".attention.norm.bias").dense();
         result.final_norm_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".mlp.norm.weight"));
-        result.final_norm_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native(prefix + ".mlp.norm.bias"));
+            weights.native(prefix + ".mlp.norm.weight").dense();
+        result.final_norm_bias = weights.native(prefix + ".mlp.norm.bias").dense();
 #endif
         result.fc1 = weights.biased(prefix + ".mlp.up.weight", prefix + ".mlp.up.bias");
         result.fc2 = weights.biased(prefix + ".mlp.down.weight", prefix + ".mlp.down.bias");
@@ -131,7 +131,7 @@ struct MiniCPMO45WhisperLayer {
 
 struct MiniCPMO45AudioEncoder {
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> conv1_weight, conv1_bias, conv2_weight, conv2_bias, position_embedding;
+    ::tyloi::Tensor conv1_weight, conv1_bias, conv2_weight, conv2_bias, position_embedding;
 #else
     ::tyloi::DenseTensor conv1_weight;
     ::tyloi::DenseTensor conv1_bias;
@@ -141,7 +141,7 @@ struct MiniCPMO45AudioEncoder {
 #endif
     std::vector<MiniCPMO45WhisperLayer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> final_norm_weight, final_norm_bias;
+    ::tyloi::Tensor final_norm_weight, final_norm_bias;
 #else
     ::tyloi::DenseTensor final_norm_weight;
     ::tyloi::DenseTensor final_norm_bias;
@@ -161,18 +161,18 @@ struct MiniCPMO45AudioEncoder {
         result.final_norm_bias = weights.native("audio.output_norm.bias");
 #else
         result.conv1_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv1.weight"));
+            weights.native("audio.patch_embedding.conv1.weight").dense();
         result.conv1_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv1.bias"));
+            weights.native("audio.patch_embedding.conv1.bias").dense();
         result.conv2_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv2.weight"));
+            weights.native("audio.patch_embedding.conv2.weight").dense();
         result.conv2_bias =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.patch_embedding.conv2.bias"));
+            weights.native("audio.patch_embedding.conv2.bias").dense();
         result.position_embedding =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.position_embedding.weight"));
+            weights.native("audio.position_embedding.weight").dense();
         result.final_norm_weight =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.output_norm.weight"));
-        result.final_norm_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("audio.output_norm.bias"));
+            weights.native("audio.output_norm.weight").dense();
+        result.final_norm_bias = weights.native("audio.output_norm.bias").dense();
 #endif
         result.projector1 = weights.biased("audio.projector.input.weight", "audio.projector.input.bias");
         result.projector2 = weights.biased("audio.projector.output.weight", "audio.projector.output.bias");
@@ -244,8 +244,8 @@ struct MiniCPMO45AudioEncoder {
             features, layers,
             [&](DenseTensor features) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& weight = dynamic_cast<const DenseTensor&>(*conv1_weight);
-                const auto& bias = dynamic_cast<const DenseTensor&>(*conv1_bias);
+                const auto& weight = conv1_weight.dense();
+                const auto& bias = conv1_bias.dense();
 #else
                 const auto& weight = conv1_weight;
                 const auto& bias = conv1_bias;
@@ -257,8 +257,8 @@ struct MiniCPMO45AudioEncoder {
             [](DenseTensor x) { return ::tyloi::cuda::gelu(x); },
             [&](DenseTensor hidden) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& weight = dynamic_cast<const DenseTensor&>(*conv2_weight);
-                const auto& bias = dynamic_cast<const DenseTensor&>(*conv2_bias);
+                const auto& weight = conv2_weight.dense();
+                const auto& bias = conv2_bias.dense();
 #else
                 const auto& weight = conv2_weight;
                 const auto& bias = conv2_bias;
@@ -295,7 +295,7 @@ struct MiniCPMO45AudioEncoder {
                         "MiniCPM-o streaming Whisper position cache exceeds 1500 frames");
                 }
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& position = dynamic_cast<const DenseTensor&>(*position_embedding);
+                const auto& position = position_embedding.dense();
 #else
                 const auto& position = position_embedding;
 #endif
@@ -375,8 +375,8 @@ struct MiniCPMO45AudioEncoder {
             features, layers,
             [&](DenseTensor features) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& weight = dynamic_cast<const DenseTensor&>(*conv1_weight);
-                const auto& bias = dynamic_cast<const DenseTensor&>(*conv1_bias);
+                const auto& weight = conv1_weight.dense();
+                const auto& bias = conv1_bias.dense();
 #else
                 const auto& weight = conv1_weight;
                 const auto& bias = conv1_bias;
@@ -388,8 +388,8 @@ struct MiniCPMO45AudioEncoder {
             [](DenseTensor x) { return ::tyloi::cuda::gelu(x); },
             [&](DenseTensor hidden) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& weight = dynamic_cast<const DenseTensor&>(*conv2_weight);
-                const auto& bias = dynamic_cast<const DenseTensor&>(*conv2_bias);
+                const auto& weight = conv2_weight.dense();
+                const auto& bias = conv2_bias.dense();
 #else
                 const auto& weight = conv2_weight;
                 const auto& bias = conv2_bias;
@@ -414,7 +414,7 @@ struct MiniCPMO45AudioEncoder {
                         "MiniCPM-o Whisper position cache exceeds 1500 frames");
                 }
 #ifdef TYLOINFER_NATIVE_CUDA
-                const auto& position = dynamic_cast<const DenseTensor&>(*position_embedding);
+                const auto& position = position_embedding.dense();
 #else
                 const auto& position = position_embedding;
 #endif

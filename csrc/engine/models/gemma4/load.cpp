@@ -23,13 +23,13 @@ struct LayerLoader {
     void output(FullAttention& attention, const std::string& name) const {
         attention.o = weights.weight(name);
     }
-    static auto shape(const std::shared_ptr<const tyloi::Tensor>& value) {
+    static auto shape(const ::tyloi::Tensor& value) {
         std::vector<int64_t> result;
-        if (value) for (int64_t i = 0; i < value->dim(); ++i) result.push_back(value->size(i));
+        if (value) for (int64_t i = 0; i < value.dim(); ++i) result.push_back(value.size(i));
         return result;
     }
-    static int64_t elements(const std::shared_ptr<const tyloi::Tensor>& value) {
-        return value ? value->numel() : 0;
+    static int64_t elements(const ::tyloi::Tensor& value) {
+        return value ? value.numel() : 0;
     }
     auto rope(int64_t capacity, const tyloi::models::gemma4::LayerSpec &spec) {
         return tyloi::ops::rope_table(capacity, spec.head_dim, spec.rope_base,
@@ -40,20 +40,20 @@ struct LayerLoader {
         const std::array<int64_t, 1> shape{width};
         auto value = tyloi::ops::full(shape, 1, tyloi::Device(
             weights.placement.cpu ? tyloi::kCPU : tyloi::kCUDA, weights.placement.device));
-        return tyloi::ops::cast(*value, tyloi::kFloat32);
+        return tyloi::ops::cast(value, tyloi::kFloat32);
     }
     auto layer_scale(const std::string &name) {
-        auto value = tyloi::ops::cast(*weights.tensor(name), tyloi::kFloat16);
-        return tyloi::ops::contiguous(*value);
+        auto value = tyloi::ops::cast(weights.tensor(name), tyloi::kFloat16);
+        return tyloi::ops::contiguous(value);
     }
     auto router_parameter(const std::string &name) {
-        auto value = tyloi::ops::cast(*weights.tensor(name), tyloi::kFloat32);
-        return tyloi::ops::contiguous(*value);
+        auto value = tyloi::ops::cast(weights.tensor(name), tyloi::kFloat32);
+        return tyloi::ops::contiguous(value);
     }
     auto normalized_router_parameter(const std::string &name, double divisor) {
         auto value = router_parameter(name);
-        auto divided = tyloi::ops::divide(*value, divisor);
-        return tyloi::ops::contiguous(*divided);
+        auto divided = tyloi::ops::divide(value, divisor);
+        return tyloi::ops::contiguous(divided);
     }
     auto mlp(const std::vector<std::string>& names, const std::string& down_name) {
         auto down = weights.weight(down_name);

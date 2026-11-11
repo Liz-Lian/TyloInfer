@@ -62,7 +62,7 @@ void KlMmqState::reset() noexcept {
         ::tyloi::DenseTensor x,
         ::tyloi::DenseTensor gate,
         InputGateMode mode) {
-    const auto* nint = dynamic_cast<const tyloi::NintTensor*>(&weight);
+    const auto* nint = weight.representation<tyloi::NintTensor>();
     TYLOINFER_RUNTIME_CHECK(
         nint != nullptr && tyloi::mfq_compat_enabled,
         "FP32-output KLD down projection requires a local NINT tensor");

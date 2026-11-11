@@ -32,7 +32,7 @@
 #include <utility>
 #include <vector>
 
-static double mfe_weight_bytes(const mfq::cuda::Experts & weight) {
+static double mfe_weight_bytes(const tyloi::cuda::Experts & weight) {
     double bytes = static_cast<double>(weight.mixed_weight_bytes);
     for (const auto & shard :
          weight.expert_parallel_shards) {
@@ -68,7 +68,7 @@ int run_expert_parallel_moe_check(
     TYLOINFER_RUNTIME_CHECK(
         routes >= 1,
         "--check-ep-moe-routes must be positive");
-    auto model_source = mfq::open_model_source(model_path);
+    auto model_source = tyloi::open_model_source(model_path);
     const auto& mfq = *model_source;
     const std::string role =
         tensor_name.find("gate_up") != std::string::npos
@@ -79,7 +79,7 @@ int run_expert_parallel_moe_check(
     execution.tensor_parallel = {};
     execution.expert_parallel = {};
     execution.expert_parallel.devices = {saved.primary_device()};
-    mfq::cuda::Experts full;
+    tyloi::cuda::Experts full;
     try {
         full = load_mfe_gpu(execution,
             mfq, tensor_name, false, 0, role);
@@ -109,17 +109,17 @@ int run_expert_parallel_moe_check(
     const int64_t count =
         static_cast<int64_t>(tokens) *
         full.neuron_len;
-    auto sequence = mfq_tensor_backend::arange(
+    auto sequence = tyloi::cuda::arange(
         count,
-        mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::Device(
-                mfq_tensor_backend::kCUDA,
+        tyloi::TensorOptions()
+            .device(tyloi::cuda::Device(
+                tyloi::kCUDA,
                 saved.primary_device()))
-            .dtype(mfq_tensor_backend::kFloat32));
+            .dtype(tyloi::kFloat32));
     auto x = (
         (sequence.remainder(257) - 128.0) / 127.0 +
-        0.03125 * mfq_tensor_backend::sin(sequence * 0.015625))
-        .to(mfq_tensor_backend::kFloat16)
+        0.03125 * tyloi::cuda::sin(sequence * 0.015625))
+        .to(tyloi::kFloat16)
         .reshape({tokens, full.neuron_len})
         .contiguous();
     std::vector<int32_t> host_ids(
@@ -134,12 +134,12 @@ int run_expert_parallel_moe_check(
                 full.n_experts;
         }
     }
-    auto ids = mfq_tensor_backend::from_blob(
+    auto ids = tyloi::cuda::from_blob(
         host_ids.data(), {tokens, routes},
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
+        tyloi::TensorOptions().dtype(tyloi::kInt32))
         .clone()
-        .to(mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA,
+        .to(tyloi::cuda::Device(
+            tyloi::kCUDA,
             saved.primary_device()))
         .contiguous();
     auto route =
@@ -147,11 +147,11 @@ int run_expert_parallel_moe_check(
             ids, full.n_experts);
     auto reference =
         execution.projector().run(full, x, route)
-            .to(mfq_tensor_backend::kFloat32);
+            .to(tyloi::kFloat32);
     auto test =
         execution.projector().run(sharded, x, route)
-            .to(mfq_tensor_backend::kFloat32);
-    mfq_cuda_synchronize();
+            .to(tyloi::kFloat32);
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
     auto difference = test - reference;
     const double denominator =
         std::max(
@@ -182,7 +182,7 @@ int run_expert_parallel_moe_check(
         << " mean_abs=" << mean_abs
         << " max_abs=" << max_abs
         << '\n';
-    if (!mfq_tensor_backend::isfinite(test).all().item<bool>() ||
+    if (!tyloi::cuda::isfinite(test).all().item<bool>() ||
         relative > 1.0e-6) {
         throw std::runtime_error(
             "expert-parallel MoE numerical check failed");
@@ -209,7 +209,7 @@ int run_mfe_tensor_check(
         throw std::runtime_error(
             "MFE benchmark-only mode does not support split checks");
     }
-    auto model_source = mfq::open_model_source(model_path);
+    auto model_source = tyloi::open_model_source(model_path);
     const auto& mfq = *model_source;
     auto weight = load_mfe_gpu(execution,
         mfq, tensor_name, true, 0, "diagnostic");
@@ -231,21 +231,21 @@ int run_mfe_tensor_check(
     const auto input_shape = routed_input
         ? std::vector<int64_t>{tokens, routes, weight.neuron_len}
         : std::vector<int64_t>{tokens, weight.neuron_len};
-    mfq_tensor_backend::Tensor x;
+    tyloi::DenseTensor x;
     if (benchmark_only) {
-        x = mfq_tensor_backend::zeros(
+        x = tyloi::cuda::zeros(
             input_shape,
-            mfq_tensor_backend::TensorOptions()
-                .device(mfq_tensor_backend::kCUDA)
-                .dtype(mfq_tensor_backend::kFloat16));
+            tyloi::TensorOptions()
+                .device(tyloi::kCUDA)
+                .dtype(tyloi::kFloat16));
     } else {
-        auto sequence = mfq_tensor_backend::arange(
+        auto sequence = tyloi::cuda::arange(
             count,
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat32));
+            tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32));
         x = (
             (sequence.remainder(257) - 128.0) / 127.0 +
-            0.03125 * mfq_tensor_backend::sin(sequence * 0.015625))
-            .to(mfq_tensor_backend::kFloat16)
+            0.03125 * tyloi::cuda::sin(sequence * 0.015625))
+            .to(tyloi::kFloat16)
             .reshape(input_shape)
             .contiguous();
     }
@@ -256,17 +256,17 @@ int run_mfe_tensor_check(
                 (token * routes + route * 3) % weight.n_experts;
         }
     }
-    auto ids = mfq_tensor_backend::from_blob(
+    auto ids = tyloi::cuda::from_blob(
         host_ids.data(), {tokens, routes},
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
-        .clone().to(mfq_tensor_backend::kCUDA).contiguous();
+        tyloi::TensorOptions().dtype(tyloi::kInt32))
+        .clone().to(tyloi::kCUDA).contiguous();
     auto route = build_moe_route_plan(ids, weight.n_experts);
-    mfq_tensor_backend::Tensor output;
+    tyloi::DenseTensor output;
     for (int warmup = 0; warmup < 5; ++warmup) {
         output = execution.projector().run(weight, x, route);
-        if (warmup == 0) mfq::cuda::prefetch_experts(weight, route);
+        if (warmup == 0) tyloi::cuda::prefetch_experts(weight, route);
     }
-    mfq_cuda_synchronize();
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
     cudaEvent_t start, stop;
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&start));
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&stop));
@@ -302,11 +302,11 @@ int run_mfe_tensor_check(
         auto reference = mfe_dense_reference(
             mfq, tensor_name, x, host_ids,
             tokens, routes, routed_input);
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         auto actual_f32 =
             output.reshape({tokens * routes, weight.out_per_expert})
-                .to(mfq_tensor_backend::kFloat32);
-        auto reference_f32 = reference.to(mfq_tensor_backend::kFloat32);
+                .to(tyloi::kFloat32);
+        auto reference_f32 = reference.to(tyloi::kFloat32);
         auto difference = actual_f32 - reference_f32;
         dense_reference_rel =
             (difference.norm() / reference_f32.norm()).item<double>();
@@ -315,8 +315,8 @@ int run_mfe_tensor_check(
         dense_reference_max_abs =
             difference.abs().max().item<double>();
     }
-    auto output_f32 = output.to(mfq_tensor_backend::kFloat32);
-    if (!mfq_tensor_backend::isfinite(output_f32).all().item<bool>()) {
+    auto output_f32 = output.to(tyloi::kFloat32);
+    if (!tyloi::cuda::isfinite(output_f32).all().item<bool>()) {
         throw std::runtime_error("MFE tensor check produced a non-finite value");
     }
     const double checksum = output_f32.sum().item<double>();
@@ -353,26 +353,26 @@ int run_mfe_tensor_check(
             return execution.projector().run(weight, x, route)
                 .narrow(2, row_offset, width).contiguous();
         };
-        mfq_tensor_backend::Tensor merged;
-        mfq_tensor_backend::Tensor left;
-        mfq_tensor_backend::Tensor right;
+        tyloi::DenseTensor merged;
+        tyloi::DenseTensor left;
+        tyloi::DenseTensor right;
         for (int warmup = 0; warmup < 3; ++warmup) {
             merged = run_segment(weight.out_per_expert, 0);
             left = run_segment(split_width, 0);
             right = run_segment(
                 weight.out_per_expert - split_width, split_width);
         }
-        mfq_cuda_synchronize();
-        auto split = mfq_tensor_backend::cat({left, right}, 2).contiguous();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
+        auto split = tyloi::cuda::cat({left, right}, 2).contiguous();
         auto difference =
-            merged.to(mfq_tensor_backend::kFloat32) - split.to(mfq_tensor_backend::kFloat32);
+            merged.to(tyloi::kFloat32) - split.to(tyloi::kFloat32);
         const int64_t left_differing =
             merged.slice(2, 0, split_width).ne(left).sum().item<int64_t>();
         const int64_t right_differing =
             merged.slice(2, split_width, weight.out_per_expert)
                 .ne(right).sum().item<int64_t>();
         const int64_t differing = left_differing + right_differing;
-        const double merged_norm = merged.to(mfq_tensor_backend::kFloat32).norm().item<double>();
+        const double merged_norm = merged.to(tyloi::kFloat32).norm().item<double>();
         std::cout << std::scientific << std::setprecision(9)
                   << "mfe_merged_split_check"
                   << " tensor=" << tensor_name
@@ -403,24 +403,24 @@ int run_mfe_tensor_check(
                   << "\n";
     }
 
-    const char * warp_ab_env = mfq::cuda::env_lookup("TYLOINFER_CHECK_NVQ_MOE_WARP_AB");
+    const char * warp_ab_env = tyloi::cuda::env_lookup("TYLOINFER_CHECK_NVQ_MOE_WARP_AB");
     if (warp_ab_env != nullptr && std::atoi(warp_ab_env) != 0) {
-        const char * original_env = mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_WARPS");
+        const char * original_env = tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_WARPS");
         const bool had_original_env = original_env != nullptr;
         const std::string original_value = had_original_env ? original_env : "";
         const char * original_exact_env =
-            mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_EXACT_REDUCTION");
+            tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_EXACT_REDUCTION");
         const bool had_original_exact_env = original_exact_env != nullptr;
         const std::string original_exact_value =
             had_original_exact_env ? original_exact_env : "";
         auto set_env = [](const char * name, const char * value) {
-            mfq::cuda::env_set(name, value);
+            tyloi::cuda::env_set(name, value);
         };
         auto restore_env = [&](const char * name, bool existed, const std::string & value) {
             if (existed) {
-                mfq::cuda::env_set(name, value.c_str());
+                tyloi::cuda::env_set(name, value.c_str());
             } else {
-                mfq::cuda::env_clear(name);
+                tyloi::cuda::env_clear(name);
             }
         };
         set_env("TYLOINFER_NVQ_MOE_WARPS", "0");
@@ -428,14 +428,14 @@ int run_mfe_tensor_check(
         auto candidate = execution.projector().run(weight, x, route);
         set_env("TYLOINFER_NVQ_MOE_EXACT_REDUCTION", "0");
         auto baseline = execution.projector().run(weight, x, route);
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         restore_env(
             "TYLOINFER_NVQ_MOE_WARPS", had_original_env, original_value);
         restore_env(
             "TYLOINFER_NVQ_MOE_EXACT_REDUCTION",
             had_original_exact_env, original_exact_value);
-        auto candidate_f32 = candidate.to(mfq_tensor_backend::kFloat32);
-        auto baseline_f32 = baseline.to(mfq_tensor_backend::kFloat32);
+        auto candidate_f32 = candidate.to(tyloi::kFloat32);
+        auto baseline_f32 = baseline.to(tyloi::kFloat32);
         auto diff = candidate_f32 - baseline_f32;
         const double baseline_norm = baseline_f32.norm().item<double>();
         std::cout << std::scientific << std::setprecision(9)
@@ -451,7 +451,7 @@ int run_mfe_tensor_check(
     }
 
     const char * clamped_ab_env =
-        mfq::cuda::env_lookup("TYLOINFER_CHECK_MFE_CLAMPED_SWIGLU_AB");
+        tyloi::cuda::env_lookup("TYLOINFER_CHECK_MFE_CLAMPED_SWIGLU_AB");
     if (clamped_ab_env != nullptr && weight.supports_clamped_swiglu()) {
         const double limit = std::atof(clamped_ab_env);
         if (!std::isfinite(limit) || limit <= 0.0) {
@@ -460,13 +460,13 @@ int run_mfe_tensor_check(
         }
         const int64_t gate_up_count =
             static_cast<int64_t>(tokens) * routes * 2 * weight.neuron_len;
-        auto gate_up_sequence = mfq_tensor_backend::arange(
+        auto gate_up_sequence = tyloi::cuda::arange(
             gate_up_count,
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat32));
+            tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32));
         auto gate_up = (
-            12.0 * mfq_tensor_backend::sin(gate_up_sequence * 0.013671875) +
-            0.5 * mfq_tensor_backend::cos(gate_up_sequence * 0.00390625))
-            .to(mfq_tensor_backend::kFloat16)
+            12.0 * tyloi::cuda::sin(gate_up_sequence * 0.013671875) +
+            0.5 * tyloi::cuda::cos(gate_up_sequence * 0.00390625))
+            .to(tyloi::kFloat16)
             .reshape({tokens, routes, 2 * weight.neuron_len})
             .contiguous();
         auto run_candidate = [&]() {
@@ -474,29 +474,29 @@ int run_mfe_tensor_check(
         };
         auto run_baseline = [&]() {
             const int64_t width = weight.neuron_len;
-            auto gate = mfq_tensor_backend::clamp_max(
-                gate_up.slice(-1, 0, width).to(mfq_tensor_backend::kFloat32), limit);
-            auto up = mfq_tensor_backend::clamp(
-                gate_up.slice(-1, width, 2 * width).to(mfq_tensor_backend::kFloat32),
+            auto gate = tyloi::cuda::clamp_max(
+                gate_up.slice(-1, 0, width).to(tyloi::kFloat32), limit);
+            auto up = tyloi::cuda::clamp(
+                gate_up.slice(-1, width, 2 * width).to(tyloi::kFloat32),
                 -limit, limit);
-            auto hidden = (mfq_tensor_backend::silu(gate) * up)
-                .to(mfq_tensor_backend::kFloat16).contiguous();
+            auto hidden = (tyloi::cuda::silu(gate) * up)
+                .to(tyloi::kFloat16).contiguous();
             return execution.projector().run(weight, hidden, route);
         };
-        mfq_tensor_backend::Tensor candidate;
-        mfq_tensor_backend::Tensor baseline;
+        tyloi::DenseTensor candidate;
+        tyloi::DenseTensor baseline;
         for (int warmup = 0; warmup < 5; ++warmup) {
             candidate = run_candidate();
             baseline = run_baseline();
         }
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         auto time_ms = [&](auto && fn) {
             cudaEvent_t begin, end;
             TYLOINFER_CUDA_CHECK(cudaEventCreate(&begin));
             TYLOINFER_CUDA_CHECK(cudaEventCreate(&end));
             auto cuda_stream = mfq_get_current_cuda_stream().stream();
             TYLOINFER_CUDA_CHECK(cudaEventRecord(begin, cuda_stream));
-            mfq_tensor_backend::Tensor value;
+            tyloi::DenseTensor value;
             for (int iteration = 0; iteration < reps; ++iteration) {
                 value = fn();
             }
@@ -507,15 +507,15 @@ int run_mfe_tensor_check(
                 &elapsed_ms, begin, end));
             TYLOINFER_CUDA_CHECK(cudaEventDestroy(begin));
             TYLOINFER_CUDA_CHECK(cudaEventDestroy(end));
-            return std::pair<double, mfq_tensor_backend::Tensor>(
+            return std::pair<double, tyloi::DenseTensor>(
                 elapsed_ms / reps, std::move(value));
         };
         auto candidate_timing = time_ms(run_candidate);
         auto baseline_timing = time_ms(run_baseline);
         candidate = std::move(candidate_timing.second);
         baseline = std::move(baseline_timing.second);
-        auto candidate_f32 = candidate.to(mfq_tensor_backend::kFloat32);
-        auto baseline_f32 = baseline.to(mfq_tensor_backend::kFloat32);
+        auto candidate_f32 = candidate.to(tyloi::kFloat32);
+        auto baseline_f32 = baseline.to(tyloi::kFloat32);
         auto diff = candidate_f32 - baseline_f32;
         const double baseline_norm = baseline_f32.norm().item<double>();
         std::cout << std::scientific << std::setprecision(9)
@@ -538,8 +538,8 @@ int run_mfe_tensor_check(
 }
 static int run_gemma_moe_check(
         CudaExecutionContext& execution,
-        const mfq::ModelSource & mfq,
-        const mfq::models::gemma4::Config & config,
+        const tyloi::ModelSource & mfq,
+        const tyloi::models::gemma4::Config & config,
         int layer,
         const std::vector<int64_t> & token_sizes,
     int reps) {
@@ -560,11 +560,11 @@ static int run_gemma_moe_check(
     TYLOINFER_RUNTIME_CHECK(routes > 0 && routes <= 8 && experts > routes,
         "Gemma MoE benchmark requires 1..8 routes and more experts than routes");
     const char * dense_reference_env =
-        mfq::cuda::env_lookup("TYLOINFER_CHECK_GEMMA_MOE_DENSE_REFERENCE");
+        tyloi::cuda::env_lookup("TYLOINFER_CHECK_GEMMA_MOE_DENSE_REFERENCE");
     const bool dense_reference_enabled =
         dense_reference_env != nullptr && std::atoi(dense_reference_env) != 0;
-    mfq_tensor_backend::Tensor dense_gate_up;
-    mfq_tensor_backend::Tensor dense_down;
+    tyloi::DenseTensor dense_gate_up;
+    tyloi::DenseTensor dense_down;
     if (dense_reference_enabled) {
         dense_gate_up = materialize_mfe_dense(
             mfq, prefix + "gate_up.weight", mfq_current_cuda_device());
@@ -585,7 +585,7 @@ static int run_gemma_moe_check(
 
     auto stream = mfq_get_current_cuda_stream().stream();
     auto time_ms = [&](auto && fn, int iterations) {
-        mfq_tensor_backend::Tensor output;
+        tyloi::DenseTensor output;
         for (int warmup = 0; warmup < 5; ++warmup) output = fn();
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
@@ -598,16 +598,16 @@ static int run_gemma_moe_check(
         cudaEventElapsedTime(&elapsed, start, stop);
         cudaEventDestroy(start);
         cudaEventDestroy(stop);
-        return std::pair<double, mfq_tensor_backend::Tensor>(elapsed / iterations, output);
+        return std::pair<double, tyloi::DenseTensor>(elapsed / iterations, output);
     };
 
-    auto topk_logits = mfq_tensor_backend::randn(
-        {1, experts}, mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat32));
+    auto topk_logits = tyloi::cuda::randn(
+        {1, experts}, tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32));
     auto selected = moe_topk_cuda(
         topk_logits, routes, false, false, false, true, mfq_nullopt, 1e-20, 1.0);
-    auto reference = mfq_tensor_backend::topk(topk_logits, routes, 1, true, true);
-    auto reference_weights = mfq_tensor_backend::softmax(std::get<0>(reference), 1);
-    mfq_cuda_synchronize();
+    auto reference = tyloi::cuda::topk(topk_logits, routes, 1, true, true);
+    auto reference_weights = tyloi::cuda::softmax(std::get<0>(reference), 1);
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
     auto topk_timing = time_ms([&]() {
         return moe_topk_cuda(
             topk_logits, routes, false, false, false, true,
@@ -616,16 +616,16 @@ static int run_gemma_moe_check(
     std::cout << std::fixed << std::setprecision(6)
               << "gemma_topk_check"
               << " ids_equal="
-              << (selected.at(0).equal(std::get<1>(reference).to(mfq_tensor_backend::kInt32)) ? 1 : 0)
+              << (selected.at(0).equal(std::get<1>(reference).to(tyloi::kInt32)) ? 1 : 0)
               << " weights_max_abs="
               << (selected.at(1) - reference_weights).abs().max().item<float>()
               << " cuda_ms=" << topk_timing.first << "\n";
 
-    mfq_tensor_backend::manual_seed(20260721 + layer);
+    tyloi::cuda::manual_seed(20260721 + layer);
     for (int64_t tokens : token_sizes) {
-        auto x = mfq_tensor_backend::randn(
+        auto x = tyloi::cuda::randn(
             {tokens, gate_up.neuron_len},
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat16));
+            tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16));
         std::vector<int32_t> host_ids(static_cast<size_t>(tokens) * routes);
         for (int64_t token = 0; token < tokens; ++token) {
             for (int route_index = 0; route_index < routes; ++route_index) {
@@ -634,12 +634,12 @@ static int run_gemma_moe_check(
                         (token * routes + route_index) % experts);
             }
         }
-        auto ids = mfq_tensor_backend::from_blob(
-            host_ids.data(), {tokens, routes}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
-            .clone().to(mfq_tensor_backend::kCUDA).contiguous();
-        auto weights = mfq_tensor_backend::full(
+        auto ids = tyloi::cuda::from_blob(
+            host_ids.data(), {tokens, routes}, tyloi::TensorOptions().dtype(tyloi::kInt32))
+            .clone().to(tyloi::kCUDA).contiguous();
+        auto weights = tyloi::cuda::full(
             {tokens, routes}, 1.0 / routes,
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat32));
+            tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32));
         auto forward_materialized = [&]() {
             auto route = build_moe_route_plan(ids, experts);
             const bool projection_bundle_prefetched =
@@ -647,7 +647,7 @@ static int run_gemma_moe_check(
                     gate_up, down, route);
             auto gate_pair = execution.projector().run(gate_up, x, route);
             auto hidden = moe_geglu_split_cuda(gate_pair);
-            if (!projection_bundle_prefetched) mfq::cuda::prefetch_experts(down, route);
+            if (!projection_bundle_prefetched) tyloi::cuda::prefetch_experts(down, route);
             auto down_pair = execution.projector().run(down, hidden, route);
             return moe_weighted_reduce_cuda(down_pair, weights);
         };
@@ -657,7 +657,7 @@ static int run_gemma_moe_check(
                 prefetch_cached_moe_projection_bundle(
                     gate_up, down, route);
             auto hidden = execution.projector().glu(gate_up, x, route, true);
-            if (!projection_bundle_prefetched) mfq::cuda::prefetch_experts(down, route);
+            if (!projection_bundle_prefetched) tyloi::cuda::prefetch_experts(down, route);
             auto down_pair = execution.projector().run(down, hidden, route);
             return moe_weighted_reduce_cuda(down_pair, weights);
         };
@@ -672,14 +672,14 @@ static int run_gemma_moe_check(
         auto gate_glu_check = gate_glu_supported
             ? forward_gate_glu()
             : fused_check;
-        mfq_cuda_synchronize();
-        auto fused_diff = (fused_check - materialized_check).abs().to(mfq_tensor_backend::kFloat32);
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
+        auto fused_diff = (fused_check - materialized_check).abs().to(tyloi::kFloat32);
         auto fused_time = time_ms(forward, reps);
         auto materialized_time = time_ms(forward_materialized, reps);
         auto gate_glu_time = gate_glu_supported
             ? time_ms(forward_gate_glu, reps)
             : fused_time;
-        auto gate_glu_diff = (gate_glu_check - materialized_check).abs().to(mfq_tensor_backend::kFloat32);
+        auto gate_glu_diff = (gate_glu_check - materialized_check).abs().to(tyloi::kFloat32);
         std::cout << std::fixed << std::setprecision(6)
                   << "gemma_moe_geglu_quant_fusion"
                   << " tokens=" << tokens
@@ -697,7 +697,7 @@ static int run_gemma_moe_check(
             auto stage_route = build_moe_route_plan(ids, experts);
             auto stage_hidden = execution.projector().glu(gate_up, x, stage_route, true);
             auto stage_down = execution.projector().run(down, stage_hidden, stage_route);
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             auto gate_stage = time_ms(
                 [&]() { return execution.projector().glu(gate_up, x, stage_route, true); }, reps);
             auto down_stage = time_ms(
@@ -716,19 +716,19 @@ static int run_gemma_moe_check(
             auto mma = time_ms(forward, reps);
             auto mma_first = mma.second.clone();
             auto mma_repeat = forward().clone();
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             options.prefill = false;
             decltype(mma) baseline;
             try {
                 baseline = time_ms(forward, reps);
-                mfq_cuda_synchronize();
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
             } catch (...) {
                 options.prefill = prefill;
                 throw;
             }
             options.prefill = prefill;
-            auto repeat_diff = (mma_repeat - mma_first).abs().to(mfq_tensor_backend::kFloat32);
-            auto baseline_diff = (mma_first - baseline.second).abs().to(mfq_tensor_backend::kFloat32);
+            auto repeat_diff = (mma_repeat - mma_first).abs().to(tyloi::kFloat32);
+            auto baseline_diff = (mma_first - baseline.second).abs().to(tyloi::kFloat32);
             std::cout << std::setprecision(6)
                       << "gemma_moe_prefill_ab"
                       << " tokens=" << tokens
@@ -738,22 +738,22 @@ static int run_gemma_moe_check(
                       << " repeat_equal=" << (mma_repeat.equal(mma_first) ? 1 : 0)
                       << " repeat_max_abs=" << repeat_diff.max().item<float>()
                       << " baseline_rel="
-                      << ((mma_first - baseline.second).to(mfq_tensor_backend::kFloat32).norm() /
-                          baseline.second.to(mfq_tensor_backend::kFloat32).norm()).item<float>()
+                      << ((mma_first - baseline.second).to(tyloi::kFloat32).norm() /
+                          baseline.second.to(tyloi::kFloat32).norm()).item<float>()
                       << " baseline_max_abs=" << baseline_diff.max().item<float>()
                       << "\n";
             if (dense_reference_enabled) {
-                auto dense_route_forward = [&](const mfq_tensor_backend::Tensor & dense,
-                                               const mfq_tensor_backend::Tensor & input) {
-                    auto result = mfq_tensor_backend::empty(
+                auto dense_route_forward = [&](const tyloi::DenseTensor & dense,
+                                               const tyloi::DenseTensor & input) {
+                    auto result = tyloi::cuda::empty(
                         {tokens, routes, dense.size(1)},
-                        input.options().dtype(mfq_tensor_backend::kFloat16));
+                        input.options().dtype(tyloi::kFloat16));
                     for (int route_index = 0; route_index < routes; ++route_index) {
                         const int expert = (route_index * 17) % experts;
                         auto selected = input.dim() == 3
                             ? input.select(1, route_index)
                             : input;
-                        result.select(1, route_index).copy_(mfq_tensor_backend::matmul(
+                        result.select(1, route_index).copy_(tyloi::cuda::matmul(
                             selected,
                             dense.index({expert}).transpose(0, 1)));
                     }
@@ -768,10 +768,10 @@ static int run_gemma_moe_check(
                 auto dense_output =
                     moe_weighted_reduce_cuda(dense_down_pair, weights);
                 auto dense_difference =
-                    mma_first.to(mfq_tensor_backend::kFloat32) -
-                    dense_output.to(mfq_tensor_backend::kFloat32);
+                    mma_first.to(tyloi::kFloat32) -
+                    dense_output.to(tyloi::kFloat32);
                 const double dense_norm =
-                    dense_output.to(mfq_tensor_backend::kFloat32).norm().item<double>();
+                    dense_output.to(tyloi::kFloat32).norm().item<double>();
                 std::cout << std::scientific << std::setprecision(9)
                           << "gemma_moe_dense_reference"
                           << " tokens=" << tokens
@@ -804,15 +804,15 @@ int run_moe_check(
             [](int64_t value) { return value < 1 || value > 4096; })) {
         throw std::runtime_error("--check-moe-tokens values must be in [1, 4096]");
     }
-    auto model_source = mfq::open_model_source(model_path);
+    auto model_source = tyloi::open_model_source(model_path);
     const auto& mfq = *model_source;
-    mfq::cuda::validate_model_source(mfq);
-    const auto graph = mfq::models::graph(mfq);
-    const auto payload = mfq::models::config_json(mfq, config_path);
-    mfq::cuda::Ffn ffn;
+    tyloi::cuda::validate_model_source(mfq);
+    const auto graph = tyloi::models::graph(mfq);
+    const auto payload = tyloi::models::config_json(mfq, config_path);
+    tyloi::cuda::Ffn ffn;
     int64_t hidden_size = 0;
     if (graph.backbone == "gemma4") {
-        const auto config = mfq::models::gemma4::Config::from_json(payload);
+        const auto config = tyloi::models::gemma4::Config::from_json(payload);
         if (layer >= config.num_hidden_layers) {
             throw std::runtime_error(
                 "MoE benchmark layer is out of range");
@@ -821,34 +821,34 @@ int run_moe_check(
             execution, mfq, config, layer, token_sizes, reps);
     }
     if (graph.backbone == "glm_dsa") {
-        const auto config = mfq::models::glm_dsa::Config::from_json(payload);
+        const auto config = tyloi::models::glm_dsa::Config::from_json(payload);
         if (layer >= config.num_hidden_layers) {
             throw std::runtime_error(
                 "MoE benchmark layer is out of range");
         }
-        mfq::cuda::glm_dsa::load_ffn(
+        tyloi::cuda::glm_dsa::load_ffn(
             execution, mfq, config, layer, ffn);
         hidden_size = config.hidden_size;
     } else if (graph.backbone == "deepseek_v4") {
         const auto config =
-            mfq::models::deepseek_v4::Config::from_json(payload);
+            tyloi::models::deepseek_v4::Config::from_json(payload);
         if (layer >= config.num_hidden_layers) {
             throw std::runtime_error(
                 "MoE benchmark layer is out of range");
         }
-        auto block = mfq::cuda::deepseek_v4::load_block(
+        auto block = tyloi::cuda::deepseek_v4::load_block(
             execution, mfq, config, layer, "deepseek_v4",
             std::make_shared<Dsv4SharedState>());
         ffn = std::move(static_cast<Dsv4Block&>(*block).ffn);
         hidden_size = config.hidden_size;
     } else if (graph.backbone == "deepseek_v41") {
         const auto config =
-            mfq::models::deepseek_v41::Config::from_json(payload);
+            tyloi::models::deepseek_v41::Config::from_json(payload);
         if (layer >= config.n_layers) {
             throw std::runtime_error(
                 "MoE benchmark layer is out of range");
         }
-        ffn = mfq::cuda::deepseek_v41_runtime::load_moe_at(
+        ffn = tyloi::cuda::deepseek_v41_runtime::load_moe_at(
             mfq, config,
             "model.block." + std::to_string(layer) + ".mlp.",
             layer, config.top_k);
@@ -878,14 +878,14 @@ int run_moe_check(
               << " routed_weight_bytes=" << std::fixed << std::setprecision(0)
               << routed_weight_bytes << "\n";
 
-    mfq_tensor_backend::manual_seed(20260720 + layer);
-    mfq_tensor_backend::Tensor output;
+    tyloi::cuda::manual_seed(20260720 + layer);
+    tyloi::DenseTensor output;
     for (int64_t tokens : token_sizes) {
-        auto x = mfq_tensor_backend::randn(
+        auto x = tyloi::cuda::randn(
             {tokens, hidden_size},
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat16));
+            tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16));
         for (int warmup = 0; warmup < 10; ++warmup) output = execution.ffn().run(ffn, x);
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
 
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
@@ -904,7 +904,7 @@ int run_moe_check(
         const double cuda_ms = static_cast<double>(elapsed_ms) / reps;
         const double wall_ms =
             std::chrono::duration<double, std::milli>(wall_stop - wall_start).count() / reps;
-        const double checksum = output.to(mfq_tensor_backend::kFloat32).sum().item<double>();
+        const double checksum = output.to(tyloi::kFloat32).sum().item<double>();
         if (!std::isfinite(checksum)) throw std::runtime_error("non-finite MoE benchmark output");
         std::cout << std::setprecision(6)
                   << "moe_bench_result"
@@ -916,23 +916,23 @@ int run_moe_check(
                   << " tokens_per_second=" << (1000.0 * tokens / cuda_ms)
                   << " checksum=" << checksum << "\n";
 
-        const char * prefill_ab_env = mfq::cuda::env_lookup("TYLOINFER_CHECK_MOE_PREFILL_MMA_AB");
+        const char * prefill_ab_env = tyloi::cuda::env_lookup("TYLOINFER_CHECK_MOE_PREFILL_MMA_AB");
         if (prefill_ab_env != nullptr && std::atoi(prefill_ab_env) != 0 && tokens >= 9) {
             auto candidate = output.clone();
             auto& options = execution.config.tasks.projection.moe;
             const bool prefill = options.prefill;
             options.prefill = false;
-            mfq_tensor_backend::Tensor baseline;
+            tyloi::DenseTensor baseline;
             try {
                 baseline = execution.ffn().run(ffn, x);
-                mfq_cuda_synchronize();
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
             } catch (...) {
                 options.prefill = prefill;
                 throw;
             }
             options.prefill = prefill;
-            auto diff = (candidate - baseline).to(mfq_tensor_backend::kFloat32);
-            const double baseline_norm = baseline.to(mfq_tensor_backend::kFloat32).norm().item<double>();
+            auto diff = (candidate - baseline).to(tyloi::kFloat32);
+            const double baseline_norm = baseline.to(tyloi::kFloat32).norm().item<double>();
             std::cout << "moe_prefill_mma_ab"
                       << " tokens=" << tokens
                       << " equal=" << (candidate.equal(baseline) ? 1 : 0)
@@ -943,7 +943,7 @@ int run_moe_check(
                       << "\n";
         }
 
-        const char * exact_env = mfq::cuda::env_lookup("TYLOINFER_CHECK_MOE_POOL_EXACT");
+        const char * exact_env = tyloi::cuda::env_lookup("TYLOINFER_CHECK_MOE_POOL_EXACT");
         if (exact_env != nullptr && std::atoi(exact_env) != 0 && tokens <= 8) {
             auto candidate = output;
             auto& options = execution.config.tasks.projection.moe;
@@ -952,10 +952,10 @@ int run_moe_check(
             options.nint_decode = false;
             execution.force_moe_unfused_reduce = true;
             execution.force_moe_materialized_swiglu = true;
-            mfq_tensor_backend::Tensor baseline;
+            tyloi::DenseTensor baseline;
             try {
                 baseline = execution.ffn().run(ffn, x);
-                mfq_cuda_synchronize();
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
             } catch (...) {
                 options = saved_options;
                 execution.force_moe_unfused_reduce = false;
@@ -965,7 +965,7 @@ int run_moe_check(
             options = saved_options;
             execution.force_moe_unfused_reduce = false;
             execution.force_moe_materialized_swiglu = false;
-            auto diff = (candidate - baseline).abs().to(mfq_tensor_backend::kFloat32);
+            auto diff = (candidate - baseline).abs().to(tyloi::kFloat32);
             std::cout << "moe_exact_result"
                       << " equal=" << (candidate.equal(baseline) ? 1 : 0)
                       << " differing=" << candidate.ne(baseline).sum().item<int64_t>()
@@ -977,7 +977,7 @@ int run_moe_check(
         execution.profiler.enabled = true;
         const int profile_reps = std::min(reps, 10);
         for (int iteration = 0; iteration < profile_reps; ++iteration) output = execution.ffn().run(ffn, x);
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         execution.profiler.report(
             "moe_layer" + std::to_string(layer) + "_m" +
             std::to_string(tokens));

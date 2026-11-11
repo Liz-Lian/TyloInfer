@@ -78,7 +78,7 @@ int parity(unsigned value) {
 }
 
 void check(int format,int width,int batch,int sign_mode) {
-    const auto kernel=mfq::cpu::nvq_group_dot_kernel(format);
+    const auto kernel=tyloi::cpu::nvq_group_dot_kernel(format);
     if (!kernel) throw std::runtime_error("missing supported NVQ group kernel");
     const bool d4=format==3 || format==10 || format==11 || format==12 || format==15;
     const bool delta_format=format==1 || format==8;
@@ -113,7 +113,7 @@ void check(int format,int width,int batch,int sign_mode) {
     Guarded index_guard(indices.size()), aux_guard(aux.size());
     std::memcpy(index_guard.data,indices.data(),indices.size());
     if (!aux.empty()) std::memcpy(aux_guard.data,aux.data(),aux.size());
-    mfq::cpu::NvqDecodeView view{index_guard.data,no_aux ? nullptr : aux_guard.data,
+    tyloi::cpu::NvqDecodeView view{index_guard.data,no_aux ? nullptr : aux_guard.data,
         static_cast<std::int64_t>(indices.size()),static_cast<std::int64_t>(aux.size()),
         vectors,signs,groups,sign_mode};
     for (int state=0; state<states; ++state)
@@ -132,11 +132,11 @@ void check(int format,int width,int batch,int sign_mode) {
             x[sample*stride+column]=float(int(random()%65)-32)/16;
     std::vector<float> matrix_output(batch*(rows+2),-13);
     set_single_rows(false);
-    const auto matrix=mfq::cpu::nvq_rows_dot_kernel(format);
+    const auto matrix=tyloi::cpu::nvq_rows_dot_kernel(format);
     if (!matrix) throw std::runtime_error("missing supported NVQ matrix kernel");
     matrix(view,x,batch,stride,matrix_output.data(),rows+2,0,rows);
     set_single_rows(true);
-    const auto single=mfq::cpu::nvq_rows_dot_kernel(format);
+    const auto single=tyloi::cpu::nvq_rows_dot_kernel(format);
     if(!single || (format==7 ? single!=matrix : single==matrix))
         throw std::runtime_error("single-row NVQ test selected the wrong implementation or fallback");
     std::vector<float> actual_single(batch*(rows+2),-13);
@@ -208,7 +208,7 @@ void check(int format,int width,int batch,int sign_mode) {
 } // namespace
 
 int main() try {
-    if (!mfq::cpu::packed_nint_has_avx2()) {
+    if (!tyloi::cpu::packed_nint_has_avx2()) {
         std::cout << "NVQ AVX2 unavailable; portable decoder uses canonical adapter tests\n";
         return 0;
     }
@@ -217,7 +217,7 @@ int main() try {
         for (int width: {1,7,8,9,17,23,24,25,31,49,640,641,2560,2561})
             for (int batch: {1,7})
                 for (int sign_mode: {0,1}) { check(format,width,batch,sign_mode); ++cases; }
-    if (mfq::cpu::nvq_group_dot_kernel(4)) throw std::runtime_error("unsupported kernel format accepted");
+    if (tyloi::cpu::nvq_group_dot_kernel(4)) throw std::runtime_error("unsupported kernel format accepted");
     std::cout << "NVQ guarded FP64 group cases passed=" << cases << " single-row original FP32 bits/ranges/fallback exact=" << cases << '\n';
     return 0;
 } catch (const std::exception& error) {

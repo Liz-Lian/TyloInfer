@@ -1,4 +1,5 @@
 #pragma once
+#include "execution_fixture.h"
 #include "env.h"
 #include "mfe_ffn_runtime.h"
 #include "mfe_ffn_token_groups.h"
@@ -6,11 +7,11 @@
 class MfeWideOption {
     const char* key_;std::string old_;bool present_;
 public:
-    explicit MfeWideOption(const char* key,const char* value):key_(key),present_(mfq::cuda::env_lookup(key)!=nullptr) {
-        if(present_)old_=mfq::cuda::env_lookup(key);set(value);
+    explicit MfeWideOption(const char* key,const char* value):key_(key),present_(tyloi::cuda::env_lookup(key)!=nullptr) {
+        if(present_)old_=tyloi::cuda::env_lookup(key);set(value);
     }
     void set(const char* value)const {
-        if(*value)mfq::cuda::env_set(key_,value);else mfq::cuda::env_clear(key_);
+        if(*value)tyloi::cuda::env_set(key_,value);else tyloi::cuda::env_clear(key_);
     }
     ~MfeWideOption(){set(present_?old_.c_str():"");}
 };
@@ -22,11 +23,10 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
     MfeWideOption alignment("TYLOINFER_MFE_TOKEN_ALIGNED_GU","");
     MfeWideOption split_shared("TYLOINFER_MFE_SPLIT_SHARED_GROUPS","0");
     MfeWideOption aligned_warps("TYLOINFER_MFE_ALIGNED_GU_WARPS","16");
-    CudaStores stores;
-    CudaExecutionContext execution(stores);const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    TestExecution execution;const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     const auto sigmoid=moe_swiglu_sigmoid_table_cuda();int checks=0,wide_buckets=0;
-    int case_index=0;const auto* start_option=mfq::cuda::env_lookup("TYLOINFER_MFE_WIDE_START_CASE");
+    int case_index=0;const auto* start_option=tyloi::cuda::env_lookup("TYLOINFER_MFE_WIDE_START_CASE");
     const int start_case=start_option?std::atoi(start_option):0;
     std::array<NintWeight,3> shared_weights;
     for(int p=0;p<3;++p) {
@@ -43,17 +43,17 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
         if(!benchmark && !legacy_only && name!="nvq2j-l" && name!="nvq3j-512" && !(aligned_probe && (nint || name=="nvq1-s")))continue;
         std::array<MixedMoeRuntime,3> projections;
         for(int p=0;p<3;++p) {
-            auto model=mfq::open_model_source((root/(std::string(format)+(p==2?"-2560-640.mfq":"-640-2560.mfq"))).string());
+            auto model=tyloi::open_model_source((root/(std::string(format)+(p==2?"-2560-640.mfq":"-640-2560.mfq"))).string());
             const auto encoded=load_mfe_cpu(*model,"linear.weight");
             auto gpu=make_mixed_moe_runtime(encoded,true,execution.config),cpu=make_mixed_moe_runtime(encoded,false,execution.config);
             if(cpu->pools.size()!=1 || cpu->n_experts!=3)throw std::runtime_error("wide-group fixture requires three original experts");
             const int copies=aligned_probe?16:4,experts=3*copies;
-            const auto repeat=[&](const tb::Tensor& t){return t.numel()?tb::cat(std::vector<tb::Tensor>(copies,t),0):t;};
+            const auto repeat=[&](const tyloi::DenseTensor& t){return t.numel()?tb::cat(std::vector<tyloi::DenseTensor>(copies,t),0):t;};
             auto& pool=gpu->pools[0];
             if(nint) {
                 auto& w=pool.nint;const auto packed_bytes=w.q_packed.numel();
                 if(!w.q_expert_stride) {
-                    std::vector<tb::Tensor> offsets;
+                    std::vector<tyloi::DenseTensor> offsets;
                     for(int copy=0;copy<copies;++copy)offsets.push_back(w.row_q_bit_offsets+int64_t(copy)*packed_bytes*8);
                     w.row_q_bit_offsets=tb::cat(offsets,0);
                 }else w.row_q_bit_offsets=repeat(w.row_q_bit_offsets);
@@ -63,17 +63,17 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
             }else {
                 auto weight=nvq1?pool.nvq:cpu->pools[0].nvq;
                 if(!nvq1 && !prepare_nvq_dense_groups(weight))throw std::runtime_error("wide-group fixture cannot use compact representation");
-                weight.indices_packed=repeat(weight.indices_packed).to(tb::kCUDA);
-                weight.aux_packed=repeat(weight.aux_packed).to(tb::kCUDA);
-                weight.sub_scale_packed=repeat(weight.sub_scale_packed).to(tb::kCUDA);
-                weight.neuron_scale=repeat(weight.neuron_scale).to(tb::kCUDA);
-                weight.codebook=weight.codebook.to(tb::kCUDA);weight.out*=copies;
+                weight.indices_packed=repeat(weight.indices_packed).to(tyloi::kCUDA);
+                weight.aux_packed=repeat(weight.aux_packed).to(tyloi::kCUDA);
+                weight.sub_scale_packed=repeat(weight.sub_scale_packed).to(tyloi::kCUDA);
+                weight.neuron_scale=repeat(weight.neuron_scale).to(tyloi::kCUDA);
+                weight.codebook=weight.codebook.to(tyloi::kCUDA);weight.out*=copies;
                 if(nvq1 && weight.decode_records.defined())weight.decode_records=repeat(weight.decode_records);
                 pool.nvq=std::move(weight);
             }
             pool.local_experts*=copies;
             std::vector<int32_t> local(experts);for(int i=0;i<experts;++i)local[i]=i;
-            pool.expert_local=tb::tensor(local).to(tb::kCUDA);gpu->n_experts=experts;
+            pool.expert_local=tb::tensor(local).to(tyloi::kCUDA);gpu->n_experts=experts;
             projections[p]=std::move(*gpu);
         }
         for(int tokens:{2,3,4,6,8})for(bool shared:{false,true}) {
@@ -91,19 +91,19 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
                         pattern==3?(r+t*3)%experts:r==9?(t%2?-1:experts):r%5;
             };
             routes(0);
-            auto x=tb::tensor(values).reshape({tokens,2560}).to(tb::kFloat16).to(tb::kCUDA),initial=x.clone();
-            auto ids=tb::tensor(selected).reshape({tokens,10}).to(tb::kCUDA);
-            auto route_weights=tb::tensor(weights).reshape({tokens,10}).to(tb::kCUDA);
+            auto x=tb::tensor(values).reshape({tokens,2560}).to(tyloi::kFloat16).to(tyloi::kCUDA),initial=x.clone();
+            auto ids=tb::tensor(selected).reshape({tokens,10}).to(tyloi::kCUDA);
+            auto route_weights=tb::tensor(weights).reshape({tokens,10}).to(tyloi::kCUDA);
             std::array<const NintWeight*,3> shared_views{};
             if(shared)for(int p=0;p<3;++p)shared_views[p]=&shared_weights[p];
-            auto shared_gate=shared?tb::sigmoid(x.mean(1)):tb::Tensor{};
+            auto shared_gate=shared?tb::sigmoid(x.mean(1)):tyloi::DenseTensor{};
             constexpr int variants=5;
             const std::array<int,variants> capacities=nonaligned_quad_probe?std::array<int,variants>{2,4,2,4,4}:
                 shared_split_probe?std::array<int,variants>{2,4,20,4,4}:
                 shared_quad_probe?std::array<int,variants>{2,4,20,2,4}:
                 aligned_probe?std::array<int,variants>{2,2,4,4,4}:std::array<int,variants>{2,4,4,8,8};
-            std::unique_ptr<MfeFfnRuntime> runtime[variants];mfq::cuda::Graph graph[variants];
-            std::vector<tb::Tensor> expected_output,expected_hidden;
+            std::unique_ptr<MfeFfnRuntime> runtime[variants];tyloi::cuda::Graph graph[variants];
+            std::vector<tyloi::DenseTensor> expected_output,expected_hidden;
             for(int variant=0;variant<variants;++variant) {
                 capacity.set(capacities[variant]==20?"shared4":capacities[variant]==2?"2":capacities[variant]==4?"4":"8");
                 if(aligned_probe) {
@@ -122,7 +122,7 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
                     alignment.set(variant==4?"":variant==2 || variant==3?"0":"1");
                 }
                 routes(0);
-                ids.copy_(tb::tensor(selected).reshape({tokens,10}).to(tb::kCUDA));x.copy_(initial);
+                ids.copy_(tb::tensor(selected).reshape({tokens,10}).to(tyloi::kCUDA));x.copy_(initial);
                 runtime[variant]=std::make_unique<MfeFfnRuntime>(
                     std::array<MixedMoeRuntime*,3>{&projections[0],&projections[1],&projections[2]},x,ids,route_weights,sigmoid,shared_views,shared_gate,
                     0,0,nullptr,false,false,nint?4:0);
@@ -152,10 +152,10 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
                     if(b.token_groups<tokens*10+2 || counts[tokens*10]!=2 || counts[tokens*10+1]!=tokens-2)
                         throw std::runtime_error("shared pair plan did not retain routed quads and shared pairs");
                 }
-                {mfq::cuda::GraphWarmupScope warmup(context,stream);r.run();}
-                mfq_cuda_synchronize();graph[variant].capture_begin_shared();r.run();graph[variant].capture_end();
+                {tyloi::cuda::GraphWarmupScope warmup(context,stream);r.run();}
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());graph[variant].capture_begin_shared();r.run();graph[variant].capture_end();
                 for(int pattern=0;pattern<(aligned_probe?4:3);++pattern) {
-                    routes(pattern);ids.copy_(tb::tensor(selected).reshape({tokens,10}).to(tb::kCUDA));x.copy_(initial*float(pattern+1));
+                    routes(pattern);ids.copy_(tb::tensor(selected).reshape({tokens,10}).to(tyloi::kCUDA));x.copy_(initial*float(pattern+1));
                     graph[variant].replay();auto actual=r.output().cpu().contiguous(),hidden=r.hidden().cpu().contiguous();
                     if(!variant){expected_output.push_back(actual.clone());expected_hidden.push_back(hidden.clone());}
                     else {
@@ -183,31 +183,31 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
                 // without pretending that packed Down weights use another GS.
                 auto b=runtime[base_variant]->batch();
                 const int view_count=b.projection_offsets[2]+b.projection_counts[2]+(shared?3:0);
-                std::vector<mfq::cuda::MfePackedProjection> views(view_count);
+                std::vector<tyloi::cuda::MfePackedProjection> views(view_count);
                 TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(views.data(),b.projections,
                     views.size()*sizeof(views[0]),cudaMemcpyDeviceToHost,stream));
                 TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));
                 for(int i=0;i<b.projection_counts[2];++i)
                     views[b.projection_offsets[2]+i].group_size=down_gs;
                 if(shared)views.back().group_size=down_gs;
-                auto descriptors=tb::empty({int64_t(views.size()*sizeof(views[0]))},x.options().dtype(tb::kUInt8));
+                auto descriptors=tb::empty({int64_t(views.size()*sizeof(views[0]))},x.options().dtype(tyloi::kUInt8));
                 TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(descriptors.data_ptr(),views.data(),descriptors.nbytes(),cudaMemcpyHostToDevice,stream));
-                b.projections=reinterpret_cast<const mfq::cuda::MfePackedProjection*>(descriptors.data_ptr());
+                b.projections=reinterpret_cast<const tyloi::cuda::MfePackedProjection*>(descriptors.data_ptr());
                 if(shared)b.shared=b.projections+view_count-3;
                 b.scale_stride=(std::max(b.intermediate,b.shared_intermediate)+down_gs-1)/down_gs;
                 b.quantized_stride=b.scale_stride*down_gs;
-                std::array<tb::Tensor,3> expected;
+                std::array<tyloi::DenseTensor,3> expected;
                 for(int warps:{16,12}) {
                     auto hidden=tb::zeros({tokens*(10+int(shared)),b.hidden_stride},x.options());
-                    auto quantized=tb::zeros({tokens*(10+int(shared)),b.quantized_stride},x.options().dtype(tb::kInt8));
-                    auto scales=tb::zeros({tokens*(10+int(shared)),b.scale_stride},x.options().dtype(tb::kFloat32));
+                    auto quantized=tb::zeros({tokens*(10+int(shared)),b.quantized_stride},x.options().dtype(tyloi::kInt8));
+                    auto scales=tb::zeros({tokens*(10+int(shared)),b.scale_stride},x.options().dtype(tyloi::kFloat32));
                     b.hidden=reinterpret_cast<__half*>(hidden.data_ptr());
                     b.hidden_quantized=quantized.data_ptr<int8_t>();b.hidden_scales=scales.data_ptr<float>();
                     aligned_warps.set(warps==12?"12":"16");
-                    if(!mfq::cuda::mfe_ffn_token_group_gate_up(b,0,std::max(b.intermediate,b.shared_intermediate),stream))
+                    if(!tyloi::cuda::mfe_ffn_token_group_gate_up(b,0,std::max(b.intermediate,b.shared_intermediate),stream))
                         throw std::runtime_error("aligned GS boundary missed grouped GU dispatch");
                     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));
-                    std::array<tb::Tensor,3> actual={hidden.cpu().contiguous(),quantized.cpu().contiguous(),scales.cpu().contiguous()};
+                    std::array<tyloi::DenseTensor,3> actual={hidden.cpu().contiguous(),quantized.cpu().contiguous(),scales.cpu().contiguous()};
                     for(int i=0;i<3;++i)if(warps==16)expected[i]=actual[i].clone();
                         else if(std::memcmp(actual[i].data_ptr(),expected[i].data_ptr(),actual[i].nbytes()))
                             throw std::runtime_error("aligned GS28/32 hidden or quantization bits differ");
@@ -226,11 +226,11 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
             const int timed_variants=shared_quad_probe && !shared_split_probe && !nonaligned_quad_probe && tokens==3?3:aligned_probe?4:variants;
             for(int sample_pattern=0;sample_pattern<(aligned_probe?3:2);++sample_pattern) {
                 const int pattern=sample_pattern==2?3:sample_pattern;
-                routes(pattern);ids.copy_(tb::tensor(selected).reshape({tokens,10}).to(tb::kCUDA));x.copy_(initial);
+                routes(pattern);ids.copy_(tb::tensor(selected).reshape({tokens,10}).to(tyloi::kCUDA));x.copy_(initial);
                 std::vector<float> timing[variants];
                 for(int sample=0;sample<7;++sample)for(int order=0;order<timed_variants;++order) {
                     const int variant=(sample+order)%timed_variants;
-                    mfq::cuda::Event begin(cudaEventDefault),end(cudaEventDefault);begin.record(stream);
+                    tyloi::cuda::Event begin(cudaEventDefault),end(cudaEventDefault);begin.record(stream);
                     for(int i=0;i<32;++i)graph[variant].replay();end.record(stream);end.synchronize();
                     float ms=0;TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&ms,begin.get(),end.get()));
                     if(sample)timing[variant].push_back(ms*1000/32);
@@ -246,5 +246,5 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
         }
     }
     std::cout<<(nonaligned_quad_probe?"MFE nonaligned quad":aligned_warps_probe?"MFE aligned warps":shared_split_probe?"MFE shared split":shared_quad_probe?"MFE shared quad":aligned_probe?"MFE aligned compact":"MFE wide compact")<<" executions="<<checks<<" active_wide_buckets="<<wide_buckets<<" PASS\n";
-    mfq_cuda_synchronize();context->end_graph_pool(stream);
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());context->end_graph_pool(stream);
 }

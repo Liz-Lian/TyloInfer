@@ -16,30 +16,30 @@
 
 int run_text_session_state_check() {
     MfqCudaGuard guard(0);
-    auto cuda_float = mfq_tensor_backend::TensorOptions()
-        .device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat32);
+    auto cuda_float = tyloi::TensorOptions()
+        .device(tyloi::kCUDA).dtype(tyloi::kFloat32);
     const auto values = [&](std::vector<int64_t> shape,
-                            mfq_tensor_backend::ScalarType dtype,
+                            tyloi::ScalarType dtype,
                             float offset) {
         int64_t elements = 1;
         for (int64_t extent : shape) elements *= extent;
-        return (mfq_tensor_backend::arange(elements, cuda_float) + offset)
+        return (tyloi::cuda::arange(elements, cuda_float) + offset)
             .reshape(shape).to(dtype).contiguous();
     };
     const auto require_equal = [](bool condition, const char * message) {
         if (!condition) throw std::runtime_error(message);
     };
 
-    mfq::cuda::DeepseekV4CausalLm dsv4_model;
+    tyloi::cuda::DeepseekV4CausalLm dsv4_model;
     auto dsv4 = std::make_unique<Dsv4Block>();
     auto * dsv4_block = dsv4.get();
     dsv4_block->cuda_device = 0;
     dsv4_block->shared_state = std::make_shared<Dsv4SharedState>();
-    dsv4_block->shared_state->attention_meta = mfq_tensor_backend::empty({1}, cuda_float);
-    dsv4_block->shared_state->hadamard_signs = mfq_tensor_backend::ones(
-        {128}, cuda_float.dtype(mfq_tensor_backend::kInt8));
+    dsv4_block->shared_state->attention_meta = tyloi::cuda::empty({1}, cuda_float);
+    dsv4_block->shared_state->hadamard_signs = tyloi::cuda::ones(
+        {128}, cuda_float.dtype(tyloi::kInt8));
     dsv4_block->local_cache = values(
-        {1, 128, 8}, mfq_tensor_backend::kFloat16, 1.0f);
+        {1, 128, 8}, tyloi::kFloat16, 1.0f);
     const auto initialize_dsv4_pool = [&](Dsv4PoolState & pool,
                                           int64_t head_dim,
                                           bool overlap,
@@ -51,17 +51,17 @@ int run_text_session_state_check() {
         pool.capacity = 16;
         const int64_t state_width = overlap ? 2 * head_dim : head_dim;
         pool.state_kv = values(
-            {1, pool.ratio, state_width}, mfq_tensor_backend::kFloat32, offset);
+            {1, pool.ratio, state_width}, tyloi::kFloat32, offset);
         pool.state_gate = values(
-            {1, pool.ratio, state_width}, mfq_tensor_backend::kFloat32, offset + 100.0f);
+            {1, pool.ratio, state_width}, tyloi::kFloat32, offset + 100.0f);
         if (overlap) {
             pool.previous_kv = values(
-                {1, pool.ratio, head_dim}, mfq_tensor_backend::kFloat32, offset + 200.0f);
+                {1, pool.ratio, head_dim}, tyloi::kFloat32, offset + 200.0f);
             pool.previous_gate = values(
-                {1, pool.ratio, head_dim}, mfq_tensor_backend::kFloat32, offset + 300.0f);
+                {1, pool.ratio, head_dim}, tyloi::kFloat32, offset + 300.0f);
         }
         pool.pool = values(
-            {1, pool.capacity, head_dim}, mfq_tensor_backend::kFloat16, offset + 400.0f);
+            {1, pool.capacity, head_dim}, tyloi::kFloat16, offset + 400.0f);
     };
     initialize_dsv4_pool(
         dsv4_block->compressor, 8, false, 10.0f);
@@ -85,25 +85,25 @@ int run_text_session_state_check() {
     dsv4_model.cache_pos = 0;
     dsv4_model.restore_text_session_state(dsv4_state);
     const auto & saved_dsv4 = std::get<
-        std::vector<mfq::models::deepseek_v4::BlockSnapshot>>(dsv4_state.payload).at(0);
+        std::vector<tyloi::models::deepseek_v4::BlockSnapshot>>(dsv4_state.payload).at(0);
     require_equal(
-        mfq_tensor_backend::equal(dsv4_block->local_cache, saved_dsv4.local_cache),
+        tyloi::cuda::equal(dsv4_block->local_cache, saved_dsv4.local_cache),
         "DeepSeek V4 local session cache restore failed");
     const auto check_dsv4_pool = [&](const Dsv4PoolState & restored,
-                                     const mfq::models::deepseek_v4::PoolSnapshot & saved) {
+                                     const tyloi::models::deepseek_v4::PoolSnapshot & saved) {
         require_equal(
-            mfq_tensor_backend::equal(restored.state_kv, saved.state_kv) &&
-            mfq_tensor_backend::equal(restored.state_gate, saved.state_gate),
+            tyloi::cuda::equal(restored.state_kv, saved.state_kv) &&
+            tyloi::cuda::equal(restored.state_gate, saved.state_gate),
             "DeepSeek V4 compressor recurrent state restore failed");
         if (saved.overlap) {
             require_equal(
-                mfq_tensor_backend::equal(restored.previous_kv, saved.previous_kv) &&
-                mfq_tensor_backend::equal(restored.previous_gate, saved.previous_gate),
+                tyloi::cuda::equal(restored.previous_kv, saved.previous_kv) &&
+                tyloi::cuda::equal(restored.previous_gate, saved.previous_gate),
                 "DeepSeek V4 overlap compressor state restore failed");
         }
         require_equal(
             restored.capacity == saved.capacity &&
-            mfq_tensor_backend::equal(
+            tyloi::cuda::equal(
                 restored.pool.narrow(1, 0, saved.pool.size(1)),
                 saved.pool),
             "DeepSeek V4 compressed pool restore failed");
@@ -117,7 +117,7 @@ int run_text_session_state_check() {
         dsv4_model.cache_pos == 10 && dsv4_state.bytes > 0,
         "DeepSeek V4 session position restore failed");
 
-    mfq::cuda::GlmDsaCausalLm glm_model;
+    tyloi::cuda::GlmDsaCausalLm glm_model;
     auto glm_shared = std::make_shared<GlmDsaSharedState>();
     std::vector<GlmDsaBlock *> glm_blocks;
     for (int index = 0; index < 2; ++index) {
@@ -126,11 +126,11 @@ int run_text_session_state_check() {
         glm->full_indexer = index == 0;
         glm->shared_state = glm_shared;
         glm->kv_cache = values(
-            {1, 1, 16, 6}, mfq_tensor_backend::kFloat16,
+            {1, 1, 16, 6}, tyloi::kFloat16,
             1000.0f + index * 100.0f);
         if (glm->full_indexer) {
             glm->index_cache = values(
-                {1, 16, 4}, mfq_tensor_backend::kFloat16, 2000.0f);
+                {1, 16, 4}, tyloi::kFloat16, 2000.0f);
         }
         glm_blocks.push_back(glm.get());
         glm_model.blocks.push_back(std::move(glm));
@@ -142,17 +142,17 @@ int run_text_session_state_check() {
         glm->kv_cache.zero_();
         if (glm->index_cache.defined()) glm->index_cache.zero_();
     }
-    glm_shared->topk_indices = mfq_tensor_backend::ones(
-        {1, 1, 1}, cuda_float.dtype(mfq_tensor_backend::kInt32));
+    glm_shared->topk_indices = tyloi::cuda::ones(
+        {1, 1, 1}, cuda_float.dtype(tyloi::kInt32));
     glm_model.cache_pos = 0;
     glm_model.restore_text_session_state(glm_state);
     const auto& saved_glm = std::get<
-        std::vector<mfq::models::glm_dsa::BlockSnapshot>>(glm_state.payload);
+        std::vector<tyloi::models::glm_dsa::BlockSnapshot>>(glm_state.payload);
     for (size_t index = 0; index < glm_blocks.size(); ++index) {
         const auto & saved = saved_glm.at(index);
         require_equal(
             glm_blocks[index]->kv_cache.size(2) == saved.kv_capacity &&
-            mfq_tensor_backend::equal(
+            tyloi::cuda::equal(
                 glm_blocks[index]->kv_cache.narrow(
                     2, 0, saved.kv_cache.size(2)),
                 saved.kv_cache),
@@ -161,7 +161,7 @@ int run_text_session_state_check() {
             require_equal(
                 glm_blocks[index]->index_cache.size(1) ==
                     saved.index_capacity &&
-                mfq_tensor_backend::equal(
+                tyloi::cuda::equal(
                     glm_blocks[index]->index_cache.narrow(
                         1, 0, saved.index_cache.size(1)),
                     saved.index_cache),

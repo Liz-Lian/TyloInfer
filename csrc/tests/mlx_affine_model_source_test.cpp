@@ -34,14 +34,14 @@ int main() {
             const auto text = header.dump(); u64(file, text.size()); file << text;
             file.write(reinterpret_cast<const char*>(payload.data()), payload.size());
         }
-        mfq::HfModelSource source(root);
+        tyloi::HfModelSource source(root);
         const auto* tensor = source.find_tensor("probe.weight");
         require(tensor && tensor->dtype == "MLX-AFFINE" && tensor->shape ==
             std::vector<std::int64_t>{2, 3, 128}, "MLX logical shape/format was not preserved");
         require(!source.find_tensor("probe.scales") && !source.find_tensor("probe.biases"),
             "MLX auxiliary arrays remained separate model tensors");
         const auto bytes = source.read("probe.weight");
-        const auto layout = mfq::MlxAffineLayout::parse(bytes.data(), bytes.size());
+        const auto layout = tyloi::MlxAffineLayout::parse(bytes.data(), bytes.size());
         require(layout.bits == 5 && layout.group_size == 32 && layout.values_bytes == 480 &&
             layout.scales_bytes == 48 && layout.total_bytes() == bytes.size(), "MLX module override was ignored");
         require(std::equal(bytes.begin() + layout.prefix_bytes, bytes.end(), payload.begin()),
@@ -58,16 +58,16 @@ int main() {
         require(std::equal(scale_bytes.begin(), scale_bytes.end(), payload.begin() + 480), "MLX mapped scale offsets changed");
         require(!source.tensor_file_range_at("probe.weight", layout.prefix_bytes - 1, 2),
             "MLX inline/source boundary was exposed as one raw file range");
-        require(mfq::mlx_hf_tensor_name("language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.12.weight") ==
+        require(tyloi::mlx_hf_tensor_name("language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.12.weight") ==
             "model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_12.weight", "MLX PLE names were not normalized");
-        require(mfq::mlx_hf_tensor_shape("model.block.0.linear_attention.conv.weight", {10240, 4, 1}) ==
+        require(tyloi::mlx_hf_tensor_shape("model.block.0.linear_attention.conv.weight", {10240, 4, 1}) ==
             std::vector<std::int64_t>{10240, 1, 4}, "MLX depthwise convolution singleton axis was not normalized");
         auto invalid = layout; invalid.group_size = 48;
         bool rejected = false;
         try { invalid.validate(); } catch (const std::invalid_argument&) { rejected = true; }
         require(rejected, "MLX invalid group size was accepted");
         rejected = false;
-        try { mfq::MlxAffineLayout::parse(bytes.data(), layout.prefix_bytes - 1); }
+        try { tyloi::MlxAffineLayout::parse(bytes.data(), layout.prefix_bytes - 1); }
         catch (const std::invalid_argument&) { rejected = true; }
         require(rejected, "MLX truncated metadata was accepted");
         std::filesystem::remove_all(root);

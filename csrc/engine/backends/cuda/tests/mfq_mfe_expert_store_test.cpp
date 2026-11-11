@@ -111,7 +111,7 @@ struct TempFile {
 void test_exact_ranges() {
     const auto blob = make_record();
     TempFile file(blob);
-    mfq::cuda::MfeMxfp4ExpertStore store({
+    tyloi::cuda::MfeMxfp4ExpertStore store({
         "model.block.0.mlp.experts.gate.weight",
         "MFE",
         file.path.string(),
@@ -130,10 +130,10 @@ void test_exact_ranges() {
         std::vector<std::uint8_t> values(32);
         std::vector<std::uint8_t> scales(2);
         store.read_part_into(
-            store.part(expert, mfq::cuda::MfeMxfp4ExpertStore::values),
+            store.part(expert, tyloi::cuda::MfeMxfp4ExpertStore::values),
             values);
         store.read_part_into(
-            store.part(expert, mfq::cuda::MfeMxfp4ExpertStore::scales),
+            store.part(expert, tyloi::cuda::MfeMxfp4ExpertStore::scales),
             scales);
         require(values.front() == 17 * expert, "expert value range is wrong");
         require(values[16] == 17 * expert + 3, "expert row range is wrong");
@@ -144,7 +144,7 @@ void test_exact_ranges() {
 
 void test_model_source_ranges() {
     const auto blob = make_record();
-    mfq::cuda::MfeMxfp4ExpertStore store({
+    tyloi::cuda::MfeMxfp4ExpertStore store({
         "model.block.0.mlp.experts.gate.weight",
         "MFE",
         {},
@@ -156,12 +156,12 @@ void test_model_source_ranges() {
         },
     });
     std::vector<std::uint8_t> values(32);
-    const mfq::cuda::MfeMxfp4ReadRequest request{
+    const tyloi::cuda::MfeMxfp4ReadRequest request{
         &store,
-        &store.part(2, mfq::cuda::MfeMxfp4ExpertStore::values),
+        &store.part(2, tyloi::cuda::MfeMxfp4ExpertStore::values),
         values,
     };
-    mfq::cuda::MfeMxfp4ReadPool pool(1);
+    tyloi::cuda::MfeMxfp4ReadPool pool(1);
     const auto stats = pool.read(std::span(&request, 1));
     require(values.front() == 34, "ModelSource range callback read wrong bytes");
     require(stats.file_opens == 0, "ModelSource callback opened a physical file");
@@ -172,9 +172,9 @@ void test_unsupported_cohort() {
     TempFile file(blob);
     bool rejected = false;
     try {
-        (void)mfq::cuda::MfeMxfp4ExpertStore({
+        (void)tyloi::cuda::MfeMxfp4ExpertStore({
             "experts.up.weight", "MFE", file.path.string(), 7, blob.size()});
-    } catch (const mfq::cuda::MfeMxfp4Unsupported&) {
+    } catch (const tyloi::cuda::MfeMxfp4Unsupported&) {
         rejected = true;
     }
     require(rejected, "non-MXFP4 cohort was accepted by the range store");
@@ -183,27 +183,27 @@ void test_unsupported_cohort() {
 void test_parallel_read_batch() {
     const auto blob = make_record();
     TempFile file(blob);
-    mfq::cuda::MfeMxfp4ExpertStore store({
+    tyloi::cuda::MfeMxfp4ExpertStore store({
         "experts.down.weight", "MFE", file.path.string(), 7, blob.size()});
     std::array<std::vector<std::uint8_t>, 3> values;
     std::array<std::vector<std::uint8_t>, 3> scales;
-    std::vector<mfq::cuda::MfeMxfp4ReadRequest> requests;
+    std::vector<tyloi::cuda::MfeMxfp4ReadRequest> requests;
     requests.reserve(6);
     for (int expert = 0; expert < 3; ++expert) {
         values[expert].resize(32);
         scales[expert].resize(2);
         requests.push_back({
             &store,
-            &store.part(expert, mfq::cuda::MfeMxfp4ExpertStore::values),
+            &store.part(expert, tyloi::cuda::MfeMxfp4ExpertStore::values),
             values[expert],
         });
         requests.push_back({
             &store,
-            &store.part(expert, mfq::cuda::MfeMxfp4ExpertStore::scales),
+            &store.part(expert, tyloi::cuda::MfeMxfp4ExpertStore::scales),
             scales[expert],
         });
     }
-    mfq::cuda::MfeMxfp4ReadPool pool(3);
+    tyloi::cuda::MfeMxfp4ReadPool pool(3);
     auto ticket = pool.submit(requests);
     require(ticket.valid(), "asynchronous read ticket is empty");
     const auto stats = ticket.wait();
@@ -221,20 +221,20 @@ void test_parallel_read_batch() {
                 "parallel expert scale range is wrong");
     }
 
-    mfq::cuda::MfeMxfp4ReadPool serial(1);
+    tyloi::cuda::MfeMxfp4ReadPool serial(1);
     const auto first = serial.read(requests);
     const auto second = serial.read(requests);
     require(first.file_opens == 1, "serial worker did not open its source once");
     require(second.file_opens == 0, "serial worker did not reuse its file handle");
 
     std::array<std::uint8_t, 32> destructor_values{};
-    const std::array<mfq::cuda::MfeMxfp4ReadRequest, 1>
+    const std::array<tyloi::cuda::MfeMxfp4ReadRequest, 1>
         destructor_requests{{
             {
                 &store,
                 &store.part(
                     2,
-                    mfq::cuda::MfeMxfp4ExpertStore::values),
+                    tyloi::cuda::MfeMxfp4ExpertStore::values),
                 destructor_values,
             },
         }};
@@ -249,37 +249,37 @@ void test_parallel_read_batch() {
 void test_concurrent_read_batches() {
     const auto blob = make_record();
     TempFile file(blob);
-    mfq::cuda::MfeMxfp4ExpertStore store({
+    tyloi::cuda::MfeMxfp4ExpertStore store({
         "experts.gate.weight", "MFE", file.path.string(), 7, blob.size()});
     std::array<std::uint8_t, 32> first_values{};
     std::array<std::uint8_t, 2> first_scales{};
     std::array<std::uint8_t, 32> second_values{};
     std::array<std::uint8_t, 2> second_scales{};
-    const std::array<mfq::cuda::MfeMxfp4ReadRequest, 2> first_requests{{
+    const std::array<tyloi::cuda::MfeMxfp4ReadRequest, 2> first_requests{{
         {
             &store,
-            &store.part(0, mfq::cuda::MfeMxfp4ExpertStore::values),
+            &store.part(0, tyloi::cuda::MfeMxfp4ExpertStore::values),
             first_values,
         },
         {
             &store,
-            &store.part(0, mfq::cuda::MfeMxfp4ExpertStore::scales),
+            &store.part(0, tyloi::cuda::MfeMxfp4ExpertStore::scales),
             first_scales,
         },
     }};
-    const std::array<mfq::cuda::MfeMxfp4ReadRequest, 2> second_requests{{
+    const std::array<tyloi::cuda::MfeMxfp4ReadRequest, 2> second_requests{{
         {
             &store,
-            &store.part(1, mfq::cuda::MfeMxfp4ExpertStore::values),
+            &store.part(1, tyloi::cuda::MfeMxfp4ExpertStore::values),
             second_values,
         },
         {
             &store,
-            &store.part(1, mfq::cuda::MfeMxfp4ExpertStore::scales),
+            &store.part(1, tyloi::cuda::MfeMxfp4ExpertStore::scales),
             second_scales,
         },
     }};
-    mfq::cuda::MfeMxfp4ReadPool pool(3);
+    tyloi::cuda::MfeMxfp4ReadPool pool(3);
     auto first = std::async(std::launch::async, [&] {
         return pool.read(first_requests);
     });

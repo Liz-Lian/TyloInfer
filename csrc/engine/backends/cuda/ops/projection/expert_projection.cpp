@@ -22,7 +22,7 @@ namespace tyloi::cuda {
 
 DenseTensor Projector::run(const ::tyloi::Tensor& weight, DenseTensor input,
                            const MoeRoutePlan& route) const {
-    const auto* mfe = dynamic_cast<const MfeTensor*>(&weight);
+    const auto* mfe = weight.representation<MfeTensor>();
     if (!mfe) throw std::invalid_argument("unsupported expert tensor layout");
     return run(*mfe, std::move(input), route);
 }

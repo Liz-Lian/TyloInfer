@@ -12,7 +12,7 @@ class MoeCachedSource;
 
 namespace tyloi {
 
-class MfeTensor final : public Tensor {
+class MfeTensor final : public TensorImpl {
 public:
     struct Shard {
         int device = 0;
@@ -46,7 +46,7 @@ public:
     bool is_encoded() const noexcept override { return true; }
     std::vector<const DenseTensor*> buffers() const override;
     void record_stream(std::uintptr_t stream) const override;
-    std::shared_ptr<const Tensor> relocated(Device target) const override;
+    std::shared_ptr<TensorImpl> relocated(Device target) const override;
 };
 
 } // namespace tyloi

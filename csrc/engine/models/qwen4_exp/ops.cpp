@@ -567,7 +567,7 @@ MtpSessionState Predictor::capture_session_state(const tyloi::models::MtpState& 
 void Predictor::restore_session_state(tyloi::models::MtpState& value, const MtpSessionState& state) const {
     auto& request=this->state<PredictorState>(value);
     const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::MtpSnapshot>(&state.payload);
-    const auto* hidden=dynamic_cast<const DenseTensor*>(state.last_target_hidden.get());
+    const auto* hidden=state.last_target_hidden.representation<DenseTensor>();
 #ifdef TYLOINFER_NATIVE_CUDA
     TYLOINFER_RUNTIME_CHECK(supports_session_state() && state.cache_pos>0 &&
         snapshot && snapshot->layers.size()==layers.size() && snapshot->positions.size()==layers.size() &&
@@ -640,7 +640,7 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
 #endif
     const auto primary = model.execution->config.layer_placement.primary_device();
     tyloi::models::require_model(bool(input.ids), "Qwen4 forward requires token ids");
-    auto ids = model.device_ids(dynamic_cast<const DenseTensor&>(*input.ids));
+    auto ids = model.device_ids(input.ids.dense());
     auto embeddings = input.embeddings
         ? tyloi::ops::contiguous(tyloi::ops::copy(input.embeddings,
             ::tyloi::Device(::tyloi::kCUDA, primary))).dense()
@@ -672,7 +672,7 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
                                                      .device(::tyloi::kCUDA)
                                                      .dtype(::tyloi::kInt64));
     auto current = input.positions
-        ? model.device_ids(dynamic_cast<const DenseTensor&>(*input.positions))
+        ? model.device_ids(input.positions.dense())
         : (state.decode_position_delta == 0 ? cache_positions
                                             : cache_positions + state.decode_position_delta);
     if ((current.dim() == 2 || current.dim() == 3) && current.size(0) == 4)
@@ -1626,7 +1626,7 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                         auto x = hidden.narrow(0,row,1);
                         auto& layer = *requests[row]->state_->layers[i];
                         graph.ple[row][i]->decode();
-                        auto rows = dynamic_cast<const DenseTensor&>(graph.ple[row][i]->output()).reshape({1,1,model.hidden_size()});
+                        auto rows = graph.ple[row][i]->output().dense().reshape({1,1,model.hidden_size()});
                         positional.push_back(x + block.ple->forward_chunk(
                             layer.ple,x,graph.ids.narrow(0,row,1),true,{},rows));
                     }
@@ -2377,7 +2377,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
 #endif
 }
 
-std::shared_ptr<::tyloi::Tensor> Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
+::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                                     const tyloi::models::ForwardOptions&) const {
     return std::make_shared<::tyloi::DenseTensor>(qwen4_forward(*this, static_cast<State&>(state_value), std::move(input)));
 }

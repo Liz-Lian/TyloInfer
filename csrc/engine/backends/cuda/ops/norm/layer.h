@@ -41,7 +41,7 @@ using DenseTensor = ::tyloi::DenseTensor;
 
 struct RmsNorm {
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> weight;
+    ::tyloi::Tensor weight;
 #else
     DenseTensor weight;
 #endif
@@ -50,26 +50,26 @@ struct RmsNorm {
     template <class Visitor>
     void visit_tensors(Visitor visit) const {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) ::tyloi::weights::fields::tensors(weight, visit);
+        if (weight && weight.defined()) ::tyloi::weights::fields::tensors(weight, visit);
 #else
         if (weight.defined()) visit(weight);
 #endif
     }
     void to_device(::tyloi::Device device) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) ::tyloi::weights::fields::to_device(weight, device);
+        if (weight && weight.defined()) ::tyloi::weights::fields::to_device(weight, device);
 #else
         if (weight.defined()) weight = weight.to(device);
 #endif
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<::tyloi::Tensor> operator()(const ::tyloi::Tensor& input) const {
-        if (input.dim() == 0 || !weight || !weight->defined() || input.size(-1) != weight->size(0)) {
+    ::tyloi::Tensor operator()(const ::tyloi::Tensor& input) const {
+        if (input.dim() == 0 || !weight || !weight.defined() || input.size(-1) != weight.size(0)) {
             throw std::runtime_error("vision RMSNorm input width mismatch");
         }
-        return tyloi::ops::contiguous(*tyloi::ops::cast(
-            *tyloi::ops::rms_norm(input, *weight, epsilon, 0.0), input.scalar_type()));
+        return tyloi::ops::contiguous(tyloi::ops::cast(
+            tyloi::ops::rms_norm(input, weight, epsilon, 0.0), input.scalar_type()));
 #else
     DenseTensor operator()(const DenseTensor& input) const {
         if (input.dim() == 0 || input.size(-1) != weight.size(0)) {
@@ -89,7 +89,7 @@ struct RmsNorm {
 
 struct LayerNorm {
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> weight, bias;
+    ::tyloi::Tensor weight, bias;
 #else
     DenseTensor weight, bias;
 #endif
@@ -98,8 +98,8 @@ struct LayerNorm {
     template <class Visitor>
     void visit_tensors(Visitor visit) const {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) ::tyloi::weights::fields::tensors(weight, visit);
-        if (bias && bias->defined()) ::tyloi::weights::fields::tensors(bias, visit);
+        if (weight && weight.defined()) ::tyloi::weights::fields::tensors(weight, visit);
+        if (bias && bias.defined()) ::tyloi::weights::fields::tensors(bias, visit);
 #else
         if (weight.defined()) visit(weight);
         if (bias.defined()) visit(bias);
@@ -107,8 +107,8 @@ struct LayerNorm {
     }
     void to_device(::tyloi::Device device) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (weight && weight->defined()) ::tyloi::weights::fields::to_device(weight, device);
-        if (bias && bias->defined()) ::tyloi::weights::fields::to_device(bias, device);
+        if (weight && weight.defined()) ::tyloi::weights::fields::to_device(weight, device);
+        if (bias && bias.defined()) ::tyloi::weights::fields::to_device(bias, device);
 #else
         if (weight.defined()) weight = weight.to(device);
         if (bias.defined()) bias = bias.to(device);
@@ -116,12 +116,12 @@ struct LayerNorm {
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<::tyloi::Tensor> operator()(const ::tyloi::Tensor& input) const {
-        if (input.dim() == 0 || !weight || !weight->defined() || input.size(-1) != weight->size(0))
+    ::tyloi::Tensor operator()(const ::tyloi::Tensor& input) const {
+        if (input.dim() == 0 || !weight || !weight.defined() || input.size(-1) != weight.size(0))
             throw std::runtime_error("grid-ViT LayerNorm input width mismatch");
-        if (!bias || !bias->defined())
+        if (!bias || !bias.defined())
             throw std::runtime_error("grid-ViT LayerNorm bias is undefined");
-        return tyloi::ops::layer_norm(input, *weight, *bias, epsilon);
+        return tyloi::ops::layer_norm(input, weight, bias, epsilon);
 #else
     DenseTensor operator()(const DenseTensor& input) const {
         if (input.dim() == 0 || input.size(-1) != weight.size(0))

@@ -253,7 +253,7 @@ static int run_prefill_sweep(
                     std::cout<<"prefill_transfer_flush_m="<<m<<" chunk="<<chunk<<" repeat="<<repeat
                         <<" flush="<<enabled<<std::endl;
                 }
-                state.reset(1);mfq_cuda_synchronize();
+                state.reset(1);cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 execution.profiler.reset();
                 const auto started=std::chrono::steady_clock::now();
                 mfq_tensor_backend::Tensor logits;
@@ -263,7 +263,7 @@ static int run_prefill_sweep(
                         auto hidden=qwen4_layer_major_prefill_hidden(model,all_ids.narrow(1,0,m),chunk,true);
                         logits=model.apply_final_logit_softcap(model.adapter_last_logits(
                             model.lm_head,model.last_hidden(std::move(hidden))));
-                        mfq_cuda_synchronize();
+                        cudaStreamSynchronize(::tyloi::cuda::current_stream());
                         if(profile) {
                             execution.profiler.report("prefill_layer_major_m="+std::to_string(m)+
                                 " chunk="+std::to_string(chunk)+" repeat="+std::to_string(repeat));
@@ -279,7 +279,7 @@ static int run_prefill_sweep(
                             model,state,executor,execution,part);
                     else (void)mfq::cuda::internal::diagnostic_hidden(
                         model,state,executor,execution,part);
-                    mfq_cuda_synchronize();
+                    cudaStreamSynchronize(::tyloi::cuda::current_stream());
                     if(execution.profiler.enabled) {
                         execution.profiler.report("prefill_m="+std::to_string(m)+" chunk="+std::to_string(chunk)+
                             " repeat="+std::to_string(repeat));
@@ -379,7 +379,7 @@ static int run_prefill_sweep(
                     <<" repeat="<<public_repeat<<" mode="<<engine_mode<<std::endl;
                 // End the previous long-prompt case before the public-path
                 // check; unused asynchronous pool blocks are outside timing.
-                state.reset(1);mfq_cuda_synchronize();
+                state.reset(1);cudaStreamSynchronize(::tyloi::cuda::current_stream());
 #ifdef TYLOINFER_NATIVE_CUDA
                 cudaMemPool_t verification_pool=nullptr;
                 TYLOINFER_CUDA_CHECK(cudaDeviceGetDefaultMemPool(&verification_pool,mfq_current_cuda_device()));
@@ -419,7 +419,7 @@ static int run_prefill_sweep(
                         model_parallel_cuda_graph_enabled(execution),
                     [owner = &execution] { owner->drain(); },
                     metadata, graph, cache, config, request, output, mtp_state));
-                mfq_cuda_synchronize();
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 const auto engine_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-engine_started).count();
                 std::cout<<"prefill_ordinary_generation_timing prompt="<<sizes.front()<<" chunk="<<engine_chunk
                     <<" mode="<<engine_mode<<" generated_tokens="<<result.tokens.size()
@@ -455,7 +455,7 @@ static int run_prefill_sweep(
                         state.reset(1);execution.profiler.reset();execution.profiler.enabled=true;
                         auto hidden=qwen4_layer_major_prefill_hidden(model,all_ids.narrow(1,0,sizes.front()),chunks.front(),true);
                         (void)model.apply_final_logit_softcap(model.adapter_last_logits(model.lm_head,model.last_hidden(std::move(hidden))));
-                        mfq_cuda_synchronize();
+                        cudaStreamSynchronize(::tyloi::cuda::current_stream());
                         execution.profiler.report("prefill_optimized_tail_profile_m="+std::to_string(sizes.front()));
                         execution.profiler.enabled=false;
                         execution.profiler.reset();
@@ -492,7 +492,7 @@ static int run_prefill_sweep(
             state.reset(1);
             (void)mfq::cuda::internal::diagnostic_last_logits(
                 model,state,executor,execution,ids);
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
         }
 
         std::vector<double> elapsed_ms;
@@ -503,7 +503,7 @@ static int run_prefill_sweep(
             auto started = std::chrono::steady_clock::now();
             auto logits = mfq::cuda::internal::diagnostic_last_logits(
                 model,state,executor,execution,ids);
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             auto ended = std::chrono::steady_clock::now();
             elapsed_ms.push_back(std::chrono::duration<double, std::milli>(ended - started).count());
             if (repeat == 0) top = logits.argmax(-1).template item<int64_t>();
@@ -587,7 +587,7 @@ static int run_block_trace_compare(
     else
         reference.reset(ids.size(0));
     auto reference_hidden = reference_forward(&reference_trace);
-    mfq_cuda_synchronize();
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
 
     if (test_trace.size() != reference_trace.size()) {
         throw std::runtime_error("block trace stage count mismatch");
@@ -686,7 +686,7 @@ static int run_block_trace_dump(
     auto final_hidden = mfq::cuda::internal::diagnostic_hidden(
         model, state, executor, execution, ids, mfq_nullopt, mfq_nullopt,
         &trace);
-    mfq_cuda_synchronize();
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
 
     auto ids_cpu = ids.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt32).contiguous();
     {
@@ -806,7 +806,7 @@ static int run_dsv4_hc_model_compare(
                                            std::move(repeat_hidden), false)
         .to(mfq_tensor_backend::kFloat32);
     g_dsv4_fused_hc = true;
-    mfq_cuda_synchronize();
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
 
     if (reference_trace.size() != candidate_trace.size() ||
             reference_trace.size() != repeat_trace.size()) {
@@ -1398,7 +1398,7 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
                 [owner = model.execution] { owner->drain(); },
                 model.metadata, graph, cache, config, request, output,
                 mtp_state, enable_mtp ? &mtp : nullptr));
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             const auto decode_ms=std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-result.first_token).count();
             TYLOINFER_RUNTIME_CHECK(result.tokens.size()==1024 && decode_ms>0.,"MTP variant generation was incomplete");
@@ -1440,7 +1440,7 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
                     generated[row].push_back(next.back());
                 }
                 mfq::cuda::Qwen4BatchDecodeGraph graph(model);
-                mfq_cuda_synchronize();
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 const auto started=std::chrono::steady_clock::now();
                 for(int step=1;step<512;++step) {
                     auto host_ids=tb::tensor(next,options).reshape({2,1});
@@ -1503,11 +1503,11 @@ static int run_qwen4_mtp_variant_profile(mfq::cuda::Qwen4CausalLm& model,const s
         const auto input=tb::tensor(values,options).reshape({1,tokens});
         double elapsed=0;tb::Tensor raw,logits;
         for(int repeat=0;repeat<10;++repeat) {
-            mfq_cuda_synchronize();const auto start=std::chrono::steady_clock::now();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());const auto start=std::chrono::steady_clock::now();
             std::vector<int32_t> greedy;
             auto result=qwen4_decode_graph_hidden(model,input,&raw,1,nullptr,{},&logits,&greedy);
             TYLOINFER_RUNTIME_CHECK(result.has_value(),"MTP variant profile did not use the graph");
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             if(repeat>=3)elapsed+=ms;
             model.rollback_speculative();
@@ -1543,13 +1543,13 @@ static int run_qwen4_mtp_profile(mfq::cuda::Qwen4CausalLm& model,const std::vect
         double elapsed=0;
         for(int repeat=0;repeat<8;++repeat) {
             profiler.enabled=!graph && repeat>=3;profiler.reset();
-            mfq_cuda_synchronize();const auto start=std::chrono::steady_clock::now();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());const auto start=std::chrono::steady_clock::now();
             tb::Tensor raw;
             if(graph) {
                 auto result=qwen4_decode_graph_hidden(model,input,&raw,1);
                 TYLOINFER_RUNTIME_CHECK(result.has_value(),"MTP profile did not use the graph");
             } else model.hidden_forward(input,mfq_nullopt,mfq_nullopt,nullptr,mfq_nullopt,&raw,1);
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             if(repeat>=3)elapsed+=ms;
             if(profiler.enabled)profiler.report("mtp_verify_m"+std::to_string(tokens));

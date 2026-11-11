@@ -140,7 +140,7 @@ void tyloi::MfeTensor::record_stream(std::uintptr_t stream) const {
         if (buffer && buffer->defined()) buffer->record_stream(stream);
 }
 
-std::shared_ptr<const tyloi::Tensor> tyloi::MfeTensor::relocated(Device target) const {
+std::shared_ptr<::tyloi::TensorImpl> tyloi::MfeTensor::relocated(Device target) const {
     if (!defined())
         throw std::invalid_argument("MFE relocation before preparation is unsupported");
     auto moved = std::make_shared<MfeTensor>(*this);

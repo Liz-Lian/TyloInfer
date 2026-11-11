@@ -1,5 +1,6 @@
-#include "mfq_cuda_cache_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
 #include "mfq_cuda_quant_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_embedding_ops.h"
 
 #include <array>
 #include <cstring>
@@ -7,13 +8,14 @@
 #include <numeric>
 #include <stdexcept>
 
-using namespace mfq_tensor_backend;
+using namespace tyloi::cuda;
+using namespace tyloi;
 
 static void check(bool ok, const char* message) {
     if (!ok) throw std::runtime_error(message);
 }
 
-static void exact(const Tensor& actual, const Tensor& expected) {
+static void exact(const DenseTensor& actual, const DenseTensor& expected) {
     auto a = actual.cpu().contiguous(), b = expected.cpu().contiguous();
     check(a.sizes() == b.sizes() && a.scalar_type() == b.scalar_type() &&
               std::memcmp(a.data_ptr(), b.data_ptr(), a.nbytes()) == 0,
@@ -21,7 +23,7 @@ static void exact(const Tensor& actual, const Tensor& expected) {
 }
 
 struct OffsetTensor {
-    Tensor storage, view;
+    DenseTensor storage, view;
     int offset;
 
     OffsetTensor(const std::vector<int64_t>& shape, ScalarType dtype, int start)

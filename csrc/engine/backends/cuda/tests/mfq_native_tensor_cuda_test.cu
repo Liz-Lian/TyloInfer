@@ -2,7 +2,7 @@
 #include "context.h"
 #include "tensor.h"
 #include "matmul_rows.h"
-#include "weight_memory.h"
+#include "engine/weights/memory.h"
 #include <cstring>
 
 #include <cuda_runtime_api.h>
@@ -33,21 +33,22 @@ void require_close(float actual, float expected, float tolerance, const char* me
     }
 }
 
-std::vector<float> host_values(const mfq::cuda::Tensor& value) {
-    auto host = value.contiguous().to(mfq::cuda::kCPU, mfq::cuda::kFloat32);
+std::vector<float> host_values(const tyloi::cuda::DenseTensor& value) {
+    auto host = value.contiguous().to(tyloi::cuda::kCPU, tyloi::cuda::kFloat32);
     return std::vector<float>(
         host.data_ptr<float>(), host.data_ptr<float>() + host.numel());
 }
 
-std::vector<std::int64_t> host_int64_values(const mfq::cuda::Tensor& value) {
-    auto host = value.contiguous().to(mfq::cuda::kCPU, mfq::cuda::kInt64);
+std::vector<std::int64_t> host_int64_values(const tyloi::cuda::DenseTensor& value) {
+    auto host = value.contiguous().to(tyloi::cuda::kCPU, tyloi::cuda::kInt64);
     return std::vector<std::int64_t>(
         host.data_ptr<std::int64_t>(),
         host.data_ptr<std::int64_t>() + host.numel());
 }
 
 void check_where_broadcast() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     for(auto dtype:{kFloat16,kFloat32}) {
         auto options=TensorOptions{}.device(kCUDA).dtype(dtype);
         auto mask=tensor<uint8_t>({1,0,1}).reshape({3,1}).to(kCUDA);
@@ -75,11 +76,12 @@ void check_where_broadcast() {
 }
 
 void set_test_environment(const char* name, const char* value) {
-    mfq::cuda::env_set(name, value);
+    tyloi::cuda::env_set(name, value);
 }
 
 void check_strided_reshape() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     int checks=0;
     set_test_environment("TYLOINFER_TENSOR_VIEW_RESHAPE","1");
     for(const auto device:{Device{kCPU,0},Device{kCUDA,0}}) {
@@ -120,9 +122,10 @@ void check_strided_reshape() {
 }
 
 void check_weight_memory() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     WeightMemoryLedger ledger,nested;
-    Tensor weight,view;
+    DenseTensor weight,view;
     auto table=std::make_shared<int>(1);
     {
         const WeightMemoryLoadScope loading(ledger);
@@ -161,7 +164,8 @@ int main(int argc,char** argv) try {
         return 77;
     }
 
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     const Device cuda_device{DeviceType::cuda, 0};
     if(argc==2 && std::string(argv[1])=="--where-broadcast-check") {check_where_broadcast();return 0;}
     check_where_broadcast();
@@ -193,7 +197,7 @@ int main(int argc,char** argv) try {
         require(cudaPeekAtLastError()==cudaSuccess,"mapped pinned allocation left a stale CUDA error");
         auto input=ones({16},TensorOptions{}.device(cuda_device).dtype(kFloat32));
         require_close(host_values(input.square())[0],1.0f,0.0f,"kernel after pinned allocation failure");
-        Graph graph;Tensor output;
+        Graph graph;DenseTensor output;
         graph.prepare_memory();output=input+2.0;
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(current_stream(0).stream()));output={};
         graph.capture_begin();output=input+2.0;graph.capture_end();graph.replay();graph.replay();
@@ -409,7 +413,7 @@ int main(int argc,char** argv) try {
                 std::vector<float>({17, 23, 29, 39, 53, 67}), "mixed batch broadcasting");
     if (default_context(0)->supports_async_allocations()) {
         Graph matrix_graph;
-        Tensor captured;
+        DenseTensor captured;
         matrix_graph.prepare_memory();
         captured = matmul(attention_left, attention_right);
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(current_stream(0).stream()));
@@ -449,7 +453,7 @@ int main(int argc,char** argv) try {
             .reshape({1, 2, 263, 16}).to(dtype);
         for (int mask_mode = 0; mask_mode < 4; ++mask_mode) {
             const bool causal = mask_mode == 1;
-            std::optional<Tensor> mask;
+            std::optional<DenseTensor> mask;
             if (mask_mode == 2) mask = arange(259 * 263, input.options()).remainder(7)
                 .reshape({259, 263}).ne(0);
             if (mask_mode == 3) mask = (arange(263, input.options()).remainder(7) / -4.0)
@@ -522,7 +526,7 @@ int main(int argc,char** argv) try {
     constexpr std::array<std::int64_t, 1> padding1{0};
     constexpr std::array<std::int64_t, 1> dilation1{1};
     const auto convolved = host_values(conv1d(
-        signal, filter, Tensor{}, stride1, padding1, dilation1, 1));
+        signal, filter, DenseTensor{}, stride1, padding1, dilation1, 1));
     require(convolved == std::vector<float>({3, 5, 7}), "conv1d values");
 
     auto image = tensor<float>({1, 2, 3, 4, 5, 6, 7, 8, 9})
@@ -533,7 +537,7 @@ int main(int argc,char** argv) try {
     constexpr std::array<std::int64_t, 2> padding2{0, 0};
     constexpr std::array<std::int64_t, 2> dilation2{1, 1};
     const auto image_convolved = host_values(conv2d(
-        image, kernel, Tensor{}, stride2, padding2, dilation2, 1));
+        image, kernel, DenseTensor{}, stride2, padding2, dilation2, 1));
     require(
         image_convolved == std::vector<float>({12, 16, 24, 28}),
         "conv2d values");
@@ -609,7 +613,7 @@ int main(int argc,char** argv) try {
     auto cross_stream = input.square();
     Event producer_ready;
     producer_ready.record(current_stream(0).stream());
-    Tensor consumed;
+    DenseTensor consumed;
     {
         StreamGuard stream_guard(usage_stream);
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamWaitEvent(usage_stream.stream(), producer_ready.get(), 0));
@@ -648,11 +652,11 @@ int main(int argc,char** argv) try {
                 "stream remains usable after rejected graph capture");
         }
         Graph graph;
-        Tensor graph_output;
+        DenseTensor graph_output;
         graph.prepare_memory();
         graph_output = input.square();
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
-        graph_output = Tensor{};
+        graph_output = DenseTensor{};
         graph.capture_begin();
         graph_output = input.square();
         graph.capture_end();

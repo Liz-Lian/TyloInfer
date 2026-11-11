@@ -73,7 +73,7 @@ static std::vector<std::uint8_t> read_weight(
     return result;
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::tensor(const std::string& name) const {
+::tyloi::Tensor tyloi::weights::Loader::tensor(const std::string& name) const {
     const auto& mfq = source;
     const tyloi::cuda::AllocationScope weight_memory;
     const bool cpu_layer = placement.cpu;
@@ -208,7 +208,7 @@ plan_moe_expert_parallel_slices(
     return plan_parallel_slices(extent, 1, parallel, name);
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::weight(const std::string & name,
+::tyloi::Tensor tyloi::weights::Loader::weight(const std::string & name,
         std::optional<TensorParallelAxis> axis_override,
         const std::vector<tyloi::TensorParallelSlice> *
             slices_override) const {
@@ -217,7 +217,7 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::weight(const std:
     const bool cpu_layer = placement.cpu;
     const bool logical_tq = !mfq.find_tensor(name) && tyloi::is_tq_table(mfq, name);
     const std::string dtype = logical_tq ? "TQ" : tyloi::require_tensor(mfq, name).dtype;
-    std::shared_ptr<const ::tyloi::Tensor> weight;
+    ::tyloi::Tensor weight;
     std::vector<tyloi::ShardedTensor::Shard> shards;
     int64_t logical_out = 0, logical_neuron_len = 0;
     const TensorParallelAxis axis =
@@ -609,7 +609,7 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::weight(const std:
             name + " dtype=" + dtype);
     }
     if (shards.empty()) return weight;
-    const auto shard_dtype = shards.front().weight->scalar_type();
+    const auto shard_dtype = shards.front().weight.scalar_type();
     return std::make_shared<tyloi::ShardedTensor>(
         logical_out, logical_neuron_len, shard_dtype, axis, std::move(shards));
 }
@@ -617,7 +617,7 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::weight(const std:
 static std::vector<tyloi::TensorParallelSlice>
 tensor_parallel_output_slices_for_input(
         const ::tyloi::Tensor & input_parallel) {
-    const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&input_parallel);
+    const auto* sharded = input_parallel.representation<tyloi::ShardedTensor>();
     if (!sharded || sharded->axis != TensorParallelAxis::Input) {
         return {};
     }
@@ -822,9 +822,9 @@ void Cache::finalize(std::size_t reserve, std::size_t kv_charge) {
         finalize_moe_expert_cache(detail::cache(*this).moe, reserve, kv_charge);
 }
 
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vector<std::string>& names,
+std::vector<::tyloi::Tensor> Loader::group(const std::vector<std::string>& names,
     size_t prefix, const std::vector<tyloi::TensorParallelSlice>* slices, bool preserve_boundaries) const {
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers;
+    std::vector<::tyloi::Tensor> layers;
     layers.reserve(names.size());
     for (const auto& name : names)
         layers.push_back(weight(name, slices ? std::optional<TensorParallelAxis>(TensorParallelAxis::Output)
@@ -833,14 +833,14 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vec
     if (layers.empty()) throw std::runtime_error("empty quantized linear group");
     std::vector<::tyloi::encoding::TqTensor> tq_weights;
     for (const auto& layer : layers) {
-        const auto* tq = dynamic_cast<const ::tyloi::encoding::TqTensor*>(layer.get());
+        const auto* tq = layer.representation<::tyloi::encoding::TqTensor>();
         if (!tq || !tq->is_cuda()) { tq_weights.clear(); break; }
         tq_weights.push_back(*tq);
     }
     if (!tq_weights.empty()) tyloi::cuda::tq::validate_group(tq_weights);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const bool all_nint = std::all_of(layers.begin(), layers.end(), [](const auto& layer) {
-        const auto* nint = dynamic_cast<const tyloi::NintTensor*>(layer.get());
+        const auto* nint = layer.representation<tyloi::NintTensor>();
         return nint && nint->q_packed.is_cuda();
     });
     if (all_nint && options.grouped && !placement.cpu && !preserve_boundaries) {
@@ -850,13 +850,13 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::group(const std::vec
 #endif
     return layers;
 }
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::gate_up(const std::vector<std::string>& names,
+std::vector<::tyloi::Tensor> Loader::gate_up(const std::vector<std::string>& names,
     const ::tyloi::Tensor& down, size_t prefix, bool preserve_boundaries) const {
     auto slices = tensor_parallel_output_slices_for_input(down);
     return group(names, std::min(prefix, names.size()), slices.empty() ? nullptr : &slices,
                  preserve_boundaries);
 }
-std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, bool cacheable,
+::tyloi::Tensor Loader::experts(const std::string& name, bool cacheable,
     int layer, const std::string& role) const {
     if (tyloi::is_tq_table(source, name)) {
         MfqCudaGuard guard(placement.device);
@@ -868,13 +868,13 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::experts(const std::string& name, 
     const auto& dtype = tyloi::require_tensor(source, name).dtype;
     if (dtype == "F32" || dtype == "F16" || dtype == "BF16") {
         auto bank = native(name);
-        if (bank->dim() != 3)
+        if (bank.dim() != 3)
             throw std::runtime_error("dense routed expert tensor must be [experts,out,in]: " + name);
         return bank;
     }
     return build_experts(name, cacheable, layer, role);
 }
-std::shared_ptr<const ::tyloi::Tensor> Loader::dense(const std::string& name) const {
+::tyloi::Tensor Loader::dense(const std::string& name) const {
     const auto& file = source;
     const tyloi::cuda::AllocationScope weight_memory;
     const auto& dtype=tyloi::require_tensor(file, name).dtype;
@@ -886,12 +886,12 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::dense(const std::string& name) co
     auto value=tensor(name);
     if (!dense_storage) return value;
     std::optional<MfqCudaGuard> guard;
-    if (value->device().is_cuda()) guard.emplace(placement.device);
-    return std::make_shared<DenseTensor>(static_cast<const DenseTensor&>(*value).to(
+    if (value.device().is_cuda()) guard.emplace(placement.device);
+    return std::make_shared<DenseTensor>(value.dense().to(
         dtype=="F16" ? ::tyloi::kFloat16 : dtype=="BF16" ? ::tyloi::kBFloat16 : ::tyloi::kFloat32));
 }
 
-std::shared_ptr<const ::tyloi::Tensor> Loader::routed(const std::string& name, int layer,
+::tyloi::Tensor Loader::routed(const std::string& name, int layer,
     int64_t experts, int64_t output, int64_t input, const std::string& role) const {
     const auto& file = source;
     const auto& dtype=tyloi::require_tensor(file, name).dtype;
@@ -906,7 +906,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::routed(const std::string& name, i
         TYLOINFER_RUNTIME_CHECK(!placement.experts.enabled(),
             "expert parallelism requires packed routed tensors: ",name);
         auto w=dense(name);
-        TYLOINFER_RUNTIME_CHECK(w->dim()==3 && w->size(0)==experts && w->size(1)==output && w->size(2)==input,
+        TYLOINFER_RUNTIME_CHECK(w.dim()==3 && w.size(0)==experts && w.size(1)==output && w.size(2)==input,
             "dense expert tensor shape mismatch: ",name);
         return w;
     }
@@ -925,7 +925,7 @@ std::shared_ptr<const ::tyloi::Tensor> Loader::routed(const std::string& name, i
 #endif
 }
 
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::routed_gate_up(const std::string& mlp_prefix,
+std::vector<::tyloi::Tensor> Loader::routed_gate_up(const std::string& mlp_prefix,
     int layer, int64_t experts, int64_t width, int64_t input, const std::string& role) const {
     const auto& file = source;
     const auto base=mlp_prefix+".experts";
@@ -964,17 +964,17 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> Loader::routed_gate_up(const
                          ::tyloi::TensorOptions().dtype(dtype)).clone();
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::host(const std::string &name) const {
+::tyloi::Tensor tyloi::weights::Loader::host(const std::string &name) const {
     return std::make_shared<DenseTensor>(host_value(name));
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::native(const std::string &name) const {
+::tyloi::Tensor tyloi::weights::Loader::native(const std::string &name) const {
     const tyloi::cuda::AllocationScope weight_memory;
     MfqCudaGuard guard(placement.device);
     return std::make_shared<DenseTensor>(host_value(name).to(::tyloi::Device(::tyloi::kCUDA, placement.device)).contiguous());
 }
 
-std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::embedding(const std::string& name, bool independent_output) const {
+::tyloi::Tensor tyloi::weights::Loader::embedding(const std::string& name, bool independent_output) const {
     if (!source.find_tensor(name) && tyloi::is_tq_table(source, name)) return weight(name);
     const auto* mapped=tyloi::cuda::env_lookup("TYLOINFER_EMBEDDING_MAPPED");
     const bool mapped_control=mapped && mapped[0]=='2';
@@ -991,7 +991,7 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::embedding(const s
             if(nint) {
                 auto cpu = for_layer(placement.device, true).weight(name);
                 auto result=map_nint_embedding(cpu,placement.device,mapped_control);
-                std::cerr<<"mapped_token_embedding rows="<<result->size(0)<<" width="<<result->size(1)
+                std::cerr<<"mapped_token_embedding rows="<<result.size(0)<<" width="<<result.size(1)
                          <<" dtype="<<dtype<<" read="<<(mapped_control?"device_control":"mapped_host")<<std::endl;
                 return result;
             }
@@ -1016,10 +1016,10 @@ std::shared_ptr<const ::tyloi::Tensor> tyloi::weights::Loader::embedding(const s
 namespace tyloi::weights {
 
 BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count) {
-    const auto& weight = *value.weight;
+    const auto& weight = value.weight;
     const auto& bias = value.bias;
 
-    const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&weight);
+    const auto* dense = weight.representation<::tyloi::DenseTensor>();
     if (dense == nullptr) {
         throw std::runtime_error("fused vision projection must stay dense to be split");
     }
@@ -1030,7 +1030,7 @@ BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count) {
     result.weight = std::make_shared<::tyloi::DenseTensor>(
         dense->narrow(0, begin, count).contiguous());
     if (bias) {
-        const auto& dense_bias = dynamic_cast<const ::tyloi::DenseTensor&>(*bias);
+        const auto& dense_bias = bias.dense();
         if (dense_bias.defined()) result.bias = std::make_shared<::tyloi::DenseTensor>(
             dense_bias.narrow(0, begin, count).contiguous());
     }
@@ -1054,7 +1054,7 @@ BiasWeight Loader::affine(const std::string& weight_name,
     BiasWeight result{weight(weight_name), {}};
     if (has(bias_name)) {
         auto bias = tensor(bias_name);
-        if (bias->dim() != 1 || bias->size(0) != result.weight->size(0)) {
+        if (bias.dim() != 1 || bias.size(0) != result.weight.size(0)) {
             throw std::runtime_error("vision affine bias shape mismatch: " + bias_name);
         }
         result.bias = std::move(bias);
@@ -1062,11 +1062,11 @@ BiasWeight Loader::affine(const std::string& weight_name,
     return result;
 }
 
-std::shared_ptr<const ::tyloi::Tensor> Loader::norm(const std::string& name, std::int64_t width) const {
+::tyloi::Tensor Loader::norm(const std::string& name, std::int64_t width) const {
     auto value = tensor(name);
     std::optional<MfqCudaGuard> guard;
-    if (value->device().is_cuda()) guard.emplace(placement.device);
-    auto weight = static_cast<const DenseTensor&>(*value).to(::tyloi::kFloat32).contiguous();
+    if (value.device().is_cuda()) guard.emplace(placement.device);
+    auto weight = value.dense().to(::tyloi::kFloat32).contiguous();
     if (weight.dim() != 1 || weight.size(0) != width) {
         throw std::runtime_error("vision RMSNorm width mismatch: " + name);
     }

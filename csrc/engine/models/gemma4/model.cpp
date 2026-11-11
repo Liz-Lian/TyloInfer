@@ -11,8 +11,8 @@ namespace tyloi::cuda::gemma4 {
 tyloi::models::Info Model::info() const {
     bool decode_graph = true;
     for (const auto& layer : layers) {
-        if (layer.gemma4_moe && (layer.gemma_moe_gate_up->device().is_cpu() ||
-                                 layer.gemma_moe_down->device().is_cpu())) {
+        if (layer.gemma4_moe && (layer.gemma_moe_gate_up.device().is_cpu() ||
+                                 layer.gemma_moe_down.device().is_cpu())) {
             decode_graph = false;
             break;
         }

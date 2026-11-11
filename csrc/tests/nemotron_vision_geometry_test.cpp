@@ -14,8 +14,8 @@
 
 namespace {
 
-using mfq::models::nemotron_h::RadioPositionInterpolation;
-using mfq::models::nemotron_h::make_radio_position_interpolation;
+using tyloi::models::nemotron_h::RadioPositionInterpolation;
+using tyloi::models::nemotron_h::make_radio_position_interpolation;
 
 constexpr std::int32_t kSide = 8;
 

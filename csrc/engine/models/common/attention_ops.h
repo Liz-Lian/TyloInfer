@@ -12,7 +12,7 @@
 
 namespace tyloi::cuda::attention_ops {
 using DenseTensor = ::tyloi::DenseTensor;
-using Linear = std::shared_ptr<const ::tyloi::Tensor>;
+using Linear = ::tyloi::Tensor;
 using Transform = std::function<DenseTensor(const Projector&, const DenseTensor&)>;
 using Embedding = std::function<DenseTensor(const DenseTensor&)>;
 
@@ -24,7 +24,7 @@ inline DenseTensor rms_norm(const DenseTensor& value,
 #endif
     auto f = value.to(::tyloi::kFloat32);
 #ifdef TYLOINFER_NATIVE_CUDA
-    const auto& weight = dynamic_cast<const DenseTensor&>(weight_tensor);
+    const auto& weight = weight_tensor.dense();
 #endif
     return (f * ::tyloi::cuda::rsqrt((f * f).mean(-1, true) + eps) * weight.to(::tyloi::kFloat32))
         .to(value.scalar_type());

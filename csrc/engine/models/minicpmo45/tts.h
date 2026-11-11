@@ -85,7 +85,7 @@ struct Tts {
     struct Layer {
         FullAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA
-        std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+        ::tyloi::Tensor ffn_norm;
 #else
         ::tyloi::DenseTensor ffn_norm;
 #endif
@@ -111,15 +111,15 @@ struct Tts {
 #else
     RopeCache rope;
 #endif
-    std::shared_ptr<const ::tyloi::Tensor> text_embedding;
-    std::shared_ptr<const ::tyloi::Tensor> code_embedding;
+    ::tyloi::Tensor text_embedding;
+    ::tyloi::Tensor code_embedding;
     tyloi::weights::BiasWeight semantic_projector1;
     tyloi::weights::BiasWeight semantic_projector2;
     tyloi::weights::BiasWeight speaker_projector1;
     tyloi::weights::BiasWeight speaker_projector2;
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> output_norm, code_head;
+    ::tyloi::Tensor output_norm, code_head;
 #else
     ::tyloi::DenseTensor output_norm;
     ::tyloi::DenseTensor code_head;
@@ -152,9 +152,9 @@ struct Tts {
         if (head_g_tensor->dim() != 2 || head_g_tensor->size(0) != 6562 || head_g_tensor->size(1) != 1 ||
                 head_v_tensor->dim() != 2 || head_v_tensor->size(0) != 6562 || head_v_tensor->size(1) != 768 ||
 #else
-        result.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.output_norm.weight"));
-        auto head_g = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.code_output.0.weight_norm.magnitude"));
-        auto head_v = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.native("tts.code_output.0.weight_norm.direction"));
+        result.output_norm = weights.native("tts.output_norm.weight").dense();
+        auto head_g = weights.native("tts.code_output.0.weight_norm.magnitude").dense();
+        auto head_v = weights.native("tts.code_output.0.weight_norm.direction").dense();
         if (head_g.sizes().vec() != std::vector<int64_t>({6562, 1}) ||
                 head_v.sizes().vec() != std::vector<int64_t>({6562, 768}) ||
 #endif
@@ -166,8 +166,8 @@ struct Tts {
                 "MiniCPM-o TTS tensor shapes disagree with version 4.5");
         }
 #ifdef TYLOINFER_NATIVE_CUDA
-        const auto& head_g = dynamic_cast<const ::tyloi::DenseTensor&>(*head_g_tensor);
-        const auto& head_v = dynamic_cast<const ::tyloi::DenseTensor&>(*head_v_tensor);
+        const auto& head_g = head_g_tensor.dense();
+        const auto& head_v = head_v_tensor.dense();
 #endif
         auto head_v_f32 = head_v.to(::tyloi::kFloat32);
         auto row_norm = ::tyloi::cuda::sqrt(
@@ -362,7 +362,7 @@ struct Tts {
 
     ::tyloi::DenseTensor logits(::tyloi::DenseTensor hidden) const {
 #ifdef TYLOINFER_NATIVE_CUDA
-        const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(*code_head);
+        const auto& weight = code_head.dense();
 #else
         const auto& weight = code_head;
 #endif

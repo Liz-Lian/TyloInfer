@@ -63,7 +63,7 @@ struct TokenizerFixture {
 } // namespace
 
 int main() try {
-    using namespace mfq::engine;
+    using namespace tyloi::engine;
     TokenizerFixture fixture;
     TextProcessor processor(fixture.path.string(), fixture.vocabulary, "deepseek_v41");
     for (const auto& prompt : std::vector<std::string>{"abc", "<s>abc</s>", std::string(4096, 'a')})

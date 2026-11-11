@@ -6,18 +6,18 @@
 #include <cstring>
 #include <iostream>
 #include <algorithm>
-namespace tb=mfq_tensor_backend;
-using tb::Tensor;
-Tensor data(std::vector<int64_t> shape,int salt,float scale,tb::ScalarType dtype=tb::kFloat32) {
+namespace tb=tyloi::cuda;
+using tyloi::DenseTensor;
+Tensor data(std::vector<int64_t> shape,int salt,float scale,tyloi::ScalarType dtype=tyloi::kFloat32) {
  int64_t n=1;for(auto d:shape)n*=d;std::vector<float> values(n);
  for(int64_t i=0;i<n;++i)values[i]=std::sin(float(i)*.173f+salt)*scale;
- return tb::tensor(values).reshape(shape).to(tb::kCUDA).to(dtype);
+ return tb::tensor(values).reshape(shape).to(tyloi::kCUDA).to(dtype);
 }
 void exact(const Tensor& a,const Tensor& b,const char* label) {
  auto x=a.contiguous().cpu(),y=b.contiguous().cpu();
  if(x.scalar_type()!=y.scalar_type() || x.sizes()!=y.sizes())throw std::runtime_error(std::string(label)+" shape/dtype differs");
  if(std::memcmp(x.data_ptr(),y.data_ptr(),x.nbytes())) {
-  auto xf=x.to(tb::kFloat32),yf=y.to(tb::kFloat32);int64_t first=0;double peak=0;
+  auto xf=x.to(tyloi::kFloat32),yf=y.to(tyloi::kFloat32);int64_t first=0;double peak=0;
   for(int64_t i=0;i<xf.numel();++i)if(xf.data_ptr<float>()[i]!=yf.data_ptr<float>()[i]) {
    if(peak==0)first=i;peak=std::max(peak,std::abs(double(xf.data_ptr<float>()[i])-yf.data_ptr<float>()[i]));
   }
@@ -26,18 +26,18 @@ void exact(const Tensor& a,const Tensor& b,const char* label) {
 }
 int main(int argc,char** argv)try {
  const bool benchmark=argc==2 && std::string(argv[1])=="--bench";
- const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+ const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
  const auto stream=mfq_current_cuda_stream();
  int cases=0,replays=0;
  for(int tokens:{2,3,4,6,8})for(int combination=0;combination<16;++combination) {
   const int nk=combination&1?16:2,nv=nk*(combination&2?3:1),channels=(2*nk+nv)*128;
-  const auto gate_type=combination&4?tb::kFloat32:tb::kFloat16;
+  const auto gate_type=combination&4?tyloi::kFloat32:tyloi::kFloat16;
   const bool output_half=!(combination&8),transposed=!(combination&8),silu=combination&2;
   const int confirmed=combination&8?2:1;
   const double eps=combination&8?.013456789123:1e-6;
-  auto qkv=data({1,tokens,channels+17},151,.4f,tb::kFloat16).narrow(2,0,channels);
+  auto qkv=data({1,tokens,channels+17},151,.4f,tyloi::kFloat16).narrow(2,0,channels);
   auto gate=data({1,tokens,nv*128+7},152,88,gate_type).narrow(2,0,nv*128);
-  const float gate_amplitude=gate_type==tb::kFloat32?88.f:4.f;
+  const float gate_amplitude=gate_type==tyloi::kFloat32?88.f:4.f;
   auto alpha=data({1,tokens,nv*2},153,gate_amplitude,gate_type).slice(2,0,nv*2,2);
   auto beta=data({1,tokens,nv*2},154,gate_amplitude,gate_type).slice(2,0,nv*2,2);
   auto initial_conv=data({1,3,channels},155,.3f),initial_state=data({1,nv,128,128},156,.17f);
@@ -72,12 +72,12 @@ int main(int argc,char** argv)try {
   };
   auto expected=old(),actual=candidate();check(actual,expected);++cases;
   if(combination==3) {
-   mfq::cuda::Graph oldgraph,newgraph;Tensor oldout,newout;
-   oldgraph.prepare_memory();oldout=old();mfq_cuda_synchronize();oldout={};reset(0);
+   tyloi::cuda::Graph oldgraph,newgraph;Tensor oldout,newout;
+   oldgraph.prepare_memory();oldout=old();cudaStreamSynchronize(::tyloi::cuda::current_stream());oldout={};reset(0);
    oldgraph.capture_begin();oldout=old();oldgraph.capture_end();
    {
-    mfq::cuda::GraphWarmupScope warm(context,stream);
-    newout=candidate();mfq_cuda_synchronize();newout={};reset(1);
+    tyloi::cuda::GraphWarmupScope warm(context,stream);
+    newout=candidate();cudaStreamSynchronize(::tyloi::cuda::current_stream());newout={};reset(1);
    }
    newgraph.capture_begin_shared();newout=candidate();newgraph.capture_end();
    auto base=qkv.clone();reset(0);reset(1);
@@ -87,7 +87,7 @@ int main(int argc,char** argv)try {
    if(benchmark) {
    std::vector<float> times[2];
    for(int sample=0;sample<5;++sample)for(int order=0;order<2;++order) {
-    const int kind=(sample+order)%2;reset(kind);mfq_cuda_synchronize();
+    const int kind=(sample+order)%2;reset(kind);cudaStreamSynchronize(::tyloi::cuda::current_stream());
     cudaEvent_t start,end;TYLOINFER_CUDA_CHECK(cudaEventCreate(&start));TYLOINFER_CUDA_CHECK(cudaEventCreate(&end));
     TYLOINFER_CUDA_CHECK(cudaEventRecord(start,stream));
     for(int i=0;i<100;++i)(kind?newgraph:oldgraph).replay();
@@ -100,6 +100,6 @@ int main(int argc,char** argv)try {
    }
   }
  }
- mfq_cuda_synchronize();
+ cudaStreamSynchronize(::tyloi::cuda::current_stream());
  std::cout<<"gdn_register_window exact_cases="<<cases<<" changing_graph="<<replays<<" PASS\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

@@ -68,7 +68,7 @@ struct LayerLoader : ::tyloi::weights::Loader {
     static Parameter concat(const std::vector<Parameter> &parts) {
         std::vector<DenseTensor> dense;
         dense.reserve(parts.size());
-        for (const auto& part : parts) dense.push_back(dynamic_cast<const DenseTensor&>(*part));
+        for (const auto& part : parts) dense.push_back(part.dense());
         return std::make_shared<DenseTensor>(::tyloi::cuda::cat(dense, 0));
     }
 #else
@@ -159,7 +159,7 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
 #ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
 #else
-        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+        model.output_norm = weights.tensor("model.output_norm.weight").dense();
 #endif
         model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
                                  : model.embed;
@@ -174,7 +174,7 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
 #ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
 #else
-        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+        model.output_norm = weights.tensor("model.output_norm.weight").dense();
 #endif
     }
 }
@@ -245,7 +245,7 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, i
 DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t, int64_t) {
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-    return rms_norm(hidden.mean(2), *model.output_norm, model.metadata.rms_norm_eps);
+    return rms_norm(hidden.mean(2), model.output_norm, model.metadata.rms_norm_eps);
 #else
     return rms_norm(hidden.mean(2), model.output_norm, model.metadata.rms_norm_eps);
 #endif
@@ -290,7 +290,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
         "inputs_embeds shape must match [batch,tokens,hidden_size]");
     tyloi::models::require_model(T > 0 && state.cache_pos + T <= model.metadata.max_position_embeddings &&
-        !input.positions.has_value() && !input.cache_positions.has_value(),
+        !input.positions.defined() && !input.cache_positions.defined(),
         "GLM Flash-Next currently requires contiguous causal cache positions");
     tyloi::models::require_model(state.speculative_start < 0,
         "commit or roll back the pending speculative pass before forwarding");
@@ -372,7 +372,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
 #ifdef TYLOINFER_NATIVE_CUDA
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
                           hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
-                          hidden.size(1) == ids.size(1) && hidden.size(2) == hidden_norm->numel(),
+                          hidden.size(1) == ids.size(1) && hidden.size(2) == hidden_norm.numel(),
                       "GLM5-Next MTP input geometry mismatch");
 #else
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
@@ -422,7 +422,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
             auto mask = (pos == 0).reshape({pos.dim() == 1 ? 1 : b, t, 1});
             auto masked = ::tyloi::cuda::where(mask, ::tyloi::cuda::zeros_like(embeds), embeds);
 #ifdef TYLOINFER_NATIVE_CUDA
-            e = rms_norm(masked, *embedding_norm, config.eps);
+            e = rms_norm(masked, embedding_norm, config.eps);
 #else
             e = rms_norm(masked, embedding_norm, config.eps);
 #endif
@@ -431,7 +431,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
         embeds = {};
         DenseTensor streams;
 #ifdef TYLOINFER_NATIVE_CUDA
-        streams = rms_norm(hidden, *hidden_norm, config.eps);
+        streams = rms_norm(hidden, hidden_norm, config.eps);
 #else
         streams = rms_norm(hidden, hidden_norm, config.eps);
 #endif
@@ -451,7 +451,7 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
     x = {};
     DenseTensor result;
 #ifdef TYLOINFER_NATIVE_CUDA
-    result = rms_norm(multi, *output_norm, config.eps).to(dtype);
+    result = rms_norm(multi, output_norm, config.eps).to(dtype);
 #else
     result = rms_norm(multi, output_norm, config.eps).to(dtype);
 #endif

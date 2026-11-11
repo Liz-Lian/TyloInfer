@@ -50,7 +50,7 @@ public:
     std::int64_t position() const noexcept override { return cache_pos; }
     void advance(std::int64_t tokens) noexcept override { cache_pos += tokens; }
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
-    std::vector<std::shared_ptr<const tyloi::Tensor>> storage() const override;
+    std::vector<::tyloi::Tensor> storage() const override;
     std::vector<tyloi::Tensor*> graph_state() override;
 
     bool supports_text_session_state() const override;

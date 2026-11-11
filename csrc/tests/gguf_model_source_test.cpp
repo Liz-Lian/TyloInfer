@@ -1,4 +1,6 @@
-#include "source/gguf_model_source.h"
+#include "engine/models/common/gguf_source.h"
+#include "engine/models/common/model_config.h"
+#include "ggml.h"
 #include "gguf.h"
 #include "nlohmann/json.hpp"
 
@@ -9,7 +11,18 @@
 #include <fstream>
 #include <iostream>
 
+
 namespace {
+std::vector<std::byte> read_tensor(
+        const tyloi::ModelSource& source, std::string_view name) {
+    const auto* meta = source.find_tensor(name);
+    if (!meta) throw std::runtime_error("missing tensor " + std::string(name));
+    std::vector<std::byte> bytes(meta->nbytes);
+    source.read_range_into(name, 0, bytes.data(), bytes.size());
+    return bytes;
+}
+} // namespace
+
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 
 void qwen4_source(const std::filesystem::path& directory) {
@@ -76,20 +89,20 @@ void qwen4_source(const std::filesystem::path& directory) {
     const auto table_path = directory / "ple.gguf";
     require(gguf_write_to_file(companion, table_path.string().c_str(), false), "Qwen4 PLE write failed");
     gguf_free(main); gguf_free(companion); ggml_free(tensors);
-    const mfq::GgufModelSource source(main_path, {table_path});
+    const tyloi::models::GgufSource source(main_path, {table_path});
     const auto* packed_down = source.find_tensor("model.block.0.mlp.experts.down.weight");
     require(packed_down && packed_down->dtype == "GGUF_Q2_0" && packed_down->nbytes == 108 &&
         *packed_down->shape == std::vector<int64_t>({2, 3, 64}), "GGUF Q2_0 expert metadata wrong");
-    const auto packed_bytes = source.read(packed_down->name);
+    const auto packed_bytes = read_tensor(source, packed_down->name);
     std::vector<float> decoded(384);
     ggml_get_type_traits(GGML_TYPE_Q2_0)->to_float(packed_bytes.data(), decoded.data(), decoded.size());
     for (std::size_t i = 0; i < decoded.size(); ++i)
         require(decoded[i] == .5f * (int(i % 4) - 1), "GGUF Q2_0 code order changed");
-    const auto cfg = nlohmann::json::parse(source.model_config_json());
+    const auto cfg = nlohmann::json::parse(tyloi::models::config_json(source));
     require(cfg["model_type"] == "qwen4_exp_text" && cfg["hc_count"] == 2 &&
         cfg["indexer_compress_ratio"] == 4 && cfg["ple_layer_ids"] == nlohmann::json({1}), "Qwen4 config translation differs");
     const auto read_float = [&](const char* name) {
-        const auto bytes = source.read(name); float value;
+        const auto bytes = read_tensor(source, name); float value;
         std::memcpy(&value, bytes.data() + 12, 4); return value;
     };
     require(read_float("model.mhc.pre.norm.weight") == .5f, "GGUF GR norm offset was applied twice");
@@ -100,7 +113,7 @@ void qwen4_source(const std::filesystem::path& directory) {
     require(table && *table->shape == std::vector<int64_t>({4, 128}), "GGUF external PLE missing");
     const auto range = source.tensor_file_range(table->name);
     require(range && range->path == table_path && range->nbytes == 288, "GGUF PLE cannot be mapped without copying");
-    const auto bytes = source.read("model.block.0.position_embedding.ngram.head_vocab_sizes");
+    const auto bytes = read_tensor(source, "model.block.0.position_embedding.ngram.head_vocab_sizes");
     int64_t vocab = 0; std::memcpy(&vocab, bytes.data() + 12, 8);
     require(vocab == 2, "GGUF PLE hash metadata missing");
 
@@ -126,25 +139,24 @@ void qwen4_source(const std::filesystem::path& directory) {
     add_predictor("mtp.layers.0.mlp.experts.down_proj", GGML_TYPE_Q2_0, {4, 256, 128});
     const auto predictor_path = directory / "predictor.gguf";
     require(gguf_write_to_file(predictor, predictor_path.string().c_str(), false), "GGUF predictor write failed");
-    const mfq::GgufModelSource with_predictor(main_path, {table_path, predictor_path});
-    const auto predictor_config = nlohmann::json::parse(with_predictor.model_config_json());
+    const tyloi::models::GgufSource with_predictor(main_path, {table_path, predictor_path});
+    const auto predictor_config = nlohmann::json::parse(tyloi::models::config_json(with_predictor));
     require(predictor_config["mtp_num_hidden_layers"] == 1, "GGUF companion predictor was not declared");
     require(with_predictor.find_tensor("predictor.block.0.mlp.experts.gate_up.weight") &&
         *with_predictor.find_tensor("predictor.block.0.mlp.experts.gate_up.weight")->shape ==
             std::vector<int64_t>({4, 256, 256}), "GGUF fused predictor experts were not normalized");
-    const auto predictor_norm = with_predictor.read("predictor.embedding_norm.weight");
+    const auto predictor_norm = read_tensor(with_predictor, "predictor.embedding_norm.weight");
     float original_norm = 0;
     std::memcpy(&original_norm, predictor_norm.data() + 12, 4);
     require(original_norm == .25f, "raw MTP companion norm was converted as a folded main-model norm");
-    require(with_predictor.read(packed_down->name) == packed_bytes, "MTP companion changed backbone weights");
+    require(read_tensor(with_predictor, packed_down->name) == packed_bytes, "MTP companion changed backbone weights");
     add_predictor("mtp.unsupported.weight", GGML_TYPE_F32, {1});
     require(gguf_write_to_file(predictor, predictor_path.string().c_str(), false), "GGUF invalid predictor write failed");
     bool unsupported_predictor = false;
-    try { mfq::GgufModelSource invalid(main_path, {table_path, predictor_path}); }
+    try { tyloi::models::GgufSource invalid(main_path, {table_path, predictor_path}); }
     catch (const std::runtime_error&) { unsupported_predictor = true; }
     require(unsupported_predictor, "GGUF predictor silently ignored unsupported tensors");
     gguf_free(predictor); ggml_free(predictor_tensors);
-}
 }
 
 int main() {
@@ -180,7 +192,7 @@ int main() {
         const auto split_path = directory / "model-00001-of-00002.gguf";
         require(gguf_write_to_file(gguf, split_path.string().c_str(), false), "GGUF shard write failed");
         bool missing = false;
-        try { mfq::GgufModelSource invalid(split_path); } catch (const std::runtime_error&) { missing = true; }
+        try { tyloi::models::GgufSource invalid(split_path); } catch (const std::runtime_error&) { missing = true; }
         require(missing, "incomplete GGUF shard set accepted");
         auto* second = gguf_init_empty();
         gguf_set_val_u16(second, "split.count", 2);
@@ -191,35 +203,35 @@ int main() {
         gguf_add_tensor(second, extra);
         const auto second_path = directory / "model-00002-of-00002.gguf";
         require(gguf_write_to_file(second, second_path.string().c_str(), false), "GGUF second shard write failed");
-        const mfq::GgufModelSource split(second_path);
+        const tyloi::models::GgufSource split(second_path);
         require(split.source_paths().size() == 2 && split.tensors().size() == 3 &&
             split.find_tensor("model.block.0.attention.norm.weight"), "GGUF shard discovery failed");
         gguf_set_val_u16(second, "split.no", 0);
         require(gguf_write_to_file(second, second_path.string().c_str(), false), "GGUF invalid shard write failed");
         bool mismatched = false;
-        try { mfq::GgufModelSource invalid(split_path); } catch (const std::runtime_error&) { mismatched = true; }
+        try { tyloi::models::GgufSource invalid(split_path); } catch (const std::runtime_error&) { mismatched = true; }
         require(mismatched, "GGUF shard number mismatch accepted");
         gguf_free(second);
         gguf_free(gguf); ggml_free(tensors);
-        auto source = mfq::open_model_source(path);
+        auto source = tyloi::open_model_source(path);
         require(source->architecture() == "qwen35", "architecture lost");
         const auto* table = source->find_tensor("model.token_embedding.weight");
         require(table && table->dtype == "GGUF_Q4_K" && *table->shape == std::vector<int64_t>({3, 256}), "GGUF quantized metadata wrong");
-        const auto data = source->read(table->name);
+        const auto data = read_tensor(*source, table->name);
         require(data.size() == 3 * 144 && data.front() == std::byte{17}, "packed GGUF data changed");
-        const auto dense = source->read("model.output_norm.weight");
+        const auto dense = read_tensor(*source, "model.output_norm.weight");
         require(dense.size() == 12 + 256 * 4 && dense[0] == std::byte{1}, "dense prefix missing");
         float end = 0;
         std::memcpy(&end, dense.data() + dense.size() - 4, 4);
         require(end == 255, "dense GGUF data changed");
-        const auto config = nlohmann::json::parse(source->model_config_json());
+        const auto config = nlohmann::json::parse(tyloi::models::config_json(*source));
         require(config["vocab_size"] == 3 && config["tie_word_embeddings"] == true, "GGUF config translation wrong");
-        auto tokenizer = source->read_asset(mfq::kTokenizerGgufAsset);
+        auto tokenizer = source->read_asset(tyloi::kTokenizerGgufAsset);
         auto* tok = gguf_init_from_buffer(tokenizer.data(), tokenizer.size(), {true, nullptr});
         require(tok && gguf_get_n_tensors(tok) == 0 && gguf_find_key(tok, "tokenizer.ggml.tokens") >= 0, "GGUF tokenizer extraction wrong");
         gguf_free(tok);
         bool bounded = false;
-        try { source->read(table->name, table->nbytes, 1); } catch (const std::out_of_range&) { bounded = true; }
+        try { source->read_range_into(table->name, 1, nullptr, table->nbytes); } catch (const std::out_of_range&) { bounded = true; }
         require(bounded, "out-of-range GGUF read accepted");
         const auto reader = source->tensor_reader(table->name);
         source.reset();
@@ -228,7 +240,7 @@ int main() {
         require(value == std::byte{17}, "retained GGUF reader expired");
         std::filesystem::resize_file(path, 80);
         bool truncated = false;
-        try { mfq::GgufModelSource invalid(path); } catch (const std::runtime_error&) { truncated = true; }
+        try { tyloi::models::GgufSource invalid(path); } catch (const std::runtime_error&) { truncated = true; }
         require(truncated, "truncated GGUF accepted");
         qwen4_source(directory);
         std::filesystem::remove_all(directory);

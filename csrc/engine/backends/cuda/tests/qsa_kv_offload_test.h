@@ -3,8 +3,7 @@
 
 void qsa_streamed_graph_case() {
     for(int width:{32,256}) {
-        CudaStores stores;
-        CudaExecutionContext execution(stores);
+        TestExecution execution;
         constexpr int hidden=32,heads=4,kv=2,iw=8,ih=2,pool=4,maximum=128,budget=16;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);
         auto norm=data({width},1,0),inorm=data({iw},1,0);
@@ -21,7 +20,7 @@ void qsa_streamed_graph_case() {
         memory->finalize();
         if(!memory->offload())throw std::runtime_error("streamed graph oracle requires SSD overflow");
         auto inputs=data({1,maximum,hidden},17,.4f);
-        auto history=tb::arange(6,inputs.options().dtype(tb::kInt64));
+        auto history=tb::arange(6,inputs.options().dtype(tyloi::kInt64));
         const auto eager=[&](Qsa& a,Qsa& b,const Tensor& input,const Tensor& positions,const Tensor& full) {
             return b.forward(execution,a.forward(execution,input,positions,full,true),positions,full,true);
         };
@@ -74,7 +73,7 @@ void qsa_kv_offload_case() {
     if (metric(store,"qsa_kv_resident_bytes") > 8192 || metric(store,"qsa_kv_ram_bytes") > 16384 ||
         metric(store,"qsa_kv_ssd_bytes") <= 0)
         throw std::runtime_error("KV tier limits or SSD overflow are incorrect");
-    equal(sequence.gather({900,1,70,900,513}), source.index_select(0,tb::tensor(std::vector<int64_t>{900,1,70,900,513}).to(tb::kCUDA)),"KV three-tier gather",0,0);
+    equal(sequence.gather({900,1,70,900,513}), source.index_select(0,tb::tensor(std::vector<int64_t>{900,1,70,900,513}).to(tyloi::kCUDA)),"KV three-tier gather",0,0);
     sequence.truncate(67);
     sequence.append(source.narrow(0,67,13));
     equal(sequence.range(0,80),source.narrow(0,0,80),"KV truncate and partial-tail replay",0,0);
@@ -90,8 +89,7 @@ void qsa_kv_offload_case() {
     equal(direct.range(0,64),source.narrow(0,0,64),"KV direct SSD restore",0,0);
 
     for (int width : {8,256}) {
-        CudaStores stores;
-        CudaExecutionContext execution(stores);
+        TestExecution execution;
         constexpr int hidden=32,kv=2,iw=8,ih=2,pool=4,maximum=384,budget=64;
         const int heads=4;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);
@@ -105,7 +103,7 @@ void qsa_kv_offload_case() {
         auto inputs=data({1,maximum,hidden},17,.4f);
         int64_t offset=0;
         for(int tokens:{16,49,97,128,1}) {
-            auto positions=tb::arange(offset,offset+tokens,inputs.options().dtype(tb::kInt64));
+            auto positions=tb::arange(offset,offset+tokens,inputs.options().dtype(tyloi::kInt64));
             auto history=tb::arange(offset+tokens,positions.options());
             auto x=inputs.narrow(1,offset,tokens);
             auto expected=oracle.forward(execution,x,positions,history,true);
@@ -113,7 +111,7 @@ void qsa_kv_offload_case() {
             equal(result,expected,"QSA streamed dense/sparse prefill and decode");offset+=tokens;
         }
         actual.truncate(67);oracle.truncate(67);
-        auto positions=tb::arange(67,80,inputs.options().dtype(tb::kInt64));
+        auto positions=tb::arange(67,80,inputs.options().dtype(tyloi::kInt64));
         auto history=tb::arange(80,positions.options());auto x=inputs.narrow(1,67,13);
         equal(actual.forward(execution,x,positions,history,true),oracle.forward(execution,x,positions,history,true),"QSA streamed truncate/replay");
         store->flush();

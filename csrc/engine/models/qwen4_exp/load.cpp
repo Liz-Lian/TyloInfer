@@ -56,7 +56,7 @@ struct LayerLoader : tyloi::weights::Loader {
 #endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA
-    GatedResidual residual(std::shared_ptr<const ::tyloi::Tensor> norm, GatedResidual::Projection down,
+    GatedResidual residual(::tyloi::Tensor norm, GatedResidual::Projection down,
 #else
     GatedResidual residual(DenseTensor norm, GatedResidual::Projection down,
 #endif
@@ -87,10 +87,10 @@ struct LayerLoader : tyloi::weights::Loader {
         w.a_log=dense(p+".a");
         w.norm=dense(p+".norm.weight");
 #else
-        w.conv=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".conv.weight"));
-        w.dt_bias=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".dt_bias"));
-        w.a_log=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".a"));
-        w.norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".norm.weight"));
+        w.conv=dense(p+".conv.weight").dense();
+        w.dt_bias=dense(p+".dt_bias").dense();
+        w.a_log=dense(p+".a").dense();
+        w.norm=dense(p+".norm.weight").dense();
 #endif
         return w;
     }
@@ -106,10 +106,10 @@ struct LayerLoader : tyloi::weights::Loader {
         w.index_query_norm=dense(p+".indexer.query_norm.weight");
         w.index_key_norm=dense(p+".indexer.key_norm.weight");
 #else
-        w.query_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".query_norm.weight"));
-        w.key_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".key_norm.weight"));
-        w.index_query_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".indexer.query_norm.weight"));
-        w.index_key_norm=dynamic_cast<const ::tyloi::DenseTensor&>(*dense(p+".indexer.key_norm.weight"));
+        w.query_norm=dense(p+".query_norm.weight").dense();
+        w.key_norm=dense(p+".key_norm.weight").dense();
+        w.index_query_norm=dense(p+".indexer.query_norm.weight").dense();
+        w.index_key_norm=dense(p+".indexer.key_norm.weight").dense();
 #endif
         if(has(p+".gate.weight")) {
             w.input_projection.push_back(weight(p+".gate.weight"));
@@ -142,7 +142,7 @@ struct LayerLoader : tyloi::weights::Loader {
         for(auto* norm:{&weights.query_norm,&weights.key_norm,&weights.index_query_norm,&weights.index_key_norm})
 #ifdef TYLOINFER_NATIVE_CUDA
             if((*norm)->defined())*norm=std::make_shared<DenseTensor>(
-                dynamic_cast<const DenseTensor&>(**norm).to(::tyloi::kFloat32).contiguous());
+                *norm.dense().to(::tyloi::kFloat32).contiguous());
 #else
             if(norm->defined())*norm=norm->to(::tyloi::kFloat32).contiguous();
 #endif
@@ -159,7 +159,7 @@ struct LayerLoader : tyloi::weights::Loader {
             auto table=tyloi::tq_table(source,name);
             Embedding lookup{[table](const DenseTensor& ids){
                 auto result=lookup_tq_table(*table,ids);
-                return dynamic_cast<const DenseTensor&>(*result);
+                return result.dense();
             },{},table};
             return std::pair{std::move(lookup),std::array<int64_t,2>{static_cast<int64_t>(table->rows()),table->width()}};
         }
@@ -181,7 +181,7 @@ struct LayerLoader : tyloi::weights::Loader {
         const auto &type = require_tensor(source, name).dtype;
         TYLOINFER_RUNTIME_CHECK(type == "I64" || type == "I32",
                           "Qwen4 PLE metadata must be a dense integer array: ", name);
-        auto host = dynamic_cast<const ::tyloi::DenseTensor&>(*tensor(name)).to(::tyloi::kInt64).contiguous().cpu();
+        auto host = tensor(name).dense().to(::tyloi::kInt64).contiguous().cpu();
         TYLOINFER_RUNTIME_CHECK(host.dim() == 1, "Qwen4 PLE metadata must be a vector");
         return {host.data_ptr<int64_t>(), host.data_ptr<int64_t>() + host.numel()};
     }
@@ -225,7 +225,7 @@ std::unique_ptr<Layer> LayerLoader::layer(const Config &c, int layer, bool predi
 std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execution,
                                                       const tyloi::weights::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
-                                                      std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
+                                                      ::tyloi::Tensor embedding, ::tyloi::Tensor output,
                                                       double softcap) {
     Predictor result;
     result.execution = &execution;

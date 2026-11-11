@@ -8,8 +8,8 @@
 namespace tyloi::weights {
 
 struct BiasWeight {
-    std::shared_ptr<const ::tyloi::Tensor> weight;
-    std::shared_ptr<const ::tyloi::Tensor> bias;
+    ::tyloi::Tensor weight;
+    ::tyloi::Tensor bias;
 };
 
 BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count);

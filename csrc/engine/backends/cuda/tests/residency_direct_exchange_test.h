@@ -1,4 +1,5 @@
 #pragma once
+#include "execution_fixture.h"
 #include "env.h"
 
 #include "storage/weights/moe/cached_source_internal.h"
@@ -11,8 +12,8 @@ struct MoeResidencyTestAccess {
         cache.moe_residency_=std::move(manager);return *cache.moe_residency_;
     }
     static void seed_full_exchange_loan(MoeExpertCache& cache) {
-        cache.kv_expert_loan_=std::make_shared<mfq::cuda::KvExpertLoan>();
-        auto arena=tb::zeros({32<<20},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+        cache.kv_expert_loan_=std::make_shared<tyloi::cuda::KvExpertLoan>();
+        auto arena=tb::zeros({32<<20},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
         cache.kv_expert_loan_->add(arena,arena.numel(),1,true,1,true,true);
         for(const auto& source:cache.sources_) {
             auto lease=source->quant_source_->acquire_expert(1);
@@ -33,8 +34,8 @@ struct MoeResidencyTestAccess {
         for(const auto& source:cache.sources_)if(source->layer_id_<0)
             loan.retire_expert(source->id_,2,int(source->cohorts_[source->expert_to_cohort_[2]].bytes_per_expert.size()));
         loan.next_packet();
-        auto bytes=tb::full({mfq::cuda::KvExpertLoan::page},37,
-            tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8));
+        auto bytes=tb::full({tyloi::cuda::KvExpertLoan::page},37,
+            tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kUInt8));
         auto guard=loan.retain_exchange_reads();bool full=false;
         for(int i=0;i<1024;++i) {
             bool hit=false;
@@ -85,8 +86,8 @@ struct MoeResidencyTestAccess {
     static void seed_prefill_shadow(MoeExpertCache& cache,bool stale,bool reclaim,bool permuted=false,bool refresh=false) {
         for(const auto& source:cache.sources_)for(const auto& cohort:source->cohorts_) {
             auto& arena=*cohort.arena;if(arena.prefill_backup_key && !refresh)continue;
-            const mfq::MoeCacheKey key=arena.prefill_backup_key.value_or(mfq::MoeCacheKey{-2-source->id_,cohort.index,0});
-            std::vector<tb::Tensor> fields;std::size_t image_bytes=arena.slots*3*sizeof(int32_t);
+            const tyloi::MoeCacheKey key=arena.prefill_backup_key.value_or(tyloi::MoeCacheKey{-2-source->id_,cohort.index,0});
+            std::vector<tyloi::DenseTensor> fields;std::size_t image_bytes=arena.slots*3*sizeof(int32_t);
             for(const auto& field:arena.fields) {
                 auto host=field.cpu();
                 if(permuted) {
@@ -99,7 +100,7 @@ struct MoeResidencyTestAccess {
                 fields.push_back(std::move(host));image_bytes+=tensor_nbytes(field);
             }
             auto image=moe_replace_quant_fields(*cohort.cpu,fields);
-            image.expert_local=tb::empty({arena.slots,3},tb::TensorOptions().device(tb::kCPU).dtype(tb::kInt32));
+            image.expert_local=tb::empty({arena.slots,3},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kInt32));
             auto* identities=image.expert_local.data_ptr<int32_t>();
             for(int slot=0;slot<arena.slots;++slot) {
                 const auto& owner=arena.book->key_for(permuted?(slot+1)%arena.slots:slot);
@@ -125,14 +126,14 @@ struct MoeResidencyTestAccess {
             throw std::runtime_error("completed shadow lookup retained optional weight ownership");
     }
     static void seed_kv_refill(MoeExpertCache& cache) {
-        cache.kv_expert_loan_=std::make_shared<mfq::cuda::KvExpertLoan>();
-        auto arena=tb::zeros({16<<20},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+        cache.kv_expert_loan_=std::make_shared<tyloi::cuda::KvExpertLoan>();
+        auto arena=tb::zeros({16<<20},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
         cache.kv_expert_loan_->add(arena,4096,4096,false);
         for(const auto& source:cache.sources_) {
             const auto lease=source->quant_source_->acquire_expert(1);
             const auto fields=moe_cache_fields(lease->weights);
             for(std::size_t f=0;f<fields.size();++f) {
-                const auto bytes=tensor_nbytes(fields[f]);if(bytes<int64_t(mfq::cuda::KvExpertLoan::page))continue;
+                const auto bytes=tensor_nbytes(fields[f]);if(bytes<int64_t(tyloi::cuda::KvExpertLoan::page))continue;
                 bool hit=false;
                 if(!cache.kv_expert_loan_->pin({source->id_,1,int64_t(f)},fields[f].data_ptr(),
                         std::size_t(bytes),mfq_current_cuda_stream(),hit))
@@ -142,7 +143,7 @@ struct MoeResidencyTestAccess {
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     }
     static void seed_exchange_wire(MoeExpertCache& cache,int64_t bytes) {
-        cache.pipeline_wire_gpu_=tb::full({bytes+4096},91,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+        cache.pipeline_wire_gpu_=tb::full({bytes+4096},91,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     }
     static void check_exchange_wire(const MoeExpertCache& cache) {
@@ -201,12 +202,12 @@ struct MoeResidencyTestAccess {
         if(!arena) {
             arena=std::make_unique<MoeGpuArena>();arena->signature=key;
             arena->slot_bytes=cohort.arena->slot_bytes;arena->slots=1;arena->layouts=cohort.arena->layouts;
-            arena->book=std::make_unique<mfq::MoeCacheSlotBook>(1);
+            arena->book=std::make_unique<tyloi::MoeCacheSlotBook>(1);
         }
         const auto held=source.quant_source_->acquire_expert(expert);
         const auto fields=moe_cache_fields(held->weights);
-        if(arena->fields.empty())for(const auto& field:fields)arena->fields.push_back(field.to(tb::kCUDA));
-        else for(std::size_t f=0;f<fields.size();++f)arena->fields[f].copy_(fields[f].to(tb::kCUDA));
+        if(arena->fields.empty())for(const auto& field:fields)arena->fields.push_back(field.to(tyloi::kCUDA));
+        else for(std::size_t f=0;f<fields.size();++f)arena->fields[f].copy_(fields[f].to(tyloi::kCUDA));
         arena->book->acquire(source.quant_source_->host_key(expert));
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     }
@@ -238,8 +239,7 @@ void verify_predictor_exchange_overlap(const std::filesystem::path& root) {
     for(const std::string failure:{"none","direct_refill","publish"})for(bool pressure:{false,true}) {
         if((shared_arena || !full_cache) && failure!="none")continue;
         if(pressure && (shared_arena || !full_cache || failure!="none"))continue;
-        CudaStores stores;
-        CudaExecutionContext execution(stores);auto& cfg=execution.config;
+        TestExecution execution;auto& cfg=execution.config;
         cfg.moe_pipeline=true;cfg.moe_preload_all=true;cfg.moe_assert_resident=true;
         cfg.moe_hybrid_cpu=false;cfg.moe_direct_ram=true;cfg.moe_ram_pcie=true;cfg.moe_ram_pcie_fraction=1.;
         cfg.moe_residency_adapt=true;cfg.moe_residency_warm=true;cfg.moe_residency_projection_heat=true;
@@ -264,14 +264,14 @@ void verify_predictor_exchange_overlap(const std::filesystem::path& root) {
             throw std::runtime_error("predictor overlap fixture requires expert0 on GPU and expert1 in RAM");
         if(full_cache)MoeResidencyTestAccess::seed_full_exchange_loan(*cache);
         else MoeResidencyTestAccess::seed_kv_refill(*cache);
-        auto x=tb::full({1,2560},.07,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
-        auto ids=tb::tensor(std::vector<int32_t>{0,pressure?2:1}).reshape({1,2}).to(tb::kCUDA);
-        auto weights=tb::full({1,2},.5,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32));
+        auto x=tb::full({1,2560},.07,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16));
+        auto ids=tb::tensor(std::vector<int32_t>{0,pressure?2:1}).reshape({1,2}).to(tyloi::kCUDA);
+        auto weights=tb::full({1,2},.5,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32));
         auto expected=forward[1](execution,x,ids,weights).cpu().contiguous();
         if(pressure)MoeResidencyTestAccess::pressure_exchange_loan(*cache);
         std::mutex mutex;std::condition_variable changed;bool release=false,held=false;
-        const auto* enabled=mfq::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
-        const auto* keyed=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
+        const auto* enabled=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
+        const auto* keyed=tyloi::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
         const bool expect_overlap=!shared_arena && full_cache && (!enabled || enabled[0]!='0') && (!keyed || keyed[0]=='1');
         auto& manager=MoeResidencyTestAccess::install_manager(*cache,std::make_unique<MoeResidencyManager>(cache.get(),
             [&](const char* event,std::size_t index) {
@@ -323,20 +323,19 @@ void verify_predictor_exchange_overlap(const std::filesystem::path& root) {
 
 void verify_direct_exchange(const std::filesystem::path& root) {
     int cases=0,repeats=0;
-    const char* batching_env=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
-    const bool defaults=mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_EXPECT_DEFAULTS")!=nullptr;
+    const char* batching_env=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
+    const bool defaults=tyloi::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_EXPECT_DEFAULTS")!=nullptr;
     const bool batching=defaults || (batching_env && std::string(batching_env)=="1");
-    const char* shadow=mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_SHADOW");
+    const char* shadow=tyloi::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_SHADOW");
     for(const std::string format:{"nint5","nvq3j-512"})
     for(const int cached_projections:{0,1,3})
     for(const bool gpu_wire:{false,true})
     for(const std::string phase:{"none","direct_backup","direct_backup_batch","direct_refill","direct_refill_batch","upload","map","host","publish","reader","window","cancel","prefill"}) {
         if(shadow && phase=="direct_backup_batch")continue;
         if(phase=="direct_refill_batch" && (!batching || (!cached_projections && !gpu_wire)))continue;
-        const auto* small_backup=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
+        const auto* small_backup=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
         if(phase=="direct_backup_batch" && small_backup && std::atoll(small_backup)<=0)continue;
-        CudaStores stores;
-        CudaExecutionContext execution(stores);execution.config.moe_residency_warm=true;
+        TestExecution execution;execution.config.moe_residency_warm=true;
         execution.config.moe_residency_projection_heat=true;execution.config.moe_ram_pcie_fraction=1.0;
         execution.config.moe_direct_ram=true;execution.config.moe_two_stage_ffn=true;
         std::array<std::shared_ptr<MoeQuantRangeSource>,3> sources;
@@ -360,7 +359,7 @@ void verify_direct_exchange(const std::filesystem::path& root) {
         }
         if(!MoeResidencyTestAccess::transfer_enabled(*cache))throw std::runtime_error("direct fixture needs transfer caching");
         for(int p=0;p<cached_projections;++p)MoeResidencyTestAccess::seed(*cache,p,1);
-        const bool loan_refill=mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_KV_REFILL")!=nullptr;
+        const bool loan_refill=tyloi::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_KV_REFILL")!=nullptr;
         if(loan_refill)MoeResidencyTestAccess::seed_kv_refill(*cache);
         if(defaults)MoeResidencyTestAccess::verify_defaults_guard(*cache);
         MoeHostExpertCache::Lease reader;std::atomic_bool complete=false;
@@ -378,11 +377,11 @@ void verify_direct_exchange(const std::filesystem::path& root) {
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
         }
         if(phase=="prefill") {
-            auto old_routes=tb::full({32,1},2,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt32));
+            auto old_routes=tb::full({32,1},2,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kInt32));
             manager->record_prefill_routes(0,old_routes.data_ptr<int32_t>(),32,1,mfq_current_cuda_stream());
-            auto wide_routes=tb::full({32,2},2,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt32));
+            auto wide_routes=tb::full({32,2},2,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kInt32));
             manager->record_prefill_routes(0,wide_routes.data_ptr<int32_t>(),32,2,mfq_current_cuda_stream());
-            auto routes=tb::full({32,1},1,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt32));
+            auto routes=tb::full({32,1},1,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kInt32));
             manager->record_prefill_routes(0,routes.data_ptr<int32_t>(),32,1,mfq_current_cuda_stream());
             if(manager->stats().committed_projections)throw std::runtime_error("prefill routes exchanged before decode boundary");
             manager->prepare_decode();
@@ -460,14 +459,13 @@ void verify_direct_exchange(const std::filesystem::path& root) {
 
 void verify_indexed_shadow_exchange(const std::filesystem::path& root) {
     int cases=0,refreshes=0;
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
     const bool indexed=!option || option[0]!='0';
     for(const std::string format:{"nint5","nvq3j-512"})
     for(int cached_projections:{0,1,3})for(bool gpu_wire:{false,true})
     for(const std::string image:{"permuted","stale","reclaimed"})
     for(const std::string phase:{"none","direct_backup","direct_refill","upload","map","host","publish"}) {
-        CudaStores stores;
-        CudaExecutionContext execution(stores);execution.config.moe_residency_warm=true;
+        TestExecution execution;execution.config.moe_residency_warm=true;
         execution.config.moe_residency_projection_heat=true;execution.config.moe_ram_pcie_fraction=1.0;
         execution.config.moe_direct_ram=true;execution.config.moe_two_stage_ffn=true;
         std::array<std::shared_ptr<MoeQuantRangeSource>,3> sources;
@@ -546,14 +544,13 @@ void verify_indexed_shadow_exchange(const std::filesystem::path& root) {
 void verify_prefill_cpu_prefetch(const std::filesystem::path& root) {
     struct Setting {
         std::string previous;
-        Setting(){if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_PREFILL_CPU_PREFETCH"))previous=p;}
+        Setting(){if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_CPU_PREFETCH"))previous=p;}
         static void set(const char* value) {
-            if(*value)mfq::cuda::env_set("TYLOINFER_PREFILL_CPU_PREFETCH",value);else mfq::cuda::env_clear("TYLOINFER_PREFILL_CPU_PREFETCH");
+            if(*value)tyloi::cuda::env_set("TYLOINFER_PREFILL_CPU_PREFETCH",value);else tyloi::cuda::env_clear("TYLOINFER_PREFILL_CPU_PREFETCH");
         }
         ~Setting(){set(previous.c_str());}
     } setting;
-    CudaStores stores;
-    CudaExecutionContext execution(stores);auto& cfg=execution.config;
+    TestExecution execution;auto& cfg=execution.config;
     cfg.moe_pipeline=true;cfg.moe_preload_all=true;cfg.moe_assert_resident=true;
     cfg.moe_hybrid_cpu=false;cfg.moe_direct_ram=true;cfg.moe_ram_pcie=true;cfg.moe_ram_pcie_fraction=1.;
     const std::array<std::array<std::string,3>,3> formats={
@@ -576,9 +573,9 @@ void verify_prefill_cpu_prefetch(const std::filesystem::path& root) {
         std::vector<float> values(tokens*2560),weights(tokens*3);std::vector<int32_t> routes(tokens*3);
         for(std::size_t i=0;i<values.size();++i)values[i]=std::sin(float(i+step*37)*.017f)*.11f;
         for(std::size_t i=0;i<routes.size();++i){routes[i]=(int(i)+step)%3;weights[i]=.13f+float(i%7)*.01f;}
-        auto x=tb::tensor(values).reshape({tokens,2560}).to(tb::kCUDA,tb::kFloat16);
-        auto ids=tb::tensor(routes).reshape({tokens,3}).to(tb::kCUDA);
-        auto scales=tb::tensor(weights).reshape({tokens,3}).to(tb::kCUDA);
+        auto x=tb::tensor(values).reshape({tokens,2560}).to(tyloi::kCUDA,tyloi::kFloat16);
+        auto ids=tb::tensor(routes).reshape({tokens,3}).to(tyloi::kCUDA);
+        auto scales=tb::tensor(weights).reshape({tokens,3}).to(tyloi::kCUDA);
         const bool split=step==1 && tokens>=64;
         const auto run=[&](int layer,bool check_pending) {
             if(!split)return forward[layer](execution,x,ids,scales).clone();
@@ -590,7 +587,7 @@ void verify_prefill_cpu_prefetch(const std::filesystem::path& root) {
                 throw std::runtime_error("same-layer expert batch consumed next-layer prefetch early");
             return tb::cat({a,b},0);
         };
-        std::array<tb::Tensor,3> expected;
+        std::array<tyloi::DenseTensor,3> expected;
         Setting::set("0");
         for(int layer=0;layer<3;++layer)expected[layer]=run(layer,false);
         release_moe_prefill_buffers(cache);Setting::set("1");

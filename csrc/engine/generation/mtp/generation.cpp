@@ -16,7 +16,7 @@
       tyloi::engine::mtp::State &,                                                \
       InferenceRequest &, InferenceOutput &, int64_t,                            \
       const tyloi::models::Prepared *, std::size_t,                            \
-      std::shared_ptr<const tyloi::Tensor>, std::shared_ptr<tyloi::Tensor> *,      \
+      ::tyloi::Tensor, ::tyloi::Tensor *,      \
       std::size_t, tyloi::engine::Budget*)
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State);
 TYLOINFER_INSTANTIATE_MTP(tyloi::cuda::qwen4_exp::Model, tyloi::cuda::qwen4_exp::State);

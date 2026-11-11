@@ -9,10 +9,11 @@
 #include <vector>
 
 int main() {
-    using namespace mfq::cuda;
+    using namespace tyloi::cuda;
+using namespace tyloi;
 
     const auto before=tensor_host_bytes.load();
-    Tensor retained_view;
+    DenseTensor retained_view;
     {
         auto storage=empty({16},TensorOptions{}.dtype(kFloat32));
         retained_view=storage.narrow(0,3,4);
@@ -128,7 +129,7 @@ int main() {
     }));
     for(auto& worker:workers)worker.get();
     {
-        std::vector<Tensor> allocations;
+        std::vector<DenseTensor> allocations;
         for(int i=0;i<20;++i)allocations.push_back(empty({4u<<20},options));
     }
     assert(tensor_host_bytes.load()==fixed_host_bytes+(64u<<20));

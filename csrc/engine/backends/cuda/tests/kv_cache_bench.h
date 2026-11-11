@@ -3,11 +3,11 @@
 #include "kernels/moe/pipeline.h"
 
 static void benchmark_decode_kv_cache() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto handle=mfq_get_stream_from_pool();MfqCudaStreamGuard guard(handle);
     auto context=default_context();const auto stream=handle.stream();context->begin_graph_pool(stream);
     const auto setting=[](const char* name,bool enabled) {
-        mfq::cuda::env_set(name,enabled?"1":"0");
+        tyloi::cuda::env_set(name,enabled?"1":"0");
     };
     const auto measure=[&](const auto& body) {
         constexpr int repeat=64,replays=128;
@@ -27,22 +27,22 @@ static void benchmark_decode_kv_cache() {
     };
     {
         constexpr int maximum=65536,cells=51551,heads=2,width=128,iw=128;
-        const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
+        const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16);
         auto hot=HotKvCache::allocate(heads,maximum,cells,width,width,options);
         hot.set_cold_storage(tb::empty({1,heads,maximum-cells,width},options),
             tb::empty({1,heads,maximum-cells,width},options));
         auto stored=tb::empty({1,maximum,iw},options);
         for(int rows:{1,2,4,6,8,16,32})for(bool floating:{false,true}) {
-            const auto source_options=options.dtype(floating?tb::kFloat32:tb::kFloat16);
+            const auto source_options=options.dtype(floating?tyloi::kFloat32:tyloi::kFloat16);
             auto k=tb::ones({1,rows,heads,width+32},source_options).narrow(3,0,width).permute({0,2,1,3});
             auto v=tb::ones({1,rows,heads,width+32},source_options).narrow(3,0,width).permute({0,2,1,3});
             auto raw=tb::ones({1,rows,iw*3},options).narrow(2,iw,iw);
-            auto positions=tb::arange(rows,options.dtype(tb::kInt64));
+            auto positions=tb::arange(rows,options.dtype(tyloi::kInt64));
             for(int arm:{0,1,0}) {
                 setting("TYLOINFER_KV_APPEND_FUSED",arm!=0);
                 const double us=measure([&] {
                     if(!hot.append_decode(k,v,positions,raw,stored)) {
-                        hot.append(k.to(tb::kFloat16),v.to(tb::kFloat16),positions);stored.index_copy_(1,positions,raw);
+                        hot.append(k.to(tyloi::kFloat16),v.to(tyloi::kFloat16),positions);stored.index_copy_(1,positions,raw);
                     }
                 });
                 std::cout<<"kv_append_bench rows="<<rows<<" float_input="<<floating<<" fused="<<arm<<" us="<<us<<"\n";
@@ -51,11 +51,11 @@ static void benchmark_decode_kv_cache() {
         // Resident prefix and long-context hit marking. Same selection is read
         // repeatedly, so this measures metadata work without PCIe variation.
         hot.reset();
-        auto positions=tb::arange(4096,options.dtype(tb::kInt64));
+        auto positions=tb::arange(4096,options.dtype(tyloi::kInt64));
         auto full=tb::ones({1,heads,4096,width},options);hot.append(full,full,positions);
         auto source=tb::empty({1,heads,maximum,width},options);
         for(int rows:{1,2,4,6})for(bool short_prefix:{true,false}) {
-            auto selected=tb::arange(rows*2047,options.dtype(tb::kInt32)).remainder(2047).reshape({1,rows,2047});
+            auto selected=tb::arange(rows*2047,options.dtype(tyloi::kInt32)).remainder(2047).reshape({1,rows,2047});
             auto pos=tb::arange(rows,positions.options())+(short_prefix?4000:60000);
             auto key=full.narrow(2,0,rows),raw=tb::ones({1,rows,iw},options);
             for(int arm:{0,1,0}) {
@@ -74,14 +74,14 @@ static void benchmark_decode_kv_cache() {
 }
 
 static void benchmark_route_export() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     for(int rows:{1,2,6,32}) {
         const int n=rows*2560,k=rows*10;
-        auto host=tb::empty({n+k+1},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32).pinned_memory(true));
+        auto host=tb::empty({n+k+1},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32).pinned_memory(true));
         float* alias=nullptr;TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&alias),host.data_ptr(),0));
-        auto input=tb::full({n},.25,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
-        auto ids=tb::arange(k,input.options().dtype(tb::kInt32));
+        auto input=tb::full({n},.25,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16));
+        auto ids=tb::arange(k,input.options().dtype(tyloi::kInt32));
         for(bool copy:{true,false,true}) {
             auto* host_values=host.data_ptr<float>();std::fill(host_values,host_values+n,-99.f);
             auto* host_ids=reinterpret_cast<int32_t*>(host_values+n);std::fill(host_ids,host_ids+k,-1);

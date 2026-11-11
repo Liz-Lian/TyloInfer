@@ -35,18 +35,18 @@ Ffn load_ffn(Loader& ops, const Config& config, int layer, std::string_view tens
     ffn.moe_router_scale = routing.scale;
     const bool routed_gate_shapes =
         ffn.moe_split_gate_up
-            ? ffn.moe_gate && ffn.moe_up && ffn.moe_gate->size(0) == config.num_experts &&
-                  ffn.moe_up->size(0) == config.num_experts &&
-                  ffn.moe_gate->size(2) == config.hidden_size &&
-                  ffn.moe_up->size(2) == config.hidden_size &&
-                  ffn.moe_gate->size(1) == config.moe_intermediate_size &&
-                  ffn.moe_up->size(1) == config.moe_intermediate_size
-            : ffn.moe_gate_up && ffn.moe_gate_up->size(0) == config.num_experts &&
-                  ffn.moe_gate_up->size(2) == config.hidden_size &&
-                  ffn.moe_gate_up->size(1) == 2 * config.moe_intermediate_size;
-    if (!routed_gate_shapes || !ffn.moe_down || ffn.moe_down->size(0) != config.num_experts ||
-        ffn.moe_down->size(2) != config.moe_intermediate_size ||
-        ffn.moe_down->size(1) != config.hidden_size || ops.shape(ffn.moe_router).size() != 2 ||
+            ? ffn.moe_gate && ffn.moe_up && ffn.moe_gate.size(0) == config.num_experts &&
+                  ffn.moe_up.size(0) == config.num_experts &&
+                  ffn.moe_gate.size(2) == config.hidden_size &&
+                  ffn.moe_up.size(2) == config.hidden_size &&
+                  ffn.moe_gate.size(1) == config.moe_intermediate_size &&
+                  ffn.moe_up.size(1) == config.moe_intermediate_size
+            : ffn.moe_gate_up && ffn.moe_gate_up.size(0) == config.num_experts &&
+                  ffn.moe_gate_up.size(2) == config.hidden_size &&
+                  ffn.moe_gate_up.size(1) == 2 * config.moe_intermediate_size;
+    if (!routed_gate_shapes || !ffn.moe_down || ffn.moe_down.size(0) != config.num_experts ||
+        ffn.moe_down.size(2) != config.moe_intermediate_size ||
+        ffn.moe_down.size(1) != config.hidden_size || ops.shape(ffn.moe_router).size() != 2 ||
         ops.shape(ffn.moe_router)[0] != config.num_experts ||
         ops.shape(ffn.moe_router)[1] != config.hidden_size || ops.shape(ffn.moe_shared_gate).size() != 2 ||
         ops.shape(ffn.moe_shared_gate)[0] != 1 || ops.shape(ffn.moe_shared_gate)[1] != config.hidden_size) {

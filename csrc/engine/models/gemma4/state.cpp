@@ -77,37 +77,37 @@ std::vector<tyloi::Tensor*> State::graph_state() {
     if (cache_pos <= 0 || layers.empty())
         throw std::runtime_error("Gemma4 graph warmup requires a prefilled KV cache");
 
-    std::vector<std::shared_ptr<tyloi::Tensor>> views;
+    std::vector<::tyloi::Tensor> views;
     views.reserve(layers.size() * 2);
     for (const auto& cache : layers) {
-        if (cache.paged() || !cache.defined() || cache.physical_key->dim() != 4 ||
-            cache.physical_value->dim() != 4 || cache.physical_key->size(2) <= 0 ||
-            cache.physical_value->size(2) != cache.physical_key->size(2))
+        if (cache.paged() || !cache.defined() || cache.physical_key.dim() != 4 ||
+            cache.physical_value.dim() != 4 || cache.physical_key.size(2) <= 0 ||
+            cache.physical_value.size(2) != cache.physical_key.size(2))
             throw std::runtime_error("Gemma4 graph warmup requires allocated non-paged KV caches with matching capacities");
-        const auto capacity = cache.physical_key->size(2);
+        const auto capacity = cache.physical_key.size(2);
         if (!cache.ring && cache_pos >= capacity)
             throw std::runtime_error("Gemma4 graph warmup exceeds KV cache capacity");
         const auto position = cache.ring ? cache_pos % capacity : cache_pos;
-        views.push_back(tyloi::ops::slice(*cache.physical_key, 2, position, position + 1));
-        views.push_back(tyloi::ops::slice(*cache.physical_value, 2, position, position + 1));
+        views.push_back(tyloi::ops::slice(cache.physical_key, 2, position, position + 1));
+        views.push_back(tyloi::ops::slice(cache.physical_value, 2, position, position + 1));
     }
     std::vector<tyloi::Tensor*> result;
     result.reserve(views.size());
-    for (const auto& view : views) result.push_back(view.get());
+    for (auto& view : views) result.push_back(&view);
     graph_views_ = std::move(views);
     return result;
 }
 
-std::vector<std::shared_ptr<const tyloi::Tensor>> State::storage() const {
-    std::vector<std::shared_ptr<const tyloi::Tensor>> result;
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
     for (const auto& cache : layers) {
         if (cache.paged()) {
-            if (cache.key_chunk_ptrs && cache.key_chunk_ptrs->defined()) result.push_back(cache.key_chunk_ptrs);
-            if (cache.value_chunk_ptrs && cache.value_chunk_ptrs->defined()) result.push_back(cache.value_chunk_ptrs);
-            if (cache.page_table && cache.page_table->defined()) result.push_back(cache.page_table);
+            if (cache.key_chunk_ptrs && cache.key_chunk_ptrs.defined()) result.push_back(cache.key_chunk_ptrs);
+            if (cache.value_chunk_ptrs && cache.value_chunk_ptrs.defined()) result.push_back(cache.value_chunk_ptrs);
+            if (cache.page_table && cache.page_table.defined()) result.push_back(cache.page_table);
         } else {
-            if (cache.physical_key && cache.physical_key->defined()) result.push_back(cache.physical_key);
-            if (cache.physical_value && cache.physical_value->defined()) result.push_back(cache.physical_value);
+            if (cache.physical_key && cache.physical_key.defined()) result.push_back(cache.physical_key);
+            if (cache.physical_value && cache.physical_value.defined()) result.push_back(cache.physical_value);
         }
     }
     return result;

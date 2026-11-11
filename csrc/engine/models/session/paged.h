@@ -60,7 +60,7 @@ public:
     }
 
     void raw(void* destination, size_t size, const char* name);
-    std::pair<std::shared_ptr<const ::tyloi::Tensor>, int> tensor();
+    std::pair<::tyloi::Tensor, int> tensor();
     void expect_end() const;
 
 private:

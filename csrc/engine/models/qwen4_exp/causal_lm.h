@@ -10,10 +10,10 @@ template <class Loader>
 auto load_residual(Loader &ops, const Config &c, const std::string &p, bool combine) {
 #ifdef TYLOINFER_NATIVE_CUDA
     auto norm = std::make_shared<::tyloi::DenseTensor>(
-        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".norm.weight"))
+        ops.dense(p + ".norm.weight").dense()
             .to(::tyloi::kFloat32).contiguous());
 #else
-    auto norm = dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".norm.weight"))
+    auto norm = ops.dense(p + ".norm.weight").dense()
                     .to(::tyloi::kFloat32).contiguous();
 #endif
     auto down = ops.residual_linear(p + ".down.weight"), up = ops.residual_linear(p + ".up.weight");
@@ -56,10 +56,10 @@ auto load_ple(Loader &ops, const Config &c, const std::string &p) {
         ops.dense(p + ".key_norm.weight"), ops.dense(p + ".query_norm.weight"),
         ops.dense(p + ".conv_norm.weight"), ops.dense(p + ".conv.weight")};
 #else
-        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".key_norm.weight")),
-        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".query_norm.weight")),
-        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".conv_norm.weight")),
-        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense(p + ".conv.weight"))};
+        ops.dense(p + ".key_norm.weight").dense(),
+        ops.dense(p + ".query_norm.weight").dense(),
+        ops.dense(p + ".conv_norm.weight").dense(),
+        ops.dense(p + ".conv.weight").dense()};
 #endif
     return ops.ple(std::move(shards), rows, width, c, std::move(multipliers), std::move(offsets),
                    std::move(sizes), std::move(w));
@@ -97,15 +97,15 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     result.config = c;
 #ifdef TYLOINFER_NATIVE_CUDA
     result.embedding_norm = std::make_shared<::tyloi::DenseTensor>(
-        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight"))
+        ops.dense("predictor.embedding_norm.weight").dense()
             .to(::tyloi::kFloat32).contiguous());
     result.hidden_norm = std::make_shared<::tyloi::DenseTensor>(
-        dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight"))
+        ops.dense("predictor.hidden_norm.weight").dense()
             .to(::tyloi::kFloat32).contiguous());
 #else
-    result.embedding_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.embedding_norm.weight"))
+    result.embedding_norm = ops.dense("predictor.embedding_norm.weight").dense()
                                 .to(::tyloi::kFloat32).contiguous();
-    result.hidden_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*ops.dense("predictor.hidden_norm.weight"))
+    result.hidden_norm = ops.dense("predictor.hidden_norm.weight").dense()
                              .to(::tyloi::kFloat32).contiguous();
 #endif
     result.embedding_fusion = ops.weight("predictor.fusion.embedding.weight");

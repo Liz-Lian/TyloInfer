@@ -1,5 +1,7 @@
 #include "context.h"
-#include "mfq_cuda_kernels.h"
+#include "engine/backends/cuda/native/device.h"
+#include "engine/backends/cuda/native/memory.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kernels.h"
 #include "tensor.h"
 
 #include <cuda_fp16.h>
@@ -11,7 +13,8 @@
 #include <stdexcept>
 
 namespace {
-using namespace mfq::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
 
 void close(float actual, float expected, float atol, float rtol) {
     if (!std::isfinite(actual) || !std::isfinite(expected) ||
@@ -127,7 +130,7 @@ int main() {
     }
 
     int checked = 0;
-    for (auto dtype : {mfq::cuda::kFloat16, mfq::cuda::kFloat32}) {
+    for (auto dtype : {tyloi::kFloat16, tyloi::kFloat32}) {
         for (auto count : {0, 1, 7, 32, 255, 1024, 1031}) {
             check_glu(count, dtype, false);
             check_glu(count, dtype, true);

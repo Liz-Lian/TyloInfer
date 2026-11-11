@@ -1,26 +1,26 @@
-#include "text_emitter.h"
+#include "engine/requests/emitter.h"
 #include <cassert>
 #include <string>
 namespace {
 std::string emit_all(const std::string& text) {
-    mfq::engine::TextEmitter emitter({});
+    tyloi::engine::TextEmitter emitter({});
     assert(emitter.append(text)); assert(emitter.flush());
     return emitter.take();
 }
 }
 int main() {
     const std::string bad = "\xEF\xBF\xBD";
-    mfq::engine::TextEmitter stop({"STOP", ""});
+    tyloi::engine::TextEmitter stop({"STOP", ""});
     assert(stop.append("hello ST")); assert(stop.take() == "hello ");
     assert(!stop.append("OP ignored")); assert(stop.stopped());
     stop.flush(); assert(stop.take().empty());
     assert(!stop.append("more")); assert(stop.take().empty());
-    mfq::engine::TextEmitter utf8({});
+    tyloi::engine::TextEmitter utf8({});
     assert(utf8.append("\xE4\xB8")); assert(utf8.take().empty());
     assert(utf8.append("\xAD")); assert(utf8.take() == "\xE4\xB8\xAD");
     assert(utf8.append("\xE4")); assert(utf8.flush()); assert(utf8.take() == bad);
 
-    mfq::engine::TextEmitter invalid({});
+    tyloi::engine::TextEmitter invalid({});
     assert(invalid.append("prefix \x80")); assert(invalid.take() == "prefix " + bad);
     assert(invalid.append(" ASCII suffix")); assert(invalid.take() == " ASCII suffix");
     assert(invalid.append("\xE4\xB8")); assert(invalid.take().empty());
@@ -36,6 +36,6 @@ int main() {
     assert(emit_all("\xF0\x9F\x98") == bad);
     assert(emit_all("\xF4\x8F\xBF\xBF" "\xED\x9F\xBF") == "\xF4\x8F\xBF\xBF" "\xED\x9F\xBF");
 
-    mfq::engine::TextEmitter stopped({"STOP"});
+    tyloi::engine::TextEmitter stopped({"STOP"});
     assert(!stopped.append("a\x80" "b\xE4STOP")); assert(stopped.take() == "a" + bad + "b" + bad);
 }

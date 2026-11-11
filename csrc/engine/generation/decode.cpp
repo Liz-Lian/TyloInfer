@@ -23,22 +23,23 @@ void Decode::ensure_storage(std::int64_t vocabulary) {
     if (!counts) counts = ops::empty({vocabulary}, TensorOptions().dtype(kInt32).device(device));
 }
 void Decode::initialize_inputs(const Tensor& pending, std::int64_t position, Tensor& random_host) {
-    ops::copy_into(*static_input, *ops::reshape(pending, {1, 1}));
-    ops::copy_into(*ops::slice(*generated, 0, 0, 1), *ops::reshape(pending, {1}));
-    ops::fill(*static_pos, position);
-    ops::fill(*static_len, position + 1);
-    ops::fill(*static_step, 1);
+    ops::copy_into(static_input, ops::reshape(pending, {1, 1}));
+    auto first_generated = ops::slice(generated, 0, 0, 1);
+    ops::copy_into(first_generated, ops::reshape(pending, {1}));
+    ops::fill(static_pos, position);
+    ops::fill(static_len, position + 1);
+    ops::fill(static_step, 1);
     ops::fill(random_host, 0.5);
     upload_random(random_host);
     graph->wait();
 }
-void Decode::upload_random(const Tensor& random_host) { ops::copy_into(*random, random_host); }
-void Decode::capture_next(std::shared_ptr<Tensor> next) {
+void Decode::upload_random(const Tensor& random_host) { ops::copy_into(random, random_host); }
+void Decode::capture_next(Tensor next) {
     static_next = std::move(next);
-    ops::decode_commit(*static_next, *generated, *static_step, *static_input, *static_pos, *static_len);
+    ops::decode_commit(static_next, generated, static_step, static_input, static_pos, static_len);
 }
 bool Decode::matches(std::int64_t planned, const MfqSamplingParams& sampling, bool greedy,
-                     std::span<const std::shared_ptr<const Tensor>> owners) const {
+                     std::span<const Tensor> owners) const {
     return valid_ && planned_len == planned && greedy_ == greedy &&
         (greedy || (temperature_ == sampling.temperature && top_k_ == sampling.top_k && top_p_ == sampling.top_p)) &&
         presence_ == sampling.presence_penalty && frequency_ == sampling.frequency_penalty &&
@@ -52,7 +53,7 @@ void Decode::set_key(std::int64_t planned, const MfqSamplingParams& sampling, bo
 }
 void Decode::invalidate() {
     if (graph) graph->invalidate();
-    static_next.reset(); valid_ = false;
+    static_next = {}; valid_ = false;
 }
 } // namespace tyloi::engine
 #endif

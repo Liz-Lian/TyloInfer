@@ -25,8 +25,8 @@ private:
     Vision(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,CommonConfig config)
         :source_(std::move(source)),weights_(std::move(weights)),cache_(cache),config_(std::move(config)) {}
 #ifdef TYLOINFER_NATIVE_CUDA
-    tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> encode(
-        std::shared_ptr<const tyloi::Tensor> patches,int height,int width) const;
+    tyloi::StepSequence<::tyloi::Tensor> encode(
+        ::tyloi::Tensor patches,int height,int width) const;
 #else
     tyloi::StepSequence<DenseTensor> encode(Projector projector, DenseTensor patches,int height,int width) const;
 #endif

@@ -1,6 +1,7 @@
-#include "models/common/axial_patch_vision_ops.h"
+#include "execution_fixture.h"
+#include "engine/models/common/vision/axial_patch_vision.h"
 
-#include "tyloinfer/model_source.h"
+#include "engine/models/source.h"
 
 #include <cuda_runtime.h>
 
@@ -115,7 +116,7 @@ std::vector<float> read_floats(const std::string& path) {
 
 void write_floats(
     const std::string& path,
-    const mfq_tensor_backend::Tensor& value) {
+    const tyloi::DenseTensor& value) {
     const auto bytes = static_cast<std::size_t>(value.nbytes());
     std::ofstream output(path, std::ios::binary);
     if (!output) {
@@ -141,10 +142,9 @@ int main(int argc, char** argv) try {
         return 77;
     }
     const auto arguments = parse(argc, argv);
-    auto source = mfq::open_model_source(arguments.model);
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
-    mfq::cuda::axial_patch_vision::Config config{
+    auto source = tyloi::open_model_source(arguments.model);
+    TestExecution execution;
+    tyloi::cuda::axial_patch_vision::Config config{
         arguments.hidden,
         arguments.layers,
         arguments.heads,
@@ -156,7 +156,7 @@ int main(int argc, char** argv) try {
         1e-6,
     };
     auto tower =
-        mfq::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(
+        tyloi::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(
             execution, *source, config);
     const auto values = read_floats(arguments.patches);
     const auto expected =
@@ -166,21 +166,21 @@ int main(int argc, char** argv) try {
         throw std::invalid_argument(
             "patch file size disagrees with the requested grid");
     }
-    auto patches = mfq_tensor_backend::from_blob(
+    auto patches = tyloi::cuda::from_blob(
                        const_cast<float*>(values.data()),
                        {static_cast<std::int64_t>(arguments.height) *
                             arguments.width,
                         config.patch_width()},
-                       mfq_tensor_backend::TensorOptions()
-                           .dtype(mfq_tensor_backend::kFloat32)
-                           .device(mfq_tensor_backend::kCPU))
+                       tyloi::TensorOptions()
+                           .dtype(tyloi::kFloat32)
+                           .device(tyloi::kCPU))
                        .clone()
-                       .to(mfq_tensor_backend::kCUDA);
+                       .to(tyloi::kCUDA);
     auto encoded = tower.encode(
         execution, std::move(patches), arguments.height, arguments.width);
     auto host = encoded.to(
-                          mfq_tensor_backend::kCPU,
-                          mfq_tensor_backend::kFloat32)
+                          tyloi::kCPU,
+                          tyloi::kFloat32)
                     .contiguous();
     if (host.dim() != 2 || host.size(1) != config.output_hidden) {
         throw std::runtime_error(

@@ -47,7 +47,7 @@ public:
         Forward forward;
         Mix mixed;
         Activation activated;
-        std::shared_ptr<const ::tyloi::Tensor> weight;
+        ::tyloi::Tensor weight;
         // F32 [column, stream], or vector layout [column/4, stream, 4].
         DenseTensor prepared_right;
         // Optional FP32 coefficients or packed row/group records.
@@ -85,7 +85,7 @@ public:
 
 private:
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> norm;
+    ::tyloi::Tensor norm;
 #else
     DenseTensor norm;
 #endif

@@ -11,7 +11,7 @@ namespace tyloi::cuda::grid_vision_runtime {
 namespace {
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::shared_ptr<const tyloi::Tensor> required_vector(const ::tyloi::weights::Loader& weights,
+::tyloi::Tensor required_vector(const ::tyloi::weights::Loader& weights,
 #else
 ::tyloi::DenseTensor required_vector(const ::tyloi::weights::Loader& weights,
 #endif
@@ -19,9 +19,9 @@ std::shared_ptr<const tyloi::Tensor> required_vector(const ::tyloi::weights::Loa
     const auto name = grid_vision_canonical_name(role, block);
 #ifdef TYLOINFER_NATIVE_CUDA
     auto value = weights.tensor(name);
-    if (value->dim() != 1 || value->size(0) != width) {
+    if (value.dim() != 1 || value.size(0) != width) {
 #else
-    auto value = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
+    auto value = weights.tensor(name).dense();
     if (value.dim() != 1 || value.size(0) != width) {
 #endif
         throw std::runtime_error("grid-ViT vector shape mismatch: " + name);
@@ -48,16 +48,15 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader
 #ifdef TYLOINFER_NATIVE_CUDA
     auto patch_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::patch_weight));
 #else
-    auto patch_weight = dynamic_cast<const ::tyloi::DenseTensor&>(
-        *weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::patch_weight)));
+    auto patch_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::patch_weight)).dense();
 #endif
     const std::vector<int64_t> expected_patch{hidden, config.in_channels,
                                               config.temporal_patch_size, config.patch_size,
                                               config.patch_size};
 #ifdef TYLOINFER_NATIVE_CUDA
-    if (patch_weight->dim() != 5 || patch_weight->size(0) != expected_patch[0] ||
-        patch_weight->size(1) != expected_patch[1] || patch_weight->size(2) != expected_patch[2] ||
-        patch_weight->size(3) != expected_patch[3] || patch_weight->size(4) != expected_patch[4]) {
+    if (patch_weight.dim() != 5 || patch_weight.size(0) != expected_patch[0] ||
+        patch_weight.size(1) != expected_patch[1] || patch_weight.size(2) != expected_patch[2] ||
+        patch_weight.size(3) != expected_patch[3] || patch_weight.size(4) != expected_patch[4]) {
 #else
     if (patch_weight.sizes().vec() != expected_patch) {
 #endif
@@ -67,12 +66,11 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader
         required_vector(weights, GridVisionTensorRole::patch_bias, hidden);
 #ifdef TYLOINFER_NATIVE_CUDA
     auto position_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::position_weight));
-    if (position_weight->dim() != 2 ||
-        position_weight->size(0) != config.num_position_embeddings ||
-        position_weight->size(1) != hidden) {
+    if (position_weight.dim() != 2 ||
+        position_weight.size(0) != config.num_position_embeddings ||
+        position_weight.size(1) != hidden) {
 #else
-    auto position_weight = dynamic_cast<const ::tyloi::DenseTensor&>(
-        *weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::position_weight)));
+    auto position_weight = weights.tensor(grid_vision_canonical_name(GridVisionTensorRole::position_weight)).dense();
     if (position_weight.dim() != 2 ||
         position_weight.size(0) != config.num_position_embeddings ||
         position_weight.size(1) != hidden) {
@@ -108,14 +106,14 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader
                 grid_vision_canonical_name(GridVisionTensorRole::block_mlp_down_weight, index),
                 grid_vision_canonical_name(GridVisionTensorRole::block_mlp_down_bias, index)),
         };
-        if (block.attention.qkv.weight->size(1) != hidden ||
-            block.attention.qkv.weight->size(0) != 3 * hidden ||
-            block.attention.output.weight->size(1) != hidden ||
-            block.attention.output.weight->size(0) != hidden ||
-            block.mlp_up.weight->size(1) != hidden ||
-            block.mlp_up.weight->size(0) != config.intermediate_size ||
-            block.mlp_down.weight->size(1) != config.intermediate_size ||
-            block.mlp_down.weight->size(0) != hidden) {
+        if (block.attention.qkv.weight.size(1) != hidden ||
+            block.attention.qkv.weight.size(0) != 3 * hidden ||
+            block.attention.output.weight.size(1) != hidden ||
+            block.attention.output.weight.size(0) != hidden ||
+            block.mlp_up.weight.size(1) != hidden ||
+            block.mlp_up.weight.size(0) != config.intermediate_size ||
+            block.mlp_down.weight.size(1) != config.intermediate_size ||
+            block.mlp_down.weight.size(0) != hidden) {
             throw std::runtime_error("grid-ViT transformer block geometry mismatch");
         }
         blocks.push_back(std::move(block));
@@ -125,8 +123,8 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const ::tyloi::weights::Loader
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> CudaGridVisionEncoder::encode(
-    std::shared_ptr<tyloi::Tensor> pixels,
+tyloi::StepSequence<::tyloi::Tensor> CudaGridVisionEncoder::encode(
+    ::tyloi::Tensor pixels,
 #else
 tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
     Projector projector,
@@ -135,7 +133,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
     const std::vector<GridShape> &grids) const {
     // Everything this encoder stages follows the pixels' device.
 #ifdef TYLOINFER_NATIVE_CUDA
-    const auto device = pixels->device();
+    const auto device = pixels.device();
 #else
     const auto device = pixels.device();
 #endif
@@ -143,10 +141,10 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
         std::move(pixels), config_, grids, blocks_,
         [this, device](auto input, int64_t count) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            if (input->dim() == 5)
-                input = tyloi::ops::reshape(*input, {input->size(0), -1});
-            if (input->dim() != 2 || input->size(0) != count ||
-                input->size(1) != config_.patch_width())
+            if (input.dim() == 5)
+                input = tyloi::ops::reshape(input, {input.size(0), -1});
+            if (input.dim() != 2 || input.size(0) != count ||
+                input.size(1) != config_.patch_width())
 #else
             if (input.dim() == 5)
                 input = input.reshape({input.size(0), -1});
@@ -157,13 +155,13 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                     "grid-ViT pixel values must be flattened CxTxHxW patches");
             auto run = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto weight = tyloi::ops::cast(*patch_weight_, patch_weight_->scalar_type(), device);
-                weight = tyloi::ops::reshape(*weight, {config_.hidden_size, config_.patch_width()});
-                auto output = tyloi::ops::matmul(*tyloi::ops::cast(*input, weight->scalar_type()),
-                                               *tyloi::ops::transpose(*weight, 0, 1));
-                auto bias = tyloi::ops::cast(*patch_bias_, patch_bias_->scalar_type(), device);
-                bias = tyloi::ops::cast(*bias, output->scalar_type());
-                return tyloi::ops::add(*output, *bias);
+                auto weight = tyloi::ops::cast(patch_weight_, patch_weight_.scalar_type(), device);
+                weight = tyloi::ops::reshape(weight, {config_.hidden_size, config_.patch_width()});
+                auto output = tyloi::ops::matmul(tyloi::ops::cast(input, weight.scalar_type()),
+                                               tyloi::ops::transpose(weight, 0, 1));
+                auto bias = tyloi::ops::cast(patch_bias_, patch_bias_.scalar_type(), device);
+                bias = tyloi::ops::cast(bias, output.scalar_type());
+                return tyloi::ops::add(output, bias);
 #else
                 auto weight = patch_weight_.to(::tyloi::kCUDA)
                                   .reshape({config_.hidden_size, config_.patch_width()});
@@ -176,7 +174,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
             if (!host_weights()) return run();
             tyloi::weights::Loan loan(weights_,
 #ifdef TYLOINFER_NATIVE_CUDA
-                       patch_weight_->nbytes() + patch_bias_->nbytes() +
+                       patch_weight_.nbytes() + patch_bias_.nbytes() +
 #else
                        patch_weight_.nbytes() + patch_bias_.nbytes() +
 #endif
@@ -184,22 +182,22 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 #ifdef TYLOINFER_NATIVE_CUDA
             return loan.finish(run());
 #else
-            return DenseTensor(dynamic_cast<const DenseTensor&>(*loan.finish(std::make_shared<DenseTensor>(run()))));
+            return DenseTensor(loan.finish(std::make_shared<DenseTensor>(run())).dense());
 #endif
         },
         [this, device](const LearnedPositionInterpolation &interpolation) {
             auto run = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto position_weight = tyloi::ops::cast(*position_weight_, position_weight_->scalar_type(), device);
+                auto position_weight = tyloi::ops::cast(position_weight_, position_weight_.scalar_type(), device);
                 auto index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
-                index = tyloi::ops::cast(*index, ::tyloi::kInt32, position_weight->device());
-                index = tyloi::ops::cast(*index, ::tyloi::kInt64);
+                index = tyloi::ops::cast(index, ::tyloi::kInt32, position_weight.device());
+                index = tyloi::ops::cast(index, ::tyloi::kInt64);
                 auto weights = tyloi::ops::tensor(interpolation.weights, tyloi::Device{tyloi::DeviceType::cpu, 0});
-                weights = tyloi::ops::reshape(*weights, {interpolation.patch_count, 4, 1});
-                weights = tyloi::ops::cast(*weights, ::tyloi::kFloat32, position_weight->device());
-                auto selected = tyloi::ops::index_select(*position_weight, 0, *tyloi::ops::reshape(*index, {-1}));
-                selected = tyloi::ops::reshape(*selected, {interpolation.patch_count, 4, config_.hidden_size});
-                return tyloi::ops::sum(*tyloi::ops::multiply(*selected, *weights), 1);
+                weights = tyloi::ops::reshape(weights, {interpolation.patch_count, 4, 1});
+                weights = tyloi::ops::cast(weights, ::tyloi::kFloat32, position_weight.device());
+                auto selected = tyloi::ops::index_select(position_weight, 0, tyloi::ops::reshape(index, {-1}));
+                selected = tyloi::ops::reshape(selected, {interpolation.patch_count, 4, config_.hidden_size});
+                return tyloi::ops::sum(tyloi::ops::multiply(selected, weights), 1);
 #else
                 auto position_weight = position_weight_.to(::tyloi::kCUDA);
                 auto index = ::tyloi::cuda::tensor(
@@ -226,7 +224,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
             if (!host_weights()) return run();
             tyloi::weights::Loan loan(weights_,
 #ifdef TYLOINFER_NATIVE_CUDA
-                       position_weight_->nbytes() +
+                       position_weight_.nbytes() +
 #else
                        position_weight_.nbytes() +
 #endif
@@ -234,13 +232,13 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 #ifdef TYLOINFER_NATIVE_CUDA
             return loan.finish(run());
 #else
-            return DenseTensor(dynamic_cast<const DenseTensor&>(*loan.finish(std::make_shared<DenseTensor>(run()))));
+            return DenseTensor(loan.finish(std::make_shared<DenseTensor>(run())).dense());
 #endif
         },
         [](auto hidden, auto learned) {
 #ifdef TYLOINFER_NATIVE_CUDA
-            auto dtype = hidden->scalar_type();
-            return tyloi::ops::add(*hidden, *tyloi::ops::cast(*learned, dtype));
+            auto dtype = hidden.scalar_type();
+            return tyloi::ops::add(hidden, tyloi::ops::cast(learned, dtype));
 #else
             return hidden + learned.to(hidden.scalar_type());
 #endif
@@ -257,10 +255,10 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                 std::max<int64_t>(3 * config_.hidden_size, config_.intermediate_size);
             if (host_weights()) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                tyloi::weights::Loan loan(weights_, ::tyloi::weights::fields::bytes(block) + value->nbytes() * 16 + projection_scratch +
-                           std::size_t(value->size(0) * config_.intermediate_size) * 12 +
+                tyloi::weights::Loan loan(weights_, ::tyloi::weights::fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
+                           std::size_t(value.size(0) * config_.intermediate_size) * 12 +
                            (std::size_t(16) << 20));
-                std::shared_ptr<tyloi::Tensor> output;
+                ::tyloi::Tensor output;
 #else
                 tyloi::weights::Loan loan(weights_, ::tyloi::weights::fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
                            std::size_t(value.size(0) * config_.intermediate_size) * 12 +
@@ -271,7 +269,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
                     // Block weights stage on the same device as the hidden state.
                     auto resident = block;
 #ifdef TYLOINFER_NATIVE_CUDA
-                    ::tyloi::weights::fields::to_device(resident, value->device());
+                    ::tyloi::weights::fields::to_device(resident, value.device());
 #else
                     ::tyloi::weights::fields::to_device(resident, value.device());
 #endif
@@ -284,7 +282,7 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 #ifdef TYLOINFER_NATIVE_CUDA
                 return loan.finish(std::move(output));
 #else
-                return DenseTensor(dynamic_cast<const DenseTensor&>(*loan.finish(std::make_shared<DenseTensor>(std::move(output)))));
+                return DenseTensor(loan.finish(std::make_shared<DenseTensor>(std::move(output))).dense());
 #endif
             }
             return block(
@@ -298,8 +296,8 @@ tyloi::StepSequence<DenseTensor> CudaGridVisionEncoder::encode(
 CudaGridVisionEncoder::CudaGridVisionEncoder(
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::weights::Cache& weights, GridVisionConfig config,
-    std::shared_ptr<const tyloi::Tensor> patch_weight, std::shared_ptr<const tyloi::Tensor> patch_bias,
-    std::shared_ptr<const tyloi::Tensor> position_weight,
+    ::tyloi::Tensor patch_weight, ::tyloi::Tensor patch_bias,
+    ::tyloi::Tensor position_weight,
 #else
     ::tyloi::weights::Cache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias, DenseTensor position_weight,
 #endif
@@ -337,9 +335,9 @@ CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
     auto merger_down = placed.affine(
         grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_down_weight),
         grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_down_bias));
-    if (merger_up.weight->size(1) != unit * vision.hidden_size ||
-        merger_down.weight->size(1) != merger_up.weight->size(0) ||
-        merger_down.weight->size(0) != vision.out_hidden_size) {
+    if (merger_up.weight.size(1) != unit * vision.hidden_size ||
+        merger_down.weight.size(1) != merger_up.weight.size(0) ||
+        merger_down.weight.size(0) != vision.out_hidden_size) {
         throw std::runtime_error("grid-Vision merger geometry mismatch");
     }
     return CudaGridVisionPromptComponent(

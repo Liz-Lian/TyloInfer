@@ -18,7 +18,7 @@ void require(bool value, const char* message) {
 void coverage(int threads, int count) {
     std::vector<std::atomic<int>> visits(count);
     for (auto& visit : visits) visit.store(0);
-    mfq::host_parallel_for(17, 17 + count, 3, threads,
+    tyloi::host_parallel_for(17, 17 + count, 3, threads,
         [&](std::int64_t begin, std::int64_t end) {
             for (auto i = begin; i < end; ++i) ++visits[i-17];
         });
@@ -28,7 +28,7 @@ void coverage(int threads, int count) {
 void copy_checks() {
     const std::size_t width=(1u<<20)+7;
     std::vector<std::vector<unsigned char>> inputs(4),outputs(4);
-    std::vector<mfq::HostCopy> copies;
+    std::vector<tyloi::HostCopy> copies;
     for(std::size_t i=0;i<inputs.size();++i) {
         inputs[i].resize(width);
         for(std::size_t j=0;j<width;++j)inputs[i][j]=static_cast<unsigned char>(j*17+i*79);
@@ -36,7 +36,7 @@ void copy_checks() {
         copies.push_back({outputs[i].data()+1,inputs[i].data(),width});
     }
     for(int round=0;round<3;++round) {
-        mfq::copy_host_ranges(copies);
+        tyloi::copy_host_ranges(copies);
         for(std::size_t i=0;i<inputs.size();++i)
             require(outputs[i].front()==0x5a && outputs[i].back()==0x5a &&
                     std::equal(inputs[i].begin(),inputs[i].end(),outputs[i].begin()+1),
@@ -50,20 +50,20 @@ void copy_checks() {
                                  262145u,1048579u,2097151u,2097152u})
         for(const std::size_t dst:{0u,1u,7u,63u})for(const std::size_t src:{0u,3u,13u,63u}) {
             std::vector<unsigned char> output(bytes+192,0x5a);
-            mfq::copy_host_range({output.data()+64+dst,input.data()+src,bytes});
+            tyloi::copy_host_range({output.data()+64+dst,input.data()+src,bytes});
             require(std::equal(input.begin()+src,input.begin()+src+bytes,output.begin()+64+dst) &&
                     std::all_of(output.begin(),output.begin()+64+dst,[](auto c){return c==0x5a;}) &&
                     std::all_of(output.begin()+64+dst+bytes,output.end(),[](auto c){return c==0x5a;}),
                     "host upload threshold or alignment changed bytes outside the destination");
         }
-    mfq::copy_host_ranges({{nullptr,nullptr,0}});
-    mfq::copy_host_range({nullptr,nullptr,0});
+    tyloi::copy_host_ranges({{nullptr,nullptr,0}});
+    tyloi::copy_host_range({nullptr,nullptr,0});
     bool invalid_single=false;
-    try{mfq::copy_host_range({nullptr,input.data(),1});}
+    try{tyloi::copy_host_range({nullptr,input.data(),1});}
     catch(const std::invalid_argument&){invalid_single=true;}
     require(invalid_single,"single host copy accepted a null destination");
     unsigned char guard=0x5a;bool rejected=false;
-    try{mfq::copy_host_ranges({{&guard,inputs[0].data(),1},{nullptr,inputs[1].data(),1}});}
+    try{tyloi::copy_host_ranges({{&guard,inputs[0].data(),1},{nullptr,inputs[1].data(),1}});}
     catch(const std::invalid_argument&){rejected=true;}
     require(rejected && guard==0x5a,"invalid host copy modified an earlier destination");
 }
@@ -98,13 +98,13 @@ void benchmark() {
     };
     baseline(outputs, threads, work);
     reference=result;
-    mfq::host_parallel_for(0, outputs, 1, threads, work);
+    tyloi::host_parallel_for(0, outputs, 1, threads, work);
     require(result==reference, "dispatch changed expert projection results");
     for (int round=0; round<3; ++round) {
         auto start=std::chrono::steady_clock::now();
         for (int i=0; i<operations; ++i) baseline(outputs, threads, work);
         auto middle=std::chrono::steady_clock::now();
-        for (int i=0; i<operations; ++i) mfq::host_parallel_for(0, outputs, 1, threads, work);
+        for (int i=0; i<operations; ++i) tyloi::host_parallel_for(0, outputs, 1, threads, work);
         auto end=std::chrono::steady_clock::now();
         const double old_ms=std::chrono::duration<double,std::milli>(middle-start).count();
         const double new_ms=std::chrono::duration<double,std::milli>(end-middle).count();
@@ -117,8 +117,8 @@ void benchmark() {
 }
 
 void profile_checks() {
-    mfq::HostParallelPool pool;
-    const auto check=[](const mfq::HostParallelProfile& p,int rows,int participants) {
+    tyloi::HostParallelPool pool;
+    const auto check=[](const tyloi::HostParallelProfile& p,int rows,int participants) {
         require(!p.failed && p.rows==static_cast<std::uint64_t>(rows),"profile lost completed rows");
         require(p.participants==participants && p.callbacks>0,"profile dispatch counts differ");
         require(p.work_ns>=p.caller_work_ns && p.wall_ns>=p.caller_work_ns,"profile work timing invalid");
@@ -126,14 +126,14 @@ void profile_checks() {
         require(p.worker_wake_max_ns<=p.wall_ns,"profile worker timestamp outside dispatch");
     };
     std::atomic<int> completed{0};
-    mfq::HostParallelProfile serial;
+    tyloi::HostParallelProfile serial;
     pool.run(11,18,1,1,[&](auto b,auto e){completed+=static_cast<int>(e-b);},&serial);
     check(serial,7,1);
     for(int i=0;i<100;++i) {
-        mfq::HostParallelProfile outer;
+        tyloi::HostParallelProfile outer;
         pool.run(0,37,1,6,[&](auto b,auto e) {
             for(auto row=b;row<e;++row) {
-                mfq::HostParallelProfile inner;
+                tyloi::HostParallelProfile inner;
                 pool.run(0,7,1,6,[&](auto a,auto z){completed+=static_cast<int>(z-a);},&inner);
                 check(inner,7,1);
             }
@@ -144,26 +144,26 @@ void profile_checks() {
     require(completed==7+100*37*7,"profile changed nested results");
     auto client=[&] {
         for(int i=0;i<100;++i) {
-            mfq::HostParallelProfile p;
+            tyloi::HostParallelProfile p;
             pool.run(0,83,1,6,[&](auto b,auto e){completed+=static_cast<int>(e-b);},&p);
             check(p,83,6);
         }
     };
     std::thread first(client),second(client);first.join();second.join();
     require(completed==7+100*37*7+200*83,"profile changed concurrent results");
-    mfq::HostParallelProfile failed;
+    tyloi::HostParallelProfile failed;
     bool rejected=false;
     try {pool.run(0,640,1,6,[](auto,auto){throw std::runtime_error("observed failure");},&failed);}
     catch(const std::runtime_error&) {rejected=true;}
     require(rejected && failed.failed && failed.wall_ns>0,"profile swallowed callback failure");
-    mfq::HostParallelProfile recovered;
+    tyloi::HostParallelProfile recovered;
     pool.run(0,640,1,6,[](auto,auto){},&recovered);check(recovered,640,6);
     pool.run(0,0,1,6,[](auto,auto){throw std::runtime_error("empty profile work");},&recovered);
     require(recovered.rows==0 && recovered.wall_ns==0 && recovered.participants==0,"empty profile retained previous counts");
     std::cout<<"Host pool profile: exact counts, nested/concurrent isolation, failure propagation and recovery PASS\n";
 }
 void callback_lifetime_checks() {
-    mfq::HostParallelPool pool({},false);
+    tyloi::HostParallelPool pool({},false);
     std::atomic<int> visited{0};
     int expected_visited=0;
     for(int i=0;i<2000;++i) {
@@ -171,7 +171,7 @@ void callback_lifetime_checks() {
         std::atomic<int> callbacks{0};
         std::vector<std::atomic<int>> outer_visits(37);
         for(auto& visit:outer_visits)visit=0;
-        mfq::HostParallelProfile profile;
+        tyloi::HostParallelProfile profile;
         pool.run(0,37,1,6,[&](auto begin,auto end) {
             if(!alive.load())throw std::runtime_error("retired worker used an expired callback");
             ++callbacks;
@@ -194,7 +194,7 @@ void callback_lifetime_checks() {
     std::vector<std::atomic<int>> visits(640);
     pool.run(0,640,1,6,[&](auto begin,auto end){for(auto i=begin;i<end;++i)++visits[i];});
     for(const auto& visit:visits)require(visit==1,"retired dispatch recovery duplicated rows");
-    mfq::HostParallelPool broken([](auto){throw std::runtime_error("retired initialization failure");},false);
+    tyloi::HostParallelPool broken([](auto){throw std::runtime_error("retired initialization failure");},false);
     rejected=false;
     try{broken.run(0,640,1,6,[](auto,auto){});}catch(const std::runtime_error&){rejected=true;}
     require(rejected,"retired pool ignored worker initialization failure");
@@ -203,7 +203,7 @@ void callback_lifetime_checks() {
 
 void staged_checks() {
     for (bool wait_idle : {false, true}) {
-        mfq::HostParallelPool pool({}, wait_idle);
+        tyloi::HostParallelPool pool({}, wait_idle);
         const auto caller = std::this_thread::get_id();
         for (int threads : {1, 3, 8}) for (int count : {0, 1, 3, 18, 97})
             for (int prefix : {0, count / 2, count}) for (int repeat = 0; repeat < 10; ++repeat) {
@@ -268,7 +268,7 @@ void staged_checks() {
         std::thread first(client), second(client);
         first.join(); second.join();
         require(work_count == 3600 && ready_count == 200, "concurrent staged calls changed coverage");
-        mfq::HostParallelPool broken([](auto) { throw std::runtime_error("staged initialization failure"); }, wait_idle);
+        tyloi::HostParallelPool broken([](auto) { throw std::runtime_error("staged initialization failure"); }, wait_idle);
         bool initialization_failed = false;
         try { broken.run_staged(18, 12, 6, [](auto, auto) {}, [] {}); }
         catch (const std::runtime_error&) { initialization_failed = true; }
@@ -295,23 +295,23 @@ int main(int argc, char**) {
         });
         for (auto& caller : callers) caller.join();
         std::atomic<int> nested{0};
-        mfq::host_parallel_for(0, 12, 1, 12, [&](auto begin, auto end) {
+        tyloi::host_parallel_for(0, 12, 1, 12, [&](auto begin, auto end) {
             for (auto i=begin; i<end; ++i)
-                mfq::host_parallel_for(0, 7, 1, 12, [&](auto b, auto e) { nested += int(e-b); });
+                tyloi::host_parallel_for(0, 7, 1, 12, [&](auto b, auto e) { nested += int(e-b); });
         });
         require(nested==84, "nested work deadlocked or was omitted");
         bool rejected=false;
         try {
-            mfq::host_parallel_for(0, 640, 1, 12, [](auto, auto) { throw std::runtime_error("injected"); });
+            tyloi::host_parallel_for(0, 640, 1, 12, [](auto, auto) { throw std::runtime_error("injected"); });
         } catch (const std::runtime_error&) { rejected=true; }
         require(rejected, "worker error did not propagate");
         coverage(12, 640);
-        mfq::HostParallelPool broken([](std::size_t) { throw std::runtime_error("worker init failed"); });
+        tyloi::HostParallelPool broken([](std::size_t) { throw std::runtime_error("worker init failed"); });
         rejected = false;
         try { broken.run(0, 640, 1, 4, [](auto, auto) {}); }
         catch (const std::runtime_error& error) { rejected = std::string(error.what()) == "worker init failed"; }
         require(rejected, "worker initialization failure did not reach the caller");
-        mfq::host_parallel_for(0, 0, 1, 12, [](auto, auto) { throw std::runtime_error("empty work invoked"); });
+        tyloi::host_parallel_for(0, 0, 1, 12, [](auto, auto) { throw std::runtime_error("empty work invoked"); });
         copy_checks();
         std::cout << "Host pool: coverage, concurrency, nested work, copy guards and failure recovery passed\n";
         if (argc>1) benchmark();

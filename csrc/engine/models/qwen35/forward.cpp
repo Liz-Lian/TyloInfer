@@ -45,11 +45,11 @@ DenseTensor copy_to_layer(Collectives& collectives, DenseTensor value, const Lay
 AttentionStep layer_step(Collectives& collectives, const Layer& layer,
                          const AttentionStep& step) {
     AttentionStep local = step;
-    local.positions = copy_to_layer(collectives, DenseTensor(step.positions), layer);
-    if (step.sequence_lengths.has_value())
-        local.sequence_lengths = copy_to_layer(collectives, DenseTensor(*step.sequence_lengths), layer);
-    if (step.cache_positions.has_value())
-        local.cache_positions = copy_to_layer(collectives, DenseTensor(*step.cache_positions), layer);
+    local.positions = copy_to_layer(collectives, step.positions.dense(), layer);
+    if (step.sequence_lengths.defined())
+        local.sequence_lengths = copy_to_layer(collectives, step.sequence_lengths.dense(), layer);
+    if (step.cache_positions.defined())
+        local.cache_positions = copy_to_layer(collectives, step.cache_positions.dense(), layer);
     return local;
 }
 
@@ -225,7 +225,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
     semantic = semantic.contiguous();
     const auto rank = semantic.dim();
 #ifdef TYLOINFER_NATIVE_CUDA
-    const bool has_mrope = model.rope.sections && model.rope.sections->numel() > 0;
+    const bool has_mrope = model.rope.sections && model.rope.sections.numel() > 0;
 #else
     const bool has_mrope = model.rope.sections.numel() > 0;
 #endif

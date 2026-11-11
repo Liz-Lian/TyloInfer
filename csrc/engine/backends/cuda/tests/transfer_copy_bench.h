@@ -2,10 +2,10 @@
 #include "kernels/moe/pipeline.h"
 
 static void benchmark_transfer_copy(bool timings=true) {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     int blocks=0,threads=0;TYLOINFER_CUDA_CHECK(moe_wire_launch_geometry(&blocks,&threads));
-    const auto gpu=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
+    const auto gpu=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
     HostBuffer flags(128,true);uint32_t* flag_device=nullptr;
     TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&flag_device),flags.data(),0));
     auto* flag_host=static_cast<uint32_t*>(flags.data());flag_host[0]=1;flag_host[16]=0;
@@ -13,8 +13,8 @@ static void benchmark_transfer_copy(bool timings=true) {
     for(int fields:{0,1,8,64,257})for(int width:{113,4109,131072})for(int misalign:{0,1,4}) {
         const int pitch=(width+31)&~15,bytes=fields*pitch+16;
         const int header=(int(32+fields*24)+15)&~15;
-        auto host=tb::zeros({header+bytes},gpu.device(tb::kCPU));auto* raw=host.data_ptr<uint8_t>();
-        auto destination=tb::empty({bytes*2},gpu);auto cancel=tb::zeros({1},gpu.dtype(tb::kInt32));
+        auto host=tb::zeros({header+bytes},gpu.device(tyloi::kCPU));auto* raw=host.data_ptr<uint8_t>();
+        auto destination=tb::empty({bytes*2},gpu);auto cancel=tb::zeros({1},gpu.dtype(tyloi::kInt32));
         auto* words=reinterpret_cast<uint64_t*>(raw);
         words[0]=fields;words[1]=header;words[2]=header+fields*pitch;words[3]=header+(fields/2)*pitch;
         for(int i=0;i<bytes;++i)raw[header+i]=uint8_t(i%251);
@@ -22,7 +22,7 @@ static void benchmark_transfer_copy(bool timings=true) {
             words[4+i*3]=reinterpret_cast<uint64_t>(destination.data_ptr<uint8_t>()+i*pitch+misalign);
             words[5+i*3]=header+i*pitch;words[6+i*3]=width;
         }
-        auto wire=host.to(tb::kCUDA);
+        auto wire=host.to(tyloi::kCUDA);
         const auto half=std::size_t(32+fields*sizeof(MoeMappedCopyDescriptor));
         HostBuffer table(half*2,true);void* alias=nullptr;
         TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(&alias,table.data(),0));

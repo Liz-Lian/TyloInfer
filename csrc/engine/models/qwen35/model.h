@@ -25,7 +25,7 @@ using Config = tyloi::models::qwen35::Config;
 struct Full {
     FullAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+    ::tyloi::Tensor ffn_norm;
 #else
     DenseTensor ffn_norm;
 #endif
@@ -35,7 +35,7 @@ struct Full {
 struct Linear {
     LinearAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> ffn_norm;
+    ::tyloi::Tensor ffn_norm;
 #else
     DenseTensor ffn_norm;
 #endif
@@ -62,16 +62,16 @@ struct Model {
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
 #endif
-    std::shared_ptr<const ::tyloi::Tensor> embed;
-    std::shared_ptr<const ::tyloi::Tensor> lm_head;
+    ::tyloi::Tensor embed;
+    ::tyloi::Tensor lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+    ::tyloi::Tensor output_norm;
 #else
     DenseTensor output_norm;
 #endif
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const;
+    ::tyloi::Tensor embedding(const tyloi::Tensor& ids, int primary = 0) const;
 #endif
 };
 

@@ -32,21 +32,21 @@ int run_backend_bf16_add_check(
     TYLOINFER_RUNTIME_CHECK(
         repetitions > 0,
         "backend BF16 add repetitions must be positive");
-    auto sequence = mfq_tensor_backend::arange(
+    auto sequence = tyloi::cuda::arange(
         elements,
-        mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::kCUDA)
-            .dtype(mfq_tensor_backend::kFloat32));
+        tyloi::TensorOptions()
+            .device(tyloi::kCUDA)
+            .dtype(tyloi::kFloat32));
     auto left = ((sequence.remainder(257) - 128.0) / 64.0)
-        .to(mfq_tensor_backend::kBFloat16).contiguous();
+        .to(tyloi::kBFloat16).contiguous();
     auto right = ((sequence.remainder(131) - 65.0) / 32.0)
-        .to(mfq_tensor_backend::kBFloat16).contiguous();
+        .to(tyloi::kBFloat16).contiguous();
 
-    mfq_tensor_backend::Tensor eager;
+    tyloi::DenseTensor eager;
     for (int warmup = 0; warmup < 30; ++warmup) {
         eager = (left + right).contiguous();
     }
-    mfq_cuda_synchronize();
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
     cudaEvent_t eager_start = nullptr;
     cudaEvent_t eager_stop = nullptr;
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&eager_start));
@@ -67,9 +67,9 @@ int run_backend_bf16_add_check(
     MfqCudaStreamGuard graph_guard(graph_stream);
     MfqCudaGraph graph;
     mfq_prepare_cuda_graph_memory(graph);
-    mfq_tensor_backend::Tensor graph_result = (left + right).contiguous();
+    tyloi::DenseTensor graph_result = (left + right).contiguous();
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
-    graph_result = mfq_tensor_backend::Tensor();
+    graph_result = tyloi::DenseTensor();
     graph.capture_begin();
     graph_result = (left + right).contiguous();
     graph.capture_end();
@@ -92,14 +92,14 @@ int run_backend_bf16_add_check(
     TYLOINFER_CUDA_CHECK(cudaEventDestroy(graph_stop));
 
     const auto difference = (
-        graph_result.to(mfq_tensor_backend::kFloat32) -
-        eager.to(mfq_tensor_backend::kFloat32)).abs();
+        graph_result.to(tyloi::kFloat32) -
+        eager.to(tyloi::kFloat32)).abs();
     const double maximum = difference.max().item<double>();
     TYLOINFER_RUNTIME_CHECK(
         maximum == 0.0 &&
-            mfq_tensor_backend::isfinite(graph_result).all().item<bool>(),
+            tyloi::cuda::isfinite(graph_result).all().item<bool>(),
         "backend BF16 add graph result differs from eager output");
-    graph_result = mfq_tensor_backend::Tensor();
+    graph_result = tyloi::DenseTensor();
     graph.reset();
 
     constexpr int chain_nodes = 512;
@@ -107,12 +107,12 @@ int run_backend_bf16_add_check(
         std::max(100, repetitions / 50);
     MfqCudaGraph chain_graph;
     mfq_prepare_cuda_graph_memory(chain_graph);
-    mfq_tensor_backend::Tensor chain_result;
+    tyloi::DenseTensor chain_result;
     for (int node = 0; node < chain_nodes; ++node) {
         chain_result = (left + right).contiguous();
     }
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
-    chain_result = mfq_tensor_backend::Tensor();
+    chain_result = tyloi::DenseTensor();
     chain_graph.capture_begin();
     for (int node = 0; node < chain_nodes; ++node) {
         chain_result = (left + right).contiguous();
@@ -139,30 +139,30 @@ int run_backend_bf16_add_check(
     TYLOINFER_CUDA_CHECK(cudaEventDestroy(chain_start));
     TYLOINFER_CUDA_CHECK(cudaEventDestroy(chain_stop));
     const auto chain_difference = (
-        chain_result.to(mfq_tensor_backend::kFloat32) -
-        eager.to(mfq_tensor_backend::kFloat32)).abs();
+        chain_result.to(tyloi::kFloat32) -
+        eager.to(tyloi::kFloat32)).abs();
     const double chain_maximum =
         chain_difference.max().item<double>();
     TYLOINFER_RUNTIME_CHECK(
         chain_maximum == 0.0 &&
-            mfq_tensor_backend::isfinite(chain_result).all().item<bool>(),
+            tyloi::cuda::isfinite(chain_result).all().item<bool>(),
         "backend BF16 add chain Graph differs from eager output");
     const double chain_graph_us =
         1000.0 * static_cast<double>(chain_ms) /
         chain_repetitions;
-    chain_result = mfq_tensor_backend::Tensor();
+    chain_result = tyloi::DenseTensor();
     chain_graph.reset();
 
     auto shared_reference = silu_mul_cuda(left, right);
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
     MfqCudaGraph shared_graph;
     mfq_prepare_cuda_graph_memory(shared_graph);
-    mfq_tensor_backend::Tensor shared_result;
+    tyloi::DenseTensor shared_result;
     for (int node = 0; node < chain_nodes; ++node) {
         shared_result = silu_mul_cuda(left, right);
     }
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
-    shared_result = mfq_tensor_backend::Tensor();
+    shared_result = tyloi::DenseTensor();
     shared_graph.capture_begin();
     for (int node = 0; node < chain_nodes; ++node) {
         shared_result = silu_mul_cuda(left, right);
@@ -189,13 +189,13 @@ int run_backend_bf16_add_check(
     TYLOINFER_CUDA_CHECK(cudaEventDestroy(shared_start));
     TYLOINFER_CUDA_CHECK(cudaEventDestroy(shared_stop));
     const auto shared_difference = (
-        shared_result.to(mfq_tensor_backend::kFloat32) -
-        shared_reference.to(mfq_tensor_backend::kFloat32)).abs();
+        shared_result.to(tyloi::kFloat32) -
+        shared_reference.to(tyloi::kFloat32)).abs();
     const double shared_maximum =
         shared_difference.max().item<double>();
     TYLOINFER_RUNTIME_CHECK(
         shared_maximum == 0.0 &&
-            mfq_tensor_backend::isfinite(shared_result).all().item<bool>(),
+            tyloi::cuda::isfinite(shared_result).all().item<bool>(),
         "shared BF16 SwiGLU chain Graph differs from eager output");
     const double shared_graph_us =
         1000.0 * static_cast<double>(shared_ms) /
@@ -222,7 +222,7 @@ int run_backend_bf16_add_check(
 static int run_backend_argmax_dtype_check(
         int64_t elements,
         int repetitions,
-        mfq_tensor_backend::ScalarType dtype) {
+        tyloi::ScalarType dtype) {
     TYLOINFER_RUNTIME_CHECK(
         elements > 0 && elements <= (1LL << 30),
         "backend argmax element count is out of range");
@@ -230,11 +230,11 @@ static int run_backend_argmax_dtype_check(
         repetitions > 0,
         "backend argmax repetitions must be positive");
     const int64_t expected = elements * 3 / 5;
-    auto sequence = mfq_tensor_backend::arange(
+    auto sequence = tyloi::cuda::arange(
         elements,
-        mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::kCUDA)
-            .dtype(mfq_tensor_backend::kFloat32));
+        tyloi::TensorOptions()
+            .device(tyloi::kCUDA)
+            .dtype(tyloi::kFloat32));
     auto logits = ((sequence - static_cast<double>(expected)).abs() * -1.0)
         .to(dtype)
         .contiguous()
@@ -247,7 +247,7 @@ static int run_backend_argmax_dtype_check(
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&generic_start));
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&generic_stop));
     constexpr int generic_repetitions = 8;
-    mfq_tensor_backend::Tensor generic_result;
+    tyloi::DenseTensor generic_result;
     const auto generic_stream = mfq_get_current_cuda_stream();
     TYLOINFER_CUDA_CHECK(cudaEventRecord(generic_start, generic_stream.stream()));
     for (int i = 0; i < generic_repetitions; ++i)
@@ -261,11 +261,11 @@ static int run_backend_argmax_dtype_check(
     TYLOINFER_RUNTIME_CHECK(generic_result.item<int64_t>() == expected,
         "generic argmax reference returned an unexpected index");
 
-    mfq_tensor_backend::Tensor eager;
+    tyloi::DenseTensor eager;
     for (int warmup = 0; warmup < 30; ++warmup) {
-        eager = mfq_tensor_backend::argmax(logits, -1);
+        eager = tyloi::cuda::argmax(logits, -1);
     }
-    mfq_cuda_synchronize();
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());
     cudaEvent_t eager_start = nullptr;
     cudaEvent_t eager_stop = nullptr;
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&eager_start));
@@ -273,7 +273,7 @@ static int run_backend_argmax_dtype_check(
     const auto eager_stream = mfq_get_current_cuda_stream();
     TYLOINFER_CUDA_CHECK(cudaEventRecord(eager_start, eager_stream.stream()));
     for (int repetition = 0; repetition < repetitions; ++repetition) {
-        eager = mfq_tensor_backend::argmax(logits, -1);
+        eager = tyloi::cuda::argmax(logits, -1);
     }
     TYLOINFER_CUDA_CHECK(cudaEventRecord(eager_stop, eager_stream.stream()));
     TYLOINFER_CUDA_CHECK(cudaEventSynchronize(eager_stop));
@@ -286,12 +286,12 @@ static int run_backend_argmax_dtype_check(
     MfqCudaStreamGuard graph_guard(graph_stream);
     MfqCudaGraph graph;
     mfq_prepare_cuda_graph_memory(graph);
-    mfq_tensor_backend::Tensor graph_result =
-        mfq_tensor_backend::argmax(logits, -1);
+    tyloi::DenseTensor graph_result =
+        tyloi::cuda::argmax(logits, -1);
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
-    graph_result = mfq_tensor_backend::Tensor();
+    graph_result = tyloi::DenseTensor();
     graph.capture_begin();
-    graph_result = mfq_tensor_backend::argmax(logits, -1);
+    graph_result = tyloi::cuda::argmax(logits, -1);
     graph.capture_end();
     graph.replay();
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
@@ -331,9 +331,8 @@ static int run_backend_argmax_dtype_check(
 }
 
 int run_backend_argmax_check(int64_t elements, int repetitions) {
-    namespace tb = mfq_tensor_backend;
     int cases = 0;
-    for (auto dtype : {tb::kBFloat16, tb::kFloat16, tb::kFloat32}) {
+    for (auto dtype : {tyloi::kBFloat16, tyloi::kFloat16, tyloi::kFloat32}) {
         for (int64_t width : {1LL, 3LL, 31LL, 255LL, 256LL, 257LL, 8193LL, 248320LL}) {
             std::vector<float> values(static_cast<size_t>(3 * width), -7.0f);
             std::vector<int64_t> expected(3);
@@ -343,10 +342,10 @@ int run_backend_argmax_check(int64_t elements, int repetitions) {
                 values[row * width + width - 1] = 5.0f;
                 expected[row] = first;
             }
-            auto input = tb::tensor(values).reshape({3, width}).to(dtype).to(tb::kCUDA);
-            const auto check = [&](const tb::Tensor& indices) {
+            auto input = tyloi::cuda::tensor(values).reshape({3, width}).to(dtype).to(tyloi::kCUDA);
+            const auto check = [&](const tyloi::DenseTensor& indices) {
                 const auto host = indices.cpu().contiguous();
-                TYLOINFER_RUNTIME_CHECK(host.scalar_type() == tb::kInt64 && host.numel() == 3,
+                TYLOINFER_RUNTIME_CHECK(host.scalar_type() == tyloi::kInt64 && host.numel() == 3,
                     "argmax result dtype or size changed");
                 for (int row = 0; row < 3; ++row)
                     TYLOINFER_RUNTIME_CHECK(host.data_ptr<int64_t>()[row] == expected[row],
@@ -357,7 +356,7 @@ int run_backend_argmax_check(int64_t elements, int repetitions) {
             check(input.transpose(0, 1).contiguous().argmax(0, false));
             ++cases;
         }
-        if (dtype != tb::kBFloat16) {
+        if (dtype != tyloi::kBFloat16) {
             // Match the existing generic floating reduction on NaNs, infinities,
             // signed zero and rows without a value greater than lowest().
             constexpr int64_t width = 513;
@@ -368,7 +367,7 @@ int run_backend_argmax_check(int64_t elements, int repetitions) {
             std::fill(values.begin() + 2 * width, values.begin() + 3 * width, -0.0f);
             values[2 * width + 32] = 0.0f;
             std::fill(values.begin() + 3 * width, values.end(), std::numeric_limits<float>::lowest());
-            auto input = tb::tensor(values).reshape({4, width}).to(dtype).to(tb::kCUDA);
+            auto input = tyloi::cuda::tensor(values).reshape({4, width}).to(dtype).to(tyloi::kCUDA);
             auto reference = input.transpose(0, 1).contiguous().argmax(0, false).cpu().contiguous();
             auto actual = input.argmax(-1, false).cpu().contiguous();
             TYLOINFER_RUNTIME_CHECK(std::memcmp(reference.data_ptr(), actual.data_ptr(), 4 * sizeof(int64_t)) == 0,
@@ -395,8 +394,8 @@ int run_backend_argmax_check(int64_t elements, int repetitions) {
                     begin[width - 1] = 0.0f;
                 } else std::fill(begin, begin + width, std::numeric_limits<float>::lowest());
             }
-            auto input = tb::tensor(values).reshape({rows, width}).to(dtype).to(tb::kCUDA);
-            auto quantized = input.to(tb::kCPU, tb::kFloat32).contiguous();
+            auto input = tyloi::cuda::tensor(values).reshape({rows, width}).to(dtype).to(tyloi::kCUDA);
+            auto quantized = input.to(tyloi::kCPU, tyloi::kFloat32).contiguous();
             auto actual = sample_greedy_cuda(input).cpu().contiguous();
             for (int row = 0; row < rows; ++row) {
                 float best = std::numeric_limits<float>::lowest();
@@ -411,9 +410,9 @@ int run_backend_argmax_check(int64_t elements, int repetitions) {
             ++cases;
         }
         for (int rows : {1, 6}) {
-            auto input = tb::zeros({rows, elements}, tb::TensorOptions().device(tb::kCUDA).dtype(dtype));
+            auto input = tyloi::cuda::zeros({rows, elements}, tyloi::TensorOptions().device(tyloi::kCUDA).dtype(dtype));
             for (int i = 0; i < 20; ++i) (void)sample_greedy_cuda(input);
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             cudaEvent_t begin, end;
             TYLOINFER_CUDA_CHECK(cudaEventCreate(&begin)); TYLOINFER_CUDA_CHECK(cudaEventCreate(&end));
             const auto stream = mfq_current_cuda_stream();

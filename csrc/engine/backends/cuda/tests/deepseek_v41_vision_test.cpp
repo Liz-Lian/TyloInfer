@@ -1,14 +1,16 @@
+#include "execution_fixture.h"
 #include "models/deepseek_v41/vision.h"
 #include <iostream>
 
 namespace {
-namespace tb=mfq_tensor_backend;
-using namespace mfq::cuda;
-using namespace mfq::cuda::deepseek_v41_runtime;
+namespace tb=tyloi::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
+using namespace tyloi::cuda::deepseek_v41_runtime;
 void check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 
-struct Source final:mfq::ModelSource {
-    std::vector<mfq::TensorMetadata> records;
+struct Source final:tyloi::ModelSource {
+    std::vector<tyloi::TensorMetadata> records;
     std::unordered_map<std::string,std::vector<std::byte>> blobs;
     mutable int reads=0;
     void add(std::string name,std::vector<int64_t> shape,std::vector<float> values) {
@@ -28,8 +30,8 @@ struct Source final:mfq::ModelSource {
     const std::unordered_map<std::string,std::string>& metadata() const noexcept override {
         static const std::unordered_map<std::string,std::string> values;return values;
     }
-    const std::vector<mfq::TensorMetadata>& tensors() const noexcept override{return records;}
-    const mfq::TensorMetadata* find_tensor(std::string_view name) const noexcept override {
+    const std::vector<tyloi::TensorMetadata>& tensors() const noexcept override{return records;}
+    const tyloi::TensorMetadata* find_tensor(std::string_view name) const noexcept override {
         for(const auto& record:records)if(record.name==name)return &record;return nullptr;
     }
     void read_range_into(std::string_view name,uint64_t offset,std::byte* target,std::size_t bytes) const override {
@@ -40,7 +42,7 @@ struct Source final:mfq::ModelSource {
     const std::vector<std::string>& assets() const noexcept override{static const std::vector<std::string> values;return values;}
     bool has_asset(std::string_view) const noexcept override{return false;}
     std::vector<std::byte> read_asset(std::string_view) const override{return {};}
-    std::optional<mfq::ModelGraph> model_graph() const override{return {};}
+    std::optional<tyloi::ModelGraph> model_graph() const override{return {};}
 };
 
 std::shared_ptr<Source> fixture() {
@@ -72,12 +74,11 @@ CudaPreparedPrompt run(Vision& vision,DeepseekV41CausalLm& language,
 }
 
 void test() {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);DeepseekV41CausalLm language;language.execution=&execution;
+    TestExecution execution;DeepseekV41CausalLm language;language.execution=&execution;
     auto& config=language.config;config.hidden=16;config.vocab=8;config.image_token_id=7;
     config.vision={1,8,1,12,2,3,64,12,10000.};
     language.embed.kind=QuantLinearKind::Dense;
-    language.embed.dense=tb::ones({8,16},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16))*.5;
+    language.embed.dense=tb::ones({8,16},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16))*.5;
     language.shared=std::make_shared<SharedState>();
     auto source=fixture();auto vision=Vision::load(source,config);
     check(source->reads==0,"text-only loading materialized vision weights");
@@ -87,7 +88,7 @@ void test() {
     std::vector<int64_t> ids{1,7,7,7,7,7,7,7,7,2};
     auto prepared=run(vision,language,ids,media);
     check(!prepared.positions.defined(),"DeepSeek-V4.1 Vision must retain implicit causal cache positions");
-    auto actual=prepared.embeddings.to(tb::kCPU,tb::kFloat32).contiguous();
+    auto actual=prepared.embeddings.to(tyloi::kCPU,tyloi::kFloat32).contiguous();
     const auto* data=actual.data_ptr<float>();
     for(int col=0;col<16;++col) {
         check(data[col]==.5f && data[9*16+col]==.5f,"vision replacement modified text embeddings");

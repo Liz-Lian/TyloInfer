@@ -14,7 +14,8 @@
 #include <vector>
 
 namespace {
-using namespace mfq::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
 
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
@@ -32,8 +33,8 @@ std::vector<std::uint8_t> read(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-void compare(const Tensor& result, const std::vector<float>& expected,
-             const std::vector<float>& activation, const mfq::sq::Layout& q, int m) {
+void compare(const DenseTensor& result, const std::vector<float>& expected,
+             const std::vector<float>& activation, const tyloi::sq::Layout& q, int m) {
     const auto host = result.to(kCPU, kFloat32).contiguous();
     require(host.numel() == std::int64_t(m) * q.outputs, "matmul shape mismatch");
     for (int row = 0; row < m; ++row) {
@@ -50,9 +51,9 @@ void compare(const Tensor& result, const std::vector<float>& expected,
     }
 }
 
-void compare_backward(const Tensor& result, const std::vector<float>& expected,
+void compare_backward(const DenseTensor& result, const std::vector<float>& expected,
                       const std::vector<float>& gradient,
-                      const mfq::sq::Layout& q, int m) {
+                      const tyloi::sq::Layout& q, int m) {
     const auto host = result.to(kCPU, kFloat32).contiguous();
     require(host.numel() == std::int64_t(m) * q.width, "backward shape mismatch");
     for (int row = 0; row < m; ++row) {
@@ -71,18 +72,18 @@ void compare_backward(const Tensor& result, const std::vector<float>& expected,
 }
 
 struct DeviceRowMetadata {
-    Tensor q;
-    Tensor symbol_byte_offsets;
-    Tensor auxiliary;
+    DenseTensor q;
+    DenseTensor symbol_byte_offsets;
+    DenseTensor auxiliary;
     std::int64_t q_sum = 0;
     std::int64_t sq4_rows = 0;
 };
 
 DeviceRowMetadata device_row_metadata(
         const std::vector<std::uint8_t>& raw,
-        const mfq::sq::Layout& layout,
+        const tyloi::sq::Layout& layout,
         const Device& device) {
-    const auto rows = mfq::sq::row_metadata(raw.data(), layout);
+    const auto rows = tyloi::sq::row_metadata(raw.data(), layout);
     std::vector<std::int32_t> symbol_offsets(rows.q.size());
     std::vector<std::int32_t> auxiliary(rows.q.size());
     DeviceRowMetadata result;
@@ -113,7 +114,7 @@ void check_fixture(const std::filesystem::path& path, int& matmuls,
                    int& backwards, int& graphs) {
     const Device gpu{DeviceType::cuda, 0};
     auto raw = read(path);
-    const auto q = mfq::sq::parse(raw.data(), raw.size());
+    const auto q = tyloi::sq::parse(raw.data(), raw.size());
     auto ref_path = path;
     ref_path.replace_extension(".f32");
     auto reference = read(ref_path);
@@ -122,14 +123,14 @@ void check_fixture(const std::filesystem::path& path, int& matmuls,
     std::memcpy(expected.data(), reference.data(), reference.size());
 
     // CPU wire validation runs with assertions enabled even in Release.
-    rejects([&] { mfq::sq::parse(raw.data(), raw.size() - 1); });
+    rejects([&] { tyloi::sq::parse(raw.data(), raw.size() - 1); });
     auto damaged = raw;
     damaged.push_back(0);
-    rejects([&] { mfq::sq::parse(damaged.data(), damaged.size()); });
+    rejects([&] { tyloi::sq::parse(damaged.data(), damaged.size()); });
     for (int field : {0, 3, 4, 5, 6, 7, 15, 23}) {
         damaged = raw;
         damaged[field] = 255;
-        rejects([&] { mfq::sq::parse(damaged.data(), damaged.size()); });
+        rejects([&] { tyloi::sq::parse(damaged.data(), damaged.size()); });
     }
     auto blob_host = from_blob(raw.data(), {std::int64_t(raw.size())}, TensorOptions{}.dtype(kUInt8));
     auto blob = blob_host.to(gpu);
@@ -167,11 +168,11 @@ void check_fixture(const std::filesystem::path& path, int& matmuls,
     if (q.width >= 64) {
         std::vector<std::int64_t> selected;
         for (int row = 0; row < q.outputs; row += 2) selected.push_back(row);
-        const auto sliced = mfq::sq::select_rows(raw, selected, 32, q.width);
-        const auto layout = mfq::sq::parse(sliced.data(), sliced.size());
-        const auto rows = mfq::sq::row_metadata(sliced.data(), layout);
+        const auto sliced = tyloi::sq::select_rows(raw, selected, 32, q.width);
+        const auto layout = tyloi::sq::parse(sliced.data(), sliced.size());
+        const auto rows = tyloi::sq::row_metadata(sliced.data(), layout);
         for (int row = 0; row < layout.outputs; ++row) for (int col = 0; col < layout.width; ++col) {
-            const float actual = mfq::sq::decode_cpu(sliced.data(), layout, rows.q[row],
+            const float actual = tyloi::sq::decode_cpu(sliced.data(), layout, rows.q[row],
                 rows.symbol_byte_offsets[row], rows.auxiliary_rows[row], col);
             const float expected_value = expected[selected[row] * q.width + 32 + col];
             require(std::memcmp(&actual, &expected_value, sizeof(float)) == 0,
@@ -214,9 +215,9 @@ void check_fixture(const std::filesystem::path& path, int& matmuls,
                 require(default_context(0)->supports_async_allocations(), "graph gate requires async allocation");
                 Graph graph;
                 graph.prepare_memory();
-                Tensor y = invoke();
+                DenseTensor y = invoke();
                 TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
-                y = Tensor{};
+                y = DenseTensor{};
                 graph.capture_begin();
                 y = invoke();
                 graph.capture_end();
@@ -286,7 +287,7 @@ void check_fixture(const std::filesystem::path& path, int& matmuls,
 } // namespace
 
 int main(int argc, char** argv) {
-    mfq::cuda::env_set("TYLOINFER_FORCE_SQ_TENSOR_CORE", "1");
+    tyloi::cuda::env_set("TYLOINFER_FORCE_SQ_TENSOR_CORE", "1");
     if (argc != 2) { std::cerr << "usage: mfq-mxfp4-sq-test FIXTURE_DIRECTORY\n"; return 2; }
     int devices = 0;
     const auto status = cudaGetDeviceCount(&devices);

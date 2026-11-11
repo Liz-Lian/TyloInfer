@@ -1,4 +1,4 @@
-#include "env.h"
+#include "engine/backends/cuda/native/env.h"
 // Adapted from Strata's src/kernels/cuda/s26_tsum.cuh.
 // Copyright (c) 2026 Niko1221 and the Strata contributors.
 // MIT license: LICENSES/Strata-MIT.txt.

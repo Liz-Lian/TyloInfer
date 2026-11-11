@@ -397,7 +397,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         };
         const auto current_graph_storage = [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA
-            std::vector<std::shared_ptr<const tyloi::Tensor>> result;
+            std::vector<::tyloi::Tensor> result;
             const auto append = [&result](const auto& tensor) {
                 if (tensor.defined()) result.emplace_back(tensor);
             };
@@ -494,7 +494,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         }
         graph.graph->replay();
 #ifdef TYLOINFER_NATIVE_CUDA
-        const auto token = tyloi::ops::item(*graph.static_next);
+        const auto token = tyloi::ops::item(graph.static_next);
 #else
         const auto token = graph.static_next.template item<int64_t>();
 #endif
@@ -550,7 +550,7 @@ using tyloi::engine::Generation;
 namespace generation_detail {
 
 template <class Model, class State, class Predictor> struct RequestOps {
-    using Hidden = std::shared_ptr<tyloi::Tensor>;
+    using Hidden = ::tyloi::Tensor;
     using Restore = TextSessionRestore;
     Model &model;
     State &state;
@@ -635,7 +635,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     void invalidate_plan() { graph.invalidate(); }
     std::size_t prefix_boundary=0;
     void set_prefix_boundary(std::size_t tokens) { prefix_boundary=tokens; }
-    bool has_hidden(const Hidden &value) const { return value && value->defined(); }
+    bool has_hidden(const Hidden &value) const { return value && value.defined(); }
     void reset() {
         if (batching) return;
         state.reset(1);
@@ -671,7 +671,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
             output, input.prompt.size(), reused, stable,logical_chunk);
     }
     Generation speculate(tyloi::engine::InferenceRequest &input, tyloi::engine::InferenceOutput &output,
-        size_t reused, const std::shared_ptr<const ::tyloi::Tensor>& restored, Hidden *committed) {
+        size_t reused, const ::tyloi::Tensor& restored, Hidden *committed) {
         if constexpr (has_forward<Model, State> && !requires {
             replay(model, state, *executor, int64_t{});
         }) {

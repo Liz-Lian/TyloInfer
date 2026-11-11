@@ -57,7 +57,7 @@ public:
         throw std::logic_error("state allocation planning is not implemented");
     }
     // Owners keep storage alive; deduplicate using backing identity, not object identity.
-    virtual std::vector<std::shared_ptr<const tyloi::Tensor>> storage() const = 0;
+    virtual std::vector<::tyloi::Tensor> storage() const = 0;
     // Borrow writable objects from this state; their lifetime remains tied to it.
     virtual std::vector<tyloi::Tensor*> graph_state() = 0;
     virtual bool supports_text_session_state() const = 0;

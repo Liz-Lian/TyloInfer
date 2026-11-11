@@ -22,7 +22,7 @@ void require(bool condition, const char* message) {
 
 int main() {
     try {
-        const auto deepseek = mfq::models::deepseek_v4::Config::from_json(R"({
+        const auto deepseek = tyloi::models::deepseek_v4::Config::from_json(R"({
             "model_type":"deepseek_v4","vocab_size":128,"hidden_size":64,
             "num_hidden_layers":2,"num_attention_heads":4,
             "num_key_value_heads":1,"max_position_embeddings":4096,
@@ -40,7 +40,7 @@ int main() {
                 deepseek.rope_beta_slow == 2.0,
             "DeepSeek V4 config was not normalized");
 
-        const auto gemma = mfq::models::gemma4::Config::from_json(R"({
+        const auto gemma = tyloi::models::gemma4::Config::from_json(R"({
             "model_type":"gemma4","vocab_size":128,"hidden_size":64,
             "intermediate_size":192,"num_hidden_layers":2,
             "num_attention_heads":4,"num_key_value_heads":2,
@@ -64,7 +64,7 @@ int main() {
                 gemma.moe_intermediate_size == 48,
             "Gemma4 config was not normalized");
 
-        const auto glm = mfq::models::glm_dsa::Config::from_json(R"({
+        const auto glm = tyloi::models::glm_dsa::Config::from_json(R"({
             "model_type":"glm_dsa","vocab_size":128,"hidden_size":64,
             "intermediate_size":192,"num_hidden_layers":3,
             "num_attention_heads":4,"num_key_value_heads":4,
@@ -79,7 +79,7 @@ int main() {
 
         bool rejected = false;
         try {
-            static_cast<void>(mfq::models::glm_dsa::Config::from_json(R"({
+            static_cast<void>(tyloi::models::glm_dsa::Config::from_json(R"({
                 "model_type":"glm_dsa","vocab_size":128,"hidden_size":64,
                 "intermediate_size":192,"num_hidden_layers":3,
                 "num_attention_heads":4,"num_key_value_heads":4,
@@ -91,9 +91,9 @@ int main() {
         }
         require(rejected, "invalid GLM DSA schedule was accepted");
 
-        mfq::MfqModelGraph graph;
+        tyloi::MfqModelGraph graph;
         graph.backbone = "qwen3_5";
-        const auto qwen = mfq::models::qwen35::Config::from_json(R"({
+        const auto qwen = tyloi::models::qwen35::Config::from_json(R"({
             "model_type":"qwen3_5","text_config":{
             "model_type":"qwen3_5_text","vocab_size":128,
             "hidden_size":64,"intermediate_size":192,
@@ -112,7 +112,7 @@ int main() {
                 qwen.linear_v_size() == 512 && !qwen.grid_vision,
             "Qwen3.5 config was not normalized");
 
-        const auto qwen_moe = mfq::models::qwen35::Config::from_json(R"({
+        const auto qwen_moe = tyloi::models::qwen35::Config::from_json(R"({
             "model_type":"qwen3_5_moe","text_config":{
             "model_type":"qwen3_5_moe_text","vocab_size":128,
             "hidden_size":64,"num_hidden_layers":2,
@@ -130,7 +130,7 @@ int main() {
                 qwen_moe.shared_expert_intermediate_size == 96,
             "Qwen3.5 MoE config was not normalized without intermediate_size");
 
-        const auto minicpm = mfq::models::minicpmo45::Config::from_json(R"({
+        const auto minicpm = tyloi::models::minicpmo45::Config::from_json(R"({
             "version":"4.5","model_type":"minicpmo45","vocab_size":128,
             "hidden_size":4096,"intermediate_size":12288,
             "num_hidden_layers":36,"num_attention_heads":32,
@@ -142,18 +142,18 @@ int main() {
                 !minicpm.use_sliding_window,
             "MiniCPM-o config was not normalized");
 
-        const auto nope = mfq::models::ModelConfig::from_json(R"({
+        const auto nope = tyloi::models::ModelConfig::from_json(R"({
             "model_type":"nemotron_h","vocab_size":128,"hidden_size":64,
             "num_hidden_layers":2,"num_attention_heads":4,
             "num_key_value_heads":2,"max_position_embeddings":4096,
             "head_dim":16,"positional_encoding":"none"})");
         require(
-            nope.positional_encoding == mfq::models::PositionalEncoding::none &&
+            nope.positional_encoding == tyloi::models::PositionalEncoding::none &&
                 nope.rotary_dim == 0,
             "NoPE model config retained a rotary dimension");
         rejected = false;
         try {
-            static_cast<void>(mfq::models::ModelConfig::from_json(R"({
+            static_cast<void>(tyloi::models::ModelConfig::from_json(R"({
                 "model_type":"nemotron_h","vocab_size":128,"hidden_size":64,
                 "num_hidden_layers":2,"num_attention_heads":4,
                 "num_key_value_heads":2,"max_position_embeddings":4096,
@@ -179,12 +179,12 @@ int main() {
             "n_group":1,"topk_group":1,"num_nextn_predict_layers":1,
             "mtp_layers_block_type":["attention","moe"]}})");
         const auto predictor =
-            mfq::models::nemotron_h::Config::from_json(released.dump(), mfq::MfqModelGraph{});
+            tyloi::models::nemotron_h::Config::from_json(released.dump(), tyloi::MfqModelGraph{});
         require(predictor.num_nextn_predict_layers == 1 &&
                     predictor.mtp_mixers ==
-                        std::vector<mfq::models::nemotron_h::MixerKind>{
-                            mfq::models::nemotron_h::MixerKind::full_attention,
-                            mfq::models::nemotron_h::MixerKind::moe},
+                        std::vector<tyloi::models::nemotron_h::MixerKind>{
+                            tyloi::models::nemotron_h::MixerKind::full_attention,
+                            tyloi::models::nemotron_h::MixerKind::moe},
                 "Nemotron-H MTP schedule was not normalized");
         // The predictor stage owns attention history only; a mamba sub-block
         // and a second stage have no runtime representation.
@@ -197,7 +197,7 @@ int main() {
             rejected = false;
             try {
                 static_cast<void>(
-                    mfq::models::nemotron_h::Config::from_json(broken.dump(), mfq::MfqModelGraph{}));
+                    tyloi::models::nemotron_h::Config::from_json(broken.dump(), tyloi::MfqModelGraph{}));
             } catch (const std::runtime_error&) {
                 rejected = true;
             }
@@ -208,7 +208,7 @@ int main() {
         rejected = false;
         try {
             static_cast<void>(
-                mfq::models::nemotron_h::Config::from_json(orphaned.dump(), mfq::MfqModelGraph{}));
+                tyloi::models::nemotron_h::Config::from_json(orphaned.dump(), tyloi::MfqModelGraph{}));
         } catch (const std::runtime_error&) {
             rejected = true;
         }
@@ -228,16 +228,16 @@ int main() {
             "indexer_budget":8,"ple_conv_kernel_size":4,"ngram_size":2,
             "heads_per_ngram":4,"split_ngram_parts":2,"ngram_vocab_size_base":16,
             "ple_embed_dim":32,"mtp_num_hidden_layers":0,"mtp":{"num_hidden_layers":1}})");
-        require(mfq::models::qwen4_exp::Config::parse(flash).predictor_layers == 0,
+        require(tyloi::models::qwen4_exp::Config::parse(flash).predictor_layers == 0,
                 "disabled predictor retained in source config must not activate MTP");
         flash["mtp_num_hidden_layers"] = 1;
-        require(mfq::models::qwen4_exp::Config::parse(flash).predictor_layers == 1,
+        require(tyloi::models::qwen4_exp::Config::parse(flash).predictor_layers == 1,
                 "matching active predictor configuration was rejected");
         for (auto count : {-1, 2}) {
             flash["mtp_num_hidden_layers"] = count;
             rejected = false;
             try {
-                static_cast<void>(mfq::models::qwen4_exp::Config::parse(flash));
+                static_cast<void>(tyloi::models::qwen4_exp::Config::parse(flash));
             } catch (const std::runtime_error&) {
                 rejected = true;
             }

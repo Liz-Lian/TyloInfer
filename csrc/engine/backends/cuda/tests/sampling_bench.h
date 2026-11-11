@@ -4,11 +4,11 @@
 #include <limits>
 
 static void check_conditional_compact_sampling() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     const auto context=default_context();const auto stream=mfq_current_cuda_stream();
     context->begin_graph_pool(stream);
-    mfq::cuda::HostBuffer flag(128);
-    auto device_flag=tb::zeros({1},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt32));
+    tyloi::cuda::HostBuffer flag(128);
+    auto device_flag=tb::zeros({1},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kInt32));
     auto* device=device_flag.data_ptr<int32_t>();
     auto* enabled=static_cast<int32_t*>(flag.data());
     const auto publish=[&](int value) {
@@ -17,12 +17,12 @@ static void check_conditional_compact_sampling() {
     };
     int checks=0;
     for(int vocab:{31,8192,65536,248320})for(int rows:{1,2,4})
-    for(auto dtype:{tb::kFloat32,tb::kFloat16,tb::kBFloat16}) {
+    for(auto dtype:{tyloi::kFloat32,tyloi::kFloat16,tyloi::kBFloat16}) {
         const int k=std::min(64,vocab);
-        auto host=tb::empty({rows,vocab},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
-        auto logits=tb::zeros({rows,vocab},host.options().device(tb::kCUDA).dtype(dtype));
+        auto host=tb::empty({rows,vocab},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32));
+        auto logits=tb::zeros({rows,vocab},host.options().device(tyloi::kCUDA).dtype(dtype));
         publish(1);
-        tb::Tensor output;
+        tyloi::DenseTensor output;
         const auto body=[&]{output={};output=sample_top_k_compact_if_cuda(logits,k,device);};
         {GraphWarmupScope warmup(context,stream);body();}
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));output={};
@@ -36,7 +36,7 @@ static void check_conditional_compact_sampling() {
                 values[1]=-std::numeric_limits<float>::infinity();values[2]=-0.f;
                 values[vocab-1]=std::numeric_limits<float>::infinity();
             }
-            logits.copy_(host.to(tb::kCUDA).to(dtype));
+            logits.copy_(host.to(tyloi::kCUDA).to(dtype));
             auto expected=sample_top_k_compact_cuda(logits,k).cpu().contiguous();
             for(int active:{0,1,0,1}) {
                 output.fill_(-1);TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -51,9 +51,9 @@ static void check_conditional_compact_sampling() {
         }
     }
     for(int rows:{1,4})for(int k:{20,64})for(int mode:{0,1,2}) {
-        auto logits=tb::ones({rows,248320},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
+        auto logits=tb::ones({rows,248320},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16));
         publish(mode==2?0:1);
-        tb::Tensor output;
+        tyloi::DenseTensor output;
         const auto body=[&] {
             output={};output=mode?sample_top_k_compact_if_cuda(logits,k,device):sample_top_k_compact_cuda(logits,k);
         };
@@ -74,7 +74,7 @@ static void check_conditional_compact_sampling() {
 
 static void sampling_key_variant(int variant) {
     const auto set=[](const char* name,const char* value) {
-        mfq::cuda::env_set(name,value);
+        tyloi::cuda::env_set(name,value);
     };
     set("TYLOINFER_SAMPLE_RADIX_TOPK","1");
     set("TYLOINFER_SAMPLE_RADIX_KEYS",variant?"1":"0");
@@ -83,18 +83,18 @@ static void sampling_key_variant(int variant) {
 }
 
 static void benchmark_sampling_keys(bool timings=true) {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     int checks=0;
     for(int vocab:{7,31,255,256,257,1009,151936,248320})
     for(int top_k:{1,2,20,64})if(top_k<=vocab)
-    for(auto dtype:{tb::kFloat32,tb::kFloat16,tb::kBFloat16}) {
-        auto host=tb::empty({1,vocab},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
-        auto logits=tb::zeros({1,vocab},tb::TensorOptions().device(tb::kCUDA).dtype(dtype));
-        auto random=tb::zeros({1},logits.options().dtype(tb::kFloat32));
+    for(auto dtype:{tyloi::kFloat32,tyloi::kFloat16,tyloi::kBFloat16}) {
+        auto host=tb::empty({1,vocab},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32));
+        auto logits=tb::zeros({1,vocab},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(dtype));
+        auto random=tb::zeros({1},logits.options().dtype(tyloi::kFloat32));
         for(double p:{0.0,0.8,1.0})for(int variant:{1,4,8,16,17,18}) {
             sampling_key_variant(variant);
-            tb::Tensor actual;
+            tyloi::DenseTensor actual;
             const auto body=[&]{actual={};actual=sample_top_k_top_p_cuda(logits,random,0.7,top_k,p);};
             {GraphWarmupScope warmup(context,stream);body();}
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));actual={};
@@ -108,7 +108,7 @@ static void benchmark_sampling_keys(bool timings=true) {
                     host.data_ptr<float>()[2]=-0.f;
                 }
                 if(step==3)host.data_ptr<float>()[vocab-1]=std::numeric_limits<float>::infinity();
-                logits.copy_(host.to(tb::kCUDA).to(dtype));
+                logits.copy_(host.to(tyloi::kCUDA).to(dtype));
                 random.fill_(step==0?0.f:step==1?.137f:step==2?.731f:1.f);
                 sampling_key_variant(0);
                 auto expected=sample_top_k_top_p_cuda(logits,random,0.7,top_k,p).item<int64_t>();
@@ -121,11 +121,11 @@ static void benchmark_sampling_keys(bool timings=true) {
     if(timings)for(int vocab:{256,4096,32768,151936,248320})
     for(int top_k:{20,64})if(top_k==20 || vocab>=151936)
     for(int variant:{0,16,17,18,0}) {
-        auto host=tb::empty({1,vocab},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        auto host=tb::empty({1,vocab},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32));
         for(int i=0;i<vocab;++i)host.data_ptr<float>()[i]=std::sin(float(i)*.037f)*5.f;
-        auto logits=host.to(tb::kCUDA),random=tb::full({1},0.371,logits.options());
+        auto logits=host.to(tyloi::kCUDA),random=tb::full({1},0.371,logits.options());
         sampling_key_variant(variant);
-        tb::Tensor output;
+        tyloi::DenseTensor output;
         const auto body=[&]{output={};output=sample_top_k_top_p_cuda(logits,random,0.7,top_k,0.8);};
         {GraphWarmupScope warmup(context,stream);body();}
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));output={};

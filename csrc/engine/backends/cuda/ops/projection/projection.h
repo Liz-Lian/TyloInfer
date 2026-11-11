@@ -13,7 +13,7 @@ tyloi::DenseTensor low_rank(tyloi::DenseTensor input, const ::tyloi::Tensor& out
                            const ::tyloi::Tensor& output_b, int64_t groups, bool groupwise, bool profile);
 tyloi::DenseTensor linear(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor* bias);
 tyloi::DenseTensor affine(tyloi::DenseTensor input, const ::tyloi::Tensor& weight, const tyloi::DenseTensor* bias);
-std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input, std::span<const std::shared_ptr<const tyloi::Tensor>> group);
+std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input, std::span<const ::tyloi::Tensor> group);
 bool grouped(std::span<const ::tyloi::Tensor> weights);
 std::vector<tyloi::DenseTensor> project_group(tyloi::DenseTensor input,
     std::span<const ::tyloi::Tensor> weights, std::size_t prefix);
@@ -30,16 +30,16 @@ class Branches;
 DenseLinearGroup make_fp32_quant_group(
     Collectives& collectives,
     int primary,
-    std::span<const std::shared_ptr<const tyloi::Tensor>> weights);
+    std::span<const ::tyloi::Tensor> weights);
 
 QuantLinearGroup make_quant_group(
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers,
+    std::vector<::tyloi::Tensor> layers,
     bool group_nint,
     bool cpu_layer,
     bool preserve_projection_boundaries = false);
 
 DenseLinearGroup make_dense_group(
-    const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& weights);
+    const std::vector<::tyloi::Tensor>& weights);
 
 // Bound resources and options must outlive this object; drain before resetting them.
 class Projector {
@@ -64,8 +64,8 @@ public:
           serial_(serial), projection_major_(projection_major), independent_(independent) {}
 
     int primary_device() const { return primary_; }
-    QuantLinearGroup group(std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const;
-    bool grouped(std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights) const;
+    QuantLinearGroup group(std::span<const ::tyloi::Tensor> weights) const;
+    bool grouped(std::span<const ::tyloi::Tensor> weights) const;
     MoeScratchCache& moe_scratch() const { return moe_scratch_; }
 
     ::tyloi::DenseTensor run(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input) const;
@@ -74,7 +74,7 @@ public:
     ::tyloi::DenseTensor run(const ::tyloi::Tensor& weight, ::tyloi::DenseTensor input,
         const MoeRoutePlan& route) const;
     std::vector<::tyloi::DenseTensor> run(
-        std::span<const std::shared_ptr<const ::tyloi::Tensor>> weights,
+        std::span<const ::tyloi::Tensor> weights,
         ::tyloi::DenseTensor input, size_t prefix = 1) const;
     std::vector<::tyloi::DenseTensor> run(
         const QuantLinearGroup& group, ::tyloi::DenseTensor input) const;
@@ -88,7 +88,7 @@ public:
     ::tyloi::DenseTensor swiglu(const QuantLinearGroup& group, ::tyloi::DenseTensor input) const;
     ::tyloi::DenseTensor geglu(const QuantLinearGroup& group, ::tyloi::DenseTensor input) const;
     std::vector<::tyloi::DenseTensor> grouped(
-        const std::vector<const ::tyloi::Tensor*>& projections, ::tyloi::DenseTensor input) const;
+        const std::vector<::tyloi::Tensor>& projections, ::tyloi::DenseTensor input) const;
 
     ::tyloi::DenseTensor run(const ::tyloi::MfeTensor& weight, ::tyloi::DenseTensor input,
         const MoeRoutePlan& route, bool prequantized = false, int epilogue = 0) const;

@@ -1,3 +1,4 @@
+#include "execution_fixture.h"
 #include "mfq_cuda_norm_ops.h"
 #include "memory_tensor_source.h"
 #include "execution/execution.h"
@@ -12,7 +13,7 @@
 #include "models/qwen35/linear_attention.h"
 #include "models/qwen35/ops.h"
 #include "models/qwen4_exp/model.h"
-#include "storage/session/state.h"
+#include "engine/models/common/session/state.h"
 #include "moe.h"
 #include "storage/weights/moe/expert_store.h"
 #include "storage/weights/moe/expert_cache.h"
@@ -31,8 +32,9 @@
 #include <iostream>
 #include <stdexcept>
 
-using namespace mfq::cuda;
-using namespace mfq::cuda::internal;
+using namespace tyloi::cuda;
+using namespace tyloi;
+using namespace tyloi::cuda::internal;
 
 static void check(bool ok, const char *message) {
     if (!ok)
@@ -40,23 +42,23 @@ static void check(bool ok, const char *message) {
 }
 
 static void check_sampling_fallback() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     int checks=0;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     for(auto [vocab,k]:{std::pair{129,65},std::pair{4096,257},std::pair{4096,1024},std::pair{248320,65}})
-    for(int rows:{1,2})for(auto dtype:{tb::kFloat16,tb::kBFloat16,tb::kFloat32})for(float p:{0.f,.8f,1.f}) {
-        auto cpu=tb::empty({rows,vocab},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
-        auto logits=tb::zeros({rows,vocab},cpu.options().device(tb::kCUDA).dtype(dtype));
-        auto random=tb::zeros({rows},logits.options().dtype(tb::kFloat32));
-        tb::Tensor actual;
+    for(int rows:{1,2})for(auto dtype:{tyloi::kFloat16,tyloi::kBFloat16,tyloi::kFloat32})for(float p:{0.f,.8f,1.f}) {
+        auto cpu=tb::empty({rows,vocab},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32));
+        auto logits=tb::zeros({rows,vocab},cpu.options().device(tyloi::kCUDA).dtype(dtype));
+        auto random=tb::zeros({rows},logits.options().dtype(tyloi::kFloat32));
+        DenseTensor actual;
         const auto body=[&]{actual={};actual=sample_top_k_top_p_cuda(logits,random,.7,k,p);};
         {GraphWarmupScope warmup(context,stream);body();}
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));actual={};
         Graph graph;graph.capture_begin_shared();body();graph.capture_end();
         for(float u:{0.f,.137f,.731f,.99999994f}) {
             for(int i=0;i<rows*vocab;++i)cpu.data_ptr<float>()[i]=u==0.f?0.f:std::sin(float(i)*.037f)*5.f;
-            logits.copy_(cpu.to(tb::kCUDA).to(dtype));random.fill_(u);graph.replay();
-            auto sampled=actual.cpu(),values=logits.to(tb::kCPU,tb::kFloat32);
+            logits.copy_(cpu.to(tyloi::kCUDA).to(dtype));random.fill_(u);graph.replay();
+            auto sampled=actual.cpu(),values=logits.to(tyloi::kCPU,tyloi::kFloat32);
             for(int row=0;row<rows;++row) {
                 std::vector<int> order(vocab);std::iota(order.begin(),order.end(),0);
                 const auto* v=values.data_ptr<float>()+row*vocab;
@@ -83,7 +85,8 @@ static void check_sampling_fallback() {
 }
 
 static void check_sampling_storage() {
-    using namespace mfq_tensor_backend;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     auto ids = tensor(std::vector<int64_t>{1, 2, 1}, TensorOptions().device(kCUDA).dtype(kInt64));
     auto storage = full({6}, 99, ids.options().dtype(kInt32));
     auto counts = SamplingOps::token_counts(ids, 6, storage);
@@ -113,7 +116,8 @@ static void check_sampling_storage() {
 }
 
 static void check_graph_warmup_state() {
-    using namespace mfq_tensor_backend;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     Qwen35CausalLm model;
     auto block = std::make_unique<qwen35::LinearAttentionBlock>();
     auto* recurrent = block.get();
@@ -153,7 +157,8 @@ static void check_graph_warmup_state() {
 
 
 static void check_cached_moe_binding() {
-    using namespace mfq_tensor_backend;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     MfeCpu cpu;
     cpu.n_experts = 2;
     cpu.out_per_expert = 4;
@@ -189,8 +194,7 @@ static void check_cached_moe_binding() {
                   "expert range is out of bounds");
             std::copy_n(blob.data() + offset, output.size(), output.data());
         }});
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     const auto resident = to_gpu_mixed_moe(cpu, execution.config);
     auto options = TensorOptions().device(kCUDA);
     auto input = (arange(32, options.dtype(kFloat32)) * 0.01 - 0.1)
@@ -238,8 +242,9 @@ static void check_cached_moe_binding() {
 }
 
 static void check_gemma_composition() {
-    using namespace mfq_tensor_backend;
-    using mfq::models::gemma4::FfnNorm;
+    using namespace tyloi::cuda;
+using namespace tyloi;
+    using tyloi::models::gemma4::FfnNorm;
     auto fp32 = TensorOptions().dtype(kFloat32).device(kCUDA);
     auto values = arange(16, fp32).reshape({2, 8});
     auto dense = ((values - 8) * 0.09).to(kFloat16);
@@ -249,18 +254,18 @@ static void check_gemma_composition() {
     auto dense_norm = weight, expert_norm = weight + 0.1, output_norm = weight + 0.2;
     auto scale = full({1}, 0.8, fp32).to(kFloat16);
     auto run = [&](bool fused) {
-        return mfq::models::gemma4::feed_forward(
+        return tyloi::models::gemma4::feed_forward(
             true, true, fused, residual, [&] { return dense; }, [&] { return routed; },
-            [&](Tensor x, FfnNorm role) {
+            [&](DenseTensor x, FfnNorm role) {
                 auto norm = role == FfnNorm::dense     ? dense_norm
                             : role == FfnNorm::experts ? expert_norm
                                                        : output_norm;
                 return rms_norm_f16_cuda(x.contiguous(), norm, 1e-6, 0.0);
             },
-            [](Tensor x, Tensor y) { return x + y; },
-            [](Tensor x, Tensor y) { return acc_cuda(x.contiguous(), y.contiguous()); },
-            [&](Tensor x) { return x * scale; },
-            [&](Tensor d, Tensor e, Tensor r) {
+            [](DenseTensor x, DenseTensor y) { return x + y; },
+            [](DenseTensor x, DenseTensor y) { return acc_cuda(x.contiguous(), y.contiguous()); },
+            [&](DenseTensor x) { return x * scale; },
+            [&](DenseTensor d, DenseTensor e, DenseTensor r) {
                 return gemma4_ffn_merge_f16_cuda(d, e, r, dense_norm, expert_norm, output_norm,
                                                  scale, 1e-6);
             });
@@ -272,25 +277,26 @@ static void check_gemma_composition() {
 }
 
 static void check_tts_sampling() {
-    using namespace mfq_tensor_backend;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     MiniCPMO45TtsSamplingOps ops;
     auto float_options = TensorOptions().dtype(kFloat32).device(kCUDA);
     auto scores = tensor(std::vector<float>{-2, 4, 3, 1, 0, 20}, float_options).reshape({1, 6});
     auto token = tensor(std::vector<int64_t>{1}, TensorOptions().dtype(kInt64).device(kCUDA));
-    std::vector<Tensor> history(16, token);
+    std::vector<DenseTensor> history(16, token);
     auto penalized = ops.penalties(scores.clone(), history, 1.1).cpu();
     check(std::abs(penalized.data_ptr<float>()[1] - 4.0F / std::pow(1.1F, 16)) < 2e-6F,
           "TTS repeated-token penalty changed");
     auto top = ops.top_k(scores.clone(), 3).cpu();
     check(std::isinf(top.data_ptr<float>()[0]) && top.data_ptr<float>()[2] == 3,
           "TTS top-k filtering changed");
-    mfq::models::minicpmo45::TtsSampling options{5, 1, 3, 0, 0.8, 0.0001, 1.1, 0.0};
+    tyloi::models::minicpmo45::TtsSampling options{5, 1, 3, 0, 0.8, 0.0001, 1.1, 0.0};
     std::mt19937 rng(42);
     for (bool reference : {false, true}) {
         ops.evaluator_rng = reference ? &rng : nullptr;
         auto sample = [&](int64_t step) {
-            return mfq::models::minicpmo45::sample_tts(ops, scores.clone(), options,
-                                                       std::span<const Tensor>(history), step,
+            return tyloi::models::minicpmo45::sample_tts(ops, scores.clone(), options,
+                                                       std::span<const DenseTensor>(history), step,
                                                        reference)
                 .item<int64_t>();
         };
@@ -308,23 +314,23 @@ static std::vector<std::uint8_t> tq_test_image(int outputs,int width,bool column
     std::memcpy(blob.data(),"RTRELL05",8);
     for(const auto [offset,value]:std::vector<std::pair<unsigned,unsigned>>{
             {8,5},{12,unsigned(outputs)},{16,unsigned(width)},{20,unsigned(columns)},{24,512},{28,unsigned(packed)}})
-        mfq::TqLayout::integer(blob.data()+offset,value,4);
+        tyloi::TqLayout::integer(blob.data()+offset,value,4);
     std::size_t cursor=0;
     for(int row=0;row<outputs;++row) {
-        mfq::TqLayout::integer(blob.data()+64+row*8,cursor/4
+        tyloi::TqLayout::integer(blob.data()+64+row*8,cursor/4
             |(std::uint64_t(row%8)<<32)|(std::uint64_t(0x2400)<<40),8);
         cursor+=width*(row%8+1)/8;
     }
     auto* scales=blob.data()+64+outputs*8;
     if(columns)for(int col=0;col<width;++col)
-        mfq::TqLayout::integer(scales+col*2,0x3800+col%256,2);
+        tyloi::TqLayout::integer(scales+col*2,0x3800+col%256,2);
     else for(int i=0;i<scale_bytes;++i)scales[i]=std::uint8_t(i*37+19);
     for(std::size_t i=0;i<packed;++i)scales[scale_bytes+i]=std::uint8_t(i*17+i/11+71);
     return blob;
 }
 
 static void check_tq_expert_parallel() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     constexpr int experts=3,width=256,routes=2;
     int devices=0;TYLOINFER_CUDA_CHECK(cudaGetDeviceCount(&devices));
     for(bool columns:{false,true}) {
@@ -333,8 +339,7 @@ static void check_tq_expert_parallel() {
         source.records.clear();
         for(const auto* name:{"gate","up","down"})source.records.push_back({name,"TQ","TQ",
             std::vector<std::int64_t>{experts,width,width},source.bytes.size()});
-        CudaStores stores;
-        CudaExecutionContext execution(stores);
+        TestExecution execution;
         execution.expert_parallel.devices={0,devices>=2?1:0};
         execution.expert_parallel.split={1,2};
         execution.expert_parallel.allow_duplicate_devices=devices<2;
@@ -343,20 +348,20 @@ static void check_tq_expert_parallel() {
         banks.gate=std::make_shared<TqRoutedWeight>(execution,source,"gate",experts,width,width);
         banks.up=std::make_shared<TqRoutedWeight>(execution,source,"up",experts,width,width);
         banks.down=std::make_shared<TqRoutedWeight>(execution,source,"down",experts,width,width);
-        const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+        const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32);
         for(int tokens:{1,2,6,16,64,257})for(bool one_owner:{false,true})
-            for(auto dtype:{tb::kFloat16,tb::kBFloat16,tb::kFloat32})for(float limit:{0.f,.05f}) {
+            for(auto dtype:{tyloi::kFloat16,tyloi::kBFloat16,tyloi::kFloat32})for(float limit:{0.f,.05f}) {
             std::vector<int64_t> selected(tokens*routes);
             for(int i=0;i<tokens*routes;++i)selected[i]=one_owner?0:i%experts;
-            const auto ids=tb::tensor(selected,options.dtype(tb::kInt64)).reshape({tokens,routes});
+            const auto ids=tb::tensor(selected,options.dtype(tyloi::kInt64)).reshape({tokens,routes});
             const auto weights=tb::full({tokens,routes},.5,options);
             const auto input=((tb::arange(tokens*width,options).reshape({tokens,width}).remainder(31)-15)*.01).to(dtype);
-            const auto expected=banks.forward(input,ids,weights,limit).to(tb::kFloat32);
-            const auto actual=banks.forward_parallel(execution,input,ids,weights,limit).to(tb::kFloat32);
+            const auto expected=banks.forward(input,ids,weights,limit).to(tyloi::kFloat32);
+            const auto actual=banks.forward_parallel(execution,input,ids,weights,limit).to(tyloi::kFloat32);
             const auto error=actual-expected;
             const float scale=(expected*expected).sum().item<float>();
             check(std::sqrt((error*error).sum().item<float>()/std::max(scale,1e-20f))
-                <(dtype==tb::kBFloat16?.01f:.0025f),"TQ expert parallelism changed routed FFN values");
+                <(dtype==tyloi::kBFloat16?.01f:.0025f),"TQ expert parallelism changed routed FFN values");
             const auto empty=banks.forward(input,ids,weights,limit,nullptr,0,0);
             check(empty.abs().max().item<float>()==0,"TQ empty expert partition did not return zero");
         }
@@ -365,16 +370,15 @@ static void check_tq_expert_parallel() {
 }
 
 static void check_tq_parallel() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     constexpr int outputs=17,width=768;
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     int devices=0;
     TYLOINFER_CUDA_CHECK(cudaGetDeviceCount(&devices));
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32);
     for(bool columns:{false,true}) {
         const auto blob=tq_test_image(outputs,width,columns);
-        const mfq::TqRows rows(blob.size(),[&](std::uint64_t offset,std::byte* data,std::size_t bytes) {
+        const tyloi::TqRows rows(blob.size(),[&](std::uint64_t offset,std::byte* data,std::size_t bytes) {
             if(offset>blob.size() || bytes>blob.size()-offset)throw std::out_of_range("TQ test read");
             std::memcpy(data,blob.data()+offset,bytes);
         });
@@ -410,16 +414,16 @@ static void check_tq_parallel() {
             residual_source.records[0].stored_dtype="TQ";residual_source.records[0].nbytes=blob.size();
             const auto residual=weight_loader::residual_linear(execution,residual_source,"weight");
             *std::const_pointer_cast<QuantLinear>(residual.weight)=parallel;
-            for(int tokens:{1,2,6,8,32})for(auto dtype:{tb::kFloat16,tb::kBFloat16,tb::kFloat32}) {
+            for(int tokens:{1,2,6,8,32})for(auto dtype:{tyloi::kFloat16,tyloi::kBFloat16,tyloi::kFloat32}) {
                 auto input=((tb::arange(tokens*width,options).reshape({tokens,width}).remainder(31)-15)*.01).to(dtype);
-                const auto promoted=dtype==tb::kFloat16?input:input.to(tb::kFloat32);
+                const auto promoted=dtype==tyloi::kFloat16?input:input.to(tyloi::kFloat32);
                 check((residual(execution,input)-parallel.forward(execution,promoted)).abs().max().item<float>()==0,
                     "TQ residual projection bypassed tensor-parallel shards or dtype promotion");
                 for(auto mode:{InputGateMode::None,InputGateMode::Sigmoid,InputGateMode::Silu}) {
                     const auto expected=mode!=InputGateMode::None?local.forward_input_mul(execution,input,input,mode):local.forward(execution,input);
                     const auto actual=mode!=InputGateMode::None?parallel.forward_input_mul(execution,input,input,mode):parallel.forward(execution,input);
-                    const auto error=actual.to(tb::kFloat32)-expected.to(tb::kFloat32);
-                    const float scale=(expected.to(tb::kFloat32)*expected.to(tb::kFloat32)).sum().item<float>();
+                    const auto error=actual.to(tyloi::kFloat32)-expected.to(tyloi::kFloat32);
+                    const float scale=(expected.to(tyloi::kFloat32)*expected.to(tyloi::kFloat32)).sum().item<float>();
                     const float squared=(error*error).sum().item<float>();
                     check(std::sqrt(squared/std::max(scale,1e-20f))<.01f,"TQ TP projection differs from local execution");
                 }
@@ -432,11 +436,11 @@ static void check_tq_parallel() {
             CudaStores resident_stores;
             CudaExecutionContext resident(resident_stores);
             TqRoutedWeight weight(resident,source,"weight",1,outputs,width);
-            const auto input=tb::ones({1,width},options.dtype(tb::kFloat16));
-            const auto ids=tb::zeros({1,1},options.dtype(tb::kInt64));
-            const auto expected=local.forward(execution,input).to(tb::kFloat32);
+            const auto input=tb::ones({1,width},options.dtype(tyloi::kFloat16));
+            const auto ids=tb::zeros({1,1},options.dtype(tyloi::kInt64));
+            const auto expected=local.forward(execution,input).to(tyloi::kFloat32);
             for(int pass=0;pass<2;++pass) {
-                const auto actual=weight.forward(input,ids).reshape({1,outputs}).to(tb::kFloat32);
+                const auto actual=weight.forward(input,ids).reshape({1,outputs}).to(tyloi::kFloat32);
                 const auto error=actual-expected;
                 const float scale=(expected*expected).sum().item<float>();
                 check(std::sqrt((error*error).sum().item<float>()/std::max(scale,1e-20f))<.0015f,
@@ -460,16 +464,16 @@ static void check_tq_parallel() {
             streamed.config.moe_host_cache_bytes=1;
             TqRoutedWeight weight(streamed,source,"weight",1,outputs,width);
             resize_tq_expert_cache(streamed.stores.tq_expert_cache,std::size_t{1}<<20);
-            auto input=((tb::arange(width,tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32)).remainder(31)-15)*.01)
-                .to(tb::kFloat16).reshape({1,width});
-            const auto expected=local.forward(execution,input.to(tb::Device(tb::kCUDA,0))).to(tb::kCPU,tb::kFloat32);
+            auto input=((tb::arange(width,tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32)).remainder(31)-15)*.01)
+                .to(tyloi::kFloat16).reshape({1,width});
+            const auto expected=local.forward(execution,input.to(tb::Device(tyloi::kCUDA,0))).to(tyloi::kCPU,tyloi::kFloat32);
             for(int device:{0,1,0,1}) {
                 const MfqCudaGuard guard(device);
-                const auto destination=tb::Device(tb::kCUDA,device);
-                auto ids=tb::zeros({1,1},tb::TensorOptions().device(destination).dtype(tb::kInt64));
+                const auto destination=tb::Device(tyloi::kCUDA,device);
+                auto ids=tb::zeros({1,1},tyloi::TensorOptions().device(destination).dtype(tyloi::kInt64));
                 const auto actual=weight.forward(input.to(destination),ids);
                 check(actual.get_device()==device,"TQ cache returned an image on the wrong device");
-                const auto error=actual.reshape({1,outputs}).to(tb::kCPU,tb::kFloat32)-expected;
+                const auto error=actual.reshape({1,outputs}).to(tyloi::kCPU,tyloi::kFloat32)-expected;
                 const float scale=(expected*expected).sum().item<float>();
                 check(std::sqrt((error*error).sum().item<float>()/std::max(scale,1e-20f))<.0015f,
                     "TQ device-local expert cache changed projection values");
@@ -487,7 +491,8 @@ static void check_tq_parallel() {
 }
 
 static void check_ffn_branches() {
-    using namespace mfq_tensor_backend;
+    using namespace tyloi::cuda;
+using namespace tyloi;
     const auto options = TensorOptions().dtype(kFloat32).device(kCUDA);
     auto linear = [&](int64_t out, int64_t in, float scale) {
         QuantLinear result;
@@ -504,8 +509,7 @@ static void check_ffn_branches() {
         return result;
     };
     auto input = ((arange(24, options).reshape({3, 8}) - 12) * 0.05).to(kFloat16);
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     auto low = dense_ffn(0.01F);
     auto high = std::make_unique<FFN>(dense_ffn(0.015F));
     execution.config.decode_branch_parallel = true;
@@ -584,11 +588,11 @@ static void check_linear_execution() {
     CudaStores other_stores;
     CudaExecutionContext other(other_stores);
     for (const auto* linear : {&nint, &nvq}) {
-        const auto input = (mfq_tensor_backend::arange(
+        const auto input = (tyloi::cuda::arange(
             16 * linear->neuron_len(),
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA)
-                .dtype(mfq_tensor_backend::kFloat32)) * 0.013)
-            .to(mfq_tensor_backend::kFloat16).reshape({2, 8, linear->neuron_len()});
+            tyloi::TensorOptions().device(tyloi::kCUDA)
+                .dtype(tyloi::kFloat32)) * 0.013)
+            .to(tyloi::kFloat16).reshape({2, 8, linear->neuron_len()});
         for (auto mode : {KlMmqMode::Default, KlMmqMode::Fp16, KlMmqMode::Nint8One}) {
             owner.kl_mmq.mode = mode;
             other.kl_mmq.mode = mode == KlMmqMode::Nint8One
@@ -638,10 +642,10 @@ static void check_snapshots(CudaExecutionContext& execution, bool hybrid) {
         config.linear_conv_kernel_dim = 2;
         config.linear_num_key_heads = config.linear_num_value_heads = 1;
         config.linear_key_head_dim = config.linear_value_head_dim = 2;
-        const auto options = mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat32);
-        linear->mixer.convolution = mfq_tensor_backend::zeros({1, 1, 6}, options);
-        linear->mixer.recurrent = mfq_tensor_backend::zeros({1, 1, 2, 2}, options);
+        const auto options = tyloi::TensorOptions()
+            .device(tyloi::kCUDA).dtype(tyloi::kFloat32);
+        linear->mixer.convolution = tyloi::cuda::zeros({1, 1, 6}, options);
+        linear->mixer.recurrent = tyloi::cuda::zeros({1, 1, 2, 2}, options);
         model.blocks.push_back(std::move(linear));
     }
     model.cache_pos = 2;
@@ -681,11 +685,11 @@ static void check_snapshots(CudaExecutionContext& execution, bool hybrid) {
         ("mfq-runtime-state-" + std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count()));
     {
-        mfq::cache::PagedPrefixCacheConfig config;
+        tyloi::cache::PagedPrefixCacheConfig config;
         config.cache_dir = directory;
         config.compatibility_key = "runtime-state-test";
         config.block_size_tokens = 2;
-        auto paged = std::make_shared<mfq::cache::PagedPrefixCache>(config);
+        auto paged = std::make_shared<tyloi::cache::PagedPrefixCache>(config);
         TextSessionCache mixed({}, {}, paged);
         mixed.store("source", text);
         mixed.store("source", image);
@@ -713,13 +717,13 @@ static void check_snapshots(CudaExecutionContext& execution, bool hybrid) {
               "clear retained paged snapshot");
     }
     {
-        mfq::cache::PagedPrefixCacheConfig config;
+        tyloi::cache::PagedPrefixCacheConfig config;
         config.cache_dir = directory / "vram-ssd";
         config.compatibility_key = "vram-ssd-prefix-test";
         config.block_size_tokens = 2;
         config.max_hot_bytes = 0;
-        auto paged = std::make_shared<mfq::cache::PagedPrefixCache>(config);
-        mfq::engine::PrefixCacheConfig prefix;
+        auto paged = std::make_shared<tyloi::cache::PagedPrefixCache>(config);
+        tyloi::engine::PrefixCacheConfig prefix;
         prefix.hot_bytes = text.bytes * 2;
         TextSessionCache cache({}, prefix, paged, true, 0, true);
         const auto metric = [&](const char* name) {
@@ -745,11 +749,11 @@ static void check_snapshots(CudaExecutionContext& execution, bool hybrid) {
     std::filesystem::remove_all(directory);
 }
 
-static void check_media_steps(mfq::engine::Engine& engine, const char* model_path) {
-    using namespace mfq::engine;
+static void check_media_steps(tyloi::engine::Engine& engine, const char* model_path) {
+    using namespace tyloi::engine;
     if (!engine.info().capabilities.image_input) return;
-    const auto source = mfq::open_model_source(model_path);
-    const auto config = mfq::models::qwen35::Config::from_source(*source);
+    const auto source = tyloi::open_model_source(model_path);
+    const auto config = tyloi::models::qwen35::Config::from_source(*source);
     const auto& vision = config.grid_vision.value();
     const auto side = static_cast<int32_t>(vision.spatial_merge_size);
     EngineRequest image;
@@ -763,7 +767,7 @@ static void check_media_steps(mfq::engine::Engine& engine, const char* model_pat
     image.input.sampling.enable_mtp = false;
     auto& media = image.input.media.emplace();
     media.processor = MfqMultimodalProcessor::grid_vision;
-    media.processor_name = mfq::kMfqGridVisionInputContract;
+    media.processor_name = tyloi::kMfqGridVisionInputContract;
     media.vision_grid = media.image_grid = {1, side, side};
     media.vision_grid_shape = media.image_grid_shape = {1, 3};
     media.vision_types = {1};
@@ -817,12 +821,12 @@ static void check_batching(const char* model_path, const char* tokenizer) {
     options.continuous_batching = 2;
     options.prefill_chunk_size = 8;
     auto engine = load_cuda_engine(options);
-    using namespace mfq::engine;
+    using namespace tyloi::engine;
     MfqSamplingParams sampling;
     sampling.max_tokens = 32; sampling.temperature = 0; sampling.top_k = 1; sampling.enable_mtp = false;
-    const auto reference = mfq::cuda::diagnostics::check_engine_steps(*engine, {101, 202, 303}, sampling);
+    const auto reference = tyloi::cuda::diagnostics::check_engine_steps(*engine, {101, 202, 303}, sampling);
     check(reference.size() == 32, "batched generation length");
-    check(mfq::cuda::diagnostics::check_engine_steps(*engine, {101, 202, 303}, sampling) == reference,
+    check(tyloi::cuda::diagnostics::check_engine_steps(*engine, {101, 202, 303}, sampling) == reference,
           "batched repeat changed output");
     EngineRequest cancelled; cancelled.id = "cancel";
     cancelled.token_ids = {101, 202, 303}; cancelled.input.sampling = sampling;
@@ -847,14 +851,14 @@ static void check_batching(const char* model_path, const char* tokenizer) {
               return terminal(event.data);
           }) == 1 && std::holds_alternative<Cancelled>(result.events.back().data),
           "cancel during prefill did not release");
-    check(mfq::cuda::diagnostics::check_engine_steps(*engine, {101, 202, 303}, sampling) == reference,
+    check(tyloi::cuda::diagnostics::check_engine_steps(*engine, {101, 202, 303}, sampling) == reference,
           "cancel changed subsequent output");
     check_media_steps(*engine, model_path);
 }
 
 static void check_retained_recurrent_storage() {
-    namespace tb=mfq_tensor_backend;
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
+    namespace tb=tyloi::cuda;
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32);
     qwen4_exp::GdnWeights weights;
     weights.norm=tb::ones({32},options);
     qwen4_exp::Gdn gdn(std::move(weights),1,1,32,4,1e-6,true);
@@ -877,8 +881,8 @@ static void check_retained_recurrent_storage() {
 }
 
 static void check_kv_memory() {
-    namespace tb=mfq_tensor_backend;
-    auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
+    namespace tb=tyloi::cuda;
+    auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16);
     KvMemoryOptions config;config.dynamic=true;
     KvMemoryManager manager(config);
     auto allocation=manager.add(32768,2,128,128,16,4,options);
@@ -890,7 +894,7 @@ static void check_kv_memory() {
     manager.ensure(24576);
     check(allocation->keys.data_ptr()==address,"dynamic KV moved its virtual address");
     check(allocation->gpu_bytes()>bytes,"dynamic KV failed to map growth pages");
-    auto host=allocation->keys.narrow(2,0,16).to(tb::kCPU,tb::kFloat32).contiguous();
+    auto host=allocation->keys.narrow(2,0,16).to(tyloi::kCPU,tyloi::kFloat32).contiguous();
     for(int i=0;i<host.numel();++i)check(host.data_ptr<float>()[i]==3.0f,"dynamic KV growth corrupted existing values");
     // Allocation admission must fail before creating any SSD fallback.
     KvMemoryOptions constrained;constrained.gpu_limit=8192;constrained.ram_limit_set=true;constrained.ram_limit=0;
@@ -908,22 +912,22 @@ static void check_kv_memory() {
         KvMemoryOptions automatic;automatic.auto_stream_threshold=128;automatic.resident_cells=4;
         automatic.ram_limit_set=true;automatic.ram_limit=1<<20;
         KvMemoryManager tiered(automatic);
-        const auto floating=options.dtype(tb::kFloat32);
+        const auto floating=options.dtype(tyloi::kFloat32);
         const int key_bits=int(std::floor(bits)),value_bits=int(std::ceil(bits));
         const int key_width=bits?cuda_kv_packed_width(width,key_bits):width;
         const int value_width=bits?cuda_kv_packed_width(width,value_bits):width;
-        auto memory=tiered.add(128,1,key_width,value_width,8,4,options.dtype(bits?tb::kInt32:tb::kFloat16));
+        auto memory=tiered.add(128,1,key_width,value_width,8,4,options.dtype(bits?tyloi::kInt32:tyloi::kFloat16));
         tiered.finalize();
         check(memory->host && memory->hot.defined() && !memory->offload,
             "automatic RAM KV did not keep a graph-compatible resident window");
         check(memory->ram_bytes()==memory->raw_bytes() && memory->gpu_bytes()<memory->raw_bytes()+memory->index_bytes()+4096,
             "automatic RAM KV incorrectly charged the full raw cache to VRAM");
         auto raw=tb::arange(128*width,floating).remainder(23).reshape({1,1,128,width})/23.;
-        auto encoded_keys=bits?cuda_kv_encode(raw,key_bits,false):raw.to(tb::kFloat16);
-        auto encoded_values=bits?cuda_kv_encode(raw*.5,value_bits,true):(raw*.5).to(tb::kFloat16);
+        auto encoded_keys=bits?cuda_kv_encode(raw,key_bits,false):raw.to(tyloi::kFloat16);
+        auto encoded_values=bits?cuda_kv_encode(raw*.5,value_bits,true):(raw*.5).to(tyloi::kFloat16);
         memory->keys.copy_(encoded_keys);memory->values.copy_(encoded_values);
         auto query=tb::full({1,2,2,width},.125,floating);
-        auto selected=tb::tensor(std::vector<int32_t>{1,2,3,4,127,2,1,5,6,126},options.dtype(tb::kInt32)).reshape({1,2,5});
+        auto selected=tb::tensor(std::vector<int32_t>{1,2,3,4,127,2,1,5,6,126},options.dtype(tyloi::kInt32)).reshape({1,2,5});
         const auto check_published=[&](const std::vector<int>& rows) {
             const auto tags=memory->hot.mapping.cpu().contiguous();
             const auto slots=memory->hot.slot_ids.cpu().contiguous();
@@ -943,15 +947,15 @@ static void check_kv_memory() {
                 }
             }
         };
-        memory->hot.publish(memory->keys,memory->values,tb::arange(4,options.dtype(tb::kInt64)));
+        memory->hot.publish(memory->keys,memory->values,tb::arange(4,options.dtype(tyloi::kInt64)));
         check_published({0,1,2,3});
-        auto prefix=tb::tensor(std::vector<int32_t>{0,1,2,3},options.dtype(tb::kInt32)).reshape({1,1,4});
+        auto prefix=tb::tensor(std::vector<int32_t>{0,1,2,3},options.dtype(tyloi::kInt32)).reshape({1,1,4});
         memory->hot.prepare(memory->keys,memory->values,prefix,
-            tb::tensor(std::vector<int64_t>{3},options.dtype(tb::kInt64)),128,true);
+            tb::tensor(std::vector<int64_t>{3},options.dtype(tyloi::kInt64)),128,true);
         check(memory->hot.control.cpu().contiguous().data_ptr<int64_t>()[2]==0,
             "resident short prefix still queued RAM reads");
         // One append larger than the cache must retain the final window.
-        memory->hot.publish(memory->keys,memory->values,tb::arange(10,options.dtype(tb::kInt64)));
+        memory->hot.publish(memory->keys,memory->values,tb::arange(10,options.dtype(tyloi::kInt64)));
         check_published({6,7,8,9});
         const auto wrapped=memory->hot.mapping.cpu().contiguous();
         for(int row=0;row<6;++row)check(wrapped.data_ptr<int32_t>()[row]<0,
@@ -970,17 +974,17 @@ static void check_kv_memory() {
         };
         compare();compare();
         memory->hot.prepare(memory->keys,memory->values,
-            tb::tensor(std::vector<int32_t>{1},options.dtype(tb::kInt32)).reshape({1,1,1}));
+            tb::tensor(std::vector<int32_t>{1},options.dtype(tyloi::kInt32)).reshape({1,1,1}));
         check(memory->hot.mapping.cpu().contiguous().data_ptr<int32_t>()[1]>=0,
             "KV overwrite test did not begin with a resident old row");
         auto replacement=tb::full({1,1,1,width},.875,floating);
-        memory->keys.narrow(2,1,1).copy_(bits?cuda_kv_encode(replacement,key_bits,false):replacement.to(tb::kFloat16));
-        memory->values.narrow(2,1,1).copy_(bits?cuda_kv_encode(replacement,value_bits,true):replacement.to(tb::kFloat16));
+        memory->keys.narrow(2,1,1).copy_(bits?cuda_kv_encode(replacement,key_bits,false):replacement.to(tyloi::kFloat16));
+        memory->values.narrow(2,1,1).copy_(bits?cuda_kv_encode(replacement,value_bits,true):replacement.to(tyloi::kFloat16));
         memory->hot.publish(memory->keys,memory->values,
-            tb::tensor(std::vector<int64_t>{1},options.dtype(tb::kInt64)));
+            tb::tensor(std::vector<int64_t>{1},options.dtype(tyloi::kInt64)));
         check_published({1});
         // Rewind below the hot-window boundary after a long-prefix lookup.
-        memory->hot.publish(memory->keys,memory->values,tb::arange(2,options.dtype(tb::kInt64)));
+        memory->hot.publish(memory->keys,memory->values,tb::arange(2,options.dtype(tyloi::kInt64)));
         check_published({0,1});
         compare();memory->hot.reset();compare();
         auto counters=memory->hot.control.cpu().contiguous();
@@ -995,8 +999,8 @@ static void check_kv_memory() {
 }
 
 static void check_exclusive_kv() {
-    namespace tb=mfq_tensor_backend;
-    const auto options=tb::TensorOptions().device(tb::kCUDA);
+    namespace tb=tyloi::cuda;
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA);
     for(int width:{32,256})for(double bits:{0.,2.5,4.}) {
         const int maximum=128,heads=2,cells=5;
         const int kw=bits?cuda_kv_packed_width(width,int(std::floor(bits))):width;
@@ -1004,17 +1008,17 @@ static void check_exclusive_kv() {
         KvMemoryOptions policy;policy.budget_policy=true;policy.ram_limit_set=true;policy.ram_limit=1<<20;
         policy.gpu_budget=(maximum+maximum/4)*8*2+cells*heads*(kw+vw)*(bits?4:2);
         KvMemoryManager manager(policy);
-        auto memory=manager.add(maximum,heads,kw,vw,8,4,options.dtype(bits?tb::kInt32:tb::kFloat16));manager.finalize();
+        auto memory=manager.add(maximum,heads,kw,vw,8,4,options.dtype(bits?tyloi::kInt32:tyloi::kFloat16));manager.finalize();
         check(memory->hot.exclusive(),"budgeted KV did not use exclusive GPU/RAM tiers");
         check(memory->ram_bytes()==std::size_t(maximum-cells)*heads*(kw+vw)*(bits?4:2),"RAM KV duplicated GPU capacity");
-        auto raw=tb::arange(heads*maximum*width,options.dtype(tb::kFloat32)).remainder(29).reshape({1,heads,maximum,width})/29.;
-        auto k=bits?cuda_kv_encode(raw,int(std::floor(bits)),false):raw.to(tb::kFloat16);
-        auto v=bits?cuda_kv_encode(raw*.5,int(std::ceil(bits)),true):(raw*.5).to(tb::kFloat16);
-        auto positions=tb::arange(maximum,options.dtype(tb::kInt64));
+        auto raw=tb::arange(heads*maximum*width,options.dtype(tyloi::kFloat32)).remainder(29).reshape({1,heads,maximum,width})/29.;
+        auto k=bits?cuda_kv_encode(raw,int(std::floor(bits)),false):raw.to(tyloi::kFloat16);
+        auto v=bits?cuda_kv_encode(raw*.5,int(std::ceil(bits)),true):(raw*.5).to(tyloi::kFloat16);
+        auto positions=tb::arange(maximum,options.dtype(tyloi::kInt64));
         memory->hot.append(k.narrow(2,0,31),v.narrow(2,0,31),positions.narrow(0,0,31));
         memory->hot.append(k.narrow(2,31,97),v.narrow(2,31,97),positions.narrow(0,31,97));
-        auto selected=tb::tensor(std::vector<int32_t>{1,2,3,4,127,2,1,5,6,126},options.dtype(tb::kInt32)).reshape({1,2,5});
-        auto query=tb::full({1,4,2,width},.125,options.dtype(tb::kFloat32));
+        auto selected=tb::tensor(std::vector<int32_t>{1,2,3,4,127,2,1,5,6,126},options.dtype(tyloi::kInt32)).reshape({1,2,5});
+        auto query=tb::full({1,4,2,width},.125,options.dtype(tyloi::kFloat32));
         const auto compare=[&] {
             memory->hot.prepare(memory->keys,memory->values,selected);
             auto expected=bits?cuda_kv_attention(query,k,v,KvQuantization{bits},selected):mfq_qwen4_exp::sparse_gqa_attention(query,k,v,selected);
@@ -1040,27 +1044,27 @@ static void check_exclusive_kv() {
 }
 
 static void check_decode_kv_append() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto stream=mfq_get_stream_from_pool();MfqCudaStreamGuard guard(stream);
     auto context=default_context();context->begin_graph_pool(stream.stream());
     constexpr int maximum=96,cells=32,heads=2,width=32,iw=8;
-    const auto options=tb::TensorOptions().device(tb::kCUDA);
-    for(auto type:{tb::kFloat16,tb::kFloat32,tb::kInt32})for(auto index_type:{tb::kFloat16,tb::kFloat32})
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA);
+    for(auto type:{tyloi::kFloat16,tyloi::kFloat32,tyloi::kInt32})for(auto index_type:{tyloi::kFloat16,tyloi::kFloat32})
     for(bool cast:{false,true}) {
-        if(cast && type!=tb::kFloat16)continue;
+        if(cast && type!=tyloi::kFloat16)continue;
         auto hot=HotKvCache::allocate(heads,maximum,cells,width,width,options.dtype(type));
         hot.set_cold_storage(tb::empty({1,heads,maximum-cells,width},options.dtype(type)),
             tb::empty({1,heads,maximum-cells,width},options.dtype(type)));
         // Both KV and indexer inputs retain a larger row stride.
-        auto k=tb::arange(heads*maximum*(width+8),options.dtype(tb::kFloat32)).remainder(71)
+        auto k=tb::arange(heads*maximum*(width+8),options.dtype(tyloi::kFloat32)).remainder(71)
             .reshape({1,maximum,heads,width+8}).narrow(3,0,width).permute({0,2,1,3}).to(type);
-        if(cast)k=k.to(tb::kFloat32)+.00031;
-        auto v=(k.to(tb::kFloat32)*2).to(type);
-        if(cast)v=v.to(tb::kFloat32)-.00039;
-        auto raw=tb::arange(maximum*iw*3,options.dtype(tb::kFloat32)).remainder(53)
+        if(cast)k=k.to(tyloi::kFloat32)+.00031;
+        auto v=(k.to(tyloi::kFloat32)*2).to(type);
+        if(cast)v=v.to(tyloi::kFloat32)-.00039;
+        auto raw=tb::arange(maximum*iw*3,options.dtype(tyloi::kFloat32)).remainder(53)
             .reshape({1,maximum,iw*3}).to(index_type).narrow(2,iw,iw);
-        auto stored=tb::zeros({1,maximum,iw},options.dtype(index_type==tb::kFloat16?tb::kFloat32:tb::kFloat16));
-        auto positions=tb::arange(maximum,options.dtype(tb::kInt64));
+        auto stored=tb::zeros({1,maximum,iw},options.dtype(index_type==tyloi::kFloat16?tyloi::kFloat32:tyloi::kFloat16));
+        auto positions=tb::arange(maximum,options.dtype(tyloi::kInt64));
         int begin=0;
         for(int count:{1,2,3,4,5,6,11,32,32}) {
             const bool fused=hot.append_decode(k.narrow(2,begin,count),v.narrow(2,begin,count),positions.narrow(0,begin,count),
@@ -1102,10 +1106,10 @@ static void check_decode_kv_append() {
 }
 
 static void check_kv_expert_loan() {
-    namespace tb=mfq_tensor_backend;
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
+    namespace tb=tyloi::cuda;
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
     auto arena=tb::zeros({512<<10},options),destination=tb::empty({128<<10},options);
-    auto source=tb::full({128<<10},73,options.device(tb::kCPU));
+    auto source=tb::full({128<<10},73,options.device(tyloi::kCPU));
     Stream copy(0);KvExpertLoan loan;loan.add(arena,128,4096,true);
     bool hit=false;
     check(loan.copy({0,1,2},source.data_ptr(),destination.data_ptr(),source.nbytes(),copy.get(),hit)
@@ -1128,9 +1132,9 @@ static void check_kv_expert_loan() {
     KvOffloadStore store(config);auto shared=std::make_shared<KvExpertLoan>();store.set_expert_loan(shared);
     check(shared->copy({1,1,2},source.data_ptr(),destination.data_ptr(),source.nbytes(),copy.get(),hit),"streamed KV arena did not lend unused storage");
     check(store.expert_loan_bytes()==source.nbytes(),"streamed KV loan accounting is incorrect");
-    auto rows=tb::full({128,512},7,options.dtype(tb::kFloat16));auto block=store.write(rows);
+    auto rows=tb::full({128,512},7,options.dtype(tyloi::kFloat16));auto block=store.write(rows);
     check(store.expert_loan_bytes()==0,"streamed KV growth did not reclaim its expert pages");
-    auto recovered=store.read(block).to(tb::kCPU,tb::kFloat32).contiguous();
+    auto recovered=store.read(block).to(tyloi::kCPU,tyloi::kFloat32).contiguous();
     for(int64_t i=0;i<recovered.numel();++i)check(recovered.data_ptr<float>()[i]==7,"streamed KV overwrote a live expert transfer");
 
     KvExpertLoan retired;auto retirement_arena=tb::zeros({512<<10},options);
@@ -1247,9 +1251,9 @@ static void check_kv_expert_loan() {
 }
 
 static void check_kv_projection_loan() {
-    namespace tb=mfq_tensor_backend;
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
-    auto arena=tb::zeros({512<<10},options),source=tb::full({128<<10},73,options.device(tb::kCPU));
+    namespace tb=tyloi::cuda;
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
+    auto arena=tb::zeros({512<<10},options),source=tb::full({128<<10},73,options.device(tyloi::kCPU));
     auto destination=tb::empty({128<<10},options);
     Stream copy(0);KvExpertLoan loan;loan.add(arena,128,4096,true);
     const std::vector<int64_t> sizes={64<<10,17,4097,0};
@@ -1334,8 +1338,8 @@ static void check_kv_projection_loan() {
 }
 
 static void check_reused_projection_observer() {
-    namespace tb=mfq_tensor_backend;
-    auto storage=tb::empty({4*int64_t(KvExpertLoan::page)},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+    namespace tb=tyloi::cuda;
+    auto storage=tb::empty({4*int64_t(KvExpertLoan::page)},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
     KvExpertLoan loan;loan.set_reuse_priority(true);
     const auto region=loan.add(storage,4,KvExpertLoan::page,true);
     std::map<int64_t,bool> reusable;int publications=0;
@@ -1364,8 +1368,9 @@ static void check_reused_projection_observer() {
 }
 
 static void check_workspace_loan() {
-    using namespace mfq_tensor_backend;
-    const auto context=mfq::cuda::default_context();
+    using namespace tyloi::cuda;
+using namespace tyloi;
+    const auto context=tyloi::cuda::default_context();
     const auto stream=mfq_current_cuda_stream();
     auto arena=full({4096},7,TensorOptions().device(kCUDA).dtype(kUInt8));
     const auto address=arena.data_ptr();
@@ -1386,7 +1391,7 @@ static void check_workspace_loan() {
     check(rejected,"expert storage was returned with a live workspace tensor");
     whole={};
     {
-        mfq::cuda::ResidentAllocationScope resident;
+        tyloi::cuda::ResidentAllocationScope resident;
         auto state=empty({4096},arena.options());
         check(state.data_ptr()!=address,"persistent request state borrowed expert storage");
     }
@@ -1400,16 +1405,16 @@ static void check_workspace_loan() {
 }
 
 static void check_graph_workspace_reuse() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();
     const auto before=context->memory_stats().allocated;
     context->begin_graph_pool(stream);
-    tb::Tensor retained;
+    DenseTensor retained;
     {
         GraphWarmupScope warmup(context,stream);
-        auto large=tb::empty({65536},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+        auto large=tb::empty({65536},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
         const auto* address=large.data_ptr();large={};
-        retained=tb::empty({49152},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+        retained=tb::empty({49152},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
         check(retained.data_ptr()==address,"smaller graph shape did not reuse available scratch");
         retained.fill_(7);
     }
@@ -1421,11 +1426,11 @@ static void check_graph_workspace_reuse() {
 }
 
 static void check_streamed_graph_segments() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();
     context->begin_graph_pool(stream);
     {
-        auto input=tb::ones({16},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32));
+        auto input=tb::ones({16},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32));
         auto first=tb::empty_like(input),second=tb::empty_like(input),output=tb::empty_like(input);
         int calls=0;bool fail=false;
         DecodeWindow window(stream);
@@ -1453,12 +1458,12 @@ static void check_streamed_graph_segments() {
         check(caught && calls==7,"failed I/O ran a dependent segment");
     }
     context->end_graph_pool(stream);
-    for(const auto dtype:{tb::kFloat16,tb::kInt32})for(bool preallocate_ram:{false,true}) {
+    for(const auto dtype:{tyloi::kFloat16,tyloi::kInt32})for(bool preallocate_ram:{false,true}) {
         KvOffloadConfig config;config.preallocate=true;config.ram_preallocated=preallocate_ram;
         config.buffer_bytes=4096;config.gpu_budget_bytes=6144;config.ram_budget_bytes=1024;
         config.directory=(std::filesystem::current_path()/"streamed-kv-test").string();
         auto store=std::make_shared<KvOffloadStore>(config);KvOffloadSequence sequence(store,128,2,dtype);
-        auto source=tb::arange(64*128,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64)).remainder(997).to(dtype).reshape({64,128});
+        auto source=tb::arange(64*128,tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kInt64)).remainder(997).to(dtype).reshape({64,128});
         sequence.append(source);
         for(int planar:{0,32}) {
             auto workspace=sequence.gather_workspace(16,2,planar);
@@ -1466,14 +1471,14 @@ static void check_streamed_graph_segments() {
                 std::vector<int64_t> selected{63,0,7,62,12,0,61};
                 if(pass)std::reverse(selected.begin(),selected.end());
                 sequence.gather_into(selected,*workspace);
-                tb::Tensor actual;
+                DenseTensor actual;
                 if(planar) {
                     auto flat=workspace->rows.reshape({-1});
                     auto keys=flat.narrow(0,0,16*64).reshape({2,16,32}).permute({1,0,2}).reshape({16,64});
                     auto values=flat.narrow(0,16*64,16*64).reshape({2,16,32}).permute({1,0,2}).reshape({16,64});
                     actual=tb::cat({keys,values},1).narrow(0,0,selected.size());
                 } else actual=workspace->rows.narrow(0,0,selected.size());
-                auto expected=source.index_select(0,tb::tensor(selected).to(tb::kCUDA)).cpu().contiguous();
+                auto expected=source.index_select(0,tb::tensor(selected).to(tyloi::kCUDA)).cpu().contiguous();
                 auto host=actual.cpu().contiguous();
                 check(host.nbytes()==expected.nbytes() && !std::memcmp(host.data_ptr(),expected.data_ptr(),host.nbytes()),"fixed KV gather changed RAM/SSD/GPU rows");
             }
@@ -1486,22 +1491,22 @@ static void check_streamed_graph_segments() {
 }
 
 void check_gelu_approximations() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     std::vector<float> values(289);
     for(std::size_t i=0;i<values.size();++i)values[i]=float(i-144.0)/32;
-    for(auto dtype:{tb::kFloat32,tb::kFloat16})for(bool strided:{false,true}) {
-        auto input=tb::tensor(values,tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32))
-            .reshape({17,17}).to(tb::kCUDA).to(dtype);
+    for(auto dtype:{tyloi::kFloat32,tyloi::kFloat16})for(bool strided:{false,true}) {
+        auto input=tb::tensor(values,tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32))
+            .reshape({17,17}).to(tyloi::kCUDA).to(dtype);
         if(strided)input=input.transpose(0,1);
-        auto source=input.contiguous().to(tb::kFloat32).to(tb::kCPU);
+        auto source=input.contiguous().to(tyloi::kFloat32).to(tyloi::kCPU);
         for(const std::string mode:{"none","tanh"}) {
-            auto output=tb::gelu(input,mode).to(tb::kFloat32).to(tb::kCPU);
+            auto output=tb::gelu(input,mode).to(tyloi::kFloat32).to(tyloi::kCPU);
             for(int i=0;i<289;++i) {
                 const double x=source.data_ptr<float>()[i];
                 const auto reference=mode=="tanh"?
                     .5*x*(1+std::tanh(.7978845608028654*(x+.044715*x*x*x))):
                     .5*x*(1+std::erf(x/std::sqrt(2.0)));
-                const auto tolerance=dtype==tb::kFloat32?2e-6:5e-4;
+                const auto tolerance=dtype==tyloi::kFloat32?2e-6:5e-4;
                 check(std::abs(output.data_ptr<float>()[i]-reference)<=tolerance*std::max(1.0,std::abs(x)),
                     "GELU approximation differs from its scalar reference");
             }
@@ -1510,11 +1515,12 @@ void check_gelu_approximations() {
 }
 
 void check_dma_copy_buckets() {
-    using namespace mfq::cuda;
-    namespace tb=mfq_tensor_backend;
+    using namespace tyloi::cuda;
+using namespace tyloi;
+    namespace tb=tyloi::cuda;
     constexpr int rows=129,width=32;
-    auto host=tb::empty({rows,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true));
-    auto device=tb::empty({rows,width},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+    auto host=tb::empty({rows,width},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kUInt8).pinned_memory(true));
+    auto device=tb::empty({rows,width},tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
     auto* source=host.data_ptr<uint8_t>();
     for(int i=0;i<rows*width;++i)source[i]=uint8_t(i%251);
     DmaCopyBatch batch(mfq_current_cuda_stream());
@@ -1595,8 +1601,7 @@ int main(int argc, char** argv) try {
     check_tq_parallel();
     check_mfe_cached_dispatch_geometry();
     {
-        CudaStores stores;
-        CudaExecutionContext execution(stores);
+        TestExecution execution;
         check_snapshots(execution, false);
         check_snapshots(execution, true);
     }

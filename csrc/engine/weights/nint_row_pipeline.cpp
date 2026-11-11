@@ -277,7 +277,7 @@ void NintRowPipeline::issue(const std::vector<int64_t>& ids,const std::vector<in
     const auto sequence=++s.serial;
     s.pending=s.submit(ids,sequence,issued,carried);
 }
-std::shared_ptr<::tyloi::Tensor> NintRowPipeline::collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
+::tyloi::Tensor NintRowPipeline::collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,const ::tyloi::Device& device) {
     auto& s=*impl_;
     const auto started=s.profile?RowClock::now():RowClock::time_point{};
     issue(ids,shape);

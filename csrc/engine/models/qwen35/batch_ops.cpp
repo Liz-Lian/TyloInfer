@@ -119,7 +119,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
             ::tyloi::cuda::full({1}, chunk.offset + 1, request->prefill_ids.options());
     tyloi::models::Input input;
     input.ids = request->prefill_ids.narrow(1, chunk.offset, chunk.count).contiguous();
-    input.lengths = std::move(length);
+    input.lengths = length.value_or(::tyloi::DenseTensor());
     hidden = forward(*model_, request->cache.state(), request->cache.executor(),
                      collectives_, mode_, std::move(input));
     const auto end = chunk.offset + chunk.count;

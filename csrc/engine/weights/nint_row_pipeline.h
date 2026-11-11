@@ -26,7 +26,7 @@ public:
         std::shared_ptr<tyloi::NintRowCache> cache={});
     ~NintRowPipeline();
     void issue(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,bool early_prefix=false);
-    std::shared_ptr<::tyloi::Tensor> collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,
+    ::tyloi::Tensor collect(const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,
         const ::tyloi::Device& device);
     std::shared_ptr<NintRowStage> make_stage(const std::vector<int64_t>& shape,
         const ::tyloi::Device& device);

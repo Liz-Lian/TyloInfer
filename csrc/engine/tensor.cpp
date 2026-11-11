@@ -15,10 +15,9 @@
 namespace tyloi {
 namespace {
 
-DenseTensor dense_result(const std::shared_ptr<Tensor>& result) {
-    const auto* value = dynamic_cast<const DenseTensor*>(result.get());
-    if (!value || value->is_encoded()) throw std::invalid_argument("operation returned a non-dense tensor");
-    return *value;
+DenseTensor dense_result(const Tensor& result) {
+    if (!result.defined()) throw std::invalid_argument("operation returned an undefined tensor");
+    return result.dense();
 }
 
 std::size_t normalize_dimension(std::int64_t dimension, std::size_t rank, bool allow_end = false) {
@@ -35,7 +34,25 @@ std::size_t normalize_dimension(std::int64_t dimension, std::size_t rank, bool a
 
 }  // namespace
 
-std::vector<std::shared_ptr<TensorStorage>> Tensor::backings() const {
+const TensorImpl& Tensor::reference() const noexcept {
+    if (impl_) return *impl_;
+    static const DenseTensor undefined;
+    return undefined;
+}
+
+const DenseTensor& Tensor::dense() const {
+    const auto* value = dynamic_cast<const DenseTensor*>(impl_.get());
+    if (!value) throw std::invalid_argument("operation requires a dense tensor");
+    return *value;
+}
+
+DenseTensor& Tensor::dense() {
+    auto* value = dynamic_cast<DenseTensor*>(impl_.get());
+    if (!value) throw std::invalid_argument("operation requires a dense tensor");
+    return *value;
+}
+
+std::vector<std::shared_ptr<TensorStorage>> TensorImpl::backings() const {
     std::vector<std::shared_ptr<TensorStorage>> result;
     for (const auto* buffer : buffers())
         if (buffer && buffer->defined()) result.push_back(buffer->storage());
@@ -43,7 +60,7 @@ std::vector<std::shared_ptr<TensorStorage>> Tensor::backings() const {
 }
 
 
-std::shared_ptr<const Tensor> DenseTensor::relocated(Device target) const {
+std::shared_ptr<TensorImpl> DenseTensor::relocated(Device target) const {
     return defined() && device() != target
         ? std::make_shared<DenseTensor>(to(target))
         : std::make_shared<DenseTensor>(*this);
@@ -478,7 +495,8 @@ DenseTensor DenseTensor::masked_fill(const DenseTensor& mask, double value) cons
     return dense_result(ops::masked_fill(*this, mask, value));
 }
 DenseTensor& DenseTensor::masked_fill_(const DenseTensor& mask, double value) {
-    ops::masked_fill_inplace(*this, mask, value);
+    Tensor self{*this};
+    ops::masked_fill_inplace(self, mask, value);
     return *this;
 }
 
@@ -499,7 +517,8 @@ DenseTensor DenseTensor::to(Device target_device) const {
 }
 
 DenseTensor& DenseTensor::copy_(const DenseTensor& source, bool) {
-    ops::copy_into(*this, source);
+    Tensor self{*this};
+    ops::copy_into(self, source);
     return *this;
 }
 
@@ -508,44 +527,50 @@ DenseTensor& DenseTensor::zero_() {
 }
 
 DenseTensor& DenseTensor::fill_(double value) {
-    ops::fill(*this, value);
+    Tensor self{*this};
+    ops::fill(self, value);
     return *this;
 }
 
 DenseTensor& DenseTensor::add_(const DenseTensor& value) {
     auto result = ops::add(*this, value);
-    ops::copy_into(*this, *result);
+    Tensor self{*this};
+    ops::copy_into(self, result);
     return *this;
 }
 
 DenseTensor& DenseTensor::scatter_add_(
     std::int64_t dimension, const DenseTensor& index, const DenseTensor& source) {
-    ops::scatter_add(*this, dimension, index, source);
+    Tensor self{*this};
+    ops::scatter_add(self, dimension, index, source);
     return *this;
 }
 
 DenseTensor& DenseTensor::scatter_(
     std::int64_t dimension, const DenseTensor& index, const DenseTensor& source) {
-    ops::scatter(*this, dimension, index, source);
+    Tensor self{*this};
+    ops::scatter(self, dimension, index, source);
     return *this;
 }
 
 DenseTensor& DenseTensor::index_copy_(
     std::int64_t dimension, const DenseTensor& index, const DenseTensor& source) {
-    ops::index_copy(*this, dimension, index, source);
+    Tensor self{*this};
+    ops::index_copy(self, dimension, index, source);
     return *this;
 }
 
 DenseTensor& DenseTensor::index_fill_(
     std::int64_t dimension, const DenseTensor& index, double value) {
-    ops::index_fill(*this, dimension, index, value);
+    Tensor self{*this};
+    ops::index_fill(self, dimension, index, value);
     return *this;
 }
 
 DenseTensor& DenseTensor::index_put_(
     std::initializer_list<TensorIndex> indices, const DenseTensor& value) {
     value.require_dense();
-    auto view = index(indices);
+    Tensor view{index(indices)};
     ops::copy_into(view, value);
     return *this;
 }

@@ -13,21 +13,21 @@ namespace tyloi::cuda {
 template<class State> class ImageMaskScope {
     State& state_;
     bool active_=false;
-    std::shared_ptr<const ::tyloi::Tensor> mask_;
+    ::tyloi::Tensor mask_;
 public:
     ImageMaskScope(State& state,const tyloi::models::Prepared* prepared,
                    int64_t offset,int64_t count):state_(state) {
-        if(!prepared || !prepared->image_mask || !prepared->image_mask->defined())return;
+        if(!prepared || !prepared->image_mask || !prepared->image_mask.defined())return;
         if constexpr(requires {state_.set_image_mask(mask_);}) {
-            auto slice=tyloi::ops::slice(*prepared->image_mask,1,offset,offset+count);
-            mask_=tyloi::ops::contiguous(*slice);
+            auto slice=tyloi::ops::slice(prepared->image_mask,1,offset,offset+count);
+            mask_=tyloi::ops::contiguous(slice);
             state_.set_image_mask(mask_);
             active_=true;
         } else throw std::invalid_argument("model cannot apply an image participation mask");
     }
     ~ImageMaskScope() {
         if constexpr(requires {state_.set_image_mask(mask_);})
-            if(active_)state_.set_image_mask({});
+            if(active_)state_.set_image_mask(::tyloi::Tensor{});
     }
     ImageMaskScope(const ImageMaskScope&)=delete;
     ImageMaskScope& operator=(const ImageMaskScope&)=delete;

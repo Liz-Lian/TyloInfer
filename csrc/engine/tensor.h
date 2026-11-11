@@ -428,18 +428,21 @@ private:
 
 class TensorIndex;
 class Tensor;
+class TensorImpl;
 class DenseTensor;
 namespace encoding {
 struct Tq;
 class TqTensor;
 }
 
-// Abstract data interface: every representation shares the logical
+// Representation interface: every implementation shares the logical
 // shape/dtype metadata, layout identification, storage access and lifetime
-// contract below. Numeric entry points stay in ops; no compute virtuals.
-class Tensor {
+// contract below. It never travels through model-side data flow; the public
+// currency is the Tensor handle. Numeric entry points stay in ops; no compute
+// virtuals.
+class TensorImpl {
 public:
-    virtual ~Tensor() = default;
+    virtual ~TensorImpl() = default;
     virtual bool defined() const noexcept = 0;
     virtual std::int64_t dim() const noexcept = 0;
     virtual std::int64_t numel() const = 0;
@@ -470,7 +473,7 @@ public:
     // A copy of this representation with every buffer resident on `device`,
     // keeping the encoding. Weight preparation uses this; a published weight
     // is never rewritten in place.
-    virtual std::shared_ptr<const Tensor> relocated(Device device) const = 0;
+    virtual std::shared_ptr<TensorImpl> relocated(Device device) const = 0;
 
     ScalarType dtype() const noexcept { return scalar_type(); }
     int get_device() const noexcept { return device().index; }
@@ -487,7 +490,7 @@ public:
     }
 };
 
-class DenseTensor final : public Tensor {
+class DenseTensor final : public TensorImpl {
 public:
     DenseTensor() = default;
 
@@ -513,18 +516,22 @@ public:
     const Device& device() const noexcept override { return view_.device; }
     bool is_contiguous() const noexcept override { return defined() && view_.is_contiguous(); }
     bool is_encoded() const noexcept override { return false; }
+    // DenseTensor is already the concrete representation; the accessor exists
+    // so callers can treat a handle and a representation the same way.
+    const DenseTensor& dense() const noexcept { return *this; }
+    DenseTensor& dense() noexcept { return *this; }
     std::vector<const DenseTensor*> buffers() const override { return {this}; }
-    std::shared_ptr<const Tensor> relocated(Device device) const override;
+    std::shared_ptr<TensorImpl> relocated(Device device) const override;
     const std::shared_ptr<TensorStorage>& storage() const noexcept { return storage_; }
     std::size_t byte_offset() const noexcept { return byte_offset_; }
     void record_stream(std::uintptr_t stream) const override {
         if (storage_ && storage_->record_stream) storage_->record_stream(stream);
     }
 
-    ScalarType dtype() const noexcept { return Tensor::dtype(); }
-    std::size_t element_size() const noexcept { return Tensor::element_size(); }
-    TensorOptions options() const noexcept { return Tensor::options(); }
-    void require_dense() const { Tensor::require_dense(); }
+    ScalarType dtype() const noexcept { return TensorImpl::dtype(); }
+    std::size_t element_size() const noexcept { return TensorImpl::element_size(); }
+    TensorOptions options() const noexcept { return TensorImpl::options(); }
+    void require_dense() const { TensorImpl::require_dense(); }
 
     IntArrayRef sizes() const {
         return IntArrayRef(std::span<const std::int64_t>(view_.sizes).first(view_.rank));
@@ -741,6 +748,77 @@ private:
     std::shared_ptr<TensorStorage> storage_;
     TensorView view_{};
     std::size_t byte_offset_ = 0;
+};
+
+// Public data currency for models, state and ops: a copyable handle over a
+// polymorphic representation. Copying a handle shares the implementation and
+// its backing, never the data. Callers never dereference or unwrap it.
+class Tensor {
+public:
+    Tensor() = default;
+    Tensor(std::shared_ptr<TensorImpl> implementation) noexcept
+        : impl_(std::move(implementation)) {}
+    // A DenseTensor is already a representation; wrapping it copies only the
+    // view metadata and shares the backing.
+    Tensor(DenseTensor value)
+        : impl_(std::make_shared<DenseTensor>(std::move(value))) {}
+    template <typename Impl, typename = std::enable_if_t<
+                 std::is_base_of<TensorImpl, Impl>::value &&
+                 !std::is_same<Impl, TensorImpl>::value>>
+    Tensor(std::shared_ptr<Impl> implementation)
+        : impl_(std::move(implementation)) {}
+    // Loading hands out owned representations that are read-only by convention;
+    // the handle has no separate const type.
+    template <typename Impl, typename = std::enable_if_t<
+                 std::is_base_of<TensorImpl, Impl>::value>>
+    Tensor(std::shared_ptr<const Impl> implementation)
+        : impl_(std::const_pointer_cast<TensorImpl>(
+              std::shared_ptr<const TensorImpl>(std::move(implementation)))) {}
+
+    bool defined() const noexcept { return impl_ != nullptr && impl_->defined(); }
+    explicit operator bool() const noexcept { return defined(); }
+
+    // Concrete representation access stays in loading, storage and ops code.
+    const DenseTensor& dense() const;
+    DenseTensor& dense();
+    // Representation probe: null when the handle holds another representation.
+    template <typename Impl>
+    const Impl* representation() const noexcept {
+        return dynamic_cast<const Impl*>(impl_.get());
+    }
+    template <typename Impl>
+    Impl* representation() noexcept {
+        return dynamic_cast<Impl*>(impl_.get());
+    }
+    const std::shared_ptr<TensorImpl>& implementation() const noexcept { return impl_; }
+
+    std::int64_t dim() const noexcept { return reference().dim(); }
+    std::int64_t numel() const { return reference().numel(); }
+    std::size_t nbytes() const { return reference().nbytes(); }
+    std::size_t backing_nbytes() const { return reference().backing_nbytes(); }
+    std::int64_t size(std::int64_t dimension) const { return reference().size(dimension); }
+    ScalarType scalar_type() const noexcept { return reference().scalar_type(); }
+    const Device& device() const noexcept { return reference().device(); }
+    bool is_contiguous() const noexcept { return reference().is_contiguous(); }
+    bool is_encoded() const noexcept { return reference().is_encoded(); }
+    std::vector<const DenseTensor*> buffers() const { return reference().buffers(); }
+    std::vector<std::shared_ptr<TensorStorage>> backings() const { return reference().backings(); }
+    void record_stream(std::uintptr_t stream) const { reference().record_stream(stream); }
+    Tensor relocated(Device device) const { return Tensor{reference().relocated(device)}; }
+
+    ScalarType dtype() const noexcept { return reference().dtype(); }
+    int get_device() const noexcept { return reference().get_device(); }
+    bool is_cpu() const noexcept { return reference().is_cpu(); }
+    bool is_cuda() const noexcept { return reference().is_cuda(); }
+    std::size_t element_size() const noexcept { return reference().element_size(); }
+    TensorOptions options() const noexcept { return reference().options(); }
+    void require_dense() const { reference().require_dense(); }
+
+private:
+    // An empty handle reports the same metadata as an undefined DenseTensor.
+    const TensorImpl& reference() const noexcept;
+
+    std::shared_ptr<TensorImpl> impl_;
 };
 
 class TensorIndex final {

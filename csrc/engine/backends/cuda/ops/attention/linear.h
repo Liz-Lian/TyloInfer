@@ -37,7 +37,7 @@ struct LinearAttention {
     double rms_norm_eps = 1e-6;
     double norm_weight_offset = 1.0;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> attn_norm, conv_weight, conv_bias,
+    ::tyloi::Tensor attn_norm, conv_weight, conv_bias,
         dt_bias, a_log, linear_norm;
 #else
     ::tyloi::DenseTensor attn_norm, conv_weight, conv_bias,
@@ -49,18 +49,18 @@ struct LinearAttention {
     bool ab_is_nint = false;
     bool dense_out_proj = false;
     bool tiled_v_heads = false;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> in_proj;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> qkv_proj;
-    std::shared_ptr<const ::tyloi::Tensor> z_proj;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> ab_nint_proj;
+    std::vector<::tyloi::Tensor> in_proj;
+    std::vector<::tyloi::Tensor> qkv_proj;
+    ::tyloi::Tensor z_proj;
+    std::vector<::tyloi::Tensor> ab_nint_proj;
 #ifndef TYLOINFER_NATIVE_CUDA
     bool grouped_weights = true;
 #endif
     DenseLinearGroup ab_proj;
     DenseLinearGroup zab_proj;
-    std::shared_ptr<const ::tyloi::Tensor> out_proj;
+    ::tyloi::Tensor out_proj;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> out_proj_dense;
+    ::tyloi::Tensor out_proj_dense;
 #else
     ::tyloi::DenseTensor out_proj_dense;
 #endif

@@ -24,7 +24,7 @@ struct Compressor {
     bool overlap = false;
     DenseLinearGroup projection;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const tyloi::Tensor> ape, norm;
+    ::tyloi::Tensor ape, norm;
 #else
     DenseTensor ape, norm;
 #endif
@@ -45,17 +45,17 @@ struct Layer {
     int64_t head_dim = 512, groups = 8, hc_mult = 4, hc_iterations = 20;
     double eps = 1e-6, hc_eps = 1e-6;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const tyloi::Tensor> attn_norm, ffn_norm, q_a_norm, kv_norm, sinks;
-    std::shared_ptr<const tyloi::Tensor> hc_attn_fn, hc_attn_scale, hc_attn_base, hc_ffn_fn, hc_ffn_scale, hc_ffn_base;
+    ::tyloi::Tensor attn_norm, ffn_norm, q_a_norm, kv_norm, sinks;
+    ::tyloi::Tensor hc_attn_fn, hc_attn_scale, hc_attn_base, hc_ffn_fn, hc_ffn_scale, hc_ffn_base;
 #else
     DenseTensor attn_norm, ffn_norm, q_a_norm, kv_norm, sinks;
     DenseTensor hc_attn_fn, hc_attn_scale, hc_attn_base, hc_ffn_fn, hc_ffn_scale, hc_ffn_base;
 #endif
-    std::shared_ptr<const tyloi::Tensor> q_a, q_b, kv, output_a, output_b;
+    ::tyloi::Tensor q_a, q_b, kv, output_a, output_b;
     Compressor compressor, indexer_compressor;
-    std::shared_ptr<const tyloi::Tensor> indexer_q;
+    ::tyloi::Tensor indexer_q;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const tyloi::Tensor> indexer_weight;
+    ::tyloi::Tensor indexer_weight;
 #else
     DenseTensor indexer_weight;
 #endif
@@ -69,7 +69,7 @@ struct Layer {
 
 struct OutputHeadWeights {
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const tyloi::Tensor> function, scale, base;
+    ::tyloi::Tensor function, scale, base;
 #else
     DenseTensor function, scale, base;
 #endif
@@ -81,9 +81,9 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-    std::shared_ptr<const tyloi::Tensor> embed, lm_head;
+    ::tyloi::Tensor embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const tyloi::Tensor> output_norm;
+    ::tyloi::Tensor output_norm;
 #else
     DenseTensor output_norm;
 #endif

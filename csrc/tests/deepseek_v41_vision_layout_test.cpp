@@ -6,11 +6,11 @@
 
 namespace {
 
-using mfq::models::axial_patch_vision::aligned_grid;
-using mfq::models::axial_patch_vision::Config;
-using mfq::models::axial_patch_vision::gather_indices;
-using mfq::models::axial_patch_vision::span_token_types;
-using mfq::models::axial_patch_vision::validate_span;
+using tyloi::models::axial_patch_vision::aligned_grid;
+using tyloi::models::axial_patch_vision::Config;
+using tyloi::models::axial_patch_vision::gather_indices;
+using tyloi::models::axial_patch_vision::span_token_types;
+using tyloi::models::axial_patch_vision::validate_span;
 
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);

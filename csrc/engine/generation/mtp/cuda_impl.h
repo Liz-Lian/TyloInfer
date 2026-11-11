@@ -303,8 +303,8 @@ template <class Model, class State> struct CudaMtpOps {
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt &&
 #ifdef TYLOINFER_NATIVE_CUDA
-                              prepared->positions && prepared->positions->defined() && prepared->positions->dim() == 2 &&
-                              prepared->positions->size(0) == 3
+                              prepared->positions && prepared->positions.defined() && prepared->positions.dim() == 2 &&
+                              prepared->positions.size(0) == 3
 #else
                               prepared->positions.defined() && prepared->positions.dim() == 2 &&
                               prepared->positions.size(0) == 3
@@ -496,7 +496,7 @@ template <class Model, class State> struct CudaMtpOps {
       auto positions = prepared->positions ? slice(prepared->positions, -1, chunk.offset, chunk.count)
                                            : Tensor{};
 #else
-      auto embeddings = DenseTensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
+      auto embeddings = prepared->embeddings.dense().narrow(1, chunk.offset, chunk.count)
                             .contiguous();
       auto positions = prepared->positions.defined()
                            ? MfqOptional<Tensor>(prepared->positions.dense().narrow(
@@ -876,8 +876,8 @@ run_mtp_generation(Model &model, State &state, tyloi::cuda::Executor* executor,
                    InferenceOutput &output, int64_t prefill_chunk_size,
                    const tyloi::models::Prepared *prepared,
                    std::size_t reused_tokens,
-                   std::shared_ptr<const tyloi::Tensor> restored_last_hidden,
-                   std::shared_ptr<tyloi::Tensor> *session_last_hidden,
+                   ::tyloi::Tensor restored_last_hidden,
+                   ::tyloi::Tensor *session_last_hidden,
                    std::size_t stable_prefix_tokens, tyloi::engine::Budget* budget) {
   if (!state.predictor || !state.predictor->belongs_to(mtp))
     throw std::invalid_argument("predictor state is unavailable or belongs to another model");

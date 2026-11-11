@@ -1,11 +1,11 @@
 #pragma once
 
 static void benchmark_kv_speculative_lru() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     constexpr int layers=32,experts=32,entries=layers*experts,iterations=128,samples=7;
     Stream stream{0};KvExpertLoan loan;
     auto arena=tb::zeros({int64_t(entries)*KvExpertLoan::page},
-        tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+        tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
     loan.add(arena,entries,KvExpertLoan::page,true);
     for(int layer=0;layer<layers;++layer)for(int expert=0;expert<experts;++expert) {
         bool hit=false;
@@ -48,12 +48,12 @@ static void benchmark_kv_speculative_lru() {
 }
 
 static void check_kv_speculative_lru() {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     struct Fixture {
-        Stream copy{0};KvExpertLoan loan;tb::Tensor arena;
+        Stream copy{0};KvExpertLoan loan;tyloi::DenseTensor arena;
         explicit Fixture(int pages=3) {
             arena=tb::zeros({int64_t(pages)*int64_t(KvExpertLoan::page)},
-                tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8));
+                tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8));
             loan.add(arena,pages,KvExpertLoan::page,true);
         }
         const void* put(int expert,int64_t source=17) {

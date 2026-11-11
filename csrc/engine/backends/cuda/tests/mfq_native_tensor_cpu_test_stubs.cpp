@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 Tensor empty_cuda(std::span<const std::int64_t>, const TensorOptions&) {
     throw std::runtime_error("CUDA is unavailable in the host-only tensor test");
@@ -90,4 +90,4 @@ Tensor operator+(const Tensor&, double) {
     throw std::runtime_error("CUDA is unavailable in the host-only tensor test");
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

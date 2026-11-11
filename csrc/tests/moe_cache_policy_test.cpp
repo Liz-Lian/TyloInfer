@@ -16,10 +16,10 @@ void require(bool condition, const char * message) {
 }
 
 void test_lru_replaces_oldest_non_inflight_slot() {
-    mfq::MoeCacheSlotBook book(2);
-    const mfq::MoeCacheKey first{1, 0, 3};
-    const mfq::MoeCacheKey second{1, 0, 4};
-    const mfq::MoeCacheKey third{2, 0, 9};
+    tyloi::MoeCacheSlotBook book(2);
+    const tyloi::MoeCacheKey first{1, 0, 3};
+    const tyloi::MoeCacheKey second{1, 0, 4};
+    const tyloi::MoeCacheKey third{2, 0, 9};
 
     const auto first_lease = book.acquire(first);
     const auto second_lease = book.acquire(second);
@@ -29,17 +29,17 @@ void test_lru_replaces_oldest_non_inflight_slot() {
     book.touch(first_lease.slot);
     const auto third_lease = book.acquire(third);
     require(
-        third_lease.replaced == std::optional<mfq::MoeCacheKey>(second),
+        third_lease.replaced == std::optional<tyloi::MoeCacheKey>(second),
         "LRU did not replace the oldest key");
     require(book.slot_for(first) == first_lease.slot, "touched key was evicted");
     require(book.slot_for(third) == third_lease.slot, "new key was not installed");
 }
 
 void test_inflight_slot_is_not_replaced() {
-    mfq::MoeCacheSlotBook book(2);
-    const mfq::MoeCacheKey first{0, 0, 0};
-    const mfq::MoeCacheKey second{0, 0, 1};
-    const mfq::MoeCacheKey third{0, 0, 2};
+    tyloi::MoeCacheSlotBook book(2);
+    const tyloi::MoeCacheKey first{0, 0, 0};
+    const tyloi::MoeCacheKey second{0, 0, 1};
+    const tyloi::MoeCacheKey third{0, 0, 2};
 
     const auto first_lease = book.acquire(first);
     const auto second_lease = book.acquire(second);
@@ -48,13 +48,13 @@ void test_inflight_slot_is_not_replaced() {
 
     const auto third_lease = book.acquire(third);
     require(
-        third_lease.replaced == std::optional<mfq::MoeCacheKey>(second),
+        third_lease.replaced == std::optional<tyloi::MoeCacheKey>(second),
         "in-flight slot was selected for replacement");
     require(book.slot_for(first) == first_lease.slot, "in-flight key was evicted");
 }
 
 void test_all_inflight_slots_reject_replacement() {
-    mfq::MoeCacheSlotBook book(1);
+    tyloi::MoeCacheSlotBook book(1);
     const auto lease = book.acquire({0, 0, 0});
     book.mark_inflight(lease.slot);
     bool rejected = false;
@@ -67,8 +67,8 @@ void test_all_inflight_slots_reject_replacement() {
 }
 
 void test_failed_lease_can_be_discarded() {
-    mfq::MoeCacheSlotBook book(1);
-    const mfq::MoeCacheKey failed{0, 1, 2};
+    tyloi::MoeCacheSlotBook book(1);
+    const tyloi::MoeCacheKey failed{0, 1, 2};
     const auto lease = book.acquire(failed);
     book.mark_inflight(lease.slot);
 
@@ -81,7 +81,7 @@ void test_failed_lease_can_be_discarded() {
         !book.discard(failed, lease.slot, lease.generation),
         "stale lease discarded a free slot");
 
-    const mfq::MoeCacheKey replacement{0, 1, 3};
+    const tyloi::MoeCacheKey replacement{0, 1, 3};
     const auto next = book.acquire(replacement);
     require(next.slot == lease.slot, "discarded slot was not reusable");
     require(!next.hit, "replacement unexpectedly hit the cache");
@@ -94,11 +94,11 @@ void test_failed_lease_can_be_discarded() {
 }
 
 void test_budget_planner_honors_minimums_and_hard_limit() {
-    const std::vector<mfq::MoeArenaDemand> demands{
+    const std::vector<tyloi::MoeArenaDemand> demands{
         {"nint4-gu", 256, 8, 64},
         {"nint4-down", 128, 8, 64},
     };
-    const auto plan = mfq::plan_moe_arena_slots(4096, demands);
+    const auto plan = tyloi::plan_moe_arena_slots(4096, demands);
     require(plan.at("nint4-gu") >= 8, "gate/up minimum was not satisfied");
     require(plan.at("nint4-down") >= 8, "down minimum was not satisfied");
     const int64_t used =
@@ -108,13 +108,13 @@ void test_budget_planner_honors_minimums_and_hard_limit() {
 }
 
 void test_budget_planner_rejects_insufficient_budget() {
-    const std::vector<mfq::MoeArenaDemand> demands{
+    const std::vector<tyloi::MoeArenaDemand> demands{
         {"nint4-gu", 256, 8, 64},
         {"nint4-down", 128, 8, 64},
     };
     bool rejected = false;
     try {
-        (void)mfq::plan_moe_arena_slots(3071, demands);
+        (void)tyloi::plan_moe_arena_slots(3071, demands);
     } catch (const std::runtime_error &) {
         rejected = true;
     }
@@ -122,11 +122,11 @@ void test_budget_planner_rejects_insufficient_budget() {
 }
 
 void test_budget_planner_caps_registered_experts() {
-    const std::vector<mfq::MoeArenaDemand> demands{
+    const std::vector<tyloi::MoeArenaDemand> demands{
         {"small", 64, 2, 3},
         {"large", 128, 2, 4},
     };
-    const auto plan = mfq::plan_moe_arena_slots(1 << 20, demands);
+    const auto plan = tyloi::plan_moe_arena_slots(1 << 20, demands);
     require(plan.at("small") == 3, "planner exceeded small registered count");
     require(plan.at("large") == 4, "planner exceeded large registered count");
 }
@@ -136,8 +136,8 @@ void test_budget_planner_caps_registered_experts() {
 int main() {
     try {
         {
-            mfq::MoeCacheSlotBook book(1);
-            const mfq::MoeCacheKey old{0,0,0},fresh{0,0,1};
+            tyloi::MoeCacheSlotBook book(1);
+            const tyloi::MoeCacheKey old{0,0,0},fresh{0,0,1};
             const auto lease=book.acquire(old);
             book.mark_inflight(lease.slot);
             if(book.replace(lease.slot,{0,0,9},fresh))throw std::runtime_error("stale GPU exchange committed");
@@ -146,8 +146,8 @@ int main() {
                 throw std::runtime_error("GPU exchange ownership or generation is invalid");
         }
         {
-            mfq::MoeCacheSlotBook book(2);
-            const mfq::MoeCacheKey a{0,0,0},b{0,0,1},c{1,0,0},d{1,0,1};
+            tyloi::MoeCacheSlotBook book(2);
+            const tyloi::MoeCacheKey a{0,0,0},b{0,0,1},c{1,0,0},d{1,0,1};
             auto first=book.acquire(a),second=book.acquire(b);
             auto left=book.prepare_replace(first.slot,a,c),right=book.prepare_replace(second.slot,b,d);
             book.mark_inflight(first.slot);book.mark_inflight(second.slot);
@@ -163,8 +163,8 @@ int main() {
             require(book.inflight(first.slot) && book.slot_for(d)==first.slot,"stale rollback changed another owner's slot");
         }
         {
-            mfq::MoeCacheSlotBook book(3);
-            const mfq::MoeCacheKey encoder{0,0,0},decoder{1,0,0},held{1,0,1};
+            tyloi::MoeCacheSlotBook book(3);
+            const tyloi::MoeCacheKey encoder{0,0,0},decoder{1,0,0},held{1,0,1};
             auto early=book.acquire(encoder),cold=book.acquire(decoder),busy=book.acquire(held);
             book.mark_inflight(busy.slot);book.set_low_priority_sources({1});
             auto fresh=book.acquire({0,0,1});

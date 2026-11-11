@@ -24,7 +24,7 @@ struct Tq {
 // TQ-encoded representation: logical [rows, columns] F16 over a packed uint8
 // payload. The format fields and their validation live here; the backing
 // buffer and its identity stay in the shared TensorStorage.
-class TqTensor final : public Tensor {
+class TqTensor final : public TensorImpl {
 public:
     TqTensor() = default;
 
@@ -56,7 +56,7 @@ public:
     void record_stream(std::uintptr_t stream) const override {
         if (storage_ && storage_->record_stream) storage_->record_stream(stream);
     }
-    std::shared_ptr<const Tensor> relocated(Device target) const override {
+    std::shared_ptr<TensorImpl> relocated(Device target) const override {
         auto moved = std::make_shared<TqTensor>(*this);
         if (image_.device() != target) {
             moved->image_ = image_.to(target);

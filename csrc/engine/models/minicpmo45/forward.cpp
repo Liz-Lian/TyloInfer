@@ -107,22 +107,22 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(0) == batch && hidden.size(1) == tokens &&
         hidden.size(2) == model.metadata.hidden_size, "inputs_embeds must match [batch,tokens,hidden_size]");
     auto physical = input.cache_positions
-        ? copies.copy(DenseTensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(input.cache_positions.dense().to(::tyloi::kInt64), mode.primary).contiguous()
         : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + tokens,
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::Device(::tyloi::kCUDA, mode.primary)));
     TYLOINFER_RUNTIME_CHECK((physical.dim() == 1 && physical.numel() == tokens) ||
         (physical.dim() == 2 && physical.size(0) == batch && physical.size(1) == tokens),
         "cache_positions must have shape [tokens] or [batch,tokens]");
     auto positions = input.positions
-        ? copies.copy(DenseTensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        ? copies.copy(input.positions.dense().to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
     TYLOINFER_RUNTIME_CHECK((positions.dim() == 1 && positions.numel() == tokens) ||
         (positions.dim() == 2 && positions.size(0) == batch && positions.size(1) == tokens),
         "position_ids must have shape [tokens] or [batch,tokens]");
     if (input.lengths) {
-        TYLOINFER_RUNTIME_CHECK(input.lengths->dim() == 1 && input.lengths->size(0) == batch,
+        TYLOINFER_RUNTIME_CHECK(input.lengths.dim() == 1 && input.lengths.size(0) == batch,
             "sequence lengths must have shape [batch]");
-        input.lengths = copies.copy(DenseTensor(*input.lengths).to(::tyloi::kInt64), mode.primary).contiguous();
+        input.lengths = copies.copy(input.lengths.dense().to(::tyloi::kInt64), mode.primary).contiguous();
     } else if (state.cache_pos > 0 && tokens == 1) {
         input.lengths = ::tyloi::cuda::full({batch}, state.cache_pos + 1, physical.options());
     }
@@ -140,7 +140,7 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         };
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, {}, state.cache_pos, input.kv_length, input.attention_parts};
-        if (input.lengths) step.sequence_lengths = local(DenseTensor(*input.lengths));
+        if (input.lengths) step.sequence_lengths = local(input.lengths.dense());
         if (input.cache_positions) step.cache_positions = local(physical);
         auto& cache = state.layers[index];
         if (!cache.defined()) {

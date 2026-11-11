@@ -5,18 +5,18 @@ class GdnColumnsScope {
     std::string previous_;
     bool present_;
 public:
-    explicit GdnColumnsScope(int columns):present_(mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_COLUMNS")!=nullptr) {
-        if(present_)previous_=mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_COLUMNS");
+    explicit GdnColumnsScope(int columns):present_(tyloi::cuda::env_lookup("TYLOINFER_GDN_PREFILL_COLUMNS")!=nullptr) {
+        if(present_)previous_=tyloi::cuda::env_lookup("TYLOINFER_GDN_PREFILL_COLUMNS");
         set(columns);
     }
     static void set(int columns) {
         const auto value=columns<0?std::string():std::to_string(columns);
-        if(value.empty()?mfq::cuda::env_clear("TYLOINFER_GDN_PREFILL_COLUMNS"):mfq::cuda::env_set("TYLOINFER_GDN_PREFILL_COLUMNS",value.c_str()))
+        if(value.empty()?tyloi::cuda::env_clear("TYLOINFER_GDN_PREFILL_COLUMNS"):tyloi::cuda::env_set("TYLOINFER_GDN_PREFILL_COLUMNS",value.c_str()))
             throw std::runtime_error("GDN columns option");
     }
     ~GdnColumnsScope() {
-        if(present_)mfq::cuda::env_set("TYLOINFER_GDN_PREFILL_COLUMNS",previous_.c_str());
-        else mfq::cuda::env_clear("TYLOINFER_GDN_PREFILL_COLUMNS");
+        if(present_)tyloi::cuda::env_set("TYLOINFER_GDN_PREFILL_COLUMNS",previous_.c_str());
+        else tyloi::cuda::env_clear("TYLOINFER_GDN_PREFILL_COLUMNS");
     }
 };
 
@@ -31,12 +31,12 @@ void gdn_prefill_columns_case() {
     for(int batch:{1,2})for(int tokens:{1,2,3,4,5,6,8,31,1024})
     for(bool transposed:{false,true})for(bool tiled:{false,true})for(bool initial:{false,true}) {
         constexpr int width=128,nk=2,nv=6;
-        auto q=data({batch,nk,tokens,width},361,.04f).to(tb::kFloat32);
-        auto k=data({batch,nk,tokens,width},362,.04f).to(tb::kFloat32);
-        auto v=data({batch,nv,tokens,width},363,.19f).to(tb::kFloat32);
+        auto q=data({batch,nk,tokens,width},361,.04f).to(tyloi::kFloat32);
+        auto k=data({batch,nk,tokens,width},362,.04f).to(tyloi::kFloat32);
+        auto v=data({batch,nv,tokens,width},363,.19f).to(tyloi::kFloat32);
         auto g=tb::ones({batch,nv,tokens},q.options())*(-.07f);
         auto beta=tb::ones({batch,nv,tokens},q.options())*.21f;
-        auto state=data({batch,nv,width,width},364,.03f).to(tb::kFloat32);
+        auto state=data({batch,nv,width,width},364,.03f).to(tyloi::kFloat32);
         const auto call=[&](bool inplace) {
             if(tiled) {
                 auto s=initial?state.clone():tb::zeros(state.sizes(),state.options());
@@ -63,8 +63,8 @@ void gdn_prefill_columns_case() {
     }
     // Independent FP64 recurrence: decay, dot, rank-one update, and query dot.
     constexpr int D=128,Hq=2,Hv=6,T=17;
-    auto q=data({1,Hq,T,D},371,.04f).to(tb::kFloat32),k=data({1,Hq,T,D},372,.04f).to(tb::kFloat32);
-    auto v=data({1,Hv,T,D},373,.19f).to(tb::kFloat32),state=data({1,Hv,D,D},374,.03f).to(tb::kFloat32);
+    auto q=data({1,Hq,T,D},371,.04f).to(tyloi::kFloat32),k=data({1,Hq,T,D},372,.04f).to(tyloi::kFloat32);
+    auto v=data({1,Hv,T,D},373,.19f).to(tyloi::kFloat32),state=data({1,Hv,D,D},374,.03f).to(tyloi::kFloat32);
     auto g=tb::ones({1,Hv,T},q.options())*(-.07f),beta=tb::ones({1,Hv,T},q.options())*.21f;
     auto qc=q.cpu(),kc=k.cpu(),vc=v.cpu(),sc=state.cpu(),gc=g.cpu(),bc=beta.cpu();
     std::vector<float> expected_output(Hv*T*D),expected_state(Hv*D*D);
@@ -105,15 +105,15 @@ void gdn_short_columns_benchmark() {
             throw std::runtime_error("short GDN column output/state differs");
     };
     for(int tokens:{2,3,4,5,6,8}) {
-        auto q=data({1,nk,tokens,width},381,.04f).to(tb::kFloat32),k=data({1,nk,tokens,width},382,.04f).to(tb::kFloat32);
-        auto v=data({1,nv,tokens,width},383,.19f).to(tb::kFloat32);
-        auto g=data({1,nv,tokens},384,.3f).to(tb::kFloat32)-.7f;
-        auto beta=data({1,nv,tokens},385,.3f).to(tb::kFloat32)+.5f;
-        auto state=data({1,nv,width,width},386,.03f).to(tb::kFloat32);
+        auto q=data({1,nk,tokens,width},381,.04f).to(tyloi::kFloat32),k=data({1,nk,tokens,width},382,.04f).to(tyloi::kFloat32);
+        auto v=data({1,nv,tokens,width},383,.19f).to(tyloi::kFloat32);
+        auto g=data({1,nv,tokens},384,.3f).to(tyloi::kFloat32)-.7f;
+        auto beta=data({1,nv,tokens},385,.3f).to(tyloi::kFloat32)+.5f;
+        auto state=data({1,nv,width,width},386,.03f).to(tyloi::kFloat32);
         GdnColumnsScope::set(0);auto expected=gdn_transposed_cuda(q,k,v,g,beta,state);
         for(int columns:{0,2,4,-1}) {
-            q.copy_(data(q.sizes().vec(),381,.04f).to(tb::kFloat32));
-            k.copy_(data(k.sizes().vec(),382,.04f).to(tb::kFloat32));
+            q.copy_(data(q.sizes().vec(),381,.04f).to(tyloi::kFloat32));
+            k.copy_(data(k.sizes().vec(),382,.04f).to(tyloi::kFloat32));
             GdnColumnsScope::set(columns);std::vector<Tensor> result;
             const auto compute=[&]{result=gdn_transposed_cuda(q,k,v,g,beta,state);};
             compute();bits(result[0],expected[0]);bits(result[1],expected[1]);
@@ -121,8 +121,8 @@ void gdn_short_columns_benchmark() {
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream));result.clear();
             Graph graph;graph.capture_begin_shared();compute();graph.capture_end();
             for(int step=0;step<3;++step) {
-                q.copy_(data(q.sizes().vec(),390+step,.02f*(step+1)).to(tb::kFloat32));
-                k.copy_(data(k.sizes().vec(),394+step,.02f*(step+1)).to(tb::kFloat32));
+                q.copy_(data(q.sizes().vec(),390+step,.02f*(step+1)).to(tyloi::kFloat32));
+                k.copy_(data(k.sizes().vec(),394+step,.02f*(step+1)).to(tyloi::kFloat32));
                 GdnColumnsScope::set(0);auto reference=gdn_transposed_cuda(q,k,v,g,beta,state);
                 GdnColumnsScope::set(columns);graph.replay();bits(result[0],reference[0]);bits(result[1],reference[1]);
             }
@@ -140,10 +140,10 @@ void gdn_prefill_columns_benchmark() {
     GdnColumnsScope option(0);
     for(int nv:{48,64}) {
         constexpr int nk=16,width=128,tokens=1024;
-        auto q=data({1,nk,tokens,width},381,.04f).to(tb::kFloat32),k=data({1,nk,tokens,width},382,.04f).to(tb::kFloat32);
-        auto v=data({1,nv,tokens,width},383,.19f).to(tb::kFloat32);
+        auto q=data({1,nk,tokens,width},381,.04f).to(tyloi::kFloat32),k=data({1,nk,tokens,width},382,.04f).to(tyloi::kFloat32);
+        auto v=data({1,nv,tokens,width},383,.19f).to(tyloi::kFloat32);
         auto g=tb::ones({1,nv,tokens},q.options())*(-.07f),beta=tb::ones({1,nv,tokens},q.options())*.21f;
-        auto state=data({1,nv,width,width},384,.03f).to(tb::kFloat32);
+        auto state=data({1,nv,width,width},384,.03f).to(tyloi::kFloat32);
         for(int columns:{0,2,4}) {
             GdnColumnsScope::set(columns);std::vector<Tensor> result;
             for(int i=0;i<3;++i)result=gdn_transposed_cuda(q,k,v,g,beta,state);

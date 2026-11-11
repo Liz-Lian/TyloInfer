@@ -178,7 +178,7 @@ struct Native {
         return model.prepare(input.prompt, *input.vision, target);
     }
     void validate_prepared() const {
-        if (prepared && prepared->image_mask && prepared->image_mask->defined())
+        if (prepared && prepared->image_mask && prepared->image_mask.defined())
             throw std::invalid_argument("model cannot apply an image participation mask");
     }
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, models::State&,
@@ -202,10 +202,10 @@ struct Native {
         const auto& prompt = input.prompt;
         const auto chunk_size = budget.prefill(prompt.size(), config.generation.prefill_chunk_size,
             info.prefill_row_bytes, state.position() > 0, config.prefill_chunk_auto);
-        auto full_ids = ops::reshape(*ops::tensor(std::span<const int64_t>(prompt),
+        auto full_ids = ops::reshape(ops::tensor(std::span<const int64_t>(prompt),
             Device(kCUDA, forward_options.primary)), {1, -1});
         graph.ensure_storage(info.vocab_size);
-        Sampler sampler(input.sampling, full_ids->device());
+        Sampler sampler(input.sampling, full_ids.device());
         const bool penalties = sampler.has_penalties();
         if (penalties) { ops::fill(graph.counts, 0); ops::add_token_counts(graph.counts, full_ids); }
         Plain plain{model, state, executor, budget, graph, weights, info, config,

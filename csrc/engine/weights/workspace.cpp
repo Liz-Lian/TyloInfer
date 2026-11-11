@@ -113,7 +113,7 @@ KvRegion Cache::lend_kv(const Tensor& backing, std::int64_t capacity,
     if (!data_->kv) return result;
     auto impl = std::make_unique<KvRegion::Impl>();
     impl->owner = data_->kv;
-    impl->region = data_->kv->loan->add(dynamic_cast<const DenseTensor&>(backing),
+    impl->region = data_->kv->loan->add(backing.dense(),
         capacity, row_bytes, prefix, ratio);
     result.impl_ = std::move(impl);
     return result;
@@ -124,7 +124,7 @@ KvRegion Cache::lend_kv(const Tensor& arena) {
     if (!data_->kv) return result;
     auto impl = std::make_unique<KvRegion::Impl>();
     impl->owner = data_->kv;
-    const auto& dense = dynamic_cast<const DenseTensor&>(arena);
+    const auto& dense = arena.dense();
     impl->region = data_->kv->loan->add(dense, static_cast<std::int64_t>(dense.nbytes()),
         1, false, 1, true);
     result.impl_ = std::move(impl);
@@ -304,10 +304,10 @@ void Cache::append_workspace_metrics(
 
 tyloi::weights::Loan::Loan(Cache& cache, std::size_t bytes) : Loan(cache) { begin(bytes); }
 
-std::shared_ptr<tyloi::Tensor> tyloi::weights::Loan::finish(std::shared_ptr<Tensor> output) {
+::tyloi::Tensor tyloi::weights::Loan::finish(Tensor output) {
     if (active_) {
         suspend();
-        output = ops::clone(*output);
+        output = ops::clone(output);
         finish();
     }
     return output;

@@ -158,7 +158,7 @@ std::optional<CedEncoding> deepseek_v41_prefill_encode(
             if (!block.kv_source()) continue;
             auto source = deepseek_v41_hc_input_cuda(hidden, state.shared->previous_pre,
 #ifdef TYLOINFER_NATIVE_CUDA
-                                                     dynamic_cast<const DenseTensor&>(*block.attention_norm), config.rms_eps);
+                                                     block.attention_norm.dense(), config.rms_eps);
 #else
                                                      block.attention_norm, config.rms_eps);
 #endif

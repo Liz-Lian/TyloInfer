@@ -108,6 +108,21 @@ if(TYLOINFER_BUILD_HIP_RUNTIME)
     add_subdirectory(backends/hip hip)
 endif()
 
+# Umbrella for the backend-independent core modules that test targets link.
+add_library(mfq-core INTERFACE)
+add_library(mfq::core ALIAS mfq-core)
+target_include_directories(mfq-core INTERFACE
+    ${PROJECT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/engine
+)
+target_link_libraries(mfq-core INTERFACE
+    mfq-host-parallel
+    mfq-model-graph
+    mfq-model-source
+    mfq-json
+    mfq-qsa-kv-store
+)
+
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()

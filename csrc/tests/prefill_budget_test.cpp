@@ -1,10 +1,10 @@
-#include "prefill_budget.h"
+#include "engine/generation/prefill_budget.h"
 
 #include <cassert>
 #include <limits>
 
 int main() {
-    using namespace mfq::engine;
+    using namespace tyloi::engine;
     constexpr std::size_t row=327680, fixed=std::size_t(2)<<30;
     const auto memory=[&](int tokens) {return fixed+std::size_t(tokens)*row;};
     assert(select_prefill_chunk(131072,8192,memory(8192),fixed,row)==8192);

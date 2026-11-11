@@ -42,8 +42,8 @@ class CudaGridVisionEncoder {
                                       const GridVisionConfig &config);
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> encode(
-                                   std::shared_ptr<tyloi::Tensor> pixels, const std::vector<GridShape> &grids) const;
+    tyloi::StepSequence<::tyloi::Tensor> encode(
+                                   ::tyloi::Tensor pixels, const std::vector<GridShape> &grids) const;
 #else
     tyloi::StepSequence<DenseTensor> encode(
                                    Projector projector,
@@ -53,7 +53,7 @@ class CudaGridVisionEncoder {
     const GridVisionConfig &config() const noexcept { return config_; }
     bool host_weights() const noexcept {
 #ifdef TYLOINFER_NATIVE_CUDA
-        return !patch_weight_->device().is_cuda();
+        return !patch_weight_.device().is_cuda();
 #else
         return !patch_weight_.is_cuda();
 #endif
@@ -69,7 +69,7 @@ class CudaGridVisionEncoder {
         double theta = 10'000.0;
 
 #ifdef TYLOINFER_NATIVE_CUDA
-        std::shared_ptr<tyloi::Tensor> operator()(const tyloi::Tensor& input,
+        ::tyloi::Tensor operator()(const tyloi::Tensor& input,
 #else
         DenseTensor operator()(
             const Projector& projector,
@@ -79,12 +79,12 @@ class CudaGridVisionEncoder {
             const std::vector<std::int32_t>& segment_lengths) const {
             const std::int64_t tokens = input.size(0);
 #ifdef TYLOINFER_NATIVE_CUDA
-            auto projected = tyloi::ops::reshape(*tyloi::ops::affine(input, *qkv.weight, qkv.bias.get()), {tokens, 3, heads, head_dim});
-            auto query = tyloi::ops::axial_rope(*tyloi::ops::select(*projected, 1, 0), positions, theta);
-            auto key = tyloi::ops::axial_rope(*tyloi::ops::select(*projected, 1, 1), positions, theta);
-            auto value = tyloi::ops::select(*projected, 1, 2);
-            auto attended = tyloi::ops::segmented_attention(*query, *key, *value, segment_lengths);
-            return tyloi::ops::affine(*tyloi::ops::reshape(*attended, {tokens, hidden}), *output.weight, output.bias.get());
+            auto projected = tyloi::ops::reshape(tyloi::ops::affine(input, qkv.weight, qkv.bias), {tokens, 3, heads, head_dim});
+            auto query = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 0), positions, theta);
+            auto key = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 1), positions, theta);
+            auto value = tyloi::ops::select(projected, 1, 2);
+            auto attended = tyloi::ops::segmented_attention(query, key, value, segment_lengths);
+            return tyloi::ops::affine(tyloi::ops::reshape(attended, {tokens, hidden}), output.weight, output.bias);
 #else
             auto projected = tyloi::cuda::affine(projector, qkv, input).reshape({tokens, 3, heads, head_dim});
             auto query = vision::apply_axial_rope(projected.select(1, 0), positions, theta);
@@ -122,7 +122,7 @@ class CudaGridVisionEncoder {
         }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-        std::shared_ptr<tyloi::Tensor> operator()(std::shared_ptr<tyloi::Tensor> input,
+        ::tyloi::Tensor operator()(::tyloi::Tensor input,
 #else
         DenseTensor operator()(
                           const Projector& projector,
@@ -150,8 +150,8 @@ class CudaGridVisionEncoder {
 
 #ifdef TYLOINFER_NATIVE_CUDA
     CudaGridVisionEncoder(::tyloi::weights::Cache& weights, GridVisionConfig config,
-                          std::shared_ptr<const tyloi::Tensor> patch_weight, std::shared_ptr<const tyloi::Tensor> patch_bias,
-                          std::shared_ptr<const tyloi::Tensor> position_weight, std::vector<Layer> blocks);
+                          ::tyloi::Tensor patch_weight, ::tyloi::Tensor patch_bias,
+                          ::tyloi::Tensor position_weight, std::vector<Layer> blocks);
 #else
     CudaGridVisionEncoder(::tyloi::weights::Cache& weights, GridVisionConfig config, DenseTensor patch_weight, DenseTensor patch_bias,
                           DenseTensor position_weight, std::vector<Layer> blocks);
@@ -160,7 +160,7 @@ class CudaGridVisionEncoder {
     ::tyloi::weights::Cache& weights_;
     GridVisionConfig config_;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const tyloi::Tensor> patch_weight_, patch_bias_, position_weight_;
+    ::tyloi::Tensor patch_weight_, patch_bias_, position_weight_;
 #else
     DenseTensor patch_weight_, patch_bias_, position_weight_;
 #endif
@@ -228,8 +228,8 @@ class CudaGridVisionPromptComponent {
             auto pixels = tyloi::ops::from_blob(
                 const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
                 tyloi::TensorOptions().dtype(tyloi::ScalarType::float32).device(tyloi::DeviceType::cpu));
-            pixels = tyloi::ops::clone(*pixels);
-            pixels = tyloi::ops::cast(*pixels, tyloi::ScalarType::float32, tyloi::Device{tyloi::kCUDA, primary});
+            pixels = tyloi::ops::clone(pixels);
+            pixels = tyloi::ops::cast(pixels, tyloi::ScalarType::float32, tyloi::Device{tyloi::kCUDA, primary});
 #else
             auto pixels = ::tyloi::cuda::from_blob(
                               const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
@@ -246,7 +246,7 @@ class CudaGridVisionPromptComponent {
 #endif
                 std::move(pixels), {grid});
 #ifdef TYLOINFER_NATIVE_CUDA
-            std::shared_ptr<tyloi::Tensor> patches;
+            ::tyloi::Tensor patches;
 #else
             DenseTensor patches;
 #endif
@@ -259,14 +259,14 @@ class CudaGridVisionPromptComponent {
             const auto merge = [&](const auto &norm, const auto &up, const auto &down) {
                 return tyloi::models::grid_vision::merge(
 #ifdef TYLOINFER_NATIVE_CUDA
-                    patches, patches->size(0), encoder_.config(),
-                    [&](std::shared_ptr<tyloi::Tensor> value) { return norm(*value); },
-                    [](std::shared_ptr<tyloi::Tensor> value, int64_t rows, int64_t width) {
-                        return tyloi::ops::reshape(*value, {rows, width});
+                    patches, patches.size(0), encoder_.config(),
+                    [&](::tyloi::Tensor value) { return norm(value); },
+                    [](::tyloi::Tensor value, int64_t rows, int64_t width) {
+                        return tyloi::ops::reshape(value, {rows, width});
                     },
-                    [&](std::shared_ptr<tyloi::Tensor> value) { return tyloi::ops::affine(*value, *up.weight, up.bias.get()); },
-                    [](std::shared_ptr<tyloi::Tensor> value) { return tyloi::ops::gelu(*value); },
-                    [&](std::shared_ptr<tyloi::Tensor> value) { return tyloi::ops::affine(*value, *down.weight, down.bias.get()); });
+                    [&](::tyloi::Tensor value) { return tyloi::ops::affine(value, up.weight, up.bias); },
+                    [](::tyloi::Tensor value) { return tyloi::ops::gelu(value); },
+                    [&](::tyloi::Tensor value) { return tyloi::ops::affine(value, down.weight, down.bias); });
 #else
                     patches, patches.size(0), encoder_.config(),
                     [&](DenseTensor value) { return norm(value); },
@@ -283,8 +283,8 @@ class CudaGridVisionPromptComponent {
                                    ::tyloi::weights::fields::bytes(merger_up_) +
                                    ::tyloi::weights::fields::bytes(merger_down_);
 #ifdef TYLOINFER_NATIVE_CUDA
-                tyloi::weights::Loan loan(weights_, bytes + patches->nbytes() * 12 + (std::size_t(16) << 20));
-                std::shared_ptr<tyloi::Tensor> output;
+                tyloi::weights::Loan loan(weights_, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
+                ::tyloi::Tensor output;
 #else
                 tyloi::weights::Loan loan(weights_, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
                 DenseTensor output;
@@ -303,7 +303,7 @@ class CudaGridVisionPromptComponent {
 #ifdef TYLOINFER_NATIVE_CUDA
                 merged = loan.finish(std::move(output));
 #else
-                merged = dynamic_cast<const DenseTensor&>(*loan.finish(std::make_shared<DenseTensor>(std::move(output))));
+                merged = loan.finish(std::make_shared<DenseTensor>(std::move(output))).dense();
 #endif
             } else {
                 merged = merge(merger_norm_, merger_up_, merger_down_);
@@ -314,7 +314,7 @@ class CudaGridVisionPromptComponent {
 
         auto prepared = tyloi::models::grid_vision::prepare(
 #ifdef TYLOINFER_NATIVE_CUDA
-            token_ids, merged, merged->size(0), image_token_id_, video_token_id_, encoder_.config(),
+            token_ids, merged, merged.size(0), image_token_id_, video_token_id_, encoder_.config(),
 #else
             token_ids, merged, merged.size(0), image_token_id_, video_token_id_, encoder_.config(),
 #endif
@@ -322,8 +322,8 @@ class CudaGridVisionPromptComponent {
             [&](const auto &tokens) {
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto ids = tyloi::ops::tensor(tokens, tyloi::Device{tyloi::kCUDA, primary});
-                auto shaped = tyloi::ops::reshape(*ids, {1, -1});
-                return tyloi::ops::contiguous(*language.embedding(*shaped, primary));
+                auto shaped = tyloi::ops::reshape(ids, {1, -1});
+                return tyloi::ops::contiguous(language.embedding(shaped, primary));
 #else
                 auto ids =
                     ::tyloi::cuda::tensor(tokens, ::tyloi::TensorOptions()
@@ -347,10 +347,10 @@ class CudaGridVisionPromptComponent {
 #endif
             },
 #ifdef TYLOINFER_NATIVE_CUDA
-            [](std::shared_ptr<tyloi::Tensor>& embeddings, const std::shared_ptr<tyloi::Tensor>& vision, const std::vector<int64_t> &indices) {
-                auto index = tyloi::ops::tensor(indices, embeddings->device());
-                tyloi::ops::index_copy(*embeddings, 1, *index,
-                    *tyloi::ops::unsqueeze(*tyloi::ops::cast(*vision, embeddings->scalar_type()), 0));
+            [](::tyloi::Tensor& embeddings, const ::tyloi::Tensor& vision, const std::vector<int64_t> &indices) {
+                auto index = tyloi::ops::tensor(indices, embeddings.device());
+                tyloi::ops::index_copy(embeddings, 1, index,
+                    tyloi::ops::unsqueeze(tyloi::ops::cast(vision, embeddings.scalar_type()), 0));
 #else
             [](DenseTensor &embeddings, const DenseTensor &vision, const std::vector<int64_t> &indices) {
                 auto index =
@@ -363,9 +363,9 @@ class CudaGridVisionPromptComponent {
             [primary](const GridMropePositions &positions) {
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto values = tyloi::ops::tensor(positions.values, tyloi::Device{tyloi::DeviceType::cpu, 0});
-                values = tyloi::ops::reshape(*values, {3, positions.token_count});
-                values = tyloi::ops::cast(*values, ::tyloi::kInt32, tyloi::Device{tyloi::kCUDA, primary});
-                return tyloi::ops::cast(*values, ::tyloi::kInt64);
+                values = tyloi::ops::reshape(values, {3, positions.token_count});
+                values = tyloi::ops::cast(values, ::tyloi::kInt32, tyloi::Device{tyloi::kCUDA, primary});
+                return tyloi::ops::cast(values, ::tyloi::kInt64);
 #else
                 return ::tyloi::cuda::tensor(positions.values,
                                                   ::tyloi::TensorOptions()

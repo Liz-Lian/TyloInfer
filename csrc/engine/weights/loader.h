@@ -69,27 +69,27 @@ struct Loader {
     bool has(const std::string& name) const { return has_tensor(source, name); }
     bool has_prefix(const std::string& prefix) const { return has_tensor_prefix(source, prefix); }
     // Dense parameters promote half precision to F32; native/host preserve stored dtype.
-    std::shared_ptr<const ::tyloi::Tensor> tensor(const std::string& name) const;
-    std::shared_ptr<const ::tyloi::Tensor> native(const std::string& name) const;
-    std::shared_ptr<const ::tyloi::Tensor> host(const std::string& name) const;
-    std::shared_ptr<const ::tyloi::Tensor> norm(const std::string& name, std::int64_t width) const;
+    ::tyloi::Tensor tensor(const std::string& name) const;
+    ::tyloi::Tensor native(const std::string& name) const;
+    ::tyloi::Tensor host(const std::string& name) const;
+    ::tyloi::Tensor norm(const std::string& name, std::int64_t width) const;
     BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
     BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
-    std::shared_ptr<const ::tyloi::Tensor> weight(const std::string& name,
+    ::tyloi::Tensor weight(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr) const;
     // preserve_boundaries controls storage packing only.
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> group(const std::vector<std::string>& names, size_t prefix = 0,
+    std::vector<::tyloi::Tensor> group(const std::vector<std::string>& names, size_t prefix = 0,
         const std::vector<tyloi::TensorParallelSlice>* slices = nullptr, bool preserve_boundaries = false) const;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up(const std::vector<std::string>& names,
+    std::vector<::tyloi::Tensor> gate_up(const std::vector<std::string>& names,
         const ::tyloi::Tensor& down, size_t prefix = 2, bool preserve_boundaries = false) const;
-    std::shared_ptr<const ::tyloi::Tensor> embedding(const std::string& name, bool independent_output) const;
-    std::shared_ptr<const ::tyloi::Tensor> experts(const std::string& name, bool cacheable = false,
+    ::tyloi::Tensor embedding(const std::string& name, bool independent_output) const;
+    ::tyloi::Tensor experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
-    std::shared_ptr<const ::tyloi::Tensor> dense(const std::string& name) const;
-    std::shared_ptr<const ::tyloi::Tensor> routed(const std::string& name, int layer, int64_t experts, int64_t output,
+    ::tyloi::Tensor dense(const std::string& name) const;
+    ::tyloi::Tensor routed(const std::string& name, int layer, int64_t experts, int64_t output,
                   int64_t input, const std::string& role = {}) const;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
+    std::vector<::tyloi::Tensor> routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
                          int64_t input, const std::string& role = {}) const;
 private:
     struct Impl;

@@ -21,22 +21,22 @@ namespace mfe_cached_dispatch_test_detail {
 struct Option {
     const char* name;
     std::string previous;
-    bool present = mfq::cuda::env_lookup(name) != nullptr;
+    bool present = tyloi::cuda::env_lookup(name) != nullptr;
     Option(const char* key, const char* value) : name(key) {
-        if (present) previous = mfq::cuda::env_lookup(key);
-        mfq::cuda::env_set(name, value);
+        if (present) previous = tyloi::cuda::env_lookup(key);
+        tyloi::cuda::env_set(name, value);
     }
     ~Option() {
-        if (present) mfq::cuda::env_set(name, previous.c_str());
-        else mfq::cuda::env_clear(name);
+        if (present) tyloi::cuda::env_set(name, previous.c_str());
+        else tyloi::cuda::env_clear(name);
     }
 };
 }  // namespace mfe_cached_dispatch_test_detail
 
 static MixedMoePool mfe_test_nint_pool(int experts, int rows, int width, int group_size,
                                        int payload) {
-    namespace tb = mfq_tensor_backend;
-    const auto options = tb::TensorOptions().device(tb::kCUDA);
+    namespace tb = tyloi::cuda;
+    const auto options = tyloi::TensorOptions().device(tyloi::kCUDA);
     MixedMoePool pool;
     pool.family = MixedMoeFamily::Nint;
     pool.local_experts = experts;
@@ -62,14 +62,14 @@ static MixedMoePool mfe_test_nint_pool(int experts, int rows, int width, int gro
     for (std::size_t row = 0; row < local_rows; ++row) offsets[row] = int64_t(row % rows) * 8;
     std::vector<int32_t> locals(static_cast<std::size_t>(experts));
     for (int expert = 0; expert < experts; ++expert) locals[std::size_t(expert)] = expert;
-    weight.q_packed = tb::tensor(packed).to(tb::kCUDA);
-    weight.row_q_bits = tb::tensor(row_bits).to(tb::kCUDA);
-    weight.row_q_bit_offsets = tb::tensor(offsets).to(tb::kCUDA);
-    weight.sub_scale = tb::tensor(sub_scale).to(tb::kCUDA);
-    weight.sub_min = tb::tensor(sub_min).to(tb::kCUDA);
-    weight.neuron_scale = tb::full({int64_t(local_rows)}, 0.01, options.dtype(tb::kFloat32));
-    weight.neuron_min = tb::full({int64_t(local_rows)}, -0.02, options.dtype(tb::kFloat32));
-    pool.expert_local = tb::tensor(locals).to(tb::kCUDA);
+    weight.q_packed = tb::tensor(packed).to(tyloi::kCUDA);
+    weight.row_q_bits = tb::tensor(row_bits).to(tyloi::kCUDA);
+    weight.row_q_bit_offsets = tb::tensor(offsets).to(tyloi::kCUDA);
+    weight.sub_scale = tb::tensor(sub_scale).to(tyloi::kCUDA);
+    weight.sub_min = tb::tensor(sub_min).to(tyloi::kCUDA);
+    weight.neuron_scale = tb::full({int64_t(local_rows)}, 0.01, options.dtype(tyloi::kFloat32));
+    weight.neuron_min = tb::full({int64_t(local_rows)}, -0.02, options.dtype(tyloi::kFloat32));
+    pool.expert_local = tb::tensor(locals).to(tyloi::kCUDA);
     return pool;
 }
 
@@ -80,7 +80,7 @@ static std::vector<int64_t> mfe_test_nint_bytes(const MixedMoePool& pool) {
 }
 
 static void check_mfe_cached_dispatch_geometry() {
-    namespace tb = mfq_tensor_backend;
+    namespace tb = tyloi::cuda;
     using mfe_cached_dispatch_test_detail::Option;
     constexpr int experts = 3, width = 16, intermediate = 8, tokens = 2, routes = 2;
     // The fixed-quota server workers let the device classify the resident plan.
@@ -96,18 +96,18 @@ static void check_mfe_cached_dispatch_geometry() {
     projections[2].out_per_expert = width;
     projections[2].neuron_len = intermediate;
     projections[2].pools.push_back(mfe_test_nint_pool(experts, width, intermediate, 8, 5));
-    const auto gpu_options = tb::TensorOptions().device(tb::kCUDA);
+    const auto gpu_options = tyloi::TensorOptions().device(tyloi::kCUDA);
     std::vector<float> input_values(std::size_t(tokens) * width);
     for (std::size_t i = 0; i < input_values.size(); ++i)
         input_values[i] = std::sin(float(i) * 0.11f) * 0.4f;
-    auto input = tb::tensor(input_values).reshape({tokens, width}).to(tb::kFloat16).to(tb::kCUDA);
+    auto input = tb::tensor(input_values).reshape({tokens, width}).to(tyloi::kFloat16).to(tyloi::kCUDA);
     std::vector<int32_t> route_ids(std::size_t(tokens) * routes);
     for (std::size_t i = 0; i < route_ids.size(); ++i) route_ids[i] = int32_t(i % experts);
-    auto ids = tb::tensor(route_ids).reshape({tokens, routes}).to(tb::kCUDA);
-    auto weights = tb::full({tokens, routes}, 1.0 / routes, gpu_options.dtype(tb::kFloat32));
+    auto ids = tb::tensor(route_ids).reshape({tokens, routes}).to(tyloi::kCUDA);
+    auto weights = tb::full({tokens, routes}, 1.0 / routes, gpu_options.dtype(tyloi::kFloat32));
     // [plan, transfer, cpu_ready, abort, transfer index * experts, kinds * experts]
     const std::size_t words = 4 + 2 * std::size_t(experts);
-    mfq::cuda::HostBuffer mapped_state(words * sizeof(int32_t), true);
+    tyloi::cuda::HostBuffer mapped_state(words * sizeof(int32_t), true);
     void* mapped_device = nullptr;
     TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(&mapped_device, mapped_state.data(), 0));
     auto* host_words = static_cast<int32_t*>(mapped_state.data());
@@ -120,10 +120,10 @@ static void check_mfe_cached_dispatch_geometry() {
     };
     // Published routes have their own mapped image; the plan words already carry
     // the host kind for every expert.
-    mfq::cuda::HostBuffer published_ids(std::size_t(tokens) * routes * sizeof(int32_t), true);
+    tyloi::cuda::HostBuffer published_ids(std::size_t(tokens) * routes * sizeof(int32_t), true);
     void* published_device = nullptr;
     TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(&published_device, published_ids.data(), 0));
-    auto cpu_pairs = tb::zeros({tokens, routes, width}, gpu_options.dtype(tb::kFloat16));
+    auto cpu_pairs = tb::zeros({tokens, routes, width}, gpu_options.dtype(tyloi::kFloat16));
     MfeFfnRuntime runtime({nullptr, &projections[1], &projections[2]}, input, ids, weights, sigmoid,
                           {}, {}, 0, 0, nullptr, false, false, 0, 0, true, false);
     mfe_test_require(runtime.batch().expert_activation == 1,
@@ -164,7 +164,7 @@ static void check_mfe_cached_dispatch_geometry() {
         runtime.wait_cpu();
         runtime.down_reduce_compute();
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
-        auto host = runtime.output().to(tb::kFloat16).contiguous().cpu();
+        auto host = runtime.output().to(tyloi::kFloat16).contiguous().cpu();
         return std::vector<unsigned char>(
             static_cast<const unsigned char*>(host.data_ptr()),
             static_cast<const unsigned char*>(host.data_ptr()) + host.numel() * host.element_size());
@@ -182,15 +182,15 @@ static void check_mfe_cached_dispatch_geometry() {
     sizes[1].push_back(mfe_test_nint_bytes(projections[1].pools[0]));
     sizes[2].push_back(mfe_test_nint_bytes(projections[2].pools[0]));
     auto cached_table =
-        tb::zeros({int64_t(experts) * int64_t(sizeof(mfq::cuda::MfeCachedExpert))},
-                  gpu_options.dtype(tb::kUInt8));
-    std::vector<mfq::cuda::MfeCachedExpert> cached_host(static_cast<std::size_t>(experts));
+        tb::zeros({int64_t(experts) * int64_t(sizeof(tyloi::cuda::MfeCachedExpert))},
+                  gpu_options.dtype(tyloi::kUInt8));
+    std::vector<tyloi::cuda::MfeCachedExpert> cached_host(static_cast<std::size_t>(experts));
     for (auto& expert : cached_host) expert.ready_mask = 7;
     TYLOINFER_CUDA_CHECK(cudaMemcpy(cached_table.data_ptr(), cached_host.data(),
-                              sizeof(mfq::cuda::MfeCachedExpert) * cached_host.size(),
+                              sizeof(tyloi::cuda::MfeCachedExpert) * cached_host.size(),
                               cudaMemcpyHostToDevice));
     runtime.enable_cached_dispatch(
-        static_cast<const mfq::cuda::MfeCachedExpert*>(cached_table.data_ptr()), sizes,
+        static_cast<const tyloi::cuda::MfeCachedExpert*>(cached_table.data_ptr()), sizes,
         const_cast<uint32_t*>(mapped_device_flag(0)));
     mfe_test_require(runtime.batch().projection_counts[0] == 0 &&
                          runtime.batch().projection_offsets[0] == 0,

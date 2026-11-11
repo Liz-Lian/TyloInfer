@@ -42,11 +42,11 @@ public:
     public:
         virtual ~Graph() = default;
         virtual std::unique_ptr<Scope> enter() = 0;
-        virtual bool matches(std::span<const std::shared_ptr<const Tensor>> owners) const = 0;
+        virtual bool matches(std::span<const Tensor> owners) const = 0;
         virtual void prepare(std::span<Tensor* const> recurrent) = 0;
         virtual void restore() = 0;
         virtual void begin() = 0;
-        virtual void end(std::span<const std::shared_ptr<const Tensor>> owners) = 0;
+        virtual void end(std::span<const Tensor> owners) = 0;
         virtual void replay() = 0;
         virtual void wait() = 0;
         virtual void invalidate() = 0;

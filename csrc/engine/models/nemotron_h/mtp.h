@@ -47,11 +47,11 @@ struct Mtp final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::cuda::nemotron_h::Config config;
-    std::shared_ptr<const ::tyloi::Tensor> embedding;
+    ::tyloi::Tensor embedding;
     int primary = 0;
-    std::shared_ptr<const ::tyloi::Tensor> fusion;
+    ::tyloi::Tensor fusion;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> embedding_norm, hidden_norm, output_norm;
+    ::tyloi::Tensor embedding_norm, hidden_norm, output_norm;
 #else
     DenseTensor embedding_norm, hidden_norm, output_norm;
 #endif
@@ -72,7 +72,7 @@ struct Mtp final : tyloi::models::Mtp {
 #endif
                                               const ::tyloi::weights::Loader& weights,
                                               const tyloi::models::nemotron_h::Config &main,
-                                              std::shared_ptr<const ::tyloi::Tensor> embedding) {
+                                              ::tyloi::Tensor embedding) {
         const bool fusion_present = weights.has("predictor.fusion.weight");
         if (!fusion_present) {
             TYLOINFER_RUNTIME_CHECK(!weights.has_prefix("predictor."),
@@ -94,17 +94,17 @@ struct Mtp final : tyloi::models::Mtp {
         result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
         result.output_norm = weights.tensor("predictor.output_norm.weight");
 #else
-        result.embedding_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.embedding_norm.weight"));
-        result.hidden_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.hidden_norm.weight"));
-        result.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("predictor.output_norm.weight"));
+        result.embedding_norm = weights.tensor("predictor.embedding_norm.weight").dense();
+        result.hidden_norm = weights.tensor("predictor.hidden_norm.weight").dense();
+        result.output_norm = weights.tensor("predictor.output_norm.weight").dense();
 #endif
         result.fusion = weights.weight("predictor.fusion.weight");
 #ifdef TYLOINFER_NATIVE_CUDA
-        TYLOINFER_RUNTIME_CHECK(result.fusion->size(1) == 2 * main.hidden_size &&
-                              result.fusion->size(0) == main.hidden_size &&
-                              result.embedding_norm->numel() == main.hidden_size &&
-                              result.hidden_norm->numel() == main.hidden_size &&
-                              result.output_norm->numel() == main.hidden_size,
+        TYLOINFER_RUNTIME_CHECK(result.fusion.size(1) == 2 * main.hidden_size &&
+                              result.fusion.size(0) == main.hidden_size &&
+                              result.embedding_norm.numel() == main.hidden_size &&
+                              result.hidden_norm.numel() == main.hidden_size &&
+                              result.output_norm.numel() == main.hidden_size,
                           "Nemotron-H MTP fusion/norm dimensions disagree with the backbone");
 #else
         TYLOINFER_RUNTIME_CHECK(result.fusion->size(1) == 2 * main.hidden_size &&

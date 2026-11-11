@@ -75,10 +75,10 @@ void validate_full_snapshot(const Layout& model_layer, const FullLayout& layer,
     validate_kv(state);
     const bool quantized = layer.quantization.enabled();
     const auto dtype = quantized ? ::tyloi::kInt32 : layer.dtype;
-    if (!(state.ring == layer.sliding && state.k->scalar_type() == dtype &&
-          state.v->scalar_type() == dtype && on_layer_device(*state.k, model_layer) &&
-          on_layer_device(*state.v, model_layer) && state.k->size(1) == layer.kv_heads &&
-          state.v->size(1) == layer.kv_heads))
+    if (!(state.ring == layer.sliding && state.k.scalar_type() == dtype &&
+          state.v.scalar_type() == dtype && on_layer_device(state.k, model_layer) &&
+          on_layer_device(state.v, model_layer) && state.k.size(1) == layer.kv_heads &&
+          state.v.size(1) == layer.kv_heads))
         throw CudaSessionStateError("Qwen full-attention session topology changed");
     const auto key_width = quantized
                                ? cuda_kv_packed_width(static_cast<int>(layer.head_dim),
@@ -88,13 +88,13 @@ void validate_full_snapshot(const Layout& model_layer, const FullLayout& layer,
                                  ? cuda_kv_packed_width(static_cast<int>(layer.head_dim),
                                                          layer.quantization.value_bits())
                                  : layer.head_dim;
-    if (state.k->size(3) != key_width || state.v->size(3) != value_width)
+    if (state.k.size(3) != key_width || state.v.size(3) != value_width)
         throw CudaSessionStateError("Qwen full-attention session quantization changed");
 }
 
 void validate_full_snapshot_length(const KvSnapshot& state, std::int64_t cache_pos) {
-    if ((!state.ring && (cache_pos > state.capacity || state.k->size(2) != cache_pos)) ||
-        (state.ring && state.k->size(2) != state.capacity))
+    if ((!state.ring && (cache_pos > state.capacity || state.k.size(2) != cache_pos)) ||
+        (state.ring && state.k.size(2) != state.capacity))
         throw CudaSessionStateError("Qwen full-attention session length changed");
 }
 
@@ -380,8 +380,8 @@ State::Restore State::prepare(const TextSessionState& state) const {
             } else {
                 if (saved.kind != HybridBlockSessionStateKind::Recurrent)
                     throw CudaSessionStateError("Qwen hybrid recurrent layer changed");
-                const auto* convolution = dynamic_cast<const DenseTensor*>(saved.convolution.get());
-                const auto* recurrent = dynamic_cast<const DenseTensor*>(saved.recurrent.get());
+                const auto* convolution = saved.convolution.representation<DenseTensor>();
+                const auto* recurrent = saved.recurrent.representation<DenseTensor>();
                 if (!convolution || !recurrent)
                     throw CudaSessionStateError("Qwen recurrent session topology changed");
                 validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention),
@@ -422,8 +422,8 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
             auto& linear = std::get<LinearState>(restore.layers[index]);
             linear.speculative_ffn_batches = current.speculative_ffn_batches;
             linear.speculative_projection_batches = current.speculative_projection_batches;
-            const auto& convolution = dynamic_cast<const DenseTensor&>(*saved.convolution);
-            const auto& recurrent = dynamic_cast<const DenseTensor&>(*saved.recurrent);
+            const auto& convolution = saved.convolution.dense();
+            const auto& recurrent = saved.recurrent.dense();
             // Candidate owns copy targets through the caller's asynchronous drain.
             linear.mixer.view().convolution = ::tyloi::cuda::empty(
                 convolution.sizes(), convolution.options());

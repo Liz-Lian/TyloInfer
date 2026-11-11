@@ -16,8 +16,8 @@ class Projector;
 
 class Ffn {
 public:
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up;
-    std::shared_ptr<const ::tyloi::Tensor> down;
+    std::vector<::tyloi::Tensor> gate_up;
+    ::tyloi::Tensor down;
     std::unique_ptr<Ffn> important_neurons;
     bool geglu = false;
     // Dense Ffn and shared/routed experts share the explicit activation label.
@@ -26,17 +26,17 @@ public:
     bool moe_split_gate_up = false;
     // Routed experts without a gate projection use the activation above.
     bool moe_ungated_experts = false;
-    std::shared_ptr<const ::tyloi::Tensor> moe_gate_up;
-    std::shared_ptr<const ::tyloi::Tensor> moe_gate;
-    std::shared_ptr<const ::tyloi::Tensor> moe_up;
-    std::shared_ptr<const ::tyloi::Tensor> moe_down;
+    ::tyloi::Tensor moe_gate_up;
+    ::tyloi::Tensor moe_gate;
+    ::tyloi::Tensor moe_up;
+    ::tyloi::Tensor moe_down;
     // Optional latent projections around the routed branch only.
-    std::shared_ptr<const ::tyloi::Tensor> moe_latent_in;
-    std::shared_ptr<const ::tyloi::Tensor> moe_latent_out;
-    std::shared_ptr<const ::tyloi::Tensor> moe_router;
-    std::shared_ptr<const ::tyloi::Tensor> moe_shared_gate;
-    std::shared_ptr<const ::tyloi::Tensor> moe_router_bias;
-    std::shared_ptr<const ::tyloi::Tensor> moe_hash_ids;
+    ::tyloi::Tensor moe_latent_in;
+    ::tyloi::Tensor moe_latent_out;
+    ::tyloi::Tensor moe_router;
+    ::tyloi::Tensor moe_shared_gate;
+    ::tyloi::Tensor moe_router_bias;
+    ::tyloi::Tensor moe_hash_ids;
     std::unique_ptr<Ffn> shared;
     int moe_top_k = 0;
     bool moe_use_sigmoid = false;

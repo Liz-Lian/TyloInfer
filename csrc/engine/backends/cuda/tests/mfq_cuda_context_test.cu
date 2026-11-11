@@ -1,6 +1,10 @@
 #include "context.h"
-#include "resident_allocations.h"
-#include "tyloinfer/runtime.h"
+#include "engine/backends/cuda/native/device.h"
+#include "engine/backends/cuda/native/memory.h"
+#include "engine/backends/cuda/native/resident_allocations.h"
+#include "components/error.h"
+#include "engine/backends/cuda/native/graph.h"
+#include "engine/backends/cuda/native/context.h"
 
 #include <cuda_runtime_api.h>
 
@@ -14,17 +18,17 @@
 
 int memory_limit_cases() {
     constexpr auto mib=std::size_t(1024)*1024;
-    auto first=std::make_shared<mfq::cuda::Context>(0);
-    auto second=std::make_shared<mfq::cuda::Context>(0);
-    mfq::cuda::StreamGuard active(mfq::cuda::StreamHandle(0,first->stream().get()));
+    auto first=std::make_shared<tyloi::cuda::Context>(0);
+    auto second=std::make_shared<tyloi::cuda::Context>(0);
+    tyloi::cuda::StreamGuard active(tyloi::cuda::StreamHandle(0,first->stream().get()));
     assert(first->memory_stats().limit==1024*mib);
     assert(first->memory_stats().allocated==0);
     {
-        mfq::cuda::Buffer model(first,48*mib);
+        tyloi::cuda::Buffer model(first,48*mib);
         {
-            mfq::cuda::Buffer cache(second,16*mib);
+            tyloi::cuda::Buffer cache(second,16*mib);
             bool rejected=false;
-            try {mfq::cuda::Buffer overflow(first,first->memory_stats().limit);}catch(const MfqResourceExhausted& error) {
+            try {tyloi::cuda::Buffer overflow(first,first->memory_stats().limit);}catch(const MfqResourceExhausted& error) {
                 rejected=std::string(error.what()).find("VRAM limit exceeded")!=std::string::npos;
             }
             assert(rejected && second->memory_stats().allocated==64*mib);
@@ -33,19 +37,19 @@ int memory_limit_cases() {
         const auto stream=first->stream().get();first->begin_graph_pool(stream);
         void* warmed=nullptr;
         {
-            mfq::cuda::GraphWarmupScope warm(first,stream);
-            mfq::cuda::Buffer workspace(first,16*mib);warmed=workspace.data();
+            tyloi::cuda::GraphWarmupScope warm(first,stream);
+            tyloi::cuda::Buffer workspace(first,16*mib);warmed=workspace.data();
         }
         // Released tensors still own their warmed graph allocations.
         assert(second->memory_stats().allocated==64*mib);
         first->begin_graph_capture(stream);
         {
-            mfq::cuda::Buffer reuse(first,16*mib);
+            tyloi::cuda::Buffer reuse(first,16*mib);
             assert(reuse.data()==warmed && first->memory_stats().allocated==64*mib);
         }
         first->end_graph_capture(stream);
         bool retained_rejected=false;
-        try {mfq::cuda::Buffer overflow(second,second->memory_stats().limit);}catch(const MfqResourceExhausted&) {retained_rejected=true;}
+        try {tyloi::cuda::Buffer overflow(second,second->memory_stats().limit);}catch(const MfqResourceExhausted&) {retained_rejected=true;}
         assert(retained_rejected && first->memory_stats().allocated==64*mib);
         first->end_graph_pool(stream);
         assert(second->memory_stats().allocated==48*mib);
@@ -58,8 +62,8 @@ int memory_limit_cases() {
 }
 
 int memory_pool_reuse_case() {
-    auto context=std::make_shared<mfq::cuda::Context>(0);
-    mfq::cuda::StreamGuard active(mfq::cuda::StreamHandle(0,context->stream().get()));
+    auto context=std::make_shared<tyloi::cuda::Context>(0);
+    tyloi::cuda::StreamGuard active(tyloi::cuda::StreamHandle(0,context->stream().get()));
     if(!context->supports_async_allocations())throw std::runtime_error("async allocator required");
     const auto limit=context->memory_stats().limit,baseline=context->local_memory_usage();
     if(limit<=baseline+128*1024*1024)throw std::runtime_error("insufficient test memory budget");
@@ -72,7 +76,7 @@ int memory_pool_reuse_case() {
         ~Restore(){cudaMemPoolSetAttribute(pool,cudaMemPoolAttrReleaseThreshold,&threshold);cudaMemPoolTrimTo(pool,0);}
     } restore{pool,old_threshold};
     TYLOINFER_NATIVE_CUDA_CHECK(cudaMemPoolSetAttribute(pool,cudaMemPoolAttrReleaseThreshold,&keep));
-    {mfq::cuda::Buffer released(context,retained);}
+    {tyloi::cuda::Buffer released(context,retained);}
     context->stream().synchronize();
     std::uint64_t reserved=0,used=0;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaMemPoolGetAttribute(pool,cudaMemPoolAttrReservedMemCurrent,&reserved));
@@ -83,7 +87,7 @@ int memory_pool_reuse_case() {
     if(context->local_memory_usage()+retained<=limit)
         throw std::runtime_error("test did not exercise the WDDM pool accounting boundary");
 #endif
-    {mfq::cuda::Buffer reused(context,retained);context->stream().synchronize();}
+    {tyloi::cuda::Buffer reused(context,retained);context->stream().synchronize();}
     context->stream().synchronize();
     if(context->memory_stats().allocated!=0)throw std::runtime_error("pool reuse leaked an allocation");
     std::cout<<"cuda_memory_pool_reuse retained_bytes="<<reserved<<" allocation_bytes="<<retained<<" PASS\n";
@@ -92,23 +96,23 @@ int memory_pool_reuse_case() {
 
 int memory_telemetry_case() {
     constexpr auto mib=std::size_t(1024)*1024;
-    auto context=std::make_shared<mfq::cuda::Context>(0);
+    auto context=std::make_shared<tyloi::cuda::Context>(0);
     const auto stream=context->stream().get();
-    mfq::cuda::StreamGuard active(mfq::cuda::StreamHandle(0,stream));
+    tyloi::cuda::StreamGuard active(tyloi::cuda::StreamHandle(0,stream));
     context->begin_graph_pool(stream);
     void* retained=nullptr;
     {
-        mfq::cuda::GraphWarmupScope warm(context,stream);
-        mfq::cuda::Buffer graph(context,16*mib);retained=graph.data();
+        tyloi::cuda::GraphWarmupScope warm(context,stream);
+        tyloi::cuda::Buffer graph(context,16*mib);retained=graph.data();
     }
-    {mfq::cuda::Buffer temporary(context,32*mib);}
+    {tyloi::cuda::Buffer temporary(context,32*mib);}
     context->stream().synchronize();
     if(context->memory_stats().allocated!=16*mib || context->resident_memory_usage()<16*mib)
         throw std::runtime_error("memory telemetry lost retained graph allocations");
     context->reclaim_idle_memory();
     context->begin_graph_capture(stream);
     {
-        mfq::cuda::Buffer replay(context,16*mib);
+        tyloi::cuda::Buffer replay(context,16*mib);
         if(replay.data()!=retained)throw std::runtime_error("memory reclamation freed live graph storage");
         TYLOINFER_NATIVE_CUDA_CHECK(cudaMemsetAsync(replay.data(),0,replay.size(),stream));
     }
@@ -121,11 +125,11 @@ int memory_telemetry_case() {
 
 int graph_pool_isolation_case() {
     constexpr auto mib=std::size_t(1024)*1024;
-    auto context=std::make_shared<mfq::cuda::Context>(0);
-    auto observer=std::make_shared<mfq::cuda::Context>(0);
+    auto context=std::make_shared<tyloi::cuda::Context>(0);
+    auto observer=std::make_shared<tyloi::cuda::Context>(0);
     const auto stream=context->stream().get();
-    mfq::cuda::StreamGuard active(mfq::cuda::StreamHandle(0,stream));
-    mfq::cuda::Buffer resident(context,16*mib);
+    tyloi::cuda::StreamGuard active(tyloi::cuda::StreamHandle(0,stream));
+    tyloi::cuda::Buffer resident(context,16*mib);
     context->stream().synchronize();
     cudaMemPool_t default_pool=nullptr;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetDefaultMemPool(&default_pool,0));
@@ -133,18 +137,18 @@ int graph_pool_isolation_case() {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaMemPoolGetAttribute(default_pool,cudaMemPoolAttrUsedMemCurrent,&baseline));
     context->begin_graph_pool(stream);
     {
-        mfq::cuda::Buffer outside_capture(context,8*mib);context->stream().synchronize();
+        tyloi::cuda::Buffer outside_capture(context,8*mib);context->stream().synchronize();
         std::uint64_t ordinary=0;
         TYLOINFER_NATIVE_CUDA_CHECK(cudaMemPoolGetAttribute(default_pool,cudaMemPoolAttrUsedMemCurrent,&ordinary));
         if(ordinary<baseline+8*mib)
             throw std::runtime_error("ordinary request storage entered the graph scratch pool");
     }
-    std::unique_ptr<mfq::cuda::Buffer> persistent;
+    std::unique_ptr<tyloi::cuda::Buffer> persistent;
     void* warmed=nullptr;
     {
-        mfq::cuda::GraphWarmupScope warm(context,stream);
-        persistent=std::make_unique<mfq::cuda::Buffer>(context,32*mib);
-        mfq::cuda::Buffer scratch(context,16*mib);warmed=scratch.data();
+        tyloi::cuda::GraphWarmupScope warm(context,stream);
+        persistent=std::make_unique<tyloi::cuda::Buffer>(context,32*mib);
+        tyloi::cuda::Buffer scratch(context,16*mib);warmed=scratch.data();
     }
     context->stream().synchronize();
     std::uint64_t current=0;
@@ -154,7 +158,7 @@ int graph_pool_isolation_case() {
         throw std::runtime_error("graph pages were mixed with resident weights or omitted across contexts");
     context->reclaim_idle_memory();context->begin_graph_capture(stream);
     {
-        mfq::cuda::Buffer reuse(context,16*mib);
+        tyloi::cuda::Buffer reuse(context,16*mib);
         if(reuse.data()!=warmed)throw std::runtime_error("private graph pool lost warmed storage");
         TYLOINFER_NATIVE_CUDA_CHECK(cudaMemsetAsync(reuse.data(),0,reuse.size(),stream));
     }
@@ -172,8 +176,8 @@ int graph_pool_isolation_case() {
         throw std::runtime_error("private graph pool leaked its allocation budget");
     for(int i=0;i<128;++i) {
         context->begin_graph_pool(stream);
-        {mfq::cuda::GraphWarmupScope warmup(context,stream);
-            persistent=std::make_unique<mfq::cuda::Buffer>(context,mib);}
+        {tyloi::cuda::GraphWarmupScope warmup(context,stream);
+            persistent=std::make_unique<tyloi::cuda::Buffer>(context,mib);}
         context->end_graph_pool(stream);
         persistent.reset();context->stream().synchronize();
     }
@@ -186,9 +190,9 @@ int graph_pool_isolation_case() {
 
 int resident_allocation_case() {
     constexpr auto mib=std::size_t(1024)*1024;
-    auto context=std::make_shared<mfq::cuda::Context>(0);
+    auto context=std::make_shared<tyloi::cuda::Context>(0);
     const auto stream=context->stream().get();
-    mfq::cuda::StreamGuard active(mfq::cuda::StreamHandle(0,stream));
+    tyloi::cuda::StreamGuard active(tyloi::cuda::StreamHandle(0,stream));
     context->reclaim_idle_memory();
     cudaMemPool_t temporary_pool=nullptr;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetDefaultMemPool(&temporary_pool,0));
@@ -198,20 +202,20 @@ int resident_allocation_case() {
         return used;
     };
     const auto baseline=temporary_used();
-    std::unique_ptr<mfq::cuda::Buffer> resident;
+    std::unique_ptr<tyloi::cuda::Buffer> resident;
     {
-        mfq::cuda::ResidentAllocationScope load;
-        resident=std::make_unique<mfq::cuda::Buffer>(context,16*mib);
+        tyloi::cuda::ResidentAllocationScope load;
+        resident=std::make_unique<tyloi::cuda::Buffer>(context,16*mib);
         context->stream().synchronize();
         if(temporary_used()!=baseline || context->pool_memory_stats().first<baseline+16*mib)
             throw std::runtime_error("resident allocation entered the temporary pool");
         {
-            mfq::cuda::ResidentAllocationScope temporary(false);
-            mfq::cuda::Buffer dynamic(context,8*mib);context->stream().synchronize();
+            tyloi::cuda::ResidentAllocationScope temporary(false);
+            tyloi::cuda::Buffer dynamic(context,8*mib);context->stream().synchronize();
             if(temporary_used()<baseline+8*mib)
                 throw std::runtime_error("nested allocation scope did not restore the async path");
         }
-        mfq::cuda::Buffer nested(context,4*mib);context->stream().synchronize();
+        tyloi::cuda::Buffer nested(context,4*mib);context->stream().synchronize();
         if(context->memory_stats().allocated!=20*mib)
             throw std::runtime_error("resident allocation budget is incorrect");
     }
@@ -243,9 +247,9 @@ int main(int argc,char** argv) {
         catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     }
 
-    auto context = std::make_shared<mfq::cuda::Context>(0);
-    mfq::cuda::Buffer device(context, sizeof(std::uint32_t) * 4);
-    mfq::cuda::HostBuffer host(sizeof(std::uint32_t) * 4);
+    auto context = std::make_shared<tyloi::cuda::Context>(0);
+    tyloi::cuda::Buffer device(context, sizeof(std::uint32_t) * 4);
+    tyloi::cuda::HostBuffer host(sizeof(std::uint32_t) * 4);
     auto* values = static_cast<std::uint32_t*>(host.data());
     values[0] = 1;
     values[1] = 2;
@@ -258,7 +262,7 @@ int main(int argc,char** argv) {
         host.size(),
         cudaMemcpyHostToDevice,
         context->stream().get()));
-    mfq::cuda::Event copied;
+    tyloi::cuda::Event copied;
     copied.record(context->stream().get());
     copied.synchronize();
     assert(copied.ready());

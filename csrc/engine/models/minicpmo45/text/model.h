@@ -20,9 +20,9 @@ struct Model {
     CudaModelPlan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
-    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
+    ::tyloi::Tensor embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+    ::tyloi::Tensor output_norm;
 #else
     DenseTensor output_norm;
 #endif

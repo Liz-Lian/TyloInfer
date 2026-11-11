@@ -31,11 +31,11 @@ struct Predictor final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
 
     tyloi::models::qwen4_exp::Config config;
-    std::shared_ptr<const ::tyloi::Tensor> embedding, output;
+    ::tyloi::Tensor embedding, output;
     double softcap = 0;
     int primary = 0;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> embedding_norm, hidden_norm;
+    ::tyloi::Tensor embedding_norm, hidden_norm;
 #else
     DenseTensor embedding_norm, hidden_norm;
 #endif
@@ -52,7 +52,7 @@ struct Predictor final : tyloi::models::Mtp {
     static std::optional<Predictor> load_if_present(CudaExecutionContext &execution,
                                                       const tyloi::weights::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
-                                                      std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output,
+                                                      ::tyloi::Tensor embedding, ::tyloi::Tensor output,
                                                       double softcap);
 
     DenseTensor embed(DenseTensor ids) const;

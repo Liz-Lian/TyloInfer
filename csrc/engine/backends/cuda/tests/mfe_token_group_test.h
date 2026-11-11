@@ -1,4 +1,5 @@
 #pragma once
+#include "execution_fixture.h"
 #include "env.h"
 #include "mfe_ffn_runtime.h"
 #include <cstring>
@@ -6,19 +7,18 @@
 void verify_mfe_token_groups(const std::filesystem::path& root) {
     struct Environment {
         std::string previous;
-        Environment(){if(const auto* s=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS"))previous=s;}
+        Environment(){if(const auto* s=tyloi::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS"))previous=s;}
         static void select(bool enabled) {
-            mfq::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",enabled?"1":"0");
+            tyloi::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",enabled?"1":"0");
         }
         ~Environment(){
-            if(previous.empty())mfq::cuda::env_clear("TYLOINFER_MFE_TOKEN_GROUPS");else mfq::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",previous.c_str());
+            if(previous.empty())tyloi::cuda::env_clear("TYLOINFER_MFE_TOKEN_GROUPS");else tyloi::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",previous.c_str());
         }
     } environment;
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
-    auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    TestExecution execution;
+    auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
-    const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
+    const auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat16);
     const auto sigmoid=moe_swiglu_sigmoid_table_cuda();
     int cases=0;
     for(int family:{0,1,2}) {
@@ -32,7 +32,7 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
             auto& runtime=projections[p];runtime.n_experts=384;runtime.partial_experts=true;
             runtime.out_per_expert=p==2?2560:640;runtime.neuron_len=p==2?640:2560;
             for(int cohort=0;cohort<4;++cohort) {
-                auto model=mfq::open_model_source((root/(formats[(cohort+p)%4]+(p==2?"-2560-640.mfq":"-640-2560.mfq"))).string());
+                auto model=tyloi::open_model_source((root/(formats[(cohort+p)%4]+(p==2?"-2560-640.mfq":"-640-2560.mfq"))).string());
                 const auto encoded=load_mfe_cpu(*model,"linear.weight");
                 auto single=make_mixed_moe_runtime(encoded,true,execution.config);
                 if(nvq) {
@@ -41,26 +41,26 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
                         auto weight=cpu->pools[i].nvq;
                         if(weight.kernel_format==1 || weight.kernel_format==8)continue;
                         if(!prepare_nvq_dense_groups(weight))throw std::runtime_error("token-group dense fixture not convertible");
-                        weight.indices_packed=weight.indices_packed.to(tb::kCUDA);
-                        weight.aux_packed=weight.aux_packed.to(tb::kCUDA);
-                        weight.sub_scale_packed=weight.sub_scale_packed.to(tb::kCUDA);
-                        weight.neuron_scale=weight.neuron_scale.to(tb::kCUDA);
-                        weight.codebook=weight.codebook.to(tb::kCUDA);
+                        weight.indices_packed=weight.indices_packed.to(tyloi::kCUDA);
+                        weight.aux_packed=weight.aux_packed.to(tyloi::kCUDA);
+                        weight.sub_scale_packed=weight.sub_scale_packed.to(tyloi::kCUDA);
+                        weight.neuron_scale=weight.neuron_scale.to(tyloi::kCUDA);
+                        weight.codebook=weight.codebook.to(tyloi::kCUDA);
                         single->pools[i].nvq=std::move(weight);
                     }
                 }
                 for(auto& pool:single->pools) {
                     // Each synthetic expert owns distinct compressed storage;
                     // the no-sharing benchmark must not alias twelve weights.
-                    const auto repeat=[](const tb::Tensor& field) {
+                    const auto repeat=[](const tyloi::DenseTensor& field) {
                         if(!field.numel())return field;
-                        return tb::cat(std::vector<tb::Tensor>(32,field),0);
+                        return tb::cat(std::vector<tyloi::DenseTensor>(32,field),0);
                     };
                     if(pool.family==MixedMoeFamily::Nint) {
                         auto& w=pool.nint;
                         const auto packed_bytes=w.q_packed.numel();
                         if(!w.q_expert_stride) {
-                            std::vector<tb::Tensor> offsets;
+                            std::vector<tyloi::DenseTensor> offsets;
                             for(int copy=0;copy<32;++copy)offsets.push_back(w.row_q_bit_offsets+int64_t(copy)*packed_bytes*8);
                             w.row_q_bit_offsets=tb::cat(offsets,0);
                         }else w.row_q_bit_offsets=repeat(w.row_q_bit_offsets);
@@ -77,7 +77,7 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
                     pool.local_experts=96;
                     std::vector<int32_t> local(384,-1);
                     for(int e=0;e<96;++e)local[cohort*96+e]=e;
-                    pool.expert_local=tb::tensor(local).to(tb::kCUDA);runtime.pools.push_back(std::move(pool));
+                    pool.expert_local=tb::tensor(local).to(tyloi::kCUDA);runtime.pools.push_back(std::move(pool));
                 }
             }
         }
@@ -93,9 +93,9 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
                 if(pattern==1 && r==9)ids[i]=t%2?-1:384;
                 weights[i]=float((i*7+pattern*3)%17+1)/37;
             }
-            auto x=tb::tensor(values).reshape({tokens,2560}).to(tb::kFloat16).to(tb::kCUDA);
-            auto selected=tb::tensor(ids).reshape({tokens,10}).to(tb::kCUDA);
-            auto route_weights=tb::tensor(weights).reshape({tokens,10}).to(tb::kCUDA);
+            auto x=tb::tensor(values).reshape({tokens,2560}).to(tyloi::kFloat16).to(tyloi::kCUDA);
+            auto selected=tb::tensor(ids).reshape({tokens,10}).to(tyloi::kCUDA);
+            auto route_weights=tb::tensor(weights).reshape({tokens,10}).to(tyloi::kCUDA);
             std::array<NintWeight,3> shared_weights;
             std::array<const NintWeight*,3> shared_views{};
             if(shared)for(int p=0;p<3;++p) {
@@ -105,14 +105,14 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
                 const std::vector<uint8_t> blob((std::istreambuf_iterator<char>(stream)),std::istreambuf_iterator<char>());
                 shared_weights[p]=to_gpu_nint(unpack_nint(blob));shared_views[p]=&shared_weights[p];
             }
-            auto shared_gate=shared?tb::sigmoid(x.mean(1)):tb::Tensor{};
+            auto shared_gate=shared?tb::sigmoid(x.mean(1)):tyloi::DenseTensor{};
             MfeFfnRuntime runtime({&projections[0],&projections[1],&projections[2]},x,selected,route_weights,
                 sigmoid,shared_views,shared_gate,2560,640,nullptr,false,false,tokens==8?8:0);
             if(tokens==8 && runtime.batch().token_group_capacity!=8)
                 throw std::runtime_error("independent decode hint did not prepare eight-row expert groups");
             std::array<double,2> elapsed{};
             std::array<std::array<double,2>,2> stages{};
-            tb::Tensor expected,expected_hidden;
+            tyloi::DenseTensor expected,expected_hidden;
             for(int mode=0;mode<2;++mode) {
                 Environment::select(mode!=0);
                 runtime.run();auto actual=runtime.output().cpu().contiguous();
@@ -126,9 +126,9 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
                     if(std::memcmp(hidden.data_ptr(),expected_hidden.data_ptr(),hidden.numel()*hidden.element_size()))
                         throw std::runtime_error("token-group rounded SwiGLU differs");
                 }
-                mfq::cuda::DecodeWindow window(mfq_current_cuda_stream());
+                tyloi::cuda::DecodeWindow window(mfq_current_cuda_stream());
                 window.capture([&]{runtime.run();},[]{},[]{});
-                for(int i=0;i<3;++i)window.run();mfq_cuda_synchronize();
+                for(int i=0;i<3;++i)window.run();cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 cudaEvent_t begin,end;TYLOINFER_CUDA_CHECK(cudaEventCreate(&begin));TYLOINFER_CUDA_CHECK(cudaEventCreate(&end));
                 TYLOINFER_CUDA_CHECK(cudaEventRecord(begin,mfq_current_cuda_stream()));
                 for(int i=0;i<20;++i)window.run();
@@ -139,9 +139,9 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
                 if(std::memcmp(actual.data_ptr(),expected.data_ptr(),actual.numel()*actual.element_size()))
                     throw std::runtime_error("expert-group graph replay differs");
                 for(int stage=0;stage<2;++stage) {
-                    mfq::cuda::DecodeWindow part(mfq_current_cuda_stream());
+                    tyloi::cuda::DecodeWindow part(mfq_current_cuda_stream());
                     part.capture([&]{if(!stage){runtime.prepare();runtime.gate_up();}else runtime.down_reduce();},[]{},[]{});
-                    for(int i=0;i<3;++i)part.run();mfq_cuda_synchronize();
+                    for(int i=0;i<3;++i)part.run();cudaStreamSynchronize(::tyloi::cuda::current_stream());
                     TYLOINFER_CUDA_CHECK(cudaEventCreate(&begin));TYLOINFER_CUDA_CHECK(cudaEventCreate(&end));
                     TYLOINFER_CUDA_CHECK(cudaEventRecord(begin,mfq_current_cuda_stream()));
                     for(int i=0;i<20;++i)part.run();
@@ -158,5 +158,5 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
         }
     }
     std::cout<<"mfe_token_group_cases="<<cases<<" PASS\n";
-    mfq_cuda_synchronize();context->end_graph_pool(stream);
+    cudaStreamSynchronize(::tyloi::cuda::current_stream());context->end_graph_pool(stream);
 }

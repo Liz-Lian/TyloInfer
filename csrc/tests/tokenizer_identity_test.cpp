@@ -1,4 +1,4 @@
-#include "tokenizer_identity.h"
+#include "engine/requests/tokenizer_identity.h"
 #include "gguf.h"
 
 #include <cstdio>
@@ -49,7 +49,7 @@ std::vector<std::uint8_t> fixture(const std::vector<std::string>& names) {
 
 int main() try {
     std::vector<std::string> golden_tokens{"<unk>", "\xc4\xa0hello", "\xe4\xbd\xa0\xe5\xa5\xbd", "[PAD3]"};
-    const auto golden = mfq::tokenizer_identity_bytes(4, [&](auto id) { return golden_tokens[id]; });
+    const auto golden = tyloi::tokenizer_identity_bytes(4, [&](auto id) { return golden_tokens[id]; });
     const char expected[] = "mfq.tokenizer-vocabulary.v1\0\x04\0\0\0"
         "\x05\0\0\0<unk>\x07\0\0\0\xc4\xa0hello"
         "\x06\0\0\0\xe4\xbd\xa0\xe5\xa5\xbd\x06\0\0\0[PAD3]";
@@ -62,21 +62,21 @@ int main() try {
         names.emplace_back(name);
     }
     names.emplace_back("\xe4\xbd\xa0\xe5\xa5\xbd");
-    mfq::engine::MfqTokenizer reference(fixture(names));
-    const auto mapping = mfq::engine::tokenizer_identity_bytes(reference);
-    require(mapping == mfq::tokenizer_identity_bytes(names.size(), [&](auto id) { return names[id]; }),
+    tyloi::engine::MfqTokenizer reference(fixture(names));
+    const auto mapping = tyloi::engine::tokenizer_identity_bytes(reference);
+    require(mapping == tyloi::tokenizer_identity_bytes(names.size(), [&](auto id) { return names[id]; }),
             "embedded tokenizer changed the token-ID mapping");
     std::swap(names[100], names[101]);
-    mfq::engine::MfqTokenizer candidate(fixture(names));
+    tyloi::engine::MfqTokenizer candidate(fixture(names));
     require(reference.vocab_size() == candidate.vocab_size(), "fixture vocabulary size changed");
-    require(mapping != mfq::engine::tokenizer_identity_bytes(candidate), "reordered mapping was accepted");
+    require(mapping != tyloi::engine::tokenizer_identity_bytes(candidate), "reordered mapping was accepted");
 
     const std::string digest(64, 'a');
-    mfq::validate_tokenizer_identity(mfq::tokenizer_identity_format, digest, digest);
-    rejects([&] { mfq::validate_tokenizer_identity("", "", digest); }, "regenerate the reference");
-    rejects([&] { mfq::validate_tokenizer_identity("unknown", digest, digest); }, "unsupported");
-    rejects([&] { mfq::validate_tokenizer_identity(mfq::tokenizer_identity_format, "bad", digest); }, "SHA-256");
-    rejects([&] { mfq::validate_tokenizer_identity(mfq::tokenizer_identity_format, digest, std::string(64, 'b')); }, "mapping mismatch");
+    tyloi::validate_tokenizer_identity(tyloi::tokenizer_identity_format, digest, digest);
+    rejects([&] { tyloi::validate_tokenizer_identity("", "", digest); }, "regenerate the reference");
+    rejects([&] { tyloi::validate_tokenizer_identity("unknown", digest, digest); }, "unsupported");
+    rejects([&] { tyloi::validate_tokenizer_identity(tyloi::tokenizer_identity_format, "bad", digest); }, "SHA-256");
+    rejects([&] { tyloi::validate_tokenizer_identity(tyloi::tokenizer_identity_format, digest, std::string(64, 'b')); }, "mapping mismatch");
     std::cout << "tokenizer identity tests passed\n";
     return 0;
 } catch (const std::exception& error) {

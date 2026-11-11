@@ -1,4 +1,4 @@
-#include "view.h"
+#include "engine/tensor.h"
 
 #include <array>
 #include <cassert>
@@ -6,13 +6,13 @@
 #include <stdexcept>
 
 int main() {
-    using mfq::cuda::Device;
-    using mfq::cuda::DeviceType;
-    using mfq::cuda::ScalarType;
+    using tyloi::cuda::Device;
+    using tyloi::cuda::DeviceType;
+    using tyloi::ScalarType;
 
     std::array<std::uint16_t, 24> storage{};
     const std::array<std::int64_t, 3> shape = {2, 3, 4};
-    const auto source = mfq::cuda::make_contiguous_view(
+    const auto source = tyloi::cuda::make_contiguous_view(
         storage.data(), shape, ScalarType::float16, Device{DeviceType::cuda, 1});
     assert(source.defined());
     assert(source.rank == 3);
@@ -23,12 +23,12 @@ int main() {
     assert(source.is_contiguous());
 
     const std::array<std::int64_t, 2> inferred = {-1, 6};
-    const auto reshaped = mfq::cuda::reshape_view(source, inferred);
+    const auto reshaped = tyloi::cuda::reshape_view(source, inferred);
     assert(reshaped.size(0) == 4);
     assert(reshaped.size(1) == 6);
     assert(reshaped.is_contiguous());
 
-    const auto transposed = mfq::cuda::transpose_view(reshaped, 0, 1);
+    const auto transposed = tyloi::cuda::transpose_view(reshaped, 0, 1);
     assert(transposed.size(0) == 6);
     assert(transposed.size(1) == 4);
     assert(!transposed.is_contiguous());
@@ -36,7 +36,7 @@ int main() {
     bool rejected = false;
     try {
         const std::array<std::int64_t, 2> incompatible = {5, 5};
-        (void)mfq::cuda::reshape_view(source, incompatible);
+        (void)tyloi::cuda::reshape_view(source, incompatible);
     } catch (const std::invalid_argument&) {
         rejected = true;
     }
@@ -45,7 +45,7 @@ int main() {
     rejected = false;
     try {
         const std::array<std::int64_t, 2> ambiguous = {-1, -1};
-        (void)mfq::cuda::reshape_view(source, ambiguous);
+        (void)tyloi::cuda::reshape_view(source, ambiguous);
     } catch (const std::invalid_argument&) {
         rejected = true;
     }

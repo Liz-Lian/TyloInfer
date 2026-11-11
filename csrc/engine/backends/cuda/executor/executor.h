@@ -104,7 +104,7 @@ public:
     const ContextSet& contexts() const noexcept { return contexts_; }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> storage() const;
+    std::vector<::tyloi::Tensor> storage() const;
 #else
     std::vector<::tyloi::DenseTensor> storage() const;
 #endif

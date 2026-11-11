@@ -334,10 +334,10 @@ class Engram {
         const auto hash_layer =
             static_cast<int>(std::distance(config.engram_layer_ids.begin(), found));
         const auto prefix = "model.block." + std::to_string(layer) + ".associative_memory.";
-        auto query = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "query.weight"))
+        auto query = weights.tensor(prefix + "query.weight").dense()
                          .to(::tyloi::kFloat32)
                          .contiguous();
-        auto key = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "key.weight"))
+        auto key = weights.tensor(prefix + "key.weight").dense()
                        .to(::tyloi::kFloat32)
                        .contiguous();
         if (query.dim() != 2 || query.size(0) != config.hc_mult || query.size(1) != config.hidden ||
@@ -346,8 +346,8 @@ class Engram {
         }
         auto projection = weights.weight(prefix + "projection.weight");
         const auto hash_columns = (config.engram_max_ngram_size - 1) * config.engram_n_heads;
-        if (projection->size(1) != hash_columns * config.engram_head_dim ||
-            projection->size(0) != (config.hc_mult + 1) * config.hidden) {
+        if (projection.size(1) != hash_columns * config.engram_head_dim ||
+            projection.size(0) != (config.hc_mult + 1) * config.hidden) {
             throw std::runtime_error("DeepSeek-V4.1 Engram projection geometry disagrees");
         }
         return std::unique_ptr<Engram>(new Engram(
@@ -412,7 +412,7 @@ class Engram {
         return tyloi::ops::measure("deepseek_v41.engram.gate_add", [&] {
             return deepseek_v41_engram_gate_add_cuda(hidden, projected.contiguous(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                                       dynamic_cast<const EngramTensor&>(*query_key_weight_), config_.rms_eps);
+                                                       query_key_weight_.dense(), config_.rms_eps);
 #else
                                                        query_key_weight_, config_.rms_eps);
 #endif
@@ -436,9 +436,9 @@ class Engram {
     }
     Engram(EngramConfig config, int hash_layer, std::shared_ptr<EngramTable> table,
 #ifdef TYLOINFER_NATIVE_CUDA
-           std::shared_ptr<const ::tyloi::Tensor> projection, std::shared_ptr<const ::tyloi::Tensor> query_key_weight)
+           ::tyloi::Tensor projection, ::tyloi::Tensor query_key_weight)
 #else
-           std::shared_ptr<const ::tyloi::Tensor> projection, EngramTensor query_key_weight)
+           ::tyloi::Tensor projection, EngramTensor query_key_weight)
 #endif
         : config_(std::move(config)), hash_layer_(hash_layer), table_(std::move(table)),
           projection_(std::move(projection)), query_key_weight_(std::move(query_key_weight)) {}
@@ -446,9 +446,9 @@ class Engram {
     EngramConfig config_;
     int hash_layer_ = -1;
     std::shared_ptr<EngramTable> table_;
-    std::shared_ptr<const ::tyloi::Tensor> projection_;
+    ::tyloi::Tensor projection_;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> query_key_weight_;
+    ::tyloi::Tensor query_key_weight_;
 #else
     EngramTensor query_key_weight_;
 #endif

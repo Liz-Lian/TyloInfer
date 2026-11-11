@@ -20,12 +20,12 @@ class State;
 
 struct Layer {
     FullAttention attention;
-    std::shared_ptr<const tyloi::Tensor> ffn_norm;
+    ::tyloi::Tensor ffn_norm;
     tyloi::models::Mlp ffn;
-    std::shared_ptr<const tyloi::Tensor> attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
-    std::shared_ptr<const tyloi::Tensor> layer_scale;
-    std::shared_ptr<const tyloi::Tensor> gemma_router, gemma_router_norm_scale, gemma_expert_scale;
-    std::shared_ptr<const tyloi::Tensor> gemma_moe_gate_up, gemma_moe_down;
+    ::tyloi::Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
+    ::tyloi::Tensor layer_scale;
+    ::tyloi::Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
+    ::tyloi::Tensor gemma_moe_gate_up, gemma_moe_down;
     bool gemma4_moe = false;
     int gemma_top_k = 0;
     int device = 0;
@@ -39,18 +39,18 @@ struct Model : public tyloi::models::CausalModel {
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
-    std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const override;
-    std::shared_ptr<tyloi::Tensor> normalize(const tyloi::Tensor& hidden, std::int64_t batch, std::int64_t tokens) const override;
-    std::shared_ptr<tyloi::Tensor> softcap(const tyloi::Tensor& logits) const override;
-    std::shared_ptr<tyloi::Tensor> logits(const tyloi::Tensor& hidden, bool capped = true) const override;
-    std::shared_ptr<tyloi::Tensor> forward(tyloi::models::Input input, tyloi::models::State& state,
+    ::tyloi::Tensor embedding(const tyloi::Tensor& ids, int primary = 0) const override;
+    ::tyloi::Tensor normalize(const tyloi::Tensor& hidden, std::int64_t batch, std::int64_t tokens) const override;
+    ::tyloi::Tensor softcap(const tyloi::Tensor& logits) const override;
+    ::tyloi::Tensor logits(const tyloi::Tensor& hidden, bool capped = true) const override;
+    ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
                         const Options& options = {}) const override;
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     Config config;
     double embed_scale = 1.0;
-    std::shared_ptr<const ::tyloi::Tensor> embed, lm_head;
-    std::shared_ptr<const tyloi::Tensor> output_norm;
+    ::tyloi::Tensor embed, lm_head;
+    ::tyloi::Tensor output_norm;
     std::vector<Layer> layers;
 };
 

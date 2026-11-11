@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <map>
 
-using namespace mfq::engine;
+using namespace tyloi::engine;
 
 struct TestOps {
     bool batch = false, reset_fails = false;
@@ -218,7 +218,7 @@ static void check_preparation_steps() {
     struct MediaOps : TestOps {
         using Prepared = int;
         int encoded = 0, media_live = 0, text_runs = 0, fail_at = 0;
-        mfq::StepSequence<Prepared> prepare(InferenceRequest&) {
+        tyloi::StepSequence<Prepared> prepare(InferenceRequest&) {
             ++media_live;
             struct Storage { int& live; ~Storage() { --live; } } storage{media_live};
             for (int i = 0; i < 3; ++i) {
@@ -227,7 +227,7 @@ static void check_preparation_steps() {
             }
             co_yield 42;
         }
-        auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
+        auto advance_preparation(tyloi::StepSequence<Prepared>& preparation) {
             return std::pair{preparation.next(), 1.0};
         }
         Generation generate_text(InferenceRequest& input, InferenceOutput& output,

@@ -10,19 +10,20 @@
 namespace {
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
-        const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& weights,
+std::vector<::tyloi::Tensor> nint_aliases(
+        const std::vector<::tyloi::Tensor>& weights,
         const NintLinearGroup& group) {
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> aliases;
+    std::vector<::tyloi::Tensor> aliases;
     aliases.reserve(weights.size());
     size_t matrix_index = 0;
     int64_t row = 0;
     int64_t packed_bytes = 0;
-    for (const auto & original : weights) {
-        const auto & matrix = group.split_w.empty() ? group.w : group.split_w.at(matrix_index);
-        const auto* original_nint = dynamic_cast<const tyloi::NintTensor*>(original.get());
+    for (const auto& original : weights) {
+        const auto& matrix = group.split_w.empty()
+            ? group.w : group.split_w.at(matrix_index);
+        const auto* original_nint = original.representation<tyloi::NintTensor>();
         TYLOINFER_RUNTIME_CHECK(
-            original_nint != nullptr && row + original->size(0) <= matrix.out &&
+            original_nint != nullptr && row + original.size(0) <= matrix.out &&
                 original_nint->ng == matrix.ng && original_nint->gs == matrix.gs &&
                 original_nint->q8_zero == matrix.q8_zero,
             "grouped projection storage geometry mismatch");
@@ -41,7 +42,7 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
             view.aligned_q8 = original_nint->aligned_q8 && (packed_bytes % 4 == 0);
         }
         aliases.push_back(std::make_shared<tyloi::NintTensor>(std::move(view)));
-        row += original->size(0);
+        row += original.size(0);
         packed_bytes += original_nint->q_packed.numel();
         if (row == matrix.out) {
             ++matrix_index;
@@ -61,8 +62,8 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> nint_aliases(
 namespace tyloi::weights {
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_nint(
-        std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights) {
+std::vector<::tyloi::Tensor> pack_nint(
+        std::vector<::tyloi::Tensor> weights) {
     if (weights.empty()) return weights;
     auto group = tyloi::cuda::make_quant_group(weights, true, false);
     if (group.nint_grouped) return nint_aliases(weights, group.nint);
@@ -70,17 +71,17 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_nint(
 }
 #endif
 
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_projections(
-        std::vector<std::shared_ptr<const ::tyloi::Tensor>> weights,
+std::vector<::tyloi::Tensor> pack_projections(
+        std::vector<::tyloi::Tensor> weights,
         bool group_nint,
         bool cpu_layer) {
     if (weights.empty() || cpu_layer) return weights;
     const ::tyloi::encoding::TqTensor* first = nullptr;
     std::vector<::tyloi::encoding::TqTensor> tq_weights;
     for (const auto& weight : weights) {
-        const auto* tq = dynamic_cast<const ::tyloi::encoding::TqTensor*>(weight.get());
+        const auto* tq = weight.representation<::tyloi::encoding::TqTensor>();
         if (!tq || !tq->is_cuda()) continue;
-        if (first && (weight->size(1) != first->size(1) || tq->device() != first->device()))
+        if (first && (weight.size(1) != first->size(1) || tq->device() != first->device()))
             return weights;
         if (!first) first = tq;
         tq_weights.push_back(*tq);
@@ -92,8 +93,9 @@ std::vector<std::shared_ptr<const ::tyloi::Tensor>> pack_projections(
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (!group_nint) return weights;
     for (const auto& weight : weights) {
-        const auto* nint = dynamic_cast<const tyloi::NintTensor*>(weight.get());
-        if (!nint || !nint->q_packed.is_cuda() || weight->size(1) != weights.front()->size(1))
+        const auto* nint = weight.representation<tyloi::NintTensor>();
+        if (!nint || !nint->q_packed.is_cuda() ||
+            weight.size(1) != weights.front().size(1))
             return weights;
     }
     return pack_nint(std::move(weights));

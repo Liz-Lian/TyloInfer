@@ -3,17 +3,17 @@
 #include "kernels/moe/pipeline.h"
 
 static void benchmark_mapped_copy(bool timings=true,bool pinned_source=false) {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     int blocks=0,threads=0;TYLOINFER_CUDA_CHECK(moe_wire_launch_geometry(&blocks,&threads));
     std::cout<<"mapped_copy launch blocks="<<blocks<<" threads="<<threads<<" source="<<(pinned_source?"RAM":"VRAM")<<"\n";
     for(int fields:{0,1,8,64,257})for(int width:{113,4096+13,131072})for(int misalign:{0,1,4}) {
         const int pitch=(width+31)&~15,bytes=fields*pitch+16;
-        auto host=tb::empty({bytes},tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(pinned_source));
+        auto host=tb::empty({bytes},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kUInt8).pinned_memory(pinned_source));
         auto* values=host.data_ptr<uint8_t>();for(int i=0;i<bytes;++i)values[i]=uint8_t(i%251);
-        auto source=pinned_source?host:host.to(tb::kCUDA);
-        const auto gpu=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kUInt8);
-        auto cancel=tb::zeros({1},gpu.dtype(tb::kInt32));
+        auto source=pinned_source?host:host.to(tyloi::kCUDA);
+        const auto gpu=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kUInt8);
+        auto cancel=tb::zeros({1},gpu.dtype(tyloi::kInt32));
         auto destination=tb::empty({bytes},gpu);
         auto* source_pointer=source.data_ptr<uint8_t>();
         if(pinned_source)TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&source_pointer),host.data_ptr(),0));
@@ -23,10 +23,10 @@ static void benchmark_mapped_copy(bool timings=true,bool pinned_source=false) {
             descriptors[5+i*4]=int64_t(reinterpret_cast<uintptr_t>(source_pointer+i*pitch));
             descriptors[6+i*4]=int64_t(i)*pitch;descriptors[7+i*4]=width;
         }
-        auto table=tb::tensor(descriptors).to(tb::kCUDA);
+        auto table=tb::tensor(descriptors).to(tyloi::kCUDA);
         for(int arm:{0,1,0}) {
             const auto option=std::to_string(arm);
-            mfq::cuda::env_set("TYLOINFER_MOE_COPY_RANGES",option.c_str());
+            tyloi::cuda::env_set("TYLOINFER_MOE_COPY_RANGES",option.c_str());
             const auto body=[&]{moe_copy_mapped(table.data_ptr(),reinterpret_cast<uint32_t*>(cancel.data_ptr()),blocks,threads,stream);};
             for(bool aborted:{true,false}) {
                 destination.fill_(255);cancel.fill_(aborted?1:0);body();

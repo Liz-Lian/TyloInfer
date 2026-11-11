@@ -83,13 +83,13 @@ void restore_layer_session(
     if (layer.qsa)
         layer.qsa->restore_session(*state.qsa, snapshot, position);
     if (layer.gdn) {
-        const auto* convolution = dynamic_cast<const DenseTensor*>(snapshot.convolution.get());
-        const auto* recurrent = dynamic_cast<const DenseTensor*>(snapshot.recurrent.get());
+        const auto* convolution = snapshot.convolution.representation<DenseTensor>();
+        const auto* recurrent = snapshot.recurrent.representation<DenseTensor>();
         TYLOINFER_RUNTIME_CHECK(convolution && recurrent, "missing Qwen4 GDN session state");
         layer.gdn->restore_session(state.gdn, *convolution, *recurrent, state.retain_graph_storage);
     }
     if (layer.ple) {
-        const auto* convolution = dynamic_cast<const DenseTensor*>(snapshot.ple_convolution.get());
+        const auto* convolution = snapshot.ple_convolution.representation<DenseTensor>();
         TYLOINFER_RUNTIME_CHECK(convolution, "missing Qwen4 PLE session state");
         layer.ple->restore_session(state.ple, *convolution,
                                    {snapshot.ple_batch, snapshot.ple_tokens}, state.retain_graph_storage);
@@ -217,7 +217,7 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
 
 void State::restore_text_session_state(const TextSessionState& state) {
     const auto* snapshot = std::get_if<tyloi::models::qwen4_exp::Snapshot>(&state.payload);
-    const auto* positions = snapshot ? dynamic_cast<const DenseTensor*>(snapshot->positions.get()) : nullptr;
+    const auto* positions = snapshot ? snapshot->positions.representation<DenseTensor>() : nullptr;
     TYLOINFER_RUNTIME_CHECK(text_session_state_kind() == TextSessionStateKind::Qwen4 && snapshot &&
                                 snapshot->layers.size() == model_.layers.size() && state.cache_pos > 0 &&
                                 std::size_t(state.cache_pos) == state.tokens.size() &&

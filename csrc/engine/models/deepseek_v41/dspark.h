@@ -20,6 +20,6 @@ std::unique_ptr<tyloi::models::Mtp> load_dspark_if_present(
 #endif
     const tyloi::weights::Loader& weights,
     const tyloi::models::deepseek_v41::Config& config,
-    std::shared_ptr<const ::tyloi::Tensor> embedding, std::shared_ptr<const ::tyloi::Tensor> output, double softcap);
+    ::tyloi::Tensor embedding, ::tyloi::Tensor output, double softcap);
 
 } // namespace tyloi::cuda::deepseek_v41_runtime

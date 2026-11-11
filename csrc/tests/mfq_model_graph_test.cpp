@@ -27,7 +27,7 @@ void require_invalid(Callable&& callable, const char* message) {
 
 int main() {
     try {
-        const auto graph = mfq::MfqModelGraph::from_json(R"json({
+        const auto graph = tyloi::MfqModelGraph::from_json(R"json({
           "schema_version": 1,
           "architecture": "qwen3_5",
           "canonical_naming": {"namespace": "mfq.tensor", "version": 1, "component_roots": ["model", "vision", "predictor"]},
@@ -56,7 +56,7 @@ int main() {
 
         require_invalid(
             [] {
-                (void)mfq::MfqModelGraph::from_json(R"json({
+                (void)tyloi::MfqModelGraph::from_json(R"json({
                   "schema_version": 1,
                   "architecture": "qwen3_5",
                   "canonical_naming": {"namespace": "hf.tensor", "version": 1, "component_roots": ["model"]},
@@ -68,7 +68,7 @@ int main() {
             "foreign tensor namespace was accepted");
         require_invalid(
             [] {
-                (void)mfq::MfqModelGraph::from_json(R"json({
+                (void)tyloi::MfqModelGraph::from_json(R"json({
                   "schema_version": 1,
                   "architecture": "qwen3_5",
                   "canonical_naming": {"namespace": "mfq.tensor", "version": 1, "component_roots": ["model"]},
@@ -80,7 +80,7 @@ int main() {
             "missing Vision component was accepted");
         require_invalid(
             [] {
-                (void)mfq::MfqModelGraph::from_json(R"json({
+                (void)tyloi::MfqModelGraph::from_json(R"json({
                   "schema_version": 1,
                   "architecture": "qwen3_5",
                   "canonical_naming": {"namespace": "mfq.tensor", "version": 1, "component_roots": ["model"]},
@@ -98,7 +98,7 @@ int main() {
             "model.visual.patch_embed.proj.weight",
             "mtp.fc.weight",
         };
-        const auto legacy_qwen = mfq::synthesize_legacy_model_graph(
+        const auto legacy_qwen = tyloi::synthesize_legacy_model_graph(
             "qwen3_8",
             R"json({
               "model_type":"qwen3_5",
@@ -123,7 +123,7 @@ int main() {
                 legacy_qwen.topology.predictor_layers == 1,
             "legacy Qwen topology was not recovered");
 
-        const auto legacy_qwen4 = mfq::synthesize_legacy_model_graph(
+        const auto legacy_qwen4 = tyloi::synthesize_legacy_model_graph(
             "qwen4_exp-hf-full-mfq",
             R"json({"model_type":"qwen4_exp","text_config":{"model_type":"qwen4_exp_text","num_hidden_layers":2,"mtp_num_hidden_layers":1}})json",
             [](std::string_view name) {
@@ -138,7 +138,7 @@ int main() {
             "vision.patch_embedding.weight",
             "predictor.stage.0.main_projection.weight",
         };
-        const auto legacy_v41 = mfq::synthesize_legacy_model_graph(
+        const auto legacy_v41 = tyloi::synthesize_legacy_model_graph(
             "deepseek_v41",
             R"json({
               "model_type":"deepseek_v41",
@@ -165,7 +165,7 @@ int main() {
                     "deepseek_v41_dspark",
             "legacy DeepSeek-V4.1 components were not recovered");
 
-        const auto generic = mfq::synthesize_legacy_model_graph(
+        const auto generic = tyloi::synthesize_legacy_model_graph(
             "qwen2_legacy",
             R"json({"model_type":"qwen2","num_hidden_layers":32})json",
             [](std::string_view) { return false; });
@@ -175,7 +175,7 @@ int main() {
                 generic.components.size() == 1,
             "legacy generic decoder compatibility escaped normalization");
 
-        const auto aliases = mfq::make_legacy_tensor_aliases(
+        const auto aliases = tyloi::make_legacy_tensor_aliases(
             "qwen3_8-hf-mfq",
             R"json({"model_type":"qwen3_5","num_hidden_layers":1})json",
             {
@@ -199,7 +199,7 @@ int main() {
                 "model.language_model.layers.0.mlp.down_proj.weight.in_high",
             "derived legacy tensor alias was not canonicalized");
 
-        const auto qwen4_source = mfq::make_legacy_tensor_aliases(
+        const auto qwen4_source = tyloi::make_legacy_tensor_aliases(
             "qwen4_exp-hf-full-mfq",
             R"json({"model_type":"qwen4_exp","text_config":{"model_type":"qwen4_exp_text","num_hidden_layers":2,"mtp_num_hidden_layers":1}})json",
             {
@@ -227,7 +227,7 @@ int main() {
                 "mtp.fc_hidden.weight",
             "registered Qwen4 HF source was not canonicalized");
 
-        const auto glm5_source = mfq::make_legacy_tensor_aliases(
+        const auto glm5_source = tyloi::make_legacy_tensor_aliases(
             "glm5_next-hf-full-mfq",
             R"json({"model_type":"glm5_next","text_config":{"model_type":"glm5_next_text","num_hidden_layers":2,"layer_types":["linear_attention","full_attention"]}})json",
             {
@@ -255,7 +255,7 @@ int main() {
                 "model.visual.blocks.0.attn.qkv.weight",
             "registered GLM5 HF source was not canonicalized");
 
-        const auto minicpmo_aliases = mfq::make_legacy_tensor_aliases(
+        const auto minicpmo_aliases = tyloi::make_legacy_tensor_aliases(
             "minicpmo45",
             R"json({"model_type":"minicpmo","num_hidden_layers":1})json",
             {
@@ -283,7 +283,7 @@ int main() {
                 "tts.head_code.0.parametrizations.weight.original0",
             "legacy MiniCPM-o component aliases were not canonicalized");
 
-        const auto glm_aliases = mfq::make_legacy_tensor_aliases(
+        const auto glm_aliases = tyloi::make_legacy_tensor_aliases(
             "glm_moe_dsa",
             R"json({"model_type":"glm_moe_dsa","num_hidden_layers":1})json",
             {
@@ -303,7 +303,7 @@ int main() {
                 "model.layers.0.mlp.shared_experts.down_proj.weight",
             "legacy GLM DSA aliases were not canonicalized");
 
-        const auto deepseek_aliases = mfq::make_legacy_tensor_aliases(
+        const auto deepseek_aliases = tyloi::make_legacy_tensor_aliases(
             "deepseek_v4",
             R"json({"model_type":"deepseek_v4"})json",
             {
@@ -343,7 +343,7 @@ int main() {
                 "mtp.0.ffn.gate.bias_vl",
             "legacy DeepSeek-V4 aliases were not canonicalized");
 
-        const auto v41_aliases = mfq::make_legacy_tensor_aliases(
+        const auto v41_aliases = tyloi::make_legacy_tensor_aliases(
             "deepseek_v41",
             R"json({"model_type":"deepseek_v41"})json",
             {
@@ -367,7 +367,7 @@ int main() {
                 "mtp.0.markov_head.embed.weight",
             "legacy DeepSeek-V4.1 aliases were not canonicalized");
 
-        const auto gemma_aliases = mfq::make_legacy_tensor_aliases(
+        const auto gemma_aliases = tyloi::make_legacy_tensor_aliases(
             "gemma4",
             R"json({"model_type":"gemma4","num_hidden_layers":1})json",
             {
@@ -383,7 +383,7 @@ int main() {
                 "model.language_model.layers.0.router.per_expert_scale",
             "legacy Gemma4 aliases were not canonicalized");
 
-        const auto canonical_wins = mfq::make_legacy_tensor_aliases(
+        const auto canonical_wins = tyloi::make_legacy_tensor_aliases(
             "qwen3_8-hf-mfq",
             R"json({"model_type":"qwen3_5","num_hidden_layers":1})json",
             {

@@ -102,17 +102,17 @@ public:
         return uniform(rng_);
     }
     double next_uniform() { return std::generate_canonical<double, 53>(rng_); }
-    Tensor& random_host() noexcept { return *random_host_; }
+    Tensor& random_host() noexcept { return random_host_; }
     const Tensor& next_random() {
-        ops::fill(*random_host_, next_uniform_float());
-        return *random_host_;
+        ops::fill(random_host_, next_uniform_float());
+        return random_host_;
     }
-    std::shared_ptr<Tensor> sample(const Tensor& logits) {
+    Tensor sample(const Tensor& logits) {
         if (greedy()) return ops::sample_greedy(logits);
-        ops::copy_into(*random_cuda_, next_random());
-        return ops::sample_stochastic(logits, *random_cuda_, params_.temperature, params_.top_k, params_.top_p);
+        ops::copy_into(random_cuda_, next_random());
+        return ops::sample_stochastic(logits, random_cuda_, params_.temperature, params_.top_k, params_.top_p);
     }
-    std::shared_ptr<Tensor> sample(Tensor& logits, const Tensor& counts) {
+    Tensor sample(Tensor& logits, const Tensor& counts) {
         if (has_penalties()) apply_penalties(logits, counts);
         return sample(logits);
     }
@@ -124,7 +124,7 @@ public:
 private:
     Params params_;
     std::mt19937_64 rng_;
-    std::shared_ptr<Tensor> random_host_, random_cuda_;
+    Tensor random_host_, random_cuda_;
 };
 
 inline Tensor sample_logits(Sampler& sampler, Tensor logits, const Tensor& counts,

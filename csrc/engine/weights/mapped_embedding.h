@@ -59,7 +59,7 @@ inline ::tyloi::DenseTensor map_embedding_storage(const ::tyloi::DenseTensor& cp
 #endif
 }
 
-inline std::shared_ptr<const ::tyloi::Tensor> map_dense_embedding(const ::tyloi::DenseTensor& cpu,int device,
+inline ::tyloi::Tensor map_dense_embedding(const ::tyloi::DenseTensor& cpu,int device,
         bool device_read_control=false) {
     TYLOINFER_RUNTIME_CHECK(cpu.dim()==2 &&
         (cpu.scalar_type()==::tyloi::kFloat16 || cpu.scalar_type()==::tyloi::kBFloat16 || cpu.scalar_type()==::tyloi::kFloat32),
@@ -67,12 +67,12 @@ inline std::shared_ptr<const ::tyloi::Tensor> map_dense_embedding(const ::tyloi:
     return std::make_shared<::tyloi::DenseTensor>(map_embedding_storage(cpu,device,device_read_control));
 }
 
-inline std::shared_ptr<const ::tyloi::Tensor> map_nint_embedding(const std::shared_ptr<const ::tyloi::Tensor>& result,int device,bool device_read_control=false) {
+inline ::tyloi::Tensor map_nint_embedding(const ::tyloi::Tensor& result,int device,bool device_read_control=false) {
     TYLOINFER_RUNTIME_CHECK(
-        dynamic_cast<const tyloi::NintTensor*>(result.get()) != nullptr,
+        result.representation<tyloi::NintTensor>() != nullptr,
         "mapped NINT embedding requires an unsharded CPU table");
     auto mapped=std::make_shared<tyloi::NintTensor>(
-        static_cast<const tyloi::NintTensor&>(*result));
+        *result.representation<tyloi::NintTensor>());
     auto* w=mapped.get();
     TYLOINFER_RUNTIME_CHECK(w->q_packed.is_cpu(),
         "mapped NINT embedding requires an unsharded CPU table");

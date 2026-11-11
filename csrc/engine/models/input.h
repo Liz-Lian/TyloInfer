@@ -11,11 +11,11 @@
 namespace tyloi::models {
 
 struct Input {
-    using Trace = std::vector<std::shared_ptr<Tensor>>;
+    using Trace = std::vector<Tensor>;
 
-    std::shared_ptr<const Tensor> ids, embeddings, positions, lengths, cache_positions;
+    Tensor ids, embeddings, positions, lengths, cache_positions;
     Trace* trace = nullptr;
-    std::shared_ptr<Tensor>* raw_hidden = nullptr;
+    Tensor* raw_hidden = nullptr;
     bool advance = false;
     std::int64_t confirmed = 0;
     std::int64_t kv_length = 0;
@@ -31,15 +31,15 @@ struct ForwardOptions {
 
 struct Prepared {
     std::vector<std::int64_t> token_ids;
-    std::shared_ptr<const Tensor> embeddings;
-    std::shared_ptr<const Tensor> positions;
+    Tensor embeddings;
+    Tensor positions;
     int decode_position_delta = 0;
     std::string cache_key;
-    std::shared_ptr<const Tensor> image_mask;
+    Tensor image_mask;
 
     bool transformed() const noexcept {
-        return (embeddings && embeddings->defined()) ||
-            (positions && positions->defined()) ||
+        return (embeddings && embeddings.defined()) ||
+            (positions && positions.defined()) ||
             decode_position_delta != 0;
     }
 };

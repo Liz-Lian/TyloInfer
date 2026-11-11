@@ -18,7 +18,7 @@ void check_width(int64_t width, int64_t expected, bool padded) {
 
 }  // namespace
 
-void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device) {
+void check_fields(const ::tyloi::TensorImpl& weight, ::tyloi::Device device, bool check_device) {
     for (const auto* field : weight.buffers()) {
         field->require_dense();
         if (!check_device || !field->defined() || field->numel() == 0) continue;
@@ -29,12 +29,12 @@ void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool ch
 
 // NINT and NVQ pack input groups, so a narrower activation is accepted.
 bool width_is_padded(const ::tyloi::Tensor& weight) {
-    return dynamic_cast<const tyloi::NintTensor*>(&weight) != nullptr ||
-           dynamic_cast<const tyloi::NvqTensor*>(&weight) != nullptr;
+    return weight.representation<tyloi::NintTensor>() != nullptr ||
+           weight.representation<tyloi::NvqTensor>() != nullptr;
 }
 
 void check_projection_width(const ::tyloi::Tensor& weight, int64_t width) {
-    const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&weight);
+    const auto* sharded = weight.representation<tyloi::ShardedTensor>();
     if (!sharded) {
         check_width(width, weight.size(1), width_is_padded(weight));
         return;
@@ -44,30 +44,30 @@ void check_projection_width(const ::tyloi::Tensor& weight, int64_t width) {
         for (const auto& shard : sharded->shards) {
             if (shard.input_begin < 0 || shard.input_end <= shard.input_begin || shard.input_end > width)
                 throw std::invalid_argument("projection input does not cover tensor-parallel shard");
-            check_width(shard.input_end - shard.input_begin, shard.weight->size(1),
-                        width_is_padded(*shard.weight));
+            check_width(shard.input_end - shard.input_begin, shard.weight.size(1),
+                        width_is_padded(shard.weight));
         }
     } else if (sharded->axis == TensorParallelAxis::Output) {
         for (const auto& shard : sharded->shards)
-            check_width(width, shard.weight->size(1), width_is_padded(*shard.weight));
+            check_width(width, shard.weight.size(1), width_is_padded(shard.weight));
     } else {
         throw std::invalid_argument("tensor-parallel linear has an invalid axis");
     }
 }
 
 void check_projection_device(const ::tyloi::Tensor& weight, ::tyloi::Device device) {
-    const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&weight);
+    const auto* sharded = weight.representation<tyloi::ShardedTensor>();
     if (!sharded) {
         tyloi::weights::check_placement(projection_placement(weight), device);
-        const bool cpu_tq = dynamic_cast<const tyloi::encoding::TqTensor*>(&weight) && !weight.is_cuda();
+        const bool cpu_tq = weight.representation<tyloi::encoding::TqTensor>() && !weight.is_cuda();
         check_fields(weight, device, !cpu_tq);
         return;
     }
     for (const auto& shard : sharded->shards) {
-        if (!shard.weight || !shard.weight->defined() || !shard.weight->is_cuda() ||
-            shard.weight->get_device() != shard.device)
+        if (!shard.weight || !shard.weight.defined() || !shard.weight.is_cuda() ||
+            shard.weight.get_device() != shard.device)
             throw std::invalid_argument("tensor-parallel weight is not prepared on its device");
-        check_fields(*shard.weight, ::tyloi::Device(::tyloi::kCUDA, shard.device));
+        check_fields(shard.weight, ::tyloi::Device(::tyloi::kCUDA, shard.device));
     }
 }
 
@@ -91,7 +91,7 @@ void check_projection(const QuantLinearGroup& group, const ::tyloi::DenseTensor&
     if (!group.layers.empty()) {
         if (group.layers.size() != group.outs.size())
             throw std::invalid_argument("projection group has invalid layers");
-        for (const auto& layer : group.layers) check_projection(*layer, input);
+        for (const auto& layer : group.layers) check_projection(layer, input);
         return;
     }
     if (!group.nint_grouped || !input.is_cuda())
@@ -117,7 +117,7 @@ void check_device(const ::tyloi::DenseTensor& weight, const ::tyloi::DenseTensor
         throw std::invalid_argument("projection weight and input devices do not match");
 }
 
-void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input) {
+void check_device(const ::tyloi::TensorImpl& weight, const ::tyloi::DenseTensor& input) {
     check_fields(weight, input.device(), input.is_cuda());
 }
 
@@ -141,21 +141,21 @@ void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& inp
         const ::tyloi::Tensor & weight,
         ::tyloi::DenseTensor token_ids) {
     TYLOINFER_RUNTIME_CHECK(
-        dynamic_cast<const tyloi::ShardedTensor*>(&weight) == nullptr,
+        weight.representation<tyloi::ShardedTensor>() == nullptr,
         "quantized embedding does not support tensor-parallel shards");
-    if (const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&weight)) {
+    if (const auto* dense = weight.representation<::tyloi::DenseTensor>()) {
         auto output_shape = token_ids.sizes().vec();
         output_shape.push_back(dense->size(1));
         return dense->index_select(0, token_ids.reshape({-1})).reshape(output_shape);
     }
-    if (const auto* tq = dynamic_cast<const tyloi::encoding::TqTensor*>(&weight))
+    if (const auto* tq = weight.representation<tyloi::encoding::TqTensor>())
         return tyloi::cuda::tq::embedding(*tq, token_ids);
-    if (const auto* nvq = dynamic_cast<const tyloi::NvqTensor*>(&weight)) {
+    if (const auto* nvq = weight.representation<tyloi::NvqTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NVQ embedding weight is not enabled");
         check_device(*nvq, token_ids);
         return nvq_embedding(*nvq, token_ids);
     }
-    if (const auto* nint = dynamic_cast<const tyloi::NintTensor*>(&weight)) {
+    if (const auto* nint = weight.representation<tyloi::NintTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NINT embedding weight is not enabled");
         check_device(*nint, token_ids);
         if (nint->q8_zero)
@@ -166,29 +166,29 @@ void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& inp
             nint->sub_scale, nint->sub_min, nint->neuron_scale, nint->neuron_min,
             token_ids, nint->neuron_len, nint->gs);
     }
-    if (const auto* mx4 = dynamic_cast<const tyloi::Mxfp4Tensor*>(&weight)) {
+    if (const auto* mx4 = weight.representation<tyloi::Mxfp4Tensor>()) {
         check_device(*mx4, token_ids);
         return mxfp4_embedding_lookup_cuda(mx4->values, mx4->scales, token_ids);
     }
-    if (const auto* mx8 = dynamic_cast<const tyloi::Mxfp8Tensor*>(&weight)) {
+    if (const auto* mx8 = weight.representation<tyloi::Mxfp8Tensor>()) {
         check_device(*mx8, token_ids);
         return mxfp8_embedding_lookup_cuda(mx8->values, mx8->scales, token_ids);
     }
     TYLOINFER_RUNTIME_CHECK(
-        dynamic_cast<const tyloi::Mxfp4SqTensor*>(&weight) == nullptr &&
-            dynamic_cast<const tyloi::Fp8SqTensor*>(&weight) == nullptr,
+        weight.representation<tyloi::Mxfp4SqTensor>() == nullptr &&
+            weight.representation<tyloi::Fp8SqTensor>() == nullptr,
         "SQ tensors do not support embedding lookup");
     throw std::runtime_error("unsupported quantized embedding weight");
 }
 
 bool tensor_parallel_output_projections_compatible(
-        const std::vector<const ::tyloi::Tensor*>& projections) {
+        const std::vector<::tyloi::Tensor>& projections) {
     if (projections.size() < 2) return false;
-    const auto* first = dynamic_cast<const tyloi::ShardedTensor*>(projections.front());
+    const auto* first = projections.front().representation<tyloi::ShardedTensor>();
     if (!first || first->axis != TensorParallelAxis::Output || first->shards.size() < 2)
         return false;
-    for (const auto* projection : projections) {
-        const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(projection);
+    for (const auto& projection : projections) {
+        const auto* sharded = projection.representation<tyloi::ShardedTensor>();
         if (!sharded || sharded->axis != TensorParallelAxis::Output ||
             sharded->shards.size() != first->shards.size()) return false;
         for (size_t i = 0; i < first->shards.size(); ++i) {
@@ -204,13 +204,13 @@ bool tensor_parallel_output_projections_compatible(
 
 ::tyloi::DenseTensor quant_linear_reference_weight(
         const ::tyloi::Tensor& weight) {
-    TYLOINFER_RUNTIME_CHECK(dynamic_cast<const tyloi::ShardedTensor*>(&weight) == nullptr, "linear reference requires local weights");
-    if (const auto* tq = dynamic_cast<const tyloi::encoding::TqTensor*>(&weight)) {
+    TYLOINFER_RUNTIME_CHECK(weight.representation<tyloi::ShardedTensor>() == nullptr, "linear reference requires local weights");
+    if (const auto* tq = weight.representation<tyloi::encoding::TqTensor>()) {
         const auto ids = ::tyloi::cuda::arange(tq->size(0),
             ::tyloi::TensorOptions{}.dtype(::tyloi::kInt64).device(tq->device()));
         return tyloi::cuda::tq::embedding(*tq, ids);
     }
-    if (const auto* nint = dynamic_cast<const tyloi::NintTensor*>(&weight)) {
+    if (const auto* nint = weight.representation<tyloi::NintTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NINT linear weight is not enabled");
         return nint->q8_zero
             ? nint8_zero_dequant_cuda(nint->q_packed, nint->q8_zero_scale, nint->neuron_len)
@@ -218,14 +218,14 @@ bool tensor_parallel_output_projections_compatible(
                                nint->sub_scale, nint->sub_min, nint->neuron_scale,
                                nint->neuron_min, nint->neuron_len, nint->gs);
     }
-    if (const auto* nvq = dynamic_cast<const tyloi::NvqTensor*>(&weight)) {
+    if (const auto* nvq = weight.representation<tyloi::NvqTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NVQ linear weight is not enabled");
         return nvq_dequant(*nvq);
     }
-    if (const auto* mx4 = dynamic_cast<const tyloi::Mxfp4Tensor*>(&weight))
+    if (const auto* mx4 = weight.representation<tyloi::Mxfp4Tensor>())
         return mxfp4_dequant_cuda(mx4->values, mx4->scales);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (const auto* sq4 = dynamic_cast<const tyloi::Mxfp4SqTensor*>(&weight)) {
+    if (const auto* sq4 = weight.representation<tyloi::Mxfp4SqTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "MXFP4-SQ linear weight is not enabled");
         if (!sq4->blob.is_cuda()) return dequant_mxfp4_sq_cpu(*sq4).to(::tyloi::kFloat16);
         return mxfp4_sq_dequant_cuda(
@@ -234,13 +234,13 @@ bool tensor_parallel_output_projections_compatible(
             sq4->q_sum, sq4->sq4_rows, false);
     }
 #endif
-    if (const auto* sq8 = dynamic_cast<const tyloi::Fp8SqTensor*>(&weight)) {
+    if (const auto* sq8 = weight.representation<tyloi::Fp8SqTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "FP8-SQ linear weight is not enabled");
         return dequant_fp8_sq(*sq8, false);
     }
-    if (const auto* mx8 = dynamic_cast<const tyloi::Mxfp8Tensor*>(&weight))
+    if (const auto* mx8 = weight.representation<tyloi::Mxfp8Tensor>())
         return mxfp8_cpu_reference(*mx8);
-    if (const auto* dense = dynamic_cast<const ::tyloi::DenseTensor*>(&weight)) return *dense;
+    if (const auto* dense = weight.representation<::tyloi::DenseTensor>()) return *dense;
     throw std::runtime_error("unsupported linear reference format");
 }
 
@@ -267,21 +267,21 @@ bool tensor_parallel_output_projections_compatible(
 tyloi::weights::Placement projection_placement(const ::tyloi::Tensor& weight, std::size_t index) {
     if (index != 0) throw std::out_of_range("matrix index out of range");
     tyloi::weights::Placement result;
-    if (const auto* sharded = dynamic_cast<const tyloi::ShardedTensor*>(&weight)) {
+    if (const auto* sharded = weight.representation<tyloi::ShardedTensor>()) {
         for (const auto& shard : sharded->shards)
             result.devices.emplace_back(tyloi::DeviceType::cuda, shard.device);
     } else {
         result.devices.push_back(weight.device());
-        if (dynamic_cast<const tyloi::encoding::TqTensor*>(&weight) && !weight.is_cuda())
+        if (weight.representation<tyloi::encoding::TqTensor>() && !weight.is_cuda())
             result.caller = tyloi::DeviceType::cuda;
     }
     return result;
 }
 
-std::vector<const ::tyloi::Tensor*> QuantLinearGroup::tensor_parallel_output_projections() const {
-    std::vector<const ::tyloi::Tensor*> projections;
+std::vector<::tyloi::Tensor> QuantLinearGroup::tensor_parallel_output_projections() const {
+    std::vector<::tyloi::Tensor> projections;
     projections.reserve(layers.size());
-    for (const auto& layer : layers) projections.push_back(layer.get());
+    for (const auto& layer : layers) projections.push_back(layer);
     return projections;
 }
 
@@ -294,7 +294,7 @@ std::vector<::tyloi::DenseTensor> DenseLinearGroup::forward(::tyloi::DenseTensor
     auto shape = x.sizes().vec();
     auto y = dense_projection(x.reshape({-1, x.size(-1)}),
 #ifdef TYLOINFER_NATIVE_CUDA
-        dynamic_cast<const ::tyloi::DenseTensor&>(*w));
+        w.dense());
 #else
         w);
 #endif

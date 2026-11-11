@@ -1,4 +1,4 @@
-#include "session_snapshot_cache.h"
+#include "engine/state/session/snapshot.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -24,7 +24,7 @@ const auto same_snapshot = [](const State& left, const State& right) {
 } // namespace
 
 int main() {
-    mfq::engine::SessionSnapshotCache<State> cache({2, 2, 100});
+    tyloi::engine::SessionSnapshotCache<State> cache({2, 2, 100});
     cache.store("a", {{1}, "", 10}, same_snapshot);
     cache.store("a", {{1, 2}, "", 20}, same_snapshot);
     cache.store("b", {{1}, "", 10}, same_snapshot);
@@ -44,7 +44,7 @@ int main() {
     require(cache.fork("a", "c") == 2, "fork must copy retained snapshots");
     require(cache.metrics().sessions == 2, "fork must respect session limit");
 
-    mfq::engine::SessionSnapshotCache<State> budget({4, 4, 25});
+    tyloi::engine::SessionSnapshotCache<State> budget({4, 4, 25});
     budget.store("a", {{1}, "", 10}, same_snapshot);
     budget.store("b", {{2}, "", 20}, same_snapshot);
     require(budget.metrics().sessions == 1, "byte budget must evict LRU state");

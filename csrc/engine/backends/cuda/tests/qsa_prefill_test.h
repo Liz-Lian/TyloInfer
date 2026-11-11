@@ -1,12 +1,12 @@
 #pragma once
+#include "execution_fixture.h"
 #include "env.h"
 #include <filesystem>
 
 void qsa_scalar_history_chain_case() {
     int cases=0,scalar_replays=0,chain_replays=0;
     for(int mode:{0,1,2})for(int width:{32,256}) {
-        CudaStores stores;
-        CudaExecutionContext execution(stores);
+        TestExecution execution;
         constexpr int hidden=32,heads=4,kv=2,iw=8,ih=2,pool=4,maximum=128,budget=16;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);
         auto norm=data({width},1,0),inorm=data({iw},1,0);
@@ -24,7 +24,7 @@ void qsa_scalar_history_chain_case() {
         Qsa actual(weights,cfg,rotary,true,true,{},memory),oracle(weights,cfg,rotary,true,true,{},memory);
         if(memory)memory->finalize();
         auto inputs=data({1,maximum,hidden},17,.4f);
-        auto history=tb::arange(6,inputs.options().dtype(tb::kInt64));
+        auto history=tb::arange(6,inputs.options().dtype(tyloi::kInt64));
         actual.forward(execution,inputs.narrow(1,0,6),history,history,true);
         oracle.forward(execution,inputs.narrow(1,0,6),history,history,true);
         actual.prepare_graph(history,maximum);oracle.prepare_graph(history,maximum);
@@ -84,8 +84,7 @@ void qsa_scalar_history_chain_case() {
 void qsa_history_prime_case() {
     int cases=0;
     for(int mode:{0,1,2}) {
-        CudaStores stores;
-        CudaExecutionContext execution(stores);
+        TestExecution execution;
         constexpr int hidden=32,heads=4,kv=2,width=32,iw=8,ih=2,pool=4,maximum=512,budget=64;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);
         auto norm=data({width},1,0),inorm=data({iw},1,0);
@@ -105,7 +104,7 @@ void qsa_history_prime_case() {
         auto inputs=data({1,maximum,hidden},17,.4f);
         int64_t offset=0;
         for(int tokens:{17,128,257}) {
-            auto positions=tb::arange(offset,offset+tokens,inputs.options().dtype(tb::kInt64));
+            auto positions=tb::arange(offset,offset+tokens,inputs.options().dtype(tyloi::kInt64));
             auto full=tb::arange(offset+tokens,positions.options());
             auto x=inputs.narrow(1,offset,tokens);
             oracle.forward(execution,x,positions,full,true);
@@ -137,7 +136,7 @@ void qsa_history_prime_case() {
             ++offset;++cases;
         }
         actual.truncate(65);oracle.truncate(65);
-        auto positions=tb::arange(65,73,inputs.options().dtype(tb::kInt64));
+        auto positions=tb::arange(65,73,inputs.options().dtype(tyloi::kInt64));
         auto full=tb::arange(73,positions.options()),x=inputs.narrow(1,65,8);
         equal(actual.forward(execution,x,positions,full,true),oracle.forward(execution,x,positions,full,true),
             "history priming rollback and continuation");++cases;
@@ -148,16 +147,15 @@ void qsa_history_prime_case() {
 void qsa_prefill_fusion_case() {
     struct Setting {
         std::string old;
-        Setting(){if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_QSA_PREFILL_FUSED"))old=p;}
+        Setting(){if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_QSA_PREFILL_FUSED"))old=p;}
         static void set(const char* p) {
-            if(*p)mfq::cuda::env_set("TYLOINFER_QSA_PREFILL_FUSED",p);else mfq::cuda::env_clear("TYLOINFER_QSA_PREFILL_FUSED");
+            if(*p)tyloi::cuda::env_set("TYLOINFER_QSA_PREFILL_FUSED",p);else tyloi::cuda::env_clear("TYLOINFER_QSA_PREFILL_FUSED");
         }
         ~Setting(){set(old.c_str());}
     } setting;
     int cases=0,grouped_calls=0;
     for(int width:{8,256})for(bool grouped:{false,true}) {
-        CudaStores stores;
-        CudaExecutionContext execution(stores);
+        TestExecution execution;
         constexpr int hidden=32,kv=2,iw=8,ih=2,pool=4,maximum=2048,budget=512;
         const int heads=width==256?24:4;
         auto rotary=std::make_shared<RotaryEmbedding>(std::min(width,8),maximum,10000.);
@@ -173,7 +171,7 @@ void qsa_prefill_fusion_case() {
         auto inputs=data({1,maximum,hidden},17,.4f);
         int64_t offset=0;
         for(int tokens:{128,257,511,512,1}) {
-            auto positions=tb::arange(offset,offset+tokens,inputs.options().dtype(tb::kInt64));
+            auto positions=tb::arange(offset,offset+tokens,inputs.options().dtype(tyloi::kInt64));
             auto history=tb::arange(offset+tokens,positions.options());
             auto x=inputs.narrow(1,offset,tokens);
             Setting::set("0");auto expected=oracle.forward(execution,x,positions,history,true);
@@ -182,7 +180,7 @@ void qsa_prefill_fusion_case() {
             ++cases;offset+=tokens;
         }
         actual.truncate(385);oracle.truncate(385);
-        auto positions=tb::arange(385,642,inputs.options().dtype(tb::kInt64));
+        auto positions=tb::arange(385,642,inputs.options().dtype(tyloi::kInt64));
         auto history=tb::arange(642,positions.options());auto x=inputs.narrow(1,385,257);
         Setting::set("0");auto expected=oracle.forward(execution,x,positions,history,true);
         Setting::set("1");auto result=actual.forward(execution,x,positions,history,true);

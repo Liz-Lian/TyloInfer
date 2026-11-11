@@ -172,10 +172,10 @@ struct TransformerWeightLoader {
 
     bool has(const std::string& name) const;
     ::tyloi::DenseTensor dense(const std::string& name) const;
-    std::shared_ptr<const ::tyloi::Tensor> router_parameter(const std::string& name) const;
-    std::shared_ptr<const ::tyloi::Tensor> linear(const std::string& name) const;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> projections(const std::vector<std::string>& names) const;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> gate_up(const std::vector<std::string>& names, const std::shared_ptr<const ::tyloi::Tensor>& down) const;
+    ::tyloi::Tensor router_parameter(const std::string& name) const;
+    ::tyloi::Tensor linear(const std::string& name) const;
+    std::vector<::tyloi::Tensor> projections(const std::vector<std::string>& names) const;
+    std::vector<::tyloi::Tensor> gate_up(const std::vector<std::string>& names, const ::tyloi::Tensor& down) const;
     void qkv(tyloi::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
     void output(tyloi::cuda::FullAttention& attention, const std::string& name) const;
     void important_neurons(int64_t hidden, int64_t intermediate, tyloi::cuda::Ffn& ffn,
@@ -184,15 +184,15 @@ struct TransformerWeightLoader {
         const std::string& down, const std::string& gate, const std::string& up) const;
     void experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
-    std::shared_ptr<const ::tyloi::Tensor> headwise(const std::string& name) const;
+    ::tyloi::Tensor headwise(const std::string& name) const;
     static std::vector<std::int64_t> shape(const ::tyloi::DenseTensor& value);
     static int64_t elements(const ::tyloi::DenseTensor& value);
-    static auto shape(const std::shared_ptr<const ::tyloi::Tensor>& value) {
+    static auto shape(const ::tyloi::Tensor& value) {
         std::vector<int64_t> result;
-        if (value) for (int64_t i = 0; i < value->dim(); ++i) result.push_back(value->size(i));
+        if (value) for (int64_t i = 0; i < value.dim(); ++i) result.push_back(value.size(i));
         return result;
     }
-    static int64_t elements(const std::shared_ptr<const ::tyloi::Tensor>& value) { return value ? value->numel() : 0; }
+    static int64_t elements(const ::tyloi::Tensor& value) { return value ? value.numel() : 0; }
 };
 struct MoeWeightLoadOptions {
     int layer;

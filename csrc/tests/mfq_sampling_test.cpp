@@ -44,13 +44,13 @@ struct FakeOps {
 int main() {
     FakeParams stochastic;
     stochastic.seed = 42;
-    mfq::engine::Sampler<FakeOps> first(stochastic);
-    mfq::engine::Sampler<FakeOps> second(stochastic);
+    tyloi::engine::Sampler<FakeOps> first(stochastic);
+    tyloi::engine::Sampler<FakeOps> second(stochastic);
     assert(first.sample({}).value == second.sample({}).value);
     assert(first.next_uniform_float() == second.next_uniform_float());
 
     stochastic.presence_penalty = 1.0;
-    mfq::engine::Sampler<FakeOps> penalized(stochastic);
+    tyloi::engine::Sampler<FakeOps> penalized(stochastic);
     const auto sampled = penalized.sample(
         FakeTensor{2.0}, FakeTensor{3.0});
     assert(sampled.value >= 5.0 && sampled.value < 6.0);
@@ -58,7 +58,7 @@ int main() {
     FakeParams greedy;
     greedy.top_k = 1;
     greedy.seed = 7;
-    mfq::engine::Sampler<FakeOps> greedy_sampler(greedy);
+    tyloi::engine::Sampler<FakeOps> greedy_sampler(greedy);
     assert(greedy_sampler.sample(FakeTensor{9.0}).value == 9.0);
     return 0;
 }

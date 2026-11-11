@@ -101,11 +101,11 @@ struct LayerLoader : TransformerWeightLoader {
             attention.out_proj_dense = weights.tensor(name);
             if (require_tensor(weights.source, name).dtype == "F16")
                 attention.out_proj_dense = std::make_shared<DenseTensor>(
-                    dynamic_cast<const DenseTensor&>(*attention.out_proj_dense)
+                    attention.out_proj_dense.dense()
                         .to(::tyloi::kFloat16).contiguous());
-            if (attention.out_proj_dense->dim() != 2)
+            if (attention.out_proj_dense.dim() != 2)
 #else
-            attention.out_proj_dense = dynamic_cast<const DenseTensor&>(*weights.tensor(name));
+            attention.out_proj_dense = weights.tensor(name).dense();
             if (require_tensor(weights.source, name).dtype == "F16")
                 attention.out_proj_dense =
                     attention.out_proj_dense.to(::tyloi::kFloat16).contiguous();
@@ -130,7 +130,7 @@ struct LayerLoader : TransformerWeightLoader {
         attention.dt_bias = weights.tensor(linear + "dt_bias");
         auto a = weights.tensor(linear + "a");
         attention.a_log = config.legacy_tensor_layout.linear_attention_a_is_log
-            ? a : std::make_shared<DenseTensor>(log_negative(dynamic_cast<const DenseTensor&>(*a)));
+            ? a : std::make_shared<DenseTensor>(log_negative(a.dense()));
         attention.linear_norm = weights.tensor(linear + "norm.weight");
 #else
         attention.conv_weight = dense(linear + "conv.weight");
@@ -298,7 +298,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
 #ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
 #else
-        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+        model.output_norm = weights.tensor("model.output_norm.weight").dense();
 #endif
         if (config.tie_word_embeddings || !weights.has(output_name)) {
             model.lm_head = weights.placement.tensor.enabled()
@@ -326,7 +326,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
 #ifdef TYLOINFER_NATIVE_CUDA
         model.output_norm = weights.tensor("model.output_norm.weight");
 #else
-        model.output_norm = dynamic_cast<const DenseTensor&>(*weights.tensor("model.output_norm.weight"));
+        model.output_norm = weights.tensor("model.output_norm.weight").dense();
 #endif
     }
     return model;
@@ -358,12 +358,12 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
     model.output_norm = loader.dense("predictor.output_norm.weight");
 #endif
     model.fusion = loader.linear("predictor.fusion.weight");
-    TYLOINFER_RUNTIME_CHECK(model.fusion->size(1) == 2 * config.hidden_size &&
-        model.fusion->size(0) == config.hidden_size &&
+    TYLOINFER_RUNTIME_CHECK(model.fusion.size(1) == 2 * config.hidden_size &&
+        model.fusion.size(0) == config.hidden_size &&
 #ifdef TYLOINFER_NATIVE_CUDA
-        model.hidden_norm->numel() == config.hidden_size &&
-        model.embedding_norm->numel() == config.hidden_size &&
-        model.output_norm->numel() == config.hidden_size,
+        model.hidden_norm.numel() == config.hidden_size &&
+        model.embedding_norm.numel() == config.hidden_size &&
+        model.output_norm.numel() == config.hidden_size,
 #else
         model.hidden_norm.numel() == config.hidden_size &&
         model.embedding_norm.numel() == config.hidden_size &&

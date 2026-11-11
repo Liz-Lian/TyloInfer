@@ -36,8 +36,8 @@ std::vector<CudaPagedPayload> encode_cuda_paged_session(const TextSessionState &
         writer.scalar<uint32_t>(static_cast<uint32_t>(block_size));
         writer.scalar<uint32_t>(static_cast<uint32_t>(layers->size()));
         for (const auto &layer : *layers) {
-            const auto* k = dynamic_cast<const ::tyloi::DenseTensor*>(layer.k.get());
-            const auto* v = dynamic_cast<const ::tyloi::DenseTensor*>(layer.v.get());
+            const auto* k = layer.k.representation<::tyloi::DenseTensor>();
+            const auto* v = layer.v.representation<::tyloi::DenseTensor>();
             if (layer.ring || layer.capacity <= 0 || !k || !v ||
                 !session_kv_geometry_matches(*k,*v) ||
                 k->size(2) < start + static_cast<int64_t>(block_size)) {
@@ -82,8 +82,8 @@ CudaDecodedPagedBlock decode_cuda_paged_block(const std::vector<uint8_t> &payloa
         layer.capacity = reader.scalar<int64_t>("capacity");
         auto key = reader.tensor();
         auto value = reader.tensor();
-        if (key.second != value.second || !session_kv_geometry_matches(*key.first,*value.first) ||
-            key.first->size(2) != static_cast<int64_t>(block.count)) {
+        if (key.second != value.second || !session_kv_geometry_matches(key.first,value.first) ||
+            key.first.size(2) != static_cast<int64_t>(block.count)) {
             throw CudaSessionStateError("invalid CUDA paged cache layer");
         }
         layer.device = key.second;
@@ -132,13 +132,13 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
         for (const auto &block : blocks) {
             const auto &layer = block.layers[layer_index];
             if (layer.capacity != final.capacity || layer.device != final.device ||
-                layer.k->scalar_type() != final.k->scalar_type() ||
-                layer.k->size(0) != final.k->size(0) || layer.k->size(1) != final.k->size(1) ||
-                layer.k->size(3) != final.k->size(3) || layer.v->size(3)!=final.v->size(3)) {
+                layer.k.scalar_type() != final.k.scalar_type() ||
+                layer.k.size(0) != final.k.size(0) || layer.k.size(1) != final.k.size(1) ||
+                layer.k.size(3) != final.k.size(3) || layer.v.size(3)!=final.v.size(3)) {
                 throw CudaSessionStateError("inconsistent CUDA paged cache topology");
             }
-            keys.push_back(dynamic_cast<const ::tyloi::DenseTensor&>(*layer.k));
-            values.push_back(dynamic_cast<const ::tyloi::DenseTensor&>(*layer.v));
+            keys.push_back(layer.k.dense());
+            values.push_back(layer.v.dense());
         }
         auto key = ::tyloi::cuda::cat(keys, 2).contiguous();
         auto value = ::tyloi::cuda::cat(values, 2).contiguous();
@@ -229,17 +229,17 @@ KvSnapshot capture_kv(const tyloi::state::KvView &cache, int64_t cache_pos, size
         state.ring ? state.capacity : std::min<int64_t>(cache_pos, state.capacity);
     state.k = tyloi::ops::clone(tyloi::ops::slice(cache.physical_key, 2, 0, saved_tokens));
     state.v = tyloi::ops::clone(tyloi::ops::slice(cache.physical_value, 2, 0, saved_tokens));
-    bytes += session_tensor_bytes(*state.k);
-    bytes += session_tensor_bytes(*state.v);
+    bytes += session_tensor_bytes(state.k);
+    bytes += session_tensor_bytes(state.v);
     return state;
 }
 
 void validate_kv(const KvSnapshot& state) {
-    if (!dynamic_cast<const ::tyloi::DenseTensor*>(state.k.get()) ||
-        !dynamic_cast<const ::tyloi::DenseTensor*>(state.v.get()) ||
-        state.capacity <= 0 || state.k->dim() != 4 ||
-        !session_kv_geometry_matches(*state.k,*state.v) || state.k->size(0) != 1 ||
-        state.k->size(2) > state.capacity) {
+    if (!state.k.representation<::tyloi::DenseTensor>() ||
+        !state.v.representation<::tyloi::DenseTensor>() ||
+        state.capacity <= 0 || state.k.dim() != 4 ||
+        !session_kv_geometry_matches(state.k,state.v) || state.k.size(0) != 1 ||
+        state.k.size(2) > state.capacity) {
         throw CudaSessionStateError("full-attention session KV layout is invalid");
     }
 }
@@ -253,8 +253,8 @@ void restore_kv(tyloi::state::KvView &cache, const KvSnapshot &state, int64_t he
     cache.visible_value = {};
     cache.ring = state.ring;
     cache.quantization = quantization;
-    cache.batch = state.k->size(0);
-    cache.heads = state.k->size(1);
+    cache.batch = state.k.size(0);
+    cache.heads = state.k.size(1);
     cache.head_dim = head_dim;
     cache.dtype = dtype;
     cache.key_chunk_ptrs = {};

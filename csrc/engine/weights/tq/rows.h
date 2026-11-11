@@ -8,14 +8,14 @@
 #include <memory>
 #include <vector>
 
-std::shared_ptr<::tyloi::Tensor> lookup_tq_table(
+::tyloi::Tensor lookup_tq_table(
     const tyloi::TqTable&, const std::int64_t*, std::size_t,
     const ::tyloi::Device&);
 
-std::shared_ptr<::tyloi::Tensor> lookup_tq_table(
+::tyloi::Tensor lookup_tq_table(
     const tyloi::TqTable&, const ::tyloi::Tensor& ids);
 
-std::shared_ptr<::tyloi::Tensor> lookup_tq_shards(
+::tyloi::Tensor lookup_tq_shards(
     const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
     std::int64_t rows_per_shard, const std::vector<std::int64_t>& ids,
     const ::tyloi::Device& device);

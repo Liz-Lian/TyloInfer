@@ -7,7 +7,7 @@
 #include <cmath>
 #include <map>
 #include <thread>
-using namespace mfq::engine;
+using namespace tyloi::engine;
 using namespace std::chrono_literals;
 
 struct FakeEngine final : Engine {
@@ -122,25 +122,25 @@ void test_decode_timing() {
     metrics.saw_token = true;
     InferenceResult result;
     result.completion_tokens = 6;
-    const auto values = mfq::transport_detail::request_metric_values(result, metrics);
+    const auto values = tyloi::transport_detail::request_metric_values(result, metrics);
     assert(std::abs(values.ttft_ms - 10.0) < 1e-12);
     assert(std::abs(values.decode_ms - 50.0) < 1e-12);
     assert(std::abs(values.decode_tps - 100.0) < 1e-12);
     assert(values.generation_ms >= 80.0);
     assert(values.generation_ms - values.ttft_ms - values.decode_ms >= 20.0);
     result.cancelled = true;
-    assert(mfq::transport_detail::request_metric_values(result, metrics).decode_ms == values.decode_ms);
+    assert(tyloi::transport_detail::request_metric_values(result, metrics).decode_ms == values.decode_ms);
     InferenceMetrics single;
     single.mark_token();
     result.completion_tokens = 1;
-    const auto one = mfq::transport_detail::request_metric_values(result, single);
+    const auto one = tyloi::transport_detail::request_metric_values(result, single);
     assert(one.decode_ms == 0.0 && one.decode_tps == 0.0);
     result.completion_tokens = 0;
-    const auto empty = mfq::transport_detail::request_metric_values(result, InferenceMetrics{});
+    const auto empty = tyloi::transport_detail::request_metric_values(result, InferenceMetrics{});
     assert(empty.decode_ms == 0.0 && empty.decode_tps == 0.0);
 }
 void test_token_count_contract() {
-    using namespace mfq::transport_detail;
+    using namespace tyloi::transport_detail;
     assert(parse_token_count_request({{"prompt", "raw <s> text"}}).prompt == "raw <s> text");
     for (const auto& invalid : std::vector<json>{
             json::array(), json::object(), {{"prompt", ""}}, {{"prompt", 1}},
@@ -156,7 +156,7 @@ void test_token_count_contract() {
 }
 
 void test_benchmark_input_contract() {
-    using namespace mfq::transport_detail;
+    using namespace tyloi::transport_detail;
     json params = {{"input", {{"messages", json::array({{{"role", "user"}, {"content", "test input"}}})}, {"preformatted_prompt", "test input"},
         {"benchmark_prompt_tokens", 32}}}, {"cache", {{"enabled", false}}}};
     auto body = runtime_generate_body(params);
@@ -176,7 +176,7 @@ void test_benchmark_input_contract() {
     }
 }
 void test_probability_contract() {
-    using namespace mfq::transport_detail;
+    using namespace tyloi::transport_detail;
     const auto request = parse_score_request({{"prompt", "Q:\nA:"}, {"continuations", {"A", "B"}}, {"mode", "next_token"}});
     assert(request.next_token && request.prompt == "Q:\nA:" && request.continuations.size() == 2);
     for (const auto& invalid : std::vector<json>{
@@ -195,7 +195,7 @@ void test_probability_contract() {
 }
 
 void test_live_request_metrics() {
-    using namespace mfq::transport_detail;
+    using namespace tyloi::transport_detail;
     RuntimeRequestMetrics store;
     {
         ActiveRequest first(store), second(store);

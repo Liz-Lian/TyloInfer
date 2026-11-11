@@ -19,7 +19,7 @@ void restore_session(State&, Mtp*, const TextSessionState&, const std::function<
 
 class Mtp final : public tyloi::models::Mtp {
 public:
-    Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding,
+    Mtp(Predictor model, ::tyloi::Tensor embedding,
 #ifdef TYLOINFER_NATIVE_CUDA
         tyloi::ops::RopeTable rope,
 #else
@@ -53,7 +53,7 @@ private:
         ::tyloi::DenseTensor positions) const;
 
     Predictor model_;
-    std::shared_ptr<const ::tyloi::Tensor> embedding_;
+    ::tyloi::Tensor embedding_;
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::ops::RopeTable rope_;
 #else

@@ -1,4 +1,4 @@
-#include "mfq_cuda_paged_kv.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
 #include "tensor.h"
 
 #include <cuda_runtime_api.h>
@@ -13,17 +13,17 @@
 
 namespace {
 
-using mfq::cuda::Device;
-using mfq::cuda::DeviceType;
-using mfq::cuda::Tensor;
-using mfq::cuda::TensorOptions;
+using tyloi::Device;
+using tyloi::DeviceType;
+using tyloi::DenseTensor;
+using tyloi::TensorOptions;
 
 void require(bool condition, const char * message) {
     if (!condition) throw std::runtime_error(message);
 }
 
 std::vector<float> float_values(const Tensor & tensor) {
-    auto host = tensor.to(mfq::cuda::kCPU, mfq::cuda::kFloat32)
+    auto host = tensor.to(tyloi::kCPU, tyloi::kFloat32)
         .contiguous();
     return std::vector<float>(
         host.data_ptr<float>(), host.data_ptr<float>() + host.numel());
@@ -53,18 +53,18 @@ void check_kernels() {
         q_host[index] = static_cast<float>(
             static_cast<int>((index * 11 + 7) % 79) - 39) / 67.0f;
     }
-    auto k = mfq::cuda::tensor<float>(k_host).reshape({B, Hk, T, D})
-        .to(gpu).to(mfq::cuda::kFloat16).contiguous();
-    auto v = mfq::cuda::tensor<float>(v_host).reshape({B, Hk, T, D})
-        .to(gpu).to(mfq::cuda::kFloat16).contiguous();
-    auto q = mfq::cuda::tensor<float>(q_host).reshape({B, Hq, 1, D})
-        .to(gpu).to(mfq::cuda::kFloat16).contiguous();
-    auto k_chunk_0 = mfq::cuda::empty(
+    auto k = tyloi::cuda::tensor<float>(k_host).reshape({B, Hk, T, D})
+        .to(gpu).to(tyloi::kFloat16).contiguous();
+    auto v = tyloi::cuda::tensor<float>(v_host).reshape({B, Hk, T, D})
+        .to(gpu).to(tyloi::kFloat16).contiguous();
+    auto q = tyloi::cuda::tensor<float>(q_host).reshape({B, Hq, 1, D})
+        .to(gpu).to(tyloi::kFloat16).contiguous();
+    auto k_chunk_0 = tyloi::cuda::empty(
         {PagesPerChunk, Hk, Page, D},
-        TensorOptions().device(gpu).dtype(mfq::cuda::kFloat16));
-    auto v_chunk_0 = mfq::cuda::empty_like(k_chunk_0);
-    auto k_chunk_1 = mfq::cuda::empty_like(k_chunk_0);
-    auto v_chunk_1 = mfq::cuda::empty_like(k_chunk_0);
+        TensorOptions().device(gpu).dtype(tyloi::kFloat16));
+    auto v_chunk_0 = tyloi::cuda::empty_like(k_chunk_0);
+    auto k_chunk_1 = tyloi::cuda::empty_like(k_chunk_0);
+    auto v_chunk_1 = tyloi::cuda::empty_like(k_chunk_0);
     const auto k_pointer_0 = static_cast<std::int64_t>(
         reinterpret_cast<std::intptr_t>(k_chunk_0.data_ptr()));
     const auto v_pointer_0 = static_cast<std::int64_t>(
@@ -73,17 +73,17 @@ void check_kernels() {
         reinterpret_cast<std::intptr_t>(k_chunk_1.data_ptr()));
     const auto v_pointer_1 = static_cast<std::int64_t>(
         reinterpret_cast<std::intptr_t>(v_chunk_1.data_ptr()));
-    auto k_chunks = mfq::cuda::tensor<std::int64_t>({
+    auto k_chunks = tyloi::cuda::tensor<std::int64_t>({
         k_pointer_0, k_pointer_1}).to(gpu);
-    auto v_chunks = mfq::cuda::tensor<std::int64_t>({
+    auto v_chunks = tyloi::cuda::tensor<std::int64_t>({
         v_pointer_0, v_pointer_1}).to(gpu);
     // Logical pages deliberately map to non-contiguous physical pages and
     // cross the chunk boundary at physical page 4.
-    auto page_table = mfq::cuda::tensor<std::int32_t>({
+    auto page_table = tyloi::cuda::tensor<std::int32_t>({
         2, 4, -1, -1,
         5, 3, -1, -1,
     }).reshape({B, LogicalPages}).to(gpu).contiguous();
-    auto positions = mfq::cuda::tensor<std::int64_t>({
+    auto positions = tyloi::cuda::tensor<std::int64_t>({
         0, 1, 2, 3, 4, 5, 6,
         0, 1, 2, 3, 4, 5, 6,
     }).reshape({B, T}).to(gpu).contiguous();
@@ -92,9 +92,9 @@ void check_kernels() {
         k.narrow(2, 0, 3).contiguous(), v.narrow(2, 0, 3).contiguous(),
         positions.narrow(1, 0, 3).contiguous(),
         Page, PagesPerChunk);
-    auto first_k = mfq::cuda::empty({B, Hk, 3, D},
-        TensorOptions().device(gpu).dtype(mfq::cuda::kFloat16));
-    auto first_v = mfq::cuda::empty_like(first_k);
+    auto first_k = tyloi::cuda::empty({B, Hk, 3, D},
+        TensorOptions().device(gpu).dtype(tyloi::kFloat16));
+    auto first_v = tyloi::cuda::empty_like(first_k);
     paged_kv_cache_gather_cuda(k_chunks, v_chunks, page_table,
         first_k, first_v, Page, PagesPerChunk);
     require(float_values(first_k) == float_values(k.narrow(2, 0, 3)),
@@ -104,8 +104,8 @@ void check_kernels() {
     paged_kv_cache_write_cuda(k_chunks, v_chunks, page_table,
         k.narrow(2, 3, 4).contiguous(), v.narrow(2, 3, 4).contiguous(),
         positions.narrow(1, 3, 4).contiguous(), Page, PagesPerChunk);
-    auto gathered_k = mfq::cuda::empty_like(k);
-    auto gathered_v = mfq::cuda::empty_like(v);
+    auto gathered_k = tyloi::cuda::empty_like(k);
+    auto gathered_v = tyloi::cuda::empty_like(v);
     paged_kv_cache_gather_cuda(k_chunks, v_chunks, page_table,
         gathered_k, gathered_v, Page, PagesPerChunk);
     require(float_values(gathered_k) == float_values(k),
@@ -113,14 +113,14 @@ void check_kernels() {
     require(float_values(gathered_v) == float_values(v),
         "Paged complete-prefix value gather differs from source");
 
-    auto lengths = mfq::cuda::tensor<std::int64_t>({7, 5}).to(gpu);
-    auto partial_o = mfq::cuda::empty(
+    auto lengths = tyloi::cuda::tensor<std::int64_t>({7, 5}).to(gpu);
+    auto partial_o = tyloi::cuda::empty(
         {B * Hq, 4, D},
-        TensorOptions().device(gpu).dtype(mfq::cuda::kFloat32));
-    auto partial_m = mfq::cuda::empty(
+        TensorOptions().device(gpu).dtype(tyloi::kFloat32));
+    auto partial_m = tyloi::cuda::empty(
         {B * Hq, 4},
-        TensorOptions().device(gpu).dtype(mfq::cuda::kFloat32));
-    auto partial_l = mfq::cuda::empty_like(partial_m);
+        TensorOptions().device(gpu).dtype(tyloi::kFloat32));
+    auto partial_l = tyloi::cuda::empty_like(partial_m);
     constexpr double Scale = 0.0625;
     auto direct = attention_paged_cache_decode_cuda(
         q, k_chunks, v_chunks, page_table, lengths, Scale,

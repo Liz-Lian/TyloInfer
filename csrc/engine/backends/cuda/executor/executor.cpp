@@ -88,8 +88,8 @@ void MlaScratch::ensure_decode_workspace(int64_t B, int64_t planned_len) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> Executor::storage() const {
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> result;
+std::vector<::tyloi::Tensor> Executor::storage() const {
+    std::vector<::tyloi::Tensor> result;
     const auto append = [&](const DenseTensor& tensor) {
         if (tensor.defined()) result.push_back(std::make_shared<DenseTensor>(tensor));
     };

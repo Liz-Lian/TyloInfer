@@ -133,14 +133,14 @@ std::size_t segment_for(const tyloi::TqTable& table, std::uint64_t row) {
 
 } // namespace
 
-std::shared_ptr<::tyloi::Tensor> lookup_tq_table(const tyloi::TqTable& table,
+::tyloi::Tensor lookup_tq_table(const tyloi::TqTable& table,
                            const std::int64_t* ids, std::size_t count,
                            const ::tyloi::Device& device) {
     return std::make_shared<::tyloi::DenseTensor>(lookup_tq_rows(table, ids, count, device));
 }
 
-std::shared_ptr<::tyloi::Tensor> lookup_tq_table(const tyloi::TqTable& table, const ::tyloi::Tensor& input) {
-    const auto& ids = dynamic_cast<const ::tyloi::DenseTensor&>(input);
+::tyloi::Tensor lookup_tq_table(const tyloi::TqTable& table, const ::tyloi::Tensor& input) {
+    const auto& ids = input.dense();
     auto host = ids.contiguous().cpu().to(::tyloi::kInt64);
     auto shape = ids.sizes().vec();
     shape.push_back(table.width());
@@ -149,7 +149,7 @@ std::shared_ptr<::tyloi::Tensor> lookup_tq_table(const tyloi::TqTable& table, co
         table, host.data_ptr<std::int64_t>(), host.numel(), ids.device()).reshape(shape));
 }
 
-std::shared_ptr<::tyloi::Tensor> lookup_tq_shards(
+::tyloi::Tensor lookup_tq_shards(
         const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
         std::int64_t rows_per_shard, const std::vector<std::int64_t>& ids,
         const ::tyloi::Device& device) {

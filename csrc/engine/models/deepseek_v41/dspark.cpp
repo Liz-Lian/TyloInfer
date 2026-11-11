@@ -71,12 +71,12 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     double softcap = 0;
     int primary = 0;
     CommonConfig config;
-    std::shared_ptr<const ::tyloi::Tensor> main_projection;
+    ::tyloi::Tensor main_projection;
     Parameter main_norm;
     Parameter output_norm;
-    std::shared_ptr<const ::tyloi::Tensor> markov_embedding;
-    std::shared_ptr<const ::tyloi::Tensor> markov_output;
-    std::shared_ptr<const ::tyloi::Tensor> confidence_projection;
+    ::tyloi::Tensor markov_embedding;
+    ::tyloi::Tensor markov_output;
+    ::tyloi::Tensor confidence_projection;
     std::vector<std::unique_ptr<Block>> stages;
 
     std::unique_ptr<tyloi::models::MtpState> make_state() const override {
@@ -92,69 +92,69 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         result->ratio = 0;
         result->max_context = config.max_position_embeddings;
 #ifdef TYLOINFER_NATIVE_CUDA
-        result->attention_norm = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "attention.norm.weight"))
+        result->attention_norm = std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.norm.weight").dense()
                                      .to(::tyloi::kFloat32).contiguous());
-        result->mlp_norm = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "mlp.norm.weight"))
+        result->mlp_norm = std::make_shared<DenseTensor>(weights.tensor(prefix + "mlp.norm.weight").dense()
                                .to(::tyloi::kFloat32).contiguous());
         result->query_a_norm =
             weights.tensor(prefix + "attention.query_a_norm.weight");
         result->key_value_norm =
             weights.tensor(prefix + "attention.key_value_norm.weight");
-        result->sinks = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "attention.sink"))
+        result->sinks = std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.sink").dense()
                             .to(::tyloi::kFloat32)
                             .contiguous());
         result->attention_mhc_function =
-            std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.function"))
+            std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.mhc.pre.function").dense()
                 .to(::tyloi::kFloat32)
                 .contiguous());
         result->attention_mhc_scale =
-            std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.scale"))
+            std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.mhc.pre.scale").dense()
                 .to(::tyloi::kFloat32)
                 .contiguous());
         result->attention_mhc_base =
-            std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.base"))
+            std::make_shared<DenseTensor>(weights.tensor(prefix + "attention.mhc.pre.base").dense()
                 .to(::tyloi::kFloat32)
                 .contiguous());
-        result->mlp_mhc_function = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.function"))
+        result->mlp_mhc_function = std::make_shared<DenseTensor>(weights.tensor(prefix + "mlp.mhc.pre.function").dense()
                                        .to(::tyloi::kFloat32)
                                        .contiguous());
-        result->mlp_mhc_scale = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.scale"))
+        result->mlp_mhc_scale = std::make_shared<DenseTensor>(weights.tensor(prefix + "mlp.mhc.pre.scale").dense()
                                     .to(::tyloi::kFloat32)
                                     .contiguous());
-        result->mlp_mhc_base = std::make_shared<DenseTensor>(dynamic_cast<const DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.base"))
+        result->mlp_mhc_base = std::make_shared<DenseTensor>(weights.tensor(prefix + "mlp.mhc.pre.base").dense()
                                    .to(::tyloi::kFloat32)
                                    .contiguous());
 #else
-        result->attention_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.norm.weight"))
+        result->attention_norm = weights.tensor(prefix + "attention.norm.weight").dense()
                                      .to(::tyloi::kFloat32).contiguous();
-        result->mlp_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.norm.weight"))
+        result->mlp_norm = weights.tensor(prefix + "mlp.norm.weight").dense()
                                .to(::tyloi::kFloat32).contiguous();
         result->query_a_norm =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.query_a_norm.weight"));
+            weights.tensor(prefix + "attention.query_a_norm.weight").dense();
         result->key_value_norm =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.key_value_norm.weight"));
-        result->sinks = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.sink"))
+            weights.tensor(prefix + "attention.key_value_norm.weight").dense();
+        result->sinks = weights.tensor(prefix + "attention.sink").dense()
                             .to(::tyloi::kFloat32)
                             .contiguous();
         result->attention_mhc_function =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.function"))
+            weights.tensor(prefix + "attention.mhc.pre.function").dense()
                 .to(::tyloi::kFloat32)
                 .contiguous();
         result->attention_mhc_scale =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.scale"))
+            weights.tensor(prefix + "attention.mhc.pre.scale").dense()
                 .to(::tyloi::kFloat32)
                 .contiguous();
         result->attention_mhc_base =
-            dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "attention.mhc.pre.base"))
+            weights.tensor(prefix + "attention.mhc.pre.base").dense()
                 .to(::tyloi::kFloat32)
                 .contiguous();
-        result->mlp_mhc_function = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.function"))
+        result->mlp_mhc_function = weights.tensor(prefix + "mlp.mhc.pre.function").dense()
                                        .to(::tyloi::kFloat32)
                                        .contiguous();
-        result->mlp_mhc_scale = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.scale"))
+        result->mlp_mhc_scale = weights.tensor(prefix + "mlp.mhc.pre.scale").dense()
                                     .to(::tyloi::kFloat32)
                                     .contiguous();
-        result->mlp_mhc_base = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(prefix + "mlp.mhc.pre.base"))
+        result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base").dense()
                                    .to(::tyloi::kFloat32)
                                    .contiguous();
 #endif
@@ -182,9 +182,9 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 #ifdef TYLOINFER_NATIVE_CUDA
         const auto valid_mhc = [&](const Parameter &function, const Parameter &scale, const Parameter &base,
                                    const Parameter &norm) {
-            return function->dim() == 2 && function->size(0) == 24 &&
-                   function->size(1) == function_width && scale->numel() == 3 && base->numel() == 24 &&
-                   norm->numel() == config.hidden;
+            return function.dim() == 2 && function.size(0) == 24 &&
+                   function.size(1) == function_width && scale.numel() == 3 && base.numel() == 24 &&
+                   norm.numel() == config.hidden;
         };
 #else
         const auto valid_mhc = [&](const DenseTensor &function, const DenseTensor &scale, const DenseTensor &base,
@@ -195,29 +195,29 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         };
 #endif
         const auto& routed = result->mlp.moe_split_gate_up ? result->mlp.moe_gate : result->mlp.moe_gate_up;
-        const auto routed_experts = routed ? routed->size(0) : 0;
+        const auto routed_experts = routed ? routed.size(0) : 0;
 #ifdef TYLOINFER_NATIVE_CUDA
         TYLOINFER_RUNTIME_CHECK(valid_mhc(result->attention_mhc_function, result->attention_mhc_scale,
                                     result->attention_mhc_base, result->attention_norm) &&
                               valid_mhc(result->mlp_mhc_function, result->mlp_mhc_scale,
                                         result->mlp_mhc_base, result->mlp_norm) &&
-                              result->query_a->size(1) == config.hidden &&
-                              result->query_a->size(0) == config.q_lora_rank &&
-                              result->query_b->size(1) == config.q_lora_rank &&
-                              result->query_b->size(0) == config.n_heads * config.head_dim &&
-                              result->key_value->size(1) == config.hidden &&
-                              result->key_value->size(0) == config.head_dim &&
-                              result->output_a->size(1) ==
+                              result->query_a.size(1) == config.hidden &&
+                              result->query_a.size(0) == config.q_lora_rank &&
+                              result->query_b.size(1) == config.q_lora_rank &&
+                              result->query_b.size(0) == config.n_heads * config.head_dim &&
+                              result->key_value.size(1) == config.hidden &&
+                              result->key_value.size(0) == config.head_dim &&
+                              result->output_a.size(1) ==
                                   config.n_heads * config.head_dim / config.o_groups &&
-                              result->output_a->size(0) == config.o_groups * config.o_lora_rank &&
-                              result->output_b->size(1) ==
+                              result->output_a.size(0) == config.o_groups * config.o_lora_rank &&
+                              result->output_b.size(1) ==
                                   config.o_groups * config.o_lora_rank &&
-                              result->output_b->size(0) == config.hidden &&
-                              result->query_a_norm->numel() == config.q_lora_rank &&
-                              result->key_value_norm->numel() == config.head_dim &&
-                              result->sinks->numel() == config.n_heads &&
+                              result->output_b.size(0) == config.hidden &&
+                              result->query_a_norm.numel() == config.q_lora_rank &&
+                              result->key_value_norm.numel() == config.head_dim &&
+                              result->sinks.numel() == config.n_heads &&
                               routed_experts == config.dspark_n_experts &&
-                              (result->mlp.moe_down ? result->mlp.moe_down->size(0) : 0) == config.dspark_n_experts,
+                              (result->mlp.moe_down ? result->mlp.moe_down.size(0) : 0) == config.dspark_n_experts,
                           "DeepSeek-V4.1 DSpark stage tensor geometry disagrees at stage ", stage);
 #else
         TYLOINFER_RUNTIME_CHECK(valid_mhc(result->attention_mhc_function, result->attention_mhc_scale,
@@ -280,8 +280,8 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         result.main_norm = weights.tensor(first + "main_norm.weight");
         result.output_norm = weights.tensor(last + "output_norm.weight");
 #else
-        result.main_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(first + "main_norm.weight"));
-        result.output_norm = dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(last + "output_norm.weight"));
+        result.main_norm = weights.tensor(first + "main_norm.weight").dense();
+        result.output_norm = weights.tensor(last + "output_norm.weight").dense();
 #endif
         result.markov_embedding =
             weights.weight(last + "markov.embedding.weight");
@@ -299,17 +299,17 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         TYLOINFER_RUNTIME_CHECK(
             result.config.hc_mult == 4 && result.config.n_heads == 64 &&
                 result.config.head_dim == 512 && result.config.rope_head_dim == 64 &&
-                result.main_projection->size(1) == target_width &&
-                result.main_projection->size(0) == result.config.hidden &&
-                result.main_norm->numel() == result.config.hidden &&
-                result.output_norm->numel() == result.config.hidden &&
-                result.markov_embedding->size(0) == result.config.vocab &&
-                result.markov_embedding->size(1) == result.config.dspark_markov_rank &&
-                result.markov_output->size(1) == result.config.dspark_markov_rank &&
-                result.markov_output->size(0) == result.config.vocab &&
-                result.confidence_projection->size(1) ==
+                result.main_projection.size(1) == target_width &&
+                result.main_projection.size(0) == result.config.hidden &&
+                result.main_norm.numel() == result.config.hidden &&
+                result.output_norm.numel() == result.config.hidden &&
+                result.markov_embedding.size(0) == result.config.vocab &&
+                result.markov_embedding.size(1) == result.config.dspark_markov_rank &&
+                result.markov_output.size(1) == result.config.dspark_markov_rank &&
+                result.markov_output.size(0) == result.config.vocab &&
+                result.confidence_projection.size(1) ==
                     result.config.hidden + result.config.dspark_markov_rank &&
-                result.confidence_projection->size(0) == 1,
+                result.confidence_projection.size(0) == 1,
             "DeepSeek-V4.1 DSpark top-level tensor geometry disagrees");
 #else
         TYLOINFER_RUNTIME_CHECK(
@@ -392,9 +392,9 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 hidden->dim()!=3 || hidden->size(0)!=1 || hidden->size(1)<=0 || hidden->size(2)!=width)
             throw CudaSessionStateError("DeepSeek-V4.1 DSpark session state is incompatible");
         for(const auto& ring:saved->rings)
-            if(!ring || !ring->defined() || !ring->is_cuda() || ring->scalar_type()!=::tyloi::kFloat16 ||
-                    ring->dim()!=3 || ring->size(0)!=1 || ring->size(1)!=config.sliding_window ||
-                    ring->size(2)!=config.head_dim || !dynamic_cast<const DenseTensor*>(ring.get()))
+            if(!ring.defined() || !ring.is_cuda() || ring.scalar_type()!=::tyloi::kFloat16 ||
+                    ring.dim()!=3 || ring.size(0)!=1 || ring.size(1)!=config.sliding_window ||
+                    ring.size(2)!=config.head_dim || !ring.representation<DenseTensor>())
                 throw CudaSessionStateError("DeepSeek-V4.1 DSpark saved ring geometry is incompatible");
 #ifndef TYLOINFER_NATIVE_CUDA
         if(state.batch!=1 || state.rings.size()!=stages.size() || !state.attention_meta.defined())reset(value, 1);
@@ -492,7 +492,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(main_projection, (floating / scale).to(::tyloi::kFloat16).contiguous()),
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-                    *main_norm, config.rms_eps);
+                    main_norm, config.rms_eps);
 #else
                     main_norm, config.rms_eps);
 #endif
@@ -505,7 +505,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stages[index]->key_value, main_x),
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-                                              *stages[index]->key_value_norm, config.rms_eps);
+                                              stages[index]->key_value_norm, config.rms_eps);
 #else
                                               stages[index]->key_value_norm, config.rms_eps);
 #endif
@@ -539,7 +539,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                                            execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.query_a, input),
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-                                           *stage.query_a_norm, config.rms_eps);
+                                           stage.query_a_norm, config.rms_eps);
 #else
                                            stage.query_a_norm, config.rms_eps);
 #endif
@@ -555,7 +555,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                                  .to(::tyloi::kFloat32);
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto rotated = ::tyloi::ops::tail_rope(query, positions, stage.rope);
-                query = dynamic_cast<const DenseTensor&>(*rotated);
+                query = rotated.dense();
 #else
                 query = stage.rope.forward(query, positions, false);
 #endif
@@ -569,7 +569,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                                                  execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.key_value, input),
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
-                                                 *stage.key_value_norm, config.rms_eps);
+                                                 stage.key_value_norm, config.rms_eps);
 #else
                                                  stage.key_value_norm, config.rms_eps);
 #endif
@@ -601,7 +601,7 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto value = attended.transpose(1, 2).contiguous();
                 auto rotated = ::tyloi::ops::tail_rope(value, positions, stage.rope, true);
-                return dynamic_cast<const DenseTensor&>(*rotated)
+                return rotated.dense()
 #else
                 return stage.rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
 #endif

@@ -25,7 +25,7 @@ public:
     void set_position_delta(std::int64_t delta) noexcept override { decode_position_delta = delta; }
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
         std::int64_t tokens, const tyloi::models::ForwardOptions& options) const override;
-    std::vector<std::shared_ptr<const tyloi::Tensor>> storage() const override;
+    std::vector<::tyloi::Tensor> storage() const override;
     std::vector<tyloi::Tensor*> graph_state() override;
 
     bool supports_text_session_state() const override;
@@ -47,7 +47,7 @@ public:
 
 private:
     std::vector<Layout> layout_;
-    std::vector<std::shared_ptr<tyloi::Tensor>> graph_views_;
+    std::vector<::tyloi::Tensor> graph_views_;
 };
 
 } // namespace tyloi::cuda::gemma4

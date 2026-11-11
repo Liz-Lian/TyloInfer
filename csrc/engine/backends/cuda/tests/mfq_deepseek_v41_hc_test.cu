@@ -1,5 +1,5 @@
-#include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
-#include "csrc/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
 #include "context.h"
 #include "tensor.h"
@@ -16,7 +16,8 @@
 
 namespace {
 
-using namespace mfq::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
 
 void close(float actual, float expected, float tolerance, const char* name) {
     if (!std::isfinite(actual) ||
@@ -82,10 +83,10 @@ void check_single_pass_prepare(int batch, int tokens, int hidden) {
     auto coefficients = dsv4_hc_coefficients_cuda(mixes, scale, base, 20, 1.e-6);
     if (!coefficients.at(1).equal(reference.at(1)) || !coefficients.at(2).equal(reference.at(2)))
         throw std::runtime_error("mHC coefficient-only path changed post/Sinkhorn values");
-    auto function=mfq_tensor_backend::randn({24,4*hidden},pre.options())/std::sqrt(double(4*hidden));
+    auto function=tyloi::cuda::randn({24,4*hidden},pre.options())/std::sqrt(double(4*hidden));
     auto partials=deepseek_v41_hc_project_cuda(residual,pre,function);
     auto fused=deepseek_v41_hc_finalize_cuda(residual,pre,weight,partials,scale,base,20,1.e-20,1.e-6);
-    auto projected=mfq_tensor_backend::matmul(prepared[0],function.transpose(0,1));
+    auto projected=tyloi::cuda::matmul(prepared[0],function.transpose(0,1));
     auto projected_coefficients=dsv4_hc_coefficients_cuda(projected.contiguous(),scale,base,20,1.e-6);
     for(int index=0;index<4;++index) {
         auto expected=index==0?prepared[1]:projected_coefficients[index-1];
@@ -102,14 +103,14 @@ void check_single_pass_prepare(int batch, int tokens, int hidden) {
 }
 
 void check_candidate_scores(int heads) {
-    namespace tb=mfq_tensor_backend;
-    auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
-    auto q=tb::randn({2,3,heads,128},options).to(tb::kFloat16).contiguous();
-    auto k=tb::randn({2,131,128},options).to(tb::kFloat16).contiguous();
-    auto weights=tb::randn({2,3,heads},options).to(tb::kFloat16).contiguous();
+    namespace tb=tyloi::cuda;
+    auto options=tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kFloat32);
+    auto q=tb::randn({2,3,heads,128},options).to(tyloi::kFloat16).contiguous();
+    auto k=tb::randn({2,131,128},options).to(tyloi::kFloat16).contiguous();
+    auto weights=tb::randn({2,3,heads},options).to(tyloi::kFloat16).contiguous();
     std::vector<int64_t> ids(2*3*79);
     for(size_t i=0;i<ids.size();++i)ids[i]=i%13==0?-1:int64_t((i*17)%131);
-    auto selected=tb::tensor(ids).reshape({2,3,79}).to(tb::kCUDA).contiguous();
+    auto selected=tb::tensor(ids).reshape({2,3,79}).to(tyloi::kCUDA).contiguous();
     auto full=dsv4_indexer_scores_cuda(q,k,weights,126,1);
     auto safe=selected.clamp(0.,130.);
     auto expected=tb::where(selected>=0.,full.gather(-1,safe),

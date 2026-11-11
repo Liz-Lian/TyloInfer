@@ -67,7 +67,7 @@ struct NintLinearGroup {
 // rejects a weight that is not one.
 template <class Format>
 const Format& payload_as(const ::tyloi::Tensor& weight) {
-    const auto* found = dynamic_cast<const Format*>(&weight);
+    const auto* found = weight.representation<Format>();
     TYLOINFER_RUNTIME_CHECK(found, "projection weight has an unexpected representation");
     return *found;
 }
@@ -78,16 +78,22 @@ void check_projection_device(const ::tyloi::Tensor& weight, ::tyloi::Device devi
 void check_projection(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input);
 
 void check_device(const ::tyloi::DenseTensor& weight, const ::tyloi::DenseTensor& input);
-void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input);
+void check_device(const ::tyloi::TensorImpl& weight, const ::tyloi::DenseTensor& input);
+inline void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input) {
+    check_device(weight.implementation(), input);
+}
 
 tyloi::weights::Placement projection_placement(const ::tyloi::Tensor& weight, std::size_t index = 0);
 
 // Where a weight's buffers actually live, matched against the running device.
 // Every buffer of a representation is defined and resident on `device`.
-void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true);
+void check_fields(const ::tyloi::TensorImpl& weight, ::tyloi::Device device, bool check_device = true);
+inline void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true) {
+    check_fields(weight.implementation(), device, check_device);
+}
 
 bool tensor_parallel_output_projections_compatible(
-    const std::vector<const ::tyloi::Tensor*>& projections);
+    const std::vector<::tyloi::Tensor>& projections);
 
 struct QuantLinearGroup {
     bool nint_grouped = false;
@@ -95,7 +101,7 @@ struct QuantLinearGroup {
     bool decode_branch_parallel = true;
     NintLinearGroup nint;
     TqProjectionGroup tq;
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> layers;
+    std::vector<::tyloi::Tensor> layers;
     std::vector<int64_t> outs;
     std::vector<int64_t> cols;
     std::vector<tyloi::weights::Placement> placements;
@@ -106,7 +112,7 @@ struct QuantLinearGroup {
         return {outs.at(index), cols.at(index)};
     }
 
-    std::vector<const ::tyloi::Tensor*> tensor_parallel_output_projections() const;
+    std::vector<::tyloi::Tensor> tensor_parallel_output_projections() const;
 
     bool tensor_parallel_output_compatible() const;
 };
@@ -115,7 +121,7 @@ void check_projection(const QuantLinearGroup& group, const ::tyloi::DenseTensor&
 
 struct DenseLinearGroup {
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> w;
+    ::tyloi::Tensor w;
 #else
     ::tyloi::DenseTensor w;
 #endif

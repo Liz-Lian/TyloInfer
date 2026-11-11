@@ -6,7 +6,7 @@
 #include <thread>
 
 namespace {
-using namespace mfq::engine;
+using namespace tyloi::engine;
 
 struct Tensor {
     std::vector<int64_t> shape;

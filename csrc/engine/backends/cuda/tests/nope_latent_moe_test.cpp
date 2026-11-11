@@ -2,8 +2,10 @@
 // NoPE GQA through FullBlock and a latent MoE with non-gated relu-squared
 // experts. All references are double-precision CPU implementations.
 
-#include "execution/execution.h"
-#include "models/common/ffn.h"
+#include "execution_fixture.h"
+#include "engine/backends/cuda/executor/execution.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "models/common/full_block.h"
 #include "mfq_cuda_moe_ops.h"
 #include "backend.h"
@@ -23,39 +25,43 @@
 
 namespace {
 
-namespace tb = mfq_tensor_backend;
-using tb::Tensor;
+namespace tb = tyloi::cuda;
+using DenseTensor = ::tyloi::DenseTensor;
+using tyloi::DenseTensor;
 
 void require(bool condition, const std::string& message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-Tensor upload(const std::vector<float>& values, std::initializer_list<std::int64_t> shape,
-              tb::ScalarType dtype) {
-    return tb::tensor(values).reshape(shape).to(dtype).to(tb::kCUDA).contiguous();
+DenseTensor upload(const std::vector<float>& values, std::initializer_list<std::int64_t> shape,
+              tyloi::ScalarType dtype) {
+    return tb::tensor(values).reshape(shape).to(dtype).to(tyloi::kCUDA).contiguous();
 }
 
-std::vector<float> host_values(const Tensor& value) {
-    auto host = value.contiguous().to(tb::kCPU).to(tb::kFloat32);
+std::vector<float> host_values(const DenseTensor& value) {
+    auto host = value.contiguous().to(tyloi::kCPU).to(tyloi::kFloat32);
     return std::vector<float>(host.data_ptr<float>(), host.data_ptr<float>() + host.numel());
 }
 
 // Create a tensor on the device and return the exact values the kernel reads.
-Tensor make_tensor(const std::vector<float>& values, std::initializer_list<std::int64_t> shape,
-                   tb::ScalarType dtype, std::vector<double>* stored = nullptr) {
+DenseTensor make_tensor(const std::vector<float>& values, std::initializer_list<std::int64_t> shape,
+                   tyloi::ScalarType dtype, std::vector<double>* stored = nullptr) {
     auto cpu = tb::tensor(values).reshape(shape).to(dtype).contiguous();
     if (stored) {
         const auto exact = host_values(cpu);
         stored->assign(exact.begin(), exact.end());
     }
-    return cpu.to(tb::kCUDA).contiguous();
+    return cpu.to(tyloi::kCUDA).contiguous();
 }
 
-QuantLinear dense_linear(Tensor weight) {
+QuantLinear dense_linear(DenseTensor weight) {
     QuantLinear linear;
-    linear.kind = QuantLinearKind::Dense;
-    linear.dense = std::move(weight);
+    linear.weight = std::make_shared<DenseTensor>(std::move(weight));
     return linear;
+}
+
+std::shared_ptr<const QuantLinear> dense_linear_ref(DenseTensor weight) {
+    return std::make_shared<const QuantLinear>(dense_linear(std::move(weight)));
 }
 
 std::vector<float> pattern(std::size_t count, float amplitude, float salt) {
@@ -178,7 +184,7 @@ struct AttentionFixture {
 };
 
 std::unique_ptr<AttentionFixture> make_attention_fixture(const AttentionGeometry& g, bool no_rope,
-                                                         tb::ScalarType dtype) {
+                                                         tyloi::ScalarType dtype) {
     auto holder = std::make_unique<AttentionFixture>();
     AttentionFixture& f = *holder;
     const int width = g.heads * g.head_dim;
@@ -187,15 +193,18 @@ std::unique_ptr<AttentionFixture> make_attention_fixture(const AttentionGeometry
     auto k_values = pattern(static_cast<std::size_t>(kv_width) * g.hidden, 0.071f, 2.0f);
     auto v_values = pattern(static_cast<std::size_t>(kv_width) * g.hidden, 0.053f, 3.0f);
     auto o_values = pattern(static_cast<std::size_t>(g.hidden) * width, 0.067f, 4.0f);
-    f.block.qkv.layers = {
-        dense_linear(make_tensor(q_values, {width, g.hidden}, dtype, &f.q)),
-        dense_linear(make_tensor(k_values, {kv_width, g.hidden}, dtype, &f.k)),
-        dense_linear(make_tensor(v_values, {kv_width, g.hidden}, dtype, &f.v)),
+    QuantLinearGroup qkv;
+    qkv.layers = {
+        dense_linear_ref(make_tensor(q_values, {width, g.hidden}, dtype, &f.q)),
+        dense_linear_ref(make_tensor(k_values, {kv_width, g.hidden}, dtype, &f.k)),
+        dense_linear_ref(make_tensor(v_values, {kv_width, g.hidden}, dtype, &f.v)),
     };
-    f.block.qkv.outs = {width, kv_width, kv_width};
-    f.block.o = dense_linear(make_tensor(o_values, {g.hidden, width}, dtype, &f.o));
+    qkv.outs = {width, kv_width, kv_width};
+    qkv.cols = {g.hidden, g.hidden, g.hidden};
+    f.block.qkv = std::make_shared<const QuantLinearGroup>(std::move(qkv));
+    f.block.o = dense_linear_ref(make_tensor(o_values, {g.hidden, width}, dtype, &f.o));
     auto norm_values = std::vector<float>(g.hidden, 1.0f);
-    f.block.attn_norm = make_tensor(norm_values, {g.hidden}, tb::kFloat32, &f.norm);
+    f.block.attn_norm = make_tensor(norm_values, {g.hidden}, tyloi::kFloat32, &f.norm);
     f.block.ffn_norm = f.block.attn_norm;
     f.block.layer = 0;
     f.block.attention_heads = g.heads;
@@ -209,29 +218,29 @@ std::unique_ptr<AttentionFixture> make_attention_fixture(const AttentionGeometry
 
     const int intermediate = g.hidden;
     f.block.ffn.gate_up.layers = {
-        dense_linear(make_tensor(std::vector<float>(g.hidden * intermediate, 0.0f),
+        dense_linear_ref(make_tensor(std::vector<float>(g.hidden * intermediate, 0.0f),
                                  {intermediate, g.hidden}, dtype)),
-        dense_linear(make_tensor(std::vector<float>(g.hidden * intermediate, 0.0f),
+        dense_linear_ref(make_tensor(std::vector<float>(g.hidden * intermediate, 0.0f),
                                  {intermediate, g.hidden}, dtype)),
     };
     f.block.ffn.gate_up.outs = {intermediate, intermediate};
+    f.block.ffn.gate_up.cols = {g.hidden, g.hidden};
     f.block.ffn.down = dense_linear(make_tensor(
         std::vector<float>(std::size_t(g.hidden) * intermediate, 0.0f),
         {g.hidden, intermediate}, dtype));
     return holder;
 }
 
-void check_attention_case(bool no_rope, tb::ScalarType dtype, float tolerance) {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+void check_attention_case(bool no_rope, tyloi::ScalarType dtype, float tolerance) {
+    TestExecution execution;
     const AttentionGeometry g;
     auto fixture = make_attention_fixture(g, no_rope, dtype);
     const int tokens = 5;
     auto input_values = pattern(static_cast<std::size_t>(tokens) * g.hidden, 0.4f, 7.0f);
     std::vector<double> input;
     auto input_tensor =
-        make_tensor(input_values, {1, tokens, g.hidden}, tb::kFloat16, &input);
-    auto positions = tb::arange(tokens, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64));
+        make_tensor(input_values, {1, tokens, g.hidden}, tyloi::kFloat16, &input);
+    auto positions = tb::arange(tokens, tyloi::TensorOptions().device(tyloi::kCUDA).dtype(tyloi::kInt64));
     RopeCache rope(fixture->block.max_position_embeddings, g.head_dim, 10000.0);
     auto actual = fixture->block.forward(execution, input_tensor, positions, 0, mfq_nullopt, rope);
     auto actual_values = host_values(actual);
@@ -251,10 +260,10 @@ void check_attention_case(bool no_rope, tb::ScalarType dtype, float tolerance) {
     // applied in the none case, the query/key would rotate at position 5.
     auto next_values = pattern(static_cast<std::size_t>(g.hidden), 0.3f, 11.0f);
     std::vector<double> next;
-    auto next_tensor = make_tensor(next_values, {1, 1, g.hidden}, tb::kFloat16, &next);
+    auto next_tensor = make_tensor(next_values, {1, 1, g.hidden}, tyloi::kFloat16, &next);
     input.insert(input.end(), next.begin(), next.end());
     auto next_positions = tb::tensor(std::vector<int64_t>{tokens})
-                              .to(tb::kCUDA).to(tb::kInt64);
+                              .to(tyloi::kCUDA).to(tyloi::kInt64);
     auto decode = fixture->block.forward(execution, next_tensor, next_positions, tokens,
                                         mfq_nullopt, rope);
     auto decode_values = host_values(decode);
@@ -289,7 +298,7 @@ struct MoeTensors {
     std::vector<float> up, down, shared_up, shared_down;
 };
 
-MoeTensors make_moe_tensors(const MoeGeometry& g, tb::ScalarType dtype, MoeWeights& w) {
+MoeTensors make_moe_tensors(const MoeGeometry& g, tyloi::ScalarType dtype, MoeWeights& w) {
     MoeTensors t;
     t.router = pattern(static_cast<std::size_t>(g.experts) * g.hidden, 0.09f, 21.0f);
     t.router_bias = pattern(static_cast<std::size_t>(g.experts), 0.05f, 22.0f);
@@ -317,12 +326,12 @@ MoeTensors make_moe_tensors(const MoeGeometry& g, tb::ScalarType dtype, MoeWeigh
 }
 
 // Build the canonical router plus shared branch from already rounded values.
-std::unique_ptr<FFN> make_moe_ffn(const MoeGeometry& g, tb::ScalarType dtype,
+std::unique_ptr<tyloi::cuda::Ffn> make_moe_ffn(const MoeGeometry& g, tyloi::ScalarType dtype,
                                   const MoeWeights& w, bool with_latent) {
-    auto ffn = std::make_unique<FFN>();
+    auto ffn = std::make_unique<tyloi::cuda::Ffn>();
     ffn->is_moe = true;
     ffn->moe_ungated_experts = true;
-    ffn->activation = mfq::models::MlpActivation::relu_squared;
+    ffn->activation = tyloi::ops::MlpActivation::relu_squared;
     ffn->moe_top_k = g.top_k;
     ffn->moe_use_sigmoid = true;
     ffn->moe_normalize = true;
@@ -334,18 +343,18 @@ std::unique_ptr<FFN> make_moe_ffn(const MoeGeometry& g, tb::ScalarType dtype,
         std::vector<float> narrow(values.begin(), values.end());
         return upload(narrow, shape, dtype);
     };
-    ffn->moe_router = tensor(w.router, {g.experts, g.hidden}).to(tb::kFloat32).contiguous();
-    ffn->moe_router_bias = tensor(w.router_bias, {g.experts}).to(tb::kFloat32).contiguous();
+    ffn->moe_router = tensor(w.router, {g.experts, g.hidden}).to(tyloi::kFloat32).contiguous();
+    ffn->moe_router_bias = tensor(w.router_bias, {g.experts}).to(tyloi::kFloat32).contiguous();
     ffn->moe_dense_up = tensor(w.up, {g.experts, g.expert_width, g.latent});
     ffn->moe_dense_down = tensor(w.down, {g.experts, g.latent, g.expert_width});
     if (with_latent) {
         ffn->moe_latent_in = dense_linear(tensor(w.latent_down, {g.latent, g.hidden}));
         ffn->moe_latent_out = dense_linear(tensor(w.latent_up, {g.hidden, g.latent}));
     }
-    ffn->shared = std::make_unique<FFN>();
-    ffn->shared->activation = mfq::models::MlpActivation::relu_squared;
+    ffn->shared = std::make_unique<tyloi::cuda::Ffn>();
+    ffn->shared->activation = tyloi::ops::MlpActivation::relu_squared;
     ffn->shared->gate_up.layers = {
-        dense_linear(tensor(w.shared_up, {g.shared_width, g.hidden}))};
+        dense_linear_ref(tensor(w.shared_up, {g.shared_width, g.hidden}))};
     ffn->shared->gate_up.outs = {g.shared_width};
     ffn->shared->down = dense_linear(tensor(w.shared_down, {g.hidden, g.shared_width}));
     return ffn;
@@ -445,24 +454,23 @@ double max_difference(const std::vector<float>& actual, const std::vector<float>
 }
 
 void check_latent_removal_detected() {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     // A square latent keeps both variants runnable with the same expert bank.
     MoeGeometry g;
     g.latent = g.hidden;
     MoeWeights weights;
-    make_moe_tensors(g, tb::kFloat16, weights);
+    make_moe_tensors(g, tyloi::kFloat16, weights);
     const int tokens = 3;
     std::vector<double> input;
     auto input_tensor = make_tensor(
         pattern(static_cast<std::size_t>(tokens) * g.hidden, 0.35f, 41.0f),
-        {1, tokens, g.hidden}, tb::kFloat16, &input);
-    auto with_latent = make_moe_ffn(g, tb::kFloat16, weights, true);
-    auto without_latent = make_moe_ffn(g, tb::kFloat16, weights, false);
+        {1, tokens, g.hidden}, tyloi::kFloat16, &input);
+    auto with_latent = make_moe_ffn(g, tyloi::kFloat16, weights, true);
+    auto without_latent = make_moe_ffn(g, tyloi::kFloat16, weights, false);
     auto expected = reference_moe(input, g, weights, true, true);
     auto expected_without = reference_moe(input, g, weights, false, true);
-    auto actual = host_values(with_latent->forward(execution, input_tensor));
-    auto removed = host_values(without_latent->forward(execution, input_tensor));
+    auto actual = host_values(with_latent->forward(input_tensor, tyloi::cuda::Ffn::Mode{}));
+    auto removed = host_values(without_latent->forward(input_tensor, tyloi::cuda::Ffn::Mode{}));
     const auto difference = max_difference(actual, expected);
     const auto removed_difference = max_difference(removed, expected_without);
     require(difference <= 3e-2f,
@@ -474,9 +482,8 @@ void check_latent_removal_detected() {
             "latent projection removal was not detected: " + std::to_string(removal_difference));
 }
 
-void check_latent_moe(tb::ScalarType dtype, float tolerance) {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+void check_latent_moe(tyloi::ScalarType dtype, float tolerance) {
+    TestExecution execution;
     const MoeGeometry g;
     const int tokens = 4;
     MoeWeights weights;
@@ -484,8 +491,8 @@ void check_latent_moe(tb::ScalarType dtype, float tolerance) {
     auto ffn = make_moe_ffn(g, dtype, weights, true);
     std::vector<double> input;
     auto input_tensor = make_tensor(pattern(static_cast<std::size_t>(tokens) * g.hidden, 0.35f, 31.0f),
-                                    {1, tokens, g.hidden}, tb::kFloat16, &input);
-    auto actual = host_values(ffn->forward(execution, input_tensor));
+                                    {1, tokens, g.hidden}, tyloi::kFloat16, &input);
+    auto actual = host_values(ffn->forward(input_tensor, tyloi::cuda::Ffn::Mode{}));
     auto expected = reference_moe(input, g, weights, true, true);
     const auto difference = max_difference(actual, expected);
     require(difference <= tolerance,
@@ -504,7 +511,7 @@ void check_latent_moe(tb::ScalarType dtype, float tolerance) {
     mixed->moe_gate.n_experts = g.experts;
     bool rejected = false;
     try {
-        (void)mixed->forward(execution, input_tensor);
+        (void)mixed->forward(input_tensor, tyloi::cuda::Ffn::Mode{});
     } catch (const std::runtime_error& error) {
         rejected = std::string(error.what()).find("cannot mix a gate") != std::string::npos;
     }
@@ -516,15 +523,15 @@ void check_latent_moe(tb::ScalarType dtype, float tolerance) {
 void check_dense_routed_chunking() {
     const int64_t experts = 9, output = 6, width = 5, rows = 11, routes = 3;
     auto bank = upload(pattern(static_cast<std::size_t>(experts * output * width), 0.4f, 3.0f),
-                       {experts, output, width}, tb::kFloat32);
+                       {experts, output, width}, tyloi::kFloat32);
     std::vector<float> ids_values(static_cast<std::size_t>(rows * routes));
     for (std::size_t i = 0; i < ids_values.size(); ++i)
         ids_values[i] = static_cast<float>((i * 5 + i / 3) % static_cast<std::size_t>(experts));
-    auto ids = upload(ids_values, {rows, routes}, tb::kFloat32).to(tb::kInt64);
+    auto ids = upload(ids_values, {rows, routes}, tyloi::kFloat32).to(tyloi::kInt64);
     auto flat = upload(pattern(static_cast<std::size_t>(rows * width), 0.6f, 7.0f), {rows, width},
-                       tb::kFloat32);
+                       tyloi::kFloat32);
     auto routed = upload(pattern(static_cast<std::size_t>(rows * routes * width), 0.5f, 11.0f),
-                         {rows, routes, width}, tb::kFloat32);
+                         {rows, routes, width}, tyloi::kFloat32);
     const std::size_t row_bytes = static_cast<std::size_t>(routes * output * width) * sizeof(float);
     const std::size_t unbounded = std::numeric_limits<std::size_t>::max();
     for (const auto& input : {flat, routed}) {
@@ -566,8 +573,7 @@ std::vector<int64_t> reference_topk(const std::vector<float>& logits, const std:
 }
 
 void check_topk_512() {
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     constexpr int top_k = 22;
     for (const int experts : {512, 1024}) {
         std::vector<float> logits(static_cast<std::size_t>(experts));
@@ -578,8 +584,8 @@ void check_topk_512() {
         for (int i = 0; i < experts; ++i)
             bias[static_cast<std::size_t>(i)] = 0.02f * std::cos(float(i) * 0.093f);
         auto selected = moe_topk_cuda(
-            upload(logits, {1, experts}, tb::kFloat32), top_k, true, false, true, false,
-            upload(bias, {experts}, tb::kFloat32), 1e-20, 5.0);
+            upload(logits, {1, experts}, tyloi::kFloat32), top_k, true, false, true, false,
+            upload(bias, {experts}, tyloi::kFloat32), 1e-20, 5.0);
         auto ids = host_values(selected.at(0));
         auto expected = reference_topk(logits, bias, top_k);
         for (int rank = 0; rank < top_k; ++rank)
@@ -595,10 +601,10 @@ void check_topk_512() {
 
 int main() {
     try {
-        check_attention_case(true, tb::kFloat16, 4e-3f);
-        check_attention_case(false, tb::kFloat16, 4e-3f);
-        check_latent_moe(tb::kFloat16, 3e-3f);
-        check_latent_moe(tb::kBFloat16, 3e-2f);
+        check_attention_case(true, tyloi::kFloat16, 4e-3f);
+        check_attention_case(false, tyloi::kFloat16, 4e-3f);
+        check_latent_moe(tyloi::kFloat16, 3e-3f);
+        check_latent_moe(tyloi::kBFloat16, 3e-2f);
         check_latent_removal_detected();
         check_dense_routed_chunking();
         check_topk_512();

@@ -28,7 +28,7 @@ std::vector<MtpState::Layout> layout(const Predictor& model, int device) {
 
 } // namespace
 
-Mtp::Mtp(Predictor model, std::shared_ptr<const ::tyloi::Tensor> embedding,
+Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding,
 #ifdef TYLOINFER_NATIVE_CUDA
         tyloi::ops::RopeTable rope,
 #else

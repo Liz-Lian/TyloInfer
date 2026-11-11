@@ -34,9 +34,9 @@ tyloi::DenseTensor tyloi::cuda::ops::rope(tyloi::DenseTensor input, tyloi::Dense
     const tyloi::ops::RopeTable& table, bool bf16, bool grid_mrope_positions) {
     MfqCudaGuard guard(input.device().index);
     RopeCache cache;
-    auto copy = [](const std::shared_ptr<const tyloi::Tensor>& value, tyloi::DenseTensor& target) {
+    auto copy = [](const ::tyloi::Tensor& value, tyloi::DenseTensor& target) {
         if (!value) return;
-        const auto* dense = dynamic_cast<const tyloi::DenseTensor*>(value.get());
+        const auto* dense = value.representation<tyloi::DenseTensor>();
         if (!dense) throw std::invalid_argument("RoPE requires dense table tensors");
         target = *dense;
     };
@@ -369,8 +369,8 @@ DenseTensor ops::tail_rope(DenseTensor x, DenseTensor positions,
         throw std::runtime_error("DeepSeek V4 RoPE expects contiguous [B,H,T,D>=64]");
     }
     MfqCudaGuard guard(x.device().index);
-    const auto& cos = dynamic_cast<const DenseTensor&>(*table.cos);
-    const auto& sin = dynamic_cast<const DenseTensor&>(*(inverse ? table.negative_sin : table.sin));
+    const auto& cos = table.cos.dense();
+    const auto& sin = (inverse ? table.negative_sin : table.sin).dense();
     return dsv4_tail_rope_cuda(
         x, positions.contiguous().to(x.device(), ::tyloi::kInt64), cos, sin, 64);
 }

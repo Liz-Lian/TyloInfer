@@ -34,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct DiagnosticsCommandOptions : CudaLoadOptions, TokenInputOptions {
     std::string check_linear, check_linear_cpu, check_linear_gate;
@@ -210,11 +210,11 @@ struct DiagnosticsCommandOptions : CudaLoadOptions, TokenInputOptions {
     }
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-using namespace mfq::cuda::internal;
+using namespace tyloi::cuda::internal;
 
-using namespace mfq::cuda::diagnostics;
+using namespace tyloi::cuda::diagnostics;
 
 namespace {
 class ScopedDiagnosticEnvironment {
@@ -223,36 +223,36 @@ class ScopedDiagnosticEnvironment {
     bool present_;
 public:
     explicit ScopedDiagnosticEnvironment(const char* name) : name_(name) {
-        const char* previous = mfq::cuda::env_lookup(name);
+        const char* previous = tyloi::cuda::env_lookup(name);
         present_ = previous != nullptr;
         if (previous) previous_ = previous;
     }
     void set(const char* value) {
-        mfq::cuda::env_set(name_.c_str(), value);
+        tyloi::cuda::env_set(name_.c_str(), value);
     }
     ~ScopedDiagnosticEnvironment() noexcept {
         try {
-            if (present_) mfq::cuda::env_set(name_.c_str(), previous_.c_str());
-            else mfq::cuda::env_clear(name_.c_str());
+            if (present_) tyloi::cuda::env_set(name_.c_str(), previous_.c_str());
+            else tyloi::cuda::env_clear(name_.c_str());
         } catch (...) {} // Restoration previously ignored OS errors.
     }
 };
 
-struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
-    explicit DiagnosticsCommand(mfq::cuda::DiagnosticsCommandOptions options)
-        : mfq::cuda::DiagnosticsCommandOptions(std::move(options)) {}
+struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
+    explicit DiagnosticsCommand(tyloi::cuda::DiagnosticsCommandOptions options)
+        : tyloi::cuda::DiagnosticsCommandOptions(std::move(options)) {}
     int run() { return with_command_errors([&]() -> int {
         if (check_engine_isolation) {
-            mfq::cuda::CudaEngineOptions options;
-            static_cast<mfq::cuda::CudaLoadOptions&>(options) =
-                static_cast<const mfq::cuda::CudaLoadOptions&>(*this);
+            tyloi::cuda::CudaEngineOptions options;
+            static_cast<tyloi::cuda::CudaLoadOptions&>(options) =
+                static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
             return run_cuda_engine_isolation_check(std::move(options));
         }
         auto tq = std::make_shared<TqExec>();
-        std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
-        mfq::cuda::RoutedCache weights;
-        std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        mfq::cuda::ContextSet contexts;
+        std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
+        tyloi::cuda::RoutedCache weights;
+        std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
+        tyloi::cuda::ContextSet contexts;
         CudaExecutionContext execution(contexts, weights, kv, offload, tq);
         CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         // Operator-only checks do not require loading a model.
@@ -261,8 +261,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         TYLOINFER_RUNTIME_CHECK(!comparison_phase_timings || runtime_comparison_modes(),
             "comparison phase timings require a runtime comparison");
         if(runtime_comparison_modes()) {
-            TYLOINFER_RUNTIME_CHECK(mfq::cuda:: ::tyloi::cuda::options::transfer_cache() &&
-                !mfq::cuda:: ::tyloi::cuda::options::mapped_copy(),
+            TYLOINFER_RUNTIME_CHECK(::tyloi::cuda::options::transfer_cache() &&
+                !::tyloi::cuda::options::mapped_copy(),
                 "runtime comparison requires TYLOINFER_MOE_TRANSFER_CACHE=1 and TYLOINFER_MOE_MAPPED_COPY=0");
             const bool free_gpu_comparison=decode_inputs.empty() &&
                 (compare_route_spin || compare_moe_plan_reuse || compare_shared_gate_fusion || compare_graph_optimizations || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_gdn_fixed_geometry || compare_gdn_inplace_state || compare_qsa_fusion) &&
@@ -391,7 +391,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 throw std::runtime_error(
                     "--check-mfq-container requires --model");
             }
-            auto model_source = mfq::open_model_source(model_path);
+            auto model_source = tyloi::open_model_source(model_path);
             const auto& mfq = *model_source;
             std::cout << "mfq_container_check=ok"
                       << " shards=" << mfq.source_paths().size()
@@ -405,16 +405,16 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 throw std::runtime_error(
                     "--check-runtime-assets requires --model");
             }
-            auto model_source = mfq::open_model_source(model_path);
+            auto model_source = tyloi::open_model_source(model_path);
             const auto& mfq = *model_source;
-            const auto config = mfq::models::ModelConfig::from_json(
-                mfq::models::config_json(mfq, config_path));
-            if (!mfq.has_asset(mfq::kTokenizerGgufAsset)) {
+            const auto config = tyloi::models::ModelConfig::from_json(
+                tyloi::models::config_json(mfq, config_path));
+            if (!mfq.has_asset(tyloi::kTokenizerGgufAsset)) {
                 throw std::runtime_error(
                     "model source has no tokenizer GGUF");
             }
             const auto tokenizer_blob =
-                read_asset(mfq, mfq::kTokenizerGgufAsset);
+                read_asset(mfq, tyloi::kTokenizerGgufAsset);
             const auto embedded =
                 probe_mfq_tokenizer(tokenizer_blob, check_tokenizer_text);
             if (embedded.vocab_size != config.vocab_size) {
@@ -510,7 +510,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             return run_dsv4_hc_check(check_attention_reps);
         }
         if (check_deepseek_v41) {
-            return mfq::cuda::deepseek_v41_runtime::run_self_check();
+            return tyloi::cuda::deepseek_v41_runtime::run_self_check();
         }
         if (check_text_session_state) {
             return run_text_session_state_check();
@@ -529,7 +529,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 throw std::runtime_error(
                     "--minicpmo-eval-vision-batch-size must be positive");
             }
-            return mfq::cuda::minicpmo45::run_eval_batch(
+            return tyloi::cuda::minicpmo45::run_eval_batch(
                 execution, model_path, config_path, context_size,
                 minicpmo_eval_vision_batch_size);
         }
@@ -597,8 +597,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 ids_file.empty() ? parse_ids(ids_arg) : load_ids_file(ids_file)).size();
         }
         execution.profiler.enabled = false;
-        mfq_tensor_backend::NoGradGuard no_grad;
-        return mfq::cuda::with_model<>(execution, *this,
+        tyloi::cuda::NoGradGuard no_grad;
+        return tyloi::cuda::with_model<>(execution, *this,
             check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
                 check_nemotron_h_vision ||
                 !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile),
@@ -607,9 +607,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         auto& state = *owned_state;
         using Model = std::remove_cvref_t<decltype(model)>;
         if (check_continuous_batching) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model> ||
-                          std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
+            if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model> ||
+                          std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>) {
+                if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
                     return run_cuda_continuous_batching_check(
                         model, state, executor.get(), execution,
                         check_continuous_batching_requests);
@@ -621,8 +621,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 "continuous batching requires Qwen3.5 or Flash-Next");
         }
         if (check_qwen4_decode_hidden) {
-            if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-                const auto* variants=mfq::cuda::env_lookup("TYLOINFER_MTP_GENERATION_VARIANTS");
+            if constexpr(std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>) {
+                const auto* variants=tyloi::cuda::env_lookup("TYLOINFER_MTP_GENERATION_VARIANTS");
                 if(profile && variants && variants[0]=='1') {
                     auto* predictor = tyloi::cuda::component_predictor(parts);
                     TYLOINFER_RUNTIME_CHECK(predictor,"MTP variants require a loaded predictor");
@@ -630,29 +630,29 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                         ids_file.empty()?parse_ids(ids_arg):load_ids_file(ids_file));
                 }
             }
-            if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
+            if constexpr(std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
                 return profile?run_qwen4_mtp_profile(model,ids_file.empty()?parse_ids(ids_arg):load_ids_file(ids_file))
                     :run_qwen4_decode_hidden_check(model);
             throw std::runtime_error("hidden graph diagnostic requires Qwen4CausalLm");
         }
         if (check_flash_next) {
             if constexpr (
-                    std::is_same_v<Model, mfq::cuda::Qwen4CausalLm> ||
-                    std::is_same_v<Model, mfq::cuda::Glm5CausalLm>) {
+                    std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm> ||
+                    std::is_same_v<Model, tyloi::cuda::Glm5CausalLm>) {
                 return run_flash_next_check(model);
             }
             throw std::runtime_error(
                 "Flash-Next diagnostic requires a Flash-Next causal LM");
         }
         if (check_nemotron_h) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::NemotronHCausalLm>) {
+            if constexpr (std::is_same_v<Model, tyloi::cuda::NemotronHCausalLm>) {
                 return run_nemotron_h_check(model);
             }
             throw std::runtime_error(
                 "--check-nemotron-h requires a Nemotron-H causal LM");
         }
         if (check_nemotron_h_vision) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::NemotronHCausalLm>) {
+            if constexpr (std::is_same_v<Model, tyloi::cuda::NemotronHCausalLm>) {
                 TYLOINFER_RUNTIME_CHECK(parts.radio_vision.has_value(),
                     "--check-nemotron-h-vision requires a model containing RADIO vision weights");
                 return run_nemotron_h_vision_check(model, *parts.radio_vision);
@@ -661,8 +661,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 "--check-nemotron-h-vision requires a Nemotron-H causal LM");
         }
         if (check_nemotron_h_mtp) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::NemotronHCausalLm>) {
-                auto* predictor = dynamic_cast<mfq::cuda::nemotron_h::NemotronHMtp*>(
+            if constexpr (std::is_same_v<Model, tyloi::cuda::NemotronHCausalLm>) {
+                auto* predictor = dynamic_cast<tyloi::cuda::nemotron_h::NemotronHMtp*>(
                     tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--check-nemotron-h-mtp requires a model containing MTP weights");
@@ -673,12 +673,12 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         if (check_flash_next_mtp) {
             if constexpr (
-                    std::is_same_v<Model, mfq::cuda::Qwen4CausalLm> ||
-                    std::is_same_v<Model, mfq::cuda::Glm5CausalLm>) {
+                    std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm> ||
+                    std::is_same_v<Model, tyloi::cuda::Glm5CausalLm>) {
                 using Predictor=std::conditional_t<
-                    std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>,
-                    mfq::cuda::qwen4_exp::Predictor,
-                    mfq::cuda::glm5_next::Glm5NextMtp>;
+                    std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>,
+                    tyloi::cuda::qwen4_exp::Predictor,
+                    tyloi::cuda::glm5_next::Glm5NextMtp>;
                 auto* predictor=dynamic_cast<Predictor*>(tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "Flash-Next MTP diagnostic requires a loaded predictor component");
@@ -688,8 +688,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 "Flash-Next MTP diagnostic requires a Flash-Next causal LM");
         }
         if (check_qwen35_mtp) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-                auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
+            if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {
+                auto* predictor = dynamic_cast<tyloi::cuda::qwen35::Mtp*>(
                     tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--check-qwen35-mtp requires a supported model containing MTP weights");
@@ -700,8 +700,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 "--check-qwen35-mtp requires Qwen3.5");
         }
         if (!bench_qwen35_mtp.empty()) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-                auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
+            if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {
+                auto* predictor = dynamic_cast<tyloi::cuda::qwen35::Mtp*>(
                     tyloi::cuda::component_predictor(parts));
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--bench-qwen35-mtp requires a supported model containing MTP weights");
@@ -716,7 +716,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (!prefill_sweep_sizes.empty()) {
             execution.profiler.enabled=profile;
             const int status = [&] {
-                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
+                if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
                     return run_prefill_sweep(model, state, executor.get(), model.metadata,
                         prefill_sweep_sizes, prefill_sweep_reps, execution);
                 else
@@ -732,18 +732,18 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if(!router_lookahead_audit.empty()) {
             TYLOINFER_RUNTIME_CHECK(!compare_ffn_transfer_phases && !profile && gen>1 && !decode_inputs.empty(),
                 "router lookahead audit requires fixed single-token decode inputs and profiling disabled");
-            if constexpr (std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
+            if constexpr (std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
                 qwen4_begin_router_lookahead_audit(model,gen-1);
             else throw std::runtime_error("router lookahead audit requires Qwen4 Flash-Next");
         }
         auto ids_vec = ids_file.empty() ? parse_ids(ids_arg) : load_ids_file(ids_file);
-        auto ids = mfq_tensor_backend::tensor(ids_vec, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA)).unsqueeze(0);
+        auto ids = tyloi::cuda::tensor(ids_vec, tyloi::TensorOptions().dtype(tyloi::kInt64).device(tyloi::kCUDA)).unsqueeze(0);
         if (compare_dsv4_hc_ops) {
             g_dsv4_compare_hc_ops = true;
             g_dsv4_fused_hc = false;
             state.reset(1);
             (void)diagnostic_forward(model, state, executor.get(), execution, ids);
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             return 0;
         }
         if (compare_dsv4_hc_model) {
@@ -761,7 +761,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 block_trace_start, block_trace_count);
         }
         if(runtime_comparison_modes()) {
-            if constexpr (!std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
+            if constexpr (!std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
                 throw std::runtime_error("runtime comparison requires Qwen4 Flash-Next");
             const char* comparison_name = runtime_comparison_name();
             std::cout<<comparison_name<<"_model_load_sec="
@@ -876,13 +876,13 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     parallel_gu.set("1");gpu_bundle.set("1");early_gu.set(phased ? "1" : "0");
                 }
                 // reset destroys the decoder graphs before each branch is captured.
-                state.reset(1);mfq_cuda_synchronize();
+                state.reset(1);cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 if(compare_ffn_transfer_phases)execution.config.moe_ffn.transfer_phases=phased;
                 if(compare_mhc_fusion) {
                     execution.config.residual.two_stage=phased;
                     execution.config.residual.dense_injection=phased && compare_dense_mhc;
                 }
-                if constexpr (std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
+                if constexpr (std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>) {
                     if(compare_router_lookahead)model.router_lookahead=phased;
                     if(compare_rotary_fusion)qwen4_set_rotary_fusion(model,phased);
                     if(compare_attention_grouping) {
@@ -906,9 +906,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 for(int round=0;round<rounds;++round) {
                     diagnostic_reset(model, state, 1);
                     (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
-                    mfq_cuda_synchronize();
+                    cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 }
-                state.reset(1);mfq_cuda_synchronize();execution.profiler.reset();
+                state.reset(1);cudaStreamSynchronize(::tyloi::cuda::current_stream());execution.profiler.reset();
                 std::cout<<"warmup_prefill_rounds="<<rounds<<"\n"
                     <<"warmup_prefill_tokens="<<rounds*ids_vec.size()<<"\n"
                     <<"warmup_prefill_sec="<<std::chrono::duration<double>(
@@ -930,7 +930,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         for (int round = 0; round < warmup_rounds; ++round) {
             state.reset(1);
             (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
         }
         if (warmup_rounds) {
             state.reset(1);
@@ -950,20 +950,20 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 state.reset(1);
                 (void)diagnostic_hidden(model, state, executor.get(), execution, ids);
                 const int64_t decode_len = state.cache_pos + 1;
-                auto seq_len = mfq_tensor_backend::tensor({decode_len}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA));
+                auto seq_len = tyloi::cuda::tensor({decode_len}, tyloi::TensorOptions().dtype(tyloi::kInt64).device(tyloi::kCUDA));
                 auto decode_id = ids.index({Slice(), -1}).reshape({1, 1});
                 auto hidden = diagnostic_hidden(model, state, executor.get(), execution,
                                                 decode_id, mfq_nullopt, seq_len);
                 auto last = diagnostic_last_hidden(std::move(hidden));
                 auto logits = diagnostic_logits(model, executor.get(), execution,
-                                                std::move(last), false).to(mfq_tensor_backend::kFloat32);
-                mfq_cuda_synchronize();
+                                                std::move(last), false).to(tyloi::kFloat32);
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 return logits;
             };
             auto ref = run(false);
             auto test = run(true);
-            auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);
-            auto test_logp = mfq_tensor_backend::log_softmax(test, -1);
+            auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
+            auto test_logp = tyloi::cuda::log_softmax(test, -1);
             auto kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1);
             auto diff = (ref - test).abs();
             std::cout << "decode_splitk_compare_kl=" << kl.template item<float>() << "\n";
@@ -978,8 +978,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             if (compare_mma_decode_steps < 1) {
                 throw std::runtime_error("--compare-mma-decode-steps must be positive");
             }
-            auto cuda_i64 = mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA);
-            std::vector<mfq_tensor_backend::Tensor> reference_logits;
+            auto cuda_i64 = tyloi::TensorOptions().dtype(tyloi::kInt64).device(tyloi::kCUDA);
+            std::vector<tyloi::DenseTensor> reference_logits;
             std::vector<int64_t> teacher_tokens;
             reference_logits.reserve(compare_mma_decode_steps);
             teacher_tokens.reserve(compare_mma_decode_steps);
@@ -990,16 +990,16 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             const int64_t initial_teacher_token = input.template item<int64_t>();
             for (int step = 0; step < compare_mma_decode_steps; ++step) {
                 const int64_t decode_len = state.cache_pos + 1;
-                auto seq_len = mfq_tensor_backend::tensor({decode_len}, cuda_i64);
+                auto seq_len = tyloi::cuda::tensor({decode_len}, cuda_i64);
                 auto hidden = diagnostic_hidden(model, state, executor.get(), execution,
                                                 input, mfq_nullopt, seq_len);
                 auto last = diagnostic_last_hidden(std::move(hidden));
                 auto logits = diagnostic_logits(model, executor.get(), execution,
-                                                std::move(last), false).to(mfq_tensor_backend::kFloat32);
+                                                std::move(last), false).to(tyloi::kFloat32);
                 reference_logits.push_back(logits.clone());
                 const int64_t next = logits.argmax(-1).template item<int64_t>();
                 teacher_tokens.push_back(next);
-                input = mfq_tensor_backend::tensor({next}, cuda_i64).reshape({1, 1});
+                input = tyloi::cuda::tensor({next}, cuda_i64).reshape({1, 1});
             }
             execution.config.tasks.attention.kernels.mma_decode = true;
             const int64_t planned_kv_length =
@@ -1011,7 +1011,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             }
             state.reset(1);
             (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
-            input = mfq_tensor_backend::tensor({initial_teacher_token}, cuda_i64).reshape({1, 1});
+            input = tyloi::cuda::tensor({initial_teacher_token}, cuda_i64).reshape({1, 1});
             double kl_sum = 0.0;
             double kl_max = 0.0;
             double abs_sum = 0.0;
@@ -1023,17 +1023,17 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             int64_t values = 0;
             for (int step = 0; step < compare_mma_decode_steps; ++step) {
                 const int64_t decode_len = state.cache_pos + 1;
-                auto seq_len = mfq_tensor_backend::tensor({decode_len}, cuda_i64);
+                auto seq_len = tyloi::cuda::tensor({decode_len}, cuda_i64);
                 auto hidden = diagnostic_hidden(
                     model, state, executor.get(), execution, input,
                     mfq_nullopt, seq_len, nullptr, mfq_nullopt, nullptr, 0,
                     planned_kv_length, 0);
                 auto last = diagnostic_last_hidden(std::move(hidden));
                 auto test = diagnostic_logits(model, executor.get(), execution,
-                                              std::move(last), false).to(mfq_tensor_backend::kFloat32);
+                                              std::move(last), false).to(tyloi::kFloat32);
                 const auto & ref = reference_logits[(size_t)step];
-                auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);
-                auto test_logp = mfq_tensor_backend::log_softmax(test, -1);
+                auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
+                auto test_logp = tyloi::cuda::log_softmax(test, -1);
                 const double kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1).template item<double>();
                 auto delta = test - ref;
                 kl_sum += kl;
@@ -1046,9 +1046,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 const bool top_equal = test.argmax(-1).eq(ref.argmax(-1)).template item<bool>();
                 same_top += top_equal ? 1 : 0;
                 if (!top_equal && first_top_difference < 0) first_top_difference = step;
-                input = mfq_tensor_backend::tensor({teacher_tokens[(size_t)step]}, cuda_i64).reshape({1, 1});
+                input = tyloi::cuda::tensor({teacher_tokens[(size_t)step]}, cuda_i64).reshape({1, 1});
             }
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             std::cout << std::setprecision(10)
                       << "mma_decode_compare_steps=" << compare_mma_decode_steps << "\n"
                       << "mma_decode_compare_mean_kl=" << kl_sum / compare_mma_decode_steps << "\n"
@@ -1065,16 +1065,16 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 state.reset(1);
                 auto logits = diagnostic_last_logits(
                     model, state, executor.get(), execution, ids)
-                    .to(mfq_tensor_backend::kFloat32);
-                mfq_cuda_synchronize();
+                    .to(tyloi::kFloat32);
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 return logits;
             };
             auto ref = run(false);
             auto repeat = run(false);
             auto test = run(true);
-            auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);
-            auto repeat_logp = mfq_tensor_backend::log_softmax(repeat, -1);
-            auto test_logp = mfq_tensor_backend::log_softmax(test, -1);
+            auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
+            auto repeat_logp = tyloi::cuda::log_softmax(repeat, -1);
+            auto test_logp = tyloi::cuda::log_softmax(test, -1);
             auto repeat_kl = (ref_logp.exp() * (ref_logp - repeat_logp)).sum(-1);
             auto kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1);
             auto diff = (ref - test).abs();
@@ -1091,16 +1091,16 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             return 0;
         }
         if (prefill_repeat > 0) {
-            const char * trace_env = mfq::cuda::env_lookup("TYLOINFER_CHECK_PREFILL_REPEAT_TRACE");
+            const char * trace_env = tyloi::cuda::env_lookup("TYLOINFER_CHECK_PREFILL_REPEAT_TRACE");
             const bool trace_repeat = trace_env != nullptr && std::atoi(trace_env) != 0;
-            std::vector<mfq_tensor_backend::Tensor> reference_trace;
-            std::vector<std::pair<std::string, mfq_tensor_backend::Tensor>> reference_gemma_trace;
+            std::vector<tyloi::DenseTensor> reference_trace;
+            std::vector<std::pair<std::string, tyloi::DenseTensor>> reference_gemma_trace;
             for (int i = 0; i < prefill_repeat; ++i) {
                 state.reset(1);
                 auto run_t0 = std::chrono::steady_clock::now();
-                std::vector<mfq_tensor_backend::Tensor> trace;
-                std::vector<std::pair<std::string, mfq_tensor_backend::Tensor>> gemma_trace;
-                mfq_tensor_backend::Tensor logits;
+                std::vector<tyloi::DenseTensor> trace;
+                std::vector<std::pair<std::string, tyloi::DenseTensor>> gemma_trace;
+                tyloi::DenseTensor logits;
                 if (trace_repeat) {
                     execution.gemma_trace_layer = 0;
                     execution.gemma_stage_trace = &gemma_trace;
@@ -1117,7 +1117,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     logits = diagnostic_last_logits(
                         model, state, executor.get(), execution, ids);
                 }
-                mfq_cuda_synchronize();
+                cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 auto run_t1 = std::chrono::steady_clock::now();
                 std::cout << "prefill_repeat=" << (i + 1)
                           << " sec=" << std::chrono::duration<double>(run_t1 - run_t0).count()
@@ -1160,17 +1160,17 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             execution.config.tasks.attention.kernels.bf16_flash128 = false;
             auto ref = diagnostic_last_logits(
                 model, state, executor.get(), execution, ids)
-                .to(mfq_tensor_backend::kFloat32);
-            mfq_cuda_synchronize();
+                .to(tyloi::kFloat32);
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             state.reset(1);
             execution.config.tasks.attention.kernels.mma_prefill = true;
             execution.config.tasks.attention.kernels.bf16_flash128 = true;
             auto test = diagnostic_last_logits(
                 model, state, executor.get(), execution, ids)
-                .to(mfq_tensor_backend::kFloat32);
-            mfq_cuda_synchronize();
-            auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);
-            auto test_logp = mfq_tensor_backend::log_softmax(test, -1);
+                .to(tyloi::kFloat32);
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
+            auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
+            auto test_logp = tyloi::cuda::log_softmax(test, -1);
             auto kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1);
             auto diff = (ref - test).abs();
             auto same_top = ref.argmax(-1).eq(test.argmax(-1));
@@ -1184,8 +1184,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (!ignore_eos && tokenizer_model.empty() && decode_inputs.empty()) {
             const auto* source = diagnostic_source(model);
             if (!source) throw std::runtime_error("diagnostics model source is unavailable");
-            stop_ids = mfq::models::stop_token_ids(
-                mfq::models::config_json(*source, config_path),
+            stop_ids = tyloi::models::stop_token_ids(
+                tyloi::models::config_json(*source, config_path),
                 diagnostic_vocab_size(model));
             if (stop_ids.empty()) std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
         }
@@ -1193,7 +1193,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             execution, model, state, executor.get(), ids, gen, profile, t0, t1,
             decode_inputs,stop_ids,!router_lookahead_audit.empty());
         if(!status && !router_lookahead_audit.empty()) {
-            if constexpr (std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
+            if constexpr (std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
                 qwen4_finish_router_lookahead_audit(model,router_lookahead_audit);
         }
         return status;
@@ -1203,13 +1203,13 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
 
 } // namespace
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 int execute_diagnostics_command(DiagnosticsCommandOptions options) {
     return DiagnosticsCommand(std::move(options)).run();
 }
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda::commands {
+namespace tyloi::cuda::commands {
 namespace {
 
 void print_diagnostics_help() {
@@ -1568,7 +1568,7 @@ int run_diagnostics(int argc, char** argv) {
     try {
         ArgCursor args(argc, argv);
         auto options = parse_diagnostics(args);
-        return mfq::cuda::execute_diagnostics_command(std::move(options));
+        return tyloi::cuda::execute_diagnostics_command(std::move(options));
     } catch (const HelpRequested&) {
         return 0;
     } catch (const UsageError& error) {
@@ -1579,4 +1579,4 @@ int run_diagnostics(int argc, char** argv) {
     }
 }
 
-} // namespace mfq::cuda::commands
+} // namespace tyloi::cuda::commands

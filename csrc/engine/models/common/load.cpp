@@ -58,11 +58,11 @@ void load_important_branch(const tyloi::weights::Loader& weights,
     copy_important_neuron_settings(f, *high);
 
     if (f.gate_up.size() != 2 || high->gate_up.size() != 2 ||
-        f.gate_up[0]->size(0) != f.gate_up[1]->size(0) || high->gate_up[0]->size(0) != high->gate_up[1]->size(0) ||
-        f.down->size(0) != hidden_size || high->down->size(0) != hidden_size ||
-        f.down->size(1) != f.gate_up[0]->size(0) ||
-        high->down->size(1) != high->gate_up[0]->size(0) ||
-        f.down->size(1) + high->down->size(1) != intermediate_size) {
+        f.gate_up[0].size(0) != f.gate_up[1].size(0) || high->gate_up[0].size(0) != high->gate_up[1].size(0) ||
+        f.down.size(0) != hidden_size || high->down.size(0) != hidden_size ||
+        f.down.size(1) != f.gate_up[0].size(0) ||
+        high->down.size(1) != high->gate_up[0].size(0) ||
+        f.down.size(1) + high->down.size(1) != intermediate_size) {
         throw std::runtime_error("important-neuron FFN tensor shapes disagree with model config");
     }
     f.important_neurons = std::move(high);
@@ -79,29 +79,29 @@ void load_important_neuron_branch(const tyloi::weights::Loader& weights,
 }
 
 ::tyloi::DenseTensor TransformerWeightLoader::dense(const std::string& name) const {
-    return dynamic_cast<const ::tyloi::DenseTensor&>(*weights.tensor(name));
+    return weights.tensor(name).dense();
 }
-std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::linear(const std::string& name) const {
+::tyloi::Tensor TransformerWeightLoader::linear(const std::string& name) const {
     return weights.weight(name);
 }
 bool TransformerWeightLoader::has(const std::string& name) const { return tyloi::has_tensor(weights.source, name); }
-std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::router_parameter(const std::string& name) const {
+::tyloi::Tensor TransformerWeightLoader::router_parameter(const std::string& name) const {
     if(keep_quantized_router && name.ends_with("router.weight") && tyloi::require_tensor(weights.source,name).dtype=="TQ")
         return linear(name);
 #ifdef TYLOINFER_NATIVE_CUDA
     auto value = weights.tensor(name);
-    auto converted = tyloi::ops::cast(*value, ::tyloi::kFloat32);
-    return tyloi::ops::contiguous(*converted);
+    auto converted = tyloi::ops::cast(value, ::tyloi::kFloat32);
+    return tyloi::ops::contiguous(converted);
 #else
     return std::make_shared<::tyloi::DenseTensor>(dense(name).to(::tyloi::kFloat32).contiguous());
 #endif
 }
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
+std::vector<::tyloi::Tensor> TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
     return weights.group(names);
 }
-std::vector<std::shared_ptr<const ::tyloi::Tensor>> TransformerWeightLoader::gate_up(const std::vector<std::string>& names,
-                                                 const std::shared_ptr<const ::tyloi::Tensor>& down) const {
-    return weights.gate_up(names, *down, shared_gate_up_compatible_prefix,
+std::vector<::tyloi::Tensor> TransformerWeightLoader::gate_up(const std::vector<std::string>& names,
+                                                 const ::tyloi::Tensor& down) const {
+    return weights.gate_up(names, down, shared_gate_up_compatible_prefix,
                               preserve_projection_boundaries);
 }
 void TransformerWeightLoader::qkv(tyloi::cuda::FullAttention& block, const std::vector<std::string>& names) const {
@@ -135,7 +135,7 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
                                      const std::string& name, int layer) const {
     using Role = tyloi::models::ExpertProjection;
     const auto& record = tyloi::require_tensor(weights.source, name);
-    std::shared_ptr<const ::tyloi::Tensor>* weight = nullptr;
+    ::tyloi::Tensor* weight = nullptr;
     const char* role = nullptr;
     switch (projection) {
         case Role::gate: weight = &ffn.moe_gate; role = "gate"; break;
@@ -160,7 +160,7 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
                 "dense fused Gate/Up expert banks require separate Gate and Up records at layer " +
                 std::to_string(layer));
         auto bank = weights.native(name);
-        if (bank->dim() != 3)
+        if (bank.dim() != 3)
             throw std::runtime_error(
                 "dense routed expert tensor must be [experts,out,in]: " + name);
         *weight = std::move(bank);
@@ -177,7 +177,7 @@ void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::Expe
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-std::shared_ptr<const ::tyloi::Tensor> TransformerWeightLoader::headwise(const std::string& name) const {
+::tyloi::Tensor TransformerWeightLoader::headwise(const std::string& name) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     return weights.experts(name);
@@ -195,9 +195,9 @@ tyloi::cuda::Ffn load_moe_weights(const tyloi::weights::Loader& weights,
     auto result=tyloi::models::load_moe_weights<tyloi::cuda::Ffn>(
         loader, std::string(prefix), options.layer, options.router_bias_required,
         options.ungated_experts, options.ungated_shared);
-    const auto gate = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_gate);
-    const auto up = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_up);
-    const auto down = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_down);
+    const auto gate = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_gate.implementation());
+    const auto up = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_up.implementation());
+    const auto down = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_down.implementation());
     if (gate || up || down) {
         TYLOINFER_RUNTIME_CHECK(up && down && (options.ungated_experts || gate),
             "TQ expert banks cannot be mixed with legacy routed formats");

@@ -57,7 +57,7 @@ struct MixedMoePool {
 
     // The encoded representation this pool uses. NEPQ keeps a plain aggregate,
     // so it has no Tensor payload and reports its buffers separately.
-    const ::tyloi::Tensor* payload() const {
+    const ::tyloi::TensorImpl* payload() const {
         switch (family) {
             case MixedMoeFamily::Nint: return &nint;
             case MixedMoeFamily::Nint8Zero: return &q8_zero;

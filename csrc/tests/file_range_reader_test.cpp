@@ -18,10 +18,10 @@
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 void exercise_scatter(const std::filesystem::path& path, const std::vector<std::byte>& expected,
-    mfq::FileReadMode mode) {
-    mfq::FileRangeReader reader(path, mode);
+    tyloi::FileReadMode mode) {
+    tyloi::FileRangeReader reader(path, mode);
     std::vector<std::vector<std::byte>> output(1100, std::vector<std::byte>(9, std::byte{0x5a}));
-    std::vector<mfq::ReadSpan> destinations;
+    std::vector<tyloi::ReadSpan> destinations;
     std::uint64_t next = 3;
     for (auto& field : output) {
         destinations.push_back({next, nullptr, 0});
@@ -59,7 +59,7 @@ void exercise_large_batches(const std::filesystem::path& base) {
     {std::ofstream stream(path,std::ios::binary);
         stream.write(reinterpret_cast<const char*>(expected.data()),expected.size());
         require(bool(stream),"cannot write large batch fixture");}
-    mfq::FileRangeReader reader(path,mfq::FileReadMode::Direct);
+    tyloi::FileRangeReader reader(path,tyloi::FileReadMode::Direct);
     const std::array<std::size_t,3> offsets{3,37,7*mib+5};
     const std::array<std::size_t,3> sizes{17,11*mib+17,9*mib+33};
 #if defined(_WIN32) || defined(__linux__)
@@ -68,7 +68,7 @@ void exercise_large_batches(const std::filesystem::path& base) {
     const auto staging_limit=*std::max_element(sizes.begin(),sizes.end())+2*reader.alignment();
 #endif
     std::array<std::vector<std::byte>,3> output;
-    std::vector<mfq::ReadSpan> spans;
+    std::vector<tyloi::ReadSpan> spans;
     for(std::size_t i=0;i<sizes.size();++i) {
         output[i].resize(sizes[i]+2);
         spans.push_back({offsets[i],output[i].data()+1,sizes[i]});
@@ -110,11 +110,11 @@ void exercise_coalesced_staging(const std::filesystem::path& base) {
     {std::ofstream stream(path,std::ios::binary);
         stream.write(reinterpret_cast<const char*>(expected.data()),expected.size());
         require(bool(stream),"cannot write coalesced staging fixture");}
-    mfq::AsyncRangeReader reader(path,mfq::FileReadMode::Direct);
+    tyloi::AsyncRangeReader reader(path,tyloi::FileReadMode::Direct);
     const std::array<std::size_t,3> offsets{3,mib+20,2*mib+11};
     const std::array<std::size_t,3> sizes{mib+17,mib-9,mib-1};
     std::array<std::vector<std::byte>,3> output;
-    std::vector<mfq::ReadSpan> spans;
+    std::vector<tyloi::ReadSpan> spans;
     for(std::size_t i=0;i<output.size();++i) {
         output[i].assign(sizes[i]+2,std::byte{0x5a});
         spans.push_back({offsets[i],output[i].data()+1,sizes[i]});
@@ -137,8 +137,8 @@ void exercise_coalesced_staging(const std::filesystem::path& base) {
     {std::ofstream stream(tail_path,std::ios::binary);
         stream.write(reinterpret_cast<const char*>(expected.data()),tail_size);
         require(bool(stream),"cannot write coalesced EOF fixture");}
-    for(auto mode:{mfq::FileReadMode::Buffered,mfq::FileReadMode::Direct}) {
-        mfq::AsyncRangeReader tail(tail_path,mode);
+    for(auto mode:{tyloi::FileReadMode::Buffered,tyloi::FileReadMode::Direct}) {
+        tyloi::AsyncRangeReader tail(tail_path,mode);
         std::vector<std::byte> first(mib+19,std::byte{0x5a});
         std::vector<std::byte> second(tail_size-mib-18,std::byte{0x5a});
         tail.read({{3,first.data()+1,mib+17},{mib+20,second.data()+1,tail_size-mib-20}});
@@ -150,7 +150,7 @@ void exercise_coalesced_staging(const std::filesystem::path& base) {
                 "coalesced EOF read changed bytes");
         require(tail.stats().staging_peak_bytes<=tail_size+(128u<<10),
                 "unaligned EOF retained another full coalesced payload");
-        mfq::FileRangeReader grouped(path,mode);
+        tyloi::FileRangeReader grouped(path,mode);
         std::vector<std::byte> actual(4002,std::byte{0x5a}),reference=actual;
         std::copy_n(expected.begin()+100,3000,reference.begin()+1);
         std::copy_n(expected.begin()+200,3000,reference.begin()+1001);
@@ -158,7 +158,7 @@ void exercise_coalesced_staging(const std::filesystem::path& base) {
         require(actual==reference && grouped.stats().logical_bytes==6000,
                 "coalesced reads changed caller order or duplicate-byte accounting");
     }
-    mfq::FileRangeReader aligned(path,mfq::FileReadMode::Direct);
+    tyloi::FileRangeReader aligned(path,tyloi::FileReadMode::Direct);
     const auto alignment=aligned.alignment();
     struct AlignedOutput {
         std::size_t alignment;
@@ -195,7 +195,7 @@ void exercise_shared_staging(const std::filesystem::path& base) {
         stream.write(reinterpret_cast<const char*>(expected[shard].data()),expected[shard].size());
         require(bool(stream),"cannot write shared staging fixture");
     }
-    auto check=[&](mfq::FileRangeReader& reader,std::size_t shard,std::size_t offset) {
+    auto check=[&](tyloi::FileRangeReader& reader,std::size_t shard,std::size_t offset) {
         std::vector<std::byte> actual(bytes+2,std::byte{0x5a});
         reader.read(offset,actual.data()+1,bytes);
         require(actual.front()==std::byte{0x5a} && actual.back()==std::byte{0x5a},
@@ -204,11 +204,11 @@ void exercise_shared_staging(const std::filesystem::path& base) {
                 "shared staging reused another shard's contents");
         require(!reader.stats().staging_bytes,"shared staging retained an active read");
     };
-    auto first=std::make_unique<mfq::FileRangeReader>(fixtures.paths[0],mfq::FileReadMode::Direct);
+    auto first=std::make_unique<tyloi::FileRangeReader>(fixtures.paths[0],tyloi::FileReadMode::Direct);
     check(*first,0,3);
     require(first->stats().staging_cached_bytes>=bytes,"large expert staging was not cached");
     {
-        mfq::FileRangeReader second(fixtures.paths[1],mfq::FileReadMode::Direct);
+        tyloi::FileRangeReader second(fixtures.paths[1],tyloi::FileReadMode::Direct);
         check(second,1,5);
         require(!second.stats().staging_allocations && !first->stats().staging_cached_bytes &&
                 second.stats().staging_cached_bytes>=bytes,
@@ -218,9 +218,9 @@ void exercise_shared_staging(const std::filesystem::path& base) {
     check(*first,0,7);
     require(first->stats().staging_allocations==allocations,
             "closing the previous reader discarded reusable shared staging");
-    std::vector<std::unique_ptr<mfq::FileRangeReader>> readers;
+    std::vector<std::unique_ptr<tyloi::FileRangeReader>> readers;
     for(int i=0;i<12;++i)
-        readers.push_back(std::make_unique<mfq::FileRangeReader>(fixtures.paths[i%2],mfq::FileReadMode::Direct));
+        readers.push_back(std::make_unique<tyloi::FileRangeReader>(fixtures.paths[i%2],tyloi::FileReadMode::Direct));
     std::vector<std::future<void>> jobs;
     for(int i=0;i<12;++i)jobs.push_back(std::async(std::launch::async,[&,i] {
         for(int round=0;round<3;++round)check(*readers[i],i%2,11+i+round);
@@ -230,10 +230,10 @@ void exercise_shared_staging(const std::filesystem::path& base) {
     for(const auto& reader:readers)cached+=reader->stats().staging_cached_bytes;
     require(cached>0 && cached<=(128u<<20),"shared staging exceeded its process-wide idle budget");
 }
-void exercise(const std::filesystem::path& path, const std::vector<std::byte>& expected, mfq::FileReadMode mode) {
-    auto reader = std::make_shared<mfq::FileRangeReader>(path, mode);
+void exercise(const std::filesystem::path& path, const std::vector<std::byte>& expected, tyloi::FileReadMode mode) {
+    auto reader = std::make_shared<tyloi::FileRangeReader>(path, mode);
     const auto alignment = reader->alignment();
-    if (mode == mfq::FileReadMode::Direct) require(alignment > 1, "direct reader did not query sector alignment");
+    if (mode == tyloi::FileReadMode::Direct) require(alignment > 1, "direct reader did not query sector alignment");
     const std::vector<std::size_t> offsets = {0,1,17,511,512,4095,4096,4097,expected.size()-7};
     for (auto offset : offsets) {
         for (auto count : {std::size_t(1),std::size_t(7),std::size_t(4097),expected.size()-offset}) {
@@ -267,7 +267,7 @@ void exercise(const std::filesystem::path& path, const std::vector<std::byte>& e
     require(stats.files==1 && stats.mode==mode && stats.calls>=384 && stats.errors==0,"read accounting differs");
     require(stats.logical_bytes>0 && stats.physical_bytes>=stats.logical_bytes,"read byte accounting differs");
     require(stats.staging_bytes==0,"aligned staging leaked after read");
-    if (mode==mfq::FileReadMode::Direct) require(stats.staging_peak_bytes>=alignment,"aligned staging was not charged");
+    if (mode==tyloi::FileReadMode::Direct) require(stats.staging_peak_bytes>=alignment,"aligned staging was not charged");
     else require(stats.staging_peak_bytes==0,"buffered reader allocated unnecessary staging");
 }
 }
@@ -283,14 +283,14 @@ int main() {
         exercise_coalesced_staging(path);
         exercise_large_batches(path);
         {
-            const auto sector=mfq::FileRangeReader(path,mfq::FileReadMode::Direct).alignment();
+            const auto sector=tyloi::FileRangeReader(path,tyloi::FileReadMode::Direct).alignment();
             std::vector<std::byte> large(256*sector+13);
             for(std::size_t i=0;i<large.size();++i)large[i]=std::byte((i*31+i/19)&255);
             {std::ofstream stream(path,std::ios::binary|std::ios::trunc);
                 stream.write(reinterpret_cast<const char*>(large.data()),large.size());require(bool(stream),"cannot write sparse row fixture");}
             {
-                mfq::AsyncRangeReader rows(path,mfq::FileReadMode::Direct);
-                std::vector<std::byte> output(96*9,std::byte{0x5a});std::vector<mfq::ReadSpan> spans;
+                tyloi::AsyncRangeReader rows(path,tyloi::FileReadMode::Direct);
+                std::vector<std::byte> output(96*9,std::byte{0x5a});std::vector<tyloi::ReadSpan> spans;
                 for(std::size_t i=0;i<96;++i)spans.push_back({i*2*sector+3,output.data()+i*9+1,7});
                 rows.read(spans);
                 for(std::size_t i=0;i<96;++i) {
@@ -304,12 +304,12 @@ int main() {
             {std::ofstream stream(path,std::ios::binary|std::ios::trunc);
                 stream.write(reinterpret_cast<const char*>(expected.data()),expected.size());require(bool(stream),"cannot restore fixture");}
         }
-        exercise(path,expected,mfq::FileReadMode::Buffered);
-        exercise(path,expected,mfq::FileReadMode::Direct);
-        for(auto mode:{mfq::FileReadMode::Buffered,mfq::FileReadMode::Direct}) {
+        exercise(path,expected,tyloi::FileReadMode::Buffered);
+        exercise(path,expected,tyloi::FileReadMode::Direct);
+        for(auto mode:{tyloi::FileReadMode::Buffered,tyloi::FileReadMode::Direct}) {
             {
-                mfq::AsyncRangeReader disjoint(path,mode);
-                std::vector<std::byte> output(8*9,std::byte{0x5a});std::vector<mfq::ReadSpan> spans;
+                tyloi::AsyncRangeReader disjoint(path,mode);
+                std::vector<std::byte> output(8*9,std::byte{0x5a});std::vector<tyloi::ReadSpan> spans;
                 for(std::size_t i=0;i<8;++i)spans.push_back({i*8192+3,output.data()+i*9+1,7});
                 disjoint.read(spans);
                 for(std::size_t i=0;i<8;++i) {
@@ -321,14 +321,14 @@ int main() {
                     "disjoint direct ranges allocated a redundant staging copy");
             }
             {
-                mfq::FileRangeReader batched(path,mode);
+                tyloi::FileRangeReader batched(path,mode);
                 std::uint64_t first_allocations=0;
                 for(int round=0;round<4;++round) {
-                    std::vector<std::byte> output(384*33,std::byte{0x5a});std::vector<mfq::ReadSpan> spans;
+                    std::vector<std::byte> output(384*33,std::byte{0x5a});std::vector<tyloi::ReadSpan> spans;
                     for(std::size_t i=0;i<384;++i)spans.push_back({i*167+std::size_t(round),output.data()+i*33+1,31});
                     batched.read_batch(spans);
                     if(!round)first_allocations=batched.stats().staging_allocations;
-                    if(mode==mfq::FileReadMode::Direct)require(batched.stats().staging_allocations==first_allocations &&
+                    if(mode==tyloi::FileReadMode::Direct)require(batched.stats().staging_allocations==first_allocations &&
                         batched.stats().staging_cached_bytes<=(8u<<20),"repeated Direct batches did not reuse bounded aligned arenas");
                     for(std::size_t i=0;i<384;++i) {
                         require(output[i*33]==std::byte{0x5a} && output[i*33+32]==std::byte{0x5a},"event reuse changed a destination guard");
@@ -337,14 +337,14 @@ int main() {
                     }
                 }
                 require(!batched.stats().staging_bytes && !batched.stats().errors,"event reuse leaked request staging");
-                if(mode==mfq::FileReadMode::Direct)
+                if(mode==tyloi::FileReadMode::Direct)
                     require(batched.stats().staging_peak_bytes<=128*batched.alignment(),
                         "direct row batches allocated unbounded aligned staging");
             }
             {
-                mfq::FileRangeReader growing(path,mode);
+                tyloi::FileRangeReader growing(path,mode);
                 std::vector<std::vector<std::byte>> output;
-                std::vector<mfq::ReadSpan> spans;
+                std::vector<tyloi::ReadSpan> spans;
                 std::size_t logical=0;
                 for(std::size_t i=0;i<192;++i) {
                     const std::size_t bytes=i<64?31:(i<128?8193:7);
@@ -360,17 +360,17 @@ int main() {
                 }
                 const auto stats=growing.stats();
                 require(!stats.staging_bytes && !stats.errors && stats.logical_bytes==logical,"growing batch staging accounting differs");
-                if(mode==mfq::FileReadMode::Direct)
+                if(mode==tyloi::FileReadMode::Direct)
                     require(stats.staging_peak_bytes<=64*(8193+2*growing.alignment()),"growing batch retained more than one wave");
             }
-            auto reader=std::make_shared<mfq::AsyncRangeReader>(path,mode);
+            auto reader=std::make_shared<tyloi::AsyncRangeReader>(path,mode);
             std::vector<std::future<void>> jobs;
             for(int client=0;client<4;++client)jobs.push_back(std::async(std::launch::async,[&,reader,client] {
                 for(int round=0;round<8;++round) {
                     const std::vector<std::size_t> offsets={1,4095,4096,4097,expected.size()-7,std::size_t(client*73+round*111)};
                     std::vector<std::vector<std::byte>> buffers;
                     for(auto at:offsets)buffers.emplace_back(std::min<std::size_t>(4177,expected.size()-at)+2,std::byte{0x5a});
-                    std::vector<mfq::ReadSpan> spans;
+                    std::vector<tyloi::ReadSpan> spans;
                     for(std::size_t i=0;i<offsets.size();++i)spans.push_back({offsets[i],buffers[i].data()+1,buffers[i].size()-2});
                     reader->read(spans);
                     for(std::size_t i=0;i<offsets.size();++i) {
@@ -384,7 +384,7 @@ int main() {
             bool invalid=false;try{reader->read({{expected.size(),expected.data(),1}});}catch(const std::out_of_range&){invalid=true;}
             require(invalid,"MFQ batch accepted a range outside the file");
             std::vector<std::byte> many(400*4,std::byte{0x5a});
-            std::vector<mfq::ReadSpan> spans;
+            std::vector<tyloi::ReadSpan> spans;
             for(std::size_t i=0;i<400;++i)spans.push_back({i*127,many.data()+i*4+1,2});
             reader->read(spans);
             for(std::size_t i=0;i<400;++i) {
@@ -399,11 +399,11 @@ int main() {
         }
 #if defined(__linux__)
         {
-            auto reader=std::make_shared<mfq::FileRangeReader>(path,mfq::FileReadMode::Direct);
+            auto reader=std::make_shared<tyloi::FileRangeReader>(path,tyloi::FileReadMode::Direct);
             std::vector<std::future<void>> jobs;
             for(int client=0;client<8;++client)jobs.push_back(std::async(std::launch::async,[&,client] {
                 for(int round=0;round<12;++round) {
-                    std::vector<std::byte> output(96*33,std::byte{0x5a});std::vector<mfq::ReadSpan> spans;
+                    std::vector<std::byte> output(96*33,std::byte{0x5a});std::vector<tyloi::ReadSpan> spans;
                     for(std::size_t i=0;i<96;++i)spans.push_back({i*167+std::size_t(round+client),output.data()+i*33+1,31});
                     reader->read_batch(spans);
                     for(std::size_t i=0;i<96;++i)
@@ -429,11 +429,11 @@ int main() {
         }
 #endif
         exercise_shared_staging(path);
-        exercise_scatter(path, expected, mfq::FileReadMode::Buffered);
-        exercise_scatter(path, expected, mfq::FileReadMode::Direct);
+        exercise_scatter(path, expected, tyloi::FileReadMode::Buffered);
+        exercise_scatter(path, expected, tyloi::FileReadMode::Direct);
         std::filesystem::remove(path);
         bool rejected=false;
-        try { mfq::FileRangeReader missing(path,mfq::FileReadMode::Direct); } catch (const std::system_error&) { rejected=true; }
+        try { tyloi::FileRangeReader missing(path,tyloi::FileReadMode::Direct); } catch (const std::system_error&) { rejected=true; }
         require(rejected,"missing model file was accepted");
         std::cout<<"file range buffered/direct sector edges, unaligned destinations, EOF, unicode and 12-way reads PASS\n";
         return 0;

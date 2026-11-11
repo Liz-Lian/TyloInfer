@@ -115,7 +115,7 @@ tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
     if (!x.is_cuda()) {
         auto xf = x.contiguous().to(::tyloi::kFloat32);
 #ifdef TYLOINFER_NATIVE_CUDA
-        const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(weight_tensor);
+        const auto& weight = weight_tensor.dense();
 #endif
         auto wf = weight.contiguous().to(::tyloi::kFloat32);
         if (weight_offset != 0.0)
@@ -124,7 +124,7 @@ tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
         return (xf * inverse * wf).contiguous();
     }
 #ifdef TYLOINFER_NATIVE_CUDA
-    const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(weight_tensor);
+    const auto& weight = weight_tensor.dense();
 #endif
     return rms_norm_offset_cuda(x, weight, eps, weight_offset);
 }
@@ -139,7 +139,7 @@ tyloi::DenseTensor tyloi::cuda::ops::merge_norms(
                                               double eps, double weight_offset) {
     auto input = x.contiguous().to(::tyloi::kBFloat16);
 #ifdef TYLOINFER_NATIVE_CUDA
-    const auto& weight = dynamic_cast<const ::tyloi::DenseTensor&>(weight_tensor);
+    const auto& weight = weight_tensor.dense();
 #endif
     if (input.is_cuda() && fused) {
         return qwen_rms_norm_bf16_cuda(input, weight.contiguous(), eps, weight_offset);

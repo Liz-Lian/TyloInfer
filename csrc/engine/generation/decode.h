@@ -15,15 +15,15 @@ public:
     void ensure_storage(std::int64_t vocabulary);
     void initialize_inputs(const Tensor& pending, std::int64_t position, Tensor& random_host);
     void upload_random(const Tensor& random_host);
-    void capture_next(std::shared_ptr<Tensor> next);
+    void capture_next(Tensor next);
     bool matches(std::int64_t planned, const MfqSamplingParams& sampling, bool greedy,
-                 std::span<const std::shared_ptr<const Tensor>> owners) const;
+                 std::span<const Tensor> owners) const;
     void set_key(std::int64_t planned, const MfqSamplingParams& sampling, bool greedy);
     void invalidate();
 
     Device device;
-    std::shared_ptr<Tensor> static_input, static_pos, static_len, static_step;
-    std::shared_ptr<Tensor> generated, random, counts, static_next;
+    Tensor static_input, static_pos, static_len, static_step;
+    Tensor generated, random, counts, static_next;
     std::unique_ptr<Executor::Graph> graph;
     std::int64_t generated_capacity;
     std::uint64_t captures = 0, reuses = 0;

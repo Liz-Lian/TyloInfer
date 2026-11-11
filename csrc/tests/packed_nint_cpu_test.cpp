@@ -60,7 +60,7 @@ struct Fixture {
         }
     }
 
-    mfq::cpu::PackedNintView view() const {
+    tyloi::cpu::PackedNintView view() const {
         return {packed.data(),packed.size(),bits.data(),offsets.data(),
             scales.data(),minima.data(),anchors_scale.data(),anchors_min.data(),
             outputs,width,group_size};
@@ -86,10 +86,10 @@ void compare(const Fixture& f, int batch, int threads) {
             if (column==f.width/2) value *= 128;
             input[sample*input_stride+column]=value;
         }
-    mfq::cpu::packed_nint_matmul(f.view(),input.data(),batch,input_stride,
+    tyloi::cpu::packed_nint_matmul(f.view(),input.data(),batch,input_stride,
         output.data(),output_stride,threads);
-    mfq::cpu::packed_nint_matmul(f.view(),input.data(),batch,input_stride,
-        scalar.data(),output_stride,threads,mfq::cpu::PackedNintKernel::scalar);
+    tyloi::cpu::packed_nint_matmul(f.view(),input.data(),batch,input_stride,
+        scalar.data(),output_stride,threads,tyloi::cpu::PackedNintKernel::scalar);
     for (int sample=0; sample<batch; ++sample) {
         for (int row=0; row<f.outputs; ++row) {
             double reference=0, magnitude=0;
@@ -118,7 +118,7 @@ void compare(const Fixture& f, int batch, int threads) {
     }
     auto zero=input;
     std::fill(zero.begin(),zero.end(),0.0f);
-    mfq::cpu::packed_nint_matmul(f.view(),zero.data(),batch,input_stride,
+    tyloi::cpu::packed_nint_matmul(f.view(),zero.data(),batch,input_stride,
         output.data(),output_stride,threads);
     for (int sample=0; sample<batch; ++sample)
         for (int row=0; row<f.outputs; ++row)
@@ -149,7 +149,7 @@ void guarded_tail() {
         std::memcpy(packed,f.packed.data(),f.packed.size());
         view.packed=packed;
         float input[8]={1,-2,3,-4,5,-6,7,-8}, result;
-        mfq::cpu::packed_nint_matmul(view,input,1,8,&result,1,1);
+        tyloi::cpu::packed_nint_matmul(view,input,1,8,&result,1,1);
         double reference=0;
         for (int i=0; i<8; ++i) reference += double(f.decoded(0,i))*input[i];
         require(std::abs(result-reference)<1e-4,"guarded row result differs");
@@ -164,9 +164,9 @@ void guarded_tail() {
 void invalid_storage() {
     Fixture f(8,17,7);
     float input[17]={}, output[8];
-    auto expect_rejected=[&](mfq::cpu::PackedNintView view) {
+    auto expect_rejected=[&](tyloi::cpu::PackedNintView view) {
         bool rejected=false;
-        try { mfq::cpu::packed_nint_matmul(view,input,1,17,output,8,12); }
+        try { tyloi::cpu::packed_nint_matmul(view,input,1,17,output,8,12); }
         catch (const std::invalid_argument&) { rejected=true; }
         require(rejected,"invalid packed row was accepted");
     };
@@ -189,7 +189,7 @@ void invalid_storage() {
 
 void signed_dots() {
     std::mt19937 random(119);
-    const auto optimized=mfq::cpu::scaled_i8_dot_kernel();
+    const auto optimized=tyloi::cpu::scaled_i8_dot_kernel();
     for (int length=0; length<=64; ++length) {
         std::vector<std::int8_t> weights(length);
         std::vector<float> input(length);
@@ -204,7 +204,7 @@ void signed_dots() {
                 reference+=term;
                 magnitude+=std::abs(term);
             }
-            for (auto dot : {optimized,mfq::cpu::scaled_i8_dot_scalar})
+            for (auto dot : {optimized,tyloi::cpu::scaled_i8_dot_scalar})
                 require(std::abs(dot(weights.data(),input.data(),length,scale)-reference)
                     <=1e-5+2e-6*magnitude,"signed dot differs from decoded FP64 oracle");
         }
@@ -221,20 +221,20 @@ void benchmark(int outputs, int width, int bits) {
     std::vector<float> input(width),output(outputs);
     for (int i=0; i<width; ++i) input[i]=float(i%31-15)/16.0f;
     const int threads=std::max(1u,std::thread::hardware_concurrency());
-    auto measure=[&](mfq::cpu::PackedNintKernel kernel) {
+    auto measure=[&](tyloi::cpu::PackedNintKernel kernel) {
         double checksum=0;
         const auto start=std::chrono::steady_clock::now();
         for (int expert=0; expert<top_k; ++expert)
             for (const auto& matrix : matrices) {
-                mfq::cpu::packed_nint_matmul(matrix.view(),input.data(),1,width,
+                tyloi::cpu::packed_nint_matmul(matrix.view(),input.data(),1,width,
                     output.data(),outputs,threads,kernel);
                 checksum += output[expert%outputs];
             }
         const auto stop=std::chrono::steady_clock::now();
         return std::make_pair(std::chrono::duration<double,std::milli>(stop-start).count(),checksum);
     };
-    const auto scalar=measure(mfq::cpu::PackedNintKernel::scalar);
-    const auto vector=measure(mfq::cpu::PackedNintKernel::automatic);
+    const auto scalar=measure(tyloi::cpu::PackedNintKernel::scalar);
+    const auto vector=measure(tyloi::cpu::PackedNintKernel::automatic);
     require(std::abs(scalar.second-vector.second)<0.01,"benchmark checksum differs");
     std::cout << "{\"shape\":[" << outputs << ',' << width << "],\"q_bits\":" << bits
         << ",\"threads\":" << threads << ",\"projections\":" << layers*top_k
@@ -259,7 +259,7 @@ int main(int argc, char**) {
         invalid_storage();
         signed_dots();
         std::cout << "packed NINT FP32 oracle, mixed rows, strided batches, zero input, bounds: passed; avx2="
-            << mfq::cpu::packed_nint_has_avx2() << '\n';
+            << tyloi::cpu::packed_nint_has_avx2() << '\n';
         if (argc>1) {
             benchmark(640,2560,4);
             benchmark(2560,640,5);

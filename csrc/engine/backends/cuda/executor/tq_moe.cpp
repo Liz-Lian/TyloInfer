@@ -566,13 +566,13 @@ struct TqMoeGraphStage {
     return result;
 }
 
-TqMoeBanks tq_banks(std::shared_ptr<const tyloi::Tensor> gate,
-                    std::shared_ptr<const tyloi::Tensor> up,
-                    std::shared_ptr<const tyloi::Tensor> down) {
+TqMoeBanks tq_banks(::tyloi::Tensor gate,
+                    ::tyloi::Tensor up,
+                    ::tyloi::Tensor down) {
     TqMoeBanks result;
-    result.gate = std::dynamic_pointer_cast<const tyloi::TqBank>(gate);
-    result.up = std::dynamic_pointer_cast<const tyloi::TqBank>(up);
-    result.down = std::dynamic_pointer_cast<const tyloi::TqBank>(down);
+    result.gate = std::dynamic_pointer_cast<const tyloi::TqBank>(gate.implementation());
+    result.up = std::dynamic_pointer_cast<const tyloi::TqBank>(up.implementation());
+    result.down = std::dynamic_pointer_cast<const tyloi::TqBank>(down.implementation());
     const auto* owner = result.up ? result.up.get() : result.gate ? result.gate.get() : result.down.get();
     if (!owner) return result;
     result.slices = owner->slices;

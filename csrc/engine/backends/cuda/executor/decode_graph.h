@@ -62,15 +62,15 @@ struct DecodeGraphCache {
     decltype(mfq_get_stream_from_pool(false)) stream;
     std::vector<MfqCudaStream> compute_streams;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::vector<std::shared_ptr<const ::tyloi::Tensor>> storage;
+    std::vector<::tyloi::Tensor> storage;
     std::vector<std::optional<decode_graph_detail::Layout>> storage_layout;
 #else
     std::vector<::tyloi::DenseTensor> storage;
 #endif
     std::unique_ptr<MfqCudaGraph> graph;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<::tyloi::Tensor> static_input, static_pos, static_len, static_step;
-    std::shared_ptr<::tyloi::Tensor> generated, random, counts, static_next;
+    ::tyloi::Tensor static_input, static_pos, static_len, static_step;
+    ::tyloi::Tensor generated, random, counts, static_next;
 #else
     ::tyloi::DenseTensor static_input;
     ::tyloi::DenseTensor static_pos;
@@ -101,16 +101,16 @@ struct DecodeGraphCache {
 #ifdef TYLOINFER_NATIVE_CUDA
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
-                 const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& candidate_storage) const;
+                 const std::vector<::tyloi::Tensor>& candidate_storage) const;
     void ensure_storage(int64_t vocab_size);
     void initialize_inputs(const ::tyloi::Tensor& pending, int64_t position,
                            ::tyloi::Tensor& random_host);
     void upload_random(const ::tyloi::Tensor& random_host);
-    void capture_next(std::shared_ptr<::tyloi::Tensor> next);
+    void capture_next(::tyloi::Tensor next);
     void invalidate();
     void set_key(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
-                 const std::vector<std::shared_ptr<const ::tyloi::Tensor>>& candidate_storage);
+                 const std::vector<::tyloi::Tensor>& candidate_storage);
 #else
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
@@ -137,7 +137,7 @@ void prepare_decode_graph_memory(
     struct SavedRecurrentState {
         StateTensor* target;
 #ifdef TYLOINFER_NATIVE_CUDA
-        std::shared_ptr<::tyloi::Tensor> value;
+        ::tyloi::Tensor value;
         decode_graph_detail::Layout layout;
 #else
         using DenseTensor = ::tyloi::DenseTensor;
@@ -163,7 +163,7 @@ void prepare_decode_graph_memory(
 #ifdef TYLOINFER_NATIVE_CUDA
             TYLOINFER_RUNTIME_CHECK(decode_graph_detail::same_layout(state.layout, *state.target),
                 "decode warmup changed recurrent storage addresses");
-            ::tyloi::ops::copy_into(*state.target, *state.value);
+            ::tyloi::ops::copy_into(*state.target, state.value);
             TYLOINFER_RUNTIME_CHECK(decode_graph_detail::same_layout(state.layout, *state.target),
                 "decode warmup changed recurrent storage addresses");
 #else

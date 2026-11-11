@@ -13,23 +13,24 @@ target_compile_features(mfq-benchmark-validation-test PRIVATE cxx_std_17)
 add_test(NAME mfq-benchmark-validation-test COMMAND mfq-benchmark-validation-test)
 
 add_executable(mfq-cuda-tensor-view-test
-    ${PROJECT_SOURCE_DIR}/backends/cuda/tests/mfq_cuda_tensor_view_test.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/tests/mfq_cuda_tensor_view_test.cpp
 )
 target_include_directories(mfq-cuda-tensor-view-test PRIVATE
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
 )
 target_compile_features(mfq-cuda-tensor-view-test PRIVATE cxx_std_20)
 add_test(NAME mfq-cuda-tensor-view-test COMMAND mfq-cuda-tensor-view-test)
 
 add_executable(mfq-native-tensor-test
-    ${PROJECT_SOURCE_DIR}/native/cuda/env.cpp
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/tensor.cpp
-    ${PROJECT_SOURCE_DIR}/backends/cuda/tests/mfq_native_tensor_cpu_test_stubs.cpp
-    ${PROJECT_SOURCE_DIR}/backends/cuda/tests/mfq_native_tensor_test.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/env.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/tests/mfq_native_tensor_cpu_test_stubs.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/tests/mfq_native_tensor_test.cpp
 )
 target_include_directories(mfq-native-tensor-test PRIVATE
-    ${PROJECT_SOURCE_DIR}/native/cuda
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
+    ${PROJECT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
 )
 target_compile_features(mfq-native-tensor-test PRIVATE cxx_std_20)
 add_test(NAME mfq-native-tensor-test COMMAND mfq-native-tensor-test)
@@ -74,7 +75,7 @@ add_test(NAME mfq-prefill-budget-test COMMAND mfq-prefill-budget-test)
 
 if(TARGET mfq-tokenizer)
     add_executable(mfq-tokenizer-identity-test tokenizer_identity_test.cpp)
-    target_link_libraries(mfq-tokenizer-identity-test PRIVATE mfq-engine)
+    target_link_libraries(mfq-tokenizer-identity-test PRIVATE mfq-engine mfq-ggml)
     target_compile_features(mfq-tokenizer-identity-test PRIVATE cxx_std_20)
     add_test(NAME mfq-tokenizer-identity-test COMMAND mfq-tokenizer-identity-test)
 
@@ -99,13 +100,16 @@ target_link_libraries(tyloinfer-gguf-model-source-test PRIVATE mfq-model-source 
 add_test(NAME tyloinfer-gguf-model-source-test COMMAND tyloinfer-gguf-model-source-test)
 mfq_add_core_test(mfq-file-range-reader-test file_range_reader_test.cpp)
 mfq_add_core_test(mfq-moe-dispatch-plan-test moe_dispatch_plan_test.cpp)
+if(TYLOINFER_BUILD_BENCHES)
 add_executable(mfq-moe-residency-bench ${PROJECT_SOURCE_DIR}/../bench/moe_residency_bench.cpp)
 target_link_libraries(mfq-moe-residency-bench PRIVATE mfq-core)
 target_compile_features(mfq-moe-residency-bench PRIVATE cxx_std_17)
+endif()
 mfq_add_core_test(mfq-nint-rows-test nint_rows_test.cpp)
 mfq_add_core_test(mfq-quant-expert-range-test quant_expert_range_test.cpp)
 mfq_add_core_test(mfq-host-parallel-test host_parallel_test.cpp)
 mfq_add_core_test(mfq-cpu-expert-pool-test cpu_expert_pool_test.cpp)
+target_link_libraries(mfq-cpu-expert-pool-test PRIVATE mfq-cpu-execution)
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
 mfq_add_core_test(mfq-packed-nint-cpu-test packed_nint_cpu_test.cpp)
 target_link_libraries(mfq-packed-nint-cpu-test PRIVATE mfq-cpu-ops)
@@ -142,17 +146,17 @@ add_test(NAME mfq-moe-cache-policy-test COMMAND mfq-moe-cache-policy-test)
 mfq_add_core_test(mfq-tensor-parallel-test tensor_parallel_test.cpp)
 
 add_executable(mfq-cuda-model-plan-test
-    ${PROJECT_SOURCE_DIR}/backends/cuda/tests/cuda_model_plan_test.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/tests/cuda_model_plan_test.cpp
 )
 target_include_directories(mfq-cuda-model-plan-test PRIVATE
-    ${PROJECT_SOURCE_DIR}/backends/cuda/include
+    ${PROJECT_SOURCE_DIR}
 )
 target_link_libraries(mfq-cuda-model-plan-test PRIVATE mfq-core)
 target_compile_features(mfq-cuda-model-plan-test PRIVATE cxx_std_20)
 add_test(NAME mfq-cuda-model-plan-test COMMAND mfq-cuda-model-plan-test)
 
 add_executable(mfq-moe-host-memory-test
-    ${PROJECT_SOURCE_DIR}/backends/cuda/tests/moe_host_memory_test.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/tests/moe_host_memory_test.cpp
 )
 target_include_directories(mfq-moe-host-memory-test PRIVATE
     ${PROJECT_SOURCE_DIR}/backends/cuda

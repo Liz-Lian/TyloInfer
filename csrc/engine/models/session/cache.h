@@ -32,7 +32,7 @@ bool cuda_has_separate_memory();
 
 struct TextSessionRestore {
     std::size_t tokens = 0;
-    std::shared_ptr<const ::tyloi::Tensor> mtp_last_target_hidden;
+    ::tyloi::Tensor mtp_last_target_hidden;
 };
 
 struct CudaSessionOps {

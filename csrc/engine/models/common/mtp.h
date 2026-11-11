@@ -13,10 +13,10 @@
 namespace tyloi::models {
 
 struct MtpStep {
-    std::shared_ptr<Tensor> sample_hidden;
-    std::shared_ptr<Tensor> chain_hidden;
+    Tensor sample_hidden;
+    Tensor chain_hidden;
     // Optional last-row vocabulary projection computed in the predictor graph.
-    std::shared_ptr<Tensor> sample_logits;
+    Tensor sample_logits;
     int32_t greedy_token=-1;
 };
 
@@ -80,7 +80,7 @@ struct Mtp {
         throw std::runtime_error(
             "this CUDA MTP predictor has no block-draft adapter");
     }
-    virtual std::shared_ptr<Tensor> draft_next(
+    virtual Tensor draft_next(
         const Tensor&,
         const Tensor&) const {
         throw std::runtime_error("this CUDA MTP predictor has no block-draft adapter");

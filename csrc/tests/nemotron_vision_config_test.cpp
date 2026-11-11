@@ -8,7 +8,7 @@
 
 namespace {
 
-using mfq::models::nemotron_h::RadioVisionConfig;
+using tyloi::models::nemotron_h::RadioVisionConfig;
 
 // The keys of the released checkpoint's config.json that describe the vision
 // tower and its projection (NVIDIA-Nemotron-3.5-Super-VL-120B-A12B).

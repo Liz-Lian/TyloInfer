@@ -1,6 +1,6 @@
-#include "storage/weights/moe/dma_copy_batch.h"
-#include "storage/weights/moe/native_dma_batch.h"
-#include "kernels/moe/pipeline.h"
+#include "engine/backends/cuda/native/copy_batch.h"
+#include "engine/backends/cuda/native/dma_batch.h"
+#include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -13,7 +13,7 @@ void check(cudaError_t error) {
     if(error!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(error));
 }
 void verify_native_batches() {
-    if(!mfq::cuda::NativeDmaBatch::available()) {
+    if(!tyloi::cuda::NativeDmaBatch::available()) {
         std::cout<<"native DMA batches unavailable on this driver SKIP\n";return;
     }
     constexpr std::size_t total=1<<20;
@@ -31,7 +31,7 @@ void verify_native_batches() {
         return offset<=total && bytes<=total-offset?reinterpret_cast<CUdeviceptr>(mapped)+offset:0;
     };
     std::vector<unsigned char> expected(total),actual(total);
-    std::vector<mfq::cuda::DmaCopy> copies;
+    std::vector<tyloi::cuda::DmaCopy> copies;
     int cases=0;
     for(const int count:{2,127,128,129,255,256,257,768,1025}) {
         check(cudaMemsetAsync(device,0xa7,total,stream));
@@ -43,7 +43,7 @@ void verify_native_batches() {
             copies.push_back({device+destination,host+source,bytes});
             std::memcpy(expected.data()+destination,host+source,bytes);
         }
-        if(!mfq::cuda::NativeDmaBatch::submit(copies,stream,1,alias))
+        if(!tyloi::cuda::NativeDmaBatch::submit(copies,stream,1,alias))
             throw std::runtime_error("native DMA rejected a valid multi-packet list");
         // One phase fence must cover every packet, including a one-copy tail.
         check(cudaEventRecord(ready,stream));check(cudaStreamWaitEvent(consumer,ready,0));
@@ -56,14 +56,14 @@ void verify_native_batches() {
     copies.resize(129);check(cudaMemsetAsync(device,0xa7,total,stream));
     std::fill(expected.begin(),expected.end(),0xa7);
     std::size_t aliases=0;
-    if(mfq::cuda::NativeDmaBatch::submit(copies,stream,1,[&](const void* p,std::size_t n) {
+    if(tyloi::cuda::NativeDmaBatch::submit(copies,stream,1,[&](const void* p,std::size_t n) {
             return ++aliases==copies.size()?CUdeviceptr(0):alias(p,n);
         }))throw std::runtime_error("native DMA accepted an invalid late alias");
     check(cudaMemcpyAsync(actual.data(),device,total,cudaMemcpyDeviceToHost,stream));
     check(cudaStreamSynchronize(stream));
     if(actual!=expected)throw std::runtime_error("native DMA partially submitted before alias validation");
     copies.back().bytes=0;bool rejected=false;
-    try {mfq::cuda::NativeDmaBatch::submit(copies,stream,1,alias);}
+    try {tyloi::cuda::NativeDmaBatch::submit(copies,stream,1,alias);}
     catch(const std::invalid_argument&){rejected=true;}
     check(cudaMemcpyAsync(actual.data(),device,total,cudaMemcpyDeviceToHost,stream));
     check(cudaStreamSynchronize(stream));
@@ -89,12 +89,12 @@ void verify_notification(bool cached,bool registered_source=false) {
     check(cudaStreamBeginCapture(compute,cudaStreamCaptureModeThreadLocal));
     void* allocation=nullptr;check(cudaMallocAsync(&allocation,65536,compute));
     check(cudaMemsetAsync(allocation,0xa7,65536,compute));
-    mfq::cuda::wait_mapped_flag(alias,compute);
+    tyloi::cuda::wait_mapped_flag(alias,compute);
     check(cudaFreeAsync(allocation,compute));
     check(cudaStreamEndCapture(compute,&graph));check(cudaGraphInstantiate(&execution,graph,0));
     bool rescued=false;
     {
-        mfq::cuda::DmaCopyBatch batch(copy);
+        tyloi::cuda::DmaCopyBatch batch(copy);
         check(cudaMemcpyAsync(device,host,4096,cudaMemcpyHostToDevice,copy));
         check(cudaStreamSynchronize(copy));
         if(cached)batch.prepare(2,device,host);
@@ -148,12 +148,12 @@ int main(int argc,char** argv) {
         for(std::size_t i=0;i<total;++i)host[i]=static_cast<unsigned char>(i*29+(i>>5)*71);
         int cases=0;
         {
-            mfq::cuda::DmaCopyBatch batch(stream);
+            tyloi::cuda::DmaCopyBatch batch(stream);
             batch.prepare(16,device,host);
             for(int round=0;round<48;++round) {
                 check(cudaMemsetAsync(device,0xa7,total,stream));
                 std::vector<unsigned char> expected(total,0xa7),actual(total);
-                std::vector<mfq::cuda::DmaCopy> copies;
+                std::vector<tyloi::cuda::DmaCopy> copies;
                 const int count=round%24;
                 for(int i=0;i<count;++i) {
                     const std::size_t source=(i*1777+round*13)%region;
@@ -173,7 +173,7 @@ int main(int argc,char** argv) {
             check(cudaMemsetAsync(device,0xa7,total,stream));
             std::vector<unsigned char> expected(total,0xa7),actual(total);
             for(int invocation=0;invocation<2;++invocation) {
-                std::vector<mfq::cuda::DmaCopy> copies;
+                std::vector<tyloi::cuda::DmaCopy> copies;
                 for(int i=0;i<3;++i) {
                     const auto destination=invocation*region+i*2048+17;
                     const auto source=invocation*region+i*1024+31;

@@ -10,17 +10,17 @@
 #include <stdexcept>
 #include <thread>
 
-namespace tb=mfq_tensor_backend;
+namespace tb=tyloi::cuda;
 namespace {
 void check(bool value,const char* message) { if (!value) throw std::runtime_error(message); }
 MixedMoePool weight(std::size_t bytes,int marker) {
     MixedMoePool result;
     result.local_experts=1;
     result.nint.q_packed=tb::full({1,static_cast<std::int64_t>(bytes)},marker,
-        tb::TensorOptions().dtype(tb::kUInt8));
+        tyloi::TensorOptions().dtype(tyloi::kUInt8));
     return result;
 }
-mfq::MoeCacheKey key(int expert,int source=0) { return {source,0,expert}; }
+tyloi::MoeCacheKey key(int expert,int source=0) { return {source,0,expert}; }
 void bytes_equal(MoeHostExpertCache::Lease value,int marker) {
     check(value && value->weights.nint.q_packed.numel()==value->bytes,"host lease shape mismatch");
     const auto* data=value->weights.nint.q_packed.data_ptr<std::uint8_t>();
@@ -60,7 +60,7 @@ int main() try {
         cache.begin_speculative_learning();
         if(!before_window)predicted=load();
         bytes_equal(cache.find(key(0)),1);bytes_equal(cache.find(key(0)),1);
-        cache.commit_speculative_learning(std::vector<mfq::MoeCacheKey>(accepted,key(0)));
+        cache.commit_speculative_learning(std::vector<tyloi::MoeCacheKey>(accepted,key(0)));
         check(cache.stats().reuse_promotions==unsigned(accepted==2),
             "forecast admission or rejected verification counted as an accepted token use");
         if(!accepted) {
@@ -90,7 +90,7 @@ int main() try {
     {
         MoeHostExpertCache cache(192);cache.enable_reuse_priority();
         auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(
-            std::vector<mfq::MoeCacheKey>{key(0)},true);
+            std::vector<tyloi::MoeCacheKey>{key(0)},true);
         cache.set_device_cache_hints(hints);hints->publish(0,true);
         cache.acquire(key(0),64,[]{return weight(64,1);},true,false);
         check(cache.stats().device_reuse_promotions==1 && !cache.stats().prediction_used_jobs,
@@ -125,7 +125,7 @@ int main() try {
     {
         MoeHostExpertCache cache(256);cache.enable_reuse_priority();
         auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(
-            std::vector<mfq::MoeCacheKey>{key(0),key(1)},true);
+            std::vector<tyloi::MoeCacheKey>{key(0),key(1)},true);
         cache.set_device_cache_hints(hints);
         for(int e=0;e<4;++e)cache.acquire(key(e),64,[e]{return weight(64,e+1);});
         hints->publish(0,true);hints->publish(1,true);
@@ -236,7 +236,7 @@ int main() try {
     {
         MoeHostExpertCache cache(192);cache.enable_reuse_priority();
         auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(
-            std::vector<mfq::MoeCacheKey>{key(1)},true);
+            std::vector<tyloi::MoeCacheKey>{key(1)},true);
         cache.set_device_cache_hints(hints);
         for(int e:{0,1,2})cache.acquire(key(e),64,[e]{return weight(64,e+1);});
         // Only the GPU consumed this expert again. Its RAM backup must
@@ -253,7 +253,7 @@ int main() try {
     {
         MoeHostExpertCache cache(192);cache.enable_reuse_priority();
         auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(
-            std::vector<mfq::MoeCacheKey>{key(1)},true);
+            std::vector<tyloi::MoeCacheKey>{key(1)},true);
         cache.set_device_cache_hints(hints);cache.set_reuse_learning(false);
         for(int e:{0,1,2})cache.acquire(key(e),64,[e]{return weight(64,e+1);});
         hints->publish(0,true);cache.acquire(key(3),64,[]{return weight(64,4);});
@@ -323,7 +323,7 @@ int main() try {
     for(bool reuse:{false,true}) {
         MoeHostExpertCache cache(192);if(reuse)cache.enable_reuse_priority();
         auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(
-            std::vector<mfq::MoeCacheKey>{key(0),key(1),key(2),key(3),key(4)});
+            std::vector<tyloi::MoeCacheKey>{key(0),key(1),key(2),key(3),key(4)});
         cache.set_device_cache_hints(hints);
         for(int e:{0,1,2})cache.acquire(key(e),64,[e]{return weight(64,e+1);});
         if(reuse)bytes_equal(cache.find(key(2)),3);
@@ -341,7 +341,7 @@ int main() try {
     }
     {
         MoeHostExpertCache cache(192);cache.enable_reuse_priority();
-        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<mfq::MoeCacheKey>{key(1)});
+        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<tyloi::MoeCacheKey>{key(1)});
         cache.set_device_cache_hints(hints);
         for(int e:{0,1,2})cache.acquire(key(e),64,[e]{return weight(64,e+1);});
         bytes_equal(cache.find(key(1)),2);hints->publish(0,true);
@@ -351,7 +351,7 @@ int main() try {
     }
     {
         MoeHostExpertCache cache(128);
-        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<mfq::MoeCacheKey>{key(1),key(2)});
+        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<tyloi::MoeCacheKey>{key(1),key(2)});
         cache.set_device_cache_hints(hints);
         cache.acquire(key(0),64,[]{return weight(64,1);});
         auto held=cache.acquire(key(1),64,[]{return weight(64,2);});
@@ -367,7 +367,7 @@ int main() try {
     }
     {
         MoeHostExpertCache cache(128);cache.preserve_resident_experts();
-        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<mfq::MoeCacheKey>{key(0)});
+        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<tyloi::MoeCacheKey>{key(0)});
         cache.set_device_cache_hints(hints);
         cache.acquire(key(0),64,[]{return weight(64,1);});hints->publish(0,true);
         cache.acquire(key(1),64,[]{return weight(64,2);});
@@ -378,7 +378,7 @@ int main() try {
     }
     for(bool batch:{false,true}) {
         MoeHostExpertCache cache(128);
-        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<mfq::MoeCacheKey>{key(0),key(2)});
+        auto hints=std::make_shared<MoeHostExpertCache::DeviceCacheHints>(std::vector<tyloi::MoeCacheKey>{key(0),key(2)});
         cache.set_device_cache_hints(hints);hints->publish(0,true);
         cache.acquire(key(0),64,[]{return weight(64,1);});
         cache.acquire(key(1),64,[]{return weight(64,2);});
@@ -696,7 +696,7 @@ int main() try {
         ++batch_cases;
     }
     int keyed_cases=0;
-    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");option && option[0]=='1')
+    if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");option && option[0]=='1')
       for(bool reuse:{false,true})for(bool fail:{false,true}) {
         MoeHostExpertCache cache(192);cache.preserve_resident_experts();
         if(reuse)cache.enable_reuse_priority();

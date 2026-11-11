@@ -28,7 +28,7 @@ __global__ void compare(const float* input,std::uint32_t* output,int cases) {
         for(int offset=16;offset>0;offset/=2)
             reference[row]+=__shfl_xor_sync(0xffffffffu,reference[row],offset);
     }
-    mfq::cuda::warp_multi_sum::broadcast(candidate,lane);
+    tyloi::cuda::warp_multi_sum::broadcast(candidate,lane);
 #pragma unroll
     for(int row=0;row<Count;++row) {
         const int index=((sample*Count+row)*32+lane)*4;

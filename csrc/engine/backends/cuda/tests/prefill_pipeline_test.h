@@ -1,20 +1,21 @@
 #pragma once
+#include "execution_fixture.h"
 #include "env.h"
 
 void verify_prefill_graph_execution(const std::filesystem::path& root,bool grouped=false,int group_size=1,bool sparse=false,bool oracle=false,bool layer_prefill=false,bool layout_only=false,bool batch_check=false,bool residency_check=false,bool partial_pin=false) {
     struct Setting {
         std::string old;
         std::string old_direct,old_groups,old_group_size,old_mma,old_layer,old_retain,old_pin;
-        Setting(){if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GRAPH"))old=p;
-            if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_DIRECT_RAM"))old_direct=p;
-            if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUPS"))old_groups=p;
-            if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE"))old_group_size=p;
-            if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_COMPACT_MMA"))old_mma=p;
-            if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER"))old_layer=p;
-            if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_RAM_PIN_GIB"))old_pin=p;
-            if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_POOL_RETAIN"))old_retain=p;}
+        Setting(){if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GRAPH"))old=p;
+            if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_DIRECT_RAM"))old_direct=p;
+            if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUPS"))old_groups=p;
+            if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE"))old_group_size=p;
+            if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_COMPACT_MMA"))old_mma=p;
+            if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER"))old_layer=p;
+            if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_RAM_PIN_GIB"))old_pin=p;
+            if(const auto* p=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_POOL_RETAIN"))old_retain=p;}
         static void set_env(const char* key,const char* p) {
-            if(*p)mfq::cuda::env_set(key,p);else mfq::cuda::env_clear(key);
+            if(*p)tyloi::cuda::env_set(key,p);else tyloi::cuda::env_clear(key);
         }
         static void set(const char* p){set_env("TYLOINFER_MOE_PREFILL_GRAPH",p);}
         ~Setting(){set(old.c_str());set_env("TYLOINFER_MOE_PREFILL_DIRECT_RAM",old_direct.c_str());set_env("TYLOINFER_MOE_PREFILL_GROUPS",old_groups.c_str());set_env("TYLOINFER_MOE_PREFILL_GROUP_SIZE",old_group_size.c_str());set_env("TYLOINFER_MOE_PREFILL_COMPACT_MMA",old_mma.c_str());set_env("TYLOINFER_MOE_PREFILL_LAYER",old_layer.c_str());set_env("TYLOINFER_MOE_PREFILL_POOL_RETAIN",old_retain.c_str());set_env("TYLOINFER_MOE_RAM_PIN_GIB",old_pin.c_str());}
@@ -24,11 +25,10 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
         std::array<std::string,3>{"nint5","nint5","nint5"},
         {"nvq3j-512","nvq3j-512","nvq3j-512"},
         {"nint6","nvq3j-l","nvq2j-xl"}}) {
-        std::array<std::shared_ptr<const mfq::ModelSource>,3> canonical;
+        std::array<std::shared_ptr<const tyloi::ModelSource>,3> canonical;
         if(oracle)for(int p=0;p<3;++p)
-            canonical[p]=mfq::open_model_source((root/(names[p]+(p==2?"-2560-640.mfq":"-640-2560.mfq"))).string());
-        std::array<CudaStores,2> stores;
-        std::array<CudaExecutionContext,2> execution{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
+            canonical[p]=tyloi::open_model_source((root/(names[p]+(p==2?"-2560-640.mfq":"-640-2560.mfq"))).string());
+        std::array<TestExecution,2> execution;
         std::array<std::shared_ptr<MoeExpertCache>,2> caches;
         std::array<std::array<MoeFfnForward,2>,2> forward;
         const std::array<MfqCudaStream,2> streams={mfq_get_stream_from_pool(),mfq_get_current_cuda_stream()};
@@ -69,7 +69,7 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
             finalize_moe_expert_cache(caches[mode]);
             if(layer_prefill && mode==1)for(const auto& quant:registered)
                 for(std::size_t pool=0;pool<quant->store().pool_count();++pool)
-                    quant->store().visit_pool_experts(pool,[&](int expert,mfq::MfeQuantExpert encoded) {
+                    quant->store().visit_pool_experts(pool,[&](int expert,tyloi::MfeQuantExpert encoded) {
                         if(quant->gpu_resident(expert))return;
                         auto actual=quant->acquire_expert(expert);
                         const auto expected=moe_cache_fields(quant->decode_expert(expert,encoded));
@@ -103,11 +103,11 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
                 for(int i=0;i<3;++i)ids[i]=1;
                 for(int i=3;i<8;++i)ids[i]=2;
             }
-            auto x=tb::tensor(values).reshape({tokens,2560}).to(tb::kFloat16).to(tb::kCUDA);
-            auto route=tb::tensor(ids).reshape({tokens,3}).to(tb::kCUDA);
-            auto w=tb::tensor(weights).reshape({tokens,3}).to(tb::kCUDA);
+            auto x=tb::tensor(values).reshape({tokens,2560}).to(tyloi::kFloat16).to(tyloi::kCUDA);
+            auto route=tb::tensor(ids).reshape({tokens,3}).to(tyloi::kCUDA);
+            auto w=tb::tensor(weights).reshape({tokens,3}).to(tyloi::kCUDA);
             TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
-            std::array<std::array<tb::Tensor,2>,2> queued;
+            std::array<std::array<tyloi::DenseTensor,2>,2> queued;
             for(int mode=0;mode<2;++mode) {
                 MfqCudaStreamGuard guard(streams[mode]);
                 Setting::set(mode==0?"1":"0");
@@ -128,22 +128,22 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
                 if(mode==1 && pool) {
                     uint64_t threshold=0;
                     TYLOINFER_CUDA_CHECK(cudaMemPoolGetAttribute(pool,cudaMemPoolAttrReleaseThreshold,&threshold));
-                    const auto limit=mfq::cuda::default_context(mfq_current_cuda_device())->memory_stats().limit;
+                    const auto limit=tyloi::cuda::default_context(mfq_current_cuda_device())->memory_stats().limit;
                     const uint64_t expected=tokens>8?(limit?limit:std::numeric_limits<uint64_t>::max()):initial_threshold;
                     if(threshold!=expected)throw std::runtime_error("prefill pool retention/decode restoration differs");
                     ++pool_checks;
                 }
 #endif
             }
-            tb::Tensor dense_reference;
+            tyloi::DenseTensor dense_reference;
             if(batch_check && tokens>=512) {
                 MfqCudaStreamGuard guard(streams[1]);
                 for(int layer=0;layer<2;++layer) {
                     // A one-row final chunk uses Q8 decode arithmetic. Compare
                     // full batches directly to establish the new tile's bits.
-                    const auto* wide_option=mfq::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_M256");
-                    const auto* k_option=mfq::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_NARROW_G2");
-                    const auto* cohorts_option=mfq::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_COHORTS");
+                    const auto* wide_option=tyloi::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_M256");
+                    const auto* k_option=tyloi::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_NARROW_G2");
+                    const auto* cohorts_option=tyloi::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_COHORTS");
                     const bool wide=wide_option && std::atoi(wide_option)!=0;
                     const bool k_tile=k_option && std::atoi(k_option)!=0;
                     const char* tile_key=wide?"TYLOINFER_NVQ_PREFILL_M256":k_tile?"TYLOINFER_NVQ_PREFILL_NARROW_G2":"TYLOINFER_NVQ_PREFILL_COHORTS";
@@ -158,14 +158,14 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
                             throw std::runtime_error("NVQ tile variant changed original FFN output bits");
                         ++wide_row_bits_checks;
                     }
-                    std::vector<tb::Tensor> parts;
+                    std::vector<tyloi::DenseTensor> parts;
                     for(int start=0;start<tokens;start+=64) {
                         const int length=std::min(64,tokens-start);
                         parts.push_back(forward[1][layer](execution[1],x.narrow(0,start,length).contiguous(),
                             route.narrow(0,start,length).contiguous(),w.narrow(0,start,length).contiguous()));
                     }
-                    auto expected=tb::cat(parts,0).cpu().to(tb::kFloat32);
-                    auto actual=queued[1][layer].cpu().to(tb::kFloat32);
+                    auto expected=tb::cat(parts,0).cpu().to(tyloi::kFloat32);
+                    auto actual=queued[1][layer].cpu().to(tyloi::kFloat32);
                     double error=0,scale=0;
                     for(int64_t i=0;i<actual.numel();++i) {
                         const double delta=double(actual.data_ptr<float>()[i])-expected.data_ptr<float>()[i];
@@ -184,10 +184,10 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
                 auto up=mfe_dense_reference(*canonical[1],"linear.weight",x,ids,tokens,3,false).reshape({tokens,3,640});
                 auto hidden=moe_swiglu_rounded_cuda(gate,up,moe_swiglu_sigmoid_table_cuda());
                 dense_reference=mfe_dense_reference(*canonical[2],"linear.weight",hidden,ids,tokens,3,true)
-                    .reshape({tokens,3,2560}).cpu().to(tb::kFloat32);
+                    .reshape({tokens,3,2560}).cpu().to(tyloi::kFloat32);
             }
             for(int layer=0;layer<2;++layer) {
-            std::array<tb::Tensor,2> result;
+            std::array<tyloi::DenseTensor,2> result;
             for(int mode=0;mode<2;++mode) {
                 MfqCudaStreamGuard guard(streams[mode]);
                 result[mode]=queued[mode][layer].cpu().contiguous();
@@ -195,7 +195,7 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
             }
             if(result[0].sizes()!=result[1].sizes())throw std::runtime_error("prefill FFN output shape differs");
             if(oracle && tokens>8) {
-                auto actual=result[1].to(tb::kFloat32);double squared=0,reference_squared=0;
+                auto actual=result[1].to(tyloi::kFloat32);double squared=0,reference_squared=0;
                 float difference=0,scale=0;
                 for(int64_t i=0;i<actual.numel();++i) {
                     const float a=actual.data_ptr<float>()[i],b=dense_reference.data_ptr<float>()[i];
@@ -213,7 +213,7 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
             } else if(residency_check) {
                 // Ownership changes can alter FP16 reduction rounding between
                 // the resident and transferred NVQ projection kernels.
-                auto a=result[0].to(tb::kFloat32),b=result[1].to(tb::kFloat32);
+                auto a=result[0].to(tyloi::kFloat32),b=result[1].to(tyloi::kFloat32);
                 double squared=0,reference_squared=0;
                 for(int64_t i=0;i<a.numel();++i) {
                     const double d=double(a.data_ptr<float>()[i])-b.data_ptr<float>()[i];
@@ -222,7 +222,7 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
                 if(std::sqrt(squared/std::max(reference_squared,1e-20))>.001)
                     throw std::runtime_error("adaptive decode differs from fixed residency");
             } else if(std::memcmp(result[0].data_ptr(),result[1].data_ptr(),result[0].numel()*result[0].element_size())) {
-                auto a=result[0].to(tb::kFloat32),b=result[1].to(tb::kFloat32);
+                auto a=result[0].to(tyloi::kFloat32),b=result[1].to(tyloi::kFloat32);
                 float difference=0,scale=0;int64_t worst=0;
                 for(int64_t i=0;i<a.numel();++i) {
                     const float d=std::abs(a.data_ptr<float>()[i]-b.data_ptr<float>()[i]);
@@ -233,7 +233,7 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
                          <<" expected="<<a.data_ptr<float>()[worst]<<" actual="<<b.data_ptr<float>()[worst]<<"\n";
                 throw std::runtime_error("eager prefill differs from captured FFN");
             }
-            auto f=result[1].to(tb::kFloat32);
+            auto f=result[1].to(tyloi::kFloat32);
             for(int64_t i=0;i<f.numel();++i)if(!std::isfinite(f.data_ptr<float>()[i]))
                 throw std::runtime_error("nonfinite eager prefill output");
             ++cases;
@@ -245,7 +245,7 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
                     throw std::runtime_error("prefill did not copy registered RAM directly");
                 if(grouped && (!std::regex_search(stats,match,std::regex("pipeline_prefill_groups=(\\d+)")) || std::stoll(match[1])<3))
                     throw std::runtime_error("prefill did not reuse its streamed expert ring");
-                const auto* phased=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_PHASED");
+                const auto* phased=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_PHASED");
                 if(layer_prefill && !layout_only && (!phased || std::atoi(phased)!=0) &&
                     (!std::regex_search(stats,match,std::regex("pipeline_phased_transfer_serves=(\\d+)")) || std::stoll(match[1])<=0))
                     throw std::runtime_error("whole-layer prefill did not partition Gate/Up and Down");

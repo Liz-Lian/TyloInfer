@@ -25,7 +25,7 @@
 #include <numeric>
 #include <map>
 
-using namespace mfq::engine;
+using namespace tyloi::engine;
 
 struct BatchOps {
     using Request = BatchRequest;
@@ -506,7 +506,7 @@ struct Model {
     void adapter_reset(int64_t) {}
 };
 void model_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     Model model;
     for (int i = 0; i < 2; ++i)
         model.blocks.push_back(std::make_unique<Block>());
@@ -576,7 +576,7 @@ void model_test() {
                add) == 45);
 }
 void inner_model_flow_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     using Heads = AttentionHeads<int>;
     // All three native fusion choices must implement the same attention graph.
     for (int fusion = 0; fusion < 3; ++fusion) {
@@ -715,7 +715,7 @@ struct PredictorOps {
     }
     static bool defined(const Tensor &t) { return !t.shape.empty(); }
     static Tensor embed(Tensor ids, const Tensor &like) { return {like.shape, ids.value + 2}; }
-    static Tensor normalize(Tensor t, mfq::models::qwen35::PredictorNorm role) {
+    static Tensor normalize(Tensor t, tyloi::models::qwen35::PredictorNorm role) {
         t.value += static_cast<int>(role) + 1;
         return t;
     }
@@ -744,7 +744,7 @@ struct PredictorOps {
 };
 
 void predictor_flow_test() {
-    using mfq::models::qwen35::mtp_predictor;
+    using tyloi::models::qwen35::mtp_predictor;
     PredictorOps ops;
     auto run = [&](int64_t tokens, PredictorOps::Tensor pos = {}) {
         return mtp_predictor(ops, {{1, tokens, 4}, 3}, {{1, tokens}, 5}, pos);
@@ -784,9 +784,9 @@ struct NemotronPredictorOps {
         struct Config {
             int hidden_size = 4;
             std::int64_t num_nextn_predict_layers = 1;
-            std::vector<mfq::models::nemotron_h::MixerKind> mtp_mixers = {
-                mfq::models::nemotron_h::MixerKind::full_attention,
-                mfq::models::nemotron_h::MixerKind::moe};
+            std::vector<tyloi::models::nemotron_h::MixerKind> mtp_mixers = {
+                tyloi::models::nemotron_h::MixerKind::full_attention,
+                tyloi::models::nemotron_h::MixerKind::moe};
         } config;
         // Smaller than predictor_capacity(): the shared fallback must not win.
         int64_t maximum = 2;
@@ -811,7 +811,7 @@ struct NemotronPredictorOps {
     }
     static bool defined(const Tensor &t) { return !t.shape.empty(); }
     static Tensor embed(Tensor ids, const Tensor &like) { return {like.shape, ids.value + 2}; }
-    static Tensor normalize(Tensor t, mfq::models::nemotron_h::PredictorNorm role) {
+    static Tensor normalize(Tensor t, tyloi::models::nemotron_h::PredictorNorm role) {
         t.value += static_cast<int>(role) + 1;
         return t;
     }
@@ -831,7 +831,7 @@ struct NemotronPredictorOps {
 };
 
 void nemotron_predictor_flow_test() {
-    using mfq::models::nemotron_h::mtp_predictor;
+    using tyloi::models::nemotron_h::mtp_predictor;
     NemotronPredictorOps ops;
     auto run = [&](int64_t tokens) {
         return mtp_predictor(ops, {{1, tokens, 4}, 3}, {{1, tokens}, 5}, {}, 0, true);
@@ -882,7 +882,7 @@ struct CausalTestOps {
         void commit_speculative() {}
         void rollback_speculative(int64_t value) { kept = value; }
     };
-    mfq::models::CausalLmMetadata metadata;
+    tyloi::models::CausalLmMetadata metadata;
     std::vector<std::unique_ptr<Block>> blocks;
     Tensor output_norm;
     int embed = 0, lm_head = 0;
@@ -990,7 +990,7 @@ struct CausalTestOps {
 
 void causal_lm_test() {
     using Tensor = CausalTestOps::Tensor;
-    struct TestModel : mfq::models::CausalModelBase<CausalTestOps, TestModel> {
+    struct TestModel : tyloi::models::CausalModelBase<CausalTestOps, TestModel> {
         bool adapter_supports_speculation() const { return true; }
         bool adapter_supports_suffix_speculation() const { return true; }
     } model;
@@ -1060,7 +1060,7 @@ struct FinalCausalTestOps : CausalTestOps {
 };
 
 void family_model_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     struct QwenOps : CausalTestOps {
         Tensor positions;
         static bool defined(const Tensor &t) { return !t.shape.empty(); }
@@ -1105,7 +1105,7 @@ void family_model_test() {
 }
 
 void remaining_family_flows_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     int state = 0, saved = -1;
     auto run = [&](int64_t start, int64_t count) {
         state += count;
@@ -1236,7 +1236,7 @@ void remaining_family_flows_test() {
 }
 
 void boundary_model_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     for (bool ple : {false, true})
         for (bool linear : {false, true}) {
             int selected = 0, embedded = 0;
@@ -1393,20 +1393,20 @@ void token_generation_test() {
     assert(accepted == 1);
     std::array<int, 20> history{};
     std::iota(history.begin(), history.end(), 0);
-    mfq::models::minicpmo45::TtsSampling options;
+    tyloi::models::minicpmo45::TtsSampling options;
     options.minimum_keep = 3;
     options.min_p = 0.1;
     options.validate(3, 6562);
     TtsTraceOps ops;
-    mfq::models::minicpmo45::sample_tts(ops, 0, options, history, 0, false);
+    tyloi::models::minicpmo45::sample_tts(ops, 0, options, history, 0, false);
     assert(ops.order == "PEKNMTS");
     ops.order.clear();
-    mfq::models::minicpmo45::sample_tts(ops, 0, options, history, 0, true);
+    tyloi::models::minicpmo45::sample_tts(ops, 0, options, history, 0, true);
     assert(ops.order == "TPER");
     ops.order.clear();
     options.minimum_steps = 0;
     options.repetition_penalty = 1;
-    mfq::models::minicpmo45::sample_tts(ops, 0, options, {}, 0, false);
+    tyloi::models::minicpmo45::sample_tts(ops, 0, options, {}, 0, false);
     assert(ops.order == "KNMTS");
     std::mt19937 rng(42);
     const float scores[]{0, 1, 5, -1};
@@ -1420,7 +1420,7 @@ void token_generation_test() {
     }
 }
 
-struct LoadTestModel : mfq::models::CausalModelBase<CausalTestOps, LoadTestModel> {
+struct LoadTestModel : tyloi::models::CausalModelBase<CausalTestOps, LoadTestModel> {
     static bool accepts_backbone(std::string_view value) { return value == "fixture"; }
     void adapter_set_max_position_embeddings(int64_t) {}
     template <class Graph, class Source>
@@ -1509,7 +1509,7 @@ struct MediaTestOps {
         calls += 'E';
         return {{ids.shape[0], ids.shape[1], 4}, 4};
     }
-    mfq::StepSequence<Tensor> vision(Tensor, Tensor, Tensor) {
+    tyloi::StepSequence<Tensor> vision(Tensor, Tensor, Tensor) {
         calls += 'V';
         co_yield Tensor{{1, 4, 3}, 7};
     }
@@ -1519,7 +1519,7 @@ struct MediaTestOps {
         return {{1, 2, 4}, 10};
     }
     void reset_audio() { calls += 'A'; }
-    mfq::StepSequence<Tensor> audio(Tensor, Tensor) {
+    tyloi::StepSequence<Tensor> audio(Tensor, Tensor) {
         calls += 'U';
         co_yield Tensor{{1, 3, 4}, 20};
     }
@@ -1528,7 +1528,7 @@ struct MediaTestOps {
         return std::vector<int64_t>{3};
     }
     void scatter(Tensor &target, const Tensor &source,
-                 const mfq::models::minicpmo45::MediaBound &bound) {
+                 const tyloi::models::minicpmo45::MediaBound &bound) {
         calls += 'S';
         assert(bound.end - bound.begin == source.shape[1]);
         target.value += source.value;
@@ -1536,7 +1536,7 @@ struct MediaTestOps {
 };
 
 void bounded_encoder_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     std::array<int, 3> layers{1, 2, 3};
     for (bool audio : {false, true}) {
         for (int stop = 0; stop <= 5; ++stop) {
@@ -1565,12 +1565,12 @@ void bounded_encoder_test() {
 }
 
 void composition_boundary_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     using Tensor = CausalTestOps::Tensor;
     MediaTestOps ops;
     minicpmo45::MultimodalInputs<Tensor> input{{{6}, 1}, {{1}, 1}, {{1}, 1},       {{1}, 1},
                                                {{1}, 1}, {{1}, 1}, {{0, 0, 1, 3}}, {{0, 0, 3, 6}}};
-    auto result = mfq::finish_steps(minicpmo45::encode(ops, input));
+    auto result = tyloi::finish_steps(minicpmo45::encode(ops, input));
     assert(ops.calls == "EVRSAULS" && result.input_embeddings.value == 34);
     assert(input.ids.shape == std::vector<int64_t>({1, 6}));
     minicpmo45::CausalLm<CausalTestOps> model;
@@ -1589,7 +1589,7 @@ void composition_boundary_test() {
         if (invalid == 3)
             broken.pixels = {};
         try {
-            mfq::finish_steps(minicpmo45::encode(ops, broken));
+            tyloi::finish_steps(minicpmo45::encode(ops, broken));
             assert(false);
         } catch (const std::runtime_error &) {
         }
@@ -1598,27 +1598,27 @@ void composition_boundary_test() {
     text.images.clear();
     text.audios.clear();
     ops.calls.clear();
-    assert(mfq::finish_steps(minicpmo45::encode(ops, text)).input_embeddings.value == 4 && ops.calls == "E");
+    assert(tyloi::finish_steps(minicpmo45::encode(ops, text)).input_embeddings.value == 4 && ops.calls == "E");
     try {
         minicpmo45::media_bounds(std::array<int64_t, 4>{0, 0, 2, 1});
         assert(false);
     } catch (const std::runtime_error &) {
     }
 
-    mfq::GridVisionConfig config;
+    tyloi::GridVisionConfig config;
     config.spatial_merge_size = 2;
     config.hidden_size = 3;
     config.num_position_embeddings = 4;
     std::array<int, 2> layers{1, 2};
     std::string order;
-    const auto encoded = mfq::finish_steps(grid_vision::encode(
+    const auto encoded = tyloi::finish_steps(grid_vision::encode(
         1, config, {{1, 2, 2}}, layers,
         [&](int x, int64_t count) {
             order += 'P';
             assert(count == 4);
             return x + 2;
         },
-        [&](const mfq::LearnedPositionInterpolation &p) {
+        [&](const tyloi::LearnedPositionInterpolation &p) {
             order += 'I';
             assert(p.patch_count == 4);
             return 5;
@@ -1627,7 +1627,7 @@ void composition_boundary_test() {
             order += 'A';
             return x + y;
         },
-        [&](int layer, int x, const mfq::GridVisionLayout &layout) {
+        [&](int layer, int x, const tyloi::GridVisionLayout &layout) {
             order += 'L';
             assert(layout.patch_count == 4);
             return x * layer;
@@ -1674,7 +1674,7 @@ void composition_boundary_test() {
                 assert(indices == std::vector<int64_t>{1});
                 embedding += vision;
             },
-            [](const mfq::GridMropePositions &positions) {
+            [](const tyloi::GridMropePositions &positions) {
                 assert(positions.token_count == 3);
                 return 1;
             });
@@ -1756,7 +1756,7 @@ struct ParameterLoader {
     Tensor routed_gate_up(const std::string &p, int, int64_t, int64_t, int64_t) {
         return dense(p + ".experts.gate_up.weight");
     }
-    static Tensor residual(Tensor norm, Tensor, Tensor, Tensor, const mfq::models::qwen4_exp::Config &) { return norm; }
+    static Tensor residual(Tensor norm, Tensor, Tensor, Tensor, const tyloi::models::qwen4_exp::Config &) { return norm; }
     static Tensor final_mixer(Tensor value) { return value; }
     GdnWeights gdn_weights(const std::string &p) {
         return {linear(p + ".qkv.weight"),linear(p + ".gate.weight"),linear(p + ".alpha.weight"),
@@ -1768,8 +1768,8 @@ struct ParameterLoader {
             linear(p + ".output.weight"),linear(p + ".indexer.query_key.weight"),dense(p + ".query_norm.weight"),
             dense(p + ".key_norm.weight"),dense(p + ".indexer.query_norm.weight"),dense(p + ".indexer.key_norm.weight")};
     }
-    static Tensor gdn(GdnWeights w, const mfq::models::qwen4_exp::Config &) { return w[0]; }
-    static Tensor qsa(QsaWeights w, const mfq::models::qwen4_exp::Config &) { return w[0]; }
+    static Tensor gdn(GdnWeights w, const tyloi::models::qwen4_exp::Config &) { return w[0]; }
+    static Tensor qsa(QsaWeights w, const tyloi::models::qwen4_exp::Config &) { return w[0]; }
     template <class... Args> static Tensor moe(Args &&...) { return "moe"; }
     static Tensor gated_mlp(Tensor gate, Tensor, Tensor, double) { return gate; }
     auto embedding(const std::string &name) {
@@ -1777,22 +1777,22 @@ struct ParameterLoader {
     }
     std::vector<int64_t> integers(const std::string &name) { dense(name); return {1}; }
     static Tensor ple(std::vector<Embedding> shards, int64_t, int64_t,
-                      const mfq::models::qwen4_exp::Config &, std::vector<int64_t>,
+                      const tyloi::models::qwen4_exp::Config &, std::vector<int64_t>,
                       std::vector<int64_t>, std::vector<int64_t>, PleWeights) { return shards.front(); }
-    auto block(const mfq::models::qwen4_exp::Config &c, int layer, bool predictor) {
-        LayerParameters<mfq::models::qwen4_exp::Config> result;
-        mfq::models::qwen4_exp::load_block(result, *this, c, layer, predictor);
+    auto block(const tyloi::models::qwen4_exp::Config &c, int layer, bool predictor) {
+        LayerParameters<tyloi::models::qwen4_exp::Config> result;
+        tyloi::models::qwen4_exp::load_block(result, *this, c, layer, predictor);
         return result;
     }
     static Tensor mhc(Tensor function, Tensor, Tensor) { return function; }
     static Tensor concat(const std::vector<Tensor> &parts) { return parts[0]; }
     static Tensor headwise(Tensor weight, int64_t, int64_t) { return weight; }
-    static Tensor kda(KdaWeights w, const mfq::models::glm5_next::Config &) { return w[0]; }
-    static Tensor mla(MlaWeights w, const mfq::models::glm5_next::Config &) { return w[0]; }
+    static Tensor kda(KdaWeights w, const tyloi::models::glm5_next::Config &) { return w[0]; }
+    static Tensor mla(MlaWeights w, const tyloi::models::glm5_next::Config &) { return w[0]; }
 };
 
 static void family_parameter_loading_test() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     qwen4_exp::Config q{};
     q.hidden = 8; q.streams = 2; q.ngram = 2; q.ngram_heads = 1; q.shards = 2;
     q.layer_types = {"linear_attention", "full_attention"}; q.ple_layers = {1};
@@ -1875,8 +1875,8 @@ struct Ffn {
 };
 struct Layer {
     Ffn ffn;
-    mfq::models::qwen35::Config qwen_config;
-    mfq::models::glm_dsa::Config config;
+    tyloi::models::qwen35::Config qwen_config;
+    tyloi::models::glm_dsa::Config config;
     int layer = -1;
     int64_t attention_heads = 0, kv_heads = 0, attention_head_dim = 0, max_position_embeddings = 0;
     double rms_norm_eps = 0, norm_weight_offset = 0;
@@ -1909,8 +1909,8 @@ struct Loader {
         const auto& s = weights.at(name);
         return {s.at(0), s.at(1), s.at(2)};
     }
-    void experts(Ffn& f, mfq::models::ExpertProjection role, const std::string& name, int) const {
-        using Role = mfq::models::ExpertProjection;
+    void experts(Ffn& f, tyloi::models::ExpertProjection role, const std::string& name, int) const {
+        using Role = tyloi::models::ExpertProjection;
         auto& value = role == Role::gate ? f.moe_gate : role == Role::up ? f.moe_up
                     : role == Role::down ? f.moe_down : f.moe_gate_up;
         value = headwise(name);
@@ -1923,7 +1923,7 @@ struct Loader {
     static auto linear_block() { auto b = full_block(); b->linear = true; return b; }
     static auto finish(std::unique_ptr<Layer> value) { return value; }
     static Tensor log_negative(Tensor value) { value.name = "log(-" + value.name + ")"; return value; }
-    void linear_projections(Layer& b, const mfq::models::qwen35::LinearWeightNames& n, bool split) const {
+    void linear_projections(Layer& b, const tyloi::models::qwen35::LinearWeightNames& n, bool split) const {
         b.split_in_proj = split;
         b.input_proj = projections(split ? std::vector{n.qk, n.value, n.gate, n.alpha, n.beta}
                                           : std::vector{n.qkv, n.gate, n.alpha, n.beta});
@@ -1944,7 +1944,7 @@ struct Loader {
     }
 };
 void run() {
-    using namespace mfq::models;
+    using namespace tyloi::models;
     qwen35::Config q{};
     q.hidden_size = 8; q.intermediate_size = 16; q.num_attention_heads = 2;
     q.num_key_value_heads = 1; q.head_dim = 4; q.max_position_embeddings = 32;

@@ -5,7 +5,7 @@
 
 namespace tyloi {
 
-class ShardedTensor final : public Tensor {
+class ShardedTensor final : public TensorImpl {
 public:
     struct Shard {
         int device = 0;
@@ -13,7 +13,7 @@ public:
         int64_t input_end = 0;
         int64_t output_begin = 0;
         int64_t output_end = 0;
-        std::shared_ptr<const Tensor> weight;
+        Tensor weight;
     };
 
     ShardedTensor(int64_t out, int64_t in, ScalarType dtype,
@@ -26,11 +26,11 @@ public:
             throw std::invalid_argument("invalid sharded tensor geometry");
         int64_t end = 0;
         for (const auto& shard : this->shards) {
-            if (!shard.weight || shard.weight->dim() != 2 || shard.device < 0 ||
+            if (!shard.weight || shard.weight.dim() != 2 || shard.device < 0 ||
                 shard.input_begin < 0 || shard.input_end <= shard.input_begin || shard.input_end > in ||
                 shard.output_begin < 0 || shard.output_end <= shard.output_begin || shard.output_end > out ||
-                shard.weight->size(0) != shard.output_end - shard.output_begin ||
-                shard.weight->size(1) < shard.input_end - shard.input_begin)
+                shard.weight.size(0) != shard.output_end - shard.output_begin ||
+                shard.weight.size(1) < shard.input_end - shard.input_begin)
                 throw std::invalid_argument("invalid sharded tensor shard");
             if (axis == TensorParallelAxis::Input) {
                 if (shard.input_begin != end || shard.output_begin != 0 || shard.output_end != out)
@@ -48,7 +48,7 @@ public:
 
     bool defined() const noexcept override {
         for (const auto& shard : shards)
-            if (!shard.weight || !shard.weight->defined()) return false;
+            if (!shard.weight || !shard.weight.defined()) return false;
         return true;
     }
     int64_t dim() const noexcept override { return 2; }
@@ -64,7 +64,7 @@ public:
         std::vector<const DenseTensor*> result;
         for (const auto& shard : shards) {
             if (!shard.weight) continue;
-            auto part = shard.weight->buffers();
+            auto part = shard.weight.buffers();
             result.insert(result.end(), part.begin(), part.end());
         }
         return result;
@@ -73,12 +73,12 @@ public:
         for (const auto& shard : shards)
             if (!shard.weight || shard.device != shards.front().device)
                 throw std::invalid_argument("cannot record one stream for multiple devices");
-        for (const auto& shard : shards) shard.weight->record_stream(stream);
+        for (const auto& shard : shards) shard.weight.record_stream(stream);
     }
-    std::shared_ptr<const Tensor> relocated(Device) const override {
+    std::shared_ptr<TensorImpl> relocated(Device) const override {
         auto moved = shards;
         for (auto& shard : moved)
-            shard.weight = shard.weight->relocated(Device(kCUDA, shard.device));
+            shard.weight = shard.weight.relocated(Device(kCUDA, shard.device));
         return std::make_shared<ShardedTensor>(size(0), size(1), scalar_type(), axis, std::move(moved));
     }
 

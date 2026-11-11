@@ -1,4 +1,5 @@
 #pragma once
+#include "execution_fixture.h"
 #include "env.h"
 
 void verify_nvq_prefill_k_tiles(const std::filesystem::path& root,bool cohorts=false,bool defaults=false) {
@@ -6,14 +7,13 @@ void verify_nvq_prefill_k_tiles(const std::filesystem::path& root,bool cohorts=f
         const char* name;
         std::string previous;
         bool present=false;
-        explicit Environment(const char* key):name(key){if(const auto* p=mfq::cuda::env_lookup(name)){previous=p;present=true;}}
+        explicit Environment(const char* key):name(key){if(const auto* p=tyloi::cuda::env_lookup(name)){previous=p;present=true;}}
         void set(const char* p) const {
-            if(*p)mfq::cuda::env_set(name,p);else mfq::cuda::env_clear(name);
+            if(*p)tyloi::cuda::env_set(name,p);else tyloi::cuda::env_clear(name);
         }
         ~Environment(){set(present?previous.c_str():"");}
     } environment(cohorts?"TYLOINFER_NVQ_PREFILL_COHORTS":"TYLOINFER_NVQ_PREFILL_NARROW_G2");
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     constexpr int experts=512,routes=10;
     int cases=0;
     const auto formats=cohorts?std::vector<std::string>{"mixed"}:
@@ -28,7 +28,7 @@ void verify_nvq_prefill_k_tiles(const std::filesystem::path& root,bool cohorts=f
             std::vector<std::string>{format};
         int member_index=0;
         for(const auto& member:members) {
-        auto model=mfq::open_model_source((root/(member+"-"+std::to_string(out)+"-"+std::to_string(width)+".mfq")).string());
+        auto model=tyloi::open_model_source((root/(member+"-"+std::to_string(out)+"-"+std::to_string(width)+".mfq")).string());
         auto single=make_mixed_moe_runtime(load_mfe_cpu(*model,"linear.weight"),true,execution.config);
         if(single->pools.size()!=1 || single->pools[0].family!=MixedMoeFamily::Nvq)
             throw std::runtime_error("NVQ K-tile check requires a single NVQ fixture pool per member");
@@ -47,15 +47,15 @@ void verify_nvq_prefill_k_tiles(const std::filesystem::path& root,bool cohorts=f
         // expert fixture does not turn the throughput test into an L2-only run.
         const int pool_experts=(experts+int(members.size())-1-member_index)/int(members.size());
         const int repetitions=(pool_experts+pool.local_experts-1)/pool.local_experts;
-        const auto replicate=[&](tb::Tensor& tensor) {
-            if(tensor.numel())tensor=tb::cat(std::vector<tb::Tensor>(repetitions,tensor),0);
+        const auto replicate=[&](tyloi::DenseTensor& tensor) {
+            if(tensor.numel())tensor=tb::cat(std::vector<tyloi::DenseTensor>(repetitions,tensor),0);
         };
         replicate(pool.nvq.indices_packed);replicate(pool.nvq.aux_packed);
         replicate(pool.nvq.sub_scale_packed);replicate(pool.nvq.neuron_scale);
         pool.nvq.out*=repetitions;pool.local_experts*=repetitions;
         std::vector<int32_t> slots(experts,-1);
         for(int e=member_index;e<experts;e+=int(members.size()))slots[e]=e/int(members.size());
-        pool.expert_local=tb::tensor(slots).to(tb::kCUDA);
+        pool.expert_local=tb::tensor(slots).to(tyloi::kCUDA);
         runtime->pools.push_back(std::move(pool));++member_index;
         }
         initialize_mixed_nvq_dispatch(*runtime,execution.config,true);
@@ -65,7 +65,7 @@ void verify_nvq_prefill_k_tiles(const std::filesystem::path& root,bool cohorts=f
             const int pairs=tokens*routes;
             std::vector<float> values(tokens*width);
             for(size_t i=0;i<values.size();++i)values[i]=std::sin(float(i)*.017f)*.13f;
-            auto input=tb::tensor(values).reshape({tokens,width}).to(tb::kFloat16).to(tb::kCUDA);
+            auto input=tb::tensor(values).reshape({tokens,width}).to(tyloi::kFloat16).to(tyloi::kCUDA);
             std::vector<std::vector<int32_t>> selected(experts);
             for(int p=0;p<pairs;++p) {
                 const int e=(p*37)%experts;
@@ -86,19 +86,19 @@ void verify_nvq_prefill_k_tiles(const std::filesystem::path& root,bool cohorts=f
                 for(size_t first=0;first<selected[e].size();first+=128)tile_experts[tiles++]=e;
             }
             bounds.back()=int(compact.size());tile_bounds.back()=tiles;
-            auto ids_dst=tb::tensor(compact).to(tb::kCUDA),expert_bounds=tb::tensor(bounds).to(tb::kCUDA);
-            auto tiles_bounds=tb::tensor(tile_bounds).to(tb::kCUDA),tiles_experts=tb::tensor(tile_experts).to(tb::kCUDA);
+            auto ids_dst=tb::tensor(compact).to(tyloi::kCUDA),expert_bounds=tb::tensor(bounds).to(tyloi::kCUDA);
+            auto tiles_bounds=tb::tensor(tile_bounds).to(tyloi::kCUDA),tiles_experts=tb::tensor(tile_experts).to(tyloi::kCUDA);
             auto output=tb::empty({tokens,routes,out},input.options());
             const auto run=[&] {
                 nvq_moe_grouped_matmul_hetero_f16_cuda(dispatch.weight_ptrs,dispatch.weight_sizes,dispatch.pool_params,
                     dispatch.expert_pool,dispatch.expert_local,input,experts,out,width,128,output,
                     ids_dst,expert_bounds,tiles_bounds,tiles_experts,int(dispatch.f16_format_group),false);
             };
-            std::vector<float> times[2];tb::Tensor reference;
+            std::vector<float> times[2];tyloi::DenseTensor reference;
             for(int repeat=0;repeat<8;++repeat)for(int order=0;order<2;++order) {
                 const int candidate=order^(repeat&1);
                 environment.set(candidate?(defaults?"":"1"):"0");
-                run();run();mfq_cuda_synchronize();
+                run();run();cudaStreamSynchronize(::tyloi::cuda::current_stream());
                 cudaEvent_t start,stop;TYLOINFER_CUDA_CHECK(cudaEventCreate(&start));TYLOINFER_CUDA_CHECK(cudaEventCreate(&stop));
                 TYLOINFER_CUDA_CHECK(cudaEventRecord(start,mfq_current_cuda_stream()));
                 for(int i=0;i<3;++i)run();

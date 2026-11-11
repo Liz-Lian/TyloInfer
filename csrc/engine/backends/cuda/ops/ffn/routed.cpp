@@ -31,21 +31,21 @@ tyloi::ops::SelectedExperts topk(tyloi::DenseTensor logits, std::int64_t count,
 }
 tyloi::DenseTensor expert_scale(tyloi::DenseTensor weights, tyloi::DenseTensor ids, const tyloi::DenseTensor& scales) {
     MfqCudaGuard guard(weights.device().index);
-    return moe_apply_expert_scale_cuda(DenseTensor(weights), DenseTensor(ids), DenseTensor(scales));
+    return moe_apply_expert_scale_cuda(weights.dense(), ids.dense(), scales.dense());
 }
 tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor weights) {
     MfqCudaGuard guard(pairs.device().index);
-    return moe_weighted_reduce_cuda(DenseTensor(pairs), DenseTensor(weights));
+    return moe_weighted_reduce_cuda(pairs.dense(), weights.dense());
 }
 tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
     const ::tyloi::Tensor& gate_bank, const ::tyloi::Tensor& down_bank, bool trace) {
-    const auto* dense_gate = dynamic_cast<const DenseTensor*>(&gate_bank);
-    const auto* dense_down = dynamic_cast<const DenseTensor*>(&down_bank);
-    const auto* tq_gate = dynamic_cast<const TqBank*>(&gate_bank);
-    const auto* tq_down = dynamic_cast<const TqBank*>(&down_bank);
+    const auto* dense_gate = gate_bank.representation<DenseTensor>();
+    const auto* dense_down = down_bank.representation<DenseTensor>();
+    const auto* tq_gate = gate_bank.representation<TqBank>();
+    const auto* tq_down = down_bank.representation<TqBank>();
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    const auto* gate = dynamic_cast<const MfeTensor*>(&gate_bank);
-    const auto* down = dynamic_cast<const MfeTensor*>(&down_bank);
+    const auto* gate = gate_bank.representation<MfeTensor>();
+    const auto* down = down_bank.representation<MfeTensor>();
     if (gate) ::tyloi::weights::check_placement(
         ::tyloi::weights::expert_placement(*gate), input.device());
     if (down) ::tyloi::weights::check_placement(
@@ -89,7 +89,7 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
     }
     if (gate && down) {
         auto route = profiler.measure("gemma.route_map", [&] {
-            return build_moe_route_plan(DenseTensor(ids), gate->n_experts);
+            return build_moe_route_plan(ids.dense(), gate->n_experts);
         });
         const bool prefetched =
             ::tyloi::cuda::prefetch_cached_moe_projection_bundle(*gate, *down, route);
@@ -99,7 +99,7 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
         tyloi::ops::RoutedGeglu result;
         if (!trace && ::tyloi::weights::supports_geglu(*gate)) {
             auto hidden = profiler.measure("gemma.moe_gate_up_geglu", [&] {
-                return project.glu(*gate, DenseTensor(input), route, true);
+                return project.glu(*gate, input.dense(), route, true);
             });
             prefetch_down();
             result.pairs = std::make_shared<DenseTensor>(profiler.measure("gemma.moe_down", [&] {
@@ -108,7 +108,7 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
             return result;
         }
         auto packed = profiler.measure("gemma.moe_gate_up", [&] {
-            return project.run(*gate, DenseTensor(input), route);
+            return project.run(*gate, input.dense(), route);
         });
         prefetch_down();
         if (trace) result.gate_up = std::make_shared<DenseTensor>(packed.to(::tyloi::kFloat32).contiguous().clone());
@@ -136,7 +136,7 @@ tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTenso
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     std::optional<MoeRoutePlan> route;
     if (gate || down) route.emplace(profiler.measure("gemma.route_map", [&] {
-        return build_moe_route_plan(DenseTensor(ids), static_cast<int>(gate_bank.size(0)));
+        return build_moe_route_plan(ids.dense(), static_cast<int>(gate_bank.size(0)));
     }));
     if (gate) packed = project.run(*gate, input, *route);
     else

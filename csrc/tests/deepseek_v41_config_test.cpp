@@ -12,8 +12,8 @@
 
 namespace {
 
-using mfq::models::deepseek_v41::Config;
-using mfq::models::deepseek_v41::TensorNames;
+using tyloi::models::deepseek_v41::Config;
+using tyloi::models::deepseek_v41::TensorNames;
 
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
@@ -113,7 +113,7 @@ void require_rejected(Mutator mutate, const char* message) {
 }
 
 void check_retained_engram_history() {
-    using mfq::models::deepseek_v41::EngramHashState;
+    using tyloi::models::deepseek_v41::EngramHashState;
     const auto make=[] {return EngramHashState(8,3,2,0,{1},{36},{5,7,11,13},
         {0,5,12,23},{3,5,7},{0,1,2,3,4,5,6,7});};
     const auto tokens=[](int batch,int count,int offset) {
@@ -149,7 +149,7 @@ void check_retained_engram_history() {
 }
 
 void check_image_engram_history() {
-    using mfq::models::deepseek_v41::EngramHashState;
+    using tyloi::models::deepseek_v41::EngramHashState;
     const auto make=[] {return EngramHashState(8,3,2,0,{1},{36},{5,7,11,13},
         {0,5,12,23},{3,5,7},{0,1,2,3,4,5,6,7});};
     const std::vector<int64_t> ids{1,2,3,4,5,6,7};
@@ -171,7 +171,7 @@ void check_image_engram_history() {
 void check_dspark_requested_head() {
     for(int width:{1,2,5})for(int stages:{1,3}) {
         auto run=[&](int requested) {
-            return mfq::models::deepseek_v41::dspark_draft(width,requested,stages,
+            return tyloi::models::deepseek_v41::dspark_draft(width,requested,stages,
                 [](int64_t count) {
                     std::vector<int> rows(count);
                     for(int i=0;i<count;++i)rows[i]=i+1;

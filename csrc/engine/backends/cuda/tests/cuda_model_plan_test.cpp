@@ -1,4 +1,4 @@
-#include "cuda_model_plan.h"
+#include "engine/models/common/capabilities.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -9,11 +9,11 @@ void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
 }
 
-mfq::ModelGraph graph_with(
+tyloi::ModelGraph graph_with(
         std::string backbone,
         std::string vision = {},
         std::string predictor = {}) {
-    mfq::ModelGraph graph;
+    tyloi::ModelGraph graph;
     graph.backbone = std::move(backbone);
     graph.components.push_back({
         "text", "model", graph.backbone, "decoder", {}, {}, {}});
@@ -33,7 +33,8 @@ mfq::ModelGraph graph_with(
 
 int main() {
     try {
-        using namespace mfq::cuda;
+        using namespace tyloi::cuda;
+using namespace tyloi;
 
         const auto require_capabilities = [](
                 const CudaCapabilityMatrix& actual,
@@ -53,9 +54,9 @@ int main() {
         auto qwen = graph_with(
             "qwen3_5", "grid_vit", "next_token_prediction");
         qwen.components.at(1).input_contract =
-            mfq::kMfqGridVisionInputContract;
+            tyloi::kMfqGridVisionInputContract;
         qwen.components.at(1).position_policy =
-            mfq::kMfqGridMropePositionPolicy;
+            tyloi::kMfqGridMropePositionPolicy;
         const auto qwen_plan = cuda_model_plan(qwen);
         require(
             cuda_backbone(qwen.backbone) == CudaBackbone::generic_qwen,
@@ -91,7 +92,7 @@ int main() {
             cuda_component_state(flash, flash_plan, true, true), true, false),
             {true, true, false, false, false, false, true},
             "Qwen4 grid-ViT and MTP must be available together");
-        const auto require_grid_rejected = [](const mfq::ModelGraph& graph) {
+        const auto require_grid_rejected = [](const tyloi::ModelGraph& graph) {
             require(
                 cuda_model_plan(graph).vision ==
                     CudaVisionAdapter::none,
@@ -187,7 +188,7 @@ int main() {
             "Nemotron-H optional component selection mismatch");
         auto nemotron_vision = nemotron;
         nemotron_vision.components.at(1).input_contract =
-            mfq::kMfqRadioCpeInputContract;
+            tyloi::kMfqRadioCpeInputContract;
         const auto nemotron_vision_plan = cuda_model_plan(nemotron_vision);
         require(
             nemotron_vision_plan.vision == CudaVisionAdapter::radio &&

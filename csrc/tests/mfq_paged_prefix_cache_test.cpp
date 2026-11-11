@@ -47,7 +47,7 @@ std::size_t benchmark_size(const char* name, std::size_t fallback) {
 }
 
 void run_benchmark() {
-    using namespace mfq::cache;
+    using namespace tyloi::cache;
     const auto block_count = benchmark_size(
         "TYLOINFER_PREFIX_CACHE_BENCHMARK_BLOCKS", 16);
     constexpr std::size_t block_tokens = 256;
@@ -153,7 +153,7 @@ void run_benchmark() {
 } // namespace
 
 int main() try {
-    using namespace mfq::cache;
+    using namespace tyloi::cache;
     const auto inspect_root = temporary_directory();
     for (const bool disk : {false, true}) {
         PagedPrefixCacheConfig config{inspect_root, disk ? "disposable-ram-ssd" : "disposable-ram", 4,
@@ -354,7 +354,7 @@ int main() try {
     const auto binding_root = temporary_directory();
     {
         auto cache = std::make_shared<PagedPrefixCache>(PagedPrefixCacheConfig{binding_root, "bound-disk", 4, 200, 0, 8});
-        mfq::engine::PagedSessionBindings bindings(cache, 16);
+        tyloi::engine::PagedSessionBindings bindings(cache, 16);
         const std::vector<std::int64_t> a{1, 2, 3, 4}, b{5, 6, 7, 8};
         const auto first_block = cache->store({}, a.data(), 4, payload({1}));
         cache->flush();
@@ -368,7 +368,7 @@ int main() try {
     }
     {
         auto cache = std::make_shared<PagedPrefixCache>(PagedPrefixCacheConfig{binding_root, "bound-ram", 4, 0, 4, 8});
-        mfq::engine::PagedSessionBindings bindings(cache, 16);
+        tyloi::engine::PagedSessionBindings bindings(cache, 16);
         const std::vector<std::int64_t> sequence{1, 2, 3, 4};
         const auto block = cache->store({}, sequence.data(), 4, payload({1, 2, 3, 4}));
         bindings.bind("idle-ram", {block}, 4);
@@ -452,7 +452,7 @@ int main() try {
                 64,
                 2,
             });
-        mfq::engine::PagedSessionBindings bindings(cache, 2);
+        tyloi::engine::PagedSessionBindings bindings(cache, 2);
         bindings.bind("first", {first}, 4);
         require(bindings.fork("first", "fork") == 1,
                 "paged session fork failed");

@@ -50,7 +50,7 @@ class Vision;
 using DenseTensor = ::tyloi::DenseTensor;
 using CommonConfig = tyloi::models::deepseek_v41::Config;
 #ifdef TYLOINFER_NATIVE_CUDA
-using Parameter = std::shared_ptr<const ::tyloi::Tensor>;
+using Parameter = ::tyloi::Tensor;
 #else
 using Parameter = DenseTensor;
 #endif
@@ -250,7 +250,7 @@ inline DenseTensor weighted_rms(const DenseTensor &input,
                       "DeepSeek-V4.1 weighted RMS geometry mismatch");
     return rms_norm_cuda(input.reshape({-1, shape.back()}).to(::tyloi::kFloat32),
 #ifdef TYLOINFER_NATIVE_CUDA
-                         dynamic_cast<const DenseTensor&>(weight),
+                         weight.dense(),
 #else
                          weight,
 #endif
@@ -270,7 +270,7 @@ inline DenseTensor rotate_token_major_tail(DenseTensor input, const DenseTensor 
 #ifdef TYLOINFER_NATIVE_CUDA
     auto value = input.unsqueeze(1).contiguous();
     auto rotated = ::tyloi::ops::tail_rope(value, positions, rope, inverse);
-    return dynamic_cast<const DenseTensor&>(*rotated).squeeze(1).contiguous();
+    return rotated.dense().squeeze(1).contiguous();
 #else
     return rope.forward(input.unsqueeze(1).contiguous(), positions, inverse)
         .squeeze(1)
@@ -408,16 +408,16 @@ struct Block final {
     Parameter compressor_norm;
     Parameter index_key_norm;
 
-    std::shared_ptr<const ::tyloi::Tensor> query_a;
-    std::shared_ptr<const ::tyloi::Tensor> query_b;
-    std::shared_ptr<const ::tyloi::Tensor> key_value;
-    std::shared_ptr<const ::tyloi::Tensor> output_a;
-    std::shared_ptr<const ::tyloi::Tensor> output_b;
-    std::shared_ptr<const ::tyloi::Tensor> compressor_key_value;
-    std::shared_ptr<const ::tyloi::Tensor> compressor_gate;
-    std::shared_ptr<const ::tyloi::Tensor> index_query;
-    std::shared_ptr<const ::tyloi::Tensor> index_key;
-    std::shared_ptr<const ::tyloi::Tensor> index_score;
+    ::tyloi::Tensor query_a;
+    ::tyloi::Tensor query_b;
+    ::tyloi::Tensor key_value;
+    ::tyloi::Tensor output_a;
+    ::tyloi::Tensor output_b;
+    ::tyloi::Tensor compressor_key_value;
+    ::tyloi::Tensor compressor_gate;
+    ::tyloi::Tensor index_query;
+    ::tyloi::Tensor index_key;
+    ::tyloi::Tensor index_score;
     tyloi::cuda::Ffn mlp;
     Parameter vision_router_bias;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -559,10 +559,10 @@ struct Block final {
 #endif
         return tyloi::ops::measure(profile, [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA
-            const auto& function = dynamic_cast<const DenseTensor&>(function_tensor);
-            const auto& scale = dynamic_cast<const DenseTensor&>(scale_tensor);
-            const auto& base = dynamic_cast<const DenseTensor&>(base_tensor);
-            const auto& norm = dynamic_cast<const DenseTensor&>(norm_tensor);
+            const auto& function = function_tensor.dense();
+            const auto& scale = scale_tensor.dense();
+            const auto& base = base_tensor.dense();
+            const auto& norm = norm_tensor.dense();
 #endif
             if(residual.size(0)*residual.size(1)<=8) {
                 auto partials=deepseek_v41_hc_project_cuda(residual,previous_pre,function);
@@ -602,7 +602,7 @@ struct Block final {
             [&] {
                 return weighted_rms(tyloi::ops::project(input, compressor_key_value).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                    *compressor_norm,
+                                    compressor_norm,
 #else
                                     compressor_norm,
 #endif
@@ -628,7 +628,7 @@ struct Block final {
                 auto pooled = (kv_groups * ::tyloi::cuda::softmax(score_groups, 2)).sum(2);
                 return weighted_rms(pooled.to(::tyloi::kFloat16),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                    *compressor_norm,
+                                    compressor_norm,
 #else
                                     compressor_norm,
 #endif
@@ -650,7 +650,7 @@ struct Block final {
                         .sum(1, true);
                 return weighted_rms(pooled.to(::tyloi::kFloat16),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                    *compressor_norm,
+                                    compressor_norm,
 #else
                                     compressor_norm,
 #endif
@@ -676,7 +676,7 @@ struct Block final {
             auto index_values =
                 weighted_rms(tyloi::ops::project(*latent, index_key).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                             *index_key_norm, config.rms_eps);
+                             index_key_norm, config.rms_eps);
 #else
                              index_key_norm, config.rms_eps);
 #endif
@@ -721,7 +721,7 @@ struct Block final {
                         .contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto rotated = ::tyloi::ops::tail_rope(query, positions, rope);
-                query = dynamic_cast<const DenseTensor&>(*rotated)
+                query = rotated.dense()
 #else
                 query = rope.forward(query, positions, false)
 #endif
@@ -774,7 +774,7 @@ struct Block final {
             [&] {
                 return weighted_rms(tyloi::ops::project(input, query_a).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                    *query_a_norm,
+                                    query_a_norm,
 #else
                                     query_a_norm,
 #endif
@@ -788,7 +788,7 @@ struct Block final {
                                  .to(::tyloi::kFloat32);
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto rotated = ::tyloi::ops::tail_rope(query, positions, rope);
-                query = dynamic_cast<const DenseTensor&>(*rotated);
+                query = rotated.dense();
 #else
                 query = rope.forward(query, positions, false);
 #endif
@@ -798,7 +798,7 @@ struct Block final {
             [&] {
                 auto local = weighted_rms(tyloi::ops::project(input, key_value).dense(),
 #ifdef TYLOINFER_NATIVE_CUDA
-                                          *key_value_norm,
+                                          key_value_norm,
 #else
                                           key_value_norm,
 #endif
@@ -905,7 +905,7 @@ struct Block final {
 #ifdef TYLOINFER_NATIVE_CUDA
                 auto value = attended.transpose(1, 2).contiguous();
                 auto rotated = ::tyloi::ops::tail_rope(value, positions, rope, true);
-                return dynamic_cast<const DenseTensor&>(*rotated)
+                return rotated.dense()
 #else
                 return rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
 #endif
@@ -1053,12 +1053,12 @@ struct Model : tyloi::models::CausalModel {
     std::unique_ptr<tyloi::models::State> make_state() const override;
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;
-    std::shared_ptr<tyloi::Tensor> embedding(const tyloi::Tensor& ids, int primary = 0) const override;
-    std::shared_ptr<tyloi::Tensor> normalize(const tyloi::Tensor& hidden, std::int64_t batch,
+    ::tyloi::Tensor embedding(const tyloi::Tensor& ids, int primary = 0) const override;
+    ::tyloi::Tensor normalize(const tyloi::Tensor& hidden, std::int64_t batch,
         std::int64_t tokens) const override;
-    std::shared_ptr<tyloi::Tensor> softcap(const tyloi::Tensor& logits) const override;
-    std::shared_ptr<tyloi::Tensor> logits(const tyloi::Tensor& hidden, bool capped = true) const override;
-    std::shared_ptr<tyloi::Tensor> forward(tyloi::models::Input input, tyloi::models::State& state,
+    ::tyloi::Tensor softcap(const tyloi::Tensor& logits) const override;
+    ::tyloi::Tensor logits(const tyloi::Tensor& hidden, bool capped = true) const override;
+    ::tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
                                  const tyloi::models::ForwardOptions& options = {}) const override;
 
     // ---- speculative contract used by the MTP sequence
@@ -1078,13 +1078,13 @@ struct Model : tyloi::models::CausalModel {
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
     CudaModelPlan plan;
-    std::shared_ptr<const ::tyloi::Tensor> embed;
+    ::tyloi::Tensor embed;
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<const ::tyloi::Tensor> output_norm;
+    ::tyloi::Tensor output_norm;
 #else
     ::tyloi::DenseTensor output_norm;
 #endif
-    std::shared_ptr<const ::tyloi::Tensor> lm_head;
+    ::tyloi::Tensor lm_head;
     CausalConfig config;
     std::vector<std::unique_ptr<deepseek_v41_runtime::Block>> blocks;
     deepseek_v41_runtime::ModelTables tables;

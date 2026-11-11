@@ -18,7 +18,7 @@ template<class F> void rejects(F&& fn) {
 }
 
 int main() {
-    using namespace mfq::engine::mtp;
+    using namespace tyloi::engine::mtp;
     {
         GenerationStats stats;
         stats.available = stats.used = true;
@@ -424,14 +424,14 @@ int main() {
         while (controller.warming_up()) controller.observe(controller.depth(), 0, 30.0);
         ParkState park;
         {
-            mfq::engine::PrefillActivity activity;
-            require(mfq::engine::PrefillActivity::recent());
+            tyloi::engine::PrefillActivity activity;
+            require(tyloi::engine::PrefillActivity::recent());
             park.park(controller);
             require(park.baseline_ms == 0.0);
             park.tokens_remaining = 0;
             require(!park.probe_ready());
         }
-        require(mfq::engine::PrefillActivity::recent() && !park.probe_ready());
+        require(tyloi::engine::PrefillActivity::recent() && !park.probe_ready());
     }
     {
         DsparkDepthController controller(3);

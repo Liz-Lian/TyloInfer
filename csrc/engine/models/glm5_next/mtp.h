@@ -26,7 +26,7 @@ struct PredictorState final : tyloi::models::MtpState {
 struct Mtp final : tyloi::models::Mtp {
     using DenseTensor = ::tyloi::DenseTensor;
 #ifdef TYLOINFER_NATIVE_CUDA
-    using Parameter = std::shared_ptr<const ::tyloi::Tensor>;
+    using Parameter = ::tyloi::Tensor;
 #else
     using Parameter = DenseTensor;
 #endif

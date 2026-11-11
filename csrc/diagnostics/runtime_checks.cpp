@@ -20,19 +20,19 @@
 #include <thread>
 #include <vector>
 
-namespace mfq::cuda::diagnostics {
+namespace tyloi::cuda::diagnostics {
 
-using namespace mfq::cuda::internal;
+using namespace tyloi::cuda::internal;
 
 // Fixed synthetic-ID latency probe through the actual runtime dispatch. Model
 // loading and the independent serial oracle are outside every timed request.
 int run_qwen35_mtp_bench(
-        mfq::cuda::qwen35::Model& model, mfq::cuda::qwen35::State& state,
-        mfq::cuda::Executor* executor, CudaExecutionContext& execution,
-        mfq::cuda::qwen35::Mtp& mtp,
+        tyloi::cuda::qwen35::Model& model, tyloi::cuda::qwen35::State& state,
+        tyloi::cuda::Executor* executor, CudaExecutionContext& execution,
+        tyloi::cuda::qwen35::Mtp& mtp,
         bool enable_mtp, int generated_tokens, int repetitions) {
     using Clock = std::chrono::steady_clock;
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = tyloi::DenseTensor;
     TYLOINFER_RUNTIME_CHECK(
         generated_tokens >= 2 && repetitions > 0 && repetitions <= 100 &&
             diagnostic_max_position_embeddings(model) >= generated_tokens + 17,
@@ -48,9 +48,9 @@ int run_qwen35_mtp_bench(
     params.top_p = 1.;
     params.enable_mtp = enable_mtp;
     params.seed = 20260907;
-    const auto options = mfq_tensor_backend::TensorOptions()
-        .device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kInt64);
-    const char* profiler_env = mfq::cuda::env_lookup("TYLOINFER_CUDA_PROFILER_RANGE");
+    const auto options = tyloi::TensorOptions()
+        .device(tyloi::kCUDA).dtype(tyloi::kInt64);
+    const char* profiler_env = tyloi::cuda::env_lookup("TYLOINFER_CUDA_PROFILER_RANGE");
     const bool profiler_range = profiler_env != nullptr && std::atoi(profiler_env) != 0;
     std::cout << "mtp_bench config mode=" << (enable_mtp ? "mtp" : "ordinary")
         << " full_window_batching=1"
@@ -60,11 +60,11 @@ int run_qwen35_mtp_bench(
     const auto ms_between = [](Clock::time_point first, Clock::time_point last) {
         return std::chrono::duration<double, std::milli>(last - first).count();
     };
-    mfq::engine::mtp::State mtp_state;
+    tyloi::engine::mtp::State mtp_state;
     for (const auto& prompt : std::vector<std::vector<int64_t>>{
             {1, 2, 3}, {100, 200, 300, 400, 500, 600, 700}, std::vector<int64_t>(17, 10)}) {
         state.reset(1);
-        Tensor input = mfq_tensor_backend::tensor(prompt, options).reshape({1, -1}).contiguous();
+        Tensor input = tyloi::cuda::tensor(prompt, options).reshape({1, -1}).contiguous();
         std::vector<int64_t> reference;
         reference.reserve(generated_tokens);
         for (int step = 0; step < generated_tokens; ++step) {
@@ -73,13 +73,13 @@ int run_qwen35_mtp_bench(
             reference.push_back(next.template item<int64_t>());
             input = next.reshape({1, 1});
         }
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         for (int repeat = -1; repeat < repetitions; ++repeat) {
             std::vector<int64_t> output;
             output.reserve(generated_tokens);
             MfqPrefillTiming prefill;
             Clock::time_point first_token;
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             // Capture only the actual request; its independent oracle, full
             // warmup, model load and context construction remain unprofiled.
             const bool capture_request = profiler_range && repeat >= 0;
@@ -89,9 +89,9 @@ int run_qwen35_mtp_bench(
                 TYLOINFER_CUDA_CHECK(cudaProfilerStart());
             }
             const auto started = Clock::now();
-            mfq::engine::InferenceRequest request;
+            tyloi::engine::InferenceRequest request;
             request.prompt = prompt; request.sampling = params;
-            mfq::engine::InferenceOutput parsed(request, nullptr, "bench");
+            tyloi::engine::InferenceOutput parsed(request, nullptr, "bench");
             auto result = collect_generation(generate(
                 model, state, executor, execution.collectives, execution.forward_mode(),
                 execution.profiler, execution.weights,
@@ -103,7 +103,7 @@ int run_qwen35_mtp_bench(
                 request, parsed, mtp_state, &mtp));
             output = std::move(result.tokens); prefill = result.prefill; first_token = result.first_token;
             const int produced = static_cast<int>(output.size());
-            mfq_cuda_synchronize();
+            cudaStreamSynchronize(::tyloi::cuda::current_stream());
             const auto finished = Clock::now();
             if (capture_request) {
                 TYLOINFER_CUDA_CHECK(cudaProfilerStop());
@@ -140,12 +140,12 @@ int run_qwen35_mtp_bench(
 template<class Model, class State>
 int run_qwen_continuous_batching_check(Model& model,
         State& state,
-        mfq::cuda::Executor* executor,
+        tyloi::cuda::Executor* executor,
         CudaExecutionContext& execution_context,
-        const mfq::models::CausalLmMetadata& metadata,
+        const tyloi::models::CausalLmMetadata& metadata,
         const CudaRuntimeConfig& runtime_config, int requests = 2,
-        std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner = {}) {
-    using namespace mfq::engine;
+        std::shared_ptr<const tyloi::cuda::qwen35::Model> model_owner = {}) {
+    using namespace tyloi::engine;
     auto config = runtime_config;
     config.generation.prefill_chunk_size = 64;
     TYLOINFER_RUNTIME_CHECK(requests >= 2 && requests <= 32,"batching check supports 2..32 requests");
@@ -157,7 +157,7 @@ int run_qwen_continuous_batching_check(Model& model,
     for (size_t i = 0; i < second_prompt.size(); ++i) second_prompt[i] = (113 + (i * 53) % 880) % diagnostic_vocab_size(model);
     DecodeGraphCache graph(diagnostic_max_position_embeddings(model));
     TextSessionCache cache(config.session_cache, config.prefix_cache);
-    mfq::engine::mtp::State mtp_state;
+    tyloi::engine::mtp::State mtp_state;
     auto serial = [&](const std::vector<int64_t>& prompt, MfqPromptCachePlan plan = {}) {
         InferenceRequest request; request.prompt = prompt; request.sampling = sampling; request.cache_plan = std::move(plan);
         InferenceOutput output(request, nullptr, "serial");
@@ -181,33 +181,33 @@ int run_qwen_continuous_batching_check(Model& model,
     {
         struct Execution {
             Model& model;
-            const mfq::models::CausalLmMetadata& metadata;
+            const tyloi::models::CausalLmMetadata& metadata;
             DecodeGraphCache& graph;
             TextSessionCache& cache;
             const CudaRuntimeConfig& config;
             State& state;
-            mfq::engine::mtp::State mtp_state;
-            mfq::cuda::Executor* executor;
+            tyloi::engine::mtp::State mtp_state;
+            tyloi::cuda::Executor* executor;
             CudaExecutionContext& execution_context;
-            std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner;
-            std::unique_ptr<mfq::engine::Batch> batcher;
-            Execution(Model& model, const mfq::models::CausalLmMetadata& metadata,
+            std::shared_ptr<const tyloi::cuda::qwen35::Model> model_owner;
+            std::unique_ptr<tyloi::engine::Batch> batcher;
+            Execution(Model& model, const tyloi::models::CausalLmMetadata& metadata,
                       DecodeGraphCache& graph, TextSessionCache& cache,
                       const CudaRuntimeConfig& config, State& state,
-                      mfq::cuda::Executor* executor,
+                      tyloi::cuda::Executor* executor,
                       CudaExecutionContext& execution_context,
-                      std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner)
+                      std::shared_ptr<const tyloi::cuda::qwen35::Model> model_owner)
                 : model(model), metadata(metadata), graph(graph), cache(cache),
                   config(config), state(state), executor(executor),
                   execution_context(execution_context), model_owner(std::move(model_owner)),
                   batcher(make_batcher(model, execution_context,
                                        config.continuous_batch,
                                        this->model_owner)) {}
-            static std::unique_ptr<mfq::engine::Batch> make_batcher(
+            static std::unique_ptr<tyloi::engine::Batch> make_batcher(
                     Model& model, CudaExecutionContext& execution,
                     const CudaContinuousBatchConfig& config,
-                    const std::shared_ptr<const mfq::cuda::qwen35::Model>& owner) {
-                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
+                    const std::shared_ptr<const tyloi::cuda::qwen35::Model>& owner) {
+                if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {
                     auto batch_config = config;
                     batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution);
                     return make_batch(
@@ -347,9 +347,9 @@ int run_qwen_continuous_batching_check(Model& model,
             if (key == "continuous_batching_cuda_graph_replays") replays = value;
             if (key == "continuous_batching_packed_prefill_batches") packed_prefills = value;
         }
-        if constexpr (std::is_same_v<Model,mfq::cuda::qwen35::Model>)
+        if constexpr (std::is_same_v<Model,tyloi::cuda::qwen35::Model>)
             if (config.continuous_batch.greedy &&
-                mfq::cuda::qwen35::batch_graph_enabled(
+                tyloi::cuda::qwen35::batch_graph_enabled(
                     model, execution_context, config.continuous_batch))
                 TYLOINFER_RUNTIME_CHECK(captures > 0 && replays > captures, "batch graph was not replayed");
         std::cout << "continuous_batching_state_check paged=" << config.continuous_batch.paged_kv
@@ -369,17 +369,17 @@ int run_qwen_continuous_batching_check(Model& model,
 }
 
 int run_cuda_continuous_batching_check(
-        mfq::cuda::qwen35::Model& model,
-        mfq::cuda::qwen35::State& state,
-        mfq::cuda::Executor* executor,
+        tyloi::cuda::qwen35::Model& model,
+        tyloi::cuda::qwen35::State& state,
+        tyloi::cuda::Executor* executor,
         CudaExecutionContext& execution,
         int requests) {
-    auto owner = std::make_shared<mfq::cuda::qwen35::Model>(std::move(model));
+    auto owner = std::make_shared<tyloi::cuda::qwen35::Model>(std::move(model));
     return run_qwen_continuous_batching_check(
         *owner, state, executor, execution, owner->metadata,
         resolve_cuda_config({}), requests, owner);
 }
-int run_cuda_continuous_batching_check(mfq::cuda::Qwen4CausalLm& model,int requests) {
+int run_cuda_continuous_batching_check(tyloi::cuda::Qwen4CausalLm& model,int requests) {
     return run_qwen_continuous_batching_check(
         model, model, nullptr, *model.execution, model.metadata,
         resolve_cuda_config({}),requests);
@@ -391,12 +391,12 @@ int run_cuda_engine_isolation_check(CudaEngineOptions options) {
     if (options.context_size == 0) options.context_size = 64;
     options.continuous_batching = 0;
 
-    std::unique_ptr<mfq::engine::Engine> first;
-    std::unique_ptr<mfq::engine::Engine> second;
+    std::unique_ptr<tyloi::engine::Engine> first;
+    std::unique_ptr<tyloi::engine::Engine> second;
     std::exception_ptr first_error;
     std::exception_ptr second_error;
     std::atomic<int> load_ready{0};
-    auto load = [&](std::unique_ptr<mfq::engine::Engine>& engine,
+    auto load = [&](std::unique_ptr<tyloi::engine::Engine>& engine,
                     std::exception_ptr& error) {
         try {
             load_ready.fetch_add(1, std::memory_order_release);
@@ -423,7 +423,7 @@ int run_cuda_engine_isolation_check(CudaEngineOptions options) {
     sampling.enable_mtp = false;
     const std::vector<int64_t> first_prompt{101, 138, 175, 212, 249};
     const std::vector<int64_t> second_prompt{113, 166, 219, 272, 325, 378};
-    const auto serial = [&](mfq::engine::Engine& engine,
+    const auto serial = [&](tyloi::engine::Engine& engine,
                             const std::vector<int64_t>& prompt) {
         std::vector<int64_t> output;
         output = check_engine_steps(engine, prompt, sampling);
@@ -441,7 +441,7 @@ int run_cuda_engine_isolation_check(CudaEngineOptions options) {
     int32_t first_produced = 0;
     int32_t second_produced = 0;
     std::atomic<int> ready{0};
-    auto generate = [&](mfq::engine::Engine& engine,
+    auto generate = [&](tyloi::engine::Engine& engine,
                         const std::vector<int64_t>& prompt,
                         std::vector<int64_t>& output,
                         int32_t& produced,
@@ -480,8 +480,8 @@ int run_cuda_engine_isolation_check(CudaEngineOptions options) {
         first->info().model_type == second->info().model_type &&
         first->info().max_context == options.context_size &&
         second->info().max_context == options.context_size &&
-        !std::get<mfq::engine::Metrics>(first->control(mfq::engine::GetMetrics{})).empty() &&
-        !std::get<mfq::engine::Metrics>(second->control(mfq::engine::GetMetrics{})).empty(),
+        !std::get<tyloi::engine::Metrics>(first->control(tyloi::engine::GetMetrics{})).empty() &&
+        !std::get<tyloi::engine::Metrics>(second->control(tyloi::engine::GetMetrics{})).empty(),
         "concurrent CUDA engines did not remain isolated");
     std::cout << "cuda_engine_isolation_check PASS engines=2 generated="
               << first_produced + second_produced
@@ -489,4 +489,4 @@ int run_cuda_engine_isolation_check(CudaEngineOptions options) {
     return 0;
 }
 
-} // namespace mfq::cuda::diagnostics
+} // namespace tyloi::cuda::diagnostics

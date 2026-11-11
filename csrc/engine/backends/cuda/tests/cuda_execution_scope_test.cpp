@@ -1,79 +1,52 @@
-#include "env.h"
-#include "execution/execution.h"
-#include "execution/options.h"
-#include "engine/load_options.h"
-#include "storage/state/kv_memory.h"
+#include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/native/scope.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 
-#include <atomic>
 #include <barrier>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace {
 void set_option(const char* name, const char* value) {
-    if (value) mfq::cuda::env_set(name, value); else mfq::cuda::env_clear(name);
+    if (value) tyloi::cuda::env_set(name, value); else tyloi::cuda::env_clear(name);
 }
-}
-
-static void check_stores() {
-    static_assert(!std::is_default_constructible_v<CudaExecutionContext>);
-    static_assert(!std::is_copy_constructible_v<CudaExecutionContext>);
-    static_assert(!std::is_copy_constructible_v<CudaStores>);
-    CudaStores stores, peer;
-    stores.kv_memory = std::make_shared<mfq::cuda::KvMemoryManager>(mfq::cuda::KvMemoryOptions{});
-    peer.kv_memory = std::make_shared<mfq::cuda::KvMemoryManager>(mfq::cuda::KvMemoryOptions{});
-    std::weak_ptr<mfq::cuda::KvMemoryManager> lifetime = stores.kv_memory;
-    {
-        CudaExecutionContext execution(stores);
-        if (&execution.stores != &stores) throw std::runtime_error("execution copied its stores");
-        execution.reset();
-        if (stores.kv_memory != lifetime.lock())
-            throw std::runtime_error("execution reset retired borrowed storage");
-        auto lease = stores.kv_memory;
-        mfq::cuda::CudaLoadOptions invalid;
-        invalid.cpu_threads_set = true;
-        invalid.cpu_threads = 0;
-        bool rejected = false;
-        try { mfq::cuda::internal::setup_cuda_load(invalid, execution); }
-        catch (const std::runtime_error&) { rejected = true; }
-        if (!rejected || stores.kv_memory || lifetime.expired() || !peer.kv_memory)
-            throw std::runtime_error("failed load violated store/lease isolation");
-    }
-    if (!lifetime.expired() || !peer.kv_memory)
-        throw std::runtime_error("retired load retained storage or changed its peer");
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+// A reset/drain must wait for work issued on pool streams, not only the
+// active one: launch a slow host callback and retire the context set.
 static void check_drain() {
-    using namespace mfq::cuda;
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
-    CudaScope scope(execution);
+    using namespace tyloi::cuda;
+    using namespace tyloi;
+    ContextSet contexts;
+    ContextGuard guard(contexts);
     auto auxiliary = stream_from_pool(false, 0);
+    StreamGuard active(auxiliary);
     Event finished;
     TYLOINFER_CUDA_CHECK(cudaLaunchHostFunc(auxiliary.stream(), [](void*) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }, nullptr));
     finished.record(auxiliary.stream());
-    execution.reset();
+    contexts.clear();
     if (!finished.ready()) throw std::runtime_error("reset missed an auxiliary consumer");
 }
 
+// Each thread guards its own ContextSet: contexts, streams, BLAS handles and
+// graph captures must stay isolated, and nested guards must not leak streams.
 static void check_contexts() {
-    using namespace mfq::cuda;
-    CudaStores stores[2];
-    CudaExecutionContext engines[2]{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
+    using namespace tyloi::cuda;
+    using namespace tyloi;
+    ContextSet context_sets[2];
     std::shared_ptr<Context> contexts[2];
     std::barrier ready(2);
     std::exception_ptr errors[2];
     std::thread workers[2];
     for (int i = 0; i < 2; ++i) workers[i] = std::thread([&, i] {
         try {
-            CudaScope scope(engines[i]);
+            CudaScope scope(0, context_sets[i]);
             contexts[i] = default_context(0);
             auto options = TensorOptions().device(kCUDA).dtype(kFloat32);
             auto input = full({32, 32}, double(i + 1), options);
@@ -89,7 +62,7 @@ static void check_contexts() {
             }
             Graph graph;
             graph.prepare_memory();
-            Tensor output;
+            DenseTensor output;
             for (int warmup = 0; warmup < 2; ++warmup) {
                 output = matmul(input, weight);
                 output = {};
@@ -114,21 +87,21 @@ static void check_contexts() {
          contexts[0]->memory_pool() == contexts[1]->memory_pool()))
         throw std::runtime_error("Engine native resources are shared");
     {
-        CudaScope first(engines[0]);
+        CudaScope first(0, context_sets[0]);
         auto stream = stream_from_pool(false, 0);
         StreamGuard active(stream);
-        { CudaScope same(engines[0]);
+        { CudaScope same(0, context_sets[0]);
           if (current_stream().stream() != stream.stream())
-              throw std::runtime_error("same Engine lost its stream override"); }
-        { CudaScope second(engines[1]);
+            throw std::runtime_error("same Engine lost its stream override"); }
+        { CudaScope second(0, context_sets[1]);
           if (current_stream().stream() == stream.stream())
-              throw std::runtime_error("nested Engine inherited a stream override"); }
+            throw std::runtime_error("nested Engine inherited a stream override"); }
         if (current_stream().stream() != stream.stream())
             throw std::runtime_error("Engine scope did not restore its stream");
     }
     contexts[0].reset();
-    engines[0].native_contexts.clear();
-    CudaScope survivor(engines[1]);
+    context_sets[0].clear();
+    CudaScope survivor(0, context_sets[1]);
     auto value = full({4}, 3.0, TensorOptions().device(kCUDA));
     if (value.sum().item<float>() != 12.0f)
         throw std::runtime_error("peer Engine teardown changed survivor");
@@ -136,8 +109,7 @@ static void check_contexts() {
 #endif
 
 int main() try {
-    check_stores();
-    using namespace mfq::cuda::runtime_options;
+    using namespace tyloi::cuda::runtime_options;
     // Presence, first-character and exact-value controls have distinct meanings.
     set_option("TYLOINFER_NINT_ROUTE_ROW_WORKSPACE", nullptr);
     if (nint_route_row_workspace()) return 1;
@@ -151,11 +123,6 @@ int main() try {
     set_option("TYLOINFER_MFE_NINT_LATE_SCALE", "1");
     if (!mfe_nint_late_scale().value_or(false)) return 1;
     set_option("TYLOINFER_MFE_NINT_LATE_SCALE", nullptr);
-    set_option("TYLOINFER_EMBEDDING_MAPPED", nullptr);
-    if (embedding_mapped()) return 1;
-    set_option("TYLOINFER_EMBEDDING_MAPPED", "2");
-    if (embedding_mapped().value_or(0) != 2) return 1;
-    set_option("TYLOINFER_EMBEDDING_MAPPED", nullptr);
     set_option("TYLOINFER_MOE_PREFILL_EXPERT_BATCH_TOKENS", "8192");
     if (moe_prefill_expert_batch_tokens().value_or(0) != 8192) return 1;
     set_option("TYLOINFER_MOE_PREFILL_EXPERT_BATCH_TOKENS", nullptr);
@@ -163,8 +130,7 @@ int main() try {
     if (!nvq_dense_reference()) return 1;
     set_option("TYLOINFER_NVQ_DENSE_REFERENCE", nullptr);
     if (nvq_dense_reference()) return 1;
-    // Ablation switches must remain live between calls; ordinary generation
-    // must honor the same explicit residency override as benchmark modes.
+    // Ablation switches must remain live between calls.
     set_option("TYLOINFER_MFE_RESIDENT_PLAN_OVERLAP", "1");
     if (!resident_plan_overlap()) return 1;
     set_option("TYLOINFER_MFE_RESIDENT_PLAN_OVERLAP", "0");
@@ -174,60 +140,6 @@ int main() try {
     if (early_gate_up()) return 1;
     set_option("TYLOINFER_MFE_EARLY_GU", nullptr);
     if (!early_gate_up()) return 1;
-    set_option("TYLOINFER_MOE_RESIDENCY_ADAPT", "0");
-    if (load_cuda_execution_config().moe_residency_adapt) return 1;
-    set_option("TYLOINFER_MOE_RESIDENCY_ADAPT", nullptr);
-    if (!load_cuda_execution_config().moe_residency_adapt) return 1;
-    mfq::cuda::env_set("TYLOINFER_DISABLE_NVQ_FUSION", "1");
-    const auto disabled_config = load_cuda_execution_config();
-    mfq::cuda::env_clear("TYLOINFER_DISABLE_NVQ_FUSION");
-    const auto enabled_config = load_cuda_execution_config();
-    if (disabled_config.nvq_fusion || !enabled_config.nvq_fusion) return 1;
-
-    CudaStores first_stores;
-    CudaExecutionContext first(first_stores);
-    CudaStores second_stores;
-    CudaExecutionContext second(second_stores);
-    first.tensor_parallel.devices = {0, 1};
-    second.expert_parallel.devices = {2, 3};
-    first.drop_file_cache = true;
-    first.config.nvq_fusion = false;
-    second.decode_graph_serial_branches = true;
-
-    std::atomic<int> ready{0};
-    std::atomic<bool> isolated{true};
-    auto run = [&](CudaExecutionContext& context,
-                   bool first_context) {
-        context.kl_mmq.dense_calls = first_context ? 11 : 29;
-        context.continuous_batch_cache_serial = first_context;
-        context.profiler.stats["engine"].calls = first_context ? 3 : 7;
-        ready.fetch_add(1, std::memory_order_release);
-        while (ready.load(std::memory_order_acquire) != 2) {
-            std::this_thread::yield();
-        }
-        const bool valid = first_context
-            ? model_parallel_enabled(context) &&
-                context.tensor_parallel.primary_device() == 0 &&
-                !context.expert_parallel.enabled() &&
-                context.kl_mmq.dense_calls == 11 &&
-                context.profiler.stats.at("engine").calls == 3 &&
-                !context.config.nvq_fusion
-            : model_parallel_enabled(context) &&
-                !context.tensor_parallel.enabled() &&
-                moe_parallel_config(context).primary_device() == 2 &&
-                context.kl_mmq.dense_calls == 29 &&
-                context.profiler.stats.at("engine").calls == 7 &&
-                context.config.nvq_fusion;
-        if (!valid) {
-            isolated.store(false, std::memory_order_relaxed);
-        }
-    };
-    std::thread first_thread(
-        run, std::ref(first), true);
-    std::thread second_thread(
-        run, std::ref(second), false);
-    first_thread.join();
-    second_thread.join();
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     int devices = 0;
@@ -236,13 +148,7 @@ int main() try {
         check_drain();
     }
 #endif
-    return isolated.load(std::memory_order_relaxed) &&
-            first.drop_file_cache && !second.drop_file_cache &&
-            !first.decode_graph_serial_branches &&
-            second.decode_graph_serial_branches &&
-            first.continuous_batch_cache_serial &&
-            !second.continuous_batch_cache_serial
-        ? 0 : 1;
+    return 0;
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

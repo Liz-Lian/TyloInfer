@@ -321,7 +321,7 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
             auto value = layers.forward(index, restore(chunk), positions);
             store(chunk, value);
         }
-        mfq_cuda_synchronize();
+        cudaStreamSynchronize(::tyloi::cuda::current_stream());
         if (!resident) layers.release();
         if (!resident) mfq_cuda_empty_cache();
         std::cout << "{\"event\":\"wt2_layer\",\"layer\":" << index + 1

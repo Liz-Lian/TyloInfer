@@ -44,7 +44,7 @@ class CudaAxialPatchVisionTower {
     // Patches accept [H*W,3,P,P] or [H*W,3*P*P]. The output is the
     // row-major, ceil(H/R)*ceil(W/R) aligned embedding grid.
 #ifdef TYLOINFER_NATIVE_CUDA
-    std::shared_ptr<tyloi::Tensor> encode(std::shared_ptr<const tyloi::Tensor> patches,
+    ::tyloi::Tensor encode(::tyloi::Tensor patches,
 #else
     DenseTensor encode(Projector projector, DenseTensor patches,
 #endif
@@ -54,7 +54,7 @@ class CudaAxialPatchVisionTower {
     // Load one block at a time and restore borrowed expert storage before
     // yielding, so image preparation can share the request scheduler.
 #ifdef TYLOINFER_NATIVE_CUDA
-    tyloi::StepSequence<std::shared_ptr<tyloi::Tensor>> encode_steps(std::shared_ptr<const tyloi::Tensor> patches,
+    tyloi::StepSequence<::tyloi::Tensor> encode_steps(::tyloi::Tensor patches,
 #else
     tyloi::StepSequence<DenseTensor> encode_steps(Projector projector, DenseTensor patches,
 #endif

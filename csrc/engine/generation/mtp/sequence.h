@@ -21,8 +21,8 @@ inline void require_execution(bool condition, const char *message) {
 // predictor work and numerical sampling; acceptance and commit order are shared.
 template <class Ops>
 Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOutput &output,
-    int64_t prefill_chunk_size, size_t reused_tokens, std::shared_ptr<const tyloi::Tensor> restored,
-    std::shared_ptr<tyloi::Tensor> *session_last_hidden, size_t stable_prefix_tokens = 0) {
+    int64_t prefill_chunk_size, size_t reused_tokens, ::tyloi::Tensor restored,
+    ::tyloi::Tensor *session_last_hidden, size_t stable_prefix_tokens = 0) {
     const auto &prompt = request.prompt;
     const auto &sampling = request.sampling;
     const auto &token_constraint = request.token_constraint;
@@ -42,7 +42,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     namespace policy = tyloi::engine::mtp;
     using policy::CompactDistribution;
     if (session_last_hidden != nullptr) {
-        session_last_hidden->reset();
+        *session_last_hidden = {};
     }
     if (output.result.cancelled)
         co_return;

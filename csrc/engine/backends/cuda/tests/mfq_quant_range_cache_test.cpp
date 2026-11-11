@@ -1,3 +1,4 @@
+#include "execution_fixture.h"
 #include "env.h"
 #include "storage/weights/loaders/weight.h"
 #include "storage/weights/moe/expert_cache.h"
@@ -15,28 +16,28 @@
 #include <string>
 #include <vector>
 
-namespace tb=mfq_tensor_backend;
+namespace tb=tyloi::cuda;
 namespace {
 // Models may support immediate reads without an independently owned reader.
 // The loader must keep their existing cache path, while real I/O failures
 // continue to propagate rather than switching to whole-pool materialization.
-class WithoutOwningReader final : public mfq::ModelSource {
+class WithoutOwningReader final : public tyloi::ModelSource {
 public:
-    explicit WithoutOwningReader(std::shared_ptr<const mfq::ModelSource> source):source_(std::move(source)) {}
+    explicit WithoutOwningReader(std::shared_ptr<const tyloi::ModelSource> source):source_(std::move(source)) {}
     const std::vector<std::filesystem::path>& source_paths() const noexcept override { return source_->source_paths(); }
     std::string_view architecture() const noexcept override { return source_->architecture(); }
     const std::unordered_map<std::string,std::string>& metadata() const noexcept override { return source_->metadata(); }
-    const std::vector<mfq::TensorMetadata>& tensors() const noexcept override { return source_->tensors(); }
-    const mfq::TensorMetadata* find_tensor(std::string_view name) const noexcept override { return source_->find_tensor(name); }
+    const std::vector<tyloi::TensorMetadata>& tensors() const noexcept override { return source_->tensors(); }
+    const tyloi::TensorMetadata* find_tensor(std::string_view name) const noexcept override { return source_->find_tensor(name); }
     void read_range_into(std::string_view name,std::uint64_t offset,std::byte* data,std::size_t size) const override {
         source_->read_range_into(name,offset,data,size);
     }
     const std::vector<std::string>& assets() const noexcept override { return source_->assets(); }
     bool has_asset(std::string_view name) const noexcept override { return source_->has_asset(name); }
     std::vector<std::byte> read_asset(std::string_view name) const override { return source_->read_asset(name); }
-    std::optional<mfq::ModelGraph> model_graph() const override { return source_->model_graph(); }
+    std::optional<tyloi::ModelGraph> model_graph() const override { return source_->model_graph(); }
 private:
-    std::shared_ptr<const mfq::ModelSource> source_;
+    std::shared_ptr<const tyloi::ModelSource> source_;
 };
 
 std::vector<float> read(const std::filesystem::path& path,std::size_t count) {
@@ -49,7 +50,7 @@ std::vector<float> read(const std::filesystem::path& path,std::size_t count) {
 }
 
 std::int64_t slot_bytes(const MixedMoePool& pool) {
-    std::vector<tb::Tensor> fields;
+    std::vector<tyloi::DenseTensor> fields;
     if (pool.family==MixedMoeFamily::Nint)
         fields={pool.nint.q_packed,pool.nint.row_q_bits,pool.nint.row_q_bit_offsets,
             pool.nint.sub_scale,pool.nint.sub_min,pool.nint.neuron_scale,pool.nint.neuron_min};
@@ -61,17 +62,17 @@ std::int64_t slot_bytes(const MixedMoePool& pool) {
 }
 
 MoeRoutePlan route(const std::vector<std::int32_t>& ids,int tokens,int routes) {
-    return build_moe_route_plan(tb::tensor(ids,tb::TensorOptions().dtype(tb::kInt32))
-        .reshape({tokens,routes}).to(tb::kCUDA),3);
+    return build_moe_route_plan(tb::tensor(ids,tyloi::TensorOptions().dtype(tyloi::kInt32))
+        .reshape({tokens,routes}).to(tyloi::kCUDA),3);
 }
 
-void verify_cpu(const tb::Tensor& value,const std::vector<float>& reference,
+void verify_cpu(const tyloi::DenseTensor& value,const std::vector<float>& reference,
         const std::vector<std::int32_t>& ids,int tokens,int routes,int output) {
     if (!value.is_cuda() || value.dim()!=3 || value.size(0)!=tokens ||
             value.size(1)!=routes || value.size(2)!=output)
         throw std::runtime_error("CPU cold projection output placement/shape mismatch");
     TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
-    const auto actual=value.to(tb::kCPU).to(tb::kFloat32).contiguous();
+    const auto actual=value.to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
     for (int sample=0; sample<tokens; ++sample) for (int selected=0; selected<routes; ++selected)
         for (int row=0; row<output; ++row) {
             const double expected=reference[(sample*3+ids[sample*routes+selected])*output+row];
@@ -83,12 +84,12 @@ void verify_cpu(const tb::Tensor& value,const std::vector<float>& reference,
         }
 }
 
-void verify_gpu(const tb::Tensor& cached,const tb::Tensor& original) {
+void verify_gpu(const tyloi::DenseTensor& cached,const tyloi::DenseTensor& original) {
     TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
-    const auto actual=cached.to(tb::kCPU).contiguous();
-    const auto expected=original.to(tb::kCPU).contiguous();
-    if (actual.sizes()!=expected.sizes() || actual.scalar_type()!=tb::kFloat16 ||
-            expected.scalar_type()!=tb::kFloat16 ||
+    const auto actual=cached.to(tyloi::kCPU).contiguous();
+    const auto expected=original.to(tyloi::kCPU).contiguous();
+    if (actual.sizes()!=expected.sizes() || actual.scalar_type()!=tyloi::kFloat16 ||
+            expected.scalar_type()!=tyloi::kFloat16 ||
             std::memcmp(actual.data_ptr(),expected.data_ptr(),actual.numel()*sizeof(mfq_half)))
         throw std::runtime_error("cached GPU expert differs from the canonical full GPU dispatch");
 }
@@ -111,23 +112,22 @@ int main(int argc,char** argv) try {
         else throw std::runtime_error("unknown range cache test option");
     }
     if (hybrid && (!host_cache || shared_arena)) throw std::runtime_error("hybrid gate requires --host-cache alone");
-    if (resident && (!host_cache || hybrid || shared_arena || !mfq::cuda::env_lookup("TYLOINFER_MOE_PRELOAD_ALL")))
+    if (resident && (!host_cache || hybrid || shared_arena || !tyloi::cuda::env_lookup("TYLOINFER_MOE_PRELOAD_ALL")))
         throw std::runtime_error("resident gate requires --host-cache and TYLOINFER_MOE_PRELOAD_ALL=1 alone");
     const std::filesystem::path root(argv[1]);
     std::ifstream manifest(root/"cases.txt");
     if (!manifest) throw std::runtime_error("missing range cache fixture manifest");
-    CudaStores stores;
-    CudaExecutionContext execution(stores);
+    TestExecution execution;
     std::string name;
     int output,width,tokens,cases=0;
     while (manifest>>name>>output>>width>>tokens) {
         if (tokens!=3) throw std::runtime_error("range cache gate requires three independent samples");
-        auto model=mfq::open_model_source((root/(name+".mfq")).string());
+        auto model=tyloi::open_model_source((root/(name+".mfq")).string());
         const auto record=require_tensor(*model,"linear.weight");
         const auto reader=model->tensor_reader("linear.weight");
         std::uint64_t bytes_read=0;
         bool fail_next=false;
-        auto store=std::make_shared<mfq::MfeQuantExpertStore>(record.nbytes,
+        auto store=std::make_shared<tyloi::MfeQuantExpertStore>(record.nbytes,
             [reader,&bytes_read,&fail_next](std::size_t offset,std::uint8_t* data,std::size_t bytes) {
                 if (fail_next) { fail_next=false; throw std::runtime_error("injected expert read failure"); }
                 bytes_read+=bytes;
@@ -148,7 +148,7 @@ int main(int argc,char** argv) try {
         model.reset(); // The owning range reader must survive its ModelSource.
         const auto inputs=read(root/(name+".input.f32"),std::size_t(tokens)*width);
         const auto reference=read(root/(name+".expected.f32"),std::size_t(tokens)*3*output);
-        auto x=tb::tensor(inputs).reshape({tokens,width}).to(tb::kFloat16).to(tb::kCUDA);
+        auto x=tb::tensor(inputs).reshape({tokens,width}).to(tyloi::kFloat16).to(tyloi::kCUDA);
         const std::vector<std::int32_t> all={2,0,1,0,1,2,1,2,0};
         const auto cold_route=route(all,tokens,3);
         if (resident) {
@@ -163,8 +163,8 @@ int main(int argc,char** argv) try {
                 throw std::runtime_error("resident fixture needs sealed RAM-cold and VRAM-hot experts");
             auto actual=cached.forward(execution,x,cold_route);
             auto gpu=baseline.forward(execution,x,cold_route);
-            auto actual_host=actual.to(tb::kCPU).to(tb::kFloat32).contiguous();
-            auto gpu_host=gpu.to(tb::kCPU).to(tb::kFloat32).contiguous();
+            auto actual_host=actual.to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
+            auto gpu_host=gpu.to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
             for (int position=0; position<tokens*3; ++position) for (int row=0; row<output; ++row) {
                 const int expert=all[position],token=position/3;
                 const double expected=source->gpu_resident(expert) ? gpu_host.data_ptr<float>()[position*output+row]
@@ -177,9 +177,9 @@ int main(int argc,char** argv) try {
             verify_gpu(cached.forward(execution,routed,cold_route),actual);
             // Exercise the one-token adapter and duplicates with every tier.
             auto single=cached.forward(execution,x.narrow(0,0,1).contiguous(),route({2,0,1},1,3));
-            auto single_cpu=single.to(tb::kCPU).to(tb::kFloat32).contiguous();
+            auto single_cpu=single.to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
             auto single_gpu=baseline.forward(execution,x.narrow(0,0,1).contiguous(),route({2,0,1},1,3))
-                .to(tb::kCPU).to(tb::kFloat32).contiguous();
+                .to(tyloi::kCPU).to(tyloi::kFloat32).contiguous();
             for (int position=0; position<3; ++position) for (int row=0; row<output; ++row) {
                 const double expected=source->gpu_resident(all[position]) ? single_gpu.data_ptr<float>()[position*output+row]
                     : reference[all[position]*output+row];
@@ -197,7 +197,7 @@ int main(int argc,char** argv) try {
             continue;
         }
         if (hybrid) {
-            if (!mfq::cuda::env_lookup("TYLOINFER_MOE_HYBRID_CPU")) throw std::runtime_error("hybrid gate requires TYLOINFER_MOE_HYBRID_CPU=1");
+            if (!tyloi::cuda::env_lookup("TYLOINFER_MOE_HYBRID_CPU")) throw std::runtime_error("hybrid gate requires TYLOINFER_MOE_HYBRID_CPU=1");
             // Populate RAM with independent FP32 CPU work, then move only
             // expert2 to VRAM. Experts0/1 must execute from their retained RAM
             // fields without rereading SSD; expert2 must remain on the GPU.
@@ -305,10 +305,10 @@ int main(int argc,char** argv) try {
             throw std::runtime_error("GPU hot routes unexpectedly used CPU projections");
         // Exercise the public loader used by the native attention adapters,
         // including its owning ModelSource range callback after model release.
-        auto loaded_model=mfq::open_model_source((root/(name+".mfq")).string());
+        auto loaded_model=tyloi::open_model_source((root/(name+".mfq")).string());
         execution.stores.moe_expert_cache=make_moe_expert_cache(bytes,execution.config);
         execution.moe_cache_registration_min_slots=1;
-        mfq::cuda::weight_loader::validate_load_options(execution);
+        tyloi::cuda::weight_loader::validate_load_options(execution);
         auto loaded=load_mfe_gpu(execution,*loaded_model,"linear.weight",true,0,"gate");
         finalize_moe_expert_cache(execution.stores.moe_expert_cache);
         loaded_model.reset();
@@ -316,7 +316,7 @@ int main(int argc,char** argv) try {
         verify_gpu(loaded.forward(execution,x,selected),baseline.forward(execution,x,selected));
         verify_cpu(loaded.forward(execution,x,cold_route),reference,all,tokens,3,output);
         if (!cases) {
-            WithoutOwningReader borrowed(mfq::open_model_source((root/(name+".mfq")).string()));
+            WithoutOwningReader borrowed(tyloi::open_model_source((root/(name+".mfq")).string()));
             execution.stores.moe_expert_cache=make_moe_expert_cache(bytes,execution.config);
             auto compatible=load_mfe_gpu(execution,borrowed,"linear.weight",true,0,"gate");
             finalize_moe_expert_cache(execution.stores.moe_expert_cache);
@@ -340,7 +340,7 @@ int main(int argc,char** argv) try {
             const auto cpu_route=route(std::vector<std::int32_t>(tokens,2),tokens,1);
             if (source->gpu_resident(2)) throw std::runtime_error("benchmark expert must be cold");
             const auto before_read=bytes_read,before_decode=source->materializations();
-            tb::Tensor result;
+            tyloi::DenseTensor result;
             const auto started=std::chrono::steady_clock::now();
             for (int repeat=0; repeat<3; ++repeat) {
                 result=source->forward_cpu(execution,x,cpu_route);

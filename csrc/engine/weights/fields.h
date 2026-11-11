@@ -11,18 +11,18 @@ namespace tyloi::weights::fields {
 
 // Read-only enumeration of the owning tensor handles a record needs.
 template <class Visitor>
-void tensors(const std::shared_ptr<const ::tyloi::Tensor>& weight, Visitor visit) {
+void tensors(const ::tyloi::Tensor& weight, Visitor visit) {
     TYLOINFER_RUNTIME_CHECK(
-        dynamic_cast<const ::tyloi::ShardedTensor*>(weight.get()) == nullptr,
+        weight.representation<::tyloi::ShardedTensor>() == nullptr,
         "streamed vision weights require one CUDA device");
-    if (!weight || !weight->defined()) return;
+    if (!weight || !weight.defined()) return;
     visit(weight);
 }
 
 template <class Visitor>
 void tensors(const ::tyloi::weights::BiasWeight& weight, Visitor visit) {
     tensors(weight.weight, visit);
-    if (weight.bias && weight.bias->defined()) tensors(weight.bias, visit);
+    if (weight.bias && weight.bias.defined()) tensors(weight.bias, visit);
 }
 
 // Anything that enumerates its own tensors, such as a vision weight block.
@@ -33,13 +33,13 @@ void tensors(const Weights& weights, Visitor visit) {
 }
 
 // Weight preparation: publish a copy of every tensor on `device`.
-inline void to_device(std::shared_ptr<const ::tyloi::Tensor>& weight, ::tyloi::Device device) {
-    weight = weight->relocated(device);
+inline void to_device(::tyloi::Tensor& weight, ::tyloi::Device device) {
+    weight = weight.relocated(device);
 }
 
 inline void to_device(::tyloi::weights::BiasWeight& weight, ::tyloi::Device device) {
     to_device(weight.weight, device);
-    if (weight.bias && weight.bias->defined()) to_device(weight.bias, device);
+    if (weight.bias && weight.bias.defined()) to_device(weight.bias, device);
 }
 
 template <class Weights>
@@ -50,8 +50,8 @@ void to_device(Weights& weights, ::tyloi::Device device) {
 template <class Weights>
 std::size_t bytes(const Weights& weights) {
     std::vector<const ::tyloi::DenseTensor*> buffers;
-    tensors(weights, [&](const std::shared_ptr<const ::tyloi::Tensor>& tensor) {
-        const auto parts = tensor->buffers();
+    tensors(weights, [&](const ::tyloi::Tensor& tensor) {
+        const auto parts = tensor.buffers();
         buffers.insert(buffers.end(), parts.begin(), parts.end());
     });
     return ::tyloi::backing_bytes(buffers);

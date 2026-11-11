@@ -12,7 +12,7 @@ class TqCache;
 namespace tyloi {
 
 // The source table is CPU-backed; selected device images belong to the cache.
-class TqBank final : public Tensor {
+class TqBank final : public TensorImpl {
 public:
     std::shared_ptr<TqCache> cache;
     std::uint64_t source_id = 0;
@@ -31,7 +31,7 @@ public:
     bool is_encoded() const noexcept override { return true; }
     std::vector<const DenseTensor*> buffers() const override { return {}; }
     void record_stream(std::uintptr_t) const override {}
-    std::shared_ptr<const Tensor> relocated(Device) const override;
+    std::shared_ptr<TensorImpl> relocated(Device) const override;
 };
 
 } // namespace tyloi

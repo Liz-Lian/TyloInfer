@@ -16,15 +16,15 @@ struct TextSessionState;
 enum class TextSessionStateKind : int;
 
 struct KvSnapshot {
-    std::shared_ptr<const ::tyloi::Tensor> k;
-    std::shared_ptr<const ::tyloi::Tensor> v;
+    ::tyloi::Tensor k;
+    ::tyloi::Tensor v;
     int64_t capacity = 0;
     bool ring = false;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
-        if (k) visit(*k);
-        if (v) visit(*v);
+        if (k) visit(k);
+        if (v) visit(v);
     }
 };
 
@@ -46,23 +46,23 @@ struct HybridBlockSessionState {
     HybridBlockSessionStateKind kind =
         HybridBlockSessionStateKind::FullAttention;
     KvSnapshot full_attention;
-    std::shared_ptr<const ::tyloi::Tensor> convolution;
-    std::shared_ptr<const ::tyloi::Tensor> recurrent;
+    ::tyloi::Tensor convolution;
+    ::tyloi::Tensor recurrent;
     bool transposed = true;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
         full_attention.tensors(visit);
-        if (convolution) visit(*convolution);
-        if (recurrent) visit(*recurrent);
+        if (convolution) visit(convolution);
+        if (recurrent) visit(recurrent);
     }
 };
 
 struct CudaDecodedPagedLayer {
     int64_t capacity = 0;
     int device = -1;
-    std::shared_ptr<const ::tyloi::Tensor> k;
-    std::shared_ptr<const ::tyloi::Tensor> v;
+    ::tyloi::Tensor k;
+    ::tyloi::Tensor v;
 };
 
 struct CudaDecodedPagedBlock {

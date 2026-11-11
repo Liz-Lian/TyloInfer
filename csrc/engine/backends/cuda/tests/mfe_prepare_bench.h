@@ -3,27 +3,27 @@
 #include "kernels/moe/pipeline.h"
 
 static void benchmark_mfe_prepare(bool timings=true) {
-    namespace tb=mfq_tensor_backend;
+    namespace tb=tyloi::cuda;
     auto context=default_context();const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     int cases=0;
     for(int tokens:{1,2,6,32})for(int width:{31,640,2559,2560})
     for(int gs:{1,4,7,16,24,28,32,33,48,64}) {
-        auto host=tb::empty({tokens,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        auto host=tb::empty({tokens,width},tyloi::TensorOptions().device(tyloi::kCPU).dtype(tyloi::kFloat32));
         for(int i=0;i<tokens*width;++i)host.data_ptr<float>()[i]=i%4?float((i*37)%491-245)/37.0f:0.0f;
-        auto input=host.to(tb::kCUDA).to(tb::kFloat16);
+        auto input=host.to(tyloi::kCUDA).to(tyloi::kFloat16);
         MfeFfnBatch batch;batch.tokens=tokens;batch.routes=10;batch.input_width=width;batch.scale_stride=27;
         batch.input=reinterpret_cast<const __half*>(input.data_ptr());
-        auto completion=tb::empty({tokens*batch.routes*batch.scale_stride},input.options().dtype(tb::kInt32));
+        auto completion=tb::empty({tokens*batch.routes*batch.scale_stride},input.options().dtype(tyloi::kInt32));
         batch.completion=reinterpret_cast<uint32_t*>(completion.data_ptr());
         const int groups=(width+gs-1)/gs,other_gs=gs==24?28:24,other_groups=(width+other_gs-1)/other_gs;
-        auto codes=tb::empty({tokens*(groups*gs+other_groups*other_gs)},input.options().dtype(tb::kInt8));
-        auto scales=tb::empty({tokens*(groups+other_groups)},input.options().dtype(tb::kFloat32));
+        auto codes=tb::empty({tokens*(groups*gs+other_groups*other_gs)},input.options().dtype(tyloi::kInt8));
+        auto scales=tb::empty({tokens*(groups+other_groups)},input.options().dtype(tyloi::kFloat32));
         MfeInputQuantization descriptors[2]{{codes.data_ptr<int8_t>(),scales.data_ptr<float>(),groups,gs},
             {codes.data_ptr<int8_t>()+tokens*groups*gs,scales.data_ptr<float>()+tokens*groups,other_groups,other_gs}};
-        auto descriptor_host=tb::empty({int64_t(sizeof(descriptors))},host.options().dtype(tb::kUInt8));
+        auto descriptor_host=tb::empty({int64_t(sizeof(descriptors))},host.options().dtype(tyloi::kUInt8));
         std::memcpy(descriptor_host.data_ptr(),descriptors,sizeof(descriptors));
-        auto table=descriptor_host.to(tb::kCUDA);
-        tb::Tensor reference_codes,reference_scales;
+        auto table=descriptor_host.to(tyloi::kCUDA);
+        tyloi::DenseTensor reference_codes,reference_scales;
         for(int arm:{0,1,0}) {
             const auto body=[&]{(arm?mfe_ffn_prepare_warp:mfe_ffn_prepare)(batch,
                 reinterpret_cast<const MfeInputQuantization*>(table.data_ptr()),2,groups+other_groups,stream);};
@@ -48,7 +48,7 @@ static void benchmark_mfe_prepare(bool timings=true) {
         if(width==2560 && gs==24) {
             const int pairs=tokens*batch.routes;
             std::vector<int32_t> routes(pairs);for(int i=0;i<pairs;++i)routes[i]=(i*7)%31;
-            auto ids=tb::tensor(routes).to(tb::kCUDA);batch.ids=ids.data_ptr<int32_t>();
+            auto ids=tb::tensor(routes).to(tyloi::kCUDA);batch.ids=ids.data_ptr<int32_t>();
             HostBuffer publication((pairs+16)*sizeof(int32_t),true);int32_t* mapped=nullptr;
             TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&mapped),publication.data(),0));
             auto* ready=reinterpret_cast<uint32_t*>(mapped+pairs);

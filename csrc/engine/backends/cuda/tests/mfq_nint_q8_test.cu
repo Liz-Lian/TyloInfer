@@ -11,20 +11,21 @@
 #include <vector>
 
 namespace {
-using namespace mfq::cuda;
+using namespace tyloi::cuda;
+using namespace tyloi;
 bool benchmark_online=false;
 void single_path(bool enabled) {
-    mfq::cuda::env_set("TYLOINFER_NINT_SINGLE_ROW",enabled ? "1" : "0");
+    tyloi::cuda::env_set("TYLOINFER_NINT_SINGLE_ROW",enabled ? "1" : "0");
 }
 
 void group_path(bool enabled) {
-    mfq::cuda::env_set("TYLOINFER_NINT_GROUP_DOT", enabled ? "1" : "0");
+    tyloi::cuda::env_set("TYLOINFER_NINT_GROUP_DOT", enabled ? "1" : "0");
 }
 void whole_path(bool enabled) {
-    mfq::cuda::env_set("TYLOINFER_NINT_WHOLE_GROUP", enabled ? "1" : "0");
+    tyloi::cuda::env_set("TYLOINFER_NINT_WHOLE_GROUP", enabled ? "1" : "0");
 }
 void exact_batch_path(bool enabled) {
-    mfq::cuda::env_set("TYLOINFER_NINT_EXACT_BATCH",enabled ? "1" : "0");
+    tyloi::cuda::env_set("TYLOINFER_NINT_EXACT_BATCH",enabled ? "1" : "0");
 }
 
 double grouped_max_nrmse = 0.0;
@@ -37,7 +38,7 @@ void require(bool condition, const char *message) {
     }
 }
 
-void exact_half(const Tensor &actual, const Tensor &expected) {
+void exact_half(const DenseTensor &actual, const DenseTensor &expected) {
     require(actual.sizes() == expected.sizes() &&
             actual.scalar_type() == kFloat16 &&
             expected.scalar_type() == kFloat16, "NINT output contract mismatch");
@@ -48,7 +49,7 @@ void exact_half(const Tensor &actual, const Tensor &expected) {
             "NINT q8 output differs from the original generic path");
 }
 
-void grouped_half(const Tensor &actual, const Tensor &expected) {
+void grouped_half(const DenseTensor &actual, const DenseTensor &expected) {
     require(actual.sizes() == expected.sizes() && actual.scalar_type() == kFloat16 &&
         expected.scalar_type() == kFloat16, "NINT grouped output contract mismatch");
     auto a = actual.to(kCPU).to(kFloat32).contiguous();
@@ -128,10 +129,10 @@ void check_case(int gs, int ng, int m, int width_tail, int storage_offset,
     exact_batch_path(true);
     const auto actual = run(true);
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceSynchronize());
-    const auto* q8_option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE");
+    const auto* q8_option=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE");
     const bool reassociated=gs==48 && m>1 && storage_offset==0 &&
         (!q8_option || std::atoi(q8_option)==2);
-    const auto compare=[&](const Tensor& value) {
+    const auto compare=[&](const DenseTensor& value) {
         if(reassociated)grouped_half(value,expected);else exact_half(value,expected);
     };
     compare(actual);
@@ -145,9 +146,9 @@ void check_case(int gs, int ng, int m, int width_tail, int storage_offset,
         MfqCudaStreamGuard guard(stream);
         MfqCudaGraph graph;
         mfq_prepare_cuda_graph_memory(graph);
-        Tensor result = run(true);
+        DenseTensor result = run(true);
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
-        result = Tensor();
+        result = DenseTensor();
         graph.capture_begin();
         result = run(true);
         graph.capture_end();
@@ -200,7 +201,7 @@ void check_single(int gs,int width,int preset,int storage_offset,int padding,int
     exact_batch_path(true);
     whole_path(true);
     single_path(true);group_path(grouped);auto actual=run();
-    const auto compare=[&](const Tensor& a,const Tensor& b) {
+    const auto compare=[&](const DenseTensor& a,const DenseTensor& b) {
         try {if(online || (grouped && rows==1))grouped_half(a,b);else exact_half(a,b);}
         catch(...) {std::cerr<<"NINT case gs="<<gs<<" width="<<width<<" preset="<<preset<<" offset="<<storage_offset
             <<" padding="<<padding<<" outputs="<<n<<" rows="<<rows<<" online="<<online<<std::endl;throw;}
@@ -208,7 +209,7 @@ void check_single(int gs,int width,int preset,int storage_offset,int padding,int
     compare(actual,expected);++cases;
     const auto stream=mfq_get_stream_from_pool(false);MfqCudaStreamGuard guard(stream);
     MfqCudaGraph graph;mfq_prepare_cuda_graph_memory(graph);
-    actual=run();TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));actual=Tensor{};
+    actual=run();TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));actual=DenseTensor{};
     graph.capture_begin();actual=run();graph.capture_end();
     for(int step=0;step<2;++step) {
         for(int column=0;column<rows*width;++column)input[column]=std::sin(float(column+step*31)*.173f)*.13f;
@@ -277,8 +278,8 @@ void check_float_input(int gs,int rows,int kind,int mode,int& ordinary,int& chan
     }
     auto x=empty({rows,width},options.dtype(kFloat32));
     auto gate=empty({rows,width},options.dtype(kind==1?kFloat16:kFloat32));
-    Tensor qx[2]={empty({rows,padded},options.dtype(kInt8)),empty({rows,padded},options.dtype(kInt8))};
-    Tensor xs[2]={empty({rows,ng},options.dtype(kFloat32)),empty({rows,ng},options.dtype(kFloat32))};
+    DenseTensor qx[2]={empty({rows,padded},options.dtype(kInt8)),empty({rows,padded},options.dtype(kInt8))};
+    DenseTensor xs[2]={empty({rows,ng},options.dtype(kFloat32)),empty({rows,ng},options.dtype(kFloat32))};
     const auto change=[&](int step) {
         const float midpoint=1.f+1.f/2048.f;
         const std::vector<float> edges={0.f,-0.f,std::ldexp(1.f,-25),-std::ldexp(1.f,-25),
@@ -306,7 +307,7 @@ void check_float_input(int gs,int rows,int kind,int mode,int& ordinary,int& chan
             ?nint_matmul_input_mul_q8_ws_cuda(q,bits,off,sub,minima,scale,minimum,activation,gates,mode,gs,qx[slot],xs[slot])
             :nint_matmul_input_mul_ws_cuda(q,bits,off,sub,minima,scale,minimum,activation,gates,mode,gs,qx[slot],xs[slot]);
     };
-    const auto bytes=[](const Tensor& actual,const Tensor& expected) {
+    const auto bytes=[](const DenseTensor& actual,const DenseTensor& expected) {
         require(actual.sizes()==expected.sizes() && actual.scalar_type()==expected.scalar_type(),
             "NINT Float quantizer workspace contract mismatch");
         auto a=actual.cpu().contiguous(),b=expected.cpu().contiguous();
@@ -317,7 +318,7 @@ void check_float_input(int gs,int rows,int kind,int mode,int& ordinary,int& chan
     exact_half(actual,expected);bytes(qx[1],qx[0]);bytes(xs[1],xs[0]);++ordinary;
     const auto stream=mfq_get_stream_from_pool(false);MfqCudaStreamGuard guard(stream);
     MfqCudaGraph graph;mfq_prepare_cuda_graph_memory(graph);
-    actual=run(true);TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));actual=Tensor{};
+    actual=run(true);TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));actual=DenseTensor{};
     graph.capture_begin();actual=run(true);graph.capture_end();
     for(int step=1;step<=3;++step) {
         change(step);expected=run(false);graph.replay();
@@ -374,7 +375,7 @@ int main(int argc,char** argv) {
         check_single(28,2560,5,0,8,6144,online_cases,false,32,true);
         check_single(24,6144,6,0,8,2560,online_cases,false,16,true);
         check_single(24,6144,6,0,8,2560,online_cases,false,32,true);
-        std::cout<<"NINT online Tensor Core projection dense-reference/changing graphs cases="<<online_cases<<" PASS\n";
+        std::cout<<"NINT online DenseTensor Core projection dense-reference/changing graphs cases="<<online_cases<<" PASS\n";
         for (int gs : {4, 12, 28, 32, 48, 64, 5, 47, 63}) {
             for (int ng : {1, 3, 22}) {
                 for (int m = 1; m <= 8; ++m) {
