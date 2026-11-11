@@ -43,6 +43,12 @@ bool supports_speculation(const Model&) noexcept;
 
 void replay(const Model&, State&, Executor&, std::int64_t accepted = 0);
 
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Execute one layer using its placement and the current execution scope. */
+DenseTensor forward_layer(const Layer&, LayerState&, DenseTensor input,
+    const AttentionStep&, std::int64_t confirmed_prefix, const tyloi::ops::RopeTable&,
+    const tyloi::models::ForwardOptions&);
+#else
 DenseTensor forward_layer(
     Collectives& collectives,
     const Layer& layer,
@@ -58,5 +64,6 @@ DenseTensor forward_layer(
     const RopeCache& rope,
 #endif
     const Executor::Mode& options);
+#endif
 
 } // namespace tyloi::cuda::qwen35

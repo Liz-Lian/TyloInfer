@@ -53,6 +53,7 @@ AttentionStep layer_step(Collectives& collectives, const Layer& layer,
     return local;
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 void prepare_linear_state(const LinearAttention& attention, LinearState& state,
                           const DenseTensor& input, bool transposed) {
     if (state.mixer.defined()) return;
@@ -71,6 +72,7 @@ void clear_linear_speculative(LinearState& state) noexcept {
     state.projected = {};
     state.mixer.commit();
 }
+#endif
 
 } // namespace
 
@@ -270,9 +272,16 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
                 const auto it = model.device_ropes.find(layer.device);
                 if (it != model.device_ropes.end()) active_rope = &it->second;
             }
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto scope = executor.enter(layer.device, options.ffn);
+            hidden = forward_layer(layer, state.layers[index], std::move(hidden), step,
+                                   confirmed, *active_rope,
+                                   {options.kv_capacity, options.trace, options.trace_layer, options.primary});
+#else
             hidden = forward_layer(collectives, layer, state.layers[index], executor,
                                    2 * index, std::move(hidden), step, confirmed,
                                    *active_rope, options);
+#endif
             if (trace)
                 trace->push_back(collectives.copy(hidden, options.primary)
                                      .to(::tyloi::kFloat32)
@@ -342,6 +351,9 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
             MfqCudaGuard guard(model.layers[index].device);
             const auto* layer = std::get_if<Linear>(&model.layers[index].weights);
             require_forward(layer != nullptr, "Qwen3.5 recurrent layer weight kind mismatch");
+#ifdef TYLOINFER_NATIVE_CUDA
+            layer->attention->replay(linear->attention, keep - state.speculative_start);
+#else
             auto& state_view = linear->mixer.view();
             const LinearView linear_view{
                 state_view.convolution.dense(), state_view.recurrent.dense(), state_view.transposed};
@@ -350,6 +362,7 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
 #endif
             layer->attention.replay(linear_view, linear->projected,
                                     keep - state.speculative_start);
+#endif
         }
         state.commit_speculative();
         state.cache_pos = keep;
@@ -359,6 +372,52 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
     }
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+DenseTensor forward_layer(const Layer& layer, LayerState& state, DenseTensor input,
+                     const AttentionStep& step, std::int64_t confirmed_prefix,
+                     const tyloi::ops::RopeTable& rope, const tyloi::models::ForwardOptions& options) {
+    const auto target = layer.cpu ? ::tyloi::Device(::tyloi::kCPU) : ::tyloi::Device(::tyloi::kCUDA, layer.device);
+    const auto copy = [&](const tyloi::Tensor& value) {
+        return value.defined() ? tyloi::ops::contiguous(tyloi::ops::copy(value, target)) : tyloi::Tensor{};
+    };
+    AttentionStep local_step = step;
+    local_step.positions = copy(step.positions);
+    local_step.sequence_lengths = copy(step.sequence_lengths);
+    local_step.cache_positions = copy(step.cache_positions);
+    input = copy(input).dense();
+    const auto* full = std::get_if<Full>(&layer.weights);
+    auto* trace = full && options.trace_layer >= 0 && options.trace_layer == full->attention.layer ? options.trace : nullptr;
+    if (full) {
+        auto* cache = std::get_if<tyloi::state::KvView>(&state);
+        require_forward(cache != nullptr, "Qwen3.5 full layer state kind mismatch");
+        const auto& attention = full->attention;
+        const auto capacity = attention.sliding ? attention.attention_window :
+            (options.kv_capacity > 0 ? std::max<std::int64_t>(local_step.cache_position + input.size(1), options.kv_capacity)
+                                     : attention.max_position_embeddings);
+        if (!cache->defined()) *cache = tyloi::state::allocate_kv(input.size(0), attention.kv_heads, capacity,
+            attention.attention_head_dim, attention.sliding, input.device(),
+            attention.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16, attention.kv_quantization);
+        cache->quantization = attention.kv_quantization;
+        auto output = attention.forward(input, local_step, *cache, rope, trace);
+        return tyloi::models::full_ffn(full->ffn, full->ffn_norm, output[0], output[1],
+            attention.rms_norm_eps, attention.norm_weight_offset,
+            attention.official_bf16, attention.attention_output_gate, trace).dense();
+    }
+    const auto* linear = std::get_if<Linear>(&layer.weights);
+    auto* request = std::get_if<LinearState>(&state);
+    require_forward(linear && request, "Qwen3.5 linear layer state kind mismatch");
+    try {
+        auto output = linear->attention->forward(request->attention, input, local_step.cache_position, confirmed_prefix);
+        auto result = tyloi::models::linear_ffn(linear->ffn, linear->ffn_norm, output[0], output[1],
+            linear->geometry.rms_norm_eps, linear->geometry.norm_weight_offset).dense();
+        if (confirmed_prefix > 0) { ++request->speculative_projection_batches; ++request->speculative_ffn_batches; }
+        return result;
+    } catch (...) {
+        if (confirmed_prefix > 0 && request->attention.pending()) request->attention.abort();
+        throw;
+    }
+}
+#else
 DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& state,
                      tyloi::cuda::Executor& executor, std::size_t scratch_offset, DenseTensor input,
                      const AttentionStep& step, std::int64_t confirmed_prefix,
@@ -458,5 +517,6 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
         throw;
     }
 }
+#endif
 
 } // namespace tyloi::cuda::qwen35

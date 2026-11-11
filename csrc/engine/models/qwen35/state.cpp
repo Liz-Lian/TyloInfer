@@ -19,11 +19,13 @@ void require_state(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 bool projected(const LinearInputs& value) {
     return value.qk.defined() || value.value.defined() || value.qkv.defined() ||
            value.gate.defined() || value.beta.defined() || value.batch != 0 ||
            value.tokens != 0 || value.split;
 }
+#endif
 
 bool on_layer_device(const ::tyloi::Tensor& tensor, const Layout& layer) {
     return layer.cpu ? !tensor.is_cuda()
@@ -53,10 +55,14 @@ bool hybrid_layout(const State& state) {
 }
 
 void validate_linear_snapshot(const Layout& model_layer, const LinearLayout& layer,
+#ifdef TYLOINFER_NATIVE_CUDA
+                             const tyloi::ops::Linear::State::Snapshot& mixer, bool transposed) {
+#else
                              const Recurrent::State& mixer, bool transposed) {
+#endif
     const auto width = 2 * layer.key_heads * layer.key_dim +
                        layer.value_heads * layer.value_dim;
-    if (!(mixer.defined() && mixer.transposed == transposed &&
+    if (!(mixer.convolution.defined() && mixer.recurrent.defined() && mixer.transposed == transposed &&
           mixer.convolution.scalar_type() == ::tyloi::kFloat32 &&
           mixer.recurrent.scalar_type() == ::tyloi::kFloat32 &&
           mixer.convolution.dim() == 3 && mixer.convolution.size(0) == 1 &&
@@ -117,7 +123,11 @@ void initialize_layers(std::vector<LayerState>& layers,
 
 State::State(const Model& model, const bool& transposed)
     : max_position_embeddings_(model.metadata.max_position_embeddings),
+#ifdef TYLOINFER_NATIVE_CUDA
+      transposed_(transposed) {
+#else
       transposed_(&transposed) {
+#endif
     layout_.reserve(model.layers.size());
     for (const auto& layer : model.layers) {
         if (const auto* full = std::get_if<Full>(&layer.weights)) {
@@ -136,13 +146,18 @@ State::State(const Model& model, const bool& transposed)
         } else {
             const auto* linear = std::get_if<Linear>(&layer.weights);
             require_state(linear != nullptr, "Qwen3.5 layer weight kind mismatch");
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto& geometry = linear->geometry;
+#else
+            const auto& geometry = linear->attention;
+#endif
             layout_.push_back({layer.device,
                                layer.cpu,
-                               LinearLayout{linear->attention.key_heads,
-                                            linear->attention.key_dim,
-                                            linear->attention.value_heads,
-                                            linear->attention.value_dim,
-                                            linear->attention.conv_kernel}});
+                               LinearLayout{geometry.key_heads,
+                                            geometry.key_dim,
+                                            geometry.value_heads,
+                                            geometry.value_dim,
+                                            geometry.conv_kernel}});
         }
     }
     initialize_layers(layers, layout_);
@@ -178,8 +193,12 @@ void State::reset(std::int64_t new_batch) {
             continue;
         }
         auto& linear = std::get<LinearState>(state);
+#ifdef TYLOINFER_NATIVE_CUDA
+        linear.attention.reset(new_batch);
+#else
         linear.mixer.reset(new_batch);
         linear.projected = {};
+#endif
     }
 }
 
@@ -188,8 +207,12 @@ void State::commit_speculative() {
     for (std::size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
         if (auto* linear = std::get_if<LinearState>(&layers[index])) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            linear->attention.commit();
+#else
             linear->projected = {};
             linear->mixer.commit();
+#endif
         }
     }
     speculative_start = -1;
@@ -204,7 +227,11 @@ std::int64_t State::rewind(std::int64_t accepted_suffix) {
         auto* linear = std::get_if<LinearState>(&layers[index]);
         if (linear == nullptr) continue;
         MfqCudaGuard guard(layout_[index].device);
+#ifdef TYLOINFER_NATIVE_CUDA
+        linear->attention.rewind(keep);
+#else
         linear->mixer.rewind(keep);
+#endif
     }
     return keep;
 }
@@ -216,10 +243,16 @@ void State::abort_speculative() noexcept {
         if (linear == nullptr) continue;
         try {
             MfqCudaGuard guard(layout_[index].device);
+#ifdef TYLOINFER_NATIVE_CUDA
+            linear->attention.abort();
+#else
             linear->mixer.abort();
+#endif
         } catch (...) {
         }
+#ifndef TYLOINFER_NATIVE_CUDA
         linear->projected = {};
+#endif
     }
     if (start >= 0) cache_pos = start;
     speculative_start = -1;
@@ -231,11 +264,19 @@ std::vector<::tyloi::Tensor*> State::graph_state() {
     for (auto& state : layers) {
         auto* linear = std::get_if<LinearState>(&state);
         if (linear == nullptr) continue;
+#ifdef TYLOINFER_NATIVE_CUDA
+        require_state(linear->attention.defined() && !linear->attention.pending() &&
+                          !linear->attention.has_tape(),
+                      "decode graph requires confirmed recurrent state");
+        auto members = linear->attention.graph_state();
+        result.insert(result.end(), members.begin(), members.end());
+#else
         require_state(linear->mixer.defined() && !linear->mixer.pending() &&
                           !projected(linear->projected),
                       "decode graph requires confirmed recurrent state");
         result.push_back(&linear->mixer.view().convolution);
         result.push_back(&linear->mixer.view().recurrent);
+#endif
     }
     return result;
 }
@@ -257,8 +298,13 @@ std::vector<::tyloi::Tensor> State::storage() const {
             }
         } else {
             const auto& linear = std::get<LinearState>(state);
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto members = linear.attention.storage();
+            result.insert(result.end(), members.begin(), members.end());
+#else
             append(linear.mixer.view().convolution);
             append(linear.mixer.view().recurrent);
+#endif
         }
     }
     return result;
@@ -327,11 +373,21 @@ TextSessionState State::capture_text_session_state(
             validate_full_snapshot_length(saved.full_attention, cache_pos);
         } else {
             const auto& linear = std::get<LinearState>(layers[index]);
+#ifdef TYLOINFER_NATIVE_CUDA
+            require_state(!linear.attention.pending() && !linear.attention.has_tape(),
+                          "Qwen recurrent session state has a pending speculative pass");
+            const auto snapshot = linear.attention.snapshot();
+#else
             require_state(!linear.mixer.pending() && !projected(linear.projected),
                           "Qwen recurrent session state has a pending speculative pass");
             const auto snapshot = linear.mixer.snapshot();
+#endif
             validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention), snapshot,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                     !layout.cpu && transposed_);
+#else
                                      !layout.cpu && *transposed_);
+#endif
             saved.kind = HybridBlockSessionStateKind::Recurrent;
             saved.convolution = snapshot.convolution;
             saved.recurrent = snapshot.recurrent;
@@ -385,8 +441,13 @@ State::Restore State::prepare(const TextSessionState& state) const {
                     !saved.recurrent.representation<DenseTensor>())
                     throw CudaSessionStateError("Qwen recurrent session topology changed");
                 validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention),
+#ifdef TYLOINFER_NATIVE_CUDA
+                                         tyloi::ops::Linear::State::Snapshot{saved.convolution, saved.recurrent, saved.transposed},
+                                         !layout.cpu && transposed_);
+#else
                                          Recurrent::State{saved.convolution, saved.recurrent, saved.transposed},
                                          !layout.cpu && *transposed_);
+#endif
             }
         }
     }
@@ -424,12 +485,16 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
             linear.speculative_projection_batches = current.speculative_projection_batches;
             const auto& convolution = saved.convolution;
             const auto& recurrent = saved.recurrent;
+#ifdef TYLOINFER_NATIVE_CUDA
+            linear.attention.restore({convolution, recurrent, saved.transposed});
+#else
             // Candidate owns copy targets through the caller's asynchronous drain.
             linear.mixer.view().convolution = ::tyloi::ops::empty(
                 convolution.dense().sizes(), convolution.options());
             linear.mixer.view().recurrent = ::tyloi::ops::empty(
                 recurrent.dense().sizes(), recurrent.options());
             linear.mixer.restore(Recurrent::State{convolution, recurrent, saved.transposed});
+#endif
         }
     }
 }

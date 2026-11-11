@@ -1,4 +1,12 @@
 #include "linear.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/linear.h"
+#include "engine/state/recurrent.h"
+#include "engine/backends/cuda/executor/executor.h"
+#define TYLOI_LINEAR_IMPL LinearCore
+#else
+#define TYLOI_LINEAR_IMPL LinearAttention
+#endif
 #include "engine/ops.h"
 #include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
@@ -42,7 +50,7 @@ DenseTensor linear_attention(DenseTensor normalized, Project project, Gates gate
 
 } // namespace
 
-std::array<::tyloi::DenseTensor, 2> LinearAttention::forward(
+std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         ::tyloi::DenseTensor input,
         LinearView state, LinearInputs* captured) const {
@@ -54,7 +62,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::forward(
                            : cpu(project, std::move(input), state);
 }
 
-std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
+std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cpu(
         const Projector& project, ::tyloi::DenseTensor x,
         LinearView state) const {
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -310,7 +318,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cpu(
     return std::array<::tyloi::DenseTensor, 2>{std::move(x), std::move(output)};
 }
 
-std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
+std::array<::tyloi::DenseTensor, 2> TYLOI_LINEAR_IMPL::cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         ::tyloi::DenseTensor x,
         LinearView state, LinearInputs* captured) const {
@@ -674,7 +682,7 @@ std::array<::tyloi::DenseTensor, 2> LinearAttention::cuda(
     return std::array<::tyloi::DenseTensor, 2>{std::move(x), std::move(output)};
 }
 
-void LinearAttention::replay(
+void TYLOI_LINEAR_IMPL::replay(
         LinearView state, const LinearInputs& inputs, int64_t retained_tokens) const {
     TYLOINFER_RUNTIME_CHECK(retained_tokens > 0 && retained_tokens <= inputs.tokens &&
                           inputs.batch > 0 && inputs.split == split_in_proj,
@@ -751,3 +759,172 @@ void LinearAttention::replay(
 }
 
 } // namespace tyloi::cuda
+
+#undef TYLOI_LINEAR_IMPL
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace tyloi::ops {
+struct Linear::State::Impl {
+    cuda::Recurrent mixer;
+    cuda::LinearInputs projected;
+};
+Linear::State::State() : impl_(std::make_unique<Impl>()) {}
+Linear::State::~State() = default;
+Linear::State::State(State&&) noexcept = default;
+Linear::State& Linear::State::operator=(State&&) noexcept = default;
+bool Linear::State::defined() const noexcept { return impl_->mixer.defined(); }
+bool Linear::State::pending() const noexcept { return impl_->mixer.pending(); }
+bool Linear::State::has_tape() const noexcept {
+    const auto& p = impl_->projected;
+    return p.qk.defined() || p.value.defined() || p.qkv.defined() || p.gate.defined() ||
+        p.beta.defined() || p.batch != 0 || p.tokens != 0 || p.split;
+}
+Linear::State::Snapshot Linear::State::view() const {
+    const auto& v = impl_->mixer.view();
+    return {v.convolution, v.recurrent, v.transposed};
+}
+Linear::State::Snapshot Linear::State::snapshot() const {
+    std::optional<MfqCudaGuard> guard;
+    if (defined() && impl_->mixer.view().convolution.device().is_cuda()) guard.emplace(impl_->mixer.view().convolution.device());
+    const auto v = impl_->mixer.snapshot();
+    return {v.convolution, v.recurrent, v.transposed};
+}
+void Linear::State::restore(const Snapshot& value) {
+    if (!value.convolution.defined() || !value.recurrent.defined())
+        throw std::runtime_error("recurrent snapshot is unavailable");
+    std::optional<MfqCudaGuard> guard;
+    if (value.convolution.device().is_cuda()) guard.emplace(value.convolution.device());
+    auto& live = impl_->mixer.view();
+    const auto prepare = [](Tensor& destination, const Tensor& source) {
+        bool same = destination.defined() && destination.dim() == source.dim() &&
+            destination.scalar_type() == source.scalar_type() && destination.device() == source.device();
+        if (same) for (std::int64_t i = 0; i < source.dim(); ++i)
+            if (destination.size(i) != source.size(i)) { same = false; break; }
+        if (!same) {
+            std::vector<std::int64_t> shape;
+            for (std::int64_t i = 0; i < source.dim(); ++i) shape.push_back(source.size(i));
+            destination = ops::empty(shape, source.options());
+        }
+    };
+    prepare(live.convolution, value.convolution);
+    prepare(live.recurrent, value.recurrent);
+    impl_->mixer.restore({value.convolution, value.recurrent, value.transposed});
+    impl_->projected = {};
+}
+void Linear::State::initialize(const Snapshot& layout, std::int64_t batch) {
+    if (defined() || !layout.convolution.defined() || !layout.recurrent.defined() || batch <= 0)
+        throw std::runtime_error("invalid recurrent batch initialization");
+    std::optional<MfqCudaGuard> guard;
+    if (layout.convolution.device().is_cuda()) guard.emplace(layout.convolution.device());
+    auto shape = [batch](const Tensor& value) {
+        std::vector<std::int64_t> result;
+        for (std::int64_t axis = 0; axis < value.dim(); ++axis) result.push_back(value.size(axis));
+        if (result.empty()) throw std::runtime_error("invalid recurrent batch geometry");
+        result[0] = batch;
+        return result;
+    };
+    auto& live = impl_->mixer.view();
+    live.convolution = ops::zeros(shape(layout.convolution), layout.convolution.options());
+    live.recurrent = ops::zeros(shape(layout.recurrent), layout.recurrent.options());
+    live.transposed = layout.transposed;
+}
+void Linear::State::reset(std::int64_t batch) {
+    std::optional<MfqCudaGuard> guard;
+    if (defined() && impl_->mixer.view().convolution.device().is_cuda()) guard.emplace(impl_->mixer.view().convolution.device());
+    impl_->mixer.reset(batch); impl_->projected = {};
+}
+void Linear::State::commit() noexcept { impl_->projected = {}; impl_->mixer.commit(); }
+std::int64_t Linear::State::rewind(std::int64_t position) {
+    std::optional<MfqCudaGuard> guard;
+    if (defined() && impl_->mixer.view().convolution.device().is_cuda()) guard.emplace(impl_->mixer.view().convolution.device());
+    return impl_->mixer.rewind(position);
+}
+void Linear::State::abort() {
+    std::optional<MfqCudaGuard> guard;
+    if (defined() && impl_->mixer.view().convolution.device().is_cuda()) guard.emplace(impl_->mixer.view().convolution.device());
+    try { impl_->mixer.abort(); }
+    catch (...) { impl_->projected = {}; throw; }
+    impl_->projected = {};
+}
+std::vector<Tensor*> Linear::State::graph_state() {
+    if (!defined() || pending() || has_tape()) throw std::runtime_error("decode graph requires confirmed recurrent state");
+    auto& v = impl_->mixer.view();
+    return {&v.convolution, &v.recurrent};
+}
+std::vector<Tensor> Linear::State::storage() const {
+    auto result = impl_->mixer.storage();
+    const auto& p = impl_->projected;
+    for (const auto* value : {&p.qk, &p.value, &p.qkv, &p.gate, &p.beta})
+        if (value->defined()) result.emplace_back(*value);
+    return result;
+}
+struct Linear::Impl {
+    cuda::LinearCore core;
+    Device target;
+    Impl(LinearWeights w, LinearConfig c) : target(c.target) {
+        std::optional<MfqCudaGuard> guard;
+        if (target.is_cuda()) guard.emplace(target);
+        core.key_heads=c.key_heads; core.value_heads=c.value_heads;
+        core.key_dim=c.key_dim; core.value_dim=c.value_dim; core.conv_kernel=c.conv_kernel;
+        core.rms_norm_eps=c.rms_norm_eps; core.norm_weight_offset=c.norm_weight_offset;
+        core.split_in_proj=c.split_in_proj; core.split_dense_zab=c.split_dense_zab;
+        core.dense_ab_tail=c.dense_ab_tail; core.ab_is_nint=c.ab_is_nint;
+        core.dense_out_proj=c.dense_out_proj; core.tiled_v_heads=c.tiled_v_heads;
+        core.attn_norm=std::move(w.attn_norm); core.conv_weight=std::move(w.conv_weight);
+        core.conv_bias=std::move(w.conv_bias); core.dt_bias=std::move(w.dt_bias);
+        core.a_log=std::move(w.a_log); core.linear_norm=std::move(w.linear_norm);
+        core.in_proj=std::move(w.in_proj); core.qkv_proj=std::move(w.qkv_proj);
+        core.ab_nint_proj=std::move(w.ab_nint_proj); core.z_proj=std::move(w.z_proj);
+        if (!w.ab_proj.empty()) core.ab_proj=make_dense_group(w.ab_proj);
+        if (!w.zab_proj.empty()) core.zab_proj=make_dense_group(w.zab_proj);
+        core.out_proj=std::move(w.out_proj); core.out_proj_dense=std::move(w.out_proj_dense);
+    }
+};
+Linear::Linear(LinearWeights weights, LinearConfig config)
+    : impl_(std::make_unique<Impl>(std::move(weights),config)) {}
+Linear::~Linear() = default;
+Linear::Linear(Linear&&) noexcept = default;
+Linear& Linear::operator=(Linear&&) noexcept = default;
+std::array<Tensor, 2> Linear::forward(State& state, const Tensor& input,
+                                      std::int64_t position, std::int64_t confirmed) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
+    std::array<Tensor,2> result{Tensor{DenseTensor{}},Tensor{DenseTensor{}}};
+    auto& executor = cuda::Executor::current();
+    auto& mixer = state.impl_->mixer;
+    const auto& x = input.dense();
+    if (!mixer.defined()) {
+        const auto& c = impl_->core;
+        const auto width=2*c.key_heads*c.key_dim+c.value_heads*c.value_dim;
+        const auto options=x.options().dtype(kFloat32);
+        mixer.view()={cuda::zeros({x.size(0),c.conv_kernel-1,width},options),
+            cuda::zeros({x.size(0),c.value_heads,c.value_dim,c.value_dim},options),
+            x.is_cuda() && executor.mode().transposed};
+    }
+    if (confirmed == 0) {
+        if (mixer.pending()) throw std::runtime_error("linear attention has a pending speculative pass");
+    } else {
+        if (!x.is_cuda() || mixer.pending() || confirmed <= 0 || confirmed >= x.size(1))
+            throw std::runtime_error("invalid Qwen3.5 speculative linear-attention transaction");
+        mixer.begin(position,confirmed,x.size(1));
+    }
+    auto& v=mixer.view();
+    cuda::LinearView view{v.convolution.dense(),v.recurrent.dense(),v.transposed};
+    try {
+        auto output=impl_->core.forward(executor.projector(cuda::Executor::current_ffn()),executor.profiler(),
+            executor.mode().linear,x,view,confirmed>0 ? &state.impl_->projected : nullptr);
+        result[0].dense()=std::move(output[0]);
+        result[1].dense()=std::move(output[1]);
+        return result;
+    } catch (...) {
+        if (confirmed>0) state.abort();
+        throw;
+    }
+}
+void Linear::replay(State& state, std::int64_t retained) const {
+    std::optional<MfqCudaGuard> guard;
+    if (impl_->target.is_cuda()) guard.emplace(impl_->target);
+    auto& v=state.impl_->mixer.view();
+    impl_->core.replay({v.convolution.dense(),v.recurrent.dense(),v.transposed},state.impl_->projected,retained);
+}
+}
+#endif

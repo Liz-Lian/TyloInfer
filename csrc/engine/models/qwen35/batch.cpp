@@ -14,6 +14,7 @@ namespace tyloi::cuda::qwen35 {
 
 using DenseTensor = ::tyloi::DenseTensor;
 
+template <class Ffn>
 static bool has_cached_experts(const Ffn& ffn) {
     if (!ffn.is_moe)
         return false;
@@ -388,6 +389,14 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
         } else {
             auto &state = std::get<LinearState>(destination);
             const auto &from = std::get<LinearState>(origin);
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto source = from.attention.view();
+            TYLOINFER_RUNTIME_CHECK(from.attention.defined() && !from.attention.pending() &&
+                source.convolution.size(0)==1 && source.recurrent.size(0)==1,
+                "continuous batching recurrent state is unavailable");
+            if (!state.attention.defined()) state.attention.initialize(source,target.batch);
+            auto target_view = state.attention.view();
+#else
             TYLOINFER_RUNTIME_CHECK(
                 from.mixer.defined() && !from.mixer.pending() &&
                     from.mixer.view().convolution.size(0) == 1 &&
@@ -406,6 +415,7 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
                     recurrent_shape, source.recurrent.options());
                 target_view.transposed = source.transposed;
             }
+#endif
             TYLOINFER_RUNTIME_CHECK(target_view.transposed == source.transposed,
                                     "continuous batching recurrent layout changed");
             auto conv = ::tyloi::ops::slice(target_view.convolution, 0, slot, slot + 1);
@@ -450,14 +460,19 @@ BatchState Batch::capture_recurrent_slots(const std::vector<std::int32_t> &slots
             continue;
         MfqCudaGuard guard(weights_->layers[index].device);
         std::vector<::tyloi::Tensor> conv, recurrent;
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto view=linear->attention.view();
+#else
+        const auto& view=linear->mixer.view();
+#endif
         for (auto slot : slots) {
-            conv.push_back(::tyloi::ops::slice(linear->mixer.view().convolution, 0, slot, slot + 1));
-            recurrent.push_back(::tyloi::ops::slice(linear->mixer.view().recurrent, 0, slot, slot + 1));
+            conv.push_back(::tyloi::ops::slice(view.convolution, 0, slot, slot + 1));
+            recurrent.push_back(::tyloi::ops::slice(view.recurrent, 0, slot, slot + 1));
         }
         state.layers[index] = Recurrent::State{
             ::tyloi::ops::clone(::tyloi::ops::cat(conv, 0)),
             ::tyloi::ops::clone(::tyloi::ops::cat(recurrent, 0)),
-            linear->mixer.view().transposed};
+            view.transposed};
     }
     return state;
 }
@@ -475,10 +490,15 @@ void Batch::restore_recurrent_slots(const std::vector<std::int32_t> &slots,
             continue;
         MfqCudaGuard guard(weights_->layers[index].device);
         const auto *saved = std::get_if<Recurrent::State>(&state.layers[index]);
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto view=linear->attention.view();
+#else
+        const auto& view=linear->mixer.view();
+#endif
         TYLOINFER_RUNTIME_CHECK(saved && saved->defined() &&
                                     saved->convolution.size(0) == state.batch &&
                                     saved->recurrent.size(0) == state.batch &&
-                                    saved->transposed == linear->mixer.view().transposed,
+                                    saved->transposed == view.transposed,
                                 "continuous batching recurrent snapshot changed");
     }
     for (std::size_t index = 0; index < state_->layers.size(); ++index) {
@@ -487,9 +507,14 @@ void Batch::restore_recurrent_slots(const std::vector<std::int32_t> &slots,
             continue;
         MfqCudaGuard guard(weights_->layers[index].device);
         const auto &saved = std::get<Recurrent::State>(state.layers[index]);
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto view=linear->attention.view();
+#else
+        const auto& view=linear->mixer.view();
+#endif
         for (std::size_t row = 0; row < slots.size(); ++row) {
-            auto conv = ::tyloi::ops::slice(linear->mixer.view().convolution, 0, slots[row], slots[row] + 1);
-            auto recurrent = ::tyloi::ops::slice(linear->mixer.view().recurrent, 0, slots[row], slots[row] + 1);
+            auto conv = ::tyloi::ops::slice(view.convolution, 0, slots[row], slots[row] + 1);
+            auto recurrent = ::tyloi::ops::slice(view.recurrent, 0, slots[row], slots[row] + 1);
             ::tyloi::ops::copy_into(conv, ::tyloi::ops::slice(saved.convolution, 0, row, row + 1));
             ::tyloi::ops::copy_into(recurrent, ::tyloi::ops::slice(saved.recurrent, 0, row, row + 1));
         }

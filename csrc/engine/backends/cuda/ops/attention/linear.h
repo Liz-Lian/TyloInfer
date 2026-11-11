@@ -25,7 +25,11 @@ struct LinearView {
     bool transposed;
 };
 
+#ifdef TYLOINFER_NATIVE_CUDA
+struct LinearCore {
+#else
 struct LinearAttention {
+#endif
     struct Options {
         bool shared_input = true;
         bool fused_conv = true;

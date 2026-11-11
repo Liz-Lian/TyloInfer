@@ -96,7 +96,11 @@ public:
     const Collectives& collectives() const noexcept { return collectives_; }
     struct Mode {
         FfnMode ffn;
+#ifdef TYLOINFER_NATIVE_CUDA
+        LinearCore::Options linear;
+#else
         LinearAttention::Options linear;
+#endif
         std::int64_t kv_capacity = 0;
         bool transposed = true;
         Trace* trace = nullptr;

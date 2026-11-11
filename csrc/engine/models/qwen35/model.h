@@ -2,7 +2,12 @@
 
 #include "engine/models/qwen35/config.h"
 #include "engine/models/metadata.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/ffn.h"
+#include "engine/ops/linear.h"
+#else
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#endif
 #include "engine/models/source/model_graph.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/common/attention.h"
@@ -29,17 +34,24 @@ struct Full {
 #else
     DenseTensor ffn_norm;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::FfnWeights ffn;
+#else
     Ffn ffn;
+#endif
 };
 
 struct Linear {
-    LinearAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<tyloi::ops::Linear> attention;
+    tyloi::ops::LinearConfig geometry;
     ::tyloi::Tensor ffn_norm;
+    tyloi::ops::FfnWeights ffn;
 #else
+    LinearAttention attention;
     DenseTensor ffn_norm;
-#endif
     Ffn ffn;
+#endif
 };
 
 struct Layer {

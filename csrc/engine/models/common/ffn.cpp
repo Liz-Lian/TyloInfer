@@ -1,5 +1,8 @@
 #include "engine/models/common/ffn.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/ffn.h"
+#endif
 
 #include <stdexcept>
 
@@ -30,6 +33,11 @@ Tensor feed_forward(const Mlp& weights, const Tensor& input, bool bf16) {
 
 Tensor feed_forward(const cuda::Ffn& weights, const Tensor& input, bool bf16) {
     if (weights.is_moe && !bf16) return weights.forward(input.dense());
+    return dense_ffn(weights, input, bf16);
+}
+
+Tensor feed_forward(const ops::FfnWeights& weights, const Tensor& input, bool bf16) {
+    if (weights.is_moe && !bf16) return ops::ffn(weights, input);
     return dense_ffn(weights, input, bf16);
 }
 
@@ -81,7 +89,16 @@ Tensor full_ffn(const cuda::Ffn& weights, const Tensor& norm,
         epsilon, offset, bf16, trace, trace_output);
 }
 
-Tensor linear_ffn(const cuda::Ffn& weights, const Tensor& norm,
+Tensor full_ffn(const ops::FfnWeights& weights, const Tensor& norm,
+    const Tensor& residual, const Tensor& attention_output,
+    double epsilon, double offset, bool bf16, bool trace,
+    ops::Trace* trace_output) {
+    return full(weights, weights.is_moe, norm, residual, attention_output,
+        epsilon, offset, bf16, trace, trace_output);
+}
+
+template <class Weights>
+Tensor linear(const Weights& weights, const Tensor& norm,
     const Tensor& residual, const Tensor& attention_output,
     double epsilon, double offset) {
     const auto batch = residual.size(0), tokens = residual.size(1), width = residual.size(2);
@@ -95,6 +112,18 @@ Tensor linear_ffn(const cuda::Ffn& weights, const Tensor& norm,
     }
     auto output = ops::reshape(feed_forward(weights, input, false), {batch, tokens, width});
     return ops::recurrent_add(pair[0], output);
+}
+
+Tensor linear_ffn(const cuda::Ffn& weights, const Tensor& norm,
+    const Tensor& residual, const Tensor& attention_output,
+    double epsilon, double offset) {
+    return linear(weights, norm, residual, attention_output, epsilon, offset);
+}
+
+Tensor linear_ffn(const ops::FfnWeights& weights, const Tensor& norm,
+    const Tensor& residual, const Tensor& attention_output,
+    double epsilon, double offset) {
+    return linear(weights, norm, residual, attention_output, epsilon, offset);
 }
 
 } // namespace tyloi::models
