@@ -20,7 +20,11 @@ struct Layer final {
     tyloi::models::qwen4_exp::Config config;
     GatedResidual attention_gr, ffn_gr;
     Moe ffn;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<tyloi::ops::Gdn> gdn;
+#else
     std::unique_ptr<Gdn> gdn;
+#endif
     std::unique_ptr<Qsa> qsa;
     std::unique_ptr<Ple> ple;
 };

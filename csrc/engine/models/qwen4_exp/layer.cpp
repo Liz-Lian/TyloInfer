@@ -23,7 +23,11 @@ DenseTensor forward(const Layer& weights, LayerState& request,
     auto attention_output = weights.gdn
         ? measure("prefill.gdn", [&] {
             return weights.gdn->forward(request.gdn, attention_input, true, confirmed,
-                                        full_positions.size(-1) - ids.size(1));
+                                        full_positions.size(-1) - ids.size(1))
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                ;
         })
         : measure("prefill.qsa", [&] {
             return weights.qsa->forward(*request.qsa, attention_input, positions,
@@ -59,7 +63,11 @@ DenseTensor prefill_attention_core(const Layer& weights, LayerState& request,
     };
     return weights.gdn
         ? measure("prefill.gdn", [&] {
-            return weights.gdn->forward(request.gdn, input, true, 0);
+            return weights.gdn->forward(request.gdn, input, true, 0)
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                ;
         })
         : measure("prefill.qsa", [&] {
             return weights.qsa->forward(*request.qsa, input, positions, full_positions, true);

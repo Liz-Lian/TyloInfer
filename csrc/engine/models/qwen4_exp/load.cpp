@@ -18,9 +18,7 @@
 #include "engine/models/qwen4_exp/predictor.h"
 #include "env.h"
 
-#ifdef TYLOINFER_NATIVE_CUDA
-#include "engine/backends/cuda/executor/executor.h"
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
 #endif
 #include "engine/backends/cuda/native/scope.h"
@@ -41,7 +39,9 @@ namespace tyloi::cuda::qwen4_exp {
 using Config = tyloi::models::qwen4_exp::Config;
 
 struct LayerLoader : tyloi::weights::Loader {
+#ifndef TYLOINFER_NATIVE_CUDA
     using GdnWeights = qwen4_exp::GdnWeights;
+#endif
     using QsaWeights = qwen4_exp::QsaWeights;
     using PleWeights = qwen4_exp::PleWeights;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -86,7 +86,11 @@ struct LayerLoader : tyloi::weights::Loader {
     auto gdn_weights(const std::string &p) const {
         const bool independent = has(p + ".query.weight") || has(p + ".key.weight") || has(p + ".value.weight");
         TYLOINFER_RUNTIME_CHECK(!independent || !has(p + ".qkv.weight"), "ambiguous Qwen4 GDN input projections");
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::GdnWeights w;
+#else
         GdnWeights w;
+#endif
         if(independent)for(const auto* name:{"query","key","value"})
             w.input_projection.push_back(weight(p+"."+name+".weight"));
         else w.input_projection.push_back(weight(p+".qkv.weight"));
@@ -131,19 +135,24 @@ struct LayerLoader : tyloi::weights::Loader {
         }
         return w;
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto gdn(tyloi::ops::GdnWeights weights, const Config &c) const {
+#else
     auto gdn(GdnWeights weights, const Config &c) const {
+#endif
         weights.input_projection=tyloi::weights::pack_projections(std::move(weights.input_projection),
             options.grouped,placement.cpu);
-        auto shared=std::make_shared<const GdnWeights>(std::move(weights));
 #ifdef TYLOINFER_NATIVE_CUDA
-        auto& executor=Executor::current();
+        return std::make_unique<tyloi::ops::Gdn>(std::move(weights),c.key_heads,c.value_heads,
+            c.linear_width,c.kernel,c.eps,c.silu_gate);
 #else
+        auto shared=std::make_shared<const GdnWeights>(std::move(weights));
         auto& executor=execution.executor();
-#endif
         return std::make_unique<Gdn>(std::move(shared), c.key_heads, c.value_heads, c.linear_width,
                                      c.kernel, c.eps, c.silu_gate,true,executor.mode().transposed,
                                      executor.options().gdn_fused_output,true,executor.options().gdn_fused_preparation,
                                      executor.options().gdn_fused_core);
+#endif
     }
     auto qsa(QsaWeights weights, const Config &c) const {
         weights.input_projection=tyloi::weights::pack_projections(std::move(weights.input_projection),

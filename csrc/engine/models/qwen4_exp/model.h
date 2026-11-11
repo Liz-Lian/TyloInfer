@@ -8,6 +8,9 @@
 #include "engine/models/qwen4_exp/ngram.h"
 #include "engine/models/common/attention_ops.h"
 #include "engine/ops.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/ops/gdn.h"
+#endif
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/kernels/ple_fused.h"
@@ -39,6 +42,7 @@ using attention_ops::rms_norm;
 using attention_ops::SequenceCache;
 using attention_ops::select_pooled_blocks;
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct GdnWeights {
     std::vector<::tyloi::Tensor> input_projection;
     ::tyloi::Tensor output;
@@ -666,6 +670,7 @@ class Gdn {
     bool silu_gate_, fused_decode_,transposed_state_,fused_output_,grouped_projection_,fused_preparation_,fused_core_;
 };
 
+#endif
 // The upstream PLE hash is a CPU uint64 algorithm, including signed remainder
 // after bitwise mixing and EOS segment boundaries. Keep shards independent.
 class NgramEmbedding {

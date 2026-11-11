@@ -288,6 +288,9 @@ std::vector<::tyloi::Tensor> State::storage() const {
         const auto& block=*model_.layers[i];
         const auto& layer=*layers[i];
         if(block.gdn) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            for(const auto& value:block.gdn->storage(layer.gdn)) add(value);
+#else
             const auto& gdn=layer.gdn;
             // GDN reassigns the Dense representation in place. Capture an
             // independent view so a later reset cannot replace this backing.
@@ -295,6 +298,7 @@ std::vector<::tyloi::Tensor> State::storage() const {
             add(gdn.saved_conv);add(gdn.saved_state);
             for(const auto& value:gdn.saved_prefix_conv)add(value);
             for(const auto& value:gdn.saved_prefix_state)add(value);
+#endif
         }
         if(block.ple) {
             const auto& ple=layer.ple;
@@ -336,8 +340,8 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
         auto& layer=*layers[i];
         MfqCudaGuard guard(weights.cuda_device);
         if (weights.gdn) {
-            layer.gdn.saved_conv=layer.gdn.conv.dense().clone();
-            layer.gdn.saved_state=layer.gdn.recurrent.dense().clone();
+            layer.gdn.saved_conv=tyloi::ops::clone(layer.gdn.conv);
+            layer.gdn.saved_state=tyloi::ops::clone(layer.gdn.recurrent);
         }
         if (weights.ple) {
             layer.ple.saved_context=weights.ple->session_context(layer.ple);

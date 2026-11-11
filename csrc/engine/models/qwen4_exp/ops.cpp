@@ -47,7 +47,12 @@ namespace tyloi::cuda {
 namespace {
 
 struct GraphCheckpoint {
-    std::vector<::tyloi::DenseTensor> gdn_conv, gdn_state, ple_conv;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::vector<::tyloi::Tensor> gdn_conv, gdn_state;
+#else
+    std::vector<::tyloi::DenseTensor> gdn_conv, gdn_state;
+#endif
+    std::vector<::tyloi::DenseTensor> ple_conv;
 };
 
 GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp::LayerState& state,
@@ -74,6 +79,9 @@ GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp
     auto attention_output=weights.gdn
         ? (confirmed ? weights.gdn->forward_graph(state.gdn, attention_input,confirmed,checkpoint->gdn_conv,checkpoint->gdn_state)
                      : weights.gdn->forward_chunk(state.gdn, attention_input,true))
+#ifdef TYLOINFER_NATIVE_CUDA
+            .dense()
+#endif
         : weights.qsa->forward_graph(*state.qsa, attention_input,positions,cache_positions);
     mark("attention_core_end");
     auto ffn_result=weights.ffn_gr.pre_after(attention_output,attention_residual,attention_gate,marker("ffn_mhc_"));
@@ -157,6 +165,7 @@ static DenseTensor qwen_prefill_preserve_rows(const DenseTensor& source,Projecti
     return output;
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA
 // This scope is active only while an entire GDN layer is evaluated. Retain
 // each projection's original token count and therefore its GEMM arithmetic.
 static thread_local int64_t qwen_gdn_prefill_projection_rows=0;
@@ -269,6 +278,7 @@ DenseTensor Gdn::project_output(const DenseTensor& source) const {
     if(window)window->mark_current("gdn_output_end");
     return output;
 }
+#endif
 
 
 
@@ -2012,13 +2022,24 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
         graph.gdn_addresses.resize(model.layers.size());
         if(batch>1 && ::tyloi::cuda::options::batch_attention_projections() && ::tyloi::cuda::options::gdn_independent_batch())
             for(std::size_t i=0;i<model.layers.size();++i) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                std::vector<std::pair<const tyloi::ops::Gdn*,tyloi::ops::Gdn::State*>> rows;
+#else
                 std::vector<std::pair<const qwen4_exp::Gdn*,qwen4_exp::Gdn::State*>> rows;
+#endif
                 for(auto* request:requests) {
                     const auto& weights = *model.layers[i];
                     auto& state = *request->state_->layers[i];
                     if(weights.gdn) rows.emplace_back(weights.gdn.get(),&state.gdn);
                 }
+#ifdef TYLOINFER_NATIVE_CUDA
+                if(rows.size()==requests.size()) {
+                    auto addresses=tyloi::ops::Gdn::prepare_independent_batch(rows);
+                    if(addresses.defined()) graph.gdn_addresses[i]=addresses.dense();
+                }
+#else
                 if(rows.size()==requests.size())graph.gdn_addresses[i]=qwen4_exp::Gdn::prepare_independent_batch(rows);
+#endif
             }
 #ifndef TYLOINFER_NATIVE_CUDA
         // Cached MFE owns its graph pool and initializes it during preparation.
@@ -2113,23 +2134,49 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                     : block.attention_gr.pre(hidden,marker("attention_mhc_"));
                 graph.window->mark(static_cast<int>(i),"attention_core_begin");
                 const bool project_batch=batch>1 && ::tyloi::cuda::options::batch_attention_projections();
+#ifdef TYLOINFER_NATIVE_CUDA
+                std::vector<::tyloi::DenseTensor> projections;
+                if(project_batch) {
+                    if(block.gdn) for(const auto& value:block.gdn->project_inputs(mix.mixed)) projections.push_back(value.dense());
+                    else projections=block.qsa->project_inputs(mix.mixed);
+                }
+#else
                 const auto projections=project_batch ? (block.gdn ? block.gdn->project_inputs(mix.mixed)
                     : block.qsa->project_inputs(mix.mixed)) : std::vector<::tyloi::DenseTensor>{};
+#endif
                 std::vector<::tyloi::DenseTensor> attended;
                 DenseTensor attention;
+#ifdef TYLOINFER_NATIVE_CUDA
+                if(project_batch && block.gdn && graph.gdn_addresses[i].defined()) {
+                    auto result=block.gdn->forward_independent_batch(requests[0]->state_->layers[i]->gdn,mix.mixed,
+                        std::vector<::tyloi::Tensor>(projections.begin(),projections.end()),graph.gdn_addresses[i]);
+                    if(result.defined()) attention=result.dense();
+                }
+#else
                 if(project_batch && block.gdn && graph.gdn_addresses[i].defined())
                     attention=block.gdn->forward_independent_batch(requests[0]->state_->layers[i]->gdn,mix.mixed,projections,graph.gdn_addresses[i]);
+#endif
                 if(!attention.defined())for (int64_t row = 0; row < batch; ++row) {
                     auto& layer = *requests[row]->state_->layers[i];
                     auto attention_input = mix.mixed.narrow(0,row,1);
                     std::vector<::tyloi::DenseTensor> projected;
                     for(const auto& value:projections)projected.push_back(value.narrow(0,row,1));
+#ifdef TYLOINFER_NATIVE_CUDA
+                    if(block.gdn) attended.push_back(block.gdn->forward_chunk(layer.gdn,attention_input,true,
+                        std::vector<::tyloi::Tensor>(projected.begin(),projected.end()),!project_batch).dense());
+                    else attended.push_back(block.qsa->forward_graph(*layer.qsa,attention_input,graph.positions[row],graph.cache_positions[row],
+                        std::move(projected),!project_batch));
+#else
                     attended.push_back(block.gdn ? block.gdn->forward_chunk(layer.gdn,attention_input,true,std::move(projected),!project_batch)
                         : block.qsa->forward_graph(*layer.qsa,attention_input,graph.positions[row],graph.cache_positions[row],
                             std::move(projected),!project_batch));
+#endif
                 }
                 if(!attention.defined())attention=join_request_outputs(attended,0);
                 if(project_batch)attention=block.gdn ? block.gdn->project_output(attention)
+#ifdef TYLOINFER_NATIVE_CUDA
+                    .dense()
+#endif
                     : block.qsa->project_output(attention);
                 graph.window->mark(static_cast<int>(i),"attention_core_end");
                 auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate,marker("ffn_mhc_"));
@@ -2251,8 +2298,14 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             measure("prefill.gr_attention",[&] { return block.attention_gr.pre(hidden); });
         ::tyloi::DenseTensor attention;
         if(packed) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            std::vector<::tyloi::DenseTensor> projections;
+            if(block.gdn) for(const auto& value:block.gdn->project_inputs(mix.mixed)) projections.push_back(value.dense());
+            else projections=block.qsa->project_inputs(mix.mixed);
+#else
             const auto projections=block.gdn?block.gdn->project_inputs(mix.mixed)
                                              :block.qsa->project_inputs(mix.mixed);
+#endif
             std::vector<::tyloi::DenseTensor> attended;
             for (std::size_t row=0;row<requests.size();++row) {
                 auto& layer=*requests[row]->state_->layers[i];
@@ -2260,15 +2313,29 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
                 std::vector<::tyloi::DenseTensor> projected;
                 for (const auto& value:projections)
                     projected.push_back(value.narrow(1,offsets[row],chunks[row].size(1)));
+#ifdef TYLOINFER_NATIVE_CUDA
+                if(block.gdn) attended.push_back(block.gdn->forward_chunk(layer.gdn,attention_input,true,
+                    std::vector<::tyloi::Tensor>(projected.begin(),projected.end()),false).dense());
+                else attended.push_back(block.qsa->forward(*layer.qsa,attention_input,current[row],full[row],true,nullptr,std::move(projected),false));
+#else
                 attended.push_back(block.gdn?block.gdn->forward_chunk(layer.gdn,attention_input,true,std::move(projected),false)
                     :block.qsa->forward(*layer.qsa,attention_input,current[row],full[row],true,nullptr,std::move(projected),false));
+#endif
             }
             attention=join_request_outputs(attended,1);
-            attention=block.gdn?block.gdn->project_output(attention):block.qsa->project_output(attention);
+            attention=block.gdn?block.gdn->project_output(attention)
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                :block.qsa->project_output(attention);
         } else {
             auto& layer=*requests.front()->state_->layers[i];
             if(block.gdn)attention=measure("prefill.gdn",[&] {
-                return block.gdn->forward(layer.gdn,mix.mixed,true,0);
+                return block.gdn->forward(layer.gdn,mix.mixed,true,0)
+#ifdef TYLOINFER_NATIVE_CUDA
+                    .dense()
+#endif
+                    ;
             });
             else attention=measure("prefill.qsa",[&] {
                 return block.qsa->forward(*layer.qsa,mix.mixed,current.front(),full.front(),true);
@@ -2326,18 +2393,33 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         }
         auto mix = block.attention_gr.pre(hidden);
         const bool project_batch=batch>1 && block.gdn && ::tyloi::cuda::options::batch_attention_projections();
+#ifdef TYLOINFER_NATIVE_CUDA
+        std::vector<::tyloi::DenseTensor> projections;
+        if(project_batch) for(const auto& value:block.gdn->project_inputs(mix.mixed)) projections.push_back(value.dense());
+#else
         const auto projections=project_batch ? block.gdn->project_inputs(mix.mixed) : std::vector<::tyloi::DenseTensor>{};
+#endif
         std::vector<::tyloi::DenseTensor> attended;
         for (int64_t row = 0; row < batch; ++row) {
             auto& layer = *requests[row]->state_->layers[i];
             auto attention_input = mix.mixed.narrow(0,row,1);
             std::vector<::tyloi::DenseTensor> projected;
             for(const auto& value:projections)projected.push_back(value.narrow(0,row,1));
+#ifdef TYLOINFER_NATIVE_CUDA
+            if(block.gdn) attended.push_back(block.gdn->forward_chunk(layer.gdn,attention_input,true,
+                std::vector<::tyloi::Tensor>(projected.begin(),projected.end()),!project_batch).dense());
+            else attended.push_back(block.qsa->forward(*layer.qsa,attention_input,current[row],full[row],true));
+#else
             attended.push_back(block.gdn ? block.gdn->forward_chunk(layer.gdn,attention_input,true,std::move(projected),!project_batch)
                 : block.qsa->forward(*layer.qsa,attention_input,current[row],full[row],true));
+#endif
         }
         auto attention=join_request_outputs(attended,0);
-        if(project_batch)attention=block.gdn->project_output(attention);
+        if(project_batch)attention=block.gdn->project_output(attention)
+#ifdef TYLOINFER_NATIVE_CUDA
+            .dense()
+#endif
+            ;
         auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
         // Tiles share the expert transfer cache across all eligible rows.
         hidden = block.ffn_gr.post(batch_ffn(block.ffn,
@@ -2739,9 +2821,17 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
 #else
                 if(cancelled && cancelled())return {};
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+                const tyloi::ops::Gdn::ProjectionScope projection_rows(compute_chunk);
+#else
                 const qwen4_exp::QwenGdnPrefillProjectionRowsScope projection_rows(compute_chunk);
+#endif
                 attention_output=profile_measure("prefill.gdn",[&] {
-                    return qwen_block.gdn->forward(layer_state.gdn,attention_result.mixed,true,0);
+                    return qwen_block.gdn->forward(layer_state.gdn,attention_result.mixed,true,0)
+#ifdef TYLOINFER_NATIVE_CUDA
+                        .dense()
+#endif
+                        ;
                 });
             }
         }

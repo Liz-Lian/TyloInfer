@@ -20,7 +20,11 @@ struct Model;
 
 // Per-request recurrent and attention storage for one shared layer.
 struct LayerState {
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::Gdn::State gdn;
+#else
     Gdn::State gdn;
+#endif
     std::unique_ptr<Qsa::State> qsa;
     Ple::State ple;
     bool retain_graph_storage = false, retained_prefix = false;
