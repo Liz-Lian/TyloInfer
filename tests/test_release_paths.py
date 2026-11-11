@@ -1,8 +1,8 @@
 """Release scanning must find paths even inside compressed Python payloads."""
-import importlib.util
 import json
 import marshal
 import os
+import re
 import runpy
 import shlex
 import shutil
@@ -10,15 +10,63 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
-spec = importlib.util.spec_from_file_location(
-    "release_paths", Path(__file__).parents[1] / "packaging" / "check_release_paths.py"
-)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+ROOT = Path(__file__).resolve().parents[1]
+MAC_SCRIPT = ROOT / 'packaging/build_release_mac.sh'
+
+
+@pytest.fixture(params=['windows', 'macos'])
+def module(request):
+    """Load each platform's actual embedded scanner for the same behavior checks."""
+    filename = 'build_release_windows.ps1' if request.param == 'windows' else 'build_release_mac.sh'
+    script = ROOT / 'packaging' / filename
+    match = re.search(
+        r'^# TYLOINFER_PATH_CHECKER_BEGIN\n(.*?)^# TYLOINFER_PATH_CHECKER_END$',
+        script.read_text(encoding='utf-8'), re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f'Missing embedded path checker in {script}'
+    loaded = ModuleType(f'release_paths_{request.param}')
+    loaded.__source__ = match.group(1)
+    exec(compile(loaded.__source__, str(script), 'exec'), loaded.__dict__)
+    return loaded
+
+
+def bash_executable():
+    """Select Git Bash on Windows and the native shell on POSIX hosts."""
+    if sys.platform == 'win32':
+        git = shutil.which('git')
+        if git:
+            candidate = Path(git).resolve().parent.parent / 'bin/bash.exe'
+            if candidate.is_file():
+                return str(candidate)
+    bash = shutil.which('bash')
+    if not bash:
+        pytest.skip('bash is required for generated macOS build helpers')
+    return bash
+
+
+def shell_path(path):
+    """Translate local Windows drive paths for Git Bash without changing POSIX paths."""
+    normalized = Path(path).resolve().as_posix()
+    if sys.platform == 'win32' and len(normalized) > 2 and normalized[1] == ':':
+        return f'/{normalized[0].lower()}{normalized[2:]}'
+    return normalized
+
+
+@pytest.fixture
+def generated_hook_directory(tmp_path):
+    """Generate the PyInstaller hook through the production macOS script."""
+    directory = tmp_path / 'generated hooks'
+    subprocess.run(
+        [bash_executable(), '-euc', 'source "$1"\nmfq_write_sysconfig_hook "$2"',
+         '--', shell_path(MAC_SCRIPT), shell_path(directory)],
+        check=True, capture_output=True, text=True,
+    )
+    assert (directory / 'hook-sysconfig.py').is_file()
+    return directory
 
 
 @pytest.mark.parametrize("path", [
@@ -27,19 +75,19 @@ spec.loader.exec_module(module)
     r"C:\\Users\\Build User\\source\\crate.rs",
 ])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16le"])
-def test_private_windows_paths_are_detected(path, encoding):
+def test_private_windows_paths_are_detected(module, path, encoding):
     checker = module.PathChecker([r"C:\Users\Build User"])
     checker.check_bytes(path.encode(encoding), "program.exe")
     assert checker.failures == {"program.exe"}
 
 
-def test_normalized_diagnostic_paths_are_allowed():
+def test_normalized_diagnostic_paths_are_allowed(module):
     checker = module.PathChecker([r"C:\Users\Build User"])
     checker.check_bytes(b"/mfq-build/home/.cargo/src/crate.rs", "program.exe")
     assert not checker.failures
 
 
-def test_zip_python_filenames_are_inspected(tmp_path):
+def test_zip_python_filenames_are_inspected(module, tmp_path):
     code = compile("pass", r"C:\Users\Build User\stdlib\module.py", "exec")
     path = tmp_path / "base_library.zip"
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -49,14 +97,14 @@ def test_zip_python_filenames_are_inspected(tmp_path):
     assert any("!module.pyc" in item for item in checker.failures)
 
 
-def test_python_constant_tuples_are_inspected():
+def test_python_constant_tuples_are_inspected(module):
     code = compile("paths = (r'C:\\Users\\Build User\\source', 'other')", "module.py", "exec")
     checker = module.PathChecker([r"C:\Users\Build User"])
     checker.check_code(code, "module")
     assert checker.failures == {"module"}
 
 
-def test_matches_across_scan_blocks_are_detected(tmp_path):
+def test_matches_across_scan_blocks_are_detected(module, tmp_path):
     path = tmp_path / "program.exe"
     path.write_bytes(b"\0" * (4 * 1024 * 1024 - 5) + br"C:\Users\Build User\source")
     checker = module.PathChecker([r"C:\Users\Build User"])
@@ -65,7 +113,7 @@ def test_matches_across_scan_blocks_are_detected(tmp_path):
 
 
 @pytest.mark.parametrize("payload", ["native.dylib", "Resources/config.json"])
-def test_private_posix_paths_are_detected_outside_the_main_executable(tmp_path, payload):
+def test_private_posix_paths_are_detected_outside_the_main_executable(module, tmp_path, payload):
     path = tmp_path / payload
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"build root: /build-machine/private/source/file.cpp")
@@ -74,8 +122,8 @@ def test_private_posix_paths_are_detected_outside_the_main_executable(tmp_path, 
     assert checker.failures == {str(path)}
 
 
-def test_sysconfig_hook_remaps_nested_metadata_only():
-    hook = runpy.run_path(str(Path(__file__).parents[1] / "packaging/hooks/hook-sysconfig.py"))
+def test_sysconfig_hook_remaps_nested_metadata_only(generated_hook_directory):
+    hook = runpy.run_path(str(generated_hook_directory / 'hook-sysconfig.py'))
     code = compile("paths = (('/build-machine/python/include',),)\nanswer = 42\ndef nested():\n return '/build-machine/python/lib'", "sysconfigdata.py", "exec")
     cleaned = hook["replace_build_prefix"](code, "/build-machine/python")
     assert b"/build-machine/python" not in marshal.dumps(cleaned)
@@ -88,8 +136,8 @@ def test_sysconfig_hook_remaps_nested_metadata_only():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="macOS sysconfigdata hook")
-def test_sysconfig_hook_updates_the_actual_module_graph_code():
-    hook = runpy.run_path(str(Path(__file__).parents[1] / "packaging/hooks/hook-sysconfig.py"))
+def test_sysconfig_hook_updates_the_actual_module_graph_code(generated_hook_directory):
+    hook = runpy.run_path(str(generated_hook_directory / 'hook-sysconfig.py'))
     node = SimpleNamespace(code=compile(f"build_prefix = {sys.base_prefix!r}", "sysconfigdata.py", "exec"))
     imports = []
 
@@ -106,9 +154,8 @@ def test_sysconfig_hook_updates_the_actual_module_graph_code():
 
 
 def macos_path_environment(tmp_path, encoded=None):
-    bash = shutil.which("bash")
-    if not bash:
-        pytest.skip("bash is required for macOS build flag tests")
+    """Collect real release flags without invoking the macOS build entry point."""
+    bash = bash_executable()
     project = tmp_path / "source tree's $literal"
     project.mkdir()
     venv = tmp_path / "release python"
@@ -130,7 +177,7 @@ def macos_path_environment(tmp_path, encoded=None):
     })
     if encoded is not None:
         environment["CARGO_ENCODED_RUSTFLAGS"] = encoded
-    helper = Path(__file__).parents[1] / "packaging/macos_release_paths.sh"
+    helper = MAC_SCRIPT
     result = subprocess.run([bash, "-euc", '''
 source "$1"
 mfq_configure_release_paths
@@ -159,7 +206,7 @@ def test_macos_build_paths_cover_external_toolchains_and_preserve_flag_boundarie
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="macOS build flags use POSIX paths")
-def test_native_compiler_remaps_file_macro_with_spaces_and_shell_characters(tmp_path):
+def test_native_compiler_remaps_file_macro_with_spaces_and_shell_characters(module, tmp_path):
     compiler = shutil.which("clang")
     if not compiler:
         pytest.skip("clang is required for the native path remapping check")
@@ -176,12 +223,12 @@ def test_native_compiler_remaps_file_macro_with_spaces_and_shell_characters(tmp_
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS frozen CLI integration")
-def test_frozen_sysconfig_metadata_is_sanitized_before_packaging(tmp_path):
+def test_frozen_sysconfig_metadata_is_sanitized_before_packaging(module, generated_hook_directory, tmp_path):
     pytest.importorskip("PyInstaller")
     source = tmp_path / "check.py"
     source.write_text('import importlib, json, sysconfig\nprint(json.dumps(importlib.import_module(sysconfig._get_sysconfigdata_name()).build_time_vars))\n')
-    subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
-        "--name", "check", "--additional-hooks-dir", str(Path(__file__).parents[1] / "packaging/hooks"),
+    subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir",
+        "--name", "check", "--additional-hooks-dir", str(generated_hook_directory),
         "--distpath", str(tmp_path / "dist"), "--workpath", str(tmp_path / "work"),
         "--specpath", str(tmp_path), str(source)], check=True, capture_output=True)
     binary = tmp_path / "dist/check/check"
@@ -196,3 +243,25 @@ def test_frozen_sysconfig_metadata_is_sanitized_before_packaging(tmp_path):
     checker.check_python_cli(binary)
     assert checker.python_modules > 0
     assert not checker.failures
+
+
+def test_embedded_scanner_cli_rejects_private_paths(module, tmp_path):
+    artifact = tmp_path / 'program.bin'
+    artifact.write_bytes(b'build root: /private/build-machine/source')
+    result = subprocess.run(
+        [sys.executable, '-c', module.__source__, str(artifact),
+         '--private-prefix', '/private/build-machine'],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert 'Private build path' in result.stdout
+
+
+def test_embedded_scanner_cli_rejects_missing_artifact(module, tmp_path):
+    result = subprocess.run(
+        [sys.executable, '-c', module.__source__, str(tmp_path / 'missing.bin'),
+         '--private-prefix', '/private/build-machine'],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert 'missing release artifact' in result.stderr

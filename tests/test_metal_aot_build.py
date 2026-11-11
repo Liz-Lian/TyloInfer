@@ -8,7 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 METAL = ROOT / "cpp_runtime/backends/metal"
-SCRIPT = ROOT / "packaging/compile_metal_libraries.py"
+SCRIPT = METAL / "tools/compile_metal_libraries.py"
 
 
 def test_compilation_uses_all_cpus_bounded_by_jobs(monkeypatch):
@@ -31,8 +31,9 @@ def test_aot_fingerprint_covers_source_options_and_language():
 
 
 def test_release_requires_and_bundles_precompiled_libraries():
-    script = (ROOT / "packaging/build_release_mac.sh").read_text()
-    assert script.index("xcrun --find metal") < script.index("rm -rf")
+    script = (ROOT / 'packaging/build_release_mac.sh').read_text(encoding='utf-8')
+    assert "xcrun --find metal" in script
+    assert "xcrun --find metallib" in script
     assert "-DTYLOINFER_BUILD_PRECOMPILED_METAL=ON" in script
     assert "metal/lib/mfq-metal/manifest.json" in script
     assert '"${mfq_resource_dir}/mfq-metal"' in script

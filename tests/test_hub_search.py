@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from tyloinfer.server.protocol.models import HubModelSummary
+from tyloinfer.server.services import hub_search
 from tyloinfer.server.services.hub_search import (
     HubBrowserSearch,
     HubSearchCursorError,
@@ -137,3 +139,155 @@ def test_cursor_cache_has_a_fixed_entry_bound():
         assert len(browser._cursors) == 128
 
     asyncio.run(run())
+
+
+def test_search_supports_python_without_asyncio_timeout(monkeypatch):
+    """Search and continuation work when Python 3.11's timeout API is unavailable."""
+    monkeypatch.delattr(asyncio, 'timeout', raising=False)
+
+    async def fetch(config, format, position):
+        """Return enough results to exercise the continuation state."""
+        return [model(index) for index in range(3)], None
+
+    async def run():
+        """Read both pages without relying on asyncio.timeout."""
+        browser = HubBrowserSearch(fetch)
+        config = query(limit=2)
+        first = await browser.search(config)
+        second = await browser.search(config, first.next_cursor)
+        assert [item.repo_id for item in first.data + second.data] == [model(index).repo_id for index in range(3)]
+        assert second.next_cursor is None
+
+    asyncio.run(run())
+
+
+def test_page_deadline_spans_multiple_upstream_fetches(monkeypatch):
+    """Multiple individually fast upstream pages share one overall deadline."""
+    monkeypatch.setattr(hub_search, '_PAGE_TIMEOUT', 0.2)
+    calls = []
+    cancelled = []
+
+    async def fetch(config, format, position):
+        """Spend less than the page budget on each individual upstream fetch."""
+        calls.append(position)
+        try:
+            await asyncio.sleep(0.12)
+        except asyncio.CancelledError:
+            cancelled.append(position)
+            raise
+        index = int(position or '0')
+        return [model(index)], str(index + 1)
+
+    async def run():
+        """Reject an incomplete page rather than publishing its partial cursor."""
+        browser = HubBrowserSearch(fetch)
+        with pytest.raises(TimeoutError):
+            await browser.search(query(limit=3))
+        assert calls == [None, '1']
+        assert cancelled == ['1']
+        assert not browser._cursors
+
+    asyncio.run(run())
+
+
+def test_timed_out_continuation_cancels_fetch_and_preserves_retry_state(monkeypatch):
+    """A timed-out continuation leaves its buffered state available for a retry."""
+    blocked = True
+    cancelled = False
+
+    async def run():
+        """Force the real wait_for cancellation path after the next fetch starts."""
+        nonlocal blocked, cancelled
+        started = asyncio.Event()
+        wait_for = asyncio.wait_for
+
+        async def fetch(config, format, position):
+            """Block the continuation fetch until its page is cancelled."""
+            nonlocal cancelled
+            if position is None:
+                return [model(index) for index in range(4)], 'second'
+            if blocked:
+                started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled = True
+            return [model(index) for index in range(4, 8)], None
+
+        async def expire_started_page(awaitable, timeout):
+            """Expire the page deterministically once its upstream fetch is suspended."""
+            assert timeout == 45
+            task = asyncio.create_task(awaitable)
+            await started.wait()
+            return await wait_for(task, timeout=0)
+
+        browser = HubBrowserSearch(fetch)
+        config = query(limit=3)
+        first = await browser.search(config)
+        token = first.next_cursor
+        original = browser._cursors[token].state.copy()
+        tokens = list(browser._cursors)
+        monkeypatch.setattr(asyncio, 'wait_for', expire_started_page)
+        with pytest.raises(TimeoutError):
+            await browser.search(config, token)
+        assert cancelled
+        assert list(browser._cursors) == tokens
+        assert browser._cursors[token].state == original
+        assert browser._cursors[token].result is None
+
+        blocked = False
+        monkeypatch.setattr(asyncio, 'wait_for', wait_for)
+        second = await browser.search(config, token)
+        assert [item.repo_id for item in second.data] == [model(index).repo_id for index in range(3, 6)]
+        assert await browser.search(config, token) == second
+
+    asyncio.run(run())
+
+
+def test_external_cancellation_propagates_and_cancels_all_fetches():
+    """Cancelling a search waits for its upstream fetches to stop and publishes no cursor."""
+    async def run():
+        """Cancel only after both format streams have started their upstream fetch."""
+        started = {format: asyncio.Event() for format in ('gguf', 'mlx')}
+        cancelled = set()
+
+        async def fetch(config, format, position):
+            """Record cancellation of each independently suspended format stream."""
+            started[format].set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.add(format)
+
+        browser = HubBrowserSearch(fetch)
+        task = asyncio.create_task(browser.search(query(formats=('gguf', 'mlx'))))
+        await asyncio.gather(*(event.wait() for event in started.values()))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled == {'gguf', 'mlx'}
+        assert not browser._cursors
+
+    asyncio.run(run())
+
+
+def test_legacy_asyncio_timeout_preserves_builtin_timeout_error(monkeypatch):
+    """Python 3.10's distinct asyncio timeout class preserves callers' public error type."""
+    class LegacyTimeoutError(Exception):
+        """Represent the separate asyncio.TimeoutError class used before Python 3.11."""
+
+    async def wait_for(awaitable, timeout):
+        """Raise the legacy timeout without leaving an unawaited page coroutine."""
+        awaitable.close()
+        raise LegacyTimeoutError('page deadline')
+
+    async def fetch(config, format, position):
+        """Provide a valid fetch callback that the expired page never executes."""
+        return [], None
+
+    monkeypatch.setattr(hub_search, 'asyncio', SimpleNamespace(
+        wait_for=wait_for, TimeoutError=LegacyTimeoutError, gather=asyncio.gather,
+    ))
+    with pytest.raises(TimeoutError, match='page deadline') as error:
+        asyncio.run(HubBrowserSearch(fetch).search(query()))
+    assert isinstance(error.value.__cause__, LegacyTimeoutError)

@@ -5,3 +5,11 @@
 /Resources/
 /windows-runtime/
 /dist/
+/sidecars.previous-*/
+/sidecars.failed-*/
+/Frameworks.previous-*/
+/Frameworks.failed-*/
+/Resources.previous-*/
+/Resources.failed-*/
+/windows-runtime.previous-*/
+/windows-runtime.failed-*/

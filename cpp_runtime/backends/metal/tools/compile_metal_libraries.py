@@ -1,3 +1,5 @@
+"""Compile exported Metal kernels into the native backend's bundled libraries."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,14 +13,17 @@ import tempfile
 
 
 def fingerprint(source: bytes, mode: int, language: int) -> str:
+    """Return the cache key for a source and its Metal compilation options."""
     return hashlib.sha256(source + b"\0" + str(mode).encode() + b"\0" + str(language).encode()).hexdigest()
 
 
 def worker_count(jobs: int) -> int:
+    """Bound compilation concurrency by the job count and available CPUs."""
     return max(1, min(jobs, os.cpu_count() or 1))
 
 
 def main() -> None:
+    """Compile the exported source catalog and write its library manifest."""
     parser = argparse.ArgumentParser()
     parser.add_argument("sources", type=Path)
     parser.add_argument("output", type=Path)
@@ -32,6 +37,7 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
 
     def compile_one(job: tuple[Path, str, int, str]) -> dict:
+        """Compile one source/language pair and return its manifest metadata."""
         source, standard, language, minimum = job
         key = fingerprint(source.read_bytes(), 2, language)
         target = args.output / (key + ".metallib")

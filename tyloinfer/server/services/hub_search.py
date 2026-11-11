@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 from tyloinfer.server.protocol.models import HubModelSearchResult, HubModelSummary
 
 
+_PAGE_TIMEOUT = 45
+
+
 class HubSearchCursorError(ValueError):
     pass
 
@@ -105,8 +108,10 @@ class HubBrowserSearch:
                 stream.buffer.sort(key=lambda item: search_order(item, state.query), reverse=state.query.direction == 'desc')
 
     async def _page(self, state: _Search) -> HubModelSearchResult:
-        result = []
-        async with asyncio.timeout(45):
+        """Apply one deadline to the page and publish a cursor only after success."""
+        async def collect() -> list[HubModelSummary]:
+            """Merge upstream pages before publishing any continuation state."""
+            result = []
             while len(result) < state.query.limit:
                 await asyncio.gather(*(self._fill(state, stream) for stream in state.streams))
                 available = [stream for stream in state.streams if stream.buffer]
@@ -118,6 +123,15 @@ class HubBrowserSearch:
                 if item.repo_id not in state.seen:
                     state.seen.add(item.repo_id)
                     result.append(item)
+            return result
+
+        try:
+            result = await asyncio.wait_for(collect(), timeout=_PAGE_TIMEOUT)
+        except asyncio.TimeoutError as error:
+            if isinstance(error, TimeoutError):
+                raise
+            # Python 3.10's asyncio timeout type differs from the public builtin.
+            raise TimeoutError(*error.args) from error
         next_cursor = None
         if any(stream.buffer or not stream.exhausted for stream in state.streams):
             next_cursor = secrets.token_urlsafe(24)

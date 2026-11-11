@@ -463,7 +463,10 @@ struct LinearAttentionBlock final : ::Block {
                       return project_group();
                     });
                   };
-                  if(!profiler.enabled)ab=ab_proj.forward_parallel(xn,project,*dense_projection_executor);
+                  // Regular decode graphs prepare only their registered streams.
+                  // Respect the same serial-branch scope used by quantized projections.
+                  if(!profiler.enabled && !execution.decode_graph_serial_branches)
+                    ab=ab_proj.forward_parallel(xn,project,*dense_projection_executor);
                   else {
                     project();ab=profiler.measure("linear.ab_proj",[&]{return ab_proj.forward(xn);});
                   }

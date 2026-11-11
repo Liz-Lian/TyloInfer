@@ -709,12 +709,14 @@ if(TYLOINFER_BUILD_PRECOMPILED_METAL)
         message(FATAL_ERROR "Precompiled Metal libraries require the Xcode Metal Toolchain (metal and metallib)")
     endif()
     set(_TYLOINFER_AOT_ROOT "${_TYLOINFER_METAL_RUNTIME_BUNDLE_DIR}/mfq-metal")
+    set(_TYLOINFER_METAL_LIBRARY_COMPILER
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_metal_libraries.py")
     add_custom_command(OUTPUT "${_TYLOINFER_AOT_ROOT}/manifest.json"
         COMMAND $<TARGET_FILE:mfq-metal-source-export> "${CMAKE_CURRENT_BINARY_DIR}/metal-sources"
-        COMMAND "${Python3_EXECUTABLE}" "${TYLOINFER_REPOSITORY_ROOT}/packaging/compile_metal_libraries.py"
+        COMMAND "${Python3_EXECUTABLE}" "${_TYLOINFER_METAL_LIBRARY_COMPILER}"
             "${CMAKE_CURRENT_BINARY_DIR}/metal-sources" "${_TYLOINFER_AOT_ROOT}"
             --metal "${_TYLOINFER_METAL_COMPILER}" --metallib "${_TYLOINFER_METALLIB_COMPILER}" --sdk "${_TYLOINFER_METAL_SDK}"
-        DEPENDS mfq-metal-source-export "${TYLOINFER_REPOSITORY_ROOT}/packaging/compile_metal_libraries.py"
+        DEPENDS mfq-metal-source-export "${_TYLOINFER_METAL_LIBRARY_COMPILER}"
         VERBATIM)
     add_custom_target(mfq-metal-precompiled DEPENDS "${_TYLOINFER_AOT_ROOT}/manifest.json")
     add_dependencies(mfq-decode-metal mfq-metal-precompiled)
