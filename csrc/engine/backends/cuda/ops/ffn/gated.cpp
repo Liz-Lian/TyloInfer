@@ -1,3 +1,4 @@
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "gated.h"
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
@@ -129,7 +130,7 @@ GatedResidual::DenseTensor GatedResidual::Projection::activate(
 #else
 GatedResidual::Projection GatedResidual::projection(
         ::tyloi::Tensor weight, Projector project, CudaProfiler& profiler,
-        const Options& options, Part part) {
+        const ResidualOptions& options, Part part) {
     using Projection = GatedResidual::Projection;
     const tyloi::cuda::AllocationScope weight_memory;
     const auto* payload = weight.implementation().get();
@@ -469,3 +470,5 @@ GatedResidual::Result GatedResidual::prepare(
 }
 
 } // namespace tyloi::cuda
+
+#endif

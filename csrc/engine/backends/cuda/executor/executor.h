@@ -5,7 +5,6 @@
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
 #include "engine/backends/cuda/ops/ffn/options.h"
-#include "engine/backends/cuda/ops/ffn/gated.h"
 #include "engine/executor.h"
 
 #include <memory>
@@ -107,7 +106,7 @@ public:
                 .mma_prefill = true, .mma_decode = true, .split_k = true}};
         DenseOptions dense;
         FfnOptions ffn;
-        GatedResidual::Options residual;
+        ResidualOptions residual;
         bool gdn_fused_output = true;
         bool gdn_fused_preparation = true;
         bool gdn_fused_core = true;

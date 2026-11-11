@@ -50,7 +50,11 @@ DenseTensor forward(const Layer& weights, LayerState& request,
 #endif
     });
     return measure("prefill.gr_ffn_post", [&] {
-        return weights.ffn_gr.post(ffn_output, ffn_residual, ffn_gate);
+        return weights.ffn_gr.post(ffn_output, ffn_residual, ffn_gate)
+#ifdef TYLOINFER_NATIVE_CUDA
+            .dense()
+#endif
+            ;
     });
 }
 
@@ -86,7 +90,11 @@ DenseTensor prefill_attention_core(const Layer& weights, LayerState& request,
         });
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::ops::Residual::Result prefill_attention(const Layer& weights, LayerState& request,
+#else
 GatedResidual::Result prefill_attention(const Layer& weights, LayerState& request,
+#endif
                                         DenseTensor x, const DenseTensor& ids,
                                         const DenseTensor& host_ids, const DenseTensor& positions,
                                         const DenseTensor& full_positions) {
@@ -96,7 +104,11 @@ GatedResidual::Result prefill_attention(const Layer& weights, LayerState& reques
     x = prefill_ple(weights, request, std::move(x), ids, host_ids);
     auto mix = measure("prefill.gr_attention", [&] { return weights.attention_gr.pre(x); });
     auto attention_output = prefill_attention_core(weights, request,
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                    mix.mixed.dense(), positions, full_positions);
+#else
                                                     mix.mixed, positions, full_positions);
+#endif
     return measure("prefill.gr_ffn_pre", [&] {
         return weights.ffn_gr.pre_after(attention_output, mix.residual, mix.gate);
     });

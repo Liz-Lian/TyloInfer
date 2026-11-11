@@ -61,31 +61,33 @@ struct LayerLoader : tyloi::weights::Loader {
 #endif
 
     auto residual_linear(const std::string &name) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return weight(name);
+#else
         const auto part = name=="model.mhc.pre.down.weight" || name=="predictor.mhc.pre.down.weight"
             ? GatedResidual::Part::final_down
             : name=="model.mhc.pre.up.weight" || name=="predictor.mhc.pre.up.weight"
                 ? GatedResidual::Part::final_up : GatedResidual::Part::generic;
-#ifdef TYLOINFER_NATIVE_CUDA
-        return GatedResidual::projection(weight(name), part);
-#else
         return GatedResidual::projection(weight(name), execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(),
                                           execution.executor().options().residual, part);
 #endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA
-    GatedResidual residual(::tyloi::Tensor norm, GatedResidual::Projection down,
+    tyloi::ops::Residual residual(::tyloi::Tensor norm, ::tyloi::Tensor down,
+        ::tyloi::Tensor up, ::tyloi::Tensor injection, const Config &c) const {
+        const bool final=!injection.defined();
+        return {tyloi::ops::ResidualWeights{std::move(norm),std::move(down),std::move(up),std::move(injection)},
+                tyloi::ops::ResidualConfig{c.hidden,c.streams,c.eps,final}};
+    }
+    static auto final_mixer(tyloi::ops::Residual weights) { return std::make_unique<tyloi::ops::Residual>(std::move(weights)); }
 #else
     GatedResidual residual(DenseTensor norm, GatedResidual::Projection down,
-#endif
         GatedResidual::Projection up, GatedResidual::Projection injection, const Config &c) const {
         return {std::move(norm), std::move(down), std::move(up), std::move(injection),
-#ifdef TYLOINFER_NATIVE_CUDA
-                c.hidden, c.streams, c.eps};
-#else
                 c.hidden, c.streams, c.eps, execution.executor().options().residual, execution.executor().mode().ffn.batch_serial};
-#endif
     }
     static auto final_mixer(GatedResidual weights) { return std::make_unique<GatedResidual>(std::move(weights)); }
+#endif
     auto gdn_weights(const std::string &p) const {
         const bool independent = has(p + ".query.weight") || has(p + ".key.weight") || has(p + ".value.weight");
         TYLOINFER_RUNTIME_CHECK(!independent || !has(p + ".qkv.weight"), "ambiguous Qwen4 GDN input projections");

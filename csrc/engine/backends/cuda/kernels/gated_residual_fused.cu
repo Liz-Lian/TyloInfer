@@ -2,6 +2,9 @@
 #include "float_projection.h"
 #include "qwen4_exp.h"
 #include "gated_residual_fused.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/native/context.h"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -955,7 +958,26 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
     const ::tyloi::DenseTensor& injection,const ::tyloi::DenseTensor& norm,
     const tyloi::NintTensor& down,const tyloi::NintTensor& up,const tyloi::NintTensor* inject,int64_t streams,double eps,bool after,
     const ::tyloi::DenseTensor& dense_injection,const ::tyloi::DenseTensor& prepared_injection_right,
+#ifdef TYLOINFER_NATIVE_CUDA
+    ResidualTraceData* trace,const ::tyloi::DenseTensor& up_group_coefficients) {
+    const auto mark = [&](ResidualTraceData::Phase phase) {
+        if (!trace) return;
+        const auto& point = trace->points[phase];
+        if (!point.timestamp && !point.event) return;
+        if (point.timestamp) tyloi::cuda::record_gpu_timestamp(point.timestamp, 0, mfq_current_cuda_stream());
+        else {
+            cudaStreamCaptureStatus capture;
+            TYLOINFER_CUDA_CHECK(cudaStreamIsCapturing(mfq_current_cuda_stream(), &capture));
+            TYLOINFER_CUDA_CHECK(cudaEventRecordWithFlags(point.event, mfq_current_cuda_stream(),
+                capture == cudaStreamCaptureStatusActive ? cudaEventRecordExternal : cudaEventRecordDefault));
+        }
+        trace->sequence.at(trace->used++) = phase;
+    };
+#define GR_MARK(phase) mark(ResidualTraceData::phase)
+#else
     const std::function<void(const char*)>& marker,const ::tyloi::DenseTensor& up_group_coefficients) {
+#define GR_MARK(phase) do { if (marker) marker(#phase); } while (false)
+#endif
     TYLOINFER_RUNTIME_CHECK((inject!=nullptr)!=dense_injection.defined(),"exactly one residual injection weight is required");
     const auto matrix_valid=[](const tyloi::NintTensor& w) {return w.out>0 && w.neuron_len>0 && w.gs>0 && w.gs<=64 &&
         w.ng==(w.neuron_len+w.gs-1)/w.gs;};
@@ -1118,7 +1140,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
             auto up_sums=::tyloi::cuda::empty({7,4},options.dtype(::tyloi::kInt32));
             GrTwoPlane prepared{up_values.data_ptr<int8_t>(),nullptr,up_values.data_ptr<int8_t>()+336,
                 reinterpret_cast<float2*>(up_scales.data_ptr<float>()),reinterpret_cast<int4*>(up_sums.data_ptr<int32_t>())};
-            if(marker){marker("norm");marker("quantize_input");}
+            GR_MARK(norm); GR_MARK(quantize_input);
             const int row_tile=std::atoi(inline_norm_option)==2?16:24;
             const auto launch=[&](auto kind) {
             gated_residual_down_kernel<48,8,true,decltype(kind)::value><<<dim3(unsigned((320+row_tile-1)/row_tile*ds)),256,
@@ -1132,21 +1154,21 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
             if(half) {
                 if(after)launch(std::integral_constant<int,2>{});else launch(std::integral_constant<int,1>{});
             }else launch(std::integral_constant<int,0>{});
-            if(marker)marker("down");
+            GR_MARK(down);
             gated_residual_up_kernel<48,4,320,1,0,21><<<unsigned(hidden/16),256,0,mfq_current_cuda_stream()>>>(
                 d,u,i,normalized.data_ptr(),parts.data_ptr<float>(),mixed.data_ptr(),next_injection.data_ptr(),
                 hidden,int(streams),half,ds,is,nullptr,1,prepared,nullptr,nullptr,nullptr);
             if(tyloi::cuda::dispatch_trace::enabled())tyloi::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
                 "gr_up_mix_direct_s16_stats",reinterpret_cast<const void*>(gated_residual_up_kernel<48,4,320,1,0,21>),
                 "M=1 half="+std::to_string(half)+" capacity=1");
-            if(marker){marker("up_mix");marker("end");}
+            GR_MARK(up_mix); GR_MARK(end);
             TYLOINFER_CUDA_CHECK(cudaGetLastError());
             return {mixed,updated,next_injection};
         }
     }
     const size_t shared=(down_capacity+inject_capacity)*sizeof(float);
     TYLOINFER_RUNTIME_CHECK(shared+1056<=48*1024,"fused residual projection exceeds shared memory capacity");
-    if(marker)marker("begin");
+    GR_MARK(begin);
     const auto launch_norm=[&](auto cache) {
         const auto* wide_option=tyloi::cuda::env_lookup("TYLOINFER_GR_NORM_WIDE");
         if constexpr(decltype(cache)::value)if((!wide_option || wide_option[0]!='0') && streams==4 && rows<=6) {
@@ -1218,7 +1240,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
         const auto* cache_option=tyloi::cuda::env_lookup("TYLOINFER_GR_NORM_CACHE");
         if(hidden==2560 && (!cache_option || cache_option[0]!='0'))launch_norm(std::true_type{});
         else launch_norm(std::false_type{});
-        if(marker)marker("norm");
+        GR_MARK(norm);
     }
     if(two_plane) {
         const int64_t elements=int64_t(rows)*down.ng*down.gs;
@@ -1285,7 +1307,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
                 "gr_norm_stats",reinterpret_cast<const void*>(gated_residual_norm_kernel<false,true>),
                 "M="+std::to_string(rows)+" half="+std::to_string(half));
             }
-            if(marker)marker("norm");
+            GR_MARK(norm);
         }
         const auto launch=[&](auto triple,auto unsigned_low,auto group) {
         if(norm_group_quant) {
@@ -1318,7 +1340,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
             };
             if(norm_counter_slot>=0)launch_group_norm(std::true_type{});
             else launch_group_norm(std::false_type{});
-            if(marker)marker("norm");
+            GR_MARK(norm);
             if(norm_counter_slot>=0)return;
             gated_residual_quantize_cross_stream_kernel<decltype(group)::value,decltype(triple)::value,decltype(unsigned_low)::value><<<
                 dim3(1,unsigned(rows)),64,0,mfq_current_cuda_stream()>>>(d,projection_normalized,projection_input.output_half,global_quantized);
@@ -1394,7 +1416,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
         else if(plane_count==3)launch(std::true_type{},std::false_type{},std::integral_constant<int,48>{});
         else if(plane_count==4)launch(std::false_type{},std::true_type{},std::integral_constant<int,48>{});
         else launch(std::false_type{},std::false_type{},std::integral_constant<int,48>{});
-        if(marker)marker("quantize_input");
+        GR_MARK(quantize_input);
     }
     // M1 uses the same Uniform16 activation representation as the default
     // Up. Compare a single preparation launch with preparation by the last
@@ -1716,7 +1738,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
     else if(fixed_groups && down.aligned_q8 && !down.q8_zero && down.gs==48)launch_down(std::integral_constant<int,48>{});
     else if(fixed_groups && down.aligned_q8 && !down.q8_zero && down.gs==64)launch_down(std::integral_constant<int,64>{});
     else launch_down(std::integral_constant<int,0>{});
-    if(marker)marker("down");
+    GR_MARK(down);
     if(up_int_mma) {
         const auto run=[&](auto unroll,auto shared) {
         gated_residual_up_int16_mma_kernel<decltype(unroll)::value,decltype(shared)::value><<<hidden/8,128,0,mfq_current_cuda_stream()>>>(
@@ -1728,7 +1750,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
         if(up_int_mma_mode==2)run(std::integral_constant<int,1>{},std::true_type{});
         else if(up_int_mma_mode==3)run(std::integral_constant<int,7>{},std::true_type{});
         else run(std::integral_constant<int,7>{},std::false_type{});
-        if(marker){marker("up_mix");marker("end");}
+        GR_MARK(up_mix); GR_MARK(end);
         TYLOINFER_CUDA_CHECK(cudaGetLastError());return {mixed,updated,next_injection};
     }
     ::tyloi::DenseTensor dense_projection;
@@ -1739,7 +1761,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
         dense_projection=::tyloi::cuda::matmul(promoted_normalized.defined()?promoted_normalized:normalized,
             right.defined()?right:dense_injection.transpose(-1,-2).to(::tyloi::kFloat32));
     }
-    if(marker && dense_projection.defined())marker("dense_projection");
+    if(dense_projection.defined()) GR_MARK(dense_projection);
     const auto* prepare_setting=tyloi::cuda::env_lookup("TYLOINFER_GR_UP_INT_DOT");
     const auto* half_groups_setting=tyloi::cuda::env_lookup("TYLOINFER_GR_UP_HALF_GROUPS");
     const bool half_groups_default=(!half_groups_setting || half_groups_setting[0]!='0') &&
@@ -1826,7 +1848,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
             case 5:launch(std::integral_constant<int,5>{});break;
             case 6:launch(std::integral_constant<int,6>{});break;
         }
-        if(marker){marker("up_mix");marker("end");}
+        GR_MARK(up_mix); GR_MARK(end);
         TYLOINFER_CUDA_CHECK(cudaGetLastError());return {mixed,updated,next_injection};
     }
     const bool prepare_up=(prepare_mode==7 || prepare_mode==8 || (down_mma_candidate && rows==1 && !uniform_prepare) ||
@@ -1903,7 +1925,7 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
             case 5:launch(std::integral_constant<int,5>{},std::false_type{});break;
             case 6:launch(std::integral_constant<int,6>{},std::false_type{});break;
         }
-        if(marker){marker("up_mix");marker("end");}
+        GR_MARK(up_mix); GR_MARK(end);
         TYLOINFER_CUDA_CHECK(cudaGetLastError());return {mixed,updated,next_injection};
     }
     const auto launch_up=[&](auto group) {
@@ -2006,8 +2028,9 @@ std::vector<::tyloi::DenseTensor> gated_residual_two_stage_cuda(
     else if(fixed_groups && streams==4 && up.aligned_q8 && !up.q8_zero && up.gs==48)launch_up(std::integral_constant<int,48>{});
     else if(fixed_groups && streams==4 && up.aligned_q8 && !up.q8_zero && up.gs==64)launch_up(std::integral_constant<int,64>{});
     else launch_up(std::integral_constant<int,0>{});
-    if(marker)marker("up_mix");
+    GR_MARK(up_mix);
     TYLOINFER_CUDA_CHECK(cudaGetLastError());
-    if(marker)marker("end");
+    GR_MARK(end);
     return {mixed,updated,next_injection};
 }
+#undef GR_MARK

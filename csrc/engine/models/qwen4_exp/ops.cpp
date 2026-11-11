@@ -42,7 +42,9 @@
 #include "engine/ops/compact.h"
 #include "engine/ops/positions.h"
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/ffn/gated.h"
+#endif
 #include "engine/weights/nint_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "matmul_rows.h"
@@ -70,13 +72,22 @@ struct GraphCheckpoint {
 #endif
 };
 
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::ops::Residual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp::LayerState& state,
+#else
 GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp::LayerState& state,
+#endif
         ::tyloi::DenseTensor x, const ::tyloi::DenseTensor& ids, const ::tyloi::DenseTensor& positions,
         const ::tyloi::DenseTensor& cache_positions, const ::tyloi::DenseTensor& ple_rows, int layer,
         int64_t confirmed = 0, GraphCheckpoint* checkpoint = nullptr,
+#ifdef TYLOINFER_NATIVE_CUDA
+        const std::optional<tyloi::ops::Residual::Result>& pending_residual = {}) {
+#else
         const std::optional<GatedResidual::Result>& pending_residual = {}) {
+#endif
     if(auto* window=DecodeWindow::recording())window->set_profile_layer_kind(layer,weights.gdn?"gdn":"qsa");
     const auto mark=[&](const char* phase){if(auto* window=DecodeWindow::recording())window->mark(layer,phase);};
+#ifndef TYLOINFER_NATIVE_CUDA
     const bool detailed=::tyloi::cuda::options::mhc_timings();
     const auto marker=[&](const char* role)->GatedResidualMarker {
         if(!detailed || !DecodeWindow::recording())return {};
@@ -84,12 +95,19 @@ GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp
             const auto name=std::string(role)+phase;mark(name.c_str());
         };
     };
+#endif
     if(weights.ple)x=x+(confirmed
         ? weights.ple->forward_graph(state.ple, x,ids,ple_rows,confirmed,checkpoint->ple_conv)
         : weights.ple->forward_chunk(state.ple, x,ids,true,{},ple_rows));
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto [attention_input,attention_residual,attention_gate]=pending_residual
+        ? weights.attention_gr.pre_after(x,pending_residual->residual,pending_residual->gate,tyloi::ops::ResidualRole::attention)
+        : weights.attention_gr.pre(x,tyloi::ops::ResidualRole::attention);
+#else
     auto [attention_input,attention_residual,attention_gate]=pending_residual
         ? weights.attention_gr.pre_after(x,pending_residual->residual,pending_residual->gate,marker("attention_mhc_"))
         : weights.attention_gr.pre(x,marker("attention_mhc_"));
+#endif
     mark("attention_core_begin");
     auto attention_output=weights.gdn
         ? (confirmed ? weights.gdn->forward_graph(state.gdn, attention_input,confirmed,checkpoint->gdn_conv,checkpoint->gdn_state)
@@ -103,7 +121,11 @@ GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp
 #endif
             ;
     mark("attention_core_end");
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto ffn_result=weights.ffn_gr.pre_after(attention_output,attention_residual,attention_gate,tyloi::ops::ResidualRole::ffn);
+#else
     auto ffn_result=weights.ffn_gr.pre_after(attention_output,attention_residual,attention_gate,marker("ffn_mhc_"));
+#endif
     mark("ffn_pre_end");
     attention_output={};
     return ffn_result;
@@ -550,7 +572,11 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(tyloi::models::MtpState&
                 .dense()
 #endif
                 ;
-            x=block.attention_gr.post(attention_output,attention_residual,attention_gate);
+            x=block.attention_gr.post(attention_output,attention_residual,attention_gate)
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                ;
             attention_output={};
             auto [ffn_input,ffn_residual,ffn_gate]=block.ffn_gr.pre(x);
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -558,11 +584,19 @@ std::pair<DenseTensor, DenseTensor> Predictor::evaluate(tyloi::models::MtpState&
 #else
             auto ffn_output=block.ffn.forward(ffn_input);
 #endif
-            multi = block.ffn_gr.post(ffn_output,ffn_residual,ffn_gate);
+            multi = block.ffn_gr.post(ffn_output,ffn_residual,ffn_gate)
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                ;
         }
     }
     x = {};
-    auto result = history_only?DenseTensor{}:final_mixer->pre(multi).mixed;
+    auto result = history_only?DenseTensor{}:final_mixer->pre(multi).mixed
+#ifdef TYLOINFER_NATIVE_CUDA
+        .dense()
+#endif
+        ;
     if (cache) {
         request.positions[layer] = pos[1];
         request.batch = b;
@@ -840,12 +874,16 @@ namespace {
 }
 ::tyloi::DenseTensor qwen4_finalize_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden,
                                            std::int64_t, std::int64_t) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return model.final_mixer->pre(hidden,tyloi::ops::ResidualRole::final).mixed.dense();
+#else
     auto* window=DecodeWindow::recording();
     GatedResidualMarker marker;
     if(window && ::tyloi::cuda::options::mhc_timings())marker=[window](const char* phase) {
         window->mark(-1,(std::string("final_mhc_")+phase).c_str());
     };
     return model.final_mixer->pre(hidden,marker).mixed;
+#endif
 }
 
 ::tyloi::DenseTensor qwen4_next_token(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden) {
@@ -1318,7 +1356,11 @@ struct Qwen4DecodeGraph {
                     cell.window.mark(-1,"window_begin");
                     auto hidden=model.repeat_hidden(model.embed_tokens(cell.ids),model.metadata.hc_mult);
                     std::size_t ple_index=0;int layer=0;
+#ifdef TYLOINFER_NATIVE_CUDA
+                    std::optional<tyloi::ops::Residual::Result> pending_residual;
+#else
                     std::optional<GatedResidual::Result> pending_residual;
+#endif
                     const auto chain_setting=::tyloi::cuda::options::gr_chain_ffn_post();
                     const bool chain_post=(!chain_setting || *chain_setting) && tokens<=8;
                     for(const auto& block:model.layers) {
@@ -1365,11 +1407,19 @@ struct Qwen4DecodeGraph {
                             cell.window.mark(layer,"ple_end");
                         }
                         cell.window.mark(layer,"attention_begin");
+#ifdef TYLOINFER_NATIVE_CUDA
+                        std::optional<tyloi::ops::Residual::Result> next_residual;
+#else
                         std::optional<GatedResidual::Result> next_residual;
+#endif
                         bool defer=false;
                         if(chain_post && size_t(layer+1)<model.layers.size()) {
                             auto& next=*model.layers[layer+1];
+#ifdef TYLOINFER_NATIVE_CUDA
+                            defer=!next.ple && next.attention_gr.can_chain(pending_residual?pending_residual->residual:tyloi::Tensor(hidden));
+#else
                             defer=!next.ple && next.attention_gr.can_fuse(pending_residual?pending_residual->residual:hidden);
+#endif
                         }
                         {
                             auto& layer_state=*request.layers[layer];
@@ -1384,7 +1434,11 @@ struct Qwen4DecodeGraph {
                             if(defer) {
                                 next_residual=std::move(ffn_result);
                                 hidden=std::move(ffn_output);
-                            } else hidden=b.ffn_gr.post(ffn_output,ffn_result.residual,ffn_result.gate);
+                            } else hidden=b.ffn_gr.post(ffn_output,ffn_result.residual,ffn_result.gate)
+#ifdef TYLOINFER_NATIVE_CUDA
+                                .dense()
+#endif
+                                ;
                         }
                         pending_residual=std::move(next_residual);
                         cell.window.mark(layer++,"block_end");
@@ -2326,19 +2380,25 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
 #endif
             graph.window->mark(-1,"window_begin");
             auto hidden = model.repeat_hidden(model.embed_tokens(graph.ids),model.metadata.hc_mult);
+#ifdef TYLOINFER_NATIVE_CUDA
+            std::optional<tyloi::ops::Residual::Result> pending_residual;
+#else
             std::optional<GatedResidual::Result> pending_residual;
+#endif
             const auto chain_setting=::tyloi::cuda::options::gr_chain_ffn_post();
             const bool chain_post=(!chain_setting || *chain_setting) && batch<=8;
             for (std::size_t i = 0; i < model.layers.size(); ++i) {
                 graph.window->mark(static_cast<int>(i),"block_begin");
                 const auto& block = *model.layers[i];
                 graph.window->set_profile_layer_kind(static_cast<int>(i),block.gdn?"gdn":"qsa");
+#ifndef TYLOINFER_NATIVE_CUDA
                 const auto marker=[&](const char* role)->GatedResidualMarker {
                     if(!::tyloi::cuda::options::mhc_timings())return {};
                     return [&,role](const char* phase) {
                         graph.window->mark(static_cast<int>(i),(std::string(role)+phase).c_str());
                     };
                 };
+#endif
                 if (block.ple) {
                     graph.window->mark(static_cast<int>(i),"ple_begin");
                     std::vector<::tyloi::DenseTensor> positional;
@@ -2353,9 +2413,15 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
                     hidden = join_request_outputs(positional,0);
                     graph.window->mark(static_cast<int>(i),"ple_end");
                 }
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto mix = pending_residual
+                    ? block.attention_gr.pre_after(hidden,pending_residual->residual,pending_residual->gate,tyloi::ops::ResidualRole::attention)
+                    : block.attention_gr.pre(hidden,tyloi::ops::ResidualRole::attention);
+#else
                 auto mix = pending_residual
                     ? block.attention_gr.pre_after(hidden,pending_residual->residual,pending_residual->gate,marker("attention_mhc_"))
                     : block.attention_gr.pre(hidden,marker("attention_mhc_"));
+#endif
                 graph.window->mark(static_cast<int>(i),"attention_core_begin");
                 const bool project_batch=batch>1 && ::tyloi::cuda::options::batch_attention_projections();
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -2382,7 +2448,11 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
 #endif
                 if(!attention.defined())for (int64_t row = 0; row < batch; ++row) {
                     auto& layer = *requests[row]->state_->layers[i];
-                    auto attention_input = mix.mixed.narrow(0,row,1);
+                    auto attention_input = mix.mixed
+#ifdef TYLOINFER_NATIVE_CUDA
+                        .dense()
+#endif
+                        .narrow(0,row,1);
                     std::vector<::tyloi::DenseTensor> projected;
                     for(const auto& value:projections)projected.push_back(value.narrow(0,row,1));
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -2407,20 +2477,36 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
 #endif
                         ;
                 graph.window->mark(static_cast<int>(i),"attention_core_end");
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate,tyloi::ops::ResidualRole::ffn);
+#else
                 auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate,marker("ffn_mhc_"));
+#endif
                 graph.window->mark(static_cast<int>(i),"ffn_pre_end");
                 auto ffn_output=batch_ffn(block.ffn,
 #ifndef TYLOINFER_NATIVE_CUDA
                     execution,
 #endif
-                    ffn_mix.mixed);
+                    ffn_mix.mixed
+#ifdef TYLOINFER_NATIVE_CUDA
+                    .dense()
+#endif
+                    );
                 bool defer=false;
                 if(chain_post && i+1<model.layers.size()) {
                     const auto& next=*model.layers[i+1];
+#ifdef TYLOINFER_NATIVE_CUDA
+                    defer=!next.ple && next.attention_gr.can_chain(ffn_mix.residual);
+#else
                     defer=!next.ple && next.attention_gr.can_fuse(ffn_mix.residual);
+#endif
                 }
                 if(defer){hidden=std::move(ffn_output);pending_residual=std::move(ffn_mix);}
-                else {hidden=block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);pending_residual.reset();}
+                else {hidden=block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate)
+#ifdef TYLOINFER_NATIVE_CUDA
+                    .dense()
+#endif
+                    ;pending_residual.reset();}
                 graph.window->mark(static_cast<int>(i),"block_end");
             }
             auto finalized=qwen4_finalize_hidden(model, std::move(hidden),batch,1);
@@ -2557,7 +2643,11 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             std::vector<::tyloi::DenseTensor> attended;
             for (std::size_t row=0;row<requests.size();++row) {
                 auto& layer=*requests[row]->state_->layers[i];
-                auto attention_input=mix.mixed.narrow(1,offsets[row],chunks[row].size(1));
+                auto attention_input=mix.mixed
+#ifdef TYLOINFER_NATIVE_CUDA
+                    .dense()
+#endif
+                    .narrow(1,offsets[row],chunks[row].size(1));
                 std::vector<::tyloi::DenseTensor> projected;
                 for (const auto& value:projections)
                     projected.push_back(value.narrow(1,offsets[row],chunks[row].size(1)));
@@ -2609,10 +2699,17 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         auto ffn_output=packed ? block.ffn.forward(ffn_mix.mixed) :
             measure("prefill.ffn",[&] { return block.ffn.forward(ffn_mix.mixed); });
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+        hidden=packed ? block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate).dense() :
+            measure("prefill.gr_ffn_post",[&] {
+                return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate).dense();
+            });
+#else
         hidden=packed ? block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate) :
             measure("prefill.gr_ffn_post",[&] {
                 return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
             });
+#endif
     }
     hidden=qwen4_finalize_hidden(model, std::move(hidden),1,tokens);
     std::vector<::tyloi::Tensor> result;
@@ -2664,7 +2761,11 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         std::vector<::tyloi::DenseTensor> attended;
         for (int64_t row = 0; row < batch; ++row) {
             auto& layer = *requests[row]->state_->layers[i];
-            auto attention_input = mix.mixed.narrow(0,row,1);
+            auto attention_input = mix.mixed
+#ifdef TYLOINFER_NATIVE_CUDA
+                .dense()
+#endif
+                .narrow(0,row,1);
             std::vector<::tyloi::DenseTensor> projected;
             for(const auto& value:projections)projected.push_back(value.narrow(0,row,1));
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -2688,7 +2789,15 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
 #ifndef TYLOINFER_NATIVE_CUDA
             *model.execution,
 #endif
-            ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
+            ffn_mix.mixed
+#ifdef TYLOINFER_NATIVE_CUDA
+            .dense()
+#endif
+            ),ffn_mix.residual,ffn_mix.gate)
+#ifdef TYLOINFER_NATIVE_CUDA
+            .dense()
+#endif
+            ;
     }
     auto logits = qwen4_logits_from_hidden(model, qwen4_finalize_hidden(model, std::move(hidden),batch,1)).reshape({batch,-1});
     for (int64_t row = 0; row < batch; ++row) {
@@ -3061,7 +3170,11 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         NintCache decode_reuse(!decode_reuse_option || *decode_reuse_option);
         DenseTensor next_hidden=hidden;
         DenseTensor ffn_inputs,ffn_gate;
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::ops::Residual::Result attention_result;
+#else
         GatedResidual::Result attention_result;
+#endif
         DenseTensor attention_output;
         if(bulk_gr) {
             auto& qwen_block=*block;
@@ -3126,7 +3239,11 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
             if(bulk_gr) {
                 auto& qwen_block=*block;
                 auto attention_chunk=qwen4_exp::prefill_attention_core(qwen_block,layer_state,
-                    attention_result.mixed.narrow(1,begin,count),positions,full_positions);
+                    attention_result.mixed
+#ifdef TYLOINFER_NATIVE_CUDA
+                        .dense()
+#endif
+                        .narrow(1,begin,count),positions,full_positions);
                 if(!attention_output.defined()) {
                     auto shape=attention_chunk.sizes().vec();shape[1]=tokens;
                     attention_output=::tyloi::cuda::empty(shape,attention_chunk.options());
@@ -3142,9 +3259,15 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
                     ffn_gate=::tyloi::cuda::empty({1,tokens,mix.gate.size(-1)},mix.gate.options());
                 }
                 // The MoE casts the router/FFN source to half at this boundary.
+#ifdef TYLOINFER_NATIVE_CUDA
+                ffn_inputs.narrow(1,begin,count).copy_(mix.mixed.dense().to(::tyloi::kFloat16));
+                ffn_gate.narrow(1,begin,count).copy_(mix.gate.dense());
+                output=mix.residual.dense();
+#else
                 ffn_inputs.narrow(1,begin,count).copy_(mix.mixed.to(::tyloi::kFloat16));
                 ffn_gate.narrow(1,begin,count).copy_(mix.gate);
                 output=std::move(mix.residual);
+#endif
             } else output=qwen4_exp::forward(*block,layer_state,
                 input,chunk_ids,positions,full_positions,0,host_ids);
             // Retain the original rounding at every layer boundary. The next
@@ -3167,8 +3290,13 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
             auto mix=profile_measure("prefill.gr_ffn_pre",[&] {
                 return qwen_block.ffn_gr.pre_after(attention_output,attention_result.residual,attention_result.gate);
             });
+#ifdef TYLOINFER_NATIVE_CUDA
+            ffn_inputs=mix.mixed.dense().to(::tyloi::kFloat16);ffn_gate=mix.gate.dense();
+            next_hidden=mix.residual.dense();
+#else
             ffn_inputs=mix.mixed.to(::tyloi::kFloat16);ffn_gate=std::move(mix.gate);
             next_hidden=std::move(mix.residual);
+#endif
             attention_result={};attention_output={};
         }
         if(tokens>9216)decode_reuse.clear();
@@ -3259,7 +3387,11 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
             for(int64_t begin=0;begin<tokens;begin+=compute_chunk) {
                 const auto count=std::min(compute_chunk,tokens-begin);
                 auto output=qwen_block.ffn_gr.post(ffn_output.narrow(1,begin,count),
-                    next_hidden.narrow(1,begin,count),ffn_gate.narrow(1,begin,count));
+                    next_hidden.narrow(1,begin,count),ffn_gate.narrow(1,begin,count))
+#ifdef TYLOINFER_NATIVE_CUDA
+                    .dense()
+#endif
+                    ;
                 if(begin==0 && output.scalar_type()!=next_hidden.scalar_type())
                     post_hidden=::tyloi::cuda::empty(next_hidden.sizes(),output.options());
                 TYLOINFER_RUNTIME_CHECK(output.scalar_type()==post_hidden.scalar_type(),

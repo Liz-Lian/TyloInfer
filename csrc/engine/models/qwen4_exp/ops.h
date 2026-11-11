@@ -25,7 +25,9 @@
 struct CudaExecutionContext;
 #endif
 namespace tyloi::cuda::qwen4_exp { struct Layer; struct Components; }
+#ifndef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda { class GatedResidual; }
+#endif
 namespace tyloi::models { struct Mtp; struct LoadOptions; }
 namespace tyloi::weights { struct Loader; }
 struct LayerPlacementConfig;
@@ -225,7 +227,11 @@ struct Model : tyloi::models::CausalModel {
     ::tyloi::Tensor embed;
     ::tyloi::Tensor lm_head;
     CausalConfig config;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<tyloi::ops::Residual> final_mixer;
+#else
     std::unique_ptr<GatedResidual> final_mixer;
+#endif
     std::vector<std::unique_ptr<qwen4_exp::Layer>> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Primary device selected by the model's load placement. */

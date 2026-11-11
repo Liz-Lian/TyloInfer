@@ -10,7 +10,11 @@ struct CudaExecutionContext;
 #endif
 namespace tyloi::weights { struct Loader; }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace tyloi::ops { class Residual; }
+#else
 namespace tyloi::cuda { class GatedResidual; }
+#endif
 
 namespace tyloi::cuda::qwen4_exp {
 using attention_ops::Linear;
@@ -46,7 +50,11 @@ struct Predictor final : tyloi::models::Mtp {
     DenseTensor embedding_norm, hidden_norm;
 #endif
     Linear embedding_fusion, hidden_fusion;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<tyloi::ops::Residual> final_mixer;
+#else
     std::unique_ptr<GatedResidual> final_mixer;
+#endif
     std::vector<std::unique_ptr<Layer>> layers;
 #ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext *execution = nullptr;

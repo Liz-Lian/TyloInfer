@@ -2,6 +2,19 @@
 
 namespace tyloi::cuda {
 
+/** Numerical policy for gated residual projections and fusion. */
+struct ResidualOptions {
+    bool fused_projections = true;
+    bool fused_activation = true;
+    bool fused_post_norm = true;
+    bool prepared_dense = false;
+    bool native_input = true;
+    bool fixed_group = true;
+    bool compact_mix = true;
+    bool two_stage = true;
+    bool dense_injection = true;
+};
+
 struct FfnOptions {
     bool small_heterogeneous = true;
     bool delayed_readback = true;

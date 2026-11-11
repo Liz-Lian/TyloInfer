@@ -277,6 +277,7 @@ set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/rope.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/routes.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/gated.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mixer.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/tq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/tq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mx.cpp

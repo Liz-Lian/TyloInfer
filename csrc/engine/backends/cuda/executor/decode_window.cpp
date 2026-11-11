@@ -100,6 +100,10 @@ struct DecodeWindow::LayerPoint {
     int tile;
     std::string phase;
     cudaEvent_t event=nullptr;
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::size_t slot=0;
+    bool published=false;
+#endif
     uint64_t samples=0;
     int64_t total_ns=0,min_ns=0,max_ns=0;
     LayerPoint(int l,int t,const char* p,bool clock):layer(l),tile(t),phase(p) {
@@ -183,9 +187,18 @@ void DecodeWindow::prepare() {
 }
 #endif
 
+#ifdef TYLOINFER_NATIVE_CUDA
+DecodeWindow::LayerPoint* DecodeWindow::declare_point(int layer,const char* phase) {
+#else
 void DecodeWindow::mark(int layer,const char* phase) {
+#endif
     profile_layer_=layer;
-    if(!layer_profile_)return;
+    if(!layer_profile_)
+#ifdef TYLOINFER_NATIVE_CUDA
+        return nullptr;
+#else
+        return;
+#endif
     // Scope 2 keeps the MFE phase boundaries. Timing every small operation
     // measurably perturbs Windows graph replay; ordinary execution adds none.
     if(const auto* scope=tyloi::cuda::env_lookup("TYLOINFER_TRACE_LAYER_TIMINGS");scope &&
@@ -200,17 +213,90 @@ void DecodeWindow::mark(int layer,const char* phase) {
         if(std::none_of(std::begin(phases),std::end(phases),
                 [&](const char* allowed){return std::strcmp(phase,allowed)==0;}) &&
             (std::strcmp(scope,"3")!=0 || std::none_of(std::begin(boundaries),std::end(boundaries),
-                [&](const char* allowed){return std::strcmp(phase,allowed)==0;})))return;
+                [&](const char* allowed){return std::strcmp(phase,allowed)==0;})))
+#ifdef TYLOINFER_NATIVE_CUDA
+            return nullptr;
+#else
+            return;
+#endif
     }
     if(active!=this)throw std::logic_error("MFQ layer timing outside window recording");
     const auto key=std::make_tuple(layer,profile_tile_,std::string(phase));
     auto found=layer_point_index_.find(key);
     if(found==layer_point_index_.end()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        if(profile_clock_ && free_profile_slots_.empty() && next_profile_slot_>=ProfileClock::capacity)
+#else
         if(profile_clock_ && layer_points_.size()>=ProfileClock::capacity)
+#endif
             throw std::runtime_error("GPU stage profile exceeds timestamp capacity");
         auto point=std::make_unique<LayerPoint>(layer,profile_tile_,phase,bool(profile_clock_));
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (free_profile_slots_.empty()) point->slot=next_profile_slot_++;
+        else { point->slot=free_profile_slots_.back(); free_profile_slots_.pop_back(); }
+        found=layer_point_index_.emplace(key,point.get()).first;pending_points_.push_back(std::move(point));
+#else
         found=layer_point_index_.emplace(key,point.get()).first;layer_points_.push_back(std::move(point));
+#endif
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    return found->second;
+}
+void DecodeWindow::publish_point(LayerPoint* point) noexcept {
+    if (!point || point->published) return;
+    const auto it=std::find_if(pending_points_.begin(),pending_points_.end(),
+        [point](const auto& value){ return value.get()==point; });
+    if (it==pending_points_.end()) return;
+    point->published=true;
+    layer_points_.push_back(std::move(*it));
+    pending_points_.erase(it);
+}
+void DecodeWindow::mark(int layer,const char* phase) {
+    auto* point=declare_point(layer,phase);
+    if (!point) return;
+    layer_points_.reserve(layer_points_.size()+1);
+    publish_point(point);
+    if(profile_clock_) { record_gpu_timestamp(profile_clock_->device,point->slot,stream_); return; }
+    cudaStreamCaptureStatus capture;
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamIsCapturing(stream_,&capture));
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaEventRecordWithFlags(point->event,stream_,
+        capture==cudaStreamCaptureStatusActive ? cudaEventRecordExternal : cudaEventRecordDefault));
+}
+ResidualTraceData DecodeWindow::prepare_residual_trace(tyloi::ops::ResidualRole role) {
+    ResidualTraceData trace;
+    if (role==tyloi::ops::ResidualRole::none || !tyloi::cuda::options::mhc_timings()) return trace;
+    layer_points_.reserve(layer_points_.size()+ResidualTraceData::count);
+    pending_points_.reserve(pending_points_.size()+ResidualTraceData::count);
+    free_profile_slots_.reserve(free_profile_slots_.size()+ResidualTraceData::count);
+    const int layer=role==tyloi::ops::ResidualRole::final ? -1 : profile_layer_;
+    const char* prefix=role==tyloi::ops::ResidualRole::attention ? "attention_mhc_" :
+        role==tyloi::ops::ResidualRole::ffn ? "ffn_mhc_" : "final_mhc_";
+    constexpr const char* names[]={"begin","norm","quantize_input","down","dense_projection","up_mix","end"};
+    for (int i=0;i<ResidualTraceData::count;++i) {
+        const auto name=std::string(prefix)+names[i];
+        auto* point=declare_point(layer,name.c_str());
+        if (!point) continue;
+        trace.points[i]={profile_clock_ ? profile_clock_->device+point->slot : nullptr,point->event,point};
+    }
+    return trace;
+}
+void DecodeWindow::commit_residual_trace(const ResidualTraceData& trace) noexcept {
+    for (unsigned i=0;i<trace.used;++i)
+        publish_point(static_cast<LayerPoint*>(trace.points[trace.sequence[i]].owner));
+    for (const auto& item : trace.points) {
+        auto* point=static_cast<LayerPoint*>(item.owner);
+        if (!point || point->published) continue;
+        const auto it=std::find_if(pending_points_.begin(),pending_points_.end(),
+            [point](const auto& value){ return value.get()==point; });
+        if (it==pending_points_.end()) continue;
+        const auto key=std::find_if(layer_point_index_.begin(),layer_point_index_.end(),
+            [point](const auto& value){ return value.second==point; });
+        if (key!=layer_point_index_.end()) layer_point_index_.erase(key);
+        free_profile_slots_.push_back(point->slot);
+        pending_points_.erase(it);
+    }
+}
+#else
     if(profile_clock_) {
         const auto index=std::find_if(layer_points_.begin(),layer_points_.end(),
             [&](const auto& point){return point.get()==found->second;})-layer_points_.begin();
@@ -221,15 +307,24 @@ void DecodeWindow::mark(int layer,const char* phase) {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaEventRecordWithFlags(found->second->event,stream_,
         capture==cudaStreamCaptureStatusActive ? cudaEventRecordExternal : cudaEventRecordDefault));
 }
+#endif
 void DecodeWindow::observe_layers() {
     if(profile_clock_ && !layer_points_.empty()) {
         TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(profile_clock_->host.data(),profile_clock_->device,
+#ifdef TYLOINFER_NATIVE_CUDA
+            next_profile_slot_*sizeof(uint64_t),cudaMemcpyDeviceToHost,stream_));
+#else
             layer_points_.size()*sizeof(uint64_t),cudaMemcpyDeviceToHost,stream_));
+#endif
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream_));
         // A bad diagnostic sample must not cancel an otherwise completed
         // decode, or partly increment the phase totals for this replay.
         for(std::size_t i=1;i<layer_points_.size();++i) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto before=profile_clock_->host[layer_points_[i-1]->slot],after=profile_clock_->host[layer_points_[i]->slot];
+#else
             const auto before=profile_clock_->host[i-1],after=profile_clock_->host[i];
+#endif
             if(!before || after<before) {
                 ++dropped_profiles_;
                 std::cerr<<"native_layer_gpu_invalid role="<<profile_role_<<" rows="<<profile_rows_
@@ -244,7 +339,11 @@ void DecodeWindow::observe_layers() {
         auto& current=*layer_points_[i];float ms=0;
         int64_t ns;
         if(profile_clock_) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto before=profile_clock_->host[layer_points_[i-1]->slot],after=profile_clock_->host[layer_points_[i]->slot];
+#else
             const auto before=profile_clock_->host[i-1],after=profile_clock_->host[i];
+#endif
             ns=static_cast<int64_t>(after-before);
         } else {
             TYLOINFER_NATIVE_CUDA_CHECK(cudaEventElapsedTime(&ms,layer_points_[i-1]->event,current.event));
@@ -302,6 +401,9 @@ void DecodeWindow::clear() noexcept {
     memory_pool_.reset();
     layer_point_index_.clear();
     layer_points_.clear();
+#ifdef TYLOINFER_NATIVE_CUDA
+    pending_points_.clear(); free_profile_slots_.clear(); next_profile_slot_=0;
+#endif
     profile_clock_.reset();
     profile_kinds_.clear();
     profile_layer_ = profile_tile_ = -1;
@@ -653,8 +755,13 @@ void DecodeWindow::run() {
         if(trace_steps) {
             double gpu_ms=0;
             if(profile_clock_ && !layer_points_.empty()) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                const auto first=profile_clock_->host[layer_points_.front()->slot];
+                const auto last=profile_clock_->host[layer_points_.back()->slot];
+#else
                 const auto first=profile_clock_->host.front();
                 const auto last=profile_clock_->host[layer_points_.size()-1];
+#endif
                 if(first && last>=first)gpu_ms=double(last-first)/1e6;
             }
             std::fprintf(stderr,"runtime_decode_window_step role=%s rows=%d replay=%llu ms=%.6f reset_ms=%.6f "
