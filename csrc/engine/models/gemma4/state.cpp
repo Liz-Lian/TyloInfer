@@ -12,7 +12,7 @@ std::unique_ptr<tyloi::models::State> Model::make_state() const {
     return std::make_unique<State>(*this);
 }
 
-State::State(const Model& model) : layers(model.layers.size()) {
+State::State(const Model& model) : layers(model.layers.size()), model_(&model) {
     layout_.reserve(model.layers.size());
     for (const auto& layer : model.layers) {
         const auto& attention = layer.attention;

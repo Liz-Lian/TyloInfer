@@ -53,6 +53,8 @@ public:
     };
 
     virtual ~Executor() = default;
+    /** Returns the device used by this executor's default execution scope. */
+    virtual Device device() const noexcept = 0;
     // Destroy scopes in reverse order on the entering thread, before their resources.
     // Exiting a scope does not synchronize device work.
     virtual std::unique_ptr<Scope> enter() = 0;

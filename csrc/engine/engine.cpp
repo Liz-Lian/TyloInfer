@@ -55,21 +55,21 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         if (text_) info.chat = text_->chat_template_capabilities();
         auto scope = executor_->enter();
         tyloi::weights::LoadScope memory_load(*ledger_);
-        graph_.emplace(model_info_.max_context, Device(kCUDA, forward_options_.primary), std::move(graph));
-        budget_.emplace(*ledger_, *weights_, *cache_, Device(kCUDA, forward_options_.primary));
+        graph_.emplace(model_info_.max_context, executor_->device(), std::move(graph));
+        budget_.emplace(*ledger_, *weights_, *cache_, executor_->device());
         budget_->bind(false);
         if (const auto bytes = config_.resident_budget_bytes) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
-        weights_->prepare(::tyloi::weights::Cache::Stage::loaded, Device(kCUDA, forward_options_.primary), source_.get());
+        weights_->prepare(::tyloi::weights::Cache::Stage::loaded, executor_->device(), source_.get());
         ready_ = true;
     } catch (...) {
         const auto failure = std::current_exception();
         if (graph) {
             try {
                 auto scope = executor_->enter();
-                graph_.emplace(0, Device(kCUDA, forward_options_.primary), std::move(graph));
+                graph_.emplace(0, executor_->device(), std::move(graph));
             } catch (...) { graph.reset(); }
         }
         try { unload_model(); }
@@ -103,7 +103,7 @@ void Engine::rebind(std::unique_ptr<models::CausalModel> model, std::unique_ptr<
     if (failure) {
         try {
             auto scope = executor_->enter();
-            graph_.emplace(0, Device(kCUDA, forward_options_.primary), std::move(graph));
+            graph_.emplace(0, executor_->device(), std::move(graph));
         } catch (...) { graph.reset(); }
         try { unload_model(); }
         catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
@@ -211,7 +211,7 @@ ControlResult Engine::control_command(ControlRequest request) {
             return resource_metrics(model_->metrics(), {}, std::nullopt, false,
                 {}, {}, std::nullopt, {}, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
-                executor_->memory(config_.devices), Device(kCUDA, forward_options_.primary), config_.online_budget);
+                executor_->memory(config_.devices), executor_->device(), config_.online_budget);
         } else throw std::invalid_argument("model has no duplex component");
     }, std::move(request));
 }

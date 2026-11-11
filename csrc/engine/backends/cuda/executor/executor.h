@@ -31,6 +31,8 @@ class Executor
 {
 public:
 #ifdef TYLOINFER_NATIVE_CUDA
+    /** Returns the primary CUDA device selected before publication. */
+    tyloi::Device device() const noexcept override { return {tyloi::kCUDA, primary_}; }
     std::unique_ptr<tyloi::Executor::Scope> enter() override;
     std::unique_ptr<tyloi::Executor::Timer> timer() override;
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
