@@ -41,6 +41,21 @@ public:
     DecodeWindow(const DecodeWindow&)=delete;
     DecodeWindow& operator=(const DecodeWindow&)=delete;
 #ifdef TYLOINFER_NATIVE_CUDA
+    /** Bind a single-request window to the active execution stream. */
+    DecodeWindow();
+    /** Retain the caller's stream and a ready event for independent requests. */
+    static std::unique_ptr<DecodeWindow> batch();
+    /** Reject a failed window or a changed execution stream. */
+    void validate() const;
+    /** Hold the window stream on the current thread for the scope lifetime. */
+    class Scope {
+    public:
+        virtual ~Scope() = default;
+    };
+    /** Enter the owned stream, optionally waiting for the caller's current stream. */
+    std::unique_ptr<Scope> enter(bool wait = true);
+    /** Retire captures and scratch while retaining the stream and event owner. */
+    void clear() noexcept;
     /** Prepare graph weights or own a fallback pool before snapshot allocation. */
     void prepare();
 #endif
@@ -96,6 +111,12 @@ public:
     bool valid() const { const auto* graph=graphs_.find(0,1);return graph && graph->valid() && !recording_segments_; }
     static DecodeWindow* recording() noexcept;
 private:
+#ifdef TYLOINFER_NATIVE_CUDA
+    struct Context;
+    explicit DecodeWindow(std::unique_ptr<Context> context);
+    std::unique_ptr<Context> context_;
+#endif
+    void initialize_profile();
     cudaStream_t stream_;
     GraphRegistry graphs_;
 #ifdef TYLOINFER_NATIVE_CUDA

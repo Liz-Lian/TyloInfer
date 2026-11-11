@@ -244,8 +244,8 @@ inline Tensor from_blob(void* data, std::initializer_list<std::int64_t> shape, c
     return from_blob(data, std::span<const std::int64_t>(shape.begin(), shape.size()), options);
 }
 Tensor copy(const Tensor& input, Device target);
-// Writes destination's existing backing; source and destination may use different devices.
-void copy_into(Tensor destination, const Tensor& source);
+/** Copy into existing backing. Non-blocking copies require contiguous CUDA input and pinned contiguous CPU output of equal dtype and size; keep both alive until completion. */
+void copy_into(Tensor destination, const Tensor& source, bool non_blocking = false);
 Tensor cast(const Tensor& input, ScalarType type);
 // Targeted cast uses native tensor conversion; CUDA copy uses execution collectives.
 Tensor cast(const Tensor& input, ScalarType type, Device target);

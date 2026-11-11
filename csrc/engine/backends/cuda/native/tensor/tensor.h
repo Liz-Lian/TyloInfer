@@ -43,7 +43,7 @@ DenseTensor clone(const DenseTensor& input);
 DenseTensor cast(const DenseTensor& input, ScalarType type);
 DenseTensor cast(const DenseTensor& input, ScalarType type, Device target);
 DenseTensor copy(const DenseTensor& input, Device target);
-void copy_into(DenseTensor& destination, const DenseTensor& source);
+void copy_into(DenseTensor& destination, const DenseTensor& source, bool non_blocking = false);
 
 DenseTensor reshape(const DenseTensor& input, std::span<const std::int64_t> shape);
 DenseTensor transpose(const DenseTensor& input, std::int64_t first, std::int64_t second);
@@ -70,7 +70,7 @@ DenseTensor reduce_cuda(
     bool keep_dimension,
     int operation);
 void fill_cuda(DenseTensor& destination, double value);
-void copy_cuda(DenseTensor& destination, const DenseTensor& source);
+void copy_cuda(DenseTensor& destination, const DenseTensor& source, bool non_blocking = false);
 std::uint16_t encode_float16(float value);
 std::uint16_t encode_bfloat16(float value);
 DenseTensor index_select_cuda(const DenseTensor& source, std::int64_t dimension, const DenseTensor& indices);

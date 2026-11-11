@@ -689,12 +689,12 @@ Tensor copy(const Tensor& value_tensor, Device target) {
     device(target);
     return owner(cuda::ops::copy(value, target));
 }
-void copy_into(Tensor destination_tensor, const Tensor& source_tensor) {
+void copy_into(Tensor destination_tensor, const Tensor& source_tensor, bool non_blocking) {
     auto& destination = ::tyloi::ops::dense(destination_tensor);
     const auto& source = ::tyloi::ops::dense(source_tensor);
     input(destination);
     input(source);
-    cuda::ops::copy_into(destination, source);
+    cuda::ops::copy_into(destination, source, non_blocking);
 }
 Tensor cast(const Tensor& value_tensor, ScalarType type) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
@@ -751,7 +751,9 @@ Tensor sample_greedy(const Tensor& logits_tensor) {
     const auto& logits = dense(logits_tensor);
     input(logits);
     require_cuda(logits);
-    return owner(::sample_greedy_cuda(logits));
+    Tensor result{DenseTensor{}};
+    result.dense()=::sample_greedy_cuda(logits);
+    return result;
 }
 
 std::vector<float> floats(const Tensor& tensor) {

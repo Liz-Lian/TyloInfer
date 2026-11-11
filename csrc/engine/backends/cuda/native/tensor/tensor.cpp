@@ -296,15 +296,20 @@ DenseTensor copy(const DenseTensor& input, Device target_device) {
     return copy_or_convert_cuda(input, target);
 }
 
-void copy_into(DenseTensor& destination, const DenseTensor& source) {
+void copy_into(DenseTensor& destination, const DenseTensor& source, bool non_blocking) {
     destination.require_dense(); source.require_dense();
     if (!destination.defined() || !source.defined()) {
         throw std::invalid_argument("copy_ requires defined tensors");
     }
+    if (non_blocking && (!destination.is_cpu() || !destination.options().pinned() ||
+        !source.is_cuda() || !destination.is_contiguous() || !source.is_contiguous() ||
+        destination.scalar_type() != source.scalar_type() || destination.numel() != source.numel())) {
+        throw std::invalid_argument("non-blocking copy requires contiguous CUDA source and pinned CPU destination with equal dtype and size");
+    }
     if (destination.is_cpu() && source.is_cpu()) {
         copy_contiguous_cpu(destination, source);
     } else {
-        copy_cuda(destination, source);
+        copy_cuda(destination, source, non_blocking);
     }
 }
 

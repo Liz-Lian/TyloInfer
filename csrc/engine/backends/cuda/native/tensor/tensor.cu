@@ -408,7 +408,7 @@ DenseTensor empty_pinned(std::span<const std::int64_t> shape, const TensorOption
     return DenseTensor(std::move(storage), descriptor);
 }
 
-void copy_cuda(DenseTensor& destination, const DenseTensor& source) {
+void copy_cuda(DenseTensor& destination, const DenseTensor& source, bool non_blocking) {
     destination.require_dense(); source.require_dense();
     if (destination.numel() != source.numel()) {
         throw std::invalid_argument("native tensor copy changes element count");
@@ -473,7 +473,7 @@ void copy_cuda(DenseTensor& destination, const DenseTensor& source) {
             destination.nbytes(),
             copy_kind(destination, source),
             stream.stream()));
-        if (destination.is_cpu() && source.is_cuda()) {
+        if (destination.is_cpu() && source.is_cuda() && !non_blocking) {
             TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
         }
         return;

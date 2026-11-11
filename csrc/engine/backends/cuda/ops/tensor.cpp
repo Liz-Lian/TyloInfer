@@ -109,11 +109,11 @@ tyloi::DenseTensor copy(tyloi::DenseTensor input, Device target) {
     return target.is_cuda() ? Executor::current().collectives().copy(input, target.index)
                             : ::tyloi::cuda::copy(input, target);
 }
-void copy_into(tyloi::DenseTensor destination, tyloi::DenseTensor source) {
+void copy_into(tyloi::DenseTensor destination, tyloi::DenseTensor source, bool non_blocking) {
     std::optional<MfqCudaGuard> guard;
     if (destination.device().is_cuda()) guard.emplace(destination.device().index);
     else if (source.device().is_cuda()) guard.emplace(source.device().index);
-    ::tyloi::cuda::copy_into(destination, source);
+    ::tyloi::cuda::copy_into(destination, source, non_blocking);
 }
 tyloi::DenseTensor cast(tyloi::DenseTensor input, ScalarType type) { return ::tyloi::cuda::cast(input, type); }
 tyloi::DenseTensor cast(tyloi::DenseTensor input, ScalarType type, Device target) { return ::tyloi::cuda::cast(input, type, target); }

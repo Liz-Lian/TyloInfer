@@ -4,6 +4,7 @@
 #include "context.h"
 #include "engine/backends/cuda/native/graph.h"
 #include "engine/backends/cuda/native/device.h"
+#include "engine/backends/cuda/native/stream.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/weights/cache.h"
@@ -114,6 +115,46 @@ struct DecodeWindow::ProfileClock {
     ProfileClock(){TYLOINFER_NATIVE_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device),capacity*sizeof(uint64_t)));}
     ~ProfileClock(){if(device)(void)cudaFree(device);}
 };
+#ifdef TYLOINFER_NATIVE_CUDA
+struct DecodeWindow::Context {
+    MfqCudaStream stream = mfq_get_current_cuda_stream();
+    Event ready;
+};
+namespace {
+class WindowScope final : public DecodeWindow::Scope {
+public:
+    explicit WindowScope(const MfqCudaStream& stream) : guard_(stream) {}
+private:
+    MfqCudaStreamGuard guard_;
+};
+}
+DecodeWindow::DecodeWindow()
+    : DecodeWindow(mfq_current_cuda_stream(), ::tyloi::cuda::options::layer_timings()) {}
+DecodeWindow::DecodeWindow(std::unique_ptr<Context> context)
+    : context_(std::move(context)), stream_(context_->stream.stream()), graphs_(stream_),
+      layer_profile_(::tyloi::cuda::options::layer_timings()), independent_sequences_(true) {
+    if (auto* executor = Executor::active()) weights_ = executor->weights_;
+}
+std::unique_ptr<DecodeWindow> DecodeWindow::batch() {
+    return std::unique_ptr<DecodeWindow>(new DecodeWindow(std::make_unique<Context>()));
+}
+void DecodeWindow::validate() const {
+    if (failed_) throw std::runtime_error("MFQ model session requires recovery after its previous error");
+    if (stream_ != mfq_current_cuda_stream())
+        throw std::runtime_error("MFQ model window changed execution stream");
+}
+std::unique_ptr<DecodeWindow::Scope> DecodeWindow::enter(bool wait) {
+    if (!context_) {
+        validate();
+        return std::make_unique<WindowScope>(mfq_get_current_cuda_stream());
+    }
+    if (wait && failed_) throw std::runtime_error("MFQ model session requires recovery after its previous error");
+    if (wait) context_->ready.record(mfq_current_cuda_stream());
+    auto scope = std::make_unique<WindowScope>(context_->stream);
+    if (wait) TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamWaitEvent(stream_, context_->ready.get(), 0));
+    return scope;
+}
+#endif
 DecodeWindow::DecodeWindow(cudaStream_t stream,bool layer_profile,bool independent_sequences,bool eager)
     :stream_(stream),graphs_(stream),layer_profile_(layer_profile),independent_sequences_(independent_sequences) {
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -122,11 +163,12 @@ DecodeWindow::DecodeWindow(cudaStream_t stream,bool layer_profile,bool independe
 #else
     (void)eager;
 #endif
-    // External CUDA timing events split Windows graph submissions. Device
-    // timestamps preserve the graph's submission and use the same clock as
-    // Strata's verifier profiler. This storage exists only when tracing.
+    initialize_profile();
+}
+void DecodeWindow::initialize_profile() {
+    if (profile_clock_ || !layer_profile_) return;
     const auto* option=tyloi::cuda::env_lookup("TYLOINFER_TRACE_LAYER_TIMINGS_CLOCK");
-    if(layer_profile_ && (!option || option[0]!='0'))profile_clock_=std::make_unique<ProfileClock>();
+    if(!option || option[0]!='0')profile_clock_=std::make_unique<ProfileClock>();
 }
 #ifdef TYLOINFER_NATIVE_CUDA
 void DecodeWindow::prepare() {
@@ -136,9 +178,11 @@ void DecodeWindow::prepare() {
         memory_pool_->prepare_memory();
         default_context(mfq_current_cuda_device())->end_graph_warmup(mfq_current_cuda_stream());
     }
+    initialize_profile();
     prepared_ = true;
 }
 #endif
+
 void DecodeWindow::mark(int layer,const char* phase) {
     profile_layer_=layer;
     if(!layer_profile_)return;
@@ -219,6 +263,53 @@ std::vector<DecodeWindow::GpuPhase> DecodeWindow::gpu_phases() const {
     }
     return phases;
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+DecodeWindow::~DecodeWindow() { clear(); }
+void DecodeWindow::clear() noexcept {
+    // Keep task owners alive until cancellation and GPU consumers have finished.
+    const auto attempt = [](const char* phase, const auto& operation) noexcept {
+        try { operation(); }
+        catch (const std::exception& error) {
+            std::fprintf(stderr, "decode_window_error operation=clear phase=%s error=%s\n", phase, error.what());
+        } catch (...) {
+            std::fprintf(stderr, "decode_window_error operation=clear phase=%s error=unknown\n", phase);
+        }
+    };
+    for (auto& task : tasks_) if (task.cancel) attempt("cancel", task.cancel);
+    const auto status = cudaStreamSynchronize(stream_);
+    if (status != cudaSuccess)
+        std::fprintf(stderr, "decode_window_error operation=clear phase=wait error=%s\n", cudaGetErrorString(status));
+    attempt("graphs", [&] { graphs_.clear(); });
+    for (auto& task : tasks_) if (task.cleanup) attempt("cleanup", task.cleanup);
+    try {
+        if(replays_ && tyloi::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_GRAPH"))
+            std::cerr<<"native_cuda_window tasks="<<tasks_.size()<<" replays="<<replays_
+                <<" capture_ns="<<capture_ns_<<" replay_ns="<<replay_ns_
+                <<" reset_ns="<<reset_ns_<<" launch_ns="<<launch_ns_<<" serve_ns="<<serve_ns_
+                <<" wait_ns="<<wait_ns_<<" finish_ns="<<finish_ns_<<" profile_ns="<<profile_ns_
+                <<" role="<<profile_role_<<" rows="<<profile_rows_
+                <<" clock="<<(profile_clock_?1:0)<<" profile_dropped="<<dropped_profiles_<<std::endl;
+        for(const auto& phase:gpu_phases())if(phase.samples)
+            std::cerr<<"native_layer_gpu from_layer="<<phase.from_layer<<" layer="<<phase.layer
+                <<" from="<<phase.from<<" to="<<phase.to<<" samples="<<phase.samples
+                <<" total_ns="<<phase.total_ns<<" min_ns="<<phase.min_ns<<" max_ns="<<phase.max_ns
+                <<" from_tile="<<phase.from_tile<<" tile="<<phase.tile
+                <<" kind="<<(profile_kinds_.count(phase.layer)?profile_kinds_.at(phase.layer):"unknown")<<std::endl;
+    } catch (...) {}
+    tasks_.clear();
+    barriers_.clear();
+    workspaces_.clear();
+    memory_pool_.reset();
+    layer_point_index_.clear();
+    layer_points_.clear();
+    profile_clock_.reset();
+    profile_kinds_.clear();
+    profile_layer_ = profile_tile_ = -1;
+    recording_segments_ = failed_ = prepared_ = false;
+    capture_ns_ = replay_ns_ = reset_ns_ = launch_ns_ = serve_ns_ = wait_ns_ = finish_ns_ = profile_ns_ = 0;
+    replays_ = dropped_profiles_ = 0;
+}
+#else
 DecodeWindow::~DecodeWindow() {
     // Mapped flags and task owners must survive the last consumer, including
     // a graph released by a failed CPU or I/O phase.
@@ -246,6 +337,7 @@ DecodeWindow::~DecodeWindow() {
     memory_pool_.reset();
 #endif
 }
+#endif
 void DecodeWindow::enroll(Task task) {
     if(active!=this)throw std::logic_error("MFQ task outside window capture");
     if(std::any_of(tasks_.begin(),tasks_.end(),[&](const auto& t){return t.identity==task.identity;}))
