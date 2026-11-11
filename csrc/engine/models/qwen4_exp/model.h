@@ -682,7 +682,7 @@ class NgramEmbedding {
     using Context = tyloi::models::qwen4_exp::NgramContext;
 #ifndef TYLOINFER_NATIVE_CUDA
     using RowLookup = std::function<::tyloi::Tensor(const std::vector<int64_t>&,const ::tyloi::Device&)>;
-    using StageFactory = std::function<std::shared_ptr<RowStage>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
+    using StageFactory = std::function<std::shared_ptr<tyloi::weights::RowStage>(const std::vector<int64_t>&,const ::tyloi::Device&)>;
 #endif
     struct State {
         State() = default;
@@ -789,7 +789,7 @@ class NgramEmbedding {
 #endif
 }
     /** Prepare stable graph storage for the selected row geometry. */
-    std::shared_ptr<RowStage> graph_stage(State& state,int64_t b,int64_t t,const ::tyloi::Device& device) const {
+    std::shared_ptr<tyloi::weights::RowStage> graph_stage(State& state,int64_t b,int64_t t,const ::tyloi::Device& device) const {
         const std::vector<int64_t> shape{b,t,(ngram_-1)*heads_};
 #ifdef TYLOINFER_NATIVE_CUDA
         TYLOINFER_RUNTIME_CHECK(graph_supported(),"PLE graph requires prepared range rows");
@@ -806,7 +806,23 @@ class NgramEmbedding {
 #endif
 #endif
     }
-    void upload_graph(State& state,const DenseTensor& host_ids,RowStage& stage) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Compute selected graph rows and their next context without publishing it. */
+    tyloi::models::qwen4_exp::NgramHashes graph_rows(State& state,const DenseTensor& host_ids) const {
+        TYLOINFER_RUNTIME_CHECK(graph_supported() && host_ids.is_cpu() && host_ids.dim()==2,"PLE graph requires host token IDs");
+        auto host=host_ids.to(::tyloi::kInt64).contiguous();const auto b=host.size(0),t=host.size(1);
+        if(cacheable_hashes(b,t)) return graph_hashes(state,host);
+        return tyloi::models::qwen4_exp::ngram_hashes(host.data_ptr<int64_t>(),b,t,ngram_,heads_,eos_,
+            multipliers_,offsets_,vocab_,state.context,true);
+    }
+#endif
+    void upload_graph(State& state,const DenseTensor& host_ids,tyloi::weights::RowStage& stage) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto hashes=graph_rows(state,host_ids);
+        const auto b=host_ids.size(0),t=host_ids.size(1);
+        stage.upload(hashes.ids,{b,t,(ngram_-1)*heads_});
+        restore(state,std::move(hashes.next));
+#else
         TYLOINFER_RUNTIME_CHECK(graph_supported() && host_ids.is_cpu() && host_ids.dim()==2,"PLE graph requires host token IDs");
         auto host=host_ids.to(::tyloi::kInt64).contiguous();const auto b=host.size(0),t=host.size(1);
         if(cacheable_hashes(b,t)) {
@@ -819,6 +835,7 @@ class NgramEmbedding {
             multipliers_,offsets_,vocab_,state.context,true);
         stage.upload(hashes.ids,{b,t,(ngram_-1)*heads_});
         restore(state,std::move(hashes.next));
+#endif
     }
     /** Gather hashed embedding rows and optionally advance the request context. */
     DenseTensor forward(State& state,const DenseTensor &ids, bool cache, DenseTensor *hashed_ids = nullptr,const DenseTensor& host_ids = {}) const {
@@ -888,7 +905,7 @@ class NgramEmbedding {
 
   private:
 #if !defined(TYLOINFER_NATIVE_CUDA) && TYLOINFER_ENABLE_MFQ_COMPAT
-    struct NintStage final:RowStage {
+    struct NintStage final:tyloi::weights::RowStage {
         std::shared_ptr<NintRowPipeline> pipeline;
         std::shared_ptr<NintRowStage> stage;
         NintStage(std::shared_ptr<NintRowPipeline> p,const std::vector<int64_t>& shape,const ::tyloi::Device& device)
@@ -1022,10 +1039,16 @@ class Ple {
         } else {reset(state);state.conv=convolution.clone();}
         embedding_.restore(state.embedding,std::move(context));
     }
-    std::shared_ptr<RowStage> graph_stage(State& state,int64_t tokens,const ::tyloi::Device& device) const {
+    std::shared_ptr<tyloi::weights::RowStage> graph_stage(State& state,int64_t tokens,const ::tyloi::Device& device) const {
         return embedding_.graph_stage(state.embedding,1,tokens,device);
     }
-    void upload_graph(State& state,const DenseTensor& host_ids,RowStage& stage) const {embedding_.upload_graph(state.embedding,host_ids,stage);}
+    void upload_graph(State& state,const DenseTensor& host_ids,tyloi::weights::RowStage& stage) const {embedding_.upload_graph(state.embedding,host_ids,stage);}
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Compute graph row hashes without advancing the request's n-gram context. */
+    tyloi::models::qwen4_exp::NgramHashes graph_rows(State& state,const DenseTensor& host_ids) const {
+        return embedding_.graph_rows(state.embedding,host_ids);
+    }
+#endif
     NgramEmbedding::Context graph_prefix_context(const State& state,const DenseTensor& host_ids,int64_t count) const {
         return embedding_.prefix_context(state.embedding,host_ids,count);
     }

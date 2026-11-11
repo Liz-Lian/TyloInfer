@@ -18,6 +18,9 @@ struct NintStage final : RowStage {
     const Tensor& output() const override { return stage->output(); }
     bool mapped_rows() const override { return stage->mapped_rows(); }
     void decode() override { stage->decode(); }
+    void prefetch_rows(const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& shape) override {
+        pipeline->issue(ids, shape, false);
+    }
     void upload(const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& shape) override {
         pipeline->upload(*stage, ids, shape);
     }
@@ -104,9 +107,12 @@ Tensor RowPipeline::collect(const std::vector<std::int64_t>& ids, const std::vec
     return output.dense().reshape(result_shape);
 }
 std::shared_ptr<RowStage> RowPipeline::stage(const std::vector<std::int64_t>& shape, const Device& device) {
+    std::shared_ptr<RowStage> result;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (impl_->nint) return std::make_shared<NintStage>(impl_->nint, shape, device);
+    if (impl_->nint) result = std::make_shared<NintStage>(impl_->nint, shape, device);
+    else
 #endif
-    return make_tq_row_stage(impl_->source->tq, impl_->source->rows, shape, device);
+    result = make_tq_row_stage(impl_->source->tq, impl_->source->rows, shape, device);
+    return result;
 }
 }

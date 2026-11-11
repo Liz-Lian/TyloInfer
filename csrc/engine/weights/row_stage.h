@@ -4,18 +4,37 @@
 #include <memory>
 #include <vector>
 
-// A prepared table-row transfer. Encodings stay in their own loader; graph
-// consumers use stable output storage and never allocate inside upload/decode.
-class RowStage {
+namespace tyloi::weights {
+/** Own a prepared table-row transfer and its stable device output. */
+class RowStage : public std::enable_shared_from_this<RowStage> {
 public:
-    virtual ~RowStage()=default;
-    virtual const ::tyloi::Tensor& output()const=0;
-    virtual bool mapped_rows()const=0;
-    virtual void upload(const std::vector<std::int64_t>& ids,const std::vector<std::int64_t>& shape)=0;
-    virtual void decode()=0;
+    RowStage();
+    virtual ~RowStage();
+    RowStage(const RowStage&) = delete;
+    RowStage& operator=(const RowStage&) = delete;
+    /** Return the stable output tensor for this stage. */
+    virtual const Tensor& output() const = 0;
+    /** Report whether the transfer uses mapped host rows. */
+    virtual bool mapped_rows() const = 0;
+    /** Upload the selected host row IDs into the prepared staging storage. */
+    virtual void upload(const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& shape) = 0;
+    /** Decode the staged rows on the active execution stream. */
+    virtual void decode() = 0;
+    /** Prepare graph transfer resources before entering capture. */
+    void prepare_graph();
+    /** Store host row IDs for the next graph replay without starting I/O. */
+    void set_rows(const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& shape);
+    /** Register the row transfer and decode within an active graph window. */
+    void decode_graph();
+protected:
+    /** Begin the selected row read during graph task reset when supported. */
+    virtual void prefetch_rows(const std::vector<std::int64_t>& ids, const std::vector<std::int64_t>& shape);
+private:
+    struct Graph;
+    void init_graph(const Device& device);
+    std::unique_ptr<Graph> graph_;
 };
 
-namespace tyloi::weights {
 /** Own selected-row transfers and stable graph staging for compatible tables. */
 class RowPipeline {
 public:

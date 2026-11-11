@@ -253,6 +253,7 @@ endfunction()
 set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/ops.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rows.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mlp.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/dense.cpp

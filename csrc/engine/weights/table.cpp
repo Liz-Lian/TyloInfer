@@ -53,17 +53,17 @@ struct RowPacket {
 
 // The pinned packet and completion event follow the PLE row stage lifetime:
 // CPU publication must wait for the preceding DMA to finish reading it.
-struct RowStage {
+struct PacketStage {
     tyloi::cuda::HostBuffer host;
     ::tyloi::DenseTensor packet;
     tyloi::cuda::Event uploaded;
     bool pending = false;
-    RowStage(std::size_t bytes, const ::tyloi::Device& device)
+    PacketStage(std::size_t bytes, const ::tyloi::Device& device)
         : host(bytes), packet(::tyloi::cuda::empty({static_cast<int64_t>(bytes)},
               ::tyloi::TensorOptions().device(device).dtype(::tyloi::kUInt8))) {
         tyloi::cuda::charge_tensor_host_bytes(bytes);
     }
-    ~RowStage() {
+    ~PacketStage() {
         if (pending) {
             try { uploaded.synchronize(); } catch (...) {}
         }
@@ -107,7 +107,7 @@ struct Table::Impl {
     std::packaged_task<RowPacket()> work;
     std::thread worker;
     bool stopping = false;
-    std::unique_ptr<RowStage> stage;
+    std::unique_ptr<PacketStage> stage;
     std::shared_ptr<NintRowPipeline> nint_pipeline;
     std::shared_ptr<NintRowStage> nint_stage;
     std::unique_ptr<tyloi::cuda::Event> nint_done;
@@ -323,7 +323,7 @@ Tensor Table::gather(State& state, const std::int64_t* rows, int batch, int toke
     const MfqCudaGuard guard(device);
     if (s.stage && s.stage->pending) { s.stage->uploaded.synchronize(); s.stage->pending = false; }
     if (!s.stage || s.stage->host.size() < bytes || s.stage->packet.device() != device)
-        s.stage = std::make_unique<RowStage>(bytes, device);
+        s.stage = std::make_unique<PacketStage>(bytes, device);
     auto& stage = *s.stage;
     auto* host = static_cast<uint8_t*>(stage.host.data());
     std::memcpy(host, selected.packed.data(), selected.packed.size());

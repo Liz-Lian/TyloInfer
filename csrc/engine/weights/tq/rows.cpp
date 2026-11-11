@@ -197,7 +197,7 @@ std::size_t segment_for(const tyloi::TqTable& table, std::uint64_t row) {
 
 namespace {
 
-class TqRowStage final : public RowStage {
+class TqRowStage final : public tyloi::weights::RowStage {
     std::vector<std::shared_ptr<tyloi::TqTable>> tables_;
     std::vector<std::int64_t> shape_;
     std::int64_t rows_per_shard_, count_ = 1, columns_ = 0;
@@ -387,7 +387,7 @@ public:
 
 } // namespace
 
-std::shared_ptr<RowStage> make_tq_row_stage(
+std::shared_ptr<tyloi::weights::RowStage> make_tq_row_stage(
         const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
         std::int64_t rows_per_shard, const std::vector<std::int64_t>& shape,
         const ::tyloi::Device& device) {

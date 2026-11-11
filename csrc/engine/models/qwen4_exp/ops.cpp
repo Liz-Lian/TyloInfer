@@ -1002,9 +1002,21 @@ struct Qwen4DecodeGraph {
     struct PleStage {
         qwen4_exp::Ple* ple;
         qwen4_exp::Ple::State* state;
+#ifdef TYLOINFER_NATIVE_CUDA
+        ::tyloi::Tensor rows;
+#else
         ::tyloi::DenseTensor rows;
-        std::shared_ptr<RowStage> transfer;
+#endif
+        std::shared_ptr<tyloi::weights::RowStage> transfer;
         std::vector<qwen4_exp::NgramEmbedding::Context> prefix_context;
+#ifdef TYLOINFER_NATIVE_CUDA
+        qwen4_exp::NgramEmbedding::Context next_context;
+        PleStage(qwen4_exp::Ple* p,qwen4_exp::Ple::State& request,int tokens,int hidden):ple(p),state(&request) {
+            transfer=ple->graph_stage(*state,tokens,::tyloi::Device{::tyloi::kCUDA,mfq_current_cuda_device()});
+            transfer->prepare_graph();
+            rows=tyloi::ops::reshape(transfer->output(),{1,tokens,hidden});
+        }
+#else
         HostBuffer flags{128,true};
         uint32_t* device=nullptr;
         bool profile=false;
@@ -1023,6 +1035,7 @@ struct Qwen4DecodeGraph {
             tensor_host_bytes.fetch_sub(128);
         }
         uint32_t* host(){return static_cast<uint32_t*>(flags.data());}
+#endif
     };
     struct Cell {
         ::tyloi::DenseTensor ids,positions,cache_positions,host_ids,output,raw_hidden,logits,greedy_host,compact_host;
@@ -1068,7 +1081,10 @@ struct Qwen4DecodeGraph {
             }
         }
     };
-    MfqCudaStream stream,ple_stream;
+    MfqCudaStream stream;
+#ifndef TYLOINFER_NATIVE_CUDA
+    MfqCudaStream ple_stream;
+#endif
     std::map<std::tuple<int,int,int>,std::unique_ptr<Cell>> cells;
     // Verification widths execute serially and commit/rollback before the next
     // window. Their snapshots can share stable allocations across graph shapes.
@@ -1084,11 +1100,20 @@ struct Qwen4DecodeGraph {
     bool failed=false;
     ::tyloi::DenseTensor last_compact;
     explicit Qwen4DecodeGraph(const qwen4_exp::Model& model,qwen4_exp::State& state)
-        :stream(mfq_get_current_cuda_stream()),ple_stream(mfq_get_stream_from_pool()),request(state) {
+        :stream(mfq_get_current_cuda_stream())
+#ifndef TYLOINFER_NATIVE_CUDA
+        ,ple_stream(mfq_get_stream_from_pool())
+#endif
+        ,request(state) {
         for(std::size_t i=0;i<model.layers.size();++i)
             if(auto* attention=model.layers[i]->qsa.get())qsa.emplace_back(attention,request.layers[i]->qsa.get());
     }
-    ~Qwen4DecodeGraph() {(void)cudaStreamSynchronize(ple_stream.stream());cells.clear();}
+    ~Qwen4DecodeGraph() {
+#ifndef TYLOINFER_NATIVE_CUDA
+        (void)cudaStreamSynchronize(ple_stream.stream());
+#endif
+        cells.clear();
+    }
     void restore_legacy() {
         last_compact={};
         cells.clear();shared_checkpoints.clear();
@@ -1178,6 +1203,15 @@ struct Qwen4DecodeGraph {
                 for(const auto& stage:cell.ple)stage->ple->prefetch_tokens(*stage->state,cell.host_ids);
 #ifdef TYLOINFER_NATIVE_CUDA
             co_yield tyloi::GraphPhase::ready;
+            for(const auto& stage:cell.ple) {
+                stage->prefix_context.clear();
+                if(confirmed) for(int i=confirmed;i<tokens;++i)
+                    stage->prefix_context.push_back(stage->ple->graph_prefix_context(*stage->state,cell.host_ids,i));
+                auto hashes=stage->ple->graph_rows(*stage->state,cell.host_ids);
+                const auto columns=static_cast<int64_t>(hashes.ids.size())/tokens;
+                stage->transfer->set_rows(hashes.ids,{1,tokens,columns});
+                stage->next_context=std::move(hashes.next);
+            }
 #else
             model.execution->weights.finish_exchange();
 #endif
@@ -1229,7 +1263,12 @@ struct Qwen4DecodeGraph {
                         auto& b=*block;::tyloi::DenseTensor rows;
                         if(b.ple) {
                             cell.window.mark(layer,"ple_begin");
-                            auto* stage=cell.ple[ple_index++].get();rows=stage->rows;
+                            auto* stage=cell.ple[ple_index++].get();
+#ifdef TYLOINFER_NATIVE_CUDA
+                            rows=stage->rows.dense();
+                            stage->transfer->decode_graph();
+#else
+                            rows=stage->rows;
                             cell.window.enroll({stage,
                                 [&cell,stage] {std::memset(stage->flags.data(),0,128);stage->ple->prefetch_tokens(*stage->state,cell.host_ids);},
                                 [this,&cell,stage,confirmed] {
@@ -1259,6 +1298,7 @@ struct Qwen4DecodeGraph {
                                 },{},[stage]{publish_mapped_flag(stage->host()+16);}});
                             signal_mapped_flag(stage->device,stream.stream());wait_mapped_flag(stage->device+16,stream.stream());
                             stage->transfer->decode();
+#endif
                             cell.window.mark(layer,"ple_end");
                         }
                         cell.window.mark(layer,"attention_begin");
@@ -1329,7 +1369,12 @@ struct Qwen4DecodeGraph {
                     <<" confirmed="<<confirmed<<" segments="<<cell.window.segments()<<" count="<<request.decode_graph_captures
                     <<" ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-capture_started).count()<<'\n';
             }
-            cell.window.run();cell.used_kinds|=1u<<result_kind;
+            cell.window.run();
+#ifdef TYLOINFER_NATIVE_CUDA
+            for(const auto& stage:cell.ple)
+                stage->ple->restore_graph_context(*stage->state,std::move(stage->next_context));
+#endif
+            cell.used_kinds|=1u<<result_kind;
             if(confirmed) {
                 // Captured copies save the confirmed prefix. Bind their owned
                 // storage only after replay, so generic commit/rollback keeps
@@ -1866,7 +1911,7 @@ struct Qwen4BatchDecodeGraph::Impl {
     std::vector<int64_t> capacities;
     std::vector<DenseTensor> positions, cache_positions;
     std::vector<DenseTensor> gdn_addresses;
-    std::vector<std::vector<std::shared_ptr<RowStage>>> ple;
+    std::vector<std::vector<std::shared_ptr<tyloi::weights::RowStage>>> ple;
     DenseTensor ids, logits;
     bool greedy = false;
     int64_t captures = 0, replays = 0;

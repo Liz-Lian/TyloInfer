@@ -20,7 +20,7 @@
     std::int64_t rows_per_shard, const std::vector<std::int64_t>& ids,
     const ::tyloi::Device& device);
 
-std::shared_ptr<RowStage> make_tq_row_stage(
+std::shared_ptr<tyloi::weights::RowStage> make_tq_row_stage(
     const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
     std::int64_t rows_per_shard, const std::vector<std::int64_t>& shape,
     const ::tyloi::Device& device);
