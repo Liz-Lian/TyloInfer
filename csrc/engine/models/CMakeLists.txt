@@ -6,7 +6,6 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/components.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/load.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/state.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/engram.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/prefill.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/dspark.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/vision.cpp

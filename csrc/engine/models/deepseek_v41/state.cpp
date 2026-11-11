@@ -243,8 +243,8 @@ std::vector<::tyloi::Tensor> State::storage() const {
         if (hidden.defined()) result.push_back(hidden);
     for (const auto& engram : shared->engram_states) {
         if (!engram) continue;
-        auto buffers = engram->storage();
-        result.insert(result.end(), buffers.begin(), buffers.end());
+        auto buffer = engram->storage();
+        if (buffer.defined()) result.push_back(std::move(buffer));
     }
     return result;
 }

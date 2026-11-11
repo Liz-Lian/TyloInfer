@@ -1,8 +1,8 @@
 #pragma once
 
 #include "engine/weights/loader.h"
+#include "engine/weights/table.h"
 
-#include "engine/weights/moe/expert_store.h"
 #include "engine/models/deepseek_v41/config.h"
 #include "engine/models/deepseek_v41/hash.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
@@ -16,17 +16,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <limits>
-#include <list>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -38,7 +33,6 @@ using EngramConfig = tyloi::models::deepseek_v41::Config;
 namespace engram_detail {
 
 constexpr std::array<std::uint8_t, 8> kMagic{'M', 'F', 'Q', 'E', 'N', 'G', 'R', '1'};
-constexpr std::size_t kMxHeaderBytes = 56;
 constexpr std::int64_t kDeadToken = -1;
 
 class ByteCursor {
@@ -115,17 +109,6 @@ inline std::uint64_t checked_product(std::uint64_t left, std::uint64_t right,
                                  " byte size overflows");
     }
     return left * right;
-}
-
-inline std::uint64_t read_u64_at(const std::vector<std::uint8_t> &bytes, std::size_t offset) {
-    if (offset > bytes.size() || 8 > bytes.size() - offset) {
-        throw std::runtime_error("truncated DeepSeek-V4.1 Engram MX header");
-    }
-    std::uint64_t value = 0;
-    for (int index = 0; index < 8; ++index) {
-        value |= static_cast<std::uint64_t>(bytes[offset + index]) << (8 * index);
-    }
-    return value;
 }
 
 inline float decode_e4m3(std::uint8_t raw) {
@@ -289,41 +272,11 @@ class EngramHashState : public tyloi::models::deepseek_v41::EngramHashState {
     }
 };
 
-class EngramTable {
-    struct Shared;
-    struct Impl;
-  public:
-    class State {
-      public:
-        ~State();
-        State(State&&) noexcept;
-        State& operator=(State&&) noexcept;
-        State(const State&) = delete;
-        State& operator=(const State&) = delete;
-        std::vector<::tyloi::Tensor> storage() const;
-
-      private:
-        friend class EngramTable;
-        explicit State(std::unique_ptr<Impl>);
-        std::unique_ptr<Impl> impl_;
-    };
-
-    static std::shared_ptr<EngramTable> load(const tyloi::source::Source&, const std::string&,
-        std::int64_t expected_rows, int expected_width, std::size_t cache_capacity_rows);
-    ~EngramTable();
-    std::unique_ptr<State> make_state() const;
-    void prefetch(State&, const std::int64_t* rows, std::size_t count) const;
-    EngramTensor gather(State&, const std::int64_t* rows, int batch, int tokens, int hash_columns,
-                        const ::tyloi::Device& device) const;
-  private:
-    explicit EngramTable(std::shared_ptr<const Shared>);
-    std::shared_ptr<const Shared> shared_;
-};
-
 class Engram {
   public:
-    using State = EngramTable::State;
+    using State = tyloi::weights::Table::State;
 
+    /** Load associative-memory weights and its streamed row table. */
     static std::unique_ptr<Engram> load(const tyloi::weights::Loader& weights, const EngramConfig &config,
                                         int layer, std::size_t cache_rows) {
         const auto found =
@@ -352,7 +305,7 @@ class Engram {
         }
         return std::unique_ptr<Engram>(new Engram(
             config, hash_layer,
-            EngramTable::load(weights.source, prefix + "embedding.weight",
+            tyloi::weights::Table::load(weights.source, prefix + "embedding.weight",
                               config.engram_num_embeddings[static_cast<std::size_t>(hash_layer)],
                               static_cast<int>(config.engram_head_dim),
                               cache_rows),
@@ -366,8 +319,10 @@ class Engram {
 
     int64_t layer_id() const { return config_.engram_layer_ids[hash_layer_]; }
 
+    /** Create independent row-transfer state for a request. */
     std::unique_ptr<State> make_state() const { return table_->make_state(); }
 
+    /** Begin fetching the rows selected by the request's hashes. */
     void prefetch(State& state, const EngramHashBatch& hashes,
                   const std::vector<int64_t>* text_rows=nullptr) const {
         if(text_rows) {
@@ -381,6 +336,7 @@ class Engram {
             std::size_t(hashes.batch) * hashes.tokens * hashes.columns);
     }
 
+    /** Gather hashed rows and apply their projected contribution to hidden states. */
     EngramTensor forward(State& state, const EngramTensor &hidden, const EngramHashBatch &hashes,
                          const EngramTensor& text_rows={},
                          const std::vector<int64_t>* host_rows=nullptr) const {
@@ -404,7 +360,7 @@ class Engram {
         }
         auto embeddings = tyloi::ops::measure("deepseek_v41.engram.rows", [&] {
             return table_->gather(state, hashes.layer_data(hash_layer_), batch, tokens,
-                                  hashes.columns, hidden.device());
+                                  hashes.columns, hidden.device()).dense();
         });
         auto projected = tyloi::ops::measure("deepseek_v41.engram.projection", [&] {
             return tyloi::ops::project(embeddings, projection_).dense();
@@ -434,7 +390,7 @@ class Engram {
         }
         return selected;
     }
-    Engram(EngramConfig config, int hash_layer, std::shared_ptr<EngramTable> table,
+    Engram(EngramConfig config, int hash_layer, std::shared_ptr<tyloi::weights::Table> table,
 #ifdef TYLOINFER_NATIVE_CUDA
            ::tyloi::Tensor projection, ::tyloi::Tensor query_key_weight)
 #else
@@ -445,7 +401,7 @@ class Engram {
 
     EngramConfig config_;
     int hash_layer_ = -1;
-    std::shared_ptr<EngramTable> table_;
+    std::shared_ptr<tyloi::weights::Table> table_;
     ::tyloi::Tensor projection_;
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor query_key_weight_;
