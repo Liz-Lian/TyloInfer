@@ -1,11 +1,13 @@
 #pragma once
 
+#ifndef TYLOINFER_NATIVE_CUDA
+
 #include "engine/models/common/load.h"
 #include "engine/models/source/model_config.h"
 #include "env.h"
 #include "engine/load.h"
 #include "engine/drain.h"
-#include "engine/models/common/capabilities.h"
+#include "engine/models/metadata.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/generation/instance.h"
@@ -41,11 +43,7 @@ class EngineInstance final : public Engine {
         if (!state) throw std::runtime_error("CUDA engine is unloaded");
         return std::visit([&](auto& value) -> decltype(auto) {
             if (!value) throw std::runtime_error("CUDA engine is unloaded");
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto guard = value->executor->enter();
-#else
             CudaScope guard(value->execution->config.layer_placement.primary_device(), value->execution->executor().contexts());
-#endif
             ::tyloi::cuda::NoGradGuard no_grad;
             return run(*value);
         }, *state);
@@ -69,11 +67,7 @@ class EngineInstance final : public Engine {
     }
     std::unique_ptr<tyloi::Executor::Scope> enter() override {
         return std::visit([](auto& ops) -> std::unique_ptr<tyloi::Executor::Scope> {
-#ifdef TYLOINFER_NATIVE_CUDA
-            return ops->executor->enter();
-#else
             return ops->executor->enter(ops->execution->config.layer_placement.primary_device());
-#endif
         }, *state);
     }
     void prepare_request(Request& request, bool batched) override {
@@ -167,23 +161,16 @@ class EngineInstance final : public Engine {
                     kv.directory = kv_options.directory;
                     offload = std::make_shared<KvOffloadStore>(std::move(kv));
                 }
-#ifdef TYLOINFER_NATIVE_CUDA
-                executor->configure_kv(kv, offload);
-#endif
                 state = Load(*execution, options, true,
                     [&](auto& model, auto& model_state, auto& model_executor, auto& components,
                         auto, auto, auto source) -> State {
                         using Model = typename std::remove_reference_t<decltype(model)>::element_type;
                         using ModelState = typename std::remove_reference_t<decltype(model_state)>::element_type;
                         using Parts = std::remove_cvref_t<decltype(components)>;
-#ifdef TYLOINFER_NATIVE_CUDA
-                        const bool streamed_kv = tyloi::models::model_info(*model).streamed_kv;
-#else
                         const bool streamed_kv = [] {
                             if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
                             else return false;
                         }();
-#endif
                         if (offload && !streamed_kv)
                             throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                         return std::make_unique<Text<Model, ModelState, Parts>>(
@@ -240,9 +227,6 @@ class EngineInstance final : public Engine {
                 state.reset();
                 offload.reset();
                 kv.reset();
-#ifdef TYLOINFER_NATIVE_CUDA
-                executor->configure_kv({}, {});
-#endif
                 weights.clear_workspace();
                 weights.reset();
             }
@@ -259,3 +243,4 @@ class EngineInstance final : public Engine {
 } // namespace engine_detail
 
 } // namespace tyloi::cuda
+#endif

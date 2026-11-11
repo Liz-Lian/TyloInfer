@@ -30,15 +30,15 @@ tyloi::models::Info Model::info() const {
 
 MfqModelCapabilities Model::capabilities() const {
     const bool vision = components && components->grid_vision.has_value();
-    const auto state = cuda_component_state(graph, plan, vision, mtp() != nullptr);
-    const auto caps = cuda_runtime_capabilities(graph, plan, state, vision, false);
+    const auto state = ::tyloi::models::component_state(graph, plan, vision, mtp() != nullptr);
+    const auto caps = ::tyloi::models::runtime_capabilities(graph, plan, state, vision, false);
     return {graph.architecture, caps.text, caps.image_input, caps.video_input,
         caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp,
         "model-graph+cuda-adapters"};
 }
 
 tyloi::engine::Metrics Model::metrics() const {
-    const auto state = cuda_component_state(graph, plan,
+    const auto state = ::tyloi::models::component_state(graph, plan,
         components && components->grid_vision.has_value(), mtp() != nullptr);
     const auto quantization = cuda_kv_quantization();
     return {{"kv_memory_supported", 0.0},

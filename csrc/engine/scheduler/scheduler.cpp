@@ -406,16 +406,13 @@ void Scheduler::loop() noexcept {
                     if ((std::holds_alternative<ScoreText>(value.request) || std::holds_alternative<ScoreTokens>(value.request)) &&
                         (duplex_active || !requests_.empty()))
                         throw std::runtime_error("probability scoring requires an idle runtime");
-                    const bool start_duplex = std::holds_alternative<MfqDuplexSessionParams>(value.request);
-                    const bool stop_duplex = std::holds_alternative<StopDuplex>(value.request);
                     if (reload) throw std::runtime_error("reload is pending");
                     if ((std::holds_alternative<MfqDuplexSessionParams>(value.request) ||
                          std::holds_alternative<MfqDuplexStepInput>(value.request) ||
                          std::holds_alternative<StopDuplex>(value.request)) && !requests_.empty())
                         throw std::runtime_error("duplex conflicts with active generation");
                     auto result = engine_.control_command(std::move(value.request));
-                    if (start_duplex) duplex_active = true;
-                    if (stop_duplex) duplex_active = false;
+                    duplex_active = engine_.exclusive();
                     refresh_snapshot(healthy_, duplex_active || stopping, true);
                     value.reply.set_value(std::move(result));
                 } else if constexpr (std::is_same_v<T, Session>) {
@@ -448,7 +445,14 @@ void Scheduler::loop() noexcept {
                     for (auto& [id, request] : requests_) cancel(request);
                     reload.emplace(std::move(value));
                 }
-            } catch (...) { value.reply.set_exception(std::current_exception()); }
+            } catch (...) {
+                const auto failure = std::current_exception();
+                if constexpr (std::is_same_v<T, Control>) {
+                    duplex_active = engine_.exclusive();
+                    try { refresh_snapshot(healthy_, reload.has_value() || duplex_active || stopping, true); } catch (...) {}
+                }
+                value.reply.set_exception(failure);
+            }
         }, command);
         bool executable = false;
         auto wake_at = Clock::time_point::max();

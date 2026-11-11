@@ -1,10 +1,11 @@
 #pragma once
 
+#ifndef TYLOINFER_NATIVE_CUDA
+
 #include "engine/load.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/common/components.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen4_exp/components.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/glm5_next/components.h"
@@ -15,26 +16,21 @@
 #include "engine/models/deepseek_v41/components.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/deepseek_v41/state.h"
-#endif
 #include "engine/models/common/load.h"
 #include "engine/models/load.h"
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/load.h"
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/glm_dsa/state.h"
 #include "engine/models/deepseek_v4/load.h"
 #include "engine/models/deepseek_v4/state.h"
-#endif
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
 #include "engine/weights/cache.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/state.h"
-#endif
 #include "engine/models/minicpmo45/state.h"
 #include "engine/models/minicpmo45/text/load.h"
 #include "engine/models/minicpmo45/text/state.h"
@@ -66,10 +62,8 @@ inline constexpr auto with_model = []<typename F>(
     auto finish = [&](auto& owner, auto& state, auto& executor, auto& components, auto started) {
         auto& model = *owner;
         using Model = std::remove_cvref_t<decltype(model)>;
-#ifndef TYLOINFER_NATIVE_CUDA
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             Executor::prepare(model.metadata.vocab_size);
-#endif
         if (auto* predictor = component_predictor(model, components)) {
             if constexpr (requires { state->predictor; }) {
                 if (!state->predictor) state->predictor = predictor->make_state();
@@ -81,10 +75,6 @@ inline constexpr auto with_model = []<typename F>(
         }
         tyloi::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
-#ifdef TYLOINFER_NATIVE_CUDA
-        execution.executor().configure_kv(execution.kv, execution.offload);
-        executor->configure_kv(execution.kv, execution.offload);
-#endif
         const auto loaded_at = tyloi::cuda::finish_load(
             execution.kv.get(), execution.weights, execution.config.report_cuda_memory);
         return run(owner, state, executor, components, started, loaded_at, source);
@@ -123,9 +113,8 @@ inline constexpr auto with_model = []<typename F>(
         return finish(owner, owned_state, executor, components, started);
     };
 
-    switch (cuda_backbone(tyloi::models::graph(*source).backbone)) {
-#ifndef TYLOINFER_NATIVE_CUDA
-        case CudaBackbone::generic_qwen:
+    switch (::tyloi::models::backbone(tyloi::models::graph(*source).backbone)) {
+        case ::tyloi::models::Backbone::generic_qwen:
             if constexpr (IncludeQwen) {
                 auto started = std::chrono::steady_clock::now();
                 auto weights = execution.weights.loader(*source, execution.config.weights,
@@ -157,8 +146,7 @@ inline constexpr auto with_model = []<typename F>(
             } else {
                 throw std::runtime_error("unsupported CUDA model backbone");
             }
-#endif
-        case CudaBackbone::minicpmo45: {
+        case ::tyloi::models::Backbone::minicpmo45: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
@@ -179,10 +167,9 @@ inline constexpr auto with_model = []<typename F>(
                 load_optional_components, execution);
             return finish(owner, state, executor, components, started);
         }
-        case CudaBackbone::minicpmo_tts:
+        case ::tyloi::models::Backbone::minicpmo_tts:
             return load_tts();
-#ifndef TYLOINFER_NATIVE_CUDA
-        case CudaBackbone::glm_dsa: {
+        case ::tyloi::models::Backbone::glm_dsa: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
@@ -198,13 +185,13 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<glm_dsa::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            if (load_optional_components && (owner->plan.vision != CudaVisionAdapter::none ||
-                    owner->plan.predictor != CudaPredictorAdapter::none))
+            if (load_optional_components && (owner->plan.vision != ::tyloi::models::Vision::none ||
+                    owner->plan.predictor != ::tyloi::models::Predictor::none))
                 throw std::runtime_error("CUDA component adapter is unsupported for this model");
             std::monostate components;
             return finish(owner, state, executor, components, started);
         }
-        case CudaBackbone::glm5_next: {
+        case ::tyloi::models::Backbone::glm5_next: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
@@ -222,7 +209,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
-        case CudaBackbone::qwen4_exp: {
+        case ::tyloi::models::Backbone::qwen4_exp: {
             auto started = std::chrono::steady_clock::now();
             auto owner = std::make_shared<qwen4_exp::Model>();
             qwen4_exp::read(*owner, source, tyloi::models::config_json(*source, options.config_path),
@@ -238,7 +225,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
-        case CudaBackbone::deepseek_v4: {
+        case ::tyloi::models::Backbone::deepseek_v4: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
@@ -260,15 +247,13 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<deepseek_v4::State>(*owner);
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
-            if (load_optional_components && (owner->plan.vision != CudaVisionAdapter::none ||
-                    owner->plan.predictor != CudaPredictorAdapter::none))
+            if (load_optional_components && (owner->plan.vision != ::tyloi::models::Vision::none ||
+                    owner->plan.predictor != ::tyloi::models::Predictor::none))
                 throw std::runtime_error("CUDA component adapter is unsupported for this model");
             std::monostate components;
             return finish(owner, state, executor, components, started);
         }
-#endif
-#ifndef TYLOINFER_NATIVE_CUDA
-        case CudaBackbone::deepseek_v41: {
+        case ::tyloi::models::Backbone::deepseek_v41: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
             auto owner = std::make_shared<deepseek_v41::Model>();
@@ -284,7 +269,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
-        case CudaBackbone::nemotron_h: {
+        case ::tyloi::models::Backbone::nemotron_h: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
@@ -304,11 +289,11 @@ inline constexpr auto with_model = []<typename F>(
                 execution);
             return finish(owner, state, executor, components, started);
         }
-#endif
-        case CudaBackbone::unsupported:
+        case ::tyloi::models::Backbone::unsupported:
             throw std::runtime_error("unsupported CUDA model backbone");
     }
     throw std::runtime_error("invalid CUDA model backbone");
 };
 
 } // namespace tyloi::cuda
+#endif

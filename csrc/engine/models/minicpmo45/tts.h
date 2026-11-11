@@ -11,7 +11,9 @@
 #include "engine/models/common/attention.h"
 #include "engine/models/common/ffn.h"
 #include "engine/models/common/mlp.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
+#endif
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/state/kv_view.h"
 
@@ -149,8 +151,8 @@ struct Tts {
         result.output_norm = weights.native("tts.output_norm.weight");
         auto head_g_tensor = weights.native("tts.code_output.0.weight_norm.magnitude");
         auto head_v_tensor = weights.native("tts.code_output.0.weight_norm.direction");
-        if (head_g_tensor->dim() != 2 || head_g_tensor->size(0) != 6562 || head_g_tensor->size(1) != 1 ||
-                head_v_tensor->dim() != 2 || head_v_tensor->size(0) != 6562 || head_v_tensor->size(1) != 768 ||
+        if (head_g_tensor.dim() != 2 || head_g_tensor.size(0) != 6562 || head_g_tensor.size(1) != 1 ||
+                head_v_tensor.dim() != 2 || head_v_tensor.size(0) != 6562 || head_v_tensor.size(1) != 768 ||
 #else
         result.output_norm = weights.native("tts.output_norm.weight").dense();
         auto head_g = weights.native("tts.code_output.0.weight_norm.magnitude").dense();
@@ -158,10 +160,10 @@ struct Tts {
         if (head_g.sizes().vec() != std::vector<int64_t>({6562, 1}) ||
                 head_v.sizes().vec() != std::vector<int64_t>({6562, 768}) ||
 #endif
-                result.text_embedding->size(0) != 152064 ||
-                result.text_embedding->size(1) != 768 ||
-                result.code_embedding->size(0) != 6562 ||
-                result.code_embedding->size(1) != 768) {
+                result.text_embedding.size(0) != 152064 ||
+                result.text_embedding.size(1) != 768 ||
+                result.code_embedding.size(0) != 6562 ||
+                result.code_embedding.size(1) != 768) {
             throw std::runtime_error(
                 "MiniCPM-o TTS tensor shapes disagree with version 4.5");
         }
@@ -198,25 +200,48 @@ struct Tts {
         return result;
     }
 
-    ::tyloi::DenseTensor semantic_projection(const Projector& projector,
+    /** Project language hidden states into normalized speech conditioning. */
+    ::tyloi::DenseTensor semantic_projection(
+#ifndef TYLOINFER_NATIVE_CUDA
+                                                  const Projector& projector,
+#endif
                                                   ::tyloi::DenseTensor hidden) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto projected = tyloi::ops::linear(hidden, semantic_projector1.weight, semantic_projector1.bias).dense();
+        projected = ::tyloi::cuda::relu(projected);
+        projected = tyloi::ops::linear(projected, semantic_projector2.weight, semantic_projector2.bias).dense();
+#else
         auto projected = tyloi::cuda::biased(projector, semantic_projector1, hidden);
         projected = ::tyloi::cuda::relu(projected);
         projected = tyloi::cuda::biased(projector, semantic_projector2, projected);
+#endif
         auto norm = ::tyloi::cuda::sqrt(
             ::tyloi::cuda::sum(projected.to(::tyloi::kFloat32).square(), -1, true))
             .clamp_min(1e-12);
         return (projected / norm.to(projected.scalar_type())).contiguous();
     }
 
-    ::tyloi::DenseTensor speaker_projection(const Projector& projector,
+    /** Project speaker conditioning into the speech model width. */
+    ::tyloi::DenseTensor speaker_projection(
+#ifndef TYLOINFER_NATIVE_CUDA
+                                                 const Projector& projector,
+#endif
                                                  ::tyloi::DenseTensor hidden) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        return tyloi::ops::linear(::tyloi::cuda::relu(
+            tyloi::ops::linear(hidden, speaker_projector1.weight, speaker_projector1.bias).dense()),
+            speaker_projector2.weight, speaker_projector2.bias).dense();
+#else
         return tyloi::cuda::biased(projector, speaker_projector2, ::tyloi::cuda::relu(
                 tyloi::cuda::biased(projector, speaker_projector1, hidden)));
+#endif
     }
 
+    /** Build speech conditioning from aligned text and language hidden states. */
     ::tyloi::DenseTensor condition(
+#ifndef TYLOINFER_NATIVE_CUDA
             const Projector& projector,
+#endif
             ::tyloi::DenseTensor text_ids,
             ::tyloi::DenseTensor language_hidden) const {
         MfqCudaGuard guard(device);
@@ -231,8 +256,12 @@ struct Tts {
             throw std::runtime_error(
                 "MiniCPM-o TTS condition expects one aligned text/hidden span");
         }
-        auto text = minicpmo45_embedding(*text_embedding, text_ids);
-        auto semantic = semantic_projection(projector, language_hidden)
+        auto text = minicpmo45_embedding(text_embedding, text_ids);
+        auto semantic = semantic_projection(
+#ifndef TYLOINFER_NATIVE_CUDA
+            projector,
+#endif
+            language_hidden)
             .to(text.scalar_type());
         auto merged = (text + semantic).contiguous();
         auto suffix_ids = ::tyloi::cuda::tensor(
@@ -240,12 +269,15 @@ struct Tts {
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64)
                 .device(::tyloi::kCUDA)).reshape({1, 2});
         auto suffix = minicpmo45_embedding(
-            *text_embedding, suffix_ids, text.scalar_type());
+            text_embedding, suffix_ids, text.scalar_type());
         return ::tyloi::cuda::cat({merged, suffix}, 1).contiguous();
     }
 
+    /** Build streaming speech conditioning and its audio start token. */
     ::tyloi::DenseTensor duplex_condition(
+#ifndef TYLOINFER_NATIVE_CUDA
             const Projector& projector,
+#endif
             ::tyloi::DenseTensor text_ids,
             ::tyloi::DenseTensor language_hidden,
             int64_t audio_bos_token) const {
@@ -258,14 +290,18 @@ struct Tts {
                 text_ids.size(0) != 1 || language_hidden.size(0) != 1 ||
                 text_ids.size(1) != language_hidden.size(1) ||
                 language_hidden.size(2) != 4096 ||
-                audio_bos_token < 0 || audio_bos_token >= text_embedding->size(0)) {
+                audio_bos_token < 0 || audio_bos_token >= text_embedding.size(0)) {
             throw std::runtime_error(
                 "MiniCPM-o duplex TTS condition has invalid geometry or audio BOS");
         }
         ::tyloi::DenseTensor condition;
         if (text_ids.size(1) > 0) {
-            auto text = minicpmo45_embedding(*text_embedding, text_ids);
-            auto semantic = semantic_projection(projector, language_hidden)
+            auto text = minicpmo45_embedding(text_embedding, text_ids);
+            auto semantic = semantic_projection(
+#ifndef TYLOINFER_NATIVE_CUDA
+                projector,
+#endif
+                language_hidden)
                 .to(text.scalar_type());
             condition = (text + semantic).contiguous();
         }
@@ -274,14 +310,20 @@ struct Tts {
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64)
                 .device(::tyloi::kCUDA)).reshape({1, 1});
         auto bos = minicpmo45_embedding(
-            *text_embedding, bos_ids, ::tyloi::kBFloat16);
+            text_embedding, bos_ids, ::tyloi::kBFloat16);
         return condition.defined()
             ? ::tyloi::cuda::cat({condition, bos}, 1).contiguous()
             : bos.contiguous();
     }
 
-    ::tyloi::DenseTensor hidden_forward(State& state, Executor& executor,
-            const Executor::Mode& mode, ::tyloi::DenseTensor input_embeddings) const {
+    /** Advance speech decoder cache using request execution options. */
+    ::tyloi::DenseTensor hidden_forward(State& state,
+#ifdef TYLOINFER_NATIVE_CUDA
+            const tyloi::models::ForwardOptions& mode,
+#else
+            Executor& executor, const Executor::Mode& mode,
+#endif
+            ::tyloi::DenseTensor input_embeddings) const {
         MfqCudaGuard guard(device);
         if (input_embeddings.dim() != 3 ||
                 input_embeddings.size(2) != config.hidden_size) {
@@ -323,7 +365,6 @@ struct Tts {
             cache.quantization = attention.kv_quantization;
             auto* layer_trace = mode.trace_layer == attention.layer ? mode.trace : nullptr;
 #ifdef TYLOINFER_NATIVE_CUDA
-            auto scope = executor.enter(device, mode.ffn);
             AttentionStep step{
                 ::tyloi::Tensor(positions),
                 sequence_length ? ::tyloi::Tensor(*sequence_length) : ::tyloi::Tensor{},
@@ -376,8 +417,14 @@ struct Tts {
         bool finished = false;
     };
 
+    /** Generate one streaming speech token chunk. */
     ChunkResult generate_duplex_chunk(
-            State& state, Executor& executor, const Executor::Mode& mode,
+            State& state,
+#ifdef TYLOINFER_NATIVE_CUDA
+            const tyloi::models::ForwardOptions& mode,
+#else
+            Executor& executor, const Executor::Mode& mode,
+#endif
             ::tyloi::DenseTensor condition_embeddings,
             int64_t max_new_tokens,
             int64_t minimum_new_tokens,
@@ -389,7 +436,7 @@ struct Tts {
                 condition_embeddings.size(0) != 1 ||
                 condition_embeddings.size(2) != config.hidden_size ||
                 max_new_tokens <= 0 || minimum_new_tokens < 0 ||
-                eos_token < 0 || eos_token >= code_embedding->size(0) ||
+                eos_token < 0 || eos_token >= code_embedding.size(0) ||
                 temperature <= 0.0 || repetition_penalty <= 0.0) {
             throw std::runtime_error(
                 "MiniCPM-o duplex TTS generation limits are invalid");
@@ -399,7 +446,11 @@ struct Tts {
         auto current = condition_embeddings.to(::tyloi::kBFloat16).contiguous();
         bool finished = false;
         for (int64_t step = 0; step < max_new_tokens; ++step) {
-            auto hidden = hidden_forward(state, executor, mode, current);
+            auto hidden = hidden_forward(state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                executor,
+#endif
+                mode, current);
             auto step_logits = logits(
                 hidden.index({Slice(), -1, Slice()}))
                 .to(::tyloi::kFloat32) / temperature;
@@ -431,7 +482,7 @@ struct Tts {
             finished = token.eq(eos_token).all().item<bool>();
             if (finished) break;
             current = minicpmo45_embedding(
-                *code_embedding, token.unsqueeze(1));
+                code_embedding, token.unsqueeze(1));
         }
         const int64_t returned = std::max<int64_t>(
             0, static_cast<int64_t>(sampled.size()) - 1);
@@ -449,6 +500,7 @@ struct Tts {
         return {codes, finished};
     }
 
+#ifndef TYLOINFER_NATIVE_CUDA
     ::tyloi::DenseTensor generate_official(
         State& state, Executor& executor, const Executor::Mode& mode,
         ::tyloi::DenseTensor condition_embeddings, int64_t steps, int64_t eos_token = 6561,
@@ -484,13 +536,14 @@ struct Tts {
             [&](const DenseTensor &token, int64_t) { generated.push_back(token); },
             [&](const DenseTensor &token) { return token.eq(eos_token).all().item<bool>(); },
             [&](const DenseTensor &token) {
-                current = minicpmo45_embedding(*code_embedding, token.unsqueeze(1));
+                current = minicpmo45_embedding(code_embedding, token.unsqueeze(1));
             });
         auto sampled = ::tyloi::cuda::stack(generated, 1);
         return sampled.narrow(1, 0, result.tokens - (result.hit_eos ? 1 : 0))
             .unsqueeze(-1)
             .contiguous();
     }
+#endif
 };
 
 } // namespace tyloi::cuda::minicpmo45

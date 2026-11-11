@@ -324,15 +324,15 @@ tyloi::models::Info Model::info() const {
 }
 
 MfqModelCapabilities Model::capabilities() const {
-    const auto state = cuda_component_state(graph, plan, bool(vision), mtp() != nullptr);
-    const auto caps = cuda_runtime_capabilities(graph, plan, state, bool(vision), false);
+    const auto state = ::tyloi::models::component_state(graph, plan, bool(vision), mtp() != nullptr);
+    const auto caps = ::tyloi::models::runtime_capabilities(graph, plan, state, bool(vision), false);
     return {graph.architecture, caps.text, caps.image_input, caps.video_input,
         caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp,
         "model-graph+cuda-adapters"};
 }
 
 tyloi::engine::Metrics Model::metrics() const {
-    const auto state = cuda_component_state(graph, plan, bool(vision), mtp() != nullptr);
+    const auto state = ::tyloi::models::component_state(graph, plan, bool(vision), mtp() != nullptr);
     return {{"kv_memory_supported", 0.0},
         {"kv_quantization_supported", 0.0},
         {"kv_quantization_bits", 0.0},

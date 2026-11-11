@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/ops.h"
+#include "engine/models/metadata.h"
 
 #include <cstdint>
 #include <memory>
@@ -15,6 +16,11 @@ namespace weights { struct Loader; }
 
 namespace models {
 class CausalModel;
+
+/** Resolve a backbone implementation identifier. */
+Backbone backbone(std::string_view implementation) noexcept;
+/** Select the implementations declared by a model graph. */
+Plan model_plan(const ModelGraph& graph) noexcept;
 
 /** Model construction policy without execution resource ownership. */
 struct LoadOptions {

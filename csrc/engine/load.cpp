@@ -2,10 +2,10 @@
 #include "engine/config.h"
 #include "engine/ops.h"
 #include "engine/models/load.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/assemble.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/minicpmo45/text/forward.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/deepseek_v41/vision.h"
 #include "engine/models/glm_dsa/forward.h"
@@ -14,7 +14,9 @@
 #include "engine/models/nemotron_h/forward.h"
 #endif
 #include "engine/models/source/model_graph.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/instance_impl.h"
+#endif
 #include "engine/drain.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
@@ -47,6 +49,7 @@
 #include <variant>
 #include <vector>
 
+#ifndef TYLOINFER_NATIVE_CUDA
 namespace tyloi::cuda::engine_detail {
 
 using State = std::variant<
@@ -63,6 +66,7 @@ using State = std::variant<
     std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>>;
 
 } // namespace tyloi::cuda::engine_detail
+#endif
 
 namespace tyloi::cuda {
 
@@ -76,24 +80,23 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
 } // namespace
 
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
-    auto source = tyloi::open_model_source(options.model_path);
 #ifdef TYLOINFER_NATIVE_CUDA
-    if (models::supports(models::graph(*source).backbone)) {
-        return load_native_engine(std::move(options), nullptr, std::move(source));
-    }
-#endif
-    source.reset();
+    auto source = tyloi::open_model_source(options.model_path);
+    return load_native_engine(std::move(options), nullptr, std::move(source));
+#else
     return std::make_unique<engine_detail::EngineInstance<
         engine_detail::State, with_model<>>>(std::move(options));
+#endif
 }
 
 void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
+#ifndef TYLOINFER_NATIVE_CUDA
     if (auto* target = dynamic_cast<engine_detail::EngineInstance<engine_detail::State, with_model<>>*>(&engine)) {
         target->options = std::move(options);
         target->load();
         return;
     }
-#ifdef TYLOINFER_NATIVE_CUDA
+#else
     if (typeid(engine) == typeid(tyloi::engine::Engine)) {
         auto source = tyloi::open_model_source(options.model_path);
         load_native_engine(std::move(options), &engine, std::move(source));

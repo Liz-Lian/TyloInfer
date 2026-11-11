@@ -1,6 +1,9 @@
 #pragma once
 
 #include "engine/models/session/snapshot.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/state.h"
+#endif
 #include "engine/state/kv_view.h"
 
 #include <cstdint>
@@ -10,7 +13,11 @@ namespace tyloi::cuda::minicpmo45 {
 
 struct Model;
 
-class State {
+class State
+#ifdef TYLOINFER_NATIVE_CUDA
+    : public tyloi::models::State
+#endif
+{
 public:
     struct Restore {
         std::vector<tyloi::state::KvView> layers;
@@ -23,6 +30,17 @@ public:
     State& operator=(const State&) = delete;
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Check request ownership against the supplied model. */
+    bool belongs_to(const Model& model) const noexcept { return model_ == &model; }
+    /** Plan KV allocation for the requested batch and token span. */
+    std::vector<std::pair<tyloi::Device,std::size_t>> growth(std::int64_t batch, std::int64_t tokens,
+        const tyloi::models::ForwardOptions& options, std::int64_t confirmed = 0) const override;
+    /** Reset only releases incompatible KV backing. */
+    std::vector<std::pair<tyloi::Device,std::size_t>> reset_growth(std::int64_t batch) const override;
+    /** Prepare an independently owned session restore candidate. */
+    std::unique_ptr<tyloi::models::Restore> prepare_restore(const TextSessionState&) override;
+#endif
 
     void preallocate();
     void reset(int64_t batch);
@@ -52,6 +70,9 @@ private:
         int64_t heads, head_dim, capacity;
     };
     std::vector<Layout> layout_;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const Model* model_;
+#endif
     int64_t maximum_;
 };
 

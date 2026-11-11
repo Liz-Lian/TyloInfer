@@ -2,9 +2,6 @@
 #include "engine/models/qwen35/batch_ops.h"
 #include "engine/models/batch.h"
 #include "engine/models/input.h"
-#ifdef TYLOINFER_NATIVE_CUDA
-#include "engine/ops.h"
-#endif
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
@@ -84,19 +81,9 @@ std::vector<std::pair<std::string, double>> BatchOps::metrics() const {
 }
 
 void BatchOps::initialize_sampling(Request& request, const DenseTensor& prompt_ids) {
-#ifdef TYLOINFER_NATIVE_CUDA
-    request.sampler.emplace(request.sampling, ::tyloi::Device(::tyloi::kCUDA, mode_.primary));
-#else
     request.sampler.emplace(request.sampling);
-#endif
     if (request.sampler->has_penalties()) {
-#ifdef TYLOINFER_NATIVE_CUDA
-        request.counts = tyloi::ops::zeros({vocab_size()},
-            tyloi::TensorOptions().device(prompt_ids.device()).dtype(tyloi::kInt32));
-        tyloi::ops::add_token_counts(request.counts, prompt_ids);
-#else
         request.counts = SamplingOps::token_counts(prompt_ids, vocab_size());
-#endif
     }
 }
 
@@ -117,11 +104,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                 .contiguous();
         initialize_sampling(*request, request->prefill_ids);
     }
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor hidden;
-#else
     DenseTensor hidden;
-#endif
     std::unique_ptr<PrefillCudaTimer> final_timer;
     auto chunk_timer = std::make_unique<PrefillCudaTimer>();
     MfqOptional<DenseTensor> length = mfq_nullopt;
@@ -150,11 +133,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     request->prefill_timers.push_back(std::move(final_timer));
     auto next = tyloi::engine::sample_logits(*request->sampler, std::move(logits), request->counts,
                                          request->token_constraint);
-#ifdef TYLOINFER_NATIVE_CUDA
-    const int64_t token = tyloi::ops::item(next);
-#else
     const int64_t token = next.item<int64_t>();
-#endif
     double prefill_ms = 0.0;
     for (const auto& timer : request->prefill_timers)
         prefill_ms += timer->elapsed_ms();
@@ -165,11 +144,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
 
 void BatchOps::activate(const std::shared_ptr<Request>& request, const Sample& sample) {
     if (request->counts.defined())
-#ifdef TYLOINFER_NATIVE_CUDA
-        tyloi::ops::add_token_counts(request->counts, tyloi::ops::contiguous(sample.next));
-#else
         sample_token_counts_add_cuda(request->counts, sample.next.contiguous());
-#endif
     state_.activate(request->cache);
 }
 
@@ -302,11 +277,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     // ponytail: masked slots still occupy GPU rows; restore recurrent state
     // and overwrite the uncommitted KV position when they become eligible.
     const auto paused_state = state_.capture_recurrent_slots(paused_slots);
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor logits;
-#else
     DenseTensor logits;
-#endif
     DenseTensor graph_tokens;
     auto mode = mode_;
     mode.ffn.batch_serial = cached_moe_enabled_ && batch > 1;
@@ -328,11 +299,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                                       collectives_, mode,
                                       std::move(input));
                 auto current_logits = state_.logits_from_last_hidden(std::move(hidden), mode);
-#ifdef TYLOINFER_NATIVE_CUDA
-                return sample_greedy_cuda(current_logits.dense().contiguous().view({batch, -1}));
-#else
                 return sample_greedy_cuda(current_logits.contiguous().view({batch, -1}));
-#endif
             };
             if (!graph_cache_hit) {
                 decode_graph->invalidate();
@@ -387,11 +354,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
         ++batched_greedy_batches_;
     } else if (config_.greedy && batch_greedy) {
         batched_greedy_tokens =
-#ifdef TYLOINFER_NATIVE_CUDA
-            sample_greedy_cuda(logits.dense().contiguous().view({batch, -1}))
-#else
             sample_greedy_cuda(logits.contiguous().view({batch, -1}))
-#endif
                 .to(::tyloi::kCPU)
                 .contiguous();
         TYLOINFER_RUNTIME_CHECK(
@@ -407,17 +370,10 @@ BatchOps::Sample BatchOps::sample(const std::shared_ptr<Request>& request,
                                   const Decoded& decoded) {
     const auto slot = static_cast<int64_t>(request->cache.slot());
     if (decoded.greedy_tokens.defined())
-#ifdef TYLOINFER_NATIVE_CUDA
-        return {{}, decoded.greedy_tokens.dense().data_ptr<int64_t>()[slot], {}};
-    auto next = tyloi::engine::sample_logits(*request->sampler, tyloi::ops::slice(decoded.logits, 0, slot, slot + 1),
-                                         request->counts, request->token_constraint);
-    const auto token = tyloi::ops::item(next);
-#else
         return {{}, decoded.greedy_tokens.data_ptr<int64_t>()[slot], {}};
     auto next = tyloi::engine::sample_logits(*request->sampler, decoded.logits.narrow(0, slot, 1),
                                          request->counts, request->token_constraint);
     const auto token = next.item<int64_t>();
-#endif
     return {std::move(next), token, {}};
 }
 
@@ -425,11 +381,7 @@ void BatchOps::accept(const std::shared_ptr<Request>& request, const Sample& sam
     if (request->counts.defined()) {
         TYLOINFER_RUNTIME_CHECK(sample.next.defined(),
                                 "batched greedy sampling cannot update token penalties");
-#ifdef TYLOINFER_NATIVE_CUDA
-        tyloi::ops::add_token_counts(request->counts, tyloi::ops::contiguous(sample.next));
-#else
         sample_token_counts_add_cuda(request->counts, sample.next.contiguous());
-#endif
     }
 }
 

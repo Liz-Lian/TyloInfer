@@ -234,7 +234,7 @@ struct Model : tyloi::models::CausalModel {
 #endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
-    CudaModelPlan plan;
+    ::tyloi::models::Plan plan;
     ::tyloi::Tensor embed;
     ::tyloi::Tensor lm_head;
     CausalConfig config;

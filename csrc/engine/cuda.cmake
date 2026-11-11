@@ -83,15 +83,12 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}/models)
 
-# Remaining legacy bindings are shared by native and optional Torch builds.
 # Library loading calls the model factory and prepares execution resources.
 set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/budget.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/preparation.cpp
-    ${PROJECT_SOURCE_DIR}/engine/generation/cuda.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/decode.cpp
-    ${PROJECT_SOURCE_DIR}/engine/generation/mtp/cuda.cpp
     ${PROJECT_SOURCE_DIR}/engine/engine.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/session/sessions.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/session/cache.cpp
@@ -174,6 +171,8 @@ if(TYLOINFER_BUILD_CLI_TOOLS)
         find_package(Torch REQUIRED)
         add_library(mfq-cuda-torch-engine STATIC
             ${PROJECT_SOURCE_DIR}/engine/models/qwen35/batch_ops.cpp
+            ${PROJECT_SOURCE_DIR}/engine/generation/cuda.cpp
+            ${PROJECT_SOURCE_DIR}/engine/generation/mtp/cuda.cpp
             ${TYLOINFER_CUDA_OP_SOURCES}
             ${TYLOINFER_CUDA_EXECUTION_SOURCES}
             ${TYLOINFER_CUDA_LOADING_SOURCES}

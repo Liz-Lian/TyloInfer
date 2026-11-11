@@ -10,7 +10,7 @@
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #endif
 #include "engine/models/source/model_graph.h"
-#include "engine/models/common/capabilities.h"
+#include "engine/models/metadata.h"
 #include "engine/models/common/attention.h"
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/attention/linear.h"
@@ -83,7 +83,7 @@ struct Model
 #endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
-    CudaModelPlan plan;
+    ::tyloi::models::Plan plan;
     Config config;
     tyloi::models::CausalLmMetadata metadata;
 #ifdef TYLOINFER_NATIVE_CUDA

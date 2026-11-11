@@ -211,6 +211,35 @@ void Engine::drain() {
     if (failure) std::rethrow_exception(failure);
 }
 
+void Engine::reset_idle() {
+    if (!idle_state_) throw std::logic_error("native engine state is already in use");
+    weights_->finish_exchange();
+    if (graph_) graph_->invalidate();
+    idle_state_->release_graphs();
+    for (const auto& [device,bytes] : idle_state_->reset_growth(1))
+        if (bytes) budget_->reserve_kv(device,prefill_budget_add(bytes,std::size_t(64)<<20));
+    idle_state_->reset(1);
+    if (auto* predictor=model_->mtp()) {
+        if (!idle_state_->predictor || !idle_state_->predictor->belongs_to(*predictor))
+            throw std::invalid_argument("predictor state is unavailable or belongs to another model");
+        for (const auto& [device,bytes] : predictor->reset_growth(*idle_state_->predictor,1))
+            if (bytes) budget_->reserve_kv(device,prefill_budget_add(bytes,std::size_t(64)<<20));
+        predictor->reset(*idle_state_->predictor,1);
+    }
+}
+
+void Engine::stop_duplex() {
+    if (!duplex_) return;
+    std::exception_ptr failure;
+    const auto remember=[&] { if (!failure) failure=std::current_exception(); };
+    try { drain(); } catch (...) { remember(); }
+    try { duplex_->stop(); } catch (...) { remember(); }
+    try { drain(); } catch (...) { remember(); }
+    duplex_.reset();
+    try { reset_idle(); } catch (...) { remember(); }
+    if (failure) std::rethrow_exception(failure);
+}
+
 void Engine::unload_model() {
     ready_ = false;
     std::exception_ptr failure;
@@ -221,6 +250,8 @@ void Engine::unload_model() {
         catch (...) { remember(std::current_exception()); }
         std::unique_ptr<tyloi::Executor::Scope> scope;
         try { scope = executor_->enter(); }
+        catch (...) { remember(std::current_exception()); }
+        try { stop_duplex(); }
         catch (...) { remember(std::current_exception()); }
         clear_bindings();
         batch_.reset();
@@ -264,6 +295,45 @@ ControlResult Engine::control_command(ControlRequest request) {
                 batch_ ? batch_->metrics() : Metrics{}, executor_->metrics(), predictor, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
                 executor_->memory(config_.devices), executor_->device(), config_.online_budget);
+        } else if constexpr (std::is_same_v<T, MfqDuplexSessionParams>) {
+            if (!idle_state_) throw std::logic_error("native engine state is already in use");
+            auto next=model_->duplex(*idle_state_);
+            if (!next) throw std::invalid_argument("model has no duplex component");
+            for (const auto& [device,bytes] : next->growth(value,forward_options_))
+                if (bytes) budget_->reserve_kv(device,prefill_budget_add(bytes,std::size_t(64)<<20));
+            const bool restarting=bool(duplex_);
+            stop_duplex();
+            try {
+                if (!restarting) reset_idle();
+                duplex_=std::move(next);
+                duplex_->start(value,forward_options_);
+                drain();
+            } catch (...) {
+                const auto failure=std::current_exception();
+                try { drain(); } catch (...) {}
+                try { stop_duplex(); } catch (...) {}
+                std::rethrow_exception(failure);
+            }
+            return std::monostate{};
+        } else if constexpr (std::is_same_v<T, MfqDuplexStepInput>) {
+            if (!duplex_) throw std::invalid_argument("duplex session is not active");
+            for (const auto& [device,bytes] : duplex_->growth(value,forward_options_))
+                if (bytes) budget_->reserve_kv(device,prefill_budget_add(bytes,std::size_t(64)<<20));
+            try {
+                auto result=duplex_->step(value,forward_options_);
+                drain();
+                return result;
+            } catch (...) {
+                const auto failure=std::current_exception();
+                try { drain(); } catch (...) {}
+                try { stop_duplex(); } catch (...) {}
+                std::rethrow_exception(failure);
+            }
+        } else if constexpr (std::is_same_v<T, engine::StopDuplex>) {
+            if (!duplex_ && !info_.duplex && (!idle_state_ || !model_->duplex(*idle_state_)))
+                throw std::invalid_argument("model has no duplex component");
+            stop_duplex();
+            return std::monostate{};
         } else throw std::invalid_argument("model has no duplex component");
     }, std::move(request));
 }
@@ -273,7 +343,7 @@ bool Engine::can_batch(const EngineRequest& request) const {
         !(request.input.sampling.enable_mtp && model_->mtp());
 }
 
-bool Engine::exclusive() const { return false; }
+bool Engine::exclusive() const { return bool(duplex_); }
 
 void Engine::execute(const std::vector<RequestId>& eligible) {
     if (batch_) batch_->step(eligible);

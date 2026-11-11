@@ -1,4 +1,5 @@
 #include "engine/models/source.h"
+#include "engine/models/load.h"
 #include "engine/ops.h"
 #include "engine/models/qwen35/load.h"
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -314,9 +315,9 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     model.source = std::move(source);
     const auto& source_ref = *model.source;
     model.graph = tyloi::models::graph(source_ref);
-    model.plan = cuda_model_plan(model.graph);
+    model.plan = ::tyloi::models::model_plan(model.graph);
     if (model.graph.component("vision") != nullptr &&
-        model.plan.vision != CudaVisionAdapter::grid_vit)
+        model.plan.vision != ::tyloi::models::Vision::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
 #ifndef TYLOINFER_NATIVE_CUDA
     auto definition = tyloi::models::config_json(source_ref, options.config_path);
@@ -358,7 +359,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
                   << " gpu=" << placed_cpu_layers << '-' << model.config.num_hidden_layers - 1
                   << " cpu_threads=" << mfq_get_num_threads() << std::endl;
     }
-    if (model.plan.vision == CudaVisionAdapter::grid_vit && placed_cpu_layers > 0)
+    if (model.plan.vision == ::tyloi::models::Vision::grid_vit && placed_cpu_layers > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
 
     cpu_layers = placed_cpu_layers;

@@ -19,13 +19,13 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
     auto& cache = execution.weights;
 #endif
     if (!load_optional_components) return {};
-    if ((model.plan.vision != CudaVisionAdapter::none &&
-         model.plan.vision != CudaVisionAdapter::deepseek_v41) ||
-            (model.plan.predictor != CudaPredictorAdapter::none &&
-             model.plan.predictor != CudaPredictorAdapter::deepseek_v41_dspark)) {
+    if ((model.plan.vision != ::tyloi::models::Vision::none &&
+         model.plan.vision != ::tyloi::models::Vision::deepseek_v41) ||
+            (model.plan.predictor != ::tyloi::models::Predictor::none &&
+             model.plan.predictor != ::tyloi::models::Predictor::deepseek_v41_dspark)) {
         throw std::runtime_error("unsupported DeepSeek-V4.1 CUDA component adapter");
     }
-    if (model.plan.vision == CudaVisionAdapter::deepseek_v41) {
+    if (model.plan.vision == ::tyloi::models::Vision::deepseek_v41) {
         model.vision = std::make_unique<deepseek_v41_runtime::Vision>(
             deepseek_v41_runtime::Vision::load(model.source, weights,
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -33,7 +33,7 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
 #endif
                 model.config));
     }
-    if (model.plan.predictor == CudaPredictorAdapter::none) return {};
+    if (model.plan.predictor == ::tyloi::models::Predictor::none) return {};
     TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation() && model.tables.engram_parameters,
         "invalid DeepSeek-V4.1 DSpark model");
     return deepseek_v41_runtime::load_dspark_if_present(

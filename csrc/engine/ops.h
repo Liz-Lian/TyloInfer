@@ -129,9 +129,9 @@ class FfnScope {
 public:
     /** Apply positive batch geometry until the parent policy is restored. */
     explicit FfnScope(std::int64_t rows);
-    /** Select a predictor or stable-slot batch numerical stage. */
-    enum class Role { predictor, batch };
-    /** Run a predictor stage with its default numerical scheduling policy. */
+    /** Select a predictor, independent or stable-slot batch numerical stage. */
+    enum class Role { predictor, batch, independent };
+    /** Run a predictor or independent stage with its numerical scheduling policy. */
     explicit FfnScope(Role role);
     /** Apply stable-slot batch and graph projection scheduling. */
     FfnScope(Role role, bool cached_moe, std::int64_t slots, bool graph);

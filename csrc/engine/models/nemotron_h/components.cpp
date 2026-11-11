@@ -27,15 +27,15 @@ tyloi::models::Info Model::info() const {
 
 MfqModelCapabilities Model::capabilities() const {
     const bool vision = parts && parts->radio_vision.has_value();
-    const auto state = cuda_component_state(graph, plan, vision, mtp() != nullptr);
-    const auto caps = cuda_runtime_capabilities(graph, plan, state, vision, false);
+    const auto state = ::tyloi::models::component_state(graph, plan, vision, mtp() != nullptr);
+    const auto caps = ::tyloi::models::runtime_capabilities(graph, plan, state, vision, false);
     return {graph.architecture, caps.text, caps.image_input, caps.video_input,
         caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
 }
 
 tyloi::engine::Metrics Model::metrics() const {
     const bool vision = parts && parts->radio_vision.has_value();
-    const auto state = cuda_component_state(graph, plan, vision, mtp() != nullptr);
+    const auto state = ::tyloi::models::component_state(graph, plan, vision, mtp() != nullptr);
     return {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
         {"kv_quantization_bits", 0.0}, {"vision_declared", double(state.vision_declared)},
         {"vision_supported", double(state.vision_supported)}, {"vision_available", double(state.vision_available)},
@@ -72,13 +72,13 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
 #endif
     Components result;
     if (!load_optional_components) return result;
-    if ((model.plan.vision != CudaVisionAdapter::none &&
-         model.plan.vision != CudaVisionAdapter::radio) ||
-            (model.plan.predictor != CudaPredictorAdapter::none &&
-             model.plan.predictor != CudaPredictorAdapter::nemotron_h)) {
+    if ((model.plan.vision != ::tyloi::models::Vision::none &&
+         model.plan.vision != ::tyloi::models::Vision::radio) ||
+            (model.plan.predictor != ::tyloi::models::Predictor::none &&
+             model.plan.predictor != ::tyloi::models::Predictor::nemotron_h)) {
         throw std::runtime_error("unsupported Nemotron-H CUDA component adapter");
     }
-    if (model.plan.vision == CudaVisionAdapter::radio) {
+    if (model.plan.vision == ::tyloi::models::Vision::radio) {
         const auto* component = model.graph.component("vision");
         TYLOINFER_RUNTIME_CHECK(component != nullptr,
             "Nemotron-H graph declares a RADIO adapter without a vision component");
@@ -87,7 +87,7 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
         result.radio_vision.emplace(CudaRadioPromptComponent::load(
             weights, vision, component->input_contract, component->position_policy));
     }
-    if (model.plan.predictor == CudaPredictorAdapter::none) return result;
+    if (model.plan.predictor == ::tyloi::models::Predictor::none) return result;
     TYLOINFER_RUNTIME_CHECK(supports_speculation(model), "invalid Nemotron-H predictor model");
     auto predictor = Mtp::load_if_present(
 #ifndef TYLOINFER_NATIVE_CUDA

@@ -17,7 +17,7 @@
 #endif
 #include "engine/models/deepseek_v41/causal_lm.h"
 
-#include "engine/models/common/capabilities.h"
+#include "engine/models/metadata.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
@@ -1344,7 +1344,7 @@ struct Model : tyloi::models::CausalModel {
 #endif
     std::shared_ptr<const tyloi::ModelSource> source;
     tyloi::ModelGraph graph;
-    CudaModelPlan plan;
+    ::tyloi::models::Plan plan;
     ::tyloi::Tensor embed;
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor output_norm;

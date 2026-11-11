@@ -1,8 +1,10 @@
 #pragma once
 
+#ifndef TYLOINFER_NATIVE_CUDA
+
 #include "engine/engine.h"
 #include "engine/models/causal_model.h"
-#include "engine/models/common/capabilities.h"
+#include "engine/models/metadata.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/minicpmo45/components.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
@@ -51,8 +53,8 @@ void describe_model(const Model& model, const Parts& parts, tyloi::engine::Engin
     } else {
         const bool vision = component_vision(model, parts);
         const bool duplex = std::is_same_v<Parts, std::unique_ptr<minicpmo45::Components>> && vision;
-        const auto state = cuda_component_state(model.graph, model.plan, vision, component_predictor(model, parts));
-        const auto caps = cuda_runtime_capabilities(model.graph, model.plan, state, vision || duplex, duplex);
+        const auto state = ::tyloi::models::component_state(model.graph, model.plan, vision, component_predictor(model, parts));
+        const auto caps = ::tyloi::models::runtime_capabilities(model.graph, model.plan, state, vision || duplex, duplex);
         info.multimodal = vision || duplex;
         info.duplex = caps.full_duplex;
         info.capabilities = {model.graph.architecture, caps.text, caps.image_input, caps.video_input,
@@ -75,7 +77,7 @@ tyloi::engine::Metrics component_metrics(const Model& model, const Parts& parts)
         else
             metrics = {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
                        {"kv_quantization_bits", 0.0}};
-        const auto state = cuda_component_state(model.graph, model.plan,
+        const auto state = ::tyloi::models::component_state(model.graph, model.plan,
             component_vision(model, parts), component_predictor(model, parts));
         const auto set = [&](const char* name, double value) {
             for (auto& metric : metrics) if (metric.first == name) { metric.second = value; return; }
@@ -100,3 +102,4 @@ tyloi::engine::Metrics component_metrics(const Model& model, const Parts& parts)
 }
 
 } // namespace tyloi::cuda
+#endif

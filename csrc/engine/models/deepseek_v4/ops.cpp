@@ -302,7 +302,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     Model model;
     model.source = std::move(source);
     model.graph = tyloi::models::graph(*model.source);
-    model.plan = cuda_model_plan(model.graph);
+    model.plan = ::tyloi::models::model_plan(model.graph);
     tyloi::models::require_model(model.graph.backbone == "deepseek_v4",
                                "model backbone does not match the requested causal model");
     auto& c = model.config;
@@ -381,8 +381,8 @@ std::unique_ptr<tyloi::models::CausalModel> load(
     std::int64_t host_bytes = 0;
     load(*model, weights, placement, executor.collectives(), executor.device().index,
          options.cpu_offload_layers, host_bytes, options.gpu_layers);
-    if (model->plan.vision != CudaVisionAdapter::none ||
-        model->plan.predictor != CudaPredictorAdapter::none)
+    if (model->plan.vision != ::tyloi::models::Vision::none ||
+        model->plan.predictor != ::tyloi::models::Predictor::none)
         throw std::runtime_error("CUDA component adapter is unsupported for this model");
     return model;
 }
@@ -407,14 +407,14 @@ tyloi::models::Info Model::info() const {
 }
 
 MfqModelCapabilities Model::capabilities() const {
-    const auto state = cuda_component_state(graph, plan, false, false);
-    const auto caps = cuda_runtime_capabilities(graph, plan, state, false, false);
+    const auto state = ::tyloi::models::component_state(graph, plan, false, false);
+    const auto caps = ::tyloi::models::runtime_capabilities(graph, plan, state, false, false);
     return {graph.architecture, caps.text, caps.image_input, caps.video_input,
         caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
 }
 
 tyloi::engine::Metrics Model::metrics() const {
-    const auto state = cuda_component_state(graph, plan, false, false);
+    const auto state = ::tyloi::models::component_state(graph, plan, false, false);
     return {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
         {"kv_quantization_bits", 0.0}, {"vision_declared", double(state.vision_declared)},
         {"vision_supported", double(state.vision_supported)}, {"vision_available", double(state.vision_available)},

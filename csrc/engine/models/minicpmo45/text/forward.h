@@ -2,15 +2,21 @@
 
 #include "engine/models/minicpmo45/text/model.h"
 #include "engine/models/minicpmo45/text/state.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
+#endif
 #include "engine/models/input.h"
 
 namespace tyloi::cuda::minicpmo45::text {
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor embed(const Model&, Executor&, Collectives&, int primary, const ::tyloi::Tensor& ids, const Executor::Mode& = {});
-::tyloi::Tensor normalize(const Model&, Executor&, const ::tyloi::Tensor& hidden, int64_t batch, int64_t tokens);
-::tyloi::Tensor logits(const Model&, Executor&, const ::tyloi::Tensor& hidden, bool capped = true, const Executor::Mode& = {});
-::tyloi::Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, tyloi::models::Input);
+/** Embed token IDs on the requested primary device. */
+::tyloi::Tensor embed(const Model&, int primary, const ::tyloi::Tensor& ids);
+/** Normalize hidden states for the given batch and token geometry. */
+::tyloi::Tensor normalize(const Model&, const ::tyloi::Tensor&, int64_t batch, int64_t tokens);
+/** Project hidden states to logits. */
+::tyloi::Tensor logits(const Model&, const ::tyloi::Tensor&, bool capped = true);
+/** Run a request using its explicit input and forward policy. */
+::tyloi::Tensor forward(const Model&, State&, tyloi::models::Input, const tyloi::models::ForwardOptions& = {});
 #else
 DenseTensor embed(const Model&, Executor&, Collectives&, int primary, DenseTensor ids, const Executor::Mode& = {});
 DenseTensor normalize(const Model&, Executor&, DenseTensor hidden, int64_t batch, int64_t tokens);

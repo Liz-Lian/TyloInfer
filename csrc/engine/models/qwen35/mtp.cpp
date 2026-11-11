@@ -42,11 +42,7 @@ Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding, tyloi::ops::RopeTable rope,
 }
 #else
 Mtp::Mtp(Predictor model, ::tyloi::Tensor embedding,
-#ifdef TYLOINFER_NATIVE_CUDA
-        tyloi::ops::RopeTable rope,
-#else
         RopeCache rope,
-#endif
         std::unique_ptr<Executor> executor, Collectives& copies,
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate)
@@ -177,11 +173,7 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
     const int device = device_;
     MfqCudaGuard guard(device);
     const FfnMode mode{};
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto executor_scope = executor_->enter(device, mode);
-#else
     auto executor_scope = executor_->enter(device);
-#endif
     const bool explicit_positions = positions.defined();
     auto pos = explicit_positions
         ? copies_.copy(std::move(positions), device).to(::tyloi::kInt64).contiguous()
@@ -199,38 +191,8 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
     };
     auto record = [&](Trace* trace, const char* name, const ::tyloi::DenseTensor& value) {
         if (trace == nullptr) return;
-#ifdef TYLOINFER_NATIVE_CUDA
-        trace->emplace_back(std::string(name),
-            std::make_shared<::tyloi::DenseTensor>(value.to(::tyloi::kFloat32).contiguous().clone()));
-#else
         trace->emplace_back(std::string(name), value.to(::tyloi::kFloat32).contiguous().clone());
-#endif
     };
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor current;
-    {
-        auto normalized_ids = copies_.copy(next_ids.to(::tyloi::kInt64), device_).contiguous();
-        auto embedded = executor_->profiler().measure("model.embed", [&] {
-            return ::tyloi::ops::embedding(::tyloi::Tensor(normalized_ids), embedding_);
-        });
-        auto embedded_dense = embedded.dense().to(::tyloi::kFloat16).contiguous()
-                                  .to(hidden.scalar_type());
-        ::tyloi::Tensor hidden_value(std::move(hidden));
-        ::tyloi::Tensor embedded_value(std::move(embedded_dense));
-        auto embedded_norm = ::tyloi::ops::rms_norm(embedded_value, model_.embedding_norm,
-            config.rms_norm_eps, config.legacy_tensor_layout.norm_weight_offset);
-        auto hidden_norm = ::tyloi::ops::rms_norm(hidden_value, model_.hidden_norm,
-            config.rms_norm_eps, config.legacy_tensor_layout.norm_weight_offset);
-        record(trace_for(0), "mtp.embedding_norm", embedded_norm.dense());
-        record(trace_for(0), "mtp.hidden_norm", hidden_norm.dense());
-        std::array<::tyloi::Tensor, 2> fusion_inputs{embedded_norm, hidden_norm};
-        current = ::tyloi::ops::project(::tyloi::ops::cat(fusion_inputs, -1), model_.fusion);
-        record(trace_for(0), "mtp.fusion", current.dense());
-    }
-
-    AttentionStep attention;
-    attention.positions = pos;
-#else
     auto project = executor_->projector(mode);
     ::tyloi::DenseTensor current;
     {
@@ -256,7 +218,6 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
 
     AttentionStep attention;
     attention.positions = pos;
-#endif
     attention.cache_position = state.position();
     if (tokens == 1 && state.position() > 0)
         attention.sequence_lengths = ::tyloi::cuda::full({batch}, state.position() + 1, pos.options());
@@ -269,15 +230,6 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
         TYLOINFER_RUNTIME_CHECK(!layer.ffn.is_moe &&
             (!layer.ffn.important_neurons || !layer.ffn.important_neurons->is_moe),
             "Qwen MTP requires dense predictor projections");
-#ifdef TYLOINFER_NATIVE_CUDA
-        auto attention_output = full_attention.forward(current, attention, kv[index], rope_,
-            trace_for(full_attention.layer));
-        current = ::tyloi::models::full_ffn(
-            layer.ffn, layer.ffn_norm, attention_output[0], attention_output[1],
-            full_attention.rms_norm_eps, full_attention.norm_weight_offset,
-            full_attention.official_bf16, full_attention.attention_output_gate,
-            trace_for(full_attention.layer));
-#else
         auto attention_output = full_attention.forward(project, executor_->profiler(),
             executor_->attention_options(), std::move(current), attention, kv[index],
             executor_->attention_scratch(index), rope_, trace_for(full_attention.layer));
@@ -286,20 +238,12 @@ tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value, const ::tyloi::
             std::move(attention_output[1]), full_attention.rms_norm_eps,
             full_attention.norm_weight_offset, full_attention.official_bf16,
             full_attention.attention_output_gate, trace_for(full_attention.layer)).dense();
-#endif
     }
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto output = ::tyloi::ops::rms_norm(current, model_.output_norm, config.rms_norm_eps,
-        config.legacy_tensor_layout.norm_weight_offset);
-    record(trace_for(0), "mtp.output_norm", output.dense());
-    auto result = output.dense();
-#else
     auto output = qwen_rms_norm(
         current.reshape({-1, current.size(-1)}).to(::tyloi::kFloat32), model_.output_norm,
         config.rms_norm_eps, config.legacy_tensor_layout.norm_weight_offset).reshape_as(current);
     record(trace_for(0), "mtp.output_norm", output);
     auto result = std::move(output);
-#endif
     state.advance(tokens);
     return result;
 }

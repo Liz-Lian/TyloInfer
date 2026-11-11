@@ -352,9 +352,11 @@ FfnScope::FfnScope(std::int64_t rows) {
     impl_->scope = cuda::Executor::current().enter(policy);
 }
 FfnScope::FfnScope(Role role) {
-    if (role != Role::predictor) throw std::invalid_argument("invalid FFN stage");
+    if (role != Role::predictor && role != Role::independent) throw std::invalid_argument("invalid FFN stage");
+    auto policy = role == Role::predictor ? cuda::FfnMode{} : cuda::Executor::current_ffn();
+    if (role == Role::independent) policy.independent = true;
     impl_ = std::make_unique<Impl>();
-    impl_->scope = cuda::Executor::current().enter(cuda::FfnMode{});
+    impl_->scope = cuda::Executor::current().enter(policy);
 }
 FfnScope::FfnScope(Role role, bool cached_moe, std::int64_t slots, bool graph) {
     if (role != Role::batch || slots <= 0) throw std::invalid_argument("invalid FFN batch stage");

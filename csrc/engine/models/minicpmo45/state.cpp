@@ -1,14 +1,22 @@
 #include "engine/models/minicpmo45/state.h"
 #include "engine/models/session/snapshot.h"
+#include "engine/models/session/state.h"
 #include "engine/models/minicpmo45/model.h"
 
+#include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace tyloi::cuda::minicpmo45 {
 
 State::State(const Model& model)
-    : layers(model.layers.size()), maximum_(model.metadata.max_position_embeddings) {
+    : layers(model.layers.size())
+#ifdef TYLOINFER_NATIVE_CUDA
+    , model_(&model)
+#endif
+    , maximum_(model.metadata.max_position_embeddings)
+{
     for (const auto& layer : model.layers)
         layout_.push_back({layer.device, layer.cpu, layer.attention.kv_heads,
             layer.attention.attention_head_dim, layer.attention.max_position_embeddings});
@@ -97,7 +105,11 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
     const auto& saved = std::get<std::vector<KvSnapshot>>(state.payload);
     for (size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
+#ifdef TYLOINFER_NATIVE_CUDA
+        stage_kv(restore.layers[index], saved[index], layout_[index].head_dim, ::tyloi::kFloat16, {});
+#else
         restore_kv(restore.layers[index], saved[index], layout_[index].head_dim, ::tyloi::kFloat16, {});
+#endif
     }
 }
 
@@ -107,5 +119,52 @@ void State::publish(Restore&& restore) noexcept {
     decode_position_delta = restore.decode_position_delta;
     batch = 1;
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace {
+void add_growth(std::vector<std::pair<Device,std::size_t>>& values,Device device,std::size_t bytes) {
+    if (!device.is_cuda() || !bytes) return;
+    auto it=std::find_if(values.begin(),values.end(),[&](const auto& item){return item.first==device;});
+    if (it==values.end()) values.emplace_back(device,bytes);
+    else { if (it->second>std::numeric_limits<std::size_t>::max()-bytes) throw std::overflow_error("MiniCPM state growth overflow"); it->second+=bytes; }
+}
+}
+std::vector<std::pair<Device,std::size_t>> State::reset_growth(std::int64_t batch) const {
+    if (batch<=0) throw std::invalid_argument("MiniCPM batch must be positive");
+    return {};
+}
+std::vector<std::pair<Device,std::size_t>> State::growth(std::int64_t next_batch,std::int64_t tokens,
+        const tyloi::models::ForwardOptions& options,std::int64_t confirmed) const {
+    if (next_batch<=0 || tokens<=0 || confirmed!=0 || cache_pos<0 ||
+        tokens>maximum_ || cache_pos>maximum_-tokens || (cache_pos>0 && batch!=next_batch))
+        throw std::invalid_argument("invalid MiniCPM forward geometry");
+    std::vector<std::pair<Device,std::size_t>> result;
+    for (std::size_t i=0;i<layers.size();++i) {
+        const auto& l=layout_[i];
+        if (layers[i].defined() && (cache_pos!=0 || layers[i].batch==next_batch)) continue;
+        const auto capacity=false ? l.capacity : (options.kv_capacity>0 ? std::max(cache_pos+tokens,options.kv_capacity) : l.capacity);
+        const Device device(l.cpu?kCPU:kCUDA,l.cpu?-1:l.device);
+        add_growth(result,device,tyloi::state::kv_bytes(next_batch,l.heads,capacity,l.head_dim,false,kFloat16,{}));
+    }
+    return result;
+}
+std::unique_ptr<tyloi::models::Restore> State::prepare_restore(const TextSessionState& snapshot) {
+    struct Candidate final : tyloi::models::Restore {
+        State& owner; TextSessionState snapshot; State::Restore candidate;
+        Candidate(State& state,const TextSessionState& value) : owner(state),snapshot(value),candidate(state.prepare(snapshot)) {}
+        std::vector<std::pair<Device,std::size_t>> growth() const override {
+            std::vector<std::pair<Device,std::size_t>> result;
+            for (const auto& kv:std::get<std::vector<KvSnapshot>>(snapshot.payload)) {
+                add_growth(result,kv.k.device(),restore_prefix_bytes({},kv.k,2,kv.capacity));
+                add_growth(result,kv.v.device(),restore_prefix_bytes({},kv.v,2,kv.capacity));
+            }
+            return result;
+        }
+        void stage() override { owner.stage(candidate,snapshot); }
+        void publish() noexcept override { owner.publish(std::move(candidate)); }
+    };
+    return std::make_unique<Candidate>(*this,snapshot);
+}
+#endif
 
 } // namespace tyloi::cuda::minicpmo45

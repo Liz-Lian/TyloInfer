@@ -1,4 +1,5 @@
 #include "engine/backends/cuda/native/collectives.h"
+#include "engine/models/load.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/models/session/snapshot.h"
 #include "engine/ops.h"
@@ -721,11 +722,11 @@ template <class MambaWeights> void convert_mamba_weights(MambaWeights& block) {
 
 void validate_components(const tyloi::ModelGraph& graph) {
     if (graph.component("vision") != nullptr &&
-        cuda_model_plan(graph).vision != CudaVisionAdapter::radio)
+        ::tyloi::models::model_plan(graph).vision != ::tyloi::models::Vision::radio)
         throw std::runtime_error(
             "Nemotron-H CUDA vision requires the radio/radio_cpe.v1 vision component");
     if (graph.component("predictor") != nullptr &&
-        cuda_model_plan(graph).predictor != CudaPredictorAdapter::nemotron_h)
+        ::tyloi::models::model_plan(graph).predictor != ::tyloi::models::Predictor::nemotron_h)
         throw std::runtime_error(
             "Nemotron-H CUDA multi-token prediction requires the nemotron_h_mtp predictor "
             "implementation under the predictor tensor root");
@@ -771,7 +772,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     Model model;
     model.source = std::move(source);
     model.graph = tyloi::models::graph(*model.source);
-    model.plan = cuda_model_plan(model.graph);
+    model.plan = ::tyloi::models::model_plan(model.graph);
     tyloi::models::require_model(model.graph.backbone == "nemotron_h",
                                "model backbone does not match the requested causal model");
     tyloi::models::nemotron_h::load_config(definition, model.graph, model.config, model.metadata);

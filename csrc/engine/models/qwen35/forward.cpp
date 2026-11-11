@@ -177,106 +177,45 @@ void replay(const Model& model,State& state,std::int64_t accepted) {
     state.rollback_speculative(accepted);
 }
 #else
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
-    auto ids = ids_handle.dense();
-#else
 DenseTensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, DenseTensor ids, const Executor::Mode& mode) {
-#endif
     auto normalized = normalize_ids(collectives, primary, std::move(ids));
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
-    auto result = tyloi::ops::measure("model.embed", normalized.device(), [&] {
-        return tyloi::ops::embedding(::tyloi::Tensor(std::move(normalized)), model.embed);
-    });
-    return tyloi::ops::contiguous(tyloi::ops::cast(result, tyloi::ScalarType::float16));
-#else
     return ::tyloi::cuda::embed(model.embed, std::move(normalized), collectives,
                                 executor.profiler(), primary)
         .to(::tyloi::kFloat16).contiguous();
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle,
-                 std::int64_t batch, std::int64_t tokens) {
-    auto hidden = hidden_handle.dense();
-#else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden,
                  std::int64_t batch, std::int64_t tokens) {
-#endif
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
-    return tyloi::ops::measure("model.output_norm", hidden.device(), [&] {
-        return tyloi::ops::rms_norm(::tyloi::Tensor(std::move(hidden)), model.output_norm,
-                                    model.metadata.rms_norm_eps,
-                                    model.metadata.norm_weight_offset);
-    });
-#else
     return executor.profiler().measure("model.output_norm", [&] {
         return qwen_rms_norm(hidden.reshape({-1, hidden.size(-1)}).to(::tyloi::kFloat32),
                              model.output_norm, model.metadata.rms_norm_eps,
                              model.metadata.norm_weight_offset)
             .reshape(hidden.sizes());
     });
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& logits_handle) {
-#else
 DenseTensor softcap(const Model& model, Executor& executor, DenseTensor logits) {
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
-    return tyloi::ops::softcap(logits_handle, model.metadata.final_logit_softcapping);
-#else
     return ::tyloi::cuda::ops::softcap(std::move(logits), model.metadata.final_logit_softcapping);
-#endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& hidden_handle, bool capped,
-              const Executor::Mode& mode) {
-    auto hidden = hidden_handle.dense();
-#else
 DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, bool capped,
               const Executor::Mode& mode) {
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
-    auto result = tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
-        return tyloi::ops::project(::tyloi::Tensor(std::move(hidden)), model.lm_head);
-    });
-    return capped ? tyloi::ops::softcap(result, model.metadata.final_logit_softcapping)
-                  : result;
-#else
     auto project = executor.projector(mode.ffn);
     return ::tyloi::cuda::logits(model.lm_head, std::move(hidden), project,
                                  executor.profiler(),
                                  capped ? model.metadata.final_logit_softcapping : 0.0);
-#endif
 }
 
 namespace {
 
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor forward_impl(const Model& model, State& state, Executor& executor,
-#else
 DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
-#endif
                     Collectives& collectives, const Executor::Mode& options, DenseTensor ids,
                     DenseTensor embeddings, std::optional<DenseTensor> positions,
                     std::optional<DenseTensor> lengths, tyloi::models::Input::Trace* trace,
                     bool advance, std::optional<DenseTensor> cache_positions,
-#ifdef TYLOINFER_NATIVE_CUDA
-                    ::tyloi::Tensor* raw_hidden,
-#else
                     DenseTensor* raw_hidden,
-#endif
                     std::int64_t confirmed, std::int64_t kv_length,
                     std::int64_t attention_parts) {
     ids = normalize_ids(collectives, options.primary, std::move(ids));
@@ -327,11 +266,7 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
                                : physical + state.decode_position_delta);
     semantic = semantic.contiguous();
     const auto rank = semantic.dim();
-#ifdef TYLOINFER_NATIVE_CUDA
-    const bool has_mrope = model.rope.sections && model.rope.sections.numel() > 0;
-#else
     const bool has_mrope = model.rope.sections.numel() > 0;
-#endif
     require_forward(
         Config::valid_positions(rank, rank > 1 ? semantic.size(0) : 0,
                                 semantic.size(-1), B, T,
@@ -347,14 +282,8 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
     std::optional<DenseTensor> physical_for_layers;
     if (has_mrope || positions.has_value() || cache_positions.has_value())
         physical_for_layers = physical;
-#ifdef TYLOINFER_NATIVE_CUDA
-    AttentionStep step{semantic, lengths ? ::tyloi::Tensor(*lengths) : ::tyloi::Tensor{},
-                       physical_for_layers ? ::tyloi::Tensor(*physical_for_layers) : ::tyloi::Tensor{},
-                       state.cache_pos, kv_length, attention_parts};
-#else
     AttentionStep step{semantic, lengths ? MfqOptional<DenseTensor>(*lengths) : mfq_nullopt,
                        physical_for_layers, state.cache_pos, kv_length, attention_parts};
-#endif
     auto hidden = collectives.copy(std::move(embeddings), options.primary).contiguous();
     if (trace)
         trace->push_back(collectives.copy(hidden, options.primary)
@@ -373,16 +302,9 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
                 const auto it = model.device_ropes.find(layer.device);
                 if (it != model.device_ropes.end()) active_rope = &it->second;
             }
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto scope = executor.enter(layer.device, options.ffn);
-            hidden = forward_layer(layer, state.layers[index], std::move(hidden), step,
-                                   confirmed, *active_rope,
-                                   {options.kv_capacity, options.trace, options.trace_layer, options.primary});
-#else
             hidden = forward_layer(collectives, layer, state.layers[index], executor,
                                    2 * index, std::move(hidden), step, confirmed,
                                    *active_rope, options);
-#endif
             if (trace)
                 trace->push_back(collectives.copy(hidden, options.primary)
                                      .to(::tyloi::kFloat32)
@@ -403,29 +325,14 @@ DenseTensor forward_impl(const Model& model, State& state, Executor& executor,
 
 } // namespace
 
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
-               const Executor::Mode& options, tyloi::models::Input input) {
-#else
 DenseTensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& options, tyloi::models::Input input) {
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
-    require_forward(state.belongs_to(model), "Qwen3.5 state belongs to another model");
-    auto ids = normalize_ids(collectives, options.primary, input.ids.dense());
-    auto embeddings = input.embeddings ? input.embeddings.dense()
-        : embed(model, executor, collectives, options.primary, ids, options).dense();
-    auto positions = input.positions ? std::optional<DenseTensor>(input.positions.dense()) : std::nullopt;
-    auto lengths = input.lengths ? std::optional<DenseTensor>(input.lengths.dense()) : std::nullopt;
-    auto cache_positions = input.cache_positions ? std::optional<DenseTensor>(input.cache_positions.dense()) : std::nullopt;
-#else
     auto ids = normalize_ids(collectives, options.primary, std::move(input.ids));
     auto embeddings = input.embeddings ? *input.embeddings
         : embed(model, executor, collectives, options.primary, ids, options);
     auto positions = std::move(input.positions);
     auto lengths = std::move(input.lengths);
     auto cache_positions = std::move(input.cache_positions);
-#endif
     return forward_impl(model, state, executor, collectives, options, std::move(ids),
                         std::move(embeddings), std::move(positions),
                         std::move(lengths), input.trace, input.advance,
@@ -443,9 +350,6 @@ bool supports_speculation(const Model& model) noexcept {
 }
 
 void replay(const Model& model, State& state, Executor& executor, std::int64_t accepted) {
-#ifdef TYLOINFER_NATIVE_CUDA
-    require_forward(state.belongs_to(model), "Qwen3.5 state belongs to another model");
-#endif
     require_forward(state.speculative_start >= 0 && accepted >= 0,
                     "no speculative transaction");
     try {
@@ -456,18 +360,11 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
             MfqCudaGuard guard(model.layers[index].device);
             const auto* layer = std::get_if<Linear>(&model.layers[index].weights);
             require_forward(layer != nullptr, "Qwen3.5 recurrent layer weight kind mismatch");
-#ifdef TYLOINFER_NATIVE_CUDA
-            layer->attention->replay(linear->attention, keep - state.speculative_start);
-#else
             auto& state_view = linear->mixer.view();
             const LinearView linear_view{
                 state_view.convolution.dense(), state_view.recurrent.dense(), state_view.transposed};
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
-#endif
             layer->attention.replay(linear_view, linear->projected,
                                     keep - state.speculative_start);
-#endif
         }
         state.commit_speculative();
         state.cache_pos = keep;
@@ -528,11 +425,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Tensor input,
 DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& state,
                      tyloi::cuda::Executor& executor, std::size_t scratch_offset, DenseTensor input,
                      const AttentionStep& step, std::int64_t confirmed_prefix,
-#ifdef TYLOINFER_NATIVE_CUDA
-                     const tyloi::ops::RopeTable& rope,
-#else
                      const RopeCache& rope,
-#endif
                      const Executor::Mode& options) {
     MfqCudaGuard guard(layer.device);
     auto local_step = layer_step(collectives, layer, step);
@@ -543,9 +436,6 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
                                 options.trace_layer == full->attention.layer
                             ? options.trace
                             : nullptr;
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto scope = executor.enter(mfq_current_cuda_device(), options.ffn);
-#endif
     if (full != nullptr) {
         auto* cache = std::get_if<tyloi::state::KvView>(&state);
         require_forward(cache != nullptr, "Qwen3.5 full layer state kind mismatch");
@@ -566,14 +456,6 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
                 attention.kv_quantization);
         }
         cache->quantization = attention.kv_quantization;
-#ifdef TYLOINFER_NATIVE_CUDA
-        auto output = attention.forward(::tyloi::Tensor(std::move(input)), local_step, *cache,
-                                        rope, trace);
-        return ::tyloi::models::full_ffn(
-            full->ffn, full->ffn_norm, output[0], output[1],
-            attention.rms_norm_eps, attention.norm_weight_offset,
-            attention.official_bf16, attention.attention_output_gate, trace).dense();
-#else
         auto output = attention.forward(executor.projector(options.ffn), executor.profiler(),
                                         executor.attention_options(), std::move(input), local_step,
                                         *cache, executor.attention_scratch(scratch_offset), rope,
@@ -582,7 +464,6 @@ DenseTensor forward_layer(Collectives& collectives, const Layer& layer, LayerSta
             full->ffn, full->ffn_norm, std::move(output[0]), std::move(output[1]),
             attention.rms_norm_eps, attention.norm_weight_offset,
             attention.official_bf16, attention.attention_output_gate, trace).dense();
-#endif
     }
     const auto* linear = std::get_if<Linear>(&layer.weights);
     auto* linear_state = std::get_if<LinearState>(&state);

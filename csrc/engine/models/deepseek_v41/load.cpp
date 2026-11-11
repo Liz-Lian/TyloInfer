@@ -42,7 +42,7 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> model_source,
     const auto& source = *model.source;
     validate_model_source(source);
     model.graph = tyloi::models::graph(source);
-    model.plan = cuda_model_plan(model.graph);
+    model.plan = ::tyloi::models::model_plan(model.graph);
     require_model(Model::accepts_backbone(model.graph.backbone),
                   "model backbone does not match the requested causal model");
     model.load_config(definition);

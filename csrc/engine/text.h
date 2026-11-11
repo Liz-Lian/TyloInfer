@@ -1,16 +1,16 @@
 #pragma once
 
+#ifndef TYLOINFER_NATIVE_CUDA
+
 #include "env.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "engine/drain.h"
 #include "engine/models/common/components.h"
-#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/batch.h"
 #include "engine/models/qwen4_exp/components.h"
 #include "engine/models/qwen4_exp/batch.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/nemotron_h/components.h"
-#endif
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/models/metadata.h"
@@ -101,7 +101,6 @@ struct Text {
     }
 
     void release_request_resources() noexcept {
-#ifndef TYLOINFER_NATIVE_CUDA
         if constexpr (std::is_same_v<Model, qwen4_exp::Model>) {
             if (component_predictor(language, components)) {
                 try {
@@ -110,7 +109,6 @@ struct Text {
                 }
             }
         }
-#endif
         try {
             graph.invalidate();
         } catch (...) {
@@ -150,20 +148,14 @@ struct Text {
                 state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
         try {
-#ifdef TYLOINFER_NATIVE_CUDA
-        root_executor.configure_kv(kv, offload);
-        executor->configure_kv(kv, offload);
-#endif
         budget.emplace(*weight_memory, weights, cache, root_executor);
         if (offload) offload->bind_budget(&*budget);
         if (config.continuous_batch.max_sequences) {
-#ifndef TYLOINFER_NATIVE_CUDA
             if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
                 batching = make_batch(language, *execution, *budget, config.continuous_batch,
                     config.generation.prefill_chunk_size);
             }
             else
-#endif
             {
                 auto batch_config = config.continuous_batch;
                 batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution->config, execution->executor(), execution->weights);
@@ -178,20 +170,15 @@ struct Text {
                     execution->config.weights.min_slots);
             }
         }
-#ifdef TYLOINFER_NATIVE_CUDA
-        budget->bind(component_predictor(language, components) != nullptr);
-#endif
         if(const auto bytes=::tyloi::cuda::options::resident_budget_bytes()) {
             SessionCommand command;
             command.kind=SessionCommand::Kind::memory_budget;
             command.bytes=bytes;
             session(command);
         }
-#ifndef TYLOINFER_NATIVE_CUDA
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             qwen4_warmup_decode_graphs(language,state);
         }
-#endif
         weights.prepare(::tyloi::weights::Cache::Stage::loaded,
             tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()), source.get());
         } catch (...) {
@@ -208,11 +195,9 @@ struct Text {
         }
     }
     bool can_batch(const EngineRequest& request) const {
-#ifndef TYLOINFER_NATIVE_CUDA
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>)
             return batching && !request.input.media && request.input.cache_plan.session_id.empty() &&
                 !(request.input.sampling.enable_mtp && component_predictor(language, components));
-#endif
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), mtp_available());
     }
     void clear_bindings() noexcept {
@@ -231,24 +216,13 @@ struct Text {
         auto change = budget->change(command);
         weights.settle();
         graph.invalidate();
-#ifndef TYLOINFER_NATIVE_CUDA
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>) {
             qwen4_release_decode_graphs(language,state);
         }
-#endif
         if(batching)batching->release_idle_buffers();
         if(auto* mtp=component_predictor(language, components)) {
-#ifdef TYLOINFER_NATIVE_CUDA
-            for (const auto& [device, bytes] : mtp->reset_growth(predictor_state(), 1))
-                if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
-#endif
             mtp->reset(predictor_state(), 1);
         }
-#ifdef TYLOINFER_NATIVE_CUDA
-        if constexpr (std::derived_from<State, tyloi::models::State>)
-            for (const auto& [device, bytes] : state.reset_growth(1))
-                if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
-#endif
         state.reset(1);
         return change.apply();
     }
@@ -271,31 +245,19 @@ struct Text {
             if constexpr (requires { parts.profile_metrics(model,state); })
                 profile_metrics = parts.profile_metrics(model,state);
             std::optional<Metrics> memory;
-#ifdef TYLOINFER_NATIVE_CUDA
-            if constexpr (std::derived_from<State, tyloi::models::State>) memory = state.metrics();
-#else
             if constexpr (requires { parts.memory_metrics(model,state); })
                 memory = parts.memory_metrics(model,state);
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
-            const bool streamed_kv = info.streamed_kv;
-#else
             const bool streamed_kv = [] {
                 if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
                 else return false;
             }();
-#endif
             const auto* mtp = component_predictor(model, parts);
             const auto batch_metrics = batching ? batching->metrics() : Metrics{};
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto execution_metrics = root_executor.metrics();
-#else
             auto execution_metrics = kv ? kv->metrics() : Metrics{};
             if (offload) {
                 const auto values = offload->metrics();
                 execution_metrics.insert(execution_metrics.end(), values.begin(), values.end());
             }
-#endif
             Metrics predictor_metrics;
             if (mtp) {
                 tyloi::engine::mtp::append_generation_metrics(predictor_metrics, mtp_state.stats);
@@ -331,3 +293,4 @@ struct Text {
 };
 
 } // namespace tyloi::cuda::engine_detail
+#endif

@@ -26,11 +26,7 @@ struct BatchRequest : tyloi::engine::BatchRequest {
     using tyloi::engine::BatchRequest::BatchRequest;
 
     std::optional<Sampler> sampler;
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor counts;
-#else
     ::tyloi::DenseTensor counts;
-#endif
     ::tyloi::DenseTensor prefill_ids;
     std::vector<std::unique_ptr<internal::PrefillCudaTimer>> prefill_timers;
     RequestState cache;
@@ -43,11 +39,7 @@ class BatchOps {
     using State = tyloi::engine::BatchState<Request>;
     using Sample = tyloi::models::BatchSample;
     struct Decoded {
-#ifdef TYLOINFER_NATIVE_CUDA
-        ::tyloi::Tensor logits, greedy_tokens;
-#else
         DenseTensor logits, greedy_tokens;
-#endif
     };
 
     // Calls run inside the owner's CUDA device/context scope.

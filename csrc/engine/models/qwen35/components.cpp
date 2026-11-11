@@ -43,7 +43,7 @@ tyloi::engine::Metrics Components::metrics() const {
 void Components::describe(tyloi::engine::EngineInfo& info) const {
     const auto component_state = state();
     info.multimodal = component_state.vision_available;
-    const auto caps = cuda_runtime_capabilities(
+    const auto caps = ::tyloi::models::runtime_capabilities(
         graph, plan, component_state, info.multimodal, false);
     info.duplex = caps.full_duplex;
     info.capabilities = {graph.architecture, caps.text,
@@ -114,7 +114,7 @@ Components Components::load(
         cache.transfer() == ::tyloi::weights::Cache::Transfer::automatic;
 #endif
 
-    if (components.plan.vision == CudaVisionAdapter::grid_vit) {
+    if (components.plan.vision == ::tyloi::models::Vision::grid_vit) {
         const auto* component = components.graph.component("vision");
         const auto& config = model.config;
         if (component == nullptr || !config.grid_vision ||
@@ -131,11 +131,11 @@ Components Components::load(
                 *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
-    } else if (components.plan.vision != CudaVisionAdapter::none) {
+    } else if (components.plan.vision != ::tyloi::models::Vision::none) {
         throw std::runtime_error("CUDA vision adapter is unsupported for Qwen");
     }
 
-    if (components.plan.predictor == CudaPredictorAdapter::qwen35) {
+    if (components.plan.predictor == ::tyloi::models::Predictor::qwen35) {
         if (mtp_allowed && model.metadata.num_experts == 0 &&
             supports_speculation(model)) {
             TransformerWeightLoader loader{weights};
@@ -158,7 +158,7 @@ Components Components::load(
             std::cerr
                 << "qwen_mtp unavailable: CUDA adapter requires dense GPU-resident Qwen blocks\n";
         }
-    } else if (components.plan.predictor != CudaPredictorAdapter::none) {
+    } else if (components.plan.predictor != ::tyloi::models::Predictor::none) {
         throw std::runtime_error("CUDA predictor adapter is unsupported for Qwen");
     }
     return components;

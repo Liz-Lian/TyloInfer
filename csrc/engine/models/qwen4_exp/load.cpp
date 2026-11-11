@@ -361,7 +361,7 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> model_source,
     const auto& source = *model.source;
     validate_model_source(source);
     model.graph = tyloi::models::graph(source);
-    model.plan = cuda_model_plan(model.graph);
+    model.plan = ::tyloi::models::model_plan(model.graph);
     require_model(Model::accepts_backbone(model.graph.backbone),
                   "model backbone does not match the requested causal model");
     model.load_config(definition);
@@ -393,7 +393,7 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
         std::cerr << "dense_layer_placement cpu=0-" << cpu_layers-1 << " gpu=" << cpu_layers << '-'
                   << model.num_hidden_layers()-1 << " cpu_threads=" << mfq_get_num_threads() << std::endl;
     }
-    if (model.plan.vision == CudaVisionAdapter::grid_vit && cpu_layers > 0)
+    if (model.plan.vision == ::tyloi::models::Vision::grid_vit && cpu_layers > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     constexpr auto embedding = "model.token_embedding.weight";
     constexpr auto output = "model.output.weight";
@@ -449,7 +449,7 @@ void load(Model& model, CudaExecutionContext& execution, std::int64_t context_si
         }
     }
     CudaScope model_guard(execution.config.layer_placement.primary_device(), execution.executor().contexts());
-    if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.config.dense_cpu_layer_count > 0)
+    if (model.plan.vision == ::tyloi::models::Vision::grid_vit && execution.config.dense_cpu_layer_count > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     auto tensors = execution.weights.loader(*model.source, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,

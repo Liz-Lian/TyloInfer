@@ -6,6 +6,7 @@
 #include "engine/models/input.h"
 #include "engine/models/state.h"
 #include "engine/models/batch.h"
+#include "engine/models/duplex.h"
 #include "engine/generation/sequence.h"
 
 #include <cstdint>
@@ -35,6 +36,8 @@ public:
     virtual tyloi::StepSequence<Decoded> warmup(State&, DecodeOptions) const { return {}; }
     /** Create supported batch computation, or return null for single-request execution. */
     virtual std::unique_ptr<Batch> batch(const BatchConfig&, State* serial = nullptr) { return {}; }
+    /** Create a cold duplex session borrowing the supplied request state, if supported. */
+    virtual std::unique_ptr<Duplex> duplex(State&) const { return {}; }
     /** Prefetch rows for host token IDs using the supplied owning request state. */
     virtual bool prefetch(State&, const Tensor&) const { return false; }
     /** Prepare supported media for the owning request, yielding progress and owned Tensor payloads. */

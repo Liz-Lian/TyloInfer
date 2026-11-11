@@ -309,7 +309,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     Model model;
     model.source = std::move(source);
     model.graph = tyloi::models::graph(*model.source);
-    model.plan = cuda_model_plan(model.graph);
+    model.plan = ::tyloi::models::model_plan(model.graph);
     tyloi::models::require_model(model.graph.backbone == "glm_dsa",
                                "model backbone does not match the requested causal model");
     auto& c = model.config;
@@ -397,7 +397,7 @@ std::unique_ptr<tyloi::models::CausalModel> load(
         throw std::invalid_argument("GLM DSA does not support --cpu-offload-layers");
     auto model = std::make_unique<Model>(read(std::move(source), definition, options.context));
     load(*model, weights, placement, options.gpu_layers, true, true, options.yarn);
-    if (model->plan.vision != CudaVisionAdapter::none || model->plan.predictor != CudaPredictorAdapter::none)
+    if (model->plan.vision != ::tyloi::models::Vision::none || model->plan.predictor != ::tyloi::models::Predictor::none)
         throw std::runtime_error("CUDA component adapter is unsupported for this model");
     return model;
 }
@@ -414,7 +414,7 @@ MfqModelCapabilities Model::capabilities() const {
 }
 
 tyloi::engine::Metrics Model::metrics() const {
-    const auto state = cuda_component_state(graph, plan, false, false);
+    const auto state = ::tyloi::models::component_state(graph, plan, false, false);
     return {{"kv_memory_supported", 0.0}, {"kv_quantization_supported", 0.0},
         {"kv_quantization_bits", 0.0}, {"vision_declared", double(state.vision_declared)},
         {"vision_supported", double(state.vision_supported)}, {"vision_available", 0.0},

@@ -1,7 +1,9 @@
 #pragma once
 
 #include "engine/backends/cuda/ops/vision/attention.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/projection/bias.h"
+#endif
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/weights/format.h"
 #include "engine/weights/loader.h"
@@ -28,8 +30,12 @@ inline ::tyloi::DenseTensor
 minicpmo45_embedding(const ::tyloi::Tensor &embedding, ::tyloi::DenseTensor ids,
                      ::tyloi::ScalarType output_dtype = ::tyloi::kBFloat16) {
     ids = ids.contiguous().to(::tyloi::kCUDA, ::tyloi::kInt64);
+#ifdef TYLOINFER_NATIVE_CUDA
+    return tyloi::ops::contiguous(tyloi::ops::cast(tyloi::ops::embedding(ids, embedding), output_dtype)).dense();
+#else
     auto output = quant_embedding_lookup(embedding, ids);
     return output.to(output_dtype).contiguous();
+#endif
 }
 
 inline ::tyloi::DenseTensor minicpmo45_layer_norm(
@@ -67,7 +73,10 @@ struct MiniCPMO45VisionEncoder {
         double layer_norm_eps = 1e-6;
 
         ::tyloi::DenseTensor forward(
-                const tyloi::cuda::Projector& projector, ::tyloi::DenseTensor input,
+#ifndef TYLOINFER_NATIVE_CUDA
+                const tyloi::cuda::Projector& projector,
+#endif
+                ::tyloi::DenseTensor input,
                 MfqOptional<::tyloi::DenseTensor> mask = mfq_nullopt) const {
             using DenseTensor = ::tyloi::DenseTensor;
             if (heads <= 0 || head_dim <= 0) {
@@ -80,24 +89,40 @@ struct MiniCPMO45VisionEncoder {
             };
             const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
 #ifdef TYLOINFER_NATIVE_CUDA
-            auto normalized = minicpmo45_layer_norm(input, *norm1_weight, *norm1_bias, layer_norm_eps);
+            auto normalized = minicpmo45_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
 #else
             auto normalized = minicpmo45_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto q = split_heads(tyloi::ops::linear(normalized, query.weight, query.bias).dense());
+            auto k = split_heads(tyloi::ops::linear(normalized, key.weight, key.bias).dense());
+            auto v = split_heads(tyloi::ops::linear(normalized, value.weight, value.bias).dense());
+#else
             auto q = split_heads(tyloi::cuda::biased(projector, query, normalized));
             auto k = split_heads(tyloi::cuda::biased(projector, key, normalized));
             auto v = split_heads(tyloi::cuda::biased(projector, value, normalized));
+#endif
             auto attended = tyloi::cuda::vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto branch = tyloi::ops::linear(attended.transpose(1, 2).reshape(
+                {batch, tokens, heads * head_dim}), output.weight, output.bias).dense();
+#else
             auto branch = tyloi::cuda::biased(projector, output, attended.transpose(1, 2).reshape(
                 {batch, tokens, heads * head_dim}));
+#endif
             input = (input + branch.to(input.scalar_type())).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA
-            normalized = minicpmo45_layer_norm(input, *norm2_weight, *norm2_bias, layer_norm_eps);
+            normalized = minicpmo45_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
 #else
             normalized = minicpmo45_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+            branch = tyloi::ops::linear(::tyloi::cuda::gelu(
+                tyloi::ops::linear(normalized, fc1.weight, fc1.bias).dense(), "tanh"), fc2.weight, fc2.bias).dense();
+#else
             branch = tyloi::cuda::biased(projector, fc2,
                 ::tyloi::cuda::gelu(tyloi::cuda::biased(projector, fc1, normalized), "tanh"));
+#endif
             return (input + branch.to(input.scalar_type())).contiguous();
         }
     };
@@ -171,10 +196,10 @@ struct MiniCPMO45VisionEncoder {
             result.layers.push_back(load_layer(weights, index, 16, 72));
         }
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (result.patch_weight->dim() != 4 || result.patch_weight->size(0) != 1152 ||
-            result.patch_weight->size(1) != 3 || result.patch_weight->size(2) != 14 ||
-            result.patch_weight->size(3) != 14 || result.position_embedding->dim() != 2 ||
-            result.position_embedding->size(0) != 4900 || result.position_embedding->size(1) != 1152) {
+        if (result.patch_weight.dim() != 4 || result.patch_weight.size(0) != 1152 ||
+            result.patch_weight.size(1) != 3 || result.patch_weight.size(2) != 14 ||
+            result.patch_weight.size(3) != 14 || result.position_embedding.dim() != 2 ||
+            result.position_embedding.size(0) != 4900 || result.position_embedding.size(1) != 1152) {
 #else
         if (result.patch_weight.sizes().vec() != std::vector<int64_t>({1152, 3, 14, 14}) ||
             result.position_embedding.sizes().vec() != std::vector<int64_t>({4900, 1152})) {
@@ -185,8 +210,9 @@ struct MiniCPMO45VisionEncoder {
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA
+    /** Encode image patches while reporting intermediate progress. */
     tyloi::StepSequence<::tyloi::Tensor> forward_steps(
-        tyloi::cuda::Projector projector, ::tyloi::Tensor pixels_value,
+        ::tyloi::Tensor pixels_value,
         ::tyloi::Tensor patch_mask_value, ::tyloi::Tensor target_sizes_value) const {
 #else
     tyloi::StepSequence<::tyloi::DenseTensor> forward_steps(
@@ -279,11 +305,15 @@ struct MiniCPMO45VisionEncoder {
                 return embedded;
             },
             [&](const auto &layer, DenseTensor hidden) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                return layer.forward(hidden, attention_mask);
+#else
                 return layer.forward(projector, hidden, attention_mask);
+#endif
             },
             [&](DenseTensor hidden) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                return minicpmo45_layer_norm(hidden, *post_norm_weight, *post_norm_bias, 1e-6);
+                return minicpmo45_layer_norm(hidden, post_norm_weight, post_norm_bias, 1e-6);
 #else
                 return minicpmo45_layer_norm(hidden, post_norm_weight, post_norm_bias, 1e-6);
 #endif
@@ -300,14 +330,18 @@ struct MiniCPMO45VisionEncoder {
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
-        ::tyloi::Tensor pixels, ::tyloi::Tensor mask, ::tyloi::Tensor sizes) const {
+    /** Encode image patches to completion. */
+    ::tyloi::Tensor forward(::tyloi::Tensor pixels, ::tyloi::Tensor mask, ::tyloi::Tensor sizes) const {
 #else
     ::tyloi::DenseTensor forward(const tyloi::cuda::Projector& projector,
         ::tyloi::DenseTensor pixels, ::tyloi::DenseTensor mask, ::tyloi::DenseTensor sizes) const {
 #endif
         return tyloi::finish_steps(
+#ifdef TYLOINFER_NATIVE_CUDA
+            forward_steps(std::move(pixels), std::move(mask), std::move(sizes)));
+#else
             forward_steps(projector, std::move(pixels), std::move(mask), std::move(sizes)));
+#endif
     }
 };
 
@@ -391,9 +425,9 @@ struct MiniCPMO45Resampler {
         result.out_projection_weight = weights.native("vision.resampler.attention.output.weight");
         result.out_projection_bias = weights.native("vision.resampler.attention.output.bias");
         result.final_projection = weights.native("vision.resampler.output.weight");
-        if (result.query->dim() != 2 || result.query->size(0) != 64 || result.query->size(1) != 4096 ||
-            result.in_projection_weight->dim() != 2 || result.in_projection_weight->size(0) != 12288 ||
-            result.in_projection_weight->size(1) != 4096) {
+        if (result.query.dim() != 2 || result.query.size(0) != 64 || result.query.size(1) != 4096 ||
+            result.in_projection_weight.dim() != 2 || result.in_projection_weight.size(0) != 12288 ||
+            result.in_projection_weight.size(1) != 4096) {
 #else
         result.query = weights.native("vision.resampler.query").dense();
         result.kv_projection =
@@ -429,8 +463,8 @@ struct MiniCPMO45Resampler {
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
-                            ::tyloi::Tensor input_value, ::tyloi::Tensor target_sizes_value) const {
+    /** Resample encoded image patches into language embeddings. */
+    ::tyloi::Tensor forward(::tyloi::Tensor input_value, ::tyloi::Tensor target_sizes_value) const {
 #else
     ::tyloi::DenseTensor forward(const tyloi::cuda::Projector& projector,
                                  ::tyloi::DenseTensor input_value,
@@ -464,8 +498,8 @@ struct MiniCPMO45Resampler {
             const int64_t width = size_data[2 * index + 1];
             const int64_t patches = height * width;
 #ifdef TYLOINFER_NATIVE_CUDA
-            if (height <= 0 || width <= 0 || height > position_embedding->size(0) ||
-                width > position_embedding->size(1) || patches > length) {
+            if (height <= 0 || width <= 0 || height > position_embedding.size(0) ||
+                width > position_embedding.size(1) || patches > length) {
 #else
             if (height <= 0 || width <= 0 || height > position_embedding.size(0) ||
                 width > position_embedding.size(1) || patches > length) {
@@ -513,17 +547,21 @@ struct MiniCPMO45Resampler {
         };
         using DenseTensor = ::tyloi::DenseTensor;
         return tyloi::models::minicpmo45::resample(
+#ifdef TYLOINFER_NATIVE_CUDA
+            [&] { return tyloi::ops::linear(input, kv_projection.weight, kv_projection.bias).dense(); },
+#else
             [&] { return tyloi::cuda::biased(projector, kv_projection, input); },
+#endif
             [&](DenseTensor kv) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                return minicpmo45_layer_norm(kv, *kv_norm_weight, *kv_norm_bias, 1e-6);
+                return minicpmo45_layer_norm(kv, kv_norm_weight, kv_norm_bias, 1e-6);
 #else
                 return minicpmo45_layer_norm(kv, kv_norm_weight, kv_norm_bias, 1e-6);
 #endif
             },
             [&] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto normalized = minicpmo45_layer_norm(query.dense(), *q_norm_weight, *q_norm_bias, 1e-6);
+                auto normalized = minicpmo45_layer_norm(query.dense(), q_norm_weight, q_norm_bias, 1e-6);
 #else
                 auto normalized = minicpmo45_layer_norm(query, q_norm_weight, q_norm_bias, 1e-6);
 #endif
@@ -584,7 +622,7 @@ struct MiniCPMO45Resampler {
             },
             [&](DenseTensor attended) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                return minicpmo45_layer_norm(attended, *post_norm_weight, *post_norm_bias, 1e-6);
+                return minicpmo45_layer_norm(attended, post_norm_weight, post_norm_bias, 1e-6);
 #else
                 return minicpmo45_layer_norm(attended, post_norm_weight, post_norm_bias, 1e-6);
 #endif

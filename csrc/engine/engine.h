@@ -140,6 +140,8 @@ private:
 
     SessionResult set_budget(const SessionCommand&);
     void drain();
+    void stop_duplex();
+    void reset_idle();
     void clear_bindings() noexcept;
     std::unique_ptr<models::CausalModel> model_;
     std::unique_ptr<tyloi::Executor> executor_;
@@ -148,6 +150,7 @@ private:
     std::shared_ptr<weights::Memory> ledger_;
     std::unique_ptr<weights::Cache> weights_;
     std::unique_ptr<models::State> idle_state_;
+    std::unique_ptr<models::Duplex> duplex_;
     models::ForwardOptions forward_options_{};
     models::Info model_info_{};
     std::optional<Decode> graph_;

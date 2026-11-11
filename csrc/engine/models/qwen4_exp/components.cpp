@@ -63,7 +63,7 @@ Components load_components(
         ) {
     Components result;
     if (!load_optional_components) return result;
-    if (model.plan.vision == tyloi::cuda::CudaVisionAdapter::grid_vit) {
+    if (model.plan.vision == ::tyloi::models::Vision::grid_vit) {
 #ifdef TYLOINFER_NATIVE_CUDA
         const auto document = nlohmann::json::parse(definition.begin(), definition.end());
 #else
@@ -103,17 +103,17 @@ Components load_components(
 #endif
                 config, image, video,
                 component->input_contract, component->position_policy));
-    } else if (model.plan.vision != tyloi::cuda::CudaVisionAdapter::none) {
+    } else if (model.plan.vision != ::tyloi::models::Vision::none) {
         throw std::runtime_error("unsupported Qwen4 CUDA vision adapter");
     }
-    if (model.plan.predictor != tyloi::cuda::CudaPredictorAdapter::none &&
+    if (model.plan.predictor != ::tyloi::models::Predictor::none &&
              model.plan.predictor !=
-                 tyloi::cuda::CudaPredictorAdapter::flash_next) {
+                 ::tyloi::models::Predictor::flash_next) {
         throw std::runtime_error(
             "unsupported Qwen4 CUDA component adapter");
     }
     if (model.plan.predictor ==
-            tyloi::cuda::CudaPredictorAdapter::none) return result;
+            ::tyloi::models::Predictor::none) return result;
     TYLOINFER_RUNTIME_CHECK(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");

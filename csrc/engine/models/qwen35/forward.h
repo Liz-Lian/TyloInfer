@@ -66,11 +66,7 @@ DenseTensor forward_layer(
     DenseTensor input,
     const AttentionStep& step,
     std::int64_t confirmed_prefix,
-#ifdef TYLOINFER_NATIVE_CUDA
-    const tyloi::ops::RopeTable& rope,
-#else
     const RopeCache& rope,
-#endif
     const Executor::Mode& options);
 #endif
 

@@ -34,7 +34,7 @@ namespace tyloi::cuda::qwen35 {
 
 struct Components {
     tyloi::ModelGraph graph;
-    CudaModelPlan plan;
+    ::tyloi::models::Plan plan;
     std::optional<grid_vision_runtime::CudaGridVisionPromptComponent>
         grid_vision;
     std::unique_ptr<Mtp> mtp;
@@ -52,8 +52,8 @@ struct Components {
         const int& trace_scope, bool optional, bool cpu_offload, bool preallocate);
 #endif
 
-    CudaComponentState state() const noexcept {
-        return cuda_component_state(
+    ::tyloi::models::ComponentState state() const noexcept {
+        return ::tyloi::models::component_state(
             graph, plan, grid_vision.has_value(), bool(mtp));
     }
 

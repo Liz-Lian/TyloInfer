@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+namespace tyloi { struct ModelGraph; }
+
 struct MfqModelCapabilities {
     std::string family = "unknown";
     bool text = true;
@@ -18,6 +20,38 @@ struct MfqModelCapabilities {
 };
 
 namespace tyloi::models {
+
+/** Identify a supported model backbone implementation. */
+enum class Backbone { generic_qwen, minicpmo45, minicpmo_tts, gemma4, glm_dsa,
+    glm5_next, qwen4_exp, deepseek_v4, deepseek_v41, nemotron_h, unsupported };
+/** Identify a supported multimodal input implementation. */
+enum class Vision { none, grid_vit, minicpmo45, deepseek_v41, radio };
+/** Identify a supported next-token prediction implementation. */
+enum class Predictor { none, qwen35, flash_next, deepseek_v41_dspark, nemotron_h };
+/** Describe the implementations selected for a model graph. */
+struct Plan {
+    Backbone backbone = Backbone::unsupported;
+    Vision vision = Vision::none;
+    Predictor predictor = Predictor::none;
+};
+/** Describe input, output and prediction capabilities. */
+struct Capabilities {
+    bool text = false, image_input = false, video_input = false;
+    bool audio_input = false, audio_output = false, full_duplex = false, mtp = false;
+};
+/** Describe declared, supported, available and enabled components. */
+struct ComponentState {
+    bool vision_declared = false, vision_supported = false, vision_available = false, vision_enabled = false;
+    bool mtp_declared = false, mtp_supported = false, mtp_available = false, mtp_enabled = false;
+};
+/** Return the capabilities implied by the selected implementations. */
+Capabilities capability_matrix(const Plan& plan) noexcept;
+/** Describe components using actual loaded and enabled state. */
+ComponentState component_state(const ModelGraph& graph, const Plan& plan, bool vision_loaded,
+    bool mtp_loaded, bool enable_vision = true, bool enable_mtp = true) noexcept;
+/** Resolve capabilities against the graph and loaded components. */
+Capabilities runtime_capabilities(const ModelGraph& graph, const Plan& plan,
+    const ComponentState& components, bool multimodal_available, bool duplex_available) noexcept;
 
 /** State whether decode capture needs resident weights or can capture managed weight access. */
 enum class GraphWeights { captured, resident };

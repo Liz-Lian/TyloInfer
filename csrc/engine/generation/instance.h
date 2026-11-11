@@ -1,5 +1,7 @@
 #pragma once
 
+#ifndef TYLOINFER_NATIVE_CUDA
+
 #include "engine/text.h"
 #include "engine/generation/generation.h"
 
@@ -7,17 +9,9 @@ namespace tyloi::cuda::engine_detail {
 
 template <class M, class S, class P>
 tyloi::StepSequence<tyloi::models::Prepared> Text<M, S, P>::prepare(InferenceRequest& input, State& state) {
-#ifdef TYLOINFER_NATIVE_CUDA
-    if constexpr (std::is_same_v<Parts, std::monostate> &&
-                  std::is_base_of_v<tyloi::models::CausalModel, Model>) {
-        const tyloi::models::CausalModel& causal = language;
-        return causal.prepare(input.prompt, *input.vision, state);
-    } else
-#endif
     if constexpr (std::is_same_v<Parts, std::unique_ptr<tyloi::cuda::minicpmo45::Components>>) {
         if (!components) throw std::invalid_argument("model has no multimodal component");
         return components->prepare(input.prompt, *input.vision);
-#ifndef TYLOINFER_NATIVE_CUDA
     } else if constexpr (std::is_same_v<Model, qwen4_exp::Model> ||
                          std::is_same_v<Model, nemotron_h::Model> ||
                          std::is_same_v<Model, qwen35::Model>) {
@@ -27,14 +21,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Text<M, S, P>::prepare(InferenceReq
         execution->config.layer_placement.primary_device(),
         executor.get(),
         input.prompt, *input.vision);
-#endif
     }
-#ifdef TYLOINFER_NATIVE_CUDA
-    else if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language); }) {
-        const tyloi::models::CausalModel& causal = language;
-        return causal.prepare(input.prompt, *input.vision, state);
-    }
-#endif
     else throw std::invalid_argument("model has no multimodal component");
 }
 
@@ -61,16 +48,15 @@ template <class M, class S, class P>
 Generation Text<M, S, P>::generate(const RequestId& id, InferenceRequest& input, InferenceOutput& output, bool batched) {
     if (batched) {
         graph.invalidate();
-#ifndef TYLOINFER_NATIVE_CUDA
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             // Exclusive MTP generation has ended before a batch starts.
             // Its graph consumers must retire before idle batch buffers.
             qwen4_release_decode_graphs(language,state);
             if (auto* predictor=component_predictor(language,components)) predictor->reset(predictor_state(), 1);
         }
-#endif
     }
     return generate_prepared(std::ref(*this), state, *executor, input, output, id, batched);
 }
 
 } // namespace tyloi::cuda::engine_detail
+#endif

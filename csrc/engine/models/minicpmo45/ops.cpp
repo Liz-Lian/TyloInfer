@@ -1,4 +1,5 @@
 #include "engine/models/minicpmo45/text/load.h"
+#include "engine/models/load.h"
 #include "engine/models/minicpmo45/text/forward.h"
 #include "engine/models/common/ffn.h"
 #include "engine/models/common/mlp.h"
@@ -7,12 +8,18 @@
 #include "engine/models/common/causal_forward.h"
 #include "engine/models/session/state.h"
 #include "engine/models/source/model_graph.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
+#include "engine/models/minicpmo45/components.h"
+#include <limits>
+#endif
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 
 #include <algorithm>
+#include <array>
 #include <iostream>
 
 namespace tyloi::cuda::minicpmo45::text {
@@ -22,7 +29,7 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     Model model;
     model.source = std::move(source);
     model.graph = tyloi::models::graph(*model.source);
-    model.plan = cuda_model_plan(model.graph);
+    model.plan = ::tyloi::models::model_plan(model.graph);
     tyloi::models::require_model(model.graph.backbone == "minicpmo45",
         "model backbone does not match the requested causal model");
     auto& config = model.config;
@@ -93,7 +100,7 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
         static_cast<int>(std::max<int64_t>(config.num_hidden_layers - gpu_layers, 0));
     if (cpu_layers > 0 && (weights.placement.tensor.enabled() || placement.enabled()))
         throw std::runtime_error("--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
-    if (model.plan.vision == CudaVisionAdapter::grid_vit && cpu_layers > 0)
+    if (model.plan.vision == ::tyloi::models::Vision::grid_vit && cpu_layers > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     MfqCudaGuard guard(placement.primary_device());
     const auto make_rope = [&](::tyloi::Device device) {
@@ -145,7 +152,11 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
     }
 }
 
-State::State(const Model& model) : layers(model.layers.size()) {
+State::State(const Model& model) : layers(model.layers.size())
+#ifdef TYLOINFER_NATIVE_CUDA
+    , model_(&model), maximum_(model.metadata.max_position_embeddings)
+#endif
+{
     for (const auto& layer : model.layers) {
         const auto& a = layer.attention;
         layout_.push_back({layer.device, layer.cpu, a.sliding, a.kv_heads, a.attention_head_dim,
@@ -225,6 +236,82 @@ void State::restore_text_session_state(const TextSessionState& state) {
     batch = 1;
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+State::Restore State::prepare(const TextSessionState& state) const {
+    const auto* saved=std::get_if<std::vector<KvSnapshot>>(&state.payload);
+    if (layers.empty() || !saved || saved->size()!=layers.size() || state.cache_pos<=0 ||
+        state.cache_pos>maximum_ || std::size_t(state.cache_pos)!=state.tokens.size())
+        throw CudaSessionStateError("full-attention text session state is incompatible");
+    for (std::size_t i=0;i<saved->size();++i) {
+        const auto& l=layout_[i]; const auto& kv=(*saved)[i]; validate_kv(kv);
+        const Device target(l.cpu ? kCPU : kCUDA,l.cpu ? -1 : l.device);
+        const auto dtype=l.quantization.enabled()?kInt32:kBFloat16;
+        const auto kw=l.quantization.enabled()?cuda_kv_packed_width(int(l.head_dim),l.quantization.key_bits()):l.head_dim;
+        const auto vw=l.quantization.enabled()?cuda_kv_packed_width(int(l.head_dim),l.quantization.value_bits()):l.head_dim;
+        if (kv.k.device()!=target || kv.v.device()!=target || kv.ring!=l.sliding ||
+            kv.k.scalar_type()!=dtype || kv.v.scalar_type()!=dtype || kv.k.size(1)!=l.heads ||
+            kv.v.size(1)!=l.heads || kv.k.size(3)!=kw || kv.v.size(3)!=vw ||
+            (l.sliding ? kv.capacity!=l.capacity || kv.k.size(2)!=kv.capacity
+                       : kv.capacity<state.cache_pos || kv.k.size(2)!=state.cache_pos))
+            throw CudaSessionStateError("MiniCPM text session cache geometry changed");
+    }
+    return {std::vector<tyloi::state::KvView>(layers.size()),state.cache_pos,state.decode_position_delta};
+}
+void State::stage(Restore& candidate,const TextSessionState& snapshot) const {
+    const auto& saved=std::get<std::vector<KvSnapshot>>(snapshot.payload);
+    for (std::size_t i=0;i<layers.size();++i)
+        stage_kv(candidate.layers[i],saved[i],layout_[i].head_dim,kBFloat16,layout_[i].quantization);
+}
+void State::publish(Restore&& candidate) noexcept {
+    layers.swap(candidate.layers); cache_pos=candidate.cache_pos; decode_position_delta=candidate.decode_position_delta; batch=1;
+}
+namespace {
+void add_growth(std::vector<std::pair<Device,std::size_t>>& values,Device device,std::size_t bytes) {
+    if (!device.is_cuda() || !bytes) return;
+    auto it=std::find_if(values.begin(),values.end(),[&](const auto& item){return item.first==device;});
+    if (it==values.end()) values.emplace_back(device,bytes);
+    else { if (it->second>std::numeric_limits<std::size_t>::max()-bytes) throw std::overflow_error("MiniCPM state growth overflow"); it->second+=bytes; }
+}
+}
+std::vector<std::pair<Device,std::size_t>> State::reset_growth(std::int64_t batch) const {
+    if (batch<=0) throw std::invalid_argument("MiniCPM batch must be positive");
+    return {};
+}
+std::vector<std::pair<Device,std::size_t>> State::growth(std::int64_t next_batch,std::int64_t tokens,
+        const tyloi::models::ForwardOptions& options,std::int64_t confirmed) const {
+    if (next_batch<=0 || tokens<=0 || confirmed!=0 || cache_pos<0 ||
+        tokens>maximum_ || cache_pos>maximum_-tokens || (cache_pos>0 && batch!=next_batch))
+        throw std::invalid_argument("invalid MiniCPM forward geometry");
+    std::vector<std::pair<Device,std::size_t>> result;
+    for (std::size_t i=0;i<layers.size();++i) {
+        const auto& l=layout_[i];
+        if (layers[i].defined() && (cache_pos!=0 || layers[i].batch==next_batch)) continue;
+        const auto capacity=l.sliding ? l.capacity : (options.kv_capacity>0 ? std::max(cache_pos+tokens,options.kv_capacity) : l.capacity);
+        const Device device(l.cpu?kCPU:kCUDA,l.cpu?-1:l.device);
+        add_growth(result,device,tyloi::state::kv_bytes(next_batch,l.heads,capacity,l.head_dim,l.sliding,kBFloat16,l.quantization));
+    }
+    return result;
+}
+std::unique_ptr<tyloi::models::Restore> State::prepare_restore(const TextSessionState& snapshot) {
+    struct Candidate final : tyloi::models::Restore {
+        State& owner; TextSessionState snapshot; State::Restore candidate;
+        Candidate(State& state,const TextSessionState& value) : owner(state),snapshot(value),candidate(state.prepare(snapshot)) {}
+        std::vector<std::pair<Device,std::size_t>> growth() const override {
+            std::vector<std::pair<Device,std::size_t>> result;
+            for (const auto& kv:std::get<std::vector<KvSnapshot>>(snapshot.payload)) {
+                add_growth(result,kv.k.device(),restore_prefix_bytes({},kv.k,2,kv.capacity));
+                add_growth(result,kv.v.device(),restore_prefix_bytes({},kv.v,2,kv.capacity));
+            }
+            return result;
+        }
+        void stage() override { owner.stage(candidate,snapshot); }
+        void publish() noexcept override { owner.publish(std::move(candidate)); }
+    };
+    return std::make_unique<Candidate>(*this,snapshot);
+}
+#endif
+
+#ifndef TYLOINFER_NATIVE_CUDA
 namespace {
 DenseTensor token_ids(Collectives& copies, int primary, DenseTensor ids) {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
@@ -235,6 +322,87 @@ DenseTensor token_ids(Collectives& copies, int primary, DenseTensor ids) {
 }
 }
 
+#endif
+
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace {
+Tensor token_input(const Tensor& ids,int primary) {
+    if (ids.dim()!=1 && ids.dim()!=2) throw std::runtime_error("token IDs must have shape [tokens] or [batch,tokens]");
+    auto value=ids.dim()==1?::tyloi::ops::unsqueeze(ids,0):ids;
+    if (value.size(0)<=0 || value.size(1)<=0) throw std::runtime_error("token IDs must not be empty");
+    return ::tyloi::ops::contiguous(::tyloi::ops::copy(::tyloi::ops::cast(value,kInt64),Device(kCUDA,primary)));
+}
+}
+Tensor embed(const Model& model,int primary,const Tensor& ids) {
+    auto normalized=token_input(ids,primary);
+    auto result=::tyloi::ops::measure("model.embed",normalized.device(),[&] {return ::tyloi::ops::embedding(normalized,model.embed);});
+    return ::tyloi::ops::contiguous(::tyloi::ops::cast(result,kBFloat16));
+}
+Tensor normalize(const Model& model,const Tensor& hidden,int64_t batch,int64_t tokens) {
+    auto shaped=::tyloi::ops::reshape(hidden,{batch,tokens,model.metadata.hidden_size});
+    return ::tyloi::ops::measure("model.output_norm",shaped.device(),[&] {
+        return ::tyloi::ops::rms_norm(shaped,model.output_norm,model.metadata.rms_norm_eps,model.metadata.norm_weight_offset,kBFloat16);
+    });
+}
+Tensor logits(const Model& model,const Tensor& hidden,bool) {
+    auto result=::tyloi::ops::measure("model.lm_head",hidden.device(),[&] {return ::tyloi::ops::project(hidden,model.lm_head);});
+    return ::tyloi::ops::contiguous(::tyloi::ops::cast(result,kBFloat16));
+}
+Tensor forward(const Model& model,State& state,tyloi::models::Input input,const tyloi::models::ForwardOptions& options) {
+    if (!state.belongs_to(model)) throw std::invalid_argument("MiniCPM request belongs to another model");
+    ::tyloi::ops::FfnScope policy(::tyloi::ops::FfnScope::Role::independent);
+    auto ids=token_input(input.ids,options.primary);
+    auto hidden=input.embeddings ? input.embeddings : embed(model,options.primary,ids);
+    const auto B=ids.size(0),T=ids.size(1);
+    if (input.confirmed!=0) throw std::runtime_error("unsupported speculative backbone geometry");
+    if (state.layers.size()!=model.layers.size()) throw std::runtime_error("MiniCPM layer state mismatch");
+    if (T>model.metadata.max_position_embeddings || state.cache_pos>model.metadata.max_position_embeddings-T)
+        throw std::runtime_error("MiniCPM history exceeds context capacity");
+    if (state.cache_pos==0) state.reset(B);
+    if (state.batch!=B) throw std::runtime_error("MiniCPM cache batch does not match inputs");
+    if (hidden.dim()!=3 || hidden.size(0)!=B || hidden.size(1)!=T || hidden.size(2)!=model.metadata.hidden_size) throw std::runtime_error("inputs_embeds must match [batch,tokens,hidden_size]");
+    const Device primary(kCUDA,options.primary);
+    auto physical=input.cache_positions ? ::tyloi::ops::contiguous(::tyloi::ops::copy(::tyloi::ops::cast(input.cache_positions,kInt64),primary))
+        : ::tyloi::ops::arange(state.cache_pos,state.cache_pos+T,primary);
+    if (!((physical.dim()==1 && physical.numel()==T) || (physical.dim()==2 && physical.size(0)==B && physical.size(1)==T)))
+        throw std::runtime_error("cache_positions must have shape [tokens] or [batch,tokens]");
+    auto positions=input.positions ? ::tyloi::ops::contiguous(::tyloi::ops::copy(::tyloi::ops::cast(input.positions,kInt64),primary))
+        : (state.decode_position_delta ? ::tyloi::ops::add(physical,state.decode_position_delta) : physical);
+    if (!((positions.dim()==1 && positions.numel()==T) || (positions.dim()==2 && positions.size(0)==B && positions.size(1)==T)))
+        throw std::runtime_error("position_ids must have shape [tokens] or [batch,tokens]");
+
+    hidden=::tyloi::ops::contiguous(::tyloi::ops::cast(::tyloi::ops::copy(hidden,primary),kBFloat16));
+    const auto trace=[&] { if (input.trace) input.trace->push_back(::tyloi::ops::clone(::tyloi::ops::cast(::tyloi::ops::copy(hidden,primary),kFloat32))); };
+    trace();
+    for (std::size_t i=0;i<model.layers.size();++i) {
+        const auto& layer=model.layers[i]; const auto& attention=layer.attention;
+        const Device target(layer.cpu?kCPU:kCUDA,layer.cpu?-1:layer.device);
+        const auto local=[&](const Tensor& value) {return ::tyloi::ops::contiguous(::tyloi::ops::copy(value,target));};
+        hidden=local(hidden);
+        AttentionStep step{local(positions),{},local(physical),state.cache_pos,input.kv_length,input.attention_parts};
+        if (input.lengths) step.sequence_lengths=local(input.lengths);
+        auto& cache=state.layers[i];
+        const auto capacity=attention.sliding ? attention.attention_window : (options.kv_capacity>0 ?
+            std::max(state.cache_pos+T,options.kv_capacity) : attention.max_position_embeddings);
+        if (!cache.defined()) cache=tyloi::state::allocate_kv(B,attention.kv_heads,capacity,attention.attention_head_dim,
+            attention.sliding,hidden.device(),kBFloat16,attention.kv_quantization);
+        cache.quantization = attention.kv_quantization;
+        const auto* rope=layer.cpu ? &model.cpu_rope : &model.rope;
+        if (!layer.cpu && !model.device_ropes.empty()) rope=&model.device_ropes.at(layer.device);
+        auto* layer_trace=options.trace_layer==attention.layer?options.trace:nullptr;
+        auto output=attention.forward(hidden,step,cache,*rope,layer_trace);
+        hidden=::tyloi::models::full_ffn(layer.ffn,layer.ffn_norm,output[0],output[1],attention.rms_norm_eps,
+            attention.norm_weight_offset,attention.official_bf16,attention.attention_output_gate,layer_trace);
+        trace();
+    }
+    if (!input.positions || input.advance) state.cache_pos+=T;
+    hidden=::tyloi::ops::copy(hidden,primary);
+
+    auto finalized=normalize(model,hidden,B,T);
+    if (input.raw_hidden) *input.raw_hidden=hidden;
+    return finalized;
+}
+#else
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
              const ::tyloi::Tensor& ids_handle, const Executor::Mode& mode) {
@@ -405,4 +573,74 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
     if (input.raw_hidden) *input.raw_hidden = std::move(hidden);
     return finalized;
 }
+
+#endif
+
+#ifdef TYLOINFER_NATIVE_CUDA
+Model::Model() = default;
+Model::~Model() = default;
+Model::Model(Model&&) noexcept = default;
+Model& Model::operator=(Model&&) noexcept = default;
+
+tyloi::models::Info Model::info() const {
+    auto result = tyloi::models::model_info(metadata);
+    result.decode_graph = result.decode_graph && cpu_layers == 0;
+    return result;
+}
+MfqModelCapabilities Model::capabilities() const {
+    const bool available = bool(components);
+    const auto state = ::tyloi::models::component_state(graph, plan, available, false);
+    const auto caps = ::tyloi::models::runtime_capabilities(graph, plan, state, available, available);
+    return {graph.architecture, caps.text, caps.image_input, caps.video_input, caps.audio_input,
+            caps.audio_output, caps.full_duplex, false, "model-graph+cuda-adapters"};
+}
+tyloi::engine::Metrics Model::metrics() const {
+    const auto state = ::tyloi::models::component_state(graph, plan, bool(components), false);
+    const auto quantization = cuda_kv_quantization();
+    return {{"kv_memory_supported",0.0},{"kv_quantization_supported",1.0},
+        {"kv_quantization_bits",quantization.bits},{"vision_declared",double(state.vision_declared)},
+        {"vision_supported",double(state.vision_supported)},{"vision_available",double(state.vision_available)}};
+}
+std::unique_ptr<tyloi::models::State> Model::make_state() const { return std::make_unique<State>(*this); }
+std::unique_ptr<tyloi::models::Duplex> Model::duplex(tyloi::models::State& value) const {
+    auto* state = dynamic_cast<State*>(&value);
+    if (!state || !state->belongs_to(*this)) throw std::invalid_argument("MiniCPM state belongs to another model");
+    return components ? components->duplex(*this, *state) : nullptr;
+}
+tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(const std::vector<std::int64_t>& tokens,
+        const MfqMultimodalInput& media, tyloi::models::State& value) const {
+    auto* state = dynamic_cast<State*>(&value);
+    if (!state || !state->belongs_to(*this)) throw std::invalid_argument("MiniCPM state belongs to another model");
+    if (!components) throw std::invalid_argument("model has no multimodal component");
+    return components->prepare(*this, tokens, media);
+}
+Tensor Model::embedding(const Tensor& ids, int primary) const { return text::embed(*this, primary, ids); }
+Tensor Model::normalize(const Tensor& hidden, std::int64_t batch, std::int64_t tokens) const {
+    return text::normalize(*this, hidden, batch, tokens);
+}
+Tensor Model::softcap(const Tensor& value) const { return ::tyloi::ops::softcap(value, metadata.final_logit_softcapping); }
+Tensor Model::logits(const Tensor& hidden, bool capped) const { return text::logits(*this, hidden, capped); }
+Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& value,
+                      const tyloi::models::ForwardOptions& options) const {
+    auto* state = dynamic_cast<State*>(&value);
+    if (!state || !state->belongs_to(*this)) throw std::invalid_argument("MiniCPM state belongs to another model");
+    if (input.suffix || input.host_raw) throw std::invalid_argument("unsupported MiniCPM input mode");
+    return text::forward(*this, *state, std::move(input), options);
+}
+std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+        const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+        const tyloi::models::LoadOptions& options) {
+    auto result = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    load(*result, weights, placement, options.gpu_layers, options.expert_parallel, true, true, options.yarn);
+    result->primary_device = placement.primary_device();
+    result->cpu_layers = options.gpu_layers < 0 ? 0 : static_cast<int>(std::max<int64_t>(result->config.num_hidden_layers-options.gpu_layers,0));
+    if (options.optional_components && result->plan.vision != ::tyloi::models::Vision::none) {
+        if (result->plan.vision != ::tyloi::models::Vision::minicpmo45)
+            throw std::runtime_error("unsupported MiniCPM-o CUDA vision adapter");
+        result->components = Components::load(weights, result->primary_device);
+    }
+    return result;
+}
+#endif
+
 } // namespace tyloi::cuda::minicpmo45::text
