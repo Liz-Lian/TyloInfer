@@ -1,6 +1,7 @@
 #pragma once
 #include "engine/backends/cuda/executor/graph_registry.h"
 #include <cuda_runtime_api.h>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <map>
@@ -43,9 +44,36 @@ public:
     /** Prepare graph weights or own a fallback pool before snapshot allocation. */
     void prepare();
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Drive preparation, two warmups and recording on the entering thread. */
+    class Capture {
+    public:
+        ~Capture();
+        Capture(const Capture&) = delete;
+        Capture& operator=(const Capture&) = delete;
+        /** Begin the next numerical pass; a valid window requires no passes. */
+        bool next();
+        /** Report whether the current pass requires releasing warm outputs. */
+        bool warmup() const;
+        /** End the submitted pass before the caller restores recurrent state. */
+        void submitted();
+        /** Finish the pass after the caller restores state and releases outputs. */
+        void restored();
+        /** Cancel a failed capture and return the exception to rethrow after restoration. */
+        std::exception_ptr fail(std::exception_ptr error);
+    private:
+        friend class DecodeWindow;
+        explicit Capture(DecodeWindow& window);
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+    /** Create an owner for the explicit capture phases. */
+    std::unique_ptr<Capture> capture();
+#else
     void capture(const std::function<void()>& body,
                  const std::function<void()>& restore,
                  const std::function<void()>& release_output = {});
+#endif
     void enroll(Task task);
     // Finish the current GPU segment before running host I/O. During graph
     // preparation only the supplied placeholder buffers are consumed.

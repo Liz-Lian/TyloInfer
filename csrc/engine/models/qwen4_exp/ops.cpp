@@ -44,6 +44,7 @@
 #include <cstdio>
 #include <cstring>
 #include <chrono>
+#include <exception>
 
 namespace tyloi::cuda {
 namespace {
@@ -1216,7 +1217,7 @@ struct Qwen4DecodeGraph {
                         state.target->dense().copy_(state.saved);
                     }
                 };
-                cell.window.capture([&] {
+                auto body=[&] {
                     cell.window.mark(-1,"window_begin");
                     auto hidden=model.repeat_hidden(model.embed_tokens(cell.ids),model.metadata.hc_mult);
                     std::size_t ple_index=0;int layer=0;
@@ -1302,7 +1303,27 @@ struct Qwen4DecodeGraph {
                     else if(kind==1)cell.output=model.logits(qwen4_last_hidden(std::move(hidden))).dense();
                     else cell.output=qwen4_logits_from_hidden(model, std::move(hidden));
                     cell.window.mark(-1,"window_end");
-                },restore,[&]{cell.output={};cell.raw_hidden={};cell.logits={};});
+                };
+#ifdef TYLOINFER_NATIVE_CUDA
+                {
+                    auto capture=cell.window.capture();
+                    try {
+                        while(capture->next()) {
+                            body();
+                            capture->submitted();
+                            restore();
+                            if(capture->warmup()) {cell.output={};cell.raw_hidden={};cell.logits={};}
+                            capture->restored();
+                        }
+                    } catch(...) {
+                        auto failure=capture->fail(std::current_exception());
+                        restore();
+                        std::rethrow_exception(failure);
+                    }
+                }
+#else
+                cell.window.capture(body,restore,[&]{cell.output={};cell.raw_hidden={};cell.logits={};});
+#endif
                 ++request.decode_graph_captures;
                 std::cerr<<"runtime_qwen4_graph_capture role=target rows="<<tokens<<" kind="<<kind
                     <<" confirmed="<<confirmed<<" segments="<<cell.window.segments()<<" count="<<request.decode_graph_captures
@@ -2087,7 +2108,7 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
 #else
         DecodeGraphBranchScope branch_scope(model.execution->executor().mode().ffn.serial);
 #endif
-        try { graph.window->capture([&] {
+        auto body=[&] {
 #ifndef TYLOINFER_NATIVE_CUDA
             auto& execution = *model.execution;
 #endif
@@ -2194,8 +2215,28 @@ std::optional<::tyloi::Tensor> Qwen4BatchDecodeGraph::run(
             graph.logits = greedy ? qwen4_next_token(model,qwen4_last_hidden(std::move(finalized)))
                 .reshape({batch,1}) : qwen4_logits_from_hidden(model, std::move(finalized)).reshape({batch,-1});
             graph.window->mark(-1,"window_end");
-        },[&] { for (const auto& saved : recurrent) saved.tensor->dense().copy_(saved.snapshot); },
-        [&] { graph.logits = {}; }); }
+        };
+        const auto restore=[&] { for (const auto& saved : recurrent) saved.tensor->dense().copy_(saved.snapshot); };
+        try {
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto capture=graph.window->capture();
+            try {
+                while(capture->next()) {
+                    body();
+                    capture->submitted();
+                    restore();
+                    if(capture->warmup()) graph.logits={};
+                    capture->restored();
+                }
+            } catch(...) {
+                auto failure=capture->fail(std::current_exception());
+                restore();
+                std::rethrow_exception(failure);
+            }
+#else
+            graph.window->capture(body,restore,[&] { graph.logits = {}; });
+#endif
+        }
         catch(const std::exception& error) {
             const std::string message=error.what();
             if(!dynamic_cast<const MfqResourceExhausted*>(&error) &&

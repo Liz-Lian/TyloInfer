@@ -269,6 +269,151 @@ void DecodeWindow::host_barrier(std::function<void()> serve) {
     barriers_.push_back({tasks_.size(),std::move(serve)});
     if(recording_segments_)graphs_.begin(barriers_.size(),1);
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+struct DecodeWindow::Capture::Impl {
+    explicit Impl(DecodeWindow& owner) : window(owner) {
+        if (window.valid()) { done = true; return; }
+        registration = std::make_unique<HostRegistrationBlock>();
+        if (active) throw std::logic_error("nested MFQ window capture");
+        started = std::chrono::steady_clock::now();
+        const auto* option = tyloi::cuda::env_lookup("TYLOINFER_TRACE_MOE_SERVE");
+        trace = option && option[0] && option[0] != '0';
+        active = &window;
+        owns_active = true;
+    }
+
+    void checkpoint(const char* next) {
+        phase = next;
+        if (trace) {
+            std::fprintf(stderr, "decode_window operation=capture phase=%s tasks=%zu\n", phase, window.tasks_.size());
+            std::fflush(stderr);
+        }
+    }
+    void release_active() noexcept {
+        if (owns_active) { active = nullptr; owns_active = false; }
+        registration.reset();
+    }
+
+    DecodeWindow& window;
+    std::unique_ptr<HostRegistrationBlock> registration;
+    std::unique_ptr<GraphWarmupScope> warmup_scope;
+    std::chrono::steady_clock::time_point started;
+    std::size_t warm_tasks = 0, warm_barriers = 0;
+    int pass = 0;
+    bool in_pass = false, awaiting_restore = false, record_conversion = false;
+    bool done = false, owns_active = false, trace = false;
+    const char* phase = "prepare";
+};
+
+DecodeWindow::Capture::Capture(DecodeWindow& window) : impl_(std::make_unique<Impl>(window)) {}
+DecodeWindow::Capture::~Capture() {
+    if (!impl_->done) {
+        try { (void)fail(std::make_exception_ptr(std::runtime_error("MFQ window capture abandoned"))); }
+        catch (...) {}
+    }
+    impl_->release_active();
+}
+std::unique_ptr<DecodeWindow::Capture> DecodeWindow::capture() {
+    return std::unique_ptr<Capture>(new Capture(*this));
+}
+bool DecodeWindow::Capture::next() {
+    auto& state = *impl_;
+    if (state.done) return false;
+    if (state.in_pass || state.awaiting_restore) throw std::logic_error("MFQ capture pass is incomplete");
+    state.in_pass = true;
+    if (state.pass == 0) state.checkpoint("prepare");
+    else if (state.pass < 3) {
+        state.checkpoint("warmup");
+        int device = 0;
+        TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device));
+        state.warmup_scope = std::make_unique<GraphWarmupScope>(default_context(device), state.window.stream_);
+    } else {
+        state.checkpoint("record");
+        state.record_conversion = true;
+        state.window.recording_segments_ = true;
+        state.window.graphs_.begin(0, 1);
+    }
+    return true;
+}
+bool DecodeWindow::Capture::warmup() const {
+    return !impl_->done && impl_->pass < 3;
+}
+void DecodeWindow::Capture::submitted() {
+    auto& state = *impl_;
+    if (!state.in_pass || state.awaiting_restore) throw std::logic_error("MFQ capture pass was not started");
+    if (state.pass < 3) {
+        state.warmup_scope.reset();
+        TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(state.window.stream_));
+    } else {
+        state.window.graphs_.end(state.window.barriers_.size(), 1);
+        state.window.recording_segments_ = false;
+        state.record_conversion = false;
+        if (state.window.tasks_.size() != state.warm_tasks || state.window.barriers_.size() != state.warm_barriers)
+            throw std::logic_error("MFQ window task order changed during capture");
+        state.checkpoint("restore");
+    }
+    state.in_pass = false;
+    state.awaiting_restore = true;
+}
+void DecodeWindow::Capture::restored() {
+    auto& state = *impl_;
+    if (!state.awaiting_restore) throw std::logic_error("MFQ capture pass was not submitted");
+    if (state.pass < 3) {
+        for (auto& task : state.window.tasks_) if (task.release_warm_output) task.release_warm_output();
+        if (state.pass == 2) {
+            state.warm_tasks = state.window.tasks_.size();
+            state.warm_barriers = state.window.barriers_.size();
+        }
+        state.window.tasks_.clear();
+        state.window.barriers_.clear();
+    } else {
+        TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(state.window.stream_));
+        state.window.capture_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - state.started).count();
+        state.checkpoint("complete");
+        state.done = true;
+        state.release_active();
+    }
+    state.awaiting_restore = false;
+    ++state.pass;
+}
+std::exception_ptr DecodeWindow::Capture::fail(std::exception_ptr error) {
+    auto& state = *impl_;
+    if (state.done) return error;
+    state.warmup_scope.reset();
+    state.window.recording_segments_ = false;
+    state.window.graphs_.clear();
+    if (state.record_conversion) {
+        try { std::rethrow_exception(error); }
+        catch (const std::exception& failure) {
+            const std::string message = failure.what();
+            if (message.starts_with("CUDA process VRAM limit exceeded:") ||
+                message.starts_with("CUDA VRAM limit exceeded:") ||
+                message.starts_with("CUDA allocation failed:") ||
+                message.starts_with("CUDA pinned allocation failed:"))
+                error = std::make_exception_ptr(MfqResourceExhausted(message));
+            else error = std::make_exception_ptr(std::runtime_error(message));
+        } catch (...) {}
+    }
+    try { std::rethrow_exception(error); }
+    catch (...) { report_window_error("capture", state.phase); }
+    bool allocation_rejected = false;
+    try { std::rethrow_exception(error); }
+    catch (const MfqResourceExhausted&) { allocation_rejected = true; }
+    catch (const Error& failure) {
+        const std::string message = failure.what();
+        allocation_rejected = message.starts_with("CUDA process VRAM limit exceeded:") ||
+            message.starts_with("CUDA VRAM limit exceeded:") ||
+            message.starts_with("CUDA pinned allocation failed:");
+    } catch (...) {}
+    for (auto& task : state.window.tasks_) if (task.cancel) task.cancel();
+    (void)cudaStreamSynchronize(state.window.stream_);
+    if (allocation_rejected) (void)cudaGetLastError();
+    state.window.failed_ = true;
+    state.done = true;
+    return error;
+}
+#else
 void DecodeWindow::capture(const std::function<void()>& body,const std::function<void()>& restore,
         const std::function<void()>& release_output) {
     if(valid())return;
@@ -351,6 +496,7 @@ void DecodeWindow::capture(const std::function<void()>& body,const std::function
         restore();failed_=true;throw;
     }
 }
+#endif
 void DecodeWindow::run() {
     if(failed_ || !valid())throw std::runtime_error("MFQ window is unavailable after a failed execution");
     const HostRegistrationBlock registration;
