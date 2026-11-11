@@ -100,6 +100,8 @@ public:
     ~Executor();
     Executor(const Executor&) = delete;
     Executor& operator=(const Executor&) = delete;
+    /** Reset execution resources for loading after callers drain work and retire graphs. */
+    void reset();
     std::unique_ptr<Executor> fork() const;
     std::unique_ptr<Executor> fork(int primary) const;
     ContextSet& contexts() noexcept { return contexts_; }

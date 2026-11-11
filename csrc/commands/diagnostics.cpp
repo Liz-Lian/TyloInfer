@@ -7,7 +7,7 @@
 #include "engine/weights/loader.h"
 #include "cli.h"
 #include "diagnostics/token_generation.h"
-#include "engine/models/load.h"
+#include "engine/models/assemble.h"
 #include "engine/models/prepare.h"
 #include "diagnostics/backend_checks.h"
 #include "diagnostics/model_checks.h"

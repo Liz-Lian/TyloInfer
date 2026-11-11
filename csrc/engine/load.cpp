@@ -1,6 +1,7 @@
 #include "engine/load.h"
 #include "engine/ops.h"
 #include "engine/models/load.h"
+#include "engine/models/assemble.h"
 #include "engine/models/deepseek_v41/vision.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
@@ -63,7 +64,8 @@ namespace tyloi::cuda {
 namespace {
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target);
+std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target,
+    std::shared_ptr<const ModelSource> source);
 #endif
 
 } // namespace
@@ -71,12 +73,12 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     auto source = tyloi::open_model_source(options.model_path);
     const auto backbone = cuda_backbone(tyloi::models::graph(*source).backbone);
-    source.reset();
 #ifdef TYLOINFER_NATIVE_CUDA
     if (backbone == CudaBackbone::gemma4) {
-        return load_native_engine(std::move(options), nullptr);
+        return load_native_engine(std::move(options), nullptr, std::move(source));
     }
 #endif
+    source.reset();
     return std::make_unique<engine_detail::EngineInstance<
         engine_detail::State, with_model<>>>(std::move(options));
 }
@@ -89,7 +91,8 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
     }
 #ifdef TYLOINFER_NATIVE_CUDA
     if (typeid(engine) == typeid(tyloi::engine::Engine)) {
-        load_native_engine(std::move(options), &engine);
+        auto source = tyloi::open_model_source(options.model_path);
+        load_native_engine(std::move(options), &engine, std::move(source));
         return;
     }
 #endif
@@ -98,8 +101,8 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
 
 #ifdef TYLOINFER_NATIVE_CUDA
 namespace {
-std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target) {
-    std::shared_ptr<const ModelSource> source;
+std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, engine::Engine* target,
+        std::shared_ptr<const ModelSource> source) {
     std::shared_ptr<tyloi::weights::Memory> ledger;
     auto weights = std::make_unique<tyloi::weights::Cache>();
     std::shared_ptr<KvMemoryManager> kv;
@@ -137,7 +140,6 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             kv = std::make_shared<KvMemoryManager>();
             {
                 auto scope = root->enter(load.layer_placement.primary_device());
-                source = tyloi::open_model_source(options.model_path);
                 auto definition = models::config_json(*source, options.config_path);
                 definition = configure_yarn(load.yarn, load.yarn_context_extension,
                     std::move(definition), models::graph(*source).backbone, options.context_size);
@@ -269,12 +271,7 @@ void setup_cuda_load(
         std::shared_ptr<KvMemoryManager>& kv, std::shared_ptr<KvOffloadStore>& offload) {
     drain_cuda(executor, weights, offload.get(),
                config.layer_placement, config.tensor_parallel, config.expert_parallel);
-#ifndef TYLOINFER_NATIVE_CUDA
-    executor.attention_scratch().clear();
-#endif
-    executor.branches().clear();
-    executor.profiler().reset();
-    executor.collectives().reset();
+    executor.reset();
     config.tensor_parallel = {};
     config.expert_parallel = {};
     config.layer_placement = {};
@@ -283,16 +280,7 @@ void setup_cuda_load(
     config.n_gpu_layers = -1;
     config.dense_cpu_layer_count = 0;
     config.drop_file_cache = false;
-    executor.mode().ffn.serial = false;
-    executor.mode().ffn.projection_major = false;
-    executor.mode().ffn.batch_serial = false;
-    executor.routes().clear();
-    executor.mmq().reset();
-    executor.mode().ffn.unfused = false;
-    executor.mode().ffn.materialized = false;
     config.weights.min_slots = 8;
-    executor.mode().trace_layer = -1;
-    executor.mode().trace = nullptr;
     offload.reset();
     kv.reset();
     weights.begin_load();

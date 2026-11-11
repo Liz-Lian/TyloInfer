@@ -1,7 +1,7 @@
 #include "env.h"
 #include "cli.h"
 #include "run.h"
-#include "engine/models/load.h"
+#include "engine/models/assemble.h"
 #include "eval/kl.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"

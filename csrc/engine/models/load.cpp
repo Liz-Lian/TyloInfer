@@ -6,6 +6,7 @@
 #include "engine/models/source/model_graph.h"
 
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace tyloi::models {

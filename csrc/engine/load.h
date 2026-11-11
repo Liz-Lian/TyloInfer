@@ -38,7 +38,9 @@ struct CudaEngineOptions : CudaLoadOptions {
     int64_t prefill_chunk_size = 0;
 };
 
+/** Load and publish an engine after model, cache and execution preparation succeeds. */
 std::unique_ptr<tyloi::engine::Engine> load_cuda_engine(CudaEngineOptions options);
+/** Replace dependencies while the engine's reload owner holds the scheduler quiescent. */
 void reload_cuda_engine(tyloi::engine::Engine& engine, CudaEngineOptions options);
 
 } // namespace tyloi::cuda

@@ -197,6 +197,24 @@ Executor::Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq
 
 Executor::~Executor() = default;
 
+void Executor::reset() {
+#ifndef TYLOINFER_NATIVE_CUDA
+    attention_scratch_.clear();
+#endif
+    branches_.clear();
+    profiler_.reset();
+    collectives_.reset();
+    mode_.ffn.serial = false;
+    mode_.ffn.projection_major = false;
+    mode_.ffn.batch_serial = false;
+    routes_.clear();
+    mmq_.reset();
+    mode_.ffn.unfused = false;
+    mode_.ffn.materialized = false;
+    mode_.trace_layer = -1;
+    mode_.trace = nullptr;
+}
+
 #ifdef TYLOINFER_NATIVE_CUDA
 void Executor::drain() {
     std::exception_ptr failure;
