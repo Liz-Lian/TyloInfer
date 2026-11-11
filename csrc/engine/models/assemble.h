@@ -12,8 +12,10 @@
 #include "engine/models/nemotron_h/components.h"
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/state.h"
-#endif
 #include "engine/models/deepseek_v41/components.h"
+#include "engine/models/deepseek_v41/ops.h"
+#include "engine/models/deepseek_v41/state.h"
+#endif
 #include "engine/models/common/load.h"
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
@@ -24,8 +26,6 @@
 #include "engine/models/deepseek_v4/load.h"
 #include "engine/models/deepseek_v4/state.h"
 #endif
-#include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/deepseek_v41/state.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
@@ -258,6 +258,7 @@ inline constexpr auto with_model = []<typename F>(
             return finish(owner, state, executor, components, started);
         }
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
         case CudaBackbone::deepseek_v41: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
@@ -267,20 +268,13 @@ inline constexpr auto with_model = []<typename F>(
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
             deepseek_v41::load(*owner, execution, options.context_size, false, true, false);
-#ifdef TYLOINFER_NATIVE_CUDA
-            owner->predictor = deepseek_v41::load_components(*owner, weights, load_optional_components,
-                execution.weights);
-            std::monostate components;
-#else
             auto components = deepseek_v41::load_components(*owner, weights, load_optional_components,
                 execution);
-#endif
             auto state = std::unique_ptr<deepseek_v41::State>(static_cast<deepseek_v41::State*>(
                 owner->make_state().release()));
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
-#ifndef TYLOINFER_NATIVE_CUDA
         case CudaBackbone::nemotron_h: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);

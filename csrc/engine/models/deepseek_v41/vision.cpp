@@ -65,7 +65,11 @@ std::vector<Span> validate_media(const CommonConfig& config,const std::vector<in
 }
 } // namespace
 
-Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,const CommonConfig& config) {
+Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source, tyloi::weights::Loader weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+        ::tyloi::weights::Cache& cache,
+#endif
+        const CommonConfig& config) {
     TYLOINFER_RUNTIME_CHECK(source && config.has_vision() && config.image_token_id>=0 &&
         config.image_token_id<config.vocab && config.vision.hidden%config.vision.n_heads==0 &&
         (config.vision.hidden/config.vision.n_heads)%4==0,"invalid DeepSeek-V4.1 CUDA vision config");
@@ -73,7 +77,11 @@ Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weig
             "vision.aligner.input.weight","vision.aligner.output.weight","vision.special_token.start",
             "vision.special_token.newline","vision.special_token.end"})
         TYLOINFER_RUNTIME_CHECK(has_tensor(*source,name),std::string("DeepSeek-V4.1 vision tensor missing: ")+name);
-    return Vision(std::move(source),std::move(weights),cache,config);
+    return Vision(std::move(source), std::move(weights),
+#ifndef TYLOINFER_NATIVE_CUDA
+        cache,
+#endif
+        config);
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -87,14 +95,19 @@ tyloi::StepSequence<Vision::DenseTensor> Vision::encode(
     const tyloi::models::axial_patch_vision::Config config{
         v.hidden,v.n_layers,v.n_heads,v.intermediate,v.patch_size,
         v.downsample_ratio,config_.hidden,v.rope_theta,1e-6};
-    auto tower=tyloi::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(weights_,cache_,config);
+    auto tower=tyloi::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(weights_,
+#ifndef TYLOINFER_NATIVE_CUDA
+        cache_,
+#endif
+        config);
     auto steps=tower.encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA
         projector,
 #endif
         std::move(patches),height,width);
     while(auto step=steps.next()) {
-        if(step.value)co_yield std::move(*step.value);
+        if(step.workspace)co_yield *step.workspace;
+        else if(step.value)co_yield std::move(*step.value);
         else co_yield step.state;
     }
 }
@@ -150,7 +163,11 @@ tyloi::StepSequence<tyloi::models::Prepared> Vision::prepare(
                 projector,
 #endif
                 std::move(patches),int(span.height),int(span.width));
-            while(auto step=encoding.next()){if(step.value)visual=std::move(*step.value);else co_yield step.state;}
+            while(auto step=encoding.next()) {
+                if(step.workspace)co_yield *step.workspace;
+                else if(step.value)visual=std::move(*step.value);
+                else co_yield step.state;
+            }
             images.store(key,visual);
         }
 #ifdef TYLOINFER_NATIVE_CUDA

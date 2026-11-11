@@ -23,6 +23,10 @@ struct LoadOptions {
     bool expert_parallel = false;
     ops::YarnScaling yarn;
     std::unordered_set<int> cpu_offload_layers;
+    /** Rows retained by the model's Engram host cache. */
+    std::size_t engram_cache_rows = 16'384;
+    /** Keep host token IDs for the configured weight prefetch path. */
+    bool host_tokens = false;
 };
 
 /** Report whether this backbone is assembled through the public causal model factory. */

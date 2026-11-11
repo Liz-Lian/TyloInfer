@@ -15,7 +15,12 @@ public:
 #ifndef TYLOINFER_NATIVE_CUDA
     using DenseTensor = ::tyloi::DenseTensor;
 #endif
-    static Vision load(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,const CommonConfig& config);
+    /** Load the streamed vision adapter from its model source. */
+    static Vision load(std::shared_ptr<const tyloi::ModelSource> source, tyloi::weights::Loader weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+        ::tyloi::weights::Cache& cache,
+#endif
+        const CommonConfig& config);
     /** Prepare vision embeddings and participation masks using the owning request's media cache. */
     tyloi::StepSequence<tyloi::models::Prepared> prepare(
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -29,8 +34,16 @@ public:
 #endif
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const;
 private:
-    Vision(std::shared_ptr<const tyloi::ModelSource> source,tyloi::weights::Loader weights,::tyloi::weights::Cache& cache,CommonConfig config)
-        :source_(std::move(source)),weights_(std::move(weights)),cache_(cache),config_(std::move(config)) {}
+    Vision(std::shared_ptr<const tyloi::ModelSource> source, tyloi::weights::Loader weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+        ::tyloi::weights::Cache& cache,
+#endif
+        CommonConfig config)
+        : source_(std::move(source)), weights_(std::move(weights)),
+#ifndef TYLOINFER_NATIVE_CUDA
+          cache_(cache),
+#endif
+          config_(std::move(config)) {}
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::StepSequence<::tyloi::Tensor> encode(
         ::tyloi::Tensor patches,int height,int width) const;
@@ -39,7 +52,9 @@ private:
 #endif
     std::shared_ptr<const tyloi::ModelSource> source_;
     tyloi::weights::Loader weights_;
+#ifndef TYLOINFER_NATIVE_CUDA
     ::tyloi::weights::Cache& cache_;
+#endif
     CommonConfig config_;
 };
 

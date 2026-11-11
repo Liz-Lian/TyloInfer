@@ -10,11 +10,12 @@
 namespace tyloi::cuda::deepseek_v41 {
 
 std::unique_ptr<tyloi::models::Mtp> load_components(
-        Model& model, const tyloi::weights::Loader& weights, bool load_optional_components,
-#ifdef TYLOINFER_NATIVE_CUDA
-        tyloi::weights::Cache& cache) {
-#else
-        CudaExecutionContext& execution) {
+        Model& model, const tyloi::weights::Loader& weights, bool load_optional_components
+#ifndef TYLOINFER_NATIVE_CUDA
+        , CudaExecutionContext& execution
+#endif
+        ) {
+#ifndef TYLOINFER_NATIVE_CUDA
     auto& cache = execution.weights;
 #endif
     if (!load_optional_components) return {};
@@ -26,7 +27,11 @@ std::unique_ptr<tyloi::models::Mtp> load_components(
     }
     if (model.plan.vision == CudaVisionAdapter::deepseek_v41) {
         model.vision = std::make_unique<deepseek_v41_runtime::Vision>(
-            deepseek_v41_runtime::Vision::load(model.source, weights, cache, model.config));
+            deepseek_v41_runtime::Vision::load(model.source, weights,
+#ifndef TYLOINFER_NATIVE_CUDA
+                cache,
+#endif
+                model.config));
     }
     if (model.plan.predictor == CudaPredictorAdapter::none) return {};
     TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation() && model.tables.engram_parameters,

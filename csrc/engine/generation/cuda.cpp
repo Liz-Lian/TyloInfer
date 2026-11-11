@@ -1,7 +1,6 @@
 #include "engine/weights/cache.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/qwen35/mtp.h"
-#include "engine/models/deepseek_v41/ops.h"
 
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm_dsa/forward.h"
@@ -36,12 +35,12 @@ namespace tyloi::cuda::internal {
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::Model, tyloi::cuda::minicpmo45::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::text::Model, tyloi::cuda::minicpmo45::text::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::qwen4_exp::Model, tyloi::cuda::qwen4_exp::State, tyloi::models::Mtp)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::deepseek_v41::Model, tyloi::cuda::deepseek_v41::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm_dsa::Model, tyloi::cuda::glm_dsa::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::deepseek_v4::Model, tyloi::cuda::deepseek_v4::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::nemotron_h::Model, tyloi::cuda::nemotron_h::State, tyloi::models::Mtp)
 #endif
-TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::deepseek_v41::Model, tyloi::cuda::deepseek_v41::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::qwen35::Model, tyloi::cuda::qwen35::State, tyloi::models::Mtp)
 TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::qwen35::Model, tyloi::cuda::qwen35::State, tyloi::cuda::qwen35::Mtp)
 #undef TYLOINFER_INSTANTIATE_FLOW

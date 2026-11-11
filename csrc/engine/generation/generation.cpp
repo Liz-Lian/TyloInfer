@@ -44,6 +44,7 @@ struct Plain {
     Tensor pending;
     bool graph_active = false;
     bool graph_prepared = false;
+    Tensor host_ids;
 
     Tensor project(const Tensor& hidden, bool capped) {
         auto last = ops::contiguous(ops::cast(ops::select(hidden, 1, -1), kFloat16));
@@ -85,8 +86,14 @@ struct Plain {
             input.sampling.max_tokens <= graph.generated_capacity;
         return token;
     }
-    void accept(int64_t) {
+    void accept(int64_t token) {
         if (penalties && !graph_active) ops::add_token_counts(graph.counts, ops::contiguous(pending));
+        if (info.row_prefetch && config.prefetch.decode &&
+            !(prepared && prepared->transformed()) && !output.stopped()) {
+            if (!host_ids) host_ids = ops::empty({1, 1}, TensorOptions().device(kCPU).dtype(kInt64));
+            ops::fill(host_ids, token);
+            model.prefetch(state, host_ids);
+        }
     }
     int64_t advance() {
         reserve(1);
@@ -198,7 +205,7 @@ struct Native {
             info.prefill_row_bytes, state.position() > 0, config.prefill_chunk_auto);
         return tyloi::engine::mtp::generate(model, state, executor, budget, weights, mtp_state,
             forward_options, input, output, chunk, prepared ? &*prepared : nullptr,
-            reused, restored, committed, prefix_boundary, source, config.profile_mtp);
+            reused, restored, committed, prefix_boundary, source, config.profile_mtp, config.prefetch);
     }
     StepSequence<Prepared> prepare(InferenceRequest& input, models::State& target) {
         return model.prepare(input.prompt, *input.vision, target);

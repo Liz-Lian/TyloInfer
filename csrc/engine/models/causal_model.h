@@ -29,6 +29,8 @@ public:
     virtual Mtp* mtp() const noexcept { return nullptr; }
     /** Create request state that must be retired before this model is replaced or destroyed. */
     virtual std::unique_ptr<State> make_state() const = 0;
+    /** Prefetch rows for host token IDs using the supplied owning request state. */
+    virtual bool prefetch(State&, const Tensor&) const { return false; }
     /** Prepare supported media for the owning request, yielding progress and owned Tensor payloads. */
     virtual tyloi::StepSequence<Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, State& state) const = 0;

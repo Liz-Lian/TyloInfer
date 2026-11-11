@@ -1142,7 +1142,9 @@ tyloi::cuda::Ffn load_moe_at(const tyloi::weights::Loader& weights,
 std::unique_ptr<Block> load_block(const tyloi::weights::Loader& weights,
                                     std::int64_t layer, const CommonConfig& config,
                                     ModelTables& tables, std::size_t engram_cache_rows);
+#ifndef TYLOINFER_NATIVE_CUDA
 void validate_load_options(const CudaExecutionContext &execution);
+#endif
 DenseTensor finalize_hidden(const SharedState &state, const DenseTensor &hidden);
 
 inline int run_self_check() {
@@ -1206,7 +1208,13 @@ struct Model : tyloi::models::CausalModel {
     bool supports_suffix_speculation() const noexcept { return true; }
     ::tyloi::Tensor hidden_forward_speculative_suffix(State& state, ::tyloi::Tensor ids,
                                                       ::tyloi::Tensor* raw_hidden = nullptr);
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Prefetch Engram rows for host token IDs using this model's request state. */
+    bool prefetch(tyloi::models::State& state, const ::tyloi::Tensor& ids) const override;
+#else
+    /** Prefetch Engram rows for host token IDs using this model's request state. */
     bool prefetch_token_rows(State& state, const ::tyloi::Tensor& ids) const;
+#endif
 
     // ---- weights and load-time state
     tyloi::models::CausalLmMetadata metadata;
@@ -1281,8 +1289,10 @@ struct Model : tyloi::models::CausalModel {
 
 void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
          std::string_view definition, std::int64_t context_size);
+#ifndef TYLOINFER_NATIVE_CUDA
 void load(Model& model, CudaExecutionContext& execution, int64_t context_size,
           bool defer_moe_cache_finalize, bool load_blocks, bool load_optional_components);
+#endif
 
 #ifndef TYLOINFER_NATIVE_CUDA
 struct CedEncoding {

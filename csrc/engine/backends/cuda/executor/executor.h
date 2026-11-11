@@ -34,7 +34,6 @@ public:
     /** Returns the primary CUDA device selected before publication. */
     tyloi::Device device() const noexcept override { return tyloi::Device(tyloi::kCUDA, primary_); }
     std::unique_ptr<tyloi::Executor::Scope> enter() override;
-    std::unique_ptr<tyloi::Executor::Timer> timer() override;
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
     std::unique_ptr<tyloi::Executor::Graph> graph() override;
     /** Query device memory snapshots within this executor's scope. */
@@ -56,6 +55,12 @@ public:
     /** Set the device allocation limit; zero removes it. */
     void limit(tyloi::Device device, std::size_t bytes);
 #endif
+    /** Start a CUDA event timer for the current execution stream. */
+    std::unique_ptr<tyloi::Executor::Timer> timer()
+#ifdef TYLOINFER_NATIVE_CUDA
+        override
+#endif
+        ;
     std::unique_ptr<tyloi::Executor::Scope> enter(int device);
     void join();
     static Executor& current();

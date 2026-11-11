@@ -4,9 +4,9 @@
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm5_next/forward.h"
 #include "engine/models/nemotron_h/forward.h"
+#include "engine/models/deepseek_v41/mtp_ops.h"
 #endif
 #include "engine/models/qwen4_exp/mtp_ops.h"
-#include "engine/models/deepseek_v41/mtp_ops.h"
 
 #include "engine/generation/mtp/cuda_impl.h"
 

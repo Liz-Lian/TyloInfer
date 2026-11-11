@@ -6,7 +6,9 @@
 #include "engine/ops.h"
 #include "engine/weights/fields.h"
 #include "engine/weights/loader.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/workspace.h"
+#endif
 #include "engine/generation/sequence.h"
 
 #include <limits>
@@ -68,7 +70,9 @@ struct AlignerWeights {
 struct CudaAxialPatchVisionTower::Impl {
     // The model owns the source for the lifetime of its vision component.
     ::tyloi::weights::Loader loader;
+#ifndef TYLOINFER_NATIVE_CUDA
     ::tyloi::weights::Cache& cache;
+#endif
     Config config;
 
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -110,10 +114,11 @@ struct CudaAxialPatchVisionTower::Impl {
 #endif
         {
             auto patch = affine(host, "vision.patch_embedding", config.patch_width(), hidden);
-            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(patch) + activations);
 #ifdef TYLOINFER_NATIVE_CUDA
+            co_yield tyloi::Workspace{::tyloi::weights::fields::bytes(patch) + activations};
             ::tyloi::Tensor output;
 #else
+            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(patch) + activations);
             DenseTensor output;
 #endif
             {
@@ -127,7 +132,8 @@ struct CudaAxialPatchVisionTower::Impl {
 #endif
             }
 #ifdef TYLOINFER_NATIVE_CUDA
-            value = loan.finish(std::move(output));
+            co_yield tyloi::Workspace{0, &output};
+            value = std::move(output);
 #else
             value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))).implementation());
 #endif
@@ -148,10 +154,11 @@ struct CudaAxialPatchVisionTower::Impl {
                 affine(host, prefix + ".attention.output", hidden, hidden),
                 affine(host, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate),
                 affine(host, prefix + ".mlp.down", config.intermediate, hidden)};
-            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(block) + activations);
 #ifdef TYLOINFER_NATIVE_CUDA
+            co_yield tyloi::Workspace{::tyloi::weights::fields::bytes(block) + activations};
             ::tyloi::Tensor output;
 #else
+            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(block) + activations);
             DenseTensor output;
 #endif
             {
@@ -198,7 +205,8 @@ struct CudaAxialPatchVisionTower::Impl {
 #endif
             }
 #ifdef TYLOINFER_NATIVE_CUDA
-            value = loan.finish(std::move(output));
+            co_yield tyloi::Workspace{0, &output};
+            value = std::move(output);
 #else
             value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))).implementation());
 #endif
@@ -212,10 +220,11 @@ struct CudaAxialPatchVisionTower::Impl {
                 norm(host, "vision.output_norm.weight", hidden, config.rms_eps),
                 affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
                 affine(host, "vision.aligner.output", config.output_hidden, config.output_hidden)};
-            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(weights) + activations);
 #ifdef TYLOINFER_NATIVE_CUDA
+            co_yield tyloi::Workspace{::tyloi::weights::fields::bytes(weights) + activations};
             ::tyloi::Tensor output;
 #else
+            auto loan = ::tyloi::weights::Loan(cache, ::tyloi::weights::fields::bytes(weights) + activations);
             DenseTensor output;
 #endif
             {
@@ -252,7 +261,8 @@ struct CudaAxialPatchVisionTower::Impl {
 #endif
             }
 #ifdef TYLOINFER_NATIVE_CUDA
-            value = loan.finish(std::move(output));
+            co_yield tyloi::Workspace{0, &output};
+            value = std::move(output);
 #else
             value = *std::dynamic_pointer_cast<::tyloi::DenseTensor>(loan.finish(std::make_shared<::tyloi::DenseTensor>(std::move(output))).implementation());
 #endif
@@ -262,12 +272,20 @@ struct CudaAxialPatchVisionTower::Impl {
 };
 
 CudaAxialPatchVisionTower CudaAxialPatchVisionTower::load(
-    const ::tyloi::weights::Loader& loader, ::tyloi::weights::Cache& cache, const Config& config) {
+    const ::tyloi::weights::Loader& loader,
+#ifndef TYLOINFER_NATIVE_CUDA
+    ::tyloi::weights::Cache& cache,
+#endif
+    const Config& config) {
     config.validate();
     for (const auto* name : {"vision.patch_embedding.weight", "vision.output_norm.weight",
                             "vision.aligner.input.weight", "vision.aligner.output.weight"})
         TYLOINFER_RUNTIME_CHECK(loader.has(name), std::string("axial patch vision tensor missing: ") + name);
-    return CudaAxialPatchVisionTower(std::make_unique<Impl>(Impl{loader, cache, config}));
+    return CudaAxialPatchVisionTower(std::make_unique<Impl>(Impl{loader,
+#ifndef TYLOINFER_NATIVE_CUDA
+        cache,
+#endif
+        config}));
 }
 
 CudaAxialPatchVisionTower::CudaAxialPatchVisionTower(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -289,26 +307,15 @@ tyloi::StepSequence<DenseTensor> CudaAxialPatchVisionTower::encode_steps(
         std::move(patches), height, width);
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor CudaAxialPatchVisionTower::encode(
-    ::tyloi::Tensor patches, int height, int width) const {
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
 DenseTensor CudaAxialPatchVisionTower::encode(
     Projector projector, DenseTensor patches, int height, int width) const {
-#endif
-    auto steps = encode_steps(
-#ifndef TYLOINFER_NATIVE_CUDA
-        projector,
-#endif
-        std::move(patches), height, width);
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor output;
-#else
+    auto steps = encode_steps(projector, std::move(patches), height, width);
     DenseTensor output;
-#endif
     while (auto step = steps.next()) if (step.value) output = std::move(*step.value);
     return output;
 }
+#endif
 
 const Config& CudaAxialPatchVisionTower::config() const noexcept { return impl_->config; }
 } // namespace tyloi::cuda::axial_patch_vision

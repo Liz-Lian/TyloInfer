@@ -3,11 +3,11 @@
 #include "engine/ops.h"
 #include "engine/models/load.h"
 #include "engine/models/assemble.h"
-#include "engine/models/deepseek_v41/vision.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/minicpmo45/text/forward.h"
 #ifndef TYLOINFER_NATIVE_CUDA
+#include "engine/models/deepseek_v41/vision.h"
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/deepseek_v4/forward.h"
 #include "engine/models/glm5_next/forward.h"
@@ -57,16 +57,10 @@ using State = std::variant<
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
     std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, nemotron_h::Components>>,
-#endif
-    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
-#ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State, std::monostate>>,
+    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>,
 #endif
-#ifdef TYLOINFER_NATIVE_CUDA
-    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::monostate>>>;
-#else
-    std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>>;
-#endif
+    std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>>;
 
 } // namespace tyloi::cuda::engine_detail
 
@@ -143,6 +137,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             config.profile_decode = load.profile_decode;
             config.profile_mtp = load.profile_mtp;
             config.trace_moe = load.trace_moe;
+            config.prefetch = load.prefetch;
             if (config.continuous_batch.max_sequences)
                 throw std::invalid_argument("continuous batching is unavailable for this model");
             const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
@@ -161,7 +156,8 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 load.dense_cpu_layer_count = 0;
                 model = models::load(source, definition, loader, load.layer_placement,
                     models::LoadOptions{options.context_size, load.n_gpu_layers,
-                        load.expert_parallel.enabled(), load.yarn, load.dsv4_cpu_offload_layers});
+                        load.expert_parallel.enabled(), load.yarn, load.dsv4_cpu_offload_layers,
+                        load.deepseek_v41_engram_cache_rows, load.cache.pipeline});
                 state = model->make_state();
                 if (::tyloi::cuda::options::kv_vram_preallocated()) state->preallocate();
                 finalize_kv(kv.get(), *weights, offload);

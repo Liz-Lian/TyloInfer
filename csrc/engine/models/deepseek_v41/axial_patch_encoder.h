@@ -28,8 +28,11 @@ using DenseTensor = ::tyloi::DenseTensor;
 // belong to the architecture adapter.
 class CudaAxialPatchVisionTower {
   public:
-    static CudaAxialPatchVisionTower load(
-        const ::tyloi::weights::Loader& loader, ::tyloi::weights::Cache& cache,
+    /** Load tower configuration and retain the source-backed weight loader. */
+    static CudaAxialPatchVisionTower load(const ::tyloi::weights::Loader& loader,
+#ifndef TYLOINFER_NATIVE_CUDA
+        ::tyloi::weights::Cache& cache,
+#endif
         const Config& config);
 
     CudaAxialPatchVisionTower(CudaAxialPatchVisionTower&&) noexcept;
@@ -43,16 +46,13 @@ class CudaAxialPatchVisionTower {
 
     // Patches accept [H*W,3,P,P] or [H*W,3*P*P]. The output is the
     // row-major, ceil(H/R)*ceil(W/R) aligned embedding grid.
-#ifdef TYLOINFER_NATIVE_CUDA
-    ::tyloi::Tensor encode(::tyloi::Tensor patches,
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
     DenseTensor encode(Projector projector, DenseTensor patches,
-#endif
         int height,
         int width) const;
+#endif
 
-    // Load one block at a time and restore borrowed expert storage before
-    // yielding, so image preparation can share the request scheduler.
+    /** Load one block per step and request workspace around its execution. */
 #ifdef TYLOINFER_NATIVE_CUDA
     tyloi::StepSequence<::tyloi::Tensor> encode_steps(::tyloi::Tensor patches,
 #else

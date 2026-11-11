@@ -1,6 +1,7 @@
 #include "engine/generation/mtp/generation.h"
 
 #include "engine/budget.h"
+#include "engine/config.h"
 #include "engine/generation/mtp/sampling.h"
 #include "engine/generation/mtp/sequence.h"
 #include "engine/generation/prefill_budget.h"
@@ -32,10 +33,11 @@ struct Ops : Sampling {
     const models::Prepared* prepared;
     const ModelSource* source;
     const bool profiling;
+    const PrefetchConfig& prefetch;
     const std::int64_t compute_chunk;
     InferenceOutput& output;
     ::tyloi::weights::Cache::Routes routes;
-    Tensor projected_hidden, projected_logits;
+    Tensor projected_hidden, projected_logits, host_ids;
     int32_t projected_greedy = -1;
     std::uint64_t target_transfer_bytes = 0;
     std::array<double, 6> target_profile{};
@@ -44,10 +46,12 @@ struct Ops : Sampling {
     Ops(models::CausalModel& model, models::State& state, Executor& executor,
         Budget& budget, ::tyloi::weights::Cache& weights, State& policy, const models::ForwardOptions& options,
         models::Mtp& mtp, models::MtpState& predictor, const models::Prepared* prepared,
-        const ModelSource* source, bool profiling, std::int64_t compute_chunk, InferenceOutput& output)
+        const ModelSource* source, bool profiling, const PrefetchConfig& prefetch,
+        std::int64_t compute_chunk, InferenceOutput& output)
         : Sampling(executor.device()), model(model), state(state), executor(executor), budget(budget),
           weights(weights), mtp_state(policy), options(options), info(model.info()), mtp(mtp),
-          predictor(predictor), prepared(prepared), source(source), profiling(profiling), compute_chunk(compute_chunk), output(output),
+          predictor(predictor), prepared(prepared), source(source), profiling(profiling), prefetch(prefetch),
+          compute_chunk(compute_chunk), output(output),
           graph_captures(weights.activity().graph_captures) {}
 
     void initialize(const std::vector<int64_t>& prompt, const MfqSamplingParams& sampling) {
@@ -170,6 +174,27 @@ struct Ops : Sampling {
         return 0;
     }
     void rollback_target(std::int64_t accepted) { state.rollback_speculative(accepted); }
+    bool prefetch_target_ids(int32_t token, const std::vector<int32_t>& drafts) {
+        if (!info.row_prefetch || !prefetch.mtp || (prepared && prepared->transformed()) || output.stopped()) return false;
+        const auto count = std::int64_t(1 + (mtp.split_target_verification() ? 0 : drafts.size()));
+        if (!host_ids || host_ids.size(1) < count)
+            host_ids = ops::empty({1, count}, TensorOptions().device(kCPU).dtype(kInt64));
+        auto first = ops::slice(host_ids, 1, 0, 1);
+        ops::fill(first, token);
+        for (std::int64_t i = 1; i < count; ++i) {
+            auto next = ops::slice(host_ids, 1, i, i + 1);
+            ops::fill(next, drafts[static_cast<std::size_t>(i - 1)]);
+        }
+        auto host = ops::slice(host_ids, 1, 0, count);
+        return model.prefetch(state, host);
+    }
+    void prefetch_target_first(int32_t token) { prefetch_target_ids(token, {}); }
+    void prefetch_target_prefix(int32_t token, const std::vector<int32_t>& drafts) {
+        if (prefetch.draft) prefetch_target_ids(token, drafts);
+    }
+    void prefetch_committed_token(int32_t token) {
+        if (prefetch.publication) prefetch_target_ids(token, {});
+    }
     void begin_target_routes(int rows) { routes.begin(weights, rows); }
     void resolve_target_routes(int rows, bool cancelled) { routes.resolve(rows, cancelled); }
     bool take_target_maintenance() {
@@ -223,7 +248,8 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
     Budget& budget, ::tyloi::weights::Cache& weights, State& policy, const models::ForwardOptions& options,
     InferenceRequest& input, InferenceOutput& output, std::int64_t chunk,
     const models::Prepared* prepared, std::size_t reused, Tensor restored,
-    Tensor* committed, std::size_t stable, const ModelSource* source, bool profile) {
+    Tensor* committed, std::size_t stable, const ModelSource* source, bool profile,
+    const PrefetchConfig& prefetch) {
     auto* predictor = model.mtp();
     if (!predictor || !state.predictor || !state.predictor->belongs_to(*predictor))
         throw std::invalid_argument("predictor state is unavailable or belongs to another model");
@@ -233,7 +259,7 @@ Generation generate(models::CausalModel& model, models::State& state, Executor& 
         prepared && prepared->transformed(),
         weights.prefill_mode(input.prompt.size() - reused, state.position() > 0) == ::tyloi::weights::Cache::Prefill::retained);
     return speculative_sequence(Ops(model, state, executor, budget, weights, policy, options,
-        *predictor, *state.predictor, prepared, source, profile, chunk, output), input, output, logical, reused,
+        *predictor, *state.predictor, prepared, source, profile, prefetch, chunk, output), input, output, logical, reused,
         std::move(restored), committed, stable);
 }
 

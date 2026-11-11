@@ -292,6 +292,12 @@ tyloi::models::Info Model::info() const {
     auto result = tyloi::models::Info{metadata.vocab_size, config.max_position_embeddings, config.text_model_type,
             std::size_t(metadata.hidden_size) * sizeof(float) * 8, true, true};
     result.prefill = tyloi::models::PrefillPolicy::merged;
+#ifdef TYLOINFER_NATIVE_CUDA
+    // Decode advances host Engram history and requires contiguous causal positions.
+    result.decode_graph = false;
+    result.graph_weights = tyloi::models::GraphWeights::resident;
+    result.row_prefetch = true;
+#endif
     return result;
 }
 
@@ -362,7 +368,14 @@ bool Model::supports_speculation() const {
     return !blocks.empty();
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+bool Model::prefetch(tyloi::models::State& value, const ::tyloi::Tensor& input_ids) const {
+    auto* target = dynamic_cast<State*>(&value);
+    require_model(target && target->belongs_to(*this), "DeepSeek-V4.1 state belongs to a different model");
+    auto& state = *target;
+#else
 bool Model::prefetch_token_rows(State& state, const ::tyloi::Tensor& input_ids) const {
+#endif
     const auto& ids = input_ids.dense();
     auto& shared = *state.shared;
     const auto cache_pos = state.cache_pos;
@@ -478,7 +491,7 @@ void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cac
 #endif
     auto positions = ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T,
                                            ::tyloi::TensorOptions()
-                                               .device(::tyloi::kCUDA)
+                                               .device(primary)
                                                .dtype(::tyloi::kInt64));
     if (state.decode_position_delta != 0)
         positions = positions + state.decode_position_delta;

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "engine/backends/cuda/native/tensor/backend.h"
-#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/executor.h"
+#ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops.h"
 #endif
 
@@ -100,11 +100,7 @@ struct CudaProfiler {
 
 namespace tyloi::cuda::internal {
 
-class PrefillCudaTimer
-#ifdef TYLOINFER_NATIVE_CUDA
-    : public tyloi::Executor::Timer
-#endif
-{
+class PrefillCudaTimer : public tyloi::Executor::Timer {
 public:
     PrefillCudaTimer();
     ~PrefillCudaTimer();
@@ -113,13 +109,10 @@ public:
     PrefillCudaTimer& operator=(const PrefillCudaTimer&) = delete;
 
     cudaEvent_t finished_event() const;
-#ifdef TYLOINFER_NATIVE_CUDA
+    /** Record the completion event on the timer's stream. */
     void stop() override;
+    /** Wait for completion and return the elapsed CUDA time in milliseconds. */
     double elapsed_ms() const override;
-#else
-    void stop();
-    double elapsed_ms() const;
-#endif
 
 private:
     cudaStream_t stream_ = nullptr;

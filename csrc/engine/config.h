@@ -42,6 +42,14 @@ struct GraphConfig {
     std::int32_t minimum_generation_tokens = 16;
 };
 
+/** Control early host-token row prefetch during generation. */
+struct PrefetchConfig {
+    bool decode = true;
+    bool mtp = true;
+    bool draft = true;
+    bool publication = true;
+};
+
 struct Config {
     std::vector<Device> devices;
     std::unordered_set<std::int64_t> stop_token_ids;
@@ -54,6 +62,7 @@ struct Config {
     bool profile_decode = false;
     bool profile_mtp = false;
     bool trace_moe = false;
+    PrefetchConfig prefetch;
     GraphConfig decode_graph;
     ContinuousBatchConfig continuous_batch;
 };

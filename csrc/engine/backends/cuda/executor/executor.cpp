@@ -429,11 +429,11 @@ std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device) {
 #endif
 }
 
-#ifdef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<tyloi::Executor::Timer> Executor::timer() {
     return std::make_unique<internal::PrefillCudaTimer>();
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<tyloi::Executor::Profile> Executor::profile(const char* name) {
     return std::make_unique<ExecutorProfile>(profiler_, name);
 }

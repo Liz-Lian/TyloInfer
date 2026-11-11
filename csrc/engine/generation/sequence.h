@@ -1,17 +1,30 @@
 #pragma once
 
 #include <coroutine>
+#include <cstddef>
 #include <exception>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 
 namespace tyloi {
 
+class Tensor;
+
 enum class StepState { waiting, advanced, complete };
+
+/** Request a workspace loan or detach its final output before the next visible quantum. */
+struct Workspace {
+    /** Positive bytes begin a loan; zero bytes finish the current loan. */
+    std::size_t bytes = 0;
+    /** Owning output slot to detach on finish; valid until the sequence resumes. */
+    Tensor* output = nullptr;
+};
 
 template <class T> struct StepResult {
     StepState state = StepState::complete;
     std::optional<T> value;
+    std::optional<Workspace> workspace;
     explicit operator bool() const { return state != StepState::complete; }
 };
 
@@ -33,6 +46,10 @@ template <class T> class StepSequence {
         }
         std::suspend_always yield_value(StepState state) {
             step = {state, {}};
+            return {};
+        }
+        std::suspend_always yield_value(Workspace workspace) {
+            step = {StepState::advanced, {}, workspace};
             return {};
         }
         std::suspend_always yield_value(StepResult<T> value) {
@@ -70,7 +87,8 @@ template <class T> class StepSequence {
 template <class T> T finish_steps(StepSequence<T> sequence) {
     std::optional<T> result;
     while (auto step = sequence.next())
-        if (step.value) result = std::move(step.value);
+        if (step.workspace) throw std::logic_error("workspace requests require an execution owner");
+        else if (step.value) result = std::move(step.value);
     return std::move(result.value());
 }
 

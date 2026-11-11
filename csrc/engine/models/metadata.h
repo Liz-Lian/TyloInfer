@@ -33,6 +33,8 @@ struct Info {
     bool double_warmup;
     GraphWeights graph_weights = GraphWeights::captured;
     PrefillPolicy prefill = PrefillPolicy::chunked;
+    /** Whether the model supports early host-token row prefetch. */
+    bool row_prefetch = false;
 };
 
 struct CausalLmMetadata {

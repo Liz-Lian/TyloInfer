@@ -155,6 +155,7 @@ class EngineInstance final : public Engine {
                 config.profile_decode = execution->config.profile_decode;
                 config.profile_mtp = execution->config.profile_mtp;
                 config.trace_moe = execution->config.trace_moe;
+                config.prefetch = execution->config.prefetch;
                 const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
                 kv=std::make_shared<KvMemoryManager>();
                 if (kv_options.gpu_budget_bytes) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "step.h"
+#include "engine/generation/preparation.h"
 #include "engine/config.h"
 #include "engine/executor.h"
 #include "engine/models/common/prompt.h"
@@ -9,8 +10,10 @@
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 namespace tyloi::engine {
 
@@ -22,20 +25,29 @@ inline bool batch_compatible(const EngineRequest &request, bool persistent_prefi
            !(input.sampling.enable_mtp && has_mtp);
 }
 
-template <class Operations, class State>
-Generation generate_prepared(Operations operations, State &state, tyloi::Executor& executor,
+/** Prepare media within its resource owner, then advance the shared text generation flow. */
+template <class Operations, class State, class Execution>
+Generation generate_prepared(Operations operations, State &state, Execution& executor,
                              InferenceRequest &input, InferenceOutput &output,
                              const RequestId& id, bool batched) {
     using Ops = std::unwrap_reference_t<Operations>;
     Ops& ops = operations;
     std::optional<typename Ops::Prepared> prepared;
     if (input.vision && !output.stopped()) {
-        auto preparation = ops.prepare(input, state);
+        auto job = ops.prepare(input, state);
+        std::optional<Preparation> preparation;
+        if constexpr (std::is_base_of_v<tyloi::Executor, std::remove_cvref_t<Execution>>)
+            preparation.emplace(std::move(job), executor, ops.weights);
         while (!output.stopped()) {
             StepResult<typename Ops::Prepared> step;
             {
                 auto timer = executor.timer();
-                step = preparation.next();
+                if constexpr (std::is_base_of_v<tyloi::Executor, std::remove_cvref_t<Execution>>)
+                    step = preparation->next();
+                else {
+                    step = job.next();
+                    if (step.workspace) throw std::logic_error("workspace preparation requires a public executor");
+                }
                 timer->stop();
                 output.metrics.multimodal_ms += timer->elapsed_ms();
             }

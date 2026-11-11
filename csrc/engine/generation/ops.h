@@ -27,21 +27,7 @@ concept SpeculativeState = std::derived_from<State, tyloi::models::State> && req
     requires std::same_as<decltype(&State::rollback_speculative), void (State::*)(std::int64_t)>;
 };
 
-/** Identify transitional states that provide staged public session restoration. */
-template <class State>
-concept StagedState = std::derived_from<State, tyloi::models::State> && requires {
-    requires std::same_as<decltype(&State::prepare_restore),
-        std::unique_ptr<tyloi::models::Restore> (State::*)(const TextSessionState&)>;
-};
-
 #ifdef TYLOINFER_NATIVE_CUDA
-/** Identify transitional models that provide their own public prefill phases. */
-template <class Model>
-concept PhasedModel = requires {
-    requires std::same_as<decltype(&Model::prefill), tyloi::StepSequence<tyloi::models::Prefill> (Model::*)(
-        tyloi::models::Input, tyloi::models::State&, const tyloi::models::ForwardOptions&, std::int64_t) const>;
-};
-
 inline tyloi::models::ForwardOptions forward_options(const Executor::Mode& mode) {
     return {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
 }
