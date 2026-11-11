@@ -9,6 +9,11 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"
 #include "engine/weights/tq/routed.h"
+#include "engine/weights/encoding/rows.h"
+#include "engine/weights/tq/rows.h"
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/backends/cuda/ops/projection/nint.h"
+#endif
 
 #include <algorithm>
 #include <optional>
@@ -130,6 +135,13 @@ QuantLinearGroup tyloi::cuda::Projector::group(
 tyloi::DenseTensor tyloi::cuda::ops::embedding(tyloi::DenseTensor ids, const ::tyloi::Tensor& weight) {
     std::optional<MfqCudaGuard> guard;
     if (ids.is_cuda()) guard.emplace(ids.device().index);
+    if (const auto* rows = weight.representation<tyloi::weights::Rows>()) {
+        if (rows->tq()) return lookup_tq_table(*rows->tq(), Tensor(std::move(ids))).dense();
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        if (rows->nint()) return nint_row_embedding_lookup(*rows->nint(), ids);
+#endif
+        throw std::invalid_argument("unsupported streamed row table");
+    }
     return quant_embedding_lookup(weight, ids);
 }
 

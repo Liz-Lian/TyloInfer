@@ -6,13 +6,15 @@
 #include "engine/backends/cuda/ops/projection/nint.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/loader.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/weights/row_source.h"
-#include "engine/weights/group.h"
 #include "engine/weights/encoding/quant/nint_rows.h"
 #include "engine/weights/encoding/tq.h"
 #include "engine/weights/tq/source.h"
 #include "engine/weights/tq/rows.h"
 #include "engine/weights/nint_row_pipeline.h"
+#endif
+#include "engine/weights/group.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "env.h"
 
@@ -38,12 +40,16 @@ struct LayerLoader : tyloi::weights::Loader {
     using QsaWeights = qwen4_exp::QsaWeights;
     using PleWeights = qwen4_exp::PleWeights;
     CudaExecutionContext& execution;
+#ifdef TYLOINFER_NATIVE_CUDA
+    using Embedding = ::tyloi::Tensor;
+#else
     struct Embedding {
         attention_ops::Embedding function;
         std::shared_ptr<tyloi::NintRows> range;
         std::shared_ptr<tyloi::TqTable> tq;
         DenseTensor operator()(const DenseTensor& ids) const { return function(ids); }
     };
+#endif
 
     auto residual_linear(const std::string &name) const {
         const auto part = name=="model.mhc.pre.down.weight" || name=="predictor.mhc.pre.down.weight"
@@ -143,8 +149,7 @@ struct LayerLoader : tyloi::weights::Loader {
             ::tyloi::cuda::options::rotary_fusion().value_or(default_rotary_fusion), execution.config.yarn);
         for(auto* norm:{&weights.query_norm,&weights.key_norm,&weights.index_query_norm,&weights.index_key_norm})
 #ifdef TYLOINFER_NATIVE_CUDA
-            if((*norm)->defined())*norm=std::make_shared<DenseTensor>(
-                *norm.dense().to(::tyloi::kFloat32).contiguous());
+            if(norm->defined())*norm=tyloi::ops::contiguous(tyloi::ops::cast(*norm,::tyloi::kFloat32));
 #else
             if(norm->defined())*norm=norm->to(::tyloi::kFloat32).contiguous();
 #endif
@@ -157,6 +162,11 @@ struct LayerLoader : tyloi::weights::Loader {
                    std::move(sg), std::move(su), std::move(sd), c);
     }
     auto embedding(const std::string &name) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto table = this->rows(name);
+        const std::array<int64_t,2> shape{table.size(0),table.size(1)};
+        return std::pair{std::move(table),shape};
+#else
         if(tyloi::is_tq_table(source,name)) {
             auto table=tyloi::tq_table(source,name);
             Embedding lookup{[table](const DenseTensor& ids){
@@ -176,8 +186,9 @@ struct LayerLoader : tyloi::weights::Loader {
 #endif
 
         auto weight = this->weight(name);
-        Embedding lookup{[weight](const DenseTensor &ids) { return quant_embedding_lookup(*weight, ids); },{}};
-        return std::pair{std::move(lookup), std::array<int64_t, 2>{weight->size(0), weight->size(1)}};
+        Embedding lookup{[weight](const DenseTensor &ids) { return quant_embedding_lookup(weight, ids); },{}};
+        return std::pair{std::move(lookup), std::array<int64_t, 2>{weight.size(0), weight.size(1)}};
+#endif
     }
     std::vector<int64_t> integers(const std::string &name) const {
         const auto &type = require_tensor(source, name).dtype;
@@ -190,6 +201,10 @@ struct LayerLoader : tyloi::weights::Loader {
     static auto ple(std::vector<Embedding> shards, int64_t rows, int64_t width, const Config &c,
                     std::vector<int64_t> multipliers, std::vector<int64_t> offsets,
                     std::vector<int64_t> sizes, PleWeights weights) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        NgramEmbedding embedding(std::move(shards), rows, width, c.ngram, c.ngram_heads, c.eos,
+                                 std::move(multipliers), std::move(offsets), std::move(sizes));
+#else
         std::vector<attention_ops::Embedding> functions;std::vector<std::shared_ptr<tyloi::NintRows>> ranges;
         std::vector<std::shared_ptr<tyloi::TqTable>> tq;
         for(auto& shard:shards){functions.push_back(std::move(shard.function));ranges.push_back(std::move(shard.range));tq.push_back(std::move(shard.tq));}
@@ -210,6 +225,7 @@ struct LayerLoader : tyloi::weights::Loader {
         }
         NgramEmbedding embedding(std::move(functions), rows, width, c.ngram, c.ngram_heads, c.eos,
                                  std::move(multipliers), std::move(offsets), std::move(sizes),std::move(ranges),std::move(row_lookup),std::move(stage_factory));
+#endif
         return std::make_unique<Ple>(std::move(embedding), std::move(weights), c.hidden, c.streams,
                                      c.ngram, c.eps);
     }

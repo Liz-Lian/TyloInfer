@@ -26,6 +26,8 @@
 #include "engine/weights/tq/load.h"
 #include "engine/weights/tq/image.h"
 #include "engine/weights/tq/source.h"
+#include "engine/weights/encoding/rows.h"
+#include "engine/weights/row_source.h"
 #include "engine/weights/encoding/quant/packed_nint_expert_store.h"
 #include <cstdlib>
 #include <cstdio>
@@ -176,6 +178,15 @@ static TensorParallelAxis infer_tensor_parallel_axis(
         return TensorParallelAxis::Input;
     }
     return TensorParallelAxis::Output;
+}
+
+::tyloi::Tensor tyloi::weights::Loader::rows(const std::string& name) const {
+    if (tyloi::is_tq_table(source, name)) return std::make_shared<Rows>(tyloi::tq_table(source, name));
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (tyloi::require_tensor(source, name).dtype == "NINT")
+        return std::make_shared<Rows>(load_nint_rows(source, name));
+#endif
+    return weight(name);
 }
 
 ::tyloi::Tensor tyloi::weights::Loader::weight(const std::string & name,

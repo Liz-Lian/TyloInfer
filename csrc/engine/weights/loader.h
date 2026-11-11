@@ -79,6 +79,8 @@ struct Loader {
     std::vector<::tyloi::Tensor> gate_up(const std::vector<std::string>& names,
         const ::tyloi::Tensor& down, size_t prefix = 2, bool preserve_boundaries = false) const;
     ::tyloi::Tensor embedding(const std::string& name, bool independent_output) const;
+    /** Load a selected-row table without materializing its full encoded payload. */
+    ::tyloi::Tensor rows(const std::string& name) const;
     /** Load expert weights as an owning tensor handle. */
     ::tyloi::Tensor experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
