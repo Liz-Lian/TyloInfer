@@ -356,6 +356,14 @@ FfnScope::FfnScope(Role role) {
     impl_ = std::make_unique<Impl>();
     impl_->scope = cuda::Executor::current().enter(cuda::FfnMode{});
 }
+FfnScope::FfnScope(Role role, bool cached_moe, std::int64_t slots, bool graph) {
+    if (role != Role::batch || slots <= 0) throw std::invalid_argument("invalid FFN batch stage");
+    auto policy = cuda::Executor::current_ffn();
+    policy.batch_serial = cached_moe && slots > 1;
+    if (graph) { policy.serial = true; policy.projection_major = true; }
+    impl_ = std::make_unique<Impl>();
+    impl_->scope = cuda::Executor::current().enter(policy);
+}
 FfnScope::~FfnScope() = default;
 
 struct ProfileRange::Impl {

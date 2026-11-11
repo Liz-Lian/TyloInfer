@@ -93,7 +93,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         budget_.emplace(*ledger_, *weights_, *cache_, *executor_);
         budget_->bind(model_->mtp() != nullptr);
         if (config_.continuous_batch.max_sequences) {
-            batch_ = engine::make_batch(*model_, *executor_, *weights_, *budget_, config_);
+            batch_ = engine::make_batch(*model_, idle_state_.get(), *executor_, *weights_, *budget_, config_);
         }
         if (const auto bytes = config_.resident_budget_bytes) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;

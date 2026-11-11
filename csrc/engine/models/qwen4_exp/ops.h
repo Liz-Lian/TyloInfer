@@ -56,11 +56,11 @@ class Qwen4BatchRequestState
     /** Return request-owned resident cache bytes. */
     std::size_t resident_bytes() const override;
     /** Plan the backing needed before initialization. */
-    std::size_t initial_growth_bytes() const override;
+    tyloi::models::BatchGrowth initial_growth_bytes() const override;
     /** Initialize this request after admission. */
     void initialize() override;
     /** Plan persistent cache growth for the next token span. */
-    std::size_t prefill_growth_bytes(int64_t tokens) const override;
+    tyloi::models::BatchGrowth prefill_growth_bytes(int64_t tokens) const override;
     /** Check the model that owns the request's batch layout. */
     bool belongs_to(const qwen4_exp::Model& model) const noexcept;
 #else
@@ -189,7 +189,7 @@ struct Model : tyloi::models::CausalModel {
     /** Warm eligible model graphs using this model's request state. */
     tyloi::StepSequence<tyloi::models::Decoded> warmup(tyloi::models::State& state, tyloi::models::DecodeOptions options) const override;
     /** Create model-owned batch computation and optional decode graph state. */
-    std::unique_ptr<tyloi::models::Batch> batch(bool graph) override;
+    std::unique_ptr<tyloi::models::Batch> batch(const tyloi::models::BatchConfig& config, tyloi::models::State* serial) override;
 #endif
     /** Prepare media using the creating model's request-owned cache. */
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,

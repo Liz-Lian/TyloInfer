@@ -20,8 +20,8 @@
 #include "engine/models/load.h"
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
-#include "engine/models/qwen35/load.h"
 #ifndef TYLOINFER_NATIVE_CUDA
+#include "engine/models/qwen35/load.h"
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/glm_dsa/state.h"
 #include "engine/models/deepseek_v4/load.h"
@@ -31,8 +31,10 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
 #include "engine/weights/cache.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/state.h"
+#endif
 #include "engine/models/minicpmo45/state.h"
 #include "engine/models/minicpmo45/text/load.h"
 #include "engine/models/minicpmo45/text/state.h"
@@ -122,6 +124,7 @@ inline constexpr auto with_model = []<typename F>(
     };
 
     switch (cuda_backbone(tyloi::models::graph(*source).backbone)) {
+#ifndef TYLOINFER_NATIVE_CUDA
         case CudaBackbone::generic_qwen:
             if constexpr (IncludeQwen) {
                 auto started = std::chrono::steady_clock::now();
@@ -154,6 +157,7 @@ inline constexpr auto with_model = []<typename F>(
             } else {
                 throw std::runtime_error("unsupported CUDA model backbone");
             }
+#endif
         case CudaBackbone::minicpmo45: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);

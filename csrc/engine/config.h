@@ -33,6 +33,10 @@ struct ContinuousBatchConfig {
     bool greedy = true;
     bool cuda_graph = true;
     bool paged_kv = true;
+    /** Preserve the configured storage policy when creating model-owned batches. */
+    bool preallocate = false, cpu_offload = false;
+    /** Minimum routed expert slots available to one numerical row. */
+    int cached_slots = 0;
     /** Pack independent prompt spans into one numerical operation when supported. */
     bool packed_prefill = true;
     /** Maximum tokens admitted to one packed numerical operation. */

@@ -9,6 +9,7 @@
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/deepseek_v41/load.h"
 #include "engine/models/qwen4_exp/ops.h"
+#include "engine/models/qwen35/load.h"
 #endif
 #include "engine/models/source.h"
 #include "engine/models/source/model_graph.h"
@@ -23,7 +24,7 @@ namespace {
 enum class Kind {
     gemma4,
 #ifdef TYLOINFER_NATIVE_CUDA
-    glm_dsa, deepseek_v4, glm5_next, nemotron_h, deepseek_v41, qwen4_exp,
+    glm_dsa, deepseek_v4, glm5_next, nemotron_h, deepseek_v41, qwen4_exp, qwen35,
 #endif
     unsupported
 };
@@ -37,6 +38,7 @@ Kind select(std::string_view backbone) {
     if (backbone == "nemotron_h") return Kind::nemotron_h;
     if (backbone == "deepseek_v41") return Kind::deepseek_v41;
     if (backbone == "qwen4_exp") return Kind::qwen4_exp;
+    if (backbone == "qwen3_5" || backbone == "generic_qwen") return Kind::qwen35;
 #endif
     return Kind::unsupported;
 }
@@ -72,6 +74,8 @@ std::unique_ptr<CausalModel> load(
         return ::tyloi::cuda::deepseek_v41::load(std::move(source), definition, weights, placement, options);
     case Kind::qwen4_exp:
         return ::tyloi::cuda::qwen4_exp::load(std::move(source), definition, weights, placement, options);
+    case Kind::qwen35:
+        return ::tyloi::cuda::qwen35::load(std::move(source), definition, weights, placement, options);
 #endif
     case Kind::unsupported:
         break;

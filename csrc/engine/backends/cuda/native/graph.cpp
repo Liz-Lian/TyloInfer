@@ -31,6 +31,8 @@ Graph::Graph(Graph&& other) noexcept
       context_(std::move(other.context_)),
       pool_streams_(std::move(other.pool_streams_)),
       pool_contexts_(std::move(other.pool_contexts_)),
+      shared_streams_(std::move(other.shared_streams_)),
+      shared_contexts_(std::move(other.shared_contexts_)),
       graph_(std::exchange(other.graph_, nullptr)),
       executable_(std::exchange(other.executable_, nullptr)),
       shared_pool_(std::exchange(other.shared_pool_, false)) {}
@@ -43,6 +45,8 @@ Graph& Graph::operator=(Graph&& other) noexcept {
         context_ = std::move(other.context_);
         pool_streams_ = std::move(other.pool_streams_);
         pool_contexts_ = std::move(other.pool_contexts_);
+        shared_streams_ = std::move(other.shared_streams_);
+        shared_contexts_ = std::move(other.shared_contexts_);
         graph_ = std::exchange(other.graph_, nullptr);
         executable_ = std::exchange(other.executable_, nullptr);
         shared_pool_ = std::exchange(other.shared_pool_, false);
@@ -120,7 +124,7 @@ void Graph::capture_begin() {
     }
 }
 
-void Graph::capture_begin_shared() {
+void Graph::capture_begin_shared(const std::vector<StreamHandle>& participants) {
     if (stream_ || graph_ || executable_) throw Error("graph already owns a capture");
     auto stream = current_stream();
     auto context = default_context(stream.device_index());
@@ -128,12 +132,27 @@ void Graph::capture_begin_shared() {
     device_ = stream_.device_index();
     context_ = std::move(context);
     shared_pool_ = true;
-    context_->begin_graph_capture(stream_.stream());
     try {
+        auto streams=participants;
+        streams.insert(streams.begin(),stream_);
+        for (const auto& candidate : streams) {
+            if (!candidate) continue;
+            if (std::any_of(shared_streams_.begin(),shared_streams_.end(),[&](const auto& prior) {
+                return prior.device_index()==candidate.device_index() && prior.stream()==candidate.stream();
+            })) continue;
+            auto owner=default_context(candidate.device_index());
+            shared_streams_.push_back(candidate);
+            try { shared_contexts_.push_back(owner); }
+            catch (...) { shared_streams_.pop_back(); throw; }
+            try { owner->begin_graph_capture(candidate.stream()); }
+            catch (...) { shared_streams_.pop_back(); shared_contexts_.pop_back(); throw; }
+        }
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamBeginCapture(
             stream_.stream(), cudaStreamCaptureModeThreadLocal));
     } catch (...) {
-        context_->end_graph_capture(stream_.stream());
+        for (std::size_t i=0;i<shared_streams_.size();++i)
+            shared_contexts_[i]->end_graph_capture(shared_streams_[i].stream());
+        shared_streams_.clear(); shared_contexts_.clear();
         throw;
     }
 }
@@ -153,7 +172,8 @@ void Graph::capture_end() {
     DeviceGuard guard(device_);
     const auto capture_status =
         cudaStreamEndCapture(stream_.stream(), &graph_);
-    if (shared_pool_) context_->end_graph_capture(stream_.stream());
+    if (shared_pool_) for (std::size_t i=0;i<shared_streams_.size();++i)
+        shared_contexts_[i]->end_graph_capture(shared_streams_[i].stream());
     for (std::size_t index = 0; index < pool_streams_.size(); ++index) {
         pool_contexts_[index]->end_graph_capture(
             pool_streams_[index].stream());
@@ -275,10 +295,13 @@ void Graph::reset() noexcept {
             pool_contexts_[index]->end_graph_pool(
                 pool_streams_[index].stream());
         }
-        if (shared_pool_ && context_) context_->end_graph_capture(stream_.stream());
+        if (shared_pool_) for (std::size_t i=0;i<shared_streams_.size();++i)
+            shared_contexts_[i]->end_graph_capture(shared_streams_[i].stream());
     });
     pool_contexts_.clear();
     pool_streams_.clear();
+    shared_contexts_.clear();
+    shared_streams_.clear();
     context_.reset();
     stream_ = {};
     shared_pool_ = false;

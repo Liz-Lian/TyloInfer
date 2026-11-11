@@ -3,10 +3,10 @@
 #include "engine/ops.h"
 #include "engine/models/load.h"
 #include "engine/models/assemble.h"
-#include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/minicpmo45/text/forward.h"
 #ifndef TYLOINFER_NATIVE_CUDA
+#include "engine/models/qwen35/forward.h"
 #include "engine/models/deepseek_v41/vision.h"
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/deepseek_v4/forward.h"
@@ -50,9 +50,9 @@
 namespace tyloi::cuda::engine_detail {
 
 using State = std::variant<
-    std::unique_ptr<Text<qwen35::Model, qwen35::State, qwen35::Components>>,
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State, std::unique_ptr<minicpmo45::Components>>>,
 #ifndef TYLOINFER_NATIVE_CUDA
+    std::unique_ptr<Text<qwen35::Model, qwen35::State, qwen35::Components>>,
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
     std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, nemotron_h::Components>>,
@@ -142,6 +142,9 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 config.workspace_reserve = ::tyloi::cuda::options::workspace_reserve_bytes();
                 config.continuous_batch.packed_prefill = ::tyloi::cuda::options::batch_packed_prefill();
                 config.continuous_batch.packed_tokens = ::tyloi::cuda::options::batch_packed_prefill_token_budget();
+                config.continuous_batch.preallocate = ::tyloi::cuda::options::kv_vram_preallocated();
+                config.continuous_batch.cpu_offload = !load.dsv4_cpu_offload_layers.empty();
+                config.continuous_batch.cached_slots = load.weights.min_slots;
             }
             const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
             kv = std::make_shared<KvMemoryManager>();
@@ -164,11 +167,15 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 auto loader = weights->loader(*source, load.weights,
                     {load.layer_placement.primary_device(), false, load.drop_file_cache,
                      load.tensor_parallel, moe_parallel_config(load)});
-                load.dense_cpu_layer_count = 0;
                 model = models::load(source, definition, loader, load.layer_placement,
-                    models::LoadOptions{options.context_size, load.n_gpu_layers,
-                        load.expert_parallel.enabled(), load.yarn, load.dsv4_cpu_offload_layers,
-                        load.deepseek_v41_engram_cache_rows, load.cache.pipeline});
+                    models::LoadOptions{.context = options.context_size, .gpu_layers = load.n_gpu_layers,
+                        .expert_parallel = load.expert_parallel.enabled(), .yarn = load.yarn,
+                        .cpu_offload_layers = load.dsv4_cpu_offload_layers,
+                        .engram_cache_rows = load.deepseek_v41_engram_cache_rows, .host_tokens = load.cache.pipeline,
+                        .mirror_scalars = load.tensor_parallel_mirror_linear_attention_scalars,
+                        .optional_components = true,
+                        .transfer_auto = weights->transfer() == tyloi::weights::Cache::Transfer::automatic,
+                        .transposed = root->mode().transposed});
                 if (offload && !model->info().streamed_kv)
                     throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 state = model->make_state();
@@ -192,7 +199,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         const auto model_info = model->info();
         const auto graph_weights = model_info.graph_weights == models::GraphWeights::resident
             ? tyloi::weights::Cache::Graph::legacy : tyloi::weights::Cache::Graph::native;
-        const bool graph_allowed = model_info.decode_graph && !root->attention_options().kernels.decode_aten && load.dense_cpu_layer_count == 0 &&
+        const bool graph_allowed = model_info.decode_graph && !root->attention_options().kernels.decode_aten &&
             model_parallel_cuda_graph_enabled(load, *root, *weights) &&
             weights->graph_safe(graph_weights, moe_parallel_config(load).enabled());
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);

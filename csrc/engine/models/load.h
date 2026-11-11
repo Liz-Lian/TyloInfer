@@ -27,6 +27,14 @@ struct LoadOptions {
     std::size_t engram_cache_rows = 16'384;
     /** Keep host token IDs for the configured weight prefetch path. */
     bool host_tokens = false;
+    /** Mirror linear-attention scalars according to tensor-parallel placement. */
+    bool mirror_scalars = true;
+    /** Assemble declared optional components when enabled by the caller. */
+    bool optional_components = true;
+    /** Permit predictors that require automatic resident weight transfers. */
+    bool transfer_auto = true;
+    /** Select the recurrent tensor layout for newly created request state. */
+    bool transposed = false;
 };
 
 /** Report whether this backbone is assembled through the public causal model factory. */

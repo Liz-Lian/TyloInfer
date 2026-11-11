@@ -1,3 +1,4 @@
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/qwen35/batch_ops.h"
 #include "engine/models/batch.h"
 #include "engine/models/input.h"
@@ -464,3 +465,5 @@ std::unique_ptr<tyloi::engine::Batch> make_batch(
 }
 
 } // namespace tyloi::cuda
+
+#endif // !TYLOINFER_NATIVE_CUDA

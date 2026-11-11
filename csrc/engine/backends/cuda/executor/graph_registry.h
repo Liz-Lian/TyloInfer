@@ -6,7 +6,10 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 #include <cuda_runtime_api.h>
+#include "engine/backends/cuda/native/stream.h"
 
 namespace tyloi::cuda {
 // Host registration changes may synchronize the device. Keep them outside
@@ -39,8 +42,8 @@ public:
     void set_kernel_rows(cudaGraphNode_t node,unsigned rows)const;
 private:
     friend class GraphRegistry;
-    CapturedGraph(void* stream, const std::function<void()>& body);
-    explicit CapturedGraph(void* stream);
+    CapturedGraph(void* stream, const std::vector<StreamHandle>& participants, const std::function<void()>& body);
+    CapturedGraph(void* stream, const std::vector<StreamHandle>& participants);
     void finish();
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -49,6 +52,8 @@ private:
 class GraphRegistry {
 public:
     explicit GraphRegistry(void* stream) : stream_(stream) {}
+    /** Retain the streams participating in each shared-pool capture. */
+    void participants(std::vector<StreamHandle> streams) { participants_ = std::move(streams); }
     bool record(std::uint64_t identity, int tokens,
                 const std::function<void()>& body, std::string& error);
     const CapturedGraph* find(std::uint64_t identity, int tokens) const;
@@ -60,6 +65,7 @@ public:
     void end(std::uint64_t identity, int tokens);
 private:
     void* stream_;
+    std::vector<StreamHandle> participants_;
     std::map<std::pair<std::uint64_t, int>, CapturedGraph> graphs_;
     std::size_t captures_ = 0;
 };

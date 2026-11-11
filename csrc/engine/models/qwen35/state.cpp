@@ -2,6 +2,9 @@
 #include "engine/models/session/snapshot.h"
 
 #include "engine/models/qwen35/model.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/qwen35/mtp_state.h"
+#endif
 #include "engine/models/input.h"
 #include "engine/ops.h"
 
@@ -166,6 +169,15 @@ State::State(const Model& model, const bool& transposed)
 }
 
 void State::preallocate() {
+#ifdef TYLOINFER_NATIVE_CUDA
+    MtpState* mtp_state = nullptr;
+    if (predictor) {
+        const auto* owner = model_->mtp();
+        mtp_state = dynamic_cast<MtpState*>(predictor.get());
+        require_state(owner && mtp_state && mtp_state->belongs_to(*owner),
+                      "Qwen3.5 predictor state belongs to another model");
+    }
+#endif
     for (std::size_t index = 0; index < layout_.size(); ++index) {
         const auto& layer = layout_[index];
         const auto* full = std::get_if<FullLayout>(&layer.attention);
@@ -178,6 +190,9 @@ void State::preallocate() {
             ::tyloi::Device(::tyloi::kCUDA, layer.device), full->dtype,
             full->quantization);
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (mtp_state) mtp_state->prepare(1, 1, 0);
+#endif
 }
 
 void State::reset(std::int64_t new_batch) {

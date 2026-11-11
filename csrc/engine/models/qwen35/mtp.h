@@ -11,22 +11,25 @@
 #include "engine/models/qwen35/mtp_state.h"
 #include "engine/models/common/mtp.h"
 
+#ifndef TYLOINFER_NATIVE_CUDA
 #include <functional>
+#endif
 #include <memory>
 
 namespace tyloi::cuda::qwen35 {
 
+#ifndef TYLOINFER_NATIVE_CUDA
 class State;
 class Mtp;
-
 void restore_session(State&, Mtp*, const TextSessionState&, const std::function<void()>&);
+#endif
 
 class Mtp final : public tyloi::models::Mtp {
 public:
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Own predictor weights and placement; execution options arrive with each step. */
     Mtp(Predictor model, ::tyloi::Tensor embedding, tyloi::ops::RopeTable rope,
-        int device, bool preallocate);
+        int device);
 #else
     Mtp(Predictor model, ::tyloi::Tensor embedding, RopeCache rope,
         std::unique_ptr<Executor> executor, Collectives& copies,
@@ -60,8 +63,10 @@ public:
     bool retains_partial_target_prefix() const noexcept override { return true; }
 
 private:
+#ifndef TYLOINFER_NATIVE_CUDA
     friend void restore_session(State&, Mtp*, const TextSessionState&,
         const std::function<void()>&);
+#endif
 
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::Tensor evaluate(MtpState& state, const ::tyloi::Tensor& hidden,
@@ -87,7 +92,9 @@ private:
     const int& trace_scope_;
 #endif
     int device_;
+#ifndef TYLOINFER_NATIVE_CUDA
     bool preallocate_;
+#endif
 };
 
 } // namespace tyloi::cuda::qwen35

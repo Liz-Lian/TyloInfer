@@ -1,5 +1,7 @@
 #pragma once
 
+#ifndef TYLOINFER_NATIVE_CUDA
+
 #include "engine/models/qwen35/forward.h"
 #include "engine/state/paged_kv.h"
 
@@ -124,3 +126,5 @@ std::unique_ptr<tyloi::engine::Batch> make_batch(
     std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots);
 
 } // namespace tyloi::cuda
+
+#endif // !TYLOINFER_NATIVE_CUDA

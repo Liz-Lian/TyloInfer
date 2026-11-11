@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/linear.h"
+#include "engine/state/media.h"
 #else
 #include "engine/backends/cuda/ops/attention/linear.h"
 #endif
@@ -127,6 +128,9 @@ public:
     const std::vector<Layout>& layout() const noexcept { return layout_; }
 
     std::vector<LayerState> layers;
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::cache::Media images;
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<tyloi::models::MtpState> predictor;
 #endif

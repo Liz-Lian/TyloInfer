@@ -1,6 +1,9 @@
 #include "engine/models/source.h"
 #include "engine/ops.h"
 #include "engine/models/qwen35/load.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/qwen35/components.h"
+#endif
 
 #include "backend.h"
 #include "engine/models/qwen35/metadata.h"
@@ -287,12 +290,27 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
     return result;
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+           const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+           const tyloi::models::LoadOptions& policy) {
+    const LoadOptions options{.context_size = policy.context, .gpu_layers = policy.gpu_layers,
+        .expert_parallel = policy.expert_parallel, .mirror_scalars = policy.mirror_scalars};
+    auto yarn = policy.yarn;
+    int cpu_layers = 0;
+#else
 Model load(std::shared_ptr<const tyloi::ModelSource> source,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
            tyloi::ops::YarnScaling& yarn, int& cpu_layers,
            const LoadOptions& options) {
+#endif
     tyloi::cuda::validate_model_source(*source);
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto result = std::make_unique<Model>();
+    auto& model = *result;
+#else
     Model model;
+#endif
     model.source = std::move(source);
     const auto& source_ref = *model.source;
     model.graph = tyloi::models::graph(source_ref);
@@ -300,9 +318,11 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     if (model.graph.component("vision") != nullptr &&
         model.plan.vision != CudaVisionAdapter::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
+#ifndef TYLOINFER_NATIVE_CUDA
     auto definition = tyloi::models::config_json(source_ref, options.config_path);
     definition = tyloi::cuda::configure_yarn(yarn, options.extend_yarn, std::move(definition),
                                            model.graph.backbone, options.context_size);
+#endif
     if (model.graph.backbone != "qwen3_5" && model.graph.backbone != "generic_qwen")
         throw std::runtime_error("Qwen3.5 loading requires a Qwen-compatible model graph");
     model.config = Config::from_json(definition, model.graph);
@@ -409,7 +429,16 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
         model.output_norm = weights.tensor("model.output_norm.weight").dense();
 #endif
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    model.primary_device = weights.placement.device;
+    model.cpu_layers = cpu_layers;
+    model.transposed = policy.transposed;
+    model.components = std::make_unique<Components>(Components::load(model, weights, placement,
+        cpu_layers, policy.optional_components, !policy.cpu_offload_layers.empty(), policy.transfer_auto));
+    return result;
+#else
     return model;
+#endif
 }
 
 std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,

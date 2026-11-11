@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/native/stream.h"
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/weights/cache.h"
 #endif
 #include "components/error.h"
@@ -126,8 +127,30 @@ struct DecodeWindow::ProfileClock {
 };
 #ifdef TYLOINFER_NATIVE_CUDA
 struct DecodeWindow::Context {
-    MfqCudaStream stream = mfq_get_current_cuda_stream();
-    Event ready;
+    MfqCudaStream stream = mfq_get_stream_from_pool(false, mfq_current_cuda_device());
+    std::vector<MfqCudaStream> compute;
+    std::vector<MfqCudaStream> participants;
+    std::vector<std::shared_ptr<Graph>> pools;
+    Executor* executor = nullptr;
+    Context() {
+        executor=Executor::active();
+        if (executor) {
+            compute=make_cuda_graph_compute_streams(stream,executor->collectives());
+            if (std::none_of(compute.begin(),compute.end(),[&](const auto& item) {
+                return item.device_index()==stream.device_index() && item.stream()==stream.stream();
+            })) compute.push_back(stream);
+            participants=cuda_graph_participant_streams(compute,executor->collectives());
+        } else compute={stream};
+        if (participants.empty()) participants=compute;
+    }
+    void wait() const {
+        std::exception_ptr failure;
+        for (const auto& stream : participants) try {
+            MfqCudaGuard device(stream.device_index());
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
+        } catch (...) { if (!failure) failure=std::current_exception(); }
+        if (failure) std::rethrow_exception(failure);
+    }
 };
 namespace {
 class WindowScope final : public DecodeWindow::Scope {
@@ -136,6 +159,49 @@ public:
 private:
     MfqCudaStreamGuard guard_;
 };
+class BatchWindowScope final : public DecodeWindow::Scope {
+public:
+    BatchWindowScope(const std::vector<MfqCudaStream>& compute,
+                     const std::vector<MfqCudaStream>& participants, bool wait)
+        : participants_(participants) {
+        try {
+            if (wait) {
+                ready_.reserve(compute.size());
+                for (const auto& stream : compute) {
+                    MfqCudaGuard device(stream.device_index());
+                    auto event=std::make_unique<Event>();
+                    event->record(mfq_get_current_cuda_stream(stream.device_index()));
+                    ready_.push_back(std::move(event));
+                }
+            }
+            compute_=activate_cuda_graph_compute_streams(compute);
+            if (wait) for (std::size_t i=0;i<compute.size();++i) {
+                MfqCudaGuard device(compute[i].device_index());
+                TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamWaitEvent(compute[i].stream(),ready_[i]->get(),0));
+            }
+        } catch (...) {
+            drain();
+            while (!compute_.empty()) compute_.pop_back();
+            throw;
+        }
+    }
+    ~BatchWindowScope() override {
+        drain();
+        while (!compute_.empty()) compute_.pop_back();
+    }
+private:
+    void drain() noexcept {
+        for (const auto& stream : participants_) {
+            try {
+                MfqCudaGuard device(stream.device_index());
+                TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
+            } catch (...) { report_window_error("scope", "wait"); }
+        }
+    }
+    std::vector<MfqCudaStream> participants_;
+    std::vector<std::unique_ptr<Event>> ready_;
+    std::vector<std::unique_ptr<MfqCudaStreamGuard>> compute_;
+};
 }
 DecodeWindow::DecodeWindow()
     : DecodeWindow(mfq_current_cuda_stream(), ::tyloi::cuda::options::layer_timings()) {}
@@ -143,6 +209,7 @@ DecodeWindow::DecodeWindow(std::unique_ptr<Context> context)
     : context_(std::move(context)), stream_(context_->stream.stream()), graphs_(stream_),
       layer_profile_(::tyloi::cuda::options::layer_timings()), independent_sequences_(true) {
     if (auto* executor = Executor::active()) weights_ = executor->weights_;
+    graphs_.participants(context_->participants);
 }
 std::unique_ptr<DecodeWindow> DecodeWindow::batch() {
     return std::unique_ptr<DecodeWindow>(new DecodeWindow(std::make_unique<Context>()));
@@ -158,10 +225,7 @@ std::unique_ptr<DecodeWindow::Scope> DecodeWindow::enter(bool wait) {
         return std::make_unique<WindowScope>(mfq_get_current_cuda_stream());
     }
     if (wait && failed_) throw std::runtime_error("MFQ model session requires recovery after its previous error");
-    if (wait) context_->ready.record(mfq_current_cuda_stream());
-    auto scope = std::make_unique<WindowScope>(context_->stream);
-    if (wait) TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamWaitEvent(stream_, context_->ready.get(), 0));
-    return scope;
+    return std::make_unique<BatchWindowScope>(context_->compute,context_->participants,wait);
 }
 #endif
 DecodeWindow::DecodeWindow(cudaStream_t stream,bool layer_profile,bool independent_sequences,bool eager)
@@ -182,13 +246,45 @@ void DecodeWindow::initialize_profile() {
 #ifdef TYLOINFER_NATIVE_CUDA
 void DecodeWindow::prepare() {
     if (prepared_) return;
+    try {
     if (!weights_ || !weights_->prepare_graph(::tyloi::Device{::tyloi::kCUDA, mfq_current_cuda_device()})) {
         memory_pool_ = std::make_unique<Graph>();
         memory_pool_->prepare_memory();
         default_context(mfq_current_cuda_device())->end_graph_warmup(mfq_current_cuda_stream());
     }
+    if (context_) {
+        std::vector<MfqCudaStream> seen{context_->stream};
+        for (const auto& stream : context_->participants) {
+            if (std::any_of(seen.begin(),seen.end(),[&](const auto& prior) {
+                return prior.device_index()==stream.device_index() && prior.stream()==stream.stream();
+            })) continue;
+            seen.push_back(stream);
+            MfqCudaGuard device(stream.device_index());
+            MfqCudaStreamGuard guard(stream);
+            std::shared_ptr<Graph> pool;
+            if (context_->executor) {
+                auto& entry=context_->executor->window_pools_[{stream.device_index(),stream.stream()}];
+                pool=entry.lock();
+                if (!pool) {
+                    pool=std::make_shared<Graph>();
+                    pool->prepare_memory();
+                    default_context(stream.device_index())->end_graph_warmup(stream.stream());
+                    entry=pool;
+                }
+            } else {
+                pool=std::make_shared<Graph>();
+                pool->prepare_memory();
+                default_context(stream.device_index())->end_graph_warmup(stream.stream());
+            }
+            context_->pools.push_back(std::move(pool));
+        }
+    }
     initialize_profile();
     prepared_ = true;
+    } catch (...) {
+        clear();
+        throw;
+    }
 }
 #endif
 
@@ -392,6 +488,7 @@ void DecodeWindow::clear() noexcept {
     const auto status = cudaStreamSynchronize(stream_);
     if (status != cudaSuccess)
         std::fprintf(stderr, "decode_window_error operation=clear phase=wait error=%s\n", cudaGetErrorString(status));
+    if (context_) attempt("participants", [&] { context_->wait(); });
     attempt("graphs", [&] { graphs_.clear(); });
     for (auto& task : tasks_) if (task.cleanup) attempt("cleanup", task.cleanup);
     try {
@@ -413,6 +510,7 @@ void DecodeWindow::clear() noexcept {
     barriers_.clear();
     workspaces_.clear();
     memory_pool_.reset();
+    if (context_) context_->pools.clear();
     layer_point_index_.clear();
     layer_points_.clear();
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -505,6 +603,7 @@ struct DecodeWindow::Capture::Impl {
     DecodeWindow& window;
     std::unique_ptr<HostRegistrationBlock> registration;
     std::unique_ptr<GraphWarmupScope> warmup_scope;
+    std::vector<std::unique_ptr<GraphWarmupScope>> participant_warmups;
     std::chrono::steady_clock::time_point started;
     std::size_t warm_tasks = 0, warm_barriers = 0;
     int pass = 0;
@@ -535,6 +634,17 @@ bool DecodeWindow::Capture::next() {
         int device = 0;
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device));
         state.warmup_scope = std::make_unique<GraphWarmupScope>(default_context(device), state.window.stream_);
+        if (state.window.context_) {
+            std::vector<MfqCudaStream> seen{state.window.context_->stream};
+            for (const auto& stream : state.window.context_->participants) {
+                if (std::any_of(seen.begin(),seen.end(),[&](const auto& prior) {
+                    return prior.device_index()==stream.device_index() && prior.stream()==stream.stream();
+                })) continue;
+                seen.push_back(stream);
+                state.participant_warmups.push_back(std::make_unique<GraphWarmupScope>(
+                    default_context(stream.device_index()),stream.stream()));
+            }
+        }
     } else {
         state.checkpoint("record");
         state.record_conversion = true;
@@ -550,8 +660,10 @@ void DecodeWindow::Capture::submitted() {
     auto& state = *impl_;
     if (!state.in_pass || state.awaiting_restore) throw std::logic_error("MFQ capture pass was not started");
     if (state.pass < 3) {
+        state.participant_warmups.clear();
         state.warmup_scope.reset();
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(state.window.stream_));
+        if (state.window.context_) state.window.context_->wait();
     } else {
         state.window.graphs_.end(state.window.barriers_.size(), 1);
         state.window.recording_segments_ = false;
@@ -576,6 +688,7 @@ void DecodeWindow::Capture::restored() {
         state.window.barriers_.clear();
     } else {
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(state.window.stream_));
+        if (state.window.context_) state.window.context_->wait();
         state.window.capture_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - state.started).count();
         state.checkpoint("complete");
@@ -588,6 +701,7 @@ void DecodeWindow::Capture::restored() {
 std::exception_ptr DecodeWindow::Capture::fail(std::exception_ptr error) {
     auto& state = *impl_;
     if (state.done) return error;
+    state.participant_warmups.clear();
     state.warmup_scope.reset();
     state.window.recording_segments_ = false;
     state.window.graphs_.clear();
@@ -616,6 +730,7 @@ std::exception_ptr DecodeWindow::Capture::fail(std::exception_ptr error) {
     } catch (...) {}
     for (auto& task : state.window.tasks_) if (task.cancel) task.cancel();
     (void)cudaStreamSynchronize(state.window.stream_);
+    if (state.window.context_) try { state.window.context_->wait(); } catch (...) {}
     if (allocation_rejected) (void)cudaGetLastError();
     state.window.failed_ = true;
     state.done = true;
@@ -794,7 +909,11 @@ void DecodeWindow::run() {
         report_window_error("replay",phase);
         failed_=true;
         for(auto& task:tasks_)if(task.cancel)task.cancel();
-        (void)cudaStreamSynchronize(stream_);throw;
+        (void)cudaStreamSynchronize(stream_);
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (context_) try { context_->wait(); } catch (...) {}
+#endif
+        throw;
     }
 }
 }

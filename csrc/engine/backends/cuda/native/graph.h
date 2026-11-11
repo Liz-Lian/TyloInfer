@@ -25,7 +25,7 @@ public:
         const std::vector<StreamHandle>& participant_streams);
     void capture_begin();
     // Record in a pool already owned by a decoder or expert-cache lifetime.
-    void capture_begin_shared();
+    void capture_begin_shared(const std::vector<StreamHandle>& participants = {});
     void capture_end();
     void replay();
     void reset() noexcept;
@@ -39,6 +39,8 @@ private:
     std::shared_ptr<Context> context_;
     std::vector<StreamHandle> pool_streams_;
     std::vector<std::shared_ptr<Context>> pool_contexts_;
+    std::vector<StreamHandle> shared_streams_;
+    std::vector<std::shared_ptr<Context>> shared_contexts_;
     cudaGraph_t graph_ = nullptr;
     cudaGraphExec_t executable_ = nullptr;
     bool shared_pool_ = false;

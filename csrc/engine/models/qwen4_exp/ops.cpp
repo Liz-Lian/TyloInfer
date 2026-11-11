@@ -2040,14 +2040,22 @@ bool Qwen4BatchRequestState::belongs_to(const qwen4_exp::Model& model) const noe
 }
 #endif
 int64_t Qwen4BatchRequestState::position() const { return state_->cache_position; }
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::models::BatchGrowth Qwen4BatchRequestState::initial_growth_bytes() const {
+#else
 std::size_t Qwen4BatchRequestState::initial_growth_bytes() const {
+#endif
     std::size_t fixed=0;
     for(std::size_t i=0; i<state_->layers.size(); ++i) {
         const auto& weights = *state_->model.layers[i];
         const auto& state = *state_->layers[i];
         if(weights.gdn)fixed+=weights.gdn->request_cache_growth_bytes(state.gdn);
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    return fixed ? tyloi::models::BatchGrowth{{tyloi::Device(tyloi::kCUDA,state_->model.primary_device),fixed}} : tyloi::models::BatchGrowth{};
+#else
     return fixed;
+#endif
 }
 void Qwen4BatchRequestState::initialize() {
     for(std::size_t i=0; i<state_->layers.size(); ++i) {
@@ -2056,9 +2064,16 @@ void Qwen4BatchRequestState::initialize() {
         if(weights.gdn)weights.gdn->initialize_request_cache(state.gdn,false);
     }
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::models::BatchGrowth Qwen4BatchRequestState::prefill_growth_bytes(int64_t tokens) const {
+    const auto bytes=state_->growth_bytes(tokens);
+    return bytes ? tyloi::models::BatchGrowth{{tyloi::Device(tyloi::kCUDA,state_->model.primary_device),bytes}} : tyloi::models::BatchGrowth{};
+}
+#else
 std::size_t Qwen4BatchRequestState::prefill_growth_bytes(int64_t tokens) const {
     return state_->growth_bytes(tokens);
 }
+#endif
 std::size_t Qwen4BatchRequestState::resident_bytes() const {
     std::map<std::pair<int,std::uintptr_t>,std::size_t> allocations;
     const auto add = [&](const ::tyloi::Tensor& tensor) {

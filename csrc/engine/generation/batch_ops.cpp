@@ -49,6 +49,14 @@ std::exception_ptr prefill_failure(std::exception_ptr failure) {
     return failure;
 }
 
+void merge_growth(models::BatchGrowth& target, const models::BatchGrowth& source) {
+    for (const auto& [device, bytes] : source) {
+        auto it=std::find_if(target.begin(),target.end(),[&](const auto& item) { return item.first==device; });
+        if (it==target.end()) target.emplace_back(device,bytes);
+        else it->second=prefill_budget_add(it->second,bytes);
+    }
+}
+
 class Ops {
 public:
     using Request = BatchRow;
@@ -83,7 +91,9 @@ public:
         result.emplace_back("continuous_batching_packed_prefill_batches", packed_batches_);
         result.emplace_back("continuous_batching_packed_prefill_requests", packed_requests_);
         result.emplace_back("continuous_batching_packed_prefill_tokens", packed_rows_);
-        result.emplace_back("continuous_batching_moe_cached_row_serial", 0.0);
+        if (std::none_of(result.begin(),result.end(),[](const auto& metric) {
+            return metric.first=="continuous_batching_moe_cached_row_serial";
+        })) result.emplace_back("continuous_batching_moe_cached_row_serial", 0.0);
         result.emplace_back("continuous_batching_request_kv_bytes", bytes);
         result.emplace_back("continuous_batching_request_contexts", contexts);
         return result;
@@ -94,15 +104,23 @@ public:
         try { batch_->clear(); } catch (...) { if (!failure) failure=std::current_exception(); }
         if (failure) std::rethrow_exception(failure);
     }
-    void resume_decode(std::int64_t) {}
+    void resume_decode(std::int64_t position) {
+        auto scope=executor_.enter();
+        batch_->resume(position);
+    }
     PrefillChunk prefill_chunk(const std::shared_ptr<Request>& request, PrefillChunk chunk) {
         auto scope = executor_.enter();
         if (!request->state) weights_.finish_exchange();
         initialize(request, chunk);
+        std::size_t primary=0;
+        for (const auto& [device, bytes] : request->state->prefill_growth_bytes(chunk.count)) {
+            if (device==executor_.device()) primary=prefill_budget_add(primary,bytes);
+            else if (bytes) budget_.reserve_kv(device,prefill_budget_add(bytes,std::size_t(64)<<20));
+        }
         return budget_.batch(executor_.device(), batch_->prefill_row_bytes(), chunk,
-            request->state->prefill_growth_bytes(chunk.count));
+            primary);
     }
-    std::size_t prefill_batch_limit() const { return packed_ ? config_.max_sequences : 1; }
+    std::size_t prefill_batch_limit() const { return packed_ && batch_->supports_packed() ? config_.max_sequences : 1; }
     std::int64_t prefill_batch_token_budget() const { return packed_tokens_; }
 
     Sample prefill(const std::shared_ptr<Request>& request, PrefillChunk chunk) {
@@ -111,8 +129,7 @@ public:
             initialize(request, chunk);
             auto timer = executor_.timer();
             if (chunk.count > 1024) weights_.workspace(workspace_);
-            budget_.reserve_kv(executor_.device(), prefill_budget_add(
-                request->state->prefill_growth_bytes(chunk.count), std::size_t(256) << 20));
+            reserve(request->state->prefill_growth_bytes(chunk.count),std::size_t(256)<<20,true);
             std::vector<models::BatchState*> states{request->state.get()};
             std::vector<Tensor> ids{ops::contiguous(ops::slice(request->ids,1,chunk.offset,chunk.offset+chunk.count))};
             auto hidden = run_prefill(std::move(states), std::move(ids)).at(0);
@@ -139,9 +156,9 @@ public:
         }
         const auto execute = [&](auto&& self, const std::vector<std::size_t>& rows) -> void {
             if (rows.empty()) return;
-            std::size_t growth = std::size_t(256) << 20;
-            for (auto row : rows) growth = prefill_budget_add(growth, items[row].first->state->prefill_growth_bytes(items[row].second.count));
-            try { budget_.reserve_kv(executor_.device(), growth); }
+            models::BatchGrowth growth;
+            for (auto row : rows) merge_growth(growth,items[row].first->state->prefill_growth_bytes(items[row].second.count));
+            try { reserve(growth,std::size_t(256)<<20,true); }
             catch (const InferenceInputError& error) {
                 if (error.code != InferenceInputErrorCode::ContextLength) throw;
                 if (rows.size()==1) { result[rows.front()].failure=std::current_exception(); return; }
@@ -202,13 +219,28 @@ public:
         return result;
     }
 
-    void activate(const std::shared_ptr<Request>& request, const Sample& sample) { accept(request,sample); }
+    void activate(const std::shared_ptr<Request>& request, const Sample& sample) {
+        auto scope=executor_.enter();
+        reserve(batch_->activate_growth(*request->state),std::size_t(64)<<20);
+        batch_->activate(*request->state);
+        accept(request,sample);
+    }
     void discard_prefill(const std::shared_ptr<Request>& request) {
+        auto scope=executor_.enter();
         suspend_decode();
+        executor_.drain();
+        if (request->state) batch_->release(*request->state);
         request->state.reset(); request->ids={}; request->timers.clear(); request->packed_ms=0;
     }
-    void retire(const std::vector<std::shared_ptr<Request>>& retired, std::int64_t) {
-        for (const auto& request : retired) discard_prefill(request);
+    void retire(const std::vector<std::shared_ptr<Request>>& retired, std::int64_t position) {
+        auto scope=executor_.enter();
+        weights_.finish_exchange();
+        executor_.drain();
+        for (const auto& request : retired) {
+            if (request->state) batch_->release(*request->state);
+            request->state.reset(); request->ids={}; request->timers.clear(); request->packed_ms=0;
+        }
+        batch_->retire(position);
         const bool active=std::any_of(requests_.begin(),requests_.end(),[](const auto& weak) {
             const auto request=weak.lock(); return request && request->state;
         });
@@ -216,15 +248,18 @@ public:
     }
     Decoded decode(State& state) {
         auto scope=executor_.enter();
-        std::vector<models::BatchState*> states;
+        std::vector<models::BatchRow> rows;
         std::vector<std::int64_t> tokens;
         for (const auto& request : state.active) {
             request->row=-1;
-            if (!request->eligible) continue;
-            request->row=std::int64_t(tokens.size());
             if (!request->state || request->state->position()!=request->cache_length)
                 throw std::runtime_error("batch decode position mismatch");
-            states.push_back(request->state.get()); tokens.push_back(request->pending_token);
+            const bool row_greedy=request->sampler->greedy() && !request->sampler->has_penalties() && !request->token_constraint;
+            rows.push_back({request->state.get(),request->pending_token,request->cache_length,
+                request->generation_limit-request->produced,request->eligible,row_greedy});
+            if (!request->eligible) continue;
+            request->row=std::int64_t(tokens.size());
+            tokens.push_back(request->pending_token);
         }
         auto host=ops::reshape(ops::tensor(tokens,Device(kCPU)), {-1,1});
         auto ids=ops::copy(host,executor_.device());
@@ -233,14 +268,16 @@ public:
         });
         std::optional<Tensor> captured;
         try {
+            reserve(batch_->decode_growth(rows),std::size_t(64)<<20);
+            batch_->prepare_decode(rows);
             if (config_.cuda_graph) {
-                auto plan=plan_graph(states,greedy);
+                auto plan=plan_graph(rows,greedy);
                 if (plan) {
                     if (plan->rebuild) {
                         executor_.trim(executor_.device());
-                        budget_.reserve_kv(executor_.device(),prefill_budget_add(plan->growth,std::size_t(64)<<20));
+                        reserve(plan->growth,std::size_t(64)<<20);
                     }
-                    captured=batch_->capture(states,ids,host,greedy,*plan);
+                    captured=batch_->capture(rows,ids,host,greedy,*plan);
                 }
             }
         } catch (const std::exception& error) {
@@ -253,11 +290,11 @@ public:
                 "insufficient GPU or pinned RAM for the batch decode workspace; reduce concurrent requests");
         }
         if (!captured) {
-            std::size_t growth=0;
-            for (const auto* item:states) growth=prefill_budget_add(growth,item->prefill_growth_bytes(1));
-            if (growth) budget_.reserve_kv(executor_.device(),prefill_budget_add(growth,std::size_t(64)<<20));
+            models::BatchGrowth growth;
+            for (const auto& row:rows) if (row.eligible) merge_growth(growth,row.state->prefill_growth_bytes(1));
+            reserve(growth,std::size_t(64)<<20);
         }
-        auto output=captured ? std::move(*captured) : batch_->decode(states,std::move(ids),host);
+        auto output=captured ? std::move(*captured) : batch_->decode(rows,std::move(ids),host);
         std::vector<std::int64_t> selected;
         if (greedy) {
             selected=ops::integers(captured ? output : ops::sample_greedy(ops::contiguous(output)));
@@ -278,11 +315,26 @@ public:
         if (request->counts) ops::add_token_counts(request->counts,ops::contiguous(sample.next));
     }
     void recover(State& state) {
+        auto scope=executor_.enter();
+        std::exception_ptr failure;
+        try { weights_.drain(); } catch (...) { failure=std::current_exception(); }
+        try { executor_.drain(); } catch (...) { if (!failure) failure=std::current_exception(); }
         for (const auto& request:state.active) discard_prefill(request);
         for (const auto& request:state.prefilling) discard_prefill(request);
+        batch_->recover();
+        if (failure) std::rethrow_exception(failure);
     }
 
 private:
+    void reserve(const models::BatchGrowth& values, std::size_t margin, bool primary=false) {
+        models::BatchGrowth growth;
+        merge_growth(growth,values);
+        if (primary && std::none_of(growth.begin(),growth.end(),[&](const auto& item) { return item.first==executor_.device(); }))
+            growth.emplace_back(executor_.device(),0);
+        for (const auto& [device,bytes] : growth)
+            if (bytes || (primary && device==executor_.device()))
+                budget_.reserve_kv(device,prefill_budget_add(bytes,margin));
+    }
     std::vector<Tensor> run_prefill(std::vector<models::BatchState*> states, std::vector<Tensor> ids) {
         auto work=executor_.work();
         StepSequence<std::vector<Tensor>> job;
@@ -315,13 +367,13 @@ private:
         }
     }
     std::unique_ptr<models::Batch::Plan> plan_graph(
-            const std::vector<models::BatchState*>& states, bool greedy) {
+            const std::vector<models::BatchRow>& rows, bool greedy) {
         Capture capture(executor_,weights_);
         std::unique_ptr<models::Batch::Plan> plan;
         StepSequence<std::unique_ptr<models::Batch::Plan>> job;
         bool observed=false;
         try {
-            job=batch_->plan(states,greedy);
+            job=batch_->plan(rows,greedy);
             for (;;) {
                 auto step=job.next();
                 if (step.layer || step.workspace || (step.graph && step.value) ||
@@ -359,10 +411,10 @@ private:
             });
             if (!active) { weights_.retire_decode(); executor_.trim(executor_.device()); }
             requests_.push_back(request);
-            auto state=batch_->make_state();
-            const auto fixed=state->initial_growth_bytes();
-            if (fixed) budget_.reserve_kv(executor_.device(),prefill_budget_add(fixed,std::size_t(64)<<20));
-            state->initialize(); request->state=std::move(state);
+            auto state=batch_->make_state(static_cast<std::int64_t>(request->prompt.size()));
+            reserve(state->initial_growth_bytes(),std::size_t(64)<<20);
+            request->state=std::move(state);
+            request->state->initialize();
             request->ids=ops::reshape(ops::tensor(request->prompt,executor_.device()),{1,-1});
             request->sampler.emplace(request->sampling,executor_.device());
             if (request->sampler->has_penalties()) {
@@ -395,10 +447,27 @@ private:
 };
 } // namespace
 
-std::unique_ptr<Batch> make_batch(models::CausalModel& model, Executor& executor,
+std::unique_ptr<Batch> make_batch(models::CausalModel& model, models::State* serial, Executor& executor,
     weights::Cache& weights, Budget& budget, const Config& config) {
-    auto batch = model.batch(config.continuous_batch.cuda_graph);
+    const auto& settings=config.continuous_batch;
+    auto scope=executor.enter();
+    auto batch = model.batch({settings.max_sequences,settings.paged_kv,settings.preallocate,
+        settings.cpu_offload,settings.cached_slots,settings.cuda_graph,settings.greedy,
+        settings.cuda_graph_minimum_tokens},serial);
     if (!batch) throw std::invalid_argument("continuous batching is unavailable for this model");
+    try {
+        for (const auto& [device,bytes] : batch->initial_growth_bytes())
+            if (bytes) budget.reserve_kv(device,prefill_budget_add(bytes,std::size_t(64)<<20));
+        batch->initialize();
+        weights.finish_exchange();
+        executor.drain();
+    } catch (...) {
+        const auto failure=std::current_exception();
+        try { weights.finish_exchange(); } catch (...) {}
+        try { executor.drain(); } catch (...) {}
+        batch.reset();
+        std::rethrow_exception(failure);
+    }
     return std::make_unique<ContinuousBatch<Ops>>(config.generation.prefill_chunk_size,
         config.continuous_batch.prefill_token_budget,model,std::move(batch),executor,weights,budget,
         config.continuous_batch,config.workspace_reserve,config.continuous_batch.packed_prefill,

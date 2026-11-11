@@ -27,6 +27,7 @@ class KvMemoryManager;
 class KvOffloadStore;
 struct KvMemoryAllocation;
 class DecodeWindow;
+class Graph;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -208,6 +209,7 @@ private:
     MoeScratchCache moe_scratch_;
 #ifdef TYLOINFER_NATIVE_CUDA
     ::tyloi::weights::Cache* weights_ = nullptr;
+    std::map<std::pair<int, cudaStream_t>, std::weak_ptr<::tyloi::cuda::Graph>> window_pools_;
     std::shared_ptr<KvMemoryManager> kv_;
     std::shared_ptr<KvOffloadStore> offload_;
     mutable std::mutex attention_scratch_mutex_;

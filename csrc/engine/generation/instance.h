@@ -17,22 +17,17 @@ tyloi::StepSequence<tyloi::models::Prepared> Text<M, S, P>::prepare(InferenceReq
     if constexpr (std::is_same_v<Parts, std::unique_ptr<tyloi::cuda::minicpmo45::Components>>) {
         if (!components) throw std::invalid_argument("model has no multimodal component");
         return components->prepare(input.prompt, *input.vision);
-    } else if constexpr (
 #ifndef TYLOINFER_NATIVE_CUDA
-                         std::is_same_v<Model, qwen4_exp::Model> ||
+    } else if constexpr (std::is_same_v<Model, qwen4_exp::Model> ||
                          std::is_same_v<Model, nemotron_h::Model> ||
-#endif
                          std::is_same_v<Model, qwen35::Model>) {
         return components.prepare(language, images,
-#ifndef TYLOINFER_NATIVE_CUDA
         execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)),
         execution->executor().collectives(),
-#endif
         execution->config.layer_placement.primary_device(),
-#ifndef TYLOINFER_NATIVE_CUDA
         executor.get(),
-#endif
         input.prompt, *input.vision);
+#endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA
     else if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language); }) {

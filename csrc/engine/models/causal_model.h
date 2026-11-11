@@ -34,7 +34,7 @@ public:
     /** Report startup graph phases using disposable request state and weight access policy. */
     virtual tyloi::StepSequence<Decoded> warmup(State&, DecodeOptions) const { return {}; }
     /** Create supported batch computation, or return null for single-request execution. */
-    virtual std::unique_ptr<Batch> batch(bool) { return {}; }
+    virtual std::unique_ptr<Batch> batch(const BatchConfig&, State* serial = nullptr) { return {}; }
     /** Prefetch rows for host token IDs using the supplied owning request state. */
     virtual bool prefetch(State&, const Tensor&) const { return false; }
     /** Prepare supported media for the owning request, yielding progress and owned Tensor payloads. */

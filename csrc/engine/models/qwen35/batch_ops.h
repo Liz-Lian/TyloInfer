@@ -1,5 +1,7 @@
 #pragma once
 
+#ifndef TYLOINFER_NATIVE_CUDA
+
 #include "engine/models/batch.h"
 #include "engine/backends/cuda/executor/batch_graph.h"
 #include "engine/config.h"
@@ -97,3 +99,5 @@ class BatchOps {
 };
 
 } // namespace tyloi::cuda::qwen35
+
+#endif // !TYLOINFER_NATIVE_CUDA
