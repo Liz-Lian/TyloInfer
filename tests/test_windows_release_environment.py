@@ -113,76 +113,6 @@ if ([IO.File]::ReadAllText($sentinel) -cne 'existing native cache') { throw 'Nat
 ''')
 
 
-def test_msvc_prefix_repair_preserves_good_prefixes_and_original_files(tmp_path):
-    """Repair only reversible legacy decoding and keep the compiler and Ninja prefixes aligned."""
-    output = invoke_functions(tmp_path, r'''
-if ([Text.Encoding]::GetEncoding(0).CodePage -eq 65001) { Write-Output 'SKIP UTF8'; return }
-$context = @{ NativeBuildDirectory = (Join-Path $env:TEST_ROOT 'native'); BuildId = 'test' }
-$files = Join-Path $context.NativeBuildDirectory 'CMakeFiles'
-$version = Join-Path $files '3.31.6'
-$goodVersion = Join-Path $files '4.0.0'
-New-Item -ItemType Directory -Force -Path $version, $goodVersion | Out-Null
-$correct = 'é: à:  '
-$bad = [Text.Encoding]::GetEncoding(0).GetString([Text.Encoding]::UTF8.GetBytes($correct))
-$rules = Join-Path $files 'rules.ninja'
-$c = Join-Path $version 'CMakeCCompiler.cmake'
-$cxx = Join-Path $version 'CMakeCXXCompiler.cmake'
-$good = Join-Path $goodVersion 'CMakeCXXCompiler.cmake'
-$ascii = Join-Path $goodVersion 'CMakeCCompiler.cmake'
-$originals = @{
-    $rules = "msvc_deps_prefix = $bad`nother_rule = unchanged`n"
-    $c = "set(CMAKE_C_CL_SHOWINCLUDES_PREFIX `"$bad`")`n"
-    $cxx = "set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX `"$bad`")`n"
-}
-foreach ($file in $originals.Keys) { [IO.File]::WriteAllText($file, $originals[$file]) }
-[IO.File]::WriteAllText($good, "set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX `"$correct`")`n")
-[IO.File]::WriteAllText($ascii, 'set(CMAKE_C_CL_SHOWINCLUDES_PREFIX "Note: including file:  ")')
-Repair-MsvcDependencyPrefixEncoding $context
-foreach ($file in $originals.Keys) {
-    if (-not [IO.File]::ReadAllText($file).Contains($correct)) { throw 'Prefix was not repaired' }
-    if ([IO.File]::ReadAllText("$file.before-prefix-fix-test") -cne $originals[$file]) {
-        throw 'Original generated file was not preserved'
-    }
-}
-if ([IO.File]::ReadAllText($rules) -cne "msvc_deps_prefix = $correct`nother_rule = unchanged`n") {
-    throw 'Unrelated Ninja rules changed'
-}
-Repair-MsvcDependencyPrefixEncoding $context
-if (Test-Path -LiteralPath "$good.before-prefix-fix-test") { throw 'Correct Unicode prefix changed' }
-if (Test-Path -LiteralPath "$ascii.before-prefix-fix-test") { throw 'ASCII prefix changed' }
-''')
-    if 'SKIP UTF8' in output:
-        pytest.skip('The system ANSI encoding is already UTF-8')
-
-
-def test_msvc_prefix_repair_rejects_an_already_built_bad_cache_before_writing(tmp_path):
-    """Do not accept stale dependency records or invalidate CUDA outputs automatically."""
-    output = invoke_functions(tmp_path, r'''
-if ([Text.Encoding]::GetEncoding(0).CodePage -eq 65001) { Write-Output 'SKIP UTF8'; return }
-$context = @{ NativeBuildDirectory = (Join-Path $env:TEST_ROOT 'native'); BuildId = 'test' }
-$files = Join-Path $context.NativeBuildDirectory 'CMakeFiles'
-New-Item -ItemType Directory -Force -Path $files | Out-Null
-$bad = [Text.Encoding]::GetEncoding(0).GetString([Text.Encoding]::UTF8.GetBytes('é: à:  '))
-$rules = Join-Path $files 'rules.ninja'
-$original = "msvc_deps_prefix = $bad`n"
-[IO.File]::WriteAllText($rules, $original)
-$deps = Join-Path $context.NativeBuildDirectory '.ninja_deps'
-[IO.File]::WriteAllText($deps, 'previous dependency records')
-$rejected = $false
-try { Repair-MsvcDependencyPrefixEncoding $context }
-catch {
-    if ($_.Exception.Message -notlike '*unused -NativeBuildDirectory*') { throw }
-    $rejected = $true
-}
-if (-not $rejected) { throw 'Unsafe existing cache was accepted' }
-if ([IO.File]::ReadAllText($rules) -cne $original) { throw 'Existing rules changed' }
-if ([IO.File]::ReadAllText($deps) -cne 'previous dependency records') { throw 'Existing dependencies changed' }
-if (Test-Path -LiteralPath "$rules.before-prefix-fix-test") { throw 'Rejection happened after writing' }
-''')
-    if 'SKIP UTF8' in output:
-        pytest.skip('The system ANSI encoding is already UTF-8')
-
-
 def test_resource_preparation_retains_previous_files_and_rejects_outside_paths(tmp_path):
     invoke_functions(tmp_path, r'''
 $packaging = Join-Path $env:TEST_ROOT 'packaging'
@@ -213,42 +143,6 @@ try { Initialize-EmptyDirectory $stage }
 catch { $rejected = $true }
 if (-not $rejected -or [IO.File]::ReadAllText($sentinel) -ne 'preserve') { throw 'Existing stage was changed' }
 ''')
-
-
-def test_frontend_cache_defaults_to_build_directory_and_preserves_override(tmp_path):
-    """Use a writable release cache while honoring an explicit npm cache directory."""
-    invoke_functions(tmp_path, r'''
-$context = New-BuildContext '' (Join-Path $env:TEST_ROOT 'dist') (Join-Path $env:TEST_ROOT 'packaging')
-$env:npm_config_cache = $null
-Initialize-FrontendCache $context
-$expected = Join-Path $context.BuildDirectory 'npm-cache'
-if ($env:npm_config_cache -ne $expected -or -not (Test-Path -LiteralPath $expected)) {
-    throw 'Default npm cache is not inside the build directory'
-}
-$explicit = Join-Path $env:TEST_ROOT 'explicit cache'
-$env:npm_config_cache = $explicit
-Initialize-FrontendCache $context
-if ($env:npm_config_cache -ne $explicit -or -not (Test-Path -LiteralPath $explicit)) {
-    throw 'Explicit npm cache was replaced'
-}
-''')
-
-
-def test_clean_is_rejected_before_modifying_release_resources(tmp_path):
-    if sys.platform != 'win32' or not POWERSHELL:
-        pytest.skip('Windows PowerShell execution is required')
-    output = tmp_path / 'previous output'
-    output.mkdir()
-    sentinel = output / 'previous.exe'
-    sentinel.write_bytes(b'previous complete release')
-    result = subprocess.run(
-        [POWERSHELL, '-NoProfile', '-NonInteractive', '-File', str(BUILD_SCRIPT),
-         '-Clean', '-OutputDirectory', str(output)],
-        capture_output=True, text=True, encoding='utf-8', timeout=30,
-    )
-    assert result.returncode != 0
-    assert '-Clean is not supported' in result.stderr
-    assert sentinel.read_bytes() == b'previous complete release'
 
 
 def test_portable_preflight_rejects_python_without_pyinstaller_before_touching_output(tmp_path):
@@ -282,32 +176,272 @@ Build-PortableArchive $context
     assert list(output.iterdir()) == [previous]
 
 
-def test_visual_studio_import_selects_supported_2022_toolchain(tmp_path):
-    if sys.platform != 'win32' or not POWERSHELL:
-        pytest.skip('Windows PowerShell execution is required')
-    installer = Path(os.environ.get('ProgramFiles(x86)', 'C:/Program Files (x86)'))
-    vswhere = installer / 'Microsoft Visual Studio/Installer/vswhere.exe'
-    if not vswhere.is_file():
-        pytest.skip('Visual Studio Installer is not installed')
-    installed = subprocess.run(
-        [str(vswhere), '-latest', '-products', '*', '-version', '[17.0,18.0)',
-         '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
-         '-property', 'installationPath'],
-        capture_output=True, text=True, encoding='utf-8', timeout=15,
-    )
-    if installed.returncode != 0 or not installed.stdout.strip():
-        pytest.skip('Visual Studio 2022 C++ tools are not installed')
+def test_clean_uses_fresh_caches_and_preserves_explicit_locations(tmp_path):
+    """Keep normal incremental caches while requiring fresh explicit clean-build locations."""
     invoke_functions(tmp_path, r'''
+$env:CARGO_TARGET_DIR = $null
+$env:TYLOINFER_RELEASE_NATIVE_BUILD_DIR = $null
+$packaging = Join-Path $env:TEST_ROOT 'packaging'
+$output = Join-Path $env:TEST_ROOT 'dist'
+$normal = New-BuildContext '' $output $packaging
+$fresh = New-BuildContext '' $output $packaging -Clean
+if (-not $fresh.NativeBuildDirectory.StartsWith($fresh.BuildDirectory)) { throw 'Clean reused native cache' }
+if (-not $fresh.CargoTargetDirectory.StartsWith($fresh.BuildDirectory)) { throw 'Clean reused Cargo cache' }
+if ($fresh.NativeBuildDirectory -eq $normal.NativeBuildDirectory) { throw 'Clean reused normal native cache' }
+$explicit = Join-Path $env:TEST_ROOT 'explicit-native'
+$env:CARGO_TARGET_DIR = Join-Path $env:TEST_ROOT 'explicit-cargo'
+$chosen = New-BuildContext '' $output $packaging -NativeBuildDirectory $explicit -Clean
+if ($chosen.NativeBuildDirectory -ne $explicit -or $chosen.CargoTargetDirectory -ne $env:CARGO_TARGET_DIR) { throw 'Changed explicit cache locations' }
+New-Item -ItemType Directory -Force -Path $explicit | Out-Null
+$sentinel = Join-Path $explicit 'keep.obj'
+[IO.File]::WriteAllText($sentinel, 'previous object')
+$rejected = $false
+try { New-BuildContext '' $output $packaging -NativeBuildDirectory $explicit -Clean | Out-Null }
+catch { if ($_.Exception.Message -notlike '*empty explicitly selected*') { throw }; $rejected = $true }
+if (-not $rejected -or [IO.File]::ReadAllText($sentinel) -cne 'previous object') { throw 'Destroyed or accepted nonempty cache' }
+''')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows developer environment')
+def test_active_developer_environment_preserves_tools_language_and_path(tmp_path):
+    """Use the caller's valid environment instead of selecting a different installed VS."""
+    invoke_functions(tmp_path, r'''
+$tools = Join-Path $env:TEST_ROOT 'caller-tools'
+New-Item -ItemType Directory -Force -Path $tools | Out-Null
+[IO.File]::WriteAllText((Join-Path $tools 'cl.cmd'), '@exit /b 0')
+[IO.File]::WriteAllText((Join-Path $tools 'ninja.cmd'), '@exit /b 0')
+$env:PATH = "$tools;$env:PATH"
+$env:INCLUDE = 'caller includes'
+$env:LIB = 'caller libraries'
+$env:VSCMD_ARG_TGT_ARCH = 'x64'
+$env:VSLANG = 'caller-language'
+$env:TYLOINFER_RELEASE_VS_PATH = $null
+$before = $env:PATH
+$ninja = (Get-Command ninja).Source
 Import-VisualStudioEnvironment
-if ($env:VisualStudioVersion -notlike '17.*') { throw 'Selected an unsupported Visual Studio version' }
-if ($env:VSLANG -ne '1033') { throw 'Compiler diagnostics are not deterministic across languages' }
-$compiler = Get-Command cl.exe -ErrorAction Stop
-if (-not $compiler.Source.StartsWith($env:VSINSTALLDIR, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Compiler does not belong to the selected Visual Studio instance'
+if ($env:PATH -cne $before -or $env:VSLANG -cne 'caller-language') { throw 'Changed caller environment' }
+if ((Get-Command ninja).Source -ne $ninja) { throw 'Changed selected Ninja' }
+$env:VSCMD_ARG_TGT_ARCH = 'x86'
+$rejected = $false
+try { Import-VisualStudioEnvironment }
+catch { if ($_.Exception.Message -notlike '*x64*') { throw }; $rejected = $true }
+if (-not $rejected) { throw 'Accepted an incompatible target environment' }
+''')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows developer environment')
+def test_explicit_visual_studio_preserves_caller_ninja_and_language(tmp_path):
+    """Initialize the selected installation without imposing a VS year or unrelated tools."""
+    invoke_functions(tmp_path, r'''
+$install = Join-Path $env:TEST_ROOT 'selected VS'
+$tools = Join-Path $install 'compiler'
+$caller = Join-Path $env:TEST_ROOT 'caller'
+$batch = Join-Path $install 'Common7/Tools/VsDevCmd.bat'
+New-Item -ItemType Directory -Force -Path $tools, $caller, (Split-Path $batch) | Out-Null
+[IO.File]::WriteAllText((Join-Path $tools 'cl.cmd'), '@exit /b 0')
+[IO.File]::WriteAllText((Join-Path $caller 'ninja.cmd'), '@exit /b 0')
+[IO.File]::WriteAllText($batch, "@echo off`nset `"PATH=$tools;%PATH%`"`nset `"INCLUDE=chosen`"`nset `"LIB=chosen`"`nset `"VSCMD_ARG_TGT_ARCH=x64`"`nset `"VSLANG=changed-by-batch`"`n")
+$env:PATH = "$caller;$env:PATH"
+$env:VSLANG = 'caller-language'
+$ninja = (Get-Command ninja).Source
+Import-VisualStudioEnvironment -InstallationPath $install
+if ((Get-Command cl).Source -ne (Join-Path $tools 'cl.cmd')) { throw 'Ignored selected installation' }
+if ((Get-Command ninja).Source -ne $ninja -or $env:VSLANG -cne 'caller-language') { throw 'Overrode unrelated caller settings' }
+''')
+
+
+@pytest.mark.parametrize('variable,value', [('Jobs', '-1'), ('TYLOINFER_RELEASE_JOBS', '0'), ('TYLOINFER_RELEASE_JOBS', 'invalid')])
+def test_invalid_parallelism_is_rejected(tmp_path, variable, value):
+    """Fail invalid concurrency settings before starting any compilation."""
+    invoke_functions(tmp_path, r'''
+$env:TYLOINFER_RELEASE_JOBS = 'ENV_VALUE'
+$rejected = $false
+try { Get-ReleaseJobs REQUESTED | Out-Null }
+catch { if ($_.Exception.Message -notlike '*positive*') { throw }; $rejected = $true }
+if (-not $rejected) { throw 'Accepted invalid parallelism' }
+'''.replace('ENV_VALUE', value if variable != 'Jobs' else '').replace('REQUESTED', value if variable == 'Jobs' else '0'))
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows script entry')
+def test_script_entry_restores_all_environment_on_failure(tmp_path):
+    """Restore existing and newly created process variables when an invoked build fails."""
+    invoke_functions(tmp_path, r'''
+$env:TYLOINFER_RELEASE_JOBS = $null
+$before = [Environment]::GetEnvironmentVariables('Process')
+function Get-CimInstance {
+    $env:PATH = 'changed'
+    $env:VSLANG = 'changed'
+    $env:TEMP = 'changed'
+    $env:CFLAGS = 'changed'
+    $env:VSCMD_ARG_TGT_ARCH = 'changed'
+    $env:TYLOINFER_TEST_NEW_ENVIRONMENT = 'new'
+    throw 'controlled initialization failure'
 }
-$bundledNinja = Join-Path $env:VSINSTALLDIR 'Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe'
-if (Test-Path -LiteralPath $bundledNinja) {
-    $ninja = Get-Command ninja.exe -ErrorAction Stop
-    if ($ninja.Source -ne $bundledNinja) { throw 'The bundled Ninja directory was not added to PATH' }
+$rejected = $false
+try { & $env:TEST_BUILD_SCRIPT }
+catch { if ($_.Exception.Message -notlike '*controlled initialization failure*') { throw }; $rejected = $true }
+if (-not $rejected) { throw 'Expected controlled failure' }
+$after = [Environment]::GetEnvironmentVariables('Process')
+if ($before.Count -ne $after.Count) { throw 'Environment variable count changed' }
+foreach ($key in $before.Keys) { if ($before[$key] -cne $after[$key]) { throw "Leaked environment variable: $key" } }
+''')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows file sharing')
+def test_checkout_lock_rejects_a_second_process_and_releases_for_the_owner(tmp_path):
+    """Serialize one checkout while allowing independent checkouts and later invocations."""
+    if not POWERSHELL:
+        pytest.skip('PowerShell 7 is required')
+    environment = dict(os.environ, TEST_BUILD_SCRIPT=str(BUILD_SCRIPT), TEST_ROOT=str(tmp_path))
+    owner = subprocess.Popen(
+        [POWERSHELL, '-NoProfile', '-NonInteractive', '-Command',
+         '. $env:TEST_BUILD_SCRIPT; $lock = Get-CheckoutBuildLock $env:TEST_ROOT; '
+         'Write-Output READY; [Console]::ReadLine() | Out-Null; $lock.Dispose()'],
+        env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert owner.stdout.readline().strip() == 'READY'
+        invoke_functions(tmp_path, r'''
+$rejected = $false
+try { $unexpected = Get-CheckoutBuildLock $env:TEST_ROOT; $unexpected.Dispose() }
+catch { if ($_.Exception.Message -notlike '*checkout release lock*') { throw }; $rejected = $true }
+if (-not $rejected) { throw 'Concurrent checkout build was accepted' }
+$other = Get-CheckoutBuildLock (Join-Path $env:TEST_ROOT 'other checkout')
+$other.Dispose()
+''')
+        owner.communicate('\n', timeout=10)
+        assert owner.returncode == 0
+        invoke_functions(tmp_path, '$lock = Get-CheckoutBuildLock $env:TEST_ROOT; $lock.Dispose()')
+    finally:
+        if owner.poll() is None:
+            owner.terminate()
+            owner.wait(timeout=5)
+
+
+def test_cuda_selection_honors_explicit_compilers_and_numeric_versions(tmp_path):
+    """Use one selected SDK and reject invalid overrides instead of silently switching."""
+    invoke_functions(tmp_path, r'''
+$first = Join-Path $env:TEST_ROOT 'first SDK'
+$second = Join-Path $env:TEST_ROOT 'second SDK'
+foreach ($root in @($first, $second)) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $root 'bin') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $root 'bin/nvcc.exe'), 'fixture')
 }
+$script:pathCompiler = Join-Path $second 'bin/nvcc.exe'
+function Get-Command { param($Name, $ErrorAction); if ($Name -eq 'nvcc' -and $script:pathCompiler) { [pscustomobject]@{ Source = $script:pathCompiler } } }
+$env:CUDACXX = Join-Path $first 'bin/nvcc.exe'
+$env:CUDA_HOME = $second
+$env:CUDA_PATH = $second
+if ((Find-CudaRoot) -ne $first) { throw 'CUDACXX was ignored' }
+$env:CUDACXX = Join-Path $first 'missing.exe'
+$rejected = $false
+try { Find-CudaRoot | Out-Null }
+catch { if ($_.Exception.Message -notlike '*CUDACXX*') { throw }; $rejected = $true }
+if (-not $rejected) { throw 'Invalid CUDACXX fell back silently' }
+$env:CUDACXX = $null
+$env:CUDA_HOME = $first
+if ((Find-CudaRoot) -ne $second) { throw 'PATH compiler was ignored' }
+$script:pathCompiler = $null
+if ((Find-CudaRoot) -ne $first) { throw 'CUDA_HOME was ignored' }
+$env:CUDA_HOME = Join-Path $env:TEST_ROOT 'missing SDK'
+$rejected = $false
+try { Find-CudaRoot | Out-Null }
+catch { if ($_.Exception.Message -notlike '*CUDA_HOME*') { throw }; $rejected = $true }
+if (-not $rejected) { throw 'Invalid CUDA_HOME fell back silently' }
+$env:CUDA_HOME = $null
+if ((Find-CudaRoot) -ne $second) { throw 'CUDA_PATH was ignored' }
+$env:CUDA_PATH = $null
+$env:ProgramFiles = Join-Path $env:TEST_ROOT 'installed'
+foreach ($version in @('v9.0', 'v12.0')) {
+    $bin = Join-Path $env:ProgramFiles "NVIDIA GPU Computing Toolkit/CUDA/$version/bin"
+    New-Item -ItemType Directory -Force -Path $bin | Out-Null
+    [IO.File]::WriteAllText((Join-Path $bin 'nvcc.exe'), 'fixture')
+}
+if ((Find-CudaRoot) -notlike '*v12.0') { throw 'Automatic discovery sorted versions lexically' }
+''')
+
+
+@pytest.mark.skipif(sys.platform != 'win32' or not shutil.which('npm.cmd'), reason='Windows npm configuration')
+@pytest.mark.parametrize('explicit_cache', [False, True])
+def test_build_preparation_preserves_npmrc_and_explicit_cache(tmp_path, explicit_cache):
+    """Leave cache precedence to npm, including project configuration and environment overrides."""
+    invoke_functions(tmp_path, r'''
+$script:npm = (Get-Command npm.cmd).Source
+$context = New-BuildContext '' (Join-Path $env:TEST_ROOT 'output') (Join-Path $env:TEST_ROOT 'packaging')
+New-Item -ItemType Directory -Force -Path $context.StudioDirectory | Out-Null
+$configuredCache = Join-Path $env:TEST_ROOT 'project cache'
+[IO.File]::WriteAllText((Join-Path $context.StudioDirectory '.npmrc'), "cache=$($configuredCache.Replace('\', '/'))`n")
+[IO.File]::WriteAllText((Join-Path $context.StudioDirectory 'package.json'), '{"name":"cache-fixture","version":"1.0.0"}')
+$env:NPM_CONFIG_USERCONFIG = Join-Path $env:TEST_ROOT 'empty-user-config'
+$env:NPM_CONFIG_GLOBALCONFIG = Join-Path $env:TEST_ROOT 'empty-global-config'
+$env:npm_config_cache = EXPLICIT
+$expected = if ($env:npm_config_cache) { $env:npm_config_cache } else { $configuredCache }
+function Import-VisualStudioEnvironment { param($InstallationPath) }
+function Find-CudaRoot { $env:TEST_ROOT }
+function Initialize-ReleasePathMapping { param($Context) }
+function Require-Command { param($Name); if ($Name -eq 'npm.cmd') { return $script:npm }; return 'fixture-tool' }
+Initialize-BuildEnvironment $context
+if ($env:npm_config_cache -cne EXPLICIT) { throw 'Build preparation overrode npm configuration' }
+Push-Location $context.StudioDirectory
+try { $actual = & $script:npm config get cache; if ($LASTEXITCODE -ne 0) { throw 'npm config failed' } }
+finally { Pop-Location }
+if ([IO.Path]::GetFullPath($actual.Trim()) -ne [IO.Path]::GetFullPath($expected)) { throw 'npmrc cache precedence changed' }
+'''.replace('EXPLICIT', "(Join-Path $env:TEST_ROOT 'explicit cache')" if explicit_cache else '$null'))
+
+
+def test_native_build_delegates_dependency_metadata_to_cmake(tmp_path):
+    """Build configured outputs without probing compilers or modifying generated Ninja metadata."""
+    invoke_functions(tmp_path, r'''
+$context = New-BuildContext '' (Join-Path $env:TEST_ROOT 'out') (Join-Path $env:TEST_ROOT 'packaging')
+$context.Tools.CMake = 'fixture-cmake'
+$context.CudaRoot = Join-Path $env:TEST_ROOT 'selected CUDA'
+New-Item -ItemType Directory -Force -Path $context.NativeBuildDirectory, $context.SidecarDirectory | Out-Null
+$script:commands = @()
+$script:rules = Join-Path $context.NativeBuildDirectory 'CMakeFiles/rules.ninja'
+function Get-ReleaseNativeFlags { param($Context); '/DPORTABLE' }
+function Invoke-Checked {
+    param($FilePath, $Arguments)
+    if ($FilePath -ne 'fixture-cmake') { throw 'Invoked an unexpected tool' }
+    $script:commands += ,$Arguments
+    if ($Arguments[0] -eq '-S') {
+        New-Item -ItemType Directory -Force -Path (Split-Path $script:rules) | Out-Null
+        [IO.File]::WriteAllText($script:rules, "msvc_deps_prefix = compiler-owned: `n  deps = msvc`n")
+        $script:originalHash = (Get-FileHash -LiteralPath $script:rules).Hash
+    } elseif ($Arguments[0] -eq '--build') {
+        foreach ($name in @('mfq-runtime.exe', 'mfq-diagnostics.exe')) {
+            [IO.File]::WriteAllText((Join-Path $context.NativeBuildDirectory $name), 'built output')
+        }
+    } else { throw 'Unexpected CMake invocation' }
+}
+Build-NativeSidecar $context '80' 1
+if ($script:commands.Count -ne 2) { throw 'Unexpected toolchain self-test' }
+if ((Get-FileHash -LiteralPath $script:rules).Hash -cne $script:originalHash) { throw 'Rewrote CMake metadata' }
+if (-not (Test-Path -LiteralPath $context.NativeArtifact)) { throw 'Runtime output was not staged' }
+$expected = "-DCMAKE_CUDA_COMPILER=$([IO.Path]::Combine($context.CudaRoot, 'bin', 'nvcc.exe'))"
+if ($script:commands[0] -notcontains $expected) { throw 'Configured a different CUDA Toolkit' }
+function Invoke-Checked { param($FilePath, $Arguments); throw 'unsupported compiler fixture' }
+$rejected = $false
+try { Build-NativeSidecar $context '80' 1 }
+catch {
+    if ($_.Exception.Message -notlike '*VisualStudioPath*unsupported compiler fixture*') { throw }
+    $rejected = $true
+}
+if (-not $rejected) { throw 'Native configuration error was swallowed' }
+''')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows path aliases')
+def test_external_native_cache_is_included_in_privacy_path_mappings(tmp_path):
+    """Remap and scan external cache paths using the same prefix, including Unicode and spaces."""
+    invoke_functions(tmp_path, r'''
+$external = Join-Path $env:TEST_ROOT '外部 native cache'
+New-Item -ItemType Directory -Force -Path $external | Out-Null
+$packaging = Join-Path $env:TEST_ROOT 'checkout/packaging'
+$context = New-BuildContext '' (Join-Path $env:TEST_ROOT 'out') $packaging -NativeBuildDirectory $external
+$mappings = @(Get-ReleasePathMappings $context)
+if (-not @($mappings | Where-Object { $_.Source -eq $external -and $_.Destination -eq '/mfq-build/native' }).Count) {
+    throw 'External native build paths were omitted from the shared mappings'
+}
+$flags = @(Get-ReleaseNativeFlags $context) -join ' '
+if (-not $flags.Contains("/pathmap:$external=/mfq-build/native")) { throw 'External native path was not remapped' }
 ''')

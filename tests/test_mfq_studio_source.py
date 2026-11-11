@@ -316,3 +316,98 @@ fi
     assert result.returncode == 0, result.stdout + result.stderr
     assert (packaging / 'dist/candidate.dmg').read_text() == 'old'
     assert (packaging / 'dist/candidate.dmg.partial-mac.test').read_text() == 'verified'
+
+
+def test_macos_checkout_lock_rejects_competitors_and_releases_only_owned_lock(tmp_path):
+    """Competing releases must leave the owner's lock intact and allow reuse after cleanup."""
+    result, packaging = _run_macos_release_helper(tmp_path, r'''
+mfq_mounted=false
+mfq_mount_dir=''
+mfq_release_succeeded=true
+mfq_build_root=''
+lock="$mfq_script_dir/build/.mac-release.lock"
+mfq_acquire_release_lock "$lock"
+(
+  mfq_release_lock_held=false
+  if mfq_acquire_release_lock "$lock"; then
+    printf 'competing release unexpectedly acquired the lock\n' >&2
+    exit 1
+  fi
+  mfq_cleanup_release 0
+  test -d "$lock"
+)
+mfq_cleanup_release 0
+test ! -e "$lock"
+mfq_acquire_release_lock "$lock"
+mfq_cleanup_release 0
+''')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'another macOS release may be running' in result.stderr
+    assert 'rmdir ' in result.stderr
+    assert not (packaging / 'build/.mac-release.lock').exists()
+
+
+def test_macos_dependency_builds_receive_private_path_remapping(tmp_path):
+    """The real entry point must map external caches before uv builds the Python extension."""
+    project = tmp_path / 'project with spaces'
+    packaging = project / 'packaging'
+    packaging.mkdir(parents=True)
+    (project / 'TyloInferStudio').mkdir()
+    script = packaging / 'build_release_mac.sh'
+    script.write_text(RELEASE_SCRIPT, encoding='utf-8')
+    flags_file = tmp_path / 'dependency-flags.json'
+    command = r'''
+source "$1"
+test_python="$2"
+test_flags_file="$3"
+uname() { if [[ "$1" == -s ]]; then printf Darwin; else printf arm64; fi; }
+cmake() { :; }
+codesign() { :; }
+hdiutil() { :; }
+install_name_tool() { :; }
+lipo() { :; }
+npm() { :; }
+cargo() { :; }
+xcrun() { :; }
+uv() {
+  if [[ "$1" == venv ]]; then
+    mkdir -p "$4/bin"
+    printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$test_python" > "$4/bin/python"
+    chmod +x "$4/bin/python"
+    printf 'export VIRTUAL_ENV=%q\n' "$4" > "$4/bin/activate"
+  elif [[ "$1" == sync ]]; then
+    "$test_python" - "$test_flags_file" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+names = ('CFLAGS', 'CXXFLAGS', 'OBJCXXFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_TARGET_DIR')
+Path(sys.argv[1]).write_text(json.dumps({name: os.environ.get(name, '') for name in names}))
+PY
+    return 97
+  else
+    return 98
+  fi
+}
+export TYLOINFER_RELEASE_NATIVE_BUILD_DIR='external native cache'
+unset TYLOINFER_RELEASE_VENV TYLOINFER_RELEASE_OUTPUT_DIR
+export TYLOINFER_RELEASE_REUSE_VENV=0
+export CARGO_TARGET_DIR='relative cargo cache'
+mfq_main
+'''
+    result = subprocess.run(
+        [_release_bash(), '-euc', command, '--', script.as_posix(),
+         Path(sys.executable).as_posix(), flags_file.as_posix()],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 97, result.stdout + result.stderr
+    flags = json.loads(flags_file.read_text(encoding='utf-8'))
+    for name in ('CFLAGS', 'CXXFLAGS', 'OBJCXXFLAGS'):
+        assert '-ffile-prefix-map=' in flags[name]
+        assert 'external native cache=/mfq-build/native' in flags[name]
+        assert 'project with spaces=/mfq-src' in flags[name]
+    assert 'external native cache=/mfq-build/native' in flags['CARGO_ENCODED_RUSTFLAGS']
+    assert flags['CARGO_TARGET_DIR'].endswith('/TyloInferStudio/relative cargo cache')
+    assert not (packaging / 'build/.mac-release.lock').exists()
+    assert len(list((packaging / 'build').glob('mac.*'))) == 1

@@ -16,7 +16,8 @@ param(
     [int] $Jobs = 0,
     [switch] $PortableOnly,
     [switch] $Clean,
-    [string] $NativeBuildDirectory = $env:TYLOINFER_RELEASE_NATIVE_BUILD_DIR
+    [string] $NativeBuildDirectory = $env:TYLOINFER_RELEASE_NATIVE_BUILD_DIR,
+    [string] $VisualStudioPath = $env:TYLOINFER_RELEASE_VS_PATH
 )
 
 Set-StrictMode -Version Latest
@@ -75,24 +76,33 @@ function Invoke-Checked {
 }
 
 function Import-VisualStudioEnvironment {
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-        Fail "Visual Studio Build Tools with the C++ workload are required"
-    }
+    <# .SYNOPSIS
+    Honor a selected x64 developer environment or initialize the requested VS installation.
+    #>
+    param([string] $InstallationPath = $env:TYLOINFER_RELEASE_VS_PATH)
 
-    $installDirectory = & $vswhere -latest -products * -version '[17.0,18.0)' `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($InstallationPath) -and (Get-Command cl -ErrorAction SilentlyContinue)) {
+        if (-not $env:INCLUDE -or -not $env:LIB -or
+                ($env:VSCMD_ARG_TGT_ARCH -and $env:VSCMD_ARG_TGT_ARCH -notin @('x64', 'amd64'))) {
+            Fail 'The selected compiler requires an x64 Visual Studio developer environment with INCLUDE and LIB configured. Use an x64 Developer PowerShell or specify -VisualStudioPath.'
+        }
+        return
+    }
+    $installDirectory = if ($InstallationPath) { $InstallationPath } else { $env:VSINSTALLDIR }
     if ([string]::IsNullOrWhiteSpace($installDirectory)) {
-        $installDirectory = & $vswhere -all -products * -version '[17.0,18.0)' -property installationPath |
-            Where-Object {
-                Test-Path -LiteralPath (Join-Path $_ "Common7\Tools\VsDevCmd.bat") `
-                    -PathType Leaf
-            } |
-            Select-Object -First 1
+        $vswhere = Get-Command vswhere.exe -ErrorAction SilentlyContinue
+        if (-not $vswhere) {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+                Fail 'Visual Studio C++ tools are required. Use an x64 Developer PowerShell or specify -VisualStudioPath.'
+            }
+        }
+        $installDirectory = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1
     }
     if ([string]::IsNullOrWhiteSpace($installDirectory)) {
-        Fail "Visual Studio 2022 C++ x64 tools are required for the supported CUDA toolchain"
+        Fail 'Visual Studio C++ x64 tools were not found; specify -VisualStudioPath for an installation compatible with the selected CUDA Toolkit.'
     }
 
     $vsDevCmd = Join-Path $installDirectory.Trim() "Common7\Tools\VsDevCmd.bat"
@@ -100,7 +110,8 @@ function Import-VisualStudioEnvironment {
         Fail "VsDevCmd.bat is missing from $installDirectory"
     }
 
-    $env:VSLANG = '1033'
+    $originalPath = $env:PATH
+    $importedPath = $null
     $environmentLines = & cmd.exe /d /s /c "call `"$vsDevCmd`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
     if ($LASTEXITCODE -ne 0) {
         Fail "failed to initialize the Visual Studio x64 environment"
@@ -110,22 +121,59 @@ function Import-VisualStudioEnvironment {
         if ($separator -le 0) {
             continue
         }
-        Set-Item -Path "Env:$($line.Substring(0, $separator))" -Value $line.Substring($separator + 1)
+        $name = $line.Substring(0, $separator)
+        if ($name -ieq 'PATH') { $importedPath = $line.Substring($separator + 1); continue }
+        if ($name -ine 'VSLANG') {
+            Set-Item -Path "Env:$name" -Value $line.Substring($separator + 1)
+        }
     }
-    Add-ToPath (Join-Path $installDirectory.Trim() 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja')
+    try {
+        $env:PATH = $importedPath
+        $compiler = Require-Command 'cl'
+    } finally { $env:PATH = $originalPath }
+    $env:PATH = (@((Split-Path $compiler -Parent)) + @($originalPath -split ';') +
+        @($importedPath -split ';') | Where-Object { $_ } | Select-Object -Unique) -join ';'
 }
 
 function Find-CudaRoot {
-    if (-not [string]::IsNullOrWhiteSpace($env:CUDA_PATH)) {
-        if (Test-Path -LiteralPath (Join-Path $env:CUDA_PATH "bin\nvcc.exe") -PathType Leaf) {
-            return $env:CUDA_PATH
+    <# .SYNOPSIS
+    Select one SDK through CUDACXX, PATH, CUDA_HOME, CUDA_PATH, then installed versions.
+    #>
+    $compiler = $null
+    if ($env:CUDACXX) {
+        if (Test-Path -LiteralPath $env:CUDACXX -PathType Leaf) {
+            $compiler = [IO.Path]::GetFullPath($env:CUDACXX)
+        } else {
+            $command = Get-Command $env:CUDACXX -ErrorAction SilentlyContinue
+            if ($command) { $compiler = $command.Source }
+        }
+        if (-not $compiler) { Fail 'CUDACXX must name an existing nvcc.exe executable; compiler arguments belong in CUDAFLAGS.' }
+    } else {
+        $command = Get-Command nvcc -ErrorAction SilentlyContinue
+        if ($command) { $compiler = $command.Source }
+    }
+    if ($compiler) {
+        $bin = Split-Path $compiler -Parent
+        if ((Split-Path $compiler -Leaf) -ine 'nvcc.exe' -or (Split-Path $bin -Leaf) -ine 'bin') {
+            Fail 'The selected CUDA compiler must be nvcc.exe inside a CUDA Toolkit bin directory so matching runtime DLLs can be staged.'
+        }
+        return Split-Path $bin -Parent
+    }
+    foreach ($name in @('CUDA_HOME', 'CUDA_PATH')) {
+        $configured = [Environment]::GetEnvironmentVariable($name)
+        if ($configured) {
+            if (-not (Test-Path -LiteralPath (Join-Path $configured 'bin\nvcc.exe') -PathType Leaf)) {
+                Fail "$name does not contain bin\nvcc.exe: $configured"
+            }
+            return [IO.Path]::GetFullPath($configured)
         }
     }
 
     $cudaParent = Join-Path ${env:ProgramFiles} "NVIDIA GPU Computing Toolkit\CUDA"
     if (Test-Path -LiteralPath $cudaParent -PathType Container) {
         $cudaDirectory = Get-ChildItem -LiteralPath $cudaParent -Directory |
-            Sort-Object -Property Name -Descending |
+            Where-Object { $_.Name -match '^v?\d+(\.\d+){1,3}$' } |
+            Sort-Object -Property @{ Expression = { [version] $_.Name.TrimStart('v') }; Descending = $true } |
             Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "bin\nvcc.exe") -PathType Leaf } |
             Select-Object -First 1
         if ($null -ne $cudaDirectory) {
@@ -233,11 +281,16 @@ function Preserve-ReleaseDirectory {
 function Get-ReleaseJobs {
     param([int] $RequestedJobs)
 
+    if ($RequestedJobs -lt 0) { Fail '-Jobs must be positive, or 0 for automatic parallelism' }
     if ($RequestedJobs -gt 0) {
         return $RequestedJobs
     }
     if ($env:TYLOINFER_RELEASE_JOBS) {
-        return [int] $env:TYLOINFER_RELEASE_JOBS
+        $configuredJobs = 0
+        if (-not [int]::TryParse($env:TYLOINFER_RELEASE_JOBS, [ref] $configuredJobs) -or $configuredJobs -lt 1) {
+            Fail 'TYLOINFER_RELEASE_JOBS must be a positive integer'
+        }
+        return $configuredJobs
     }
 
     # The largest native CUDA translation units need several GiB each, so bound
@@ -254,7 +307,9 @@ function New-BuildContext {
         [Parameter(Mandatory)][AllowEmptyString()][string] $Venv,
         [Parameter(Mandatory)][string] $Output,
         [string] $ScriptDirectory = $PSScriptRoot,
-        [string] $NativeBuildDirectory = $env:TYLOINFER_RELEASE_NATIVE_BUILD_DIR
+        [string] $NativeBuildDirectory = $env:TYLOINFER_RELEASE_NATIVE_BUILD_DIR,
+        [switch] $Clean,
+        [string] $VisualStudioPath = $env:TYLOINFER_RELEASE_VS_PATH
     )
 
     $projectDirectory = [System.IO.Path]::GetFullPath((Join-Path $scriptDirectory ".."))
@@ -265,9 +320,19 @@ function New-BuildContext {
     $buildId = [Guid]::NewGuid().ToString("N")
     $buildDirectory = Join-Path $scriptDirectory "build\windows-$buildId"
     $nativeBuildCache = if ([string]::IsNullOrWhiteSpace($NativeBuildDirectory)) {
-        Join-Path $scriptDirectory 'build\runtime'
+        if ($Clean) { Join-Path $buildDirectory 'runtime' } else { Join-Path $scriptDirectory 'build\runtime' }
     } else {
         Resolve-BuildPath $NativeBuildDirectory $projectDirectory
+    }
+    $cargoTargetDirectory = if ($env:CARGO_TARGET_DIR) {
+        Resolve-BuildPath $env:CARGO_TARGET_DIR (Join-Path $projectDirectory 'TyloInferStudio')
+    } elseif ($Clean) { Join-Path $buildDirectory 'cargo-target' } else { $null }
+    if ($Clean) {
+        foreach ($cache in @($nativeBuildCache, $cargoTargetDirectory)) {
+            if ((Test-Path -LiteralPath $cache) -and @(Get-ChildItem -LiteralPath $cache -Force).Count -gt 0) {
+                Fail '-Clean requires empty explicitly selected cache directories. Choose fresh -NativeBuildDirectory/CARGO_TARGET_DIR paths or omit those overrides; existing caches were preserved.'
+            }
+        }
     }
 
     return @{
@@ -279,6 +344,8 @@ function New-BuildContext {
         PyInstallerBuildDirectory = Join-Path $buildDirectory "pyinstaller"
         SpecDirectory = Join-Path $buildDirectory "spec"
         NativeBuildDirectory = $nativeBuildCache
+        CargoTargetDirectory = $cargoTargetDirectory
+        VisualStudioPath = $VisualStudioPath
         SidecarDirectory = $sidecarDirectory
         ResourceDirectory = $resourceDirectory
         WindowsRuntimeDirectory = Join-Path $scriptDirectory "windows-runtime"
@@ -296,26 +363,20 @@ function New-BuildContext {
     }
 }
 
-function Initialize-FrontendCache {
-    <# .SYNOPSIS
-    Use a writable build-local npm cache unless an explicit cache was selected.
-    #>
-    param([Parameter(Mandatory)][hashtable] $Context)
-
-    if ([string]::IsNullOrWhiteSpace($env:npm_config_cache)) {
-        $env:npm_config_cache = Join-Path $Context.BuildDirectory 'npm-cache'
-    }
-    New-Item -ItemType Directory -Force -Path $env:npm_config_cache | Out-Null
-}
-
 function Initialize-BuildEnvironment {
     param([Parameter(Mandatory)][hashtable] $Context)
 
-    Add-ToPath (Join-Path ${env:ProgramFiles} "CMake\bin")
-    Add-ToPath (Join-Path $env:USERPROFILE ".cargo\bin")
-    Add-ToPath ([System.IO.Path]::Combine(
-        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86), "NSIS"))
-    Import-VisualStudioEnvironment
+    if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) { Add-ToPath (Join-Path ${env:ProgramFiles} 'CMake\bin') }
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { Add-ToPath (Join-Path $env:USERPROFILE '.cargo\bin') }
+    if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+        Add-ToPath ([System.IO.Path]::Combine(
+            [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86), 'NSIS'))
+    }
+    Import-VisualStudioEnvironment -InstallationPath $Context.VisualStudioPath
+    if (-not (Get-Command ninja -ErrorAction SilentlyContinue) -and $env:VSINSTALLDIR) {
+        Add-ToPath (Join-Path $env:VSINSTALLDIR 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja')
+    }
+    if ($Context.CargoTargetDirectory) { $env:CARGO_TARGET_DIR = $Context.CargoTargetDirectory }
 
     $Context.CudaRoot = Find-CudaRoot
     $env:CUDA_PATH = $Context.CudaRoot
@@ -327,7 +388,6 @@ function Initialize-BuildEnvironment {
     $null = Require-Command "ninja"
     $null = Require-Command "cargo"
     $Context.Tools.Npm = Require-Command "npm.cmd"
-    Initialize-FrontendCache $Context
     $null = Require-Command "cl"
     $null = Require-Command "nvcc"
     # Tauri downloads its pinned NSIS toolset when no local installation exists.
@@ -341,6 +401,12 @@ function Get-ReleasePathMappings {
         [pscustomobject]@{ Source = $Context.ProjectDirectory; Destination = "/mfq-src" }
         [pscustomobject]@{ Source = $env:USERPROFILE; Destination = "/mfq-build/home" }
     )
+    if ($Context.ContainsKey('NativeBuildDirectory') -and $Context.NativeBuildDirectory) {
+        $mappings += [pscustomobject]@{
+            Source = Resolve-BuildPath $Context.NativeBuildDirectory $Context.ProjectDirectory
+            Destination = '/mfq-build/native'
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
         $mappings += [pscustomobject]@{
             Source = Resolve-BuildPath $env:CARGO_TARGET_DIR $Context.StudioDirectory
@@ -428,22 +494,42 @@ class PathChecker:
     def __init__(self, prefixes: list[str]):
         """Prepare normalized path spellings and counters for one release scan."""
         self.needles: set[bytes] = set()
+        self.ascii_needles: set[bytes] = set()
+        self.unicode_prefixes: set[str] = set()
         for prefix in prefixes:
             normalized = prefix.rstrip("/\\").replace("\\", "/")
             for spelling in (normalized, normalized.replace("/", "\\")):
                 for escaped in (spelling, spelling.replace("\\", "\\\\")):
                     for encoding in ("utf-8", "utf-16le"):
-                        self.needles.add(escaped.lower().encode(encoding))
-        self.overlap = max(map(len, self.needles), default=1) - 1
+                        self.needles.add(escaped.encode(encoding))
+                        if escaped.isascii():
+                            self.ascii_needles.add(escaped.lower().encode(encoding))
+                    if not escaped.isascii():
+                        self.unicode_prefixes.add(escaped.casefold())
+        self.overlap = max(
+            [len(needle) for needle in self.needles]
+            + [4 * len(prefix) for prefix in self.unicode_prefixes], default=1,
+        ) - 1
         self.failures: set[str] = set()
         self.files = 0
         self.python_modules = 0
 
     def check_bytes(self, data: bytes, label: str) -> None:
         """Record the artifact when its bytes contain a private build prefix."""
-        lowered = data.lower()
-        if any(needle in lowered for needle in self.needles):
+        if any(needle in data for needle in self.needles):
             self.failures.add(label)
+            return
+        if self.ascii_needles:
+            lowered = data.lower()
+            if any(needle in lowered for needle in self.ascii_needles):
+                self.failures.add(label)
+                return
+        if self.unicode_prefixes:
+            for encoding, offset in (("utf-8", 0), ("utf-16le", 0), ("utf-16le", 1)):
+                text = data[offset:].decode(encoding, errors="replace").casefold()
+                if any(prefix in text for prefix in self.unicode_prefixes):
+                    self.failures.add(label)
+                    return
 
     def check_code(self, code: CodeType, label: str) -> None:
         """Inspect marshalled code including nested filenames and constants."""
@@ -630,58 +716,6 @@ function Initialize-PythonEnvironment {
     }
 }
 
-function Repair-MsvcDependencyPrefixEncoding {
-    <#
-    .SYNOPSIS
-    Repair legacy CMake include-prefix decoding before a fresh Ninja cache is built.
-    #>
-    param([Parameter(Mandatory)][hashtable] $Context)
-
-    $cmakeFiles = Join-Path $Context.NativeBuildDirectory 'CMakeFiles'
-    if (-not (Test-Path -LiteralPath $cmakeFiles -PathType Container)) { return }
-    $files = @((Join-Path $cmakeFiles 'rules.ninja'))
-    foreach ($version in Get-ChildItem -LiteralPath $cmakeFiles -Directory) {
-        if ($version.Name -notmatch '^\d+\.\d+') { continue }
-        $files += Join-Path $version.FullName 'CMakeCCompiler.cmake'
-        $files += Join-Path $version.FullName 'CMakeCXXCompiler.cmake'
-    }
-    $ansi = [Text.Encoding]::GetEncoding(
-        [Text.Encoding]::GetEncoding(0).CodePage,
-        [Text.EncoderExceptionFallback]::new(), [Text.DecoderExceptionFallback]::new()
-    )
-    $utf8 = [Text.UTF8Encoding]::new($false, $true)
-    $pattern = '(?m)^(?:msvc_deps_prefix = |set\(CMAKE_(?:C|CXX)_CL_SHOWINCLUDES_PREFIX ")(?<prefix>[^"\r\n]+)'
-    $changes = @()
-    foreach ($file in $files) {
-        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { continue }
-        $original = [IO.File]::ReadAllText($file, $utf8)
-        $updated = $original
-        $matches = [regex]::Matches($original, $pattern)
-        for ($index = $matches.Count - 1; $index -ge 0; $index--) {
-            $prefix = $matches[$index].Groups['prefix']
-            try { $corrected = $utf8.GetString($ansi.GetBytes($prefix.Value)) }
-            catch [Text.EncoderFallbackException] { continue }
-            catch [Text.DecoderFallbackException] { continue }
-            if ($corrected -cne $prefix.Value) {
-                $updated = $updated.Remove($prefix.Index, $prefix.Length).Insert($prefix.Index, $corrected)
-            }
-        }
-        if ($updated -cne $original) {
-            $changes += @{ Path = $file; Contents = $updated }
-        }
-    }
-    if ($changes.Count -eq 0) { return }
-    if (Test-Path -LiteralPath (Join-Path $Context.NativeBuildDirectory '.ninja_deps') -PathType Leaf) {
-        Fail 'This native cache contains incorrectly decoded MSVC include prefixes and may have missing header dependencies. Choose an unused -NativeBuildDirectory; the existing cache was preserved.'
-    }
-    foreach ($change in $changes) {
-        $backup = "$($change.Path).before-prefix-fix-$($Context.BuildId)"
-        if (Test-Path -LiteralPath $backup) { Fail "include-prefix backup already exists: $backup" }
-        Copy-Item -LiteralPath $change.Path -Destination $backup -ErrorAction Stop
-        [IO.File]::WriteAllText($change.Path, $change.Contents, $utf8)
-    }
-}
-
 function Build-NativeSidecar {
     param(
         [Parameter(Mandatory)][hashtable] $Context,
@@ -694,7 +728,7 @@ function Build-NativeSidecar {
     # so a reused CMake cache cannot pull those dependencies back into a release.
     $nativeFlags = @(Get-ReleaseNativeFlags $Context)
     $cudaFlags = ($nativeFlags | ForEach-Object { "--compiler-options=$_" }) -join ' '
-    Invoke-Checked $Context.Tools.CMake @(
+    try { Invoke-Checked $Context.Tools.CMake @(
         "-S", (Join-Path $Context.ProjectDirectory "cpp_runtime"),
         "-B", $Context.NativeBuildDirectory,
         "-G", "Ninja",
@@ -709,8 +743,9 @@ function Build-NativeSidecar {
         "-DTYLOINFER_BUILD_METAL_RUNTIME=OFF",
         "-DTYLOINFER_ENABLE_MFQ_COMPAT=$(if ($env:TYLOINFER_ENABLE_MFQ_COMPAT) { $env:TYLOINFER_ENABLE_MFQ_COMPAT } else { 'OFF' })",
         "-DTYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME=OFF"
-    )
-    Repair-MsvcDependencyPrefixEncoding $Context
+    ) } catch {
+        Fail "Native configuration failed with the selected compiler/CUDA Toolkit. Use a compatible x64 developer environment or -VisualStudioPath, and a fresh -NativeBuildDirectory when changing toolchains. $($_.Exception.Message)"
+    }
     Invoke-Checked $Context.Tools.CMake @(
         "--build", $Context.NativeBuildDirectory,
         "--target", "mfq-runtime", "mfq-diagnostics",
@@ -1087,6 +1122,15 @@ def payload(project: Path, executable: Path) -> dict[str, Path]:
     return files
 
 
+def file_sha256(path: Path) -> bytes:
+    """Hash a file in bounded chunks on every supported Python version."""
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.digest()
+
+
 def build_archive(project: Path, executable: Path, output: Path) -> Path:
     """Publish a complete portable resource ZIP after validating its payload."""
     files = payload(project, executable)
@@ -1109,8 +1153,7 @@ def build_archive(project: Path, executable: Path, output: Path) -> Path:
         partial.replace(archive)
     finally:
         partial.unlink(missing_ok=True)
-    with archive.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    digest = file_sha256(archive).hex()
     archive.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     print(f"Built {archive} ({archive.stat().st_size / 1024**2:.1f} MiB)", flush=True)
     return archive
@@ -1132,8 +1175,7 @@ def build_executable(project: Path, executable: Path, output: Path, makensis: Pa
     directory = None
     for name, path in sorted(files.items()):
         digest.update(name.encode() + b"\0")
-        with path.open("rb") as stream:
-            digest.update(hashlib.file_digest(stream, "sha256").digest())
+        digest.update(file_sha256(path))
         target = PurePosixPath(name)
         parent = str(target.parent).replace("/", "\\")
         if parent != directory:
@@ -1165,12 +1207,10 @@ def build_executable(project: Path, executable: Path, output: Path, makensis: Pa
     archive_partial = archive.with_name(archive.name + '.partial-' + uuid.uuid4().hex)
     try:
         subprocess.run([str(makensis), "-INPUTCHARSET", "UTF8", "-V2", str(script)], check=True)
-        with partial.open('rb') as stream:
-            checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+        checksum = file_sha256(partial).hex()
         with zipfile.ZipFile(archive_partial, 'w', compression=zipfile.ZIP_STORED) as package:
             package.write(partial, 'TyloInfer.exe')
-        with archive_partial.open('rb') as stream:
-            zip_checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+        zip_checksum = file_sha256(archive_partial).hex()
         partial.replace(destination)
         archive_partial.replace(archive)
     finally:
@@ -1263,14 +1303,32 @@ function Build-PortableArchive {
     Invoke-PortablePackage @portableArguments
 }
 
+function Get-CheckoutBuildLock {
+    <# .SYNOPSIS
+    Hold an exclusive per-checkout file handle until the caller disposes it.
+    #>
+    param([string] $ScriptDirectory = $PSScriptRoot)
+
+    $directory = Join-Path ([IO.Path]::GetFullPath($ScriptDirectory)) 'build'
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
+    try {
+        return [IO.File]::Open((Join-Path $directory '.release.lock'),
+            [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch {
+        Fail "Cannot acquire the checkout release lock. Another release may be active; wait for it or use a separate checkout. $($_.Exception.Message)"
+    }
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
+    $originalEnvironment = [Environment]::GetEnvironmentVariables('Process')
+    $checkoutLock = $null
+    try {
     if (-not [System.OperatingSystem]::IsWindows() -or -not [Environment]::Is64BitOperatingSystem) {
         Fail "this release target must be built on 64-bit Windows"
     }
 
-    if ($Clean) {
-        Fail '-Clean is not supported; builds preserve previous files. Remove reviewed files manually.'
-    }
+    if ($Clean -and $PortableOnly) { Fail '-Clean cannot be combined with -PortableOnly' }
+    $checkoutLock = Get-CheckoutBuildLock
 
     $PythonVersion = if ([string]::IsNullOrWhiteSpace($PythonVersion)) { "3.12" } else { $PythonVersion }
     $CudaArchitectures = if ([string]::IsNullOrWhiteSpace($CudaArchitectures)) { "80-real;86-real;89" } else { $CudaArchitectures }
@@ -1287,7 +1345,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         Resolve-BuildPath $OutputDirectory $PSScriptRoot
     }
 
-    $context = New-BuildContext $venvDirectory $releaseOutputDirectory -NativeBuildDirectory $NativeBuildDirectory
+    $context = New-BuildContext $venvDirectory $releaseOutputDirectory -NativeBuildDirectory $NativeBuildDirectory `
+        -Clean:$Clean -VisualStudioPath $VisualStudioPath
     if ($PortableOnly) {
         $context.Python = if ($ReleaseVenv) {
             Join-Path $context.VenvDirectory 'Scripts\python.exe'
@@ -1313,5 +1372,16 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     finally {
         Pop-Location
+    }
+    } finally {
+        if ($checkoutLock) { $checkoutLock.Dispose() }
+        foreach ($name in [Environment]::GetEnvironmentVariables('Process').Keys) {
+            if (-not $originalEnvironment.Contains($name)) {
+                Remove-Item -LiteralPath "Env:$name"
+            }
+        }
+        foreach ($name in $originalEnvironment.Keys) {
+            Set-Item -LiteralPath "Env:$name" -Value ([string] $originalEnvironment[$name])
+        }
     }
 }

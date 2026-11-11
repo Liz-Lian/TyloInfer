@@ -81,6 +81,40 @@ def test_private_windows_paths_are_detected(module, path, encoding):
     assert checker.failures == {"program.exe"}
 
 
+@pytest.mark.parametrize('prefix, path', [
+    (r'C:\Users\Émile', r'C:\Users\Émile\source'),
+    (r'C:\Users\Émile', r'c:\USERS\émILE\source'),
+    (r'C:\Users\缓存', r'C:\Users\缓存\source'),
+    (r'C:\Users\缓存', r'c:\USERS\缓存\source'),
+    ('/Users/Straße', '/USERS/STRASSE/source'),
+    ('/Users/İpek', '/USERS/i\u0307PEK/source'),
+])
+@pytest.mark.parametrize('encoding', ['utf-8', 'utf-16le'])
+@pytest.mark.parametrize('offset', [0, 1])
+def test_unicode_private_paths_keep_exact_and_case_insensitive_matching(module, prefix, path, encoding, offset):
+    """Find Unicode paths without modifying UTF-16 bytes or assuming string alignment."""
+    checker = module.PathChecker([prefix])
+    checker.check_bytes(b'\xff' * offset + path.encode(encoding) + b'\xff', 'program.exe')
+    assert checker.failures == {'program.exe'}
+
+
+@pytest.mark.parametrize('encoding', ['utf-8', 'utf-16le'])
+def test_unicode_case_variants_across_scan_blocks_are_detected(module, tmp_path, encoding):
+    """Keep enough encoded overlap when case folding changes a prefix's length."""
+    artifact = tmp_path / 'unicode-path.exe'
+    artifact.write_bytes(b'\0' * (4 * 1024 * 1024 - 5) + '/USERS/i\u0307PEK/source'.encode(encoding))
+    checker = module.PathChecker(['/Users/İpek'])
+    checker.check_file(artifact)
+    assert checker.failures == {str(artifact)}
+
+
+def test_unicode_decoder_does_not_join_path_fragments_across_invalid_bytes(module):
+    """Replacement decoding must preserve a gap that prevents a literal path match."""
+    checker = module.PathChecker([r'C:\Users\缓存'])
+    checker.check_bytes(b'C:\\Users\\\xff' + '缓存/source'.encode('utf-8'), 'program.exe')
+    assert not checker.failures
+
+
 def test_normalized_diagnostic_paths_are_allowed(module):
     checker = module.PathChecker([r"C:\Users\Build User"])
     checker.check_bytes(b"/mfq-build/home/.cargo/src/crate.rs", "program.exe")

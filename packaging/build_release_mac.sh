@@ -38,6 +38,9 @@ mfq_configure_release_paths() {
   mfq_add_release_path "${CARGO_HOME:-${HOME}/.cargo}" /mfq-build/cargo
   mfq_add_release_path "${RUSTUP_HOME:-${HOME}/.rustup}" /mfq-build/rustup
   mfq_add_release_path "${CARGO_TARGET_DIR:-${tyloinfer_dir}/src-tauri/target}" /mfq-build/target
+  if [[ -n "${mfq_native_build_dir:-}" ]]; then
+    mfq_add_release_path "${mfq_native_build_dir}" /mfq-build/native
+  fi
   mfq_add_release_path "${mfq_project_dir}" /mfq-src
   CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS#"${mfq_rust_separator}"}"
   OBJCXXFLAGS="${OBJCXXFLAGS:-${CXXFLAGS:-}}${mfq_release_native_flags}"
@@ -101,22 +104,42 @@ class PathChecker:
     def __init__(self, prefixes: list[str]):
         """Prepare normalized path spellings and counters for one release scan."""
         self.needles: set[bytes] = set()
+        self.ascii_needles: set[bytes] = set()
+        self.unicode_prefixes: set[str] = set()
         for prefix in prefixes:
             normalized = prefix.rstrip("/\\").replace("\\", "/")
             for spelling in (normalized, normalized.replace("/", "\\")):
                 for escaped in (spelling, spelling.replace("\\", "\\\\")):
                     for encoding in ("utf-8", "utf-16le"):
-                        self.needles.add(escaped.lower().encode(encoding))
-        self.overlap = max(map(len, self.needles), default=1) - 1
+                        self.needles.add(escaped.encode(encoding))
+                        if escaped.isascii():
+                            self.ascii_needles.add(escaped.lower().encode(encoding))
+                    if not escaped.isascii():
+                        self.unicode_prefixes.add(escaped.casefold())
+        self.overlap = max(
+            [len(needle) for needle in self.needles]
+            + [4 * len(prefix) for prefix in self.unicode_prefixes], default=1,
+        ) - 1
         self.failures: set[str] = set()
         self.files = 0
         self.python_modules = 0
 
     def check_bytes(self, data: bytes, label: str) -> None:
         """Record the artifact when its bytes contain a private build prefix."""
-        lowered = data.lower()
-        if any(needle in lowered for needle in self.needles):
+        if any(needle in data for needle in self.needles):
             self.failures.add(label)
+            return
+        if self.ascii_needles:
+            lowered = data.lower()
+            if any(needle in lowered for needle in self.ascii_needles):
+                self.failures.add(label)
+                return
+        if self.unicode_prefixes:
+            for encoding, offset in (("utf-8", 0), ("utf-16le", 0), ("utf-16le", 1)):
+                text = data[offset:].decode(encoding, errors="replace").casefold()
+                if any(prefix in text for prefix in self.unicode_prefixes):
+                    self.failures.add(label)
+                    return
 
     def check_code(self, code: CodeType, label: str) -> None:
         """Inspect marshalled code including nested filenames and constants."""
@@ -260,7 +283,18 @@ mfq_rollback_resources() {
   done
 }
 
-# Unmount validation media and roll resources back when a build fails.
+# Hold an atomic checkout lock while shared native caches and release resources change.
+mfq_acquire_release_lock() {
+  local mfq_requested_lock="$1"
+  if ! mkdir "${mfq_requested_lock}" 2>/dev/null; then
+    fail "another macOS release may be running; if none is active, remove the empty stale lock with: rmdir \"${mfq_requested_lock}\""
+    return 1
+  fi
+  mfq_release_lock_dir="${mfq_requested_lock}"
+  mfq_release_lock_held=true
+}
+
+# Unmount validation media, restore failed resources, and release the owned checkout lock.
 mfq_cleanup_release() {
   local mfq_status="$1"
   set +e
@@ -272,7 +306,17 @@ mfq_cleanup_release() {
   fi
   if [[ "${mfq_release_succeeded}" != true ]]; then
     mfq_rollback_resources || printf 'error: restore the preserved release resource backups manually\n' >&2
-    printf 'release build retained at %s\n' "${mfq_build_root}" >&2
+    if [[ -n "${mfq_build_root}" ]]; then
+      printf 'release build retained at %s\n' "${mfq_build_root}" >&2
+    fi
+  fi
+  if [[ "${mfq_release_lock_held:-false}" == true ]]; then
+    if rmdir "${mfq_release_lock_dir}"; then
+      mfq_release_lock_held=false
+    else
+      printf 'error: could not release checkout lock: %s\n' "${mfq_release_lock_dir}" >&2
+      [[ "${mfq_status}" != 0 ]] || mfq_status=1
+    fi
   fi
   return "${mfq_status}"
 }
@@ -320,6 +364,15 @@ mfq_main() {
   xcrun --find metallib >/dev/null 2>&1 || fail "Xcode Metal Toolchain is required to build release shaders"
 
   mkdir -p "${mfq_script_dir}/build"
+  mfq_published_targets=()
+  mfq_published_backups=()
+  mfq_mounted=false
+  mfq_mount_dir=""
+  mfq_release_succeeded=false
+  mfq_release_lock_held=false
+  mfq_build_root=""
+  trap 'mfq_cleanup_release "$?"' EXIT
+  mfq_acquire_release_lock "${mfq_script_dir}/build/.mac-release.lock"
   mfq_build_root="$(mktemp -d "${mfq_script_dir}/build/mac.XXXXXXXX")"
   mfq_build_id="$(basename "${mfq_build_root}")"
   mfq_native_build_dir="${TYLOINFER_RELEASE_NATIVE_BUILD_DIR:-${mfq_script_dir}/build/runtime}"
@@ -334,12 +387,6 @@ mfq_main() {
   mfq_venv_dir="${TYLOINFER_RELEASE_VENV:-${mfq_build_root}/venv}"
   [[ "${mfq_venv_dir}" == /* ]] || mfq_venv_dir="${mfq_project_dir}/${mfq_venv_dir}"
   [[ "${mfq_output_dir}" == /* ]] || mfq_output_dir="${mfq_script_dir}/${mfq_output_dir}"
-  mfq_published_targets=()
-  mfq_published_backups=()
-  mfq_mounted=false
-  mfq_mount_dir=""
-  mfq_release_succeeded=false
-  trap 'mfq_cleanup_release "$?"' EXIT
   mkdir -p \
     "${mfq_native_build_dir}" \
     "${mfq_pyinstaller_build_dir}" \
@@ -358,6 +405,10 @@ mfq_main() {
     uv venv --python "${mfq_python_version}" "${mfq_venv_dir}"
   fi
   source "${mfq_venv_dir}/bin/activate"
+  mfq_cargo_target_dir="${CARGO_TARGET_DIR:-${tyloinfer_dir}/src-tauri/target}"
+  [[ "${mfq_cargo_target_dir}" == /* ]] || mfq_cargo_target_dir="${tyloinfer_dir}/${mfq_cargo_target_dir}"
+  export CARGO_TARGET_DIR="${mfq_cargo_target_dir}"
+  mfq_configure_release_paths
   if [[ "${TYLOINFER_RELEASE_REUSE_VENV:-0}" != "1" ]]; then
     uv sync \
       --locked \
@@ -368,10 +419,6 @@ mfq_main() {
       --extra metal
   fi
 
-  mfq_cargo_target_dir="${CARGO_TARGET_DIR:-${tyloinfer_dir}/src-tauri/target}"
-  [[ "${mfq_cargo_target_dir}" == /* ]] || mfq_cargo_target_dir="${tyloinfer_dir}/${mfq_cargo_target_dir}"
-  export CARGO_TARGET_DIR="${mfq_cargo_target_dir}"
-  mfq_configure_release_paths
   mfq_write_sysconfig_hook "${mfq_hook_dir}"
   mfq_dmg_dir="${mfq_cargo_target_dir}/${mfq_tauri_target}/release/bundle/dmg"
   mfq_build_marker="${mfq_build_root}/build-started"

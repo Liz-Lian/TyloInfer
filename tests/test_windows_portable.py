@@ -91,6 +91,58 @@ def test_zip_contains_the_installer_resources_without_build_files(tmp_path):
     assert archive.with_suffix(".zip.sha256").read_text() == f"{digest}  {archive.name}\n"
 
 
+def test_portable_hashes_and_payload_ids_work_without_python_311_hash_api(tmp_path):
+    """Build fixture archives with the current interpreter or an explicit Python 3.10."""
+    root = project(tmp_path)
+    source_file = tmp_path / 'embedded-packer.py'
+    source_file.write_text(source.stdout, encoding='utf-8')
+    python = os.environ.get('TYLOINFER_TEST_PYTHON310', sys.executable)
+    verification = r'''
+import hashlib
+import pathlib
+import sys
+import types
+import zipfile
+
+source, root, output = map(pathlib.Path, sys.argv[1:])
+packer = types.ModuleType('windows_portable')
+exec(compile(source.read_text(encoding='utf-8'), str(source), 'exec'), packer.__dict__)
+if hasattr(hashlib, 'file_digest'):
+    del hashlib.file_digest
+executable = root / 'build/tyloinfer.exe'
+archive = packer.build_archive(root, executable, output / 'resources')
+assert archive.with_suffix('.zip.sha256').read_text().split()[0] == hashlib.sha256(archive.read_bytes()).hexdigest()
+large_file = output / 'multiple-chunks.bin'
+large_file.write_bytes(b'chunked-content' * 160000)
+assert packer.file_sha256(large_file) == hashlib.sha256(large_file.read_bytes()).digest()
+digest = hashlib.sha256()
+for name, path in sorted(packer.payload(root, executable).items()):
+    digest.update(name.encode() + b'\0')
+    digest.update(hashlib.sha256(path.read_bytes()).digest())
+expected_payload_id = '0.4.0-' + digest.hexdigest()[:16]
+def compile_fixture(arguments, check):
+    script = pathlib.Path(arguments[-1]).read_text(encoding='utf-8')
+    assert expected_payload_id in script
+    target = next(line for line in script.splitlines() if line.startswith('OutFile '))
+    pathlib.Path(target.removeprefix('OutFile "').removesuffix('"')).write_bytes(b'fixture launcher')
+packer.subprocess.run = compile_fixture
+standalone = packer.build_executable(root, executable, output / 'standalone', pathlib.Path('fixture-makensis'))
+assert standalone.with_suffix('.exe.sha256').read_text().split()[0] == hashlib.sha256(standalone.read_bytes()).hexdigest()
+archive = standalone.parent / 'TyloInfer_0.4.0_x64-portable.zip'
+assert archive.with_suffix('.zip.sha256').read_text().split()[0] == hashlib.sha256(archive.read_bytes()).hexdigest()
+with zipfile.ZipFile(archive) as package:
+    assert package.namelist() == ['TyloInfer.exe']
+    assert package.read('TyloInfer.exe') == standalone.read_bytes()
+print('PASS portable archive checksums and content-derived payload ID on Python', sys.version.split()[0])
+'''
+    result = subprocess.run(
+        [python, '-c', verification, str(source_file), str(root), str(tmp_path / 'output')],
+        capture_output=True, text=True, encoding='utf-8', timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'PASS portable archive checksums and content-derived payload ID' in result.stdout
+
+
 def test_powershell_entry_builds_the_validated_portable_archive(tmp_path):
     root = project(tmp_path)
     output = tmp_path / 'output with spaces'
