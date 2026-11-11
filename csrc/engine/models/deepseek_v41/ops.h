@@ -57,15 +57,24 @@ using Parameter = DenseTensor;
 
 // Per-request, per-layer runtime: the KV ring, checkpoints and layer flags.
 struct LayerState {
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
+#else
     DenseTensor local_kv;
     DenseTensor compressed_kv;
     DenseTensor index_k;
     DenseTensor partial_kv;
     DenseTensor partial_score;
+#endif
     std::int64_t position = 0;
     std::int64_t compressed_length = 0;
     std::int64_t partial_length = 0;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    ::tyloi::Tensor speculative_local_slots, speculative_slot_ids;
+    ::tyloi::Tensor speculative_partial_kv, speculative_partial_score;
+    ::tyloi::Tensor speculative_projected_kv, speculative_projected_score, current_ids;
+#else
     DenseTensor speculative_local_slots;
     DenseTensor speculative_slot_ids;
     DenseTensor speculative_partial_kv;
@@ -73,6 +82,7 @@ struct LayerState {
     DenseTensor speculative_projected_kv;
     DenseTensor speculative_projected_score;
     DenseTensor current_ids;
+#endif
     std::int64_t speculative_position = -1;
     std::int64_t speculative_compressed_length = 0;
     std::int64_t speculative_partial_length = 0;
@@ -431,8 +441,39 @@ struct Block final {
 
     bool index_source() const noexcept { return config.is_index_source(layer); }
 
+    /** Reset this layer's caches, reusing compatible backing storage. */
     void reset(SharedState& shared, std::int64_t batch) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
+#ifdef TYLOINFER_NATIVE_CUDA
+        MfqCudaGuard guard(cuda_device);
+        const ::tyloi::Device device(::tyloi::kCUDA, cuda_device);
+        const auto reset_tensor = [&](::tyloi::Tensor& value, std::int64_t length,
+                                      std::int64_t width, ::tyloi::ScalarType dtype, double fill) {
+            const bool matches = value.defined() && value.dim() == 3 && value.size(0) == batch &&
+                value.size(1) == length && value.size(2) == width && value.scalar_type() == dtype &&
+                value.device() == device && value.representation<DenseTensor>() != nullptr && value.is_contiguous();
+            if (!matches)
+                value = tyloi::ops::empty({batch, length, width},
+                    ::tyloi::TensorOptions().device(device).dtype(dtype));
+            tyloi::ops::fill(value, fill);
+        };
+        reset_tensor(layer_state.local_kv, config.sliding_window, config.head_dim, ::tyloi::kFloat16, 0);
+        if (kv_source()) {
+            const auto capacity = std::max<std::int64_t>(1, max_context / ratio);
+            reset_tensor(layer_state.compressed_kv, capacity, config.head_dim, ::tyloi::kFloat16, 0);
+            reset_tensor(layer_state.index_k, capacity, config.index_head_dim, ::tyloi::kFloat16, 0);
+            if (ratio > 1) {
+                reset_tensor(layer_state.partial_kv, ratio, config.head_dim, ::tyloi::kFloat32, 0);
+                reset_tensor(layer_state.partial_score, ratio, config.head_dim, ::tyloi::kFloat32,
+                    -std::numeric_limits<float>::infinity());
+            } else {
+                layer_state.partial_kv = {}; layer_state.partial_score = {};
+            }
+        } else {
+            layer_state.compressed_kv = {}; layer_state.index_k = {};
+            layer_state.partial_kv = {}; layer_state.partial_score = {};
+        }
+#else
         const auto half = ::tyloi::TensorOptions()
                               .device(::tyloi::kCUDA)
                               .dtype(::tyloi::kFloat16);
@@ -455,15 +496,22 @@ struct Block final {
                     {batch, ratio, config.head_dim}, -std::numeric_limits<float>::infinity(), fp32);
             }
         }
+#endif
         layer_state.position = 0;
         layer_state.compressed_length = 0;
         layer_state.partial_length = 0;
+#ifdef TYLOINFER_NATIVE_CUDA
+        layer_state.speculative_local_slots = {}; layer_state.speculative_slot_ids = {};
+        layer_state.speculative_partial_kv = {}; layer_state.speculative_partial_score = {};
+        layer_state.speculative_projected_kv = {}; layer_state.speculative_projected_score = {};
+#else
         layer_state.speculative_local_slots = DenseTensor();
         layer_state.speculative_slot_ids = DenseTensor();
         layer_state.speculative_partial_kv = DenseTensor();
         layer_state.speculative_partial_score = DenseTensor();
         layer_state.speculative_projected_kv = DenseTensor();
         layer_state.speculative_projected_score = DenseTensor();
+#endif
         layer_state.speculative_position = -1;
         layer_state.speculative_pending = false;
         layer_state.prefilled_global_end = -1;
@@ -474,6 +522,7 @@ struct Block final {
 
     bool supports_speculation() const noexcept { return true; }
 
+    /** Save the mutable cache state before a speculative window. */
     void begin_speculative(SharedState& shared, std::int64_t draft_tokens) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
         TYLOINFER_RUNTIME_CHECK(!layer_state.speculative_pending && draft_tokens > 0 &&
@@ -488,26 +537,42 @@ struct Block final {
                 .remainder(static_cast<double>(config.sliding_window))
                 .to(::tyloi::kInt64)
                 .contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA
+        layer_state.speculative_local_slots = layer_state.local_kv.dense().index_select(1, layer_state.speculative_slot_ids.dense()).clone();
+        if (layer_state.partial_kv.defined()) {
+            layer_state.speculative_partial_kv = layer_state.partial_kv.dense().clone();
+            layer_state.speculative_partial_score = layer_state.partial_score.dense().clone();
+        }
+#else
         layer_state.speculative_local_slots = layer_state.local_kv.index_select(1, layer_state.speculative_slot_ids).clone();
         if (layer_state.partial_kv.defined()) {
             layer_state.speculative_partial_kv = layer_state.partial_kv.clone();
             layer_state.speculative_partial_score = layer_state.partial_score.clone();
         }
+#endif
         layer_state.speculative_pending = true;
     }
 
+    /** Release the speculative checkpoint after a successful commit. */
     void commit_speculative(SharedState& shared) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
         layer_state.speculative_pending = false;
+#ifdef TYLOINFER_NATIVE_CUDA
+        layer_state.speculative_local_slots = {}; layer_state.speculative_slot_ids = {};
+        layer_state.speculative_partial_kv = {}; layer_state.speculative_partial_score = {};
+        layer_state.speculative_projected_kv = {}; layer_state.speculative_projected_score = {};
+#else
         layer_state.speculative_local_slots = DenseTensor();
         layer_state.speculative_slot_ids = DenseTensor();
         layer_state.speculative_partial_kv = DenseTensor();
         layer_state.speculative_partial_score = DenseTensor();
         layer_state.speculative_projected_kv = DenseTensor();
         layer_state.speculative_projected_score = DenseTensor();
+#endif
         layer_state.speculative_position = -1;
     }
 
+    /** Restore rejected cache writes while retaining the accepted prefix. */
     void rollback_speculative(SharedState& shared, std::int64_t position) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
         TYLOINFER_RUNTIME_CHECK(layer_state.speculative_pending && position >= layer_state.speculative_position &&
@@ -517,12 +582,21 @@ struct Block final {
         const auto kept=position-layer_state.speculative_position;
         TYLOINFER_RUNTIME_CHECK(kept<=layer_state.speculative_slot_ids.numel(),"DeepSeek-V4.1 retained prefix is out of range");
         const auto rejected=layer_state.speculative_slot_ids.numel()-kept;
+#ifdef TYLOINFER_NATIVE_CUDA
+        if(rejected)layer_state.local_kv.dense().index_copy_(1,layer_state.speculative_slot_ids.dense().narrow(0,kept,rejected),
+            layer_state.speculative_local_slots.dense().narrow(1,kept,rejected));
+        if (layer_state.speculative_partial_kv.defined()) {
+            layer_state.partial_kv.dense().copy_(layer_state.speculative_partial_kv.dense());
+            layer_state.partial_score.dense().copy_(layer_state.speculative_partial_score.dense());
+        }
+#else
         if(rejected)layer_state.local_kv.index_copy_(1,layer_state.speculative_slot_ids.narrow(0,kept,rejected),
             layer_state.speculative_local_slots.narrow(1,kept,rejected));
         if (layer_state.speculative_partial_kv.defined()) {
             layer_state.partial_kv.copy_(layer_state.speculative_partial_kv);
             layer_state.partial_score.copy_(layer_state.speculative_partial_score);
         }
+#endif
         layer_state.position = position;
         layer_state.compressed_length = layer_state.speculative_compressed_length;
         layer_state.partial_length = layer_state.speculative_partial_length;
@@ -538,13 +612,19 @@ struct Block final {
                 if(source<0)continue; // The original partial group was restored above.
                 TYLOINFER_RUNTIME_CHECK(layer_state.speculative_projected_kv.defined() && layer_state.speculative_projected_score.defined(),
                                   "DeepSeek-V4.1 retained compressor projections are unavailable");
+#ifdef TYLOINFER_NATIVE_CUDA
+                layer_state.partial_kv.dense().narrow(1,slot,1).copy_(layer_state.speculative_projected_kv.dense().narrow(1,source,1));
+                layer_state.partial_score.dense().narrow(1,slot,1).copy_(layer_state.speculative_projected_score.dense().narrow(1,source,1));
+#else
                 layer_state.partial_kv.narrow(1,slot,1).copy_(layer_state.speculative_projected_kv.narrow(1,source,1));
                 layer_state.partial_score.narrow(1,slot,1).copy_(layer_state.speculative_projected_score.narrow(1,source,1));
+#endif
             }
         }
         commit_speculative(shared);
     }
 
+    /** Retain token IDs for the next layer invocation. */
     void set_token_ids(SharedState& shared, const DenseTensor &ids) { shared.layers.at(static_cast<std::size_t>(layer)).current_ids = ids; }
     // No dense warmup state: the recurrent cache lives in AttentionState.
     std::vector<DenseTensor*> graph_warmup_state() { return {}; }
@@ -635,19 +715,37 @@ struct Block final {
                                     config.rms_eps);
             },
             [&](int64_t cutoff, int64_t remainder) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                layer_state.partial_kv.dense().narrow(1, 0, remainder)
+                    .copy_(projected_kv.narrow(1, cutoff, remainder));
+                layer_state.partial_score.dense().narrow(1, 0, remainder)
+                    .copy_(projected_score.narrow(1, cutoff, remainder));
+#else
                 layer_state.partial_kv.narrow(1, 0, remainder)
                     .copy_(projected_kv.narrow(1, cutoff, remainder));
                 layer_state.partial_score.narrow(1, 0, remainder)
                     .copy_(projected_score.narrow(1, cutoff, remainder));
+#endif
             },
             [&](int64_t token, int64_t slot) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                layer_state.partial_kv.dense().narrow(1, slot, 1).copy_(projected_kv.narrow(1, token, 1));
+                layer_state.partial_score.dense().narrow(1, slot, 1).copy_(projected_score.narrow(1, token, 1));
+#else
                 layer_state.partial_kv.narrow(1, slot, 1).copy_(projected_kv.narrow(1, token, 1));
                 layer_state.partial_score.narrow(1, slot, 1).copy_(projected_score.narrow(1, token, 1));
+#endif
             },
             [&] {
+#ifdef TYLOINFER_NATIVE_CUDA
+                auto pooled =
+                    (layer_state.partial_kv.dense() * ::tyloi::cuda::softmax(layer_state.partial_score.dense(), 1))
+                        .sum(1, true);
+#else
                 auto pooled =
                     (layer_state.partial_kv * ::tyloi::cuda::softmax(layer_state.partial_score, 1))
                         .sum(1, true);
+#endif
                 return weighted_rms(pooled.to(::tyloi::kFloat16),
 #ifdef TYLOINFER_NATIVE_CUDA
                                     compressor_norm,
@@ -686,12 +784,22 @@ struct Block final {
             compressed = deepseek_v41_mxfp4_e4m3_scale_sim_cuda(compressed.contiguous());
             auto rows = ::tyloi::cuda::arange(
                 begin, begin + count, latent->options().dtype(::tyloi::kInt64));
+#ifdef TYLOINFER_NATIVE_CUDA
+            layer_state.index_k.dense().index_copy_(1, rows, index_values);
+            layer_state.compressed_kv.dense().index_copy_(1, rows, compressed);
+#else
             layer_state.index_k.index_copy_(1, rows, index_values);
             layer_state.compressed_kv.index_copy_(1, rows, compressed);
+#endif
             layer_state.compressed_length += count;
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        shared.compressed_kv = layer_state.compressed_kv.dense();
+        shared.index_k = layer_state.index_k.dense();
+#else
         shared.compressed_kv = layer_state.compressed_kv;
         shared.index_k = layer_state.index_k;
+#endif
         shared.compressed_length = layer_state.compressed_length;
         shared.ratio = ratio;
     }
@@ -766,6 +874,11 @@ struct Block final {
                              const MfqOptional<DenseTensor> &sequence_lengths,
                              bool truncated_local = false) {
         auto& layer_state = shared.layers.at(static_cast<std::size_t>(layer));
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto& local_kv = layer_state.local_kv.dense();
+#else
+        auto& local_kv = layer_state.local_kv;
+#endif
         const auto batch = input.size(0);
         const auto tokens = input.size(1);
         const auto local_history = truncated_local ? 0 : std::min(position, config.sliding_window);
@@ -824,8 +937,8 @@ struct Block final {
                     auto slot = ::tyloi::cuda::full(
                         {1}, position % config.sliding_window,
                         positions.options().dtype(::tyloi::kInt64));
-                    layer_state.local_kv.index_copy_(1, slot, local);
-                    local_for_attention = layer_state.local_kv;
+                    local_kv.index_copy_(1, slot, local);
+                    local_for_attention = local_kv;
                 } else {
                     const auto history = local_history;
                     std::vector<DenseTensor> local_parts;
@@ -836,7 +949,7 @@ struct Block final {
                                          .remainder(static_cast<double>(config.sliding_window))
                                          .to(::tyloi::kInt64)
                                          .contiguous();
-                        local_parts.push_back(layer_state.local_kv.index_select(1, slots));
+                        local_parts.push_back(local_kv.index_select(1, slots));
                     }
                     local_parts.push_back(local);
                     local_for_attention =
@@ -850,7 +963,7 @@ struct Block final {
                                             .remainder(static_cast<double>(config.sliding_window))
                                             .to(::tyloi::kInt64)
                                             .contiguous();
-                    layer_state.local_kv.index_copy_(1, recent_slots,
+                    local_kv.index_copy_(1, recent_slots,
                                                local.narrow(1, tokens - recent, recent));
                 }
 
@@ -942,8 +1055,13 @@ struct Block final {
                               !cache_positions.has_value() &&
                               layer_state.position == cache_position,
                           "DeepSeek-V4.1 block input/cache mismatch");
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto& ids = layer_state.current_ids.dense();
+#else
+        const auto& ids = layer_state.current_ids;
+#endif
         shared.enter_layer(layer, config.n_layers, hidden.size(0), hidden.size(1), cache_position,
-                            hidden.device(), layer_state.current_ids);
+                            hidden.device(), ids);
 
         const auto batch = hidden.size(0), tokens = hidden.size(1);
         const bool truncated_local = std::exchange(layer_state.replay_local_window, false);
@@ -981,21 +1099,21 @@ struct Block final {
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
                 return mlp.forward(
-                    value.reshape({-1,config.hidden}), layer_state.current_ids, bias)
+                    value.reshape({-1,config.hidden}), ids, bias)
 #else
                 auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
                 return mlp.forward(
-                    value.reshape({-1,config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids, bias)
+                    value.reshape({-1,config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, ids, bias)
 #endif
                     .reshape({batch,tokens,config.hidden});
             }
 #ifdef TYLOINFER_NATIVE_CUDA
             return mlp.forward(
-                    value.reshape({-1, config.hidden}), layer_state.current_ids)
+                    value.reshape({-1, config.hidden}), ids)
 #else
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return mlp.forward(
-                    value.reshape({-1, config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, layer_state.current_ids)
+                    value.reshape({-1, config.hidden}), *executor, execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, ids)
 #endif
                 .reshape({batch, tokens, config.hidden});
         });

@@ -31,6 +31,9 @@ void Engine::reset_states(std::int64_t batch) {
     for (auto& [id, request] : scheduler_->requests_) {
         if (!request.state) continue;
 #ifdef TYLOINFER_NATIVE_CUDA
+        auto* predictor = model_ ? model_->mtp() : nullptr;
+        if (predictor && (!request.state->predictor || !request.state->predictor->belongs_to(*predictor)))
+            throw std::invalid_argument("predictor state is unavailable or belongs to another model");
         if (budget_) {
             for (const auto& [device, bytes] : request.state->reset_growth(batch))
                 if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
@@ -38,7 +41,12 @@ void Engine::reset_states(std::int64_t batch) {
 #endif
         request.state->reset(batch);
 #ifdef TYLOINFER_NATIVE_CUDA
-        if (model_ && model_->mtp()) model_->mtp()->reset(*request.state->predictor, batch);
+        if (predictor) {
+            if (budget_)
+                for (const auto& [device, bytes] : predictor->reset_growth(*request.state->predictor, batch))
+                    if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
+            predictor->reset(*request.state->predictor, batch);
+        }
 #endif
     }
 }
@@ -260,10 +268,17 @@ SessionResult Engine::set_budget(const SessionCommand& command) {
     graph_->invalidate();
     if (ready_) reset_states(1);
     if (idle_state_) {
+        auto* predictor = model_->mtp();
+        if (predictor && (!idle_state_->predictor || !idle_state_->predictor->belongs_to(*predictor)))
+            throw std::invalid_argument("predictor state is unavailable or belongs to another model");
         for (const auto& [device, bytes] : idle_state_->reset_growth(1))
             if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
         idle_state_->reset(1);
-        if (auto* predictor = model_->mtp()) predictor->reset(*idle_state_->predictor, 1);
+        if (predictor) {
+            for (const auto& [device, bytes] : predictor->reset_growth(*idle_state_->predictor, 1))
+                if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
+            predictor->reset(*idle_state_->predictor, 1);
+        }
     }
     return change.apply();
 }

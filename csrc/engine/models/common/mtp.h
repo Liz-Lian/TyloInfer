@@ -25,6 +25,8 @@ struct Mtp {
     virtual ~Mtp() = default;
     virtual std::unique_ptr<MtpState> make_state() const = 0;
     virtual void reset(MtpState& state, int64_t batch = 1) const = 0;
+    /** Return per-device backing that resetting predictor state will newly allocate. */
+    virtual std::vector<std::pair<Device, std::size_t>> reset_growth(const MtpState&, int64_t) const { return {}; }
     /** Estimate device backing allocated by the next predictor step. */
     virtual std::vector<std::pair<Device, std::size_t>> growth(
         const MtpState&, const Tensor&) const {
@@ -55,6 +57,10 @@ struct Mtp {
         return false;
     }
     virtual bool supports_session_state() const noexcept { return false; }
+    /** Validate the predictor's committed position against its target's session boundary. */
+    virtual bool session_boundary(std::int64_t target, std::int64_t predictor) const noexcept {
+        return target > 1 && predictor == target - 1;
+    }
     virtual MtpSessionState capture_session_state(
         const MtpState&,
         std::int64_t,

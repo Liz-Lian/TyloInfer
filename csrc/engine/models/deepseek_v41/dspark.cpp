@@ -9,11 +9,13 @@
 #include "engine/models/deepseek_v41/policy.h"
 
 #include "engine/models/common/mtp.h"
+#include "engine/ops.h"
 #include "ops.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -55,7 +57,11 @@ struct DsState final : tyloi::models::MtpState {
 
     std::int64_t position() const noexcept override { return position_; }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::vector<::tyloi::Tensor> rings;
+#else
     std::vector<DenseTensor> rings;
+#endif
 #ifndef TYLOINFER_NATIVE_CUDA
     DenseTensor attention_meta;
 #endif
@@ -334,6 +340,16 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
     void reset(tyloi::models::MtpState& value, std::int64_t next_batch = 1) const override {
         auto& state = this->state<DsState>(value);
         TYLOINFER_RUNTIME_CHECK(next_batch > 0, "DeepSeek-V4.1 DSpark batch must be positive");
+#ifdef TYLOINFER_NATIVE_CUDA
+        state.rings.resize(stages.size());
+        const auto options = ::tyloi::TensorOptions()
+            .device(::tyloi::Device(::tyloi::kCUDA, primary)).dtype(::tyloi::kFloat16);
+        for (auto& ring : state.rings) {
+            if (!compatible_ring(ring, next_batch))
+                ring = tyloi::ops::empty({next_batch, config.sliding_window, config.head_dim}, options);
+            tyloi::ops::fill(ring, 0);
+        }
+#else
         auto half = ::tyloi::TensorOptions()
                         .device(::tyloi::kCUDA)
                         .dtype(::tyloi::kFloat16);
@@ -343,13 +359,44 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
             state.rings.push_back(::tyloi::cuda::zeros(
                 {next_batch, config.sliding_window, config.head_dim}, half));
         }
-#ifndef TYLOINFER_NATIVE_CUDA
         state.attention_meta =
             ::tyloi::cuda::empty({8 * 1024 * 1024}, half.dtype(::tyloi::kFloat32));
 #endif
         state.batch = next_batch;
         state.position_ = 0;
     }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Estimate new ring backing required to reset the predictor for a batch. */
+    std::vector<std::pair<::tyloi::Device, std::size_t>> reset_growth(
+            const tyloi::models::MtpState& value, std::int64_t next_batch) const override {
+        const auto& state = this->state<DsState>(value);
+        TYLOINFER_RUNTIME_CHECK(next_batch > 0 && config.sliding_window > 0 && config.head_dim > 0,
+            "DeepSeek-V4.1 DSpark batch or ring geometry is invalid");
+        auto bytes = sizeof(std::uint16_t);
+        for (const auto dimension : {next_batch, config.sliding_window, config.head_dim}) {
+            if (bytes > std::numeric_limits<std::size_t>::max() / std::size_t(dimension))
+                throw std::overflow_error("DeepSeek-V4.1 DSpark ring size overflow");
+            bytes *= std::size_t(dimension);
+        }
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < stages.size(); ++i)
+            if (i >= state.rings.size() || !compatible_ring(state.rings[i], next_batch)) ++count;
+        if (count && bytes > std::numeric_limits<std::size_t>::max() / count)
+            throw std::overflow_error("DeepSeek-V4.1 DSpark ring size overflow");
+        return count ? std::vector<std::pair<::tyloi::Device, std::size_t>>{
+            {::tyloi::Device(::tyloi::kCUDA, primary), bytes * count}} :
+            std::vector<std::pair<::tyloi::Device, std::size_t>>{};
+    }
+
+    /** Report whether an existing ring can be reused for this batch. */
+    bool compatible_ring(const ::tyloi::Tensor& ring, std::int64_t batch) const {
+        return ring.defined() && ring.representation<DenseTensor>() && ring.dim() == 3 &&
+            ring.size(0) == batch && ring.size(1) == config.sliding_window &&
+            ring.size(2) == config.head_dim && ring.scalar_type() == ::tyloi::kFloat16 &&
+            ring.device() == ::tyloi::Device(::tyloi::kCUDA, primary) && ring.is_contiguous();
+    }
+#endif
 
     tyloi::models::MtpStep step(tyloi::models::MtpState&, const tyloi::Tensor&,
                                 const tyloi::Tensor&, const tyloi::Tensor& = {}) const override {
@@ -358,29 +405,110 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
 
     bool supports_session_state() const noexcept override {return true;}
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** DSpark keeps every committed target position in its context ring. */
+    bool session_boundary(std::int64_t target, std::int64_t predictor) const noexcept override {
+        return target > 0 && predictor == target;
+    }
+#endif
+
     MtpSessionState capture_session_state(const tyloi::models::MtpState& value,
                                           int64_t cache_pos,
                                           const tyloi::Tensor& input_hidden) const override {
         const auto& state = this->state<DsState>(value);
         const auto& hidden=input_hidden.dense();
         const auto width=config.hidden*int64_t(config.dspark_target_layer_ids.size());
-        TYLOINFER_RUNTIME_CHECK(state.batch==1 && cache_pos==state.position_ && state.position_>0 &&
+#ifdef TYLOINFER_NATIVE_CUDA
+        const bool boundary = session_boundary(cache_pos, state.position_);
+#else
+        const bool boundary = cache_pos == state.position_ && state.position_ > 0;
+#endif
+        TYLOINFER_RUNTIME_CHECK(state.batch==1 && boundary &&
             state.rings.size()==stages.size() &&
             hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)>0 && hidden.size(2)==width,
             "DeepSeek-V4.1 DSpark session position or hidden state disagrees");
         MtpSessionState snapshot;snapshot.cache_pos=state.position_;
+#ifdef TYLOINFER_NATIVE_CUDA
+        snapshot.last_target_hidden=tyloi::ops::clone(input_hidden);
+        snapshot.bytes=session_tensor_bytes(snapshot.last_target_hidden);
+#else
         auto saved_hidden=hidden.clone();snapshot.bytes=session_tensor_bytes(saved_hidden);
         snapshot.last_target_hidden=std::make_shared<DenseTensor>(std::move(saved_hidden));
+#endif
         auto& saved=snapshot.payload.emplace<tyloi::models::deepseek_v41::MtpSnapshot>();
         for(const auto& ring:state.rings) {
             TYLOINFER_RUNTIME_CHECK(ring.dim()==3 && ring.size(0)==1 && ring.size(1)==config.sliding_window &&
                 ring.size(2)==config.head_dim,"DeepSeek-V4.1 DSpark session ring disagrees");
+#ifdef TYLOINFER_NATIVE_CUDA
+            saved.rings.push_back(tyloi::ops::clone(ring));
+#else
             saved.rings.push_back(std::make_shared<DenseTensor>(ring.clone()));
+#endif
             snapshot.bytes+=session_tensor_bytes(saved.rings.back());
         }
         return snapshot;
     }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Validate and retain the DSpark ring snapshot for joint restoration. */
+    std::unique_ptr<tyloi::models::Restore> prepare_restore(
+            tyloi::models::MtpState& value, const MtpSessionState& snapshot) const override {
+        auto& state = this->state<DsState>(value);
+        struct Candidate final : tyloi::models::Restore {
+            const DeepseekV41Dspark& model;
+            DsState& state;
+            MtpSessionState saved;
+            std::vector<::tyloi::Tensor> rings;
+
+            Candidate(const DeepseekV41Dspark& model, DsState& state, const MtpSessionState& snapshot)
+                : model(model), state(state), saved(snapshot), rings(state.rings) {
+                const auto* payload = std::get_if<tyloi::models::deepseek_v41::MtpSnapshot>(&saved.payload);
+                const auto* hidden = saved.last_target_hidden.representation<DenseTensor>();
+                const auto width = model.config.hidden * std::int64_t(model.config.dspark_target_layer_ids.size());
+                const auto device = ::tyloi::Device(::tyloi::kCUDA, model.primary);
+                if (saved.cache_pos <= 0 || saved.cache_pos > model.config.max_position_embeddings ||
+                    !payload || payload->rings.size() != model.stages.size() || !hidden || !hidden->defined() ||
+                    hidden->dim() != 3 || hidden->size(0) != 1 || hidden->size(1) <= 0 ||
+                    hidden->size(2) != width || hidden->device() != device ||
+                    (hidden->scalar_type() != ::tyloi::kFloat16 && hidden->scalar_type() != ::tyloi::kBFloat16 &&
+                     hidden->scalar_type() != ::tyloi::kFloat32))
+                    throw CudaSessionStateError("DeepSeek-V4.1 DSpark session state is incompatible");
+                for (const auto& ring : payload->rings) {
+                    if (!model.compatible_ring(ring, 1))
+                        throw CudaSessionStateError("DeepSeek-V4.1 DSpark saved ring geometry is incompatible");
+                }
+                rings.resize(model.stages.size());
+            }
+            std::vector<std::pair<::tyloi::Device, std::size_t>> growth() const override {
+                const auto& source = std::get<tyloi::models::deepseek_v41::MtpSnapshot>(saved.payload).rings;
+                std::size_t bytes = 0;
+                for (std::size_t i = 0; i < rings.size(); ++i) {
+                    const auto added = restore_tensor_bytes(rings[i], source[i]);
+                    if (bytes > std::numeric_limits<std::size_t>::max() - added)
+                        throw std::overflow_error("DeepSeek-V4.1 DSpark session allocation overflow");
+                    bytes += added;
+                }
+                return bytes ? std::vector<std::pair<::tyloi::Device, std::size_t>>{
+                    {::tyloi::Device(::tyloi::kCUDA, model.primary), bytes}} :
+                    std::vector<std::pair<::tyloi::Device, std::size_t>>{};
+            }
+            void stage() override {
+                const auto& source = std::get<tyloi::models::deepseek_v41::MtpSnapshot>(saved.payload).rings;
+                for (std::size_t i = 0; i < rings.size(); ++i) {
+                    if (restore_tensor_bytes(rings[i], source[i]))
+                        rings[i] = tyloi::ops::empty(source[i].dense().sizes(), source[i].options());
+                    tyloi::ops::copy_into(rings[i], source[i]);
+                }
+            }
+            void publish() noexcept override {
+                state.rings.swap(rings);
+                state.position_ = saved.cache_pos;
+                state.batch = 1;
+            }
+        };
+        return std::make_unique<Candidate>(*this, state, snapshot);
+    }
+#else
     void restore_session_state(tyloi::models::MtpState& value,
                                const MtpSessionState& snapshot) const override {
         auto& state = this->state<DsState>(value);
@@ -396,21 +524,14 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                     ring.dim()!=3 || ring.size(0)!=1 || ring.size(1)!=config.sliding_window ||
                     ring.size(2)!=config.head_dim || !ring.representation<DenseTensor>())
                 throw CudaSessionStateError("DeepSeek-V4.1 DSpark saved ring geometry is incompatible");
-#ifndef TYLOINFER_NATIVE_CUDA
         if(state.batch!=1 || state.rings.size()!=stages.size() || !state.attention_meta.defined())reset(value, 1);
-#else
-        if(state.batch!=1 || state.rings.size()!=stages.size())reset(value, 1);
-#endif
         for(std::size_t i=0;i<state.rings.size();++i) {
-#ifdef TYLOINFER_NATIVE_CUDA
-            auto restored=restore_session_tensor(state.rings[i],saved->rings[i]);
-            state.rings[i]=restored.defined()?restored.dense():DenseTensor{};
-#else
-            restore_session_tensor(state.rings[i],saved->rings[i]);
-#endif
+            auto ring=restore_session_tensor(state.rings[i],saved->rings[i]);
+            state.rings[i]=ring.defined()?ring.dense():DenseTensor{};
         }
         state.position_=snapshot.cache_pos;
     }
+#endif
 
     void trim_cache_to(tyloi::models::MtpState& value,
                        std::int64_t selected_position) const override {
@@ -474,7 +595,11 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         auto positions =
             ::tyloi::cuda::arange(start_position + tokens - retained, start_position + tokens,
                                        ::tyloi::TensorOptions()
+#ifdef TYLOINFER_NATIVE_CUDA
+                                           .device(::tyloi::Device(::tyloi::kCUDA, primary))
+#else
                                            .device(::tyloi::kCUDA)
+#endif
                                            .dtype(::tyloi::kInt64));
         auto slots = positions.remainder(static_cast<double>(config.sliding_window))
                          .to(::tyloi::kInt64)
@@ -517,7 +642,13 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 key_value = deepseek_v41_mxfp8_e4m3_sim_cuda(key_value.contiguous());
                 return key_value;
             },
-            [&](size_t index, DenseTensor key_value) { state.rings[index].index_copy_(1, slots, key_value); });
+            [&](size_t index, DenseTensor key_value) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                state.rings[index].dense().index_copy_(1, slots, key_value);
+#else
+                state.rings[index].index_copy_(1, slots, key_value);
+#endif
+            });
         state.position_=next_position;
     }
 
@@ -526,7 +657,11 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
         const auto tokens = input.size(1);
         auto positions = ::tyloi::cuda::arange(state.position_, state.position_ + tokens,
                                                     ::tyloi::TensorOptions()
+#ifdef TYLOINFER_NATIVE_CUDA
+                                                        .device(::tyloi::Device(::tyloi::kCUDA, primary))
+#else
                                                         .device(::tyloi::kCUDA)
+#endif
                                                         .dtype(::tyloi::kInt64));
         const auto active = std::min(state.position_, config.sliding_window);
         return tyloi::models::deepseek_v41::dspark_attention(
@@ -625,7 +760,11 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                 requested <= physical_width && state.position_ > 0 && state.rings.size() == stages.size(),
             "invalid DeepSeek-V4.1 DSpark draft input");
         anchor_ids =
+#ifdef TYLOINFER_NATIVE_CUDA
+            anchor_ids.to(::tyloi::Device(::tyloi::kCUDA, primary), ::tyloi::kInt64).contiguous();
+#else
             anchor_ids.to(::tyloi::kCUDA, ::tyloi::kInt64).contiguous();
+#endif
         auto draft_ids = anchor_ids;
         if (physical_width > 1) {
             draft_ids = ::tyloi::cuda::cat(
@@ -677,7 +816,12 @@ struct DeepseekV41Dspark final : tyloi::models::Mtp {
                             stage.attention_mhc_base, stage.attention_norm,
 #endif
                             "deepseek_v41.dspark.mhc.attention.collapse");
-                const auto attended = attention(state, attention_mix.branch, stage, state.rings[index]);
+                const auto attended = attention(state, attention_mix.branch, stage,
+#ifdef TYLOINFER_NATIVE_CUDA
+                    state.rings[index].dense());
+#else
+                    state.rings[index]);
+#endif
                 auto after_attention = stage.expand(
                     attended, hidden.narrow(1, 0, attended.size(1)), attention_mix,
                     "deepseek_v41.dspark.mhc.attention.expand");

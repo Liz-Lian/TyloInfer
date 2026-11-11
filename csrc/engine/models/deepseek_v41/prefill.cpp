@@ -149,7 +149,7 @@ std::optional<CedEncoding> deepseek_v41_prefill_encode(
         for (int64_t layer = 0; layer < split; ++layer) {
             if (cancelled()) return {};
             if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=encoder layer="<<layer<<" tokens="<<count<<'\n';
-            hidden = forward_layer(model,state,ids,layer,std::move(hidden),positions,host_ids);
+            hidden = forward_layer(model,state,chunk_ids,layer,std::move(hidden),positions,host_ids);
         }
         // Decoder global KV comes from the encoder boundary for every prompt token.
         // Decoder attention and FFNs run only over the bounded local replay below.
@@ -217,7 +217,7 @@ std::optional<CedEncoding> deepseek_v41_prefill_encode(
         auto& block = *model.blocks.at(layer);
         state.shared->layers.at(static_cast<std::size_t>(layer)).position = replay_begin;
         state.shared->layers.at(static_cast<std::size_t>(layer)).replay_local_window = truncated_local;
-        tail_hidden = forward_layer(model,state,ids,layer,std::move(tail_hidden),replay_positions,replay_host_ids);
+        tail_hidden = forward_layer(model,state,tail_ids,layer,std::move(tail_hidden),replay_positions,replay_host_ids);
     }
     state.cache_pos = end;
     std::cerr << "runtime_deepseek_v41_ced_prefill tokens=" << tokens << " encoder_layers=" << split

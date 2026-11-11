@@ -3,6 +3,7 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/generation/cuda.h"
 #include "engine/budget.h"
+#include "engine/generation/prefill_budget.h"
 #include "engine/weights/cache.h"
 #include "engine/weights/workspace.h"
 #include "engine/config.h"
@@ -584,6 +585,14 @@ template <class Model, class State, class Predictor> struct RequestOps {
     bool batched() const { return batching != nullptr; }
     Restore restore_session(const std::string& id, const std::vector<std::int64_t>& prompt,
         std::size_t prefix, const std::string& key, bool use_mtp) {
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (tyloi::cuda::StagedState<State>) {
+            TYLOINFER_RUNTIME_CHECK(executor != nullptr, "public session restore requires an executor");
+            tyloi::models::State& target = state;
+            return cache.restore(target, *executor, weights, budget, use_mtp ? mtp : nullptr,
+                id, prompt, prefix, key);
+        } else
+#endif
         return cache.restore_best(state, drain, use_mtp ? mtp : nullptr, id, prompt, prefix, key);
     }
     void trace_expert_cache(const char* boundary, bool wait = true) {
@@ -648,9 +657,23 @@ template <class Model, class State, class Predictor> struct RequestOps {
     bool has_hidden(const Hidden &value) const { return value && value.defined(); }
     void reset() {
         if (batching) return;
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (requires { state.predictor; })
+            if (mtp && (!state.predictor || !state.predictor->belongs_to(*mtp)))
+                throw std::invalid_argument("predictor state is unavailable or belongs to another model");
+        if constexpr (std::derived_from<State, tyloi::models::State>)
+            for (const auto& [device, bytes] : state.reset_growth(1))
+                if (bytes) budget.reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
         state.reset(1);
         if constexpr (requires { state.predictor; }) {
-            if (mtp) mtp->reset(*state.predictor,1);
+            if (mtp) {
+#ifdef TYLOINFER_NATIVE_CUDA
+                for (const auto& [device, bytes] : mtp->reset_growth(*state.predictor, 1))
+                    if (bytes) budget.reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
+                mtp->reset(*state.predictor, 1);
+            }
         }
     }
     void release() {

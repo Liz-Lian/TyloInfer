@@ -28,6 +28,7 @@
 #include "engine/models/session/cache.h"
 #include "engine/resource_metrics.h"
 #include "engine/generation/generation.h"
+#include "engine/generation/prefill_budget.h"
 #include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/models/source.h"
@@ -221,7 +222,18 @@ struct Text {
         if constexpr(std::is_same_v<Model,qwen4_exp::Model>)
             qwen4_release_decode_graphs(language,state);
         if(batching)batching->release_idle_buffers();
-        if(auto* mtp=component_predictor(language, components))mtp->reset(predictor_state(), 1);
+        if(auto* mtp=component_predictor(language, components)) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            for (const auto& [device, bytes] : mtp->reset_growth(predictor_state(), 1))
+                if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
+            mtp->reset(predictor_state(), 1);
+        }
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (std::derived_from<State, tyloi::models::State>)
+            for (const auto& [device, bytes] : state.reset_growth(1))
+                if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
         state.reset(1);
         return change.apply();
     }

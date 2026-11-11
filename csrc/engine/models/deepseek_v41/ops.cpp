@@ -320,7 +320,9 @@ std::unique_ptr<tyloi::models::State> Model::make_state() const {
 
 tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     const std::vector<std::int64_t>& tokens, const MfqMultimodalInput& media,
-    tyloi::models::State&) const {
+    tyloi::models::State& state) const {
+    const auto* target = dynamic_cast<const State*>(&state);
+    require_model(target && target->belongs_to(*this), "DeepSeek-V4.1 state belongs to a different model");
     if (!vision)
         throw std::invalid_argument("model has no multimodal component");
     return vision->prepare(const_cast<Model&>(*this), const_cast<Model&>(*this).media, tokens, media);
@@ -430,7 +432,9 @@ void Model::validate_forward(std::int64_t, std::int64_t tokens, std::int64_t cac
 // device placement of the walked tensors.
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                                     const tyloi::models::ForwardOptions&) const {
-    auto& state = static_cast<State&>(state_value);
+    auto* target = dynamic_cast<State*>(&state_value);
+    require_model(target && target->belongs_to(*this), "DeepSeek-V4.1 state belongs to a different model");
+    auto& state = *target;
 #ifndef TYLOINFER_NATIVE_CUDA
     auto scope = execution_scope();
 #endif

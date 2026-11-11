@@ -7,6 +7,7 @@
 #endif
 #include "engine/weights/workspace.h"
 #include "engine/budget.h"
+#include "engine/generation/prefill_budget.h"
 
 #include "env.h"
 #include "engine/weights/cache.h"
@@ -405,6 +406,12 @@ template <class Model, class State> struct CudaMtpOps
 #endif
   Tensor target_forward(Tensor ids, Tensor *raw = nullptr,
                         int64_t confirmed = 0) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (tyloi::cuda::StagedState<State>)
+      if (budget)
+        for (const auto& [device, bytes] : state.growth(ids.size(1), tyloi::cuda::forward_options(mode), confirmed))
+          if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
     projected_target_hidden = {}; projected_target_logits = {};
     projected_target_compact={};
     projected_target_greedy.clear();
@@ -427,7 +434,27 @@ template <class Model, class State> struct CudaMtpOps
     finish_profile();
     return hidden;
   }
+  /** Reserve the owning state's checkpoint before beginning a suffix transaction. */
+  void begin_target_suffix(int64_t tokens) {
+    if constexpr (requires { state.begin_speculative_suffix(tokens); }) {
+#ifdef TYLOINFER_NATIVE_CUDA
+      if constexpr (tyloi::cuda::StagedState<State>)
+        if (budget)
+          for (const auto& [device, bytes] : state.suffix_growth(tokens))
+            if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
+      state.begin_speculative_suffix(tokens);
+    } else {
+      throw std::runtime_error("target model does not support speculative suffix forwarding");
+    }
+  }
   Tensor target_suffix(Tensor ids, Tensor *raw) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if constexpr (tyloi::cuda::StagedState<State>)
+      if (budget)
+        for (const auto& [device, bytes] : state.growth(ids.size(1), tyloi::cuda::forward_options(mode)))
+          if (bytes) budget->reserve_kv(device, tyloi::engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+#endif
     if constexpr (requires(Model& value) { value.supports_suffix_speculation(); }) {
       TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation(),
                               "model does not support speculative suffix forwarding");

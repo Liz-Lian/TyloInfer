@@ -134,6 +134,11 @@ struct Ops : Sampling {
     Tensor target_suffix(Tensor, Tensor*) {
         throw std::runtime_error("model does not support speculative suffix forwarding");
     }
+    /** Reserve the owning state's checkpoint before beginning a suffix transaction. */
+    void begin_target_suffix(int64_t tokens) {
+        reserve(state.suffix_growth(tokens));
+        state.begin_speculative_suffix(tokens);
+    }
     double end_predictor_prefill() {
         weights.prepare(::tyloi::weights::Cache::Stage::decode, executor.device(), source);
         return 0;

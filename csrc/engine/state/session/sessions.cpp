@@ -34,7 +34,7 @@ void restore(models::State& state, const TextSessionState& snapshot, Executor& e
         if (mtp) {
             if (!mtp->supports_session_state() || !state.predictor ||
                 !state.predictor->belongs_to(*mtp) || !held.mtp || held.cache_pos <= 0 ||
-                held.mtp->cache_pos != held.cache_pos - 1)
+                !mtp->session_boundary(held.cache_pos, held.mtp->cache_pos))
                 throw std::invalid_argument("joint predictor session state is incompatible");
         }
         target = state.prepare_restore(held);

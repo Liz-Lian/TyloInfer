@@ -601,7 +601,9 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     // the suffix, using the same hooks as joint verification.
                     if constexpr(requires { ops.begin_target_routes(int{}); })
                         ops.begin_target_routes(draft_count);
-                    if constexpr (requires { state.begin_speculative_suffix(draft_count); })
+                    if constexpr (requires { ops.begin_target_suffix(draft_count); })
+                        ops.begin_target_suffix(draft_count);
+                    else if constexpr (requires { state.begin_speculative_suffix(draft_count); })
                         state.begin_speculative_suffix(draft_count);
                     else
                         throw std::runtime_error(

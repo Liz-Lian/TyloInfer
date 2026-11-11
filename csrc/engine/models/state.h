@@ -85,6 +85,10 @@ public:
     virtual std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t) const {
         return {};
     }
+    /** Plan the checkpoint allocated before beginning an uncommitted speculative suffix. */
+    virtual std::vector<std::pair<Device, std::size_t>> suffix_growth(std::int64_t) const {
+        throw std::logic_error("speculative suffix allocation planning is unsupported");
+    }
     // Owners keep storage alive; deduplicate using backing identity, not object identity.
     virtual std::vector<::tyloi::Tensor> storage() const = 0;
     // Borrow writable objects from this state; their lifetime remains tied to it.

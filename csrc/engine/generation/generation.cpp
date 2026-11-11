@@ -220,7 +220,11 @@ struct Native {
         for (const auto& [device, growth] : state.reset_growth(1))
             if (growth) budget.reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
         state.reset(1);
-        if (mtp) mtp->reset(*state.predictor, 1);
+        if (mtp) {
+            for (const auto& [device, growth] : mtp->reset_growth(*state.predictor, 1))
+                if (growth) budget.reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
+            mtp->reset(*state.predictor, 1);
+        }
     }
     void release() {
         trace_expert_cache("end");
