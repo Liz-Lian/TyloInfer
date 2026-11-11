@@ -32,6 +32,7 @@ public:
     }
 
     void raw(const void* data, size_t size);
+    /** Append tensor metadata and contiguous host bytes to the payload. */
     void tensor(const ::tyloi::Tensor& source);
     CudaPagedPayload finish() &&;
 
@@ -60,6 +61,7 @@ public:
     }
 
     void raw(void* destination, size_t size, const char* name);
+    /** Read a host tensor and its original CUDA device index. */
     std::pair<::tyloi::Tensor, int> tensor();
     void expect_end() const;
 

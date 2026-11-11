@@ -16,20 +16,6 @@
 
 namespace tyloi::weights { class Cache; }
 
-struct MfqDropFileCacheGuard {
-    bool& setting;
-    bool previous;
-
-    MfqDropFileCacheGuard(bool enabled, bool& value)
-        : setting(value), previous(value) {
-        setting = enabled;
-    }
-
-    ~MfqDropFileCacheGuard() {
-        setting = previous;
-    }
-};
-
 namespace tyloi::weights {
 // The source and cache owner outlive all loading, including streamed media layers.
 struct Loader {

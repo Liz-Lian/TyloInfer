@@ -22,6 +22,7 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <limits>
 #endif
 
 namespace tyloi::ops {
@@ -646,6 +647,38 @@ Tensor tensor(std::span<const std::uint8_t> values, Device target) {
     device(target);
     return owner(cuda::ops::tensor(values, target));
 }
+Tensor tensor(std::span<const std::byte> data, std::span<const std::int64_t> shape, const TensorOptions& options) {
+    device(options.target_device());
+    const auto width = scalar_size(options.scalar_type());
+    if (!width) throw std::invalid_argument("invalid tensor dtype");
+    if (shape.size() > kMaximumTensorRank) throw std::invalid_argument("tensor rank exceeds maximum");
+    bool empty_shape = false;
+    for (const auto extent : shape) {
+        if (extent < 0) throw std::invalid_argument("negative tensor dimension");
+        empty_shape = empty_shape || extent == 0;
+    }
+    std::size_t elements = empty_shape ? 0 : 1;
+    if (!empty_shape) for (const auto extent : shape) {
+        if (std::size_t(extent) > std::size_t(std::numeric_limits<std::int64_t>::max()) / elements)
+            throw std::overflow_error("tensor byte size overflow");
+        elements *= std::size_t(extent);
+    }
+    if (elements > std::numeric_limits<std::size_t>::max() / width)
+        throw std::overflow_error("tensor byte size overflow");
+    const auto expected = elements * width;
+    if (data.size() != expected) throw std::invalid_argument("tensor byte size does not match shape");
+    auto host_options = options.device(Device(kCPU));
+    if (options.target_device().is_cuda()) host_options = host_options.pinned_memory(false);
+    auto host = ::tyloi::cuda::empty(shape, host_options);
+    if (expected) std::memcpy(host.data_ptr(), data.data(), expected);
+    if (options.target_device().is_cpu()) return owner(std::move(host));
+    auto result = cuda::ops::copy(host, options.target_device());
+    if (expected) {
+        cuda::DeviceGuard guard(options.target_device().index);
+        TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(cuda::current_stream(options.target_device().index).stream()));
+    }
+    return owner(std::move(result));
+}
 Tensor from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options) {
     device(options.target_device());
     return owner(cuda::ops::from_blob(data, shape, options));
@@ -731,6 +764,14 @@ std::vector<std::int64_t> integers(const Tensor& tensor) {
     const auto& value = dense(tensor);
     input(value);
     return cuda::ops::integers(value);
+}
+std::vector<std::byte> bytes(const Tensor& tensor) {
+    const auto& value = dense(tensor);
+    input(value);
+    auto host = value.contiguous().to(Device(kCPU));
+    std::vector<std::byte> result(host.nbytes());
+    if (!result.empty()) std::memcpy(result.data(), host.data_ptr(), result.size());
+    return result;
 }
 
 TopK top_k(const Tensor& tensor, std::int64_t k, bool force_radix) {

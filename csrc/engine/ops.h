@@ -4,6 +4,7 @@
 #include "engine/requests/constraint.h"
 #include "engine/state/kv_view.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <array>
 #include <initializer_list>
@@ -235,6 +236,8 @@ Tensor tensor(std::span<const float> values, Device target);
 Tensor tensor(std::span<const std::int32_t> values, Device target);
 Tensor tensor(std::span<const std::int64_t> values, Device target);
 Tensor tensor(std::span<const std::uint8_t> values, Device target);
+/** Copy raw host bytes into owned storage with the requested shape, dtype and device. */
+Tensor tensor(std::span<const std::byte> data, std::span<const std::int64_t> shape, const TensorOptions& options);
 // The caller keeps external data alive until its last consumer completes.
 Tensor from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options);
 inline Tensor from_blob(void* data, std::initializer_list<std::int64_t> shape, const TensorOptions& options) {
@@ -270,6 +273,8 @@ Tensor sample_greedy(const Tensor& logits);
 std::vector<float> floats(const Tensor& value);
 /** Read a tensor as contiguous host signed integer values. */
 std::vector<std::int64_t> integers(const Tensor& value);
+/** Copy a dense tensor's contiguous raw bytes to host memory without changing dtype. */
+std::vector<std::byte> bytes(const Tensor& value);
 /** Host values and vocabulary indices for each selected row. */
 struct TopK {
     std::vector<float> values;

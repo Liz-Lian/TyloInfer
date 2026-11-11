@@ -1,5 +1,7 @@
 #include "engine/models/session/state.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "backend.h"
+#endif
 #include "engine/models/session/snapshot.h"
 #include "engine/ops.h"
 
@@ -37,6 +39,18 @@ std::vector<CudaPagedPayload> encode_cuda_paged_session(const TextSessionState &
         writer.scalar<uint32_t>(static_cast<uint32_t>(block_size));
         writer.scalar<uint32_t>(static_cast<uint32_t>(layers->size()));
         for (const auto &layer : *layers) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            const auto& k=layer.k;
+            const auto& v=layer.v;
+            if (layer.ring || layer.capacity <= 0 || !k.defined() || !v.defined() ||
+                k.is_encoded() || v.is_encoded() || !session_kv_geometry_matches(k,v) ||
+                k.size(2) < start + static_cast<int64_t>(block_size)) {
+                throw std::runtime_error("CUDA session layer cannot be block-sliced");
+            }
+            writer.scalar<int64_t>(layer.capacity);
+            writer.tensor(tyloi::ops::slice(k,2,start,start+static_cast<int64_t>(block_size)));
+            writer.tensor(tyloi::ops::slice(v,2,start,start+static_cast<int64_t>(block_size)));
+#else
             const auto* k = layer.k.representation<::tyloi::DenseTensor>();
             const auto* v = layer.v.representation<::tyloi::DenseTensor>();
             if (layer.ring || layer.capacity <= 0 || !k || !v ||
@@ -47,6 +61,7 @@ std::vector<CudaPagedPayload> encode_cuda_paged_session(const TextSessionState &
             writer.scalar<int64_t>(layer.capacity);
             writer.tensor(k->narrow(2, start, static_cast<int64_t>(block_size)));
             writer.tensor(v->narrow(2, start, static_cast<int64_t>(block_size)));
+#endif
         }
         result.push_back(std::move(writer).finish());
     }
@@ -126,8 +141,13 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
     layers.reserve(layer_count);
     for (size_t layer_index = 0; layer_index < layer_count; ++layer_index) {
         const auto &final = blocks.back().layers[layer_index];
+#ifdef TYLOINFER_NATIVE_CUDA
+        std::vector<::tyloi::Tensor> keys;
+        std::vector<::tyloi::Tensor> values;
+#else
         std::vector<::tyloi::DenseTensor> keys;
         std::vector<::tyloi::DenseTensor> values;
+#endif
         keys.reserve(blocks.size());
         values.reserve(blocks.size());
         for (const auto &block : blocks) {
@@ -138,9 +158,23 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
                 layer.k.size(3) != final.k.size(3) || layer.v.size(3)!=final.v.size(3)) {
                 throw CudaSessionStateError("inconsistent CUDA paged cache topology");
             }
+#ifdef TYLOINFER_NATIVE_CUDA
+            keys.push_back(layer.k);
+            values.push_back(layer.v);
+#else
             keys.push_back(layer.k.dense());
             values.push_back(layer.v.dense());
+#endif
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto key=tyloi::ops::contiguous(tyloi::ops::cat(keys,2));
+        auto value=tyloi::ops::contiguous(tyloi::ops::cat(values,2));
+        const tyloi::Device device(tyloi::kCUDA,final.device);
+        key=tyloi::ops::contiguous(tyloi::ops::copy(key,device));
+        value=tyloi::ops::contiguous(tyloi::ops::copy(value,device));
+        state.bytes += static_cast<size_t>(key.numel()*key.element_size()+value.numel()*value.element_size());
+        layers.push_back(KvSnapshot{std::move(key),std::move(value),final.capacity,false});
+#else
         auto key = ::tyloi::cuda::cat(keys, 2).contiguous();
         auto value = ::tyloi::cuda::cat(values, 2).contiguous();
         MfqCudaGuard guard(final.device);
@@ -156,6 +190,7 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
             final.capacity,
             false,
         });
+#endif
     }
     return state;
 }
@@ -176,22 +211,43 @@ bool session_tensor_layout_matches(const ::tyloi::Tensor &target,
 }
 
 namespace {
+#ifdef TYLOINFER_NATIVE_CUDA
+std::vector<int64_t> tensor_shape(const ::tyloi::Tensor& tensor) {
+    std::vector<int64_t> shape;
+    shape.reserve(static_cast<std::size_t>(tensor.dim()));
+    for(int64_t axis=0;axis<tensor.dim();++axis) shape.push_back(tensor.size(axis));
+    return shape;
+}
+#endif
 std::vector<int64_t> restore_prefix_shape(const ::tyloi::Tensor& source, int64_t dimension, int64_t capacity) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (!source.defined() || source.is_encoded())
+#else
     if (!source.representation<::tyloi::DenseTensor>())
+#endif
         throw CudaSessionStateError("session prefix tensor is not dense");
     if (!source.defined() || dimension < 0 || dimension >= source.dim() || capacity <= 0 ||
         source.size(dimension) > capacity)
         throw CudaSessionStateError("session prefix tensor layout is invalid");
+#ifdef TYLOINFER_NATIVE_CUDA
+    auto shape = tensor_shape(source);
+#else
     auto shape = source.dense().sizes().vec();
+#endif
     shape.at(static_cast<size_t>(dimension)) = capacity;
     return shape;
 }
 
 bool restore_prefix_compatible(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source,
                                const std::vector<int64_t>& shape) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    return target.defined() && !target.is_encoded() && target.dim()==static_cast<int64_t>(shape.size()) &&
+        tensor_shape(target)==shape && target.scalar_type()==source.scalar_type() && target.device()==source.device();
+#else
     const auto* current = target.representation<::tyloi::DenseTensor>();
     return current && current->defined() && current->sizes() == ::tyloi::IntArrayRef(shape) &&
         current->scalar_type() == source.scalar_type() && current->device() == source.device();
+#endif
 }
 
 std::size_t restore_shape_bytes(const std::vector<int64_t>& shape, std::size_t element_size) {
@@ -207,10 +263,19 @@ std::size_t restore_shape_bytes(const std::vector<int64_t>& shape, std::size_t e
 
 std::size_t restore_tensor_bytes(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source) {
     if (!source.defined()) return 0;
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (source.is_encoded())
+#else
     if (!source.representation<::tyloi::DenseTensor>())
+#endif
         throw CudaSessionStateError("session tensor is not dense");
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (target.defined() && !target.is_encoded() && session_tensor_layout_matches(target, source)) return 0;
+    return restore_shape_bytes(tensor_shape(source), source.element_size());
+#else
     if (target.representation<::tyloi::DenseTensor>() && session_tensor_layout_matches(target, source)) return 0;
     return restore_shape_bytes(source.dense().sizes().vec(), source.element_size());
+#endif
 }
 
 std::size_t restore_prefix_bytes(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source,
@@ -224,10 +289,19 @@ std::size_t restore_prefix_bytes(const ::tyloi::Tensor& target, const ::tyloi::T
     if (!source.defined()) {
         return {};
     }
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (source.is_encoded())
+#else
     if (!source.representation<::tyloi::DenseTensor>())
+#endif
         throw CudaSessionStateError("session tensor is not dense");
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (!target.defined() || target.is_encoded() || !session_tensor_layout_matches(target, source)) {
+        target = tyloi::ops::empty(tensor_shape(source), source.options());
+#else
     if (!target.representation<::tyloi::DenseTensor>() || !session_tensor_layout_matches(target, source)) {
         target = tyloi::ops::empty(source.dense().sizes(), source.options());
+#endif
     }
     tyloi::ops::copy_into(target, source);
     return target;
@@ -249,8 +323,13 @@ std::size_t restore_prefix_bytes(const ::tyloi::Tensor& target, const ::tyloi::T
 }
 
 KvSnapshot capture_kv(const tyloi::state::KvView &cache, int64_t cache_pos, size_t &bytes) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (!cache.physical_key.defined() || !cache.physical_value.defined() ||
+        cache.physical_key.is_encoded() || cache.physical_value.is_encoded() ||
+#else
     if (!cache.physical_key.representation<::tyloi::DenseTensor>() ||
         !cache.physical_value.representation<::tyloi::DenseTensor>() ||
+#endif
         !cache.physical_key.defined() || !cache.physical_value.defined() || cache.physical_key.dim() != 4 ||
         !session_kv_geometry_matches(cache.physical_key,cache.physical_value) || cache.physical_key.size(0) != 1) {
         throw std::runtime_error("full-attention KV cache is unavailable");
@@ -268,8 +347,12 @@ KvSnapshot capture_kv(const tyloi::state::KvView &cache, int64_t cache_pos, size
 }
 
 void validate_kv(const KvSnapshot& state) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (!state.k.defined() || !state.v.defined() || state.k.is_encoded() || state.v.is_encoded() ||
+#else
     if (!state.k.representation<::tyloi::DenseTensor>() ||
         !state.v.representation<::tyloi::DenseTensor>() ||
+#endif
         state.capacity <= 0 || state.k.dim() != 4 ||
         !session_kv_geometry_matches(state.k,state.v) || state.k.size(0) != 1 ||
         state.k.size(2) > state.capacity) {
