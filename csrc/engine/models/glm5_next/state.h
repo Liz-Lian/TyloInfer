@@ -54,8 +54,10 @@ public:
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate() {}
     void commit_speculative();
-    std::vector<DenseTensor> storage() const { return {}; }
-    std::vector<DenseTensor*> graph_state() { return {}; }
+    /** Return the state storage handles available to Graph capture. */
+    std::vector<::tyloi::Tensor> storage() const { return {}; }
+    /** Return writable state handles available for Graph warmup. */
+    std::vector<::tyloi::Tensor*> graph_state() { return {}; }
     TextSessionStateKind text_session_state_kind() const { return TextSessionStateKind::Unsupported; }
     bool supports_text_session_state() const { return false; }
     bool supports_paged_text_session_state() const { return false; }

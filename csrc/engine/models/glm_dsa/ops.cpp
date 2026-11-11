@@ -85,8 +85,8 @@ void State::reset(int64_t next_batch) {
     }
 }
 
-std::vector<DenseTensor> State::storage() const {
-    std::vector<DenseTensor> result;
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
     for (const auto& layer : layers) {
         if (layer.kv_cache.defined()) result.push_back(layer.kv_cache);
         if (layer.index_cache.defined()) result.push_back(layer.index_cache);
@@ -306,8 +306,8 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, LayerPlacementC
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, ::tyloi::Tensor input_ids, const Executor::Mode& mode) {
-    auto ids = normalize_ids(collectives, primary, std::move(input_ids).dense());
+             int primary, const ::tyloi::Tensor& input_ids, const Executor::Mode& mode) {
+    auto ids = normalize_ids(collectives, primary, input_ids.dense());
     auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
     return ::tyloi::ops::measure("model.embed", ids.device(), [&] {
         return ::tyloi::ops::embedding(ids, model.embed);
@@ -323,7 +323,7 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor normalize(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden,
+::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden,
                  std::int64_t batch, std::int64_t tokens) {
     auto hidden = input_hidden.dense();
     hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
@@ -347,7 +347,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor softcap(const Model& model, Executor& executor, ::tyloi::Tensor input_logits) {
+::tyloi::Tensor softcap(const Model& model, Executor& executor, const ::tyloi::Tensor& input_logits) {
     auto scope = executor.enter(mfq_current_cuda_device(), FfnMode{});
     return ::tyloi::ops::softcap(input_logits, model.metadata.final_logit_softcapping);
 #else
@@ -358,7 +358,7 @@ DenseTensor softcap(const Model& model, Executor&, DenseTensor logits) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor logits(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, bool capped,
+::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden, bool capped,
               const Executor::Mode& mode) {
     auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
     auto value = ::tyloi::ops::measure("model.lm_head", input_hidden.device(), [&] {

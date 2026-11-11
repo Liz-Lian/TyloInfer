@@ -6,10 +6,14 @@
 
 namespace tyloi::cuda::glm5_next {
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor embed(const Model&, Executor&, Collectives&, int primary, ::tyloi::Tensor ids, const Executor::Mode& = {});
-::tyloi::Tensor normalize(const Model&, Executor&, ::tyloi::Tensor hidden, int64_t batch, int64_t tokens);
-::tyloi::Tensor softcap(const Model&, Executor&, ::tyloi::Tensor logits);
-::tyloi::Tensor logits(const Model&, Executor&, ::tyloi::Tensor hidden, bool capped = true, const Executor::Mode& = {});
+/** Embed token IDs on the primary device. */
+::tyloi::Tensor embed(const Model&, Executor&, Collectives&, int primary, const ::tyloi::Tensor& ids, const Executor::Mode& = {});
+/** Normalize the model's hidden states. */
+::tyloi::Tensor normalize(const Model&, Executor&, const ::tyloi::Tensor& hidden, int64_t batch, int64_t tokens);
+/** Return the logits unchanged because this model has no soft cap. */
+::tyloi::Tensor softcap(const Model&, Executor&, const ::tyloi::Tensor& logits);
+/** Project hidden states to logits. */
+::tyloi::Tensor logits(const Model&, Executor&, const ::tyloi::Tensor& hidden, bool capped = true, const Executor::Mode& = {});
 ::tyloi::Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, tyloi::models::Input);
 #else
 DenseTensor embed(const Model&, Executor&, Collectives&, int primary, DenseTensor ids, const Executor::Mode& = {});

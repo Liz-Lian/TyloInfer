@@ -24,8 +24,10 @@ public:
     void advance(int64_t tokens) noexcept { cache_pos += tokens; }
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate() {}
-    std::vector<DenseTensor> storage() const;
-    std::vector<DenseTensor*> graph_state() { return {}; }
+    /** Return owning handles for the current state storage. */
+    std::vector<::tyloi::Tensor> storage() const;
+    /** Return recurrent tensors that require graph warmup restoration. */
+    std::vector<::tyloi::Tensor*> graph_state() { return {}; }
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
     bool supports_paged_text_session_state() const { return false; }

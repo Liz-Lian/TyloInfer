@@ -382,8 +382,8 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& collectives, int primary,
-             ::tyloi::Tensor input_ids, const Executor::Mode& mode) {
-    auto ids = normalize_ids(collectives, primary, std::move(input_ids).dense());
+             const ::tyloi::Tensor& input_ids, const Executor::Mode& mode) {
+    auto ids = normalize_ids(collectives, primary, input_ids.dense());
     auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
     return ::tyloi::ops::measure("model.embed", ids.device(), [&] {
         return ::tyloi::ops::embedding(ids, model.embed);
@@ -399,7 +399,7 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& collectiv
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor normalize(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, int64_t batch, int64_t tokens) {
+::tyloi::Tensor normalize(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden, int64_t batch, int64_t tokens) {
     auto hidden = input_hidden.dense();
 #else
 DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden, int64_t batch, int64_t tokens) {
@@ -418,7 +418,7 @@ DenseTensor normalize(const Model& model, Executor& executor, DenseTensor hidden
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor softcap(const Model& model, Executor&, ::tyloi::Tensor value) {
+::tyloi::Tensor softcap(const Model& model, Executor&, const ::tyloi::Tensor& value) {
     const double cap = model.metadata.final_logit_softcapping;
     if (cap > 0.0) return ::tyloi::cuda::tanh(value.dense() / cap) * cap;
     return value;
@@ -431,7 +431,7 @@ DenseTensor softcap(const Model& model, Executor&, DenseTensor value) {
 #endif
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor logits(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, bool capped,
+::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden, bool capped,
               const Executor::Mode& mode) {
     auto scope = executor.enter(mfq_current_cuda_device(), mode.ffn);
     auto value = ::tyloi::ops::measure("model.lm_head", input_hidden.device(), [&] {
@@ -865,8 +865,8 @@ void State::reset(int64_t next_batch) {
     }
 }
 
-std::vector<DenseTensor> State::storage() const {
-    std::vector<DenseTensor> result;
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
     const auto append = [&](const DenseTensor& tensor) { if (tensor.defined()) result.push_back(tensor); };
     const auto pool = [&](const PoolState& state) {
         append(state.state_kv); append(state.state_gate); append(state.previous_kv);

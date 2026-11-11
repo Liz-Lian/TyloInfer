@@ -222,7 +222,7 @@ static DenseTensor normalize_ids(Collectives& copies, int primary, DenseTensor i
 
 #ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
-             ::tyloi::Tensor input_ids, const Executor::Mode& mode) {
+             const ::tyloi::Tensor& input_ids, const Executor::Mode& mode) {
     auto ids = input_ids.dense();
     auto normalized = normalize_ids(copies, primary, std::move(ids));
     return ::tyloi::ops::measure("model.embed", normalized.device(), [&] {
@@ -239,7 +239,7 @@ DenseTensor embed(const Model& model, Executor& executor, Collectives& copies, i
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor normalize(const Model& model, Executor&, ::tyloi::Tensor input_hidden, int64_t, int64_t) {
+::tyloi::Tensor normalize(const Model& model, Executor&, const ::tyloi::Tensor& input_hidden, int64_t, int64_t) {
     auto hidden = input_hidden.dense();
 #else
 DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t, int64_t) {
@@ -252,13 +252,13 @@ DenseTensor normalize(const Model& model, Executor&, DenseTensor hidden, int64_t
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor softcap(const Model&, Executor&, ::tyloi::Tensor value) { return value; }
+::tyloi::Tensor softcap(const Model&, Executor&, const ::tyloi::Tensor& value) { return value; }
 #else
 DenseTensor softcap(const Model&, Executor&, DenseTensor value) { return value; }
 #endif
 
 #ifdef TYLOINFER_NATIVE_CUDA
-::tyloi::Tensor logits(const Model& model, Executor& executor, ::tyloi::Tensor input_hidden, bool,
+::tyloi::Tensor logits(const Model& model, Executor& executor, const ::tyloi::Tensor& input_hidden, bool,
               const Executor::Mode& mode) {
     return ::tyloi::ops::project(input_hidden, model.lm_head);
 #else
