@@ -2,6 +2,7 @@
 
 #include "engine/ops.h"
 #include "engine/models/causal_model.h"
+#include "engine/models/batch.h"
 #include "engine/models/metadata.h"
 #include "engine/metrics.h"
 #include "engine/models/common/prompt.h"
@@ -25,17 +26,40 @@ namespace tyloi::cuda {
 struct Qwen4DecodeGraph;
 class Qwen4BatchDecodeGraph;
 // A request owns recurrent, positional and attention state; weights stay shared.
-class Qwen4BatchRequestState {
+class Qwen4BatchRequestState
+#ifdef TYLOINFER_NATIVE_CUDA
+    : public tyloi::models::BatchState
+#endif
+{
   public:
     explicit Qwen4BatchRequestState(qwen4_exp::Model&);
+#ifdef TYLOINFER_NATIVE_CUDA
+    ~Qwen4BatchRequestState() override;
+#else
     ~Qwen4BatchRequestState();
+#endif
     Qwen4BatchRequestState(const Qwen4BatchRequestState&) = delete;
     Qwen4BatchRequestState& operator=(const Qwen4BatchRequestState&) = delete;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Return the committed request position. */
+    int64_t position() const override;
+    /** Return request-owned resident cache bytes. */
+    std::size_t resident_bytes() const override;
+    /** Plan the backing needed before initialization. */
+    std::size_t initial_growth_bytes() const override;
+    /** Initialize this request after admission. */
+    void initialize() override;
+    /** Plan persistent cache growth for the next token span. */
+    std::size_t prefill_growth_bytes(int64_t tokens) const override;
+    /** Check the model that owns the request's batch layout. */
+    bool belongs_to(const qwen4_exp::Model& model) const noexcept;
+#else
     int64_t position() const;
     std::size_t resident_bytes() const;
     std::size_t initial_growth_bytes() const;
     void initialize();
     std::size_t prefill_growth_bytes(int64_t tokens) const;
+#endif
   private:
     struct Impl;
     std::unique_ptr<Impl> state_;
@@ -75,17 +99,19 @@ class Qwen4BatchDecodeGraph {
 };
 #ifndef TYLOINFER_NATIVE_CUDA
 std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(
-    qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,int,const ::tyloi::Tensor& host_ids={});
+    const qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,int,const ::tyloi::Tensor& host_ids={});
 std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
-    qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,::tyloi::Tensor* raw_hidden,int64_t confirmed=0,
+    const qwen4_exp::Model&,qwen4_exp::State&,::tyloi::Tensor,::tyloi::Tensor* raw_hidden,int64_t confirmed=0,
     bool* initialized=nullptr,const ::tyloi::Tensor& host_ids={},
     ::tyloi::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
 ::tyloi::Tensor qwen4_decode_graph_compact_topk(const qwen4_exp::Model&,const qwen4_exp::State&);
 #endif
 void qwen4_report_decode_graph(const qwen4_exp::Model&,const qwen4_exp::State&,std::ostream&);
 std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const qwen4_exp::Model&,const qwen4_exp::State&);
-void qwen4_release_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&);
-void qwen4_warmup_decode_graphs(qwen4_exp::Model&,qwen4_exp::State&);
+#ifndef TYLOINFER_NATIVE_CUDA
+void qwen4_release_decode_graphs(const qwen4_exp::Model&,qwen4_exp::State&);
+void qwen4_warmup_decode_graphs(const qwen4_exp::Model&,qwen4_exp::State&);
+#endif
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const qwen4_exp::Model&,const qwen4_exp::State&,const tyloi::models::Mtp*);
 bool qwen4_layer_major_prefill_eligible(const qwen4_exp::Model&, const qwen4_exp::State&, int64_t tokens);
 #ifndef TYLOINFER_NATIVE_CUDA
@@ -128,6 +154,12 @@ struct Model : tyloi::models::CausalModel {
     tyloi::models::Mtp* mtp() const noexcept override;
     /** Create request state and its predictor state for this model. */
     std::unique_ptr<tyloi::models::State> make_state() const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Warm eligible model graphs using this model's request state. */
+    void warmup(tyloi::models::State& state) const override;
+    /** Create model-owned batch computation and optional decode graph state. */
+    std::unique_ptr<tyloi::models::Batch> batch(bool graph) override;
+#endif
     /** Prepare media using the creating model's request-owned cache. */
     tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, tyloi::models::State& state) const override;

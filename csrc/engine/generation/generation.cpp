@@ -2,6 +2,7 @@
 #include "engine/engine.h"
 #include "engine/budget.h"
 #include "engine/generation/decode.h"
+#include "engine/generation/batch.h"
 #include "engine/generation/generation.h"
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill_budget.h"
@@ -283,6 +284,18 @@ struct Native {
 } // namespace
 
 StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
+    if (request.batched) {
+        graph_->invalidate();
+        idle_state_->release_graphs();
+        if (auto* predictor = model_->mtp()) {
+            if (!idle_state_->predictor || !idle_state_->predictor->belongs_to(*predictor))
+                throw std::invalid_argument("predictor state is unavailable or belongs to another model");
+            for (const auto& [device, bytes] : predictor->reset_growth(*idle_state_->predictor, 1))
+                if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
+            predictor->reset(*idle_state_->predictor, 1);
+        }
+        return batch_->generate(id, request.input, *request.output);
+    }
     return generate_prepared(
         Native{*model_, *request.state, *executor_, *budget_, *graph_, *weights_, *cache_, model_info_,
                config_, forward_options_, source_.get(), mtp_state_, {}, model_->mtp()},

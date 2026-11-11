@@ -30,6 +30,7 @@ namespace tyloi::engine {
 class Scheduler;
 class InferenceOutput;
 class TextProcessor;
+class Batch;
 struct Request;
 
 struct EngineInfo {
@@ -152,6 +153,7 @@ private:
     std::optional<Decode> graph_;
     std::unique_ptr<state::Sessions> cache_;
     std::optional<Budget> budget_;
+    std::unique_ptr<Batch> batch_;
     mtp::State mtp_state_;
     std::unique_ptr<TextProcessor> text_;
     EngineInfo info_;

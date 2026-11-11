@@ -12,6 +12,10 @@
 #include "engine/backends/cuda/kernels/gr_prefill_blas.h"
 #include "engine/backends/cuda/ops/projection/mmq.h"
 #include "diagnostics/route_stats.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/state/kv_memory.h"
+#include "engine/state/kv_offload.h"
+#endif
 
 #include <exception>
 #include <iostream>
@@ -239,14 +243,28 @@ void Executor::reset() {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
+void Executor::configure_kv(std::shared_ptr<KvMemoryManager> kv, std::shared_ptr<KvOffloadStore> offload) {
+    kv_ = std::move(kv);
+    offload_ = std::move(offload);
+}
+
+void Executor::bind_budget(tyloi::engine::Budget* budget) noexcept {
+    if (kv_) kv_->bind_budget(budget);
+    if (offload_) offload_->bind_budget(budget);
+}
+
 void Executor::drain() {
     std::exception_ptr failure;
     try { join(); } catch (...) { failure = std::current_exception(); }
+    try { if (offload_) offload_->flush(); } catch (...) { if (!failure) failure = std::current_exception(); }
     try { wait(); } catch (...) { if (!failure) failure = std::current_exception(); }
     if (failure) std::rethrow_exception(failure);
 }
 
 void Executor::clear() {
+    bind_budget(nullptr);
+    kv_.reset();
+    offload_.reset();
     if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
         std::cerr << "cuda knobs in use:\n" << env_dump();
     scratch_.clear();
@@ -305,8 +323,12 @@ std::unique_ptr<Executor> Executor::fork() const {
 }
 
 std::unique_ptr<Executor> Executor::fork(int primary) const {
-    return std::unique_ptr<Executor>(new Executor(contexts_, profiler_, mmq_, tq_, branches_,
+    auto result = std::unique_ptr<Executor>(new Executor(contexts_, profiler_, mmq_, tq_, branches_,
         collectives_, routes_, options_, mode_, primary));
+#ifdef TYLOINFER_NATIVE_CUDA
+    result->configure_kv(kv_, offload_);
+#endif
+    return result;
 }
 
 Executor::Mode Executor::forward_mode(int primary) const {

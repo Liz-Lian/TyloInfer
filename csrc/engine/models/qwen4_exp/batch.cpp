@@ -21,6 +21,100 @@
 #include <utility>
 #include <vector>
 
+#ifdef TYLOINFER_NATIVE_CUDA
+namespace tyloi::cuda::qwen4_exp {
+namespace {
+
+class Batch final : public tyloi::models::Batch {
+    struct GraphPlan final : Plan {
+        const Batch* owner;
+        std::vector<Qwen4BatchRequestState*> states;
+        bool greedy;
+        Qwen4BatchDecodeGraph::Plan layout;
+        GraphPlan(const Batch& owner, std::vector<Qwen4BatchRequestState*> states, bool greedy,
+                  Qwen4BatchDecodeGraph::Plan layout)
+            : owner(&owner), states(std::move(states)), greedy(greedy), layout(std::move(layout)) {
+            growth=this->layout.growth;
+            rebuild=this->layout.rebuild;
+        }
+    };
+public:
+    /** Own the optional graph for batches using this model. */
+    Batch(Model& model, bool graph) : model_(model) {
+        if(graph) graph_=std::make_unique<Qwen4BatchDecodeGraph>(model);
+    }
+    /** Create an independent request cache for this model. */
+    std::unique_ptr<tyloi::models::BatchState> make_state() override {
+        return std::make_unique<Qwen4BatchRequestState>(model_);
+    }
+    /** Return the per-row prefill workspace budget. */
+    std::size_t prefill_row_bytes() const override {
+        return std::size_t(model_.metadata.hidden_size) * model_.metadata.hc_mult * sizeof(float) * 8;
+    }
+    /** Prefill the validated request states with their token rows. */
+    std::vector<tyloi::Tensor> prefill(std::span<tyloi::models::BatchState* const> states,
+                                      const std::vector<tyloi::Tensor>& ids) override {
+        return qwen4_batch_prefill(model_,checked(states),ids);
+    }
+    /** Decode one batch under its current execution policy. */
+    tyloi::Tensor decode(std::span<tyloi::models::BatchState* const> states, tyloi::Tensor ids,
+                         const tyloi::Tensor& host_ids) override {
+        auto requests=checked(states);
+        auto policy=Executor::current_ffn();
+        policy.batch_serial=requests.size()>8;
+        auto scope=Executor::current().enter(policy);
+        return qwen4_batch_decode(model_,requests,std::move(ids),host_ids);
+    }
+    /** Plan an eligible graph for these request states. */
+    std::unique_ptr<Plan> plan(std::span<tyloi::models::BatchState* const> states, bool greedy) override {
+        auto requests=checked(states);
+        if(!graph_) return {};
+        auto layout=graph_->plan(requests,greedy);
+        if(!layout) return {};
+        return std::make_unique<GraphPlan>(*this,std::move(requests),greedy,std::move(*layout));
+    }
+    /** Capture or replay a graph using the matching plan. */
+    std::optional<tyloi::Tensor> capture(std::span<tyloi::models::BatchState* const> states,
+            const tyloi::Tensor& ids,const tyloi::Tensor& host_ids,bool greedy,const Plan& value) override {
+        auto requests=checked(states);
+        const auto* plan=dynamic_cast<const GraphPlan*>(&value);
+        if(!graph_ || !plan || plan->owner!=this || plan->states!=requests || plan->greedy!=greedy)
+            throw std::invalid_argument("Qwen4 batch graph plan belongs to another request or model");
+        auto policy=Executor::current_ffn();
+        policy.batch_serial=requests.size()>8;
+        auto scope=Executor::current().enter(policy);
+        return graph_->run(requests,ids,host_ids,greedy,plan->layout);
+    }
+    /** Retire graph references before releasing request states. */
+    void clear() override { if(graph_) graph_->clear(); }
+    /** Report graph capture and replay counts. */
+    tyloi::engine::Metrics metrics() const override {
+        return {{"continuous_batching_cuda_graph_captures",double(graph_?graph_->captures():0)},
+                {"continuous_batching_cuda_graph_replays",double(graph_?graph_->replays():0)}};
+    }
+private:
+    std::vector<Qwen4BatchRequestState*> checked(std::span<tyloi::models::BatchState* const> states) const {
+        std::vector<Qwen4BatchRequestState*> result;
+        result.reserve(states.size());
+        for(auto* value:states) {
+            auto* state=dynamic_cast<Qwen4BatchRequestState*>(value);
+            if(!state || !state->belongs_to(model_))
+                throw std::invalid_argument("Qwen4 batch state belongs to another model");
+            result.push_back(state);
+        }
+        return result;
+    }
+    Model& model_;
+    std::unique_ptr<Qwen4BatchDecodeGraph> graph_;
+};
+
+} // namespace
+
+std::unique_ptr<tyloi::models::Batch> Model::batch(bool graph) {
+    return std::make_unique<Batch>(*this,graph);
+}
+} // namespace tyloi::cuda::qwen4_exp
+#else
 namespace tyloi::cuda::qwen4_exp {
 
 using tyloi::cuda::internal::PrefillCudaTimer;
@@ -507,3 +601,4 @@ std::unique_ptr<tyloi::engine::Batch> make_batch(
 }
 
 } // namespace tyloi::cuda
+#endif

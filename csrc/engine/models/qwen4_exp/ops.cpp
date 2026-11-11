@@ -1290,7 +1290,7 @@ struct Qwen4DecodeGraph {
     return state.graph_registry?state.graph_registry->last_compact: ::tyloi::DenseTensor{};
 }
 
-std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(qwen4_exp::Model& model,qwen4_exp::State& state,::tyloi::Tensor ids_handle,int kind,
+std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(const qwen4_exp::Model& model,qwen4_exp::State& state,::tyloi::Tensor ids_handle,int kind,
         const ::tyloi::Tensor& host_ids) {
     auto ids = ids_handle.dense();
     if (!streamed_decode_graphs(*model.execution)) return {};
@@ -1356,7 +1356,7 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(
 
 #ifndef TYLOINFER_NATIVE_CUDA
 std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
-        qwen4_exp::Model& model,qwen4_exp::State& state,::tyloi::Tensor ids_handle,::tyloi::Tensor* raw_hidden,int64_t confirmed,
+        const qwen4_exp::Model& model,qwen4_exp::State& state,::tyloi::Tensor ids_handle,::tyloi::Tensor* raw_hidden,int64_t confirmed,
         bool* initialized,const ::tyloi::Tensor& host_ids,::tyloi::Tensor* logits,
         std::vector<int32_t>* greedy_tokens,bool compact_sampling) {
     auto ids = ids_handle.dense();
@@ -1437,14 +1437,24 @@ std::optional<tyloi::models::Decoded> qwen4_exp::Model::decode(
 }
 #endif
 
-void qwen4_release_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state) {
+#ifndef TYLOINFER_NATIVE_CUDA
+void qwen4_release_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& state) {
     model.execution->weights.finish_exchange();
     if(state.graph_registry)state.graph_registry->restore_legacy();
     state.graph_registry.reset();
     for(auto& layer:state.layers)layer->retain_graph_storage=false;
 }
+#endif
 
-void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state) {
+#ifdef TYLOINFER_NATIVE_CUDA
+void qwen4_exp::Model::warmup(tyloi::models::State& target) const {
+    auto* request=dynamic_cast<qwen4_exp::State*>(&target);
+    tyloi::models::require_model(request && request->belongs_to(*this), "Qwen4 state belongs to another model");
+    auto& state=*request;
+    const auto& model=*this;
+#else
+void qwen4_warmup_decode_graphs(const qwen4_exp::Model& model,qwen4_exp::State& state) {
+#endif
     const auto* reuse=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     state.reuse_decode_graphs=!reuse || reuse[0]!='0';
     const auto decode=model.execution->weights.decode();
@@ -1512,7 +1522,6 @@ void qwen4_warmup_decode_graphs(qwen4_exp::Model& model,qwen4_exp::State& state)
         <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
     cache_warmup.release(tyloi::Device(tyloi::kCUDA, model.execution->config.layer_placement.primary_device()), false);
 }
-
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
         const qwen4_exp::Model& model,const qwen4_exp::State& state,const tyloi::models::Mtp* mtp) {
     // Shared checkpoint views and recurrent state aliases count once. These
@@ -1638,6 +1647,11 @@ Qwen4BatchRequestState::Qwen4BatchRequestState(qwen4_exp::Model& model)
     }
 }
 Qwen4BatchRequestState::~Qwen4BatchRequestState() = default;
+#ifdef TYLOINFER_NATIVE_CUDA
+bool Qwen4BatchRequestState::belongs_to(const qwen4_exp::Model& model) const noexcept {
+    return &state_->model == &model;
+}
+#endif
 int64_t Qwen4BatchRequestState::position() const { return state_->cache_position; }
 std::size_t Qwen4BatchRequestState::initial_growth_bytes() const {
     std::size_t fixed=0;
@@ -2143,6 +2157,13 @@ qwen4_exp::State::~State() = default;
 
 #ifdef TYLOINFER_NATIVE_CUDA
 void qwen4_exp::State::retire_graphs() noexcept { graph_registry.reset(); }
+
+void qwen4_exp::State::release_graphs() {
+    model_.execution->weights.finish_exchange();
+    if(graph_registry) graph_registry->restore_legacy();
+    graph_registry.reset();
+    for(auto& layer:layers) layer->retain_graph_storage=false;
+}
 #endif
 
 void qwen4_exp::State::reset(int64_t new_batch) {

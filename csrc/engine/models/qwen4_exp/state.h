@@ -68,6 +68,10 @@ public:
     void preallocate() override {}
     void reset(std::int64_t batch) override;
 #ifdef TYLOINFER_NATIVE_CUDA
+    /** Finish graph exchanges and retire this request's graph references. */
+    void release_graphs() override;
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA
     /** Plan per-device cache and checkpoint allocations for a forward window. */
     std::vector<std::pair<tyloi::Device, std::size_t>> growth(
         std::int64_t tokens, const tyloi::models::ForwardOptions& options,

@@ -17,6 +17,7 @@
 namespace tyloi::engine { class Budget; }
 namespace tyloi::cuda::qwen4_exp {
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct BatchRequest : tyloi::engine::BatchRequest {
     using tyloi::engine::BatchRequest::BatchRequest;
 
@@ -90,13 +91,16 @@ class BatchOps {
     int64_t packed_prefill_batches_ = 0, packed_prefill_requests_ = 0,
             packed_prefill_tokens_ = 0;
 };
+#endif
 
 } // namespace tyloi::cuda::qwen4_exp
 
 namespace tyloi::cuda {
 
+#ifndef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<tyloi::engine::Batch> make_batch(
     qwen4_exp::Model& model, CudaExecutionContext& execution, tyloi::engine::Budget& budget,
     const tyloi::engine::ContinuousBatchConfig& config, std::int64_t chunk_size);
+#endif
 
 } // namespace tyloi::cuda

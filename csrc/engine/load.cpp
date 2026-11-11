@@ -142,12 +142,18 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             config.profile_mtp = load.profile_mtp;
             config.trace_moe = load.trace_moe;
             config.prefetch = load.prefetch;
+            if (config.continuous_batch.max_sequences) {
+                config.workspace_reserve = ::tyloi::cuda::options::workspace_reserve_bytes();
+                config.continuous_batch.packed_prefill = ::tyloi::cuda::options::batch_packed_prefill();
+                config.continuous_batch.packed_tokens = ::tyloi::cuda::options::batch_packed_prefill_token_budget();
+            }
             if (config.continuous_batch.max_sequences)
                 throw std::invalid_argument("continuous batching is unavailable for this model");
             const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
             if (kv_options.gpu_budget_bytes)
                 throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             kv = std::make_shared<KvMemoryManager>();
+            root->configure_kv(kv, offload);
             {
                 auto scope = root->enter(load.layer_placement.primary_device());
                 auto definition = models::config_json(*source, options.config_path);
@@ -166,6 +172,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 if (::tyloi::cuda::options::kv_vram_preallocated()) state->preallocate();
                 finalize_kv(kv.get(), *weights, offload);
                 finish_load(kv.get(), *weights, load.report_cuda_memory);
+                root->configure_kv(kv, offload);
                 if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             }
             graph = root->graph();
@@ -213,10 +220,12 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 std::cerr << "runtime_load_cleanup error=unknown\n";
             }
             graph.reset();
+            state.reset(); model.reset(); sessions.reset();
             try { root->clear(); }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
             catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
-            state.reset(); model.reset(); sessions.reset(); offload.reset(); kv.reset(); weights.reset();
+            root->configure_kv({}, {});
+            offload.reset(); kv.reset(); weights.reset();
             scope.reset();
             root.reset();
         }

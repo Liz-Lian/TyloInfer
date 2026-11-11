@@ -233,6 +233,9 @@ class EngineInstance final : public Engine {
                 state.reset();
                 offload.reset();
                 kv.reset();
+#ifdef TYLOINFER_NATIVE_CUDA
+                executor->configure_kv({}, {});
+#endif
                 weights.clear_workspace();
                 weights.reset();
             }

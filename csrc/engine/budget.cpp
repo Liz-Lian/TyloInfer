@@ -34,9 +34,11 @@ tyloi::Executor::Memory Budget::memory(Device device) const {
 
 void Budget::bind(bool predictor) {
     weights_.bind(*this, primary_, predictor);
+    executor_.bind_budget(this);
 }
 
 void Budget::unbind() noexcept {
+    executor_.bind_budget(nullptr);
     weights_.unbind();
 }
 

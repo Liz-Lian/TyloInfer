@@ -33,6 +33,10 @@ struct ContinuousBatchConfig {
     bool greedy = true;
     bool cuda_graph = true;
     bool paged_kv = true;
+    /** Pack independent prompt spans into one numerical operation when supported. */
+    bool packed_prefill = true;
+    /** Maximum tokens admitted to one packed numerical operation. */
+    std::int64_t packed_tokens = 512;
     std::int32_t cuda_graph_minimum_tokens = 16;
 };
 
@@ -62,6 +66,8 @@ struct Config {
     bool profile_decode = false;
     bool profile_mtp = false;
     bool trace_moe = false;
+    /** Expert workspace requested before large batched prompt operations. */
+    std::size_t workspace_reserve = std::size_t(4) << 30;
     PrefetchConfig prefetch;
     GraphConfig decode_graph;
     ContinuousBatchConfig continuous_batch;

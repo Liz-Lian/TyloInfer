@@ -68,7 +68,11 @@ Generation Text<M, S, P>::generate(const RequestId& id, InferenceRequest& input,
         if constexpr (std::is_same_v<Model,qwen4_exp::Model>) {
             // Exclusive MTP generation has ended before a batch starts.
             // Its graph consumers must retire before idle batch buffers.
+#ifdef TYLOINFER_NATIVE_CUDA
+            state.release_graphs();
+#else
             qwen4_release_decode_graphs(language,state);
+#endif
             if (auto* predictor=component_predictor(language,components)) predictor->reset(predictor_state(), 1);
         }
     }

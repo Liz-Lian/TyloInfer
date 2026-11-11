@@ -14,6 +14,8 @@
 #include "engine/budget.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/generation/mtp/metrics.h"
+#include "engine/generation/batch.h"
+#include "engine/generation/batch_ops.h"
 #include "engine/models/common/mtp.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
@@ -39,6 +41,7 @@ void Engine::reset_states(std::int64_t batch) {
                 if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
         }
 #endif
+        request.state->release_graphs();
         request.state->reset(batch);
 #ifdef TYLOINFER_NATIVE_CUDA
         if (predictor) {
@@ -89,10 +92,14 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         graph_.emplace(model_info_.max_context, executor_->device(), std::move(graph));
         budget_.emplace(*ledger_, *weights_, *cache_, *executor_);
         budget_->bind(model_->mtp() != nullptr);
+        if (config_.continuous_batch.max_sequences) {
+            batch_ = engine::make_batch(*model_, *executor_, *weights_, *budget_, config_);
+        }
         if (const auto bytes = config_.resident_budget_bytes) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
         }
+        model_->warmup(*idle_state_);
         weights_->prepare(::tyloi::weights::Cache::Stage::loaded, executor_->device(), source_.get());
         ready_ = true;
     } catch (...) {
@@ -169,6 +176,7 @@ std::unique_ptr<tyloi::Executor::Scope> Engine::enter() { return executor_->ente
 
 void Engine::prepare_request(Request& request, bool batched) {
     engine::prepare_request(request, text_.get(), info_, batched, model_->mtp() != nullptr);
+    if (batched) return;
     if (!idle_state_) {
         request.output.reset();
         request.input = {};
@@ -212,10 +220,11 @@ void Engine::unload_model() {
         try { scope = executor_->enter(); }
         catch (...) { remember(std::current_exception()); }
         clear_bindings();
+        batch_.reset();
         graph_.reset();
+        idle_state_.reset(); model_.reset();
         try { executor_->clear(); }
         catch (...) { remember(std::current_exception()); }
-        idle_state_.reset(); model_.reset();
         weights_->clear_workspace();
         budget_.reset(); cache_.reset();
         weights_.reset();
@@ -243,18 +252,23 @@ ControlResult Engine::control_command(ControlRequest request) {
             Metrics predictor;
             if (model_->mtp()) mtp::append_generation_metrics(predictor, mtp_state_.stats);
             return resource_metrics(model_->metrics(), {}, std::nullopt, false,
-                {}, {}, std::nullopt, predictor, source_.get(),
+                batch_ ? batch_->metrics() : Metrics{}, {}, std::nullopt, predictor, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
                 executor_->memory(config_.devices), executor_->device(), config_.online_budget);
         } else throw std::invalid_argument("model has no duplex component");
     }, std::move(request));
 }
 
-bool Engine::can_batch(const EngineRequest&) const { return false; }
+bool Engine::can_batch(const EngineRequest& request) const {
+    return batch_ && !request.input.media && request.input.cache_plan.session_id.empty() &&
+        !(request.input.sampling.enable_mtp && model_->mtp());
+}
 
 bool Engine::exclusive() const { return false; }
 
-void Engine::execute(const std::vector<RequestId>&) {}
+void Engine::execute(const std::vector<RequestId>& eligible) {
+    if (batch_) batch_->step(eligible);
+}
 
 void Engine::clear_bindings() noexcept {
     if (budget_) budget_->unbind();
@@ -266,8 +280,10 @@ SessionResult Engine::set_budget(const SessionCommand& command) {
     auto change = budget_->change(command);
     weights_->settle();
     graph_->invalidate();
+    if (batch_) batch_->release_idle_buffers();
     if (ready_) reset_states(1);
     if (idle_state_) {
+        idle_state_->release_graphs();
         auto* predictor = model_->mtp();
         if (predictor && (!idle_state_->predictor || !idle_state_->predictor->belongs_to(*predictor)))
             throw std::invalid_argument("predictor state is unavailable or belongs to another model");

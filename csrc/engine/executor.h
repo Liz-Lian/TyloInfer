@@ -6,6 +6,8 @@
 #include <span>
 #include <vector>
 
+namespace tyloi::engine { class Budget; }
+
 namespace tyloi {
 
 class Executor {
@@ -83,8 +85,10 @@ public:
     virtual void trim(Device device) = 0;
     /** Set the device allocation limit within its resource scope; zero removes it. */
     virtual void limit(Device device, std::size_t bytes) = 0;
+    /** Bind or release the budget used by execution-owned resources. */
+    virtual void bind_budget(engine::Budget*) noexcept {}
     // Stop concurrent submissions and call within this executor's scope.
-    // Wait for executor work; owners coordinate weights and offload separately.
+    // Wait for executor work and its owned transfers; callers drain weights first.
     virtual void drain() = 0;
     // After draining and destroying graphs, clear execution caches within the scope.
     virtual void clear() = 0;

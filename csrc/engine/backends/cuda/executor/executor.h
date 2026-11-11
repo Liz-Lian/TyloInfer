@@ -23,6 +23,8 @@ namespace tyloi::cuda {
 class Branches;
 class Collectives;
 class RouteStats;
+class KvMemoryManager;
+class KvOffloadStore;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -42,6 +44,10 @@ public:
     void trim(tyloi::Device device) override;
     /** Set the device allocation limit; zero removes it. */
     void limit(tyloi::Device device, std::size_t bytes) override;
+    /** Bind the budget used for KV admission and offload. */
+    void bind_budget(tyloi::engine::Budget* budget) noexcept override;
+    /** Install load-time KV owners before creating request executors. */
+    void configure_kv(std::shared_ptr<KvMemoryManager> kv, std::shared_ptr<KvOffloadStore> offload);
     void drain() override;
     void clear() override;
     // Set the default device during loading, before publication or concurrent submissions.
@@ -177,6 +183,8 @@ private:
     MfeScratch mfe_scratch_;
     MoeScratchCache moe_scratch_;
 #ifdef TYLOINFER_NATIVE_CUDA
+    std::shared_ptr<KvMemoryManager> kv_;
+    std::shared_ptr<KvOffloadStore> offload_;
     mutable std::mutex attention_scratch_mutex_;
     std::map<std::pair<int, std::uintptr_t>, std::map<AttentionGeometry, AttentionScratch>> attention_scratch_;
 #else

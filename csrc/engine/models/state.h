@@ -63,6 +63,8 @@ public:
     std::unique_ptr<MtpState> predictor;
     virtual void preallocate() = 0;
     virtual void reset(std::int64_t batch) = 0;
+    /** Retire model-owned graphs before changing request backing or runtime policy. */
+    virtual void release_graphs() {}
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;
