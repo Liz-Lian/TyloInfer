@@ -53,9 +53,9 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::suffix_growth(std::int
             add(result, device, session_tensor_bytes(layer.gdn.recurrent));
         }
         if (weights.ple) {
-            if (!layer.ple.conv.defined() || layer.ple.saved)
+            if (!layer.ple.numeric.conv.defined() || layer.ple.numeric.saved)
                 throw std::invalid_argument("Qwen4 PLE checkpoint is unavailable");
-            add(result, device, session_tensor_bytes(layer.ple.conv));
+            add(result, device, session_tensor_bytes(layer.ple.numeric.conv));
         }
     }
     return result;
@@ -95,11 +95,9 @@ std::vector<std::pair<tyloi::Device, std::size_t>> State::growth(
             }
         }
         if (weights.ple) {
-            const auto bytes = layer.ple.conv.defined() ? session_tensor_bytes(layer.ple.conv) :
-                multiply(multiply(multiply(multiply(std::size_t(batch), std::size_t(weights.config.ple_kernel - 1)),
-                    std::size_t(weights.config.ngram)), std::size_t(weights.config.hidden)),
-                    multiply(std::size_t(weights.config.streams), sizeof(float)));
-            if (!layer.ple.conv.defined()) add(result, device, bytes);
+            const auto bytes = layer.ple.numeric.conv.defined() ? session_tensor_bytes(layer.ple.numeric.conv) :
+                weights.ple->growth_bytes(layer.ple,batch);
+            if (!layer.ple.numeric.conv.defined()) add(result, device, bytes);
             if (copies) add(result, device, multiply(bytes, copies));
         }
     }
@@ -231,7 +229,7 @@ void validate_layer_session(const Layer& layer, const LayerState& current,
     } else TYLOINFER_RUNTIME_CHECK(!saved.convolution && !saved.recurrent,
         "unexpected Qwen4 GDN snapshot");
     if (layer.ple) {
-        TYLOINFER_RUNTIME_CHECK(!current.ple.saved &&
+        TYLOINFER_RUNTIME_CHECK(!current.ple.numeric.saved &&
             check(saved.ple_convolution,{1,(c.ple_kernel-1)*c.ngram,c.hidden*c.streams}) &&
             saved.ple_batch==1 && saved.ple_tokens.size()==std::size_t(c.ngram-1),
             "incompatible Qwen4 PLE session state");
@@ -259,7 +257,7 @@ void stage_layer_session(const Layer& layer, LayerState& candidate,
     };
     if (layer.gdn) { copy(candidate.gdn.conv,saved.convolution); copy(candidate.gdn.recurrent,saved.recurrent); }
     if (layer.ple) {
-        copy(candidate.ple.conv,saved.ple_convolution);
+        copy(candidate.ple.numeric.conv,saved.ple_convolution);
         layer.ple->restore_graph_context(candidate.ple,{saved.ple_batch,saved.ple_tokens});
     }
 }
@@ -312,9 +310,13 @@ std::vector<::tyloi::Tensor> State::storage() const {
 #endif
         }
         if(block.ple) {
+#ifdef TYLOINFER_NATIVE_CUDA
+            for(const auto& value:block.ple->storage(layer.ple)) add(value);
+#else
             const auto& ple=layer.ple;
             add(ple.conv);add(ple.saved_conv);
             for(const auto& value:ple.saved_prefix_conv)add(value);
+#endif
         }
         if(block.qsa) {
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -359,9 +361,7 @@ void State::begin_speculative_suffix(std::int64_t draft_tokens) {
             layer.gdn.saved_state=tyloi::ops::clone(layer.gdn.recurrent);
         }
         if (weights.ple) {
-            layer.ple.saved_context=weights.ple->session_context(layer.ple);
-            layer.ple.saved_conv=layer.ple.conv.dense().clone();
-            layer.ple.saved=true;
+            weights.ple->checkpoint(layer.ple);
         }
     }
     speculative_prefix_retention=false;

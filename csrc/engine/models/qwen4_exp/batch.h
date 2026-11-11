@@ -1,7 +1,9 @@
 #pragma once
 
 #include "engine/models/batch.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
+#endif
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/config.h"
 #include "engine/generation/batch.h"

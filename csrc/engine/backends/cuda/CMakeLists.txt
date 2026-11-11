@@ -269,6 +269,7 @@ set(TYLOINFER_CUDA_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/gdn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/qsa.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/ple.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/rms.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/rope.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/routes.cpp

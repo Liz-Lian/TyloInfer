@@ -18,7 +18,9 @@
 #include <iosfwd>
 #include <vector>
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct CudaExecutionContext;
+#endif
 namespace tyloi::cuda::qwen4_exp { struct Layer; struct Components; }
 namespace tyloi::cuda { class GatedResidual; }
 namespace tyloi::models { struct Mtp; struct LoadOptions; }

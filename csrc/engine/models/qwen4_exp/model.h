@@ -11,6 +11,7 @@
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/ops/gdn.h"
 #include "engine/ops/qsa.h"
+#include "engine/ops/ple.h"
 #endif
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/ops/rope/rope.h"
@@ -27,7 +28,9 @@
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/decode_window.h"
+#endif
 #include "engine/models/session/snapshot.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 #include <array>
@@ -952,6 +955,153 @@ class NgramEmbedding {
     }
 };
 
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Coordinate n-gram context and row loading with the PLE numeric operation. */
+class Ple {
+public:
+    /** Own numeric convolution state and the request's n-gram history. */
+    struct State {
+        NgramEmbedding::State embedding;
+        tyloi::ops::Ple::State numeric;
+        tyloi::Tensor input{DenseTensor{}}, rows{DenseTensor{}};
+        NgramEmbedding::Context saved_context;
+        std::vector<NgramEmbedding::Context> saved_prefix_context;
+    };
+    /** Bind immutable numeric weights to the n-gram row source. */
+    Ple(NgramEmbedding embedding, tyloi::ops::PleWeights weights, int64_t hidden, int64_t streams,
+        int64_t dilation, double eps)
+        : embedding_(std::move(embedding)), numeric_(std::move(weights),hidden,streams,dilation,eps),
+          hidden_(hidden),streams_(streams) {}
+    /** Reset the request history, optionally retaining graph storage. */
+    void reset(State& state,bool retain=false) const {
+        embedding_.reset(state.embedding); numeric_.reset(state.numeric,retain);
+        state.saved_context={}; state.saved_prefix_context.clear();
+        state.input.dense()={}; state.rows.dense()={};
+    }
+    /** Commit and release speculative history. */
+    void commit(State& state) const {
+        numeric_.commit(state.numeric); state.saved_context={}; state.saved_prefix_context.clear();
+    }
+    /** Save convolution and n-gram history for rollback. */
+    void checkpoint(State& state) const {
+        state.saved_context=embedding_.context(state.embedding); numeric_.checkpoint(state.numeric);
+    }
+    /** Restore the saved history or a selected retained prefix. */
+    void rollback(State& state,int64_t keep=-1) const {
+        auto context=state.saved_context;
+        if(keep>=0 && state.numeric.saved_prefix_position>=0) {
+            const auto index=keep-state.numeric.saved_prefix_position;
+            TYLOINFER_RUNTIME_CHECK(index>=0 && index<int64_t(state.saved_prefix_context.size()),
+                "Qwen4 PLE prefix checkpoint is out of range");
+            context=state.saved_prefix_context[index];
+        }
+        numeric_.rollback(state.numeric,keep); embedding_.restore(state.embedding,std::move(context));
+        state.saved_context={}; state.saved_prefix_context.clear();
+    }
+    /** Borrow the current convolution history. */
+    const tyloi::Tensor& conv_state(const State& state) const { return state.numeric.conv; }
+    /** Borrow stable numeric slots used by graph capture. */
+    std::vector<tyloi::Tensor*> graph_state(State& state) const { return numeric_.graph_state(state.numeric); }
+    /** Keep numeric and pending embedding backings alive through execution. */
+    std::vector<tyloi::Tensor> storage(const State& state) const {
+        auto result=numeric_.storage(state.numeric);
+        if(state.input.defined())result.emplace_back(state.input.dense());
+        if(state.rows.defined())result.emplace_back(state.rows.dense());
+        return result;
+    }
+    /** Estimate missing convolution storage for a batch. */
+    std::size_t growth_bytes(const State& state,int64_t batch) const { return numeric_.growth_bytes(state.numeric,batch); }
+    /** Report whether the row source supports graph execution. */
+    bool graph_supported() const { return embedding_.graph_supported(); }
+    /** Borrow the committed n-gram context for a session snapshot. */
+    const NgramEmbedding::Context& session_context(const State& state) const { return embedding_.context(state.embedding); }
+    /** Publish a prepared n-gram context after graph replay. */
+    void restore_graph_context(State& state,NgramEmbedding::Context context) const { embedding_.restore(state.embedding,std::move(context)); }
+    /** Restore convolution and n-gram history from a session. */
+    void restore_session(State& state,const DenseTensor& conv,NgramEmbedding::Context context,bool retain=false) const {
+        numeric_.restore_session(state.numeric,conv,retain); embedding_.restore(state.embedding,std::move(context));
+        state.saved_context={}; state.saved_prefix_context.clear();
+    }
+    /** Create a request-owned row transfer stage for graph execution. */
+    std::shared_ptr<tyloi::weights::RowStage> graph_stage(State& state,int64_t tokens,const tyloi::Device& device) const {
+        return embedding_.graph_stage(state.embedding,1,tokens,device);
+    }
+    /** Upload graph rows and update the n-gram context. */
+    void upload_graph(State& state,const DenseTensor& ids,tyloi::weights::RowStage& stage) const { embedding_.upload_graph(state.embedding,ids,stage); }
+    /** Compute graph row hashes without publishing the next context. */
+    tyloi::models::qwen4_exp::NgramHashes graph_rows(State& state,const DenseTensor& ids) const { return embedding_.graph_rows(state.embedding,ids); }
+    /** Compute the context corresponding to a graph verification prefix. */
+    NgramEmbedding::Context graph_prefix_context(const State& state,const DenseTensor& ids,int64_t count) const {
+        return embedding_.prefix_context(state.embedding,ids,count);
+    }
+    /** Bind numeric and n-gram snapshots for a graph verification window. */
+    void bind_graph_checkpoint(State& state,const std::vector<tyloi::Tensor>& conv,
+            std::vector<NgramEmbedding::Context> context,int64_t position) const {
+        TYLOINFER_RUNTIME_CHECK(!conv.empty() && conv.size()==context.size(),"invalid PLE prefix checkpoints");
+        numeric_.bind_graph_checkpoint(state.numeric,conv,position);
+        state.saved_context=context.front(); state.saved_prefix_context=std::move(context);
+    }
+    /** Execute graph PLE with prepared rows and optional prefix checkpoints. */
+    DenseTensor forward_graph(State& state,const DenseTensor& x,const DenseTensor&,const DenseTensor& rows,
+            int64_t confirmed,std::vector<tyloi::Tensor>& conv) const {
+        return numeric_.forward_graph(state.numeric,x,rows,confirmed,conv).dense();
+    }
+    /** Start request row reads for the supplied token IDs. */
+    void prefetch_tokens(State& state,const DenseTensor& ids,bool early=false) const { embedding_.prefetch(state.embedding,ids,early); }
+    /** Load embedding rows and execute one chunk with transactional context. */
+    DenseTensor forward_chunk(State& state,const DenseTensor& x,const DenseTensor& ids,bool cache,
+            const DenseTensor& host={},const DenseTensor& rows={}) const {
+        auto context=embedding_.context(state.embedding);
+        try {
+            state.input.dense()=x;
+            state.rows.dense()=rows.defined()?rows:embedding_.forward(state.embedding,ids,cache,nullptr,host);
+            auto result=numeric_.forward_chunk(state.numeric,state.input,state.rows,cache).dense();
+            state.input.dense()={}; state.rows.dense()={};
+            return result;
+        } catch(...) { embedding_.restore(state.embedding,std::move(context)); throw; }
+    }
+    /** Execute a request window and retain speculative prefix history when needed. */
+    DenseTensor forward(State& state,const DenseTensor& x,const DenseTensor& ids,bool cache,
+            int64_t confirmed=0,const DenseTensor& host={},int64_t position=-1) const {
+        TYLOINFER_RUNTIME_CHECK(x.dim()==3 && ids.dim()==2 && x.size(0)==ids.size(0) &&
+            x.size(1)==ids.size(1) && x.size(1)>0 && x.size(2)==hidden_*streams_ && confirmed>=0 &&
+            confirmed<=x.size(1) && (!confirmed || cache),"invalid Qwen4 PLE input");
+        if(cache && position>=0 && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8) {
+            TYLOINFER_RUNTIME_CHECK(!state.numeric.saved && state.numeric.conv.defined(),"PLE verification requires committed convolution state");
+            auto host_ids=host.defined()?host:ids.to(tyloi::kCPU,tyloi::kInt64);
+            state.numeric.saved_prefix_conv.clear(); state.saved_prefix_context.clear();
+            for(int64_t i=confirmed;i<x.size(1);++i) {
+                state.numeric.saved_prefix_conv.emplace_back(tyloi::cuda::empty_like(state.numeric.conv.dense()));
+                state.saved_prefix_context.push_back(embedding_.prefix_context(state.embedding,host_ids,i));
+            }
+            auto context=embedding_.context(state.embedding);
+            try {
+                state.input.dense()=x;
+                state.rows.dense()=embedding_.forward(state.embedding,ids,true,nullptr,host_ids);
+                auto result=numeric_.forward_graph(state.numeric,state.input,state.rows,confirmed,state.numeric.saved_prefix_conv).dense();
+                auto contexts=state.saved_prefix_context;
+                bind_graph_checkpoint(state,state.numeric.saved_prefix_conv,std::move(contexts),position+confirmed);
+                state.input.dense()={}; state.rows.dense()={};
+                return result;
+            } catch(...) { embedding_.restore(state.embedding,std::move(context)); throw; }
+        }
+        if(!confirmed || confirmed==x.size(1)) return forward_chunk(state,x,ids,cache,host);
+        TYLOINFER_RUNTIME_CHECK(!state.numeric.saved,"resolve previous PLE checkpoint");
+        auto first=forward_chunk(state,x.narrow(1,0,confirmed),ids.narrow(1,0,confirmed),cache,
+            host.defined()?host.narrow(1,0,confirmed):DenseTensor{});
+        checkpoint(state);
+        try {
+            auto second=forward_chunk(state,x.narrow(1,confirmed,x.size(1)-confirmed),ids.narrow(1,confirmed,x.size(1)-confirmed),cache,
+                host.defined()?host.narrow(1,confirmed,x.size(1)-confirmed):DenseTensor{});
+            return tyloi::cuda::cat({first,second},1);
+        } catch(...) { rollback(state); throw; }
+    }
+private:
+    NgramEmbedding embedding_;
+    tyloi::ops::Ple numeric_;
+    int64_t hidden_,streams_;
+};
+#else
 struct PleWeights {
     Linear key, value;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -1237,6 +1387,7 @@ class Ple {
     int64_t hidden_, streams_, dilation_;
     double eps_;
 };
+#endif
 
 #ifndef TYLOINFER_NATIVE_CUDA
 struct QsaWeights {

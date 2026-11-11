@@ -42,7 +42,9 @@
 #include <utility>
 #include <vector>
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct CudaExecutionContext;
+#endif
 
 namespace tyloi::cuda::deepseek_v41_runtime {
 

@@ -2,7 +2,9 @@
 #include "engine/weights/workspace.h"
 #include "engine/models/session/snapshot.h"
 #include "env.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
+#endif
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
@@ -58,7 +60,11 @@ struct GraphCheckpoint {
 #else
     std::vector<::tyloi::DenseTensor> gdn_conv, gdn_state;
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    std::vector<::tyloi::Tensor> ple_conv;
+#else
     std::vector<::tyloi::DenseTensor> ple_conv;
+#endif
 };
 
 GatedResidual::Result graph_attention(const qwen4_exp::Layer& weights, qwen4_exp::LayerState& state,
@@ -1776,7 +1782,7 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
     const auto block_cache=[&](const qwen4_exp::Layer& block,const qwen4_exp::LayerState& layer) {
         if(block.qsa)for(const auto& tensor:block.qsa->resident_cache_tensors(*layer.qsa))add(tensor);
         if(block.gdn) { add(layer.gdn.conv); add(layer.gdn.recurrent); }
-        if(block.ple && layer.ple.conv.defined())add(layer.ple.conv);
+        if(block.ple && block.ple->conv_state(layer.ple).defined())add(block.ple->conv_state(layer.ple));
     };
     for(std::size_t i=0;i<model.layers.size();++i)block_cache(*model.layers[i],*state.layers[i]);
     add(state.positions);
@@ -1870,6 +1876,9 @@ struct Qwen4BatchRequestState::Impl {
             const auto& state = *layers[i];
             if (weights.qsa) bytes += weights.qsa->growth_bytes(*state.qsa,tokens);
             if (weights.gdn) bytes += weights.gdn->growth_bytes(state.gdn);
+#ifdef TYLOINFER_NATIVE_CUDA
+            if (weights.ple) bytes += weights.ple->growth_bytes(state.ple,1);
+#endif
         }
         return bytes;
     }
@@ -1932,7 +1941,7 @@ std::size_t Qwen4BatchRequestState::resident_bytes() const {
         const auto& state = *state_->layers[i];
         if (weights.qsa) for (const auto& tensor : weights.qsa->resident_cache_tensors(*state.qsa)) add(tensor);
         if (weights.gdn) { add(state.gdn.conv); add(state.gdn.recurrent); }
-        if (weights.ple && state.ple.conv.defined()) add(state.ple.conv);
+        if (weights.ple && weights.ple->conv_state(state.ple).defined()) add(weights.ple->conv_state(state.ple));
     }
     std::size_t bytes = 0;
     for (const auto& [address,size] : allocations) bytes += size;

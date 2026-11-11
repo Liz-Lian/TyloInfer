@@ -45,11 +45,12 @@ struct LayerLoader : tyloi::weights::Loader {
 #ifndef TYLOINFER_NATIVE_CUDA
     using QsaWeights = qwen4_exp::QsaWeights;
 #endif
-    using PleWeights = qwen4_exp::PleWeights;
 #ifdef TYLOINFER_NATIVE_CUDA
+    using PleWeights = tyloi::ops::PleWeights;
     tyloi::ops::YarnScaling yarn;
     using Embedding = ::tyloi::Tensor;
 #else
+    using PleWeights = qwen4_exp::PleWeights;
     CudaExecutionContext& execution;
     struct Embedding {
         attention_ops::Embedding function;
