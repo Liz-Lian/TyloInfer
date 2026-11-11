@@ -2,8 +2,15 @@
 
 #include "engine/tensor.h"
 
+namespace tyloi::ops { struct TopK; }
 namespace tyloi::cuda::ops {
 
+/** Read contiguous host float values from a dense tensor. */
+std::vector<float> floats(const tyloi::DenseTensor& input);
+/** Read contiguous host integer values from a dense tensor. */
+std::vector<std::int64_t> integers(const tyloi::DenseTensor& input);
+/** Select sorted top-k values and indices on the input device. */
+::tyloi::ops::TopK top_k(const tyloi::DenseTensor& input, std::int64_t k, bool force_radix);
 void decode_commit(tyloi::DenseTensor next, tyloi::DenseTensor generated, tyloi::DenseTensor step,
                    tyloi::DenseTensor input, tyloi::DenseTensor position, tyloi::DenseTensor length);
 tyloi::DenseTensor tensor(std::span<const float> values, Device target);

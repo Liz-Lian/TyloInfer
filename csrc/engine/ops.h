@@ -256,6 +256,18 @@ inline Tensor empty(std::initializer_list<std::int64_t> shape, const TensorOptio
     return empty(std::span<const std::int64_t>(shape.begin(), shape.size()), options);
 }
 Tensor sample_greedy(const Tensor& logits);
+/** Read a tensor as contiguous host float values. */
+std::vector<float> floats(const Tensor& value);
+/** Read a tensor as contiguous host signed integer values. */
+std::vector<std::int64_t> integers(const Tensor& value);
+/** Host values and vocabulary indices for each selected row. */
+struct TopK {
+    std::vector<float> values;
+    std::vector<std::int64_t> indices;
+    std::int64_t rows = 0, columns = 0;
+};
+/** Select sorted top-k entries per row and return them on the host. */
+TopK top_k(const Tensor& logits, std::int64_t k, bool force_radix = false);
 void decode_commit(const Tensor& next, Tensor& generated, Tensor& step,
                    Tensor& input, Tensor& position, Tensor& length);
 Tensor sample_stochastic(const Tensor& logits, const Tensor& random,

@@ -19,6 +19,7 @@
 #include "engine/backends/cuda/native/device.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <iostream>
 #endif
@@ -705,6 +706,27 @@ Tensor sample_greedy(const Tensor& logits_tensor) {
     input(logits);
     require_cuda(logits);
     return owner(::sample_greedy_cuda(logits));
+}
+
+std::vector<float> floats(const Tensor& tensor) {
+    const auto& value = dense(tensor);
+    input(value);
+    return cuda::ops::floats(value);
+}
+
+std::vector<std::int64_t> integers(const Tensor& tensor) {
+    const auto& value = dense(tensor);
+    input(value);
+    return cuda::ops::integers(value);
+}
+
+TopK top_k(const Tensor& tensor, std::int64_t k, bool force_radix) {
+    const auto& logits = dense(tensor);
+    input(logits);
+    require_cuda(logits);
+    if (logits.dim() != 2 || k < 1 || k > logits.size(1))
+        throw std::invalid_argument("invalid top-k sampling geometry");
+    return cuda::ops::top_k(logits, k, force_radix);
 }
 
 void decode_commit(const Tensor& next, Tensor& generated, Tensor& step,

@@ -778,6 +778,9 @@ public:
     bool defined() const noexcept { return impl_ != nullptr && impl_->defined(); }
     explicit operator bool() const noexcept { return defined(); }
 
+    /** Compare view identity; distinct representations match only for identical dense geometry and data. */
+    bool same_view(const Tensor& other) const;
+
     // Concrete representation access stays in loading, storage and ops code.
     const DenseTensor& dense() const;
     DenseTensor& dense();

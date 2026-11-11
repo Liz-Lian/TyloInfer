@@ -87,7 +87,7 @@ set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/generation/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/cuda.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/decode.cpp
-    ${PROJECT_SOURCE_DIR}/engine/generation/mtp/generation.cpp
+    ${PROJECT_SOURCE_DIR}/engine/generation/mtp/cuda.cpp
     ${PROJECT_SOURCE_DIR}/engine/engine.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/session/paged.cpp
@@ -107,6 +107,8 @@ add_library(mfq-cuda-engine STATIC
     ${TYLOINFER_CUDA_ENGINE_SOURCES}
 )
 add_library(mfq::cuda-engine ALIAS mfq-cuda-engine)
+target_sources(mfq-cuda-engine PRIVATE
+    ${PROJECT_SOURCE_DIR}/engine/generation/mtp/generation.cpp)
 mfq_configure_cuda_engine_target(mfq-cuda-engine)
 target_link_libraries(mfq-cuda-engine PRIVATE
     CUDA::cuda_driver

@@ -40,6 +40,19 @@ const TensorImpl& Tensor::reference() const noexcept {
     return undefined;
 }
 
+bool Tensor::same_view(const Tensor& other) const {
+    if (!defined() || !other.defined()) return false;
+    if (impl_ == other.impl_) return true;
+    const auto* left = representation<DenseTensor>();
+    const auto* right = other.representation<DenseTensor>();
+    if (!left || !right || left->device() != right->device() ||
+        left->scalar_type() != right->scalar_type() || left->data_ptr() != right->data_ptr() ||
+        left->dim() != right->dim()) return false;
+    for (std::int64_t axis = 0; axis < left->dim(); ++axis)
+        if (left->size(axis) != right->size(axis) || left->stride(axis) != right->stride(axis)) return false;
+    return true;
+}
+
 const DenseTensor& Tensor::dense() const {
     const auto* value = dynamic_cast<const DenseTensor*>(impl_.get());
     if (!value) throw std::invalid_argument("operation requires a dense tensor");

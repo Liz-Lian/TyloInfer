@@ -52,6 +52,7 @@ struct Config {
     PrefixCacheConfig prefix_cache;
     bool prefill_chunk_auto = true;
     bool profile_decode = false;
+    bool profile_mtp = false;
     bool trace_moe = false;
     GraphConfig decode_graph;
     ContinuousBatchConfig continuous_batch;

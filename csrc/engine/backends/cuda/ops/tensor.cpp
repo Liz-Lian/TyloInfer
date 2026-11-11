@@ -4,14 +4,63 @@
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/collectives.h"
+#include "engine/backends/cuda/native/env.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 
 #include <optional>
+#include <cstring>
+#include <tuple>
 #include <vector>
 
 namespace tyloi::cuda::ops {
+
+std::vector<float> floats(const tyloi::DenseTensor& input) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.device().is_cuda()) guard.emplace(input.device().index);
+    auto host = input.to(kCPU, kFloat32).contiguous();
+    const auto* data = host.data_ptr<float>();
+    return {data, data + host.numel()};
+}
+
+std::vector<std::int64_t> integers(const tyloi::DenseTensor& input) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.device().is_cuda()) guard.emplace(input.device().index);
+    auto host = input.to(kCPU, kInt64).contiguous();
+    const auto* data = host.data_ptr<std::int64_t>();
+    return {data, data + host.numel()};
+}
+
+::tyloi::ops::TopK top_k(const tyloi::DenseTensor& logits, std::int64_t k, bool force_radix) {
+    MfqCudaGuard guard(logits.device().index);
+    ::tyloi::ops::TopK result;
+    result.rows = logits.size(0);
+    result.columns = k;
+    const auto* option = cuda::env_lookup("TYLOINFER_MTP_RADIX_TOPK");
+    if ((force_radix || (option && option[0] == '1' && result.rows <= 32)) && k <= 64) {
+        auto host = ::sample_top_k_compact_cuda(logits, k).cpu().contiguous();
+        const auto* packets = host.data_ptr<std::int64_t>();
+        result.values.reserve(std::size_t(result.rows * k));
+        result.indices.reserve(std::size_t(result.rows * k));
+        for (std::int64_t row = 0; row < result.rows; ++row) {
+            for (std::int64_t column = 0; column < k; ++column) {
+                const auto packet = std::uint64_t(packets[row * host.size(1) + column]);
+                const auto raw = std::uint32_t(packet >> 32);
+                float value;
+                std::memcpy(&value, &raw, sizeof(value));
+                result.values.push_back(value);
+                result.indices.push_back(std::uint32_t(packet));
+            }
+        }
+    } else {
+        auto selected = ::tyloi::cuda::topk(logits, k, -1, true, true);
+        result.values = floats(std::get<0>(selected));
+        result.indices = integers(std::get<1>(selected));
+    }
+    return result;
+}
 
 void decode_commit(tyloi::DenseTensor next, tyloi::DenseTensor generated, tyloi::DenseTensor step,
                    tyloi::DenseTensor input, tyloi::DenseTensor position, tyloi::DenseTensor length) {

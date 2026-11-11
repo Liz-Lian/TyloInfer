@@ -537,6 +537,8 @@ std::pair<tyloi::cuda::CudaLoadConfig, tyloi::cuda::Executor::Options> tyloi::cu
     tyloi::cuda::Executor::Options numeric;
     const auto* profile_decode = tyloi::cuda::env_lookup("TYLOINFER_PROFILE_DECODE");
     result.profile_decode = profile_decode && profile_decode[0] == '1';
+    const auto* profile_mtp = tyloi::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
+    result.profile_mtp = profile_mtp && profile_mtp[0] == '1';
     const auto* trace_moe = tyloi::cuda::env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
     result.trace_moe = trace_moe && trace_moe[0] && trace_moe[0] != '0';
     numeric.profile_filter = tyloi::cuda::env_value("TYLOINFER_PROFILE_CUDA_FILTER").value_or("");

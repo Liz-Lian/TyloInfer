@@ -13,6 +13,8 @@
 #include "engine/scheduler/request.h"
 #include "engine/budget.h"
 #include "engine/generation/prefill_budget.h"
+#include "engine/generation/mtp/metrics.h"
+#include "engine/models/common/mtp.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
 #include "engine/weights/cache.h"
@@ -35,6 +37,9 @@ void Engine::reset_states(std::int64_t batch) {
         }
 #endif
         request.state->reset(batch);
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (model_ && model_->mtp()) model_->mtp()->reset(*request.state->predictor, batch);
+#endif
     }
 }
 
@@ -55,6 +60,9 @@ Engine::Engine(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi
 void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
     try {
         model_info_ = model_->info();
+        if (auto* predictor = model_->mtp(); predictor &&
+            (!idle_state_->predictor || !idle_state_->predictor->belongs_to(*predictor)))
+            throw std::invalid_argument("predictor state is unavailable or belongs to another model");
         info_ = {};
         auto& info = info_;
         info.max_requests = std::max<std::size_t>(1, config_.continuous_batch.max_sequences);
@@ -72,7 +80,7 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
         tyloi::weights::LoadScope memory_load(*ledger_);
         graph_.emplace(model_info_.max_context, executor_->device(), std::move(graph));
         budget_.emplace(*ledger_, *weights_, *cache_, *executor_);
-        budget_->bind(false);
+        budget_->bind(model_->mtp() != nullptr);
         if (const auto bytes = config_.resident_budget_bytes) {
             engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
             set_budget(command);
@@ -115,6 +123,7 @@ void Engine::rebind(std::unique_ptr<models::CausalModel> model, std::unique_ptr<
     cache_ = std::move(sessions);
     text_ = std::move(text);
     forward_options_ = std::move(forward);
+    mtp_state_ = {};
     if (failure) {
         try {
             auto scope = executor_->enter();
@@ -151,7 +160,7 @@ bool Engine::ready() const { return ready_; }
 std::unique_ptr<tyloi::Executor::Scope> Engine::enter() { return executor_->enter(); }
 
 void Engine::prepare_request(Request& request, bool batched) {
-    engine::prepare_request(request, text_.get(), info_, batched, false);
+    engine::prepare_request(request, text_.get(), info_, batched, model_->mtp() != nullptr);
     if (!idle_state_) {
         request.output.reset();
         request.input = {};
@@ -223,8 +232,10 @@ ControlResult Engine::control_command(ControlRequest request) {
                 text_->prepare_duplex_session(value.prompt, value.parameters); return std::move(value.parameters);
             } else { text_->prepare_duplex_step(value.text, value.input); return std::move(value.input); }
         } else if constexpr (std::is_same_v<T, engine::GetMetrics>) {
+            Metrics predictor;
+            if (model_->mtp()) mtp::append_generation_metrics(predictor, mtp_state_.stats);
             return resource_metrics(model_->metrics(), {}, std::nullopt, false,
-                {}, {}, std::nullopt, {}, source_.get(),
+                {}, {}, std::nullopt, predictor, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
                 executor_->memory(config_.devices), executor_->device(), config_.online_budget);
         } else throw std::invalid_argument("model has no duplex component");
@@ -252,6 +263,7 @@ SessionResult Engine::set_budget(const SessionCommand& command) {
         for (const auto& [device, bytes] : idle_state_->reset_growth(1))
             if (bytes) budget_->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
         idle_state_->reset(1);
+        if (auto* predictor = model_->mtp()) predictor->reset(*idle_state_->predictor, 1);
     }
     return change.apply();
 }

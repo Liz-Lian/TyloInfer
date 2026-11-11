@@ -80,6 +80,7 @@ public:
         return masked;
     }
 
+#ifndef TYLOINFER_NATIVE_CUDA
     static std::vector<float> probabilities(DenseTensor logits, const Params& parameters) {
         auto host = logits.to(::tyloi::kFloat32).cpu().contiguous();
         return tyloi::engine::mtp::distribution(
@@ -159,11 +160,14 @@ public:
         return result;
     }
 
+#endif
 private:
+#ifndef TYLOINFER_NATIVE_CUDA
     static bool compact_radix_enabled(const DenseTensor& logits) {
         const auto* option = tyloi::cuda::env_lookup("TYLOINFER_MTP_RADIX_TOPK");
         return option && option[0] == '1' && logits.size(0) <= 32;
     }
+#endif
 
     DenseTensor random_host_;
     DenseTensor random_cuda_;

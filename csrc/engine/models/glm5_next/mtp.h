@@ -60,6 +60,10 @@ struct Mtp final : tyloi::models::Mtp {
 
     void reset(tyloi::models::MtpState& state, int64_t next_batch = 1) const override;
 
+    /** Estimate first-layer predictor cache growth for the next IDs. */
+    std::vector<std::pair<tyloi::Device, std::size_t>> growth(
+        const tyloi::models::MtpState& state, const ::tyloi::Tensor& next_ids) const override;
+
     std::pair<DenseTensor, DenseTensor> evaluate(tyloi::models::MtpState& state,
                                        const DenseTensor &hidden,
                                        const DenseTensor &ids, int64_t depth = 0, bool cache = true,

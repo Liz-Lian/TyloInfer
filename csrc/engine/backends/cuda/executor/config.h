@@ -23,6 +23,8 @@ struct CudaLoadConfig {
     tyloi::weights::Loader::Options weights;
     /** Decode profiling policy read by the CUDA configuration loader. */
     bool profile_decode = false;
+    /** Speculative cycle profiling policy read by the CUDA configuration loader. */
+    bool profile_mtp = false;
     /** MoE summary tracing policy read by the CUDA configuration loader. */
     bool trace_moe = false;
     bool report_cuda_memory = false;

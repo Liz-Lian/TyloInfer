@@ -10,8 +10,8 @@
 #ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/deepseek_v4/forward.h"
-#endif
 #include "engine/models/glm5_next/forward.h"
+#endif
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/instance_impl.h"
@@ -55,10 +55,6 @@ using State = std::variant<
     std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>,
 #ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
-#endif
-#ifdef TYLOINFER_NATIVE_CUDA
-    std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::monostate>>,
-#else
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
 #endif
     std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
@@ -141,6 +137,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             tyloi::weights::LoadScope memory_load(*ledger);
             config = engine::resolve_config(options.prefill_chunk_size, options.continuous_batching);
             config.profile_decode = load.profile_decode;
+            config.profile_mtp = load.profile_mtp;
             config.trace_moe = load.trace_moe;
             if (config.continuous_batch.max_sequences)
                 throw std::invalid_argument("continuous batching is unavailable for this model");

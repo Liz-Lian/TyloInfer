@@ -25,6 +25,11 @@ struct Mtp {
     virtual ~Mtp() = default;
     virtual std::unique_ptr<MtpState> make_state() const = 0;
     virtual void reset(MtpState& state, int64_t batch = 1) const = 0;
+    /** Estimate device backing allocated by the next predictor step. */
+    virtual std::vector<std::pair<Device, std::size_t>> growth(
+        const MtpState&, const Tensor&) const {
+        throw std::logic_error("predictor allocation planning is unsupported");
+    }
     virtual MtpStep step(
         MtpState& state,
         const Tensor& previous_hidden,

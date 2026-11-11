@@ -10,6 +10,10 @@
 #include "engine/weights/loader.h"
 #include "engine/models/session/paged.h"
 #include "engine/ops.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/load.h"
+#include "engine/models/glm5_next/components.h"
+#endif
 #include <limits>
 #include <stdexcept>
 
@@ -180,6 +184,20 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
 #endif
     }
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+std::unique_ptr<tyloi::models::CausalModel> load(
+        std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+        const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+        const tyloi::models::LoadOptions& options) {
+    if (!options.cpu_offload_layers.empty())
+        throw std::invalid_argument("GLM5-Next does not support --cpu-offload-layers");
+    auto model = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    load(*model, weights, placement, options.gpu_layers);
+    model->predictor = load_components(*model, weights, true);
+    return model;
+}
+#endif
 
 State::State(const Model& model) : model_(&model) {
     layers.reserve(model.layers.size());
@@ -465,6 +483,31 @@ void Mtp::reset(tyloi::models::MtpState& value, int64_t next_batch) const {
         layer.reset();
     std::fill(state.lengths.begin(), state.lengths.end(), 0);
     state.batch = next_batch;
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> Mtp::growth(
+        const tyloi::models::MtpState& value, const ::tyloi::Tensor& ids) const {
+    const auto& state = this->state<PredictorState>(value);
+    TYLOINFER_RUNTIME_CHECK(ids.representation<DenseTensor>() && ids.defined() && ids.dim() == 2 &&
+                          ids.size(0) > 0 && ids.size(1) > 0,
+                      "GLM5-Next MTP input geometry mismatch");
+    const auto batch = ids.size(0), tokens = ids.size(1);
+    tyloi::models::require_model(!state.lengths.empty() && !state.states.empty(), "invalid predictor geometry");
+    const bool reset = state.batch && state.batch != batch;
+    const auto start = reset ? 0 : state.lengths.front();
+    tyloi::models::require_model(start >= 0 && start <= config.maximum && tokens <= config.maximum - start,
+                                 "predictor history exceeds context capacity");
+    const MlaState fresh(config.maximum, config.latent, config.index_width);
+    const auto& mla = reset ? fresh : state.states.front();
+    TYLOINFER_RUNTIME_CHECK(mla.position() == start && mla.index.position() == start,
+                            "GLM MLA/model cache positions diverged");
+    const auto latent = mla.latent.growth(batch, tokens);
+    const auto index = mla.index.growth(batch, tokens);
+    if (latent > std::numeric_limits<std::size_t>::max() - index)
+        throw std::overflow_error("GLM5-Next predictor cache planning byte count overflow");
+    const auto bytes = latent + index;
+    if (!bytes) return {};
+    return {{tyloi::Device(tyloi::DeviceType::cuda, primary_), bytes}};
 }
 
 std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value,

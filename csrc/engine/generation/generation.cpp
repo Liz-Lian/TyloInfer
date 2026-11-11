@@ -5,6 +5,7 @@
 #include "engine/generation/generation.h"
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill_budget.h"
+#include "engine/generation/mtp/generation.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/session/snapshot.h"
@@ -174,6 +175,7 @@ struct Native {
     const Config& config;
     const models::ForwardOptions& forward_options;
     const ModelSource* source;
+    tyloi::engine::mtp::State& mtp_state;
     std::optional<Prepared> prepared;
     models::Mtp* mtp = nullptr;
 
@@ -185,8 +187,15 @@ struct Native {
     }
     bool has_hidden(const Hidden& value) const { return value && value.defined(); }
     void invalidate_plan() { graph.invalidate(); }
-    Generation speculate(InferenceRequest&, InferenceOutput&, std::size_t, const Tensor&, Hidden*) {
-        throw std::invalid_argument("this CUDA model has no speculative predictor");
+    std::size_t prefix_boundary = 0;
+    void set_prefix_boundary(std::size_t tokens) { prefix_boundary = tokens; }
+    Generation speculate(InferenceRequest& input, InferenceOutput& output, std::size_t reused,
+        const Tensor& restored, Hidden* committed) {
+        const auto chunk = budget.prefill(input.prompt.size() - reused, config.generation.prefill_chunk_size,
+            info.prefill_row_bytes, state.position() > 0, config.prefill_chunk_auto);
+        return tyloi::engine::mtp::generate(model, state, executor, budget, weights, mtp_state,
+            forward_options, input, output, chunk, prepared ? &*prepared : nullptr,
+            reused, restored, committed, prefix_boundary, source, config.profile_mtp);
     }
     StepSequence<Prepared> prepare(InferenceRequest& input, models::State& target) {
         return model.prepare(input.prompt, *input.vision, target);
@@ -206,9 +215,12 @@ struct Native {
     }
     void prepare_request(const InferenceRequest&) { trace_expert_cache("begin"); }
     void reset() {
+        if (mtp && (!state.predictor || !state.predictor->belongs_to(*mtp)))
+            throw std::invalid_argument("predictor state is unavailable or belongs to another model");
         for (const auto& [device, growth] : state.reset_growth(1))
             if (growth) budget.reserve_kv(device, prefill_budget_add(growth, std::size_t(64) << 20));
         state.reset(1);
+        if (mtp) mtp->reset(*state.predictor, 1);
     }
     void release() {
         trace_expert_cache("end");
@@ -239,7 +251,7 @@ struct Native {
 StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
     return generate_prepared(
         Native{*model_, *request.state, *executor_, *budget_, *graph_, *weights_, *cache_, model_info_,
-               config_, forward_options_, source_.get()},
+               config_, forward_options_, source_.get(), mtp_state_, {}, model_->mtp()},
         *request.state, *executor_, request.input, *request.output, id, request.batched);
 }
 } // namespace tyloi::engine

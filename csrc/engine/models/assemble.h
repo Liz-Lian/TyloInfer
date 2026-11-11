@@ -6,7 +6,10 @@
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/components.h"
 #include "engine/models/qwen4_exp/ops.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm5_next/components.h"
+#include "engine/models/glm5_next/load.h"
+#endif
 #include "engine/models/deepseek_v41/components.h"
 #include "engine/models/nemotron_h/components.h"
 #include "engine/models/common/load.h"
@@ -21,7 +24,6 @@
 #endif
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/deepseek_v41/state.h"
-#include "engine/models/glm5_next/load.h"
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/state.h"
 #include "engine/backends/cuda/executor/options.h"
@@ -191,7 +193,6 @@ inline constexpr auto with_model = []<typename F>(
             std::monostate components;
             return finish(owner, state, executor, components, started);
         }
-#endif
         case CudaBackbone::glm5_next: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
@@ -204,19 +205,13 @@ inline constexpr auto with_model = []<typename F>(
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
             execution.config.dense_cpu_layer_count = 0;
             glm5_next::load(*owner, weights, execution.config.layer_placement, execution.config.n_gpu_layers);
-#ifdef TYLOINFER_NATIVE_CUDA
-            owner->predictor = glm5_next::load_components(*owner, weights, load_optional_components);
-            std::monostate components;
-            auto state = std::unique_ptr<glm5_next::State>(
-                static_cast<glm5_next::State*>(owner->make_state().release()));
-#else
             auto state = std::make_unique<glm5_next::State>(*owner);
             auto components = glm5_next::load_components(*owner, weights, load_optional_components);
-#endif
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
+#endif
         case CudaBackbone::qwen4_exp: {
             auto started = std::chrono::steady_clock::now();
             auto owner = std::make_shared<qwen4_exp::Model>();

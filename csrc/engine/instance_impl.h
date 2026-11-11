@@ -153,6 +153,7 @@ class EngineInstance final : public Engine {
                 const tyloi::weights::LoadScope memory_load(*weight_memory);
                 auto config = engine::resolve_config(options.prefill_chunk_size, options.continuous_batching);
                 config.profile_decode = execution->config.profile_decode;
+                config.profile_mtp = execution->config.profile_mtp;
                 config.trace_moe = execution->config.trace_moe;
                 const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
                 kv=std::make_shared<KvMemoryManager>();

@@ -9,6 +9,7 @@
 #include "config.h"
 #include "budget.h"
 #include "generation/decode.h"
+#include "generation/mtp/state.h"
 #include "models/causal_model.h"
 #endif
 
@@ -151,6 +152,7 @@ private:
     std::optional<Decode> graph_;
     std::unique_ptr<state::Sessions> cache_;
     std::optional<Budget> budget_;
+    mtp::State mtp_state_;
     std::unique_ptr<TextProcessor> text_;
     EngineInfo info_;
     bool ready_ = false;

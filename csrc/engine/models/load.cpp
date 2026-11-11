@@ -5,6 +5,7 @@
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/deepseek_v4/load.h"
+#include "engine/models/glm5_next/load.h"
 #endif
 #include "engine/models/source.h"
 #include "engine/models/source/model_graph.h"
@@ -19,7 +20,7 @@ namespace {
 enum class Kind {
     gemma4,
 #ifdef TYLOINFER_NATIVE_CUDA
-    glm_dsa, deepseek_v4,
+    glm_dsa, deepseek_v4, glm5_next,
 #endif
     unsupported
 };
@@ -29,6 +30,7 @@ Kind select(std::string_view backbone) {
 #ifdef TYLOINFER_NATIVE_CUDA
     if (backbone == "glm_dsa") return Kind::glm_dsa;
     if (backbone == "deepseek_v4") return Kind::deepseek_v4;
+    if (backbone == "glm5_next") return Kind::glm5_next;
 #endif
     return Kind::unsupported;
 }
@@ -56,6 +58,8 @@ std::unique_ptr<CausalModel> load(
         return ::tyloi::cuda::glm_dsa::load(std::move(source), definition, weights, placement, options);
     case Kind::deepseek_v4:
         return ::tyloi::cuda::deepseek_v4::load(std::move(source), definition, weights, placement, options);
+    case Kind::glm5_next:
+        return ::tyloi::cuda::glm5_next::load(std::move(source), definition, weights, placement, options);
 #endif
     case Kind::unsupported:
         break;
