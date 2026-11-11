@@ -37,14 +37,24 @@ public:
     std::unique_ptr<tyloi::Executor::Timer> timer() override;
     std::unique_ptr<tyloi::Executor::Profile> profile(const char* name) override;
     std::unique_ptr<tyloi::Executor::Graph> graph() override;
+    /** Query device memory snapshots within this executor's scope. */
     std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices) const override;
+    /** Reclaim idle allocator memory on the device. */
+    void trim(tyloi::Device device) override;
+    /** Set the device allocation limit; zero removes it. */
+    void limit(tyloi::Device device, std::size_t bytes) override;
     void drain() override;
     void clear() override;
     // Set the default device during loading, before publication or concurrent submissions.
     void set_primary(int primary) noexcept { primary_ = primary; }
 #else
     std::unique_ptr<tyloi::Executor::Scope> enter();
+    /** Query device memory snapshots within this executor's scope. */
     std::vector<tyloi::Executor::Memory> memory(std::span<const tyloi::Device> devices) const;
+    /** Reclaim idle allocator memory on the device. */
+    void trim(tyloi::Device device);
+    /** Set the device allocation limit; zero removes it. */
+    void limit(tyloi::Device device, std::size_t bytes);
 #endif
     std::unique_ptr<tyloi::Executor::Scope> enter(int device);
     void join();

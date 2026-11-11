@@ -145,8 +145,7 @@ struct Text {
                 state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
         try {
-        budget.emplace(*weight_memory, weights, cache,
-            tyloi::Device(tyloi::kCUDA, execution->config.layer_placement.primary_device()));
+        budget.emplace(*weight_memory, weights, cache, root_executor);
         if (offload) offload->bind_budget(&*budget);
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model,qwen4_exp::Model>)

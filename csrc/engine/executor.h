@@ -11,8 +11,24 @@ namespace tyloi {
 class Executor {
 public:
     struct Memory {
+        /** Device represented by this snapshot. */
         Device device;
-        std::size_t allocated, reserved, available, total;
+        /** Allocator bytes currently allocated. */
+        std::size_t allocated;
+        /** Allocator bytes currently reserved. */
+        std::size_t reserved;
+        /** Physically free device bytes. */
+        std::size_t available;
+        /** Total physical device bytes. */
+        std::size_t total;
+        /** Allocation budget in bytes; zero means no limit. */
+        std::size_t limit = 0;
+        /** Process-owned resident bytes, including idle allocator pages. */
+        std::size_t resident = 0;
+        /** Bytes available under both the allocation budget and physical memory. */
+        std::size_t usable = 0;
+        /** Bytes currently available in the active workspace loan. */
+        std::size_t workspace = 0;
     };
 
     class Scope {
@@ -61,8 +77,12 @@ public:
     virtual std::unique_ptr<Timer> timer() = 0;
     virtual std::unique_ptr<Profile> profile(const char* name) = 0;
     virtual std::unique_ptr<Graph> graph() = 0;
-    // Query allocator and physical byte snapshots for the requested devices within this executor's scope.
+    /** Query one snapshot per device, in order, within a scope borrowing this executor's resources. */
     virtual std::vector<Memory> memory(std::span<const Device> devices) const = 0;
+    /** Reclaim idle memory within a scope borrowing this executor's resources. */
+    virtual void trim(Device device) = 0;
+    /** Set the device allocation limit within its resource scope; zero removes it. */
+    virtual void limit(Device device, std::size_t bytes) = 0;
     // Stop concurrent submissions and call within this executor's scope.
     // Wait for executor work; owners coordinate weights and offload separately.
     virtual void drain() = 0;

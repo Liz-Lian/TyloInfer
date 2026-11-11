@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/requests/policy.h"
+#include "engine/executor.h"
 #include "engine/tensor.h"
 #include "engine/weights/cache.h"
 
@@ -15,8 +16,9 @@ struct SessionResult;
 
 class Budget {
 public:
+    /** Borrow the memory owners and executor, which must outlive this budget. */
     Budget(::tyloi::weights::Memory& weight_memory, ::tyloi::weights::Cache& weights,
-        state::Sessions& cache, Device primary);
+        state::Sessions& cache, tyloi::Executor& executor);
     ~Budget();
     Budget(const Budget&) = delete;
     Budget& operator=(const Budget&) = delete;
@@ -63,11 +65,13 @@ public:
     bool snapshot(Device device, std::size_t bytes, std::size_t peak);
 
 private:
-    std::size_t trim_prefix(std::size_t bytes, int device);
+    std::size_t trim_prefix(std::size_t bytes, Device device);
+    tyloi::Executor::Memory memory(Device device) const;
     ::tyloi::weights::Memory& weight_memory_;
     ::tyloi::weights::Cache& weights_;
     state::Sessions& cache_;
-    int primary_device_;
+    tyloi::Executor& executor_;
+    Device primary_;
     std::size_t resident_budget_ = 0;
     std::size_t weight_budget_ = 0;
     std::size_t initial_expert_budget_ = 0;
