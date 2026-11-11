@@ -1,6 +1,7 @@
 #pragma once
 #include "config.h"
 #include "engine/models/metadata.h"
+#include "engine/ops.h"
 #include "../common/check.h"
 #include "../common/recurrent_attention.h"
 #include <memory>
@@ -14,6 +15,7 @@ auto load_dense_ffn(Loader &ops, const std::string &p, double limit) {
     return ops.gated_mlp(std::move(gate), std::move(up), std::move(down), limit);
 }
 
+/** Load the dense or routed feed-forward weights for a model layer. */
 template <class Loader>
 auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, bool predictor) {
     if (c.dense_layer(layer, predictor))
@@ -23,9 +25,8 @@ auto load_ffn(Loader &ops, const Config &c, int layer, const std::string &p, boo
     auto router = ops.weight(p + ".router.weight");
     auto shared = load_dense_ffn(ops, p + ".shared_expert", c.swiglu_limit);
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto bias = std::make_shared<typename Loader::DenseTensor>(
-        ops.dense(p + ".router.bias").dense()
-            .to(::tyloi::kFloat32).contiguous());
+    auto bias = ::tyloi::ops::contiguous(
+        ::tyloi::ops::cast(ops.dense(p + ".router.bias"), ::tyloi::kFloat32));
 #else
     auto bias = ops.dense(p + ".router.bias").dense()
                     .to(::tyloi::kFloat32).contiguous();
@@ -121,6 +122,7 @@ void load_layer_weights(Layer &b, Loader &ops, const Config &c, int layer) {
     }
 }
 
+/** Load predictor weights when the model declares a predictor. */
 template <class Predictor, class Loader>
 bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     const auto count = c.predictor_layers;
@@ -131,12 +133,10 @@ bool load_predictor(Predictor &result, Loader &ops, const Config &c) {
     }
     result.config = c;
 #ifdef TYLOINFER_NATIVE_CUDA
-    result.embedding_norm = std::make_shared<typename Loader::DenseTensor>(
-        ops.dense("predictor.embedding_norm.weight").dense()
-            .to(::tyloi::kFloat32).contiguous());
-    result.hidden_norm = std::make_shared<typename Loader::DenseTensor>(
-        ops.dense("predictor.hidden_norm.weight").dense()
-            .to(::tyloi::kFloat32).contiguous());
+    result.embedding_norm = ::tyloi::ops::contiguous(
+        ::tyloi::ops::cast(ops.dense("predictor.embedding_norm.weight"), ::tyloi::kFloat32));
+    result.hidden_norm = ::tyloi::ops::contiguous(
+        ::tyloi::ops::cast(ops.dense("predictor.hidden_norm.weight"), ::tyloi::kFloat32));
     result.output_norm = ops.dense("predictor.output_norm.weight");
 #else
     result.embedding_norm = ops.dense("predictor.embedding_norm.weight").dense().to(::tyloi::kFloat32).contiguous();

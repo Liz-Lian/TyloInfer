@@ -54,7 +54,7 @@ inline constexpr auto with_model = []<typename F>(
         const CudaLoadOptions& options,
         bool load_optional_components,
         F&& run) -> auto {
-    CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
+    auto scope = execution.executor().enter(execution.config.layer_placement.primary_device());
     auto source = tyloi::open_model_source(options.model_path);
     auto finish = [&](auto& owner, auto& state, auto& executor, auto& components, auto started) {
         auto& model = *owner;

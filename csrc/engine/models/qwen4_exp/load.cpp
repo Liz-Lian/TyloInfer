@@ -6,6 +6,7 @@
 #include "engine/backends/cuda/ops/projection/nint.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/loader.h"
+#include "engine/weights/row_source.h"
 #include "engine/weights/group.h"
 #include "engine/weights/encoding/quant/nint_rows.h"
 #include "engine/weights/encoding/tq.h"
@@ -165,7 +166,7 @@ struct LayerLoader : tyloi::weights::Loader {
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         if (require_tensor(source, name).dtype == "NINT") {
-            auto table = load_nint_row_table(source, name);
+            auto table = tyloi::weights::load_nint_rows(source, name);
             Embedding lookup{[table](const DenseTensor &ids) {
                 return nint_row_embedding_lookup(*table, ids);
             },table};

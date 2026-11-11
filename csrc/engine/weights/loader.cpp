@@ -13,16 +13,13 @@
 #include "engine/weights/quant.h"
 #include "engine/weights/sharded.h"
 #include "engine/weights/encoding/dense_blob.h"
-#include "engine/weights/memory.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include <algorithm>
 #include <cstring>
-#include <limits>
 #include <numeric>
 #include "engine/weights/moe/expert_cache.h"
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/weights/encoding/fp8_sq_blob.h"
-#include "engine/weights/encoding/quant/nint_rows.h"
 #include "engine/weights/moe/cached_source_internal.h"
 #endif
 #include "engine/weights/moe/expert_store.h"
@@ -38,6 +35,9 @@
 struct tyloi::weights::Loader::Impl {
     tyloi::weights::Cache& cache;
     std::shared_ptr<TqExec> tq;
+    std::shared_ptr<const ::tyloi::MfeTensor> experts(
+        const Loader& loader, const std::string& name, bool cacheable,
+        int layer, const std::string& role) const;
 };
 
 tyloi::weights::Loader::Loader(const tyloi::source::Source& source, Options options,
@@ -86,7 +86,7 @@ static std::vector<std::uint8_t> read_weight(
         auto ids=::tyloi::cuda::arange(weight.size(0),::tyloi::TensorOptions()
             .device(weight.device()).dtype(::tyloi::kInt64));
         auto value=tyloi::cuda::tq::embedding(weight,ids).to(::tyloi::kFloat32).contiguous();
-        return std::make_shared<DenseTensor>(cpu_layer?value.cpu().contiguous():value);
+        return std::make_shared<::tyloi::DenseTensor>(cpu_layer?value.cpu().contiguous():value);
     }
     const auto & rec = tyloi::require_tensor(mfq, name);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -94,19 +94,19 @@ static std::vector<std::uint8_t> read_weight(
         auto dense = materialize_mfe_dense(mfq, name, placement.device)
             .to(::tyloi::kFloat32)
             .contiguous();
-        return std::make_shared<DenseTensor>(cpu_layer ? dense.cpu().contiguous() : dense);
+        return std::make_shared<::tyloi::DenseTensor>(cpu_layer ? dense.cpu().contiguous() : dense);
     }
     if (rec.dtype != "NINT8-0" && rec.dtype != "NINT") {
         auto value = host_value(name);
         if (rec.dtype == "BF16" || rec.dtype == "F16")
             value = value.to(::tyloi::kFloat32);
-        return std::make_shared<DenseTensor>(cpu_layer ? value : value.to(::tyloi::Device(::tyloi::kCUDA, placement.device)).contiguous());
+        return std::make_shared<::tyloi::DenseTensor>(cpu_layer ? value : value.to(::tyloi::Device(::tyloi::kCUDA, placement.device)).contiguous());
     }
     auto blob = read_weight(placement.drop_cache, mfq, name);
     if (rec.dtype == "NINT8-0") {
         const auto source = tyloi::nint8::unpack(blob);
         if (cpu_layer) {
-            return std::make_shared<DenseTensor>(dequant_nint8_zero_cpu(source));
+            return std::make_shared<::tyloi::DenseTensor>(dequant_nint8_zero_cpu(source));
         }
         const auto packed = to_device_nint8_zero(source, true);
         auto dense = nint8_zero_dequant_f32_cuda(
@@ -120,17 +120,17 @@ static std::vector<std::uint8_t> read_weight(
             throw std::runtime_error(
                 "NINT8-0 dense tensor shape mismatch: " + name);
         }
-        return std::make_shared<DenseTensor>(std::move(dense));
+        return std::make_shared<::tyloi::DenseTensor>(std::move(dense));
     }
     auto dense = dequant_nint_dense_f32(
         to_device_nint(tyloi::nint::unpack(blob), true));
-    return std::make_shared<DenseTensor>(cpu_layer
+    return std::make_shared<::tyloi::DenseTensor>(cpu_layer
         ? dense.cpu().contiguous()
         : dense);
 #else
     auto value = host_value(name);
     if (rec.dtype == "BF16" || rec.dtype == "F16") value = value.to(::tyloi::kFloat32);
-    return std::make_shared<DenseTensor>(cpu_layer ? value : value.to(::tyloi::Device(::tyloi::kCUDA, placement.device)).contiguous());
+    return std::make_shared<::tyloi::DenseTensor>(cpu_layer ? value : value.to(::tyloi::Device(::tyloi::kCUDA, placement.device)).contiguous());
 #endif
 }
 
@@ -639,55 +639,19 @@ tensor_parallel_output_slices_for_input(
     return result;
 }
 
-std::shared_ptr<tyloi::NintRows> load_nint_row_table(
-        const tyloi::source::Source& source, const std::string& name, bool prefer_mapping) {
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-
-    const auto& metadata = tyloi::require_tensor(source, name);
-    TYLOINFER_RUNTIME_CHECK(metadata.dtype == "NINT", "NINT row table requires packed NINT");
-    TYLOINFER_RUNTIME_CHECK(metadata.nbytes <= std::numeric_limits<std::size_t>::max(),
-        "NINT row table size overflow");
-    auto read = source.tensor_reader(name);
-    bool parallel=source.supports_parallel_tensor_reads();
-    const auto* batched=tyloi::cuda::env_lookup("TYLOINFER_PLE_BATCH_READ");
-    auto batch=(!batched || batched[0]!='0') ? source.tensor_batch_reader(name) : tyloi::source::Source::TensorBatchReader{};
-    bool mapped_file=false;
-    const auto* mapped=tyloi::cuda::env_lookup("TYLOINFER_PLE_FILE_MAP");
-    if(mapped ? mapped[0]=='1' : prefer_mapping && source.file_read_stats().mode!=tyloi::FileReadMode::Direct) {
-        if(auto mapping=source.mapped_tensor_batch_reader(name)) {
-            batch=std::move(mapping);
-            read=[batch](uint64_t offset,std::byte* out,std::size_t count){batch({{offset,out,count}});};
-            parallel=true;mapped_file=true;
-        } else if(auto mapping=source.mapped_tensor_reader(name)) {
-            read=std::move(mapping);parallel=true;batch={};mapped_file=true;
-        }
-    }
-    if(const auto* trace=tyloi::cuda::env_lookup("TYLOINFER_TRACE_PLE_TIMINGS");trace && trace[0]=='1')
-        std::fprintf(stderr,"nint_row_source mapped_file=%d nbytes=%llu name=%s\n",int(mapped_file),
-            static_cast<unsigned long long>(metadata.nbytes),name.c_str());
-    auto table=std::make_shared<tyloi::NintRows>(static_cast<std::size_t>(metadata.nbytes),
-        [read = std::move(read)](std::size_t offset, std::uint8_t* out, std::size_t count) {
-            read(offset, reinterpret_cast<std::byte*>(out), count);
-        }, parallel,std::move(batch));
-    tyloi::weights::observe_streamed_ple(table,static_cast<std::size_t>(metadata.nbytes));
-    return table;
-
-#else
-    throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
-#endif
-}
-
-std::shared_ptr<const tyloi::MfeTensor> tyloi::weights::Loader::build_experts(const std::string & name,
+std::shared_ptr<const tyloi::MfeTensor> tyloi::weights::Loader::Impl::experts(const Loader& loader, const std::string & name,
         bool cacheable,
         int layer_id,
         const std::string & projection_role) const {
-    const auto& mfq = source;
+    const auto& mfq = loader.source;
+    const auto& placement = loader.placement;
+    const auto& options = loader.options;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     MfqCudaGuard guard(placement.device);
     const auto& quant = options.quant;
     const tyloi::cuda::AllocationScope weight_memory;
-    auto& cache = tyloi::weights::detail::cache(impl_->cache).moe;
+    auto& cache = tyloi::weights::detail::cache(this->cache).moe;
     if (cache && cacheable &&
             !placement.experts.enabled() &&
             options.ranges) {
@@ -872,7 +836,7 @@ std::vector<::tyloi::Tensor> Loader::gate_up(const std::vector<std::string>& nam
             throw std::runtime_error("dense routed expert tensor must be [experts,out,in]: " + name);
         return bank;
     }
-    return build_experts(name, cacheable, layer, role);
+    return impl_->experts(*this, name, cacheable, layer, role);
 }
 ::tyloi::Tensor Loader::dense(const std::string& name) const {
     const auto& file = source;
@@ -887,7 +851,7 @@ std::vector<::tyloi::Tensor> Loader::gate_up(const std::vector<std::string>& nam
     if (!dense_storage) return value;
     std::optional<MfqCudaGuard> guard;
     if (value.device().is_cuda()) guard.emplace(placement.device);
-    return std::make_shared<DenseTensor>(value.dense().to(
+    return std::make_shared<::tyloi::DenseTensor>(value.dense().to(
         dtype=="F16" ? ::tyloi::kFloat16 : dtype=="BF16" ? ::tyloi::kBFloat16 : ::tyloi::kFloat32));
 }
 
@@ -965,13 +929,13 @@ std::vector<::tyloi::Tensor> Loader::routed_gate_up(const std::string& mlp_prefi
 }
 
 ::tyloi::Tensor tyloi::weights::Loader::host(const std::string &name) const {
-    return std::make_shared<DenseTensor>(host_value(name));
+    return std::make_shared<::tyloi::DenseTensor>(host_value(name));
 }
 
 ::tyloi::Tensor tyloi::weights::Loader::native(const std::string &name) const {
     const tyloi::cuda::AllocationScope weight_memory;
     MfqCudaGuard guard(placement.device);
-    return std::make_shared<DenseTensor>(host_value(name).to(::tyloi::Device(::tyloi::kCUDA, placement.device)).contiguous());
+    return std::make_shared<::tyloi::DenseTensor>(host_value(name).to(::tyloi::Device(::tyloi::kCUDA, placement.device)).contiguous());
 }
 
 ::tyloi::Tensor tyloi::weights::Loader::embedding(const std::string& name, bool independent_output) const {
@@ -1070,7 +1034,7 @@ BiasWeight Loader::affine(const std::string& weight_name,
     if (weight.dim() != 1 || weight.size(0) != width) {
         throw std::runtime_error("vision RMSNorm width mismatch: " + name);
     }
-    return std::make_shared<DenseTensor>(std::move(weight));
+    return std::make_shared<::tyloi::DenseTensor>(std::move(weight));
 }
 
 } // namespace tyloi::weights

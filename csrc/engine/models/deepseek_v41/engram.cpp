@@ -3,6 +3,7 @@
 #include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cpu/native/host_parallel.h"
 #include "engine/weights/source/mapped.h"
+#include "engine/weights/row_source.h"
 #include "engine/weights/encoding/quant/nint_rows.h"
 #include "engine/weights/nint_row_cache.h"
 #include "engine/weights/nint_row_pipeline.h"
@@ -329,7 +330,7 @@ std::shared_ptr<EngramTable> EngramTable::load(const tyloi::source::Source &mode
         const auto record = require_tensor(model, name);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         if(record.dtype=="NINT") {
-            auto table=load_nint_row_table(model,name,true);
+            auto table=tyloi::weights::load_nint_rows(model,name,true);
             if(table->rows()!=expected_rows || table->width()!=expected_width)
                 throw std::runtime_error("DeepSeek-V4.1 Engram NINT table shape disagrees: "+name);
             std::fprintf(stderr,"deepseek_v41_engram_dispatch format=NINT row_pipeline=ple rows=%lld width=%d\n",
