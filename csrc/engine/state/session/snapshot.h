@@ -36,6 +36,7 @@ class SessionSnapshotCache {
     struct Entry {
         State state;
         std::uint64_t last_used = 0;
+        std::uint64_t identity = 0;
     };
 
 public:
@@ -46,10 +47,12 @@ public:
     struct Match {
         State* state = nullptr;
         std::string session_id;
-        std::size_t index = 0;
+        /** Stable entry identity survives history relocation and detects eviction. */
+        std::uint64_t identity = 0;
+        std::size_t token_count = 0;
 
         std::size_t tokens() const noexcept {
-            return state ? state->tokens.size() : 0;
+            return token_count;
         }
 
         explicit operator bool() const noexcept { return state != nullptr; }
@@ -131,25 +134,32 @@ public:
             }
         }
         if (selected_session.empty()) return std::nullopt;
+        auto& selected = states_.at(selected_session)[selected_snapshot];
         return Match{
-            &states_.at(selected_session)[selected_snapshot].state,
+            &selected.state,
             std::move(selected_session),
-            selected_snapshot};
+            selected.identity,
+            selected_tokens};
     }
 
     void record_hit(const Match& match) {
         auto found = states_.find(match.session_id);
-        if (found == states_.end() || match.index >= found->second.size() ||
-                &found->second[match.index].state != match.state) {
-            throw std::logic_error("session snapshot match is stale");
+        if (found != states_.end()) {
+            auto entry = std::find_if(found->second.begin(), found->second.end(),
+                [&](const Entry& value) { return value.identity == match.identity; });
+            if (entry != found->second.end()) entry->last_used = ++clock_;
         }
-        found->second[match.index].last_used = ++clock_;
         ++hits_;
         hit_tokens_ += match.tokens();
     }
 
     void erase(const Match& match) {
-        erase_snapshot(match.session_id, match.index);
+        auto found = states_.find(match.session_id);
+        if (found == states_.end()) return;
+        const auto entry = std::find_if(found->second.begin(), found->second.end(),
+            [&](const Entry& value) { return value.identity == match.identity; });
+        if (entry != found->second.end())
+            erase_snapshot(match.session_id, static_cast<std::size_t>(entry - found->second.begin()));
     }
 
     template <typename SameSnapshot>
@@ -160,7 +170,7 @@ public:
         if (session_id.empty() || !enabled() || state.bytes > config_.max_bytes) {
             return {};
         }
-        Entry entry{std::move(state), ++clock_};
+        Entry entry{std::move(state), ++clock_, clock_};
         const auto protected_clock = entry.last_used;
         auto& history = states_[session_id];
         auto previous = std::find_if(
@@ -213,6 +223,7 @@ public:
         std::uint64_t protected_clock = 0;
         for (auto& snapshot : copied) {
             snapshot.last_used = ++clock_;
+            snapshot.identity = snapshot.last_used;
             protected_clock = snapshot.last_used;
             bytes_ += snapshot.state.bytes;
             target.push_back(std::move(snapshot));

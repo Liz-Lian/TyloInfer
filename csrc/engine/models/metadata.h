@@ -19,6 +19,9 @@ struct MfqModelCapabilities {
 
 namespace tyloi::models {
 
+/** State whether decode capture needs resident weights or can capture managed weight access. */
+enum class GraphWeights { captured, resident };
+
 struct Info {
     std::int64_t vocab_size;
     std::int64_t max_context;
@@ -26,6 +29,7 @@ struct Info {
     std::size_t prefill_row_bytes;
     bool decode_graph;
     bool double_warmup;
+    GraphWeights graph_weights = GraphWeights::captured;
 };
 
 struct CausalLmMetadata {

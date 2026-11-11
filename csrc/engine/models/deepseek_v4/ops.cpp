@@ -9,6 +9,7 @@
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/models/deepseek_v4/load.h"
+#include "engine/models/load.h"
 #include "engine/models/deepseek_v4/forward.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
@@ -369,6 +370,24 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
     }
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+std::unique_ptr<tyloi::models::CausalModel> load(
+        std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+        const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+        const tyloi::models::LoadOptions& options) {
+    auto model = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    validate_offload(model->config, options.cpu_offload_layers);
+    auto& executor = Executor::current();
+    std::int64_t host_bytes = 0;
+    load(*model, weights, placement, executor.collectives(), executor.device().index,
+         options.cpu_offload_layers, host_bytes, options.gpu_layers);
+    if (model->plan.vision != CudaVisionAdapter::none ||
+        model->plan.predictor != CudaPredictorAdapter::none)
+        throw std::runtime_error("CUDA component adapter is unsupported for this model");
+    return model;
+}
+#endif
+
 namespace {
 DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids) {
     tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
@@ -381,7 +400,11 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 } // namespace
 
 #ifdef TYLOINFER_NATIVE_CUDA
-tyloi::models::Info Model::info() const { return tyloi::models::model_info(metadata); }
+tyloi::models::Info Model::info() const {
+    auto result = tyloi::models::model_info(metadata);
+    result.graph_weights = tyloi::models::GraphWeights::resident;
+    return result;
+}
 
 MfqModelCapabilities Model::capabilities() const {
     const auto state = cuda_component_state(graph, plan, false, false);
@@ -1014,6 +1037,66 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
         saved_layers.push_back(std::move(saved));
     }
     return state;
+}
+
+std::vector<std::pair<tyloi::Device, std::size_t>> State::restore_growth(
+        const TextSessionState& state) const {
+    const auto* saved_layers = std::get_if<std::vector<tyloi::models::deepseek_v4::BlockSnapshot>>(&state.payload);
+    if (!supports_text_session_state() || state.kind() != TextSessionStateKind::DeepseekV4 ||
+        state.cache_pos <= 0 || static_cast<size_t>(state.cache_pos) != state.tokens.size() ||
+        saved_layers == nullptr || saved_layers->size() != layers.size())
+        throw CudaSessionStateError("DeepSeek V4 text session state is incompatible");
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    const auto add = [&](const ::tyloi::Tensor& source, std::size_t bytes) {
+        if (!bytes) return;
+        const auto device = source.device();
+        auto entry = std::find_if(result.begin(), result.end(),
+            [device](const auto& item) { return item.first == device; });
+        if (entry == result.end()) result.emplace_back(device, bytes);
+        else {
+            if (entry->second > std::numeric_limits<std::size_t>::max() - bytes)
+                throw std::overflow_error("DeepSeek V4 session planning byte count overflow");
+            entry->second += bytes;
+        }
+    };
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const auto& layer = layers[i];
+        const auto& saved = saved_layers->at(i);
+        if (!saved.local_cache || saved.local_cache.dim() != 3 || saved.local_cache.size(0) != 1 ||
+            saved.local_cache.size(1) != 128 || saved.local_cache.size(2) != layout_[i].head_dim ||
+            saved.local_cache.scalar_type() != ::tyloi::kFloat16)
+            throw CudaSessionStateError("DeepSeek V4 saved local cache is invalid");
+        add(saved.local_cache, restore_tensor_bytes(layer.local_cache, saved.local_cache));
+        const auto plan_pool = [&](const PoolState& target, const PoolSnapshot& source) {
+            if (target.ratio != source.ratio || target.head_dim != source.head_dim ||
+                target.cache_quant_mode != source.cache_quant_mode || target.overlap != source.overlap)
+                throw CudaSessionStateError("DeepSeek V4 session compressor configuration changed");
+            if (source.ratio <= 0) return;
+            const auto output_dim = source.overlap ? 2 * source.head_dim : source.head_dim;
+            const auto valid_state = [&](const ::tyloi::Tensor& value, std::int64_t width) {
+                return value && value.dim() == 3 && value.size(0) == 1 &&
+                    value.size(1) == source.ratio && value.size(2) == width &&
+                    value.scalar_type() == ::tyloi::kFloat32;
+            };
+            if (source.capacity <= 0 || !valid_state(source.state_kv, output_dim) ||
+                !valid_state(source.state_gate, output_dim) || !source.pool || source.pool.dim() != 3 ||
+                source.pool.size(0) != 1 || source.pool.size(1) > source.capacity ||
+                source.pool.size(2) != source.head_dim || source.pool.scalar_type() != ::tyloi::kFloat16 ||
+                (source.overlap && (!valid_state(source.previous_kv, source.head_dim) ||
+                                    !valid_state(source.previous_gate, source.head_dim))))
+                throw CudaSessionStateError("DeepSeek V4 saved compressor state is invalid");
+            add(source.state_kv, restore_tensor_bytes(target.state_kv, source.state_kv));
+            add(source.state_gate, restore_tensor_bytes(target.state_gate, source.state_gate));
+            if (source.overlap) {
+                add(source.previous_kv, restore_tensor_bytes(target.previous_kv, source.previous_kv));
+                add(source.previous_gate, restore_tensor_bytes(target.previous_gate, source.previous_gate));
+            }
+            add(source.pool, restore_prefix_bytes(target.pool, source.pool, 1, source.capacity));
+        };
+        plan_pool(layer.compressor, saved.compressor);
+        plan_pool(layer.indexer_compressor, saved.indexer_compressor);
+    }
+    return result;
 }
 
 void State::restore_text_session_state(const TextSessionState& state) {

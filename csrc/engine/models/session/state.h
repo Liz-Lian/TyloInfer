@@ -96,6 +96,12 @@ bool session_tensor_layout_matches(
     const ::tyloi::Tensor& target,
     const ::tyloi::Tensor& source);
 
+/** Return the new backing bytes needed to restore a complete tensor. */
+std::size_t restore_tensor_bytes(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source);
+/** Return the new backing bytes needed to restore a prefix at the given capacity. */
+std::size_t restore_prefix_bytes(const ::tyloi::Tensor& target, const ::tyloi::Tensor& source,
+    std::int64_t dimension, std::int64_t capacity);
+
 ::tyloi::Tensor restore_session_tensor(
     ::tyloi::Tensor target,
     const ::tyloi::Tensor& source);

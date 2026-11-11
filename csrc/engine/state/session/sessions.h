@@ -14,6 +14,7 @@ struct TextSessionState;
 namespace tyloi { class Executor; }
 namespace tyloi::models { class State; struct Mtp; }
 namespace tyloi::weights { class Cache; }
+namespace tyloi::engine { class Budget; }
 
 namespace tyloi::state {
 
@@ -28,7 +29,7 @@ public:
     /** Report whether anonymous persistent prefix reuse is enabled. */
     virtual bool persistent_prefix_enabled() const noexcept = 0;
     /** Restore the best compatible prefix in the owner's execution scope. */
-    virtual Restore restore(models::State& state, tyloi::Executor& executor, weights::Cache& weights,
+    virtual Restore restore(models::State& state, tyloi::Executor& executor, weights::Cache& weights, engine::Budget& budget,
         models::Mtp* mtp, const std::string& requested_session,
         const std::vector<std::int64_t>& prompt, std::size_t maximum_prefix_tokens,
         const std::string& input_key = {}) = 0;

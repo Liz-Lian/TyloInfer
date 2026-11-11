@@ -4,7 +4,15 @@
 
 struct LayerPlacementConfig;
 namespace tyloi::weights { struct Loader; }
+namespace tyloi::models { struct LoadOptions; }
 namespace tyloi::cuda::glm_dsa {
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Assemble a GLM-DSA causal model with the selected placement and loading policy. */
+std::unique_ptr<tyloi::models::CausalModel> load(
+    std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+    const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+    const tyloi::models::LoadOptions& options);
+#endif
 Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definition, int64_t context);
 void load(Model&, const ::tyloi::weights::Loader&, LayerPlacementConfig&, int gpu_layers = -1,
           bool load_layers = true, bool load_input_output = true,

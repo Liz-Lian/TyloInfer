@@ -13,10 +13,12 @@
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/models/qwen35/load.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/glm_dsa/state.h"
 #include "engine/models/deepseek_v4/load.h"
 #include "engine/models/deepseek_v4/state.h"
+#endif
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/deepseek_v41/state.h"
 #include "engine/models/glm5_next/load.h"
@@ -163,6 +165,7 @@ inline constexpr auto with_model = []<typename F>(
         }
         case CudaBackbone::minicpmo_tts:
             return load_tts();
+#ifndef TYLOINFER_NATIVE_CUDA
         case CudaBackbone::glm_dsa: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
@@ -185,6 +188,7 @@ inline constexpr auto with_model = []<typename F>(
             std::monostate components;
             return finish(owner, state, executor, components, started);
         }
+#endif
         case CudaBackbone::glm5_next: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
@@ -219,6 +223,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             return finish(owner, state, executor, components, started);
         }
+#ifndef TYLOINFER_NATIVE_CUDA
         case CudaBackbone::deepseek_v4: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);
@@ -247,6 +252,7 @@ inline constexpr auto with_model = []<typename F>(
             std::monostate components;
             return finish(owner, state, executor, components, started);
         }
+#endif
         case CudaBackbone::deepseek_v41: {
             auto started = std::chrono::steady_clock::now();
             auto definition = tyloi::models::config_json(*source, options.config_path);

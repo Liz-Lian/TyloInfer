@@ -7,6 +7,8 @@
 #include "../../requests/result.h"
 #include "engine/tensor.h"
 #include "engine/executor.h"
+#include "engine/budget.h"
+#include "engine/generation/prefill_budget.h"
 #include "engine/models/common/mtp.h"
 #include "engine/weights/cache.h"
 
@@ -79,7 +81,7 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
 
     /** Restore the best matching prefix after draining both resource owners when required. */
     tyloi::state::Sessions::Restore restore(tyloi::models::State& state, tyloi::Executor& executor,
-        tyloi::weights::Cache& weights, tyloi::models::Mtp* mtp, const std::string& requested_session,
+        tyloi::weights::Cache& weights, Budget& budget, tyloi::models::Mtp* mtp, const std::string& requested_session,
         const std::vector<std::int64_t>& prompt, std::size_t maximum_prefix_tokens,
         const std::string& input_key = {}) override {
         if (mtp)
@@ -90,20 +92,20 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
             try { executor.drain(); } catch (...) { if (!failure) failure = std::current_exception(); }
             if (failure) std::rethrow_exception(failure);
         };
-        return restore_best(state, drain, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
+        return restore_best(state, drain, mtp, requested_session, prompt, maximum_prefix_tokens, input_key, &budget);
     }
 
     template <typename State, typename Resources, typename Predictor>
     Restore restore_best(State &state, Resources &resources, Predictor *mtp,
         const std::string &requested_session,
         const std::vector<int64_t> &prompt, size_t maximum_prefix_tokens,
-        const std::string &input_key = {}) {
+        const std::string &input_key = {}, Budget* budget = nullptr) {
         if (!supported_)
             return {};
         bool paged_failed = false;
         if (paged_cache_ && !native_hot_snapshots_) {
             auto restored = restore_paged(
-                state, resources, requested_session, prompt, maximum_prefix_tokens, mtp, input_key, paged_failed);
+                state, resources, requested_session, prompt, maximum_prefix_tokens, mtp, input_key, paged_failed, budget);
             if (restored.tokens) return restored;
             if constexpr (std::is_same_v<std::remove_cvref_t<State>, tyloi::models::State>)
                 if (paged_failed) return {};
@@ -119,14 +121,22 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
         if (!match) {
             if (paged_cache_ && native_hot_snapshots_)
                 return restore_paged(
-                    state, resources, requested_session, prompt, maximum_prefix_tokens, mtp, input_key, paged_failed);
+                    state, resources, requested_session, prompt, maximum_prefix_tokens, mtp, input_key, paged_failed, budget);
             return {};
         }
         try {
             Restore restored{match->tokens(), {}};
             if (mtp != nullptr)
                 restored.mtp_last_target_hidden = match->state->mtp->last_target_hidden;
-            Backend::restore(state, *match->state, resources, mtp);
+            if constexpr (std::is_same_v<std::remove_cvref_t<State>, tyloi::models::State>) {
+                if (!budget) throw std::logic_error("public session restore requires a budget");
+                const Snapshot snapshot = *match->state;
+                for (const auto& [device, bytes] : state.restore_growth(snapshot))
+                    if (bytes) budget->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
+                Backend::restore(state, snapshot, resources, mtp);
+            } else {
+                Backend::restore(state, *match->state, resources, mtp);
+            }
             snapshots_.record_hit(*match);
             if (paged_cache_ && native_hot_snapshots_) paged_cache_->record_match(match->tokens());
             if (trace_) {
@@ -358,7 +368,7 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
     Restore restore_paged(State &state, Resources &resources,
         const std::string &requested_session,
         const std::vector<int64_t> &prompt, size_t maximum_prefix_tokens, Predictor* mtp,
-        const std::string& input_key, bool& failed) {
+        const std::string& input_key, bool& failed, Budget* budget) {
         if (snapshots_.max_sessions() == 0 || !state.supports_paged_text_session_state() ||
             prompt.size() < 2) {
             return {};
@@ -426,6 +436,11 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
             Restore restored{match.matched_tokens,{}};
             if(mtp)
                 restored.mtp_last_target_hidden=snapshot.mtp->last_target_hidden;
+            if constexpr (std::is_same_v<std::remove_cvref_t<State>, tyloi::models::State>) {
+                if (!budget) throw std::logic_error("public session restore requires a budget");
+                for (const auto& [device, bytes] : state.restore_growth(snapshot))
+                    if (bytes) budget->reserve_kv(device, prefill_budget_add(bytes, std::size_t(64) << 20));
+            }
             Backend::restore(state, snapshot, resources, mtp);
             if (native_hot_snapshots_)
                 snapshots_.store(requested_session.empty() ? "\x01prefix-" + std::to_string(++anonymous_snapshots_) : requested_session,

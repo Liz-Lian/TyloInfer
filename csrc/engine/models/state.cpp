@@ -9,6 +9,10 @@ TextSessionState State::capture_text_session_state(const std::vector<std::int64_
     throw std::runtime_error("text session state is unsupported by this model");
 }
 
+std::vector<std::pair<tyloi::Device, std::size_t>> State::restore_growth(const TextSessionState&) const {
+    throw std::runtime_error("text session state is unsupported by this model");
+}
+
 void State::restore_text_session_state(const TextSessionState&) {
     throw std::runtime_error("text session state is unsupported by this model");
 }

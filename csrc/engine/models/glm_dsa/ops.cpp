@@ -9,6 +9,9 @@
 #include "engine/models/glm_dsa/state.h"
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/glm_dsa/load.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/models/load.h"
+#endif
 #include "engine/models/glm_dsa/weights.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
@@ -182,6 +185,44 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
     return state;
 }
 
+std::vector<std::pair<tyloi::Device, std::size_t>> State::restore_growth(
+        const TextSessionState& state) const {
+    const auto* saved_layers = std::get_if<std::vector<tyloi::models::glm_dsa::BlockSnapshot>>(&state.payload);
+    if (!supports_text_session_state() || state.kind() != TextSessionStateKind::GlmDsa ||
+        state.cache_pos <= 0 || static_cast<size_t>(state.cache_pos) != state.tokens.size() ||
+        saved_layers == nullptr || saved_layers->size() != layers.size())
+        throw CudaSessionStateError("GLM DSA text session state is incompatible");
+    std::vector<std::pair<tyloi::Device, std::size_t>> result;
+    const auto add = [&](const tyloi::Tensor& source, std::size_t bytes) {
+        if (!bytes) return;
+        const auto device = source.device();
+        auto entry = std::find_if(result.begin(), result.end(),
+            [device](const auto& item) { return item.first == device; });
+        if (entry == result.end()) result.emplace_back(device, bytes);
+        else {
+            if (entry->second > std::numeric_limits<std::size_t>::max() - bytes)
+                throw std::overflow_error("GLM DSA session planning byte count overflow");
+            entry->second += bytes;
+        }
+    };
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const auto& layer = layers[i];
+        const auto& saved = (*saved_layers)[i];
+        if (layout_[i].full_indexer != saved.full_indexer || !saved.kv_cache || !saved.kv_cache.defined() ||
+            saved.kv_cache.dim() != 4 || saved.kv_cache.size(0) != 1 ||
+            saved.kv_cache.size(2) != state.cache_pos)
+            throw CudaSessionStateError("GLM DSA saved MLA cache is invalid");
+        if (saved.full_indexer && (!saved.index_cache || !saved.index_cache.defined() ||
+            saved.index_cache.dim() != 3 || saved.index_cache.size(0) != 1 ||
+            saved.index_cache.size(1) != state.cache_pos))
+            throw CudaSessionStateError("GLM DSA saved index cache is invalid");
+        add(saved.kv_cache, restore_prefix_bytes(layer.kv_cache, saved.kv_cache, 2, saved.kv_capacity));
+        if (saved.full_indexer)
+            add(saved.index_cache, restore_prefix_bytes(layer.index_cache, saved.index_cache, 1, saved.index_capacity));
+    }
+    return result;
+}
+
 void State::restore_text_session_state(const TextSessionState& state) {
     const auto* saved_layers = std::get_if<std::vector<tyloi::models::glm_dsa::BlockSnapshot>>(&state.payload);
     if (!supports_text_session_state() || state.kind() != TextSessionStateKind::GlmDsa ||
@@ -347,7 +388,24 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, LayerPlacementC
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-tyloi::models::Info Model::info() const { return tyloi::models::model_info(metadata); }
+std::unique_ptr<tyloi::models::CausalModel> load(
+        std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+        const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+        const tyloi::models::LoadOptions& options) {
+    if (!options.cpu_offload_layers.empty())
+        throw std::invalid_argument("GLM DSA does not support --cpu-offload-layers");
+    auto model = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    load(*model, weights, placement, options.gpu_layers, true, true, options.yarn);
+    if (model->plan.vision != CudaVisionAdapter::none || model->plan.predictor != CudaPredictorAdapter::none)
+        throw std::runtime_error("CUDA component adapter is unsupported for this model");
+    return model;
+}
+
+tyloi::models::Info Model::info() const {
+    auto result = tyloi::models::model_info(metadata);
+    result.graph_weights = tyloi::models::GraphWeights::resident;
+    return result;
+}
 
 MfqModelCapabilities Model::capabilities() const {
     return {graph.architecture, graph.has_component("text"), false, false,

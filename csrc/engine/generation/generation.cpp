@@ -180,7 +180,7 @@ struct Native {
     bool batched() const { return false; }
     Restore restore_session(const std::string& session_id, const std::vector<std::int64_t>& prompt,
         std::size_t maximum_prefix, const std::string& input_key, bool use_mtp) {
-        return cache.restore(state, executor, weights, use_mtp ? mtp : nullptr,
+        return cache.restore(state, executor, weights, budget, use_mtp ? mtp : nullptr,
             session_id, prompt, maximum_prefix, input_key);
     }
     bool has_hidden(const Hidden& value) const { return value && value.defined(); }

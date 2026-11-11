@@ -55,6 +55,9 @@ public:
     bool supports_paged_text_session_state() const override { return false; }
     /** Capture a text session snapshot for the committed tokens. */
     TextSessionState capture_text_session_state(const std::vector<int64_t>&) const override;
+    /** Estimate per-device backing allocated when restoring the snapshot. */
+    std::vector<std::pair<tyloi::Device, std::size_t>> restore_growth(
+        const TextSessionState& snapshot) const override;
     /** Restore a compatible text session snapshot. */
     void restore_text_session_state(const TextSessionState&) override;
 

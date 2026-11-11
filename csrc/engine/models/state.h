@@ -70,6 +70,9 @@ public:
     virtual bool supports_paged_text_session_state() const = 0;
     /** Capture a text session snapshot for the committed tokens. */
     virtual TextSessionState capture_text_session_state(const std::vector<std::int64_t>& tokens) const;
+    /** Return actual device bytes newly allocated when restoring the snapshot. */
+    virtual std::vector<std::pair<tyloi::Device, std::size_t>> restore_growth(
+        const TextSessionState& snapshot) const;
     /** Restore a compatible text session snapshot into this state. */
     virtual void restore_text_session_state(const TextSessionState& snapshot);
 };

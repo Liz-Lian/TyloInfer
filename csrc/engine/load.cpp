@@ -7,8 +7,10 @@
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/minicpmo45/text/forward.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/models/glm_dsa/forward.h"
 #include "engine/models/deepseek_v4/forward.h"
+#endif
 #include "engine/models/glm5_next/forward.h"
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/source/model_graph.h"
@@ -51,10 +53,14 @@ using State = std::variant<
     std::unique_ptr<Text<qwen35::Model, qwen35::State, qwen35::Components>>,
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State, std::unique_ptr<minicpmo45::Components>>>,
     std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State, std::monostate>>,
+#ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State, std::monostate>>,
+#endif
     std::unique_ptr<Text<glm5_next::Model, glm5_next::State, std::unique_ptr<tyloi::models::Mtp>>>,
     std::unique_ptr<Text<qwen4_exp::Model, qwen4_exp::State, qwen4_exp::Components>>,
+#ifndef TYLOINFER_NATIVE_CUDA
     std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State, std::monostate>>,
+#endif
     std::unique_ptr<Text<deepseek_v41::Model, deepseek_v41::State, std::unique_ptr<tyloi::models::Mtp>>>,
     std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State, nemotron_h::Components>>>;
 
@@ -73,9 +79,8 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
 
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     auto source = tyloi::open_model_source(options.model_path);
-    const auto backbone = cuda_backbone(tyloi::models::graph(*source).backbone);
 #ifdef TYLOINFER_NATIVE_CUDA
-    if (backbone == CudaBackbone::gemma4) {
+    if (models::supports(models::graph(*source).backbone)) {
         return load_native_engine(std::move(options), nullptr, std::move(source));
     }
 #endif
@@ -126,8 +131,6 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         {
             auto outer_scope = root->enter(load.layer_placement.primary_device());
             internal::setup_cuda_load(options, load, *root, *weights, kv, offload);
-            if (!load.dsv4_cpu_offload_layers.empty())
-                throw std::invalid_argument("Gemma4 does not support --cpu-offload-layers");
             root->set_primary(load.layer_placement.primary_device());
             root->profiler().enabled = false;
             ledger = std::make_shared<tyloi::weights::Memory>();
@@ -146,12 +149,14 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 auto definition = models::config_json(*source, options.config_path);
                 definition = configure_yarn(load.yarn, load.yarn_context_extension,
                     std::move(definition), models::graph(*source).backbone, options.context_size);
+                if (!load.dsv4_cpu_offload_layers.empty()) load.drop_file_cache = true;
                 auto loader = weights->loader(*source, load.weights,
                     {load.layer_placement.primary_device(), false, load.drop_file_cache,
                      load.tensor_parallel, moe_parallel_config(load)});
                 load.dense_cpu_layer_count = 0;
-                model = models::load(source, definition, options.context_size, loader,
-                    load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
+                model = models::load(source, definition, loader, load.layer_placement,
+                    models::LoadOptions{options.context_size, load.n_gpu_layers,
+                        load.expert_parallel.enabled(), load.yarn, load.dsv4_cpu_offload_layers});
                 state = model->make_state();
                 if (::tyloi::cuda::options::kv_vram_preallocated()) state->preallocate();
                 finalize_kv(kv.get(), *weights, offload);
@@ -167,10 +172,12 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         config.devices = cuda_devices(load);
         config.online_budget = load.layer_placement.devices.size() <= 1 &&
             !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
+        const auto model_info = model->info();
+        const auto graph_weights = model_info.graph_weights == models::GraphWeights::resident
+            ? tyloi::weights::Cache::Graph::legacy : tyloi::weights::Cache::Graph::native;
         const bool graph_allowed = !root->attention_options().kernels.decode_aten && load.dense_cpu_layer_count == 0 &&
             model_parallel_cuda_graph_enabled(load, *root, *weights) &&
-            weights->graph_safe(tyloi::weights::Cache::Graph::native, moe_parallel_config(load).enabled());
-        const auto model_info = model->info();
+            weights->graph_safe(graph_weights, moe_parallel_config(load).enabled());
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
         auto text = engine::TextProcessor::load(*source, options.tokenizer_model, vocab_size, model_info.model_type);
         config.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
