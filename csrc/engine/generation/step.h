@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../engine.h"
+#include "../requests/result.h"
 #include "../requests/output.h"
 #include "sequence.h"
 #include "../requests/policy.h"
@@ -15,24 +15,23 @@ namespace tyloi::engine {
 using tyloi::StepState;
 using Generation = tyloi::StepSequence<EventData>;
 
-// Resource owners release exactly once, including coroutine destruction. The
-// scheduler observes teardown failures before publishing a terminal event.
-template <class Release> struct ExecutionCleanup {
+/** Release the borrowed owner once, recording failures even during coroutine destruction. */
+template <class Owner> struct ExecutionCleanup {
     std::exception_ptr& failure;
-    Release release;
+    Owner& owner;
     bool pending = true;
+    /** Release the owner once and propagate any cleanup failure. */
     void finish() {
         if (!std::exchange(pending, false)) return;
-        try { release(); }
+        try { owner.release(); }
         catch (...) { failure = std::current_exception(); throw; }
     }
     ~ExecutionCleanup() { try { finish(); } catch (...) {} }
 };
-template <class Release>
-ExecutionCleanup(std::exception_ptr&, Release) -> ExecutionCleanup<Release>;
+template <class Owner>
+ExecutionCleanup(std::exception_ptr&, Owner&) -> ExecutionCleanup<Owner>;
 
-// Ops performs one device prefill/decode operation. Chunking, cancellation,
-// token acceptance and publication order are independent of tensor storage.
+/** Advance prefill and decode while preserving cancellation, acceptance and publication order. */
 template <class Operations>
 Generation generate_sequence(Operations operations, InferenceOutput &output, std::int64_t prompt_tokens,
     std::int64_t reused_tokens, std::int64_t stable_prefix_tokens, std::int64_t chunk_size) {

@@ -177,7 +177,7 @@ Generation generate_session(Ops& ops, InferenceRequest& request, InferenceOutput
 
 } // namespace detail
 
-// All request paths share validation and cleanup.
+/** Validate and advance a request, retiring its operation owner after child borrows end. */
 template <class Operations>
 Generation generate_request(Operations operations, InferenceRequest& request, InferenceOutput& output) {
     std::unwrap_reference_t<Operations>& ops = operations;
@@ -210,7 +210,7 @@ Generation generate_request(Operations operations, InferenceRequest& request, In
             ops.mtp_state.stats.available = true;
         }
     }
-    ExecutionCleanup cleanup{output.cleanup_failure, [&] { ops.release(); }};
+    ExecutionCleanup cleanup{output.cleanup_failure, ops};
     if constexpr (requires { ops.prepare_request(request); }) ops.prepare_request(request);
     {
         auto sequence = [&] {

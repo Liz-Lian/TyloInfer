@@ -99,6 +99,8 @@ template <class Ops> class ContinuousBatch : public Batch {
     struct SequenceOps {
         ContinuousBatch& batch;
         Work& work;
+        /** Retire this request from the batch. */
+        void release() { batch.release(work); }
         PrefillChunk prefill_chunk(PrefillChunk chunk) {
             if constexpr (requires { batch.operations.prefill_chunk(work.request, chunk); })
                 return batch.operations.prefill_chunk(work.request, chunk);
@@ -148,21 +150,24 @@ template <class Ops> class ContinuousBatch : public Batch {
             throw std::invalid_argument("continuous batching requires a positive prefill chunk");
     }
 
+    /** Advance one batch request and retire it after its child generator is destroyed. */
     Generation generate(std::string id, InferenceRequest& input, InferenceOutput& output) override {
         if (output.stopped()) co_return;
         auto work = std::make_shared<Work>();
         work->request = std::make_shared<Request>(std::move(id), input);
         if (!requests.emplace(work->request->id, work).second)
             throw std::invalid_argument("duplicate batch request id");
-        ExecutionCleanup cleanup{output.cleanup_failure, [&] { release(*work); }};
         SequenceOps ops{*this, *work};
+        ExecutionCleanup cleanup{output.cleanup_failure, ops};
         int64_t reused = 0, prefix = 0;
         if constexpr (requires { operations.prepare(work->request); })
             reused = operations.prepare(work->request);
         if constexpr (requires { operations.prefix_tokens(work->request); })
             prefix = operations.prefix_tokens(work->request);
-        auto sequence = generate_sequence(ops, output, input.prompt.size(), reused, prefix, prefill_chunk_size);
-        while (auto step = sequence.next()) co_yield std::move(step);
+        {
+            auto sequence = generate_sequence(ops, output, input.prompt.size(), reused, prefix, prefill_chunk_size);
+            while (auto step = sequence.next()) co_yield std::move(step);
+        }
         cleanup.finish();
     }
 
