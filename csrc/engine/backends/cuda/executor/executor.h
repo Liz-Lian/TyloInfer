@@ -25,6 +25,7 @@ class Collectives;
 class RouteStats;
 class KvMemoryManager;
 class KvOffloadStore;
+struct KvMemoryAllocation;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -158,6 +159,10 @@ public:
     MlaScratch& mla_scratch(int device) { return mla_scratch_[device]; }
 
 private:
+#ifdef TYLOINFER_NATIVE_CUDA
+    friend std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t, int64_t, int64_t, int64_t,
+        int64_t, int64_t, const ::tyloi::TensorOptions&, int64_t);
+#endif
     Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
              Branches& branches, Collectives& collectives, RouteStats& routes,
              const Options& options, Mode& mode, int primary);

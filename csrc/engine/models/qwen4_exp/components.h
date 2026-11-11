@@ -1,12 +1,14 @@
 #pragma once
 
 #include "engine/metrics.h"
+#include "engine/ops.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/vision/grid_encoder.h"
 #include "engine/state/media.h"
 
 #include <memory>
 #include <optional>
+#include <string_view>
 
 namespace tyloi::weights { struct Loader; }
 
@@ -43,7 +45,12 @@ struct Components {
         ;
 };
 
+/** Load supported optional components using the model's configuration. */
 Components load_components(Model& model, const tyloi::weights::Loader& weights,
-    bool load_optional_components);
+    bool load_optional_components
+#ifdef TYLOINFER_NATIVE_CUDA
+    , std::string_view definition, const tyloi::ops::YarnScaling& yarn
+#endif
+    );
 
 } // namespace tyloi::cuda::qwen4_exp

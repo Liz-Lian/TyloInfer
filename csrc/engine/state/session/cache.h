@@ -108,9 +108,12 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
             return {};
         auto match = snapshots_.find_best(
             native_hot_snapshots_ && requested_session.empty() ? "\x01prefix-global" : requested_session,
-            prompt, maximum_prefix_tokens, [&](const Snapshot &state) {
-            return state.input_key == input_key &&
-                   (mtp == nullptr || (mtp->supports_session_state() && state.mtp.has_value()));
+            prompt, maximum_prefix_tokens, [&](const Snapshot &saved) {
+            if (saved.input_key != input_key) return false;
+            if (!mtp) return true;
+            if constexpr (std::is_same_v<std::remove_cvref_t<State>, tyloi::models::State>)
+                return state.predictor && mtp->supports_session_state(*state.predictor) && saved.mtp.has_value();
+            else return mtp->supports_session_state() && saved.mtp.has_value();
         });
         if (!match) {
             if (paged_cache_ && native_hot_snapshots_)
@@ -420,8 +423,12 @@ template <class Backend> class SessionCache : public tyloi::state::Sessions {
             auto snapshot =
                 Backend::decode(payloads, matched_tokens, paged_cache_->block_size_tokens());
             snapshot.input_key = input_key;
-            if(mtp && (!mtp->supports_session_state() || !snapshot.mtp)) {
-                paged_cache_->record_match(0);return {};
+            if(mtp) {
+                bool supported;
+                if constexpr (std::is_same_v<std::remove_cvref_t<State>, tyloi::models::State>)
+                    supported = state.predictor && mtp->supports_session_state(*state.predictor);
+                else supported = mtp->supports_session_state();
+                if (!supported || !snapshot.mtp) { paged_cache_->record_match(0);return {}; }
             }
             invalid_action = "paged_restore_invalidate";
             failure_action = "paged_restore_failed";

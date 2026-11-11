@@ -361,9 +361,19 @@ void State::commit_speculative() {
 }
 
 TextSessionStateKind State::text_session_state_kind() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (model_.layers.empty() || layers.size()!=model_.layers.size()) return TextSessionStateKind::Unsupported;
+    for (std::size_t i=0; i<layers.size(); ++i) {
+        if (!model_.layers[i] || !layers[i]) return TextSessionStateKind::Unsupported;
+        if (model_.layers[i]->qsa && (!layers[i]->qsa ||
+            !model_.layers[i]->qsa->supports_session(*layers[i]->qsa))) return TextSessionStateKind::Unsupported;
+    }
+    return TextSessionStateKind::Qwen4;
+#else
     return model_.execution && !model_.execution->offload && !model_.layers.empty()
         ? TextSessionStateKind::Qwen4
         : TextSessionStateKind::Unsupported;
+#endif
 }
 
 bool State::supports_text_session_state() const {
@@ -408,7 +418,7 @@ public:
             throw CudaSessionStateError("incompatible Qwen4 text session state");
         const auto& positions=snapshot->positions;
         const auto primary=tyloi::Device(tyloi::DeviceType::cuda,
-            owner_.model_.execution->config.layer_placement.primary_device());
+            owner_.model_.primary_device);
         if(!positions.defined() || !positions.representation<DenseTensor>() || positions.device()!=primary ||
            positions.scalar_type()!=tyloi::kInt64 || positions.size(-1)!=saved_.cache_pos ||
            !(positions.dim()==1 || (positions.dim()==2 && positions.size(0)==3) ||

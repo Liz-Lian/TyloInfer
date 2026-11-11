@@ -256,7 +256,9 @@ void Executor::bind_budget(tyloi::engine::Budget* budget) noexcept {
 void Executor::drain() {
     std::exception_ptr failure;
     try { join(); } catch (...) { failure = std::current_exception(); }
-    try { if (offload_) offload_->flush(); } catch (...) { if (!failure) failure = std::current_exception(); }
+    try { if (kv_) kv_->flush(); } catch (...) { if (!failure) failure = std::current_exception(); }
+    try { if (offload_ && (!kv_ || offload_ != kv_->offload())) offload_->flush(); }
+    catch (...) { if (!failure) failure = std::current_exception(); }
     try { wait(); } catch (...) { if (!failure) failure = std::current_exception(); }
     if (failure) std::rethrow_exception(failure);
 }

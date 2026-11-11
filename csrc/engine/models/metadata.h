@@ -38,6 +38,8 @@ struct Info {
     /** Whether the model supports early host-token row prefetch. */
     bool row_prefetch = false;
     GraphOwner graph = GraphOwner::executor;
+    /** Whether attention state supports the configured streamed KV storage policy. */
+    bool streamed_kv = false;
 };
 
 struct CausalLmMetadata {

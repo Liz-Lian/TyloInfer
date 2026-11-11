@@ -6,12 +6,16 @@
 #include "engine/state/kv_budget.h"
 #include "engine/weights/cache.h"
 #include "engine/backends/cuda/executor/options.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/backends/cuda/executor/executor.h"
+#endif
 #include "context.h"
 #include "engine/backends/cuda/native/device.h"
 #include "resident_allocations.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -182,7 +186,40 @@ void KvMemoryAllocation::ensure(int64_t tokens) {
     if(!expert_regions.empty())expert_regions.front().advance(tokens+pool-1);
     if (virtual_keys) {virtual_keys->ensure(tokens); virtual_values->ensure(tokens);}
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t maximum, int64_t heads, int64_t kw, int64_t vw,
+        int64_t iw, int64_t pool, const ::tyloi::TensorOptions& options, int64_t selected_columns) {
+    auto& executor = Executor::current();
+    if (executor.kv_)
+        return executor.kv_->add(maximum, heads, kw, vw, iw, pool, options, selected_columns);
+    if (!executor.offload_) return {};
+    auto result = std::make_shared<KvMemoryAllocation>();
+    result->maximum = maximum; result->heads = heads; result->key_width = kw; result->value_width = vw;
+    result->index_width = iw; result->pool = pool; result->selected_columns = selected_columns;
+    result->options = options; result->offload = executor.offload_;
+    return result;
+}
+#endif
+
 KvMemoryManager::KvMemoryManager(KvMemoryOptions options):options_(std::move(options)) {}
+void KvMemoryManager::bind_budget(tyloi::engine::Budget* budget) noexcept {
+    budget_ = budget;
+    if (offload_) offload_->bind_budget(budget);
+    for (const auto& weak : allocations_)
+        if (auto allocation = weak.lock(); allocation && allocation->offload && allocation->offload != offload_)
+            allocation->offload->bind_budget(budget);
+}
+void KvMemoryManager::flush() {
+    std::exception_ptr failure;
+    const auto flush_store = [&](KvOffloadStore& store) {
+        try { store.flush(); } catch (...) { if (!failure) failure = std::current_exception(); }
+    };
+    if (offload_) flush_store(*offload_);
+    for (const auto& weak : allocations_)
+        if (auto allocation = weak.lock(); allocation && allocation->offload && allocation->offload != offload_)
+            flush_store(*allocation->offload);
+    if (failure) std::rethrow_exception(failure);
+}
 std::shared_ptr<KvMemoryAllocation> KvMemoryManager::add(int64_t maximum,int64_t heads,int64_t kw,int64_t vw,
         int64_t iw,int64_t pool,const ::tyloi::TensorOptions& options,int64_t selected_columns) {
     if (ready_) {
@@ -400,7 +437,10 @@ void KvMemoryManager::finalize(tyloi::weights::Cache& cache, std::size_t minimum
     auto& offload_config=selected.offload_config;
     if(selected.disk_needed)std::cerr<<"runtime_kv_warning code=kv_ssd_overflow target_spill_bytes="<<*selected.disk_needed
         <<" message=KV may spill to SSD; long-context latency and disk usage will increase\n";
-    if(offload_config)offload_=std::make_shared<KvOffloadStore>(std::move(*offload_config));
+    if(offload_config) {
+        offload_=std::make_shared<KvOffloadStore>(std::move(*offload_config));
+        offload_->bind_budget(budget_);
+    }
     ResidentAllocationScope resident;
     if(tiered_budget && !options_.additional_request && !options_.dynamic && setting("TYLOINFER_KV_EXPERT_LOAN",1)) {
         cache_->prepare_kv();

@@ -251,7 +251,7 @@ ControlResult Engine::control_command(ControlRequest request) {
         } else if constexpr (std::is_same_v<T, engine::GetMetrics>) {
             Metrics predictor;
             if (model_->mtp()) mtp::append_generation_metrics(predictor, mtp_state_.stats);
-            return resource_metrics(model_->metrics(), {}, std::nullopt, false,
+            return resource_metrics(model_->metrics(), {}, std::nullopt, model_info_.streamed_kv,
                 batch_ ? batch_->metrics() : Metrics{}, {}, std::nullopt, predictor, source_.get(),
                 *ledger_, *weights_, *cache_, *budget_,
                 executor_->memory(config_.devices), executor_->device(), config_.online_budget);

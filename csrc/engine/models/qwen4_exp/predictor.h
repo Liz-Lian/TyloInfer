@@ -5,7 +5,9 @@
 #include "engine/models/common/attention_ops.h"
 #include "engine/models/qwen4_exp/config.h"
 
+#ifndef TYLOINFER_NATIVE_CUDA
 struct CudaExecutionContext;
+#endif
 namespace tyloi::weights { struct Loader; }
 
 namespace tyloi::cuda { class GatedResidual; }
@@ -46,7 +48,9 @@ struct Predictor final : tyloi::models::Mtp {
     Linear embedding_fusion, hidden_fusion;
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<Layer>> layers;
+#ifndef TYLOINFER_NATIVE_CUDA
     CudaExecutionContext *execution = nullptr;
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA
     bool history_stream = true, history_bootstrap = true, history_early_flush = true, history_cache_only = true;
     int history_host = -1;
@@ -57,11 +61,19 @@ struct Predictor final : tyloi::models::Mtp {
     Predictor(Predictor&&) noexcept;
     Predictor& operator=(Predictor&&) noexcept;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Load predictor weights, if present, using the model's rotary policy. */
+    static std::optional<Predictor> load_if_present(const tyloi::weights::Loader& weights,
+                                                      const tyloi::models::qwen4_exp::Config &main,
+                                                      ::tyloi::Tensor embedding, ::tyloi::Tensor output,
+                                                      double softcap, const tyloi::ops::YarnScaling& yarn);
+#else
     static std::optional<Predictor> load_if_present(CudaExecutionContext &execution,
                                                       const tyloi::weights::Loader& weights,
                                                       const tyloi::models::qwen4_exp::Config &main,
                                                       ::tyloi::Tensor embedding, ::tyloi::Tensor output,
                                                       double softcap);
+#endif
 
     DenseTensor embed(DenseTensor ids) const;
     DenseTensor logits(DenseTensor hidden) const;
@@ -101,7 +113,12 @@ struct Predictor final : tyloi::models::Mtp {
     bool preserve_output_dtype() const noexcept override;
     std::unique_ptr<tyloi::engine::mtp::DepthPolicy> depth_policy(
         int maximum_depth, tyloi::engine::mtp::PolicyState& state) const override;
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Check session support against the owning predictor request state. */
+    bool supports_session_state(const tyloi::models::MtpState&) const noexcept override;
+#else
     bool supports_session_state() const noexcept override;
+#endif
     MtpSessionState capture_session_state(const tyloi::models::MtpState&, int64_t,const tyloi::Tensor&) const override;
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Prepare an owned predictor snapshot for a joint session restore. */

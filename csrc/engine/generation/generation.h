@@ -95,10 +95,20 @@ Generation generate_session(Ops& ops, InferenceRequest& request, InferenceOutput
         plan.stable_prefix_tokens > 0 &&
         (!cache_plan.session_id.empty() || session_cache.persistent_prefix_enabled());
     const bool use_mtp = mtp && sampling.enable_mtp && sampling.max_tokens > 1;
+    const bool mtp_session = [&] {
+        if (!use_mtp) return false;
+#ifdef TYLOINFER_NATIVE_CUDA
+        if constexpr (requires { state.predictor; })
+            return state.predictor && mtp->supports_session_state(*state.predictor);
+        else return false;
+#else
+        return mtp->supports_session_state();
+#endif
+    }();
     if constexpr(requires { ops.set_prefix_boundary(size_t{}); })
         ops.set_prefix_boundary(caching?std::min(plan.stable_prefix_tokens,prompt.size()-1):0);
     typename Ops::Restore restored;
-    if (caching && (!use_mtp || mtp->supports_session_state()))
+    if (caching && (!use_mtp || mtp_session))
         restored = ops.restore_session(
             cache_plan.session_id,
             prompt,
@@ -114,7 +124,7 @@ Generation generate_session(Ops& ops, InferenceRequest& request, InferenceOutput
     bool initial_snapshot_attempted = false;
     const auto snapshot = [&] {
         const auto position = state.position();
-        if (!caching || output.result.cancelled || position <= 0 ||
+        if (!caching || (use_mtp && !mtp_session) || output.result.cancelled || position <= 0 ||
             static_cast<std::size_t>(position) > history.size() ||
             static_cast<std::size_t>(position) == last_snapshot)
             return;

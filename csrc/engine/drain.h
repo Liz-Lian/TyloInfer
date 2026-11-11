@@ -30,22 +30,17 @@ inline void drain_cuda(
     };
     finish([&] { weights.drain(); });
 #ifdef TYLOINFER_NATIVE_CUDA
-    if (!offload) {
-        finish([&] { static_cast<tyloi::Executor&>(executor).drain(); });
-    } else
-#endif
+    finish([&] { static_cast<tyloi::Executor&>(executor).drain(); });
+#else
     {
         finish([&] { executor.join(); });
         if (offload) finish([&] { offload->flush(); });
-#ifdef TYLOINFER_NATIVE_CUDA
-        finish([&] { executor.wait(); });
-#else
         std::unordered_set<int> devices{layer_placement.primary_device()};
         for (const auto* group : {&tensor_parallel.devices, &expert_parallel.devices, &layer_placement.devices})
             devices.insert(group->begin(), group->end());
         finish([&] { executor.wait(devices); });
-#endif
     }
+#endif
     if (failure) std::rethrow_exception(failure);
 }
 

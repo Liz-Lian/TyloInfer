@@ -1227,11 +1227,22 @@ class Qsa {
         explicit State(const Qsa& model)
             : keys(model.c_.maximum, model.c_.kv_heads * model.key_width(), model.cache_dtype()),
               values(model.c_.maximum, model.c_.kv_heads * model.value_width(), model.cache_dtype()),
-              index(model.c_.maximum, model.c_.index_width), offload(model.offload_) {
+              index(model.c_.maximum, model.c_.index_width)
+#ifndef TYLOINFER_NATIVE_CUDA
+              , offload(model.offload_)
+#endif
+              {
+#ifdef TYLOINFER_NATIVE_CUDA
+            memory=allocate_kv(model.c_.maximum,model.c_.kv_heads,model.key_width(),model.value_width(),
+                model.c_.index_width,model.c_.pool,model.w_->query_norm.options().dtype(model.cache_dtype()),
+                model.c_.maximum<=model.c_.budget?model.c_.maximum:model.c_.budget+model.c_.pool-1);
+            if(memory && !memory->ready) offload=memory->offload;
+#else
             if(model.memory_manager_ && !offload)
                 memory=model.memory_manager_->add(model.c_.maximum,model.c_.kv_heads,model.key_width(),model.value_width(),
                     model.c_.index_width,model.c_.pool,model.w_->query_norm.options().dtype(model.cache_dtype()),
                     model.c_.maximum<=model.c_.budget?model.c_.maximum:model.c_.budget+model.c_.pool-1);
+#endif
             if(offload) {
                 offloaded_kv=std::make_unique<KvOffloadSequence>(offload,model.c_.kv_heads*(model.key_width()+model.value_width()),model.c_.pool,model.cache_dtype());
                 offloaded_index=std::make_unique<KvOffloadSequence>(offload,model.c_.index_width,model.c_.pool);
@@ -1250,10 +1261,18 @@ class Qsa {
         bool graph_prepared=false;
     };
     Qsa(std::shared_ptr<const QsaWeights> weights, QsaConfig config, std::shared_ptr<RotaryEmbedding> rotary,
-        bool fused_projection, bool grouped_projection,
+        bool fused_projection, bool grouped_projection
+#ifndef TYLOINFER_NATIVE_CUDA
+        ,
         std::shared_ptr<KvOffloadStore> offload, std::shared_ptr<KvMemoryManager> memory)
-        : w_(std::move(weights)), c_(config), rotary_(std::move(rotary)), fused_projection_(fused_projection), grouped_projection_(grouped_projection),
-          offload_(std::move(offload)), memory_manager_(std::move(memory)) {
+#else
+        )
+#endif
+        : w_(std::move(weights)), c_(config), rotary_(std::move(rotary)), fused_projection_(fused_projection), grouped_projection_(grouped_projection)
+#ifndef TYLOINFER_NATIVE_CUDA
+          , offload_(std::move(offload)), memory_manager_(std::move(memory))
+#endif
+          {
         TYLOINFER_RUNTIME_CHECK(c_.heads > 0 && c_.kv_heads > 0 && c_.heads % c_.kv_heads == 0 &&
                               c_.width > 0 && c_.index_heads > 0 && c_.pool > 0 && c_.budget > 0 &&
                               c_.budget % c_.pool == 0 && rotary_,
@@ -1352,7 +1371,11 @@ class Qsa {
     }
     /** Estimate fresh unmanaged sequence backing; managed allocation has its own admission. */
     std::size_t fresh_session_growth(const State& current, int64_t count) const {
+#ifdef TYLOINFER_NATIVE_CUDA
+        if (current.memory && !current.offload) {
+#else
         if (memory_manager_) {
+#endif
             TYLOINFER_RUNTIME_CHECK(managed_memory(current), "Qwen4 managed session storage is not ready");
             return 0;
         }
@@ -2186,7 +2209,9 @@ class Qsa {
     std::shared_ptr<RotaryEmbedding> rotary_;
     bool fused_projection_;
     bool grouped_projection_;
+#ifndef TYLOINFER_NATIVE_CUDA
     std::shared_ptr<KvOffloadStore> offload_;
     std::shared_ptr<KvMemoryManager> memory_manager_;
+#endif
 };
 } // namespace tyloi::cuda::qwen4_exp

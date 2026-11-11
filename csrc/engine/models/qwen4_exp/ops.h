@@ -18,9 +18,12 @@
 #include <iosfwd>
 #include <vector>
 
+struct CudaExecutionContext;
 namespace tyloi::cuda::qwen4_exp { struct Layer; struct Components; }
 namespace tyloi::cuda { class GatedResidual; }
-namespace tyloi::models { struct Mtp; }
+namespace tyloi::models { struct Mtp; struct LoadOptions; }
+namespace tyloi::weights { struct Loader; }
+struct LayerPlacementConfig;
 
 namespace tyloi::cuda {
 struct Qwen4DecodeGraph;
@@ -208,6 +211,10 @@ struct Model : tyloi::models::CausalModel {
     std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<qwen4_exp::Layer>> layers;
 #ifdef TYLOINFER_NATIVE_CUDA
+    /** Primary device selected by the model's load placement. */
+    int primary_device = 0;
+    /** Retain host token IDs for configured prefetch and CPU layer placement. */
+    bool needs_host_tokens = false;
     /** Loaded optional weights remain owned by the shared model. */
     std::unique_ptr<Components> components;
 #endif
@@ -222,7 +229,7 @@ struct Model : tyloi::models::CausalModel {
 #ifdef TYLOINFER_NATIVE_CUDA
         return tyloi::ops::contiguous(tyloi::ops::copy(
             tyloi::ops::cast(ids, ::tyloi::kInt64),
-            ::tyloi::Device(::tyloi::kCUDA, execution->config.layer_placement.primary_device()))).dense();
+            ::tyloi::Device(::tyloi::kCUDA, primary_device))).dense();
 #else
         return execution->executor().collectives()
             .copy(ids.to(::tyloi::kInt64), execution->config.layer_placement.primary_device())
@@ -256,8 +263,14 @@ struct Model : tyloi::models::CausalModel {
 
 void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
           std::string_view definition, std::int64_t context_size);
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Load weights into an already configured model using the selected placement. */
+void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+          const tyloi::models::LoadOptions& options, bool load_layers = true);
+#else
 void load(Model& model, CudaExecutionContext& execution, std::int64_t context_size,
           bool defer_moe_cache_finalize, bool load_layers);
+#endif
 
 } // namespace tyloi::cuda::qwen4_exp
 

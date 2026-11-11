@@ -84,6 +84,8 @@ struct Mtp {
         return false;
     }
     virtual bool supports_session_state() const noexcept { return false; }
+    /** Check session support for this predictor's actual request state. */
+    virtual bool supports_session_state(const MtpState&) const noexcept { return supports_session_state(); }
     /** Validate the predictor's committed position against its target's session boundary. */
     virtual bool session_boundary(std::int64_t target, std::int64_t predictor) const noexcept {
         return target > 1 && predictor == target - 1;

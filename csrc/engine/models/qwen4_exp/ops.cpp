@@ -635,15 +635,36 @@ std::unique_ptr<tyloi::engine::mtp::DepthPolicy> Predictor::depth_policy(
     return std::make_unique<tyloi::engine::mtp::AdaptivePolicy>(maximum_depth, &state, true, batch);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+bool Predictor::supports_session_state(const tyloi::models::MtpState& value) const noexcept {
+    if (!value.belongs_to(*this) || layers.empty()) return false;
+    const auto* request = dynamic_cast<const PredictorState*>(&value);
+    if (!request || request->layer_states.size() != layers.size() ||
+        request->positions.size() != layers.size() || request->lengths.size() != layers.size()) return false;
+    for (std::size_t i=0; i<layers.size(); ++i) {
+        if (!layers[i] || !request->layer_states[i]) return false;
+        if (layers[i]->qsa && (!request->layer_states[i]->qsa ||
+            !layers[i]->qsa->supports_session(*request->layer_states[i]->qsa))) return false;
+    }
+    return true;
+}
+#else
 bool Predictor::supports_session_state() const noexcept {
     return execution && !execution->offload && !layers.empty();
 }
+#endif
 
 MtpSessionState Predictor::capture_session_state(const tyloi::models::MtpState& value, int64_t target_position,const tyloi::Tensor& input_hidden) const {
     const auto& request=this->state<PredictorState>(value);
     const auto& hidden=input_hidden.dense();
     const auto position=target_position-1;
-    TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=request.position() &&
+    TYLOINFER_RUNTIME_CHECK(
+#ifdef TYLOINFER_NATIVE_CUDA
+        supports_session_state(value) &&
+#else
+        supports_session_state() &&
+#endif
+        position>0 && position<=request.position() &&
         hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm.numel(),
         "Qwen4 MTP session boundary is unavailable");
     MtpSessionState state;state.cache_pos=position;
@@ -687,7 +708,7 @@ std::unique_ptr<tyloi::models::Restore> Predictor::prepare_restore(
             const auto* data = std::get_if<tyloi::models::qwen4_exp::MtpSnapshot>(&saved.payload);
             const auto* hidden = saved.last_target_hidden.representation<DenseTensor>();
             const auto device = ::tyloi::Device(::tyloi::kCUDA, owner.primary);
-            if (!owner.supports_session_state() || saved.cache_pos <= 0 || saved.cache_pos > owner.config.maximum ||
+            if (!owner.supports_session_state(request) || saved.cache_pos <= 0 || saved.cache_pos > owner.config.maximum ||
                 !data || data->layers.size() != owner.layers.size() || data->positions.size() != owner.layers.size() ||
                 data->lengths.size() != owner.layers.size() || data->lengths.empty() ||
                 data->lengths.front() != saved.cache_pos || request.layer_states.size() != owner.layers.size() ||
@@ -820,7 +841,11 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
 #ifndef TYLOINFER_NATIVE_CUDA
     auto scope = model.execution_scope();
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto primary = model.primary_device;
+#else
     const auto primary = model.execution->config.layer_placement.primary_device();
+#endif
     tyloi::models::require_model(bool(input.ids), "Qwen4 forward requires token ids");
     auto ids = model.device_ids(input.ids.dense());
     auto embeddings = input.embeddings
@@ -871,8 +896,12 @@ void qwen4_validate_forward(const qwen4_exp::Model& model, std::int64_t tokens,
                                      current.size(-1) == T,
                                  "Qwen4 positions require [T], [3,T], [4,T], [3,B,T] or [4,B,T]");
     DenseTensor host_ids, cpu_positions;
+#ifdef TYLOINFER_NATIVE_CUDA
+    const bool pinned = model.needs_host_tokens;
+#else
     const bool pinned = model.execution->config.cache.pipeline ||
                         model.execution->config.dense_cpu_layer_count > 0;
+#endif
     if (pinned) {
         host_ids = ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         cpu_positions = current.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
@@ -1639,7 +1668,11 @@ struct Qwen4BatchRequestState::Impl {
 
 Qwen4BatchRequestState::Qwen4BatchRequestState(qwen4_exp::Model& model)
     : state_(std::make_unique<Impl>(model)) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto primary = model.primary_device;
+#else
     const auto primary = model.execution->config.layer_placement.primary_device();
+#endif
     for (const auto& block : model.layers) {
         TYLOINFER_RUNTIME_CHECK(!block->cpu_offloaded && block->cuda_device == primary,
                           "Flash-Next continuous batching requires one CUDA device");
@@ -1998,7 +2031,18 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
     chunks.reserve(chunk_handles.size());
     for (const auto& chunk : chunk_handles) chunks.push_back(chunk.dense());
     TYLOINFER_RUNTIME_CHECK(!requests.empty() && requests.size()==chunks.size(),"invalid packed prefill rows");
+#ifdef TYLOINFER_NATIVE_CUDA
+    const auto pipeline = model.needs_host_tokens;
+    const auto measure = [](const char* name, const auto& operation) {
+        return tyloi::ops::measure(name, operation);
+    };
+#else
     auto& execution = *model.execution;
+    const auto pipeline = execution.config.cache.pipeline;
+    const auto measure = [&](const char* name, const auto& operation) {
+        return execution.executor().profiler().measure(name, operation);
+    };
+#endif
     const bool packed=requests.size()>1;
     std::vector<int64_t> offsets{0};
     std::vector<::tyloi::DenseTensor> current,full;
@@ -2015,7 +2059,7 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
     auto ids=::tyloi::cuda::cat(chunks,1);
     auto host_ids=ids.to(::tyloi::kCPU);
     const auto tokens=offsets.back();
-    if(!packed && execution.config.cache.pipeline) {
+    if(!packed && pipeline) {
         for(std::size_t row=0;row<requests.size();++row) {
             const auto row_ids=host_ids.narrow(1,offsets[row],chunks[row].size(1));
             for(std::size_t i=0;i<requests[row]->state_->layers.size();++i) {
@@ -2036,7 +2080,7 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
                 auto& layer=*requests[row]->state_->layers[i];
                 auto ple=packed ? block.ple->forward(layer.ple,x,chunks[row],true,0,
                     host_ids.narrow(1,offsets[row],chunks[row].size(1))) :
-                    execution.executor().profiler().measure("prefill.ple",[&] {
+                    measure("prefill.ple",[&] {
                         return block.ple->forward(layer.ple,x,chunks[row],true,0,
                             host_ids.narrow(1,offsets[row],chunks[row].size(1)));
                     });
@@ -2045,7 +2089,7 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             hidden=join_request_outputs(positional,1);
         }
         auto mix=packed ? block.attention_gr.pre(hidden) :
-            execution.executor().profiler().measure("prefill.gr_attention",[&] { return block.attention_gr.pre(hidden); });
+            measure("prefill.gr_attention",[&] { return block.attention_gr.pre(hidden); });
         ::tyloi::DenseTensor attention;
         if(packed) {
             const auto projections=block.gdn?block.gdn->project_inputs(mix.mixed)
@@ -2064,21 +2108,21 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
             attention=block.gdn?block.gdn->project_output(attention):block.qsa->project_output(attention);
         } else {
             auto& layer=*requests.front()->state_->layers[i];
-            if(block.gdn)attention=execution.executor().profiler().measure("prefill.gdn",[&] {
+            if(block.gdn)attention=measure("prefill.gdn",[&] {
                 return block.gdn->forward(layer.gdn,mix.mixed,true,0);
             });
-            else attention=execution.executor().profiler().measure("prefill.qsa",[&] {
+            else attention=measure("prefill.qsa",[&] {
                 return block.qsa->forward(*layer.qsa,mix.mixed,current.front(),full.front(),true);
             });
         }
         auto ffn_mix=packed ? block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate) :
-            execution.executor().profiler().measure("prefill.gr_ffn_pre",[&] {
+            measure("prefill.gr_ffn_pre",[&] {
                 return block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
             });
         auto ffn_output=packed ? block.ffn.forward(ffn_mix.mixed) :
-            execution.executor().profiler().measure("prefill.ffn",[&] { return block.ffn.forward(ffn_mix.mixed); });
+            measure("prefill.ffn",[&] { return block.ffn.forward(ffn_mix.mixed); });
         hidden=packed ? block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate) :
-            execution.executor().profiler().measure("prefill.gr_ffn_post",[&] {
+            measure("prefill.gr_ffn_post",[&] {
                 return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
             });
     }
@@ -2108,7 +2152,6 @@ std::vector<::tyloi::Tensor> qwen4_batch_prefill(qwen4_exp::Model& model,
         current.push_back(position);
         full.push_back(state.positions.defined() ? ::tyloi::cuda::cat({state.positions,position},-1) : position);
     }
-    auto& execution = *model.execution;
     auto hidden = model.repeat_hidden(model.embed_tokens(ids),model.metadata.hc_mult);
     for (std::size_t i = 0; i < model.layers.size(); ++i) {
         const auto& block = *model.layers[i];
@@ -2748,6 +2791,7 @@ tyloi::models::Info Model::info() const {
 #ifdef TYLOINFER_NATIVE_CUDA
     result.graph=tyloi::models::GraphOwner::model;
     result.row_prefetch=true;
+    result.streamed_kv=true;
 #endif
     return result;
 }
@@ -2810,7 +2854,7 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
     auto* target=dynamic_cast<State*>(&state);
     tyloi::models::require_model(target && target->belongs_to(*this), "Qwen4 state belongs to another model");
     if (components)
-        return components->prepare(*this, target->images, execution->config.layer_placement.primary_device(), tokens, media);
+        return components->prepare(*this, target->images, primary_device, tokens, media);
 #endif
     throw std::invalid_argument("model has no multimodal component");
 }

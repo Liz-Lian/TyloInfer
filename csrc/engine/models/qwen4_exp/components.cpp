@@ -1,6 +1,8 @@
 #include "engine/models/qwen4_exp/components.h"
 
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
+#endif
 #include "engine/models/source/model_config.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/qwen4_exp/predictor.h"
@@ -52,12 +54,19 @@ tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
 Components load_components(
         tyloi::cuda::qwen4_exp::Model& model,
         const tyloi::weights::Loader& weights,
-        bool load_optional_components) {
+        bool load_optional_components
+#ifdef TYLOINFER_NATIVE_CUDA
+        , std::string_view definition, const tyloi::ops::YarnScaling& yarn
+#endif
+        ) {
     Components result;
     if (!load_optional_components) return result;
     if (model.plan.vision == tyloi::cuda::CudaVisionAdapter::grid_vit) {
-        const auto document = nlohmann::json::parse(
-            tyloi::models::config_json(*model.source));
+#ifdef TYLOINFER_NATIVE_CUDA
+        const auto document = nlohmann::json::parse(definition.begin(), definition.end());
+#else
+        const auto document = nlohmann::json::parse(tyloi::models::config_json(*model.source));
+#endif
         const auto& vision = document.at("vision_config");
         if (vision.value("hidden_act", std::string("gelu_pytorch_tanh")) != "gelu_pytorch_tanh" ||
                 !vision.value("deepstack_visual_indexes", std::vector<int>{}).empty())
@@ -107,8 +116,13 @@ Components load_components(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
     auto predictor = tyloi::cuda::qwen4_exp::Predictor::load_if_present(
+#ifndef TYLOINFER_NATIVE_CUDA
         *model.execution, weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping);
+#else
+        weights, model.config, model.embed, model.lm_head,
+        model.metadata.final_logit_softcapping, yarn);
+#endif
     if (predictor) {
         result.mtp =
             std::make_unique<tyloi::cuda::qwen4_exp::Predictor>(

@@ -297,14 +297,14 @@ struct Text {
 #endif
             if constexpr (requires { parts.memory_metrics(model,state); })
                 memory = parts.memory_metrics(model,state);
-            const bool streamed_kv = [] {
 #ifdef TYLOINFER_NATIVE_CUDA
-                if constexpr (std::is_same_v<Model, qwen4_exp::Model> && std::is_same_v<Parts, std::monostate>) return true;
-                else
-#endif
+            const bool streamed_kv = info.streamed_kv;
+#else
+            const bool streamed_kv = [] {
                 if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
                 else return false;
             }();
+#endif
             const auto* mtp = component_predictor(model, parts);
             const auto batch_metrics = batching ? batching->metrics() : Metrics{};
             const auto kv_metrics = kv ? kv->metrics() : Metrics{};

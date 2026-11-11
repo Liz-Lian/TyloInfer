@@ -167,16 +167,23 @@ class EngineInstance final : public Engine {
                     kv.directory = kv_options.directory;
                     offload = std::make_shared<KvOffloadStore>(std::move(kv));
                 }
+#ifdef TYLOINFER_NATIVE_CUDA
+                executor->configure_kv(kv, offload);
+#endif
                 state = Load(*execution, options, true,
                     [&](auto& model, auto& model_state, auto& model_executor, auto& components,
                         auto, auto, auto source) -> State {
                         using Model = typename std::remove_reference_t<decltype(model)>::element_type;
                         using ModelState = typename std::remove_reference_t<decltype(model_state)>::element_type;
                         using Parts = std::remove_cvref_t<decltype(components)>;
+#ifdef TYLOINFER_NATIVE_CUDA
+                        const bool streamed_kv = tyloi::models::model_info(*model).streamed_kv;
+#else
                         const bool streamed_kv = [] {
                             if constexpr (requires { Parts::streamed_kv(); }) return Parts::streamed_kv();
                             else return false;
                         }();
+#endif
                         if (offload && !streamed_kv)
                             throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                         return std::make_unique<Text<Model, ModelState, Parts>>(

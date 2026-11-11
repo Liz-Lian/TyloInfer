@@ -17,6 +17,7 @@
 #include "engine/models/deepseek_v41/state.h"
 #endif
 #include "engine/models/common/load.h"
+#include "engine/models/load.h"
 #include "engine/models/source/model_config.h"
 #include "engine/models/source/model_graph.h"
 #include "engine/models/qwen35/load.h"
@@ -76,6 +77,10 @@ inline constexpr auto with_model = []<typename F>(
         }
         tyloi::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
+#ifdef TYLOINFER_NATIVE_CUDA
+        execution.executor().configure_kv(execution.kv, execution.offload);
+        executor->configure_kv(execution.kv, execution.offload);
+#endif
         const auto loaded_at = tyloi::cuda::finish_load(
             execution.kv.get(), execution.weights, execution.config.report_cuda_memory);
         return run(owner, state, executor, components, started, loaded_at, source);
@@ -215,16 +220,32 @@ inline constexpr auto with_model = []<typename F>(
         case CudaBackbone::qwen4_exp: {
             auto started = std::chrono::steady_clock::now();
             auto owner = std::make_shared<qwen4_exp::Model>();
+#ifdef TYLOINFER_NATIVE_CUDA
+            auto definition = tyloi::models::config_json(*source, options.config_path);
+            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
+                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
+            qwen4_exp::read(*owner, source, definition, options.context_size);
+#else
             qwen4_exp::read(*owner, source, tyloi::models::config_json(*source, options.config_path),
                             options.context_size);
+#endif
             owner->execution = &execution;
+#ifndef TYLOINFER_NATIVE_CUDA
             qwen4_exp::load(*owner, execution, options.context_size, true, true);
+#endif
             auto weights = execution.weights.loader(*owner->source, execution.config.weights,
                 {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
                  execution.config.tensor_parallel, moe_parallel_config(execution.config)});
 #ifdef TYLOINFER_NATIVE_CUDA
+            qwen4_exp::load(*owner, weights, execution.config.layer_placement,
+                tyloi::models::LoadOptions{options.context_size, execution.config.n_gpu_layers,
+                    execution.config.expert_parallel.enabled(), execution.config.yarn,
+                    execution.config.dsv4_cpu_offload_layers, execution.config.deepseek_v41_engram_cache_rows,
+                    execution.config.cache.pipeline});
+            execution.config.dense_cpu_layer_count = static_cast<int>(std::count_if(
+                owner->layers.begin(), owner->layers.end(), [](const auto& layer) { return layer->cpu_offloaded; }));
             owner->components = std::make_unique<qwen4_exp::Components>(
-                qwen4_exp::load_components(*owner, weights, load_optional_components));
+                qwen4_exp::load_components(*owner, weights, load_optional_components, definition, execution.config.yarn));
             std::monostate components;
 #else
             auto components = qwen4_exp::load_components(*owner, weights, load_optional_components);

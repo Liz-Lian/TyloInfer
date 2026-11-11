@@ -65,7 +65,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                            (positioned_prompt || prepared->decode_position_delta==0)),
         "prepared MTP prompt is missing embeddings or valid position metadata");
     require_execution(
-        reused_tokens == 0 || (mtp.supports_session_state() && ops.defined(restored_last_hidden) &&
+        reused_tokens == 0 || (mtp.supports_session_state(predictor) && ops.defined(restored_last_hidden) &&
                                   state.position() == static_cast<int64_t>(reused_tokens) &&
                                   predictor.position() == static_cast<int64_t>(reused_tokens) -
                                       (mtp.blockwise_drafting()?0:1)),
