@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 
-#include "../../../csrc/engine/backends/cuda/kernels/mx_float_decode.cuh"
+#include "mx_float_decode.cuh"
 #include "mx_check.h"
 #include "packed_backward.cuh"
 

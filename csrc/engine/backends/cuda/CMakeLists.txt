@@ -121,7 +121,6 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     ${TYLOINFER_CUDA_KERNEL_ROOT}/nint_q8_decode.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/nvq_matmul.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/nvq_decode.cu
-    ${TYLOINFER_CUDA_KERNEL_ROOT}/nvq_projection.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/nvq_routed_reuse.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/nvq1_decode.cu
     )
@@ -157,6 +156,7 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     target_sources(mfq-cuda-native-kernels PRIVATE
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nint_wrappers.cpp
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nvq_wrappers.cpp
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nvq_check.cu
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nepq_residual_wrappers.cpp
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/fp8_sq_wrappers.cpp
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mxfp4_sq_wrappers.cpp

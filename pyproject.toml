@@ -111,7 +111,20 @@ where = ["."]
 include = ["tyloinfer*"]
 
 [tool.setuptools.package-data]
-"tyloinfer.kernels.cuda" = ["tq_ops.cu", "tq_ops.h", "tq_*.cuh"]
+"tyloinfer.kernels.cuda" = [
+    "*.cpp", "*.cu", "*.h", "*.cuh",
+    "_src/csrc/engine/backends/cuda/kernels/*",
+    "_src/csrc/engine/backends/cuda/kernels/*/*",
+    "_src/csrc/engine/backends/cuda/kernels/*/*/*",
+    "_src/csrc/engine/backends/cuda/native/*",
+    "_src/csrc/engine/weights/encoding/*",
+    "_src/csrc/engine/weights/encoding/*/*",
+    "_src/csrc/components/ggml/include/*",
+    "_src/csrc/components/ggml/src/*",
+    "_src/csrc/components/ggml/src/ggml-cuda/*",
+    "_src/csrc/components/ggml/src/ggml-cuda/vendors/*",
+    "_src/csrc/components/ggml/src/ggml-cuda/*/*/*",
+]
 "tyloinfer.kernels.metal" = ["tq_decode.h", "tq_matmul.h"]
 "tyloinfer.server" = [
     "protocol/*.json",
