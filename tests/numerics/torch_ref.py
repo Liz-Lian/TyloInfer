@@ -3,11 +3,12 @@
 import hashlib
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.nn import functional
 
 from .case import Case, CaseWriter, save_tensor, write_result
+from .torch_env import execution as describe
+from .torch_env import scope, settings
 
 
 def _array(value):
@@ -18,17 +19,8 @@ def _array(value):
 def _execution(device, accumulation):
     """Describe the framework and settings used to calculate the reference."""
     return {
-        'framework': 'PyTorch',
-        'torch_version': str(torch.__version__),
-        'numpy_version': np.__version__,
-        'device': str(device),
-        'device_name': torch.cuda.get_device_name(device),
-        'device_capability': list(torch.cuda.get_device_capability(device)),
-        'cuda_version': torch.version.cuda,
-        'accumulation': accumulation,
-        'matmul_allow_tf32': torch.backends.cuda.matmul.allow_tf32,
+        **describe(device, accumulation),
         'cudnn_allow_tf32': torch.backends.cudnn.allow_tf32,
-        'float32_matmul_precision': torch.get_float32_matmul_precision(),
     }
 
 
@@ -39,7 +31,7 @@ def _generate_case(root, device, name, op, seed, tensors, config, formula, toler
         root,
         name,
         op,
-        config,
+        {**config, 'compute': settings()},
         {
             'generator': 'tests/numerics/torch_ref.py',
             'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -105,7 +97,7 @@ def _extra_case(root, device, name, source, op, config, values, formula, toleran
         root,
         name,
         op,
-        config,
+        {**config, 'compute': settings()},
         {
             'generator': 'tests/numerics/torch_ref.py',
             'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -133,6 +125,12 @@ def _extra_case(root, device, name, source, op, config, values, formula, toleran
 
 def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
     """Recalculate a supported reference from its validated, fixed inputs."""
+    with scope(case.data['config']['compute']):
+        return _reference(case, root, device)
+
+
+def _reference(case, root, device):
+    """Evaluate one supported formula with fixed inputs and selected Torch settings."""
     device = torch.device(device)
     if device.type != 'cuda':
         raise ValueError('These reference cases require a CUDA device')

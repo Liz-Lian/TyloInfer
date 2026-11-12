@@ -16,12 +16,25 @@ def main(argv=None):
     generate = commands.add_parser('generate', help='Create new fixed inputs and reference results')
     generate.add_argument(
         'kind',
-        choices=('rms', 'basic', 'rope', 'conv', 'gelu', 'tq', 'flash', 'mx', 'gdn', 'nemotron'),
+        choices=(
+            'rms',
+            'basic',
+            'rope',
+            'conv',
+            'gelu',
+            'tq',
+            'flash',
+            'mx',
+            'gdn',
+            'nemotron',
+            'attn',
+            'sample',
+        ),
     )
     generate.add_argument('output', type=Path)
     generate.add_argument(
         '--suite',
-        help='Required for TQ, Flash-Next, MX, GDN and Nemotron generators',
+        help='Required for grouped reference generators',
     )
     generate.add_argument('--device', default='cuda')
     rerun = commands.add_parser(
@@ -42,8 +55,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == 'generate':
-            if (args.kind in {'tq', 'flash', 'mx', 'gdn', 'nemotron'}) != (args.suite is not None):
-                parser.error('--suite is required only for TQ, Flash-Next, MX, GDN and Nemotron')
+            grouped = args.kind in {'tq', 'flash', 'mx', 'gdn', 'nemotron', 'attn', 'sample'}
+            if grouped != (args.suite is not None):
+                parser.error('--suite is required only for grouped reference generators')
             if args.kind == 'tq':
                 from .tq_ref import generate
 
@@ -68,6 +82,14 @@ def main(argv=None):
                 else:
                     parser.error('Nemotron suite must be backbone or vision')
                 paths = generate(args.output, args.suite)
+            elif args.kind == 'attn':
+                from .attn_ref import generate
+
+                paths = generate(args.output, args.suite, args.device)
+            elif args.kind == 'sample':
+                from .sample_ref import generate
+
+                paths = generate(args.output, args.suite, args.device)
             else:
                 from .torch_ref import generate
 
@@ -105,6 +127,14 @@ def main(argv=None):
                 from .nemotron_vision_ref import reference
 
                 path = reference(case, args.output)
+            elif generator == 'tests/numerics/attn_ref.py':
+                from .attn_ref import reference
+
+                path = reference(case, args.output, args.device)
+            elif generator == 'tests/numerics/sample_ref.py':
+                from .sample_ref import reference
+
+                path = reference(case, args.output, args.device)
             else:
                 raise ValueError(f'Unsupported reference generator: {generator!r}')
             print(
@@ -118,7 +148,15 @@ def main(argv=None):
                 stream.write(text)
         print(text, end='')
         return {'pass': 0, 'fail': 1, 'not_executed': 2}[report['status']]
-    except (ValueError, OSError, ImportError, RuntimeError) as error:
+    except (
+        ValueError,
+        OSError,
+        ImportError,
+        RuntimeError,
+        KeyError,
+        TypeError,
+        IndexError,
+    ) as error:
         print(f'Numerical tool failed: {error}', file=sys.stderr)
         return 1
 

@@ -7,6 +7,9 @@ import numpy as np
 import torch
 
 from .case import Case, CaseWriter, save_tensor, write_result
+from .torch_env import device as _device
+from .torch_env import execution as describe
+from .torch_env import scope, settings
 
 
 def _numpy_recurrence(inputs):
@@ -48,18 +51,14 @@ def _torch_recurrence(inputs):
     return torch.stack(outputs, dim=2), state
 
 
-def _device(value, kind):
-    """Require the original case's CPU or CUDA execution device."""
-    device = torch.device(value)
-    if device.type != kind:
-        raise ValueError(f'This case requires a {kind} device')
-    if kind == 'cuda' and device.index is None:
-        device = torch.device('cuda', torch.cuda.current_device())
-    return device
-
-
 def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
     """Recompute supported references from the fixed case tensors."""
+    with scope(case.data['config']['compute']):
+        return _reference(case, root, device)
+
+
+def _reference(case, root, device):
+    """Evaluate the original CPU or CUDA recurrence under the recorded settings."""
     source = case.data['source']
     name = source.get('test')
     cpu_test = 'tests/test_kernels_ops.py::test_gdn_matches_reference'
@@ -93,12 +92,8 @@ def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
     if 'state' in case.data['outputs']:
         outputs['state'] = save_tensor(root, 'state', state)
     execution = {
+        **describe(device, accumulation),
         'framework': 'NumPy' if name == cpu_test else 'PyTorch',
-        'numpy_version': np.__version__,
-        'torch_version': str(torch.__version__),
-        'device': str(device),
-        'cuda_version': torch.version.cuda,
-        'accumulation': accumulation,
         'comparison_note': (
             'Float32 NumPy and Torch GPU reductions can differ in rounding'
             if name != cpu_test
@@ -106,13 +101,6 @@ def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
         ),
         'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
-    if device.type == 'cuda':
-        execution.update(
-            device_name=torch.cuda.get_device_name(device),
-            device_capability=list(torch.cuda.get_device_capability(device)),
-            matmul_allow_tf32=torch.backends.cuda.matmul.allow_tf32,
-            float32_matmul_precision=torch.get_float32_matmul_precision(),
-        )
     return write_result(case, root, outputs, execution)
 
 
@@ -158,6 +146,7 @@ def generate(root: Path, suite: str = 'cuda', device: str = 'cuda') -> list[Path
             'initial_state': 'random' if initial_state else 'zero',
             'cuda_column_path': initial_state,
             'scale': width**-0.5,
+            'compute': settings(),
         }
         writer = CaseWriter(
             root,

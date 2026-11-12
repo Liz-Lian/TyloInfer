@@ -9,6 +9,8 @@ import torch
 from tyloinfer.formats.mx import MxTensor, pack_mx, unpack_mx
 
 from .case import Case, CaseWriter, save_tensor, write_result
+from .torch_env import device as _device
+from .torch_env import execution, scope, settings
 
 
 def _array(value):
@@ -54,47 +56,18 @@ def _dense(tensor):
     return dense
 
 
-def _device(device):
-    """Resolve a CUDA device so reference provenance identifies the execution device."""
-    device = torch.device(device)
-    if device.type != 'cuda':
-        raise ValueError('These reference cases require a CUDA device')
-    return device if device.index is not None else torch.device('cuda', torch.cuda.current_device())
-
-
 def _provenance(device):
     """Describe the arithmetic environment used by the independent reference."""
     return {
-        'framework': 'PyTorch',
-        'torch_version': str(torch.__version__),
-        'numpy_version': np.__version__,
-        'device': str(device),
-        'device_name': torch.cuda.get_device_name(device),
-        'device_capability': list(torch.cuda.get_device_capability(device)),
-        'cuda_version': torch.version.cuda,
-        'accumulation': 'float32',
-        'matmul_allow_tf32': torch.backends.cuda.matmul.allow_tf32,
-        'float32_matmul_precision': torch.get_float32_matmul_precision(),
+        **execution(device, 'float32'),
         'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
 
 
 def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
     """Recalculate MX outputs from a validated case without sampling new inputs."""
-    config = case.data['config']
-    allow_tf32 = config['matmul_allow_tf32']
-    precision = config['float32_matmul_precision']
-    if type(allow_tf32) is not bool or precision not in {'highest', 'high', 'medium'}:
-        raise ValueError('Invalid recorded Torch matmul settings')
-    previous_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
-    previous_precision = torch.get_float32_matmul_precision()
-    try:
-        torch.set_float32_matmul_precision(precision)
-        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+    with scope(case.data['config']['compute']):
         return _reference(case, root, device)
-    finally:
-        torch.set_float32_matmul_precision(previous_precision)
-        torch.backends.cuda.matmul.allow_tf32 = previous_allow_tf32
 
 
 def _reference(case, root, device):
@@ -155,8 +128,7 @@ def _make_case(
         'input_seed': seed,
         'output_kind': output_kind,
         'execution_checks': ['cuda_graph_capture_and_replay'] if graph else [],
-        'matmul_allow_tf32': torch.backends.cuda.matmul.allow_tf32,
-        'float32_matmul_precision': torch.get_float32_matmul_precision(),
+        'compute': settings(),
     }
     test_path = Path(__file__).resolve().parents[1] / 'test_format_completion_cuda.py'
     source = {

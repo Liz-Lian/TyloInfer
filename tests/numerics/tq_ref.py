@@ -18,6 +18,8 @@ from torch.nn import functional
 from tyloinfer.formats.tq import TQTensor
 
 from .case import Case, CaseWriter, save_tensor, write_result
+from .torch_env import device as resolve_device
+from .torch_env import execution, scope, settings
 
 _DTYPES = {'f16': torch.float16, 'bf16': torch.bfloat16, 'f32': torch.float32}
 _NAMES = {'f16': 'float16', 'bf16': 'bfloat16', 'f32': 'float32'}
@@ -73,32 +75,21 @@ def _rms(limit):
 
 def _writer(root, name, op, config, test):
     """Create a case with explicit execution checks and original source."""
-    settings = {
-        'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
-        'float32_matmul_precision': torch.get_float32_matmul_precision(),
-    }
-    return CaseWriter(root, name, op, {**config, 'compute': settings}, {**_SOURCE, 'test': test})
+    return CaseWriter(root, name, op, {**config, 'compute': settings()}, {**_SOURCE, 'test': test})
 
 
 def _result(case, root, outputs, device):
     """Save float32 reference outputs and execution provenance."""
     target = Path(root)
     specs = {name: save_tensor(target, name, _numpy(value)) for name, value in outputs.items()}
-    execution = {
-        'framework': 'torch',
-        'torch_version': str(torch.__version__),
-        'cuda_version': torch.version.cuda,
-        'numpy_version': np.__version__,
-        'device': str(device),
-        'device_name': torch.cuda.get_device_name(device),
-        'device_capability': list(torch.cuda.get_device_capability(device)),
-        'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
-        'float32_matmul_precision': torch.get_float32_matmul_precision(),
-        'accumulation': 'Torch float32 matmul/einsum and reduction with recorded backend settings',
+    provenance = {
+        **execution(
+            device, 'Torch float32 matmul/einsum and reduction with recorded backend settings'
+        ),
         'independence': 'CPU TQTensor.dequantize and Torch arithmetic are independent of native CUDA TQ kernels; CPU decoding is shared production code',
         'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
-    return write_result(case, target, specs, execution)
+    return write_result(case, target, specs, provenance)
 
 
 def _asset(writer, name, tensor):
@@ -484,36 +475,13 @@ def _calculate(case, device):
     raise ValueError(f'Unsupported TQ reference operation: {op!r}')
 
 
-def _set_compute(settings):
-    """Apply a recorded float32 matmul configuration."""
-    torch.set_float32_matmul_precision(settings['float32_matmul_precision'])
-    if torch.backends.cuda.matmul.allow_tf32 != settings['allow_tf32']:
-        torch.backends.cuda.matmul.allow_tf32 = settings['allow_tf32']
-    if (
-        torch.get_float32_matmul_precision() != settings['float32_matmul_precision']
-        or torch.backends.cuda.matmul.allow_tf32 != settings['allow_tf32']
-    ):
-        raise ValueError('Recorded Torch matmul settings cannot be reproduced')
-
-
 def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
     """Recompute TQ reference outputs from fixed case inputs and recorded settings."""
-    device = torch.device(device)
-    if device.type != 'cuda':
-        raise ValueError('TQ reference migration requires a CUDA device')
-    if device.index is None:
-        device = torch.device('cuda', torch.cuda.current_device())
+    device = resolve_device(device)
     if case.data['source'].get('generator') != 'tests/numerics/tq_ref.py':
         raise ValueError('Unsupported TQ reference source')
-    previous = {
-        'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
-        'float32_matmul_precision': torch.get_float32_matmul_precision(),
-    }
-    try:
-        _set_compute(case.data['config']['compute'])
+    with scope(case.data['config']['compute']):
         return _result(case, root, _calculate(case, device), device)
-    finally:
-        _set_compute(previous)
 
 
 def generate(root: Path, suite: str = 'gemv', device: str = 'cuda') -> list[Path]:
@@ -536,16 +504,8 @@ def generate(root: Path, suite: str = 'gemv', device: str = 'cuda') -> list[Path
     )
     if suite not in suites:
         raise ValueError(f'Unknown TQ suite {suite!r}; choose one of {", ".join(suites)}')
-    device = torch.device(device)
-    if device.type != 'cuda':
-        raise ValueError('TQ reference migration requires a CUDA device')
-    if device.index is None:
-        device = torch.device('cuda', torch.cuda.current_device())
-    previous = {
-        'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
-        'float32_matmul_precision': torch.get_float32_matmul_precision(),
-    }
-    try:
+    device = resolve_device(device)
+    with scope(settings()):
         if suite in ('gemv', 'ffn'):
             torch.backends.cuda.matmul.allow_tf32 = False
         if suite == 'gemv':
@@ -563,6 +523,3 @@ def generate(root: Path, suite: str = 'gemv', device: str = 'cuda') -> list[Path
         if suite == 'embedding':
             return _embedding(root, device)
         return _routed(root, device)
-    finally:
-        if suite in ('gemv', 'ffn'):
-            _set_compute(previous)
