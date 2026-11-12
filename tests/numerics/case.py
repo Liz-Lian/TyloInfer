@@ -223,6 +223,8 @@ class Case:
         for field in ('config', 'source', 'inputs', 'assets', 'outputs'):
             if not isinstance(data.get(field), dict):
                 raise ValueError(f'Case {field} must be an object')
+        if data.get('actual_role', 'native') not in {'native', 'candidate'}:
+            raise ValueError('Unsupported execution role')
         if not data['source'] or not data['outputs']:
             raise ValueError('Case requires a reference source and output observations')
         case = cls(path.resolve().parent, data)
@@ -262,7 +264,7 @@ class Case:
 class CaseWriter:
     """Build one new fixed case, refusing to overwrite any existing case directory."""
 
-    def __init__(self, root, name, op, config, source):
+    def __init__(self, root, name, op, config, source, actual_role='native'):
         self.root = Path(root) / _name(name)
         self.root.mkdir(parents=True, exist_ok=False)
         self.data = {
@@ -276,6 +278,7 @@ class CaseWriter:
             'inputs': {},
             'assets': {},
             'outputs': {},
+            'actual_role': actual_role,
         }
         self.finished = False
 
@@ -343,7 +346,7 @@ class CaseWriter:
 def _validate_result(case, root, result, role):
     """Validate complete observations against the case before numeric comparison."""
     if (
-        role not in {'reference', 'native'}
+        role not in {'reference', case.data.get('actual_role', 'native')}
         or not isinstance(result, dict)
         or result.get('format') != _FORMAT
         or result.get('version') != 1
@@ -374,7 +377,7 @@ def _validate_result(case, root, result, role):
 
 
 def write_result(case, root, outputs, execution, role='reference'):
-    """Publish a validated reference or native result without replacing a baseline."""
+    """Publish a validated reference or execution result without replacing a baseline."""
     result = {
         'format': _FORMAT,
         'version': 1,

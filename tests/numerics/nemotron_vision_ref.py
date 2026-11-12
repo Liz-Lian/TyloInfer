@@ -24,7 +24,7 @@ PROJECTOR_EPS = 1e-5
 GRIDS = ((4, 6), (6, 2))
 
 
-def _fixture():
+def fixture():
     """Reproduce the source configuration and float32 vision weights in RNG order."""
     config, text_weights = text_fixture(('mamba', 'moe'))
     config.update(
@@ -92,15 +92,17 @@ def _layer_norm(x, weight, bias, eps):
     return (x - mean) / torch.sqrt(variance + eps) * weight + bias
 
 
-def _block(hidden, weights, prefix):
+def _block(hidden, weights, prefix, heads=HEADS):
     """Apply one original float64 pre-LayerNorm RADIO attention and MLP block."""
     batch, tokens, width = hidden.shape
-    head_dim = width // HEADS
+    if width % heads:
+        raise ValueError('RADIO hidden size must be divisible by the head count')
+    head_dim = width // heads
     x = _layer_norm(
         hidden, weights[prefix + 'norm1.weight'], weights[prefix + 'norm1.bias'], LAYER_NORM_EPS
     )
     qkv = x @ weights[prefix + 'attention.qkv.weight'].T + weights[prefix + 'attention.qkv.bias']
-    q, k, v = qkv.reshape(batch, tokens, 3, HEADS, head_dim).permute(2, 0, 3, 1, 4)
+    q, k, v = qkv.reshape(batch, tokens, 3, heads, head_dim).permute(2, 0, 3, 1, 4)
     scores = torch.einsum('bhqd,bhkd->bhqk', q, k) / math.sqrt(head_dim)
     attended = torch.einsum('bhqk,bhkd->bhqd', torch.softmax(scores, dim=-1), v)
     attended = attended.transpose(1, 2).reshape(batch, tokens, width)
@@ -163,21 +165,33 @@ def _project(features, weights, grids):
     return hidden @ weights['vision.projector.mlp.down.weight'].T
 
 
-def reference(case: Case, root: Path) -> Path:
-    """Recalculate one CPU float64 RADIO result from fixed pixels and weights."""
-    if case.data['op'] not in {'radio_features', 'radio_projector', 'radio_prompt'}:
+def compute(case: Case) -> dict[str, np.ndarray]:
+    """Compute RADIO observations from fixed inputs without writing results."""
+    op = case.data['op']
+    if op not in {'radio_features', 'radio_projector', 'radio_prompt', 'radio_layer'}:
         raise ValueError('Unsupported RADIO reference operation')
-    if case.data['source'].get('generator') != 'tests/numerics/nemotron_vision_ref.py':
-        raise ValueError('Unsupported RADIO reference source')
-    grids = case.data['config']['image_grids']
-    if grids != [list(grid) for grid in GRIDS]:
-        raise ValueError('Unsupported RADIO image grids')
     weights = {
         name: torch.tensor(case.tensor(name), dtype=torch.float64)
         for name in case.data['inputs']
         if name.startswith('vision.')
     }
+    if op == 'radio_layer':
+        hidden = torch.tensor(case.tensor('hidden'), dtype=torch.float64)
+        heads = case.data['config']['heads']
+        if hidden.ndim != 3 or type(heads) is not int or heads <= 0 or hidden.shape[-1] % heads:
+            raise ValueError('Invalid RADIO layer input or head count')
+        return {
+            'output': _block(hidden, weights, 'vision.block.0.', heads)
+            .detach()
+            .contiguous()
+            .numpy()
+        }
+    grids = case.data['config']['image_grids']
+    if grids != [list(grid) for grid in GRIDS]:
+        raise ValueError('Unsupported RADIO image grids')
     pixels = torch.tensor(case.tensor('pixels'), dtype=torch.float64)
+    if pixels.shape != (sum(rows * columns for rows, columns in grids), 12):
+        raise ValueError('RADIO pixels do not match the image grids')
     features = _features(pixels, weights, grids)
     if case.data['op'] == 'radio_prompt':
         ids = torch.from_numpy(case.tensor('token_ids'))
@@ -208,6 +222,14 @@ def reference(case: Case, root: Path) -> Path:
             features if case.data['op'] == 'radio_features' else _project(features, weights, grids)
         )
         outputs = {'output': output.detach().contiguous().numpy()}
+    return outputs
+
+
+def reference(case: Case, root: Path) -> Path:
+    """Publish a CPU float64 RADIO result from the fixed case inputs."""
+    if case.data['source'].get('generator') != 'tests/numerics/nemotron_vision_ref.py':
+        raise ValueError('Unsupported RADIO reference source')
+    outputs = compute(case)
     specs = {name: save_tensor(root, name, value) for name, value in outputs.items()}
     return write_result(
         case,
@@ -228,14 +250,8 @@ def generate(root: Path, suite: str = 'vision') -> list[Path]:
     """Freeze the original two-image RADIO vision or prompt references."""
     if suite not in {'vision', 'prompt'}:
         raise ValueError(f'Unsupported RADIO suite: {suite}')
-    config, weights = _fixture()
+    config, weights = fixture()
     config['image_grids'] = [list(grid) for grid in GRIDS]
-    config['unmigrated'] = [
-        'dynamic MTP hidden states',
-        'real HF checkpoint and one real encoder layer',
-    ]
-    if suite == 'vision':
-        config['unmigrated'].insert(0, 'native placeholder IDs and positions')
     count = sum(rows * columns for rows, columns in GRIDS)
     pixels = np.asarray(
         [((index * 37 + 11) % 101) / 64.0 for index in range(count * 12)], dtype=np.float64

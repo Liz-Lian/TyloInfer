@@ -34,6 +34,7 @@ def main(argv=None):
             'nepq',
             'sq4',
             'sq8',
+            'hf',
         ),
     )
     generate.add_argument('output', type=Path)
@@ -49,6 +50,7 @@ def main(argv=None):
     generate.add_argument(
         '--capture', type=Path, help='Native MTP diagnostic record for nemotron/mtp-target'
     )
+    generate.add_argument('--hf', type=Path, help='Explicit HF RADIO checkpoint directory')
     rerun = commands.add_parser(
         'reference', help='Recompute a reference from existing fixed inputs'
     )
@@ -58,6 +60,10 @@ def main(argv=None):
     )
     rerun.add_argument('--device', default='cuda', help='CUDA device for Torch references')
     rerun.add_argument('--source', type=Path, help='The original MFQ source checkout for MFQ cases')
+    rerun.add_argument('--hf', type=Path, help='The original HF RADIO checkpoint directory')
+    candidate = commands.add_parser('candidate', help='Recompute a Python reference crosscheck')
+    candidate.add_argument('case', type=Path)
+    candidate.add_argument('output', type=Path, help='A new result directory')
     check = commands.add_parser('compare', help='Validate and compare fixed result artifacts')
     check.add_argument('case', type=Path)
     check.add_argument('--reference', required=True, type=Path)
@@ -80,6 +86,7 @@ def main(argv=None):
                 'nepq',
                 'sq4',
                 'sq8',
+                'hf',
             }
             if grouped != (args.suite is not None):
                 parser.error('--suite is required only for grouped reference generators')
@@ -87,11 +94,17 @@ def main(argv=None):
                 parser.error('--source is required only for MFQ-based reference generation')
             if args.kind != 'mfq' and args.experts != 1:
                 parser.error('--experts is only available for MFQ generation')
+            if (args.kind == 'hf') != (args.hf is not None):
+                parser.error('--hf is required only for HF RADIO reference generation')
             if (args.kind == 'nemotron' and args.suite == 'mtp-target') != (
                 args.capture is not None
             ):
                 parser.error('--capture is required only for nemotron/mtp-target')
-            if args.kind == 'mfq':
+            if args.kind == 'hf':
+                from .hf_ref import generate
+
+                paths = generate(args.output, args.hf, args.suite)
+            elif args.kind == 'mfq':
                 from .mfq_ref import generate
 
                 paths = generate(args.output, args.source, args.experts)
@@ -158,6 +171,22 @@ def main(argv=None):
                 paths = generate(args.output, args.kind, args.device)
             print(json.dumps({'status': 'generated', 'cases': [str(path) for path in paths]}))
             return 0
+        if args.command == 'candidate':
+            from .hf_ref import candidate
+
+            case = Case.load(args.case)
+            path = candidate(case, args.output)
+            print(
+                json.dumps(
+                    {
+                        'status': 'generated',
+                        'case_id': case.data['id'],
+                        'result': str(path),
+                        'actual_role': 'candidate',
+                    }
+                )
+            )
+            return 0
         if args.command == 'reference':
             case = Case.load(args.case)
             generator = case.data['source'].get('generator')
@@ -166,7 +195,13 @@ def main(argv=None):
             }
             if external != (args.source is not None):
                 parser.error('--source is required only for an MFQ-based reference case')
-            if generator == 'tests/numerics/mfq_ref.py':
+            if (generator == 'tests/numerics/hf_ref.py') != (args.hf is not None):
+                parser.error('--hf is required only for an HF RADIO reference case')
+            if generator == 'tests/numerics/hf_ref.py':
+                from .hf_ref import reference
+
+                path = reference(case, args.output, args.hf)
+            elif generator == 'tests/numerics/mfq_ref.py':
                 from .mfq_ref import reference
 
                 path = reference(case, args.output, args.source)

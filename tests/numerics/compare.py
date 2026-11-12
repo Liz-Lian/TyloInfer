@@ -171,14 +171,15 @@ def compare(case_path, reference_path, actual_path):
         case = Case.load(case_path)
         report['case_id'] = case.data['id']
         report['case_name'] = case.data.get('name', case.data['id'])
+        report['actual_role'] = case.data.get('actual_role', 'native')
         if reference_path is None:
             raise ValueError('A reference result is required')
         reference = read_result(case, reference_path, 'reference')
         if actual_path is None:
             report['status'] = 'not_executed'
-            report['reason'] = 'Native result was not provided'
+            report['reason'] = 'Execution result was not provided'
             return report
-        actual = read_result(case, actual_path, 'native')
+        actual = read_result(case, actual_path, report['actual_role'])
         reference_root = Path(reference_path).parent
         actual_root = Path(actual_path).parent
         for name, contract in case.data['outputs'].items():

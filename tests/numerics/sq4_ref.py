@@ -111,7 +111,7 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
     _, identity = open_source(source_root)
     source = case.data['source']
     if (
-        case.data['op'] not in {'sq4_decode', 'sq4_forward', 'sq4_backward'}
+        case.data['op'] not in {'sq4_decode', 'sq4_forward', 'sq4_backward', 'sq4_moe'}
         or source.get('generator') != 'tests/numerics/sq4_ref.py'
     ):
         raise ValueError('Unsupported SQ reference case')
@@ -138,12 +138,33 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
         if case.data['op'] == 'sq4_decode':
             with np.errstate(over='ignore'):
                 outputs = {'f32': dense, 'f16': dense.astype(np.float16)}
+            if 'slice_cpu' in case.data['outputs']:
+                selected = case.tensor('slice_rows')
+                outputs['slice_cpu'] = dense[selected, config['slice_start'] : config['slice_end']]
             arithmetic = 'Independent scalar wire decode; float16 nearest rounding'
+        elif case.data['op'] == 'sq4_moe':
+            values = torch.from_numpy(case.tensor('reference_input')).double()
+            weight = torch.from_numpy(dense).double()
+            ids = case.tensor('route_ids')
+            mapping = case.tensor('expert_local')
+            result = torch.from_numpy(case.tensor('initial_output')).double()
+            for token in range(2):
+                for route in range(4):
+                    expert = int(ids[token, route])
+                    local = int(mapping[expert]) if 0 <= expert < len(mapping) else -1
+                    if local >= 0:
+                        result[token, route] = (
+                            values[token] @ weight[local * 11 : (local + 1) * 11].T
+                        )
+            outputs = {'routed_output': result.numpy()}
+            arithmetic = 'Independent decoded weights and CPU float64 routed dot products'
         else:
             values = torch.from_numpy(case.tensor('reference_input')).double()
             weight = torch.from_numpy(dense).double()
             result = values @ (weight.T if case.data['op'] == 'sq4_forward' else weight)
             outputs = {'output': result.numpy()}
+            if 'graph_replay_output' in case.data['outputs']:
+                outputs['graph_replay_output'] = outputs['output']
             arithmetic = 'Torch CPU float64 matmul using source test reference input'
         specs = {name: save_tensor(root, name, value) for name, value in outputs.items()}
         provenance = execution(device, arithmetic)
@@ -163,6 +184,79 @@ def _geometries():
     cases += [(0, n, k, 120) for n, k in ((4, 32), (7, 96), (33, 96), (128, 256))]
     cases += [(0, 128, 256, base) for base in (0, 1, 251)]
     return cases
+
+
+def _native_checks(suite, graph, has_slice):
+    """Describe each original native execution check without claiming execution."""
+    if suite == 'decode':
+        checks = [
+            {'kind': 'parse_reject', 'mutation': 'truncate_last_byte', 'status': 'not_executed'},
+            {'kind': 'parse_reject', 'mutation': 'append_zero_byte', 'status': 'not_executed'},
+        ]
+        checks.extend(
+            {
+                'kind': 'parse_reject',
+                'mutation': 'replace_byte',
+                'offset': offset,
+                'value': 255,
+                'status': 'not_executed',
+            }
+            for offset in (0, 3, 4, 5, 6, 7, 15, 23)
+        )
+        checks.extend(
+            [
+                {'kind': 'dequant_reject', 'mutation': 'host_blob', 'status': 'not_executed'},
+                {'kind': 'dequant_reject', 'mutation': 'width_plus_one', 'status': 'not_executed'},
+                {'kind': 'dequant_reject', 'mutation': 'base_252', 'status': 'not_executed'},
+                {'kind': 'decode', 'observations': ['f32', 'f16'], 'status': 'not_executed'},
+            ]
+        )
+        if has_slice:
+            checks.append(
+                {
+                    'kind': 'slice_cpu',
+                    'operations': ['select_rows', 'parse', 'row_metadata', 'decode_cpu'],
+                    'observation': 'slice_cpu',
+                    'status': 'not_executed',
+                }
+            )
+        return checks
+    checks = [
+        {
+            'kind': 'shape_dtype',
+            'observation': 'routed_output' if suite == 'moe' else 'output',
+            'status': 'not_executed',
+        }
+    ]
+    if graph:
+        checks.append(
+            {
+                'kind': 'graph_replay',
+                'status': 'not_executed',
+                'stream': 'stream_from_pool(false, 0)',
+                'requires_async_allocations': True,
+                'steps': [
+                    'device_synchronize',
+                    'stream_guard',
+                    'ordinary_invoke_and_compare',
+                    'prepare_memory',
+                    'warmup_invoke',
+                    'stream_synchronize',
+                    'release_warmup_output',
+                    'capture_begin',
+                    'invoke',
+                    'capture_end',
+                    'replay',
+                    'replay',
+                    'stream_synchronize',
+                    'compare',
+                ],
+                'capture_count': 1,
+                'replay_count': 2,
+                'observation': 'graph_replay_output',
+            }
+        )
+    return checks
 
 
 def _make_case(
@@ -205,26 +299,46 @@ def _make_case(
         if suite == 'backward' and dtype == 'float16' and not external
         else 'same_input_independent_reference'
     )
+    graph = (
+        suite == 'forward'
+        and not external
+        and n == 33
+        and k == 96
+        and base == 120
+        and 2 <= rows <= 6
+    )
+    config = {
+        'bits': bits,
+        'weight_shape': [n, k],
+        'base': base,
+        'rows': rows,
+        'input_dtype': dtype,
+        'compute': settings(),
+        'test_origin': 'external_python' if external else 'tyloinfer_native',
+        'category': category,
+        'reference_input': 'pre-rounding source values'
+        if not external
+        else 'actual rounded gradient',
+        'native_checks': _native_checks(suite, graph, suite == 'decode' and k >= 64),
+    }
+    if not external:
+        config['native_environment'] = {'TYLOINFER_FORCE_SQ_TENSOR_CORE': '1'}
+    if suite == 'decode' and k >= 64:
+        config.update(slice_start=32, slice_end=k)
+    if suite == 'moe':
+        config.update(
+            tokens=2,
+            routes=4,
+            n_experts=5,
+            local_experts=3,
+            out_per_expert=11,
+            initial_output='zero',
+        )
     writer = CaseWriter(
         root,
         label,
         f'sq4_{suite}',
-        {
-            'bits': bits,
-            'weight_shape': [n, k],
-            'base': base,
-            'rows': rows,
-            'input_dtype': dtype,
-            'compute': settings(),
-            'test_origin': 'external_python' if external else 'tyloinfer_native',
-            'category': category,
-            'reference_input': 'pre-rounding source values'
-            if not external
-            else 'actual rounded gradient',
-            'native_checks': ['decode_fp32_fp16_bitwise']
-            if suite == 'decode'
-            else ['shape', 'dtype'],
-        },
+        config,
         {
             'generator': 'tests/numerics/sq4_ref.py',
             'generator_sha256': file_hash(__file__),
@@ -250,6 +364,31 @@ def _make_case(
     if suite == 'decode':
         writer.output('f32', [n, k], 'float32', {'kind': 'bits'}, allow_infinity=True)
         writer.output('f16', [n, k], 'float16', {'kind': 'bits'}, allow_infinity=True)
+        if k >= 64:
+            selected = np.arange(0, n, 2, dtype=np.int64)
+            writer.input('slice_rows', selected)
+            writer.output(
+                'slice_cpu',
+                [len(selected), k - 32],
+                'float32',
+                {'kind': 'bits'},
+                allow_infinity=True,
+            )
+    elif suite == 'moe':
+        index = torch.arange(2 * k, dtype=torch.int64)
+        values = (((index * 19 + 5) % 41 - 20).float() / 64).reshape(2, k)
+        writer.input('reference_input', values.numpy())
+        writer.input('native_input', values.to(dtype=torch.float16).numpy())
+        writer.input('route_ids', np.array([[0, 1, 2, 3], [4, -1, 3, 0]], dtype=np.int32))
+        writer.input('expert_local', np.array([2, -1, 0, 1, -1], dtype=np.int32))
+        writer.input('initial_output', np.zeros((2, 4, 11), dtype=np.float16))
+        writer.output(
+            'routed_output',
+            [2, 4, 11],
+            'float64',
+            {'kind': 'close', 'atol': 0.02, 'rtol': 0.006},
+            actual_dtype='float16',
+        )
     else:
         input_width = k if suite == 'forward' else n
         torch_dtype = torch.float16 if dtype == 'float16' else torch.float32
@@ -277,6 +416,14 @@ def _make_case(
             {'kind': 'close', 'atol': 0.02, 'rtol': 0.006},
             actual_dtype=dtype,
         )
+        if graph:
+            writer.output(
+                'graph_replay_output',
+                [rows, n],
+                'float64',
+                {'kind': 'close', 'atol': 0.02, 'rtol': 0.006},
+                actual_dtype=dtype,
+            )
     case = writer.finish()
     reference(case, case.root / 'reference', source_root, device)
     return case.root / 'case.json'
@@ -285,8 +432,8 @@ def _make_case(
 def generate(
     root: Path, source_root: Path, suite: str = 'decode', device: str = 'cuda'
 ) -> list[Path]:
-    """Freeze SQ decode, forward or backward source cases and references."""
-    if suite not in {'decode', 'forward', 'backward'}:
+    """Freeze SQ decode, forward, backward or routed MoE reference cases."""
+    if suite not in {'decode', 'forward', 'backward', 'moe'}:
         raise ValueError(f'Unknown SQ4 suite: {suite}')
     device = resolve_device(device)
     _, identity = open_source(source_root)
@@ -308,6 +455,23 @@ def generate(
                     suite,
                 )
             )
+        elif suite == 'moe':
+            if geometry in ((2, 33, 96, 120), (3, 33, 96, 120), (0, 33, 96, 120)):
+                results.append(
+                    _make_case(
+                        Path(root),
+                        source_root,
+                        device,
+                        fixture,
+                        identity,
+                        fixture_identity,
+                        palettes,
+                        geometry,
+                        suite,
+                        2,
+                        'float16',
+                    )
+                )
         elif geometry[3] == 120:
             for rows in (0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 32, 65):
                 for dtype in ('float16', 'float32'):
