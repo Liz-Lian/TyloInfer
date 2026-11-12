@@ -93,35 +93,45 @@ def _evaluate(actual, reference, contract):
         'reason': None,
     }
     kind = rule['kind']
-    if kind == 'rms':
+    if kind in {'rms', 'relative_l2'}:
         result['elementwise_threshold'] = 'not established'
-        result['rms_semantics'] = (
-            'Float32 NumPy reduction follows the original RMS formula but may differ '
+        result['reduction_semantics'] = (
+            'Float32 NumPy reduction follows the original formula but may differ '
             'from Torch reduction rounding. Allowed matching infinities are replaced '
             'with zero in both arrays and remain included in the mean.'
         )
-        result['rms'] = None
+        result[kind] = None
         if not valid.all():
             result['reason'] = 'NaN or disallowed/mismatched infinity'
             return result
         if not actual.size:
-            result['reason'] = 'RMS is undefined for an empty output'
+            result['reason'] = 'Relative error is undefined for an empty output'
             return result
         with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
             a = np.where(matching_inf, 0, actual).astype(np.float32)
             b = np.where(matching_inf, 0, reference).astype(np.float32)
-            numerator = np.mean(np.square(a - b), dtype=np.float32)
-            denominator = np.maximum(
-                np.mean(np.square(b), dtype=np.float32), np.float32(rule['floor'])
-            )
-            rms = np.sqrt(numerator / denominator)
-        result['rms'] = _number(rms)
-        if not np.isfinite(rms) or not rms < rule['limit']:
-            result['reason'] = 'Relative RMS does not satisfy the strict limit'
+            if kind == 'rms':
+                numerator = np.mean(np.square(a - b), dtype=np.float32)
+                denominator = np.maximum(
+                    np.mean(np.square(b), dtype=np.float32), np.float32(rule['floor'])
+                )
+                error = np.sqrt(numerator / denominator)
+            else:
+                error = np.linalg.norm((a - b).ravel()) / np.linalg.norm(b.ravel())
+        result[kind] = _number(error)
+        if not np.isfinite(error) or not error < rule['limit']:
+            result['reason'] = 'Relative error does not satisfy the original strict limit'
         else:
             result['status'] = 'pass'
         return result
-    if kind == 'exact':
+    if kind == 'max_abs':
+        if not actual.size:
+            result['reason'] = 'Maximum error is undefined for an empty output'
+            return result
+        with np.errstate(over='ignore', invalid='ignore'):
+            delta = np.abs(actual.astype(np.float32) - reference.astype(np.float32))
+        passed = valid & ((delta < rule['limit']) | (matching_inf & allow_infinity))
+    elif kind == 'exact':
         if actual.dtype.kind in 'biu' or reference.dtype.kind in 'biu':
             equal = actual.astype(object) == reference.astype(object)
         else:

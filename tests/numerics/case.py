@@ -180,17 +180,19 @@ def _rule(rule):
     kind = rule.get('kind')
     if kind == 'exact':
         return
-    fields = ('atol', 'rtol') if kind == 'close' else ('limit', 'floor')
-    if kind not in {'close', 'rms'}:
+    fields = (
+        ('atol', 'rtol') if kind == 'close' else ('limit', 'floor') if kind == 'rms' else ('limit',)
+    )
+    if kind not in {'close', 'rms', 'relative_l2', 'max_abs'}:
         raise ValueError(f'Unsupported comparison rule: {kind}')
     for name in fields:
         value = rule.get(name)
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             raise ValueError(f'Invalid comparison parameter: {name}')
-    if kind == 'rms' and (
-        rule['floor'] == 0 or rule.get('strict') is not True or rule.get('precision') != 'float32'
-    ):
-        raise ValueError('Unsupported RMS semantics')
+    if kind != 'close' and (rule.get('strict') is not True or rule.get('precision') != 'float32'):
+        raise ValueError('Unsupported aggregate comparison semantics')
+    if kind == 'rms' and rule['floor'] == 0:
+        raise ValueError('RMS requires its original positive denominator floor')
 
 
 @dataclass(frozen=True)

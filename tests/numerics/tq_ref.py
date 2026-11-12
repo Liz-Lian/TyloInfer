@@ -17,7 +17,7 @@ from torch.nn import functional
 
 from tyloinfer.formats.tq import TQTensor
 
-from .case import CaseWriter, save_tensor, write_result
+from .case import Case, CaseWriter, save_tensor, write_result
 
 _DTYPES = {'f16': torch.float16, 'bf16': torch.bfloat16, 'f32': torch.float32}
 _NAMES = {'f16': 'float16', 'bf16': 'bfloat16', 'f32': 'float32'}
@@ -73,12 +73,16 @@ def _rms(limit):
 
 def _writer(root, name, op, config, test):
     """Create a case with explicit execution checks and original source."""
-    return CaseWriter(root, name, op, config, {**_SOURCE, 'test': test})
+    settings = {
+        'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
+        'float32_matmul_precision': torch.get_float32_matmul_precision(),
+    }
+    return CaseWriter(root, name, op, {**config, 'compute': settings}, {**_SOURCE, 'test': test})
 
 
-def _result(case, outputs, device):
+def _result(case, root, outputs, device):
     """Save float32 reference outputs and execution provenance."""
-    target = case.root / 'reference'
+    target = Path(root)
     specs = {name: save_tensor(target, name, _numpy(value)) for name, value in outputs.items()}
     execution = {
         'framework': 'torch',
@@ -92,9 +96,9 @@ def _result(case, outputs, device):
         'float32_matmul_precision': torch.get_float32_matmul_precision(),
         'accumulation': 'Torch float32 matmul/einsum and reduction with recorded backend settings',
         'independence': 'CPU TQTensor.dequantize and Torch arithmetic are independent of native CUDA TQ kernels; CPU decoding is shared production code',
+        'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
-    write_result(case, target, specs, execution)
-    return case.root / 'case.json'
+    return write_result(case, target, specs, execution)
 
 
 def _asset(writer, name, tensor):
@@ -160,10 +164,8 @@ def _gemv(root, device, boundary=False):
             _input(w, 'bias', torch.linspace(-0.02, 0.02, rows, device=device))
         _output(w, 'output', (rows,), _rms(limit), _NAMES[label])
         case = w.finish()
-        value = _weight(case, 'weight', width, device) @ _tensor(case, 'x', device, dtype).float()
-        if not boundary:
-            value = value + _tensor(case, 'bias', device)
-        results.append(_result(case, {'output': value}, device))
+        reference(case, case.root / 'reference', device)
+        results.append(case.root / 'case.json')
     return results
 
 
@@ -195,12 +197,8 @@ def _prefill(root, device):
             w, 'output', (tokens, rows), _rms(0.004 if label == 'bf16' else 3e-5), _NAMES[label]
         )
         case = w.finish()
-        weights = _weight(case, 'weight', width, device).reshape(groups, 19, width)
-        x = _tensor(case, 'x', device, dtype).float()
-        value = torch.einsum('tgk,grk->tgr', x, weights).reshape(tokens, rows) + _tensor(
-            case, 'bias', device
-        )
-        results.append(_result(case, {'output': value}, device))
+        reference(case, case.root / 'reference', device)
+        results.append(case.root / 'case.json')
     return results
 
 
@@ -290,22 +288,8 @@ def _q8_cases(root, device, parallel=False):
         for observation in ('output', 'changed') if parallel else ('output', 'changed', 'zero'):
             _output(w, observation, shape, _rms(0.001), _NAMES[label])
         case = w.finish()
-        outputs = {}
-        names = [('output', 'x'), ('changed', 'x_changed')]
-        if not parallel:
-            names.append(('zero', 'x_zero'))
-        for out, inp in names:
-            value = _tensor(case, inp, device, dtype)
-            parts = [
-                _q8(case, f'weight{i}', value, width, device, groups) for i in range(len(tensors))
-            ]
-            if parallel:
-                if joined:
-                    parts = [torch.cat(parts[:joined], -1), *parts[joined:]]
-                outputs[out] = torch.cat([part.ravel() for part in parts])
-            else:
-                outputs[out] = parts[0].reshape(tokens, rows) + _tensor(case, 'bias', device)
-        results.append(_result(case, outputs, device))
+        reference(case, case.root / 'reference', device)
+        results.append(case.root / 'case.json')
     return results
 
 
@@ -337,14 +321,8 @@ def _ffn(root, device):
         _output(w, 'workspace', (hidden,), _rms(0.01), _NAMES[label])
         _output(w, 'output', (output,), _rms(0.015), _NAMES[label])
         case = w.finish()
-        x = _tensor(case, 'x', device, dtype).float()
-        gate = (_weight(case, 'gate', width, device) @ x).to(dtype).float()
-        up = (_weight(case, 'up', width, device) @ x).to(dtype).float()
-        hidden_value = (up * functional.silu(gate)).to(dtype)
-        output_value = _weight(case, 'down', hidden, device) @ hidden_value.float()
-        results.append(
-            _result(case, {'workspace': hidden_value.float(), 'output': output_value}, device)
-        )
+        reference(case, case.root / 'reference', device)
+        results.append(case.root / 'case.json')
     return results
 
 
@@ -352,7 +330,7 @@ def _embedding(root, device):
     """Generate exact mixed-table row selection observations."""
     results = []
     width = 273
-    for label, dtype in _DTYPES.items():
+    for label in _DTYPES:
         w = _writer(
             root,
             f'embedding_{label}',
@@ -375,12 +353,8 @@ def _embedding(root, device):
         _output(w, 'output', (3 * width,), {'kind': 'exact'}, _NAMES[label])
         _output(w, 'changed', (3 * width,), {'kind': 'exact'}, _NAMES[label])
         case = w.finish()
-        outputs = {}
-        for name, ids_name in [('output', 'ids'), ('changed', 'ids_changed')]:
-            ids = case.tensor(ids_name).tolist()
-            values = [_weight(case, f'weight{i}', width, device).reshape(-1) for i in ids]
-            outputs[name] = torch.cat(values).to(dtype).float()
-        results.append(_result(case, outputs, device))
+        reference(case, case.root / 'reference', device)
+        results.append(case.root / 'case.json')
     return results
 
 
@@ -420,9 +394,72 @@ def _routed(root, device):
         for name in ('output', 'changed'):
             _output(w, name, (output,), _rms(0.015 if label == 'bf16' else 0.004), _NAMES[label])
         case = w.finish()
+        reference(case, case.root / 'reference', device)
+        results.append(case.root / 'case.json')
+    return results
+
+
+def _calculate(case, device):
+    """Evaluate the original TQ formulas from persisted case data."""
+    op, config = case.data['op'], case.data['config']
+    width = config['width']
+    dtype = getattr(torch, config['actual_dtype'])
+    if op == 'tq_gemv':
+        output = _weight(case, 'weight', width, device) @ _tensor(case, 'x', device, dtype).float()
+        if 'bias' in case.data['inputs']:
+            output = output + _tensor(case, 'bias', device)
+        return {'output': output}
+    if op == 'tq_float_prefill':
+        groups, tokens = config['groups'], config['tokens']
+        rows = case.data['outputs']['output']['shape'][-1]
+        weights = _weight(case, 'weight', width, device).reshape(groups, rows // groups, width)
+        x = _tensor(case, 'x', device, dtype).float()
+        output = torch.einsum('tgk,grk->tgr', x, weights).reshape(tokens, rows)
+        return {'output': output + _tensor(case, 'bias', device)}
+    if op in ('tq_q8', 'tq_q8_parallel'):
+        groups, tokens, joined = config['groups'], config['tokens'], config['joined']
+        rows = sum(config['projection_rows'])
+        parallel = op == 'tq_q8_parallel'
+        names = [('output', 'x'), ('changed', 'x_changed')]
+        if not parallel:
+            names.append(('zero', 'x_zero'))
+        outputs = {}
+        for out, inp in names:
+            value = _tensor(case, inp, device, dtype)
+            parts = [
+                _q8(case, f'weight{i}', value, width, device, groups)
+                for i in range(len(config['projection_rows']))
+            ]
+            if parallel:
+                if joined:
+                    parts = [torch.cat(parts[:joined], -1), *parts[joined:]]
+                outputs[out] = torch.cat([part.ravel() for part in parts])
+            else:
+                outputs[out] = parts[0].reshape(tokens, rows) + _tensor(case, 'bias', device)
+        return outputs
+    if op == 'tq_ffn':
+        x = _tensor(case, 'x', device, dtype).float()
+        gate = (_weight(case, 'gate', width, device) @ x).to(dtype).float()
+        up = (_weight(case, 'up', width, device) @ x).to(dtype).float()
+        hidden = (up * functional.silu(gate)).to(dtype)
+        return {
+            'workspace': hidden.float(),
+            'output': _weight(case, 'down', config['hidden'], device) @ hidden.float(),
+        }
+    if op == 'tq_embedding':
+        outputs = {}
+        for name, ids_name in [('output', 'ids'), ('changed', 'ids_changed')]:
+            values = [
+                _weight(case, f'weight{i}', width, device).reshape(-1)
+                for i in case.tensor(ids_name).tolist()
+            ]
+            outputs[name] = torch.cat(values).to(dtype).float()
+        return outputs
+    if op == 'tq_routed_ffn':
         x = _tensor(case, 'x', device, dtype).float()
         weights = _tensor(case, 'weights', device)
         outputs = {}
+        limit = config['limit']
         for name, ids_name in [('output', 'ids'), ('changed', 'ids_changed')]:
             values = []
             for expert in case.tensor(ids_name).tolist():
@@ -430,21 +467,53 @@ def _routed(root, device):
                     (_weight(case, f'gate{expert}', width, device) @ x)
                     .to(dtype)
                     .float()
-                    .clamp_max(0.1)
+                    .clamp_max(limit)
                 )
                 up = (
                     (_weight(case, f'up{expert}', width, device) @ x)
                     .to(dtype)
                     .float()
-                    .clamp(-0.1, 0.1)
+                    .clamp(-limit, limit)
                 )
                 h = (functional.silu(gate) * up).to(dtype).float()
                 values.append(
-                    (_weight(case, f'down{expert}', hidden, device) @ h).to(dtype).float()
+                    (_weight(case, f'down{expert}', config['hidden'], device) @ h).to(dtype).float()
                 )
             outputs[name] = (torch.stack(values) * weights[:, None]).sum(0).to(dtype).float()
-        results.append(_result(case, outputs, device))
-    return results
+        return outputs
+    raise ValueError(f'Unsupported TQ reference operation: {op!r}')
+
+
+def _set_compute(settings):
+    """Apply a recorded float32 matmul configuration."""
+    torch.set_float32_matmul_precision(settings['float32_matmul_precision'])
+    if torch.backends.cuda.matmul.allow_tf32 != settings['allow_tf32']:
+        torch.backends.cuda.matmul.allow_tf32 = settings['allow_tf32']
+    if (
+        torch.get_float32_matmul_precision() != settings['float32_matmul_precision']
+        or torch.backends.cuda.matmul.allow_tf32 != settings['allow_tf32']
+    ):
+        raise ValueError('Recorded Torch matmul settings cannot be reproduced')
+
+
+def reference(case: Case, root: Path, device: str = 'cuda') -> Path:
+    """Recompute TQ reference outputs from fixed case inputs and recorded settings."""
+    device = torch.device(device)
+    if device.type != 'cuda':
+        raise ValueError('TQ reference migration requires a CUDA device')
+    if device.index is None:
+        device = torch.device('cuda', torch.cuda.current_device())
+    if case.data['source'].get('generator') != 'tests/numerics/tq_ref.py':
+        raise ValueError('Unsupported TQ reference source')
+    previous = {
+        'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
+        'float32_matmul_precision': torch.get_float32_matmul_precision(),
+    }
+    try:
+        _set_compute(case.data['config']['compute'])
+        return _result(case, root, _calculate(case, device), device)
+    finally:
+        _set_compute(previous)
 
 
 def generate(root: Path, suite: str = 'gemv', device: str = 'cuda') -> list[Path]:
@@ -467,9 +536,15 @@ def generate(root: Path, suite: str = 'gemv', device: str = 'cuda') -> list[Path
     )
     if suite not in suites:
         raise ValueError(f'Unknown TQ suite {suite!r}; choose one of {", ".join(suites)}')
-    if torch.device(device).type != 'cuda':
+    device = torch.device(device)
+    if device.type != 'cuda':
         raise ValueError('TQ reference migration requires a CUDA device')
-    previous_tf32 = torch.backends.cuda.matmul.allow_tf32
+    if device.index is None:
+        device = torch.device('cuda', torch.cuda.current_device())
+    previous = {
+        'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
+        'float32_matmul_precision': torch.get_float32_matmul_precision(),
+    }
     try:
         if suite in ('gemv', 'ffn'):
             torch.backends.cuda.matmul.allow_tf32 = False
@@ -490,4 +565,4 @@ def generate(root: Path, suite: str = 'gemv', device: str = 'cuda') -> list[Path
         return _routed(root, device)
     finally:
         if suite in ('gemv', 'ffn'):
-            torch.backends.cuda.matmul.allow_tf32 = previous_tf32
+            _set_compute(previous)
