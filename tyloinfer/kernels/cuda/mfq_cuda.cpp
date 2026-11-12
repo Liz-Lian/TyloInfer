@@ -211,7 +211,7 @@ torch::Tensor mxfp4_moe_grouped_matmul_pool_f16_cuda(
     torch::Tensor output, torch::Tensor ids_dst,
     torch::Tensor expert_bounds, torch::Tensor tile_bounds,
     torch::Tensor tile_experts);
-// nvq_matmul.cu
+// nvq.cu
 // nepq.cu
 torch::Tensor nepq_hadamard_input_cuda(
     torch::Tensor input, torch::Tensor signs, int64_t block_size);

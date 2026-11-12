@@ -17,7 +17,7 @@ ADAPTERS = (
     'selected_attention.cpp', 'rope.cpp', 'sampling.cpp', 'embedding.cpp',
     'kv_cache.cpp', 'ssm_conv.cpp', 'glm5_next.cpp', 'attention.cpp',
     'gated_delta_net.cpp', 'moe.cpp', 'mx_matmul.cpp', 'mx_backward.cu',
-    'nint_matmul.cpp', 'nint_backward.cu', 'nvq_matmul.cu', 'nvq_backward.cu',
+    'nint_matmul.cpp', 'nint_backward.cu', 'nvq.cu', 'nvq_backward.cu',
     'nepq.cpp', 'nepq_residual.cpp', 'nepq_residual_backward.cu', 'fp8_sq.cpp',
     'fp8_sq_backward.cu', 'mxfp4_sq.cpp', 'mxfp4_sq_backward.cu',
 )

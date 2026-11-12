@@ -175,6 +175,7 @@ if(TYLOINFER_BUILD_CLI_TOOLS)
         endif()
         find_package(Torch REQUIRED)
         add_library(mfq-cuda-torch-engine STATIC
+            ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/execution.cpp
             ${PROJECT_SOURCE_DIR}/engine/scheduler/scheduler.cpp
             ${PROJECT_SOURCE_DIR}/engine/models/qwen35/batch_ops.cpp
             ${PROJECT_SOURCE_DIR}/engine/generation/cuda.cpp
