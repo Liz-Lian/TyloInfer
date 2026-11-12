@@ -16,6 +16,7 @@
 #include "diagnostics/trace.h"
 #include "diagnostics/engines.h"
 #include "diagnostics/source.h"
+#include "diagnostics/text.h"
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "diagnostics/runtime_checks.h"
@@ -248,6 +249,74 @@ public:
 struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
     explicit DiagnosticsCommand(tyloi::cuda::DiagnosticsCommandOptions options)
         : tyloi::cuda::DiagnosticsCommandOptions(std::move(options)) {}
+    /** Resolve model-mode context and validate combined diagnostic options. */
+    std::vector<int64_t> prepare_model() {
+        if (context_size < 0) throw std::runtime_error("--ctx-size must be positive");
+        if (!bench_qwen35_mtp.empty()) {
+            TYLOINFER_RUNTIME_CHECK(bench_qwen35_mtp == "ordinary" || bench_qwen35_mtp == "mtp",
+                "--bench-qwen35-mtp expects ordinary or mtp");
+            TYLOINFER_RUNTIME_CHECK(!check_qwen35_mtp && ids_arg.empty() && ids_file.empty() &&
+                prefill_sweep_arg.empty(), "MTP benchmark cannot combine execution modes");
+            if (context_size == 0) context_size = 512;
+            TYLOINFER_RUNTIME_CHECK(gen >= 2 && context_size >= static_cast<int64_t>(gen) + 17 &&
+                bench_qwen35_mtp_reps > 0 && bench_qwen35_mtp_reps <= 100,
+                "MTP benchmark requires gen>=2, reps1-100 and context>=gen+17");
+            std::cout << std::unitbuf;
+        }
+        if (check_nemotron_h_vision) {
+            if (context_size == 0) context_size = 128;
+            std::cout << std::unitbuf;
+        }
+        if (check_nemotron_h_mtp) {
+            if (context_size == 0) context_size = 128;
+            if (context_size < 64)
+                throw std::runtime_error(
+                    "Nemotron-H MTP correctness gate requires --ctx-size >= 64");
+            std::cout << std::unitbuf;
+        }
+        if (check_qwen35_mtp) {
+            if (context_size == 0) context_size = 512;
+            if (context_size < 64) throw std::runtime_error("MTP correctness gate requires --ctx-size >= 64");
+            std::cout << std::unitbuf;
+        }
+        if (check_continuous_batching) {
+            TYLOINFER_RUNTIME_CHECK(
+                !check_qwen35_mtp &&
+                !check_flash_next && !check_flash_next_mtp &&
+                bench_qwen35_mtp.empty() && ids_arg.empty() &&
+                ids_file.empty() &&
+                prefill_sweep_arg.empty(),
+                "continuous batching check cannot combine execution modes");
+            if (context_size == 0) context_size = 512;
+            if (context_size < 32) {
+                throw std::runtime_error(
+                    "continuous batching check requires --ctx-size >= 32");
+            }
+            std::cout << std::unitbuf;
+        }
+        std::vector<int64_t> prefill_sweep_sizes;
+        if (!prefill_sweep_arg.empty()) {
+            prefill_sweep_sizes = parse_ids(prefill_sweep_arg);
+            if (std::any_of(prefill_sweep_sizes.begin(), prefill_sweep_sizes.end(),
+                            [](int64_t value) { return value <= 0; })) {
+                throw std::runtime_error("--prefill-sweep values must be positive");
+            }
+            if (context_size == 0) {
+                context_size = *std::max_element(prefill_sweep_sizes.begin(), prefill_sweep_sizes.end());
+            }
+        }
+        if ((!block_trace_reference.empty() || !block_trace_output.empty()) &&
+                context_size == 0) {
+            context_size = (int64_t)(
+                ids_file.empty() ? parse_ids(ids_arg) : load_ids_file(ids_file)).size();
+        }
+        return prefill_sweep_sizes;
+    }
+    /** Select the optional weights used by the original model-mode combination. */
+    bool needs_parts() const {
+        return check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
+            check_nemotron_h_vision || !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile);
+    }
     int run() { return with_command_errors([&]() -> int {
         if (check_engine_isolation) {
             tyloi::cuda::CudaEngineOptions options;
@@ -262,7 +331,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             return run_backend_argmax_check(*program, 248320, 2000);
         }
         enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
-            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, trace };
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, trace };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
@@ -286,6 +355,9 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (check_deepseek_v41) selected = Tool::legacy;
         else if (check_text_session_state) selected = Tool::session;
         else if (minicpmo_eval_batch) selected = Tool::minicpmo;
+        else if (check_continuous_batching || check_qwen4_decode_hidden) selected = Tool::legacy;
+        else if (check_flash_next) selected = Tool::flash;
+        else if (check_nemotron_h) selected = Tool::nemo;
         else if (!check_continuous_batching && !check_qwen4_decode_hidden && !check_flash_next &&
                  !check_nemotron_h && !check_nemotron_h_vision && !check_nemotron_h_mtp &&
                  !check_flash_next_mtp && !check_qwen35_mtp && bench_qwen35_mtp.empty() &&
@@ -296,6 +368,14 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (runtime_comparison_modes() || comparison_phase_timings)
                 throw std::runtime_error("runtime comparison dispatch harness is currently unavailable");
             auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
+            if (selected == Tool::flash || selected == Tool::nemo) {
+                if (model_path.empty()) {
+                    std::cerr << "missing model or execution mode (see --help)\n";
+                    return 2;
+                }
+                (void)prepare_model();
+                options.context_size = context_size;
+            }
             std::vector<int64_t> trace_ids;
             if (selected == Tool::trace) {
                 if (!router_lookahead_audit.empty())
@@ -316,6 +396,10 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::dsv4_attention) return run_dsv4_attention_check(*program, check_attention_reps);
             if (selected == Tool::hc) return run_dsv4_hc_check(*program, check_attention_reps);
             if (selected == Tool::session) return run_text_session_state_check(*program);
+            if (selected == Tool::flash || selected == Tool::nemo) {
+                program->load(needs_parts());
+                return selected == Tool::flash ? run_flash_next_check(*program) : run_nemotron_h_check(*program);
+            }
             if (selected == Tool::trace) {
                 if (model_path.empty()) {
                     std::cerr << "missing model or execution mode (see --help)\n";
@@ -466,71 +550,11 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             std::cerr << "missing model or execution mode (see --help)\n";
             return 2;
         }
-        if (context_size < 0) throw std::runtime_error("--ctx-size must be positive");
-        if (!bench_qwen35_mtp.empty()) {
-            TYLOINFER_RUNTIME_CHECK(bench_qwen35_mtp == "ordinary" || bench_qwen35_mtp == "mtp",
-                "--bench-qwen35-mtp expects ordinary or mtp");
-            TYLOINFER_RUNTIME_CHECK(!check_qwen35_mtp && ids_arg.empty() && ids_file.empty() &&
-                prefill_sweep_arg.empty(), "MTP benchmark cannot combine execution modes");
-            if (context_size == 0) context_size = 512;
-            TYLOINFER_RUNTIME_CHECK(gen >= 2 && context_size >= static_cast<int64_t>(gen) + 17 &&
-                bench_qwen35_mtp_reps > 0 && bench_qwen35_mtp_reps <= 100,
-                "MTP benchmark requires gen>=2, reps1-100 and context>=gen+17");
-            std::cout << std::unitbuf;
-        }
-        if (check_nemotron_h_vision) {
-            if (context_size == 0) context_size = 128;
-            std::cout << std::unitbuf;
-        }
-        if (check_nemotron_h_mtp) {
-            if (context_size == 0) context_size = 128;
-            if (context_size < 64)
-                throw std::runtime_error(
-                    "Nemotron-H MTP correctness gate requires --ctx-size >= 64");
-            std::cout << std::unitbuf;
-        }
-        if (check_qwen35_mtp) {
-            if (context_size == 0) context_size = 512;
-            if (context_size < 64) throw std::runtime_error("MTP correctness gate requires --ctx-size >= 64");
-            std::cout << std::unitbuf;
-        }
-        if (check_continuous_batching) {
-            TYLOINFER_RUNTIME_CHECK(
-                !check_qwen35_mtp &&
-                !check_flash_next && !check_flash_next_mtp &&
-                bench_qwen35_mtp.empty() && ids_arg.empty() &&
-                ids_file.empty() &&
-                prefill_sweep_arg.empty(),
-                "continuous batching check cannot combine execution modes");
-            if (context_size == 0) context_size = 512;
-            if (context_size < 32) {
-                throw std::runtime_error(
-                    "continuous batching check requires --ctx-size >= 32");
-            }
-            std::cout << std::unitbuf;
-        }
-        std::vector<int64_t> prefill_sweep_sizes;
-        if (!prefill_sweep_arg.empty()) {
-            prefill_sweep_sizes = parse_ids(prefill_sweep_arg);
-            if (std::any_of(prefill_sweep_sizes.begin(), prefill_sweep_sizes.end(),
-                            [](int64_t value) { return value <= 0; })) {
-                throw std::runtime_error("--prefill-sweep values must be positive");
-            }
-            if (context_size == 0) {
-                context_size = *std::max_element(prefill_sweep_sizes.begin(), prefill_sweep_sizes.end());
-            }
-        }
-        if ((!block_trace_reference.empty() || !block_trace_output.empty()) &&
-                context_size == 0) {
-            context_size = (int64_t)(
-                ids_file.empty() ? parse_ids(ids_arg) : load_ids_file(ids_file)).size();
-        }
+        const auto prefill_sweep_sizes = prepare_model();
         execution.profiler.enabled = false;
         tyloi::cuda::NoGradGuard no_grad;
         return tyloi::cuda::with_model<>(execution, *this,
-            check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
-                check_nemotron_h_vision ||
-                !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile),
+            needs_parts(),
             [&](auto& owner, auto& owned_state, auto& executor, auto& parts, auto t0, auto t1, auto&) -> int {
         auto& model = *owner;
         auto& state = *owned_state;
@@ -563,22 +587,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 return profile?run_qwen4_mtp_profile(model,ids_file.empty()?parse_ids(ids_arg):load_ids_file(ids_file))
                     :run_qwen4_decode_hidden_check(model);
             throw std::runtime_error("hidden graph diagnostic requires Qwen4CausalLm");
-        }
-        if (check_flash_next) {
-            if constexpr (
-                    std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm> ||
-                    std::is_same_v<Model, tyloi::cuda::Glm5CausalLm>) {
-                return run_flash_next_check(model);
-            }
-            throw std::runtime_error(
-                "Flash-Next diagnostic requires a Flash-Next causal LM");
-        }
-        if (check_nemotron_h) {
-            if constexpr (std::is_same_v<Model, tyloi::cuda::NemotronHCausalLm>) {
-                return run_nemotron_h_check(model);
-            }
-            throw std::runtime_error(
-                "--check-nemotron-h requires a Nemotron-H causal LM");
         }
         if (check_nemotron_h_vision) {
             if constexpr (std::is_same_v<Model, tyloi::cuda::NemotronHCausalLm>) {

@@ -321,10 +321,10 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                 *request->sampler,
 #ifdef TYLOINFER_NATIVE_CUDA
                 tyloi::ops::reshape(model_.logits(
-                    hidden.dense().index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()})), {1, -1}),
+                    hidden.dense().index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()}), false), {1, -1}),
 #else
                 model_.logits(
-                    hidden.dense().index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()})).dense().reshape({1, -1}),
+                    hidden.dense().index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()}), false).dense().reshape({1, -1}),
 #endif
                 request->counts, request->token_constraint);
         TYLOINFER_CUDA_CHECK(
@@ -414,10 +414,10 @@ std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefi
 #endif
             if (!last.empty()) {
 #ifdef TYLOINFER_NATIVE_CUDA
-                auto logits = tyloi::ops::reshape(model_.logits(::tyloi::cuda::cat(last, 0)),
+                auto logits = tyloi::ops::reshape(model_.logits(::tyloi::cuda::cat(last, 0), false),
                                                    {int64_t(last.size()), -1});
 #else
-                auto logits = model_.logits(::tyloi::cuda::cat(last, 0)).dense()
+                auto logits = model_.logits(::tyloi::cuda::cat(last, 0), false).dense()
                                   .reshape({int64_t(last.size()), -1});
 #endif
                 for (std::size_t i = 0; i < finished.size(); ++i) {

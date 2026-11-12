@@ -876,9 +876,7 @@ namespace {
     return hidden.index({::tyloi::indexing::Slice(), -1, ::tyloi::indexing::Slice()});
 }
 ::tyloi::DenseTensor qwen4_logits_from_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden) {
-    const auto cap = model.metadata.final_logit_softcapping;
-    auto logits = model.logits(hidden).dense();
-    return cap > 0.0 ? ::tyloi::cuda::tanh(logits / cap) * cap : logits;
+    return model.logits(hidden, true).dense();
 }
 ::tyloi::DenseTensor qwen4_finalize_hidden(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden,
                                            std::int64_t, std::int64_t) {
@@ -897,7 +895,7 @@ namespace {
 ::tyloi::DenseTensor qwen4_next_token(const qwen4_exp::Model& model, ::tyloi::DenseTensor hidden) {
     auto* window=DecodeWindow::recording();
     if(window)window->mark(-1,"lm_head_begin");
-    auto projected=model.logits(hidden).dense();
+    auto projected=model.logits(hidden, false).dense();
     if(window)window->mark(-1,"lm_head_projection_end");
     auto output=::tyloi::cuda::argmax(projected,-1).to(::tyloi::kInt64);
     if(window)window->mark(-1,"lm_head_sample_end");
@@ -1481,7 +1479,7 @@ struct Qwen4DecodeGraph {
                         }
                     }
                     else if(kind==2)cell.output=qwen4_next_token(model,qwen4_last_hidden(std::move(hidden)));
-                    else if(kind==1)cell.output=model.logits(qwen4_last_hidden(std::move(hidden))).dense();
+                    else if(kind==1)cell.output=model.logits(qwen4_last_hidden(std::move(hidden)),false).dense();
                     else cell.output=qwen4_logits_from_hidden(model, std::move(hidden));
                     cell.window.mark(-1,"window_end");
                 };
@@ -3682,20 +3680,24 @@ tyloi::StepSequence<tyloi::models::Prepared> Model::prepare(
 }
 
 ::tyloi::Tensor Model::softcap(const ::tyloi::Tensor& logits) const {
-    return logits;
+    const auto cap = metadata.final_logit_softcapping;
+    if (!(cap > 0.0)) return logits;
+    return std::make_shared<::tyloi::DenseTensor>(::tyloi::cuda::tanh(logits.dense() / cap) * cap);
 }
 
-::tyloi::Tensor Model::logits(const ::tyloi::Tensor& hidden, bool) const {
+::tyloi::Tensor Model::logits(const ::tyloi::Tensor& hidden, bool capped) const {
 #ifdef TYLOINFER_NATIVE_CUDA
-    return tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
+    auto value = tyloi::ops::measure("model.lm_head", hidden.device(), [&] {
         return tyloi::ops::project(hidden, lm_head);
     });
 #else
-    return execution->executor().profiler().measure("model.lm_head", [&] {
+    auto value = execution->executor().profiler().measure("model.lm_head", [&] {
         return execution->executor().projector(execution->executor().mode().ffn,
             model_parallel_primary_device(execution->config)).run(lm_head, hidden.dense());
     });
 #endif
+    if (capped) return softcap(value);
+    return value;
 }
 
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
