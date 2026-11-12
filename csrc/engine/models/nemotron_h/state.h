@@ -44,6 +44,8 @@ public:
     void preallocate() override;
     /** Commit a speculative verification pass. */
     void commit_speculative() override;
+    /** Report whether the request has an uncommitted speculative suffix. */
+    bool speculating() const override { return speculative_start >= 0; }
     /** Roll back a speculative pass and replay the retained prefix. */
     void rollback_speculative(std::int64_t accepted) override;
     /** Conservatively estimate state and speculative replay allocations per device. */

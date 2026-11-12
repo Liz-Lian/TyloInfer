@@ -78,6 +78,8 @@ public:
     }
     /** Commit a completed speculative verification pass. */
     virtual void commit_speculative() { throw std::logic_error("speculative state is unsupported by this model"); }
+    /** Report whether a speculative transaction is currently open. */
+    virtual bool speculating() const { throw std::logic_error("speculative state observation is unsupported by this model"); }
     /** Roll back a speculative pass while retaining the accepted suffix. */
     virtual void rollback_speculative(std::int64_t) {
         throw std::logic_error("speculative rollback is unsupported by this model");

@@ -60,7 +60,7 @@ public:
     models::Groups& groups();
     /** Borrow the prepared routed FFN view. */
     models::Ffn& ffn();
-    /** Configure generation once after model loading; retain its resource owners until closure. */
+    /** Configure a quiescent loaded model, replacing its request graph and session owners. */
     void configure(engine::Config config);
     /** Run one exclusive request in the caller's scope; its owners outlive the sequence and drain after it. */
     StepSequence<engine::EventData> generate(engine::InferenceRequest& request,

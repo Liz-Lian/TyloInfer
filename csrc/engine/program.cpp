@@ -314,10 +314,16 @@ models::Ffn& Program::ffn() { if (!impl_->ffn) throw std::logic_error("FFN not l
 void Program::configure(engine::Config config) {
     auto& p = *impl_;
     if (!p.model || !p.state) throw std::logic_error("model not loaded");
-    if (p.run_attempted) throw std::logic_error("generation configuration already attempted");
+    if (p.running) throw std::logic_error("program request is already running");
+    if (p.run_attempted && !p.run_ready) throw std::logic_error("generation configuration failed");
     p.run_attempted = true;
+    p.run_ready = false;
     drain();
     auto scope = p.executor->enter(p.config.layer_placement.primary_device());
+    p.state->release_graphs();
+    p.budget.reset();
+    p.graph.reset();
+    p.sessions.reset();
     ::tyloi::weights::LoadScope memory(*p.ledger);
     p.run_config = std::move(config);
     auto& runtime = p.run_config;
