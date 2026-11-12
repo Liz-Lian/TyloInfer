@@ -2,10 +2,11 @@
 // Layout: k/v input [B, H, T, D], cache [B, H, max_seq, D].
 
 #include <cuda_runtime.h>
-#include "backend.h"
+#include "kv_cache_raw.h"
 #include <algorithm>
 #include <cstdint>
-#include <vector>
+#include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -119,97 +120,7 @@ __global__ void kv_cache_write_rows_kernel(
         k, v, k_cache, v_cache, src, dst, D, lane);
 }
 
-std::vector<::tyloi::DenseTensor> kv_cache_write_cuda(
-    ::tyloi::DenseTensor k_cache,
-    ::tyloi::DenseTensor v_cache,
-    ::tyloi::DenseTensor k,
-    ::tyloi::DenseTensor v,
-    ::tyloi::DenseTensor positions)
-{
-    TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous(), "kv_cache_write: k_cache must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(v_cache.is_cuda() && v_cache.is_contiguous(), "kv_cache_write: v_cache must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous(), "kv_cache_write: k must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous(), "kv_cache_write: v must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == v_cache.scalar_type() && k_cache.scalar_type() == k.scalar_type()
-                && k_cache.scalar_type() == v.scalar_type(),
-                "kv_cache_write: k/v/cache dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == ::tyloi::kFloat16 ||
-                k_cache.scalar_type() == ::tyloi::kBFloat16 ||
-                k_cache.scalar_type() == ::tyloi::kFloat32,
-                "kv_cache_write: dtype must be f16, bf16 or f32");
-    TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.is_contiguous() && positions.scalar_type() == ::tyloi::kInt64,
-                "kv_cache_write: positions must be cuda contiguous int64");
-    TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k.dim() == 4 && v.dim() == 4,
-                "kv_cache_write: all k/v tensors must be 4D");
-    TYLOINFER_RUNTIME_CHECK(k.sizes() == v.sizes(), "kv_cache_write: k/v input shapes must match");
-    TYLOINFER_RUNTIME_CHECK(k_cache.sizes() == v_cache.sizes(), "kv_cache_write: k/v cache shapes must match");
 
-    int B = (int)k.size(0);
-    int H = (int)k.size(1);
-    int T = (int)k.size(2);
-    int D = (int)k.size(3);
-    int max_seq = (int)k_cache.size(2);
-    TYLOINFER_RUNTIME_CHECK(k_cache.size(0) == B && k_cache.size(1) == H && k_cache.size(3) == D,
-                "kv_cache_write: cache shape must be [B,H,max_seq,D]");
-    if (T == 0) return {k_cache, v_cache};
-
-    int pos_dim = positions.dim();
-    TYLOINFER_RUNTIME_CHECK(pos_dim == 1 || pos_dim == 2, "kv_cache_write: positions must be [T] or [B,T]");
-    if (pos_dim == 1) {
-        TYLOINFER_RUNTIME_CHECK(positions.size(0) == T, "kv_cache_write: positions [T] length mismatch");
-    } else {
-        TYLOINFER_RUNTIME_CHECK(positions.size(0) == B && positions.size(1) == T,
-                    "kv_cache_write: positions [B,T] shape mismatch");
-    }
-
-    const size_t rows = (size_t)B * H * T;
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-        mfq_dispatch_half, mfq_dispatch_bfloat16,
-        k_cache.scalar_type(), "kv_cache_write_cuda", [&] {
-        if (rows >= KV_ROW_KERNEL_MIN_ROWS &&
-            sizeof(scalar_t) < sizeof(float)) {
-            constexpr int elements_per_vector =
-                sizeof(uint2) / sizeof(scalar_t);
-            const auto vector_addresses =
-                reinterpret_cast<std::uintptr_t>(k.data_ptr()) |
-                reinterpret_cast<std::uintptr_t>(v.data_ptr()) |
-                reinterpret_cast<std::uintptr_t>(k_cache.data_ptr()) |
-                reinterpret_cast<std::uintptr_t>(v_cache.data_ptr());
-            const bool vector_aligned =
-                (vector_addresses & (alignof(uint2) - 1)) == 0;
-            const int grid = static_cast<int>(
-                (rows + KV_WARPS_PER_BLOCK - 1) / KV_WARPS_PER_BLOCK);
-            if (D % elements_per_vector == 0 && vector_aligned) {
-                kv_cache_write_rows_kernel<scalar_t, true><<<
-                    grid, KV_BLOCK_SIZE, 0, mfq_current_cuda_stream()>>>(
-                    k.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(),
-                    k_cache.data_ptr<scalar_t>(), v_cache.data_ptr<scalar_t>(),
-                    positions.data_ptr<int64_t>(), B, H, T, D, max_seq,
-                    pos_dim);
-            } else {
-                kv_cache_write_rows_kernel<scalar_t, false><<<
-                    grid, KV_BLOCK_SIZE, 0, mfq_current_cuda_stream()>>>(
-                    k.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(),
-                    k_cache.data_ptr<scalar_t>(), v_cache.data_ptr<scalar_t>(),
-                    positions.data_ptr<int64_t>(), B, H, T, D, max_seq,
-                    pos_dim);
-            }
-        } else {
-            constexpr int block = 256;
-            const size_t elements = rows * D;
-            const int grid = static_cast<int>(std::min<size_t>(
-                4096, (elements + block - 1) / block));
-            kv_cache_write_flat_kernel<scalar_t><<<
-                grid, block, 0, mfq_current_cuda_stream()>>>(
-                    k.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(),
-                    k_cache.data_ptr<scalar_t>(), v_cache.data_ptr<scalar_t>(),
-                    positions.data_ptr<int64_t>(), B, H, T, D, max_seq,
-                    pos_dim);
-        }
-    });
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return {k_cache, v_cache};
-}
 
 template <typename scalar_t>
 __global__ void kv_cache_write_ring_kernel(
@@ -240,57 +151,7 @@ __global__ void kv_cache_write_ring_kernel(
     }
 }
 
-std::vector<::tyloi::DenseTensor> kv_cache_write_ring_cuda(
-    ::tyloi::DenseTensor k_cache,
-    ::tyloi::DenseTensor v_cache,
-    ::tyloi::DenseTensor k,
-    ::tyloi::DenseTensor v,
-    int64_t position_start)
-{
-    TYLOINFER_RUNTIME_CHECK(position_start >= 0, "kv_cache_write_ring: position_start must be nonnegative");
-    TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous() &&
-                v_cache.is_cuda() && v_cache.is_contiguous(),
-                "kv_cache_write_ring: caches must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && v.is_cuda() && v.is_contiguous(),
-                "kv_cache_write_ring: inputs must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == v_cache.scalar_type() &&
-                k_cache.scalar_type() == k.scalar_type() && k_cache.scalar_type() == v.scalar_type(),
-                "kv_cache_write_ring: k/v/cache dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == ::tyloi::kFloat16 ||
-                k_cache.scalar_type() == ::tyloi::kBFloat16 ||
-                k_cache.scalar_type() == ::tyloi::kFloat32,
-                "kv_cache_write_ring: dtype must be f16, bf16 or f32");
-    TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k.dim() == 4 && v.dim() == 4,
-                "kv_cache_write_ring: all tensors must be rank 4");
-    TYLOINFER_RUNTIME_CHECK(k_cache.sizes() == v_cache.sizes() && k.sizes() == v.sizes(),
-                "kv_cache_write_ring: k/v shapes must match");
 
-    const int B = (int)k.size(0);
-    const int H = (int)k.size(1);
-    const int T = (int)k.size(2);
-    const int D = (int)k.size(3);
-    const int capacity = (int)k_cache.size(2);
-    TYLOINFER_RUNTIME_CHECK(capacity > 0 && k_cache.size(0) == B && k_cache.size(1) == H && k_cache.size(3) == D,
-                "kv_cache_write_ring: cache shape mismatch");
-    if (T == 0) return {k_cache, v_cache};
-
-    // Keeping only the latest capacity entries makes every destination unique,
-    // even when one prefill chunk is larger than the physical ring.
-    const int source_start = std::max(0, T - capacity);
-    const size_t n = (size_t)B * H * (T - source_start) * D;
-    constexpr int block = 256;
-    const int grid = (int)std::min<size_t>(4096, (n + block - 1) / block);
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-        mfq_dispatch_half, mfq_dispatch_bfloat16,
-        k_cache.scalar_type(), "kv_cache_write_ring_cuda", [&] {
-        kv_cache_write_ring_kernel<scalar_t><<<grid, block, 0, mfq_current_cuda_stream()>>>(
-            k.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(),
-            k_cache.data_ptr<scalar_t>(), v_cache.data_ptr<scalar_t>(),
-            position_start, B, H, T, D, capacity, source_start);
-    });
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return {k_cache, v_cache};
-}
 
 template <typename scalar_t>
 __global__ void kv_cache_write_ring_positions_kernel(
@@ -321,57 +182,45 @@ __global__ void kv_cache_write_ring_positions_kernel(
     }
 }
 
-std::vector<::tyloi::DenseTensor> kv_cache_write_ring_positions_cuda(
-    ::tyloi::DenseTensor k_cache,
-    ::tyloi::DenseTensor v_cache,
-    ::tyloi::DenseTensor k,
-    ::tyloi::DenseTensor v,
-    ::tyloi::DenseTensor positions)
-{
-    TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous() &&
-                v_cache.is_cuda() && v_cache.is_contiguous(),
-                "kv_cache_write_ring_positions: caches must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && v.is_cuda() && v.is_contiguous(),
-                "kv_cache_write_ring_positions: inputs must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.is_contiguous() &&
-                positions.scalar_type() == ::tyloi::kInt64 && positions.dim() == 1,
-                "kv_cache_write_ring_positions: positions must be cuda contiguous int64[T]");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == v_cache.scalar_type() &&
-                k_cache.scalar_type() == k.scalar_type() && k_cache.scalar_type() == v.scalar_type(),
-                "kv_cache_write_ring_positions: k/v/cache dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == ::tyloi::kFloat16 ||
-                k_cache.scalar_type() == ::tyloi::kBFloat16 ||
-                k_cache.scalar_type() == ::tyloi::kFloat32,
-                "kv_cache_write_ring_positions: dtype must be f16, bf16 or f32");
-    TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k.dim() == 4 && v.dim() == 4,
-                "kv_cache_write_ring_positions: all tensors must be rank 4");
-    TYLOINFER_RUNTIME_CHECK(k_cache.sizes() == v_cache.sizes() && k.sizes() == v.sizes(),
-                "kv_cache_write_ring_positions: k/v shapes must match");
 
-    const int B = (int)k.size(0);
-    const int H = (int)k.size(1);
-    const int T = (int)k.size(2);
-    const int D = (int)k.size(3);
-    const int capacity = (int)k_cache.size(2);
-    TYLOINFER_RUNTIME_CHECK(capacity > 0 && k_cache.size(0) == B && k_cache.size(1) == H && k_cache.size(3) == D,
-                "kv_cache_write_ring_positions: cache shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(positions.size(0) == T,
-                "kv_cache_write_ring_positions: positions length mismatch");
-    if (T == 0) return {k_cache, v_cache};
 
-    const int source_start = std::max(0, T - capacity);
-    const size_t n = (size_t)B * H * (T - source_start) * D;
-    constexpr int block = 256;
-    const int grid = (int)std::min<size_t>(4096, (n + block - 1) / block);
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-        mfq_dispatch_half, mfq_dispatch_bfloat16,
-        k_cache.scalar_type(), "kv_cache_write_ring_positions_cuda", [&] {
-        kv_cache_write_ring_positions_kernel<scalar_t><<<
-            grid, block, 0, mfq_current_cuda_stream()>>>(
-            k.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(),
-            k_cache.data_ptr<scalar_t>(), v_cache.data_ptr<scalar_t>(),
-            positions.data_ptr<int64_t>(), B, H, T, D, capacity, source_start);
-    });
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return {k_cache, v_cache};
+namespace tyloi::cuda::kv_cache_raw {
+namespace {
+void check() { const auto e = cudaGetLastError(); if (e != cudaSuccess) throw std::runtime_error(std::string("kv cache launch: ") + cudaGetErrorString(e)); }
+template<class T> void write_t(void* kc, void* vc, const void* k, const void* v, const int64_t* p, int B, int H, int N, int D, int cap, int rank, cudaStream_t stream) {
+    const size_t rows = size_t(B)*H*N;
+    if (rows >= KV_ROW_KERNEL_MIN_ROWS && sizeof(T) < sizeof(float)) {
+        constexpr int per = sizeof(uint2)/sizeof(T);
+        const auto addresses = reinterpret_cast<std::uintptr_t>(k) | reinterpret_cast<std::uintptr_t>(v) | reinterpret_cast<std::uintptr_t>(kc) | reinterpret_cast<std::uintptr_t>(vc);
+        const bool aligned = (addresses & (alignof(uint2)-1)) == 0;
+        const int grid = int((rows + KV_WARPS_PER_BLOCK - 1)/KV_WARPS_PER_BLOCK);
+        if (D%per == 0 && aligned) kv_cache_write_rows_kernel<T,true><<<grid,KV_BLOCK_SIZE,0,stream>>>(static_cast<const T*>(k),static_cast<const T*>(v),static_cast<T*>(kc),static_cast<T*>(vc),p,B,H,N,D,cap,rank);
+        else kv_cache_write_rows_kernel<T,false><<<grid,KV_BLOCK_SIZE,0,stream>>>(static_cast<const T*>(k),static_cast<const T*>(v),static_cast<T*>(kc),static_cast<T*>(vc),p,B,H,N,D,cap,rank);
+    } else {
+        const size_t elements = rows*D; const int grid = int(std::min<size_t>(4096,(elements+255)/256));
+        kv_cache_write_flat_kernel<T><<<grid,256,0,stream>>>(static_cast<const T*>(k),static_cast<const T*>(v),static_cast<T*>(kc),static_cast<T*>(vc),p,B,H,N,D,cap,rank);
+    }
+}
+template<class T> void ring_t(void* kc,void* vc,const void* k,const void* v,const int64_t* p,int64_t start,int B,int H,int N,int D,int cap,cudaStream_t stream) {
+    const int first=std::max(0,N-cap); const size_t n=size_t(B)*H*(N-first)*D;
+    const int grid=int(std::min<size_t>(4096,(n+255)/256));
+    if(p) kv_cache_write_ring_positions_kernel<T><<<grid,256,0,stream>>>(static_cast<const T*>(k),static_cast<const T*>(v),static_cast<T*>(kc),static_cast<T*>(vc),p,B,H,N,D,cap,first);
+    else kv_cache_write_ring_kernel<T><<<grid,256,0,stream>>>(static_cast<const T*>(k),static_cast<const T*>(v),static_cast<T*>(kc),static_cast<T*>(vc),start,B,H,N,D,cap,first);
+}
+}
+void write(void* kc,void* vc,const void* k,const void* v,const int64_t* p,int B,int H,int N,int D,int cap,int rank,NumericType type,cudaStream_t stream) {
+    if (type==NumericType::f32) write_t<uint32_t>(kc,vc,k,v,p,B,H,N,D,cap,rank,stream);
+    else if (type==NumericType::f16 || type==NumericType::bf16) write_t<uint16_t>(kc,vc,k,v,p,B,H,N,D,cap,rank,stream);
+    else throw std::invalid_argument("unsupported KV dtype"); check();
+}
+void ring(void* kc,void* vc,const void* k,const void* v,int64_t start,int B,int H,int N,int D,int cap,NumericType type,cudaStream_t stream) {
+    if (type==NumericType::f32) ring_t<uint32_t>(kc,vc,k,v,nullptr,start,B,H,N,D,cap,stream);
+    else if (type==NumericType::f16 || type==NumericType::bf16) ring_t<uint16_t>(kc,vc,k,v,nullptr,start,B,H,N,D,cap,stream);
+    else throw std::invalid_argument("unsupported KV dtype"); check();
+}
+void ring_positions(void* kc,void* vc,const void* k,const void* v,const int64_t* p,int B,int H,int N,int D,int cap,NumericType type,cudaStream_t stream) {
+    if (type==NumericType::f32) ring_t<uint32_t>(kc,vc,k,v,p,0,B,H,N,D,cap,stream);
+    else if (type==NumericType::f16 || type==NumericType::bf16) ring_t<uint16_t>(kc,vc,k,v,p,0,B,H,N,D,cap,stream);
+    else throw std::invalid_argument("unsupported KV dtype"); check();
+}
 }

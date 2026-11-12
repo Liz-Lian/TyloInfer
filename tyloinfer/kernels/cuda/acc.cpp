@@ -1,6 +1,5 @@
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
 #include "acc_raw.h"
 #include <stdexcept>
 #include <vector>
@@ -25,7 +24,6 @@ torch::Tensor acc_cuda(torch::Tensor a, torch::Tensor b)
         "acc: dtype must be f16, f32, or bf16");
     TORCH_CHECK(a.sizes() == b.sizes(), "acc: a/b shape mismatch");
     int n = (int)a.numel();
-    c10::cuda::CUDAGuard guard(a.device());
     auto out = torch::empty_like(a);
     tyloi::cuda::acc_raw::add(a.data_ptr(), b.data_ptr(), out.data_ptr(), n, raw_type(a.scalar_type()), at::cuda::getCurrentCUDAStream().stream());
     return out;
@@ -48,7 +46,6 @@ std::vector<torch::Tensor> acc_rms_norm_cuda(torch::Tensor a, torch::Tensor b,
     int N = (int)(a.numel() / D);
     TORCH_CHECK(weight.numel() == D, "acc_rms_norm: weight length mismatch");
 
-    c10::cuda::CUDAGuard guard(a.device());
     auto sum = torch::empty_like(a);
     auto norm = torch::empty(a.sizes(), a.options().dtype(at::kFloat));
     tyloi::cuda::acc_raw::rms(a.data_ptr(), b.data_ptr(), weight.data_ptr<float>(), sum.data_ptr(), norm.data_ptr(), N, D, float(eps), float(weight_offset), raw_type(a.scalar_type()), tyloi::cuda::NumericType::f32, at::cuda::getCurrentCUDAStream().stream());
@@ -71,7 +68,6 @@ std::vector<torch::Tensor> acc_rms_norm_f16_cuda(torch::Tensor a, torch::Tensor 
     int N = (int)(a.numel() / D);
     TORCH_CHECK(weight.numel() == D, "acc_rms_norm_f16: weight length mismatch");
 
-    c10::cuda::CUDAGuard guard(a.device());
     auto sum = torch::empty_like(a);
     auto norm = torch::empty_like(a);
     tyloi::cuda::acc_raw::rms(a.data_ptr(), b.data_ptr(), weight.data_ptr<float>(), sum.data_ptr(), norm.data_ptr(), N, D, float(eps), float(weight_offset), raw_type(a.scalar_type()), tyloi::cuda::NumericType::f16, at::cuda::getCurrentCUDAStream().stream());
@@ -97,7 +93,6 @@ std::vector<torch::Tensor> acc_rms_norm_bf16_cuda(
     const int N = (int)(a.numel() / D);
     TORCH_CHECK(D > 0 && weight.numel() == D,
                 "acc_rms_norm_bf16: weight length mismatch");
-    c10::cuda::CUDAGuard guard(a.device());
     auto sum = torch::empty_like(a);
     auto norm = torch::empty_like(a);
     tyloi::cuda::acc_raw::rms(a.data_ptr(), b.data_ptr(), weight.data_ptr<float>(), sum.data_ptr(), norm.data_ptr(), N, D, float(eps), float(weight_offset), raw_type(a.scalar_type()), tyloi::cuda::NumericType::bf16, at::cuda::getCurrentCUDAStream().stream());
@@ -127,7 +122,6 @@ std::vector<torch::Tensor> gemma4_attn_residual_pre_norms_f16_cuda(
                     "gemma4 fused pre norms: weights must be cuda contiguous f32[D]");
     }
 
-    c10::cuda::CUDAGuard guard(residual.device());
     auto residual_out = torch::empty_like(residual);
     auto dense_out = torch::empty_like(residual);
     auto router_out = torch::empty(residual.sizes(), residual.options().dtype(at::kFloat));
@@ -161,7 +155,6 @@ torch::Tensor gemma4_ffn_merge_f16_cuda(
                     layer_scale.scalar_type() == at::kHalf && layer_scale.numel() == 1,
                 "gemma4 fused FFN merge: layer scale must be cuda contiguous f16[1]");
 
-    c10::cuda::CUDAGuard guard(dense.device());
     auto out = torch::empty_like(dense);
     tyloi::cuda::acc_raw::gemma_merge(dense.data_ptr(), moe.data_ptr(), residual.data_ptr(), dense_post_weight.data_ptr<float>(), moe_post_weight.data_ptr<float>(), final_post_weight.data_ptr<float>(), layer_scale.data_ptr(), out.data_ptr(), N, D, float(eps), at::cuda::getCurrentCUDAStream().stream());
     return out;
@@ -182,6 +175,5 @@ void decode_graph_commit_cuda(torch::Tensor next, torch::Tensor generated, torch
                 "decode_graph_commit: pos must be cuda int64[1]");
     TORCH_CHECK(len.is_cuda() && len.is_contiguous() && len.scalar_type() == at::kLong && len.numel() == 1,
                 "decode_graph_commit: len must be cuda int64[1]");
-    c10::cuda::CUDAGuard guard(next.device());
     tyloi::cuda::acc_raw::commit(next.data_ptr<int64_t>(), generated.data_ptr<int64_t>(), step.data_ptr<int64_t>(), input.data_ptr<int64_t>(), pos.data_ptr<int64_t>(), len.data_ptr<int64_t>(), at::cuda::getCurrentCUDAStream().stream());
 }

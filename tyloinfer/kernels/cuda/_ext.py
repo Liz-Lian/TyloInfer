@@ -70,6 +70,11 @@ _SOURCES = [
     os.path.join(_DIR, "activation.cpp"),
     os.path.join(_DIR, "qwen4_exp.cpp"),
     os.path.join(_DIR, "selected_attention.cpp"),
+    os.path.join(_DIR, "rope.cpp"),
+    os.path.join(_DIR, "sampling.cpp"),
+    os.path.join(_DIR, "embedding.cpp"),
+    os.path.join(_DIR, "kv_cache.cpp"),
+    os.path.join(_DIR, "ssm_conv.cpp"),
     os.path.join(_CUDA_NATIVE_INCLUDE, "env.cpp"),
 ]
 _module = None

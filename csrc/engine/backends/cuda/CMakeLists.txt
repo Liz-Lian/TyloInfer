@@ -133,6 +133,11 @@ add_library(mfq-cuda-native-kernels STATIC
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/activation.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/qwen4_exp.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/selected_attention.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/wrappers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/sampling.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/embedding.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/kv_cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ssm_conv.cpp
     ${TYLOINFER_CUDA_KERNEL_ROOT}/float_projection.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_quantization.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_hot_cache.cu

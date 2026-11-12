@@ -1,4 +1,4 @@
-#include "env.h"
+
 // GPU logits sampling helpers.
 // Greedy uses a parallel block reduction. Stochastic full-softmax keeps logits on GPU;
 // random uniforms are passed as a small GPU tensor.
@@ -6,13 +6,14 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
-#include "backend.h"
+#include "sampling_raw.h"
 #include <cub/block/block_radix_sort.cuh>
 #include <float.h>
 #include <climits>
 #include <cstdlib>
 #include <cstdint>
 #include <utility>
+#include <type_traits>
 
 constexpr int SAMPLE_BD = 256;
 constexpr int SAMPLE_MAX_TOP_K = 1024;
@@ -527,310 +528,107 @@ __global__ void sample_top_k_top_p_kernel(
     out[row] = chosen;
 }
 
-::tyloi::DenseTensor sample_greedy_cuda(::tyloi::DenseTensor logits)
-{
-    TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_greedy: logits must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(logits.dim() == 2, "sample_greedy: logits must be [B,V]");
-    TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == ::tyloi::kFloat32 ||
-        logits.scalar_type() == ::tyloi::kFloat16 ||
-        logits.scalar_type() == ::tyloi::kBFloat16,
-        "sample_greedy: logits dtype must be f32, f16, or bf16");
-    int B = (int)logits.size(0);
-    int V = (int)logits.size(1);
-    auto out = ::tyloi::cuda::empty({B}, logits.options().dtype(::tyloi::kInt64));
-    const auto stream = mfq_current_cuda_stream();
-    const auto logits_address = reinterpret_cast<std::uintptr_t>(
-        logits.data_ptr());
-    const bool pair_aligned =
-        (logits_address & (alignof(half2) - 1)) == 0;
+namespace tyloi::cuda::sampling_raw {
+template<class T> void greedy_t(const void* x, int64_t* out, float* values, int64_t* indices,
+    int B, int V, cudaStream_t stream) {
+    const bool aligned = (reinterpret_cast<uintptr_t>(x) & (alignof(half2) - 1)) == 0;
     if (V >= 16384 && B <= 65535) {
-        // Large vocabularies with a few rows need multiple CTAs per row.
         const int chunks = (V + SAMPLE_GREEDY_CHUNK - 1) / SAMPLE_GREEDY_CHUNK;
-        auto values = ::tyloi::cuda::empty({B, chunks}, logits.options().dtype(::tyloi::kFloat32));
-        auto indices = ::tyloi::cuda::empty({B, chunks}, logits.options().dtype(::tyloi::kInt64));
         const dim3 grid(chunks, B);
-        if ((V & 1) == 0 && pair_aligned && logits.scalar_type() == ::tyloi::kFloat16) {
-            sample_greedy_pair_chunks_kernel<half2><<<grid, SAMPLE_BD, 0, stream>>>(
-                reinterpret_cast<const half2*>(logits.data_ptr<mfq_half>()),
-                values.data_ptr<float>(), indices.data_ptr<int64_t>(), V, chunks);
-        } else if ((V & 1) == 0 && pair_aligned && logits.scalar_type() == ::tyloi::kBFloat16) {
-            sample_greedy_pair_chunks_kernel<__nv_bfloat162><<<grid, SAMPLE_BD, 0, stream>>>(
-                reinterpret_cast<const __nv_bfloat162*>(logits.data_ptr<mfq_bfloat16>()),
-                values.data_ptr<float>(), indices.data_ptr<int64_t>(), V, chunks);
-        } else {
-            TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(mfq_dispatch_half, mfq_dispatch_bfloat16,
-                logits.scalar_type(), "sample_greedy_chunks_cuda", [&] {
-                sample_greedy_chunks_kernel<scalar_t><<<grid, SAMPLE_BD, 0, stream>>>(
-                    logits.data_ptr<scalar_t>(), values.data_ptr<float>(), indices.data_ptr<int64_t>(), V, chunks);
-            });
-        }
-        sample_greedy_chunks_finish_kernel<<<B, SAMPLE_BD, 0, stream>>>(
-            values.data_ptr<float>(), indices.data_ptr<int64_t>(), out.data_ptr<int64_t>(), chunks);
-        return out;
-    }
-    if ((V & 1) == 0 &&
-        pair_aligned &&
-        logits.scalar_type() == ::tyloi::kFloat16) {
-        sample_greedy_pair_kernel<half2><<<B, SAMPLE_BD, 0, stream>>>(
-            reinterpret_cast<const half2*>(logits.data_ptr<mfq_half>()),
-            out.data_ptr<int64_t>(), V);
-    } else if ((V & 1) == 0 &&
-               pair_aligned &&
-               logits.scalar_type() == ::tyloi::kBFloat16) {
-        sample_greedy_pair_kernel<__nv_bfloat162>
-            <<<B, SAMPLE_BD, 0, stream>>>(
-                reinterpret_cast<const __nv_bfloat162*>(
-                    logits.data_ptr<mfq_bfloat16>()),
-                out.data_ptr<int64_t>(), V);
-    } else {
-        TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-            mfq_dispatch_half, mfq_dispatch_bfloat16,
-            logits.scalar_type(), "sample_greedy_cuda", [&] {
-        sample_greedy_kernel<scalar_t><<<B, SAMPLE_BD, 0, mfq_current_cuda_stream()>>>(
-            logits.data_ptr<scalar_t>(), out.data_ptr<int64_t>(), B, V);
-        });
-    }
-    return out;
+        if constexpr (std::is_same_v<T, __half>) {
+            if (!(V & 1) && aligned) sample_greedy_pair_chunks_kernel<half2><<<grid,SAMPLE_BD,0,stream>>>(static_cast<const half2*>(x),values,indices,V,chunks);
+            else sample_greedy_chunks_kernel<T><<<grid,SAMPLE_BD,0,stream>>>(static_cast<const T*>(x),values,indices,V,chunks);
+        } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+            if (!(V & 1) && aligned) sample_greedy_pair_chunks_kernel<__nv_bfloat162><<<grid,SAMPLE_BD,0,stream>>>(static_cast<const __nv_bfloat162*>(x),values,indices,V,chunks);
+            else sample_greedy_chunks_kernel<T><<<grid,SAMPLE_BD,0,stream>>>(static_cast<const T*>(x),values,indices,V,chunks);
+        } else sample_greedy_chunks_kernel<T><<<grid,SAMPLE_BD,0,stream>>>(static_cast<const T*>(x),values,indices,V,chunks);
+        sample_greedy_chunks_finish_kernel<<<B,SAMPLE_BD,0,stream>>>(values,indices,out,chunks);
+    } else if constexpr (std::is_same_v<T, __half>) {
+        if (!(V & 1) && aligned) sample_greedy_pair_kernel<half2><<<B,SAMPLE_BD,0,stream>>>(static_cast<const half2*>(x),out,V);
+        else sample_greedy_kernel<T><<<B,SAMPLE_BD,0,stream>>>(static_cast<const T*>(x),out,B,V);
+    } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+        if (!(V & 1) && aligned) sample_greedy_pair_kernel<__nv_bfloat162><<<B,SAMPLE_BD,0,stream>>>(static_cast<const __nv_bfloat162*>(x),out,V);
+        else sample_greedy_kernel<T><<<B,SAMPLE_BD,0,stream>>>(static_cast<const T*>(x),out,B,V);
+    } else sample_greedy_kernel<T><<<B,SAMPLE_BD,0,stream>>>(static_cast<const T*>(x),out,B,V);
 }
-
-::tyloi::DenseTensor sample_softmax_cuda(::tyloi::DenseTensor logits, ::tyloi::DenseTensor random, double temperature)
-{
-    TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_softmax: logits must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(random.is_cuda() && random.is_contiguous() && random.scalar_type() == ::tyloi::kFloat32,
-                "sample_softmax: random must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(logits.dim() == 2, "sample_softmax: logits must be [B,V]");
-    TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == ::tyloi::kFloat32 ||
-        logits.scalar_type() == ::tyloi::kFloat16 ||
-        logits.scalar_type() == ::tyloi::kBFloat16,
-        "sample_softmax: logits dtype must be f32, f16, or bf16");
-    int B = (int)logits.size(0);
-    int V = (int)logits.size(1);
-    TYLOINFER_RUNTIME_CHECK(random.numel() == B, "sample_softmax: random length must match B");
-    TYLOINFER_RUNTIME_CHECK(temperature > 0.0, "sample_softmax: temperature must be > 0");
-    auto out = ::tyloi::cuda::empty({B}, logits.options().dtype(::tyloi::kInt64));
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-        mfq_dispatch_half, mfq_dispatch_bfloat16,
-        logits.scalar_type(), "sample_softmax_cuda", [&] {
-        sample_softmax_kernel<scalar_t><<<B, SAMPLE_BD, 0, mfq_current_cuda_stream()>>>(
-            logits.data_ptr<scalar_t>(), random.data_ptr<float>(), out.data_ptr<int64_t>(),
-            B, V, (float)temperature);
-    });
-    return out;
+template<class T> void softmax_t(const void* x,const float* random,int64_t* out,int B,int V,float t,cudaStream_t s) {
+    sample_softmax_kernel<T><<<B,SAMPLE_BD,0,s>>>(static_cast<const T*>(x),random,out,B,V,t);
 }
-
-template<bool Conditional>
-static ::tyloi::DenseTensor sample_top_k_compact_impl(
-    ::tyloi::DenseTensor logits,int64_t top_k,const volatile int32_t* enabled) {
-    TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous() && logits.dim()==2,
-        "sample_top_k_compact: logits must be contiguous CUDA [B,V]");
-    TYLOINFER_RUNTIME_CHECK(logits.scalar_type()==::tyloi::kFloat32 ||
-        logits.scalar_type()==::tyloi::kFloat16 || logits.scalar_type()==::tyloi::kBFloat16,
-        "sample_top_k_compact: unsupported logit dtype");
-    const int B=int(logits.size(0)),V=int(logits.size(1));
-    TYLOINFER_RUNTIME_CHECK(B>0 && B<=32 && logits.size(1)<=INT_MAX && top_k>0 && top_k<=V && top_k<=64,
-        "sample_top_k_compact: unsupported rows, vocab or top-k");
+template<class T,bool Conditional> void compact_t(const void* x,int64_t* out,int64_t* a,int64_t* b,
+    int B,int V,int k,const volatile int32_t* enabled,cudaStream_t s) {
     const int items=V<=8192?1:V<=65536?4:8;
     const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
-    // Explicit types keep these non-dependent for nvcc's MSVC-mode front end.
-    ::tyloi::DenseTensor out=::tyloi::cuda::empty({B,top_k},logits.options().dtype(::tyloi::kInt64));
-    ::tyloi::DenseTensor a=::tyloi::cuda::empty({int64_t(B)*blocks*top_k},out.options());
-    ::tyloi::DenseTensor b=::tyloi::cuda::empty(a.sizes(),a.options());
-    auto* first=reinterpret_cast<uint64_t*>(a.data_ptr<int64_t>());
-    auto* second=reinterpret_cast<uint64_t*>(b.data_ptr<int64_t>());
-    const auto stream=mfq_current_cuda_stream();
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(mfq_dispatch_half,mfq_dispatch_bfloat16,
-        logits.scalar_type(),"sample_top_k_compact",[&] {
-            if(items==8)sample_radix_keys_first<scalar_t,8,true,Conditional><<<dim3(blocks,B),SAMPLE_BD,0,stream>>>(logits.data_ptr<scalar_t>(),first,V,int(top_k),enabled);
-            else if(items==4)sample_radix_keys_first<scalar_t,4,true,Conditional><<<dim3(blocks,B),SAMPLE_BD,0,stream>>>(logits.data_ptr<scalar_t>(),first,V,int(top_k),enabled);
-            else sample_radix_keys_first<scalar_t,1,true,Conditional><<<dim3(blocks,B),SAMPLE_BD,0,stream>>>(logits.data_ptr<scalar_t>(),first,V,int(top_k),enabled);
-        });
-    int count=blocks*int(top_k);
+    auto* first=reinterpret_cast<uint64_t*>(a); auto* second=reinterpret_cast<uint64_t*>(b);
+    if(items==8) sample_radix_keys_first<T,8,true,Conditional><<<dim3(blocks,B),SAMPLE_BD,0,s>>>(static_cast<const T*>(x),first,V,k,enabled);
+    else if(items==4) sample_radix_keys_first<T,4,true,Conditional><<<dim3(blocks,B),SAMPLE_BD,0,s>>>(static_cast<const T*>(x),first,V,k,enabled);
+    else sample_radix_keys_first<T,1,true,Conditional><<<dim3(blocks,B),SAMPLE_BD,0,s>>>(static_cast<const T*>(x),first,V,k,enabled);
+    int count=blocks*k;
     while(count>SAMPLE_BD) {
         const int next=(count+SAMPLE_BD-1)/SAMPLE_BD;
-        sample_radix_keys_reduce<true,true,Conditional><<<dim3(next,B),SAMPLE_BD,0,stream>>>(first,second,count,int(top_k),enabled);
-        std::swap(first,second);count=next*int(top_k);
+        sample_radix_keys_reduce<true,true,Conditional><<<dim3(next,B),SAMPLE_BD,0,s>>>(first,second,count,k,enabled);
+        std::swap(first,second);count=next*k;
     }
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(mfq_dispatch_half,mfq_dispatch_bfloat16,
-        logits.scalar_type(),"sample_top_k_compact_finish",[&] {
-            sample_radix_compact_finish<scalar_t,true,Conditional><<<dim3(1,B),SAMPLE_BD,0,stream>>>(
-                first,logits.data_ptr<scalar_t>(),reinterpret_cast<uint64_t*>(out.data_ptr<int64_t>()),count,V,int(top_k),enabled);
-        });
-    TYLOINFER_CUDA_CHECK(cudaGetLastError());
-    return out;
+    sample_radix_compact_finish<T,true,Conditional><<<dim3(1,B),SAMPLE_BD,0,s>>>(first,static_cast<const T*>(x),reinterpret_cast<uint64_t*>(out),count,V,k,enabled);
 }
-
-::tyloi::DenseTensor sample_top_k_compact_cuda(::tyloi::DenseTensor logits,int64_t top_k) {
-    return sample_top_k_compact_impl<false>(std::move(logits),top_k,nullptr);
-}
-::tyloi::DenseTensor sample_top_k_compact_if_cuda(
-        ::tyloi::DenseTensor logits,int64_t top_k,const volatile int32_t* enabled) {
-    TYLOINFER_RUNTIME_CHECK(enabled,"sample_top_k_compact_if: null replay flag");
-    return sample_top_k_compact_impl<true>(std::move(logits),top_k,enabled);
-}
-
-::tyloi::DenseTensor sample_top_k_top_p_cuda(
-    ::tyloi::DenseTensor logits,
-    ::tyloi::DenseTensor random,
-    double temperature,
-    int64_t top_k,
-    double top_p)
-{
-    TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_top_k_top_p: logits must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(random.is_cuda() && random.is_contiguous() && random.scalar_type() == ::tyloi::kFloat32,
-                "sample_top_k_top_p: random must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(logits.dim() == 2, "sample_top_k_top_p: logits must be [B,V]");
-    TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == ::tyloi::kFloat32 ||
-        logits.scalar_type() == ::tyloi::kFloat16 ||
-        logits.scalar_type() == ::tyloi::kBFloat16,
-        "sample_top_k_top_p: logits dtype must be f32, f16, or bf16");
-    int B = (int)logits.size(0);
-    int V = (int)logits.size(1);
-    TYLOINFER_RUNTIME_CHECK(random.numel() == B, "sample_top_k_top_p: random length must match B");
-    TYLOINFER_RUNTIME_CHECK(temperature > 0.0, "sample_top_k_top_p: temperature must be > 0");
-    TYLOINFER_RUNTIME_CHECK(top_k > 0 && top_k <= V && top_k <= SAMPLE_MAX_TOP_K,
-                "sample_top_k_top_p: top_k must be in [1, min(V,1024)]");
-    auto out = ::tyloi::cuda::empty({B}, logits.options().dtype(::tyloi::kInt64));
-
-    const char* radix_env = tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_TOPK");
-    const bool use_radix = B == 1 && top_k <= SAMPLE_RADIX_MAX_TOP_K &&
-        (radix_env == nullptr || radix_env[0] != '0');
-    if (use_radix) {
-        cudaStream_t stream = mfq_current_cuda_stream();
-        const auto* key_option=tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_KEYS");
-        if(!key_option || key_option[0]!='0') {
-            const auto* item_option=tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_ITEMS");
-            const int requested=item_option?std::atoi(item_option):(V<=8192?1:V<=65536?4:8);
-            const int items=requested==8?8:requested==1?1:4;
-            const auto* bitonic_option=tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_KEY_BITONIC");
-            const bool bitonic=!bitonic_option || bitonic_option[0]!='0';
-            const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
-            const int64_t capacity=int64_t(blocks)*top_k;
-            auto a=::tyloi::cuda::empty({capacity},logits.options().dtype(::tyloi::kInt64));
-            auto b=::tyloi::cuda::empty({capacity},a.options());
-            auto* first=reinterpret_cast<uint64_t*>(a.data_ptr<int64_t>());
-            auto* second=reinterpret_cast<uint64_t*>(b.data_ptr<int64_t>());
-            TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(mfq_dispatch_half,mfq_dispatch_bfloat16,
-                logits.scalar_type(),"sample_radix_keys",[&] {
-                    if(items==8)sample_radix_keys_first<scalar_t,8><<<blocks,SAMPLE_BD,0,stream>>>(logits.data_ptr<scalar_t>(),first,V,int(top_k));
-                    else if(items==4)sample_radix_keys_first<scalar_t,4><<<blocks,SAMPLE_BD,0,stream>>>(logits.data_ptr<scalar_t>(),first,V,int(top_k));
-                    else sample_radix_keys_first<scalar_t,1><<<blocks,SAMPLE_BD,0,stream>>>(logits.data_ptr<scalar_t>(),first,V,int(top_k));
-                });
-            int count=blocks*int(top_k);
-            while(count>SAMPLE_BD) {
-                const int next=(count+SAMPLE_BD-1)/SAMPLE_BD;
-                if(bitonic)sample_radix_keys_reduce<true><<<next,SAMPLE_BD,0,stream>>>(first,second,count,int(top_k));
-                else sample_radix_keys_reduce<false><<<next,SAMPLE_BD,0,stream>>>(first,second,count,int(top_k));
-                std::swap(first,second);count=next*int(top_k);
-            }
-            if(bitonic)sample_radix_keys_finish<true><<<1,SAMPLE_BD,0,stream>>>(first,random.data_ptr<float>(),
-                out.data_ptr<int64_t>(),count,int(top_k),float(temperature),float(top_p));
-            else sample_radix_keys_finish<false><<<1,SAMPLE_BD,0,stream>>>(first,random.data_ptr<float>(),
-                out.data_ptr<int64_t>(),count,int(top_k),float(temperature),float(top_p));
-            return out;
+template<class T> void topk_t(const void* x,const float* random,int64_t* out,void* a,void* b,void* c,void* d,
+    int B,int V,int k,float t,float p,bool radix,bool keys,int items,bool bitonic,cudaStream_t s) {
+    if (!radix) { sample_top_k_top_p_kernel<T><<<B,SAMPLE_BD,0,s>>>(static_cast<const T*>(x),random,out,B,V,t,k,p); return; }
+    if (keys) {
+        const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
+        auto* first=static_cast<uint64_t*>(a);auto* second=static_cast<uint64_t*>(b);
+        if(items==8)sample_radix_keys_first<T,8><<<blocks,SAMPLE_BD,0,s>>>(static_cast<const T*>(x),first,V,k);
+        else if(items==4)sample_radix_keys_first<T,4><<<blocks,SAMPLE_BD,0,s>>>(static_cast<const T*>(x),first,V,k);
+        else sample_radix_keys_first<T,1><<<blocks,SAMPLE_BD,0,s>>>(static_cast<const T*>(x),first,V,k);
+        int count=blocks*k;
+        while(count>SAMPLE_BD) {
+            int next=(count+SAMPLE_BD-1)/SAMPLE_BD;
+            if(bitonic)sample_radix_keys_reduce<true><<<next,SAMPLE_BD,0,s>>>(first,second,count,k);
+            else sample_radix_keys_reduce<false><<<next,SAMPLE_BD,0,s>>>(first,second,count,k);
+            std::swap(first,second);count=next*k;
         }
-        const int first_blocks = (V + SAMPLE_BD - 1) / SAMPLE_BD;
-        const int64_t capacity = (int64_t)first_blocks * top_k;
-        auto vals_a = ::tyloi::cuda::empty(
-            {capacity}, logits.options().dtype(::tyloi::kFloat32));
-        auto idxs_a = ::tyloi::cuda::empty(
-            {capacity}, logits.options().dtype(::tyloi::kInt32));
-        auto vals_b = ::tyloi::cuda::empty(
-            {capacity}, logits.options().dtype(::tyloi::kFloat32));
-        auto idxs_b = ::tyloi::cuda::empty(
-            {capacity}, logits.options().dtype(::tyloi::kInt32));
-        TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-            mfq_dispatch_half, mfq_dispatch_bfloat16,
-            logits.scalar_type(), "sample_top_k_radix_stage1", [&] {
-            sample_top_k_radix_stage1_kernel<scalar_t><<<first_blocks, SAMPLE_BD, 0, stream>>>(
-                logits.data_ptr<scalar_t>(), vals_a.data_ptr<float>(), idxs_a.data_ptr<int>(),
-                V, (int)top_k);
-        });
-
-        int count = first_blocks * (int)top_k;
-        bool input_is_a = true;
-        while (count > SAMPLE_BD) {
-            const int blocks = (count + SAMPLE_BD - 1) / SAMPLE_BD;
-            if (input_is_a) {
-                sample_top_k_radix_reduce_kernel<<<blocks, SAMPLE_BD, 0, stream>>>(
-                    vals_a.data_ptr<float>(), idxs_a.data_ptr<int>(),
-                    vals_b.data_ptr<float>(), idxs_b.data_ptr<int>(), count, (int)top_k);
-            } else {
-                sample_top_k_radix_reduce_kernel<<<blocks, SAMPLE_BD, 0, stream>>>(
-                    vals_b.data_ptr<float>(), idxs_b.data_ptr<int>(),
-                    vals_a.data_ptr<float>(), idxs_a.data_ptr<int>(), count, (int)top_k);
-            }
-            count = blocks * (int)top_k;
-            input_is_a = !input_is_a;
-        }
-        if (input_is_a) {
-            sample_top_k_radix_finish_kernel<<<1, SAMPLE_BD, 0, stream>>>(
-                vals_a.data_ptr<float>(), idxs_a.data_ptr<int>(), random.data_ptr<float>(),
-                out.data_ptr<int64_t>(), count, (int)top_k, (float)temperature, (float)top_p);
-        } else {
-            sample_top_k_radix_finish_kernel<<<1, SAMPLE_BD, 0, stream>>>(
-                vals_b.data_ptr<float>(), idxs_b.data_ptr<int>(), random.data_ptr<float>(),
-                out.data_ptr<int64_t>(), count, (int)top_k, (float)temperature, (float)top_p);
-        }
-        return out;
+        if(bitonic)sample_radix_keys_finish<true><<<1,SAMPLE_BD,0,s>>>(first,random,out,count,k,t,p);
+        else sample_radix_keys_finish<false><<<1,SAMPLE_BD,0,s>>>(first,random,out,count,k,t,p);
+        return;
     }
-
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-        mfq_dispatch_half, mfq_dispatch_bfloat16,
-        logits.scalar_type(), "sample_top_k_top_p_cuda", [&] {
-        sample_top_k_top_p_kernel<scalar_t><<<B, SAMPLE_BD, 0, mfq_current_cuda_stream()>>>(
-            logits.data_ptr<scalar_t>(), random.data_ptr<float>(), out.data_ptr<int64_t>(),
-            B, V, (float)temperature, (int)top_k, (float)top_p);
-    });
-    return out;
+    const int blocks=(V+SAMPLE_BD-1)/SAMPLE_BD;
+    auto* va=static_cast<float*>(a);auto* ia=static_cast<int*>(b);
+    auto* vb=static_cast<float*>(c);auto* ib=static_cast<int*>(d);
+    sample_top_k_radix_stage1_kernel<T><<<blocks,SAMPLE_BD,0,s>>>(static_cast<const T*>(x),va,ia,V,k);
+    int count=blocks*k;bool first=true;
+    while(count>SAMPLE_BD) {
+        const int next=(count+SAMPLE_BD-1)/SAMPLE_BD;
+        if(first)sample_top_k_radix_reduce_kernel<<<next,SAMPLE_BD,0,s>>>(va,ia,vb,ib,count,k);
+        else sample_top_k_radix_reduce_kernel<<<next,SAMPLE_BD,0,s>>>(vb,ib,va,ia,count,k);
+        count=next*k;first=!first;
+    }
+    sample_top_k_radix_finish_kernel<<<1,SAMPLE_BD,0,s>>>(first?va:vb,first?ia:ib,random,out,count,k,t,p);
+}
+template<class T> void penalties_t(void* x,const int32_t* counts,int V,float p,float f,float r,cudaStream_t s) {
+    sample_apply_penalties_kernel<T><<<(V+255)/256,256,0,s>>>(static_cast<T*>(x),counts,V,p,f,r);
 }
 
-void sample_token_counts_add_cuda(::tyloi::DenseTensor counts, ::tyloi::DenseTensor tokens)
-{
-    TYLOINFER_RUNTIME_CHECK(counts.is_cuda() && counts.is_contiguous() && counts.scalar_type() == ::tyloi::kInt32,
-                "sample_token_counts_add: counts must be contiguous CUDA int32");
-    TYLOINFER_RUNTIME_CHECK(tokens.is_cuda() && tokens.is_contiguous() && tokens.scalar_type() == ::tyloi::kInt64,
-                "sample_token_counts_add: tokens must be contiguous CUDA int64");
-    TYLOINFER_RUNTIME_CHECK(counts.dim() == 1, "sample_token_counts_add: counts must be [V]");
-    int64_t n = tokens.numel();
-    if (n == 0) return;
-    constexpr int bd = 256;
-    int blocks = (int)((n + bd - 1) / bd);
-    sample_token_counts_add_kernel<<<blocks, bd, 0, mfq_current_cuda_stream()>>>(
-        counts.data_ptr<int32_t>(), tokens.data_ptr<int64_t>(), n, (int)counts.numel());
+void greedy(const void* x,int64_t* out,float* values,int64_t* ids,int B,int V,NumericType type,cudaStream_t s) {
+    if(type==NumericType::f16)greedy_t<__half>(x,out,values,ids,B,V,s);
+    else if(type==NumericType::bf16)greedy_t<__nv_bfloat16>(x,out,values,ids,B,V,s);
+    else greedy_t<float>(x,out,values,ids,B,V,s);
 }
-
-::tyloi::DenseTensor sample_apply_penalties_cuda(
-    ::tyloi::DenseTensor logits,
-    ::tyloi::DenseTensor counts,
-    double presence_penalty,
-    double frequency_penalty,
-    double repetition_penalty)
-{
-    TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(),
-                "sample_apply_penalties: logits must be contiguous CUDA");
-    TYLOINFER_RUNTIME_CHECK(logits.dim() == 2 && logits.size(0) == 1,
-                "sample_apply_penalties: logits must be [1,V]");
-    TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == ::tyloi::kFloat32 ||
-        logits.scalar_type() == ::tyloi::kFloat16 ||
-        logits.scalar_type() == ::tyloi::kBFloat16,
-        "sample_apply_penalties: logits dtype must be f32, f16, or bf16");
-    TYLOINFER_RUNTIME_CHECK(counts.is_cuda() && counts.is_contiguous() && counts.scalar_type() == ::tyloi::kInt32,
-                "sample_apply_penalties: counts must be contiguous CUDA int32");
-    TYLOINFER_RUNTIME_CHECK(counts.dim() == 1 && counts.numel() == logits.size(1),
-                "sample_apply_penalties: counts must be [V]");
-    int vocab_size = (int)logits.size(1);
-    constexpr int bd = 256;
-    int blocks = (vocab_size + bd - 1) / bd;
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
-        mfq_dispatch_half, mfq_dispatch_bfloat16,
-        logits.scalar_type(), "sample_apply_penalties_cuda", [&] {
-        sample_apply_penalties_kernel<scalar_t><<<blocks, bd, 0, mfq_current_cuda_stream()>>>(
-            logits.data_ptr<scalar_t>(), counts.data_ptr<int32_t>(), vocab_size,
-            (float)presence_penalty, (float)frequency_penalty, (float)repetition_penalty);
-    });
-    return logits;
+void softmax(const void* x,const float* r,int64_t* out,int B,int V,float t,NumericType type,cudaStream_t s) {
+    if(type==NumericType::f16)softmax_t<__half>(x,r,out,B,V,t,s);
+    else if(type==NumericType::bf16)softmax_t<__nv_bfloat16>(x,r,out,B,V,t,s);
+    else softmax_t<float>(x,r,out,B,V,t,s);
+}
+void compact(const void* x,int64_t* out,int64_t* a,int64_t* b,int B,int V,int k,const volatile int32_t* enabled,NumericType type,cudaStream_t s) {
+    const auto call=[&]<class T>() { if(enabled)compact_t<T,true>(x,out,a,b,B,V,k,enabled,s);else compact_t<T,false>(x,out,a,b,B,V,k,nullptr,s); };
+    if(type==NumericType::f16)call.template operator()<__half>();else if(type==NumericType::bf16)call.template operator()<__nv_bfloat16>();else call.template operator()<float>();
+}
+void topk(const void* x,const float* r,int64_t* out,void* a,void* b,void* c,void* d,int B,int V,int k,float t,float p,bool radix,bool keys,int items,bool bitonic,NumericType type,cudaStream_t s) {
+    const auto call=[&]<class T>() { topk_t<T>(x,r,out,a,b,c,d,B,V,k,t,p,radix,keys,items,bitonic,s); };
+    if(type==NumericType::f16)call.template operator()<__half>();else if(type==NumericType::bf16)call.template operator()<__nv_bfloat16>();else call.template operator()<float>();
+}
+void counts(int32_t* c,const int64_t* tokens,int64_t n,int V,cudaStream_t s) {
+    sample_token_counts_add_kernel<<<int((n+255)/256),256,0,s>>>(c,tokens,n,V);
+}
+void penalties(void* x,const int32_t* c,int V,float p,float f,float r,NumericType type,cudaStream_t s) {
+    if(type==NumericType::f16)penalties_t<__half>(x,c,V,p,f,r,s);else if(type==NumericType::bf16)penalties_t<__nv_bfloat16>(x,c,V,p,f,r,s);else penalties_t<float>(x,c,V,p,f,r,s);
+}
 }

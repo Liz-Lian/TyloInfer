@@ -2,9 +2,11 @@
 // conv_input [B, K - 1 + T, C], weight [C,1,K], [C,K], or [K,C], output [B,T,C].
 
 #include <cuda_runtime.h>
-#include "backend.h"
+#include "ssm_conv_raw.h"
 #include <cuda_fp16.h>
-#include <vector>
+#include <stdexcept>
+#include <string>
+
 
 #include "reduce.cuh"
 
@@ -46,45 +48,7 @@ __global__ void ssm_conv_silu_kernel(
     }
 }
 
-::tyloi::DenseTensor ssm_conv_silu_cuda(::tyloi::DenseTensor conv_input, ::tyloi::DenseTensor weight, ::tyloi::DenseTensor bias, int64_t n_tokens)
-{
-    TYLOINFER_RUNTIME_CHECK(conv_input.is_cuda() && conv_input.is_contiguous() && conv_input.scalar_type() == ::tyloi::kFloat32,
-                "ssm_conv_silu: conv_input must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
-                "ssm_conv_silu: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == ::tyloi::kFloat32,
-                "ssm_conv_silu: bias must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(conv_input.dim() == 3, "ssm_conv_silu: conv_input must be [B,K-1+T,C]");
-    int B = (int)conv_input.size(0);
-    int C = (int)conv_input.size(2);
-    int has_bias = (int)(bias.numel() > 0);
-    TYLOINFER_RUNTIME_CHECK(!has_bias || (bias.dim() == 1 && bias.size(0) == C), "ssm_conv_silu: bias must be [C]");
-    int K = 0;
-    int layout = 0; // 0: channel-major [C,1,K]/[C,K], 1: [K,C]
-    if (weight.dim() == 3) {
-        TYLOINFER_RUNTIME_CHECK(weight.size(0) == C && weight.size(1) == 1, "ssm_conv_silu: [C,1,K] weight mismatch");
-        K = (int)weight.size(2);
-        layout = 0;
-    } else {
-        TYLOINFER_RUNTIME_CHECK(weight.dim() == 2, "ssm_conv_silu: weight must be [C,1,K], [C,K], or [K,C]");
-        if (weight.size(0) == C) {
-            K = (int)weight.size(1);
-            layout = 0;
-        } else {
-            TYLOINFER_RUNTIME_CHECK(weight.size(1) == C, "ssm_conv_silu: 2D weight must be [C,K] or [K,C]");
-            K = (int)weight.size(0);
-            layout = 1;
-        }
-    }
-    int T = (int)n_tokens;
-    TYLOINFER_RUNTIME_CHECK(T > 0 && conv_input.size(1) == T + K - 1, "ssm_conv_silu: conv_input length must be K-1+T");
-    auto out = ::tyloi::cuda::empty({B, T, C}, conv_input.options());
-    dim3 blocks(B, (C + SSM_CONV_BD - 1) / SSM_CONV_BD);
-    ssm_conv_silu_kernel<<<blocks, SSM_CONV_BD, 0, mfq_current_cuda_stream()>>>(
-        conv_input.data_ptr<float>(), weight.data_ptr<float>(), bias.data_ptr<float>(), out.data_ptr<float>(),
-        B, T, C, K, layout, has_bias);
-    return out;
-}
+
 
 __global__ void ssm_conv_silu_decode_kernel(
     float* __restrict__ state,
@@ -123,47 +87,7 @@ __global__ void ssm_conv_silu_decode_kernel(
     state[state_base + (size_t)(K - 2) * (size_t)C] = x_cur;
 }
 
-::tyloi::DenseTensor ssm_conv_silu_decode_cuda(::tyloi::DenseTensor state, ::tyloi::DenseTensor x, ::tyloi::DenseTensor weight, ::tyloi::DenseTensor bias)
-{
-    TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type() == ::tyloi::kFloat32,
-                "ssm_conv_silu_decode: state must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
-                "ssm_conv_silu_decode: x must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
-                "ssm_conv_silu_decode: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == ::tyloi::kFloat32,
-                "ssm_conv_silu_decode: bias must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(state.dim() == 3, "ssm_conv_silu_decode: state must be [B,K-1,C]");
-    TYLOINFER_RUNTIME_CHECK(x.dim() == 3 && x.size(1) == 1, "ssm_conv_silu_decode: x must be [B,1,C]");
-    int B = (int)state.size(0);
-    int K = (int)state.size(1) + 1;
-    int C = (int)state.size(2);
-    TYLOINFER_RUNTIME_CHECK(x.size(0) == B && x.size(2) == C, "ssm_conv_silu_decode: x shape mismatch");
-    int has_bias = (int)(bias.numel() > 0);
-    TYLOINFER_RUNTIME_CHECK(!has_bias || (bias.dim() == 1 && bias.size(0) == C), "ssm_conv_silu_decode: bias must be [C]");
-    int layout = 0;
-    if (weight.dim() == 3) {
-        TYLOINFER_RUNTIME_CHECK(weight.size(0) == C && weight.size(1) == 1 && weight.size(2) == K,
-                    "ssm_conv_silu_decode: [C,1,K] weight mismatch");
-        layout = 0;
-    } else {
-        TYLOINFER_RUNTIME_CHECK(weight.dim() == 2,
-                    "ssm_conv_silu_decode: weight must be [C,1,K], [C,K], or [K,C]");
-        if (weight.size(0) == C && weight.size(1) == K) {
-            layout = 0;
-        } else {
-            TYLOINFER_RUNTIME_CHECK(weight.size(0) == K && weight.size(1) == C,
-                        "ssm_conv_silu_decode: 2D weight must be [C,K] or [K,C]");
-            layout = 1;
-        }
-    }
-    auto out = ::tyloi::cuda::empty({B, 1, C}, x.options());
-    dim3 blocks(B, (C + SSM_CONV_BD - 1) / SSM_CONV_BD);
-    ssm_conv_silu_decode_kernel<<<blocks, SSM_CONV_BD, 0, mfq_current_cuda_stream()>>>(
-        state.data_ptr<float>(), x.data_ptr<float>(), weight.data_ptr<float>(), bias.data_ptr<float>(),
-        out.data_ptr<float>(), B, C, K, layout, has_bias);
-    return out;
-}
+
 
 __device__ inline float ssm_decode_cur(
     const __half* __restrict__ qk,
@@ -331,115 +255,9 @@ __global__ void ssm_conv_qkv_gate_decode_kernel(float* state,const __half* qk,co
     }
 }
 
-std::vector<::tyloi::DenseTensor> linear_conv_qkv_gate_decode_cuda(
-    ::tyloi::DenseTensor state,::tyloi::DenseTensor qk,::tyloi::DenseTensor v,
-    ::tyloi::DenseTensor weight,::tyloi::DenseTensor alpha,::tyloi::DenseTensor beta,
-    ::tyloi::DenseTensor dt_bias,::tyloi::DenseTensor a_log,
-    int64_t nk,int64_t nv,int64_t dk,int64_t dv,double eps) {
-    TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type()==::tyloi::kFloat32 &&
-        state.dim()==3 && state.size(1)>0 && nk>0 && nv>0 && nv%nk==0 && dk>0 && dk<=256 && dv>0,
-        "GDN combined decode state/geometry disagrees");
-    const int B=int(state.size(0)),K=int(state.size(1))+1,C=int(2*nk*dk+nv*dv);
-    const auto same_device=[&](const ::tyloi::DenseTensor& x){return x.is_cuda() && x.device()==state.device();};
-    TYLOINFER_RUNTIME_CHECK(same_device(qk) && same_device(v) && qk.is_contiguous() && v.is_contiguous() &&
-        qk.scalar_type()==::tyloi::kFloat16 && v.scalar_type()==::tyloi::kFloat16 &&
-        qk.sizes().vec()==std::vector<int64_t>({B,1,2*nk*dk}) &&
-        v.sizes().vec()==std::vector<int64_t>({B,1,nv*dv}) && state.size(2)==C,
-        "GDN combined decode projection shape/dtype disagrees");
-    TYLOINFER_RUNTIME_CHECK(same_device(alpha) && same_device(beta) && alpha.scalar_type()==beta.scalar_type() &&
-        (alpha.scalar_type()==::tyloi::kFloat16 || alpha.scalar_type()==::tyloi::kFloat32) &&
-        alpha.sizes().vec()==std::vector<int64_t>({B,1,nv}) && beta.sizes()==alpha.sizes(),
-        "GDN combined decode gates disagree");
-    TYLOINFER_RUNTIME_CHECK(same_device(weight) && same_device(dt_bias) && same_device(a_log) &&
-        weight.is_contiguous() && dt_bias.is_contiguous() && a_log.is_contiguous() &&
-        weight.scalar_type()==::tyloi::kFloat32 && dt_bias.scalar_type()==::tyloi::kFloat32 && a_log.scalar_type()==::tyloi::kFloat32 &&
-        dt_bias.numel()==nv && a_log.numel()==nv,"GDN combined decode parameters disagree");
-    const bool channels_first=weight.sizes().vec()==std::vector<int64_t>({C,1,K});
-    TYLOINFER_RUNTIME_CHECK(channels_first || weight.sizes().vec()==std::vector<int64_t>({K,C}),
-        "GDN combined decode convolution shape disagrees");
-    MfqCudaGuard guard(state.device());auto options=state.options();
-    auto q=::tyloi::cuda::empty({B,nk,1,dk},options),k=::tyloi::cuda::empty_like(q),output=::tyloi::cuda::empty({B,nv,1,dv},options);
-    auto decay=::tyloi::cuda::empty({B,nv,1},options),beta_out=::tyloi::cuda::empty_like(decay);
-    const dim3 grid(unsigned(2*nk+(nv*dv+255)/256+(nv+255)/256),unsigned(B));
-    const auto launch=[&](auto tag) {
-        using Gate=decltype(tag);
-        ssm_conv_qkv_gate_decode_kernel<Gate><<<grid,256,0,mfq_current_cuda_stream()>>>(
-            state.data_ptr<float>(),reinterpret_cast<const __half*>(qk.data_ptr<mfq_half>()),
-            reinterpret_cast<const __half*>(v.data_ptr<mfq_half>()),weight.data_ptr<float>(),
-            alpha.data_ptr<Gate>(),beta.data_ptr<Gate>(),dt_bias.data_ptr<float>(),a_log.data_ptr<float>(),
-            q.data_ptr<float>(),k.data_ptr<float>(),output.data_ptr<float>(),decay.data_ptr<float>(),beta_out.data_ptr<float>(),
-            B,int(nk),int(nv),int(dk),int(dv),K,channels_first?0:1,float(eps),
-            alpha.stride(0),alpha.stride(2),beta.stride(0),beta.stride(2));
-    };
-    if(alpha.scalar_type()==::tyloi::kFloat16)launch(mfq_half{});else launch(float{});
-    TYLOINFER_CUDA_CHECK(cudaGetLastError());return {q,k,output,decay,beta_out};
-}
 
-std::vector<::tyloi::DenseTensor> linear_conv_qkv_decode_cuda(
-    ::tyloi::DenseTensor state,
-    ::tyloi::DenseTensor qk,
-    ::tyloi::DenseTensor v,
-    ::tyloi::DenseTensor weight,
-    ::tyloi::DenseTensor bias,
-    int64_t nk,
-    int64_t nv,
-    int64_t dk,
-    int64_t dv,
-    double eps)
-{
-    TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type() == ::tyloi::kFloat32,
-                "linear_conv_qkv_decode: state must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(qk.is_cuda() && qk.is_contiguous() && qk.scalar_type() == ::tyloi::kHalf,
-                "linear_conv_qkv_decode: qk must be cuda contiguous f16");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == ::tyloi::kHalf,
-                "linear_conv_qkv_decode: v must be cuda contiguous f16");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
-                "linear_conv_qkv_decode: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == ::tyloi::kFloat32,
-                "linear_conv_qkv_decode: bias must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(state.dim() == 3, "linear_conv_qkv_decode: state must be [B,K-1,C]");
-    TYLOINFER_RUNTIME_CHECK(qk.dim() == 3 && qk.size(1) == 1, "linear_conv_qkv_decode: qk must be [B,1,2*nk*dk]");
-    TYLOINFER_RUNTIME_CHECK(v.dim() == 3 && v.size(1) == 1, "linear_conv_qkv_decode: v must be [B,1,nv*dv]");
-    int B = (int)state.size(0);
-    int K = (int)state.size(1) + 1;
-    int qkC = (int)(2 * nk * dk);
-    int vsz = (int)(nv * dv);
-    int C = qkC + vsz;
-    TYLOINFER_RUNTIME_CHECK(qk.size(0) == B && qk.size(2) == qkC, "linear_conv_qkv_decode: qk shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(v.size(0) == B && v.size(2) == vsz, "linear_conv_qkv_decode: v shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(state.size(2) == C, "linear_conv_qkv_decode: state width mismatch");
-    TYLOINFER_RUNTIME_CHECK(nv % nk == 0, "linear_conv_qkv_decode: nv must be divisible by nk");
-    TYLOINFER_RUNTIME_CHECK(dk <= 256, "linear_conv_qkv_decode: dk > 256 is unsupported");
-    int has_bias = (int)(bias.numel() > 0);
-    TYLOINFER_RUNTIME_CHECK(!has_bias || (bias.dim() == 1 && bias.size(0) == C), "linear_conv_qkv_decode: bias must be [C]");
-    int layout = 0;
-    if (weight.dim() == 3) {
-        TYLOINFER_RUNTIME_CHECK(weight.size(0) == C && weight.size(1) == 1 && weight.size(2) == K,
-                    "linear_conv_qkv_decode: [C,1,K] weight mismatch");
-        layout = 0;
-    } else {
-        TYLOINFER_RUNTIME_CHECK(weight.dim() == 2 && weight.size(0) == K && weight.size(1) == C,
-                    "linear_conv_qkv_decode: weight must be [C,1,K] or [K,C]");
-        layout = 1;
-    }
-    auto opts = state.options();
-    auto q = ::tyloi::cuda::empty({B, (int)nk, 1, (int)dk}, opts);
-    auto k = ::tyloi::cuda::empty({B, (int)nk, 1, (int)dk}, opts);
-    auto vo = ::tyloi::cuda::empty({B, (int)nv, 1, (int)dv}, opts);
-    cudaStream_t stream = mfq_current_cuda_stream();
-    ssm_conv_qk_norm_decode_kernel<256><<<B * 2 * (int)nk, 256, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(qk.data_ptr<mfq_half>()),
-        reinterpret_cast<const __half*>(v.data_ptr<mfq_half>()), weight.data_ptr<float>(),
-        bias.data_ptr<float>(), q.data_ptr<float>(), k.data_ptr<float>(), B, (int)nk, (int)nv,
-        (int)dk, (int)dv, K, layout, has_bias, (float)eps);
-    dim3 v_blocks(B, (vsz + SSM_CONV_BD - 1) / SSM_CONV_BD);
-    ssm_conv_v_decode_kernel<<<v_blocks, SSM_CONV_BD, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(qk.data_ptr<mfq_half>()),
-        reinterpret_cast<const __half*>(v.data_ptr<mfq_half>()), weight.data_ptr<float>(),
-        bias.data_ptr<float>(), vo.data_ptr<float>(), B, (int)nk, (int)nv, (int)dk, (int)dv,
-        K, layout, has_bias);
-    return {q, k, vo};
-}
+
+
 
 template <int BD, bool Packed = false>
 __global__ void linear_conv_qk_norm_prefill_kernel(
@@ -579,125 +397,56 @@ __global__ void linear_conv_state_prefill_kernel(
     }
 }
 
-std::vector<::tyloi::DenseTensor> linear_conv_qkv_prefill_cuda(
-    ::tyloi::DenseTensor state,
-    ::tyloi::DenseTensor qk,
-    ::tyloi::DenseTensor v,
-    ::tyloi::DenseTensor weight,
-    ::tyloi::DenseTensor bias,
-    int64_t nk,
-    int64_t nv,
-    int64_t dk,
-    int64_t dv,
-    double eps)
-{
-    TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type() == ::tyloi::kFloat32,
-                "linear_conv_qkv_prefill: state must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(qk.is_cuda() && qk.is_contiguous() && qk.scalar_type() == ::tyloi::kHalf,
-                "linear_conv_qkv_prefill: qk must be contiguous CUDA f16");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == ::tyloi::kHalf,
-                "linear_conv_qkv_prefill: v must be contiguous CUDA f16");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
-                "linear_conv_qkv_prefill: weight must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == ::tyloi::kFloat32,
-                "linear_conv_qkv_prefill: bias must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(state.dim() == 3 && qk.dim() == 3 && v.dim() == 3,
-                "linear_conv_qkv_prefill: state/qk/v must be rank 3");
-    int B = (int)qk.size(0);
-    int T = (int)qk.size(1);
-    int K = (int)state.size(1) + 1;
-    int qkC = (int)(2 * nk * dk);
-    int vsz = (int)(nv * dv);
-    int C = qkC + vsz;
-    TYLOINFER_RUNTIME_CHECK(T > 1 && qk.size(2) == qkC && v.size(0) == B && v.size(1) == T && v.size(2) == vsz,
-                "linear_conv_qkv_prefill: qk/v shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(state.size(0) == B && state.size(2) == C, "linear_conv_qkv_prefill: state shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(dk <= 256 && K <= 8, "linear_conv_qkv_prefill: requires dk<=256 and K<=8");
-    int layout = 0;
-    if (weight.dim() == 3) {
-        TYLOINFER_RUNTIME_CHECK(weight.size(0) == C && weight.size(1) == 1 && weight.size(2) == K,
-                    "linear_conv_qkv_prefill: [C,1,K] weight mismatch");
-    } else {
-        TYLOINFER_RUNTIME_CHECK(weight.dim() == 2 && weight.size(0) == K && weight.size(1) == C,
-                    "linear_conv_qkv_prefill: weight must be [C,1,K] or [K,C]");
-        layout = 1;
-    }
-    int has_bias = (int)(bias.numel() > 0);
-    TYLOINFER_RUNTIME_CHECK(!has_bias || (bias.dim() == 1 && bias.size(0) == C), "linear_conv_qkv_prefill: bias shape mismatch");
 
-    auto opts = state.options();
-    auto qo = ::tyloi::cuda::empty({B, (int)nk, T, (int)dk}, opts);
-    auto ko = ::tyloi::cuda::empty_like(qo);
-    auto vo = ::tyloi::cuda::empty({B, (int)nv, T, (int)dv}, opts);
-    auto new_state = ::tyloi::cuda::empty_like(state);
-    cudaStream_t stream = mfq_current_cuda_stream();
-    linear_conv_qk_norm_prefill_kernel<256><<<B * T * 2 * (int)nk, 256, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(qk.data_ptr<mfq_half>()),
-        weight.data_ptr<float>(), bias.data_ptr<float>(), qo.data_ptr<float>(), ko.data_ptr<float>(),
-        B, T, (int)nk, (int)dk, C, K, layout, has_bias, (float)eps);
-    linear_conv_v_prefill_kernel<><<<dim3(B * T, (vsz + 255) / 256), 256, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(v.data_ptr<mfq_half>()),
-        weight.data_ptr<float>(), bias.data_ptr<float>(), vo.data_ptr<float>(),
-        B, T, (int)nk, (int)nv, (int)dk, (int)dv, C, K, layout, has_bias);
-    int state_total = B * (K - 1) * C;
-    linear_conv_state_prefill_kernel<><<<(state_total + 255) / 256, 256, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(qk.data_ptr<mfq_half>()),
-        reinterpret_cast<const __half*>(v.data_ptr<mfq_half>()), new_state.data_ptr<float>(),
-        B, T, qkC, vsz, C, K);
-    return {qo, ko, vo, new_state};
-}
 
 // Short verification windows keep the projected Q/K/V together. Their V
 // convolution also prepares the recurrent gates, with the original FP order.
-std::vector<::tyloi::DenseTensor> linear_conv_qkv_gate_short_cuda(
-    ::tyloi::DenseTensor state,::tyloi::DenseTensor qkv,
-    ::tyloi::DenseTensor weight,::tyloi::DenseTensor alpha,
-    ::tyloi::DenseTensor beta,::tyloi::DenseTensor dt_bias,
-    ::tyloi::DenseTensor a_log,int64_t nk,int64_t nv,int64_t width,double eps)
-{
-    TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && qkv.scalar_type()==::tyloi::kFloat16 &&
-        qkv.dim()==3 && qkv.size(1)>=2 && qkv.size(1)<=8 && nk>0 && nv>0 && nv%nk==0 &&
-        width>0 && width<=256 && qkv.stride(2)==1 && qkv.stride(1)>=qkv.size(2) &&
-        (qkv.size(0)==1 || qkv.stride(0)>=qkv.size(1)*qkv.stride(1)),
-        "short GDN requires row-strided half QKV and 2-8 tokens");
-    const int B=int(qkv.size(0)),T=int(qkv.size(1)),K=int(state.size(1))+1;
-    const int qkC=int(2*nk*width),vsz=int(nv*width),C=qkC+vsz;
-    TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type()==::tyloi::kFloat32 &&
-        state.sizes().vec()==std::vector<int64_t>({B,K-1,C}) && K>=2 && K<=8 && qkv.size(2)==C,
-        "short GDN convolution state geometry disagrees");
-    for(const auto* tensor:{&weight,&dt_bias,&a_log})
-        TYLOINFER_RUNTIME_CHECK(tensor->is_cuda() && tensor->is_contiguous() && tensor->scalar_type()==::tyloi::kFloat32 &&
-            tensor->device()==qkv.device(),"short GDN parameters require contiguous float on the QKV device");
-    TYLOINFER_RUNTIME_CHECK(alpha.is_cuda() && beta.is_cuda() &&
-        alpha.device()==qkv.device() && beta.device()==qkv.device() && state.device()==qkv.device() &&
-        alpha.sizes().vec()==std::vector<int64_t>({B,T,nv}) && beta.sizes()==alpha.sizes() &&
-        alpha.stride(2)==1 && beta.stride(2)==1 && alpha.stride(1)>=nv && beta.stride(1)>=nv &&
-        (B==1 || (alpha.stride(0)>=T*alpha.stride(1) && beta.stride(0)>=T*beta.stride(1))) &&
-        beta.scalar_type()==alpha.scalar_type() &&
-        (alpha.scalar_type()==::tyloi::kFloat16 || alpha.scalar_type()==::tyloi::kFloat32) &&
-        dt_bias.numel()==nv && a_log.numel()==nv,"short GDN gate geometry disagrees");
-    const int layout=weight.dim()==2?1:0;
-    TYLOINFER_RUNTIME_CHECK(layout?weight.sizes().vec()==std::vector<int64_t>({K,C}):
-        weight.sizes().vec()==std::vector<int64_t>({C,1,K}),"short GDN convolution weight geometry disagrees");
-    auto options=state.options();
-    auto q=::tyloi::cuda::empty({B,nk,T,width},options),k=::tyloi::cuda::empty_like(q),v=::tyloi::cuda::empty({B,nv,T,width},options);
-    auto next=::tyloi::cuda::empty_like(state),decay=::tyloi::cuda::empty({B,nv,T},options),bt=::tyloi::cuda::empty_like(decay);
-    auto* projected=reinterpret_cast<const __half*>(qkv.data_ptr<mfq_half>());
-    auto stream=mfq_current_cuda_stream();
-    linear_conv_qk_norm_prefill_kernel<256,true><<<B*T*2*int(nk),256,0,stream>>>(
-        state.data_ptr<float>(),projected,weight.data_ptr<float>(),nullptr,q.data_ptr<float>(),k.data_ptr<float>(),
-        B,T,int(nk),int(width),C,K,layout,0,float(eps),qkv.stride(0),qkv.stride(1));
-    const auto launch=[&]<class Gate>() {
-        linear_conv_v_prefill_kernel<true,Gate><<<dim3(B*T,(vsz+255)/256),256,0,stream>>>(
-            state.data_ptr<float>(),projected+qkC,weight.data_ptr<float>(),nullptr,v.data_ptr<float>(),
-            B,T,int(nk),int(nv),int(width),int(width),C,K,layout,0,
-            reinterpret_cast<const Gate*>(alpha.data_ptr()),reinterpret_cast<const Gate*>(beta.data_ptr()),
-            dt_bias.data_ptr<float>(),a_log.data_ptr<float>(),decay.data_ptr<float>(),bt.data_ptr<float>(),
-            qkv.stride(0),qkv.stride(1),alpha.stride(0),alpha.stride(1),beta.stride(0),beta.stride(1));
-    };
-    if(alpha.scalar_type()==::tyloi::kFloat16)launch.template operator()<__half>();else launch.template operator()<float>();
-    const int elements=B*(K-1)*C;
-    linear_conv_state_prefill_kernel<true><<<(elements+255)/256,256,0,stream>>>(
-        state.data_ptr<float>(),projected,projected+qkC,next.data_ptr<float>(),B,T,qkC,vsz,C,K,qkv.stride(0),qkv.stride(1));
-    return {q,k,v,next,decay,bt};
+
+
+namespace tyloi::cuda::ssm_conv_raw {
+void prefill(const Args& a, cudaStream_t s) {
+    dim3 blocks(a.batch,(a.channels+255)/256);
+    ssm_conv_silu_kernel<<<blocks,256,0,s>>>(a.input,a.weight,a.bias,a.output,a.batch,a.tokens,a.channels,a.kernel,a.layout,a.has_bias);
+}
+void decode(const Args& a, cudaStream_t s) {
+    dim3 blocks(a.batch,(a.channels+255)/256);
+    ssm_conv_silu_decode_kernel<<<blocks,256,0,s>>>(a.state,a.input,a.weight,a.bias,a.output,a.batch,a.channels,a.kernel,a.layout,a.has_bias);
+}
+void qkv_decode(const Args& a, cudaStream_t s) {
+    auto qk=static_cast<const __half*>(a.qk); auto v=static_cast<const __half*>(a.v);
+    ssm_conv_qk_norm_decode_kernel<256><<<a.batch*2*a.nk,256,0,s>>>(a.state,qk,v,a.weight,a.bias,a.q,a.k,a.batch,a.nk,a.nv,a.dk,a.dv,a.kernel,a.layout,a.has_bias,a.eps);
+    dim3 blocks(a.batch,(a.nv*a.dv+255)/256);
+    ssm_conv_v_decode_kernel<<<blocks,256,0,s>>>(a.state,qk,v,a.weight,a.bias,a.output,a.batch,a.nk,a.nv,a.dk,a.dv,a.kernel,a.layout,a.has_bias);
+}
+template<class Gate> void gate_decode(const Args& a, cudaStream_t s) {
+    dim3 grid(unsigned(2*a.nk+(a.nv*a.dv+255)/256+(a.nv+255)/256),unsigned(a.batch));
+    ssm_conv_qkv_gate_decode_kernel<Gate><<<grid,256,0,s>>>(a.state,static_cast<const __half*>(a.qk),static_cast<const __half*>(a.v),a.weight,
+        static_cast<const Gate*>(a.alpha),static_cast<const Gate*>(a.beta),a.dt_bias,a.a_log,a.q,a.k,a.output,a.decay,a.beta_out,
+        a.batch,a.nk,a.nv,a.dk,a.dv,a.kernel,a.layout,a.eps,a.a_stride0,a.a_stride1,a.b_stride0,a.b_stride1);
+}
+void qkv_gate_decode(const Args& a, cudaStream_t s) {
+    if(a.half_gate) gate_decode<__half>(a,s); else gate_decode<float>(a,s);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess)
+        throw std::runtime_error(std::string("GDN decode launch: ") + cudaGetErrorString(error));
+}
+void qkv_prefill(const Args& a, cudaStream_t s) {
+    auto qk=static_cast<const __half*>(a.qk); auto v=static_cast<const __half*>(a.v);
+    const int qkc=2*a.nk*a.dk, vsz=a.nv*a.dv;
+    linear_conv_qk_norm_prefill_kernel<256><<<a.batch*a.tokens*2*a.nk,256,0,s>>>(a.state,qk,a.weight,a.bias,a.q,a.k,a.batch,a.tokens,a.nk,a.dk,a.channels,a.kernel,a.layout,a.has_bias,a.eps);
+    linear_conv_v_prefill_kernel<><<<dim3(a.batch*a.tokens,(vsz+255)/256),256,0,s>>>(a.state,v,a.weight,a.bias,a.output,a.batch,a.tokens,a.nk,a.nv,a.dk,a.dv,a.channels,a.kernel,a.layout,a.has_bias);
+    const int n=a.batch*(a.kernel-1)*a.channels;
+    linear_conv_state_prefill_kernel<><<<(n+255)/256,256,0,s>>>(a.state,qk,v,a.next,a.batch,a.tokens,qkc,vsz,a.channels,a.kernel);
+}
+template<class Gate> void short_gate(const Args& a,cudaStream_t s,const __half* projected,int qkc,int vsz) {
+    linear_conv_v_prefill_kernel<true,Gate><<<dim3(a.batch*a.tokens,(vsz+255)/256),256,0,s>>>(a.state,projected+qkc,a.weight,nullptr,a.output,a.batch,a.tokens,a.nk,a.nv,a.dk,a.dv,a.channels,a.kernel,a.layout,0,
+        static_cast<const Gate*>(a.alpha),static_cast<const Gate*>(a.beta),a.dt_bias,a.a_log,a.decay,a.beta_out,a.q_stride0,a.q_stride1,a.a_stride0,a.a_stride1,a.b_stride0,a.b_stride1);
+}
+void qkv_gate_short(const Args& a,cudaStream_t s) {
+    auto projected=static_cast<const __half*>(a.qk); const int qkc=2*a.nk*a.dk, vsz=a.nv*a.dv;
+    linear_conv_qk_norm_prefill_kernel<256,true><<<a.batch*a.tokens*2*a.nk,256,0,s>>>(a.state,projected,a.weight,nullptr,a.q,a.k,a.batch,a.tokens,a.nk,a.dk,a.channels,a.kernel,a.layout,0,a.eps,a.q_stride0,a.q_stride1);
+    if(a.half_gate) short_gate<__half>(a,s,projected,qkc,vsz); else short_gate<float>(a,s,projected,qkc,vsz);
+    const int n=a.batch*(a.kernel-1)*a.channels;
+    linear_conv_state_prefill_kernel<true><<<(n+255)/256,256,0,s>>>(a.state,projected,projected+qkc,a.next,a.batch,a.tokens,qkc,vsz,a.channels,a.kernel,a.q_stride0,a.q_stride1);
+}
 }

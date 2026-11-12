@@ -7,7 +7,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
-#include "backend.h"
+#include "embedding_raw.h"
 
 
 namespace {
@@ -204,281 +204,48 @@ int launch_blocks(size_t elements) {
 
 }  // namespace
 
-
-::tyloi::DenseTensor embedding_lookup_cuda(
-        ::tyloi::DenseTensor weight,
-        ::tyloi::DenseTensor token_ids) {
-    TYLOINFER_RUNTIME_CHECK(
-        weight.is_cuda() && weight.is_contiguous() && weight.dim() == 2,
-        "embedding weight must be contiguous CUDA rank-2");
-    TYLOINFER_RUNTIME_CHECK(
-        weight.scalar_type() == ::tyloi::kFloat32 ||
-        weight.scalar_type() == ::tyloi::kFloat16,
-        "embedding weight must be fp16 or fp32");
-    TYLOINFER_RUNTIME_CHECK(
-        token_ids.is_cuda() && token_ids.is_contiguous() &&
-        token_ids.scalar_type() == ::tyloi::kInt64 &&
-        token_ids.device() == weight.device(),
-        "embedding token IDs must be contiguous CUDA int64 on the weight device");
-    const int vocabulary = static_cast<int>(weight.size(0));
-    const int width = static_cast<int>(weight.size(1));
-    const int token_count = static_cast<int>(token_ids.numel());
-    auto shape = token_ids.sizes().vec();
-    shape.push_back(width);
-    auto output = ::tyloi::cuda::empty(shape, weight.options());
-    if (token_count == 0) {
-        return output;
-    }
+namespace tyloi::cuda::embedding_raw {
+template<class T>
+void dense_t(const void* weight, const int64_t* ids, void* output, int tokens, int width,
+    int vocabulary, cudaStream_t stream) {
     constexpr int threads = 256;
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND_HALF(
-        weight.scalar_type(), "embedding_lookup_cuda", [&] {
-            const auto vector_addresses =
-                reinterpret_cast<std::uintptr_t>(weight.data_ptr()) |
-                reinterpret_cast<std::uintptr_t>(output.data_ptr());
-            const bool vector_aligned =
-                (vector_addresses & (alignof(uint4) - 1)) == 0;
-            if (token_count >= 64 && vector_aligned &&
-                (static_cast<size_t>(width) * sizeof(scalar_t)) %
-                    sizeof(uint4) == 0) {
-                constexpr int elements_per_vector =
-                    sizeof(uint4) / sizeof(scalar_t);
-                const size_t vectors =
-                    static_cast<size_t>(width) / elements_per_vector;
-                const size_t tiles = (vectors + threads - 1) / threads;
-                const int vector_blocks = launch_blocks(
-                    static_cast<size_t>(token_count) * tiles * threads);
-                dense_embedding_vector_kernel<scalar_t><<<
-                    vector_blocks, threads, 0, mfq_current_cuda_stream()>>>(
-                        weight.data_ptr<scalar_t>(),
-                        token_ids.data_ptr<int64_t>(),
-                        output.data_ptr<scalar_t>(),
-                        token_count,
-                        width,
-                        vocabulary);
-            } else {
-                const int flat_blocks = launch_blocks(
-                    static_cast<size_t>(token_count) * width);
-                dense_embedding_flat_kernel<scalar_t><<<
-                    flat_blocks, threads, 0, mfq_current_cuda_stream()>>>(
-                        weight.data_ptr<scalar_t>(),
-                        token_ids.data_ptr<int64_t>(),
-                        output.data_ptr<scalar_t>(),
-                        token_count,
-                        width,
-                        vocabulary);
-            }
-        });
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
+    const auto addresses = reinterpret_cast<std::uintptr_t>(weight) | reinterpret_cast<std::uintptr_t>(output);
+    if (tokens >= 64 && (addresses & (alignof(uint4) - 1)) == 0 &&
+        (static_cast<size_t>(width) * sizeof(T)) % sizeof(uint4) == 0) {
+        constexpr int elements = sizeof(uint4) / sizeof(T);
+        const size_t vectors = static_cast<size_t>(width) / elements;
+        const size_t tiles = (vectors + threads - 1) / threads;
+        dense_embedding_vector_kernel<T><<<launch_blocks(size_t(tokens) * tiles * threads), threads, 0, stream>>>(
+            static_cast<const T*>(weight), ids, static_cast<T*>(output), tokens, width, vocabulary);
+    } else {
+        dense_embedding_flat_kernel<T><<<launch_blocks(size_t(tokens) * width), threads, 0, stream>>>(
+            static_cast<const T*>(weight), ids, static_cast<T*>(output), tokens, width, vocabulary);
+    }
 }
-
-
+void dense(const void* weight, const int64_t* ids, void* output, int tokens, int width,
+    int vocabulary, NumericType type, cudaStream_t stream) {
+    if (type == NumericType::f16) dense_t<__half>(weight, ids, output, tokens, width, vocabulary, stream);
+    else dense_t<float>(weight, ids, output, tokens, width, vocabulary, stream);
+}
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-::tyloi::DenseTensor nint_selected_rows_cuda(
-        ::tyloi::DenseTensor packed,
-        ::tyloi::DenseTensor descriptors, int64_t width) {
-    TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() &&
-        packed.scalar_type() == ::tyloi::kUInt8 && packed.dim() == 1,
-        "NINT selected payload must be CUDA uint8 rank-1");
-    TYLOINFER_RUNTIME_CHECK(descriptors.is_cuda() && descriptors.is_contiguous() &&
-        descriptors.scalar_type() == ::tyloi::kInt32 &&
-        descriptors.dim() == 2 && descriptors.size(1) == 6 &&
-        descriptors.device() == packed.device(),
-        "NINT selected descriptors must be CUDA int32 [rows,6] on the payload device");
-    TYLOINFER_RUNTIME_CHECK(width > 0 && width <= std::numeric_limits<int>::max() &&
-        descriptors.size(0) <= std::numeric_limits<int>::max() / 6 &&
-        static_cast<uint64_t>(descriptors.size(0)) * width <= std::numeric_limits<uint32_t>::max(),
-        "NINT selected row dimensions exceed bounds");
-    const MfqCudaGuard guard(packed.device());
-    auto output = ::tyloi::cuda::empty({descriptors.size(0), width},
-        packed.options().dtype(::tyloi::kFloat16));
-    if (descriptors.size(0) == 0) return output;
-    TYLOINFER_RUNTIME_CHECK(packed.numel() > 0, "NINT selected payload is empty");
-    const size_t total = static_cast<size_t>(descriptors.size(0)) * width;
-    nint_selected_rows_kernel<<<launch_blocks(total), 256, 0, mfq_current_cuda_stream()>>>(
-        packed.data_ptr<uint8_t>(),
-        reinterpret_cast<const uint32_t*>(descriptors.data_ptr<int32_t>()),
-        nullptr,
-        reinterpret_cast<__half*>(output.data_ptr<mfq_half>()),
-        total, static_cast<int>(width));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
+void nint(const uint8_t* packed, const uint8_t* bits, const int64_t* offsets,
+    const uint8_t* sub_scale, const uint8_t* sub_min, const float* scale, const float* minimum,
+    const int64_t* ids, void* output, int tokens, int vocabulary, int groups, int group_size,
+    int width, cudaStream_t stream) {
+    nint_embedding_kernel<<<launch_blocks(size_t(tokens) * width), 256, 0, stream>>>(packed, bits,
+        offsets, sub_scale, sub_min, scale, minimum, ids, static_cast<__half*>(output), tokens,
+        vocabulary, groups, group_size, width);
 }
-
-
-void nint_selected_rows_into_cuda(
-        ::tyloi::DenseTensor packed, ::tyloi::DenseTensor descriptors,
-        ::tyloi::DenseTensor inverse, ::tyloi::DenseTensor output) {
-    TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() &&
-        packed.scalar_type() == ::tyloi::kUInt8 && packed.dim() == 1 && packed.numel() > 0,
-        "NINT selected payload must be nonempty CUDA uint8 rank-1");
-    TYLOINFER_RUNTIME_CHECK(descriptors.is_cuda() && descriptors.is_contiguous() &&
-        descriptors.scalar_type() == ::tyloi::kInt32 && descriptors.dim() == 2 &&
-        descriptors.size(1) == 6 && descriptors.device() == packed.device(),
-        "NINT selected descriptors must be CUDA int32 [rows,6]");
-    TYLOINFER_RUNTIME_CHECK(inverse.is_cuda() && inverse.is_contiguous() &&
-        inverse.scalar_type() == ::tyloi::kInt64 && inverse.dim() == 1 &&
-        inverse.device() == packed.device() && output.device() == packed.device() &&
-        output.is_contiguous() && output.scalar_type() == ::tyloi::kFloat16 &&
-        output.dim() == 2 && output.size(0) == inverse.numel() && output.size(1) > 0 &&
-        output.size(1) <= std::numeric_limits<int>::max() &&
-        output.numel() <= std::numeric_limits<uint32_t>::max(),
-        "NINT selected inverse/output geometry differs");
-    if (!output.numel()) return;
-    const MfqCudaGuard guard(packed.device());
-    nint_selected_rows_kernel<<<launch_blocks(output.numel()), 256, 0, mfq_current_cuda_stream()>>>(
-        packed.data_ptr<uint8_t>(), reinterpret_cast<const uint32_t*>(descriptors.data_ptr<int32_t>()),
-        inverse.data_ptr<int64_t>(), reinterpret_cast<__half*>(output.data_ptr<mfq_half>()),
-        output.numel(), static_cast<int>(output.size(1)));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+void selected(const uint8_t* packed, const int32_t* descriptors, const int64_t* inverse,
+    void* output, size_t count, int width, cudaStream_t stream) {
+    nint_selected_rows_kernel<<<launch_blocks(count), 256, 0, stream>>>(packed,
+        reinterpret_cast<const uint32_t*>(descriptors), inverse, static_cast<__half*>(output), count, width);
 }
-
-::tyloi::DenseTensor nint_embedding_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor token_ids,
-        int64_t width,
-        int64_t group_size) {
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.is_cuda() && bitstream.is_contiguous() &&
-        bitstream.scalar_type() == ::tyloi::kUInt8 &&
-        bitstream.dim() == 1,
-        "NINT embedding bitstream must be contiguous CUDA uint8 rank-1");
-    TYLOINFER_RUNTIME_CHECK(
-        row_q_bits.is_cuda() && row_q_bits.is_contiguous() &&
-        row_q_bits.scalar_type() == ::tyloi::kUInt8 &&
-        row_q_bits.dim() == 1 && row_q_bit_offsets.is_cuda() &&
-        row_q_bit_offsets.is_contiguous() &&
-        row_q_bit_offsets.scalar_type() == ::tyloi::kInt64 &&
-        row_q_bit_offsets.dim() == 1,
-        "NINT embedding q metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        subgroup_scale.is_cuda() && subgroup_scale.is_contiguous() &&
-        subgroup_scale.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_scale.dim() == 2 && subgroup_minimum.is_cuda() &&
-        subgroup_minimum.is_contiguous() &&
-        subgroup_minimum.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_minimum.sizes() == subgroup_scale.sizes(),
-        "NINT embedding subgroup metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        neuron_scale.is_cuda() && neuron_scale.is_contiguous() &&
-        neuron_scale.scalar_type() == ::tyloi::kFloat32 &&
-        neuron_minimum.is_cuda() && neuron_minimum.is_contiguous() &&
-        neuron_minimum.scalar_type() == ::tyloi::kFloat32,
-        "NINT embedding neuron metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        token_ids.is_cuda() && token_ids.is_contiguous() &&
-        token_ids.scalar_type() == ::tyloi::kInt64,
-        "NINT embedding token IDs must be contiguous CUDA int64");
-    const int vocabulary = static_cast<int>(subgroup_scale.size(0));
-    const int groups = static_cast<int>(subgroup_scale.size(1));
-    TYLOINFER_RUNTIME_CHECK(
-        vocabulary > 0 && groups > 0 && group_size >= 4 && group_size <= 64 &&
-        width > 0 && width <= static_cast<int64_t>(groups) * group_size,
-        "NINT embedding dimensions are invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        row_q_bits.numel() == vocabulary &&
-        row_q_bit_offsets.numel() == vocabulary &&
-        neuron_scale.numel() == vocabulary &&
-        neuron_minimum.numel() == vocabulary,
-        "NINT embedding row metadata shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.device() == row_q_bits.device() &&
-        bitstream.device() == row_q_bit_offsets.device() &&
-        bitstream.device() == subgroup_scale.device() &&
-        bitstream.device() == subgroup_minimum.device() &&
-        bitstream.device() == neuron_scale.device() &&
-        bitstream.device() == neuron_minimum.device() &&
-        bitstream.device() == token_ids.device(),
-        "NINT embedding tensors must share one CUDA device");
-    const int token_count = static_cast<int>(token_ids.numel());
-    auto shape = token_ids.sizes().vec();
-    shape.push_back(width);
-    auto output = ::tyloi::cuda::empty(
-        shape, bitstream.options().dtype(::tyloi::kFloat16));
-    if (token_count == 0) {
-        return output;
-    }
-    constexpr int threads = 256;
-    const int blocks = launch_blocks(
-        static_cast<size_t>(token_count) * width);
-    nint_embedding_kernel<<<
-        blocks, threads, 0, mfq_current_cuda_stream()>>>(
-            bitstream.data_ptr<uint8_t>(),
-            row_q_bits.data_ptr<uint8_t>(),
-            row_q_bit_offsets.data_ptr<int64_t>(),
-            subgroup_scale.data_ptr<uint8_t>(),
-            subgroup_minimum.data_ptr<uint8_t>(),
-            neuron_scale.data_ptr<float>(),
-            neuron_minimum.data_ptr<float>(),
-            token_ids.data_ptr<int64_t>(),
-            reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
-            token_count,
-            vocabulary,
-            groups,
-            static_cast<int>(group_size),
-            static_cast<int>(width));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
+void nint8(const uint8_t* q, const void* scale, const int64_t* ids, void* output,
+    int tokens, int vocabulary, int groups, int width, cudaStream_t stream) {
+    nint8_zero_embedding_kernel<<<launch_blocks(size_t(tokens) * width), 256, 0, stream>>>(
+        reinterpret_cast<const int8_t*>(q), static_cast<const __half*>(scale), ids,
+        static_cast<__half*>(output), tokens, vocabulary, groups, width);
 }
-
-
-::tyloi::DenseTensor nint8_zero_embedding_lookup_cuda(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        ::tyloi::DenseTensor token_ids,
-        int64_t width) {
-    TYLOINFER_RUNTIME_CHECK(
-        quantized.is_cuda() && quantized.is_contiguous() &&
-        quantized.scalar_type() == ::tyloi::kUInt8 &&
-        quantized.dim() == 3 && quantized.size(2) == 32,
-        "NINT8-0 embedding q must be contiguous CUDA uint8 [V,G,32]");
-    TYLOINFER_RUNTIME_CHECK(
-        scale.is_cuda() && scale.is_contiguous() &&
-        scale.scalar_type() == ::tyloi::kFloat16 &&
-        scale.dim() == 2 && scale.size(0) == quantized.size(0) &&
-        scale.size(1) == quantized.size(1),
-        "NINT8-0 embedding scale must be contiguous CUDA fp16 [V,G]");
-    TYLOINFER_RUNTIME_CHECK(
-        token_ids.is_cuda() && token_ids.is_contiguous() &&
-        token_ids.scalar_type() == ::tyloi::kInt64 &&
-        token_ids.device() == quantized.device() &&
-        scale.device() == quantized.device(),
-        "NINT8-0 embedding tensors must share one CUDA device");
-    TYLOINFER_RUNTIME_CHECK(
-        width > 0 && width <= quantized.size(1) * 32,
-        "NINT8-0 embedding width is invalid");
-    const int vocabulary = static_cast<int>(quantized.size(0));
-    const int groups = static_cast<int>(quantized.size(1));
-    const int token_count = static_cast<int>(token_ids.numel());
-    auto shape = token_ids.sizes().vec();
-    shape.push_back(width);
-    auto output = ::tyloi::cuda::empty(
-        shape, quantized.options().dtype(::tyloi::kFloat16));
-    if (token_count == 0) {
-        return output;
-    }
-    constexpr int threads = 256;
-    const int blocks = launch_blocks(
-        static_cast<size_t>(token_count) * width);
-    nint8_zero_embedding_kernel<<<
-        blocks, threads, 0, mfq_current_cuda_stream()>>>(
-            reinterpret_cast<const int8_t *>(
-                quantized.data_ptr<uint8_t>()),
-            reinterpret_cast<const __half *>(scale.data_ptr<mfq_half>()),
-            token_ids.data_ptr<int64_t>(),
-            reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
-            token_count,
-            vocabulary,
-            groups,
-            static_cast<int>(width));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
-}
-
 #endif
+}
