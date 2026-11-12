@@ -19,6 +19,7 @@
 #endif
 #include "engine/drain.h"
 #ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/program.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/source/model_config.h"
 #include "engine/models/session/cache.h"
@@ -149,36 +150,10 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 config.continuous_batch.cpu_offload = !load.dsv4_cpu_offload_layers.empty();
                 config.continuous_batch.cached_slots = load.weights.min_slots;
             }
-            const auto kv_options = ::tyloi::cuda::options::qsa_kv_offload();
-            kv = std::make_shared<KvMemoryManager>();
-            if (kv_options.gpu_budget_bytes) {
-                kv.reset();
-                KvOffloadConfig config;
-                config.gpu_budget_bytes = kv_options.gpu_budget_bytes;
-                config.ram_budget_bytes = cuda_has_separate_memory() ? kv_options.ram_budget_bytes : 0;
-                config.buffer_bytes = std::min<std::size_t>(config.buffer_bytes, config.gpu_budget_bytes / 4);
-                config.directory = kv_options.directory;
-                offload = std::make_shared<KvOffloadStore>(std::move(config));
-            }
-            root->configure_kv(kv, offload);
+            internal::configure_model_kv(*root, kv, offload);
             {
                 auto scope = root->enter(load.layer_placement.primary_device());
-                auto definition = models::config_json(*source, options.config_path);
-                definition = configure_yarn(load.yarn, load.yarn_context_extension,
-                    std::move(definition), models::graph(*source).backbone, options.context_size);
-                if (!load.dsv4_cpu_offload_layers.empty()) load.drop_file_cache = true;
-                auto loader = weights->loader(*source, load.weights,
-                    {load.layer_placement.primary_device(), false, load.drop_file_cache,
-                     load.tensor_parallel, moe_parallel_config(load)});
-                model = models::load(source, definition, loader, load.layer_placement,
-                    models::LoadOptions{.context = options.context_size, .gpu_layers = load.n_gpu_layers,
-                        .expert_parallel = load.expert_parallel.enabled(), .yarn = load.yarn,
-                        .cpu_offload_layers = load.dsv4_cpu_offload_layers,
-                        .engram_cache_rows = load.deepseek_v41_engram_cache_rows, .host_tokens = load.cache.pipeline,
-                        .mirror_scalars = load.tensor_parallel_mirror_linear_attention_scalars,
-                        .optional_components = true,
-                        .transfer_auto = weights->transfer() == tyloi::weights::Cache::Transfer::automatic,
-                        .transposed = root->mode().transposed});
+                model = internal::load_model(options, load, *root, *weights, source, true);
                 if (offload && !model->info().streamed_kv)
                     throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 state = model->make_state();

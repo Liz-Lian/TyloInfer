@@ -75,7 +75,8 @@ else()
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
         ${PROJECT_SOURCE_DIR}/engine/weights/moe/disabled.cpp)
 endif()
-add_library(mfq-cuda-loading OBJECT ${TYLOINFER_CUDA_LOADING_SOURCES})
+add_library(mfq-cuda-loading OBJECT ${TYLOINFER_CUDA_LOADING_SOURCES}
+    ${PROJECT_SOURCE_DIR}/engine/weights/rows.cpp)
 mfq_configure_cuda_engine_target(mfq-cuda-loading)
 target_compile_definitions(mfq-cuda-loading PRIVATE
     TYLOINFER_NATIVE_CUDA=1 NOMINMAX)
@@ -102,6 +103,9 @@ set(TYLOINFER_CUDA_ENGINE_SOURCES
     ${TYLOINFER_CUDA_MODEL_SOURCES}
 )
 add_library(mfq-cuda-engine STATIC
+    ${PROJECT_SOURCE_DIR}/engine/program.cpp
+    ${PROJECT_SOURCE_DIR}/engine/scheduler/scheduler.cpp
+    ${PROJECT_SOURCE_DIR}/engine/scheduler/request.cpp
     $<TARGET_OBJECTS:mfq-cuda-ops>
     $<TARGET_OBJECTS:mfq-cuda-execution>
     $<TARGET_OBJECTS:mfq-cuda-loading>
@@ -169,7 +173,9 @@ if(TYLOINFER_BUILD_CLI_TOOLS)
             endif()
         endif()
         find_package(Torch REQUIRED)
+        mfq_add_transport(mfq-transport-torch)
         add_library(mfq-cuda-torch-engine STATIC
+            ${PROJECT_SOURCE_DIR}/engine/scheduler/scheduler.cpp
             ${PROJECT_SOURCE_DIR}/engine/models/qwen35/batch_ops.cpp
             ${PROJECT_SOURCE_DIR}/engine/generation/cuda.cpp
             ${PROJECT_SOURCE_DIR}/engine/generation/mtp/cuda.cpp

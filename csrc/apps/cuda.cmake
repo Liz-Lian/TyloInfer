@@ -7,7 +7,7 @@ if(TARGET mfq-transport)
         ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     )
     target_link_libraries(mfq-runtime PRIVATE
-        mfq-cuda-engine mfq-transport)
+        mfq-cuda-engine mfq-cuda-reference mfq-transport)
 endif()
 
 add_executable(mfq-diagnostics
@@ -34,7 +34,7 @@ if(TARGET mfq-cuda-torch-engine)
         ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     )
     target_link_libraries(mfq-runtime-torch PRIVATE
-        mfq-cuda-torch-engine mfq-transport)
+        mfq-cuda-torch-engine mfq-transport-torch)
     set_target_properties(mfq-runtime-torch PROPERTIES
         CUDA_ARCHITECTURES "${TYLOINFER_CUDA_ARCHITECTURES}"
         CUDA_RUNTIME_LIBRARY Shared

@@ -48,7 +48,11 @@ set(TYLOINFER_MODELS_CUDA_SOURCES
 )
 set(TYLOINFER_MODELS_CUDA_SOURCES "${TYLOINFER_MODELS_CUDA_SOURCES}" PARENT_SCOPE)
 
-add_library(mfq-cuda-models OBJECT ${TYLOINFER_MODELS_CUDA_SOURCES})
+add_library(mfq-cuda-models OBJECT ${TYLOINFER_MODELS_CUDA_SOURCES}
+    ${PROJECT_SOURCE_DIR}/engine/models/layers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/layers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/gemma4/layers.cpp
+)
 mfq_configure_cuda_backend_target(mfq-cuda-models)
 target_link_libraries(mfq-cuda-models PRIVATE mfq-engine)
 target_compile_definitions(mfq-cuda-models PRIVATE

@@ -1,5 +1,9 @@
 #include "cli.h"
 #include "run.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/program.h"
+#include "eval/reference.h"
+#else
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/common/components.h"
@@ -12,6 +16,7 @@
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/forward.h"
 #include "engine/generation/ops.h"
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -27,6 +32,7 @@
 #include <vector>
 
 namespace tyloi::cuda::commands {
+#ifndef TYLOINFER_NATIVE_CUDA
 namespace {
 
 template <typename Model>
@@ -362,6 +368,7 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     return 0;
 }
 }
+#endif
 
 int run_reference(int argc, char** argv) {
     return internal::with_command_errors([&] {
@@ -381,6 +388,10 @@ int run_reference(int argc, char** argv) {
             usage_error("native reference requires --model, --ctx-size, --reference-input and --reference-output");
         if (!std::filesystem::is_directory(options.model_path))
             usage_error("native reference requires an original HF model directory");
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto program = Program::open(options);
+        return tyloi::eval::reference(*program, input, output, options.context_size, resident);
+#else
         std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
         tyloi::cuda::RoutedCache weights;
         std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
@@ -396,6 +407,7 @@ int run_reference(int argc, char** argv) {
             return generate<tyloi::cuda::qwen35::Model>(execution, options, input, output, resident);
         if (backbone == "gemma4") return generate<tyloi::cuda::gemma4::Model>(execution, options, input, output, resident);
         throw std::runtime_error("native reference architecture is unsupported: " + backbone);
+#endif
     });
 }
 } // namespace tyloi::cuda::commands

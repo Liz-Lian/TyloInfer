@@ -36,6 +36,10 @@ struct LoadOptions {
 std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
            const tyloi::models::LoadOptions& options);
+/** Assemble shared model metadata and normalization without loading layers or full tables. */
+std::unique_ptr<Model> load_deferred(std::shared_ptr<const tyloi::ModelSource> source,
+           std::string_view definition, const ::tyloi::weights::Loader& weights,
+           LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options);
 #else
 /** Load Qwen weights using the configured model definition. */
 Model load(std::shared_ptr<const tyloi::ModelSource> source,

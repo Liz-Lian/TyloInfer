@@ -29,15 +29,10 @@ add_library(mfq-engine STATIC
     requests/policy.cpp
     requests/processor.cpp
     requests/tokenizer.cpp
-    scheduler/scheduler.cpp
     state/session/paged.cpp
     state/session/prefix_cache.cpp
     state/qsa_sequence.cpp
 )
-if(TYLOINFER_BUILD_CUDA_ENGINE)
-    target_sources(mfq-engine PRIVATE scheduler/request.cpp)
-    target_compile_definitions(mfq-engine PUBLIC TYLOINFER_NATIVE_CUDA=1)
-endif()
 add_library(mfq::engine ALIAS mfq-engine)
 target_include_directories(mfq-engine
     PUBLIC

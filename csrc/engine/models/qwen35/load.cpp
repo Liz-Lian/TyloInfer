@@ -292,11 +292,12 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+static std::unique_ptr<Model> load_impl(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
-           const tyloi::models::LoadOptions& policy) {
+           const tyloi::models::LoadOptions& policy, bool deferred) {
     const LoadOptions options{.context_size = policy.context, .gpu_layers = policy.gpu_layers,
-        .expert_parallel = policy.expert_parallel, .mirror_scalars = policy.mirror_scalars};
+        .expert_parallel = policy.expert_parallel, .mirror_scalars = policy.mirror_scalars,
+        .load_layers = !deferred, .load_input_output = !deferred};
     auto yarn = policy.yarn;
     int cpu_layers = 0;
 #else
@@ -434,13 +435,27 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     model.primary_device = weights.placement.device;
     model.cpu_layers = cpu_layers;
     model.transposed = policy.transposed;
-    model.components = std::make_unique<Components>(Components::load(model, weights, placement,
+    if (!deferred) model.components = std::make_unique<Components>(Components::load(model, weights, placement,
         cpu_layers, policy.optional_components, !policy.cpu_offload_layers.empty(), policy.transfer_auto));
     return result;
 #else
     return model;
 #endif
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+           const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+           const tyloi::models::LoadOptions& options) {
+    return load_impl(std::move(source), definition, weights, placement, options, false);
+}
+
+std::unique_ptr<Model> load_deferred(std::shared_ptr<const tyloi::ModelSource> source,
+           std::string_view definition, const ::tyloi::weights::Loader& weights,
+           LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options) {
+    return load_impl(std::move(source), definition, weights, placement, options, true);
+}
+#endif
 
 std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
                                          const Config& config,
