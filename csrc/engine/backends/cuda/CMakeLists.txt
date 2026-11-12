@@ -87,7 +87,6 @@ set(TYLOINFER_CUDA_KERNEL_SOURCES
     ${TYLOINFER_CUDA_KERNEL_ROOT}/sparse_mma_raw.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/qwen4_exp.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/ple_fused.cu
-    ${TYLOINFER_CUDA_KERNEL_ROOT}/glm5_next.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/gated_delta_net.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/gdn_decode_window.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/glm_dsa.cu
@@ -138,6 +137,9 @@ add_library(mfq-cuda-native-kernels STATIC
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/embedding.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/kv_cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ssm_conv.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/glm5_next.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/wrappers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/gdn_wrappers.cpp
     ${TYLOINFER_CUDA_KERNEL_ROOT}/float_projection.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_quantization.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_hot_cache.cu

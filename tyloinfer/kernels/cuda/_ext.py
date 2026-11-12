@@ -48,7 +48,6 @@ _SOURCES = [
         "selected_attention.cu",
         "sparse_mma_raw.cu",
         "qwen4_exp.cu",
-        "glm5_next.cu",
         "sampling.cu",
         "ssm_conv.cu",
         "moe.cu",
@@ -75,6 +74,9 @@ _SOURCES = [
     os.path.join(_DIR, "embedding.cpp"),
     os.path.join(_DIR, "kv_cache.cpp"),
     os.path.join(_DIR, "ssm_conv.cpp"),
+    os.path.join(_DIR, "glm5_next.cpp"),
+    os.path.join(_DIR, "attention.cpp"),
+    os.path.join(_DIR, "gated_delta_net.cpp"),
     os.path.join(_CUDA_NATIVE_INCLUDE, "env.cpp"),
 ]
 _module = None

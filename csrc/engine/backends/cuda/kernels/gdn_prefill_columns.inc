@@ -105,27 +105,9 @@ __global__ void gdn_prefill_columns_kernel(
 template<bool TRANSPOSED_STATE, bool TILED_HEADS>
 void launch_gdn_prefill_columns(int columns, int B, int Hq, int Hv, int T,
     const float* q, const float* k, const float* v, const float* g, const float* beta,
-    const float* state, float* out, float* next_state, cudaStream_t stream,bool prepared_decay=false) {
+    const float* state, float* out, float* next_state, cudaStream_t stream,bool prepared_decay,
+    bool pipelined,bool staged) {
     const dim3 block(32, 4);
-    const auto* pipeline_option=tyloi::cuda::env_lookup("TYLOINFER_GDN_PREFILL_PIPELINED");
-    // The verified single-sequence 48/64-head grids do not lose resident
-    // blocks from the extra q/k registers. Other shapes retain the old kernel.
-    const bool pipelined=pipeline_option?std::atoi(pipeline_option)!=0:
-        B==1 && (Hv==48 || Hv==64);
-    const auto* staged_option=tyloi::cuda::env_lookup("TYLOINFER_GDN_PREFILL_STAGED");
-    bool staged=false;
-    if(columns==4 && T>8) {
-        if(staged_option)staged=std::atoi(staged_option)!=0;
-        else if(pipelined && T>=128 && B==1 && (Hv==48 || Hv==64)) {
-            static thread_local int cached_device=-1,cached_major=0;
-            const int device=mfq_current_cuda_device();
-            if(device!=cached_device) {
-                TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&cached_major,cudaDevAttrComputeCapabilityMajor,device));
-                cached_device=device;
-            }
-            staged=cached_major>=8;
-        }
-    }
     const auto launch=[&](auto prepared) {
     constexpr bool cached=decltype(prepared)::value;
     if(staged) {
@@ -134,7 +116,7 @@ void launch_gdn_prefill_columns(int columns, int B, int Hq, int Hv, int T,
         static std::atomic<bool> reported{false};
         if(!reported.exchange(true,std::memory_order_relaxed)) {
             cudaFuncAttributes attributes{};
-            TYLOINFER_CUDA_CHECK(cudaFuncGetAttributes(&attributes,
+            gdn_check(cudaFuncGetAttributes(&attributes,
                 reinterpret_cast<const void*>(gdn_prefill_staged_kernel<TRANSPOSED_STATE,TILED_HEADS,cached>)));
             std::fprintf(stderr,"runtime_gdn_prefill_staged enabled=1 tokens=%d heads=%d tile=8 columns=4 registers=%d shared_bytes=%llu\n",
                 T,Hv,attributes.numRegs,(unsigned long long)attributes.sharedSizeBytes);

@@ -380,7 +380,7 @@ torch::Tensor nvq_embedding_lookup_cuda(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     namespace qwen = mfq_qwen4_jit;
-    namespace glm = mfq_glm5_next;
+    namespace glm = mfq_glm5_jit;
     using pybind11::arg;
     m.def("qwen4_grouped_rms_norm", &qwen::grouped_rms_norm,
         arg("value"), arg("weight"), arg("group_size"), arg("eps") = 1e-6);
