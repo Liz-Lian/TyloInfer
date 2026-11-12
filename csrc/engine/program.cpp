@@ -6,8 +6,15 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/drain.h"
+#include "engine/budget.h"
+#include "engine/config.h"
+#include "engine/generation/decode.h"
+#include "engine/generation/prefill_budget.h"
+#include "engine/generation/run.h"
+#include "engine/generation/mtp/state.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/layers.h"
 #include "engine/models/groups.h"
 #include "engine/models/ffn.h"
@@ -18,17 +25,38 @@
 #include "engine/models/source/model_graph.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
+#include "engine/state/session/sessions.h"
 #include "engine/weights/cache.h"
 #include "engine/weights/memory.h"
 
 #include <algorithm>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
 namespace tyloi::cuda {
 namespace {
+/** Drain before retiring a request's coroutine and release its exclusive owner flag. */
+struct RequestWork {
+    Program& program;
+    engine::Generation job;
+    bool& running;
+    bool complete = false;
+    void drain() noexcept {
+        try { program.drain(); }
+        catch (const std::exception& error) { std::cerr << "request_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "request_cleanup error=unknown\n"; }
+    }
+    ~RequestWork() noexcept {
+        if (!complete) drain();
+        job = {};
+        if (!complete) drain();
+        running = false;
+    }
+};
+
 struct Assembly {
     std::string definition;
     weights::Loader loader;
@@ -65,6 +93,24 @@ Assembly assembly(const CudaLoadOptions& options, CudaLoadConfig& config,
 } // namespace
 
 namespace internal {
+void configure_generation(engine::Config& runtime, const CudaLoadConfig& load,
+        Executor& executor, const weights::Cache& weights, const models::Info& info) {
+    runtime.profile_decode = load.profile_decode;
+    runtime.profile_mtp = load.profile_mtp;
+    runtime.trace_moe = load.trace_moe;
+    runtime.prefetch = load.prefetch;
+    runtime.devices = cuda_devices(load);
+    runtime.online_budget = load.layer_placement.devices.size() <= 1 &&
+        !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
+    const auto graph_weights = info.graph_weights == models::GraphWeights::resident
+        ? ::tyloi::weights::Cache::Graph::legacy : ::tyloi::weights::Cache::Graph::native;
+    const bool graph_allowed = info.decode_graph && !executor.attention_options().kernels.decode_aten &&
+        model_parallel_cuda_graph_enabled(load, executor, weights) &&
+        weights.graph_safe(graph_weights, moe_parallel_config(load).enabled());
+    runtime.decode_graph.enabled &= graph_allowed;
+    runtime.continuous_batch.cuda_graph &= graph_allowed;
+}
+
 void configure_model_kv(Executor& executor, std::shared_ptr<KvMemoryManager>& kv,
         std::shared_ptr<KvOffloadStore>& offload) {
     const auto options = cuda::options::qsa_kv_offload();
@@ -103,7 +149,15 @@ struct Program::Impl {
     std::unique_ptr<models::Layers> layers;
     std::unique_ptr<models::Groups> groups;
     std::unique_ptr<models::Ffn> ffn;
+    engine::Config run_config;
+    models::Info run_info{};
+    models::ForwardOptions forward{};
+    std::unique_ptr<tyloi::state::Sessions> sessions;
+    std::optional<engine::Decode> graph;
+    std::optional<engine::Budget> budget;
+    engine::mtp::State mtp_policy;
     bool attempted = false;
+    bool run_attempted = false, run_ready = false, running = false;
 
     /** Open the source only for a model-loading operation, after execution setup. */
     void open_source() {
@@ -122,6 +176,9 @@ struct Program::Impl {
         try { scope = executor->enter(config.layer_placement.primary_device()); }
         catch (const std::exception& error) { std::cerr << "program_cleanup error=" << error.what() << '\n'; }
         catch (...) { std::cerr << "program_cleanup error=unknown\n"; }
+        budget.reset();
+        graph.reset();
+        sessions.reset();
         state.reset();
         layers.reset();
         groups.reset();
@@ -253,6 +310,75 @@ models::State& Program::state() { if (!impl_->state) throw std::logic_error("sta
 models::Layers& Program::layers() { if (!impl_->layers) throw std::logic_error("layers not loaded"); return *impl_->layers; }
 models::Groups& Program::groups() { if (!impl_->groups) throw std::logic_error("groups not loaded"); return *impl_->groups; }
 models::Ffn& Program::ffn() { if (!impl_->ffn) throw std::logic_error("FFN not loaded"); return *impl_->ffn; }
+
+void Program::configure(engine::Config config) {
+    auto& p = *impl_;
+    if (!p.model || !p.state) throw std::logic_error("model not loaded");
+    if (p.run_attempted) throw std::logic_error("generation configuration already attempted");
+    p.run_attempted = true;
+    drain();
+    auto scope = p.executor->enter(p.config.layer_placement.primary_device());
+    ::tyloi::weights::LoadScope memory(*p.ledger);
+    p.run_config = std::move(config);
+    auto& runtime = p.run_config;
+    p.run_info = p.model->info();
+    if (auto* predictor = p.model->mtp(); predictor &&
+        (!p.state->predictor || !p.state->predictor->belongs_to(*predictor)))
+        throw std::invalid_argument("predictor state is unavailable or belongs to another model");
+    internal::configure_generation(runtime, p.config, *p.executor, *p.weights, p.run_info);
+    const auto mode = p.executor->forward_mode(p.config.layer_placement.primary_device());
+    p.forward = {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
+    p.sessions = internal::make_sessions(*p.source, runtime.session_cache, runtime.prefix_cache,
+        p.run_info.max_context, p.state->supports_text_session_state(), p.state->supports_paged_text_session_state());
+    p.graph.emplace(p.run_info.max_context, p.executor->device(), p.executor->graph());
+    p.budget.emplace(*p.ledger, *p.weights, *p.sessions, *p.executor);
+    p.budget->bind(p.model->mtp() != nullptr);
+    if (runtime.resident_budget_bytes) {
+        if (!runtime.online_budget)
+            throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
+        engine::SessionCommand command;
+        command.kind = engine::SessionCommand::Kind::memory_budget;
+        command.bytes = runtime.resident_budget_bytes;
+        auto change = p.budget->change(command);
+        p.weights->settle();
+        p.graph->invalidate();
+        p.state->release_graphs();
+        auto* predictor = p.model->mtp();
+        if (predictor && (!p.state->predictor || !p.state->predictor->belongs_to(*predictor)))
+            throw std::invalid_argument("predictor state is unavailable or belongs to another model");
+        for (const auto& [device, bytes] : p.state->reset_growth(1))
+            if (bytes) p.budget->reserve_kv(device, engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+        p.state->reset(1);
+        if (predictor) {
+            for (const auto& [device, bytes] : predictor->reset_growth(*p.state->predictor, 1))
+                if (bytes) p.budget->reserve_kv(device, engine::prefill_budget_add(bytes, std::size_t(64) << 20));
+            predictor->reset(*p.state->predictor, 1);
+        }
+        (void)change.apply();
+    }
+    p.run_ready = true;
+}
+
+StepSequence<engine::EventData> Program::generate(engine::InferenceRequest& request,
+        engine::InferenceOutput& output, bool predictor, std::string id) {
+    auto& p = *impl_;
+    if (p.running) throw std::logic_error("program request is already running");
+    if (!p.run_ready) configure(engine::resolve_config());
+    p.running = true;
+    RequestWork work{*this, {}, p.running};
+    work.job = engine::generate({*p.model, *p.state, *p.executor, *p.budget, *p.graph, *p.weights,
+        *p.sessions, p.run_info, p.run_config, p.forward, p.source.get(), p.mtp_policy,
+        predictor ? p.model->mtp() : nullptr}, request, output, std::move(id));
+    while (auto step = work.job.next()) co_yield std::move(step);
+    work.complete = true;
+}
+
+Program::Stats Program::stats() const {
+    const auto& p = *impl_;
+    return {p.mtp_policy.stats, p.mtp_policy.cycles, p.mtp_policy.accepted, p.mtp_policy.rejected,
+        p.graph ? p.graph->captures : 0, p.graph ? p.graph->reuses : 0};
+}
+
 void Program::drain() {
     auto& p = *impl_;
     if (!p.executor || !p.weights) throw std::logic_error("program closed");

@@ -11,6 +11,7 @@ add_library(mfq-cuda-diagnostics STATIC
     ${PROJECT_SOURCE_DIR}/diagnostics/source.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/text.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/vision.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/mtp_bench.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/runtime_checks.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/session_checks.cpp
 )

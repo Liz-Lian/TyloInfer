@@ -71,15 +71,6 @@ static Model load_diagnostic_reference(CudaExecutionContext& execution,
     }
 }
 
-int run_qwen35_mtp_bench(
-    mfq::cuda::qwen35::Model& model,
-    mfq::cuda::qwen35::State& state,
-    mfq::cuda::Executor* executor,
-    CudaExecutionContext& execution,
-    mfq::cuda::qwen35::Mtp& mtp,
-    bool enable_mtp,
-    int generated_tokens,
-    int repetitions);
 int run_cuda_continuous_batching_check(
     mfq::cuda::qwen35::Model& model,
     mfq::cuda::qwen35::State& state,

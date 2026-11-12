@@ -14,6 +14,7 @@
 #include "engine/weights/workspace.h"
 
 #include <array>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
@@ -59,6 +60,17 @@ struct Ops : Sampling {
           predictor(predictor), prepared(prepared), source(source), profiling(profiling), prefetch(prefetch), graph_enabled(graph_enabled),
           compute_chunk(compute_chunk), output(output),
           graph_captures(weights.activity().graph_captures) {}
+
+    Ops(Ops&&) = default;
+    ~Ops() {
+        if (!std::uncaught_exceptions()) return;
+        try { weights.drain(); }
+        catch (const std::exception& error) { std::cerr << "mtp_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "mtp_cleanup error=unknown\n"; }
+        try { executor.drain(); }
+        catch (const std::exception& error) { std::cerr << "mtp_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "mtp_cleanup error=unknown\n"; }
+    }
 
     void initialize(const std::vector<int64_t>& prompt, const MfqSamplingParams& sampling) {
         Sampling::initialize(prompt, sampling);

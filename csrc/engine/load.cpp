@@ -138,10 +138,6 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             ledger = std::make_shared<tyloi::weights::Memory>();
             tyloi::weights::LoadScope memory_load(*ledger);
             config = engine::resolve_config(options.prefill_chunk_size, options.continuous_batching);
-            config.profile_decode = load.profile_decode;
-            config.profile_mtp = load.profile_mtp;
-            config.trace_moe = load.trace_moe;
-            config.prefetch = load.prefetch;
             if (config.continuous_batch.max_sequences) {
                 config.workspace_reserve = ::tyloi::cuda::options::workspace_reserve_bytes();
                 config.continuous_batch.packed_prefill = ::tyloi::cuda::options::batch_packed_prefill();
@@ -171,21 +167,12 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
                 state->supports_paged_text_session_state());
         }
         const auto mode = root->forward_mode(load.layer_placement.primary_device());
-        config.devices = cuda_devices(load);
-        config.online_budget = load.layer_placement.devices.size() <= 1 &&
-            !load.tensor_parallel.enabled() && !load.expert_parallel.enabled();
         const auto model_info = model->info();
-        const auto graph_weights = model_info.graph_weights == models::GraphWeights::resident
-            ? tyloi::weights::Cache::Graph::legacy : tyloi::weights::Cache::Graph::native;
-        const bool graph_allowed = model_info.decode_graph && !root->attention_options().kernels.decode_aten &&
-            model_parallel_cuda_graph_enabled(load, *root, *weights) &&
-            weights->graph_safe(graph_weights, moe_parallel_config(load).enabled());
+        internal::configure_generation(config, load, *root, *weights, model_info);
         const auto vocab_size = static_cast<std::int32_t>(model_info.vocab_size);
         auto text = engine::TextProcessor::load(*source, options.tokenizer_model, vocab_size, model_info.model_type);
         config.stop_token_ids = models::stop_token_ids(models::config_json(*source, options.config_path), vocab_size);
         config.resident_budget_bytes = ::tyloi::cuda::options::resident_budget_bytes();
-        config.decode_graph.enabled &= graph_allowed;
-        config.continuous_batch.cuda_graph &= graph_allowed;
         models::ForwardOptions forward{mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
         if (target) {
             target->rebind(std::move(model), std::move(root), std::move(config), std::move(source),

@@ -4,6 +4,7 @@
 #include "engine/generation/decode.h"
 #include "engine/generation/batch.h"
 #include "engine/generation/generation.h"
+#include "engine/generation/run.h"
 #include "engine/generation/sampling.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/generation/prefill.h"
@@ -23,6 +24,16 @@
 
 namespace tyloi::engine {
 namespace {
+
+// Retire asynchronous work before request-owned tensors unwind on failure.
+void drain_failed(Executor& executor, weights::Cache& weights) noexcept {
+    try { weights.drain(); }
+    catch (const std::exception& error) { std::cerr << "generation_cleanup error=" << error.what() << '\n'; }
+    catch (...) { std::cerr << "generation_cleanup error=unknown\n"; }
+    try { executor.drain(); }
+    catch (const std::exception& error) { std::cerr << "generation_cleanup error=" << error.what() << '\n'; }
+    catch (...) { std::cerr << "generation_cleanup error=unknown\n"; }
+}
 
 struct Plain {
     models::CausalModel& model;
@@ -46,6 +57,8 @@ struct Plain {
     bool graph_active = false;
     bool graph_prepared = false;
     Tensor host_ids;
+
+    ~Plain() { if (std::uncaught_exceptions()) drain_failed(executor, weights); }
 
     Tensor project(const Tensor& hidden, bool capped) {
         auto last = ops::contiguous(ops::cast(ops::select(hidden, 1, -1), kFloat16));
@@ -196,24 +209,13 @@ struct Plain {
     }
 };
 
-struct Native {
+struct Native : Run {
     using Prepared = models::Prepared;
     using Hidden = Tensor;
     using Restore = ::tyloi::state::Sessions::Restore;
-    models::CausalModel& model;
-    models::State& state;
-    tyloi::Executor& executor;
-    Budget& budget;
-    Decode& graph;
-    weights::Cache& weights;
-    ::tyloi::state::Sessions& cache;
-    const models::Info& info;
-    const Config& config;
-    const models::ForwardOptions& forward_options;
-    const ModelSource* source;
-    tyloi::engine::mtp::State& mtp_state;
     std::optional<Prepared> prepared;
-    models::Mtp* mtp = nullptr;
+
+    ~Native() { if (std::uncaught_exceptions()) drain_failed(executor, weights); }
 
     bool batched() const { return false; }
     Restore restore_session(const std::string& session_id, const std::vector<std::int64_t>& prompt,
@@ -308,6 +310,12 @@ struct Native {
 
 } // namespace
 
+Generation generate(Run run, InferenceRequest& request, InferenceOutput& output,
+        RequestId id) {
+    auto sequence = generate_prepared(Native{run, {}}, run.state, run.executor, request, output, id, false);
+    while (auto step = sequence.next()) co_yield std::move(step);
+}
+
 StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
     if (request.batched) {
         graph_->invalidate();
@@ -322,10 +330,10 @@ StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) 
         }
         return batch_->generate(id, request.input, *request.output);
     }
-    return generate_prepared(
-        Native{*model_, *request.state, *executor_, *budget_, *graph_, *weights_, *cache_, model_info_,
-               config_, forward_options_, source_.get(), mtp_state_, {}, model_->mtp()},
-        *request.state, *executor_, request.input, *request.output, id, request.batched);
+    return engine::generate(
+        {*model_, *request.state, *executor_, *budget_, *graph_, *weights_, *cache_, model_info_,
+            config_, forward_options_, source_.get(), mtp_state_, model_->mtp()},
+        request.input, *request.output, id);
 }
 } // namespace tyloi::engine
 #endif
