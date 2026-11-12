@@ -27,7 +27,7 @@
 
 namespace tyloi::cuda::deepseek_v4 {
 
-Layer load_layer(const tyloi::weights::Loader& weights, const Config &c, int i,
+void load_layer(Layer& layer, const tyloi::weights::Loader& weights, const Config &c, int i,
                  const std::string &type, Collectives& collectives, int primary,
                  const std::unordered_set<int>& offload, int64_t& host_bytes) {
     const auto &config = c;
@@ -35,7 +35,6 @@ Layer load_layer(const tyloi::weights::Loader& weights, const Config &c, int i,
         throw std::runtime_error("invalid DeepSeek V4 layer type");
     MfqCudaGuard guard(weights.placement.device);
     const std::string p = "model.block." + std::to_string(i) + ".";
-    Layer layer;
     layer.device = weights.placement.device;
     layer.layer = i;
     layer.max_positions = c.max_position_embeddings;
@@ -224,7 +223,6 @@ Layer load_layer(const tyloi::weights::Loader& weights, const Config &c, int i,
         throw std::runtime_error("DeepSeek V4 tensor shapes disagree with config at layer " +
                                  std::to_string(i));
     }
-    return layer;
 }
 
 void validate_offload(const Config &config, const std::unordered_set<int>& offload) {
@@ -247,24 +245,22 @@ void validate_offload(const Config &config, const std::unordered_set<int>& offlo
     }
 }
 
-OutputHeadWeights load_output_head(const tyloi::weights::Loader& weights) {
-    return {
+void load_output_head(OutputHeadWeights& output, const tyloi::weights::Loader& weights) {
 #ifdef TYLOINFER_NATIVE_CUDA
-        std::make_shared<DenseTensor>(weights.tensor("model.mhc.output.function").dense().to(::tyloi::kFloat32).contiguous()),
-        std::make_shared<DenseTensor>(weights.tensor("model.mhc.output.scale").dense().to(::tyloi::kFloat32).contiguous()),
-        std::make_shared<DenseTensor>(weights.tensor("model.mhc.output.base").dense().to(::tyloi::kFloat32).contiguous()),
+    output.function = std::make_shared<DenseTensor>(weights.tensor("model.mhc.output.function").dense().to(::tyloi::kFloat32).contiguous());
+    output.scale = std::make_shared<DenseTensor>(weights.tensor("model.mhc.output.scale").dense().to(::tyloi::kFloat32).contiguous());
+    output.base = std::make_shared<DenseTensor>(weights.tensor("model.mhc.output.base").dense().to(::tyloi::kFloat32).contiguous());
 #else
-        weights.tensor("model.mhc.output.function").dense()
+    output.function = weights.tensor("model.mhc.output.function").dense()
             .to(::tyloi::kFloat32)
-            .contiguous(),
-        weights.tensor("model.mhc.output.scale").dense()
+            .contiguous();
+    output.scale = weights.tensor("model.mhc.output.scale").dense()
             .to(::tyloi::kFloat32)
-            .contiguous(),
-        weights.tensor("model.mhc.output.base").dense()
+            .contiguous();
+    output.base = weights.tensor("model.mhc.output.base").dense()
             .to(::tyloi::kFloat32)
-            .contiguous(),
+            .contiguous();
 #endif
-    };
 }
 
 ::tyloi::DenseTensor finalize_hidden(::tyloi::DenseTensor hidden,
@@ -335,9 +331,8 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
-          Collectives& collectives, int primary, const std::unordered_set<int>& offload,
-          int64_t& host_bytes, int gpu_layers) {
+void load_deferred(Model& model, const tyloi::weights::Loader& weights,
+                   LayerPlacementConfig& placement, int gpu_layers) {
     const auto& c = model.config;
     placement.prepare(c.num_hidden_layers);
     const int cpu_layers = gpu_layers < 0 ? 0 :
@@ -355,18 +350,26 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
 #else
     model.output_norm = weights.tensor("model.output_norm.weight").dense();
 #endif
-    model.output_head = load_output_head(weights);
+    load_output_head(model.output_head, weights);
     model.lm_head = separate ? weights.weight("model.output.weight", TensorParallelAxis::Output)
         : weights.placement.tensor.enabled()
             ? weights.weight("model.token_embedding.weight", TensorParallelAxis::Output)
             : model.embed;
+}
+
+void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
+          Collectives& collectives, int primary, const std::unordered_set<int>& offload,
+          int64_t& host_bytes, int gpu_layers) {
+    load_deferred(model, weights, placement, gpu_layers);
+    const auto& c = model.config;
     model.layers.reserve(static_cast<size_t>(c.num_hidden_layers));
     for (int index = 0; index < c.num_hidden_layers; ++index) {
         const int device = placement.device_for_layer(index);
         const auto& type = model.metadata.layer_types.at(static_cast<size_t>(index));
         std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
-        model.layers.push_back(load_layer(weights.for_layer(device, false), c, index, type,
-                                          collectives, primary, offload, host_bytes));
+        model.layers.emplace_back();
+        load_layer(model.layers.back(), weights.for_layer(device, false), c, index, type,
+                   collectives, primary, offload, host_bytes);
     }
 }
 
@@ -503,6 +506,14 @@ DenseTensor logits(const Model& model, Executor& executor, DenseTensor hidden, b
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor finalize(const Model& model, const ::tyloi::Tensor& hidden, int64_t batch, int64_t tokens) {
+    auto& executor = Executor::current();
+    auto collapsed = finalize_hidden(hidden.dense(), model.output_head, model.config, executor.profiler(), batch, tokens);
+    return model.normalize(collapsed, batch, tokens);
+}
+#endif
+
+#ifdef TYLOINFER_NATIVE_CUDA
 ::tyloi::Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& state_value,
                const tyloi::models::ForwardOptions& options_value) const {
     tyloi::models::require_model(!input.suffix, "DeepSeek V4 does not support speculative suffix forwarding");
@@ -572,17 +583,23 @@ DenseTensor forward(const Model& model, State& state, Executor& executor, Collec
         local.positions = collectives.copy(step.positions.dense(), layer.device);
         if (step.sequence_lengths.defined()) local.sequence_lengths = collectives.copy(step.sequence_lengths.dense(), layer.device);
         if (step.cache_positions.defined()) local.cache_positions = collectives.copy(step.cache_positions.dense(), layer.device);
+#ifdef TYLOINFER_NATIVE_CUDA
+        hidden = forward_layer(layer, state.layers[index],
+                               collectives.copy(std::move(hidden), layer.device),
+                               collectives.copy(ids, layer.device), local, options_value).dense();
+#else
         hidden = forward_layer(layer, state.layers[index], executor,
                                collectives.copy(std::move(hidden), layer.device),
                                collectives.copy(ids, layer.device), local, mode);
+#endif
         trace(hidden);
     }
     if (!input.positions.defined() || input.advance) state.cache_pos += T;
     hidden = collectives.copy(std::move(hidden), mode.primary);
-    auto collapsed = finalize_hidden(hidden, model.output_head, model.config, executor.profiler(), B, T);
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto finalized = normalize(collapsed, B, T);
+    auto finalized = finalize(model, hidden, B, T);
 #else
+    auto collapsed = finalize_hidden(hidden, model.output_head, model.config, executor.profiler(), B, T);
     auto finalized = normalize(model, executor, std::move(collapsed), B, T);
 #endif
     if (input.raw_hidden) *input.raw_hidden = std::move(hidden);
@@ -1621,8 +1638,22 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
         [](const auto &outputs) { return ::tyloi::cuda::cat(outputs, 1); });
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+::tyloi::Tensor forward_layer(const Layer& w, LayerState& state, const ::tyloi::Tensor& input,
+                     const ::tyloi::Tensor& ids, const AttentionStep& step,
+                     const tyloi::models::ForwardOptions& options) {
+    auto& executor = Executor::current();
+    auto mode = executor.forward_mode(options.primary);
+    mode.ffn = Executor::current_ffn();
+    mode.kv_capacity = options.kv_capacity;
+    mode.trace = options.trace;
+    mode.trace_layer = options.trace_layer;
+    auto x = input.dense();
+    auto current_ids = ids.dense();
+#else
 DenseTensor forward_layer(const Layer& w, LayerState& state, Executor& executor, DenseTensor x,
                      DenseTensor current_ids, const AttentionStep& step, const Executor::Mode& mode) {
+#endif
     auto& profiler = executor.profiler();
     const auto& hidden_size = w.hidden_size;
     const auto& eps = w.eps;

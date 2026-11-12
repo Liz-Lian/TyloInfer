@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <iosfwd>
 #include <memory>
 #include <optional>
 #include <string>
@@ -93,6 +94,8 @@ public:
     void configure(std::size_t bytes, const CachePolicy& policy, bool preload,
         const std::string& profile_path);
     std::vector<std::pair<std::string, double>> metrics() const;
+    /** Print the existing expert-cache statistics when that cache is configured. */
+    void report(std::ostream& output) const;
     Activity activity() const;
     std::size_t budget() const;
     std::size_t minimum() const;

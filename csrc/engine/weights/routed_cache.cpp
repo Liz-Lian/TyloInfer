@@ -101,6 +101,10 @@ std::vector<std::pair<std::string, double>> Cache::metrics() const {
     return result;
 }
 
+void Cache::report(std::ostream& output) const {
+    if (data_->moe) print_moe_expert_cache_stats(data_->moe, output);
+}
+
 Cache::Activity Cache::activity() const {
     return {moe_expert_streamed_bytes(data_->moe), moe_expert_graph_captures(data_->moe)};
 }

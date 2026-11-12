@@ -18,8 +18,10 @@ std::unique_ptr<tyloi::models::CausalModel> load(
 #endif
 Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definition, int64_t context);
 void validate_offload(const Config&, const std::unordered_set<int>&);
-Layer load_layer(const tyloi::weights::Loader&, const Config&, int index, const std::string& type,
+void load_layer(Layer&, const tyloi::weights::Loader&, const Config&, int index, const std::string& type,
                  Collectives&, int primary, const std::unordered_set<int>&, int64_t& host_bytes);
 void load(Model&, const tyloi::weights::Loader&, LayerPlacementConfig&, Collectives&, int primary,
           const std::unordered_set<int>&, int64_t& host_bytes, int gpu_layers);
+/** Load shared weights and prepare placement without retaining transformer layers. */
+void load_deferred(Model&, const tyloi::weights::Loader&, LayerPlacementConfig&, int gpu_layers);
 } // namespace tyloi::cuda::deepseek_v4

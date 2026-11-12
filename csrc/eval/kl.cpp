@@ -1,23 +1,12 @@
-#include "engine/backends/cuda/executor/execution.h"
+#include "engine/backends/cuda/executor/config.h"
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/ops/projection/mmq.h"
+#include "diagnostics/route_stats.h"
 #include "kl.h"
-
-#include "engine/models/deepseek_v4/ops.h"
-#include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/gemma4/ops.h"
-#include "engine/models/glm5_next/ops.h"
-#include "engine/models/glm_dsa/ops.h"
-#include "engine/models/minicpmo45/ops.h"
-#include "engine/models/nemotron_h/ops.h"
-#include "engine/models/qwen35/forward.h"
-#include "engine/models/minicpmo45/forward.h"
+#include "engine/program.h"
+#include "engine/models/causal_model.h"
+#include "engine/models/groups.h"
 #include "engine/models/input.h"
-#include "engine/models/qwen4_exp/ops.h"
-#include "engine/models/common/load.h"
-#include "engine/backends/cuda/ops/projection/quant_linear.h"
-#include "engine/weights/moe/expert_cache.h"
-#include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
-#include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
-#include "engine/backends/cuda/kernels/deepseek_v41.h"
 #include "backend.h"
 
 #include <cuda_runtime_api.h>
@@ -42,6 +31,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+using tyloi::indexing::Slice;
 
 struct KlEvalChunk {
     std::vector<int32_t> tokens;
@@ -74,70 +65,45 @@ const char * kl_evaluator_name(KlEvaluator evaluator) {
     return evaluator == KlEvaluator::Legacy ? "legacy" : "optimized";
 }
 
-template <typename Model>
-std::string_view kl_model_type(const Model& model) {
-    return model.metadata.model_type;
+static std::string kl_model_type(const tyloi::models::CausalModel& model) {
+    return model.info().model_type;
 }
 
-template <typename Model>
-mfq_tensor_backend::Tensor kl_hidden_forward(
-    CudaExecutionContext& execution,
-    Model& model,
-    auto& state,
-    mfq::cuda::Executor* executor,
-    mfq_tensor_backend::Tensor ids) {
-    if constexpr (requires { forward(model, state, *executor, execution.collectives,
-            execution.forward_mode(), mfq::cuda::Input{}); }) {
-        if (!executor) throw std::runtime_error("CUDA model evaluation requires an executor");
-        return forward(
-            model, state, *executor, execution.collectives,
-            execution.forward_mode(), mfq::cuda::Input{std::move(ids)});
-    } else {
-        return model.hidden_forward(std::move(ids));
-    }
+static ::tyloi::DenseTensor kl_hidden_forward(
+    tyloi::cuda::Program& program,
+    ::tyloi::DenseTensor ids, std::int64_t kv_capacity = 0) {
+    tyloi::models::Input input;
+    input.ids = tyloi::Tensor(std::move(ids));
+    const int primary = program.config().layer_placement.primary_device();
+    const auto mode = program.executor().forward_mode(primary);
+    tyloi::models::ForwardOptions options{
+        kv_capacity ? kv_capacity : mode.kv_capacity,
+        mode.trace, mode.trace_layer, mode.primary};
+    return program.model().forward(std::move(input), program.state(), options).dense();
 }
 
-template <typename Model>
-mfq_tensor_backend::Tensor kl_logits_from_hidden(
-    Model& model,
-    mfq::cuda::Executor* executor,
-    mfq_tensor_backend::Tensor hidden) {
-    if constexpr (requires { logits(model, *executor, hidden); }) {
-        if (!executor) throw std::runtime_error("CUDA model evaluation requires an executor");
-        return logits(model, *executor, std::move(hidden));
-    } else {
-        return model.logits_from_hidden(std::move(hidden));
-    }
+static ::tyloi::DenseTensor kl_logits_from_hidden(
+    tyloi::cuda::Program& program,
+    ::tyloi::DenseTensor hidden) {
+    return program.model().logits(tyloi::Tensor(std::move(hidden))).dense();
 }
 
-template <typename Model>
-mfq_tensor_backend::Tensor kl_forward_logits(
-    CudaExecutionContext& execution,
-    Model& model,
-    auto& state,
-    mfq::cuda::Executor* executor,
-    mfq_tensor_backend::Tensor ids) {
-    if constexpr (requires { forward(model, state, *executor, execution.collectives,
-            execution.forward_mode(), mfq::cuda::Input{}); }) {
-        return kl_logits_from_hidden(
-            model, executor, kl_hidden_forward(
-                execution, model, state, executor, std::move(ids)));
-    } else {
-        return model.forward(std::move(ids));
-    }
+static ::tyloi::DenseTensor kl_forward_logits(
+    tyloi::cuda::Program& program,
+    ::tyloi::DenseTensor ids) {
+    return kl_logits_from_hidden(program, kl_hidden_forward(program, std::move(ids)));
 }
 
-template <typename Model, typename State>
 static int run_kl_eval(
-        CudaExecutionContext& execution,
-        Model& model,
-        State& state,
-        mfq::cuda::Executor* executor,
+        tyloi::cuda::Program& program,
         const std::string & path,
         int max_chunks,
         KlEvaluator evaluator,
         int score_override,
         const KlReferenceContract & reference_contract) {
+    auto& model = program.model();
+    const tyloi::Device device(tyloi::kCUDA, program.config().layer_placement.primary_device());
+    auto& state = program.state();
     std::ifstream f(path, std::ios::binary);
     if (!f) throw std::runtime_error("cannot open KL logits file: " + path);
     char magic[8];
@@ -256,7 +222,7 @@ static int run_kl_eval(
     if (chunks <= 0) throw std::runtime_error("KL evaluation requires at least one chunk");
     for (int ci = 0; ci < chunks; ++ci) {
         if ((int64_t)eval_chunks[(size_t)ci].tokens.size() >
-                model.metadata.max_position_embeddings) {
+                model.info().max_context) {
             throw std::runtime_error(
                 "KL reference exceeds model context capacity");
         }
@@ -308,48 +274,48 @@ static int run_kl_eval(
         for (size_t j = 0; j < chunk.tokens.size(); ++j) {
             chunk_tokens[j] = chunk.tokens[j];
         }
-        auto ids = mfq_tensor_backend::from_blob(chunk_tokens.data(), {1, (int64_t)chunk_tokens.size()},
-                                    mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64)).clone().to(mfq_tensor_backend::kCUDA);
-        mfq_tensor_backend::Tensor pred;
+        auto ids = ::tyloi::cuda::from_blob(chunk_tokens.data(), {1, (int64_t)chunk_tokens.size()},
+                                    ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(device);
+        ::tyloi::DenseTensor pred;
         if (optimized) {
             auto hidden = kl_hidden_forward(
-                execution, model, state, executor, ids);
+                program, ids);
             auto selected_hidden = hidden.index({
                 0, Slice(first, first + score_count), Slice()
             }).contiguous();
-            pred = kl_logits_from_hidden(model, executor, std::move(selected_hidden));
+            pred = kl_logits_from_hidden(program, std::move(selected_hidden));
         } else if (score_count < stored_score_count) {
             (void)kl_hidden_forward(
-                execution, model, state, executor,
+                program,
                 ids.index({Slice(), Slice(0, first)}));
             auto logits = kl_forward_logits(
-                execution, model, state, executor,
+                program,
                 ids.index({Slice(), Slice(first, first + score_count)}));
             pred = logits.index({0, Slice(), Slice()});
         } else {
             auto logits = kl_forward_logits(
-                execution, model, state, executor, ids);
+                program, ids);
             pred = logits.index({0, Slice(first, first + score_count), Slice()});
         }
         if (pred.size(1) != n_vocab) throw std::runtime_error("KL vocab size mismatch");
 
-        mfq_tensor_backend::Tensor optimized_kld_sum;
-        mfq_tensor_backend::Tensor optimized_reverse_kld_sum;
-        mfq_tensor_backend::Tensor optimized_bf16_ce_sum;
-        mfq_tensor_backend::Tensor optimized_mfq_ce_sum;
-        mfq_tensor_backend::Tensor optimized_same_top;
+        ::tyloi::DenseTensor optimized_kld_sum;
+        ::tyloi::DenseTensor optimized_reverse_kld_sum;
+        ::tyloi::DenseTensor optimized_bf16_ce_sum;
+        ::tyloi::DenseTensor optimized_mfq_ce_sum;
+        ::tyloi::DenseTensor optimized_same_top;
         if (optimized) {
-            const auto cuda = mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA);
-            optimized_kld_sum = mfq_tensor_backend::zeros(
-                {}, cuda.dtype(mfq_tensor_backend::kFloat64));
-            optimized_reverse_kld_sum = mfq_tensor_backend::zeros(
-                {}, cuda.dtype(mfq_tensor_backend::kFloat64));
-            optimized_bf16_ce_sum = mfq_tensor_backend::zeros(
-                {}, cuda.dtype(mfq_tensor_backend::kFloat64));
-            optimized_mfq_ce_sum = mfq_tensor_backend::zeros(
-                {}, cuda.dtype(mfq_tensor_backend::kFloat64));
-            optimized_same_top = mfq_tensor_backend::zeros(
-                {}, cuda.dtype(mfq_tensor_backend::kInt64));
+            const auto cuda = ::tyloi::TensorOptions().device(device);
+            optimized_kld_sum = ::tyloi::cuda::zeros(
+                {}, cuda.dtype(::tyloi::kFloat64));
+            optimized_reverse_kld_sum = ::tyloi::cuda::zeros(
+                {}, cuda.dtype(::tyloi::kFloat64));
+            optimized_bf16_ce_sum = ::tyloi::cuda::zeros(
+                {}, cuda.dtype(::tyloi::kFloat64));
+            optimized_mfq_ce_sum = ::tyloi::cuda::zeros(
+                {}, cuda.dtype(::tyloi::kFloat64));
+            optimized_same_top = ::tyloi::cuda::zeros(
+                {}, cuda.dtype(::tyloi::kInt64));
         }
         f.seekg(chunk.row_offset);
         for (int s = 0; s < score_count; s += KL_BATCH) {
@@ -366,41 +332,41 @@ static int run_kl_eval(
                 std::memcpy(&mins[r], row + 2, sizeof(float));
                 for (int v = 0; v < n_vocab; ++v) codes[(size_t)r * n_vocab + v] = row[4 + v];
             }
-            auto scale = mfq_tensor_backend::from_blob(scales.data(), {b}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32)).clone().to(mfq_tensor_backend::kCUDA);
-            auto min_lp = mfq_tensor_backend::from_blob(mins.data(), {b}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32)).clone().to(mfq_tensor_backend::kCUDA);
-            auto base_codes = mfq_tensor_backend::from_blob(
-                codes.data(), {b, n_vocab}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
-                .clone().to(mfq_tensor_backend::kCUDA);
-            auto base_logp = base_codes.to(mfq_tensor_backend::kFloat32) * scale.unsqueeze(1) +
+            auto scale = ::tyloi::cuda::from_blob(scales.data(), {b}, ::tyloi::TensorOptions().dtype(::tyloi::kFloat32)).clone().to(device);
+            auto min_lp = ::tyloi::cuda::from_blob(mins.data(), {b}, ::tyloi::TensorOptions().dtype(::tyloi::kFloat32)).clone().to(device);
+            auto base_codes = ::tyloi::cuda::from_blob(
+                codes.data(), {b, n_vocab}, ::tyloi::TensorOptions().dtype(::tyloi::kInt32))
+                .clone().to(device);
+            auto base_logp = base_codes.to(::tyloi::kFloat32) * scale.unsqueeze(1) +
                 min_lp.unsqueeze(1);
-            auto q = pred.index({Slice(s, s + b), Slice()}).to(mfq_tensor_backend::kFloat32);
-            auto lse = mfq_tensor_backend::logsumexp(q, -1);
+            auto q = pred.index({Slice(s, s + b), Slice()}).to(::tyloi::kFloat32);
+            auto lse = ::tyloi::cuda::logsumexp(q, -1);
             auto quant_logp = q - lse.unsqueeze(1);
             auto normalized_base_logp =
-                base_logp - mfq_tensor_backend::logsumexp(base_logp, -1, true);
-            auto p_base = mfq_tensor_backend::exp(base_logp).masked_fill(base_codes.eq(0), 0.0f);
+                base_logp - ::tyloi::cuda::logsumexp(base_logp, -1, true);
+            auto p_base = ::tyloi::cuda::exp(base_logp).masked_fill(base_codes.eq(0), 0.0f);
             auto kld = (p_base * (base_logp - q + lse.unsqueeze(1))).sum(-1);
             auto reverse_kld =
-                (mfq_tensor_backend::exp(quant_logp) * (quant_logp - normalized_base_logp)).sum(-1);
+                (::tyloi::cuda::exp(quant_logp) * (quant_logp - normalized_base_logp)).sum(-1);
             if (optimized) {
-                optimized_kld_sum.add_(kld.to(mfq_tensor_backend::kFloat64).sum());
+                optimized_kld_sum.add_(kld.to(::tyloi::kFloat64).sum());
                 optimized_reverse_kld_sum.add_(
-                    reverse_kld.to(mfq_tensor_backend::kFloat64).sum());
+                    reverse_kld.to(::tyloi::kFloat64).sum());
             } else {
-                kld_sum += kld.to(mfq_tensor_backend::kFloat64).sum().item<double>();
+                kld_sum += kld.to(::tyloi::kFloat64).sum().item<double>();
                 reverse_kld_sum +=
-                    reverse_kld.to(mfq_tensor_backend::kFloat64).sum().item<double>();
+                    reverse_kld.to(::tyloi::kFloat64).sum().item<double>();
             }
             std::vector<int64_t> target_ids(b);
             for (int r = 0; r < b; ++r) {
                 target_ids[r] = chunk_tokens[(size_t)chunk.target_start + s + r];
             }
-            auto target = mfq_tensor_backend::from_blob(target_ids.data(), {b, 1},
-                                            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64))
-                              .clone().to(mfq_tensor_backend::kCUDA);
+            auto target = ::tyloi::cuda::from_blob(target_ids.data(), {b, 1},
+                                            ::tyloi::TensorOptions().dtype(::tyloi::kInt64))
+                              .clone().to(device);
             if (chunk.target_log_probs.empty()) {
                 auto batch_bf16_ce =
-                    -base_logp.gather(1, target).to(mfq_tensor_backend::kFloat64).sum();
+                    -base_logp.gather(1, target).to(::tyloi::kFloat64).sum();
                 if (optimized) {
                     optimized_bf16_ce_sum.add_(batch_bf16_ce);
                 } else {
@@ -412,7 +378,7 @@ static int run_kl_eval(
                 }
             }
             auto batch_mfq_ce = (lse.unsqueeze(1) - q.gather(1, target))
-                                     .to(mfq_tensor_backend::kFloat64).sum();
+                                     .to(::tyloi::kFloat64).sum();
             auto batch_same_top =
                 q.argmax(-1).eq(base_logp.argmax(-1)).sum();
             if (optimized) {
@@ -466,7 +432,6 @@ static int run_kl_eval(
               << "\n";
     return 0;
 }
-
 struct StreamedKlInput {
     std::string reference_format;
     int32_t n_vocab = 0;
@@ -593,11 +558,11 @@ static StreamedKlInput load_streamed_kl_input(
     return input;
 }
 
-static mfq_tensor_backend::Tensor streamed_kl_ids(
+static ::tyloi::DenseTensor streamed_kl_ids(
     const StreamedKlInput & input,
     int begin,
     int count,
-    int64_t n_ctx) {
+    int64_t n_ctx, tyloi::Device device) {
     std::vector<int64_t> token_ids((size_t)count * n_ctx);
     for (int bi = 0; bi < count; ++bi) {
         const auto & source = input.chunks[(size_t)(begin + bi)].tokens;
@@ -606,10 +571,10 @@ static mfq_tensor_backend::Tensor streamed_kl_ids(
                 source[(size_t)ti];
         }
     }
-    return mfq_tensor_backend::from_blob(
+    return ::tyloi::cuda::from_blob(
         token_ids.data(), {count, n_ctx},
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64))
-        .clone().to(mfq_tensor_backend::kCUDA);
+        ::tyloi::TensorOptions().dtype(::tyloi::kInt64))
+        .clone().to(device);
 }
 
 struct KlEvalMetrics {
@@ -625,9 +590,10 @@ static void accumulate_streamed_kl_chunk(
     std::ifstream & f,
     const StreamedKlInput & input,
     int chunk_index,
-    mfq_tensor_backend::Tensor pred,
+    ::tyloi::DenseTensor pred,
     int score_count,
     KlEvalMetrics & metrics) {
+    const auto device = pred.device();
     constexpr int KL_BATCH = 8;
     const auto & chunk = input.chunks[(size_t)chunk_index];
     f.seekg(chunk.row_offset);
@@ -649,50 +615,50 @@ static void accumulate_streamed_kl_chunk(
                 codes[(size_t)r * input.n_vocab + v] = row[4 + v];
             }
         }
-        auto scale = mfq_tensor_backend::from_blob(
+        auto scale = ::tyloi::cuda::from_blob(
             scales.data(), {b},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32))
-            .clone().to(mfq_tensor_backend::kCUDA);
-        auto min_lp = mfq_tensor_backend::from_blob(
+            ::tyloi::TensorOptions().dtype(::tyloi::kFloat32))
+            .clone().to(device);
+        auto min_lp = ::tyloi::cuda::from_blob(
             mins.data(), {b},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32))
-            .clone().to(mfq_tensor_backend::kCUDA);
-        auto base_codes = mfq_tensor_backend::from_blob(
+            ::tyloi::TensorOptions().dtype(::tyloi::kFloat32))
+            .clone().to(device);
+        auto base_codes = ::tyloi::cuda::from_blob(
             codes.data(), {b, input.n_vocab},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
-            .clone().to(mfq_tensor_backend::kCUDA);
-        auto base_logp = base_codes.to(mfq_tensor_backend::kFloat32) *
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt32))
+            .clone().to(device);
+        auto base_logp = base_codes.to(::tyloi::kFloat32) *
             scale.unsqueeze(1) + min_lp.unsqueeze(1);
-        auto q = pred.index({Slice(s, s + b), Slice()}).to(mfq_tensor_backend::kFloat32);
-        auto lse = mfq_tensor_backend::logsumexp(q, -1);
+        auto q = pred.index({Slice(s, s + b), Slice()}).to(::tyloi::kFloat32);
+        auto lse = ::tyloi::cuda::logsumexp(q, -1);
         auto quant_logp = q - lse.unsqueeze(1);
         auto normalized_base_logp =
-            base_logp - mfq_tensor_backend::logsumexp(base_logp, -1, true);
+            base_logp - ::tyloi::cuda::logsumexp(base_logp, -1, true);
         auto p_base =
-            mfq_tensor_backend::exp(base_logp).masked_fill(base_codes.eq(0), 0.0f);
+            ::tyloi::cuda::exp(base_logp).masked_fill(base_codes.eq(0), 0.0f);
         auto kld =
             (p_base * (base_logp - q + lse.unsqueeze(1))).sum(-1);
         auto reverse_kld =
-            (mfq_tensor_backend::exp(quant_logp) *
+            (::tyloi::cuda::exp(quant_logp) *
              (quant_logp - normalized_base_logp)).sum(-1);
         metrics.kld_sum +=
-            kld.to(mfq_tensor_backend::kFloat64).sum().item<double>();
+            kld.to(::tyloi::kFloat64).sum().item<double>();
         metrics.reverse_kld_sum +=
-            reverse_kld.to(mfq_tensor_backend::kFloat64).sum().item<double>();
+            reverse_kld.to(::tyloi::kFloat64).sum().item<double>();
 
         std::vector<int64_t> target_ids(b);
         for (int r = 0; r < b; ++r) {
             target_ids[r] =
                 chunk.tokens[(size_t)chunk.target_start + s + r];
         }
-        auto target = mfq_tensor_backend::from_blob(
+        auto target = ::tyloi::cuda::from_blob(
             target_ids.data(), {b, 1},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64))
-            .clone().to(mfq_tensor_backend::kCUDA);
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt64))
+            .clone().to(device);
         if (chunk.target_log_probs.empty()) {
             metrics.reference_ce_sum +=
                 -base_logp.gather(1, target)
-                    .to(mfq_tensor_backend::kFloat64).sum().item<double>();
+                    .to(::tyloi::kFloat64).sum().item<double>();
         } else {
             for (int r = 0; r < b; ++r) {
                 metrics.reference_ce_sum -=
@@ -701,24 +667,24 @@ static void accumulate_streamed_kl_chunk(
         }
         metrics.quant_ce_sum +=
             (lse.unsqueeze(1) - q.gather(1, target))
-                .to(mfq_tensor_backend::kFloat64).sum().item<double>();
+                .to(::tyloi::kFloat64).sum().item<double>();
         metrics.same_top +=
             q.argmax(-1).eq(base_logp.argmax(-1)).sum().item<int64_t>();
         metrics.count += b;
     }
 }
 
-template <typename Model, typename State>
 int run_kl_eval_batched(
-    CudaExecutionContext& execution,
-    Model& model,
-    State& state,
-    mfq::cuda::Executor* executor,
+    tyloi::cuda::Program& program,
     const std::string & reference_path,
     int max_chunks,
     int64_t requested_n_batch,
     int score_override,
     const KlReferenceContract & reference_contract) {
+    auto& model = program.model();
+    auto& state = program.state();
+    auto& mmq = program.executor().mmq();
+    const tyloi::Device device(tyloi::kCUDA, program.config().layer_placement.primary_device());
     auto input = load_streamed_kl_input(reference_path, max_chunks);
     const int chunks = (int)input.chunks.size();
     const int64_t n_ctx = (int64_t)input.chunks[0].tokens.size();
@@ -726,7 +692,7 @@ int run_kl_eval_batched(
         ? (reference_contract.n_batch == 0
               ? n_ctx : reference_contract.n_batch)
         : requested_n_batch;
-    if (n_ctx > model.metadata.max_position_embeddings) {
+    if (n_ctx > model.info().max_context) {
         throw std::runtime_error(
             "KL reference exceeds model context capacity");
     }
@@ -740,7 +706,7 @@ int run_kl_eval_batched(
     validate_kl_execution_geometry(
         n_batch, n_batch, reference_contract, "optimized");
     KlKvCacheCapacityScope kv_cache_capacity_scope(
-        n_ctx, execution.kl_mmq);
+        n_ctx, mmq);
     const int target_start = input.chunks[0].target_start;
     int score_count = input.chunks[0].score_count;
     for (const auto & chunk : input.chunks) {
@@ -759,7 +725,7 @@ int run_kl_eval_batched(
                 "--kl-score-count exceeds the stored chunk score count");
         }
     }
-    if (input.n_vocab != model.metadata.vocab_size) {
+    if (input.n_vocab != model.info().vocab_size) {
         throw std::runtime_error("KL vocab size mismatch");
     }
     int bos_replacements = 0;
@@ -801,16 +767,16 @@ int run_kl_eval_batched(
         const int n_seq_batch =
             std::min(kl_n_seq, chunks - begin);
         auto ids = streamed_kl_ids(
-            input, begin, n_seq_batch, n_ctx);
+            input, begin, n_seq_batch, n_ctx, device);
         state.reset(n_seq_batch);
         auto hidden = kl_hidden_forward(
-            execution, model, state, executor, ids);
+            program, ids, n_ctx);
         for (int bi = 0; bi < n_seq_batch; ++bi) {
             auto selected_hidden = hidden.index({
                 bi, Slice(first, first + score_count), Slice()
             }).contiguous();
             auto pred = kl_logits_from_hidden(
-                model, executor, std::move(selected_hidden));
+                program, std::move(selected_hidden));
             accumulate_streamed_kl_chunk(
                 reference, input, begin + bi, pred,
                 score_count, metrics);
@@ -872,22 +838,18 @@ int run_kl_eval_batched(
                << " reference_n_ubatch=" << reference_contract.n_ubatch
                << "\n";
     std::cout << "cpp_kl_mmq"
-              << " mmq=" << kl_mmq_mode_name(execution.kl_mmq.mode)
+              << " mmq=" << kl_mmq_mode_name(mmq.mode)
               << " activation_quantize_calls="
-              << execution.kl_mmq.activation_quantize_calls
-              << " dense_calls=" << execution.kl_mmq.dense_calls
-              << " moe_calls=" << execution.kl_mmq.moe_calls
-              << " fallback_calls=" << execution.kl_mmq.fallback_calls
+              << mmq.activation_quantize_calls
+              << " dense_calls=" << mmq.dense_calls
+              << " moe_calls=" << mmq.moe_calls
+              << " fallback_calls=" << mmq.fallback_calls
               << "\n";
     return 0;
 }
 
-template <typename Model, typename State>
 int run_selected_kl_eval(
-    CudaExecutionContext& execution,
-    Model& model,
-    State& state,
-    mfq::cuda::Executor* executor,
+    tyloi::cuda::Program& program,
     const std::string & reference_path,
     int max_chunks,
     KlEvaluator evaluator,
@@ -896,18 +858,38 @@ int run_selected_kl_eval(
     const KlReferenceContract & reference_contract) {
     return evaluator == KlEvaluator::Optimized
         ? run_kl_eval_batched(
-              execution, model, state, executor, reference_path, max_chunks,
+              program, reference_path, max_chunks,
               requested_n_batch, score_override,
               reference_contract)
         : run_kl_eval(
-              execution, model, state, executor, reference_path, max_chunks, evaluator,
+              program, reference_path, max_chunks, evaluator,
               score_override, reference_contract);
 }
 
+namespace {
+/** Keep queued chunk inputs, outputs and request state alive until all work drains. */
+struct KlChunk {
+    tyloi::cuda::Program& program;
+    tyloi::Tensor ids, positions, hidden, output, selected, logits, saved;
+    std::unique_ptr<tyloi::models::Groups::State> state;
+    ~KlChunk() noexcept {
+        try { program.drain(); }
+        catch (const std::exception& error) { std::cerr << "kl_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "kl_cleanup error=unknown\n"; }
+    }
+};
+
+/** Restore the loading policy after all shared and grouped weight reads finish. */
+struct KlDropCache {
+    bool& value;
+    const bool saved;
+    explicit KlDropCache(bool& value) : value(value), saved(value) { value = true; }
+    ~KlDropCache() { value = saved; }
+};
+} // namespace
+
 int run_kl_eval_streamed(
-    CudaExecutionContext& execution,
-    const std::string & model_path,
-    const std::string & config_path,
+    tyloi::cuda::Program& program,
     const std::string & reference_path,
     const std::string & logits_output_path,
     int max_chunks,
@@ -919,9 +901,11 @@ int run_kl_eval_streamed(
         throw std::runtime_error(
             "streamed KL layer group and chunk batch must be positive");
     }
-    execution.routes.clear();
-    MfqDropFileCacheGuard drop_cache_guard(
-        true, execution.drop_file_cache);
+    auto& executor = program.executor();
+    const int primary = program.config().layer_placement.primary_device();
+    const tyloi::Device device(tyloi::kCUDA, primary);
+    executor.routes().clear();
+    KlDropCache drop_cache_guard(program.config().drop_file_cache);
     auto input = load_streamed_kl_input(reference_path, max_chunks);
     const int chunks = (int)input.chunks.size();
     const int64_t n_ctx = (int64_t)input.chunks[0].tokens.size();
@@ -987,29 +971,31 @@ int run_kl_eval_streamed(
     }
 
     auto started = std::chrono::steady_clock::now();
-    auto model = mfq::cuda::load_causal_lm<
-        mfq::cuda::DeepseekV4CausalLm>(
-            execution, model_path, config_path, n_ctx, false);
+    program.load_groups(n_ctx);
+    auto& model = program.groups();
+    const auto info = model.info();
     if (chunk_batch > 16) {
         throw std::runtime_error(
             "DeepSeek V4 streamed KL chunk batch must not exceed 16");
     }
-    if (model.vocab_size() != input.n_vocab) {
+    if (info.vocab != input.n_vocab) {
         throw std::runtime_error("KL vocab size mismatch");
     }
-    mfq::cuda::weight_loader::Loader weights{*model.source, execution.config.weights,
-        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-         execution.tensor_parallel, moe_parallel_config(execution)},
-        execution.weights, execution.tq};
-
+    std::uint64_t hidden_elements = 1;
+    for (const auto extent : {std::int64_t(chunks), n_ctx, info.streams, info.width}) {
+        if (extent < 1 || std::uint64_t(extent) >
+            std::uint64_t(std::numeric_limits<std::int64_t>::max()) / sizeof(mfq_half) / hidden_elements)
+            throw std::overflow_error("streamed KL hidden geometry overflows");
+        hidden_elements *= std::uint64_t(extent);
+    }
     const int64_t hidden_bytes =
-        (int64_t)chunks * n_ctx * model.hc_mult() *
-        model.hidden_size() * (int64_t)sizeof(mfq_half);
-    auto hidden_cpu = mfq_tensor_backend::empty(
-        {chunks, n_ctx, model.hc_mult(), model.hidden_size()},
-        mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::kCPU)
-            .dtype(mfq_tensor_backend::kFloat16)
+        (int64_t)chunks * n_ctx * info.streams *
+        info.width * (int64_t)sizeof(mfq_half);
+    auto hidden_cpu = ::tyloi::cuda::empty(
+        {chunks, n_ctx, info.streams, info.width},
+        ::tyloi::TensorOptions()
+            .device(::tyloi::kCPU)
+            .dtype(::tyloi::kFloat16)
             .pinned_memory(true));
     std::cout << "cpp_kl_stream_begin chunks=" << chunks
               << " ctx=" << n_ctx
@@ -1026,54 +1012,39 @@ int run_kl_eval_streamed(
 
     for (int begin = 0; begin < chunks; begin += chunk_batch) {
         const int count = std::min(chunk_batch, chunks - begin);
-        auto ids = streamed_kl_ids(input, begin, count, n_ctx);
-        auto x = model.embed_forward(ids);
-        x = x.unsqueeze(2)
-            .expand({
-                count, n_ctx, model.hc_mult(), model.hidden_size()})
-            .contiguous();
-        hidden_cpu.narrow(0, begin, count).copy_(x, true);
-        mfq_cuda_synchronize();
+        KlChunk work{program};
+        work.ids = tyloi::Tensor(streamed_kl_ids(input, begin, count, n_ctx, device));
+        work.output = model.embedding(work.ids);
+        hidden_cpu.narrow(0, begin, count).copy_(work.output.dense(), true);
+        program.drain();
     }
     std::cout << "cpp_kl_stream_phase=embedding completed_chunks="
               << chunks << "\n";
 
     for (int layer_begin = 0;
-        layer_begin < model.num_hidden_layers();
+        layer_begin < info.layers;
          layer_begin += layer_group) {
-        const int layer_end = std::min(
-            layer_begin + layer_group,
-            static_cast<int>(model.num_hidden_layers()));
+        const int layer_end = layer_begin + std::min(layer_group, info.layers - layer_begin);
         auto group_started = std::chrono::steady_clock::now();
-        auto dsv4_state = std::make_shared<Dsv4SharedState>();
-        std::vector<std::unique_ptr<Block>> blocks;
-        blocks.reserve((size_t)(layer_end - layer_begin));
-        for (int layer = layer_begin; layer < layer_end; ++layer) {
-            std::cerr << "stream loading layer " << layer << " "
-                      << model.layer_type(layer) << std::endl;
-            blocks.push_back(mfq::cuda::deepseek_v4::load_block(
-                *model.execution, weights, model.config, layer,
-                std::string(model.layer_type(layer)), dsv4_state));
-        }
+        model.load(layer_begin, layer_end - layer_begin);
+        const auto mode = executor.forward_mode(primary);
+        const tyloi::models::ForwardOptions options{mode.kv_capacity, mode.trace, mode.trace_layer, primary};
         for (int begin = 0; begin < chunks; begin += chunk_batch) {
             const int count = std::min(chunk_batch, chunks - begin);
-            auto ids = streamed_kl_ids(input, begin, count, n_ctx);
-            auto pos = mfq_tensor_backend::arange(
+            KlChunk work{program};
+            work.ids = tyloi::Tensor(streamed_kl_ids(input, begin, count, n_ctx, device));
+            work.positions = tyloi::Tensor(::tyloi::cuda::arange(
                 0, n_ctx,
-                mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kInt64));
-            auto x = hidden_cpu.narrow(0, begin, count).to(mfq_tensor_backend::kCUDA);
-            for (auto & block : blocks) {
-                block->reset(count);
-                block->set_token_ids(ids);
-                x = block->forward(
-                    *model.execution, x, pos, 0, mfq_nullopt, model.rope);
-            }
-            hidden_cpu.narrow(0, begin, count).copy_(x, true);
-            mfq_cuda_synchronize();
+                ::tyloi::TensorOptions()
+                    .device(device).dtype(::tyloi::kInt64)));
+            work.hidden = tyloi::Tensor(hidden_cpu.narrow(0, begin, count).to(device));
+            work.state = model.make_state(count);
+            work.output = model.forward(work.ids, work.hidden, *work.state, work.positions, options);
+            hidden_cpu.narrow(0, begin, count).copy_(work.output.dense(), true);
+            program.drain();
         }
-        blocks.clear();
-        dsv4_state.reset();
+        program.drain();
+        model.release();
         mfq_cuda_empty_cache();
         auto group_ended = std::chrono::steady_clock::now();
         std::cout << "cpp_kl_stream_layers begin=" << layer_begin
@@ -1092,15 +1063,15 @@ int run_kl_eval_streamed(
     KlEvalMetrics metrics;
     for (int begin = 0; begin < chunks; begin += chunk_batch) {
         const int count = std::min(chunk_batch, chunks - begin);
-        auto x = hidden_cpu.narrow(0, begin, count).to(mfq_tensor_backend::kCUDA);
-        auto y = model.finalize_hidden(x, count, n_ctx);
-        auto selected =
-            y.index({Slice(), Slice(first, first + score_count), Slice()});
-        auto logits = model.apply_final_logit_softcap(
-            model.execution->projector().run(model.lm_head, selected));
+        KlChunk work{program};
+        work.hidden = tyloi::Tensor(hidden_cpu.narrow(0, begin, count).to(device));
+        work.output = model.finalize(work.hidden, count, n_ctx);
+        work.selected = tyloi::Tensor(work.output.dense().index({Slice(), Slice(first, first + score_count), Slice()}));
+        work.logits = model.logits(work.selected);
+        const auto& logits = work.logits.dense();
         if (logits_output.is_open()) {
-            auto saved = logits.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kFloat16)
-                             .contiguous();
+            work.saved = tyloi::Tensor(logits.to(::tyloi::kCPU, ::tyloi::kFloat16).contiguous());
+            const auto& saved = work.saved.dense();
             logits_output.write(
                 reinterpret_cast<const char *>(
                     saved.data_ptr<mfq_half>()),
@@ -1127,7 +1098,7 @@ int run_kl_eval_streamed(
                           (double)metrics.count)
                       << "\n";
         }
-        mfq_cuda_synchronize();
+        program.drain();
     }
     auto ended = std::chrono::steady_clock::now();
     if (logits_output.is_open()) {
@@ -1176,29 +1147,6 @@ int run_kl_eval_streamed(
               << " reference_n_batch=" << reference_contract.n_batch
               << " reference_n_ubatch=" << reference_contract.n_ubatch
               << "\n";
-    execution.routes.write();
+    executor.routes().write();
     return 0;
 }
-
-#define TYLOINFER_INSTANTIATE_KL(MODEL, STATE)                                  \
-    template int run_kl_eval_batched<MODEL, STATE>(                             \
-        CudaExecutionContext&, MODEL&, STATE&, mfq::cuda::Executor*,           \
-        const std::string&, int, std::int64_t, int,                             \
-        const KlReferenceContract&);                                            \
-    template int run_selected_kl_eval<MODEL, STATE>(                            \
-        CudaExecutionContext&, MODEL&, STATE&, mfq::cuda::Executor*,            \
-        const std::string&, int, KlEvaluator, std::int64_t, int,                \
-        const KlReferenceContract&)
-
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::Gemma4CausalLm, mfq::cuda::Gemma4CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::GlmDsaCausalLm, mfq::cuda::GlmDsaCausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::Glm5CausalLm, mfq::cuda::Glm5CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV4CausalLm, mfq::cuda::DeepseekV4CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV41CausalLm, mfq::cuda::DeepseekV41CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::NemotronHCausalLm, mfq::cuda::NemotronHCausalLm);
-
-#undef TYLOINFER_INSTANTIATE_KL

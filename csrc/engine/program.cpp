@@ -9,6 +9,7 @@
 #include "engine/models/causal_model.h"
 #include "engine/models/common/load.h"
 #include "engine/models/layers.h"
+#include "engine/models/groups.h"
 #include "engine/models/load.h"
 #include "engine/models/session/cache.h"
 #include "engine/models/source.h"
@@ -94,7 +95,14 @@ struct Program::Impl {
     std::unique_ptr<models::CausalModel> model;
     std::unique_ptr<models::State> state;
     std::unique_ptr<models::Layers> layers;
+    std::unique_ptr<models::Groups> groups;
     bool attempted = false;
+
+    /** Open the source only for a model-loading operation, after execution setup. */
+    void open_source() {
+        if (options.model_path.empty()) throw std::logic_error("program has no model source");
+        source = open_model_source(options.model_path);
+    }
 
     /** Drain before destroying execution-dependent resources, including on partial setup. */
     void cleanup() noexcept {
@@ -109,6 +117,7 @@ struct Program::Impl {
         catch (...) { std::cerr << "program_cleanup error=unknown\n"; }
         state.reset();
         layers.reset();
+        groups.reset();
         model.reset();
         try { executor->clear(); }
         catch (const std::exception& error) { std::cerr << "program_cleanup error=" << error.what() << '\n'; }
@@ -125,23 +134,28 @@ struct Program::Impl {
 Program::Program() : impl_(std::make_unique<Impl>()) {}
 Program::~Program() noexcept { impl_->cleanup(); }
 
-std::unique_ptr<Program> Program::open(CudaLoadOptions options, bool adapt) {
+std::unique_ptr<Program> Program::bare() {
     auto program = std::unique_ptr<Program>(new Program());
     auto& p = *program->impl_;
-    p.options = std::move(options);
     const bool dump_env = env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
     if (dump_env) std::cerr << "cuda knobs at load:\n" << env_dump();
     auto [config, numeric] = load_cuda_execution_config();
     p.config = std::move(config);
-    if (!adapt) p.config.cache.adapt = false;
     p.weights = std::make_unique<::tyloi::weights::Cache>();
     p.executor = std::make_unique<Executor>(std::move(numeric), 0);
+    p.executor->profiler().enabled = false;
+    p.ledger = std::make_shared<::tyloi::weights::Memory>();
+    return program;
+}
+
+std::unique_ptr<Program> Program::open(CudaLoadOptions options, bool adapt) {
+    auto program = bare();
+    auto& p = *program->impl_;
+    p.options = std::move(options);
+    if (!adapt) p.config.cache.adapt = false;
     auto scope = p.executor->enter(p.config.layer_placement.primary_device());
     internal::setup_cuda_load(p.options, p.config, *p.executor, *p.weights, p.kv, p.offload);
     p.executor->set_primary(p.config.layer_placement.primary_device());
-    p.executor->profiler().enabled = false;
-    p.source = open_model_source(p.options.model_path);
-    p.ledger = std::make_shared<::tyloi::weights::Memory>();
     internal::configure_model_kv(*p.executor, p.kv, p.offload);
     return program;
 }
@@ -150,7 +164,8 @@ void Program::load(bool components) {
     auto& p = *impl_;
     if (p.attempted || !p.executor) throw std::logic_error("program load already attempted");
     p.attempted = true;
-    try {
+    p.open_source();
+    {
         auto scope = p.executor->enter(p.config.layer_placement.primary_device());
         ::tyloi::weights::LoadScope memory(*p.ledger);
         p.model = internal::load_model(p.options, p.config, *p.executor, *p.weights, p.source, components);
@@ -164,14 +179,15 @@ void Program::load(bool components) {
         p.executor->configure_kv(p.kv, p.offload);
         if (p.offload && !p.model->info().streamed_kv)
             throw std::invalid_argument("CUDA streamed KV requires a QSA model");
-    } catch (...) { p.cleanup(); throw; }
+    }
 }
 
 void Program::load_layers() {
     auto& p = *impl_;
     if (p.attempted || !p.executor) throw std::logic_error("program load already attempted");
     p.attempted = true;
-    try {
+    p.open_source();
+    {
         auto scope = p.executor->enter(p.config.layer_placement.primary_device());
         ::tyloi::weights::LoadScope memory(*p.ledger);
         if (p.offload) throw std::invalid_argument("layer-wise execution does not support streamed KV");
@@ -179,16 +195,34 @@ void Program::load_layers() {
         p.layers = models::load_layers(p.source, input.definition, input.loader,
             p.config.layer_placement, input.policy);
         finish_load(p.kv.get(), *p.weights, p.config.report_cuda_memory);
-    } catch (...) { p.cleanup(); throw; }
+    }
+}
+
+void Program::load_groups(std::int64_t context) {
+    auto& p = *impl_;
+    if (p.attempted || !p.executor) throw std::logic_error("program load already attempted");
+    if (context < 1) throw std::invalid_argument("grouped execution requires a positive context");
+    p.attempted = true;
+    p.open_source();
+    auto scope = p.executor->enter(p.config.layer_placement.primary_device());
+    ::tyloi::weights::LoadScope memory(*p.ledger);
+    if (p.offload) throw std::invalid_argument("grouped execution does not support streamed KV");
+    auto options = p.options;
+    options.context_size = context;
+    auto input = assembly(options, p.config, *p.executor, *p.weights, *p.source, false);
+    p.groups = models::load_groups(p.source, input.definition, input.loader,
+        p.config.layer_placement, input.policy);
+    p.groups->prepare();
+    finish_load(p.kv.get(), *p.weights, p.config.report_cuda_memory);
 }
 
 Executor& Program::executor() { if (!impl_->executor) throw std::logic_error("program closed"); return *impl_->executor; }
 ::tyloi::weights::Cache& Program::weights() { if (!impl_->weights) throw std::logic_error("program closed"); return *impl_->weights; }
 CudaLoadConfig& Program::config() { return impl_->config; }
-const ModelSource& Program::source() const { if (!impl_->source) throw std::logic_error("program closed"); return *impl_->source; }
 models::CausalModel& Program::model() { if (!impl_->model) throw std::logic_error("model not loaded"); return *impl_->model; }
 models::State& Program::state() { if (!impl_->state) throw std::logic_error("state not loaded"); return *impl_->state; }
 models::Layers& Program::layers() { if (!impl_->layers) throw std::logic_error("layers not loaded"); return *impl_->layers; }
+models::Groups& Program::groups() { if (!impl_->groups) throw std::logic_error("groups not loaded"); return *impl_->groups; }
 void Program::drain() {
     auto& p = *impl_;
     if (!p.executor || !p.weights) throw std::logic_error("program closed");

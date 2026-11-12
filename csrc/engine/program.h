@@ -6,7 +6,7 @@
 
 namespace tyloi {
 class ModelSource;
-namespace models { class CausalModel; class State; class Layers; }
+namespace models { class CausalModel; class State; class Layers; class Groups; }
 namespace weights { class Cache; }
 }
 
@@ -15,6 +15,8 @@ namespace tyloi::cuda {
 /** Own native execution resources and one independently loaded model or layer view. */
 class Program final {
 public:
+    /** Prepare operator execution without applying model or weight-loading options. */
+    static std::unique_ptr<Program> bare();
     /** Prepare execution resources without loading model weights. */
     static std::unique_ptr<Program> open(CudaLoadOptions options, bool adapt = true);
     ~Program() noexcept;
@@ -27,20 +29,22 @@ public:
     void load(bool components = true);
     /** Load the independent layer-wise model view. */
     void load_layers();
+    /** Load the grouped model view using the reference context length. */
+    void load_groups(std::int64_t context);
     /** Borrow the execution resources while this owner remains alive. */
     Executor& executor();
     /** Borrow the weight cache while this owner remains alive. */
     weights::Cache& weights();
     /** Borrow the resolved execution configuration. */
     CudaLoadConfig& config();
-    /** Borrow the opened model source. */
-    const ModelSource& source() const;
     /** Borrow the loaded complete model. */
     models::CausalModel& model();
     /** Borrow the request state of the loaded complete model. */
     models::State& state();
     /** Borrow the loaded layer-wise model view. */
     models::Layers& layers();
+    /** Borrow the loaded grouped model view. */
+    models::Groups& groups();
     /** Wait for outstanding work and propagate any drain failure. */
     void drain();
 

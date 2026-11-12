@@ -1,12 +1,13 @@
 #include "env.h"
 #include "cli.h"
 #include "run.h"
-#include "engine/models/assemble.h"
+#include "engine/program.h"
+#include "engine/weights/cache.h"
 #include "eval/kl.h"
 #include "engine/backends/cuda/native/scope.h"
-#include "engine/backends/cuda/executor/execution.h"
-#include "engine/backends/cuda/executor/tq.h"
-#include "engine/weights/moe/expert_cache.h"
+#include "engine/backends/cuda/executor/config.h"
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/ops/projection/mmq.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -46,14 +47,6 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
     explicit EvalCommand(tyloi::cuda::EvalCommandOptions options)
         : tyloi::cuda::EvalCommandOptions(std::move(options)) {}
     int run() { return with_command_errors([&]() -> int {
-        auto tq = std::make_shared<TqExec>();
-        std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
-        tyloi::cuda::RoutedCache weights;
-        std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
-        tyloi::cuda::ContextSet contexts;
-        CudaExecutionContext execution(contexts, weights, kv, offload, tq);
-        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
-        setup_cuda_load(*this, execution);
         if (model_path.empty()) {
             std::cerr << "missing model or execution mode (see --help)\n";
             return 2;
@@ -133,13 +126,16 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
                 "--kl-n-batch requires non-streamed --kl-base with "
                 "--kl-evaluator optimized");
         }
+        auto program = tyloi::cuda::Program::open(*this);
+        auto& executor = program->executor();
+        auto scope = executor.enter(program->config().layer_placement.primary_device());
         std::unique_ptr<KlMmqScope> kl_mmq_scope;
         const KlMmqMode load_mmq_mode =
             kl_mmq_sequence.empty()
             ? kl_mmq_mode : kl_mmq_sequence.front();
         if (load_mmq_mode != KlMmqMode::Default) {
             kl_mmq_scope =
-                std::make_unique<KlMmqScope>(load_mmq_mode, execution.kl_mmq);
+                std::make_unique<KlMmqScope>(load_mmq_mode, executor.mmq());
         }
         if (!kl_chunks_sequence_arg.empty()) {
             kl_chunks_sequence = parse_ids(kl_chunks_sequence_arg);
@@ -152,7 +148,6 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
                     "positive comma-separated chunk counts");
             }
         }
-        execution.profiler.enabled = false;
         tyloi::cuda::NoGradGuard no_grad;
         if (!kl_base.empty()) std::cout << std::unitbuf;
         if (!kl_base.empty()) {
@@ -177,20 +172,38 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
                 throw std::runtime_error(
                     "--kl-chunks-sequence is unavailable for streamed KL");
             }
-            if (execution.weights.moe) {
+            if (moe_gpu_cache_gb > 0) {
                 throw std::runtime_error(
                     "--moe-gpu-cache-gb is unavailable for streamed KL");
             }
-            return run_kl_eval_streamed(
-                execution, model_path, config_path, kl_base,
-                kl_save_logits_f16, kl_chunks,
-                kl_stream_layers, kl_stream_batch,
-                kl_score_count, kl_reference_contract);
+            try {
+                const int status = run_kl_eval_streamed(
+                    *program, kl_base,
+                    kl_save_logits_f16, kl_chunks,
+                    kl_stream_layers, kl_stream_batch,
+                    kl_score_count, kl_reference_contract);
+                program->drain();
+                return status;
+            } catch (...) {
+                try { program->drain(); } catch (...) {}
+                throw;
+            }
         }
-        return tyloi::cuda::with_model<>(execution, *this, false,
-            [&](auto& owner, auto& owned_state, auto& executor, auto&, auto, auto, auto&) -> int {
-        auto& model = *owner;
-        auto& state = *owned_state;
+        program->load(false);
+        try {
+            const int status = evaluate(*program, kl_evaluator,
+                kl_chunks_sequence, kl_mmq_sequence);
+            program->drain();
+            return status;
+        } catch (...) {
+            try { program->drain(); } catch (...) {}
+            throw;
+        }
+    }); }
+
+    int evaluate(tyloi::cuda::Program& program, KlEvaluator kl_evaluator,
+        const std::vector<int64_t>& kl_chunks_sequence,
+        const std::vector<KlMmqMode>& kl_mmq_sequence) {
         if (!kl_base.empty()) {
             if (!kl_mmq_sequence.empty()) {
                 if (!kl_chunks_sequence.empty()) {
@@ -205,9 +218,9 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
                               << kl_mmq_mode_name(kl_mmq_sequence[index])
                               << " chunks=" << kl_chunks << "\n";
                     KlMmqScope run_scope(
-                        kl_mmq_sequence[index], execution.kl_mmq);
+                        kl_mmq_sequence[index], program.executor().mmq());
                     const int status = run_kl_eval_batched(
-                        execution, model, state, executor.get(), kl_base, kl_chunks,
+                        program, kl_base, kl_chunks,
                         kl_n_batch, kl_score_count,
                         kl_reference_contract);
                     if (status != 0) return status;
@@ -220,13 +233,11 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
             }
             if (kl_chunks_sequence.empty()) {
                 const int status = run_selected_kl_eval(
-                    execution, model, state, executor.get(), kl_base, kl_chunks,
+                    program, kl_base, kl_chunks,
                     kl_evaluator,
                     kl_n_batch, kl_score_count,
                     kl_reference_contract);
-                if (execution.weights.moe) {
-                    print_moe_expert_cache_stats(execution.weights.moe, std::cout);
-                }
+                program.weights().report(std::cout);
                 return status;
             }
             for (size_t index = 0; index < kl_chunks_sequence.size(); ++index) {
@@ -235,7 +246,7 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
                 std::cout << "cpp_kl_sequence_begin index=" << index
                           << " chunks=" << chunks << "\n";
                 const int status = run_selected_kl_eval(
-                    execution, model, state, executor.get(), kl_base, chunks,
+                    program, kl_base, chunks,
                     kl_evaluator,
                     kl_n_batch, kl_score_count,
                     kl_reference_contract);
@@ -243,14 +254,11 @@ struct EvalCommand : tyloi::cuda::EvalCommandOptions {
                 std::cout << "cpp_kl_sequence_end index=" << index
                           << " chunks=" << chunks << "\n";
             }
-            if (execution.weights.moe) {
-                print_moe_expert_cache_stats(execution.weights.moe, std::cout);
-            }
+            program.weights().report(std::cout);
             return 0;
         }
         throw std::runtime_error("KL evaluation requires --kl-base");
-            });
-    }); }
+    }
 };
 
 } // namespace
