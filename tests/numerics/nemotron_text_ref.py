@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 
@@ -28,6 +29,7 @@ DENSE_INTERMEDIATE = 32
 VOCAB = 32
 
 LAYER_MIXERS = ('mamba', 'moe', 'attention', 'moe', 'mamba', 'attention')
+MTP_MIXERS = ('attention', 'moe')
 
 
 def _sigmoid(x):
@@ -52,7 +54,7 @@ def _rms_norm(x, weight, eps):
     return x / np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + eps) * weight
 
 
-def _config_dict(mixers):
+def _config_dict(mixers, mtp=False):
     """Construct the source synthetic backbone configuration."""
     llm = dict(
         model_type='nemotron_h',
@@ -100,6 +102,10 @@ def _config_dict(mixers):
         tie_word_embeddings=False,
         eos_token_id=11,
     )
+    if mtp:
+        llm['num_nextn_predict_layers'] = 1
+        llm['mtp_layers_block_type'] = list(MTP_MIXERS)
+        llm['max_position_embeddings'] = 64
     return dict(
         model_type='nemotron_h_omni',
         llm_config=llm,
@@ -155,11 +161,11 @@ def _mixer_weights(rng, prefix, kind):
     return weights
 
 
-def fixture(mixers=('mamba', 'moe')):
+def fixture(mixers=('mamba', 'moe'), mtp=False):
     """Return the original synthetic configuration and ordered float32 weights."""
     from tyloinfer.architectures.nemotron_h import NemotronHConfig
 
-    config = _config_dict(mixers)
+    config = _config_dict(mixers, mtp)
     # The fixture must satisfy the same contract as a converted checkpoint.
     NemotronHConfig.from_hf_config(config)
     rng = np.random.default_rng(5306)
@@ -171,6 +177,14 @@ def fixture(mixers=('mamba', 'moe')):
     }
     for layer, kind in enumerate(mixers):
         weights.update(_mixer_weights(rng, f'model.block.{layer}', kind))
+    if mtp:
+        weights['model.output_norm.weight'] = np.linspace(0.5, 1.5, HIDDEN).astype(np.float32)
+        weights['predictor.embedding_norm.weight'] = np.ones(HIDDEN, np.float32)
+        weights['predictor.hidden_norm.weight'] = np.ones(HIDDEN, np.float32)
+        weights['predictor.output_norm.weight'] = np.linspace(0.6, 1.4, HIDDEN).astype(np.float32)
+        weights['predictor.fusion.weight'] = _rand(rng, (HIDDEN, 2 * HIDDEN))
+        for layer, kind in enumerate(MTP_MIXERS):
+            weights.update(_mixer_weights(rng, f'predictor.block.{layer}', kind))
     return config, weights
 
 
@@ -328,26 +342,76 @@ def _model_reference(config, weights, ids, cache, state):
     return finalized, logits
 
 
+def _mtp_head(config, weights, previous, ids, cache, offset):
+    """Calculate one MTP pass with its explicit predictor attention history."""
+    from tyloinfer.architectures.nemotron_h import NemotronHConfig
+
+    contract = NemotronHConfig.from_hf_config(config)
+    eps = contract.norm_epsilon
+    embedded = weights['model.token_embedding.weight'][ids]
+    e = _rms_norm(embedded, weights['predictor.embedding_norm.weight'], eps)
+    h = _rms_norm(previous, weights['predictor.hidden_norm.weight'], eps)
+    hidden = np.concatenate([e, h], axis=-1) @ weights['predictor.fusion.weight'].T
+    for layer, kind in enumerate(contract.mtp_mixer_types):
+        prefix = f'predictor.block.{layer}.'
+        normalized = _rms_norm(hidden, weights[prefix + 'attention.norm.weight'], eps)
+        if kind == 'full_attention':
+            branch = _attention_reference(normalized, weights, prefix + 'attention.', cache, offset)
+        elif kind == 'moe':
+            branch = _moe_reference(normalized, weights, prefix + 'mlp.', contract)
+        else:
+            branch = _dense_mlp_reference(normalized, weights, prefix + 'mlp.')
+        hidden = hidden + branch
+    finalized = _rms_norm(hidden, weights['predictor.output_norm.weight'], eps)
+    return finalized, finalized @ weights['model.output.weight'].T
+
+
 def reference(case: Case, root: Path) -> Path:
-    """Recompute backbone hidden states and logits from a fixed synthetic case."""
+    """Recompute backbone or MTP observations from fixed case inputs."""
+    op = case.data['op']
     if (
-        case.data['op'] != 'nemotron_text_backbone'
+        op
+        not in (
+            'nemotron_text_backbone',
+            'nemotron_mtp_head',
+            'nemotron_mtp_chain',
+            'nemotron_mtp_target',
+        )
         or case.data['source'].get('generator') != 'tests/numerics/nemotron_text_ref.py'
     ):
         raise ValueError('Unsupported Nemotron text reference case')
     ids = case.tensor('ids')
     cache = [case.tensor('key_cache'), case.tensor('value_cache')]
-    state = case.tensor('mamba_state')
-    conv = case.tensor('conv_left_context')
-    if any(np.any(value != 0) for value in [*cache, state, conv]):
-        raise ValueError('The migrated backbone reference requires zero initial state')
-    weights = {name: case.tensor(name) for name in case.data['inputs'] if name.startswith('model.')}
-    hidden, logits = _model_reference(case.data['config']['model'], weights, ids, cache, state)
-    root = Path(root)
-    outputs = {
-        'hidden': save_tensor(root, 'hidden', hidden),
-        'logits': save_tensor(root, 'logits', logits),
+    if any(np.any(value != 0) for value in cache):
+        raise ValueError('The migrated reference requires zero initial KV state')
+    weights = {
+        name: case.tensor(name)
+        for name in case.data['inputs']
+        if name.startswith(('model.', 'predictor.'))
     }
+    config = case.data['config']['model']
+    if op == 'nemotron_text_backbone':
+        state, conv = case.tensor('mamba_state'), case.tensor('conv_left_context')
+        if np.any(state != 0) or np.any(conv != 0):
+            raise ValueError('The migrated backbone reference requires zero initial state')
+        hidden, logits = _model_reference(config, weights, ids, cache, state)
+        values = {'hidden': hidden, 'logits': logits}
+    elif op == 'nemotron_mtp_head':
+        hidden, logits = _mtp_head(config, weights, case.tensor('previous'), ids, cache, 0)
+        values = {'head': hidden, 'logits': logits}
+    elif op == 'nemotron_mtp_chain':
+        hidden = case.tensor('previous')[:, :1]
+        values = {}
+        for index, name in enumerate(('chain_first', 'chain_second')):
+            hidden, _ = _mtp_head(config, weights, hidden, ids[:, index : index + 1], cache, index)
+            values[name] = hidden
+    else:
+        hidden, _ = _mtp_head(
+            config, weights, case.tensor('target_hidden')[:, :6], ids[:, 1:], cache, 0
+        )
+        values = {'head_from_target': hidden}
+    root = Path(root)
+    outputs = {name: save_tensor(root, name, value) for name, value in values.items()}
     execution = {
         'framework': 'NumPy',
         'numpy_version': np.__version__,
@@ -359,11 +423,103 @@ def reference(case: Case, root: Path) -> Path:
     return write_result(case, root, outputs, execution)
 
 
-def generate(root: Path, suite: str = 'backbone') -> list[Path]:
-    """Create the four original backbone cases and their NumPy references.
+def _mtp_case(root, kind, ids, hidden, capture=None):
+    """Freeze MTP inputs, source weights and the empty predictor KV cache."""
+    config, weights = fixture(LAYER_MIXERS, mtp=True)
+    source = Path(__file__).parents[1] / 'test_cuda_nemotron_runtime.py'
+    diagnostics = Path(__file__).parents[2] / 'csrc/diagnostics/runtime_checks.h'
+    tests = {
+        'head': 'test_native_mtp_head_matches_reference',
+        'chain': 'test_native_mtp_depth_chain_matches_reference',
+        'target': 'test_native_mtp_target_hidden_is_post_output_norm',
+    }
+    provenance = {
+        'generator': 'tests/numerics/nemotron_text_ref.py',
+        'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'file': 'tests/test_cuda_nemotron_runtime.py',
+        'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+        'diagnostics': 'csrc/diagnostics/runtime_checks.h',
+        'diagnostics_sha256': hashlib.sha256(diagnostics.read_bytes()).hexdigest(),
+        'test': tests[kind],
+        'seed': 5306,
+    }
+    checks = ['chunked', 'rollback', 'commit'] if kind == 'head' else []
+    if kind == 'target':
+        provenance['capture_sha256'] = hashlib.sha256(capture).hexdigest()
+        checks = ['target_hidden_equals_target_normalized', 'pre_norm_negative_check']
+    elif kind == 'chain':
+        checks = ['pre_final_norm_chain_negative_check']
+    writer = CaseWriter(
+        root,
+        f'nemotron_mtp_{kind}',
+        f'nemotron_mtp_{kind}',
+        {
+            'model': config,
+            'compute': {'device': 'cpu', 'weights': 'float32', 'attention_cache': 'float16'},
+            'native_checks': checks,
+            'input_origin': 'native capture' if kind == 'target' else 'diagnostic fixed formula',
+        },
+        provenance,
+    )
+    for name, value in weights.items():
+        writer.input(name, value)
+    writer.input('ids', ids)
+    writer.input('target_hidden' if kind == 'target' else 'previous', hidden)
+    for name in ('key_cache', 'value_cache'):
+        writer.input(name, np.zeros((1, KV_HEADS, 32, HEAD_DIM), np.float16))
+    if capture is not None:
+        writer.asset('capture', capture, encoding='nemotron_h_mtp_check JSON')
+    rule = {'kind': 'close', 'atol': 2e-3, 'rtol': 2e-3}
+    if kind == 'head':
+        writer.output('head', (1, 7, HIDDEN), 'float32', rule)
+        writer.output('logits', (1, 7, VOCAB), 'float32', rule)
+    elif kind == 'chain':
+        for name in ('chain_first', 'chain_second'):
+            writer.output(name, (1, 1, HIDDEN), 'float32', rule)
+    else:
+        writer.output('head_from_target', (1, 6, HIDDEN), 'float32', rule)
+    case = writer.finish()
+    reference(case, case.root / 'reference')
+    return case.root / 'case.json'
 
-    MTP requires captured native inputs and is intentionally not generated.
+
+def generate_target(root: Path, capture: Path) -> Path:
+    """Freeze the actual target hidden and IDs from one MTP diagnostic capture.
+
+    The captured target hidden is an input; native consistency observations are
+    recorded separately and never treated as independent expected values.
     """
+    raw = Path(capture).read_bytes()
+    text = raw.decode('utf-8')
+    prefix = 'nemotron_h_mtp_check '
+    lines = [line[len(prefix) :] for line in text.splitlines() if line.startswith(prefix)]
+    if len(lines) > 1:
+        raise ValueError('Expected exactly one MTP diagnostic record')
+    data = json.loads(lines[0] if lines else text)
+    if not isinstance(data, dict) or data.get('architecture') != 'nemotron_h':
+        raise ValueError('Capture is not a Nemotron-H MTP diagnostic')
+    ids_entry, target_entry = data['ids'], data['target_hidden']
+    if ids_entry['shape'] != [1, 7] or target_entry['shape'] != [1, 7, HIDDEN]:
+        raise ValueError('Unexpected MTP capture input shape')
+    ids_raw = np.asarray(ids_entry['data'], dtype=np.float64)
+    target = np.asarray(target_entry['data'], dtype=np.float32)
+    if ids_raw.shape != (7,) or not np.array_equal(ids_raw, np.arange(1, 8)):
+        raise ValueError('MTP capture IDs do not match the diagnostic')
+    if target.shape != (7 * HIDDEN,) or not np.isfinite(target).all():
+        raise ValueError('MTP capture target hidden is invalid')
+    return _mtp_case(
+        root, 'target', ids_raw.astype(np.int64).reshape(1, 7), target.reshape(1, 7, HIDDEN), raw
+    )
+
+
+def generate(root: Path, suite: str = 'backbone') -> list[Path]:
+    """Create the original backbone or fixed-input MTP reference cases."""
+    if suite == 'mtp':
+        ids = np.arange(1, 8, dtype=np.int64)[None]
+        previous = (np.arange(7 * HIDDEN, dtype=np.int64) % 31).astype(np.float32)
+        previous = np.multiply(previous, np.float32(0.01))
+        previous = np.subtract(previous, np.float32(0.15)).reshape(1, 7, HIDDEN)
+        return [_mtp_case(root, kind, ids, previous) for kind in ('head', 'chain')]
     if suite != 'backbone':
         raise ValueError(f'Unknown Nemotron text suite: {suite!r}')
     source = Path(__file__).parents[1] / 'test_cuda_nemotron_runtime.py'

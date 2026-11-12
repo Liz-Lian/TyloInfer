@@ -178,7 +178,7 @@ def _rule(rule):
     if not isinstance(rule, dict):
         raise ValueError('Comparison rule must be an object')
     kind = rule.get('kind')
-    if kind == 'exact':
+    if kind in {'exact', 'bits'}:
         return
     fields = (
         ('atol', 'rtol') if kind == 'close' else ('limit', 'floor') if kind == 'rms' else ('limit',)
@@ -243,6 +243,11 @@ class Case:
             ):
                 raise ValueError(f'Invalid output contract: {name}')
             _rule(contract['rule'])
+            if (
+                contract['rule']['kind'] == 'bits'
+                and contract.get('actual_dtype', contract['dtype']) != contract['dtype']
+            ):
+                raise ValueError('Bit-exact observations require matching logical dtypes')
         return case
 
     def tensor(self, name):
@@ -290,11 +295,22 @@ class CaseWriter:
         return spec
 
     def asset(self, name, value, encoding='binary'):
-        """Persist the exact packed payload used by both executions."""
+        """Store packed bytes or register an existing file inside this case directory."""
         if self.finished or name in self.data['assets']:
             raise ValueError('Asset already exists or case is published')
-        spec = _save_blob(self.root / 'assets', name, bytes(value), encoding)
-        spec['file'] = 'assets/' + spec['file']
+        if isinstance(value, Path):
+            path = value.resolve()
+            relative = path.relative_to(self.root.resolve()).as_posix()
+            data = path.read_bytes()
+            spec = {
+                'file': relative,
+                'encoding': encoding,
+                'nbytes': len(data),
+                'sha256': hashlib.sha256(data).hexdigest(),
+            }
+        else:
+            spec = _save_blob(self.root / 'assets', name, bytes(value), encoding)
+            spec['file'] = 'assets/' + spec['file']
         self._add('assets', name, spec)
         return spec
 

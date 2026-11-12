@@ -131,6 +131,13 @@ def _evaluate(actual, reference, contract):
         with np.errstate(over='ignore', invalid='ignore'):
             delta = np.abs(actual.astype(np.float32) - reference.astype(np.float32))
         passed = valid & ((delta < rule['limit']) | (matching_inf & allow_infinity))
+    elif kind == 'bits':
+        if actual.dtype != reference.dtype:
+            raise ValueError('Bit-exact comparison requires matching storage dtypes')
+        shape = (*actual.shape, actual.dtype.itemsize)
+        a = actual.reshape(-1).view(np.uint8).reshape(shape)
+        b = reference.reshape(-1).view(np.uint8).reshape(shape)
+        passed = valid & np.all(a == b, axis=-1)
     elif kind == 'exact':
         if actual.dtype.kind in 'biu' or reference.dtype.kind in 'biu':
             equal = actual.astype(object) == reference.astype(object)
@@ -141,6 +148,8 @@ def _evaluate(actual, reference, contract):
         passed = _close(actual, reference, differences, valid, matching_inf, rule, allow_infinity)
     result['failed_elements'] = int(np.count_nonzero(~passed))
     if result['failed_elements']:
+        flat = int(np.flatnonzero(~passed)[0])
+        result['first_failure_index'] = [int(part) for part in np.unravel_index(flat, actual.shape)]
         result['reason'] = (
             'NaN or disallowed/mismatched infinity'
             if not valid.all()

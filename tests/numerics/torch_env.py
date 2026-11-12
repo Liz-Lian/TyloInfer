@@ -21,20 +21,33 @@ def settings():
     return {
         'allow_tf32': torch.backends.cuda.matmul.allow_tf32,
         'float32_matmul_precision': torch.get_float32_matmul_precision(),
+        'allow_fp16_reduced_precision_reduction': torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+        'allow_bf16_reduced_precision_reduction': torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,
     }
 
 
 def _apply(config):
     """Apply recorded settings and reject configurations Torch cannot reproduce."""
+    flags = (
+        'allow_tf32',
+        'allow_fp16_reduced_precision_reduction',
+        'allow_bf16_reduced_precision_reduction',
+    )
     if (
-        set(config) != {'allow_tf32', 'float32_matmul_precision'}
-        or type(config['allow_tf32']) is not bool
+        set(config) != {*flags, 'float32_matmul_precision'}
+        or any(type(config[name]) is not bool for name in flags)
         or config['float32_matmul_precision'] not in {'highest', 'high', 'medium'}
     ):
         raise ValueError('Invalid Torch reference compute configuration')
     torch.set_float32_matmul_precision(config['float32_matmul_precision'])
     if torch.backends.cuda.matmul.allow_tf32 != config['allow_tf32']:
         torch.backends.cuda.matmul.allow_tf32 = config['allow_tf32']
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = config[
+        'allow_fp16_reduced_precision_reduction'
+    ]
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = config[
+        'allow_bf16_reduced_precision_reduction'
+    ]
     if settings() != config:
         raise ValueError('Recorded Torch matmul settings cannot be reproduced')
 

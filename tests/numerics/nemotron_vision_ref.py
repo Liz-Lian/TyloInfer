@@ -165,7 +165,7 @@ def _project(features, weights, grids):
 
 def reference(case: Case, root: Path) -> Path:
     """Recalculate one CPU float64 RADIO result from fixed pixels and weights."""
-    if case.data['op'] not in {'radio_features', 'radio_projector'}:
+    if case.data['op'] not in {'radio_features', 'radio_projector', 'radio_prompt'}:
         raise ValueError('Unsupported RADIO reference operation')
     if case.data['source'].get('generator') != 'tests/numerics/nemotron_vision_ref.py':
         raise ValueError('Unsupported RADIO reference source')
@@ -179,12 +179,40 @@ def reference(case: Case, root: Path) -> Path:
     }
     pixels = torch.tensor(case.tensor('pixels'), dtype=torch.float64)
     features = _features(pixels, weights, grids)
-    output = features if case.data['op'] == 'radio_features' else _project(features, weights, grids)
-    spec = save_tensor(root, 'output', output.detach().contiguous().numpy())
+    if case.data['op'] == 'radio_prompt':
+        ids = torch.from_numpy(case.tensor('token_ids'))
+        image_positions = torch.from_numpy(case.tensor('image_positions'))
+        expected_grid = np.asarray([[1, rows, columns] for rows, columns in grids], dtype=np.int32)
+        if not np.array_equal(case.tensor('vision_grid'), expected_grid) or not np.array_equal(
+            case.tensor('vision_types'), np.ones(len(grids), dtype=np.int32)
+        ):
+            raise ValueError('Vision preprocessing metadata differs from the recorded grids')
+        expected_positions = torch.nonzero(
+            ids == case.data['config']['img_context_token_id']
+        ).flatten()
+        projected = _project(features, weights, grids)
+        if (
+            not torch.equal(image_positions, expected_positions)
+            or image_positions.numel() != projected.shape[0]
+        ):
+            raise ValueError('Image positions do not match the projected image tokens')
+        table = torch.tensor(case.tensor('model.token_embedding.weight'), dtype=torch.float64)
+        embeddings = table[ids].clone()
+        embeddings[image_positions] = projected
+        outputs = {
+            'embeddings': embeddings.unsqueeze(0).numpy(),
+            'positions': np.arange(ids.numel(), dtype=np.int64).reshape(1, -1),
+        }
+    else:
+        output = (
+            features if case.data['op'] == 'radio_features' else _project(features, weights, grids)
+        )
+        outputs = {'output': output.detach().contiguous().numpy()}
+    specs = {name: save_tensor(root, name, value) for name, value in outputs.items()}
     return write_result(
         case,
         root,
-        {'output': spec},
+        specs,
         {
             'framework': 'PyTorch',
             'torch_version': str(torch.__version__),
@@ -197,16 +225,17 @@ def reference(case: Case, root: Path) -> Path:
 
 
 def generate(root: Path, suite: str = 'vision') -> list[Path]:
-    """Freeze the two-image RADIO tower and projector cases from the source test."""
-    if suite != 'vision':
+    """Freeze the original two-image RADIO vision or prompt references."""
+    if suite not in {'vision', 'prompt'}:
         raise ValueError(f'Unsupported RADIO suite: {suite}')
     config, weights = _fixture()
     config['image_grids'] = [list(grid) for grid in GRIDS]
     config['unmigrated'] = [
-        'native placeholder IDs and positions',
         'dynamic MTP hidden states',
         'real HF checkpoint and one real encoder layer',
     ]
+    if suite == 'vision':
+        config['unmigrated'].insert(0, 'native placeholder IDs and positions')
     count = sum(rows * columns for rows, columns in GRIDS)
     pixels = np.asarray(
         [((index * 37 + 11) % 101) / 64.0 for index in range(count * 12)], dtype=np.float64
@@ -219,6 +248,46 @@ def generate(root: Path, suite: str = 'vision') -> list[Path]:
         'vision_seed': 20260119,
         'pixels': '((index * 37 + 11) % 101) / 64',
     }
+    if suite == 'prompt':
+        producer = Path(__file__).resolve().parents[2] / 'csrc/diagnostics/runtime_checks.h'
+        writer = CaseWriter(
+            root,
+            'radio_prompt',
+            'radio_prompt',
+            {
+                **config,
+                'native_checks': ['placeholder_mismatch_rejected'],
+                'other_checks': ['pixel_shuffle_v1_differs'],
+            },
+            {
+                **source,
+                'test': 'tests/test_cuda_nemotron_vision.py::test_native_radio_matches_reference',
+                'producer': 'csrc/diagnostics/runtime_checks.h::run_nemotron_h_vision_check',
+                'producer_sha256': hashlib.sha256(producer.read_bytes()).hexdigest(),
+            },
+        )
+        ids = np.asarray([1, 2, *([18] * 6), 3, *([18] * 3), 3], dtype=np.int64)
+        writer.input('token_ids', ids)
+        writer.input('image_positions', np.flatnonzero(ids == 18).astype(np.int64))
+        writer.input('pixels', pixels.astype(np.float32))
+        writer.input(
+            'vision_grid',
+            np.asarray([[1, rows, columns] for rows, columns in GRIDS], dtype=np.int32),
+        )
+        writer.input('vision_types', np.ones(len(GRIDS), dtype=np.int32))
+        for name, weight in weights.items():
+            writer.input(name, weight)
+        writer.output(
+            'embeddings',
+            (1, 13, HIDDEN),
+            'float64',
+            {'kind': 'close', 'atol': 2e-4, 'rtol': 2e-4},
+            actual_dtype='float32',
+        )
+        writer.output('positions', (1, 13), 'int64', {'kind': 'exact'}, actual_dtype='int64')
+        case = writer.finish()
+        reference(case, case.root / 'reference')
+        return [case.root / 'case.json']
     paths = []
     for op, test, shape, actual_dtype in (
         ('radio_projector', 'test_native_radio_matches_reference', (9, HIDDEN), 'float32'),
