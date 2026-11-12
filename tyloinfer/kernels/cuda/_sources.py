@@ -16,10 +16,13 @@ ADAPTERS = (
     'mfq_cuda.cpp', 'acc.cpp', 'norm.cpp', 'activation.cpp', 'qwen4_exp.cpp',
     'selected_attention.cpp', 'rope.cpp', 'sampling.cpp', 'embedding.cpp',
     'kv_cache.cpp', 'ssm_conv.cpp', 'glm5_next.cpp', 'attention.cpp',
-    'gated_delta_net.cpp', 'moe.cpp', 'mx_matmul.cpp', 'mx_backward.cu',
-    'nint_matmul.cpp', 'nint_backward.cu', 'nvq.cu', 'nvq_backward.cu',
-    'nepq.cpp', 'nepq_residual.cpp', 'nepq_residual_backward.cu', 'fp8_sq.cpp',
-    'fp8_sq_backward.cu', 'mxfp4_sq.cpp', 'mxfp4_sq_backward.cu',
+    'gated_delta_net.cpp', 'moe.cpp', 'mx_matmul.cpp',
+    'packed_backward.cpp', 'packed_backward.cu', 'mx_backward.cpp', 'mx_backward.cu',
+    'nint_matmul.cpp', 'nint_backward.cpp', 'nint_backward.cu',
+    'nvq.cpp', 'nvq_backward.cpp', 'nvq_backward.cu',
+    'nepq.cpp', 'nepq_residual.cpp', 'nepq_residual_backward.cpp', 'nepq_residual_backward.cu',
+    'fp8_sq.cpp', 'fp8_sq_backward.cpp', 'mxfp4_sq.cpp',
+    'mxfp4_sq_backward.cpp', 'mxfp4_sq_backward.cu',
 )
 
 

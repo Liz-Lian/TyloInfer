@@ -1,11 +1,5 @@
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAException.h>
-#include <cuda_fp16.h>
+#include "nepq_residual_backward_raw.h"
 #include <cuda_runtime.h>
-
-void nepq_validate_residual(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, int64_t, int64_t, int64_t);
 
 namespace {
 constexpr int kWarpSize = 32;
@@ -178,146 +172,31 @@ __global__ void nepq_sparse_residual_backward_transpose_kernel(
 
 }  // namespace
 
-/** Accumulate the sparse residual input gradient into the supplied tensor. */
-torch::Tensor nepq_sparse_residual_backward_input_cuda(
-    torch::Tensor dictionary,
-    torch::Tensor first,
-    torch::Tensor second,
-    torch::Tensor output_gradient,
-    int64_t position_bits,
-    int64_t block_vectors,
-    torch::Tensor input_gradient) {
-    TORCH_CHECK(
-        output_gradient.is_cuda() &&
-        output_gradient.scalar_type() == at::kHalf &&
-        output_gradient.is_contiguous() && output_gradient.dim() == 2 &&
-        output_gradient.size(1) == first.size(0),
-        "NEPQ-A backward output gradient must be CUDA fp16 [M,rows]");
-    TORCH_CHECK(
-        input_gradient.is_cuda() &&
-        input_gradient.scalar_type() == at::kHalf &&
-        input_gradient.is_contiguous() && input_gradient.dim() == 2 &&
-        input_gradient.size(0) == output_gradient.size(0),
-        "NEPQ-A backward input gradient must be CUDA fp16 [M,K]");
-    nepq_validate_residual(
-        dictionary, first, second, input_gradient.size(1),
-        position_bits, block_vectors);
-    TORCH_CHECK(
-        dictionary.device() == output_gradient.device() &&
-        output_gradient.device() == input_gradient.device(),
-        "NEPQ-A backward tensors must share one CUDA device");
-    c10::cuda::CUDAGuard guard(input_gradient.device());
-    if (input_gradient.numel() == 0) {
-        return input_gradient;
-    }
-    const int threads = output_gradient.size(0) <= 8 ? 1024 : 256;
-    const dim3 blocks(
-        static_cast<unsigned>(first.size(1)),
-        static_cast<unsigned>(output_gradient.size(0)));
-    const size_t shared_bytes =
-        static_cast<size_t>(threads / kWarpSize) * block_vectors * 8 * sizeof(float);
-    nepq_sparse_residual_backward_input_kernel<<<
-        blocks, threads, shared_bytes, at::cuda::getCurrentCUDAStream().stream()>>>(
-        reinterpret_cast<const __half *>(dictionary.data_ptr<at::Half>()),
-        first.data_ptr<int16_t>(), second.data_ptr<int16_t>(),
-        reinterpret_cast<const __half *>(
-            output_gradient.data_ptr<at::Half>()),
-        reinterpret_cast<__half *>(input_gradient.data_ptr<at::Half>()),
-        static_cast<int>(output_gradient.size(0)),
-        static_cast<int>(first.size(0)),
-        static_cast<int>(input_gradient.size(1)),
-        static_cast<int>(first.size(1)),
-        static_cast<int>(position_bits),
-        static_cast<int>(block_vectors));
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return input_gradient;
+
+namespace mfq_jit_nepq_residual {
+void backward_input(const __half* dictionary, const std::int16_t* first,
+    const std::int16_t* second, const __half* output_gradient, __half* input_gradient,
+    std::int64_t input_rows, int rows, int width, std::int64_t blocks_per_row, int position_bits,
+    int block_vectors, cudaStream_t stream) {
+    const int threads = input_rows <= 8 ? 1024 : 256;
+    const dim3 blocks(static_cast<unsigned>(blocks_per_row), static_cast<unsigned>(input_rows));
+    const size_t shared_bytes = static_cast<size_t>(threads / kWarpSize) * block_vectors * 8 * sizeof(float);
+    nepq_sparse_residual_backward_input_kernel<<<blocks, threads, shared_bytes, stream>>>(
+        dictionary, first, second, output_gradient, input_gradient, static_cast<int>(input_rows),
+        rows, width, static_cast<int>(blocks_per_row), position_bits, block_vectors);
 }
 
-
-/** Accumulate a transposed sparse residual gradient, optionally rotating it. */
-torch::Tensor nepq_sparse_residual_backward_transpose_cuda(
-    torch::Tensor dictionary,
-    torch::Tensor transpose_offsets,
-    torch::Tensor transpose_rows,
-    torch::Tensor transpose_dictionary,
-    torch::Tensor output_gradient,
-    torch::Tensor rotation_signs,
-    bool fuse_rotation,
-    torch::Tensor input_gradient) {
-    TORCH_CHECK(
-        dictionary.is_cuda() &&
-        dictionary.scalar_type() == at::kHalf &&
-        dictionary.is_contiguous() && dictionary.dim() == 2 &&
-        dictionary.size(0) == 1024 && dictionary.size(1) == 8,
-        "NEPQ-A transpose dictionary must be CUDA fp16 [1024,8]");
-    TORCH_CHECK(
-        transpose_offsets.is_cuda() &&
-        transpose_offsets.scalar_type() == at::kInt &&
-        transpose_offsets.is_contiguous() && transpose_offsets.dim() == 1,
-        "NEPQ-A transpose offsets must be CUDA contiguous int32");
-    TORCH_CHECK(
-        transpose_rows.is_cuda() &&
-        transpose_rows.scalar_type() == at::kInt &&
-        transpose_rows.is_contiguous() && transpose_rows.dim() == 1 &&
-        transpose_dictionary.is_cuda() &&
-        transpose_dictionary.scalar_type() == at::kShort &&
-        transpose_dictionary.is_contiguous() &&
-        transpose_dictionary.dim() == 1 &&
-        transpose_dictionary.numel() == transpose_rows.numel(),
-        "NEPQ-A transpose records must be matching int32/int16 vectors");
-    TORCH_CHECK(
-        output_gradient.is_cuda() &&
-        output_gradient.scalar_type() == at::kHalf &&
-        output_gradient.is_contiguous() && output_gradient.dim() == 2,
-        "NEPQ-A transpose gradient must be CUDA contiguous fp16 [M,rows]");
-    TORCH_CHECK(
-        input_gradient.is_cuda() &&
-        input_gradient.scalar_type() == at::kHalf &&
-        input_gradient.is_contiguous() && input_gradient.dim() == 2 &&
-        input_gradient.size(0) == output_gradient.size(0) &&
-        input_gradient.size(1) % 8 == 0,
-        "NEPQ-A transpose output must be CUDA contiguous fp16 [M,K]");
-    const int64_t vectors = input_gradient.size(1) / 8;
-    TORCH_CHECK(
-        transpose_offsets.numel() == vectors + 1,
-        "NEPQ-A transpose offset count mismatch");
-    TORCH_CHECK(
-        rotation_signs.is_cuda() &&
-        rotation_signs.scalar_type() == at::kChar &&
-        rotation_signs.is_contiguous() && rotation_signs.dim() == 1 &&
-        (!fuse_rotation || rotation_signs.numel() == input_gradient.size(1)),
-        "NEPQ-A fused rotation signs must match K");
-    TORCH_CHECK(
-        dictionary.device() == transpose_offsets.device() &&
-        dictionary.device() == transpose_rows.device() &&
-        dictionary.device() == transpose_dictionary.device() &&
-        dictionary.device() == output_gradient.device() &&
-        dictionary.device() == rotation_signs.device() &&
-        dictionary.device() == input_gradient.device(),
-        "NEPQ-A transpose tensors must share one CUDA device");
-    if (input_gradient.numel() == 0) return input_gradient;
-
-    c10::cuda::CUDAGuard guard(input_gradient.device());
+void backward_transpose(const __half* dictionary, const std::int32_t* transpose_offsets,
+    const std::int32_t* transpose_rows, const std::int16_t* transpose_dictionary,
+    const __half* output_gradient, const std::int8_t* rotation_signs, __half* input_gradient,
+    std::int64_t input_rows, int rows, int width, std::int64_t vectors, bool fuse_rotation,
+    cudaStream_t stream) {
     constexpr int threads = 256;
-    const int64_t total_threads =
-        output_gradient.size(0) * vectors * kWarpSize;
-    const int blocks = static_cast<int>(
-        (total_threads + threads - 1) / threads);
-    nepq_sparse_residual_backward_transpose_kernel<<<
-        blocks, threads, 0, at::cuda::getCurrentCUDAStream().stream()>>>(
-        reinterpret_cast<const __half *>(dictionary.data_ptr<at::Half>()),
-        transpose_offsets.data_ptr<int32_t>(),
-        transpose_rows.data_ptr<int32_t>(),
-        transpose_dictionary.data_ptr<int16_t>(),
-        reinterpret_cast<const __half *>(
-            output_gradient.data_ptr<at::Half>()),
-        rotation_signs.data_ptr<int8_t>(),
-        reinterpret_cast<__half *>(input_gradient.data_ptr<at::Half>()),
-        static_cast<int>(output_gradient.size(0)),
-        static_cast<int>(output_gradient.size(1)),
-        static_cast<int>(input_gradient.size(1)),
-        static_cast<int>(vectors),
-        fuse_rotation);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return input_gradient;
+    const int64_t total_threads = static_cast<int64_t>(input_rows) * vectors * kWarpSize;
+    const int blocks = static_cast<int>((total_threads + threads - 1) / threads);
+    nepq_sparse_residual_backward_transpose_kernel<<<blocks, threads, 0, stream>>>(
+        dictionary, transpose_offsets, transpose_rows, transpose_dictionary, output_gradient,
+        rotation_signs, input_gradient, static_cast<int>(input_rows), rows, width,
+        static_cast<int>(vectors), fuse_rotation);
+}
 }

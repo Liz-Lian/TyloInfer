@@ -1,31 +1,23 @@
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAException.h>
+#include "nvq_backward_raw.h"
+#include "packed_nvq.cuh"
+#include "nvq_format.cuh"
 #include <cuda_fp16.h>
-#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <mma.h>
-#include <algorithm>
 #include <cstdint>
-#include <type_traits>
-#include "packed_backward.cuh"
-#include "nvq_check.cuh"
 
 using namespace nvcuda;
 using namespace tyloi::cuda::packed_nvq;
-using mfq_jit_nvq::check_common;
-using mfq_jit_nvq::check_nepq_common;
-using mfq_jit_nvq::launch_by_format;
-using mfq_jit_nvq::launch_nepq_by_format;
+using tyloi::cuda::nvq_format::launch_by_format;
+using tyloi::cuda::nvq_format::launch_nepq_by_format;
 
-/** Decode NVQ packed weights to FP16. */
-torch::Tensor nvq_dequant_cuda(torch::Tensor, torch::Tensor, torch::Tensor,
-    torch::Tensor, torch::Tensor, int64_t, int64_t, int64_t, int64_t, int64_t);
-/** Decode NEPQ shared-bank weights to FP16. */
-torch::Tensor nepq_dequant_cuda(torch::Tensor, torch::Tensor, torch::Tensor,
-    torch::Tensor, torch::Tensor, torch::Tensor, int64_t, int64_t, int64_t);
 namespace {
+struct RawBuffer {
+    void *data;
+    int64_t size;
+    template<class T> T *data_ptr() const { return reinterpret_cast<T *>(data); }
+    int64_t numel() const { return size; }
+};
 
 template <int FORMAT, int Rows>
 __global__ void __launch_bounds__(32) nvq_backward_quad_partial_kernel(
@@ -120,13 +112,13 @@ __global__ void __launch_bounds__(32) nvq_backward_quad_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nvq_backward_quad_small_m(
-        const torch::Tensor & indices,
-        const torch::Tensor & aux,
-        const torch::Tensor & sub_scale,
-        const torch::Tensor & neuron_scale,
-        const torch::Tensor & codebook,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & partials,
+        const RawBuffer & indices,
+        const RawBuffer & aux,
+        const RawBuffer & sub_scale,
+        const RawBuffer & neuron_scale,
+        const RawBuffer & codebook,
+        const RawBuffer & output_gradient,
+        RawBuffer & partials,
         int M,
         int N,
         int K,
@@ -147,8 +139,8 @@ void launch_nvq_backward_quad_small_m(
             sub_scale.data_ptr<uint8_t>(), sub_scale.numel(),
             neuron_scale.data_ptr<float>(), codebook.data_ptr<int8_t>(),
             reinterpret_cast<const __half *>(
-                output_gradient.data_ptr<at::Half>()),
-            reinterpret_cast<__half *>(partials.data_ptr<at::Half>()),
+                output_gradient.data_ptr<__half>()),
+            reinterpret_cast<__half *>(partials.data_ptr<__half>()),
             M, N, K, ng, nvec, nsign,
             sub_bits, sign_mode, output_tile);
 }
@@ -254,13 +246,13 @@ __global__ void __launch_bounds__(32) nvq_backward_vec8_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nvq_backward_vec8_small_m(
-        const torch::Tensor & indices,
-        const torch::Tensor & aux,
-        const torch::Tensor & sub_scale,
-        const torch::Tensor & neuron_scale,
-        const torch::Tensor & codebook,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & partials,
+        const RawBuffer & indices,
+        const RawBuffer & aux,
+        const RawBuffer & sub_scale,
+        const RawBuffer & neuron_scale,
+        const RawBuffer & codebook,
+        const RawBuffer & output_gradient,
+        RawBuffer & partials,
         int M,
         int N,
         int K,
@@ -282,8 +274,8 @@ void launch_nvq_backward_vec8_small_m(
             sub_scale.data_ptr<uint8_t>(), sub_scale.numel(),
             neuron_scale.data_ptr<float>(), codebook.data_ptr<int8_t>(),
             reinterpret_cast<const __half *>(
-                output_gradient.data_ptr<at::Half>()),
-            reinterpret_cast<__half *>(partials.data_ptr<at::Half>()),
+                output_gradient.data_ptr<__half>()),
+            reinterpret_cast<__half *>(partials.data_ptr<__half>()),
             M, N, K, ng, nvec, nsign,
             sub_bits, sign_mode, output_tile);
 }
@@ -405,13 +397,13 @@ __global__ void __launch_bounds__(256) nvq_backward_mma_m8_kernel(
 
 template <int FORMAT>
 void launch_nvq_backward_mma_m8(
-        const torch::Tensor & indices,
-        const torch::Tensor & aux,
-        const torch::Tensor & sub_scale,
-        const torch::Tensor & neuron_scale,
-        const torch::Tensor & codebook,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
+        const RawBuffer & indices,
+        const RawBuffer & aux,
+        const RawBuffer & sub_scale,
+        const RawBuffer & neuron_scale,
+        const RawBuffer & codebook,
+        const RawBuffer & output_gradient,
+        RawBuffer & result,
         int M,
         int N,
         int K,
@@ -428,8 +420,8 @@ void launch_nvq_backward_mma_m8(
             sub_scale.data_ptr<uint8_t>(), sub_scale.numel(),
             neuron_scale.data_ptr<float>(), codebook.data_ptr<int8_t>(),
             reinterpret_cast<const __half *>(
-                output_gradient.data_ptr<at::Half>()),
-            reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
+                output_gradient.data_ptr<__half>()),
+            reinterpret_cast<__half *>(result.data_ptr<__half>()),
             M, N, K, ng, nvec, nsign, sub_bits, sign_mode);
 }
 
@@ -557,14 +549,14 @@ __global__ void __launch_bounds__(256) nepq_backward_mma_m8_kernel(
 
 template <int FORMAT>
 void launch_nepq_backward_mma_m8(
-        const torch::Tensor & indices,
-        const torch::Tensor & aux,
-        const torch::Tensor & state_stream,
-        const torch::Tensor & neuron_scale,
-        const torch::Tensor & table_pool,
-        const torch::Tensor & bank_ids,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
+        const RawBuffer & indices,
+        const RawBuffer & aux,
+        const RawBuffer & state_stream,
+        const RawBuffer & neuron_scale,
+        const RawBuffer & table_pool,
+        const RawBuffer & bank_ids,
+        const RawBuffer & output_gradient,
+        RawBuffer & result,
         int M,
         int N,
         int K,
@@ -583,8 +575,8 @@ void launch_nepq_backward_mma_m8(
             neuron_scale.data_ptr<float>(), table_pool.data_ptr<int8_t>(),
             bank_ids.data_ptr<uint8_t>(),
             reinterpret_cast<const __half *>(
-                output_gradient.data_ptr<at::Half>()),
-            reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
+                output_gradient.data_ptr<__half>()),
+            reinterpret_cast<__half *>(result.data_ptr<__half>()),
             M, N, K, ng, nvec, nsign, nsuper, table_stride, state_bits);
 }
 
@@ -694,14 +686,14 @@ __global__ void __launch_bounds__(32) nepq_backward_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nepq_backward_small_m(
-        const torch::Tensor & indices,
-        const torch::Tensor & aux,
-        const torch::Tensor & state_stream,
-        const torch::Tensor & neuron_scale,
-        const torch::Tensor & table_pool,
-        const torch::Tensor & bank_ids,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & partials,
+        const RawBuffer & indices,
+        const RawBuffer & aux,
+        const RawBuffer & state_stream,
+        const RawBuffer & neuron_scale,
+        const RawBuffer & table_pool,
+        const RawBuffer & bank_ids,
+        const RawBuffer & output_gradient,
+        RawBuffer & partials,
         int M,
         int N,
         int K,
@@ -724,269 +716,70 @@ void launch_nepq_backward_small_m(
         neuron_scale.data_ptr<float>(), table_pool.data_ptr<int8_t>(),
         bank_ids.data_ptr<uint8_t>(),
         reinterpret_cast<const __half *>(
-            output_gradient.data_ptr<at::Half>()),
-        reinterpret_cast<__half *>(partials.data_ptr<at::Half>()),
+            output_gradient.data_ptr<__half>()),
+        reinterpret_cast<__half *>(partials.data_ptr<__half>()),
         M, N, K, ng, nvec, nsign,
         nsuper, table_stride, state_bits, output_tile);
 }
 
-template <typename T, typename Launch>
-void launch_backward_by_dtype(
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
-        Launch && launch) {
-    if constexpr (std::is_same_v<T, __half>) {
-        launch(
-            reinterpret_cast<const T *>(output_gradient.data_ptr<at::Half>()),
-            reinterpret_cast<T *>(result.data_ptr<at::Half>()));
-    } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
-        launch(
-            reinterpret_cast<const T *>(output_gradient.data_ptr<at::BFloat16>()),
-            reinterpret_cast<T *>(result.data_ptr<at::BFloat16>()));
-    } else {
-        launch(output_gradient.data_ptr<T>(), result.data_ptr<T>());
-    }
-}
+} // namespace
 
-}  // namespace
-
-/** Compute NVQ input gradients using the original format-specific path. */
-torch::Tensor nvq_backward_input_cuda(
-        torch::Tensor indices,
-        torch::Tensor aux,
-        torch::Tensor sub_scale,
-        torch::Tensor neuron_scale,
-        torch::Tensor codebook,
-        torch::Tensor output_gradient,
-        int64_t neuron_len,
-        int64_t gs,
-        int64_t sub_bits,
-        int64_t format,
-        int64_t sign_mode) {
-    check_common(indices, aux, sub_scale, neuron_scale, codebook,
-                 neuron_len, gs, sub_bits, format, sign_mode);
-    TORCH_CHECK(
-        output_gradient.is_cuda() && output_gradient.is_contiguous() &&
-        output_gradient.dim() == 2 &&
-        output_gradient.size(1) == neuron_scale.numel(),
-        "NVQ backward output gradient geometry mismatch");
-    TORCH_CHECK(
-        indices.device() == output_gradient.device() &&
-        aux.device() == output_gradient.device() &&
-        sub_scale.device() == output_gradient.device() &&
-        neuron_scale.device() == output_gradient.device() &&
-        codebook.device() == output_gradient.device(),
-        "NVQ backward tensors must share one CUDA device");
-    const auto dtype = output_gradient.scalar_type();
-    TORCH_CHECK(
-        dtype == at::kHalf ||
-        dtype == at::kFloat ||
-        dtype == at::kBFloat16,
-        "NVQ backward output gradient must be fp16, bf16, or fp32");
-    const int M = static_cast<int>(output_gradient.size(0));
-    const int N = static_cast<int>(neuron_scale.numel());
-    const int K = static_cast<int>(neuron_len);
-    const int ng = (K + static_cast<int>(gs) - 1) / static_cast<int>(gs);
-    const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
-        (is_d4_format(format) ? 4 : 8);
-    const int nsign = (K + 7) / 8;
-    auto result = torch::empty({M, K}, output_gradient.options());
-    constexpr int threads = 256;
-    const int64_t total = static_cast<int64_t>(M) * K;
-    if (total == 0) {
-        return result;
-    }
-    c10::cuda::CUDAGuard guard(output_gradient.device());
-    const int blocks = static_cast<int>(std::min<int64_t>(
-        (total + threads - 1) / threads, 65535));
-    const cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-    // Wide down projections expose enough independent K tiles to fuse
-    // decoding with WMMA; output-wide projections retain the dense path.
-    if (dtype == at::kHalf && M >= 5 && M <= 8 &&
-            static_cast<int64_t>(K) >= 2 * static_cast<int64_t>(N)) {
-        launch_by_format(static_cast<int>(format), [&](auto tag) {
-            constexpr int F = decltype(tag)::value;
-            launch_nvq_backward_mma_m8<F>(
-                indices, aux, sub_scale, neuron_scale, codebook,
-                output_gradient, result, M, N, K, ng, nvec, nsign,
-                static_cast<int>(sub_bits), static_cast<int>(sign_mode),
-                stream);
-        });
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-        return result;
-    }
-    if (dtype == at::kHalf && M <= 4) {
-        constexpr int output_tile = 16;
-        const int splits = (N + output_tile - 1) / output_tile;
-        auto partials = torch::empty(
-            {splits, M, K},
-            output_gradient.options());
-        launch_by_format(static_cast<int>(format), [&](auto tag) {
-            constexpr int F = decltype(tag)::value;
-            if (M == 1) {
-                launch_nvq_backward_vec8_small_m<F, 1>(
-                    indices, aux, sub_scale, neuron_scale, codebook,
-                    output_gradient, partials, M, N, K, ng, nvec, nsign,
-                    static_cast<int>(sub_bits), static_cast<int>(sign_mode),
-                    output_tile, stream);
-            } else if (M <= 2) {
-                launch_nvq_backward_vec8_small_m<F, 2>(
-                    indices, aux, sub_scale, neuron_scale, codebook,
-                    output_gradient, partials, M, N, K, ng, nvec, nsign,
-                    static_cast<int>(sub_bits), static_cast<int>(sign_mode),
-                    output_tile, stream);
-            } else if (M <= 4) {
-                launch_nvq_backward_vec8_small_m<F, 4>(
-                    indices, aux, sub_scale, neuron_scale, codebook,
-                    output_gradient, partials, M, N, K, ng, nvec, nsign,
-                    static_cast<int>(sub_bits), static_cast<int>(sign_mode),
-                    output_tile, stream);
-            } else if (M <= 8) {
-                if constexpr (is_d4_format(F)) {
-                    launch_nvq_backward_quad_small_m<F, 8>(
-                        indices, aux, sub_scale, neuron_scale, codebook,
-                        output_gradient, partials, M, N, K, ng, nvec, nsign,
-                        static_cast<int>(sub_bits), static_cast<int>(sign_mode),
-                        output_tile, stream);
-                } else {
-                    launch_nvq_backward_vec8_small_m<F, 4>(
-                        indices, aux, sub_scale, neuron_scale, codebook,
-                        output_gradient, partials, M, N, K, ng, nvec, nsign,
-                        static_cast<int>(sub_bits), static_cast<int>(sign_mode),
-                        output_tile, stream);
-                }
-            }
-        });
-        mfq_jit_backward::launch_split_half_reduce_to_half(
-            reinterpret_cast<const __half *>(partials.data_ptr<at::Half>()),
-            reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
-            M, K, splits, stream);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-        return result;
-    }
-    auto weight = nvq_dequant_cuda(
-        indices, aux, sub_scale, neuron_scale, codebook,
-        neuron_len, gs, sub_bits, format, sign_mode);
-    mfq_jit_backward::launch_dense_half_weight(
-        output_gradient, weight, result, M, N, K, stream);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return result;
+namespace mfq_jit_nvq_backward {
+void nvq(const Args &a, bool mma, cudaStream_t stream) {
+    RawBuffer indices{const_cast<void *>(a.indices), a.indices_size};
+    RawBuffer aux{const_cast<void *>(a.aux), a.aux_size};
+    RawBuffer state{const_cast<void *>(a.state), a.state_size};
+    RawBuffer scale{const_cast<void *>(a.scale), a.outputs};
+    RawBuffer table{const_cast<void *>(a.table), 0};
+    RawBuffer gradient{const_cast<void *>(a.gradient), 0};
+    RawBuffer output{a.output, 0};
+    launch_by_format(a.format, [&](auto tag) {
+        constexpr int F = decltype(tag)::value;
+        if (mma) {
+            launch_nvq_backward_mma_m8<F>(indices, aux, state, scale, table, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.state_bits, a.sign_mode, stream);
+        } else if (a.rows == 1) {
+            launch_nvq_backward_vec8_small_m<F, 1>(indices, aux, state, scale, table, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.state_bits, a.sign_mode, a.output_tile, stream);
+        } else if (a.rows <= 2) {
+            launch_nvq_backward_vec8_small_m<F, 2>(indices, aux, state, scale, table, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.state_bits, a.sign_mode, a.output_tile, stream);
+        } else if (a.rows <= 4) {
+            launch_nvq_backward_vec8_small_m<F, 4>(indices, aux, state, scale, table, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.state_bits, a.sign_mode, a.output_tile, stream);
+        } else if constexpr (is_d4_format(F)) {
+            launch_nvq_backward_quad_small_m<F, 8>(indices, aux, state, scale, table, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.state_bits, a.sign_mode, a.output_tile, stream);
+        } else {
+            launch_nvq_backward_vec8_small_m<F, 4>(indices, aux, state, scale, table, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.state_bits, a.sign_mode, a.output_tile, stream);
+        }
+    });
 }
-
-/** Compute NEPQ input gradients using the original shared-bank path. */
-torch::Tensor nepq_backward_input_cuda(
-        torch::Tensor indices,
-        torch::Tensor aux,
-        torch::Tensor state_stream,
-        torch::Tensor neuron_scale,
-        torch::Tensor table_pool,
-        torch::Tensor bank_ids,
-        torch::Tensor output_gradient,
-        int64_t neuron_len,
-        int64_t state_bits,
-        int64_t format) {
-    check_nepq_common(
-        indices, aux, state_stream, neuron_scale, table_pool, bank_ids,
-        neuron_len, state_bits, format);
-    TORCH_CHECK(
-        output_gradient.is_cuda() && output_gradient.is_contiguous() &&
-        output_gradient.dim() == 2 &&
-        output_gradient.size(1) == neuron_scale.numel(),
-        "NEPQ backward output gradient geometry mismatch");
-    TORCH_CHECK(
-        indices.device() == output_gradient.device() &&
-        aux.device() == output_gradient.device() &&
-        state_stream.device() == output_gradient.device() &&
-        neuron_scale.device() == output_gradient.device() &&
-        table_pool.device() == output_gradient.device() &&
-        bank_ids.device() == output_gradient.device(),
-        "NEPQ backward tensors must share one CUDA device");
-    const auto dtype = output_gradient.scalar_type();
-    TORCH_CHECK(
-        dtype == at::kHalf ||
-        dtype == at::kFloat ||
-        dtype == at::kBFloat16,
-        "NEPQ backward output gradient must be fp16, bf16, or fp32");
-    const int M = static_cast<int>(output_gradient.size(0));
-    const int N = static_cast<int>(neuron_scale.numel());
-    const int K = static_cast<int>(neuron_len);
-    const int ng = (K + kGroupSize - 1) / kGroupSize;
-    const int nvec = K / 8;
-    const int nsign = (K + 7) / 8;
-    const int nsuper = (ng + kNepqGroupsPerSupergroup - 1) /
-        kNepqGroupsPerSupergroup;
-    const int table_stride = static_cast<int>(table_pool.size(1));
-    auto result = torch::empty({M, K}, output_gradient.options());
-    constexpr int threads = 256;
-    const int64_t total = static_cast<int64_t>(M) * K;
-    if (total == 0) {
-        return result;
-    }
-    c10::cuda::CUDAGuard guard(output_gradient.device());
-    const int blocks = static_cast<int>(std::min<int64_t>(
-        (total + threads - 1) / threads, 65535));
-    const cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-    // Fuse dynamic table selection, vector decode, and WMMA when K tiles
-    // provide enough parallel work; retain split reduction for output-wide MLPs.
-    if (dtype == at::kHalf && M >= 5 && M <= 8 &&
-            static_cast<int64_t>(K) >= 2 * static_cast<int64_t>(N)) {
-        launch_nepq_by_format(static_cast<int>(format), [&](auto tag) {
-            constexpr int F = decltype(tag)::value;
-            launch_nepq_backward_mma_m8<F>(
-                indices, aux, state_stream, neuron_scale, table_pool,
-                bank_ids, output_gradient, result, M, N, K, ng,
-                nvec, nsign, nsuper, table_stride,
-                static_cast<int>(state_bits), stream);
-        });
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-        return result;
-    }
-    if (dtype == at::kHalf && M <= 8) {
-        const int output_tile = M <= 4 ? 16 : 32;
-        const int splits = (N + output_tile - 1) / output_tile;
-        auto partials = torch::empty(
-            {splits, M, K}, output_gradient.options());
-        launch_nepq_by_format(static_cast<int>(format), [&](auto tag) {
-            constexpr int F = decltype(tag)::value;
-            if (M == 1) {
-                launch_nepq_backward_small_m<F, 1>(
-                    indices, aux, state_stream, neuron_scale, table_pool,
-                    bank_ids, output_gradient, partials, M, N, K, ng,
-                    nvec, nsign, nsuper, table_stride,
-                    static_cast<int>(state_bits), output_tile, stream);
-            } else if (M <= 2) {
-                launch_nepq_backward_small_m<F, 2>(
-                    indices, aux, state_stream, neuron_scale, table_pool,
-                    bank_ids, output_gradient, partials, M, N, K, ng,
-                    nvec, nsign, nsuper, table_stride,
-                    static_cast<int>(state_bits), output_tile, stream);
-            } else if (M <= 4) {
-                launch_nepq_backward_small_m<F, 4>(
-                    indices, aux, state_stream, neuron_scale, table_pool,
-                    bank_ids, output_gradient, partials, M, N, K, ng,
-                    nvec, nsign, nsuper, table_stride,
-                    static_cast<int>(state_bits), output_tile, stream);
-            } else {
-                launch_nepq_backward_small_m<F, 4>(
-                    indices, aux, state_stream, neuron_scale, table_pool,
-                    bank_ids, output_gradient, partials, M, N, K, ng,
-                    nvec, nsign, nsuper, table_stride,
-                    static_cast<int>(state_bits), output_tile, stream);
-            }
-        });
-        mfq_jit_backward::launch_split_half_reduce_to_half(
-            reinterpret_cast<const __half *>(
-                partials.data_ptr<at::Half>()),
-            reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
-            M, K, splits, stream);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-        return result;
-    }
-    auto weight = nepq_dequant_cuda(
-        indices, aux, state_stream, neuron_scale, table_pool, bank_ids,
-        neuron_len, state_bits, format);
-    mfq_jit_backward::launch_dense_half_weight(
-        output_gradient, weight, result, M, N, K, stream);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return result;
+void nepq(const Args &a, bool mma, cudaStream_t stream) {
+    RawBuffer indices{const_cast<void *>(a.indices), a.indices_size};
+    RawBuffer aux{const_cast<void *>(a.aux), a.aux_size};
+    RawBuffer state{const_cast<void *>(a.state), a.state_size};
+    RawBuffer scale{const_cast<void *>(a.scale), a.outputs};
+    RawBuffer table{const_cast<void *>(a.table), 0};
+    RawBuffer banks{const_cast<void *>(a.banks), 0};
+    RawBuffer gradient{const_cast<void *>(a.gradient), 0};
+    RawBuffer output{a.output, 0};
+    launch_nepq_by_format(a.format, [&](auto tag) {
+        constexpr int F = decltype(tag)::value;
+        if (mma) {
+            launch_nepq_backward_mma_m8<F>(indices, aux, state, scale, table, banks, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.supergroups, a.table_stride, a.state_bits, stream);
+        } else if (a.rows == 1) {
+            launch_nepq_backward_small_m<F, 1>(indices, aux, state, scale, table, banks, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.supergroups, a.table_stride, a.state_bits, a.output_tile, stream);
+        } else if (a.rows <= 2) {
+            launch_nepq_backward_small_m<F, 2>(indices, aux, state, scale, table, banks, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.supergroups, a.table_stride, a.state_bits, a.output_tile, stream);
+        } else {
+            launch_nepq_backward_small_m<F, 4>(indices, aux, state, scale, table, banks, gradient, output,
+                a.rows, a.outputs, a.width, a.groups, a.vectors, a.signs, a.supergroups, a.table_stride, a.state_bits, a.output_tile, stream);
+        }
+    });
 }
+} // namespace mfq_jit_nvq_backward

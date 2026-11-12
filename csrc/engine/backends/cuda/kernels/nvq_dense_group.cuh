@@ -1,12 +1,9 @@
 #pragma once
+#include "nvq_constants.h"
 #include "nvq_e8_dense_group.cuh"
 #include "nvq_d4_dense_group.cuh"
 
 namespace tyloi::cuda::packed_nvq {
-__host__ __device__ constexpr bool dense_nvq_format(int format) {
-    return format==5 || format==10 || format==11 || format==12 ||
-        format==13 || format==14 || format==15;
-}
 struct DenseNvqGroup {
     uint32_t lo=0,mid=0,hi=0;
     __device__ uint32_t state() const {return lo&15u;}

@@ -1,8 +1,7 @@
 #pragma once
 #include <torch/extension.h>
 #include <type_traits>
-#include "packed_nvq.cuh"
-#include "nvq_dense_group.cuh"
+#include "nvq_constants.h"
 #include "nvq_format.cuh"
 
 namespace mfq_jit_nvq {

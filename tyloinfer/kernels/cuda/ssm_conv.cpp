@@ -84,3 +84,54 @@ torch::Tensor ssm_conv_silu_decode_cuda(torch::Tensor state, torch::Tensor x, to
     tyloi::cuda::ssm_conv_raw::decode(a, at::cuda::getCurrentCUDAStream().stream());
     return out;
 }
+
+/** Run fused linear-attention decode and update the convolution state in place. */
+std::vector<torch::Tensor> linear_conv_qkv_decode_cuda(
+    torch::Tensor state, torch::Tensor qk, torch::Tensor v,
+    torch::Tensor weight, torch::Tensor bias,
+    int64_t nk, int64_t nv, int64_t dk, int64_t dv, double eps)
+{
+    TORCH_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type() == at::kFloat,
+                "linear_conv_qkv_decode: state must be cuda contiguous f32");
+    TORCH_CHECK(qk.is_cuda() && qk.is_contiguous() && qk.scalar_type() == at::kHalf,
+                "linear_conv_qkv_decode: qk must be cuda contiguous f16");
+    TORCH_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == at::kHalf,
+                "linear_conv_qkv_decode: v must be cuda contiguous f16");
+    TORCH_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == at::kFloat,
+                "linear_conv_qkv_decode: weight must be cuda contiguous f32");
+    TORCH_CHECK(bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == at::kFloat,
+                "linear_conv_qkv_decode: bias must be cuda contiguous f32");
+    TORCH_CHECK(state.dim() == 3, "linear_conv_qkv_decode: state must be [B,K-1,C]");
+    TORCH_CHECK(qk.dim() == 3 && qk.size(1) == 1, "linear_conv_qkv_decode: qk must be [B,1,2*nk*dk]");
+    TORCH_CHECK(v.dim() == 3 && v.size(1) == 1, "linear_conv_qkv_decode: v must be [B,1,nv*dv]");
+    int B = (int)state.size(0);
+    int K = (int)state.size(1) + 1;
+    int qkC = (int)(2 * nk * dk);
+    int vsz = (int)(nv * dv);
+    int C = qkC + vsz;
+    TORCH_CHECK(qk.size(0) == B && qk.size(2) == qkC, "linear_conv_qkv_decode: qk shape mismatch");
+    TORCH_CHECK(v.size(0) == B && v.size(2) == vsz, "linear_conv_qkv_decode: v shape mismatch");
+    TORCH_CHECK(state.size(2) == C, "linear_conv_qkv_decode: state width mismatch");
+    TORCH_CHECK(nv % nk == 0, "linear_conv_qkv_decode: nv must be divisible by nk");
+    TORCH_CHECK(dk <= 256, "linear_conv_qkv_decode: dk > 256 is unsupported");
+    int has_bias = (int)(bias.numel() > 0);
+    TORCH_CHECK(!has_bias || (bias.dim() == 1 && bias.size(0) == C), "linear_conv_qkv_decode: bias must be [C]");
+    int layout = 0;
+    if (weight.dim() == 3) {
+        TORCH_CHECK(weight.size(0) == C && weight.size(1) == 1 && weight.size(2) == K,
+                    "linear_conv_qkv_decode: [C,1,K] weight mismatch");
+    } else {
+        TORCH_CHECK(weight.dim() == 2 && weight.size(0) == K && weight.size(1) == C,
+                    "linear_conv_qkv_decode: weight must be [C,1,K] or [K,C]");
+        layout = 1;
+    }
+    auto q = torch::empty({B, (int)nk, 1, (int)dk}, state.options());
+    auto k = torch::empty({B, (int)nk, 1, (int)dk}, state.options());
+    auto vo = torch::empty({B, (int)nv, 1, (int)dv}, state.options());
+    tyloi::cuda::ssm_conv_raw::Args a;
+    a.state=state.data_ptr<float>(); a.qk=qk.data_ptr(); a.v=v.data_ptr(); a.weight=weight.data_ptr<float>(); a.bias=bias.data_ptr<float>();
+    a.q=q.data_ptr<float>(); a.k=k.data_ptr<float>(); a.output=vo.data_ptr<float>();
+    a.batch=B; a.nk=int(nk); a.nv=int(nv); a.dk=int(dk); a.dv=int(dv); a.kernel=K; a.layout=layout; a.has_bias=has_bias; a.eps=float(eps);
+    tyloi::cuda::ssm_conv_raw::qkv_decode(a, at::cuda::getCurrentCUDAStream().stream());
+    return {q, k, vo};
+}

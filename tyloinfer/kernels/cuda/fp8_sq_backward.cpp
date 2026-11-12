@@ -1,7 +1,7 @@
 #include "fp8_sq.h"
 #include "fp8_sq_raw.h"
 #include "fp8_sq_check.h"
-#include "packed_backward.cuh"
+#include "packed_backward.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>

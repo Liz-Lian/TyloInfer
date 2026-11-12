@@ -1,29 +1,15 @@
-#include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAException.h>
+#include "mx_backward_raw.h"
+#include "mx_float_decode.cuh"
+#include "packed_backward_raw.cuh"
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <mma.h>
 #include <algorithm>
 #include <cstdint>
 
-#include "mx_float_decode.cuh"
-#include "mx_check.h"
-#include "packed_backward.cuh"
-
 using tyloi::cuda::mx::decode_e8m0;
 using tyloi::cuda::mx::decode_e4m3fn;
 using tyloi::cuda::mx::decode_mxfp4_e2m1;
-using mfq_jit_mx::mxfp8_column_shift;
-using mfq_jit_mx::mxfp8_row_shift;
-using mfq_jit_mx::validate_mxfp4_dense;
-using mfq_jit_mx::validate_mxfp8;
-
-/** Decode MXFP4 weights to half precision. */
-torch::Tensor mxfp4_dequant_cuda(torch::Tensor values, torch::Tensor scales);
-/** Decode MXFP8 weights to half precision. */
-torch::Tensor mxfp8_dequant_cuda(torch::Tensor values, torch::Tensor scales);
 namespace {
 
 template <int Rows, int Columns>
@@ -118,25 +104,7 @@ __global__ void __launch_bounds__(256) mxfp8_backward_mma_kernel(
     }
 }
 
-template <int Rows, int Columns>
-void launch_mxfp8_backward_mma(
-        const torch::Tensor & values,
-        const torch::Tensor & scales,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
-        int rows,
-        int outputs,
-        int width,
-        cudaStream_t stream) {
-    const int blocks = (width + Columns - 1) / Columns;
-    mxfp8_backward_mma_kernel<Rows, Columns><<<
-        blocks, 256, 0, stream>>>(
-        values.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
-        reinterpret_cast<const __half *>(
-            output_gradient.data_ptr<at::Half>()),
-        reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
-        rows, outputs, width);
-}
+
 
 template <int Rows>
 __global__ void __launch_bounds__(32) mxfp4_backward_vec4_partial_kernel(
@@ -201,34 +169,7 @@ __global__ void __launch_bounds__(32) mxfp4_backward_vec4_partial_kernel(
     }
 }
 
-template <int Rows>
-void launch_mxfp4_backward_vec4_small_m(
-        const torch::Tensor & values,
-        const torch::Tensor & scales,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
-        int rows,
-        int outputs,
-        int width,
-        cudaStream_t stream) {
-    constexpr int kOutputTile = 32;
-    const int output_groups = (outputs + kOutputTile - 1) / kOutputTile;
-    torch::Tensor partials = torch::empty(
-        {output_groups, rows, width},
-        values.options().dtype(at::kFloat));
-    const dim3 partial_grid(
-        static_cast<unsigned>((width + 127) / 128),
-        static_cast<unsigned>(output_groups));
-    mxfp4_backward_vec4_partial_kernel<Rows><<<partial_grid, 32, 0, stream>>>(
-        values.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
-        reinterpret_cast<const __half *>(
-            output_gradient.data_ptr<at::Half>()),
-        partials.data_ptr<float>(), rows, outputs, width);
-    mfq_jit_backward::launch_split_float_reduce_to_half(
-        partials.data_ptr<float>(),
-        reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
-        rows, width, output_groups, stream);
-}
+
 
 template <int Rows>
 __global__ void __launch_bounds__(32) mxfp8_backward_scalar_partial_kernel(
@@ -344,66 +285,9 @@ mxfp8_backward_block_reduce_kernel(
     }
 }
 
-template <int Rows>
-void launch_mxfp8_backward_block_reduce(
-        const torch::Tensor & values,
-        const torch::Tensor & scales,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
-        int rows,
-        int outputs,
-        int width,
-        cudaStream_t stream) {
-    const int output_groups = (outputs + 127) / 128;
-    const int blocks = (width + 31) / 32;
-#define TYLOINFER_LAUNCH_MXFP8_BLOCK_REDUCE(WARPS) \
-    mxfp8_backward_block_reduce_kernel<Rows, WARPS><<< \
-        blocks, (WARPS) * 32, 0, stream>>>( \
-            values.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), \
-            reinterpret_cast<const __half *>( \
-                output_gradient.data_ptr<at::Half>()), \
-            reinterpret_cast<__half *>(result.data_ptr<at::Half>()), \
-            rows, outputs, width)
-    if (output_groups <= 1) {
-        TYLOINFER_LAUNCH_MXFP8_BLOCK_REDUCE(1);
-    } else if (output_groups <= 2) {
-        TYLOINFER_LAUNCH_MXFP8_BLOCK_REDUCE(2);
-    } else if (output_groups <= 4) {
-        TYLOINFER_LAUNCH_MXFP8_BLOCK_REDUCE(4);
-    } else {
-        TYLOINFER_LAUNCH_MXFP8_BLOCK_REDUCE(8);
-    }
-#undef TYLOINFER_LAUNCH_MXFP8_BLOCK_REDUCE
-}
 
-template <int Rows>
-void launch_mxfp8_backward_scalar_small_m(
-        const torch::Tensor & values,
-        const torch::Tensor & scales,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
-        int rows,
-        int outputs,
-        int width,
-        cudaStream_t stream) {
-    const int output_groups = (outputs + 127) / 128;
-    torch::Tensor partials = torch::empty(
-        {output_groups, rows, width},
-        values.options().dtype(at::kFloat));
-    const dim3 partial_grid(
-        static_cast<unsigned>((width + 31) / 32),
-        static_cast<unsigned>(output_groups));
-    mxfp8_backward_scalar_partial_kernel<Rows><<<partial_grid, 32, 0, stream>>>(
-        values.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
-        reinterpret_cast<const __half *>(
-            output_gradient.data_ptr<at::Half>()),
-        partials.data_ptr<float>(),
-        rows, outputs, width);
-    mfq_jit_backward::launch_split_float_reduce_to_half(
-        partials.data_ptr<float>(),
-        reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
-        rows, width, output_groups, stream);
-}
+
+
 
 template <int Rows>
 __global__ void __launch_bounds__(32) mxfp8_backward_vec4_partial_kernel(
@@ -470,138 +354,34 @@ __global__ void __launch_bounds__(32) mxfp8_backward_vec4_partial_kernel(
     }
 }
 
-template <int Rows>
-void launch_mxfp8_backward_vec4_small_m(
-        const torch::Tensor & values,
-        const torch::Tensor & scales,
-        const torch::Tensor & output_gradient,
-        torch::Tensor & result,
-        int rows,
-        int outputs,
-        int width,
-        cudaStream_t stream) {
-    const int output_groups = (outputs + 31) / 32;
-    torch::Tensor partials = torch::empty(
-        {output_groups, rows, width},
-        values.options().dtype(at::kFloat));
-    const dim3 partial_grid(
-        static_cast<unsigned>((width + 127) / 128),
-        static_cast<unsigned>(output_groups));
-    mxfp8_backward_vec4_partial_kernel<Rows><<<partial_grid, 32, 0, stream>>>(
-        values.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
-        reinterpret_cast<const __half *>(
-            output_gradient.data_ptr<at::Half>()),
-        partials.data_ptr<float>(),
-        rows, outputs, width);
-    mfq_jit_backward::launch_split_float_reduce_to_half(
-        partials.data_ptr<float>(),
-        reinterpret_cast<__half *>(result.data_ptr<at::Half>()),
-        rows, width, output_groups, stream);
-}
+
 
 }  // namespace
 
-torch::Tensor mx_backward_input_cuda(
-        torch::Tensor values,
-        torch::Tensor scales,
-        torch::Tensor output_gradient,
-        bool mxfp4) {
-    if (mxfp4) {
-        validate_mxfp4_dense(values, scales);
-    } else {
-        validate_mxfp8(values, scales);
+
+namespace mfq_jit_mx {
+void backward(Backward kind,const std::uint8_t* values,const std::uint8_t* scales,
+    const void* gradient,void* output,float* partials,int rows,int outputs,int width,cudaStream_t stream) {
+    const auto* g=static_cast<const __half*>(gradient); auto* out=static_cast<__half*>(output);
+    if(kind==Backward::mma8) { mxfp8_backward_mma_kernel<8,8><<<(width+7)/8,256,0,stream>>>(values,scales,g,out,rows,outputs,width); return; }
+    if(kind==Backward::mma16) { mxfp8_backward_mma_kernel<8,16><<<(width+15)/16,256,0,stream>>>(values,scales,g,out,rows,outputs,width); return; }
+    if(kind==Backward::block) {
+        const int groups=(outputs+127)/128, blocks=(width+31)/32;
+        if(groups<=1)mxfp8_backward_block_reduce_kernel<1,1><<<blocks,32,0,stream>>>(values,scales,g,out,rows,outputs,width);
+        else if(groups<=2)mxfp8_backward_block_reduce_kernel<1,2><<<blocks,64,0,stream>>>(values,scales,g,out,rows,outputs,width);
+        else if(groups<=4)mxfp8_backward_block_reduce_kernel<1,4><<<blocks,128,0,stream>>>(values,scales,g,out,rows,outputs,width);
+        else mxfp8_backward_block_reduce_kernel<1,8><<<blocks,256,0,stream>>>(values,scales,g,out,rows,outputs,width);
+        return;
     }
-    TORCH_CHECK(
-        output_gradient.is_cuda() && output_gradient.is_contiguous() &&
-        output_gradient.dim() == 2 && output_gradient.size(1) == values.size(0),
-        "MX backward output gradient geometry mismatch");
-    TORCH_CHECK(
-        values.device() == scales.device() &&
-        values.device() == output_gradient.device(),
-        "MX backward tensors must share one CUDA device");
-    const auto dtype = output_gradient.scalar_type();
-    TORCH_CHECK(
-        dtype == at::kHalf ||
-        dtype == at::kFloat ||
-        dtype == at::kBFloat16,
-        "MX backward output gradient must be fp16, bf16, or fp32");
-    const int rows = static_cast<int>(output_gradient.size(0));
-    const int outputs = static_cast<int>(values.size(0));
-    const int width = static_cast<int>(mxfp4 ? values.size(1) * 2 : values.size(1));
-    auto result = torch::empty({rows, width}, output_gradient.options());
-    const int64_t total = static_cast<int64_t>(rows) * width;
-    if (total == 0) {
-        return result;
-    }
-    c10::cuda::CUDAGuard guard(output_gradient.device());
-    constexpr int threads = 256;
-    const int blocks = static_cast<int>(std::min<int64_t>(
-        (total + threads - 1) / threads, 65535));
-    const cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-    if (mxfp4 && dtype == at::kHalf && rows <= 8) {
-        if (rows == 1) {
-            launch_mxfp4_backward_vec4_small_m<1>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else if (rows <= 2) {
-            launch_mxfp4_backward_vec4_small_m<2>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else if (rows <= 4) {
-            launch_mxfp4_backward_vec4_small_m<4>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else {
-            launch_mxfp4_backward_vec4_small_m<8>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        }
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-        return result;
-    }
-    if (!mxfp4 && mxfp8_column_shift(values,scales)==7 && mxfp8_row_shift(values,scales)==7 && dtype == at::kHalf && rows <= 8) {
-        const int output_groups = (outputs + 127) / 128;
-        if (rows == 1 && output_groups <= 8) {
-            launch_mxfp8_backward_block_reduce<1>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else if (rows == 1) {
-            launch_mxfp8_backward_scalar_small_m<1>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else if (rows <= 2) {
-            launch_mxfp8_backward_scalar_small_m<2>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else if (rows <= 4) {
-            launch_mxfp8_backward_vec4_small_m<4>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        // Wide down projections amortize the per-column WMMA reduction;
-        // square and output-wide projections keep the vector path.
-        } else if (static_cast<int64_t>(width) >=
-                2 * static_cast<int64_t>(outputs)) {
-            launch_mxfp8_backward_mma<8, 16>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else if (2 * static_cast<int64_t>(width) >=
-                static_cast<int64_t>(outputs)) {
-            launch_mxfp8_backward_mma<8, 8>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        } else {
-            launch_mxfp8_backward_vec4_small_m<8>(
-                values, scales, output_gradient, result,
-                rows, outputs, width, stream);
-        }
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-        return result;
-    }
-    auto weight = mxfp4
-        ? mxfp4_dequant_cuda(values, scales)
-        : mxfp8_dequant_cuda(values, scales);
-    mfq_jit_backward::launch_dense_half_weight(
-        output_gradient, weight, result, rows, outputs, width, stream);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return result;
+    const int groups=kind==Backward::scalar?(outputs+127)/128:(outputs+31)/32;
+    const dim3 grid(kind==Backward::scalar?(width+31)/32:(width+127)/128,groups);
+#define MX_LAUNCH(R) do { \
+    if(kind==Backward::fp4)mxfp4_backward_vec4_partial_kernel<R><<<grid,32,0,stream>>>(values,scales,g,partials,rows,outputs,width); \
+    else if(kind==Backward::scalar)mxfp8_backward_scalar_partial_kernel<R><<<grid,32,0,stream>>>(values,scales,g,partials,rows,outputs,width); \
+    else mxfp8_backward_vec4_partial_kernel<R><<<grid,32,0,stream>>>(values,scales,g,partials,rows,outputs,width); \
+} while(false)
+    if(rows==1)MX_LAUNCH(1); else if(rows<=2)MX_LAUNCH(2); else if(rows<=4)MX_LAUNCH(4); else MX_LAUNCH(8);
+#undef MX_LAUNCH
+    tyloi::cuda::backward_raw::launch_split_float_reduce_to_half(partials,out,rows,width,groups,stream);
+}
 }

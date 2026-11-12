@@ -1,5 +1,5 @@
 #pragma once
-#include "packed_nvq.cuh"
+#include "nvq_constants.h"
 #include <stdexcept>
 #include <type_traits>
 
