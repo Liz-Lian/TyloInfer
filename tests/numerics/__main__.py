@@ -76,6 +76,7 @@ def main(argv=None):
     candidate.add_argument('case', type=Path)
     candidate.add_argument('output', type=Path, help='A new result directory')
     candidate.add_argument('--device', default='cuda', help='CUDA device for candidate cases')
+    candidate.add_argument('--source', type=Path, help='Original MFQ source checkout for candidate cases')
     check = commands.add_parser('compare', help='Validate and compare fixed result artifacts')
     check.add_argument('case', type=Path)
     check.add_argument('--reference', required=True, type=Path)
@@ -231,19 +232,41 @@ def main(argv=None):
         if args.command == 'candidate':
             case = Case.load(args.case)
             generator = case.data['source'].get('generator')
+            needs_source = generator in {
+                'tests/numerics/nint_ref.py', 'tests/numerics/zero_ref.py',
+                'tests/numerics/nvq_ref.py', 'tests/numerics/sq8_ref.py',
+                'tests/numerics/sq4_ref.py', 'tests/numerics/nepq_ref.py',
+            }
+            if needs_source != (args.source is not None):
+                parser.error('--source is required only for MFQ-based candidates')
             if generator == 'tests/numerics/gdn_ref.py':
                 from .gdn_ref import candidate
             elif generator == 'tests/numerics/attn_ref.py':
                 from .attn_ref import candidate
+            elif generator == 'tests/numerics/mx_ref.py':
+                from .mx_ref import candidate
+            elif generator == 'tests/numerics/nint_ref.py':
+                from .nint_ref import candidate
+            elif generator == 'tests/numerics/zero_ref.py':
+                from .zero_ref import candidate
+            elif generator == 'tests/numerics/nvq_ref.py':
+                from .nvq_ref import candidate
+            elif generator == 'tests/numerics/nepq_ref.py':
+                from .nepq_ref import candidate
+            elif generator == 'tests/numerics/sq8_ref.py':
+                from .sq8_ref import candidate
+            elif generator == 'tests/numerics/sq4_ref.py':
+                from .sq4_ref import candidate
             elif generator == 'tests/numerics/hf_ref.py':
                 from .hf_ref import candidate
             else:
                 raise ValueError('Unsupported candidate source')
-            path = (
-                candidate(case, args.output, args.device)
-                if generator == 'tests/numerics/attn_ref.py'
-                else candidate(case, args.output)
-            )
+            if needs_source:
+                path = candidate(case, args.output, args.source, args.device)
+            elif generator in {'tests/numerics/attn_ref.py', 'tests/numerics/mx_ref.py'}:
+                path = candidate(case, args.output, args.device)
+            else:
+                path = candidate(case, args.output)
             print(
                 json.dumps(
                     {

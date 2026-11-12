@@ -92,7 +92,11 @@ def _reference(case, root, device):
     elif op == 'mx_backward':
         gradient = torch.from_numpy(case.tensor('output_gradient')).to(device)
         expected = gradient.float() @ weight
-        outputs = {name: expected for name in case.data['outputs']}
+        outputs = {'input_gradient': expected}
+        if 'autograd_input_gradient' in case.data['outputs']:
+            outputs['autograd_input_gradient'] = expected
+        if 'graph_completed' in case.data['outputs']:
+            outputs['graph_completed'] = torch.tensor(True, dtype=torch.bool)
     else:
         ids = case.tensor('ids')
         expected = np.zeros((*ids.shape, tensor.shape[1]), dtype=np.float16)
@@ -101,6 +105,100 @@ def _reference(case, root, device):
         outputs = {'output': torch.from_numpy(expected).to(device)}
     specs = {name: save_tensor(root, name, _array(value)) for name, value in outputs.items()}
     return write_result(case, root, specs, _provenance(device))
+
+
+def candidate(case: Case, root: Path, device: str = 'cuda') -> Path:
+    """Execute the original MX wrapper, direct kernel, or graph on fixed inputs."""
+    config, op = case.data['config'], case.data['op']
+    if (
+        case.data['source'].get('generator') != 'tests/numerics/mx_ref.py'
+        or case.data.get('actual_role') != 'candidate'
+        or op not in {'mx_forward', 'mx_backward', 'mx_embedding'}
+    ):
+        raise ValueError('Unsupported MX candidate case')
+    from tyloinfer.kernels.cuda import mx_matmul as mx
+    from tyloinfer.kernels.cuda._ext import ext
+
+    device = _device(device)
+    tensor = unpack_mx(config['dtype'], case.asset('weight'))
+    if list(tensor.shape) != config['weight_shape']:
+        raise ValueError('MX payload does not match case shape')
+    rows, width = tensor.shape
+    with scope(config['compute']), torch.cuda.device(device):
+        weight = mx.to_gpu_mx(tensor, device=device)
+        graph_case = 'graph_completed' in case.data['outputs']
+        if graph_case != (config['execution_checks'] == ['cuda_graph_capture_and_replay']):
+            raise ValueError('MX graph observation and configuration differ')
+        if op == 'mx_forward':
+            source = torch.from_numpy(case.tensor('source')).to(device)
+            if source.dtype != torch.float16 or source.shape != (config['activation_rows'], width):
+                raise ValueError('MX forward input differs from the case')
+            if config['output_kind'] == 'float32':
+                if config['dtype'] != 'MXFP8':
+                    raise ValueError('MX FP32 direct output requires MXFP8')
+                output = ext().mxfp8_gemm_f32_cuda(weight['values'], weight['scales'], source)
+                entry = 'mxfp8_gemm_f32_cuda'
+            elif config['output_kind'] == 'native':
+                output = mx.mx_matmul(weight, source)
+                entry = 'mx_matmul+mx_dequantize'
+            else:
+                raise ValueError('Unsupported MX forward output kind')
+            outputs = {'output': output}
+            if 'dequantized' in case.data['outputs']:
+                outputs['dequantized'] = mx.mx_dequantize(weight)
+        elif op == 'mx_embedding':
+            ids = torch.from_numpy(case.tensor('ids')).to(device)
+            if ids.dtype != torch.int64 or ids.shape != (2, 2):
+                raise ValueError('MX embedding IDs differ from the case')
+            outputs = {'output': mx.mx_embedding(weight, ids)}
+            entry = 'mx_embedding'
+        else:
+            saved = torch.from_numpy(case.tensor('output_gradient'))
+            if saved.dtype != torch.float16 or saved.shape != (config['activation_rows'], rows):
+                raise ValueError('MX output gradient differs from the case')
+            if graph_case:
+                initial = torch.from_numpy(case.tensor('initial_output_gradient'))
+                if initial.dtype != torch.float16 or initial.shape != saved.shape:
+                    raise ValueError('MX graph initial gradient differs from the case')
+                if not torch.equal(initial.clone().add_(0.25), saved):
+                    raise ValueError('MX graph replay gradient differs from saved mutation')
+                gradient = initial.to(device)
+                stream = torch.cuda.Stream(device=device)
+                stream.wait_stream(torch.cuda.current_stream(device))
+                with torch.cuda.stream(stream):
+                    for _ in range(3):
+                        mx.mx_backward_input(weight, gradient)
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph, stream=stream):
+                        actual = mx.mx_backward_input(weight, gradient)
+                    gradient.add_(0.25)
+                    graph.replay()
+                stream.synchronize()
+                outputs = {'input_gradient': actual, 'graph_completed': torch.tensor(True)}
+                entry = 'mx_backward_input graph capture and replay'
+            else:
+                gradient = saved.to(device)
+                outputs = {'input_gradient': mx.mx_backward_input(weight, gradient)}
+                entry = 'mx_backward_input'
+                if 'autograd_input_gradient' in case.data['outputs']:
+                    source = torch.from_numpy(case.tensor('source')).to(device)
+                    if source.dtype != torch.float16 or source.shape != (config['activation_rows'], width):
+                        raise ValueError('MX autograd input differs from the case')
+                    source.requires_grad_(True)
+                    (mx.mx_matmul(weight, source) * gradient).sum().backward()
+                    outputs['autograd_input_gradient'] = source.grad
+                    entry += '+mx_matmul autograd'
+        specs = {name: save_tensor(root, name, _array(value)) for name, value in outputs.items()}
+        module = ext()
+        provenance = execution(device, 'MX Python wrapper and shared CUDA kernels')
+        provenance.update(
+            category='python_candidate', entrypoint=entry, graph=graph_case,
+            generator_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            wrapper_sha256=hashlib.sha256(Path(mx.__file__).read_bytes()).hexdigest(),
+            jit_module=str(Path(module.__file__).resolve()),
+            jit_sha256=hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
+        )
+        return write_result(case, root, specs, provenance, role='candidate')
 
 
 def _make_case(
@@ -128,6 +226,8 @@ def _make_case(
         'input_seed': seed,
         'output_kind': output_kind,
         'execution_checks': ['cuda_graph_capture_and_replay'] if graph else [],
+        'observation_categories': {'graph_completed': 'declared reference; actual capture and replay'}
+        if graph else {},
         'compute': settings(),
     }
     test_path = Path(__file__).resolve().parents[1] / 'test_format_completion_cuda.py'
@@ -141,7 +241,7 @@ def _make_case(
         if seed >= 10000
         else 'Original input seed',
     }
-    writer = CaseWriter(root, name, op, config, source)
+    writer = CaseWriter(root, name, op, config, source, actual_role='candidate')
     writer.asset('weight', pack_mx(tensor), encoding='MXT1')
     torch.manual_seed(seed)
     if op == 'mx_forward':
@@ -174,11 +274,14 @@ def _make_case(
             writer.output(
                 'autograd_input_gradient', [rows, shape[1]], 'float32', rule, actual_dtype='float16'
             )
+        if graph:
+            writer.output('graph_completed', [], 'bool', {'kind': 'exact'})
     else:
         writer.input('ids', np.asarray([[0, shape[0] - 1], [2, -1]], dtype=np.int64))
         writer.output('output', [2, 2, shape[1]], 'float16', {'kind': 'exact'})
     case = writer.finish()
     reference(case, case.root / 'reference', device)
+    candidate(case, case.root / 'candidate', device)
     return case.root / 'case.json'
 
 

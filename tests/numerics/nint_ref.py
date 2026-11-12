@@ -13,6 +13,8 @@ from .torch_env import device as resolve_device
 from .torch_env import execution, scope, settings
 
 _FIELDS = ('q', 'neuron_scale', 'neuron_min', 'sub_scale', 'sub_min', 'row_sub_bits', 'row_q_bits')
+_RUNTIME = ('q_packed', 'row_q_bits', 'row_q_bit_offsets', 'sub_scale', 'sub_min',
+            'neuron_scale', 'neuron_min')
 
 
 def _rebuild(case, modules):
@@ -65,6 +67,58 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
         return write_result(case, target, outputs, metadata)
 
 
+def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -> Path:
+    """Run the local NINT wrapper and autograd on verified fixed runtime buffers."""
+    if (case.data['op'] != 'nint_backward_input'
+            or case.data['source'].get('generator') != 'tests/numerics/nint_ref.py'
+            or case.data.get('actual_role') != 'candidate'):
+        raise ValueError('Unsupported NINT candidate case')
+    from tyloinfer.kernels.cuda import nint_matmul as implementation
+    from tyloinfer.kernels.cuda._ext import ext
+
+    modules, identity = open_source(source_root)
+    if identity != case.data['source']['mfq_source']:
+        raise ValueError('MFQ source differs from the fixed case')
+    tensor = _rebuild(case, modules)
+    deployed = modules['mfq.kernels.torch_backend'].nint_deploy_arrays(tensor)
+    if set(deployed) != set(_RUNTIME) or any(
+        not np.array_equal(deployed[name], case.tensor('runtime_' + name)) for name in _RUNTIME
+    ):
+        raise ValueError('Saved NINT runtime arrays differ from the source components')
+    config = case.data['config']
+    rows = config['rows']
+    if rows not in (1, 6, 9, 32) or config['weight_shape'] != [31, 113] or config['spec'] != [4, 24, 6] or config['axis'] != 0:
+        raise ValueError('NINT candidate geometry differs from the original case')
+    expected_path = 'direct_packed_backward' if rows <= 8 else 'decode_matmul_fallback'
+    if config['external_wrapper_path'] != expected_path:
+        raise ValueError('NINT candidate dispatch description differs from the case')
+    device = resolve_device(device)
+    with scope(config['compute']), torch.cuda.device(device):
+        weight = {name: torch.from_numpy(case.tensor('runtime_' + name)).to(device) for name in _RUNTIME}
+        weight.update(out=31, ng=int(weight['sub_scale'].shape[1]), gs=24, neuron_len=113)
+        gradient = torch.from_numpy(case.tensor('gradient')).to(device)
+        source = torch.from_numpy(case.tensor('source')).to(device)
+        if (gradient.dtype != torch.float16 or gradient.shape != (rows, 31)
+                or source.dtype != torch.float16 or source.shape != (rows, 113)):
+            raise ValueError('NINT candidate inputs differ from the original case')
+        direct = implementation.nint_backward_input(weight, gradient)
+        source.requires_grad_(True)
+        (implementation.nint_matmul(weight, source) * gradient).sum().backward()
+        outputs = {'input_gradient': direct, 'autograd_input_gradient': source.grad}
+        specs = {name: save_tensor(root, name, value.detach().contiguous().cpu().numpy())
+                 for name, value in outputs.items()}
+        module = ext()
+        provenance = execution(device, 'Local NINT wrapper direct call and autograd')
+        provenance.update(category='python_candidate', native_worker_executed=False,
+                          backward_path=expected_path, mfq_source=identity,
+                          wrapper_sha256=file_hash(implementation.__file__),
+                          jit_module=str(Path(module.__file__).resolve()),
+                          jit_sha256=file_hash(module.__file__), generator_sha256=file_hash(__file__))
+        if open_source(source_root)[1] != identity:
+            raise ValueError('MFQ source changed during candidate execution')
+        return write_result(case, root, specs, provenance, role='candidate')
+
+
 def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
     """Freeze all four original NINT backward and autograd input-gradient cases."""
     modules, identity = open_source(source_root)
@@ -99,12 +153,10 @@ def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
                 'external_wrapper_path': 'direct_packed_backward'
                 if rows <= 8
                 else 'decode_matmul_fallback',
-                'native_checks': [
-                    'direct_entry_and_autograd'
-                    if rows <= 8
-                    else 'external_wrapper_fallback_and_autograd'
-                ],
-                'reference_scope': 'Independent expected gradient; native producer must identify direct or wrapper execution',
+                'behavior_observations': {
+                    'wrapper_and_autograd': ['input_gradient', 'autograd_input_gradient'],
+                },
+                'reference_scope': 'Independent expected gradient; candidate records packed or fallback wrapper execution',
             },
             {
                 'generator': 'tests/numerics/nint_ref.py',
@@ -114,6 +166,7 @@ def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
                 'test_sha256': file_hash(test),
                 'mfq_source': identity,
             },
+            actual_role='candidate',
         )
         writer.input('source_weight', source_weight)
         for name in _FIELDS:
@@ -128,5 +181,6 @@ def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
             )
         case = writer.finish()
         reference(case, case.root / 'reference', source_root, device)
+        candidate(case, case.root / 'candidate', source_root, device)
         paths.append(case.root / 'case.json')
     return paths

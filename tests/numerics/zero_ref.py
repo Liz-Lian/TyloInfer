@@ -66,6 +66,59 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
         return write_result(case, root, specs, provenance)
 
 
+def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -> Path:
+    """Run the local NINT8-zero wrapper on the verified packed weight and inputs."""
+    source, config, op = case.data['source'], case.data['config'], case.data['op']
+    if (op not in {'nint8_zero_forward', 'nint8_zero_backward'}
+            or source.get('generator') != 'tests/numerics/zero_ref.py'
+            or case.data.get('actual_role') != 'candidate'):
+        raise ValueError('Unsupported NINT8-0 candidate case')
+    from tyloinfer.kernels.cuda import nint8_zero_matmul as implementation
+    from tyloinfer.kernels.cuda._ext import ext
+
+    modules, identity = open_source(source_root)
+    if identity != source['mfq_source']:
+        raise ValueError('MFQ source identity differs from the case')
+    tensor = modules['mfq.formats.nint8_zero'].unpack_nint8_zero(case.asset('weight'))
+    if tensor.shape != (13, 96) or tensor.axis != 0 or tensor.neuron_len != 96 or config['weight_shape'] != [13, 96]:
+        raise ValueError('NINT8-0 candidate weight geometry differs')
+    rows = config['rows']
+    if rows not in ((1, 16, 65) if op == 'nint8_zero_forward' else (3,)):
+        raise ValueError('Unsupported NINT8-0 candidate rows')
+    device = resolve_device(device)
+    with scope(config['compute']), torch.cuda.device(device):
+        weight = {
+            'q': torch.from_numpy(np.ascontiguousarray(tensor.q).view(np.uint8)).to(device),
+            'scale': torch.from_numpy(np.ascontiguousarray(tensor.scale)).to(device),
+            'out': 13, 'ng': 3, 'neuron_len': 96,
+        }
+        x = torch.from_numpy(case.tensor('input')).to(device)
+        if x.dtype != torch.float16 or x.shape != (rows, 96):
+            raise ValueError('NINT8-0 candidate input differs from the original case')
+        if op == 'nint8_zero_forward':
+            outputs = {'output': implementation.nint8_zero_matmul(weight, x)}
+            entry = 'nint8_zero_matmul'
+        else:
+            gradient = torch.from_numpy(case.tensor('output_gradient')).to(device)
+            if gradient.dtype != torch.float16 or gradient.shape != (rows, 13):
+                raise ValueError('NINT8-0 candidate gradient differs from the original case')
+            direct = implementation.nint8_zero_backward_input(weight, gradient)
+            x.requires_grad_(True)
+            (implementation.nint8_zero_matmul(weight, x) * gradient).sum().backward()
+            outputs = {'input_gradient': direct, 'autograd_input_gradient': x.grad}
+            entry = 'nint8_zero_backward_input+nint8_zero_matmul autograd'
+        specs = {name: save_tensor(root, name, _array(value)) for name, value in outputs.items()}
+        module = ext()
+        provenance = execution(device, entry)
+        provenance.update(category='python_candidate', native_worker_executed=False,
+                          mfq_source=identity, wrapper_sha256=file_hash(implementation.__file__),
+                          jit_module=str(Path(module.__file__).resolve()),
+                          jit_sha256=file_hash(module.__file__), generator_sha256=file_hash(__file__))
+        if open_source(source_root)[1] != identity:
+            raise ValueError('MFQ source changed during candidate execution')
+        return write_result(case, root, specs, provenance, role='candidate')
+
+
 def generate(
     root: Path, source_root: Path, suite: str = 'forward', device: str = 'cuda'
 ) -> list[Path]:
@@ -127,6 +180,7 @@ def generate(
                 'decoder': 'mfq.formats.nint8_zero.dequantize_nint8_zero',
                 'independence': 'NumPy CPU decoder does not invoke the native CUDA kernel',
             },
+            actual_role='candidate',
         )
         writer.asset('weight', module.pack_nint8_zero(tensor), encoding='NINT8-0')
         torch.manual_seed(torch_seed)
@@ -144,5 +198,6 @@ def generate(
                 writer.output(output, [3, 96], 'float32', rule, actual_dtype='float16')
         case = writer.finish()
         reference(case, case.root / 'reference', source_root, device)
+        candidate(case, case.root / 'candidate', source_root, device)
         paths.append(case.root / 'case.json')
     return paths

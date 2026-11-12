@@ -255,8 +255,8 @@ def _decode(tensor, label, modules):
     return modules['mfq.quantize.nvq_quant'].dequantize(tensor)
 
 
-def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -> Path:
-    """Compute both original FP16 gradient expectations from fixed CPU components."""
+def _verified(case, source_root):
+    """Verify the external source and saved runtime buffers against the fixed components."""
     if (
         case.data['op'] != 'nvq_backward_input'
         or case.data['source'].get('generator') != 'tests/numerics/nvq_ref.py'
@@ -281,8 +281,15 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
     elif 'storage_format' in config:
         raise ValueError('Unexpected NVQ storage format for the source wrapper')
     for name, value in runtime.items():
-        if not np.array_equal(value, case.tensor(name)):
+        fixed = case.tensor(name)
+        if value.dtype != fixed.dtype or not np.array_equal(value, fixed):
             raise ValueError(f'NVQ runtime buffer differs from fixed components: {name}')
+    return modules, identity, tensor, runtime, label
+
+
+def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -> Path:
+    """Compute both original FP16 gradient expectations from fixed CPU components."""
+    modules, identity, tensor, _, label = _verified(case, source_root)
     device = resolve_device(device)
     with scope(case.data['config']['compute']):
         dense = torch.as_tensor(
@@ -307,6 +314,53 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
         if open_source(source_root)[1] != identity:
             raise ValueError('MFQ source changed during reference calculation')
         return write_result(case, root, outputs, metadata)
+
+
+def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -> Path:
+    """Execute local packed NVQ backward and wrapper autograd on fixed inputs."""
+    if case.data.get('actual_role') != 'candidate':
+        raise ValueError('NVQ candidate requires the candidate result role')
+    from tyloinfer.kernels.cuda import nvq_matmul as implementation
+    from tyloinfer.kernels.cuda._ext import ext
+
+    _, identity, tensor, runtime, _ = _verified(case, source_root)
+    config = case.data['config']
+    rows, group = config['rows'], config['groupsize']
+    if (rows not in (1, 2, 4, 8, 16) or config['weight_shape'] != [24, 80]
+            or group != tensor.spec.groupsize or config['sub_bits'] != tensor.spec.sub_bits
+            or config['sign_mode'] != 0):
+        raise ValueError('NVQ candidate parameters differ from the fixed components')
+    device = resolve_device(device)
+    with scope(config['compute']), torch.cuda.device(device):
+        weight = {name: torch.from_numpy(case.tensor(name)).to(device)
+                  for name in ('indices_packed', 'aux_packed', 'sub_scale_packed', 'neuron_scale')}
+        weight['codebook'] = torch.from_numpy(case.tensor('codebook_packed')).to(device)
+        weight.update(out=24, ng=(80 + group - 1) // group, gs=group, neuron_len=80,
+                      sub_bits=config['sub_bits'], format=config['format'],
+                      sign_mode=config['sign_mode'])
+        if 'storage_format' in config:
+            weight['storage_format'] = config['storage_format']
+        gradient = torch.from_numpy(case.tensor('output_gradient')).to(device)
+        source = torch.from_numpy(case.tensor('source')).to(device)
+        if (gradient.dtype != torch.float16 or gradient.shape != (rows, 24)
+                or source.dtype != torch.float16 or source.shape != (rows, 80)):
+            raise ValueError('NVQ candidate inputs differ from the original case')
+        direct = implementation.nvq_backward_input(weight, gradient)
+        source.requires_grad_(True)
+        (implementation.nvq_matmul(weight, source) * gradient).sum().backward()
+        outputs = {'input_gradient': direct, 'autograd_input_gradient': source.grad}
+        specs = {name: save_tensor(root, name, value.detach().contiguous().cpu().numpy())
+                 for name, value in outputs.items()}
+        module = ext()
+        provenance = execution(device, 'Local NVQ packed backward and wrapper autograd')
+        provenance.update(category='python_candidate', native_worker_executed=False,
+                          forward_path=implementation._select_matmul_path(weight, rows),
+                          mfq_source=identity, wrapper_sha256=file_hash(implementation.__file__),
+                          jit_module=str(Path(module.__file__).resolve()),
+                          jit_sha256=file_hash(module.__file__), generator_sha256=file_hash(__file__))
+        if open_source(source_root)[1] != identity:
+            raise ValueError('MFQ source changed during candidate execution')
+        return write_result(case, root, specs, provenance, role='candidate')
 
 
 def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
@@ -342,7 +396,10 @@ def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
                     'wrapper': 'to_gpu_nvq_exec'
                     if label in {'nvq2_exec', 'nvq2j_exec'}
                     else 'to_gpu_nvq',
-                    'native_checks': ['packed_backward', 'autograd_input_gradient'],
+                    'behavior_observations': {
+                        'packed_backward': ['input_gradient'],
+                        'autograd_input_gradient': ['autograd_input_gradient'],
+                    },
                 },
                 {
                     'generator': 'tests/numerics/nvq_ref.py',
@@ -355,6 +412,7 @@ def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
                     'seed_origin': 'chosen; original Torch input was unseeded',
                     'independence': 'external CPU decode versus CUDA execution; shared MFQ format history',
                 },
+                actual_role='candidate',
             )
             for field in _FIELDS:
                 value = getattr(tensor, field, None)
@@ -369,5 +427,6 @@ def generate(root: Path, source_root: Path, device: str = 'cuda') -> list[Path]:
                 writer.output(name, (rows, 80), 'float16', rule)
             case = writer.finish()
             reference(case, case.root / 'reference', source_root, device)
+            candidate(case, case.root / 'candidate', source_root, device)
             results.append(case.root / 'case.json')
     return results

@@ -306,8 +306,8 @@ bool Mlp::can_fuse(const DenseTensor& x, const DenseTensor& residual) const {
         gate_up.outs[0] != gate_up.outs[1]) {
         return false;
     }
-    const auto* gate0 = nvq_of(*gate_up.layers[0]);
-    const auto* gate1 = nvq_of(*gate_up.layers[1]);
+    const auto* gate0 = nvq_of(gate_up.layers[0]);
+    const auto* gate1 = nvq_of(gate_up.layers[1]);
     const auto* down_nvq = nvq_of(down);
     if (gate0 == nullptr || gate1 == nullptr || down_nvq == nullptr ||
         gate_up.outs[0] != down_nvq->neuron_len ||
@@ -324,8 +324,8 @@ DenseTensor Mlp::fused(CudaProfiler& profiler, DenseTensor x, DenseTensor residu
     TYLOINFER_RUNTIME_CHECK(can_fuse(x, residual),
                       "FFN fused residual requires a compatible single-token NVQ FFN");
     auto shape = x.sizes().vec();
-    const auto& gate0 = payload_as<tyloi::NvqTensor>(*gate_up.layers[0]);
-    const auto& gate1 = payload_as<tyloi::NvqTensor>(*gate_up.layers[1]);
+    const auto& gate0 = payload_as<tyloi::NvqTensor>(gate_up.layers[0]);
+    const auto& gate1 = payload_as<tyloi::NvqTensor>(gate_up.layers[1]);
     const auto& down_nvq = payload_as<tyloi::NvqTensor>(down);
     shape.back() = down_nvq.out;
     auto output =

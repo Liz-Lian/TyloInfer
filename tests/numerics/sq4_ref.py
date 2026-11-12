@@ -43,8 +43,8 @@ def _bits(blob, offset, count, width):
     return values.astype(np.uint8), offset + length
 
 
-def _decode(blob, tables):
-    """Decode the standalone fixture wire format without native decoder code."""
+def _metadata(blob):
+    """Read and validate the fixed SQ wire geometry and packed row metadata."""
     if len(blob) < 24:
         raise ValueError('Truncated SQ header')
     magic, version, base, reserved, rows, width = struct.unpack_from('<4sBBHQQ', blob)
@@ -54,12 +54,51 @@ def _decode(blob, tables):
     if adaptive:
         raw_q, offset = _bits(blob, 24, rows, 2)
         widths = raw_q.astype(np.int64) + 1
-        offset = 24 + ((offset - 24 + 3) // 4 * 4)
+        selector_end = offset
+        if rows * 2 % 8 and blob[selector_end - 1] >> (rows * 2 % 8):
+            raise ValueError('Nonzero SQ selector padding')
+        offset = 24 + ((selector_end - 24 + 3) // 4 * 4)
+        if len(blob) < offset or any(blob[selector_end:offset]):
+            raise ValueError('Invalid SQ selector alignment padding')
     elif magic in (b'SQ2\0', b'SQ3\0') and version == 1:
         widths = np.full(rows, int(chr(magic[2])), dtype=np.int64)
         offset = 24
     else:
         raise ValueError('Unsupported SQ fixture format')
+    starts, auxiliary = [], []
+    byte_offset = sq_rank = native_rank = 0
+    for bits in widths:
+        starts.append(byte_offset)
+        if bits == 4:
+            auxiliary.append(native_rank)
+            native_rank += 1
+        else:
+            auxiliary.append(sq_rank)
+            sq_rank += 1
+        byte_offset += width * int(bits) // 8
+    if byte_offset > np.iinfo(np.int32).max or max(auxiliary) > np.iinfo(np.int32).max:
+        raise ValueError('SQ row metadata exceeds int32')
+    blocks = width // 32
+    selectors = (sq_rank * blocks + 7) // 8
+    scales = sq_rank * 2
+    palettes = (sq_rank * 40 + 7) // 8
+    expected = offset + byte_offset + selectors + scales + palettes + native_rank * blocks
+    if len(blob) != expected or any(value == 255 for value in blob[expected - native_rank * blocks:]):
+        raise ValueError('Invalid SQ payload length or native scales')
+    return {
+        'bits': 0 if adaptive else int(widths[0]), 'rows': rows, 'width': width,
+        'base': base, 'q': widths, 'symbols': offset,
+        'row_offsets': np.asarray(starts, dtype=np.int32),
+        'row_auxiliary': np.asarray(auxiliary, dtype=np.int32),
+        'q_sum': int(widths.sum()), 'sq4_rows': native_rank,
+    }
+
+
+def _decode(blob, tables):
+    """Decode the standalone fixture wire format without native decoder code."""
+    metadata = _metadata(blob)
+    rows, width, base = metadata['rows'], metadata['width'], metadata['base']
+    widths, offset = metadata['q'], metadata['symbols']
     symbols = []
     for bits in widths:
         row, offset = _bits(blob, offset, width, int(bits))
@@ -163,6 +202,8 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
             weight = torch.from_numpy(dense).double()
             result = values @ (weight.T if case.data['op'] == 'sq4_forward' else weight)
             outputs = {'output': result.numpy()}
+            if 'graph_ordinary_output' in case.data['outputs']:
+                outputs['graph_ordinary_output'] = outputs['output']
             if 'graph_replay_output' in case.data['outputs']:
                 outputs['graph_replay_output'] = outputs['output']
             arithmetic = 'Torch CPU float64 matmul using source test reference input'
@@ -175,6 +216,59 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
             palette_sha256=source['palette_sha256'],
         )
         return write_result(case, root, specs, provenance)
+
+
+def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -> Path:
+    """Run the migrated SQ4 input-gradient JIT on fixed wire bytes and input."""
+    source, config = case.data['source'], case.data['config']
+    if (case.data['op'] != 'sq4_backward'
+            or source.get('generator') != 'tests/numerics/sq4_ref.py'
+            or case.data.get('actual_role') != 'candidate'):
+        raise ValueError('Unsupported SQ4 backward candidate')
+    from tyloinfer.kernels.cuda._ext import ext
+
+    _, identity = open_source(source_root)
+    if identity != source['mfq_source']:
+        raise ValueError('MFQ source differs from the case')
+    _, fixture_identity = load_fixture(source_root, _FIXTURE)
+    if (fixture_identity != source['fixture_sha256']
+            or file_hash(Path(source_root) / _PALETTE) != source['palette_sha256']
+            or hashlib.sha256(case.asset('palette_source')).hexdigest() != source['palette_sha256']):
+        raise ValueError('SQ fixture or shared palette source changed')
+    blob = case.asset('weight')
+    meta = _metadata(blob)
+    if (config['weight_shape'] != [meta['rows'], meta['width']]
+            or config['bits'] != meta['bits'] or config['base'] != meta['base']):
+        raise ValueError('SQ wire metadata differs from the case')
+    device = resolve_device(device)
+    with scope(config['compute']), torch.cuda.device(device):
+        payload = torch.from_numpy(np.frombuffer(blob, dtype=np.uint8).copy()).to(device)
+        row_q = torch.from_numpy(meta['q'].astype(np.uint8)).to(device)
+        offsets = torch.from_numpy(meta['row_offsets']).to(device)
+        auxiliary = torch.from_numpy(meta['row_auxiliary']).to(device)
+        gradient = torch.from_numpy(case.tensor('native_input')).to(device)
+        if (config['input_dtype'] not in ('float16', 'float32')
+                or gradient.dtype != getattr(torch, config['input_dtype'])
+                or tuple(gradient.shape) != (config['rows'], meta['rows'])):
+            raise ValueError('SQ backward input shape or dtype differs from the case')
+        module = ext()
+        output = module.mxfp4_sq_backward_input_cuda(
+            payload, row_q, offsets, auxiliary, gradient, meta['bits'], meta['rows'],
+            meta['width'], meta['base'], meta['q_sum'], meta['sq4_rows'],
+        )
+        spec = save_tensor(root, 'output', output.detach().contiguous().cpu().numpy())
+        provenance = execution(device, 'MXFP4-SQ packed backward Python JIT')
+        provenance.update(category='python_candidate', native_worker_executed=False,
+                          backward_implementation='shared raw backward migrated to Python JIT',
+                          input_comparison_category=config['category'], mfq_source=identity,
+                          fixture_sha256=fixture_identity, palette_sha256=source['palette_sha256'],
+                          jit_module=str(Path(module.__file__).resolve()),
+                          jit_sha256=file_hash(module.__file__), generator_sha256=file_hash(__file__))
+        if (open_source(source_root)[1] != identity
+                or load_fixture(source_root, _FIXTURE)[1] != fixture_identity
+                or file_hash(Path(source_root) / _PALETTE) != source['palette_sha256']):
+            raise ValueError('SQ source changed during candidate execution')
+        return write_result(case, root, {'output': spec}, provenance, role='candidate')
 
 
 def _geometries():
@@ -253,6 +347,7 @@ def _native_checks(suite, graph, has_slice):
                 ],
                 'capture_count': 1,
                 'replay_count': 2,
+                'ordinary_observation': 'graph_ordinary_output',
                 'observation': 'graph_replay_output',
             }
         )
@@ -319,7 +414,8 @@ def _make_case(
         'reference_input': 'pre-rounding source values'
         if not external
         else 'actual rounded gradient',
-        'native_checks': _native_checks(suite, graph, suite == 'decode' and k >= 64),
+        **({'behavior_observations': {'shape_dtype': ['output']}} if suite == 'backward' else
+           {'native_checks': _native_checks(suite, graph, suite == 'decode' and k >= 64)}),
     }
     if not external:
         config['native_environment'] = {'TYLOINFER_FORCE_SQ_TENSOR_CORE': '1'}
@@ -356,6 +452,7 @@ def _make_case(
                 'reference uses the actual input values'
             ),
         },
+        actual_role='candidate' if suite == 'backward' else 'native',
     )
     writer.asset('weight', blob, encoding='MXFP4-SQ')
     writer.asset('palette_source', palettes, encoding='source-text')
@@ -418,6 +515,13 @@ def _make_case(
         )
         if graph:
             writer.output(
+                'graph_ordinary_output',
+                [rows, n],
+                'float64',
+                {'kind': 'close', 'atol': 0.02, 'rtol': 0.006},
+                actual_dtype=dtype,
+            )
+            writer.output(
                 'graph_replay_output',
                 [rows, n],
                 'float64',
@@ -426,6 +530,8 @@ def _make_case(
             )
     case = writer.finish()
     reference(case, case.root / 'reference', source_root, device)
+    if suite == 'backward':
+        candidate(case, case.root / 'candidate', source_root, device)
     return case.root / 'case.json'
 
 

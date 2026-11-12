@@ -120,7 +120,7 @@ QuantLinearGroup tyloi::cuda::Projector::group(
                 result.nint.w = std::move(segments.front());
                 if (result.nint.w.q8_zero)
                     for (const auto& weight : weights)
-                        result.nint.projection_w.push_back(static_cast<const tyloi::NintTensor&>(*weight));
+                        result.nint.projection_w.push_back(*weight.representation<tyloi::NintTensor>());
             } else {
                 result.nint.split_w = std::move(segments);
                 result.nint.split_outs = std::move(sizes);
@@ -686,7 +686,7 @@ bool Projector::grouped(std::span<const ::tyloi::Tensor> weights) const {
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         const auto* nint = weight.representation<tyloi::NintTensor>();
-        all_nint = all_nint && nint && nint->q_packed.is_cuda() && weight->size(1) == weights.front()->size(1);
+        all_nint = all_nint && nint && nint->q_packed.is_cuda() && weight.size(1) == weights.front().size(1);
 #else
         all_nint = false;
 #endif

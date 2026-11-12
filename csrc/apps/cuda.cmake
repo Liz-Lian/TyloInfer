@@ -30,6 +30,7 @@ add_executable(mfq-numerics
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/flash_graph.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/flash_reject.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/mfq.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/sq4.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tq.cpp
 )
 target_link_libraries(mfq-numerics PRIVATE mfq-cuda-engine CUDA::cudart CUDA::cublas)

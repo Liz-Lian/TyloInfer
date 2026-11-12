@@ -7,6 +7,7 @@
 #include "diagnostics/numerics/flash_graph.h"
 #include "diagnostics/numerics/flash_reject.h"
 #include "diagnostics/numerics/mfq.h"
+#include "diagnostics/numerics/sq4.h"
 #include "diagnostics/numerics/tq.h"
 #include <exception>
 #include <iostream>
@@ -25,7 +26,8 @@ int main(int argc, char **argv) {
             !tyloi::diagnostics::numerics::run_flash(value) &&
             !tyloi::diagnostics::numerics::run_flash_graph(value) &&
             !tyloi::diagnostics::numerics::run_flash_reject(value) &&
-            !tyloi::diagnostics::numerics::run_mfq(value))
+            !tyloi::diagnostics::numerics::run_mfq(value) &&
+            !tyloi::diagnostics::numerics::run_sq4(value))
             tyloi::diagnostics::numerics::run_tq(value);
         return 0;
     } catch (const std::exception &error) {

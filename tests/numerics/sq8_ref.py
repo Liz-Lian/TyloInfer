@@ -94,6 +94,73 @@ def reference(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
         return write_result(case, target, {'output': spec}, metadata)
 
 
+def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -> Path:
+    """Execute the original SQ8 direct JIT entry on verified fixed payload and input."""
+    config, source, op = case.data['config'], case.data['source'], case.data['op']
+    if (source.get('generator') != 'tests/numerics/sq8_ref.py'
+            or op not in ('sq8_decode', 'sq8_forward', 'sq8_backward')
+            or case.data.get('actual_role') != 'candidate'):
+        raise ValueError('Unsupported FP8-SQ candidate case')
+    from tyloinfer.kernels.cuda._ext import ext
+
+    modules, identity = open_source(source_root)
+    if identity != source['mfq_source']:
+        raise ValueError('MFQ source commit or module hashes differ from the case')
+    _weight(case, modules)
+    payload = case.asset('weight')
+    layout = modules['mfq.formats.fp8_sq'].parse_fp8_sq_layout(config['format'], payload)
+    recorded = {
+        'shape': list(layout.shape), 'row_q_bits': list(layout.row_q_bits),
+        'block_shape': list(layout.block_shape), 'scale_shape': list(layout.scale_shape),
+        'scale_dtype': layout.scale_dtype, 'palettes_offset': layout.palettes_offset,
+        'symbols_offset': layout.symbols_offset, 'scales_offset': layout.scales_offset,
+        'row_symbol_byte_offsets': list(layout.row_symbol_byte_offsets),
+    }
+    if config['format'] not in ('MXFP8-SQ', 'FP8-128SQ') or any(
+        config.get(name) != expected for name, expected in recorded.items()
+    ):
+        raise ValueError('FP8-SQ saved runtime layout differs from its payload')
+    if config['actual_dtype'] not in ('float16', 'float32'):
+        raise ValueError('Unsupported FP8-SQ candidate dtype')
+    if config['format'] == 'FP8-128SQ' and layout.scale_dtype != 'F16':
+        raise ValueError('FP8-128SQ source fixture requires F16 scale')
+    device = resolve_device(device)
+    with scope(config['compute']), torch.cuda.device(device):
+        blob = torch.from_numpy(np.frombuffer(payload, dtype=np.uint8).copy()).to(device)
+        row_q = torch.tensor(layout.row_q_bits, dtype=torch.uint8, device=device)
+        offsets = torch.tensor(layout.row_symbol_byte_offsets, dtype=torch.int32, device=device)
+        dimensions = (int(layout.shape[0]), int(layout.shape[1]))
+        if config['format'] == 'MXFP8-SQ':
+            prefix = 'mxfp8_sq'
+            geometry = (*dimensions, *map(int, layout.block_shape), *map(int, layout.scale_shape))
+        else:
+            prefix = 'fp8_128_sq'
+            geometry = (*dimensions, 3)
+        metadata = (int(layout.palettes_offset), int(layout.symbols_offset), int(layout.scales_offset))
+        module = ext()
+        if op == 'sq8_decode':
+            entry = prefix + '_dequant_cuda'
+            output = getattr(module, entry)(
+                blob, row_q, offsets, *geometry, *metadata, config['actual_dtype'] == 'float32'
+            )
+        else:
+            value = torch.from_numpy(case.tensor('native_input')).to(device)
+            expected_shape = ((int(config.get('rows', -1)), 128) if op == 'sq8_forward' else (3, 8))
+            if value.dtype != getattr(torch, config['actual_dtype']) or tuple(value.shape) != expected_shape:
+                raise ValueError('FP8-SQ candidate input shape or dtype differs from the case')
+            entry = prefix + ('_matmul_cuda' if op == 'sq8_forward' else '_backward_input_cuda')
+            output = getattr(module, entry)(blob, row_q, offsets, value, *geometry, *metadata)
+        spec = save_tensor(root, 'output', output.detach().contiguous().cpu().numpy())
+        provenance = execution(device, 'Direct FP8-SQ JIT entry')
+        provenance.update(category='python_candidate', native_worker_executed=False,
+                          entrypoint=entry, input_comparison_category=config['category'],
+                          mfq_source=identity, jit_module=str(Path(module.__file__).resolve()),
+                          jit_sha256=file_hash(module.__file__), generator_sha256=file_hash(__file__))
+        if open_source(source_root)[1] != identity:
+            raise ValueError('MFQ source changed during candidate execution')
+        return write_result(case, root, {'output': spec}, provenance, role='candidate')
+
+
 def _case(
     root, source_root, modules, identity, device, dtype, suite, actual_dtype, rows, supplement=False
 ):
@@ -125,6 +192,7 @@ def _case(
         'scales_offset': layout.scales_offset,
         'row_symbol_byte_offsets': list(layout.row_symbol_byte_offsets),
         'actual_dtype': actual_dtype,
+        **({'rows': rows} if suite == 'forward' else {}),
         'category': category,
         'compute': settings(),
         'comparison_limit': (
@@ -154,6 +222,7 @@ def _case(
             'fixture_seed': 20260912,
             'mfq_source': identity,
         },
+        actual_role='candidate',
     )
     writer.asset('weight', tensor.payload, encoding=dtype)
     writer.asset(
@@ -186,6 +255,7 @@ def _case(
         )
     case = writer.finish()
     reference(case, case.root / 'reference', source_root, device)
+    candidate(case, case.root / 'candidate', source_root, device)
     return case.root / 'case.json'
 
 
