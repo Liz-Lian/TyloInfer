@@ -257,7 +257,7 @@ bool Mlp::parallel() const {
     gate = gate.to(::tyloi::kBFloat16).contiguous();
     up = up.to(::tyloi::kBFloat16).contiguous();
     auto hidden = profiler.measure("full.minicpmo45_ffn_swiglu", [&] {
-        return fused ? silu_mul_cuda(gate, up)
+        return fused && gate.is_cuda() && up.is_cuda() ? silu_mul_cuda(gate, up)
                      : (::tyloi::cuda::silu(gate) * up).contiguous();
     });
     gate = {};

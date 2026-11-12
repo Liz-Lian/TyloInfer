@@ -251,7 +251,7 @@ State::Restore State::prepare(const TextSessionState& state) const {
         throw CudaSessionStateError("full-attention text session state is incompatible");
     for (std::size_t i=0;i<saved->size();++i) {
         const auto& l=layout_[i]; const auto& kv=(*saved)[i]; validate_kv(kv);
-        const Device target(l.cpu ? kCPU : kCUDA,l.cpu ? -1 : l.device);
+        const Device target(l.cpu ? kCPU : kCUDA,l.cpu ? 0 : l.device);
         const auto dtype=l.quantization.enabled()?kInt32:kBFloat16;
         const auto kw=l.quantization.enabled()?cuda_kv_packed_width(int(l.head_dim),l.quantization.key_bits()):l.head_dim;
         const auto vw=l.quantization.enabled()?cuda_kv_packed_width(int(l.head_dim),l.quantization.value_bits()):l.head_dim;
@@ -294,7 +294,7 @@ std::vector<std::pair<Device,std::size_t>> State::growth(std::int64_t next_batch
         const auto& l=layout_[i];
         if (layers[i].defined() && (cache_pos!=0 || layers[i].batch==next_batch)) continue;
         const auto capacity=l.sliding ? l.capacity : (options.kv_capacity>0 ? std::max(cache_pos+tokens,options.kv_capacity) : l.capacity);
-        const Device device(l.cpu?kCPU:kCUDA,l.cpu?-1:l.device);
+        const Device device(l.cpu?kCPU:kCUDA,l.cpu?0:l.device);
         add_growth(result,device,tyloi::state::kv_bytes(next_batch,l.heads,capacity,l.head_dim,l.sliding,kBFloat16,l.quantization));
     }
     return result;
@@ -383,7 +383,7 @@ Tensor forward(const Model& model,State& state,tyloi::models::Input input,const 
     trace();
     for (std::size_t i=0;i<model.layers.size();++i) {
         const auto& layer=model.layers[i]; const auto& attention=layer.attention;
-        const Device target(layer.cpu?kCPU:kCUDA,layer.cpu?-1:layer.device);
+        const Device target(layer.cpu?kCPU:kCUDA,layer.cpu?0:layer.device);
         const auto local=[&](const Tensor& value) {return ::tyloi::ops::contiguous(::tyloi::ops::copy(value,target));};
         hidden=local(hidden);
         AttentionStep step{local(positions),{},local(physical),state.cache_pos,input.kv_length,input.attention_parts};

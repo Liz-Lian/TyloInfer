@@ -147,6 +147,8 @@ def _read_weights(path):
 
 def _verify(case):
     """Validate fixed model assets and the complete MLX implementation identity."""
+    import mlx.core as mx
+
     verified = Case.load(case.root / 'case.json')
     if verified.root != case.root.resolve() or verified.data != case.data:
         raise ValueError('Tiny WT2 case changed since it was loaded')
@@ -157,6 +159,8 @@ def _verify(case):
     ):
         raise ValueError('Unsupported tiny WT2 case')
     config = case.data['config']
+    if config.get('mlx_device') != str(mx.default_device()):
+        raise ValueError('MLX device differs from the fixed case')
     if json.loads(case.asset('config')) != _config(config['family']):
         raise ValueError('Tiny model configuration differs from the source scenario')
     for name in ('upstream', 'checkpoint'):
@@ -235,7 +239,7 @@ def reference(case: Case, root: Path) -> Path:
         specs,
         {
             'framework': 'mlx_lm upstream model',
-            'device': 'mlx',
+            'device': case.data['config']['mlx_device'],
             'category': 'upstream_execution_consistency',
             'independence': 'upstream model quality expectation; no native execution',
             'implementation': identity,
@@ -324,7 +328,7 @@ def candidate(case: Case, root: Path) -> Path:
         specs,
         {
             'framework': 'TyloInfer MLX quality path',
-            'device': 'mlx',
+            'device': case.data['config']['mlx_device'],
             'category': 'python_candidate',
             'native_executed': False,
             'independence': 'upstream execution consistency, not native',
@@ -337,14 +341,23 @@ def candidate(case: Case, root: Path) -> Path:
     )
 
 
-def generate(root: Path) -> list[Path]:
-    """Freeze and execute the ten original tiny MLX quality scenarios."""
+def generate(root: Path, families=_FAMILIES, dtypes=('float32', 'bfloat16')) -> list[Path]:
+    """Freeze selected original tiny MLX scenarios in a fresh output root."""
     import mlx.core as mx
     from mlx.utils import tree_flatten
 
     paths = []
-    for family in _FAMILIES:
-        for dtype in ('float32', 'bfloat16'):
+    if (
+        not families
+        or len(set(families)) != len(families)
+        or any(family not in _FAMILIES for family in families)
+        or not dtypes
+        or len(set(dtypes)) != len(dtypes)
+        or any(dtype not in ('float32', 'bfloat16') for dtype in dtypes)
+    ):
+        raise ValueError('Unsupported or duplicate tiny WT2 scenario')
+    for family in families:
+        for dtype in dtypes:
             config = _config(family)
             model = _model(config, family)
             mx.random.seed(123)
@@ -398,6 +411,7 @@ def generate(root: Path) -> list[Path]:
                 {
                     'family': family,
                     'dtype': dtype,
+                    'mlx_device': str(mx.default_device()),
                     'context': 32,
                     'chunks': 2,
                     'vocab': 67,

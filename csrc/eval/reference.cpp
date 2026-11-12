@@ -1,4 +1,5 @@
 #include "eval/reference.h"
+#include "components/error.h"
 #include "engine/program.h"
 #include "engine/models/layers.h"
 #include "engine/backends/cuda/executor/config.h"
@@ -87,6 +88,7 @@ private:
 };
 
 bool out_of_memory(const std::exception& error) {
+    if (dynamic_cast<const MfqResourceExhausted*>(&error)) return true;
     const std::string message = error.what();
     return message.find("out of memory") != std::string::npos ||
         message.find("memory allocation") != std::string::npos;

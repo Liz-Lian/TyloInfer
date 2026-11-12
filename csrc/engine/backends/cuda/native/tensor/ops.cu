@@ -1,3 +1,4 @@
+#include "host.h"
 #include "ops_common.cuh"
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/device.h"
@@ -314,6 +315,7 @@ DenseTensor unary_cuda(
     double first,
     double second) {
     source.require_dense();
+    if (source.is_cpu()) return host::unary(source, operation, first, second);
     if (!source.is_cuda()) {
         throw std::invalid_argument("native unary CUDA op requires a CUDA tensor");
     }
@@ -349,6 +351,9 @@ DenseTensor unary_cuda(
 
 DenseTensor binary_cuda(const DenseTensor& left_source, const DenseTensor& right_source, int operation) {
     left_source.require_dense(); right_source.require_dense();
+    if (left_source.device() != right_source.device())
+        throw std::invalid_argument("binary tensor devices do not match");
+    if (left_source.is_cpu()) return host::binary(left_source, right_source, operation);
     if (!left_source.is_cuda() || !right_source.is_cuda()) {
         throw std::invalid_argument("native binary CUDA op requires CUDA tensors");
     }
@@ -394,6 +399,7 @@ DenseTensor scalar_binary_cuda(
     int operation,
     bool scalar_first) {
     left.require_dense();
+    if (left.is_cpu()) return host::scalar(left, right, operation, scalar_first);
     if (!left.is_cuda()) {
         throw std::invalid_argument("native scalar CUDA op requires a CUDA tensor");
     }

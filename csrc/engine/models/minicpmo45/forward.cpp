@@ -79,7 +79,7 @@ Tensor forward(const Model& model,State& state,tyloi::models::Input input,const 
     trace();
     for (std::size_t i=0;i<model.layers.size();++i) {
         const auto& layer=model.layers[i]; const auto& attention=layer.attention;
-        const Device target(layer.cpu?kCPU:kCUDA,layer.cpu?-1:layer.device);
+        const Device target(layer.cpu?kCPU:kCUDA,layer.cpu?0:layer.device);
         const auto local=[&](const Tensor& value) {return ::tyloi::ops::contiguous(::tyloi::ops::copy(value,target));};
         hidden=local(hidden);
         AttentionStep step{local(positions),{},(input.cache_positions ? local(physical) : Tensor{}),state.cache_pos,input.kv_length,input.attention_parts};

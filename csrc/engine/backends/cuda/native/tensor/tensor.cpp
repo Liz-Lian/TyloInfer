@@ -1,3 +1,4 @@
+#include "host.h"
 #include "env.h"
 #include "tensor.h"
 
@@ -103,29 +104,6 @@ DenseTensor empty_cpu(std::span<const std::int64_t> shape, const TensorOptions& 
     return DenseTensor(std::move(storage), descriptor);
 }
 
-float decode_float16(std::uint16_t bits) {
-    const auto sign = static_cast<std::uint32_t>(bits & 0x8000u) << 16;
-    auto exponent = static_cast<std::uint32_t>((bits >> 10) & 0x1fu);
-    auto mantissa = static_cast<std::uint32_t>(bits & 0x03ffu);
-    std::uint32_t value = 0;
-    if (exponent == 0) {
-        if (mantissa == 0) {
-            value = sign;
-        } else {
-            exponent = 127 - 15 + 1;
-            while ((mantissa & 0x0400u) == 0) {
-                mantissa <<= 1;
-                --exponent;
-            }
-            value = sign | (exponent << 23) | ((mantissa & 0x03ffu) << 13);
-        }
-    } else if (exponent == 0x1fu) {
-        value = sign | 0x7f800000u | (mantissa << 13);
-    } else {
-        value = sign | ((exponent + 127 - 15) << 23) | (mantissa << 13);
-    }
-    return std::bit_cast<float>(value);
-}
 
 } // namespace
 
@@ -162,14 +140,6 @@ std::uint16_t encode_float16(float value) {
     return static_cast<std::uint16_t>(sign | (exponent << 10) | rounded);
 }
 
-namespace {
-
-float decode_bfloat16(std::uint16_t bits) {
-    return std::bit_cast<float>(static_cast<std::uint32_t>(bits) << 16);
-}
-
-} // namespace
-
 std::uint16_t encode_bfloat16(float value) {
     auto bits = std::bit_cast<std::uint32_t>(value);
     const auto lsb = (bits >> 16) & 1u;
@@ -178,53 +148,6 @@ std::uint16_t encode_bfloat16(float value) {
 }
 
 namespace {
-
-double read_cpu_number(const void* pointer, ScalarType type) {
-    switch (type) {
-        case kBool: return *static_cast<const bool*>(pointer) ? 1.0 : 0.0;
-        case kUInt8: return *static_cast<const std::uint8_t*>(pointer);
-        case kInt8: return *static_cast<const std::int8_t*>(pointer);
-        case kInt16: return *static_cast<const std::int16_t*>(pointer);
-        case kInt32: return *static_cast<const std::int32_t*>(pointer);
-        case kInt64: return static_cast<double>(*static_cast<const std::int64_t*>(pointer));
-        case kFloat16: return decode_float16(*static_cast<const std::uint16_t*>(pointer));
-        case kBFloat16: return decode_bfloat16(*static_cast<const std::uint16_t*>(pointer));
-        case kFloat32: return *static_cast<const float*>(pointer);
-        case kFloat64: return *static_cast<const double*>(pointer);
-        case kFloat8E4M3FN:
-            throw std::invalid_argument("CPU FP8 conversion is format-specific");
-    }
-    throw std::invalid_argument("unknown CPU tensor dtype");
-}
-
-void write_cpu_number(void* pointer, ScalarType type, double value) {
-    switch (type) {
-        case kBool: *static_cast<bool*>(pointer) = value != 0.0; return;
-        case kUInt8: *static_cast<std::uint8_t*>(pointer) = static_cast<std::uint8_t>(value); return;
-        case kInt8: *static_cast<std::int8_t*>(pointer) = static_cast<std::int8_t>(value); return;
-        case kInt16: *static_cast<std::int16_t*>(pointer) = static_cast<std::int16_t>(value); return;
-        case kInt32: *static_cast<std::int32_t*>(pointer) = static_cast<std::int32_t>(value); return;
-        case kInt64: *static_cast<std::int64_t*>(pointer) = static_cast<std::int64_t>(value); return;
-        case kFloat16: *static_cast<std::uint16_t*>(pointer) = encode_float16(static_cast<float>(value)); return;
-        case kBFloat16: *static_cast<std::uint16_t*>(pointer) = encode_bfloat16(static_cast<float>(value)); return;
-        case kFloat32: *static_cast<float*>(pointer) = static_cast<float>(value); return;
-        case kFloat64: *static_cast<double*>(pointer) = value; return;
-        case kFloat8E4M3FN:
-            throw std::invalid_argument("CPU FP8 conversion is format-specific");
-    }
-    throw std::invalid_argument("unknown CPU tensor dtype");
-}
-
-std::int64_t cpu_tensor_offset(const TensorView& view, std::int64_t linear) {
-    std::int64_t result = 0;
-    for (std::size_t reverse = view.rank; reverse > 0; --reverse) {
-        const auto dimension = reverse - 1;
-        const auto coordinate = linear % view.sizes[dimension];
-        linear /= view.sizes[dimension];
-        result += coordinate * view.strides[dimension];
-    }
-    return result;
-}
 
 void copy_contiguous_cpu(DenseTensor& destination, const DenseTensor& source) {
     if (!destination.is_cpu() || !source.is_cpu() ||
@@ -240,8 +163,8 @@ void copy_contiguous_cpu(DenseTensor& destination, const DenseTensor& source) {
     const auto source_width = scalar_size(source.scalar_type());
     const auto destination_width = scalar_size(destination.scalar_type());
     for (std::int64_t linear = 0; linear < source.numel(); ++linear) {
-        const auto source_offset = cpu_tensor_offset(source.view_descriptor(), linear);
-        const auto destination_offset = cpu_tensor_offset(destination.view_descriptor(), linear);
+        const auto source_offset = host::offset(source.view_descriptor(), linear);
+        const auto destination_offset = host::offset(destination.view_descriptor(), linear);
         const auto* input = static_cast<const std::byte*>(source.data_ptr()) +
             source_offset * source_width;
         auto* output = static_cast<std::byte*>(destination.data_ptr()) +
@@ -249,8 +172,8 @@ void copy_contiguous_cpu(DenseTensor& destination, const DenseTensor& source) {
         if (destination.scalar_type() == source.scalar_type()) {
             std::memcpy(output, input, source_width);
         } else {
-            write_cpu_number(output, destination.scalar_type(),
-                             read_cpu_number(input, source.scalar_type()));
+            host::store<double>(output, destination.scalar_type(),
+                             host::load<double>(input, source.scalar_type()));
         }
     }
 }

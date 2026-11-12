@@ -88,7 +88,7 @@ State::Restore State::prepare(const TextSessionState& state) const {
         const auto& cache = saved->at(index);
         validate_kv(cache);
         const auto device = ::tyloi::Device(layout.cpu ? ::tyloi::kCPU : ::tyloi::kCUDA,
-                                       layout.cpu ? -1 : layout.device);
+                                       layout.cpu ? 0 : layout.device);
         if (cache.ring || cache.k.device() != device || cache.v.device() != device ||
             cache.k.scalar_type() != ::tyloi::kFloat16 ||
             cache.v.scalar_type() != ::tyloi::kFloat16 ||
@@ -143,7 +143,7 @@ std::vector<std::pair<Device,std::size_t>> State::growth(std::int64_t next_batch
         const auto& l=layout_[i];
         if (layers[i].defined() && (cache_pos!=0 || layers[i].batch==next_batch)) continue;
         const auto capacity=false ? l.capacity : (options.kv_capacity>0 ? std::max(cache_pos+tokens,options.kv_capacity) : l.capacity);
-        const Device device(l.cpu?kCPU:kCUDA,l.cpu?-1:l.device);
+        const Device device(l.cpu?kCPU:kCUDA,l.cpu?0:l.device);
         add_growth(result,device,tyloi::state::kv_bytes(next_batch,l.heads,capacity,l.head_dim,false,kFloat16,{}));
     }
     return result;

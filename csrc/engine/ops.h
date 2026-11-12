@@ -19,9 +19,9 @@
 
 namespace tyloi::ops {
 
-// In the native CUDA runtime, computation requires CUDA unless stated below.
-// CUDA execution and prepared-weight operations require an execution scope.
-// qkv_norm and append_kv also require a scope for their CPU passthrough cases.
+// Dense arithmetic, normalization and indexing preserve CPU or CUDA placement.
+// Device-specific kernels still require CUDA. CUDA execution, prepared weights,
+// cached attention and KV writes require an execution scope.
 using Trace = std::vector<std::pair<std::string, Tensor>>;
 
 // Query, key and value are [B,H,T,D]; KV may use fewer heads.
@@ -48,8 +48,8 @@ Tensor attention(const Tensor& query, const Tensor& key, const Tensor& value,
 Tensor sparse_attention(const Tensor& query, const Tensor& cache,
                         const Tensor& indices, const Tensor& mask,
                         const Tensor& sinks, double scale);
-// Writes the supplied backing and returns visible KV; paged prefixes may be gathered.
-// An unpaged, unquantized zero-batch write can use CPU tensors.
+/** Write [T] or [B,T] positions into dense CPU/CUDA backing and return visible KV.
+ * Paged and quantized writes require CUDA; paged prefixes may be gathered. */
 std::pair<Tensor, Tensor> append_kv(state::KvView kv, const Tensor& key, const Tensor& value,
                                     const Tensor& positions, std::int64_t start,
                                     bool contiguous_prefill_prefix = false);

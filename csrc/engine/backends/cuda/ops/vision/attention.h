@@ -127,7 +127,8 @@ inline DenseTensor segmented_attention(
 namespace tyloi::cuda::ops {
 inline tyloi::DenseTensor attention(tyloi::DenseTensor query, tyloi::DenseTensor key, tyloi::DenseTensor value,
                              const std::optional<tyloi::DenseTensor>& mask, double scale) {
-    MfqCudaGuard guard(query.device().index);
+    std::optional<MfqCudaGuard> guard;
+    if (query.is_cuda()) guard.emplace(query.device().index);
     return vision_non_causal_attention(query, key, value, mask, scale);
 }
 inline tyloi::DenseTensor axial_rope(tyloi::DenseTensor input, const std::vector<std::int32_t>& positions, double theta) {

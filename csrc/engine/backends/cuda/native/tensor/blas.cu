@@ -1,3 +1,4 @@
+#include "host.h"
 #include "env.h"
 #include "ops_common.cuh"
 #include "matmul_rows.h"
@@ -223,6 +224,7 @@ void submit_parallel_rows(int device,std::int64_t begin,std::int64_t rows,
 
 DenseTensor matmul(const DenseTensor& left_source, const DenseTensor& right_source) {
     left_source.require_dense(); right_source.require_dense();
+    if (left_source.is_cpu() && right_source.is_cpu()) return host::matmul(left_source, right_source);
     if (!left_source.defined() || !right_source.defined() ||
         !left_source.is_cuda() || !right_source.is_cuda()) {
         throw std::invalid_argument("native matmul requires CUDA tensors");
@@ -565,7 +567,7 @@ DenseTensor scaled_dot_product_attention(
         query_source.size(-2), key_source.size(-2)});
     const char* fused_causal_scale_disabled =
         tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_FUSED_CAUSAL_SCALE");
-    const bool fused_causal_scale = causal && !mask.has_value() &&
+    const bool fused_causal_scale = scores.is_cuda() && causal && !mask.has_value() &&
         scores.scalar_type() == kBFloat16 && scores.is_contiguous() &&
         scores.dim() >= 2 && scores.size(-2) > 0 && scores.size(-1) > 0 &&
         (fused_causal_scale_disabled == nullptr ||

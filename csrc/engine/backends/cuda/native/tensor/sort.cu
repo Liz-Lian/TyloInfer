@@ -1,3 +1,4 @@
+#include "host.h"
 #include "env.h"
 #include "ops_common.cuh"
 #include "engine/backends/cuda/native/context.h"
@@ -308,6 +309,7 @@ DenseTensor logsumexp(const DenseTensor& input, std::int64_t dimension, bool kee
 
 DenseTensor softmax(const DenseTensor& input, std::int64_t dimension) {
     input.require_dense();
+    if (input.is_cpu()) return host::softmax(input, dimension);
     const auto selected = normalize_dimension(dimension, input.dim());
     const auto columns = input.size(-1);
     const auto rows = columns == 0 ? 0 : input.numel() / columns;

@@ -1,3 +1,4 @@
+#include "host.h"
 #include "env.h"
 #include "ops_common.cuh"
 #include "engine/backends/cuda/native/context.h"
@@ -255,6 +256,7 @@ DenseTensor reduce_cuda(
     bool keep_dimension,
     int operation) {
     source.require_dense();
+    if (source.is_cpu()) return host::reduce(source, dimension, keep_dimension, operation);
     if (!source.is_cuda() || source.dim() == 0) {
         throw std::invalid_argument("native reduction requires a ranked CUDA tensor");
     }
@@ -358,7 +360,6 @@ DenseTensor sum(const DenseTensor& input, std::int64_t dimension, bool keep_dime
 }
 DenseTensor mean(const DenseTensor& input, std::int64_t dimension, bool keep_dimension) {
     if (!input.defined()) throw std::invalid_argument("mean requires a defined tensor");
-    if (!input.is_cuda()) throw std::invalid_argument("native CPU mean is not implemented");
     return reduce_cuda(input, dimension, keep_dimension, 1);
 }
 DenseTensor argmax(const DenseTensor& input, std::int64_t dimension, bool keep_dimension) {

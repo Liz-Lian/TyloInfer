@@ -89,8 +89,8 @@ MfqOptional<::tyloi::DenseTensor> minicpmo45_attention_mask(
     auto additive = ::tyloi::cuda::zeros(
         {batch, 1, tokens, visible_len},
         ::tyloi::TensorOptions().device(request.query.device()).dtype(mask_dtype));
-    const double mask_min =
-        static_cast<double>(std::numeric_limits<mfq_bfloat16>::lowest());
+    // CUDA's BF16 scalar has no std::numeric_limits specialization.
+    constexpr double mask_min = -0x1.fep127;
     additive.masked_fill_(allowed.logical_not().unsqueeze(1), mask_min);
     result = additive.contiguous();
     return result;
@@ -172,7 +172,10 @@ std::optional<tyloi::DenseTensor> ops::rope_kv(const tyloi::ops::AttentionInput&
 tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& input,
                                         const tyloi::state::KvView& public_kv,
                                         const tyloi::ops::AttentionConfig& public_config) {
-    MfqCudaGuard guard(input.query.device().index);
+    std::optional<MfqCudaGuard> guard;
+    if (input.query.is_cuda()) guard.emplace(input.query.device().index);
+    else if (public_kv.paged() || public_kv.quantization.enabled() || public_kv.ring)
+        throw std::invalid_argument("CPU dense offload requires an unpaged, unquantized, non-ring cache");
     using DenseTensor = ::tyloi::DenseTensor;
     const NativeAttentionInput request{
         dense(input.query), dense(input.key), dense(input.value), dense(input.positions),
@@ -189,9 +192,10 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
     const AttentionConfig config{public_config.bf16, public_config.sliding, public_config.window,
                                  public_config.scale, executor.attention_kernels()};
     auto& profiler = executor.profiler();
-    auto& scratch = executor.attention_scratch(request.query.device(),
+    AttentionScratch host_scratch;
+    auto& scratch = request.query.is_cuda() ? executor.attention_scratch(request.query.device(),
         {request.query.size(1), request.key.size(1), request.query.size(3),
-         config.sliding ? config.window : 0});
+         config.sliding ? config.window : 0}) : host_scratch;
     if (request.query.is_cuda())
         scratch.split(request.query.size(0) * request.query.size(1), AttentionScratch::kMaxParts,
                       request.query.size(3), request.query.device());
@@ -256,12 +260,13 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                     visible, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
                 ::tyloi::DenseTensor allowed;
                 if (tokens > 1) {
-                    auto query_positions =
-                        request.positions.dim() == 1
-                            ? request.positions.to(::tyloi::kCPU, ::tyloi::kInt64)
-                            : request.positions.select(0, 0).to(::tyloi::kCPU, ::tyloi::kInt64);
-                    allowed = key_positions.unsqueeze(0) <= query_positions.unsqueeze(1);
-                    allowed = allowed.unsqueeze(0).expand({batch, tokens, visible});
+                    auto query_positions = request.positions.to(::tyloi::kCPU, ::tyloi::kInt64);
+                    if (query_positions.dim() == 1)
+                        query_positions = query_positions.reshape({1, tokens}).expand({batch, tokens});
+                    if (query_positions.dim() != 2 || query_positions.size(0) != batch ||
+                        query_positions.size(1) != tokens)
+                        throw std::invalid_argument("CPU attention positions must be [tokens] or [batch,tokens]");
+                    allowed = key_positions.reshape({1, 1, visible}) <= query_positions.unsqueeze(-1);
                 } else {
                     allowed = ::tyloi::cuda::ones(
                         {batch, tokens, visible},

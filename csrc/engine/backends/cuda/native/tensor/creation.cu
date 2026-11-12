@@ -1,3 +1,4 @@
+#include "host.h"
 #include "ops_common.cuh"
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/device.h"
@@ -220,6 +221,7 @@ DenseTensor where(
     const DenseTensor& yes_source,
     const DenseTensor& no_source) {
     condition_source.require_dense(); yes_source.require_dense(); no_source.require_dense();
+    if (yes_source.is_cpu()) return host::where(condition_source, yes_source, no_source);
     auto shape = broadcast_shape(yes_source, no_source);
     // The condition can introduce token or batch axes absent from both
     // alternatives. Expanding is a view; no candidate data is materialized.

@@ -37,6 +37,9 @@ add_library(mfq-cuda-core STATIC
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/context.cu
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/host_math.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/host_blas.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/host_index.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/tensor.cu
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/blas.cu
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/creation.cu

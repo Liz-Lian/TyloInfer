@@ -10,7 +10,7 @@
 #include "engine/backends/cuda/ops/ffn/residual.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/tensor.h"
-#include "engine/backends/cuda/native/tensor/tensor.h"
+#include "engine/backends/cuda/native/tensor/host.h"
 #include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/attention/kv.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
@@ -102,13 +102,12 @@ AttentionResult attention(const AttentionInput& request, const state::KvView& kv
                                 kv.physical_value, kv.key_chunk_ptrs,
                                 kv.value_chunk_ptrs, kv.page_table})
         if (tensor.defined()) compatible(request.query, tensor);
-    require_cuda(request.query);
     return cuda::ops::attention(request, kv, config);
 }
 
 std::int64_t attention_parts(std::int64_t planned_len, Device target) {
     device(target);
-    if (!target.is_cuda()) throw std::invalid_argument("attention parts require a CUDA device");
+    if (target.is_cpu()) return 1;
     return cuda::ops::attention_parts(planned_len);
 }
 
@@ -131,7 +130,6 @@ Tensor attention(const Tensor& query_tensor, const Tensor& key_tensor, const Ten
         if (!broadcasts(q, k) || !broadcasts(q > k ? q : k, v))
             throw std::invalid_argument("attention query, key and value geometry is incompatible");
     }
-    require_cuda(query);
     const std::optional<DenseTensor> dense_mask = mask ? std::optional<DenseTensor>(dense(mask)) : std::nullopt;
     return owner(cuda::ops::attention(query, key, value, dense_mask, scale));
 }
@@ -183,7 +181,6 @@ Tensor tail_rope(const Tensor& value, const Tensor& positions,
 RopeTable rope_table(std::int64_t positions, std::int64_t dimension, double base, Device target,
                      std::int64_t frequency_dim, std::int64_t active_pairs) {
     device(target);
-    if (!target.is_cuda()) throw std::invalid_argument("RoPE table requires a CUDA device");
     if (positions <= 0 || dimension <= 0 || dimension % 2 != 0 ||
         !std::isfinite(base) || base <= 0.0 || active_pairs > dimension / 2)
         throw std::invalid_argument("invalid RoPE table parameters");
@@ -203,7 +200,6 @@ Tensor rope(const Tensor& value_tensor, const Tensor& positions_tensor, const Ro
     if (value.dim() == 0 || table.rotary_dim <= 0 || table.rotary_dim % 2 != 0 ||
         table.rotary_dim > value.size(-1))
         throw std::invalid_argument("invalid RoPE rotary dimension");
-    require_cuda(value);
     return owner(cuda::ops::rope(value, positions, table, bf16, grid));
 }
 Tensor norm_rope_kv(const AttentionInput& request, const state::KvView& kv,
@@ -242,9 +238,7 @@ std::pair<Tensor, Tensor> append_kv(state::KvView kv, const Tensor& key_tensor, 
     for (const auto& tensor : {kv.physical_key, kv.physical_value, kv.key_chunk_ptrs,
                                 kv.value_chunk_ptrs, kv.page_table})
         if (tensor.defined()) compatible(key, tensor);
-    // A zero batch skips the unpaged, unquantized index writes.
-    if (kv.paged() || kv.quantization.enabled() || positions.dim() != 2 || positions.size(0) != 0)
-        require_cuda(key);
+    if (kv.paged() || kv.quantization.enabled()) require_cuda(key);
     auto result = cuda::ops::append_kv(std::move(kv), key, value, positions, start, contiguous_prefill_prefix);
     return {owner(std::move(result.first)), owner(std::move(result.second))};
 }
@@ -253,21 +247,18 @@ Tensor add(const Tensor& left_tensor, const Tensor& right_tensor) {
     const auto& left = ::tyloi::ops::dense(left_tensor);
     const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
-    require_cuda(left);
     return owner(cuda::ops::add(left, right));
 }
 Tensor multiply(const Tensor& left_tensor, const Tensor& right_tensor) {
     const auto& left = ::tyloi::ops::dense(left_tensor);
     const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
-    require_cuda(left);
     return owner(cuda::ops::multiply(left, right));
 }
 Tensor matmul(const Tensor& left_tensor, const Tensor& right_tensor) {
     const auto& left = ::tyloi::ops::dense(left_tensor);
     const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
-    require_cuda(left);
     return owner(cuda::ops::matmul(left, right));
 }
 Tensor transpose(const Tensor& value_tensor, std::int64_t first, std::int64_t second) {
@@ -279,7 +270,6 @@ Tensor add_residual(const Tensor& residual_tensor, const Tensor& value_tensor, R
     const auto& residual = ::tyloi::ops::dense(residual_tensor);
     const auto& value = ::tyloi::ops::dense(value_tensor);
     compatible(residual, value);
-    require_cuda(residual);
     return owner(cuda::ops::add_residual(residual, value, mode == ResidualMode::configured));
 }
 
@@ -473,7 +463,6 @@ Tensor rms_norm(const Tensor& value_tensor, const Tensor& weight_tensor, double 
     if (output_type != ScalarType::float32 && output_type != ScalarType::float16 &&
         output_type != ScalarType::bfloat16)
         throw std::invalid_argument("unsupported rms_norm output type");
-    require_cuda(value);
     return owner(cuda::ops::rms_norm(value, weight, eps, offset, output_type));
 }
 Tensor layer_norm(const Tensor& value_tensor, const Tensor& weight_tensor, const Tensor& bias_tensor, double epsilon) {
@@ -491,13 +480,11 @@ Tensor layer_norm(const Tensor& value_tensor, const Tensor& weight_tensor, const
 Tensor gelu(const Tensor& value_tensor, bool approximate) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::gelu(value, approximate));
 }
 Tensor silu(const Tensor& value_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::silu(value));
 }
 Tensor relu_squared(const Tensor& value_tensor) {
@@ -538,9 +525,6 @@ std::array<Tensor, 3> qkv_norm(std::array<Tensor, 3> values, std::array<Tensor, 
                 throw std::invalid_argument("qkv_norm input and weight are incompatible");
         }
     }
-    for (std::size_t i = 0; i < values.size(); ++i)
-        if (weights[i].defined()) require_cuda(values[i]);
-    (void)cuda::Executor::current();
     std::array<DenseTensor, 3> dense_values{dense(values[0]), dense(values[1]), dense(values[2])};
     auto result = cuda::ops::qkv_norm(std::move(dense_values), dense_weights, eps, offset, output_type);
     return {owner(std::move(result[0])), owner(std::move(result[1])), owner(std::move(result[2]))};
@@ -548,13 +532,11 @@ std::array<Tensor, 3> qkv_norm(std::array<Tensor, 3> values, std::array<Tensor, 
 Tensor softcap(const Tensor& value_tensor, double cap) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    if (cap > 0.0) require_cuda(value);
     return owner(cuda::ops::softcap(value, cap));
 }
 Tensor scale(const Tensor& value_tensor, double factor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::scale(value, factor));
 }
 Tensor divide(const Tensor& value_tensor, double divisor) {
@@ -888,13 +870,11 @@ Tensor index_select(const Tensor& value_tensor, std::int64_t dim, const Tensor& 
     const auto& value = ::tyloi::ops::dense(value_tensor);
     const auto& indices = ::tyloi::ops::dense(indices_tensor);
     compatible(value, indices);
-    require_cuda(value);
     return owner(cuda::ops::index_select(value, dim, indices));
 }
 Tensor sum(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::sum(value, dim, keepdim));
 }
 void index_copy(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor, const Tensor& source_tensor) {
@@ -903,7 +883,6 @@ void index_copy(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_te
     const auto& source = ::tyloi::ops::dense(source_tensor);
     compatible(value, indices);
     compatible(value, source);
-    require_cuda(value);
     cuda::ops::index_copy(value, dim, indices, source);
 }
 std::vector<Tensor> chunk(const Tensor& value_tensor, std::int64_t count, std::int64_t dim) {
@@ -922,170 +901,143 @@ Tensor full(std::span<const std::int64_t> shape, std::int64_t value, Device targ
 Tensor add(const Tensor& value_tensor, std::int64_t offset) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::add(value, offset));
 }
 Tensor mean(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::mean(value, dim, keepdim));
 }
 Tensor amax(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::amax(value, dim, keepdim));
 }
 Tensor argmax(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::argmax(value, dim, keepdim));
 }
 Tensor all(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::all(value, dim, keepdim));
 }
 Tensor any(const Tensor& value_tensor, std::int64_t dim, bool keepdim) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::any(value, dim, keepdim));
 }
 Tensor abs(const Tensor& value_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::abs(value));
 }
 Tensor square(const Tensor& value_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::square(value));
 }
 Tensor exp(const Tensor& value_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::exp(value));
 }
 Tensor sqrt(const Tensor& value_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::sqrt(value));
 }
 Tensor logical_not(const Tensor& value_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::logical_not(value));
 }
 Tensor clamp(const Tensor& value_tensor, double minimum, double maximum) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::clamp(value, minimum, maximum));
 }
 Tensor clamp_min(const Tensor& value_tensor, double minimum) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::clamp_min(value, minimum));
 }
 Tensor clamp_max(const Tensor& value_tensor, double maximum) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::clamp_max(value, maximum));
 }
 Tensor remainder(const Tensor& value_tensor, double divisor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::remainder(value, divisor));
 }
 Tensor eq(const Tensor& left_tensor, const Tensor& right_tensor) {
     const auto& left = ::tyloi::ops::dense(left_tensor);
     const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
-    require_cuda(left);
     return owner(cuda::ops::eq(left, right));
 }
 Tensor eq(const Tensor& value_tensor, double other) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::eq(value, other));
 }
 Tensor ne(const Tensor& left_tensor, const Tensor& right_tensor) {
     const auto& left = ::tyloi::ops::dense(left_tensor);
     const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
-    require_cuda(left);
     return owner(cuda::ops::ne(left, right));
 }
 Tensor ne(const Tensor& value_tensor, double other) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::ne(value, other));
 }
 bool equal(const Tensor& left_tensor, const Tensor& right_tensor) {
     const auto& left = ::tyloi::ops::dense(left_tensor);
     const auto& right = ::tyloi::ops::dense(right_tensor);
     compatible(left, right);
-    require_cuda(left);
     return cuda::ops::equal(left, right);
 }
 Tensor masked_select(const Tensor& value_tensor, const Tensor& mask_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     const auto& mask = ::tyloi::ops::dense(mask_tensor);
     compatible(value, mask);
-    require_cuda(value);
     return owner(cuda::ops::masked_select(value, mask));
 }
 Tensor gather(const Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     const auto& indices = ::tyloi::ops::dense(indices_tensor);
     compatible(value, indices);
-    require_cuda(value);
     return owner(cuda::ops::gather(value, dim, indices));
 }
 Tensor repeat(const Tensor& value_tensor, std::span<const std::int64_t> repeats) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::repeat(value, repeats));
 }
 Tensor repeat_interleave(const Tensor& value_tensor, std::int64_t repeats, std::int64_t dim) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::repeat_interleave(value, repeats, dim));
 }
 Tensor tril(const Tensor& value_tensor, std::int64_t diagonal) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     input(value);
-    require_cuda(value);
     return owner(cuda::ops::tril(value, diagonal));
 }
 Tensor masked_fill(const Tensor& value_tensor, const Tensor& mask_tensor, double fill_value) {
     const auto& value = ::tyloi::ops::dense(value_tensor);
     const auto& mask = ::tyloi::ops::dense(mask_tensor);
     compatible(value, mask);
-    require_cuda(value);
     return owner(cuda::ops::masked_fill(value, mask, fill_value));
 }
 void masked_fill_inplace(Tensor& value_tensor, const Tensor& mask_tensor, double fill_value) {
     auto& value = ::tyloi::ops::dense(value_tensor);
     const auto& mask = ::tyloi::ops::dense(mask_tensor);
     compatible(value, mask);
-    require_cuda(value);
     cuda::ops::masked_fill_inplace(value, mask, fill_value);
 }
 void fill(Tensor& value_tensor, double fill_value) {
@@ -1095,48 +1047,10 @@ void fill(Tensor& value_tensor, double fill_value) {
         cuda::ops::fill(value, fill_value);
         return;
     }
-    if (!value.is_contiguous())
-        throw std::invalid_argument("CPU fill requires a contiguous tensor");
-    if (fill_value == 0.0) {
-        std::memset(value.data_ptr(), 0, value.nbytes());
-        return;
-    }
-    switch (value.scalar_type()) {
-        case ScalarType::boolean:
-            std::fill_n(value.data_ptr<bool>(), value.numel(), fill_value != 0.0);
-            break;
-        case ScalarType::uint8:
-            std::fill_n(value.data_ptr<std::uint8_t>(), value.numel(), static_cast<std::uint8_t>(fill_value));
-            break;
-        case ScalarType::int8:
-            std::fill_n(value.data_ptr<std::int8_t>(), value.numel(), static_cast<std::int8_t>(fill_value));
-            break;
-        case ScalarType::int16:
-            std::fill_n(value.data_ptr<std::int16_t>(), value.numel(), static_cast<std::int16_t>(fill_value));
-            break;
-        case ScalarType::int32:
-            std::fill_n(value.data_ptr<std::int32_t>(), value.numel(), static_cast<std::int32_t>(fill_value));
-            break;
-        case ScalarType::int64:
-            std::fill_n(value.data_ptr<std::int64_t>(), value.numel(), static_cast<std::int64_t>(fill_value));
-            break;
-        case ScalarType::float16:
-            std::fill_n(value.data_ptr<std::uint16_t>(), value.numel(),
-                cuda::encode_float16(static_cast<float>(fill_value)));
-            break;
-        case ScalarType::bfloat16:
-            std::fill_n(value.data_ptr<std::uint16_t>(), value.numel(),
-                cuda::encode_bfloat16(static_cast<float>(fill_value)));
-            break;
-        case ScalarType::float32:
-            std::fill_n(value.data_ptr<float>(), value.numel(), static_cast<float>(fill_value));
-            break;
-        case ScalarType::float64:
-            std::fill_n(value.data_ptr<double>(), value.numel(), fill_value);
-            break;
-        default:
-            throw std::invalid_argument("CPU fill for this scalar type is not implemented yet");
-    }
+    const auto view = value.view_descriptor();
+    for (std::int64_t i = 0; i < value.numel(); ++i)
+        cuda::host::store(cuda::host::pointer(view, cuda::host::offset(view, i)),
+            value.scalar_type(), fill_value);
 }
 void scatter_add(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_tensor, const Tensor& source_tensor) {
     auto& value = ::tyloi::ops::dense(value_tensor);
@@ -1160,7 +1074,6 @@ void index_fill(Tensor& value_tensor, std::int64_t dim, const Tensor& indices_te
     auto& value = ::tyloi::ops::dense(value_tensor);
     const auto& indices = ::tyloi::ops::dense(indices_tensor);
     compatible(value, indices);
-    require_cuda(value);
     cuda::ops::index_fill(value, dim, indices, fill_value);
 }
 #endif

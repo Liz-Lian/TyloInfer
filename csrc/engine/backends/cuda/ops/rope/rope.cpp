@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <numeric>
 #include <cmath>
 #include <cstdlib>
@@ -26,13 +27,15 @@ tyloi::ops::RopeTable RopeCache::view() const {
 
 tyloi::ops::RopeTable tyloi::cuda::ops::rope_table(int64_t positions, int64_t dimension, double base,
     Device device, int64_t frequency_dim, int64_t active_pairs) {
-    DeviceGuard guard(device.index);
+    std::optional<DeviceGuard> guard;
+    if (device.is_cuda()) guard.emplace(device.index);
     return RopeCache(positions, dimension, base, frequency_dim, active_pairs, device).view();
 }
 
 tyloi::DenseTensor tyloi::cuda::ops::rope(tyloi::DenseTensor input, tyloi::DenseTensor positions,
     const tyloi::ops::RopeTable& table, bool bf16, bool grid_mrope_positions) {
-    MfqCudaGuard guard(input.device().index);
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
     RopeCache cache;
     auto copy = [](const ::tyloi::Tensor& value, tyloi::DenseTensor& target) {
         if (!value) return;
