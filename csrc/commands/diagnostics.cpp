@@ -23,6 +23,9 @@
 #include "diagnostics/prefill.h"
 #include "diagnostics/qwen_mtp.h"
 #include "diagnostics/batch.h"
+#include "diagnostics/tokens.h"
+#include "engine/models/causal_model.h"
+#include "engine/models/source.h"
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "diagnostics/runtime_checks.h"
@@ -336,7 +339,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             return run_backend_argmax_check(*program, 248320, 2000);
         }
         enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
-            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, qwen_mtp, batch, mtp_bench, prefill, hc_compare, trace };
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, qwen_mtp, batch, mtp_bench, prefill, hc_compare, trace, tokens };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
@@ -376,6 +379,9 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                  !check_flash_next_mtp && !check_qwen35_mtp && bench_qwen35_mtp.empty() &&
                  prefill_sweep_arg.empty() && !compare_dsv4_hc_ops && !compare_dsv4_hc_model &&
                  (!block_trace_reference.empty() || !block_trace_output.empty())) selected = Tool::trace;
+        else if (!runtime_comparison_modes() && !comparison_phase_timings && router_lookahead_audit.empty() &&
+                 !compare_decode_splitk && !compare_mma_decode && !compare_nvq_vec4 &&
+                 prefill_repeat <= 0 && !compare_mma_attention) selected = Tool::tokens;
 
         if (selected != Tool::legacy) {
             if (runtime_comparison_modes() || comparison_phase_timings)
@@ -384,7 +390,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             std::vector<int64_t> prefill_sizes;
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
                     selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::qwen_mtp ||
-                    selected == Tool::batch || selected == Tool::mtp_bench || selected == Tool::prefill || selected == Tool::hc_compare) {
+                    selected == Tool::batch || selected == Tool::mtp_bench || selected == Tool::prefill ||
+                    selected == Tool::hc_compare || selected == Tool::tokens) {
                 if (model_path.empty()) {
                     std::cerr << "missing model or execution mode (see --help)\n";
                     return 2;
@@ -393,7 +400,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 options.context_size = context_size;
             }
             std::vector<int64_t> trace_ids;
-            if (selected == Tool::trace || selected == Tool::hc_compare) {
+            if (selected == Tool::trace || selected == Tool::hc_compare || selected == Tool::tokens) {
                 if (!router_lookahead_audit.empty())
                     throw std::runtime_error("router lookahead audit dispatch harness is currently unavailable");
                 if (context_size < 0) throw std::runtime_error("--ctx-size must be positive");
@@ -407,6 +414,26 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             const auto loaded_context = options.context_size;
             auto program = tyloi::cuda::Program::open(std::move(options));
             auto scope = program->executor().enter(program->config().layer_placement.primary_device());
+            if (selected == Tool::tokens) {
+                program->executor().profiler().enabled = false;
+                auto loader = program->loader();
+                const auto started = std::chrono::steady_clock::now();
+                program->load(needs_parts());
+                const auto loaded = std::chrono::steady_clock::now();
+                auto ids = tyloi::ops::unsqueeze(tyloi::ops::tensor(trace_ids,
+                    program->executor().device()), 0);
+                std::unordered_set<int64_t> stops;
+                if (!ignore_eos && tokenizer_model.empty() && decode_inputs.empty()) {
+                    const auto* source = dynamic_cast<const tyloi::ModelSource*>(&loader.source);
+                    if (!source) throw std::runtime_error("diagnostics model source is unavailable");
+                    stops = tyloi::models::stop_token_ids(
+                        tyloi::models::config_json(*source, config_path), program->model().info().vocab_size);
+                    if (stops.empty())
+                        std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
+                }
+                return generate_diagnostic_tokens(*program, std::move(ids), gen, profile,
+                    started, loaded, decode_inputs, stops, false, warmup_prefill);
+            }
             if (selected == Tool::attention) return run_attention_decode_check(*program,
                 check_attention_decode, check_attention_reps, check_attention_head_dim,
                 check_attention_swa_decode, check_attention_window);
