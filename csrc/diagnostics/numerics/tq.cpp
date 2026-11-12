@@ -6,6 +6,7 @@
 #include <cublas_v2.h>
 #include <algorithm>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <limits>
 #include <stdexcept>
@@ -198,8 +199,21 @@ struct Weight {
                 int(layout.columns)};
     }
 };
-void result(Case &value, const std::string &name, const void *source, std::size_t count, int dtype,
-            cudaStream_t stream) {
+void result(Case &value, const std::string &name, const void *source,
+            std::initializer_list<std::int64_t> shape, int dtype, cudaStream_t stream) {
+    std::size_t count = 1;
+    for (const auto dimension : shape) {
+        if (dimension <= 0 || std::uint64_t(dimension) >
+                                  std::numeric_limits<std::size_t>::max() / count)
+            throw std::invalid_argument("invalid output shape");
+        count *= std::size_t(dimension);
+    }
+    if (dtype < 0 || dtype > 2 || count > std::numeric_limits<std::size_t>::max() / 4)
+        throw std::invalid_argument("invalid output dtype or size");
+    const std::string actual_dtype = dtype == 0 ? "float16" : dtype == 1 ? "bfloat16" : "float32";
+    Json actual_shape = Json::array();
+    for (const auto dimension : shape)
+        actual_shape.push_back(dimension);
     std::vector<std::uint8_t> bytes(count * size_of(dtype));
     cuda_check(cudaMemcpyAsync(bytes.data(), source, bytes.size(), cudaMemcpyDeviceToHost, stream),
                "download output");
@@ -212,9 +226,9 @@ void result(Case &value, const std::string &name, const void *source, std::size_
             const auto bits = std::uint32_t(upper) << 16;
             std::memcpy(expanded.data() + i * 4, &bits, 4);
         }
-        value.output(name, expanded.data(), expanded.size());
+        value.output(name, actual_shape, actual_dtype, expanded.data(), expanded.size());
     } else
-        value.output(name, bytes.data(), bytes.size());
+        value.output(name, actual_shape, actual_dtype, bytes.data(), bytes.size());
 }
 std::vector<std::uint8_t> guard_data(std::size_t count, int dtype) {
     std::vector<std::uint8_t> data(count * size_of(dtype));
@@ -278,7 +292,7 @@ struct TqCase {
                    "tq_gemv");
             const auto name =
                 bias ? "output_w" + std::to_string(warps) + "_r" + std::to_string(rows) : "output";
-            result(value, name, out, count, dtype, stream.value);
+            result(value, name, out, {weight.view.rows}, dtype, stream.value);
             if (bias)
                 check(checks, index++, guards(output, count, dtype, stream.value),
                       {{"guard_values", {42, 42}}, {"warps", warps}, {"rows_per_block", rows}});
@@ -315,7 +329,7 @@ struct TqCase {
                                           stream.value);
         };
         status(run(bytes), "TQ projection");
-        result(value, "output", out, count, dtype, stream.value);
+        result(value, "output", out, {tokens, weight.view.rows}, dtype, stream.value);
         bool intact = guards(output, count, dtype, stream.value);
         Graph graph;
         graph.begin(stream.value);
@@ -328,7 +342,7 @@ struct TqCase {
                                        cudaMemcpyDeviceToDevice, stream.value),
                        "changed input");
             graph.replay(stream.value);
-            result(value, "changed", out, count, dtype, stream.value);
+            result(value, "changed", out, {tokens, weight.view.rows}, dtype, stream.value);
             intact &= guards(output, count, dtype, stream.value);
             Input zero(value, "x_zero", stream.value);
             cuda_check(cudaMemcpyAsync(x.data(), zero.data(),
@@ -336,7 +350,7 @@ struct TqCase {
                                        cudaMemcpyDeviceToDevice, stream.value),
                        "zero input");
             graph.replay(stream.value);
-            result(value, "zero", out, count, dtype, stream.value);
+            result(value, "zero", out, {tokens, weight.view.rows}, dtype, stream.value);
             intact &= guards(output, count, dtype, stream.value);
             const auto short_status = run(bytes - 1);
             stream.wait();
@@ -347,7 +361,7 @@ struct TqCase {
             check(checks, 3, true, {{"zero_input_replay", 1}});
         } else {
             graph.replay(stream.value);
-            result(value, "replay", out, count, dtype, stream.value);
+            result(value, "replay", out, {tokens, weight.view.rows}, dtype, stream.value);
             intact &= guards(output, count, dtype, stream.value);
             check(checks, 0, intact, {{"guard_values", {42, 42}}});
             check(checks, 1, true, {{"capture", 1}, {"replay", 1}, {"workspace_bytes", bytes}});
@@ -379,6 +393,8 @@ struct TqCase {
         upload(plan, jobs.data(), plan.size(), stream.value);
         stream.wait();
         Input x(value, "x", stream.value);
+        if (total_rows <= 0 || total_rows > std::numeric_limits<std::int64_t>::max() / tokens)
+            throw std::invalid_argument("parallel output shape overflow");
         const auto count = std::size_t(tokens) * total_rows;
         auto initial = guard_data(count + 2, dtype);
         Buffer output(initial.size());
@@ -394,7 +410,7 @@ struct TqCase {
                 workspace_bytes, joined, joined_rows, stream.value);
         };
         status(run(bytes), "TQ Q8 parallel");
-        result(value, "output", out, count, dtype, stream.value);
+        result(value, "output", out, {std::int64_t(tokens) * total_rows}, dtype, stream.value);
         bool intact = guards(output, count, dtype, stream.value);
         Graph graph;
         graph.begin(stream.value);
@@ -406,7 +422,7 @@ struct TqCase {
                                    cudaMemcpyDeviceToDevice, stream.value),
                    "changed input");
         graph.replay(stream.value);
-        result(value, "changed", out, count, dtype, stream.value);
+        result(value, "changed", out, {std::int64_t(tokens) * total_rows}, dtype, stream.value);
         intact &= guards(output, count, dtype, stream.value);
         const auto short_status = run(bytes - 1);
         stream.wait();
@@ -429,11 +445,11 @@ struct TqCase {
         status(mfq_tq_swiglu(gate.view, up.view, x.data(), workspace.data(), dtype, 0, 0,
                              stream.value),
                "TQ swiglu");
-        result(value, "workspace", workspace.data(), hidden, dtype, stream.value);
+        result(value, "workspace", workspace.data(), {hidden}, dtype, stream.value);
         status(mfq_tq_ffn(gate.view, up.view, down.view, x.data(), workspace.data(), output.data(),
                           dtype, stream.value),
                "TQ FFN");
-        result(value, "output", output.data(), down.view.rows, dtype, stream.value);
+        result(value, "output", output.data(), {down.view.rows}, dtype, stream.value);
         stream.wait();
         Stream extra;
         for (int i = 0; i < 3; ++i)
@@ -448,7 +464,7 @@ struct TqCase {
                "TQ FFN capture");
         graph.end(stream.value);
         graph.replay(stream.value);
-        result(value, "replay", output.data(), down.view.rows, dtype, stream.value);
+        result(value, "replay", output.data(), {down.view.rows}, dtype, stream.value);
         check(checks, 0, true, {{"capture", 1}, {"replay", 1}});
         check(checks, 1, true, {{"alternate_stream_runs", 3}, {"synchronized", true}});
     }
@@ -489,7 +505,7 @@ struct TqCase {
                                          width, out, dtype, stream.value);
         };
         status(run(), "TQ embedding");
-        result(value, "output", out, count, dtype, stream.value);
+        result(value, "output", out, {std::int64_t(3) * width}, dtype, stream.value);
         bool intact = guards(output, count, dtype, stream.value);
         Graph graph;
         graph.begin(stream.value);
@@ -499,7 +515,7 @@ struct TqCase {
         upload(plan, views.data(), plan.size(), stream.value);
         stream.wait();
         graph.replay(stream.value);
-        result(value, "changed", out, count, dtype, stream.value);
+        result(value, "changed", out, {std::int64_t(3) * width}, dtype, stream.value);
         intact &= guards(output, count, dtype, stream.value);
         check(checks, 0, intact, {{"guard_values", {42, 42}}});
         check(checks, 1, true, {{"capture", 1}, {"changed_table_replay", 1}});
@@ -567,7 +583,7 @@ struct TqCase {
                    "TQ weighted reduce");
         };
         run();
-        result(value, "output", out, rows, dtype, stream.value);
+        result(value, "output", out, {rows}, dtype, stream.value);
         bool intact = guards(output, rows, dtype, stream.value);
         Graph graph;
         graph.begin(stream.value);
@@ -579,7 +595,7 @@ struct TqCase {
                                    cudaMemcpyDeviceToDevice, stream.value),
                    "changed expert IDs");
         graph.replay(stream.value);
-        result(value, "changed", out, rows, dtype, stream.value);
+        result(value, "changed", out, {rows}, dtype, stream.value);
         intact &= guards(output, rows, dtype, stream.value);
         check(checks, 0, intact, {{"guard_values", {42, 42}}});
         check(checks, 1, true, {{"capture", 1}, {"changed_ids_replay", 1}});

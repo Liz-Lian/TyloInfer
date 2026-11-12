@@ -1,4 +1,5 @@
 #include "diagnostics/numerics/case.h"
+#include "diagnostics/numerics/basic.h"
 #include "diagnostics/numerics/tq.h"
 #include <exception>
 #include <iostream>
@@ -10,7 +11,8 @@ int main(int argc, char **argv) {
     }
     try {
         tyloi::diagnostics::numerics::Case value(argv[1], argv[2]);
-        tyloi::diagnostics::numerics::run_tq(value);
+        if (!tyloi::diagnostics::numerics::run_basic(value))
+            tyloi::diagnostics::numerics::run_tq(value);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "numerics: " << error.what() << '\n';

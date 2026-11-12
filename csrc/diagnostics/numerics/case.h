@@ -45,8 +45,9 @@ class Case {
     std::vector<std::uint8_t> input(const std::string &name) const;
     /** Read a named opaque asset after checking its byte count. */
     std::vector<std::uint8_t> asset(const std::string &name) const;
-    /** Write one observation according to its declared native dtype and shape. */
-    void output(const std::string &name, const void *values, std::size_t bytes);
+    /** Check actual native metadata and write one contiguous observation. */
+    void output(const std::string &name, const Json &shape, const std::string &dtype,
+                const void *values, std::size_t bytes);
     /** Publish complete raw metadata and actual execution evidence. */
     void finish(Json execution, Json checks);
 

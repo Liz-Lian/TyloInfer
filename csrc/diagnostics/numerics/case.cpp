@@ -112,10 +112,13 @@ std::vector<std::uint8_t> Case::input(const std::string &name) const {
 std::vector<std::uint8_t> Case::asset(const std::string &name) const {
     return read(data_.at("assets").at(name));
 }
-void Case::output(const std::string &name, const void *values, std::size_t bytes) {
+void Case::output(const std::string &name, const Json &shape, const std::string &dtype,
+                  const void *values, std::size_t bytes) {
     const auto &contract = data_.at("outputs").at(name);
-    const auto dtype = contract.value("actual_dtype", contract.at("dtype").get<std::string>());
-    Json spec = {{"shape", contract.at("shape")}, {"dtype", dtype}, {"encoding", encoding(dtype)},
+    if (shape != contract.at("shape") ||
+        dtype != contract.value("actual_dtype", contract.at("dtype").get<std::string>()))
+        throw std::invalid_argument("native output shape or dtype differs: " + name);
+    Json spec = {{"shape", shape}, {"dtype", dtype}, {"encoding", encoding(dtype)},
                  {"layout", "contiguous"},        {"order", "C"},   {"nbytes", bytes},
                  {"file", name + ".bin"}};
     if (name.empty() ||

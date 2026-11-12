@@ -21,6 +21,8 @@ target_link_libraries(mfq-diagnostics PRIVATE mfq-cuda-diagnostics mfq-cuda-eval
 add_executable(mfq-numerics
     ${PROJECT_SOURCE_DIR}/apps/numerics_main.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/case.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/basic.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tq.cpp
 )
 target_link_libraries(mfq-numerics PRIVATE mfq-cuda-engine CUDA::cudart CUDA::cublas)
