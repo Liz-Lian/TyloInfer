@@ -134,7 +134,9 @@ int run_nemotron_h_mtp_check(Program& program) {
     std::vector<Tensor> pieces;
     for (auto [begin, count] : std::vector<std::pair<std::int64_t, std::int64_t>>{{0, 2}, {2, 1}, {3, 4}})
         pieces.push_back(head(slice(work, previous, begin, count), slice(work, ids, begin, count)));
-    close(work.keep(::tyloi::ops::cat(pieces, 1)), full, "chunked forward");
+    const auto chunked = work.keep(::tyloi::ops::cat(pieces, 1));
+    close(chunked, full, "chunked forward");
+    result["chunked"] = json_tensor(chunked);
 
     reset();
     (void)head(slice(work, previous, 0, 4), slice(work, ids, 0, 4));

@@ -211,7 +211,7 @@ Placement expert_placement(const MfeTensor& weight) {
         if (end != weight.n_experts) throw std::invalid_argument("incomplete expert-parallel MFE shards");
     } else if (weight.cached_source) return weight.cached_source->placement();
     else {
-        const auto add_payload = [&](const Tensor& payload) {
+        const auto add_payload = [&](const TensorImpl& payload) {
             for (const auto* buffer : payload.buffers()) {
                 if (!buffer || !buffer->defined()) continue;
                 if (!buffer->is_cuda()) throw std::invalid_argument("expert weight is not prepared for CUDA execution");

@@ -141,7 +141,7 @@ def _features(pixels, weights, grids):
     return torch.cat(features, dim=0)
 
 
-def _project(features, weights, grids):
+def _project(features, weights, grids, version='v2'):
     """Apply the source v2 pixel shuffle and the independent projector formula."""
     normalized = _layer_norm(
         features,
@@ -155,7 +155,11 @@ def _project(features, weights, grids):
         patch = normalized[start : start + rows * columns].reshape(1, rows, columns, HIDDEN)
         patch = patch.reshape(1, rows, columns // 2, 2 * HIDDEN).permute(0, 2, 1, 3).contiguous()
         patch = patch.reshape(1, columns // 2, rows // 2, 4 * HIDDEN)
-        pieces.append(patch.permute(0, 2, 1, 3).contiguous().reshape(-1, 4 * HIDDEN))
+        if version == 'v2':
+            patch = patch.permute(0, 2, 1, 3).contiguous()
+        elif version != 'v1':
+            raise ValueError('Unsupported RADIO pixel shuffle version')
+        pieces.append(patch.reshape(-1, 4 * HIDDEN))
         start += rows * columns
     shuffled = torch.cat(pieces, dim=0)
     variance = shuffled.pow(2).mean(-1, keepdim=True)
@@ -231,18 +235,38 @@ def reference(case: Case, root: Path) -> Path:
         raise ValueError('Unsupported RADIO reference source')
     outputs = compute(case)
     specs = {name: save_tensor(root, name, value) for name, value in outputs.items()}
+    metadata = {
+        'framework': 'PyTorch',
+        'torch_version': str(torch.__version__),
+        'numpy_version': np.__version__,
+        'device': 'cpu',
+        'arithmetic': 'float64',
+        'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    if case.data['op'] == 'radio_prompt':
+        weights = {
+            name: torch.tensor(case.tensor(name), dtype=torch.float64)
+            for name in case.data['inputs']
+            if name.startswith('vision.')
+        }
+        grids = case.data['config']['image_grids']
+        features = _features(
+            torch.tensor(case.tensor('pixels'), dtype=torch.float64), weights, grids
+        )
+        difference = float(
+            (_project(features, weights, grids) - _project(features, weights, grids, 'v1'))
+            .abs()
+            .max()
+        )
+        if difference <= 1e-2:
+            raise ValueError('Original RADIO v1/v2 reference distinction failed')
+        metadata['reference_shuffle_v1_max_abs'] = difference
+        metadata['reference_shuffle_v1_rule'] = 'reference v1/v2 max absolute difference > 1e-2'
     return write_result(
         case,
         root,
         specs,
-        {
-            'framework': 'PyTorch',
-            'torch_version': str(torch.__version__),
-            'numpy_version': np.__version__,
-            'device': 'cpu',
-            'arithmetic': 'float64',
-            'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        },
+        metadata,
     )
 
 
@@ -251,6 +275,8 @@ def generate(root: Path, suite: str = 'vision') -> list[Path]:
     if suite not in {'vision', 'prompt'}:
         raise ValueError(f'Unsupported RADIO suite: {suite}')
     config, weights = fixture()
+    _, text_weights = text_fixture(('mamba', 'moe'))
+    weights.update(text_weights)
     config['image_grids'] = [list(grid) for grid in GRIDS]
     count = sum(rows * columns for rows, columns in GRIDS)
     pixels = np.asarray(
@@ -265,7 +291,7 @@ def generate(root: Path, suite: str = 'vision') -> list[Path]:
         'pixels': '((index * 37 + 11) % 101) / 64',
     }
     if suite == 'prompt':
-        producer = Path(__file__).resolve().parents[2] / 'csrc/diagnostics/runtime_checks.h'
+        producer = Path(__file__).resolve().parents[2] / 'csrc/diagnostics/vision.cpp'
         writer = CaseWriter(
             root,
             'radio_prompt',
@@ -273,12 +299,12 @@ def generate(root: Path, suite: str = 'vision') -> list[Path]:
             {
                 **config,
                 'native_checks': ['placeholder_mismatch_rejected'],
-                'other_checks': ['pixel_shuffle_v1_differs'],
+                'other_checks': ['reference_pixel_shuffle_v1_v2_difference'],
             },
             {
                 **source,
                 'test': 'tests/test_cuda_nemotron_vision.py::test_native_radio_matches_reference',
-                'producer': 'csrc/diagnostics/runtime_checks.h::run_nemotron_h_vision_check',
+                'producer': 'csrc/diagnostics/vision.cpp::run_nemotron_h_vision_check',
                 'producer_sha256': hashlib.sha256(producer.read_bytes()).hexdigest(),
             },
         )
@@ -307,10 +333,17 @@ def generate(root: Path, suite: str = 'vision') -> list[Path]:
     paths = []
     for op, test, shape, actual_dtype in (
         ('radio_projector', 'test_native_radio_matches_reference', (9, HIDDEN), 'float32'),
-        ('radio_features', 'test_reference_matches_hf_radio_model', (count, HIDDEN), 'float64'),
     ):
         writer = CaseWriter(
-            root, op, op, config, {**source, 'test': f'tests/test_cuda_nemotron_vision.py::{test}'}
+            root,
+            op,
+            op,
+            config,
+            {
+                **source,
+                'test': f'tests/test_cuda_nemotron_vision.py::{test}',
+                'feature_crosscheck': 'tests/numerics/hf_ref.py synthetic candidate',
+            },
         )
         writer.input('pixels', pixels)
         for name, weight in weights.items():

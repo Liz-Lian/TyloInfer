@@ -6,6 +6,7 @@
 #include "engine/ops.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -15,9 +16,20 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace tyloi::eval {
 namespace {
+
+/** Write one capture once using the same F32 values as the hidden scratch. */
+void capture_file(const std::filesystem::path& path, const void* data, std::size_t bytes) {
+    std::unique_ptr<std::FILE, decltype(&std::fclose)> file(
+        std::fopen(path.string().c_str(), "wbx"), &std::fclose);
+    if (!file || std::fwrite(data, 1, bytes, file.get()) != bytes || std::fflush(file.get()) != 0)
+        throw std::runtime_error("cannot create WT2 capture file: " + path.string());
+    if (std::fclose(file.release()) != 0)
+        throw std::runtime_error("cannot finalize WT2 capture file: " + path.string());
+}
 
 std::size_t elements(std::int64_t rows, std::int64_t columns) {
     if (rows < 1 || columns < 1 || std::uint64_t(rows) >
@@ -28,8 +40,9 @@ std::size_t elements(std::int64_t rows, std::int64_t columns) {
 
 class Hidden {
 public:
-    Hidden(const std::filesystem::path& output, std::int64_t context, std::int64_t width)
-        : path_(output.string() + ".hidden"), context_(context), width_(width),
+    Hidden(const std::filesystem::path& output, std::int64_t context, std::int64_t width,
+           const std::filesystem::path& capture)
+        : path_(output.string() + ".hidden"), capture_(capture), context_(context), width_(width),
           buffer_(elements(context, width)), bytes_(buffer_.size() * sizeof(float)) {
         if (std::filesystem::exists(path_))
             throw std::runtime_error("reference hidden-state scratch already exists");
@@ -41,7 +54,7 @@ public:
         std::error_code error;
         std::filesystem::remove(path_, error);
     }
-    void store(std::uint32_t chunk, const Tensor& value) {
+    void store(std::uint32_t chunk, const Tensor& value, const std::string& label) {
         if (value.numel() != std::int64_t(buffer_.size()))
             throw std::runtime_error("reference hidden-state geometry differs");
         auto cpu = ops::contiguous(ops::cast(value, kFloat32, Device(kCPU)));
@@ -49,6 +62,8 @@ public:
         stream_.write(reinterpret_cast<const char*>(cpu.dense().data_ptr<float>()), bytes_);
         stream_.flush();
         if (!stream_) throw std::runtime_error("cannot write reference hidden-state scratch");
+        if (!capture_.empty())
+            capture_file(capture_ / (label + ".bin"), cpu.dense().data_ptr<float>(), bytes_);
     }
     Tensor restore(std::uint32_t chunk, Device device) {
         stream_.seekg(offset(chunk));
@@ -64,7 +79,7 @@ private:
             throw std::overflow_error("reference hidden-state file offset overflows");
         return std::streamoff(chunk) * bytes_;
     }
-    std::filesystem::path path_;
+    std::filesystem::path path_, capture_;
     std::int64_t context_, width_;
     std::vector<float> buffer_;
     std::size_t bytes_;
@@ -87,7 +102,8 @@ void cleanup(cuda::Program& program, std::unique_ptr<models::Layers::State>& sta
 } // namespace
 
 int reference(cuda::Program& program, const std::filesystem::path& input,
-        const std::filesystem::path& output, std::int64_t requested_context, bool resident) {
+        const std::filesystem::path& output, std::int64_t requested_context, bool resident,
+        const std::filesystem::path& capture) {
     std::ifstream tokens_file(input, std::ios::binary);
     std::uint32_t geometry[2]{};
     tokens_file.read(reinterpret_cast<char*>(geometry), sizeof(geometry));
@@ -114,7 +130,11 @@ int reference(cuda::Program& program, const std::filesystem::path& input,
     const Device device(kCUDA, primary);
     const auto mode = executor.forward_mode(primary);
     const models::ForwardOptions options{mode.kv_capacity, mode.trace, mode.trace_layer, primary};
-    Hidden hidden(output, context, info.width);
+    if (!capture.empty() && !std::filesystem::create_directory(capture))
+        throw std::runtime_error("WT2 capture directory already exists or cannot be created");
+    const bool requested_resident = resident;
+    bool fallback = false;
+    Hidden hidden(output, context, info.width, capture);
     std::unique_ptr<models::Layers::State> state;
     try {
         std::vector<std::int64_t> ids(context);
@@ -122,7 +142,7 @@ int reference(cuda::Program& program, const std::filesystem::path& input,
             for (std::uint32_t position = 0; position < context; ++position)
                 ids[position] = tokens[std::size_t(chunk) * context + position];
             auto input_ids = ops::reshape(ops::tensor(ids, Device(kCPU)), {1, context});
-            hidden.store(chunk, model.embedding(input_ids));
+            hidden.store(chunk, model.embedding(input_ids), "embedding-" + std::to_string(chunk));
         }
         auto positions = ops::arange(0, context, device);
         if (resident) {
@@ -133,6 +153,7 @@ int reference(cuda::Program& program, const std::filesystem::path& input,
                 model.release();
                 executor.trim(device);
                 resident = false;
+                fallback = true;
                 std::cout << "{\"event\":\"source_loading\",\"layerwise\":true,\"requested_layerwise\":false,"
                              "\"fallback_reason\":\"insufficient_memory\"}" << std::endl;
             }
@@ -141,7 +162,8 @@ int reference(cuda::Program& program, const std::filesystem::path& input,
             if (!resident) model.load_layer(index);
             for (std::uint32_t chunk = 0; chunk < chunks; ++chunk) {
                 state = model.make_state(index);
-                hidden.store(chunk, model.forward(index, hidden.restore(chunk, device), *state, positions, options));
+                hidden.store(chunk, model.forward(index, hidden.restore(chunk, device), *state, positions, options),
+                             "layer-" + std::to_string(index) + "-" + std::to_string(chunk));
                 program.drain();
                 state.reset();
             }
@@ -182,6 +204,16 @@ int reference(cuda::Program& program, const std::filesystem::path& input,
         program.drain();
         logits.close();
         if (!logits) throw std::runtime_error("cannot finalize reference logits scratch");
+        if (!capture.empty()) {
+            const nlohmann::json metadata = {{"chunks", chunks}, {"context", context},
+                {"width", info.width}, {"layers", info.layers}, {"vocab", info.vocab},
+                {"hidden_dtype", "float32"}, {"logits_dtype", "float32"},
+                {"activation_restore_dtype", "float16"}, {"head_input_dtype", "float16"},
+                {"requested_resident", requested_resident}, {"resident", resident},
+                {"oom_fallback", fallback}, {"primary_device", primary}};
+            const auto text = metadata.dump(2) + "\n";
+            capture_file(capture / "capture.json", text.data(), text.size());
+        }
         return 0;
     } catch (...) {
         const auto failure = std::current_exception();

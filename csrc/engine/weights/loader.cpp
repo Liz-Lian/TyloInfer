@@ -853,7 +853,7 @@ std::vector<::tyloi::Tensor> Loader::gate_up(const std::vector<std::string>& nam
     // backbone's layer-zero transfer range or prefill lookahead.
     if(name.starts_with("predictor."))layer=-1-layer;
     auto w=this->experts(name,true,layer,role.empty() ? this->role : role);
-    TYLOINFER_RUNTIME_CHECK(w->size(0)==experts && w->size(1)==output && w->size(2)==input,
+    TYLOINFER_RUNTIME_CHECK(w.size(0)==experts && w.size(1)==output && w.size(2)==input,
         "routed tensor shape mismatch: ",name);
     return w;
 

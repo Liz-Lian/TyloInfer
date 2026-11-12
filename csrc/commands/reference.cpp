@@ -374,13 +374,14 @@ int run_reference(int argc, char** argv) {
     return internal::with_command_errors([&] {
         ArgCursor args(argc, argv, 2);
         CudaLoadOptions options;
-        std::filesystem::path input, output;
+        std::filesystem::path input, output, capture;
         bool resident = false;
         while (!args.empty()) {
             const auto option = args.next();
             if (parse_cuda_load_option(option, args, options)) continue;
             if (option == "--reference-input") input = args.value(option);
             else if (option == "--reference-output") output = args.value(option);
+            else if (option == "--reference-capture") capture = args.value(option);
             else if (option == "--resident") resident = true;
             else usage_error("unknown native reference option: " + std::string(option));
         }
@@ -390,8 +391,9 @@ int run_reference(int argc, char** argv) {
             usage_error("native reference requires an original HF model directory");
 #ifdef TYLOINFER_NATIVE_CUDA
         auto program = Program::open(options);
-        return tyloi::eval::reference(*program, input, output, options.context_size, resident);
+        return tyloi::eval::reference(*program, input, output, options.context_size, resident, capture);
 #else
+        if (!capture.empty()) throw std::runtime_error("reference capture requires the native CUDA runtime");
         std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
         tyloi::cuda::RoutedCache weights;
         std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;

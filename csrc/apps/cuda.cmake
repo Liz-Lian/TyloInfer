@@ -31,6 +31,8 @@ add_executable(mfq-numerics
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/flash_reject.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/mfq.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/sq4.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/gemma.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tq_load.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tq.cpp
 )
 target_link_libraries(mfq-numerics PRIVATE mfq-cuda-engine CUDA::cudart CUDA::cublas)

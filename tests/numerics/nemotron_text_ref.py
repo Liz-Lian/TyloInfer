@@ -342,7 +342,7 @@ def _model_reference(config, weights, ids, cache, state):
     return finalized, logits
 
 
-def _mtp_head(config, weights, previous, ids, cache, offset):
+def _mtp_head(config, weights, previous, ids, cache, offset, *, return_pre=False):
     """Calculate one MTP pass with its explicit predictor attention history."""
     from tyloinfer.architectures.nemotron_h import NemotronHConfig
 
@@ -363,7 +363,8 @@ def _mtp_head(config, weights, previous, ids, cache, offset):
             branch = _dense_mlp_reference(normalized, weights, prefix + 'mlp.')
         hidden = hidden + branch
     finalized = _rms_norm(hidden, weights['predictor.output_norm.weight'], eps)
-    return finalized, finalized @ weights['model.output.weight'].T
+    logits = finalized @ weights['model.output.weight'].T
+    return (finalized, logits, hidden) if return_pre else (finalized, logits)
 
 
 def reference(case: Case, root: Path) -> Path:
@@ -443,10 +444,42 @@ def _mtp_case(root, kind, ids, hidden, capture=None):
         'test': tests[kind],
         'seed': 5306,
     }
-    checks = ['chunked', 'rollback', 'commit'] if kind == 'head' else []
+    close_rule = {'kind': 'close', 'atol': 2e-3, 'rtol': 2e-3}
+    checks = (
+        [
+            {
+                'kind': 'compare_observations',
+                'left': 'chunked',
+                'right': 'head',
+                'rule': {'kind': 'close', 'atol': 3e-3, 'rtol': 3e-3},
+            },
+            {
+                'kind': 'compare_observations',
+                'left': 'replayed',
+                'right': 'rollback',
+                'rule': close_rule,
+            },
+            {
+                'kind': 'compare_observations',
+                'left': 'committed',
+                'right': 'head_tail',
+                'rule': close_rule,
+            },
+        ]
+        if kind == 'head'
+        else []
+    )
     if kind == 'target':
         provenance['capture_sha256'] = hashlib.sha256(capture).hexdigest()
-        checks = ['target_hidden_equals_target_normalized', 'pre_norm_negative_check']
+        checks = [
+            {
+                'kind': 'compare_observations',
+                'left': 'actual_target',
+                'right': 'target_normalized',
+                'rule': {'kind': 'exact'},
+            },
+            'pre_norm_negative_check',
+        ]
     elif kind == 'chain':
         checks = ['pre_final_norm_chain_negative_check']
     writer = CaseWriter(
@@ -473,11 +506,21 @@ def _mtp_case(root, kind, ids, hidden, capture=None):
     if kind == 'head':
         writer.output('head', (1, 7, HIDDEN), 'float32', rule)
         writer.output('logits', (1, 7, VOCAB), 'float32', rule)
+        for name, shape in (
+            ('chunked', (1, 7, HIDDEN)),
+            ('replayed', (1, 1, HIDDEN)),
+            ('rollback', (1, 1, HIDDEN)),
+            ('committed', (1, 3, HIDDEN)),
+            ('head_tail', (1, 3, HIDDEN)),
+        ):
+            writer.auxiliary(name, shape, 'float32')
     elif kind == 'chain':
         for name in ('chain_first', 'chain_second'):
             writer.output(name, (1, 1, HIDDEN), 'float32', rule)
     else:
         writer.output('head_from_target', (1, 6, HIDDEN), 'float32', rule)
+        writer.auxiliary('actual_target', (1, 7, HIDDEN), 'float32')
+        writer.auxiliary('target_normalized', (1, 7, HIDDEN), 'float32')
     case = writer.finish()
     reference(case, case.root / 'reference')
     return case.root / 'case.json'
@@ -542,7 +585,26 @@ def generate(root: Path, suite: str = 'backbone') -> list[Path]:
                     'mamba_state': 'float32',
                     'conv_left_context': 'logical zero padding, not a native state layout',
                 },
-                'native_checks': ['decode', 'chunked', 'restore', 'rollback', 'batch', 'reset'],
+                'native_checks': [
+                    {
+                        'kind': 'compare_observations',
+                        'left': left,
+                        'right': right,
+                        'rule': {'kind': 'exact'}
+                        if left == 'reset'
+                        else {'kind': 'close', 'atol': 2e-3, 'rtol': 2e-3},
+                    }
+                    for left, right in (
+                        ('decode', 'full_tail'),
+                        ('chunked', 'logits'),
+                        ('restored', 'continued'),
+                        ('rejected', 'rejected_reference'),
+                        ('committed', 'committed_reference'),
+                        ('batch_0', 'logits'),
+                        ('batch_1', 'logits'),
+                        ('reset', 'logits'),
+                    )
+                ],
             },
             {
                 'generator': 'tests/numerics/nemotron_text_ref.py',
@@ -566,6 +628,21 @@ def generate(root: Path, suite: str = 'backbone') -> list[Path]:
         rule = {'kind': 'close', 'atol': 2e-3, 'rtol': 2e-3}
         writer.output('hidden', (1, 7, HIDDEN), 'float32', rule)
         writer.output('logits', (1, 7, VOCAB), 'float32', rule)
+        for name, shape in (
+            ('decode', (1, 2, VOCAB)),
+            ('full_tail', (1, 2, VOCAB)),
+            ('chunked', (1, 7, VOCAB)),
+            ('restored', (1, 1, VOCAB)),
+            ('continued', (1, 1, VOCAB)),
+            ('rejected', (1, 1, VOCAB)),
+            ('rejected_reference', (1, 1, VOCAB)),
+            ('committed', (1, 1, VOCAB)),
+            ('committed_reference', (1, 1, VOCAB)),
+            ('batch_0', (1, 7, VOCAB)),
+            ('batch_1', (1, 7, VOCAB)),
+            ('reset', (1, 7, VOCAB)),
+        ):
+            writer.auxiliary(name, shape, 'float32')
         case = writer.finish()
         reference(case, case.root / 'reference')
         results.append(case.root / 'case.json')

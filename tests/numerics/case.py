@@ -178,6 +178,10 @@ def _rule(rule):
     if not isinstance(rule, dict):
         raise ValueError('Comparison rule must be an object')
     kind = rule.get('kind')
+    if kind == 'observe':
+        if set(rule) != {'kind'}:
+            raise ValueError('Export-only observations cannot specify numerical criteria')
+        return
     if kind in {'exact', 'bits'}:
         return
     fields = (
@@ -212,13 +216,21 @@ def _native_checks(data):
         if set(item) != {'kind', 'left', 'right', 'rule'}:
             raise ValueError('Invalid observation comparison descriptor')
         left, right = item['left'], item['right']
-        if not isinstance(left, str) or not isinstance(right, str) or left not in contracts or right not in contracts:
+        if (
+            not isinstance(left, str)
+            or not isinstance(right, str)
+            or left not in contracts
+            or right not in contracts
+        ):
             raise ValueError('Observation comparison names must refer to declared observations')
         a, b = contracts[left], contracts[right]
-        if (a['shape'] != b['shape'] or
-                a.get('actual_dtype', a['dtype']) != b.get('actual_dtype', b['dtype'])):
+        if a['shape'] != b['shape'] or a.get('actual_dtype', a['dtype']) != b.get(
+            'actual_dtype', b['dtype']
+        ):
             raise ValueError('Observation comparison shape and actual dtype must match')
         _rule(item['rule'])
+        if item['rule']['kind'] == 'observe':
+            raise ValueError('Behavior comparisons require an established numerical rule')
     return checks
 
 
@@ -234,7 +246,8 @@ def _validate_checks(case, result, role):
         raise ValueError('Native checks result must be an object')
     allowed = {f'native_{index}' for index in range(len(descriptors))}
     central = {
-        f'native_{index}' for index, descriptor in enumerate(descriptors)
+        f'native_{index}'
+        for index, descriptor in enumerate(descriptors)
         if isinstance(descriptor, dict) and descriptor.get('kind') == 'compare_observations'
     }
     for name, item in checks.items():
@@ -310,12 +323,19 @@ class Case:
             raise ValueError('Auxiliary observations must be an object with unique names')
         for name, contract in auxiliary.items():
             _name(name)
-            if not isinstance(contract, dict) or set(contract) - {'shape', 'dtype', 'layout', 'actual_dtype'}:
+            if not isinstance(contract, dict) or set(contract) - {
+                'shape',
+                'dtype',
+                'layout',
+                'actual_dtype',
+            }:
                 raise ValueError(f'Invalid auxiliary contract: {name}')
             _shape(contract['shape'])
-            if (contract['dtype'] not in _DTYPES or
-                    contract.get('actual_dtype', contract['dtype']) not in _DTYPES or
-                    contract.get('layout') != 'contiguous'):
+            if (
+                contract['dtype'] not in _DTYPES
+                or contract.get('actual_dtype', contract['dtype']) not in _DTYPES
+                or contract.get('layout') != 'contiguous'
+            ):
                 raise ValueError(f'Invalid auxiliary contract: {name}')
         _native_checks(data)
         return case
@@ -327,6 +347,12 @@ class Case:
     def asset(self, name):
         """Read fixed packed weights or another opaque case asset."""
         return _blob(self.root, self.data['assets'][name])
+
+    def asset_path(self, name):
+        """Verify a fixed asset and return its contained path for file-based consumers."""
+        spec = self.data['assets'][name]
+        _blob(self.root, spec)
+        return _path(self.root, spec['file'])
 
 
 class CaseWriter:

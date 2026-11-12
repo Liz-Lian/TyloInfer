@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import struct
+import sys
 from pathlib import Path
 
 import numpy as np
 
 from tyloinfer.formats.header import FileHeader
-from tyloinfer.formats.io import save
+from tyloinfer.formats.inspection import inspect_tensor
+from tyloinfer.formats.io import load, open_mmap, save
 from tyloinfer.formats.tq import TQExpertTensor, TQTensor
 
 from .case import Case, CaseWriter, save_tensor, write_result
 
 _SOURCE = 'tests/test_tq_inference_formats.py'
+_ENCODING_SOURCES = (
+    'tyloinfer/formats/tq.py',
+    'tyloinfer/formats/io.py',
+    'tyloinfer/formats/header.py',
+    'tyloinfer/formats/inspection.py',
+)
 _BOOLEAN_OUTPUTS = {
     'tq_format_expert': (
         'roundtrip_equal',
@@ -60,27 +68,31 @@ def _expected_bytes(bits, columns):
 
 def _check(kind, **fields):
     """Describe an unexecuted format consumer check."""
-    return {'kind': kind, 'status': 'not_executed', **fields}
+    return {'kind': kind, **fields}
+
+
+def _sources():
+    """Identify the actual loaded production modules and their source bytes."""
+    project = Path(__file__).resolve().parents[2]
+    result = {}
+    for name in _ENCODING_SOURCES:
+        path = (project / name).resolve(strict=True)
+        module = sys.modules.get(name.removesuffix('.py').replace('/', '.'))
+        if module is None or Path(module.__file__).resolve() != path:
+            raise ValueError(f'TQ production module source differs: {name}')
+        result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
 
 
 def _writer(root, name, kind, config, checks, test):
     """Create a case with source identity and explicit execution obligations."""
     path = Path(__file__).parents[1] / 'test_tq_inference_formats.py'
-    project = Path(__file__).parents[2]
-    encoding_sources = (
-        'tyloinfer/formats/tq.py',
-        'tyloinfer/formats/io.py',
-        'tyloinfer/formats/header.py',
-    )
     source = {
         'generator': 'tests/numerics/tq_format_ref.py',
         'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'file': _SOURCE,
         'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-        'encoding_sources_sha256': {
-            name: hashlib.sha256((project / name).read_bytes()).hexdigest()
-            for name in encoding_sources
-        },
+        'encoding_sources_sha256': _sources(),
         'test': test,
         'category': 'format_and_loading_behavior',
     }
@@ -94,6 +106,7 @@ def _writer(root, name, kind, config, checks, test):
             'asset_bytes_semantics': 'identity metadata only; not evidence of consumer acceptance or rejection',
         },
         source,
+        actual_role='candidate',
     )
 
 
@@ -168,6 +181,96 @@ def reference(case: Case, root: Path) -> Path:
     )
 
 
+def candidate(case: Case, root: Path) -> Path:
+    """Execute the original Python TQ container and inspection behaviors."""
+    source, config, op = case.data['source'], case.data['config'], case.data['op']
+    if (
+        source.get('generator') != 'tests/numerics/tq_format_ref.py'
+        or case.data.get('actual_role') != 'candidate'
+        or op not in _BOOLEAN_OUTPUTS
+    ):
+        raise ValueError('Unsupported TQ format candidate')
+    identity = _sources()
+    if identity != source['encoding_sources_sha256']:
+        raise ValueError('TQ production sources differ from the fixed case')
+    payload = case.asset('payload')
+    if hashlib.sha256(payload).hexdigest() != config['payload_sha256']:
+        raise ValueError('Fixed TQ payload differs from its case')
+    output = {'asset_bytes': np.asarray(len(payload), dtype=np.int64)}
+    if op in ('tq_format_expert', 'tq_format_flat'):
+        if op == 'tq_format_expert':
+            restored = TQExpertTensor.from_bytes(payload)
+            output['roundtrip_equal'] = np.asarray(
+                restored.to_bytes() == payload
+                and tuple(restored.shape) == tuple(config['logical_shape']),
+                dtype=np.bool_,
+            )
+            shape = None
+        else:
+            shape = tuple(config['logical_shape'])
+        with memoryview(payload) as view:
+            inspected = inspect_tensor('TQ', view, rows=True, logical_shape=shape)
+        output['shape'] = np.asarray(inspected.shape, dtype=np.int64)
+        output['row_bytes_sum'] = np.asarray(inspected.row_bytes.sum(), dtype=np.float64)
+        if op == 'tq_format_expert':
+            output['is_row_granularity'] = np.asarray(
+                inspected.granularity == 'row', dtype=np.bool_
+            )
+            output['row_groups_increase'] = np.asarray(
+                inspected.row_bytes[:3].sum() < inspected.row_bytes[3:].sum(), dtype=np.bool_
+            )
+            with open_mmap(case.asset_path('container')) as store:
+                output['mmap_type'] = np.asarray(
+                    isinstance(store['model.block.0.mlp.experts.gate.weight'], TQExpertTensor),
+                    dtype=np.bool_,
+                )
+            case.asset('container')
+    elif op == 'tq_format_legacy':
+        rejected = False
+        path = case.asset_path('payload')
+        try:
+            load(path)
+        except ValueError as error:
+            if 'does not support tensor format' not in str(error):
+                raise
+            rejected = True
+        output['load_rejected'] = np.asarray(rejected, dtype=np.bool_)
+    else:
+        rejected = False
+        try:
+            TQExpertTensor.from_bytes(payload)
+        except ValueError:
+            rejected = True
+        output['from_bytes_rejected'] = np.asarray(rejected, dtype=np.bool_)
+        rejected = False
+        try:
+            with memoryview(payload) as view:
+                inspect_tensor('TQ', view, rows=True)
+        except ValueError:
+            rejected = True
+        output['inspect_rejected'] = np.asarray(rejected, dtype=np.bool_)
+    if _sources() != identity:
+        raise ValueError('TQ production sources changed during candidate execution')
+    case.asset('payload')
+    specs = {name: save_tensor(root, name, value) for name, value in output.items()}
+    return write_result(
+        case,
+        root,
+        specs,
+        {
+            'framework': 'Python and NumPy',
+            'numpy_version': np.__version__,
+            'device': 'cpu',
+            'category': 'python_candidate',
+            'native_executed': False,
+            'entrypoint': op,
+            'encoding_sources_sha256': identity,
+            'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        },
+        role='candidate',
+    )
+
+
 def _publish(writer):
     """Persist the case and calculate its fixed structural metadata."""
     writer.output('asset_bytes', (), 'int64', {'kind': 'exact'})
@@ -175,6 +278,7 @@ def _publish(writer):
         writer.output(name, (), 'bool', {'kind': 'exact'})
     case = writer.finish()
     reference(case, case.root / 'reference')
+    candidate(case, case.root / 'candidate')
     return case.root / 'case.json'
 
 

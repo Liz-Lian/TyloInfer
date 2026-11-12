@@ -93,6 +93,12 @@ def _evaluate(actual, reference, contract):
         'reason': None,
     }
     kind = rule['kind']
+    if kind == 'observe':
+        result['status'] = 'observed'
+        result['reason'] = 'Lossless observations retained; no numerical criterion was established'
+        result['nonfinite_actual'] = int(np.count_nonzero(~actual_finite))
+        result['nonfinite_reference'] = int(np.count_nonzero(~reference_finite))
+        return result
     if kind in {'rms', 'relative_l2'}:
         result['elementwise_threshold'] = 'not established'
         result['reduction_semantics'] = (
@@ -182,7 +188,8 @@ def _behavior(case, actual, actual_root=None):
                 comparison = _evaluate(left, right, {'rule': descriptor['rule']})
                 checks[name]['status'] = comparison['status']
                 checks[name]['evidence'] = {
-                    'left': descriptor['left'], 'right': descriptor['right'],
+                    'left': descriptor['left'],
+                    'right': descriptor['right'],
                     'comparison': comparison,
                 }
     if not checks:
@@ -242,18 +249,23 @@ def compare(case_path, reference_path, actual_path):
             report['outputs'][name] = _evaluate(got, ref, contract)
         if not report['outputs']:
             raise ValueError('Case has no outputs')
-        if not all(output['status'] == 'pass' for output in report['outputs'].values()):
+        statuses = {output['status'] for output in report['outputs'].values()}
+        if 'fail' in statuses:
             report['numeric_status'] = 'fail'
             report['reason'] = 'One or more outputs failed comparison'
         else:
-            report['numeric_status'] = 'pass'
+            report['numeric_status'] = 'not_evaluated' if 'observed' in statuses else 'pass'
             if report['behavior_status'] == 'fail':
                 report['reason'] = 'One or more native behavior checks failed'
             elif report['behavior_status'] == 'not_executed':
                 report['status'] = 'not_executed'
                 report['reason'] = 'One or more native behavior checks were not executed'
             else:
-                report['status'] = 'pass'
+                report['status'] = 'observed' if 'observed' in statuses else 'pass'
+                if 'observed' in statuses:
+                    report['reason'] = (
+                        'One or more outputs have no numerical criterion; export is not numerical acceptance'
+                    )
     except (ValueError, OSError, KeyError, TypeError, OverflowError) as error:
         report['reason'] = str(error)
     return report

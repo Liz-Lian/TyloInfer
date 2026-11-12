@@ -7,6 +7,8 @@ import importlib
 import importlib.metadata
 import json
 import os
+import struct
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -149,7 +151,11 @@ def reference(case: Case, root: Path, hf_root: Path) -> Path:
     tokens = case.tensor('tokens')
     vocab, width, layers = _geometry(source, tokens)
     identity = _model(source)
-    if identity != case.data['source']['model_files']:
+    model_config = _file(source.path / 'config.json')
+    if identity != case.data['source']['model_files'] or (
+        'model_config' in case.data['source']
+        and model_config != case.data['source']['model_config']
+    ):
         raise ValueError('HF checkpoint bytes differ from the fixed WT2 case')
     config = case.data['config']
     if (config['vocab'], config['hidden_size'], config['layers']) != (vocab, width, layers):
@@ -183,7 +189,11 @@ def reference(case: Case, root: Path, hf_root: Path) -> Path:
                         raise ValueError(f'Invalid WT2 hidden observation: {label}')
                     writer.outputs[label] = save_tensor(root, label, value)
             after = _implementation()
-            if _model(source) != identity or after != before:
+            if (
+                _model(source) != identity
+                or _file(source.path / 'config.json') != model_config
+                or after != before
+            ):
                 raise ValueError('WT2 weights or reference implementation changed during execution')
             quality.commit()
     return write_result(
@@ -209,11 +219,177 @@ def reference(case: Case, root: Path, hf_root: Path) -> Path:
     )
 
 
+def native(
+    case: Case, root: Path, hf_root: Path, executable: Path, resident: bool = False, device: int = 0
+) -> Path:
+    """Run native WT2 layers and publish fixed-input, lossless observations."""
+    if (
+        case.data['op'] != 'wt2_model'
+        or case.data['source'].get('generator') != 'tests/numerics/wt2_ref.py'
+        or case.data.get('actual_role', 'native') != 'native'
+        or type(resident) is not bool
+        or type(device) is not int
+        or device < 0
+    ):
+        raise ValueError('Unsupported native WT2 case or execution options')
+    verified = Case.load(case.root / 'case.json')
+    if verified.data != case.data or verified.root != case.root.resolve():
+        raise ValueError('WT2 case changed since it was loaded')
+    source = ReferenceSource(hf_root)
+    tokens = case.tensor('tokens')
+    vocab, width, layers = _geometry(source, tokens)
+    config = case.data['config']
+    if (config['vocab'], config['hidden_size'], config['layers']) != (vocab, width, layers) or (
+        config['architecture'] != source.architecture
+    ):
+        raise ValueError('WT2 native model geometry differs from the case')
+    positions = np.broadcast_to(np.arange(tokens.shape[1], dtype=np.int32), tokens.shape)
+    if not np.array_equal(case.tensor('positions'), positions):
+        raise ValueError('WT2 native positions differ from the fixed case')
+    identity = _model(source)
+    model_config = _file(source.path / 'config.json')
+    if identity != case.data['source']['model_files'] or (
+        'model_config' in case.data['source']
+        and model_config != case.data['source']['model_config']
+    ):
+        raise ValueError('WT2 native model bytes differ from the fixed case')
+    executable = Path(executable).resolve(strict=True)
+    if not executable.is_file():
+        raise ValueError('WT2 native runtime must be a file')
+    runtime_identity = _file(executable)
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=False)
+    root = root.resolve()
+    environment = os.environ.copy()
+    visible = environment.get('CUDA_VISIBLE_DEVICES')
+    if visible:
+        devices = visible.split(',')
+        if device >= len(devices):
+            raise ValueError('WT2 native CUDA device is not visible')
+        environment['CUDA_VISIBLE_DEVICES'] = devices[device]
+    else:
+        environment['CUDA_VISIBLE_DEVICES'] = str(device)
+    scratch = root / 'raw'
+    scratch.mkdir(exist_ok=False)
+    input_path, logits_path, capture = (
+        scratch / 'tokens.bin',
+        scratch / 'logits.f32',
+        scratch / 'capture',
+    )
+    with input_path.open('xb') as stream:
+        stream.write(struct.pack('<II', *tokens.shape))
+        stream.write(tokens.astype('<i4', copy=False).tobytes())
+    command = [
+        str(executable),
+        '--wt2-reference',
+        '--model',
+        str(source.path),
+        '--ctx-size',
+        str(tokens.shape[1]),
+        '--reference-input',
+        str(input_path),
+        '--reference-output',
+        str(logits_path),
+        '--reference-capture',
+        str(capture),
+    ]
+    if resident:
+        command.append('--resident')
+    stdout_path, stderr_path = root / 'runtime.stdout', root / 'runtime.stderr'
+    with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
+        process = subprocess.run(
+            command, stdout=stdout, stderr=stderr, env=environment, check=False
+        )
+    if process.returncode:
+        raise RuntimeError(f'WT2 native runtime failed with exit code {process.returncode}')
+    metadata = json.loads((capture / 'capture.json').read_text(encoding='utf-8'))
+    chunks, context = tokens.shape
+    expected = {
+        'chunks': chunks,
+        'context': context,
+        'width': width,
+        'layers': layers,
+        'vocab': vocab,
+        'hidden_dtype': 'float32',
+        'logits_dtype': 'float32',
+        'activation_restore_dtype': 'float16',
+        'head_input_dtype': 'float16',
+        'requested_resident': resident,
+        'primary_device': 0,
+    }
+    if any(metadata.get(name) != value for name, value in expected.items()) or (
+        type(metadata.get('resident')) is not bool
+        or type(metadata.get('oom_fallback')) is not bool
+        or metadata['resident'] != (resident and not metadata['oom_fallback'])
+        or (metadata['oom_fallback'] and not resident)
+    ):
+        raise ValueError('WT2 native capture metadata differs from the case')
+    count = context - (context // 2 + 1)
+    expected_size = chunks * count * vocab * 4
+    if logits_path.stat().st_size != expected_size:
+        raise ValueError('WT2 native logits have an incorrect byte count')
+    with ReferenceWriter(root / 'quality.logits', tokens, vocab) as quality:
+        writer = _Writer(case, root, quality)
+        with logits_path.open('rb') as stream:
+            for chunk in range(chunks):
+                for offset in range(0, count, 32):
+                    rows = min(32, count - offset)
+                    raw = stream.read(rows * vocab * 4)
+                    if len(raw) != rows * vocab * 4:
+                        raise ValueError('WT2 native logits are incomplete')
+                    writer.logits(
+                        chunk, offset, np.frombuffer(raw, dtype='<f4').reshape(rows, vocab)
+                    )
+            if stream.read(1):
+                raise ValueError('WT2 native logits contain extra bytes')
+        for chunk in range(chunks):
+            for label, filename in [(f'embedding_{chunk}', f'embedding-{chunk}.bin')] + [
+                (f'layer_{layer}_{chunk}', f'layer-{layer}-{chunk}.bin') for layer in range(layers)
+            ]:
+                raw = (capture / filename).read_bytes()
+                if len(raw) != context * width * 4:
+                    raise ValueError(f'Invalid WT2 native hidden observation: {label}')
+                writer.outputs[label] = save_tensor(
+                    root, label, np.frombuffer(raw, dtype='<f4').reshape(context, width)
+                )
+        if _model(source) != identity or _file(source.path / 'config.json') != model_config:
+            raise ValueError('WT2 native model changed during execution')
+        if _file(executable) != runtime_identity:
+            raise ValueError('WT2 native runtime changed during execution')
+        if Case.load(case.root / 'case.json').data != verified.data:
+            raise ValueError('WT2 case changed during native execution')
+        quality.commit()
+    return write_result(
+        case,
+        root,
+        writer.outputs,
+        {
+            'framework': 'TyloInfer native CUDA',
+            'device': device,
+            'cuda_visible_devices': environment['CUDA_VISIBLE_DEVICES'],
+            'capture': metadata,
+            'model_files': identity,
+            'model_config': model_config,
+            'runtime': {'file': str(executable), **runtime_identity},
+            'stdout': {'file': stdout_path.name, **_file(stdout_path)},
+            'stderr': {'file': stderr_path.name, **_file(stderr_path)},
+            'generator_sha256': _file(__file__)['sha256'],
+            'quality': {
+                'file': 'quality.logits',
+                **_file(root / 'quality.logits'),
+                'magic': '_logit3_',
+                'distribution': 'lossy_uint16_log_probability',
+            },
+        },
+        role='native',
+    )
+
+
 def generate(
     root: Path,
     hf_root: Path,
     dataset: Path,
-    rules: Path,
+    rules: Path | None = None,
     *,
     context: int = 512,
     chunks: int = 8,
@@ -221,13 +397,19 @@ def generate(
 ) -> list[Path]:
     """Freeze actual original-HF WT2 inputs and run the independent MLX reference.
 
-    Rules are explicit case inputs: original quality thresholds do not define
-    permissible errors for newly exported hidden states or logits.
+    Without explicit rules, observations are retained without numeric judgment.
     """
     from tyloinfer.server.services.evaluation_datasets import WT2_TEXT_SHA256
 
-    rules_bytes = Path(rules).read_bytes()
-    criteria = _rules(json.loads(rules_bytes))
+    rules_bytes = Path(rules).read_bytes() if rules is not None else None
+    criteria = (
+        _rules(json.loads(rules_bytes))
+        if rules_bytes is not None
+        else {
+            name: {'rule': {'kind': 'observe'}, 'source': 'no original numeric criterion'}
+            for name in ('embedding', 'layer', 'logits', 'target_logp')
+        }
+    )
     source = ReferenceSource(hf_root)
     if type(context) is not int or context < 32 or type(chunks) is not int or chunks < 1:
         raise ValueError('Invalid WT2 context or window count')
@@ -236,12 +418,17 @@ def generate(
     if dataset_identity['sha256'] != WT2_TEXT_SHA256:
         raise ValueError('WT2 generation requires the official mfq-wt2-text-v1 corpus')
     identity = _model(source)
+    model_config = _file(source.path / 'config.json')
     vocab = int(source.text.get('vocab_size', source.config.get('vocab_size', 0)))
     tokens, tokenizer = tokenize_windows(
         source.path, dataset.read_text(encoding='utf-8'), context, chunks, vocab
     )
     vocab, width, layers = _geometry(source, tokens)
-    if _model(source) != identity or _file(dataset) != dataset_identity:
+    if (
+        _model(source) != identity
+        or _file(source.path / 'config.json') != model_config
+        or _file(dataset) != dataset_identity
+    ):
         raise ValueError('HF model or WT2 corpus changed while preparing inputs')
     _framework()
     writer = CaseWriter(
@@ -268,6 +455,7 @@ def generate(
             'generator': 'tests/numerics/wt2_ref.py',
             'generator_sha256': _file(__file__)['sha256'],
             'model_files': identity,
+            'model_config': model_config,
             'tokenizer': tokenizer,
             'dataset': dataset_identity,
             'implementation': _implementation(),
@@ -284,7 +472,8 @@ def generate(
     )
     writer.input('tokens', tokens)
     writer.input('positions', np.broadcast_to(np.arange(context, dtype=np.int32), tokens.shape))
-    writer.asset('rules', rules_bytes, encoding='json')
+    if rules_bytes is not None:
+        writer.asset('rules', rules_bytes, encoding='json')
     count = context - (context // 2 + 1)
     for chunk in range(chunks):
         writer.output(
