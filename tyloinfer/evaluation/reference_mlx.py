@@ -5,6 +5,7 @@ import json
 import math
 import mmap
 import re
+from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
@@ -156,7 +157,15 @@ class SourceWeights:
         return result
 
 
-def generate(source, tokens, writer, directory, *, layerwise):
+def _capture_chunk(capture, name, hidden, chunk):
+    """Write one already-computed hidden chunk without replacing an existing file."""
+    if capture is not None:
+        with (capture / name).open('xb') as stream:
+            np.save(stream, np.asarray(hidden[chunk]), allow_pickle=False)
+
+
+def generate(source, tokens, writer, directory, *, layerwise, capture: Path | None = None):
+    """Generate MLX references and optionally save existing hidden-state chunks."""
     from mlx_lm.models import gemma4_text, qwen3_5
     from mlx_lm.models.base import create_attention_mask
     weights = SourceWeights(source)
@@ -196,6 +205,7 @@ def generate(source, tokens, writer, directory, *, layerwise):
                 value = value * mx.array(hidden_size**.5, dtype=value.dtype)
             mx.eval(value)
             hidden[chunk] = np.asarray(value[0].astype(mx.float32))
+            _capture_chunk(capture, f'embedding-{chunk}.npy', hidden, chunk)
             release_mapping(hidden)
         release_mapping(hidden)
         if initial is not None:
@@ -251,6 +261,7 @@ def generate(source, tokens, writer, directory, *, layerwise):
                     value = layer(value, mask=None if layer.is_linear else create_attention_mask(value, None))
                     mx.eval(value)
                 hidden[chunk] = np.asarray(value[0].astype(mx.float32))
+                _capture_chunk(capture, f'layer-{index}-{chunk}.npy', hidden, chunk)
                 release_mapping(hidden)
                 del value
             release_mapping(hidden)

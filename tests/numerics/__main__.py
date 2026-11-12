@@ -35,6 +35,8 @@ def main(argv=None):
             'sq4',
             'sq8',
             'hf',
+            'tq_format',
+            'wt2',
         ),
     )
     generate.add_argument('output', type=Path)
@@ -50,7 +52,12 @@ def main(argv=None):
     generate.add_argument(
         '--capture', type=Path, help='Native MTP diagnostic record for nemotron/mtp-target'
     )
-    generate.add_argument('--hf', type=Path, help='Explicit HF RADIO checkpoint directory')
+    generate.add_argument('--hf', type=Path, help='Explicit original HF checkpoint directory')
+    generate.add_argument('--dataset', type=Path, help='Official WT2 text for wt2 generation')
+    generate.add_argument('--rules', type=Path, help='Explicit observation criteria for wt2')
+    generate.add_argument('--context', type=int, default=512, help='WT2 context size')
+    generate.add_argument('--chunks', type=int, default=8, help='WT2 window count')
+    generate.add_argument('--resident', action='store_true', help='Request resident WT2 weights')
     rerun = commands.add_parser(
         'reference', help='Recompute a reference from existing fixed inputs'
     )
@@ -60,7 +67,7 @@ def main(argv=None):
     )
     rerun.add_argument('--device', default='cuda', help='CUDA device for Torch references')
     rerun.add_argument('--source', type=Path, help='The original MFQ source checkout for MFQ cases')
-    rerun.add_argument('--hf', type=Path, help='The original HF RADIO checkpoint directory')
+    rerun.add_argument('--hf', type=Path, help='The original HF checkpoint directory')
     candidate = commands.add_parser('candidate', help='Recompute a Python reference crosscheck')
     candidate.add_argument('case', type=Path)
     candidate.add_argument('output', type=Path, help='A new result directory')
@@ -94,13 +101,39 @@ def main(argv=None):
                 parser.error('--source is required only for MFQ-based reference generation')
             if args.kind != 'mfq' and args.experts != 1:
                 parser.error('--experts is only available for MFQ generation')
-            if (args.kind == 'hf') != (args.hf is not None):
-                parser.error('--hf is required only for HF RADIO reference generation')
+            if (args.kind in {'hf', 'wt2'}) != (args.hf is not None):
+                parser.error('--hf is required only for HF RADIO or WT2 reference generation')
+            if (args.kind == 'wt2') != (args.dataset is not None and args.rules is not None):
+                parser.error('--dataset and --rules are required for WT2 generation')
+            if args.kind != 'wt2' and (
+                args.dataset is not None
+                or args.rules is not None
+                or args.context != 512
+                or args.chunks != 8
+                or args.resident
+            ):
+                parser.error('WT2 dataset, rules and loading options require kind wt2')
             if (args.kind == 'nemotron' and args.suite == 'mtp-target') != (
                 args.capture is not None
             ):
                 parser.error('--capture is required only for nemotron/mtp-target')
-            if args.kind == 'hf':
+            if args.kind == 'wt2':
+                from .wt2_ref import generate
+
+                paths = generate(
+                    args.output,
+                    args.hf,
+                    args.dataset,
+                    args.rules,
+                    context=args.context,
+                    chunks=args.chunks,
+                    layerwise=not args.resident,
+                )
+            elif args.kind == 'tq_format':
+                from .tq_format_ref import generate
+
+                paths = generate(args.output)
+            elif args.kind == 'hf':
                 from .hf_ref import generate
 
                 paths = generate(args.output, args.hf, args.suite)
@@ -195,9 +228,19 @@ def main(argv=None):
             }
             if external != (args.source is not None):
                 parser.error('--source is required only for an MFQ-based reference case')
-            if (generator == 'tests/numerics/hf_ref.py') != (args.hf is not None):
-                parser.error('--hf is required only for an HF RADIO reference case')
-            if generator == 'tests/numerics/hf_ref.py':
+            if (generator in {'tests/numerics/hf_ref.py', 'tests/numerics/wt2_ref.py'}) != (
+                args.hf is not None
+            ):
+                parser.error('--hf is required only for an HF RADIO or WT2 reference case')
+            if generator == 'tests/numerics/wt2_ref.py':
+                from .wt2_ref import reference
+
+                path = reference(case, args.output, args.hf)
+            elif generator == 'tests/numerics/tq_format_ref.py':
+                from .tq_format_ref import reference
+
+                path = reference(case, args.output)
+            elif generator == 'tests/numerics/hf_ref.py':
                 from .hf_ref import reference
 
                 path = reference(case, args.output, args.hf)

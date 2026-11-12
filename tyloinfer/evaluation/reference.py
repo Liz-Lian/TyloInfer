@@ -135,7 +135,7 @@ def generate_reference(model, dataset, output, *, context_size=512, chunks=8, de
         raise FileExistsError('reference output or manifest already exists')
     if sha256(dataset) != WT2_TEXT_SHA256:
         raise ValueError('WT2 generation requires the official mfq-wt2-text-v1 corpus')
-    if not source.summary()['imatrix_supported']:
+    if not source.summary()['reference_supported']:
         raise ValueError('WT2 reference generation supports original Qwen3.5 and Gemma4 HF architectures')
     if context_size < 32 or chunks < 1:
         raise ValueError('invalid WT2 context or window count')
