@@ -128,7 +128,7 @@ def candidate(case: Case, root: Path, source_root: Path, device: str = 'cuda') -
     with scope(config['compute']), torch.cuda.device(device):
         blob = torch.from_numpy(np.frombuffer(payload, dtype=np.uint8).copy()).to(device)
         row_q = torch.tensor(layout.row_q_bits, dtype=torch.uint8, device=device)
-        offsets = torch.tensor(layout.row_symbol_byte_offsets, dtype=torch.int32, device=device)
+        offsets = torch.tensor(layout.row_symbol_byte_offsets[:-1], dtype=torch.int32, device=device)
         dimensions = (int(layout.shape[0]), int(layout.shape[1]))
         if config['format'] == 'MXFP8-SQ':
             prefix = 'mxfp8_sq'

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from tyloinfer.architectures.tensor_schema import CANONICAL_TENSOR_NAMESPACE
 from tyloinfer.formats.assets import MODEL_CONFIG_ASSET, MODEL_GRAPH_ASSET
 from tyloinfer.formats.header import FileHeader
 from tyloinfer.formats.io import load, save
@@ -105,7 +106,7 @@ def _model(case, path):
         'schema_version': 1,
         'architecture': 'nemotron_h_omni',
         'canonical_naming': {
-            'namespace': 'tyloinfer.tensor',
+            'namespace': CANONICAL_TENSOR_NAMESPACE,
             'version': 1,
             'component_roots': ['model', 'vision'],
         },

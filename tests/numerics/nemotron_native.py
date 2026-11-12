@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from tyloinfer.architectures.tensor_schema import CANONICAL_TENSOR_NAMESPACE
+
 from .case import Case, save_tensor, write_result
 from .compare import _evaluate
 
@@ -50,7 +52,7 @@ def _fixture(path: Path, config: dict, weights: dict, predictor: bool) -> None:
     graph = dict(
         schema_version=1,
         architecture='nemotron_h_omni',
-        canonical_naming=dict(namespace='tyloinfer.tensor', version=1, component_roots=roots),
+        canonical_naming=dict(namespace=CANONICAL_TENSOR_NAMESPACE, version=1, component_roots=roots),
         topology=topology,
         graph=dict(kind='causal_lm', backbone='nemotron_h'),
         components=components,

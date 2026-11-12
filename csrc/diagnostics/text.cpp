@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -27,6 +28,7 @@ struct Work {
     tyloi::cuda::Program& program;
     std::vector<Tensor> tensors;
     std::optional<TextSessionState> snapshot;
+    std::unique_ptr<tyloi::models::Restore> restore;
     ~Work() noexcept {
         try { program.drain(); }
         catch (const std::exception& error) { std::cerr << "text_check_cleanup error=" << error.what() << '\n'; }
@@ -197,7 +199,11 @@ int run_nemotron_h_check(tyloi::cuda::Program& program) {
     work.snapshot.emplace(state.capture_text_session_state({1, 2, 3, 4}));
     auto continued = forward(work, model, state, slice(work, ids, 4, 1), options);
     program.drain();
-    state.restore_text_session_state(*work.snapshot);
+    work.restore = state.prepare_restore(*work.snapshot);
+    if (!work.restore) throw std::runtime_error("Nemotron-H session restore is unavailable");
+    work.restore->stage();
+    program.drain();
+    work.restore->publish();
     result["restored"] = json_tensor(forward(work, model, state, slice(work, ids, 4, 1), options));
     result["continued"] = json_tensor(continued);
     transactions(work, model, state, ids, options, result, "Nemotron-H");

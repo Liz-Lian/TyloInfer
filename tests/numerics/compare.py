@@ -94,10 +94,13 @@ def _evaluate(actual, reference, contract):
     }
     kind = rule['kind']
     if kind == 'observe':
-        result['status'] = 'observed'
-        result['reason'] = 'Lossless observations retained; no numerical criterion was established'
         result['nonfinite_actual'] = int(np.count_nonzero(~actual_finite))
         result['nonfinite_reference'] = int(np.count_nonzero(~reference_finite))
+        if not valid.all():
+            result['reason'] = 'NaN or disallowed/mismatched infinity in an unscored observation'
+        else:
+            result['status'] = 'observed'
+            result['reason'] = 'Lossless observations retained; no numerical criterion was established'
         return result
     if kind in {'rms', 'relative_l2'}:
         result['elementwise_threshold'] = 'not established'

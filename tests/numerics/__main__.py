@@ -38,6 +38,7 @@ def main(argv=None):
             'tq_format',
             'tq_load',
             'wt2',
+            'wt2_tiny',
             'gemma',
             'nint',
             'nvq',
@@ -166,6 +167,10 @@ def main(argv=None):
                     chunks=args.chunks,
                     layerwise=not args.resident,
                 )
+            elif args.kind == 'wt2_tiny':
+                from .wt2_tiny import generate
+
+                paths = generate(args.output)
             elif args.kind == 'tq_format':
                 from .tq_format_ref import generate
 
@@ -280,6 +285,8 @@ def main(argv=None):
                 from .hf_ref import candidate
             elif generator == 'tests/numerics/tq_format_ref.py':
                 from .tq_format_ref import candidate
+            elif generator == 'tests/numerics/wt2_tiny.py':
+                from .wt2_tiny import candidate
             else:
                 raise ValueError('Unsupported candidate source')
             if needs_source:
@@ -332,6 +339,10 @@ def main(argv=None):
                 from .wt2_ref import reference
 
                 path = reference(case, args.output, args.hf)
+            elif generator == 'tests/numerics/wt2_tiny.py':
+                from .wt2_tiny import reference
+
+                path = reference(case, args.output)
             elif generator == 'tests/numerics/tq_format_ref.py':
                 from .tq_format_ref import reference
 

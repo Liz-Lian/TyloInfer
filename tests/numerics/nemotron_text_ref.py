@@ -428,7 +428,7 @@ def _mtp_case(root, kind, ids, hidden, capture=None):
     """Freeze MTP inputs, source weights and the empty predictor KV cache."""
     config, weights = fixture(LAYER_MIXERS, mtp=True)
     source = Path(__file__).parents[1] / 'test_cuda_nemotron_runtime.py'
-    diagnostics = Path(__file__).parents[2] / 'csrc/diagnostics/runtime_checks.h'
+    diagnostics = Path(__file__).parents[2] / 'csrc/diagnostics/mtp.cpp'
     tests = {
         'head': 'test_native_mtp_head_matches_reference',
         'chain': 'test_native_mtp_depth_chain_matches_reference',
@@ -439,7 +439,7 @@ def _mtp_case(root, kind, ids, hidden, capture=None):
         'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'file': 'tests/test_cuda_nemotron_runtime.py',
         'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
-        'diagnostics': 'csrc/diagnostics/runtime_checks.h',
+        'diagnostics': 'csrc/diagnostics/mtp.cpp',
         'diagnostics_sha256': hashlib.sha256(diagnostics.read_bytes()).hexdigest(),
         'test': tests[kind],
         'seed': 5306,
