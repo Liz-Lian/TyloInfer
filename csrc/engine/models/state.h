@@ -38,6 +38,10 @@ public:
     MtpState& operator=(const MtpState&) = delete;
     bool belongs_to(const Mtp& model) const noexcept { return model_ == &model; }
     virtual std::int64_t position() const noexcept = 0;
+    /** Return committed positions for each independently addressed predictor head. */
+    virtual std::vector<std::int64_t> head_positions() const {
+        throw std::logic_error("predictor head positions are unsupported");
+    }
 private:
     const Mtp* model_;
 };

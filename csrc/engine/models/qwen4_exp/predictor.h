@@ -26,6 +26,8 @@ struct PredictorState final : tyloi::models::MtpState {
     explicit PredictorState(const Predictor& owner);
     ~PredictorState() override;
     int64_t position() const noexcept override;
+    /** Return the committed boundary of each predictor head. */
+    std::vector<std::int64_t> head_positions() const override { return lengths; }
 
     std::vector<std::unique_ptr<LayerState>> layer_states;
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -87,6 +89,8 @@ struct Predictor final : tyloi::models::Mtp {
     DenseTensor logits(DenseTensor hidden) const;
 
     std::unique_ptr<tyloi::models::MtpState> make_state() const override;
+    /** Return the incoming multistream predictor width. */
+    std::int64_t width() const override { return hidden_norm.numel(); }
     void reset(tyloi::models::MtpState&, int64_t next_batch = 1) const override;
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Plan persistent cache and position backing for a predictor step. */
@@ -99,6 +103,9 @@ struct Predictor final : tyloi::models::Mtp {
                                        const DenseTensor &supplied_positions = {},
                                        const DenseTensor &supplied_embeddings = {},
                                        bool history_only = false) const;
+    /** Run the selected head through the original eager predictor path. */
+    tyloi::models::MtpStep evaluate(tyloi::models::MtpState&,
+        const tyloi::models::Mtp::Evaluation&) const override;
 
     tyloi::models::MtpStep step(tyloi::models::MtpState&, const tyloi::Tensor& hidden, const tyloi::Tensor& ids,
                                 const tyloi::Tensor& positions = {},

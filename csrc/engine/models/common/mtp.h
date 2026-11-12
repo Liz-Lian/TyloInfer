@@ -37,10 +37,21 @@ struct Mtp {
     struct Step { Tensor ids; ForwardOptions options{}; };
     struct Context { Tensor hidden; std::int64_t position; bool seed; };
     struct Draft { Tensor ids; int depth; };
+    /** Describe an eager predictor evaluation, including optional uncached history. */
+    struct Evaluation {
+        Tensor hidden, ids, positions;
+        std::int64_t depth = 0;
+        bool cache = true;
+        ForwardOptions options{};
+    };
     /** Describe the actual predictor operation whose allocations are being planned. */
     using Input = std::variant<Step, Context, Draft>;
     virtual ~Mtp() = default;
     virtual std::unique_ptr<MtpState> make_state() const = 0;
+    /** Return the width of the predictor's incoming hidden state. */
+    virtual std::int64_t width() const {
+        throw std::logic_error("predictor hidden width is unsupported");
+    }
     virtual void reset(MtpState& state, int64_t batch = 1) const = 0;
     /** Return per-device backing that resetting predictor state will newly allocate. */
     virtual std::vector<std::pair<Device, std::size_t>> reset_growth(const MtpState&, int64_t) const { return {}; }
@@ -55,6 +66,10 @@ struct Mtp {
         const Tensor& previous_hidden,
         const Tensor& next_ids,
         const Tensor& positions = {}, const ForwardOptions& options = {}) const = 0;
+    /** Evaluate a selected predictor head without using a replay graph. */
+    virtual MtpStep evaluate(MtpState&, const Evaluation&) const {
+        throw std::logic_error("eager predictor evaluation is unsupported");
+    }
     /** Describe prompt history handling for the available device budget. */
     virtual History history(std::int64_t, std::int64_t requested, std::size_t) const {
         History result;

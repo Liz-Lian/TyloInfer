@@ -59,6 +59,8 @@ public:
     void reset(int64_t batch) override;
     /** Return the committed cache position. */
     int64_t position() const noexcept override { return cache_pos; }
+    /** Report whether a speculative transaction is open. */
+    bool speculating() const override { return speculative_start >= 0; }
     /** Advance the committed cache position. */
     void advance(int64_t tokens) noexcept override { cache_pos += tokens; }
     /** Set the semantic decode position offset. */

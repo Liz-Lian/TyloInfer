@@ -23,7 +23,6 @@
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "diagnostics/runtime_checks.h"
-#include "diagnostics/flash_next_mtp.h"
 #include "minicpmo45.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
@@ -334,7 +333,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             return run_backend_argmax_check(*program, 248320, 2000);
         }
         enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
-            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, mtp_bench, trace };
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, mtp_bench, trace };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
@@ -363,7 +362,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (check_nemotron_h) selected = Tool::nemo;
         else if (check_nemotron_h_vision) selected = Tool::vision;
         else if (check_nemotron_h_mtp) selected = Tool::nemo_mtp;
-        else if (check_flash_next_mtp || check_qwen35_mtp) selected = Tool::legacy;
+        else if (check_flash_next_mtp) selected = Tool::flash_mtp;
+        else if (check_qwen35_mtp) selected = Tool::legacy;
         else if (!bench_qwen35_mtp.empty()) selected = Tool::mtp_bench;
         else if (!check_continuous_batching && !check_qwen4_decode_hidden && !check_flash_next &&
                  !check_nemotron_h && !check_nemotron_h_vision && !check_nemotron_h_mtp &&
@@ -376,7 +376,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 throw std::runtime_error("runtime comparison dispatch harness is currently unavailable");
             auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
-                    selected == Tool::nemo_mtp || selected == Tool::mtp_bench) {
+                    selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::mtp_bench) {
                 if (model_path.empty()) {
                     std::cerr << "missing model or execution mode (see --help)\n";
                     return 2;
@@ -405,9 +405,10 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::hc) return run_dsv4_hc_check(*program, check_attention_reps);
             if (selected == Tool::session) return run_text_session_state_check(*program);
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
-                    selected == Tool::nemo_mtp || selected == Tool::mtp_bench) {
+                    selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::mtp_bench) {
                 program->load(needs_parts());
                 if (selected == Tool::nemo_mtp) return run_nemotron_h_mtp_check(*program);
+                if (selected == Tool::flash_mtp) return run_flash_next_mtp_check(*program);
                 if (selected == Tool::mtp_bench) return run_qwen35_mtp_bench(*program,
                     bench_qwen35_mtp == "mtp", gen, bench_qwen35_mtp_reps);
                 if (selected == Tool::vision) return run_nemotron_h_vision_check(*program);
@@ -600,22 +601,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 return profile?run_qwen4_mtp_profile(model,ids_file.empty()?parse_ids(ids_arg):load_ids_file(ids_file))
                     :run_qwen4_decode_hidden_check(model);
             throw std::runtime_error("hidden graph diagnostic requires Qwen4CausalLm");
-        }
-        if (check_flash_next_mtp) {
-            if constexpr (
-                    std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm> ||
-                    std::is_same_v<Model, tyloi::cuda::Glm5CausalLm>) {
-                using Predictor=std::conditional_t<
-                    std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>,
-                    tyloi::cuda::qwen4_exp::Predictor,
-                    tyloi::cuda::glm5_next::Glm5NextMtp>;
-                auto* predictor=dynamic_cast<Predictor*>(tyloi::cuda::component_predictor(parts));
-                TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
-                    "Flash-Next MTP diagnostic requires a loaded predictor component");
-                return run_flash_next_mtp_check(model,*predictor);
-            }
-            throw std::runtime_error(
-                "Flash-Next MTP diagnostic requires a Flash-Next causal LM");
         }
         if (check_qwen35_mtp) {
             if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {

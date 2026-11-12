@@ -92,6 +92,8 @@ public:
     std::vector<std::pair<tyloi::Device, std::size_t>> suffix_growth(std::int64_t tokens) const override;
 #endif
     std::int64_t position() const noexcept override { return cache_pos; }
+    /** Report whether a speculative transaction is open. */
+    bool speculating() const override { return speculative_start >= 0; }
     /** Report whether the active speculative prefix remains available. */
     bool retains_partial_prefix(std::int64_t accepted) const noexcept override {
         return speculative_prefix_retention && accepted >= 0;

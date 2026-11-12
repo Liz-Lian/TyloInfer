@@ -17,6 +17,8 @@ struct PredictorState final : tyloi::models::MtpState {
     int64_t position() const noexcept override {
         return lengths.empty() ? 0 : lengths.front();
     }
+    /** Return the committed boundary of each predictor head. */
+    std::vector<std::int64_t> head_positions() const override { return lengths; }
 
     std::vector<MlaState> states;
     std::vector<int64_t> lengths;
@@ -57,6 +59,8 @@ struct Mtp final : tyloi::models::Mtp {
         result->lengths.assign(layers.size(), 0);
         return result;
     }
+    /** Return the incoming predictor hidden width. */
+    std::int64_t width() const override { return hidden_norm.numel(); }
 
     void reset(tyloi::models::MtpState& state, int64_t next_batch = 1) const override;
 
@@ -69,6 +73,9 @@ struct Mtp final : tyloi::models::Mtp {
                                        const DenseTensor &ids, int64_t depth = 0, bool cache = true,
                                        const DenseTensor &supplied_positions = {},
                                        const DenseTensor &supplied_embeddings = {}) const;
+    /** Run the selected head through the original eager predictor path. */
+    tyloi::models::MtpStep evaluate(tyloi::models::MtpState&,
+        const tyloi::models::Mtp::Evaluation&) const override;
 
     tyloi::models::MtpStep step(tyloi::models::MtpState& state,
                                 const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,

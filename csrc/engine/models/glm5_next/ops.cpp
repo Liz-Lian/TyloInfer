@@ -613,6 +613,14 @@ std::pair<DenseTensor, DenseTensor> Mtp::evaluate(tyloi::models::MtpState& value
     return {std::move(result), std::move(multi)};
 }
 
+tyloi::models::MtpStep Mtp::evaluate(tyloi::models::MtpState& state,
+        const tyloi::models::Mtp::Evaluation& input) const {
+    auto result = evaluate(state, input.hidden.dense(), input.ids.dense(), input.depth,
+        input.cache, input.positions ? input.positions.dense() : DenseTensor{});
+    return {std::make_shared<DenseTensor>(std::move(result.first)),
+            std::make_shared<DenseTensor>(std::move(result.second))};
+}
+
 tyloi::models::MtpStep Mtp::step(tyloi::models::MtpState& value,
                                   const ::tyloi::Tensor& hidden, const ::tyloi::Tensor& ids,
                                   const ::tyloi::Tensor& positions, const tyloi::models::ForwardOptions&) const {
