@@ -14,6 +14,8 @@
 #include "diagnostics/model_checks.h"
 #include "diagnostics/operator_checks.h"
 #include "diagnostics/trace.h"
+#include "diagnostics/engines.h"
+#include "diagnostics/source.h"
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "diagnostics/runtime_checks.h"
@@ -259,7 +261,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (check_backend_bf16_add) return run_backend_bf16_add_check(*program, 4096, 10000);
             return run_backend_argmax_check(*program, 248320, 2000);
         }
-        enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, moe,
+        enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
             mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, trace };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
@@ -271,7 +273,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (!check_gdn_input.empty()) selected = Tool::gdn;
         else if (!check_linear_conv_input.empty()) selected = Tool::conv;
         else if (check_gemma_geglu_layer >= 0) selected = Tool::geglu;
-        else if (check_mfq_container || check_runtime_assets) selected = Tool::legacy;
+        else if (check_mfq_container) selected = Tool::container;
+        else if (check_runtime_assets) selected = Tool::assets;
         else if (check_moe_layer >= 0) selected = Tool::moe;
         else if (!check_mfe_tensor.empty()) selected = Tool::mfe;
         else if (!check_dsv4_output_a.empty()) selected = Tool::output_a;
@@ -396,6 +399,14 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 return run_moe_check(*program, config_path, check_moe_layer,
                     parse_ids(check_moe_tokens), check_moe_reps);
             }
+            if (selected == Tool::container) {
+                if (model_path.empty()) throw std::runtime_error("--check-mfq-container requires --model");
+                return run_container_check(*program);
+            }
+            if (selected == Tool::assets) {
+                if (model_path.empty()) throw std::runtime_error("--check-runtime-assets requires --model");
+                return run_assets_check(*program, config_path, tokenizer_model, check_tokenizer_text);
+            }
             if (selected == Tool::output_a) {
                 if (model_path.empty()) throw std::runtime_error("--check-dsv4-output-a requires --model");
                 return run_dsv4_output_a_check(*program, check_dsv4_output_a,
@@ -447,72 +458,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         if(runtime_comparison_modes()) {
             std::cout<<runtime_comparison_name()<<"_setup\n";
             print_moe_expert_cache_stats(execution.weights.moe,std::cout);
-        }
-        if (check_mfq_container) {
-            if (model_path.empty()) {
-                throw std::runtime_error(
-                    "--check-mfq-container requires --model");
-            }
-            auto model_source = tyloi::open_model_source(model_path);
-            const auto& mfq = *model_source;
-            std::cout << "mfq_container_check=ok"
-                      << " shards=" << mfq.source_paths().size()
-                      << " tensors=" << mfq.tensors().size()
-                      << " assets=" << mfq.assets().size()
-                      << "\n";
-            return 0;
-        }
-        if (check_runtime_assets) {
-            if (model_path.empty()) {
-                throw std::runtime_error(
-                    "--check-runtime-assets requires --model");
-            }
-            auto model_source = tyloi::open_model_source(model_path);
-            const auto& mfq = *model_source;
-            const auto config = tyloi::models::ModelConfig::from_json(
-                tyloi::models::config_json(mfq, config_path));
-            if (!mfq.has_asset(tyloi::kTokenizerGgufAsset)) {
-                throw std::runtime_error(
-                    "model source has no tokenizer GGUF");
-            }
-            const auto tokenizer_blob =
-                read_asset(mfq, tyloi::kTokenizerGgufAsset);
-            const auto embedded =
-                probe_mfq_tokenizer(tokenizer_blob, check_tokenizer_text);
-            if (embedded.vocab_size != config.vocab_size) {
-                throw std::runtime_error(
-                    "embedded tokenizer/model vocabulary mismatch: tokenizer=" +
-                    std::to_string(embedded.vocab_size) + " model=" +
-                    std::to_string(config.vocab_size));
-            }
-            std::cout << "runtime_assets_check=ok"
-                      << " config=embedded"
-                      << " tokenizer=embedded"
-                      << " vocab_size=" << embedded.vocab_size
-                      << " chat_template="
-                      << (!embedded.chat_template.empty() ? 1 : 0)
-                      << " bos=" << embedded.bos_token
-                      << " eos=" << embedded.eos_token
-                      << " eot=" << embedded.eot_token
-                      << " pad=" << embedded.pad_token
-                      << " token_count=" << embedded.tokens.size()
-                      << "\n";
-            if (!tokenizer_model.empty()) {
-                const auto external =
-                    probe_mfq_tokenizer(tokenizer_model, check_tokenizer_text);
-                if (external.vocab_size != embedded.vocab_size ||
-                    external.bos_token != embedded.bos_token ||
-                    external.eos_token != embedded.eos_token ||
-                    external.eot_token != embedded.eot_token ||
-                    external.pad_token != embedded.pad_token ||
-                    external.chat_template != embedded.chat_template ||
-                    external.tokens != embedded.tokens) {
-                    throw std::runtime_error(
-                        "embedded tokenizer differs from external GGUF");
-                }
-                std::cout << "runtime_assets_external_match=ok\n";
-            }
-            return 0;
         }
         if (check_deepseek_v41) {
             return tyloi::cuda::deepseek_v41_runtime::run_self_check();

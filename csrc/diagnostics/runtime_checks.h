@@ -38,10 +38,6 @@
 #include <type_traits>
 #include <vector>
 
-namespace mfq::cuda {
-struct CudaEngineOptions;
-}
-
 namespace mfq::cuda::diagnostics {
 
 using namespace mfq::cuda::internal;
@@ -91,7 +87,6 @@ int run_cuda_continuous_batching_check(
     CudaExecutionContext& execution,
     int requests = 2);
 int run_cuda_continuous_batching_check(mfq::cuda::Qwen4CausalLm& model,int requests = 2);
-int run_cuda_engine_isolation_check(CudaEngineOptions options);
 
 template <typename Model, typename State>
 static int run_prefill_sweep(

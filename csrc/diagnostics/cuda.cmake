@@ -7,6 +7,8 @@ add_library(mfq-cuda-diagnostics STATIC
     ${PROJECT_SOURCE_DIR}/diagnostics/ffn.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/gemma_moe.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/trace.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/engines.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/source.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/runtime_checks.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/session_checks.cpp
 )
