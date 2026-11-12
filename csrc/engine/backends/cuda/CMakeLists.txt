@@ -140,6 +140,8 @@ add_library(mfq-cuda-native-kernels STATIC
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/glm5_next.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/wrappers.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/gdn_wrappers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/moe_wrappers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mx_wrappers.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nepq_wrappers.cpp
     ${TYLOINFER_CUDA_KERNEL_ROOT}/float_projection.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_quantization.cu
