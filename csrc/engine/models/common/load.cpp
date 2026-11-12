@@ -218,14 +218,14 @@ void TransformerWeightLoader::experts(tyloi::ops::FfnWeights& ffn, tyloi::models
 }
 namespace {
 template <class Ffn>
-Ffn load_moe(const tyloi::weights::Loader& weights,
+void load_moe(Ffn& result, const tyloi::weights::Loader& weights,
              std::string_view prefix, const MoeWeightLoadOptions& options) {
     TransformerWeightLoader loader{weights};
     loader.keep_quantized_router=true;
     loader.cpu_offloaded = options.cpu_offloaded;
     loader.shared_gate_up_compatible_prefix = options.shared_gate_up_compatible_prefix;
-    auto result=tyloi::models::load_moe_weights<Ffn>(
-        loader, std::string(prefix), options.layer, options.router_bias_required,
+    tyloi::models::load_moe_weights_into(
+        result, loader, std::string(prefix), options.layer, options.router_bias_required,
         options.ungated_experts, options.ungated_shared);
     const auto gate = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_gate.implementation());
     const auto up = std::dynamic_pointer_cast<const tyloi::TqBank>(result.moe_up.implementation());
@@ -239,19 +239,29 @@ Ffn load_moe(const tyloi::weights::Loader& weights,
                 gate->out==up->out && gate->input==up->input)),
             "TQ Gate/Up/Down expert dimensions disagree");
     }
-    return result;
 }
 }
 tyloi::cuda::Ffn load_moe_weights(const tyloi::weights::Loader& weights,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
-    return load_moe<tyloi::cuda::Ffn>(weights, prefix, options);
+    tyloi::cuda::Ffn result;
+    load_moe(result, weights, prefix, options);
+    return result;
+}
+void load_moe_weights_into(tyloi::cuda::Ffn& result, const tyloi::weights::Loader& weights,
+                     std::string_view prefix, const MoeWeightLoadOptions& options) {
+    load_moe(result, weights, prefix, options);
 }
 #ifdef TYLOINFER_NATIVE_CUDA
 tyloi::ops::FfnWeights load_moe_data(const tyloi::weights::Loader& weights,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
-    auto result=load_moe<tyloi::ops::FfnWeights>(weights, prefix, options);
-    result.target=tyloi::Device(tyloi::kCUDA,weights.placement.device);
+    tyloi::ops::FfnWeights result;
+    load_moe_data_into(result, weights, prefix, options);
     return result;
+}
+void load_moe_data_into(tyloi::ops::FfnWeights& result, const tyloi::weights::Loader& weights,
+                     std::string_view prefix, const MoeWeightLoadOptions& options) {
+    load_moe(result, weights, prefix, options);
+    result.target=tyloi::Device(tyloi::kCUDA,weights.placement.device);
 }
 #endif
 

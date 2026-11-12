@@ -1,13 +1,13 @@
 #pragma once
 
 #include "diagnostics/experts.h"
+#include "diagnostics/ffn.h"
 #include <cstdint>
 #include <string>
 #include <vector>
 
 enum class TensorParallelAxis;
 enum class InputGateMode : int;
-struct CudaExecutionContext;
 namespace tyloi::cuda { class Program; }
 
 /** Compare a native projection with its decoded dense reference. */
@@ -25,7 +25,6 @@ int run_q8_embedding_check(tyloi::cuda::Program& program, const std::string& nam
 int run_dsv4_output_a_check(tyloi::cuda::Program& program, const std::string& name, int batch, int repetitions);
 /** Compare Gemma GeGLU activation and output paths. */
 int run_gemma_geglu_check(tyloi::cuda::Program& program, int layer, int repetitions);
-int run_moe_check(CudaExecutionContext& execution, const std::string& model_path, const std::string& config_path, int layer, const std::vector<std::int64_t>& token_sizes, int repetitions);
 /** Compare native full or sliding-window decode attention. */
 int run_attention_decode_check(tyloi::cuda::Program& program, int length, int repetitions, int dimension, bool sliding, int window);
 /** Check native Gemma sliding-window and full attention paths. */

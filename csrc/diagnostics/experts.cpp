@@ -42,18 +42,6 @@ const tyloi::MfeTensor& mfe(const tyloi::Tensor& value) {
     if (!result) throw std::runtime_error("expert diagnostic requires an MFE tensor");
     return *result;
 }
-double mfe_weight_bytes(const tyloi::MfeTensor& weight) {
-    double bytes = 0;
-    for (const auto& shard : weight.shards) if (shard.weight) bytes += mfe_weight_bytes(*shard.weight);
-    if (weight.compact) for (const auto& pool : *weight.compact) {
-        const auto& w = pool.weight;
-        for (const auto* value : {&w.q_packed, &w.row_q_bits, &w.row_q_bit_offsets,
-                                  &w.sub_scale, &w.sub_min, &w.neuron_scale, &w.neuron_min})
-            if (value->defined()) bytes += double(value->nbytes());
-    }
-    if (!weight.pools.empty() || weight.cached_source) bytes += double(tyloi::cuda::logical_bytes(weight));
-    return bytes;
-}
 } // namespace
 
 int run_expert_parallel_moe_check(
@@ -290,7 +278,7 @@ int run_mfe_tensor_check(
                   << " k=" << weight.neuron_len
                   << " routed_input=" << (routed_input ? 1 : 0)
                   << " mixed=" << ((!weight.pools.empty() || weight.cached_source) ? 1 : 0)
-                  << " weight_bytes=" << mfe_weight_bytes(weight)
+                  << " weight_bytes=" << tyloi::cuda::logical_bytes(weight)
                   << " cuda_ms=" << elapsed / reps
                   << '\n';
         return 0;
@@ -333,7 +321,7 @@ int run_mfe_tensor_check(
               << " k=" << weight.neuron_len
               << " routed_input=" << (routed_input ? 1 : 0)
               << " mixed=" << ((!weight.pools.empty() || weight.cached_source) ? 1 : 0)
-              << " weight_bytes=" << mfe_weight_bytes(weight)
+              << " weight_bytes=" << tyloi::cuda::logical_bytes(weight)
               << " cuda_ms=" << elapsed / reps
               << " dense_reference_rel=" << dense_reference_rel
               << " dense_reference_mean_abs=" << dense_reference_mean_abs

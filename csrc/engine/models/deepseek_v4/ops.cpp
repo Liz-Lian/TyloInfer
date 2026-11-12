@@ -27,6 +27,25 @@
 
 namespace tyloi::cuda::deepseek_v4 {
 
+void load_ffn(tyloi::cuda::Ffn& ffn, const tyloi::weights::Loader& weights,
+              const Config& config, int i, bool cpu_offload) {
+    const auto prefix = "model.block." + std::to_string(i) + ".mlp.";
+    load_moe_weights_into(ffn, weights, prefix,
+        {.layer = i, .cpu_offloaded = cpu_offload, .shared_gate_up_compatible_prefix = 0});
+    if (i < config.hash_layer_count) {
+        ffn.moe_hash_ids = std::make_shared<::tyloi::DenseTensor>(weights.tensor(prefix + "router.token_to_expert").dense()
+                                  .to(::tyloi::kInt32).contiguous());
+    }
+    ffn.moe_top_k = static_cast<int>(config.num_experts_per_tok);
+    ffn.moe_use_sqrt_softplus = true;
+    ffn.moe_normalize = config.norm_topk_prob;
+    ffn.moe_delayed_softmax = false;
+    ffn.moe_shared_ungated = true;
+    ffn.moe_router_scale = config.routed_scaling_factor;
+    ffn.swiglu_limit = config.swiglu_limit;
+    ffn.shared->swiglu_limit = config.swiglu_limit;
+}
+
 void load_layer(Layer& layer, const tyloi::weights::Loader& weights, const Config &c, int i,
                  const std::string &type, Collectives& collectives, int primary,
                  const std::unordered_set<int>& offload, int64_t& host_bytes) {
@@ -158,9 +177,7 @@ void load_layer(Layer& layer, const tyloi::weights::Loader& weights, const Confi
     }
 
     const bool cpu_offload = offload.count(i) != 0;
-    layer.ffn = load_moe_weights(
-        weights, p + "mlp.",
-        {.layer = i, .cpu_offloaded = cpu_offload, .shared_gate_up_compatible_prefix = 0});
+    load_ffn(layer.ffn, weights, c, i, cpu_offload);
     if (cpu_offload) {
         const int64_t gate_up_bytes =
             layer.ffn.moe_split_gate_up
@@ -172,20 +189,6 @@ void load_layer(Layer& layer, const tyloi::weights::Loader& weights, const Confi
                   << " down_bytes=" << down_bytes
                   << " total_host_bytes=" << host_bytes << std::endl;
     }
-    if (i < config.hash_layer_count) {
-        layer.ffn.moe_hash_ids = std::make_shared<::tyloi::DenseTensor>(weights.tensor(p + "mlp.router.token_to_expert").dense()
-                                  .to(::tyloi::kInt32)
-                                  .contiguous());
-    }
-    layer.ffn.moe_top_k = static_cast<int>(c.num_experts_per_tok);
-    layer.ffn.moe_use_sqrt_softplus = true;
-    layer.ffn.moe_normalize = c.norm_topk_prob;
-    layer.ffn.moe_delayed_softmax = false;
-    layer.ffn.moe_shared_ungated = true;
-    layer.ffn.moe_router_scale = c.routed_scaling_factor;
-    layer.ffn.swiglu_limit = c.swiglu_limit;
-    layer.ffn.shared->swiglu_limit = c.swiglu_limit;
-
     const bool base_shapes =
 #ifdef TYLOINFER_NATIVE_CUDA
         layer.attn_norm.numel() == c.hidden_size && layer.ffn_norm.numel() == c.hidden_size &&

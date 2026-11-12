@@ -25,7 +25,7 @@ void load_ffn(Loader& ops, const Config& c, int i, Ffn& f) {
     const auto &config = c;
     const std::string p = "model.block." + std::to_string(i) + ".mlp.";
     if (config.mlp_layer_types.at(static_cast<size_t>(i)) == "sparse") {
-        f = models::load_moe_weights<Ffn>(ops, p, i, true);
+        models::load_moe_weights_into(f, ops, p, i, true);
         f.moe_top_k = static_cast<int>(c.num_experts_per_tok);
         f.moe_use_sigmoid = true;
         f.moe_use_sqrt_softplus = false;

@@ -378,7 +378,11 @@ Projector Executor::projector(const FfnMode& mode) {
 }
 
 Projector Executor::projector(const FfnMode& mode, int primary) {
-    return {profiler_, mmq_, *tq_, branches_, collectives_, mfe_scratch_, moe_scratch_, options_.projection,
+    auto projection = options_.projection;
+    if (mode.moe_prefill) projection.moe.prefill = *mode.moe_prefill;
+    if (mode.moe_nvq_decode) projection.moe.nvq_decode = *mode.moe_nvq_decode;
+    if (mode.moe_nint_decode) projection.moe.nint_decode = *mode.moe_nint_decode;
+    return {profiler_, mmq_, *tq_, branches_, collectives_, mfe_scratch_, moe_scratch_, projection,
             primary, mode.serial, mode.projection_major, mode.independent};
 }
 

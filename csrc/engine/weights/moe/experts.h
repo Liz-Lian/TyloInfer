@@ -25,8 +25,8 @@ namespace tyloi::cuda {
 bool supports_projection_glu_epilogue(const MfeTensor& weight);
 bool can_reuse_activation_for(const MfeTensor& producer, const MfeTensor& consumer);
 bool supports_clamped_swiglu(const MfeTensor& weight);
-/** Return the original mixed or cached expert diagnostic byte count. */
-std::int64_t logical_bytes(const MfeTensor& weight);
+/** Return the original expert diagnostic byte count across shards and representations. */
+double logical_bytes(const MfeTensor& weight);
 void prefetch_experts(const MfeTensor& weight, const MoeRoutePlan& route, bool begin = false);
 
 bool prefetch_cached_moe_projection_bundle(

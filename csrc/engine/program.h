@@ -6,7 +6,7 @@
 
 namespace tyloi {
 class ModelSource;
-namespace models { class CausalModel; class State; class Layers; class Groups; }
+namespace models { class CausalModel; class State; class Layers; class Groups; class Ffn; }
 namespace weights { class Cache; struct Loader; }
 }
 
@@ -31,6 +31,8 @@ public:
     void load_layers();
     /** Load the grouped model view using the reference context length. */
     void load_groups(std::int64_t context);
+    /** Load the controlled routed FFN view for one model layer. */
+    void load_ffn(int layer);
     /** Borrow the execution resources while this owner remains alive. */
     Executor& executor();
     /** Borrow the weight cache while this owner remains alive. */
@@ -47,6 +49,8 @@ public:
     models::Layers& layers();
     /** Borrow the loaded grouped model view. */
     models::Groups& groups();
+    /** Borrow the prepared routed FFN view. */
+    models::Ffn& ffn();
     /** Wait for outstanding work and propagate any drain failure. */
     void drain();
 

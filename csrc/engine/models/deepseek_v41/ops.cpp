@@ -9,16 +9,16 @@
 namespace tyloi::cuda::deepseek_v41_runtime {
 
 #ifdef TYLOINFER_NATIVE_CUDA
-tyloi::ops::FfnWeights load_moe_at(const tyloi::weights::Loader& weights,
+void load_moe_at_into(tyloi::ops::FfnWeights& result, const tyloi::weights::Loader& weights,
 #else
-tyloi::cuda::Ffn load_moe_at(const tyloi::weights::Loader& weights,
+static void load_moe_at_into(tyloi::cuda::Ffn& result, const tyloi::weights::Loader& weights,
 #endif
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k) {
 #ifdef TYLOINFER_NATIVE_CUDA
-    auto result = load_moe_data(weights, prefix,
+    load_moe_data_into(result, weights, prefix,
 #else
-    auto result = load_moe_weights(weights, prefix,
+    load_moe_weights_into(result, weights, prefix,
 #endif
                                    {.layer = static_cast<int>(layer),
                                     .router_bias_required = true,
@@ -31,6 +31,21 @@ tyloi::cuda::Ffn load_moe_at(const tyloi::weights::Loader& weights,
     result.moe_router_scale = config.routed_scaling;
     result.swiglu_limit = config.swiglu_limit;
     result.shared->swiglu_limit = config.swiglu_limit;
+}
+
+#ifdef TYLOINFER_NATIVE_CUDA
+tyloi::ops::FfnWeights load_moe_at(const tyloi::weights::Loader& weights,
+#else
+tyloi::cuda::Ffn load_moe_at(const tyloi::weights::Loader& weights,
+#endif
+                const CommonConfig &config, const std::string &prefix, std::int64_t layer,
+                std::int64_t top_k) {
+#ifdef TYLOINFER_NATIVE_CUDA
+    tyloi::ops::FfnWeights result;
+#else
+    tyloi::cuda::Ffn result;
+#endif
+    load_moe_at_into(result, weights, config, prefix, layer, top_k);
     return result;
 }
 

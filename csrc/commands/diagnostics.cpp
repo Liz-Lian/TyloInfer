@@ -13,6 +13,7 @@
 #include "diagnostics/backend_checks.h"
 #include "diagnostics/model_checks.h"
 #include "diagnostics/operator_checks.h"
+#include "diagnostics/trace.h"
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "diagnostics/runtime_checks.h"
@@ -258,8 +259,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (check_backend_bf16_add) return run_backend_bf16_add_check(*program, 4096, 10000);
             return run_backend_argmax_check(*program, 248320, 2000);
         }
-        enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu,
-            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo };
+        enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, moe,
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, trace };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
@@ -270,7 +271,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (!check_gdn_input.empty()) selected = Tool::gdn;
         else if (!check_linear_conv_input.empty()) selected = Tool::conv;
         else if (check_gemma_geglu_layer >= 0) selected = Tool::geglu;
-        else if (check_mfq_container || check_runtime_assets || check_moe_layer >= 0) selected = Tool::legacy;
+        else if (check_mfq_container || check_runtime_assets) selected = Tool::legacy;
+        else if (check_moe_layer >= 0) selected = Tool::moe;
         else if (!check_mfe_tensor.empty()) selected = Tool::mfe;
         else if (!check_dsv4_output_a.empty()) selected = Tool::output_a;
         else if (check_attention_decode > 0) selected = Tool::attention;
@@ -281,12 +283,26 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (check_deepseek_v41) selected = Tool::legacy;
         else if (check_text_session_state) selected = Tool::session;
         else if (minicpmo_eval_batch) selected = Tool::minicpmo;
+        else if (!check_continuous_batching && !check_qwen4_decode_hidden && !check_flash_next &&
+                 !check_nemotron_h && !check_nemotron_h_vision && !check_nemotron_h_mtp &&
+                 !check_flash_next_mtp && !check_qwen35_mtp && bench_qwen35_mtp.empty() &&
+                 prefill_sweep_arg.empty() && !compare_dsv4_hc_ops && !compare_dsv4_hc_model &&
+                 (!block_trace_reference.empty() || !block_trace_output.empty())) selected = Tool::trace;
 
         if (selected != Tool::legacy) {
             if (runtime_comparison_modes() || comparison_phase_timings)
                 throw std::runtime_error("runtime comparison dispatch harness is currently unavailable");
             auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
+            std::vector<int64_t> trace_ids;
+            if (selected == Tool::trace) {
+                if (!router_lookahead_audit.empty())
+                    throw std::runtime_error("router lookahead audit dispatch harness is currently unavailable");
+                if (context_size < 0) throw std::runtime_error("--ctx-size must be positive");
+                trace_ids = ids_file.empty() ? parse_ids(ids_arg) : load_ids_file(ids_file);
+                if (options.context_size == 0) options.context_size = static_cast<int64_t>(trace_ids.size());
+            }
             if (selected == Tool::minicpmo && options.context_size <= 0) options.context_size = 8192;
+            const auto loaded_context = options.context_size;
             auto program = tyloi::cuda::Program::open(std::move(options));
             auto scope = program->executor().enter(program->config().layer_placement.primary_device());
             if (selected == Tool::attention) return run_attention_decode_check(*program,
@@ -297,6 +313,23 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::dsv4_attention) return run_dsv4_attention_check(*program, check_attention_reps);
             if (selected == Tool::hc) return run_dsv4_hc_check(*program, check_attention_reps);
             if (selected == Tool::session) return run_text_session_state_check(*program);
+            if (selected == Tool::trace) {
+                if (model_path.empty()) {
+                    std::cerr << "missing model or execution mode (see --help)\n";
+                    return 2;
+                }
+                program->load(false);
+                auto ids = tyloi::ops::unsqueeze(tyloi::ops::tensor(trace_ids,
+                    tyloi::Device(tyloi::kCUDA, program->config().layer_placement.primary_device())), 0);
+                if (!block_trace_reference.empty()) {
+                    auto reference = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
+                    reference.model_path = block_trace_reference;
+                    reference.context_size = loaded_context;
+                    return run_block_trace_compare(*program, std::move(reference), std::move(ids));
+                }
+                return run_block_trace_dump(*program, block_trace_output, std::move(ids),
+                    block_trace_start, block_trace_count);
+            }
             if (selected == Tool::linear_cpu || selected == Tool::linear) {
                 if (model_path.empty()) throw std::runtime_error(selected == Tool::linear_cpu
                     ? "--check-linear-cpu requires --model" : "--check-linear requires --model");
@@ -357,6 +390,11 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::geglu) {
                 if (model_path.empty()) throw std::runtime_error("--check-gemma-geglu-layer requires --model");
                 return run_gemma_geglu_check(*program, check_gemma_geglu_layer, check_gemma_geglu_reps);
+            }
+            if (selected == Tool::moe) {
+                if (model_path.empty()) throw std::runtime_error("--check-moe-layer requires --model");
+                return run_moe_check(*program, config_path, check_moe_layer,
+                    parse_ids(check_moe_tokens), check_moe_reps);
             }
             if (selected == Tool::output_a) {
                 if (model_path.empty()) throw std::runtime_error("--check-dsv4-output-a requires --model");
@@ -475,13 +513,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 std::cout << "runtime_assets_external_match=ok\n";
             }
             return 0;
-        }
-        if (check_moe_layer >= 0) {
-            if (model_path.empty()) {
-                throw std::runtime_error("--check-moe-layer requires --model");
-            }
-            return run_moe_check(
-                execution, model_path, config_path, check_moe_layer, parse_ids(check_moe_tokens), check_moe_reps);
         }
         if (check_deepseek_v41) {
             return tyloi::cuda::deepseek_v41_runtime::run_self_check();
@@ -702,16 +733,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         if (compare_dsv4_hc_model) {
             return run_dsv4_hc_model_compare(
                 model, state, executor.get(), execution, ids);
-        }
-        if (!block_trace_reference.empty()) {
-            return run_block_trace_compare(
-                model, state, executor.get(), execution, block_trace_reference,
-                config_path, context_size, ids);
-        }
-        if (!block_trace_output.empty()) {
-            return run_block_trace_dump(
-                model, state, executor.get(), execution, block_trace_output, ids,
-                block_trace_start, block_trace_count);
         }
         if(runtime_comparison_modes()) {
             if constexpr (!std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)

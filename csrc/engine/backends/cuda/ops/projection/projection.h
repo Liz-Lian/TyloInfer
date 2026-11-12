@@ -111,7 +111,7 @@ private:
     Collectives& collectives_;
     MfeScratch& mfe_scratch_;
     MoeScratchCache& moe_scratch_;
-    const Options& options_;
+    Options options_;
     int primary_;
     const bool& serial_;
     const bool& projection_major_;

@@ -10,6 +10,7 @@
 #include "engine/models/common/load.h"
 #include "engine/models/layers.h"
 #include "engine/models/groups.h"
+#include "engine/models/ffn.h"
 #include "engine/models/load.h"
 #include "engine/models/session/cache.h"
 #include "engine/models/source.h"
@@ -101,6 +102,7 @@ struct Program::Impl {
     std::unique_ptr<models::State> state;
     std::unique_ptr<models::Layers> layers;
     std::unique_ptr<models::Groups> groups;
+    std::unique_ptr<models::Ffn> ffn;
     bool attempted = false;
 
     /** Open the source only for a model-loading operation, after execution setup. */
@@ -123,6 +125,7 @@ struct Program::Impl {
         state.reset();
         layers.reset();
         groups.reset();
+        ffn.reset();
         model.reset();
         try { executor->clear(); }
         catch (const std::exception& error) { std::cerr << "program_cleanup error=" << error.what() << '\n'; }
@@ -221,6 +224,21 @@ void Program::load_groups(std::int64_t context) {
     finish_load(p.kv.get(), *p.weights, p.config.report_cuda_memory);
 }
 
+void Program::load_ffn(int layer) {
+    auto& p = *impl_;
+    if (p.attempted || !p.executor) throw std::logic_error("program load already attempted");
+    p.attempted = true;
+    p.open_source();
+    auto scope = p.executor->enter(p.config.layer_placement.primary_device());
+    ::tyloi::weights::LoadScope memory(*p.ledger);
+    if (p.offload) throw std::invalid_argument("FFN execution does not support streamed KV");
+    auto input = assembly(p.options, p.config, *p.executor, *p.weights, *p.source, false);
+    p.ffn = models::load_ffn(p.source, input.definition, input.loader,
+        p.config.layer_placement, input.policy, layer);
+    p.ffn->prepare();
+    finish_load(p.kv.get(), *p.weights, p.config.report_cuda_memory);
+}
+
 Executor& Program::executor() { if (!impl_->executor) throw std::logic_error("program closed"); return *impl_->executor; }
 ::tyloi::weights::Cache& Program::weights() { if (!impl_->weights) throw std::logic_error("program closed"); return *impl_->weights; }
 ::tyloi::weights::Loader Program::loader() {
@@ -234,6 +252,7 @@ models::CausalModel& Program::model() { if (!impl_->model) throw std::logic_erro
 models::State& Program::state() { if (!impl_->state) throw std::logic_error("state not loaded"); return *impl_->state; }
 models::Layers& Program::layers() { if (!impl_->layers) throw std::logic_error("layers not loaded"); return *impl_->layers; }
 models::Groups& Program::groups() { if (!impl_->groups) throw std::logic_error("groups not loaded"); return *impl_->groups; }
+models::Ffn& Program::ffn() { if (!impl_->ffn) throw std::logic_error("FFN not loaded"); return *impl_->ffn; }
 void Program::drain() {
     auto& p = *impl_;
     if (!p.executor || !p.weights) throw std::logic_error("program closed");

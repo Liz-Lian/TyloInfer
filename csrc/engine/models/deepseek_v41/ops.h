@@ -1250,6 +1250,9 @@ struct Block final {
 };
 
 #ifdef TYLOINFER_NATIVE_CUDA
+/** Fill one routed FFN while retaining partial weights on failure. */
+void load_moe_at_into(tyloi::ops::FfnWeights&, const tyloi::weights::Loader&,
+    const CommonConfig&, const std::string&, std::int64_t layer, std::int64_t top_k);
 /** Load one DeepSeek routed FFN with its numerical policy. */
 tyloi::ops::FfnWeights load_moe_at(const tyloi::weights::Loader& weights,
 #else

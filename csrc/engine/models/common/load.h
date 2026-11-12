@@ -30,15 +30,15 @@ Ffn load_dense_ffn(Loader& ops, const ModelConfig& config, const std::string& pr
 
 // Routed banks may be gated (gate/up or fused gate_up) or ungated (up only).
 // An ungated expert's activation is relu^2, never a gate projection alias.
+/** Fill owned routed weights so partial loads remain available to failure cleanup. */
 template <class Ffn, class Loader>
-Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
+void load_moe_weights_into(Ffn& result, Loader& ops, const std::string& prefix, int layer,
                     bool router_bias_required = false, bool ungated_experts = false,
                     bool ungated_shared = false) {
     const auto gate_up = prefix + "experts.gate_up.weight", gate = prefix + "experts.gate.weight",
                up = prefix + "experts.up.weight", down = prefix + "experts.down.weight";
     const bool has_up = ops.has(up), has_down = ops.has(down);
     const bool has_gate = ops.has(gate), has_gate_up = ops.has(gate_up);
-    Ffn result;
     result.is_moe = true;
     result.moe_layer = layer;
     if (ungated_experts) {
@@ -107,6 +107,14 @@ Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
     } else {
         result.shared->gate_up = ops.gate_up({shared_gate, shared_up}, result.shared->down);
     }
+}
+
+template <class Ffn, class Loader>
+Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
+                    bool router_bias_required = false, bool ungated_experts = false,
+                    bool ungated_shared = false) {
+    Ffn result;
+    load_moe_weights_into(result, ops, prefix, layer, router_bias_required, ungated_experts, ungated_shared);
     return result;
 }
 
@@ -218,9 +226,15 @@ tyloi::cuda::Ffn load_moe_weights(
     const tyloi::weights::Loader& weights,
     std::string_view prefix,
     const MoeWeightLoadOptions& options);
+/** Fill an owned routed FFN while retaining partial weights if loading fails. */
+void load_moe_weights_into(tyloi::cuda::Ffn&, const tyloi::weights::Loader&,
+    std::string_view prefix, const MoeWeightLoadOptions& options);
 #ifdef TYLOINFER_NATIVE_CUDA
 /** Load routed FFN weights and validate their expert geometry. */
 tyloi::ops::FfnWeights load_moe_data(const tyloi::weights::Loader& weights,
+    std::string_view prefix, const MoeWeightLoadOptions& options);
+/** Fill owned public FFN weights while retaining partial weights if loading fails. */
+void load_moe_data_into(tyloi::ops::FfnWeights&, const tyloi::weights::Loader&,
     std::string_view prefix, const MoeWeightLoadOptions& options);
 #endif
 void load_important_neuron_branch(
