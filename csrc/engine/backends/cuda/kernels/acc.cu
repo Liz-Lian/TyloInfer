@@ -2,7 +2,9 @@
 
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
-#include "backend.h"
+#include "acc_raw.h"
+#include <cuda_fp16.h>
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -31,40 +33,7 @@ __global__ void acc_bf16_kernel(
     }
 }
 
-::tyloi::DenseTensor acc_cuda(::tyloi::DenseTensor a, ::tyloi::DenseTensor b)
-{
-    TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc: a must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc: b must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == b.scalar_type(), "acc: a/b dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(
-        a.scalar_type() == ::tyloi::kFloat16 ||
-            a.scalar_type() == ::tyloi::kFloat32 ||
-            a.scalar_type() == ::tyloi::kBFloat16,
-        "acc: dtype must be f16, f32, or bf16");
-    TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes(), "acc: a/b shape mismatch");
-    int n = (int)a.numel();
-    auto out = ::tyloi::cuda::empty_like(a);
-    constexpr int BD = 256;
-    if (a.scalar_type() == ::tyloi::kBFloat16) {
-        acc_bf16_kernel<<<
-            (n + BD - 1) / BD, BD, 0, mfq_current_cuda_stream()>>>(
-            reinterpret_cast<const __nv_bfloat16*>(
-                a.data_ptr<mfq_bfloat16>()),
-            reinterpret_cast<const __nv_bfloat16*>(
-                b.data_ptr<mfq_bfloat16>()),
-            reinterpret_cast<__nv_bfloat16*>(
-                out.data_ptr<mfq_bfloat16>()),
-            n);
-    } else {
-        TYLOINFER_DISPATCH_FLOATING_TYPES_AND_HALF(a.scalar_type(), "acc_cuda", [&] {
-            acc_kernel<scalar_t><<<(n + BD - 1) / BD, BD, 0,
-                mfq_current_cuda_stream()>>>(
-                a.data_ptr<scalar_t>(), b.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(), n);
-        });
-    }
-    return out;
-}
+
 
 constexpr int ACC_RMS_BD = 256;
 
@@ -149,104 +118,24 @@ __global__ void acc_rms_norm_kernel(const scalar_t* __restrict__ a,
     }
 }
 
-std::vector<::tyloi::DenseTensor> acc_rms_norm_cuda(::tyloi::DenseTensor a, ::tyloi::DenseTensor b,
-                                             ::tyloi::DenseTensor weight, double eps,
-                                             double weight_offset)
-{
-    TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc_rms_norm: a must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc_rms_norm: b must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
-                "acc_rms_norm: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == b.scalar_type(), "acc_rms_norm: a/b dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == ::tyloi::kFloat16 || a.scalar_type() == ::tyloi::kFloat32,
-                "acc_rms_norm: dtype must be f16 or f32");
-    TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes(), "acc_rms_norm: a/b shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(a.dim() >= 1, "acc_rms_norm: a must have at least one dim");
-    int D = (int)a.size(-1);
-    int N = (int)(a.numel() / D);
-    TYLOINFER_RUNTIME_CHECK(weight.numel() == D, "acc_rms_norm: weight length mismatch");
 
-    auto sum = ::tyloi::cuda::empty_like(a);
-    auto norm = ::tyloi::cuda::empty(a.sizes(), a.options().dtype(::tyloi::kFloat32));
-    TYLOINFER_DISPATCH_FLOATING_TYPES_AND_HALF(a.scalar_type(), "acc_rms_norm_cuda", [&] {
-        constexpr bool reuse_stored_sum = std::is_same_v<scalar_t, float>;
-        acc_rms_norm_kernel<scalar_t, float, ACC_RMS_BD, reuse_stored_sum><<<N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
-            a.data_ptr<scalar_t>(), b.data_ptr<scalar_t>(), weight.data_ptr<float>(),
-            sum.data_ptr<scalar_t>(), norm.data_ptr<float>(), N, D,
-            (float)eps, (float)weight_offset);
-    });
-    return {sum, norm};
-}
 
-std::vector<::tyloi::DenseTensor> acc_rms_norm_f16_cuda(::tyloi::DenseTensor a, ::tyloi::DenseTensor b,
-                                                 ::tyloi::DenseTensor weight, double eps,
-                                                 double weight_offset)
-{
-    TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc_rms_norm_f16: a must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc_rms_norm_f16: b must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
-                "acc_rms_norm_f16: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == ::tyloi::kFloat16 && b.scalar_type() == ::tyloi::kFloat16,
-                "acc_rms_norm_f16: a/b must be f16");
-    TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes(), "acc_rms_norm_f16: a/b shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(a.dim() >= 1, "acc_rms_norm_f16: a must have at least one dim");
-    int D = (int)a.size(-1);
-    int N = (int)(a.numel() / D);
-    TYLOINFER_RUNTIME_CHECK(weight.numel() == D, "acc_rms_norm_f16: weight length mismatch");
 
-    auto sum = ::tyloi::cuda::empty_like(a);
-    auto norm = ::tyloi::cuda::empty_like(a);
-    acc_rms_norm_kernel<mfq_half, mfq_half, ACC_RMS_BD, false><<<N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
-        a.data_ptr<mfq_half>(), b.data_ptr<mfq_half>(), weight.data_ptr<float>(),
-        sum.data_ptr<mfq_half>(), norm.data_ptr<mfq_half>(), N, D,
-        (float)eps, (float)weight_offset);
-    return {sum, norm};
-}
 
-std::vector<::tyloi::DenseTensor> acc_rms_norm_bf16_cuda(
-    ::tyloi::DenseTensor a, ::tyloi::DenseTensor b,
-    ::tyloi::DenseTensor weight, double eps, double weight_offset)
-{
-    TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous() &&
-                    a.scalar_type() == ::tyloi::kBFloat16,
-                "acc_rms_norm_bf16: a must be cuda contiguous bf16");
-    TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous() &&
-                    b.scalar_type() == ::tyloi::kBFloat16,
-                "acc_rms_norm_bf16: b must be cuda contiguous bf16");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                    weight.scalar_type() == ::tyloi::kFloat32,
-                "acc_rms_norm_bf16: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes() && a.dim() >= 1,
-                "acc_rms_norm_bf16: a/b shape mismatch");
-    const int D = (int)a.size(-1);
-    const int N = (int)(a.numel() / D);
-    TYLOINFER_RUNTIME_CHECK(D > 0 && weight.numel() == D,
-                "acc_rms_norm_bf16: weight length mismatch");
-    auto sum = ::tyloi::cuda::empty_like(a);
-    auto norm = ::tyloi::cuda::empty_like(a);
-    acc_rms_norm_bf16_kernel<ACC_RMS_BD><<<
-        N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
-        reinterpret_cast<const __nv_bfloat16*>(a.data_ptr<mfq_bfloat16>()),
-        reinterpret_cast<const __nv_bfloat16*>(b.data_ptr<mfq_bfloat16>()),
-        weight.data_ptr<float>(),
-        reinterpret_cast<__nv_bfloat16*>(sum.data_ptr<mfq_bfloat16>()),
-        reinterpret_cast<__nv_bfloat16*>(norm.data_ptr<mfq_bfloat16>()),
-        N, D, (float)eps, (float)weight_offset);
-    return {sum, norm};
-}
+
 
 template <int BD>
 __global__ void gemma4_attn_residual_pre_norms_f16_kernel(
-    const mfq_half* __restrict__ residual,
-    const mfq_half* __restrict__ attn,
+    const __half* __restrict__ residual,
+    const __half* __restrict__ attn,
     const float* __restrict__ attn_post_weight,
     const float* __restrict__ dense_pre_weight,
     const float* __restrict__ router_weight,
     const float* __restrict__ moe_pre_weight,
-    mfq_half* __restrict__ residual_out,
-    mfq_half* __restrict__ dense_out,
+    __half* __restrict__ residual_out,
+    __half* __restrict__ dense_out,
     float* __restrict__ router_out,
-    mfq_half* __restrict__ moe_out,
+    __half* __restrict__ moe_out,
     int N, int D, float eps)
 {
     const int row = blockIdx.x;
@@ -255,14 +144,14 @@ __global__ void gemma4_attn_residual_pre_norms_f16_kernel(
     }
 
     extern __shared__ unsigned char shared_bytes[];
-    auto* shared_x = reinterpret_cast<mfq_half*>(shared_bytes);
+    auto* shared_x = reinterpret_cast<__half*>(shared_bytes);
     const size_t row_offset = (size_t)row * D;
-    const mfq_half* rr = residual + row_offset;
-    const mfq_half* ar = attn + row_offset;
-    mfq_half* xr = residual_out + row_offset;
-    mfq_half* dr = dense_out + row_offset;
+    const __half* rr = residual + row_offset;
+    const __half* ar = attn + row_offset;
+    __half* xr = residual_out + row_offset;
+    __half* dr = dense_out + row_offset;
     float* router_r = router_out + row_offset;
-    mfq_half* mr = moe_out + row_offset;
+    __half* mr = moe_out + row_offset;
 
     float attn_ssq = 0.0f;
     for (int i = threadIdx.x; i < D; i += BD) {
@@ -274,9 +163,9 @@ __global__ void gemma4_attn_residual_pre_norms_f16_kernel(
 
     float x_ssq = 0.0f;
     for (int i = threadIdx.x; i < D; i += BD) {
-        const mfq_half attn_norm = (mfq_half)(
+        const __half attn_norm = (__half)(
             (float)ar[i] * attn_rinv * attn_post_weight[i]);
-        const mfq_half x_value = (mfq_half)((float)rr[i] + (float)attn_norm);
+        const __half x_value = (__half)((float)rr[i] + (float)attn_norm);
         xr[i] = x_value;
         shared_x[i] = x_value;
         const float value = (float)x_value;
@@ -287,62 +176,24 @@ __global__ void gemma4_attn_residual_pre_norms_f16_kernel(
 
     for (int i = threadIdx.x; i < D; i += BD) {
         const float value = (float)shared_x[i] * x_rinv;
-        dr[i] = (mfq_half)(value * dense_pre_weight[i]);
+        dr[i] = (__half)(value * dense_pre_weight[i]);
         router_r[i] = value * router_weight[i];
-        mr[i] = (mfq_half)(value * moe_pre_weight[i]);
+        mr[i] = (__half)(value * moe_pre_weight[i]);
     }
 }
 
-std::vector<::tyloi::DenseTensor> gemma4_attn_residual_pre_norms_f16_cuda(
-    ::tyloi::DenseTensor residual, ::tyloi::DenseTensor attn,
-    ::tyloi::DenseTensor attn_post_weight, ::tyloi::DenseTensor dense_pre_weight,
-    ::tyloi::DenseTensor router_weight, ::tyloi::DenseTensor moe_pre_weight, double eps)
-{
-    TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() &&
-                    residual.scalar_type() == ::tyloi::kFloat16,
-                "gemma4 fused pre norms: residual must be cuda contiguous f16");
-    TYLOINFER_RUNTIME_CHECK(attn.is_cuda() && attn.is_contiguous() &&
-                    attn.scalar_type() == ::tyloi::kFloat16,
-                "gemma4 fused pre norms: attention output must be cuda contiguous f16");
-    TYLOINFER_RUNTIME_CHECK(residual.sizes() == attn.sizes(),
-                "gemma4 fused pre norms: activation shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(residual.dim() >= 1,
-                "gemma4 fused pre norms: activation must have at least one dimension");
-    const int D = (int)residual.size(-1);
-    const int N = (int)(residual.numel() / D);
-    for (const auto& weight : {attn_post_weight, dense_pre_weight, router_weight, moe_pre_weight}) {
-        TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                        weight.scalar_type() == ::tyloi::kFloat32 && weight.numel() == D,
-                    "gemma4 fused pre norms: weights must be cuda contiguous f32[D]");
-    }
 
-    auto residual_out = ::tyloi::cuda::empty_like(residual);
-    auto dense_out = ::tyloi::cuda::empty_like(residual);
-    auto router_out = ::tyloi::cuda::empty(residual.sizes(), residual.options().dtype(::tyloi::kFloat32));
-    auto moe_out = ::tyloi::cuda::empty_like(residual);
-    constexpr int BD = ACC_RMS_BD;
-    const size_t shared_bytes = (size_t)D * sizeof(mfq_half);
-    gemma4_attn_residual_pre_norms_f16_kernel<BD>
-        <<<N, BD, shared_bytes, mfq_current_cuda_stream()>>>(
-            residual.data_ptr<mfq_half>(), attn.data_ptr<mfq_half>(),
-            attn_post_weight.data_ptr<float>(), dense_pre_weight.data_ptr<float>(),
-            router_weight.data_ptr<float>(), moe_pre_weight.data_ptr<float>(),
-            residual_out.data_ptr<mfq_half>(), dense_out.data_ptr<mfq_half>(),
-            router_out.data_ptr<float>(), moe_out.data_ptr<mfq_half>(),
-            N, D, (float)eps);
-    return {residual_out, dense_out, router_out, moe_out};
-}
 
 template <int BD>
 __global__ void gemma4_ffn_merge_f16_kernel(
-    const mfq_half* __restrict__ dense,
-    const mfq_half* __restrict__ moe,
-    const mfq_half* __restrict__ residual,
+    const __half* __restrict__ dense,
+    const __half* __restrict__ moe,
+    const __half* __restrict__ residual,
     const float* __restrict__ dense_post_weight,
     const float* __restrict__ moe_post_weight,
     const float* __restrict__ final_post_weight,
-    const mfq_half* __restrict__ layer_scale,
-    mfq_half* __restrict__ out,
+    const __half* __restrict__ layer_scale,
+    __half* __restrict__ out,
     int N, int D, float eps)
 {
     const int row = blockIdx.x;
@@ -351,12 +202,12 @@ __global__ void gemma4_ffn_merge_f16_kernel(
     }
 
     extern __shared__ unsigned char shared_bytes[];
-    auto* combined = reinterpret_cast<mfq_half*>(shared_bytes);
+    auto* combined = reinterpret_cast<__half*>(shared_bytes);
     const size_t row_offset = (size_t)row * D;
-    const mfq_half* dr = dense + row_offset;
-    const mfq_half* mr = moe + row_offset;
-    const mfq_half* rr = residual + row_offset;
-    mfq_half* orow = out + row_offset;
+    const __half* dr = dense + row_offset;
+    const __half* mr = moe + row_offset;
+    const __half* rr = residual + row_offset;
+    __half* orow = out + row_offset;
 
     float dense_ssq = 0.0f;
     float moe_ssq = 0.0f;
@@ -373,11 +224,11 @@ __global__ void gemma4_ffn_merge_f16_kernel(
 
     float combined_ssq = 0.0f;
     for (int i = threadIdx.x; i < D; i += BD) {
-        const mfq_half dense_norm = (mfq_half)(
+        const __half dense_norm = (__half)(
             (float)dr[i] * dense_rinv * dense_post_weight[i]);
-        const mfq_half moe_norm = (mfq_half)(
+        const __half moe_norm = (__half)(
             (float)mr[i] * moe_rinv * moe_post_weight[i]);
-        const mfq_half value = (mfq_half)((float)dense_norm + (float)moe_norm);
+        const __half value = (__half)((float)dense_norm + (float)moe_norm);
         combined[i] = value;
         const float value_f = (float)value;
         combined_ssq += value_f * value_f;
@@ -387,49 +238,14 @@ __global__ void gemma4_ffn_merge_f16_kernel(
     const float scale = (float)layer_scale[0];
 
     for (int i = threadIdx.x; i < D; i += BD) {
-        const mfq_half post = (mfq_half)(
+        const __half post = (__half)(
             (float)combined[i] * combined_rinv * final_post_weight[i]);
-        const mfq_half residual_sum = (mfq_half)((float)rr[i] + (float)post);
-        orow[i] = (mfq_half)((float)residual_sum * scale);
+        const __half residual_sum = (__half)((float)rr[i] + (float)post);
+        orow[i] = (__half)((float)residual_sum * scale);
     }
 }
 
-::tyloi::DenseTensor gemma4_ffn_merge_f16_cuda(
-    ::tyloi::DenseTensor dense, ::tyloi::DenseTensor moe, ::tyloi::DenseTensor residual,
-    ::tyloi::DenseTensor dense_post_weight, ::tyloi::DenseTensor moe_post_weight,
-    ::tyloi::DenseTensor final_post_weight, ::tyloi::DenseTensor layer_scale, double eps)
-{
-    for (const auto& value : {dense, moe, residual}) {
-        TYLOINFER_RUNTIME_CHECK(value.is_cuda() && value.is_contiguous() &&
-                        value.scalar_type() == ::tyloi::kFloat16,
-                    "gemma4 fused FFN merge: activations must be cuda contiguous f16");
-    }
-    TYLOINFER_RUNTIME_CHECK(dense.sizes() == moe.sizes() && dense.sizes() == residual.sizes(),
-                "gemma4 fused FFN merge: activation shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(dense.dim() >= 1,
-                "gemma4 fused FFN merge: activation must have at least one dimension");
-    const int D = (int)dense.size(-1);
-    const int N = (int)(dense.numel() / D);
-    for (const auto& weight : {dense_post_weight, moe_post_weight, final_post_weight}) {
-        TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                        weight.scalar_type() == ::tyloi::kFloat32 && weight.numel() == D,
-                    "gemma4 fused FFN merge: weights must be cuda contiguous f32[D]");
-    }
-    TYLOINFER_RUNTIME_CHECK(layer_scale.is_cuda() && layer_scale.is_contiguous() &&
-                    layer_scale.scalar_type() == ::tyloi::kFloat16 && layer_scale.numel() == 1,
-                "gemma4 fused FFN merge: layer scale must be cuda contiguous f16[1]");
 
-    auto out = ::tyloi::cuda::empty_like(dense);
-    constexpr int BD = ACC_RMS_BD;
-    const size_t shared_bytes = (size_t)D * sizeof(mfq_half);
-    gemma4_ffn_merge_f16_kernel<BD>
-        <<<N, BD, shared_bytes, mfq_current_cuda_stream()>>>(
-            dense.data_ptr<mfq_half>(), moe.data_ptr<mfq_half>(), residual.data_ptr<mfq_half>(),
-            dense_post_weight.data_ptr<float>(), moe_post_weight.data_ptr<float>(),
-            final_post_weight.data_ptr<float>(), layer_scale.data_ptr<mfq_half>(),
-            out.data_ptr<mfq_half>(), N, D, (float)eps);
-    return out;
-}
 
 __global__ void decode_graph_commit_kernel(const int64_t* __restrict__ next,
                                            int64_t* __restrict__ generated,
@@ -446,23 +262,44 @@ __global__ void decode_graph_commit_kernel(const int64_t* __restrict__ next,
     len[0] += 1;
     step[0] = idx + 1;
 }
-
-void decode_graph_commit_cuda(::tyloi::DenseTensor next, ::tyloi::DenseTensor generated, ::tyloi::DenseTensor step,
-                              ::tyloi::DenseTensor input, ::tyloi::DenseTensor pos, ::tyloi::DenseTensor len)
-{
-    TYLOINFER_RUNTIME_CHECK(next.is_cuda() && next.is_contiguous() && next.scalar_type() == ::tyloi::kInt64,
-                "decode_graph_commit: next must be cuda int64 contiguous");
-    TYLOINFER_RUNTIME_CHECK(generated.is_cuda() && generated.is_contiguous() && generated.scalar_type() == ::tyloi::kInt64,
-                "decode_graph_commit: generated must be cuda int64 contiguous");
-    TYLOINFER_RUNTIME_CHECK(step.is_cuda() && step.is_contiguous() && step.scalar_type() == ::tyloi::kInt64 && step.numel() == 1,
-                "decode_graph_commit: step must be cuda int64[1]");
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.scalar_type() == ::tyloi::kInt64 && input.numel() == 1,
-                "decode_graph_commit: input must be cuda int64[1]");
-    TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() && pos.scalar_type() == ::tyloi::kInt64 && pos.numel() == 1,
-                "decode_graph_commit: pos must be cuda int64[1]");
-    TYLOINFER_RUNTIME_CHECK(len.is_cuda() && len.is_contiguous() && len.scalar_type() == ::tyloi::kInt64 && len.numel() == 1,
-                "decode_graph_commit: len must be cuda int64[1]");
-    decode_graph_commit_kernel<<<1, 1, 0, mfq_current_cuda_stream()>>>(
-        next.data_ptr<int64_t>(), generated.data_ptr<int64_t>(), step.data_ptr<int64_t>(),
-        input.data_ptr<int64_t>(), pos.data_ptr<int64_t>(), len.data_ptr<int64_t>());
+namespace tyloi::cuda::acc_raw {
+void add(const void* a, const void* b, void* out, int n, NumericType type, cudaStream_t stream) {
+    constexpr int BD = 256;
+    if (type == NumericType::bf16)
+        acc_bf16_kernel<<<(n + BD - 1) / BD, BD, 0, stream>>>(static_cast<const __nv_bfloat16*>(a), static_cast<const __nv_bfloat16*>(b), static_cast<__nv_bfloat16*>(out), n);
+    else if (type == NumericType::f16)
+        acc_kernel<__half><<<(n + BD - 1) / BD, BD, 0, stream>>>(static_cast<const __half*>(a), static_cast<const __half*>(b), static_cast<__half*>(out), n);
+    else if (type == NumericType::f32)
+        acc_kernel<float><<<(n + BD - 1) / BD, BD, 0, stream>>>(static_cast<const float*>(a), static_cast<const float*>(b), static_cast<float*>(out), n);
+    else throw std::invalid_argument("unsupported add dtype");
 }
+void rms(const void* a, const void* b, const float* w, void* sum, void* norm,
+    int N, int D, float eps, float offset, NumericType input, NumericType output, cudaStream_t stream) {
+    if (input == NumericType::bf16 && output == NumericType::bf16)
+        acc_rms_norm_bf16_kernel<ACC_RMS_BD><<<N, ACC_RMS_BD, 0, stream>>>(static_cast<const __nv_bfloat16*>(a), static_cast<const __nv_bfloat16*>(b), w, static_cast<__nv_bfloat16*>(sum), static_cast<__nv_bfloat16*>(norm), N, D, eps, offset);
+    else if (input == NumericType::f16 && output == NumericType::f16)
+        acc_rms_norm_kernel<__half, __half, ACC_RMS_BD, false><<<N, ACC_RMS_BD, 0, stream>>>(static_cast<const __half*>(a), static_cast<const __half*>(b), w, static_cast<__half*>(sum), static_cast<__half*>(norm), N, D, eps, offset);
+    else if (input == NumericType::f16 && output == NumericType::f32)
+        acc_rms_norm_kernel<__half, float, ACC_RMS_BD, false><<<N, ACC_RMS_BD, 0, stream>>>(static_cast<const __half*>(a), static_cast<const __half*>(b), w, static_cast<__half*>(sum), static_cast<float*>(norm), N, D, eps, offset);
+    else if (input == NumericType::f32 && output == NumericType::f32)
+        acc_rms_norm_kernel<float, float, ACC_RMS_BD, true><<<N, ACC_RMS_BD, 0, stream>>>(static_cast<const float*>(a), static_cast<const float*>(b), w, static_cast<float*>(sum), static_cast<float*>(norm), N, D, eps, offset);
+    else throw std::invalid_argument("unsupported add RMS dtype");
+}
+void gemma_pre(const void* residual, const void* attn, const float* post, const float* dense,
+    const float* router, const float* moe, void* out, void* dense_out, float* router_out,
+    void* moe_out, int N, int D, float eps, cudaStream_t stream) {
+    gemma4_attn_residual_pre_norms_f16_kernel<ACC_RMS_BD><<<N, ACC_RMS_BD, std::size_t(D)*sizeof(__half), stream>>>(
+        static_cast<const __half*>(residual), static_cast<const __half*>(attn), post, dense, router, moe,
+        static_cast<__half*>(out), static_cast<__half*>(dense_out), router_out, static_cast<__half*>(moe_out), N, D, eps);
+}
+void gemma_merge(const void* dense, const void* moe, const void* residual, const float* dense_w,
+    const float* moe_w, const float* post_w, const void* scale, void* out, int N, int D, float eps, cudaStream_t stream) {
+    gemma4_ffn_merge_f16_kernel<ACC_RMS_BD><<<N, ACC_RMS_BD, std::size_t(D)*sizeof(__half), stream>>>(
+        static_cast<const __half*>(dense), static_cast<const __half*>(moe), static_cast<const __half*>(residual),
+        dense_w, moe_w, post_w, static_cast<const __half*>(scale), static_cast<__half*>(out), N, D, eps);
+}
+void commit(const std::int64_t* next, std::int64_t* generated, std::int64_t* step,
+    std::int64_t* input, std::int64_t* pos, std::int64_t* len, cudaStream_t stream) {
+    decode_graph_commit_kernel<<<1, 1, 0, stream>>>(next, generated, step, input, pos, len);
+}
+} // namespace tyloi::cuda::acc_raw

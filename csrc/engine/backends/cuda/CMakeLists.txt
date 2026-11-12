@@ -84,6 +84,7 @@ set(TYLOINFER_CUDA_KERNEL_SOURCES
     ${TYLOINFER_CUDA_KERNEL_ROOT}/deepseek_v41.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/embedding.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/selected_attention.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/sparse_mma_raw.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/qwen4_exp.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/ple_fused.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/glm5_next.cu
@@ -127,6 +128,11 @@ endif()
 
 add_library(mfq-cuda-native-kernels STATIC
     ${TYLOINFER_CUDA_KERNEL_SOURCES}
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/acc.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/wrappers.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/activation.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/qwen4_exp.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/selected_attention.cpp
     ${TYLOINFER_CUDA_KERNEL_ROOT}/float_projection.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_quantization.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_hot_cache.cu

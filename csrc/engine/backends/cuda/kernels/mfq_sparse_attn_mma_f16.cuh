@@ -10,8 +10,8 @@
 #undef TYLOINFER_FATTN_KERNEL_ONLY
 #endif
 
-#include "backend.h"
-#include "selected_attention.h"
+#include "sparse_mma_raw.h"
+
 
 #include <algorithm>
 #include <cstdint>
@@ -19,7 +19,7 @@
 
 namespace mfq_sparse_attn_mma {
 
-using DenseTensor = ::tyloi::DenseTensor;
+
 
 struct RuntimeInput {
     const void* positions = nullptr;
@@ -31,7 +31,7 @@ struct RuntimeInput {
     bool half_query = false;
     bool wide_positions = false;
     bool direct_query = false;
-    tyloi::cuda::HotKvView hot{};
+    tyloi::cuda::sparse_mma_raw::Hot hot{};
 };
 
 inline uint3 sparse_fastdiv_values(uint32_t divisor) {
@@ -186,18 +186,25 @@ __global__ void sparse_attention_kernel(
     constexpr int nbatch_fa =
         ggml_cuda_fattn_mma_get_nbatch_fa(DKQ, DV, ncols);
     const int gqa_ratio = heads / kv_heads;
-    const int iter_k = (selected + nbatch_fa - 1) / nbatch_fa;
-    const int iter_j = (M + ncols1 - 1) / ncols1;
-    const int iter_z_gqa = (gqa_ratio + ncols2 - 1) / ncols2;
+    // The positive inputs and divisors make each quotient no larger than its
+    // original int input; widen before adding the rounding term.
+    const int iter_k = static_cast<int>((static_cast<int64_t>(selected) + nbatch_fa - 1) / nbatch_fa);
+    const int iter_j = static_cast<int>((static_cast<int64_t>(M) + ncols1 - 1) / ncols1);
+    const int iter_z_gqa = static_cast<int>((static_cast<int64_t>(gqa_ratio) + ncols2 - 1) / ncols2);
     const int64_t work_per_sequence =
         static_cast<int64_t>(iter_k) * iter_j * iter_z_gqa * kv_heads;
     const int64_t total_work = work_per_sequence * B;
-    int64_t kbc = static_cast<int64_t>(blockIdx.x) * total_work / gridDim.x;
-    const int64_t kbc_stop =
-        static_cast<int64_t>(blockIdx.x + 1) * total_work / gridDim.x;
+    // Split the product so block index times total work cannot overflow int64.
+    const int64_t quotient = total_work / gridDim.x;
+    const int64_t remainder = total_work % gridDim.x;
+    const int64_t start_block = blockIdx.x;
+    const int64_t end_block = start_block + 1;
+    int64_t kbc = start_block * quotient + start_block * remainder / gridDim.x;
+    const int64_t kbc_stop = end_block * quotient + end_block * remainder / gridDim.x;
 
     int kb0_start = static_cast<int>(kbc % iter_k);
-    int kb0_stop = min(iter_k, kb0_start + static_cast<int>(kbc_stop - kbc));
+    int kb0_stop = static_cast<int>(min(static_cast<int64_t>(iter_k),
+        static_cast<int64_t>(kb0_start) + kbc_stop - kbc));
 
     while (kbc < kbc_stop && kb0_stop == iter_k) {
         if (kb0_start == 0) {
@@ -218,7 +225,7 @@ __global__ void sparse_attention_kernel(
         kbc += iter_k;
         kbc -= kbc % iter_k;
         kb0_start = 0;
-        kb0_stop = min(iter_k, static_cast<int>(kbc_stop - kbc));
+        kb0_stop = static_cast<int>(min(static_cast<int64_t>(iter_k), kbc_stop - kbc));
     }
 
     if (kbc < kbc_stop) {
@@ -236,220 +243,5 @@ __global__ void sparse_attention_kernel(
 #endif
 }
 
-template<int DKQ, int DV, int ncols1, int ncols2, bool V_is_K_view, bool use_hot = false>
-DenseTensor launch(
-    const DenseTensor& q,
-    const DenseTensor& k,
-    const DenseTensor& v,
-    const DenseTensor& indices,
-    const DenseTensor& mask,
-    const DenseTensor& sinks,
-    DenseTensor meta,
-    double scale,
-    const char * name,
-    const DenseTensor& gate = DenseTensor{},
-    bool half_output = false,
-    const DenseTensor& positions = DenseTensor{},
-    int64_t causal_columns = 0, tyloi::cuda::HotKvView hot = {}) {
-    static_assert(ncols1 == 1,
-        "selected-token tiles require one index row per query tile");
-    constexpr int ncols = ncols1 * ncols2;
-    TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4 &&
-        q.size(0) <= INT_MAX && q.size(1) <= INT_MAX && q.size(2) <= INT_MAX &&
-        k.size(1) <= INT_MAX && k.size(2) <= INT_MAX,
-        name, ": attention dimensions exceed 32-bit indexing");
-    const int B = static_cast<int>(q.size(0));
-    const int heads = static_cast<int>(q.size(1));
-    const int M = static_cast<int>(q.size(2));
-    const int kv_heads = static_cast<int>(k.size(1));
-    const int max_seq = static_cast<int>(k.size(2));
-    const bool causal = positions.defined();
-    TYLOINFER_RUNTIME_CHECK(!causal || (causal_columns > 0 && causal_columns <= INT_MAX - 32),
-        name, ": causal selection exceeds 32-bit indexing");
-    const int selected = causal ? static_cast<int>(((causal_columns + 31) / 32) * 32)
-        : static_cast<int>(indices.size(2));
-
-    TYLOINFER_RUNTIME_CHECK(B > 0 && M > 0 && heads > 0 && kv_heads > 0 &&
-        heads % kv_heads == 0 && max_seq > 0 && selected > 0,
-        name, ": invalid attention geometry");
-    TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(3) == DKQ &&
-        k.dim() == 4 && k.size(0) == B && k.size(3) == DKQ &&
-        v.dim() == 4 && v.size(0) == B && v.size(1) == kv_heads &&
-        v.size(2) == max_seq &&
-        v.size(3) == (V_is_K_view ? DKQ : DV) &&
-        (causal || (indices.dim() == 3 && indices.size(0) == B && indices.size(1) == M)),
-        name, ": tensor shapes disagree");
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && k.is_cuda() && v.is_cuda() &&
-        (causal || indices.is_cuda()) && q.device() == k.device() &&
-        q.device() == v.device() && (causal || q.device() == indices.device()),
-        name, ": tensors must share one CUDA device");
-    TYLOINFER_RUNTIME_CHECK(k.is_contiguous() &&
-        v.is_contiguous() && (causal || indices.is_contiguous()),
-        name, ": tensors must be contiguous");
-    TYLOINFER_RUNTIME_CHECK((q.scalar_type() == ::tyloi::kFloat32 ||
-        q.scalar_type() == ::tyloi::kFloat16) &&
-        k.scalar_type() == ::tyloi::kFloat16 &&
-        v.scalar_type() == ::tyloi::kFloat16 &&
-        (causal || indices.scalar_type() == ::tyloi::kInt32),
-        name, ": expected f32/f16/f16/i32 tensors");
-    if (causal) {
-        TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.device() == q.device() &&
-            positions.is_contiguous() && positions.dim() == 1 && positions.numel() == M &&
-            (positions.scalar_type() == ::tyloi::kInt32 || positions.scalar_type() == ::tyloi::kInt64) &&
-            !mask.defined() && !indices.defined(), name, ": invalid implicit causal selection");
-    }
-    if (mask.defined()) {
-        TYLOINFER_RUNTIME_CHECK(mask.is_cuda() && mask.device() == q.device() &&
-            mask.is_contiguous() &&
-            mask.scalar_type() == ::tyloi::kFloat16 &&
-            mask.sizes() == indices.sizes(), name, ": invalid mask");
-    }
-    if (sinks.defined()) {
-        TYLOINFER_RUNTIME_CHECK(sinks.is_cuda() && sinks.device() == q.device() &&
-            sinks.is_contiguous() &&
-            sinks.scalar_type() == ::tyloi::kFloat32 &&
-            sinks.numel() == heads, name, ": invalid sinks");
-    }
-
-    const MfqCudaGuard guard(q.device());
-    int device = 0;
-    cudaDeviceProp properties{};
-    TYLOINFER_RUNTIME_CHECK(cudaGetDevice(&device) == cudaSuccess,
-        name, ": cudaGetDevice failed");
-    TYLOINFER_RUNTIME_CHECK(cudaGetDeviceProperties(&properties, device) == cudaSuccess,
-        name, ": cudaGetDeviceProperties failed");
-    const int cc = properties.major * 100 + properties.minor * 10;
-    TYLOINFER_RUNTIME_CHECK(turing_mma_available(cc),
-        name, ": requires Turing-class tensor cores or newer");
-    const auto config = ampere_mma_available(cc)
-        ? ggml_cuda_fattn_mma_get_config_ampere(DKQ, DV, ncols)
-        : ggml_cuda_fattn_mma_get_config_turing(DKQ, DV, ncols);
-    const int nthreads = config.nthreads;
-    const int nwarps = nthreads / 32;
-    const int nbatch_fa = config.nbatch_fa;
-    const int nbatch_k2 = config.nbatch_K2;
-    const int nbatch_v2 = config.nbatch_V2;
-    const int nbatch_combine = config.nbatch_combine;
-    const bool q_in_reg = config.Q_in_reg;
-    TYLOINFER_RUNTIME_CHECK(nthreads > 0 && nbatch_fa > 0 && nbatch_k2 > 0 &&
-        nbatch_v2 > 0 && nbatch_combine > 0,
-        name, ": unsupported MMA geometry");
-    const int cols_per_warp = std::min(ncols, get_cols_per_warp(cc));
-    const size_t shared_kv = static_cast<size_t>(nbatch_fa) *
-        std::max(nbatch_k2 + 4, nbatch_v2 + 4) * sizeof(half2);
-    const size_t shared_q = static_cast<size_t>(ncols) *
-        (DKQ / 2 + 4) * sizeof(half2);
-    const size_t shared_mask = static_cast<size_t>(ncols1) *
-        (nbatch_fa / 2 + 4) * sizeof(half2);
-    const size_t shared_combine = static_cast<size_t>(nwarps) *
-        cols_per_warp * (nbatch_combine + 4) * sizeof(half2);
-    const size_t shmem = std::max(
-        shared_combine,
-        q_in_reg ? std::max(shared_q, shared_kv + shared_mask)
-                 : shared_q + shared_kv + shared_mask);
-
-    using Kernel = decltype(&sparse_attention_kernel<
-        DKQ, DV, ncols1, ncols2, V_is_K_view, use_hot>);
-    Kernel kernel = sparse_attention_kernel<
-        DKQ, DV, ncols1, ncols2, V_is_K_view, use_hot>;
-    static bool shmem_set[32] = {};
-    TYLOINFER_RUNTIME_CHECK(device >= 0 && device < 32,
-        name, ": unsupported CUDA device index");
-    if (!shmem_set[device]) {
-        const cudaError_t status = cudaFuncSetAttribute(
-            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-            static_cast<int>(shmem));
-        TYLOINFER_RUNTIME_CHECK(status == cudaSuccess,
-            name, ": shared-memory attribute failed: ", cudaGetErrorString(status));
-        shmem_set[device] = true;
-    }
-
-    const int gqa_ratio = heads / kv_heads;
-    const int iter_j = (M + ncols1 - 1) / ncols1;
-    const int iter_z_gqa = (gqa_ratio + ncols2 - 1) / ncols2;
-    const int64_t ntiles_dst64 =
-        static_cast<int64_t>(B) * kv_heads * iter_z_gqa * iter_j;
-    const int ntiles_kv = (selected + nbatch_fa - 1) / nbatch_fa;
-    TYLOINFER_RUNTIME_CHECK(ntiles_dst64 > 0 &&
-        ntiles_dst64 <= std::numeric_limits<int>::max(),
-        name, ": CUDA grid is too large");
-    const int ntiles_dst = static_cast<int>(ntiles_dst64);
-    int max_blocks_per_sm = 0;
-    cudaError_t status = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &max_blocks_per_sm, kernel, nthreads, shmem);
-    TYLOINFER_RUNTIME_CHECK(status == cudaSuccess && max_blocks_per_sm > 0,
-        name, ": occupancy query failed: ", cudaGetErrorString(status));
-    const int resident_blocks =
-        max_blocks_per_sm * properties.multiProcessorCount;
-    const int64_t total_tiles = ntiles_dst64 * ntiles_kv;
-    const int raw_blocks = static_cast<int>(std::min<int64_t>(
-        resident_blocks, total_tiles));
-    const int rounded_blocks = std::max(
-        ntiles_dst, (raw_blocks / ntiles_dst) * ntiles_dst);
-    const int blocks_per_tile = rounded_blocks / ntiles_dst;
-
-    const size_t meta_float2 = static_cast<size_t>(rounded_blocks) *
-        ncols * (2 + DV / 2);
-    const size_t required_meta = blocks_per_tile > 1 ? 2 * meta_float2 : 1;
-    if (!meta.defined()) {
-        TYLOINFER_RUNTIME_CHECK(required_meta <=
-            static_cast<size_t>(std::numeric_limits<int64_t>::max()),
-            name, ": meta workspace is too large");
-        meta = ::tyloi::cuda::empty(
-            {static_cast<int64_t>(required_meta)},
-            q.options().dtype(::tyloi::kFloat32));
-    }
-    TYLOINFER_RUNTIME_CHECK(meta.is_cuda() && meta.device() == q.device() &&
-        meta.is_contiguous() &&
-        meta.scalar_type() == ::tyloi::kFloat32 &&
-        static_cast<size_t>(meta.numel()) >= required_meta,
-        name, ": meta workspace too small, need ", required_meta,
-        " float elements");
-
-    DenseTensor out = ::tyloi::cuda::empty({B, M, heads, DV}, q.options().dtype(::tyloi::kFloat32));
-    const auto stream = mfq_current_cuda_stream();
-    const RuntimeInput input{causal ? positions.data_ptr() : nullptr,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3), static_cast<int>(causal_columns),
-        q.scalar_type() == ::tyloi::kFloat16,
-        causal && positions.scalar_type() == ::tyloi::kInt64,
-        causal || !q.is_contiguous() || q.scalar_type() == ::tyloi::kFloat16, hot};
-    kernel<<<rounded_blocks, dim3(32, nwarps, 1), shmem, stream>>>(
-        q.data_ptr(),
-        reinterpret_cast<const half *>(k.data_ptr<mfq_half>()),
-        reinterpret_cast<const half *>(v.data_ptr<mfq_half>()),
-        indices.defined() ? indices.data_ptr<int>() : nullptr,
-        mask.defined()
-            ? reinterpret_cast<const half *>(mask.data_ptr<mfq_half>())
-            : nullptr,
-        sinks.defined() ? sinks.data_ptr<float>() : nullptr,
-        out.data_ptr<float>(), reinterpret_cast<float2 *>(meta.data_ptr<float>()),
-        static_cast<float>(scale), B, M, heads, kv_heads, max_seq, selected,
-        sparse_fastdiv_values(static_cast<uint32_t>(M)), input);
-    status = cudaGetLastError();
-    TYLOINFER_RUNTIME_CHECK(status == cudaSuccess,
-        name, " launch failed: ", cudaGetErrorString(status));
-
-    if (gate.defined()) {
-        return mfq_selected_attention::mma_reduce_gated(out, meta, gate, half_output,
-            kv_heads, rounded_blocks, blocks_per_tile, ncols1, ncols2);
-    }
-    if (blocks_per_tile > 1) {
-        const uint3 fd0 = sparse_fastdiv_values(
-            static_cast<uint32_t>(iter_j * iter_z_gqa * kv_heads));
-        const uint3 fd1 = sparse_fastdiv_values(
-            static_cast<uint32_t>(iter_j * iter_z_gqa));
-        const uint3 fd2 = sparse_fastdiv_values(static_cast<uint32_t>(iter_j));
-        flash_attn_stream_k_fixup_uniform<DV, ncols1, ncols2>
-            <<<dim3(ntiles_dst, ncols1, ncols2), DV, 0, stream>>>(
-                out.data_ptr<float>(),
-                reinterpret_cast<const float2 *>(meta.data_ptr<float>()),
-                M, heads, kv_heads, rounded_blocks, gqa_ratio,
-                blocks_per_tile, fd0, fd1, fd2);
-        status = cudaGetLastError();
-        TYLOINFER_RUNTIME_CHECK(status == cudaSuccess,
-            name, " fixup failed: ", cudaGetErrorString(status));
-    }
-    return out;
-}
 
 } // namespace mfq_sparse_attn_mma

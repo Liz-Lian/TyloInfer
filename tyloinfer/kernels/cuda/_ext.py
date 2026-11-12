@@ -20,10 +20,9 @@ _REPOSITORY_ROOT = str(Path(_DIR).resolve().parents[2])
 # The shared CUDA kernels have one source tree, consumed by the native CMake
 # targets and by this extension. TQ is built separately by tq.py and its
 # sources are also collected into wheels from that tree.
-_CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "csrc" / "backends" / "cuda"
-_KERNEL_DIR = str(Path(_REPOSITORY_ROOT) / "csrc" / "engine" / "backends" / "cuda" / "kernels")
-_CUDA_RUNTIME_INCLUDE = str(_CUDA_BACKEND / "include")
-_CUDA_NATIVE_INCLUDE = str(Path(_REPOSITORY_ROOT) / "csrc" / "engine" / "backends" / "cuda" / "native")
+_CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "csrc" / "engine" / "backends" / "cuda"
+_KERNEL_DIR = str(_CUDA_BACKEND / "kernels")
+_CUDA_NATIVE_INCLUDE = str(_CUDA_BACKEND / "native")
 _CUDA_NATIVE_TENSOR_INCLUDE = os.path.join(_CUDA_NATIVE_INCLUDE, "tensor")
 _CSRC_ROOT = str(Path(_REPOSITORY_ROOT) / "csrc")
 _GGML_ROOT = Path(_REPOSITORY_ROOT) / "csrc" / "components" / "ggml"
@@ -47,6 +46,7 @@ _SOURCES = [
         "activation.cu",
         "embedding.cu",
         "selected_attention.cu",
+        "sparse_mma_raw.cu",
         "qwen4_exp.cu",
         "glm5_next.cu",
         "sampling.cu",
@@ -63,7 +63,15 @@ _SOURCES = [
         "nepq.cu",
         "nepq_residual.cu",
     )
-] + [os.path.join(_DIR, "mfq_cuda.cpp"), os.path.join(_CUDA_NATIVE_INCLUDE, "env.cpp")]
+] + [
+    os.path.join(_DIR, "mfq_cuda.cpp"),
+    os.path.join(_DIR, "acc.cpp"),
+    os.path.join(_DIR, "norm.cpp"),
+    os.path.join(_DIR, "activation.cpp"),
+    os.path.join(_DIR, "qwen4_exp.cpp"),
+    os.path.join(_DIR, "selected_attention.cpp"),
+    os.path.join(_CUDA_NATIVE_INCLUDE, "env.cpp"),
+]
 _module = None
 
 
@@ -121,7 +129,6 @@ def ext():
                 _REPOSITORY_ROOT,
                 str(_CUDA_BACKEND),
                 _KERNEL_DIR,
-                _CUDA_RUNTIME_INCLUDE,
                 _CUDA_NATIVE_INCLUDE,
                 _CUDA_NATIVE_TENSOR_INCLUDE,
                 _CSRC_ROOT,

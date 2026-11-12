@@ -1,7 +1,7 @@
 // GLU activation helpers used by materialized prefill paths.
 
 #include <cuda_fp16.h>
-#include "backend.h"
+#include "activation_raw.h"
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "glu.cuh"
-#include "mfq_cuda_kernels.h"
+
 
 // Calling libdevice explicitly keeps standalone FP32 GeGLU within its FP32
 // tolerance even when Torch compiles the extension with --use_fast_math.
@@ -29,19 +29,7 @@ __global__ void clipped_silu_mul_kernel(const half* gate,const half* up,half* ou
     }
 }
 
-::tyloi::DenseTensor clipped_silu_mul_cuda(::tyloi::DenseTensor gate,
-        ::tyloi::DenseTensor up,double limit) {
-    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && up.device()==gate.device() &&
-        gate.scalar_type()==::tyloi::kFloat16 && up.scalar_type()==::tyloi::kFloat16 &&
-        gate.sizes()==up.sizes() && gate.is_contiguous() && up.is_contiguous() && limit>0,
-        "clipped SwiGLU requires matching contiguous CUDA FP16 tensors and a positive limit");
-    auto output=::tyloi::cuda::empty(gate.sizes(),gate.options());
-    if(gate.numel())clipped_silu_mul_kernel<<<unsigned((gate.numel()+255)/256),256,0,mfq_current_cuda_stream()>>>(
-        reinterpret_cast<const half*>(gate.data_ptr<mfq_half>()),reinterpret_cast<const half*>(up.data_ptr<mfq_half>()),
-        reinterpret_cast<half*>(output.data_ptr<mfq_half>()),gate.numel(),float(limit));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
-}
+
 
 template <typename T>
 __device__ __forceinline__ float activation_as_float(T value) {
@@ -128,38 +116,7 @@ __global__ void silu_mul_bf16_kernel(
     }
 }
 
-::tyloi::DenseTensor silu_mul_cuda(::tyloi::DenseTensor gate, ::tyloi::DenseTensor up)
-{
-    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.is_contiguous(), "silu_mul: gate must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(up.is_cuda() && up.is_contiguous(), "silu_mul: up must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(gate.sizes() == up.sizes(), "silu_mul: gate/up shapes must match");
-    TYLOINFER_RUNTIME_CHECK(gate.scalar_type() == up.scalar_type(), "silu_mul: gate/up dtype must match");
-    TYLOINFER_RUNTIME_CHECK(
-        gate.scalar_type() == ::tyloi::kFloat32 ||
-        gate.scalar_type() == ::tyloi::kFloat16 ||
-        gate.scalar_type() == ::tyloi::kBFloat16,
-        "silu_mul: dtype must be f32, f16, or bf16");
 
-    auto out = ::tyloi::cuda::empty_like(gate);
-    const auto dtype = gate.scalar_type() == ::tyloi::kFloat32
-        ? ::tyloi::ScalarType::float32
-        : gate.scalar_type() == ::tyloi::kFloat16
-            ? ::tyloi::ScalarType::float16
-            : ::tyloi::ScalarType::bfloat16;
-    const auto shape = gate.sizes().vec();
-    tyloi::cuda::kernels::silu_mul(
-        ::tyloi::make_contiguous_view(
-            gate.data_ptr(), shape, dtype,
-            ::tyloi::Device{::tyloi::DeviceType::cuda, gate.get_device()}),
-        ::tyloi::make_contiguous_view(
-            up.data_ptr(), shape, dtype,
-            ::tyloi::Device{::tyloi::DeviceType::cuda, up.get_device()}),
-        ::tyloi::make_contiguous_view(
-            out.data_ptr(), shape, dtype,
-            ::tyloi::Device{::tyloi::DeviceType::cuda, out.get_device()}),
-        mfq_current_cuda_stream());
-    return out;
-}
 
 
 template <typename scalar_t>
@@ -190,33 +147,7 @@ __global__ void gelu_mul_kernel(
     }
 }
 
-::tyloi::DenseTensor gelu_mul_cuda(::tyloi::DenseTensor gate, ::tyloi::DenseTensor up)
-{
-    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.is_contiguous(), "gelu_mul: gate must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(up.is_cuda() && up.is_contiguous(), "gelu_mul: up must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(gate.sizes() == up.sizes(), "gelu_mul: gate/up shapes must match");
-    TYLOINFER_RUNTIME_CHECK(gate.scalar_type() == up.scalar_type(), "gelu_mul: gate/up dtype must match");
-    TYLOINFER_RUNTIME_CHECK(gate.scalar_type() == ::tyloi::kFloat32 || gate.scalar_type() == ::tyloi::kFloat16,
-                "gelu_mul: dtype must be f32 or f16");
 
-    auto out = ::tyloi::cuda::empty_like(gate);
-    const auto dtype = gate.scalar_type() == ::tyloi::kFloat32
-        ? ::tyloi::ScalarType::float32
-        : ::tyloi::ScalarType::float16;
-    const auto shape = gate.sizes().vec();
-    tyloi::cuda::kernels::gelu_mul(
-        ::tyloi::make_contiguous_view(
-            gate.data_ptr(), shape, dtype,
-            ::tyloi::Device{::tyloi::DeviceType::cuda, gate.get_device()}),
-        ::tyloi::make_contiguous_view(
-            up.data_ptr(), shape, dtype,
-            ::tyloi::Device{::tyloi::DeviceType::cuda, up.get_device()}),
-        ::tyloi::make_contiguous_view(
-            out.data_ptr(), shape, dtype,
-            ::tyloi::Device{::tyloi::DeviceType::cuda, out.get_device()}),
-        mfq_current_cuda_stream());
-    return out;
-}
 // relu(x)^2: the ungated expert / projector activation. One line per element,
 // f32 accumulation, the result is rounded back to the input dtype.
 template <typename scalar_t>
@@ -233,36 +164,7 @@ __global__ void relu_squared_kernel(
     }
 }
 
-::tyloi::DenseTensor relu_squared_cuda(::tyloi::DenseTensor input)
-{
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous(),
-        "relu_squared: input must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(
-        input.scalar_type() == ::tyloi::kFloat32 ||
-        input.scalar_type() == ::tyloi::kFloat16 ||
-        input.scalar_type() == ::tyloi::kBFloat16,
-        "relu_squared: dtype must be f32, f16, or bf16");
-    auto out = ::tyloi::cuda::empty_like(input);
-    const size_t elements = (size_t)input.numel();
-    if (elements == 0) return out;
-    constexpr int block = 256;
-    const int grid = (int)std::min<size_t>(4096, (elements + block - 1) / block);
-    cudaStream_t stream = mfq_current_cuda_stream();
-    if (input.scalar_type() == ::tyloi::kFloat32) {
-        relu_squared_kernel<float><<<grid, block, 0, stream>>>(
-            input.data_ptr<float>(), out.data_ptr<float>(), elements);
-    } else if (input.scalar_type() == ::tyloi::kFloat16) {
-        relu_squared_kernel<__half><<<grid, block, 0, stream>>>(
-            reinterpret_cast<const __half*>(input.data_ptr<mfq_half>()),
-            reinterpret_cast<__half*>(out.data_ptr<mfq_half>()), elements);
-    } else {
-        relu_squared_kernel<__nv_bfloat16><<<grid, block, 0, stream>>>(
-            reinterpret_cast<const __nv_bfloat16*>(input.data_ptr<mfq_bfloat16>()),
-            reinterpret_cast<__nv_bfloat16*>(out.data_ptr<mfq_bfloat16>()), elements);
-    }
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return out;
-}
+
 
 
 template <typename scalar_t>
@@ -296,185 +198,49 @@ __global__ void linear_gate_beta_kernel(
     }
 }
 
-std::vector<::tyloi::DenseTensor> linear_gate_beta_cuda(
-    ::tyloi::DenseTensor alpha, ::tyloi::DenseTensor beta, ::tyloi::DenseTensor dt_bias, ::tyloi::DenseTensor a_log,
-    bool stable_softplus)
-{
-    TYLOINFER_RUNTIME_CHECK(alpha.is_cuda() && beta.is_cuda(), "linear_gate_beta: alpha/beta must be cuda tensors");
-    TYLOINFER_RUNTIME_CHECK(dt_bias.is_cuda() && a_log.is_cuda(), "linear_gate_beta: dt_bias/a_log must be cuda tensors");
-    TYLOINFER_RUNTIME_CHECK(alpha.dim() == 3 && beta.dim() == 3, "linear_gate_beta: alpha/beta must be [B,T,V]");
-    TYLOINFER_RUNTIME_CHECK(alpha.sizes() == beta.sizes(), "linear_gate_beta: alpha/beta shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(alpha.scalar_type() == beta.scalar_type(), "linear_gate_beta: alpha/beta dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(alpha.scalar_type() == ::tyloi::kFloat32 || alpha.scalar_type() == ::tyloi::kFloat16,
-                "linear_gate_beta: alpha/beta dtype must be f32 or f16");
-    TYLOINFER_RUNTIME_CHECK(dt_bias.is_contiguous() && a_log.is_contiguous(), "linear_gate_beta: dt_bias/a_log must be contiguous");
-    TYLOINFER_RUNTIME_CHECK(dt_bias.scalar_type() == ::tyloi::kFloat32 && a_log.scalar_type() == ::tyloi::kFloat32,
-                "linear_gate_beta: dt_bias/a_log must be f32");
-    int64_t B = alpha.size(0);
-    int64_t T = alpha.size(1);
-    int64_t V = alpha.size(2);
-    TYLOINFER_RUNTIME_CHECK(dt_bias.numel() == V && a_log.numel() == V, "linear_gate_beta: parameter size mismatch");
-
-    auto opts = ::tyloi::TensorOptions().device(alpha.device()).dtype(::tyloi::kFloat32);
-    auto gate_t = ::tyloi::cuda::empty({B, V, T}, opts);
-    auto beta_t = ::tyloi::cuda::empty({B, V, T}, opts);
-    const auto dtype = alpha.scalar_type() == ::tyloi::kFloat32
-        ? ::tyloi::ScalarType::float32
-        : ::tyloi::ScalarType::float16;
-    const auto device = ::tyloi::Device{::tyloi::DeviceType::cuda, alpha.get_device()};
-    ::tyloi::TensorView alpha_view;
-    alpha_view.data = alpha.data_ptr();
-    alpha_view.rank = 3;
-    alpha_view.scalar_type = dtype;
-    alpha_view.device = device;
-    ::tyloi::TensorView beta_view = alpha_view;
-    beta_view.data = beta.data_ptr();
-    for (int index = 0; index < 3; ++index) {
-        alpha_view.sizes[index] = alpha.size(index);
-        alpha_view.strides[index] = alpha.stride(index);
-        beta_view.sizes[index] = beta.size(index);
-        beta_view.strides[index] = beta.stride(index);
-    }
-    const std::array<std::int64_t, 1> parameter_shape = {V};
-    const std::array<std::int64_t, 3> output_shape = {B, V, T};
-    tyloi::cuda::kernels::linear_gate_beta(
-        alpha_view,
-        beta_view,
-        ::tyloi::make_contiguous_view(
-            dt_bias.data_ptr(), parameter_shape, ::tyloi::ScalarType::float32, device),
-        ::tyloi::make_contiguous_view(
-            a_log.data_ptr(), parameter_shape, ::tyloi::ScalarType::float32, device),
-        ::tyloi::make_contiguous_view(
-            gate_t.data_ptr(), output_shape, ::tyloi::ScalarType::float32, device),
-        ::tyloi::make_contiguous_view(
-            beta_t.data_ptr(), output_shape, ::tyloi::ScalarType::float32, device),
-        mfq_current_cuda_stream(), stable_softplus);
-    return {gate_t, beta_t};
-}
-
-
-namespace tyloi::cuda::kernels {
-
-void silu_mul(
-    const TensorView& gate,
-    const TensorView& up,
-    const TensorView& output,
-    cudaStream_t stream) {
-    if (!gate.is_contiguous() || !up.is_contiguous() || !output.is_contiguous() ||
-        gate.numel() != up.numel() || gate.numel() != output.numel() ||
-        gate.scalar_type != up.scalar_type || gate.scalar_type != output.scalar_type) {
-        throw std::invalid_argument("native silu_mul tensor mismatch");
-    }
-    const auto elements = static_cast<std::size_t>(gate.numel());
-    if (elements == 0) return;
+namespace tyloi::cuda::activation_raw {
+void silu_mul(const void* gate, const void* up, void* output, std::size_t n, Type type, cudaStream_t stream) {
+    if (!n) return;
     constexpr int block = 256;
-    const int grid = static_cast<int>(std::min<std::size_t>(
-        4096, (elements + block - 1) / block));
-    if (gate.scalar_type == ScalarType::float32) {
-        silu_mul_f32_kernel<<<grid, block, 0, stream>>>(
-            gate.data_as<float>(), up.data_as<float>(), output.data_as<float>(), elements);
-    } else if (gate.scalar_type == ScalarType::float16) {
-        // Half2 reduces work for large tensors, but scalar launch geometry is
-        // faster for the small decode-sized cases.
-        constexpr std::size_t vector_threshold = 1U << 18;
-        const auto gate_address = reinterpret_cast<std::uintptr_t>(gate.data);
-        const auto up_address = reinterpret_cast<std::uintptr_t>(up.data);
-        const auto output_address = reinterpret_cast<std::uintptr_t>(output.data);
-        const bool half2_aligned =
-            ((gate_address | up_address | output_address) & (alignof(half2) - 1)) == 0;
-        if (elements >= vector_threshold && half2_aligned) {
-            const auto pairs = elements / 2;
-            const int vector_grid = static_cast<int>(std::min<std::size_t>(
-                4096, (pairs + block - 1) / block));
-            silu_mul_f16x2_kernel<<<vector_grid, block, 0, stream>>>(
-                reinterpret_cast<const half2*>(gate.data_as<half>()),
-                reinterpret_cast<const half2*>(up.data_as<half>()),
-                reinterpret_cast<half2*>(output.data_as<half>()), elements);
-        } else {
-            silu_mul_f16_kernel<<<grid, block, 0, stream>>>(
-                gate.data_as<half>(), up.data_as<half>(),
-                output.data_as<half>(), elements);
-        }
-    } else if (gate.scalar_type == ScalarType::bfloat16) {
-        silu_mul_bf16_kernel<<<grid, block, 0, stream>>>(
-            gate.data_as<__nv_bfloat16>(), up.data_as<__nv_bfloat16>(),
-            output.data_as<__nv_bfloat16>(), elements);
-    } else {
-        throw std::invalid_argument("native silu_mul dtype must be f32, f16, or bf16");
-    }
+    const int grid = static_cast<int>(std::min<std::size_t>(4096, (n + block - 1) / block));
+    if (type == Type::f32) silu_mul_f32_kernel<<<grid, block, 0, stream>>>(static_cast<const float*>(gate), static_cast<const float*>(up), static_cast<float*>(output), n);
+    else if (type == Type::f16) {
+        const auto a = reinterpret_cast<std::uintptr_t>(gate) | reinterpret_cast<std::uintptr_t>(up) | reinterpret_cast<std::uintptr_t>(output);
+        if (n >= (1U << 18) && (a & (alignof(half2) - 1)) == 0) {
+            const auto pairs = n / 2;
+            const int blocks = static_cast<int>(std::min<std::size_t>(4096, (pairs + block - 1) / block));
+            silu_mul_f16x2_kernel<<<blocks, block, 0, stream>>>(static_cast<const half2*>(gate), static_cast<const half2*>(up), static_cast<half2*>(output), n);
+        } else silu_mul_f16_kernel<<<grid, block, 0, stream>>>(static_cast<const half*>(gate), static_cast<const half*>(up), static_cast<half*>(output), n);
+    } else if (type == Type::bf16) silu_mul_bf16_kernel<<<grid, block, 0, stream>>>(static_cast<const __nv_bfloat16*>(gate), static_cast<const __nv_bfloat16*>(up), static_cast<__nv_bfloat16*>(output), n);
+    else throw std::invalid_argument("silu_mul dtype must be f32, f16, or bf16");
 }
-
-void gelu_mul(
-    const TensorView& gate,
-    const TensorView& up,
-    const TensorView& output,
-    cudaStream_t stream) {
-    if (!gate.is_contiguous() || !up.is_contiguous() || !output.is_contiguous() ||
-        gate.numel() != up.numel() || gate.numel() != output.numel() ||
-        gate.scalar_type != up.scalar_type || gate.scalar_type != output.scalar_type) {
-        throw std::invalid_argument("native gelu_mul tensor mismatch");
-    }
-    const auto elements = static_cast<std::size_t>(gate.numel());
-    if (elements == 0) return;
+void gelu_mul(const void* gate, const void* up, void* output, std::size_t n, Type type, cudaStream_t stream) {
+    if (!n) return;
     constexpr int block = 256;
-    const int grid = static_cast<int>(std::min<std::size_t>(
-        4096, (elements + block - 1) / block));
-    if (gate.scalar_type == ScalarType::float32) {
-        gelu_mul_kernel<float><<<grid, block, 0, stream>>>(
-            gate.data_as<float>(), up.data_as<float>(), output.data_as<float>(), elements);
-    } else if (gate.scalar_type == ScalarType::float16) {
-        gelu_mul_kernel<half><<<grid, block, 0, stream>>>(
-            gate.data_as<half>(), up.data_as<half>(), output.data_as<half>(), elements);
-    } else {
-        throw std::invalid_argument("native gelu_mul dtype must be f32 or f16");
-    }
+    const int grid = static_cast<int>(std::min<std::size_t>(4096, (n + block - 1) / block));
+    if (type == Type::f32) gelu_mul_kernel<float><<<grid, block, 0, stream>>>(static_cast<const float*>(gate), static_cast<const float*>(up), static_cast<float*>(output), n);
+    else if (type == Type::f16) gelu_mul_kernel<half><<<grid, block, 0, stream>>>(static_cast<const half*>(gate), static_cast<const half*>(up), static_cast<half*>(output), n);
+    else throw std::invalid_argument("gelu_mul dtype must be f32 or f16");
 }
-
-void linear_gate_beta(
-    const TensorView& alpha,
-    const TensorView& beta,
-    const TensorView& dt_bias,
-    const TensorView& a_log,
-    const TensorView& gate_t,
-    const TensorView& beta_t,
-    cudaStream_t stream, bool stable_softplus) {
-    if (alpha.rank != 3 || beta.rank != 3 || alpha.scalar_type != beta.scalar_type ||
-        alpha.sizes != beta.sizes || dt_bias.scalar_type != ScalarType::float32 ||
-        a_log.scalar_type != ScalarType::float32 ||
-        gate_t.scalar_type != ScalarType::float32 || beta_t.scalar_type != ScalarType::float32) {
-        throw std::invalid_argument("native linear_gate_beta tensor mismatch");
-    }
-    const auto batch = alpha.sizes[0];
-    const auto tokens = alpha.sizes[1];
-    const auto width = alpha.sizes[2];
-    if (dt_bias.numel() != width || a_log.numel() != width ||
-        gate_t.numel() != alpha.numel() || beta_t.numel() != alpha.numel()) {
-        throw std::invalid_argument("native linear_gate_beta shape mismatch");
-    }
-    const auto elements = static_cast<std::size_t>(alpha.numel());
-    if (elements == 0) return;
+void clipped_silu_mul(const void* gate, const void* up, void* output, std::int64_t n, float limit, cudaStream_t stream) {
+    if (n) clipped_silu_mul_kernel<<<unsigned((n + 255) / 256), 256, 0, stream>>>(static_cast<const half*>(gate), static_cast<const half*>(up), static_cast<half*>(output), n, limit);
+}
+void relu_squared(const void* input, void* output, std::size_t n, Type type, cudaStream_t stream) {
+    if (!n) return;
     constexpr int block = 256;
-    const int grid = static_cast<int>(std::min<std::size_t>(
-        4096, (elements + block - 1) / block));
-    if (alpha.scalar_type == ScalarType::float32) {
-        linear_gate_beta_kernel<float><<<grid, block, 0, stream>>>(
-            alpha.data_as<float>(), beta.data_as<float>(),
-            dt_bias.data_as<float>(), a_log.data_as<float>(),
-            gate_t.data_as<float>(), beta_t.data_as<float>(),
-            batch, tokens, width,
-            alpha.strides[0], alpha.strides[1], alpha.strides[2],
-            beta.strides[0], beta.strides[1], beta.strides[2], stable_softplus);
-    } else if (alpha.scalar_type == ScalarType::float16) {
-        linear_gate_beta_kernel<half><<<grid, block, 0, stream>>>(
-            alpha.data_as<half>(), beta.data_as<half>(),
-            dt_bias.data_as<float>(), a_log.data_as<float>(),
-            gate_t.data_as<float>(), beta_t.data_as<float>(),
-            batch, tokens, width,
-            alpha.strides[0], alpha.strides[1], alpha.strides[2],
-            beta.strides[0], beta.strides[1], beta.strides[2], stable_softplus);
-    } else {
-        throw std::invalid_argument("native linear_gate_beta dtype must be f32 or f16");
-    }
+    const int grid = static_cast<int>(std::min<std::size_t>(4096, (n + block - 1) / block));
+    if (type == Type::f32) relu_squared_kernel<float><<<grid, block, 0, stream>>>(static_cast<const float*>(input), static_cast<float*>(output), n);
+    else if (type == Type::f16) relu_squared_kernel<half><<<grid, block, 0, stream>>>(static_cast<const half*>(input), static_cast<half*>(output), n);
+    else if (type == Type::bf16) relu_squared_kernel<__nv_bfloat16><<<grid, block, 0, stream>>>(static_cast<const __nv_bfloat16*>(input), static_cast<__nv_bfloat16*>(output), n);
+    else throw std::invalid_argument("relu_squared dtype must be f32, f16, or bf16");
 }
-
-}  // namespace tyloi::cuda::kernels
+void linear_gate_beta(const void* alpha, const void* beta, const float* bias, const float* log, float* gate, float* beta_out, std::int64_t B, std::int64_t T, std::int64_t V, const std::int64_t as[3], const std::int64_t bs[3], Type type, bool stable, cudaStream_t stream) {
+    const auto n = static_cast<std::size_t>(B) * static_cast<std::size_t>(T) * static_cast<std::size_t>(V);
+    if (!n) return;
+    constexpr int block = 256;
+    const int grid = static_cast<int>(std::min<std::size_t>(4096, (n + block - 1) / block));
+    if (type == Type::f32) linear_gate_beta_kernel<float><<<grid, block, 0, stream>>>(static_cast<const float*>(alpha), static_cast<const float*>(beta), bias, log, gate, beta_out, B, T, V, as[0], as[1], as[2], bs[0], bs[1], bs[2], stable);
+    else if (type == Type::f16) linear_gate_beta_kernel<half><<<grid, block, 0, stream>>>(static_cast<const half*>(alpha), static_cast<const half*>(beta), bias, log, gate, beta_out, B, T, V, as[0], as[1], as[2], bs[0], bs[1], bs[2], stable);
+    else throw std::invalid_argument("linear_gate_beta dtype must be f32 or f16");
+}
+} // namespace tyloi::cuda::activation_raw
