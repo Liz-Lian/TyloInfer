@@ -48,7 +48,6 @@ void copy_into(DenseTensor& destination, const DenseTensor& source, bool non_blo
 DenseTensor reshape(const DenseTensor& input, std::span<const std::int64_t> shape);
 DenseTensor transpose(const DenseTensor& input, std::int64_t first, std::int64_t second);
 DenseTensor permute(const DenseTensor& input, std::span<const std::int64_t> order);
-DenseTensor unsqueeze(const DenseTensor& input, std::int64_t dimension);
 DenseTensor squeeze(const DenseTensor& input, std::int64_t dimension);
 DenseTensor squeeze(const DenseTensor& input);
 DenseTensor flatten(const DenseTensor& input, std::int64_t start, std::int64_t end);
@@ -56,7 +55,6 @@ DenseTensor narrow(const DenseTensor& input, std::int64_t dimension, std::int64_
 DenseTensor select(const DenseTensor& input, std::int64_t dimension, std::int64_t index);
 DenseTensor slice(const DenseTensor& input, std::int64_t dimension, std::int64_t start, std::int64_t end, std::int64_t step);
 DenseTensor index(const DenseTensor& input, std::initializer_list<TensorIndex> indices);
-DenseTensor expand(const DenseTensor& input, std::span<const std::int64_t> shape);
 DenseTensor unfold(const DenseTensor& input, std::int64_t dimension, std::int64_t window, std::int64_t step);
 std::vector<DenseTensor> split_with_sizes(const DenseTensor& input, std::span<const std::int64_t> sections, std::int64_t dimension);
 std::vector<DenseTensor> chunk(const DenseTensor& input, std::int64_t chunks, std::int64_t dimension);
@@ -72,7 +70,9 @@ DenseTensor reduce_cuda(
 void fill_cuda(DenseTensor& destination, double value);
 /** Complete host transfers by default; asynchronous callers retain host storage until the stream finishes. */
 void copy_cuda(DenseTensor& destination, const DenseTensor& source, bool non_blocking = false);
+/** Encode one host value using the native FP16 rounding path. */
 std::uint16_t encode_float16(float value);
+/** Encode one host value using the native BF16 rounding path. */
 std::uint16_t encode_bfloat16(float value);
 DenseTensor index_select_cuda(const DenseTensor& source, std::int64_t dimension, const DenseTensor& indices);
 DenseTensor gather_cuda(const DenseTensor& source, std::int64_t dimension, const DenseTensor& indices);

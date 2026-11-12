@@ -372,7 +372,6 @@ using ::tyloi::indexing::Slice;
         return profile ? profiler_.measure(name, operation) : operation();
     };
     const auto* tq_weight = output_a.representation<tyloi::encoding::TqTensor>();
-    const auto* nint = output_a.representation<tyloi::NintTensor>();
     if (tq_weight != nullptr) {
         auto low_rank = measure("dsv4.output_a", [&] {
             const auto resources = tq_.get(grouped.get_device());
@@ -382,6 +381,8 @@ using ::tyloi::indexing::Slice;
             return run(output_b, low_rank).reshape({batch, tokens, output_b.size(0)});
         });
     }
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    const auto* nint = output_a.representation<tyloi::NintTensor>();
     if (groupwise_output && tyloi::mfq_compat_enabled && nint != nullptr &&
         nint->bits == 8 && nint->gs == 48 && nint->out == groups * rank) {
         auto low_rank = measure("dsv4.output_a", [&]() {
@@ -391,6 +392,7 @@ using ::tyloi::indexing::Slice;
             return run(output_b, low_rank).reshape({batch, tokens, output_b.size(0)});
         });
     }
+#endif
     if (groupwise_output &&
         holds<tyloi::Mxfp8Tensor>(output_a) &&
         output_a.size(0) == groups * rank) {
@@ -908,6 +910,7 @@ std::vector<::tyloi::DenseTensor> Projector::run(
     if (tyloi::mfq_compat_enabled && group.nint_grouped) {
         return run(group.nint, x);
     }
+#if TYLOINFER_ENABLE_MFQ_COMPAT
     if (tyloi::mfq_compat_enabled && default_mmq && group.nvq_prefix2 && options_.nvq_fusion) {
         const auto* nvq0 = local_format<tyloi::NvqTensor>(group.layers[0]);
         const auto* nvq1 = local_format<tyloi::NvqTensor>(group.layers[1]);
@@ -954,6 +957,7 @@ std::vector<::tyloi::DenseTensor> Projector::run(
         }
         return result;
     }
+#endif
     std::vector<::tyloi::DenseTensor> result;
     if (default_mmq && group.decode_branch_parallel &&
             decode_branches(

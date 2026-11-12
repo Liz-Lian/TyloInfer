@@ -132,20 +132,6 @@ inline DenseTensor candidate_blocks_from_scores(const DenseTensor &scores, std::
         .contiguous();
 }
 
-inline DenseTensor candidate_positions(const DenseTensor &blocks, std::int64_t block_size,
-                                  std::int64_t pool_length) {
-    const auto count = blocks.size(-1);
-    auto block64 = blocks.to(::tyloi::kInt64);
-    auto within =
-        ::tyloi::cuda::arange(block_size, blocks.options().dtype(::tyloi::kInt64))
-            .reshape({1, 1, 1, block_size});
-    auto expanded = (block64.unsqueeze(-1) * static_cast<double>(block_size) + within)
-                        .reshape({blocks.size(0), blocks.size(1), count * block_size});
-    auto valid = (expanded >= 0.0) & (expanded < static_cast<double>(pool_length));
-    return ::tyloi::cuda::where(valid, expanded, -1.0)
-        .to(::tyloi::kInt64)
-        .contiguous();
-}
 
 } // namespace
 struct Csa::Impl {
@@ -322,8 +308,8 @@ struct Csa::Impl {
                 if (layer > config.candidate_source_layer && restricted) {
                     TYLOINFER_RUNTIME_CHECK(shared.candidate_blocks.defined(),
                                       "DeepSeek-V4.1 hierarchical indexer has no candidates");
-                    candidates = candidate_positions(shared.candidate_blocks,
-                                                     config.candidate_block_size, pool_length);
+                    candidates = csa_candidates(Tensor{shared.candidate_blocks},
+                                                config.candidate_block_size, pool_length).dense();
                     shared.keep(candidates);
                     return tyloi::ops::measure("deepseek_v41.indexer.candidate_scores", [&] {
                         return dsv4_indexer_candidate_scores_cuda(query, keys, weights, candidates,

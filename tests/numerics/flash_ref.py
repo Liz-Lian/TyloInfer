@@ -482,9 +482,95 @@ def _reference_ple(case):
     return {'full': acc * _sigmoid(acc)}
 
 
+def _graph(root):
+    """Save the source graph inputs and their changed replay inputs."""
+    source = Path(__file__).parents[1] / 'test_cuda_flash_next.py'
+    results = []
+    for op in ('qsa_block_scores', 'qwen4_sparse_gqa_attention', 'glm5_kda_forget_gate'):
+        rng = np.random.default_rng(5901)
+        if op == 'qsa_block_scores':
+            q = rng.normal(size=(1, 2, 4, 8)).astype(np.float32)
+            k = rng.normal(size=(1, 5, 8)).astype(np.float32)
+            original, changed, shape = [q, k], [-q, k], (1, 2, 5)
+        elif op == 'qwen4_sparse_gqa_attention':
+            q = rng.normal(scale=.2, size=(1, 4, 2, 256)).astype(np.float32)
+            k = rng.normal(scale=.2, size=(1, 2, 5, 256)).astype(np.float32)
+            v = rng.normal(scale=.2, size=k.shape).astype(np.float32)
+            ids = np.asarray([[[0, 2, 3, -1], [1, 2, 4, -1]]], np.int64)
+            original, changed, shape = [q, k, v, ids], [-q, k, -v, ids], (1, 2, 4, 256)
+        else:
+            x = rng.normal(size=(1, 2, 12)).astype(np.float32)
+            fa = rng.normal(scale=.2, size=(4, 12)).astype(np.float32)
+            fb = rng.normal(scale=.2, size=(12, 4)).astype(np.float32)
+            bias, log = np.zeros(12, np.float32), np.zeros(3, np.float32)
+            original, changed, shape = [x, fa, fb, bias, log], [-x, fa, fb, bias, log], (1, 2, 3, 4)
+        writer = CaseWriter(
+            root, 'graph_' + op, 'flash_graph',
+            {'operation': op, 'category': 'execution_consistency', 'num_heads': 3,
+             'head_dim': 4, 'lower_bound': -5.0,
+             'native_checks': [{'kind': 'compare_observations', 'left': 'replay_changed',
+                                'right': 'eager_changed', 'rule': _close(2e-6, 2e-6)}]},
+            {'file': 'tests/test_cuda_flash_next.py', 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+             'generator': 'tests/numerics/flash_ref.py',
+             'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+             'formula': 'declared graph completion and actual execution consistency'},
+        )
+        for index, (before, after) in enumerate(zip(original, changed, strict=True)):
+            writer.input(f'input_{index}', before)
+            writer.input(f'changed_{index}', after)
+        writer.output('graph_completed', (), 'bool', {'kind': 'exact'})
+        writer.auxiliary('eager_changed', shape, 'float32')
+        writer.auxiliary('replay_changed', shape, 'float32')
+        case = writer.finish()
+        reference(case, case.root / 'reference')
+        results.append(case.root / 'case.json')
+    return results
+
+
+def _reject(root):
+    """Save the source invalid-shape inputs for native rejection checks."""
+    source = Path(__file__).parents[1] / 'test_cuda_flash_next.py'
+    z = lambda *shape: np.zeros(shape, np.float32)
+    fixtures = (
+        ('qsa_block_scores', [z(1, 2, 3, 4), z(1, 2, 5)], {}),
+        ('glm5_kpool_states', [z(1, 2, 4), z(1, 2, 4), z(4, 4)], {'pool_size': 0}),
+        ('qwen4_ple_dilated_conv_silu', [z(1, 2, 4), z(4, 1, 3), z(1, 1, 4)], {'dilation': 2}),
+        ('qwen4_sparse_gqa_attention', [z(1, 3, 1, 4), z(1, 2, 5, 4), z(1, 2, 5, 4),
+                                        np.zeros((1, 1, 2), np.int64)], {}),
+        ('qwen4_dense_gqa_attention', [z(1, 4, 2, 8), z(1, 2, 3, 8), z(1, 2, 3, 8)],
+         {'query_offset': 2}),
+    )
+    results = []
+    for op, inputs, params in fixtures:
+        writer = CaseWriter(
+            root, 'reject_' + op, 'flash_rejection',
+            {'operation': op, 'category': 'declared_host_rejection', **params},
+            {'file': 'tests/test_cuda_flash_next.py', 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+             'generator': 'tests/numerics/flash_ref.py',
+             'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+             'formula': 'declared host rejection behavior'},
+        )
+        for index, item in enumerate(inputs):
+            writer.input(f'input_{index}', item)
+        writer.output('rejected', (), 'bool', {'kind': 'exact'})
+        case = writer.finish()
+        reference(case, case.root / 'reference')
+        results.append(case.root / 'case.json')
+    return results
+
+
 def reference(case: Case, root: Path) -> Path:
     """Recompute and persist a Flash-Next reference using only fixed case inputs."""
     op, config = case.data['op'], case.data['config']
+    if op in ('flash_graph', 'flash_rejection'):
+        root = Path(root)
+        name = 'graph_completed' if op == 'flash_graph' else 'rejected'
+        spec = save_tensor(root, name, np.asarray(True, dtype=np.bool_))
+        write_result(case, root, {name: spec}, {
+            'framework': 'declared behavior expectation', 'device': 'cpu',
+            'independence': 'declared behavior; no independent native numeric reference',
+        })
+        return root / 'result.json'
     if op == 'grouped_norm_gated_residual':
         outputs = _reference_norm(case)
     elif op == 'mhc_sinkhorn':
@@ -535,9 +621,12 @@ def generate(root: Path, suite: str = 'norm') -> list[Path]:
     """Generate a selected Flash-Next NumPy suite and return case manifests.
 
     Supported suites are ``norm``, ``mhc``, ``kda``, ``scores``, ``attention``
-    and ``ple``. Graph, stream, error and state equality checks require separate
-    native execution and are not performed by this generator.
+    ``ple``, ``graph``, and ``reject``. Graph and rejection cases declare behavior only.
     """
+    if suite == 'reject':
+        return _reject(root)
+    if suite == 'graph':
+        return _graph(root)
     if suite == 'norm':
         return _norm(root)
     if suite == 'mhc':

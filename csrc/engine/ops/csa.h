@@ -6,6 +6,8 @@
 #include <vector>
 
 namespace tyloi::ops {
+/** Expand selected blocks into bounded candidate positions. */
+Tensor csa_candidates(const Tensor& blocks, std::int64_t block_size, std::int64_t pool_length);
 /** Immutable projection and normalization weights for compressed sparse attention. */
 struct CsaWeights {
     Tensor query_a, query_b, key_value, output_a, output_b;

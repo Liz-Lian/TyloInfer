@@ -438,7 +438,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 return generate_diagnostic_tokens(*program, std::move(ids), gen, profile,
                     started, loaded, decode_inputs, stops, false, TokenOptions{.warmup=warmup_prefill});
             }
-            if (selected == Tool::dsv41) return tyloi::cuda::deepseek_v41_runtime::run_self_check();
+            if (selected == Tool::dsv41) return run_backend_dsv41_check(*program);
             if (selected == Tool::attention) return run_attention_decode_check(*program,
                 check_attention_decode, check_attention_reps, check_attention_head_dim,
                 check_attention_swa_decode, check_attention_window);

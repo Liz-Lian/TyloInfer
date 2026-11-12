@@ -27,6 +27,8 @@ add_executable(mfq-numerics
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/sample.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/gdn.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/flash.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/flash_graph.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/flash_reject.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/mfq.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tq.cpp
 )
@@ -65,6 +67,7 @@ foreach(target mfq-runtime mfq-diagnostics mfq-numerics mfq-eval mfq-runtime-tor
             target_compile_options(${target} PRIVATE /utf-8 /EHsc /bigobj)
         endif()
         set_target_properties(${target} PROPERTIES
+            CUDA_RUNTIME_LIBRARY Shared
             RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
         )
     endif()

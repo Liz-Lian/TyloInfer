@@ -127,6 +127,8 @@ float decode_float16(std::uint16_t bits) {
     return std::bit_cast<float>(value);
 }
 
+} // namespace
+
 std::uint16_t encode_float16(float value) {
     const auto bits = std::bit_cast<std::uint32_t>(value);
     const auto sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
@@ -160,9 +162,13 @@ std::uint16_t encode_float16(float value) {
     return static_cast<std::uint16_t>(sign | (exponent << 10) | rounded);
 }
 
+namespace {
+
 float decode_bfloat16(std::uint16_t bits) {
     return std::bit_cast<float>(static_cast<std::uint32_t>(bits) << 16);
 }
+
+} // namespace
 
 std::uint16_t encode_bfloat16(float value) {
     auto bits = std::bit_cast<std::uint32_t>(value);
@@ -170,6 +176,8 @@ std::uint16_t encode_bfloat16(float value) {
     bits += 0x7fffu + lsb;
     return static_cast<std::uint16_t>(bits >> 16);
 }
+
+namespace {
 
 double read_cpu_number(const void* pointer, ScalarType type) {
     switch (type) {

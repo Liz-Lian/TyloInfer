@@ -41,6 +41,22 @@ struct SharedBridge {
     }
 };
 }
+Tensor csa_candidates(const Tensor& value, std::int64_t block_size,
+                      std::int64_t pool_length) {
+    const auto& blocks = value.dense();
+    const auto count = blocks.size(-1);
+    auto block64 = blocks.to(::tyloi::kInt64);
+    auto within =
+        ::tyloi::cuda::arange(block_size, blocks.options().dtype(::tyloi::kInt64))
+            .reshape({1, 1, 1, block_size});
+    auto expanded = (block64.unsqueeze(-1) * static_cast<double>(block_size) + within)
+                        .reshape({blocks.size(0), blocks.size(1), count * block_size});
+    auto valid = (expanded >= 0.0) & (expanded < static_cast<double>(pool_length));
+    return ::tyloi::cuda::where(valid, expanded, -1.0)
+        .to(::tyloi::kInt64)
+        .contiguous();
+}
+
 Csa::State::State(const State& other)
     : local_kv(other.local_kv), compressed_kv(other.compressed_kv), index_k(other.index_k),
       partial_kv(other.partial_kv), partial_score(other.partial_score),

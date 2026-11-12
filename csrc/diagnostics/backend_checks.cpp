@@ -2,7 +2,10 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/program.h"
+#include "engine/models/deepseek_v41/engram.h"
+#include "engine/ops/csa.h"
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/graph.h"
 
@@ -54,6 +57,29 @@ private:
     tyloi::cuda::Graph* graph_;
     bool active_ = true;
 };
+}
+
+int run_backend_dsv41_check(tyloi::cuda::Program& program) {
+    auto scope = program.executor().enter();
+    tyloi::DenseTensor blocks, positions;
+    tyloi::Tensor candidates;
+    DrainGuard drain(program, tyloi::cuda::current_stream());
+    tyloi::cuda::deepseek_v41_runtime::EngramHashState::self_check();
+    const auto options = tyloi::TensorOptions()
+                             .device(program.executor().device())
+                             .dtype(tyloi::kInt32);
+    blocks = tyloi::cuda::tensor(std::vector<std::int32_t>{0, 2, -1}, options)
+                 .reshape({1, 1, 3});
+    candidates = tyloi::ops::csa_candidates(tyloi::Tensor{blocks}, 2, 5);
+    positions = candidates.dense().to(tyloi::kCPU, tyloi::kInt64).contiguous();
+    const std::vector<std::int64_t> expected{0, 1, 4, -1, -1, -1};
+    const auto* values = positions.data_ptr<std::int64_t>();
+    TYLOINFER_RUNTIME_CHECK(positions.numel() == static_cast<std::int64_t>(expected.size()) &&
+                               std::equal(expected.begin(), expected.end(), values),
+                           "DeepSeek-V4.1 candidate hierarchy contract failed");
+    drain.finish();
+    std::cout << "deepseek_v41_runtime_check=ok\n";
+    return 0;
 }
 
 int run_backend_bf16_add_check(
