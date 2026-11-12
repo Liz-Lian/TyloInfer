@@ -160,8 +160,8 @@ def _evaluate(actual, reference, contract):
     return result
 
 
-def _behavior(case, actual):
-    """Summarize declared checks without treating descriptors as execution evidence."""
+def _behavior(case, actual, actual_root=None):
+    """Evaluate observation pairs centrally and summarize other reported behavior checks."""
     descriptors = case.data['config'].get('native_checks', [])
     claims = {} if actual is None else actual.get('checks', {})
     checks = {}
@@ -173,6 +173,18 @@ def _behavior(case, actual):
             'status': claim.get('status', 'not_executed'),
             'evidence': claim.get('evidence'),
         }
+        if isinstance(descriptor, dict) and descriptor.get('kind') == 'compare_observations':
+            checks[name]['status'] = 'not_executed'
+            checks[name]['evidence'] = None
+            if actual is not None:
+                left = load_tensor(actual_root, actual['outputs'][descriptor['left']])
+                right = load_tensor(actual_root, actual['outputs'][descriptor['right']])
+                comparison = _evaluate(left, right, {'rule': descriptor['rule']})
+                checks[name]['status'] = comparison['status']
+                checks[name]['evidence'] = {
+                    'left': descriptor['left'], 'right': descriptor['right'],
+                    'comparison': comparison,
+                }
     if not checks:
         return 'not_required', checks
     statuses = {check['status'] for check in checks.values()}
@@ -213,9 +225,9 @@ def compare(case_path, reference_path, actual_path):
             report['reason'] = 'Execution result was not provided'
             return report
         actual = read_result(case, actual_path, report['actual_role'])
-        report['behavior_status'], report['checks'] = _behavior(case, actual)
         reference_root = Path(reference_path).parent
         actual_root = Path(actual_path).parent
+        report['behavior_status'], report['checks'] = _behavior(case, actual, actual_root)
         for name, contract in case.data['outputs'].items():
             ref = load_tensor(reference_root, reference['outputs'][name])
             got = load_tensor(actual_root, actual['outputs'][name])

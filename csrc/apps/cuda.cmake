@@ -23,6 +23,11 @@ add_executable(mfq-numerics
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/case.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tensor.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/basic.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/attn.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/sample.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/gdn.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/flash.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/mfq.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tq.cpp
 )
 target_link_libraries(mfq-numerics PRIVATE mfq-cuda-engine CUDA::cudart CUDA::cublas)

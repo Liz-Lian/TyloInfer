@@ -46,7 +46,9 @@ def _layout(shape, noncontiguous):
     return {'strides': strides, 'offset': 0}
 
 
-def _start(root, name, op, config, inputs, outputs, dtype='float32', noncontiguous=False):
+def _start(
+    root, name, op, config, inputs, outputs, dtype='float32', noncontiguous=False, auxiliary=()
+):
     """Persist source inputs and publish a case before calculating outputs."""
     source = Path(__file__).parents[1] / 'test_cuda_flash_next.py'
     config = {
@@ -82,6 +84,8 @@ def _start(root, name, op, config, inputs, outputs, dtype='float32', noncontiguo
         writer.input(key, array, dtype=logical, layout=_layout(array.shape, selected))
     for key, shape, rule in outputs:
         writer.output(key, shape, 'float32', rule, actual_dtype='float32')
+    for key, shape, logical_dtype in auxiliary:
+        writer.auxiliary(key, shape, logical_dtype)
     return writer.finish()
 
 
@@ -111,6 +115,37 @@ def _close(atol, rtol):
     return {'kind': 'close', 'atol': atol, 'rtol': rtol}
 
 
+def _norm_gates(x, norm, inject, count, width):
+    """Calculate the original independent input to the residual post operation."""
+    grouped = x.reshape(*x.shape[:-1], count, width)
+    normalized = (grouped / np.sqrt(np.mean(grouped**2, axis=-1, keepdims=True) + 1e-6)).reshape(
+        x.shape
+    ) * (1 + norm)
+    return 2 * _sigmoid(normalized @ inject.T / count)
+
+
+def _mhc_mix(x, function, base, scale, iterations):
+    """Calculate the original independent inputs to mHC post mixing."""
+    count = x.shape[-2]
+    flat = x.reshape(*x.shape[:-2], -1)
+    flat = flat / np.sqrt(np.mean(flat**2, axis=-1, keepdims=True) + 1e-5)
+    pre, post, comb = np.split(flat @ function.T, [count, 2 * count], axis=-1)
+    pre = _sigmoid(pre * scale[0] + base[:count]) + 1e-6
+    post = 2 * _sigmoid(post * scale[1] + base[count : 2 * count])
+    comb = (
+        _softmax(
+            comb.reshape(*x.shape[:-2], count, count) * scale[2]
+            + base[2 * count :].reshape(count, count)
+        )
+        + 1e-6
+    )
+    comb /= comb.sum(axis=-2, keepdims=True) + 1e-6
+    for _ in range(iterations - 1):
+        comb /= comb.sum(axis=-1, keepdims=True) + 1e-6
+        comb /= comb.sum(axis=-2, keepdims=True) + 1e-6
+    return pre, post, comb
+
+
 def _norm(root):
     """Generate grouped norm and gated residual observations."""
     rng = np.random.default_rng(53)
@@ -121,13 +156,16 @@ def _norm(root):
     up = rng.normal(scale=0.1, size=(c * h, rank)).astype(np.float32)
     inject = rng.normal(scale=0.1, size=(c, c * h)).astype(np.float32)
     branch = rng.normal(size=(1, 3, h)).astype(np.float32)
+    post_gates = _norm_gates(x, norm, inject, c, h)
     close = _close(2e-4, 2e-4)
     case = _start(
         root,
         'flash_norm',
         'grouped_norm_gated_residual',
-        {'group_size': h, 'hc_count': c, 'optional_inject_none': True},
-        dict(x=x, norm=norm, down=down, up=up, inject=inject, branch=branch),
+        {'group_size': h, 'hc_count': c, 'optional_inject_none': True,
+         'native_checks': ['optional_inject_none']},
+        dict(x=x, norm=norm, down=down, up=up, inject=inject, branch=branch,
+             post_gates=post_gates),
         [
             ('normalized', x.shape, close),
             ('pre', branch.shape, close),
@@ -153,12 +191,14 @@ def _mhc(root):
         base = rng.normal(scale=0.05, size=mix).astype(np.float32)
         scale = np.asarray([0.8, 0.9, 1.1], np.float32)
         branch = rng.normal(size=(1, 2, h)).astype(np.float32)
+        _, post_input, comb_input = _mhc_mix(x, function, base, scale, iterations)
         case = _start(
             root,
             f'flash_mhc_{iterations}',
             'mhc_sinkhorn',
             {'sinkhorn_iterations': iterations, 'post_inputs_contiguous': True},
-            dict(x=x, function=function, base=base, scale=scale, branch=branch),
+            dict(x=x, function=function, base=base, scale=scale, branch=branch,
+                 post_input=post_input, comb_input=comb_input),
             [
                 ('post_gate', (1, 2, c), _close(7e-4, 7e-4)),
                 ('comb', (1, 2, c, c), _close(7e-4, 7e-4)),
@@ -353,7 +393,12 @@ def _ple(root):
                 'dilation': dilation,
                 'kernel': kernel,
                 'first_tokens': 3,
-                'native_checks': ['chunk_concatenation_matches_full', 'state_last_equals_full'],
+                'native_checks': [
+                    {'kind': 'compare_observations', 'left': 'joined', 'right': 'full',
+                     'rule': _close(1e-5, 1e-5)},
+                    {'kind': 'compare_observations', 'left': 'last_state', 'right': 'full_state',
+                     'rule': {'kind': 'exact'}},
+                ],
                 'chunk_comparison': _close(1e-5, 1e-5),
                 'state_comparison': {'kind': 'exact'},
                 'state_reference': 'source checks equality only; no independent state values',
@@ -362,6 +407,11 @@ def _ple(root):
             [
                 ('full', (2, 7, 11), _close(1e-5, 1e-5)),
             ],
+            auxiliary=(
+                ('joined', (2, 7, 11), 'float32'),
+                ('full_state', (2, (kernel - 1) * dilation, 11), 'float32'),
+                ('last_state', (2, (kernel - 1) * dilation, 11), 'float32'),
+            ),
         )
         reference(case, case.root / 'reference')
         results.append(case.root / 'case.json')
@@ -383,7 +433,10 @@ def _reference_norm(case):
     mixing = _sigmoid(low @ up.T).reshape(grouped.shape)
     pre = (mixing * normalized.reshape(grouped.shape)).mean(axis=-2)
     gates = 2 * _sigmoid(normalized @ inject.T / c)
-    post = x + (branch[..., None, :] * gates[..., :, None]).reshape(x.shape)
+    post_gates = case.tensor('post_gates')
+    if not np.array_equal(post_gates, _norm_gates(x, norm, inject, c, h)):
+        raise ValueError('Fixed residual post gates differ from the source inputs')
+    post = x + (branch[..., None, :] * post_gates[..., :, None]).reshape(x.shape)
     return dict(
         normalized=normalized, pre=pre, residual=x, gates=gates, no_inject_pre=pre, post=post
     )
@@ -394,21 +447,12 @@ def _reference_mhc(case):
     x, function, base, scale, branch = (
         case.tensor(k) for k in ('x', 'function', 'base', 'scale', 'branch')
     )
-    c = x.shape[-2]
-    flat = x.reshape(*x.shape[:-2], -1)
-    flat = flat / np.sqrt(np.mean(flat**2, axis=-1, keepdims=True) + 1e-5)
-    pre, post, comb = np.split(flat @ function.T, [c, 2 * c], axis=-1)
-    pre = _sigmoid(pre * scale[0] + base[:c]) + 1e-6
-    post = 2 * _sigmoid(post * scale[1] + base[c : 2 * c])
-    comb = (
-        _softmax(comb.reshape(*x.shape[:-2], c, c) * scale[2] + base[2 * c :].reshape(c, c)) + 1e-6
-    )
-    comb /= comb.sum(axis=-2, keepdims=True) + 1e-6
-    for _ in range(case.data['config']['sinkhorn_iterations'] - 1):
-        comb /= comb.sum(axis=-1, keepdims=True) + 1e-6
-        comb /= comb.sum(axis=-2, keepdims=True) + 1e-6
+    pre, post, comb = _mhc_mix(x, function, base, scale, case.data['config']['sinkhorn_iterations'])
+    post_input, comb_input = case.tensor('post_input'), case.tensor('comb_input')
+    if not np.array_equal(post, post_input) or not np.array_equal(comb, comb_input):
+        raise ValueError('Fixed mHC post inputs differ from the source inputs')
     value = (pre[..., None] * x).sum(axis=-2)
-    final = post[..., None] * branch[..., None, :] + np.matmul(comb.swapaxes(-1, -2), x)
+    final = post_input[..., None] * branch[..., None, :] + np.matmul(comb_input.swapaxes(-1, -2), x)
     return dict(post_gate=post, comb=comb, pre=value, post=final)
 
 

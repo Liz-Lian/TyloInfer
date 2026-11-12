@@ -75,6 +75,7 @@ def main(argv=None):
     candidate = commands.add_parser('candidate', help='Recompute a Python reference crosscheck')
     candidate.add_argument('case', type=Path)
     candidate.add_argument('output', type=Path, help='A new result directory')
+    candidate.add_argument('--device', default='cuda', help='CUDA device for candidate cases')
     check = commands.add_parser('compare', help='Validate and compare fixed result artifacts')
     check.add_argument('case', type=Path)
     check.add_argument('--reference', required=True, type=Path)
@@ -228,10 +229,21 @@ def main(argv=None):
             print(json.dumps({'status': 'generated', 'cases': [str(path) for path in paths]}))
             return 0
         if args.command == 'candidate':
-            from .hf_ref import candidate
-
             case = Case.load(args.case)
-            path = candidate(case, args.output)
+            generator = case.data['source'].get('generator')
+            if generator == 'tests/numerics/gdn_ref.py':
+                from .gdn_ref import candidate
+            elif generator == 'tests/numerics/attn_ref.py':
+                from .attn_ref import candidate
+            elif generator == 'tests/numerics/hf_ref.py':
+                from .hf_ref import candidate
+            else:
+                raise ValueError('Unsupported candidate source')
+            path = (
+                candidate(case, args.output, args.device)
+                if generator == 'tests/numerics/attn_ref.py'
+                else candidate(case, args.output)
+            )
             print(
                 json.dumps(
                     {

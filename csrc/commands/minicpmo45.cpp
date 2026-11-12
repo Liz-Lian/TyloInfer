@@ -33,11 +33,7 @@ namespace {
 
 using tyloi::indexing::Slice;
 
-#ifdef TYLOINFER_NATIVE_CUDA
-using tyloi::eval::read_tensor;
-using tyloi::eval::write_tensor;
-using tyloi::eval::read_scalar;
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
 void minicpmo45_write_pickle_tensor(const tyloi::DenseTensor &value,
                                            const std::string &path) {
     auto bytes =
@@ -331,6 +327,10 @@ void validate_command_options(const CommandOptions& options) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
+using tyloi::eval::read_tensor;
+using tyloi::eval::write_tensor;
+using tyloi::eval::read_scalar;
+
 int run_composite(Program& program, const CommandOptions& options) {
     if (options.input_prefix.empty() || options.output_prefix.empty())
         throw std::runtime_error("MiniCPM-o composite graph requires input and output prefixes");

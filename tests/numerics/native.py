@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import math
 import subprocess
 import sys
@@ -12,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .case import Case, _DTYPES, _read_json, save_tensor, write_result
+from .case import _DTYPES, Case, _read_json, save_tensor, write_result
 
 _STDERR_LIMIT = 65536
 
@@ -27,7 +26,8 @@ def _outputs(case, raw):
     if not isinstance(manifest, dict):
         raise ValueError('Worker manifest must be an object')
     outputs = manifest.get('outputs')
-    if not isinstance(outputs, dict) or set(outputs) != set(case.data['outputs']):
+    contracts = {**case.data['outputs'], **case.data.get('auxiliary', {})}
+    if not isinstance(outputs, dict) or set(outputs) != set(contracts):
         raise ValueError('Worker observations do not match the case')
     execution = manifest.get('execution')
     if not isinstance(execution, dict) or not execution:
@@ -37,8 +37,14 @@ def _outputs(case, raw):
         raise ValueError('Worker checks must be an object')
     descriptors = case.data['config'].get('native_checks', [])
     names = {f'native_{index}' for index in range(len(descriptors))}
+    central = {
+        f'native_{index}' for index, descriptor in enumerate(descriptors)
+        if isinstance(descriptor, dict) and descriptor.get('kind') == 'compare_observations'
+    }
     if set(checks) - names:
         raise ValueError('Worker reported an unknown native check')
+    if set(checks) & central:
+        raise ValueError('Worker cannot claim a centrally evaluated observation comparison')
     for name, check in checks.items():
         if not isinstance(check, dict) or set(check) - {'status', 'evidence'}:
             raise ValueError(f'Invalid native behavior check: {name}')
@@ -49,11 +55,13 @@ def _outputs(case, raw):
             not isinstance(check.get('evidence'), dict) or not check['evidence']
         ):
             raise ValueError(f'Native behavior check requires evidence: {name}')
-    checks = {name: checks.get(name, {'status': 'not_executed'}) for name in sorted(names)}
+    checks = {
+        name: checks.get(name, {'status': 'not_executed'}) for name in sorted(names - central)
+    }
 
     values = {}
     used = {(raw / 'raw.json').resolve()}
-    for name, contract in case.data['outputs'].items():
+    for name, contract in contracts.items():
         spec = outputs[name]
         if not isinstance(spec, dict):
             raise ValueError(f'Invalid worker observation: {name}')
@@ -144,7 +152,7 @@ def run(case: Case, root: Path, executable: Path) -> Path:
     execution['worker'] = {'file': str(executable), 'sha256': worker_hash}
     outputs = {}
     for name, value in values.items():
-        contract = verified.data['outputs'][name]
+        contract = {**verified.data['outputs'], **verified.data.get('auxiliary', {})}[name]
         outputs[name] = save_tensor(
             root, name, value, dtype=contract.get('actual_dtype', contract['dtype'])
         )

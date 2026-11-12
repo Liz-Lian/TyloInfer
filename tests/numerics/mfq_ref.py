@@ -149,11 +149,16 @@ def reference(case: Case, root: Path, source_root: Path) -> Path:
     expected = (value.astype(np.float64) @ dense.astype(np.float64).T).astype(np.float32)
     if _source(source_root)[1] != identity:
         raise ValueError('MFQ source changed during reference calculation')
-    spec = save_tensor(root, 'output', expected)
+    outputs = {'output': save_tensor(root, 'output', expected)}
+    if config['experts'] == 1:
+        rows = config['rows']
+        intervals = ((1, 17), (rows // 2, rows // 2 + 9), (rows - 11, rows), (0, rows))
+        for index, (begin, end) in enumerate(intervals):
+            outputs[f'slice_{index}'] = save_tensor(root, f'slice_{index}', expected[:, begin:end])
     return write_result(
         case,
         root,
-        {'output': spec},
+        outputs,
         {
             'framework': 'NumPy',
             'numpy_version': np.__version__,
@@ -219,9 +224,13 @@ def generate(root: Path, source_root: Path, experts: int = 1) -> list[Path]:
                     'payload_dtype': dtype,
                     'model_dtype': dtype if experts == 1 else 'MFE',
                     'input_broadcast': 'same input rows for each flattened expert',
-                    'native_checks': ['compressed_dispatch', 'row_slices']
+                    'native_checks': [
+                        'compressed_dispatch',
+                        {'kind': 'row_slices', 'observations': [f'slice_{i}' for i in range(4)]},
+                    ]
                     if experts == 1
                     else ['expert_container_dispatch'],
+                    'category': 'source_cpu_projection' if experts == 1 else 'expert_container_extension',
                 },
                 {
                     'generator': 'tests/numerics/mfq_ref.py',
@@ -248,6 +257,15 @@ def generate(root: Path, source_root: Path, experts: int = 1) -> list[Path]:
                 'float32',
                 {'kind': 'close', 'atol': 1e-5, 'rtol': 1e-3},
             )
+            if experts == 1:
+                intervals = ((1, 17), (rows // 2, rows // 2 + 9), (rows - 11, rows), (0, rows))
+                for index, (begin, end) in enumerate(intervals):
+                    writer.output(
+                        f'slice_{index}',
+                        (3, end - begin),
+                        'float32',
+                        {'kind': 'close', 'atol': 1e-5, 'rtol': 1e-3},
+                    )
             case = writer.finish()
             reference(case, case.root / 'reference', source_root)
             paths.append(case.root / 'case.json')

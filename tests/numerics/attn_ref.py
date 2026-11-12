@@ -95,9 +95,134 @@ def _reference(case, root, device):
     return write_result(case, root, specs, provenance)
 
 
+def candidate(case: Case, root: Path, device: str = 'cuda') -> Path:
+    """Replay the original Python KV cache owner using persisted CUDA inputs."""
+    source, config, op = case.data['source'], case.data['config'], case.data['op']
+    supported = {
+        'kv_grow': 'test_kv_cache_grows_without_full_prealloc',
+        'kv_rejection': 'test_sliding_window_cache_rejects_oversized_ubatch',
+        'attention': 'test_kv_cache_default_f16_and_attention_matches_sdpa',
+    }
+    if (
+        source.get('generator') != 'tests/numerics/attn_ref.py'
+        or case.data.get('actual_role') != 'candidate'
+        or op not in supported
+        or source.get('test') != f'tests/test_kernels_cuda.py::{supported[op]}'
+    ):
+        raise ValueError('Unsupported Python KV cache candidate')
+    from tyloinfer.kernels.cuda import attention as attention_module
+    from tyloinfer.kernels.cuda import kv_cache as cache_module
+    from tyloinfer.kernels.cuda._ext import ext
+
+    device = resolve_device(device)
+    with scope(config['compute']), torch.cuda.device(device):
+        values = {name: torch.from_numpy(case.tensor(name)).to(device) for name in case.data['inputs']}
+        if op == 'kv_rejection':
+            k = values['k']
+            if (
+                set(values) != {'k'} or k.shape != (1, 2, 4, 64) or k.dtype != torch.float16
+                or (config['batch'], config['heads'], config['window'], config['head_dim'],
+                    config['ubatch_capacity'], config['append_tokens']) != (1, 2, 8, 64, 3, 4)
+                or config['append_uses_same_k_and_v'] is not True
+                or config['expected_exception'] != 'ValueError'
+                or config['exception_match'] != 'exceeding ubatch_capacity'
+            ):
+                raise ValueError('Sliding cache rejection inputs or configuration differ')
+            cache = cache_module.SlidingWindowKVCache(1, 2, 8, 64, ubatch_capacity=3, device=device)
+            rejected = False
+            exception = None
+            try:
+                cache.append(k, k)
+            except ValueError as error:
+                if config['exception_match'] not in str(error):
+                    raise
+                rejected = True
+                exception = {'type': type(error).__name__, 'message': str(error)}
+            outputs = {'rejected': torch.tensor(rejected, dtype=torch.bool)}
+        else:
+            grow = op == 'kv_grow'
+            key_name, value_name = ('k', 'v') if grow else ('k0', 'v0')
+            k, v = values[key_name], values[value_name]
+            initial_shape = (1, 2, 2 if grow else 8, 8 if grow else 16)
+            chunk_shape = (1, 2, 5, 8 if grow else 16)
+            chunk_dtype = torch.float32 if grow else torch.float16
+            if (
+                set(values) != (
+                    {'k', 'v', 'initial_k', 'initial_v'} if grow
+                    else {'k0', 'v0', 'q', 'mask', 'initial_k', 'initial_v'}
+                )
+                or k.shape != chunk_shape or v.shape != chunk_shape
+                or k.dtype != chunk_dtype or v.dtype != chunk_dtype
+                or values['initial_k'].shape != initial_shape
+                or values['initial_v'].shape != initial_shape
+                or values['initial_k'].dtype != torch.float16
+                or values['initial_v'].dtype != torch.float16
+                or config['initial_valid_length'] != 0
+                or bool(torch.count_nonzero(values['initial_k']).item())
+                or bool(torch.count_nonzero(values['initial_v']).item())
+            ):
+                raise ValueError('KV cache fixed inputs or initial state differ')
+            if grow:
+                if (config['initial_capacity'], config['expected_capacity'], config['max_seq']) != (2, 8, 1024):
+                    raise ValueError('KV growth configuration differs')
+                cache = cache_module.KVCache(1, 2, 1024, 8, device=device, initial_capacity=2)
+                initial_capacity = cache.capacity
+            else:
+                if (
+                    config.get('observe_default_f16') is not True
+                    or config['append_k'] != ['k0'] or config['append_v'] != ['v0']
+                    or config['capacity'] != 8 or config['native_causal'] is not True
+                    or values['q'].shape != (1, 4, 2, 16)
+                    or values['q'].dtype != torch.float16
+                    or values['mask'].shape != (1, 1, 2, 5)
+                    or values['mask'].dtype != torch.float16
+                ):
+                    raise ValueError('Default KV cache attention configuration differs')
+                cache = cache_module.KVCache(1, 2, 8, 16, device=device)
+                initial_f16 = cache.k.dtype == torch.float16
+            cache.k.copy_(values['initial_k'])
+            cache.v.copy_(values['initial_v'])
+            kc, vc = cache.append(k, v)
+            if grow:
+                outputs = {
+                    'k': kc, 'v': vc,
+                    'initial_capacity': torch.tensor(initial_capacity, dtype=torch.int64),
+                    'capacity': torch.tensor(cache.capacity, dtype=torch.int64),
+                }
+            else:
+                outputs = {
+                    'output': attention_module.attention(values['q'], kc, vc, causal=True),
+                    'initial_cache_is_f16': torch.tensor(initial_f16, dtype=torch.bool),
+                    'appended_cache_is_f16': torch.tensor(kc.dtype == torch.float16, dtype=torch.bool),
+                }
+        specs = {name: save_tensor(root, name, _array(value)) for name, value in outputs.items()}
+        jit_executed = op != 'kv_rejection' or not rejected
+        provenance = execution(
+            device, 'Python KV cache and shared CUDA kernels' if jit_executed
+            else 'Python sliding cache admission'
+        )
+        provenance.update(
+            category='python_candidate', native_worker_executed=False,
+            generator_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            kv_cache_sha256=hashlib.sha256(Path(cache_module.__file__).read_bytes()).hexdigest(),
+            attention_sha256=hashlib.sha256(Path(attention_module.__file__).read_bytes()).hexdigest(),
+            cache_class=type(cache).__name__, jit_executed=jit_executed,
+        )
+        if op == 'kv_rejection':
+            provenance['exception'] = exception
+        if jit_executed:
+            module = ext()
+            provenance.update(
+                jit_module=str(Path(module.__file__).resolve()),
+                jit_sha256=hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
+            )
+        return write_result(case, root, specs, provenance, role='candidate')
+
+
 def _case(root, device, name, op, config, values, outputs):
     """Publish a fixed case and calculate its reference by reading it back."""
     source_path = Path(__file__).parents[1] / 'test_kernels_cuda.py'
+    is_candidate = op in {'kv_grow', 'kv_rejection'} or config.get('observe_default_f16', False)
     writer = CaseWriter(
         root,
         name,
@@ -117,6 +242,7 @@ def _case(root, device, name, op, config, values, outputs):
             ),
             'observation_categories': config.get('observation_categories', {}),
         },
+        actual_role='candidate' if is_candidate else 'native',
     )
     for key, value in values.items():
         writer.input(key, _array(value))
@@ -124,6 +250,8 @@ def _case(root, device, name, op, config, values, outputs):
         writer.output(key, shape, dtype, rule)
     case = writer.finish()
     reference(case, case.root / 'reference', device)
+    if is_candidate:
+        candidate(case, case.root / 'candidate', device)
     return case.root / 'case.json'
 
 
@@ -293,8 +421,8 @@ def _kv_cases(root, device):
             'observation_categories': (
                 {
                     'output': 'independent Torch SDPA',
-                    'initial_cache_is_f16': 'declared original behavior',
-                    'appended_cache_is_f16': 'declared original behavior',
+                    'initial_cache_is_f16': 'declared reference; Python constructor candidate',
+                    'appended_cache_is_f16': 'declared reference; Python append candidate',
                 }
                 if seed == 251
                 else {'output': 'independent Torch SDPA'}
@@ -343,12 +471,14 @@ def _kv_cases(root, device):
                 'max_seq': 1024,
                 'initial_valid_length': 0,
                 'initial_state': 'chosen_zero_original_empty_unread',
-                'native_checks': ['capacity_and_shape'],
+                'behavior_observations': {
+                    'capacity_and_shape': ['initial_capacity', 'capacity', 'k', 'v'],
+                },
                 'observation_categories': {
                     'k': 'independent Torch cast',
                     'v': 'independent Torch cast',
-                    'initial_capacity': 'declared original behavior',
-                    'capacity': 'declared original behavior',
+                    'initial_capacity': 'declared reference; Python constructor candidate',
+                    'capacity': 'declared reference; Python append candidate',
                 },
             },
             values,
@@ -381,7 +511,7 @@ def _kv_cases(root, device):
                 'rejected_observation': 'true only for the expected exception with the matching message',
                 'input_seed': 640,
                 'seed_origin': 'chosen; source was unseeded',
-                'observation_categories': {'rejected': 'declared original exception behavior'},
+                'observation_categories': {'rejected': 'declared reference; Python exception candidate'},
             },
             {'k': k},
             [('rejected', (), 'bool', {'kind': 'exact'})],

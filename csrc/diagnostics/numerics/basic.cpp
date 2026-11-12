@@ -98,6 +98,9 @@ bool run_basic(Case& value) {
         tyloi::DenseTensor bias;
         if (data.at("inputs").contains("bias"))
             bias = work.input("bias");
+        else
+            bias = work.keep(tyloi::cuda::empty(
+                {0}, tyloi::TensorOptions().dtype(tyloi::kFloat32).device(work.device())));
         output = work.keep(
             ssm_conv_silu_cuda(input, weight, bias, config.at("n_tokens").get<std::int64_t>()));
     } else {

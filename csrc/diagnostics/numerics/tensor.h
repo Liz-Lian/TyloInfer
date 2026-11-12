@@ -22,7 +22,8 @@ class TensorWork {
     /** Export actual tensor values and their actual shape and dtype. */
     void output(const std::string& name, tyloi::DenseTensor value);
     /** Drain work and publish execution metadata after all observations. */
-    void finish(const std::string& entrypoint, Json details = Json::object());
+    void finish(const std::string& entrypoint, Json details = Json::object(),
+                Json checks = Json::object());
     /** Return the selected CUDA device. */
     tyloi::Device device() const;
 

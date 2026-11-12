@@ -1,5 +1,10 @@
 #include "diagnostics/numerics/case.h"
 #include "diagnostics/numerics/basic.h"
+#include "diagnostics/numerics/attn.h"
+#include "diagnostics/numerics/sample.h"
+#include "diagnostics/numerics/gdn.h"
+#include "diagnostics/numerics/flash.h"
+#include "diagnostics/numerics/mfq.h"
 #include "diagnostics/numerics/tq.h"
 #include <exception>
 #include <iostream>
@@ -11,7 +16,12 @@ int main(int argc, char **argv) {
     }
     try {
         tyloi::diagnostics::numerics::Case value(argv[1], argv[2]);
-        if (!tyloi::diagnostics::numerics::run_basic(value))
+        if (!tyloi::diagnostics::numerics::run_basic(value) &&
+            !tyloi::diagnostics::numerics::run_attn(value) &&
+            !tyloi::diagnostics::numerics::run_sample(value) &&
+            !tyloi::diagnostics::numerics::run_gdn(value) &&
+            !tyloi::diagnostics::numerics::run_flash(value) &&
+            !tyloi::diagnostics::numerics::run_mfq(value))
             tyloi::diagnostics::numerics::run_tq(value);
         return 0;
     } catch (const std::exception &error) {

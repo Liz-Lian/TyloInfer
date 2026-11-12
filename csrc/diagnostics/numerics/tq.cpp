@@ -102,18 +102,7 @@ std::size_t size_of(int dtype) { return dtype == 2 ? 4 : 2; }
 std::vector<std::uint8_t> device_values(std::vector<std::uint8_t> bytes, const std::string &dtype) {
     if (dtype != "bfloat16")
         return bytes;
-    if (bytes.size() % 4)
-        throw std::invalid_argument("invalid BF16 input size");
-    std::vector<std::uint8_t> result(bytes.size() / 2);
-    for (std::size_t i = 0; i < result.size() / 2; ++i) {
-        std::uint32_t bits;
-        std::memcpy(&bits, bytes.data() + i * 4, 4);
-        if (bits & 0xffff)
-            throw std::invalid_argument("invalid expanded BF16 input");
-        const auto upper = std::uint16_t(bits >> 16);
-        std::memcpy(result.data() + i * 2, &upper, 2);
-    }
-    return result;
+    return pack_bf16(bytes);
 }
 void upload(Buffer &target, const void *source, std::size_t bytes, cudaStream_t stream,
             std::size_t offset = 0) {
@@ -219,13 +208,7 @@ void result(Case &value, const std::string &name, const void *source,
                "download output");
     cuda_check(cudaStreamSynchronize(stream), "download output synchronization");
     if (dtype == 1) {
-        std::vector<std::uint8_t> expanded(count * 4);
-        for (std::size_t i = 0; i < count; ++i) {
-            std::uint16_t upper;
-            std::memcpy(&upper, bytes.data() + i * 2, 2);
-            const auto bits = std::uint32_t(upper) << 16;
-            std::memcpy(expanded.data() + i * 4, &bits, 4);
-        }
+        const auto expanded = unpack_bf16(bytes);
         value.output(name, actual_shape, actual_dtype, expanded.data(), expanded.size());
     } else
         value.output(name, actual_shape, actual_dtype, bytes.data(), bytes.size());

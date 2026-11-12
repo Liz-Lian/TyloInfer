@@ -205,6 +205,20 @@ def _native_checks(data):
         raise ValueError('Native checks must be a list of nonempty descriptors')
     if checks and data.get('actual_role', 'native') != 'native':
         raise ValueError('Native behavior checks require the native result role')
+    contracts = {**data['outputs'], **data.get('auxiliary', {})}
+    for item in checks:
+        if not isinstance(item, dict) or item.get('kind') != 'compare_observations':
+            continue
+        if set(item) != {'kind', 'left', 'right', 'rule'}:
+            raise ValueError('Invalid observation comparison descriptor')
+        left, right = item['left'], item['right']
+        if not isinstance(left, str) or not isinstance(right, str) or left not in contracts or right not in contracts:
+            raise ValueError('Observation comparison names must refer to declared observations')
+        a, b = contracts[left], contracts[right]
+        if (a['shape'] != b['shape'] or
+                a.get('actual_dtype', a['dtype']) != b.get('actual_dtype', b['dtype'])):
+            raise ValueError('Observation comparison shape and actual dtype must match')
+        _rule(item['rule'])
     return checks
 
 
@@ -219,7 +233,13 @@ def _validate_checks(case, result, role):
     if not isinstance(checks, dict):
         raise ValueError('Native checks result must be an object')
     allowed = {f'native_{index}' for index in range(len(descriptors))}
+    central = {
+        f'native_{index}' for index, descriptor in enumerate(descriptors)
+        if isinstance(descriptor, dict) and descriptor.get('kind') == 'compare_observations'
+    }
     for name, item in checks.items():
+        if name in central:
+            raise ValueError(f'Observation comparison is evaluated centrally: {name}')
         if name not in allowed or not isinstance(item, dict) or set(item) - {'status', 'evidence'}:
             raise ValueError(f'Invalid native behavior check: {name}')
         if item.get('status') not in {'pass', 'fail', 'not_executed'}:
@@ -260,7 +280,6 @@ class Case:
                 raise ValueError(f'Case {field} must be an object')
         if data.get('actual_role', 'native') not in {'native', 'candidate'}:
             raise ValueError('Unsupported execution role')
-        _native_checks(data)
         if not data['source'] or not data['outputs']:
             raise ValueError('Case requires a reference source and output observations')
         case = cls(path.resolve().parent, data)
@@ -286,6 +305,19 @@ class Case:
                 and contract.get('actual_dtype', contract['dtype']) != contract['dtype']
             ):
                 raise ValueError('Bit-exact observations require matching logical dtypes')
+        auxiliary = data.get('auxiliary', {})
+        if not isinstance(auxiliary, dict) or set(auxiliary) & set(data['outputs']):
+            raise ValueError('Auxiliary observations must be an object with unique names')
+        for name, contract in auxiliary.items():
+            _name(name)
+            if not isinstance(contract, dict) or set(contract) - {'shape', 'dtype', 'layout', 'actual_dtype'}:
+                raise ValueError(f'Invalid auxiliary contract: {name}')
+            _shape(contract['shape'])
+            if (contract['dtype'] not in _DTYPES or
+                    contract.get('actual_dtype', contract['dtype']) not in _DTYPES or
+                    contract.get('layout') != 'contiguous'):
+                raise ValueError(f'Invalid auxiliary contract: {name}')
+        _native_checks(data)
         return case
 
     def tensor(self, name):
@@ -357,6 +389,8 @@ class CaseWriter:
         self, name, shape, dtype, rule, layout='contiguous', actual_dtype=None, allow_infinity=False
     ):
         """Declare a result observation and the original native/reference precisions."""
+        if name in self.data.get('auxiliary', {}):
+            raise ValueError('Observation name is duplicated')
         spec = {
             'shape': list(shape),
             'dtype': dtype,
@@ -367,6 +401,16 @@ class CaseWriter:
         if actual_dtype is not None:
             spec['actual_dtype'] = actual_dtype
         self._add('outputs', name, spec)
+
+    def auxiliary(self, name, shape, dtype, actual_dtype=None):
+        """Declare a native-only observation without an independent reference rule."""
+        if name in self.data['outputs']:
+            raise ValueError('Observation name is duplicated')
+        spec = {'shape': list(shape), 'dtype': dtype, 'layout': 'contiguous'}
+        if actual_dtype is not None:
+            spec['actual_dtype'] = actual_dtype
+        self.data.setdefault('auxiliary', {})
+        self._add('auxiliary', name, spec)
 
     def finish(self):
         """Publish metadata only after inputs are stored; return a validated case."""
@@ -395,10 +439,13 @@ def _validate_result(case, root, result, role):
         raise ValueError('Result execution provenance is required')
     _validate_checks(case, result, role)
     outputs = result.get('outputs')
-    if not isinstance(outputs, dict) or set(outputs) != set(case.data['outputs']):
+    contracts = dict(case.data['outputs'])
+    if role != 'reference':
+        contracts.update(case.data.get('auxiliary', {}))
+    if not isinstance(outputs, dict) or set(outputs) != set(contracts):
         raise ValueError('Result observations do not match the case')
     for name, spec in outputs.items():
-        contract = case.data['outputs'][name]
+        contract = contracts[name]
         dtype = (
             contract['dtype']
             if role == 'reference'

@@ -104,6 +104,55 @@ def _reference(case, root, device):
     return write_result(case, root, outputs, execution)
 
 
+def candidate(case: Case, root: Path) -> Path:
+    """Run the original Torch CPU GDN implementation on the saved inputs."""
+    source = case.data['source']
+    if (
+        case.data['op'] != 'gated_delta_net'
+        or source.get('generator') != 'tests/numerics/gdn_ref.py'
+        or source.get('test') != 'tests/test_kernels_ops.py::test_gdn_matches_reference'
+        or case.data.get('actual_role') != 'candidate'
+    ):
+        raise ValueError('Unsupported CPU GDN candidate case')
+    from tyloinfer.kernels import gated_delta_net as implementation
+
+    arrays = {name: case.tensor(name) for name in ('q', 'k', 'v', 'g', 'beta', 'state')}
+    shapes = {
+        'q': (2, 3, 5, 4),
+        'k': (2, 3, 5, 4),
+        'v': (2, 3, 5, 4),
+        'g': (2, 3, 5),
+        'beta': (2, 3, 5),
+        'state': (2, 3, 4, 4),
+    }
+    if any(value.dtype != np.float32 or value.shape != shapes[name] for name, value in arrays.items()):
+        raise ValueError('CPU GDN input shape or dtype differs from the original case')
+    if np.any(arrays['state'] != 0):
+        raise ValueError('CPU GDN original case requires an implicit zero initial state')
+    config = case.data['config']
+    if config['gate'] != 'scalar' or config['initial_state'] != 'zero':
+        raise ValueError('CPU GDN configuration differs from the original case')
+    with scope(config['compute']):
+        values = [torch.from_numpy(arrays[name]) for name in ('q', 'k', 'v', 'g', 'beta')]
+        output, state = implementation.gated_delta_net(*values)
+        outputs = {
+            name: save_tensor(root, name, value.detach().contiguous().numpy())
+            for name, value in (('output', output), ('state', state))
+        }
+        execution = {
+            **describe(torch.device('cpu'), 'Torch float32 recurrence'),
+            'category': 'python_candidate',
+            'native_executed': False,
+            'torch_num_threads': torch.get_num_threads(),
+            'torch_num_interop_threads': torch.get_num_interop_threads(),
+            'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'candidate_source_sha256': hashlib.sha256(
+                Path(implementation.__file__).read_bytes()
+            ).hexdigest(),
+        }
+        return write_result(case, root, outputs, execution, role='candidate')
+
+
 def generate(root: Path, suite: str = 'cuda', device: str = 'cuda') -> list[Path]:
     """Save the original CPU or CUDA case inputs and generate their references."""
     if suite == 'cpu':
@@ -161,6 +210,7 @@ def generate(root: Path, suite: str = 'cuda', device: str = 'cuda') -> list[Path
                 if suite == 'cpu'
                 else 'Torch float32 recurrence',
             },
+            actual_role='candidate' if suite == 'cpu' else 'native',
         )
         for key, value in {'q': q, 'k': k, 'v': v, 'g': g, 'beta': beta, 'state': state}.items():
             writer.input(key, value.detach().contiguous().cpu().numpy())
@@ -182,5 +232,7 @@ def generate(root: Path, suite: str = 'cuda', device: str = 'cuda') -> list[Path
             writer.output('state', state_shape, 'float32', state_rule)
         case = writer.finish()
         reference(case, case.root / 'reference', device)
+        if suite == 'cpu':
+            candidate(case, case.root / 'candidate')
         paths.append(case.root / 'case.json')
     return paths
