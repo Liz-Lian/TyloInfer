@@ -195,6 +195,41 @@ def _rule(rule):
         raise ValueError('RMS requires its original positive denominator floor')
 
 
+def _native_checks(data):
+    """Validate and return ordered native behavior descriptors without treating them as results."""
+    checks = data['config'].get('native_checks', [])
+    if not isinstance(checks, list) or any(
+        not ((isinstance(item, str) and item.strip()) or (isinstance(item, dict) and item))
+        for item in checks
+    ):
+        raise ValueError('Native checks must be a list of nonempty descriptors')
+    if checks and data.get('actual_role', 'native') != 'native':
+        raise ValueError('Native behavior checks require the native result role')
+    return checks
+
+
+def _validate_checks(case, result, role):
+    """Validate native check claims; evidence structure alone cannot prove execution."""
+    descriptors = _native_checks(case.data)
+    if 'checks' not in result:
+        return
+    if role != 'native' or case.data.get('actual_role', 'native') != 'native':
+        raise ValueError('Only native execution results may report native checks')
+    checks = result['checks']
+    if not isinstance(checks, dict):
+        raise ValueError('Native checks result must be an object')
+    allowed = {f'native_{index}' for index in range(len(descriptors))}
+    for name, item in checks.items():
+        if name not in allowed or not isinstance(item, dict) or set(item) - {'status', 'evidence'}:
+            raise ValueError(f'Invalid native behavior check: {name}')
+        if item.get('status') not in {'pass', 'fail', 'not_executed'}:
+            raise ValueError(f'Invalid native behavior status: {name}')
+        if (item['status'] in {'pass', 'fail'} or 'evidence' in item) and (
+            not isinstance(item.get('evidence'), dict) or not item['evidence']
+        ):
+            raise ValueError(f'Native behavior check requires evidence: {name}')
+
+
 @dataclass(frozen=True)
 class Case:
     """A fixed case whose identity includes configuration and all input identities."""
@@ -225,6 +260,7 @@ class Case:
                 raise ValueError(f'Case {field} must be an object')
         if data.get('actual_role', 'native') not in {'native', 'candidate'}:
             raise ValueError('Unsupported execution role')
+        _native_checks(data)
         if not data['source'] or not data['outputs']:
             raise ValueError('Case requires a reference source and output observations')
         case = cls(path.resolve().parent, data)
@@ -357,6 +393,7 @@ def _validate_result(case, root, result, role):
         raise ValueError('Result format, role or case identity does not match')
     if not isinstance(result.get('execution'), dict) or not result['execution']:
         raise ValueError('Result execution provenance is required')
+    _validate_checks(case, result, role)
     outputs = result.get('outputs')
     if not isinstance(outputs, dict) or set(outputs) != set(case.data['outputs']):
         raise ValueError('Result observations do not match the case')
@@ -376,8 +413,8 @@ def _validate_result(case, root, result, role):
         load_tensor(root, spec)
 
 
-def write_result(case, root, outputs, execution, role='reference'):
-    """Publish a validated reference or execution result without replacing a baseline."""
+def write_result(case, root, outputs, execution, role='reference', checks=None):
+    """Publish a result; native check evidence is structurally validated, not independently verified."""
     result = {
         'format': _FORMAT,
         'version': 1,
@@ -387,6 +424,8 @@ def write_result(case, root, outputs, execution, role='reference'):
         'execution': execution,
         'outputs': outputs,
     }
+    if checks is not None:
+        result['checks'] = checks
     _validate_result(case, root, result, role)
     path = Path(root) / 'result.json'
     _write_json(path, result)

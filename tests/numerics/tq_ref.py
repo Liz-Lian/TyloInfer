@@ -110,6 +110,7 @@ def _output(writer, name, shape, rule, actual_dtype):
 def _gemv(root, device, boundary=False):
     """Generate GEMV and subgroup boundary cases."""
     results = []
+    launches = ((0, 0), (1, 4), (2, 2), (4, 1), (8, 1), (16, 1), (32, 1))
     geometries = (
         [(24, 273, False, gs) for gs in (16, 32, 256, 512)]
         if boundary
@@ -140,10 +141,19 @@ def _gemv(root, device, boundary=False):
             'actual_dtype': _NAMES[label],
             'groupsize': gs,
             'columns': columns,
-            'native_checks': ['guard_42'] if not boundary else [],
-            'warps_rows_per_block': [[0, 0], [1, 4], [2, 2], [4, 1], [8, 1], [16, 1], [32, 1]]
+            'native_checks': [
+                {
+                    'kind': 'guard_42',
+                    'warps': warps,
+                    'rows_per_block': slots,
+                    'observation': f'output_w{warps}_r{slots}',
+                    'guard_values': [42, 42],
+                }
+                for warps, slots in launches
+            ]
             if not boundary
-            else [[0, 0]],
+            else [],
+            'warps_rows_per_block': [list(pair) for pair in launches] if not boundary else [[0, 0]],
         }
         w = _writer(
             root, name, 'tq_gemv', config, 'test_row_scale_boundaries' if boundary else 'test_gemv'
@@ -153,7 +163,11 @@ def _gemv(root, device, boundary=False):
         _input(w, 'x', x, _NAMES[label], {'strides': [1], 'offset': 1})
         if not boundary:
             _input(w, 'bias', torch.linspace(-0.02, 0.02, rows, device=device))
-        _output(w, 'output', (rows,), _rms(limit), _NAMES[label])
+        if boundary:
+            _output(w, 'output', (rows,), _rms(limit), _NAMES[label])
+        else:
+            for warps, slots in launches:
+                _output(w, f'output_w{warps}_r{slots}', (rows,), _rms(limit), _NAMES[label])
         case = w.finish()
         reference(case, case.root / 'reference', device)
         results.append(case.root / 'case.json')
@@ -399,6 +413,10 @@ def _calculate(case, device):
         output = _weight(case, 'weight', width, device) @ _tensor(case, 'x', device, dtype).float()
         if 'bias' in case.data['inputs']:
             output = output + _tensor(case, 'bias', device)
+            return {
+                f'output_w{warps}_r{slots}': output
+                for warps, slots in config['warps_rows_per_block']
+            }
         return {'output': output}
     if op == 'tq_float_prefill':
         groups, tokens = config['groups'], config['tokens']

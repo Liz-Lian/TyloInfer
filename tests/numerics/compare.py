@@ -160,18 +160,51 @@ def _evaluate(actual, reference, contract):
     return result
 
 
+def _behavior(case, actual):
+    """Summarize declared checks without treating descriptors as execution evidence."""
+    descriptors = case.data['config'].get('native_checks', [])
+    claims = {} if actual is None else actual.get('checks', {})
+    checks = {}
+    for index, descriptor in enumerate(descriptors):
+        name = f'native_{index}'
+        claim = claims.get(name, {})
+        checks[name] = {
+            'descriptor': descriptor,
+            'status': claim.get('status', 'not_executed'),
+            'evidence': claim.get('evidence'),
+        }
+    if not checks:
+        return 'not_required', checks
+    statuses = {check['status'] for check in checks.values()}
+    if 'fail' in statuses:
+        return 'fail', checks
+    return ('not_executed' if 'not_executed' in statuses else 'pass'), checks
+
+
 def compare(case_path, reference_path, actual_path):
     """Validate persisted results and compare every output against its original rule.
 
     Return a JSON-safe report; absent native execution is explicitly reported as
     not_executed, while invalid or incomplete inputs produce a failure report.
+    Check evidence is structurally validated but does not prove execution.
     """
-    report = {'status': 'fail', 'case_id': None, 'case_name': None, 'outputs': {}, 'reason': None}
+    report = {
+        'status': 'fail',
+        'case_id': None,
+        'case_name': None,
+        'outputs': {},
+        'reason': None,
+        'numeric_status': 'not_executed',
+        'behavior_status': 'not_executed',
+        'checks': {},
+        'evidence_note': 'Evidence structure is validated; execution is not independently verified.',
+    }
     try:
         case = Case.load(case_path)
         report['case_id'] = case.data['id']
         report['case_name'] = case.data.get('name', case.data['id'])
         report['actual_role'] = case.data.get('actual_role', 'native')
+        report['behavior_status'], report['checks'] = _behavior(case, None)
         if reference_path is None:
             raise ValueError('A reference result is required')
         reference = read_result(case, reference_path, 'reference')
@@ -180,6 +213,7 @@ def compare(case_path, reference_path, actual_path):
             report['reason'] = 'Execution result was not provided'
             return report
         actual = read_result(case, actual_path, report['actual_role'])
+        report['behavior_status'], report['checks'] = _behavior(case, actual)
         reference_root = Path(reference_path).parent
         actual_root = Path(actual_path).parent
         for name, contract in case.data['outputs'].items():
@@ -196,10 +230,18 @@ def compare(case_path, reference_path, actual_path):
             report['outputs'][name] = _evaluate(got, ref, contract)
         if not report['outputs']:
             raise ValueError('Case has no outputs')
-        if all(output['status'] == 'pass' for output in report['outputs'].values()):
-            report['status'] = 'pass'
-        else:
+        if not all(output['status'] == 'pass' for output in report['outputs'].values()):
+            report['numeric_status'] = 'fail'
             report['reason'] = 'One or more outputs failed comparison'
+        else:
+            report['numeric_status'] = 'pass'
+            if report['behavior_status'] == 'fail':
+                report['reason'] = 'One or more native behavior checks failed'
+            elif report['behavior_status'] == 'not_executed':
+                report['status'] = 'not_executed'
+                report['reason'] = 'One or more native behavior checks were not executed'
+            else:
+                report['status'] = 'pass'
     except (ValueError, OSError, KeyError, TypeError, OverflowError) as error:
         report['reason'] = str(error)
     return report

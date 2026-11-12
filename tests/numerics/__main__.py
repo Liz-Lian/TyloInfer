@@ -37,6 +37,10 @@ def main(argv=None):
             'hf',
             'tq_format',
             'wt2',
+            'gemma',
+            'nint',
+            'nvq',
+            'projection',
         ),
     )
     generate.add_argument('output', type=Path)
@@ -94,10 +98,13 @@ def main(argv=None):
                 'sq4',
                 'sq8',
                 'hf',
+                'gemma',
             }
             if grouped != (args.suite is not None):
                 parser.error('--suite is required only for grouped reference generators')
-            if (args.kind in {'mfq', 'zero', 'nepq', 'sq4', 'sq8'}) != (args.source is not None):
+            if (args.kind in {'mfq', 'zero', 'nepq', 'sq4', 'sq8', 'nint', 'nvq'}) != (
+                args.source is not None
+            ):
                 parser.error('--source is required only for MFQ-based reference generation')
             if args.kind != 'mfq' and args.experts != 1:
                 parser.error('--experts is only available for MFQ generation')
@@ -117,7 +124,23 @@ def main(argv=None):
                 args.capture is not None
             ):
                 parser.error('--capture is required only for nemotron/mtp-target')
-            if args.kind == 'wt2':
+            if args.kind == 'nint':
+                from .nint_ref import generate
+
+                paths = generate(args.output, args.source, args.device)
+            elif args.kind == 'nvq':
+                from .nvq_ref import generate
+
+                paths = generate(args.output, args.source, args.device)
+            elif args.kind == 'gemma':
+                from .gemma_ref import generate
+
+                paths = generate(args.output, args.suite, args.device)
+            elif args.kind == 'projection':
+                from .projection_ref import generate
+
+                paths = generate(args.output)
+            elif args.kind == 'wt2':
                 from .wt2_ref import generate
 
                 paths = generate(
@@ -224,7 +247,8 @@ def main(argv=None):
             case = Case.load(args.case)
             generator = case.data['source'].get('generator')
             external = generator in {
-                f'tests/numerics/{name}_ref.py' for name in ('mfq', 'zero', 'nepq', 'sq4', 'sq8')
+                f'tests/numerics/{name}_ref.py'
+                for name in ('mfq', 'zero', 'nepq', 'sq4', 'sq8', 'nint', 'nvq')
             }
             if external != (args.source is not None):
                 parser.error('--source is required only for an MFQ-based reference case')
@@ -232,7 +256,23 @@ def main(argv=None):
                 args.hf is not None
             ):
                 parser.error('--hf is required only for an HF RADIO or WT2 reference case')
-            if generator == 'tests/numerics/wt2_ref.py':
+            if generator == 'tests/numerics/nint_ref.py':
+                from .nint_ref import reference
+
+                path = reference(case, args.output, args.source, args.device)
+            elif generator == 'tests/numerics/nvq_ref.py':
+                from .nvq_ref import reference
+
+                path = reference(case, args.output, args.source, args.device)
+            elif generator == 'tests/numerics/gemma_ref.py':
+                from .gemma_ref import reference
+
+                path = reference(case, args.output, args.device)
+            elif generator == 'tests/numerics/projection_ref.py':
+                from .projection_ref import reference
+
+                path = reference(case, args.output)
+            elif generator == 'tests/numerics/wt2_ref.py':
                 from .wt2_ref import reference
 
                 path = reference(case, args.output, args.hf)

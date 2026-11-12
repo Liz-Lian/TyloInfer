@@ -54,7 +54,14 @@ def _reference(case, root, device):
                     value[batch, :, p, :] = values['v'][batch, :, token, :]
         outputs = {'k': key, 'v': value}
     elif op == 'kv_grow':
-        outputs = {'k': values['k'].to(torch.float16), 'v': values['v'].to(torch.float16)}
+        outputs = {
+            'k': values['k'].to(torch.float16),
+            'v': values['v'].to(torch.float16),
+            'initial_capacity': torch.tensor(2, dtype=torch.int64),
+            'capacity': torch.tensor(8, dtype=torch.int64),
+        }
+    elif op == 'kv_rejection':
+        outputs = {'rejected': torch.tensor(True, dtype=torch.bool)}
     elif op == 'attention':
         q = values['q']
         if config.get('append'):
@@ -70,6 +77,9 @@ def _reference(case, root, device):
                 q, k, v, attn_mask=values.get('mask'), is_causal=config['reference_is_causal']
             )
         }
+        if config.get('observe_default_f16'):
+            outputs['initial_cache_is_f16'] = torch.tensor(True, dtype=torch.bool)
+            outputs['appended_cache_is_f16'] = torch.tensor(True, dtype=torch.bool)
     else:
         raise ValueError(f'Unsupported operation: {op}')
     root = Path(root)
@@ -98,7 +108,14 @@ def _case(root, device, name, op, config, values, outputs):
             'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'test': f'tests/test_kernels_cuda.py::{name}',
             'test_sha256': hashlib.sha256(source_path.read_bytes()).hexdigest(),
-            'formula': 'Torch SDPA' if op == 'attention' else 'Torch tensor assignment or cast',
+            'formula': (
+                'Torch SDPA plus declared behavior observations'
+                if op == 'attention'
+                else 'declared exception behavior'
+                if op == 'kv_rejection'
+                else 'Torch tensor assignment or cast plus declared behavior observations'
+            ),
+            'observation_categories': config.get('observation_categories', {}),
         },
     )
     for key, value in values.items():
@@ -272,7 +289,30 @@ def _kv_cases(root, device):
             'native_causal': True,
             'initial_state': 'chosen_zero_original_empty_unread',
             'reference_is_causal': False,
+            'observe_default_f16': seed == 251,
+            'observation_categories': (
+                {
+                    'output': 'independent Torch SDPA',
+                    'initial_cache_is_f16': 'declared original behavior',
+                    'appended_cache_is_f16': 'declared original behavior',
+                }
+                if seed == 251
+                else {'output': 'independent Torch SDPA'}
+            ),
         }
+        outputs = [
+            (
+                'output',
+                q.shape,
+                'float32' if seed == 25 else 'float16',
+                _rule(2e-4 if seed == 25 else 1e-3),
+            )
+        ]
+        if seed == 251:
+            outputs += [
+                ('initial_cache_is_f16', (), 'bool', {'kind': 'exact'}),
+                ('appended_cache_is_f16', (), 'bool', {'kind': 'exact'}),
+            ]
         paths.append(
             _case(
                 root,
@@ -281,14 +321,7 @@ def _kv_cases(root, device):
                 'attention',
                 config,
                 values,
-                [
-                    (
-                        'output',
-                        q.shape,
-                        'float32' if seed == 25 else 'float16',
-                        _rule(2e-4 if seed == 25 else 1e-3),
-                    )
-                ],
+                outputs,
             )
         )
     torch.manual_seed(350)
@@ -311,9 +344,47 @@ def _kv_cases(root, device):
                 'initial_valid_length': 0,
                 'initial_state': 'chosen_zero_original_empty_unread',
                 'native_checks': ['capacity_and_shape'],
+                'observation_categories': {
+                    'k': 'independent Torch cast',
+                    'v': 'independent Torch cast',
+                    'initial_capacity': 'declared original behavior',
+                    'capacity': 'declared original behavior',
+                },
             },
             values,
-            [('k', shape, 'float16', _rule(0)), ('v', shape, 'float16', _rule(0))],
+            [
+                ('k', shape, 'float16', _rule(0)),
+                ('v', shape, 'float16', _rule(0)),
+                ('initial_capacity', (), 'int64', {'kind': 'exact'}),
+                ('capacity', (), 'int64', {'kind': 'exact'}),
+            ],
+        )
+    )
+    torch.manual_seed(640)
+    k = torch.randn(1, 2, 4, 64, device=device, dtype=torch.float16)
+    paths.append(
+        _case(
+            root,
+            device,
+            'test_sliding_window_cache_rejects_oversized_ubatch',
+            'kv_rejection',
+            {
+                'batch': 1,
+                'heads': 2,
+                'window': 8,
+                'head_dim': 64,
+                'ubatch_capacity': 3,
+                'append_tokens': 4,
+                'append_uses_same_k_and_v': True,
+                'expected_exception': 'ValueError',
+                'exception_match': 'exceeding ubatch_capacity',
+                'rejected_observation': 'true only for the expected exception with the matching message',
+                'input_seed': 640,
+                'seed_origin': 'chosen; source was unseeded',
+                'observation_categories': {'rejected': 'declared original exception behavior'},
+            },
+            {'k': k},
+            [('rejected', (), 'bool', {'kind': 'exact'})],
         )
     )
     return paths

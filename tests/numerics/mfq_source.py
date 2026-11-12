@@ -31,6 +31,11 @@ _MODULES = (
     'mfq.quantize.nvq1_s_quant',
     'mfq.quantize.nvq_jsc',
     'mfq.quantize.fp8_sq',
+    'mfq.quantize.nint_quant',
+    'mfq.quantize.nvq_quant',
+    'mfq.quantize.npq0_l',
+    'mfq.quantize.npq0_s',
+    'mfq.kernels.torch_backend',
 )
 _SOURCE_ROOT = None
 _SOURCE_FILES = None
