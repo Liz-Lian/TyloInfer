@@ -769,16 +769,17 @@ static void restore_pool(PoolState &target, const PoolSnapshot &state) {
     target.pool = restore_session_prefix_tensor(target.pool, state.pool, 1, state.capacity);
 }
 
-void PoolState::reset(int64_t batch, int64_t max_positions) {
+void PoolState::reset(int64_t batch, int64_t max_positions, int device) {
     if (ratio <= 0 || head_dim <= 0)
         return;
     capacity = std::max<int64_t>(1, (max_positions + ratio - 1) / ratio);
     const int64_t output_dim = overlap ? 2 * head_dim : head_dim;
     auto fp32 = ::tyloi::TensorOptions()
-                    .device(::tyloi::kCUDA)
+                    .device(::tyloi::Device(::tyloi::kCUDA, device))
                     .dtype(::tyloi::kFloat32);
     auto half = fp32.dtype(::tyloi::kFloat16);
-    if (state_kv.defined() && state_kv.size(0) == batch && pool.size(1) == capacity) {
+    if (state_kv.defined() && state_kv.device() == ::tyloi::Device(::tyloi::kCUDA, device) &&
+        state_kv.size(0) == batch && pool.size(1) == capacity) {
         state_kv.dense().zero_();
         state_gate.dense().fill_(-std::numeric_limits<float>::infinity());
         if (overlap) {
@@ -922,13 +923,15 @@ void State::reset(int64_t next_batch) {
     for (size_t i = 0; i < layers.size(); ++i) {
         MfqCudaGuard guard(layout_[i].device);
         auto& layer = layers[i];
-        auto half = ::tyloi::TensorOptions().device(::tyloi::kCUDA)
+        const auto device = ::tyloi::Device(::tyloi::kCUDA, layout_[i].device);
+        auto half = ::tyloi::TensorOptions().device(device)
                         .dtype(::tyloi::kFloat16);
-        if (!layer.local_cache.defined() || layer.local_cache.size(0) != next_batch)
+        if (!layer.local_cache.defined() || layer.local_cache.device() != device ||
+            layer.local_cache.size(0) != next_batch)
             layer.local_cache = ::tyloi::cuda::zeros({next_batch, 128, layout_[i].head_dim}, half);
         else layer.local_cache.dense().zero_();
-        layer.compressor.reset(next_batch, layout_[i].max_positions);
-        layer.indexer_compressor.reset(next_batch, layout_[i].max_positions);
+        layer.compressor.reset(next_batch, layout_[i].max_positions, layout_[i].device);
+        layer.indexer_compressor.reset(next_batch, layout_[i].max_positions, layout_[i].device);
     }
 }
 

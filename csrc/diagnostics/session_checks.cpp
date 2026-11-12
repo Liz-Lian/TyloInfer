@@ -1,9 +1,11 @@
 #include "model_checks.h"
-
-#include "engine/models/deepseek_v4/ops.h"
-#include "engine/models/deepseek_v4/snapshot.h"
-#include "engine/models/glm_dsa/ops.h"
-#include "engine/models/glm_dsa/snapshot.h"
+#include "engine/program.h"
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/models/deepseek_v4/model.h"
+#include "engine/models/deepseek_v4/state.h"
+#include "engine/models/glm_dsa/model.h"
+#include "engine/models/glm_dsa/state.h"
 #include "engine/models/session/snapshot.h"
 
 #include <cstdint>
@@ -11,168 +13,143 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
-#include <utility>
 #include <vector>
 
-int run_text_session_state_check() {
-    MfqCudaGuard guard(0);
-    auto cuda_float = tyloi::TensorOptions()
-        .device(tyloi::kCUDA).dtype(tyloi::kFloat32);
-    const auto values = [&](std::vector<int64_t> shape,
-                            tyloi::ScalarType dtype,
-                            float offset) {
+namespace {
+/** Keep synthetic model identities, request storage and snapshots alive until drain. */
+struct Work {
+    tyloi::cuda::Program& program;
+    tyloi::cuda::deepseek_v4::Model dsv4_model;
+    tyloi::cuda::glm_dsa::Model glm_model;
+    std::unique_ptr<tyloi::cuda::deepseek_v4::State> dsv4;
+    std::unique_ptr<tyloi::cuda::glm_dsa::State> glm;
+    TextSessionState dsv4_saved, glm_saved;
+    ~Work() noexcept {
+        try { program.drain(); }
+        catch (const std::exception& error) { std::cerr << "session_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "session_cleanup error=unknown\n"; }
+    }
+};
+
+void require_equal(bool condition, const char* message) {
+    if (!condition) throw std::runtime_error(message);
+}
+
+bool same(const tyloi::Tensor& value, const tyloi::Tensor& saved) {
+    return value.dense().equal(saved.dense());
+}
+} // namespace
+
+int run_text_session_state_check(tyloi::cuda::Program& program) {
+    const auto device = program.executor().device();
+    auto cuda_float = tyloi::TensorOptions().device(device).dtype(tyloi::kFloat32);
+    Work work{program};
+    const auto values = [&](std::vector<int64_t> shape, tyloi::ScalarType dtype, float offset) {
         int64_t elements = 1;
-        for (int64_t extent : shape) elements *= extent;
+        for (const auto extent : shape) elements *= extent;
         return (tyloi::cuda::arange(elements, cuda_float) + offset)
             .reshape(shape).to(dtype).contiguous();
     };
-    const auto require_equal = [](bool condition, const char * message) {
-        if (!condition) throw std::runtime_error(message);
-    };
 
-    tyloi::cuda::DeepseekV4CausalLm dsv4_model;
-    auto dsv4 = std::make_unique<Dsv4Block>();
-    auto * dsv4_block = dsv4.get();
-    dsv4_block->cuda_device = 0;
-    dsv4_block->shared_state = std::make_shared<Dsv4SharedState>();
-    dsv4_block->shared_state->attention_meta = tyloi::cuda::empty({1}, cuda_float);
-    dsv4_block->shared_state->hadamard_signs = tyloi::cuda::ones(
-        {128}, cuda_float.dtype(tyloi::kInt8));
-    dsv4_block->local_cache = values(
-        {1, 128, 8}, tyloi::kFloat16, 1.0f);
-    const auto initialize_dsv4_pool = [&](Dsv4PoolState & pool,
-                                          int64_t head_dim,
-                                          bool overlap,
-                                          float offset) {
+    // Only cache layout is needed: no model weights or numerical forward are involved.
+    work.dsv4_model.layers.resize(1);
+    auto& dsv4_layout = work.dsv4_model.layers[0];
+    dsv4_layout.device = device.index;
+    dsv4_layout.head_dim = 8;
+    dsv4_layout.max_positions = 64;
+    dsv4_layout.compressor.ratio = dsv4_layout.indexer_compressor.ratio = 4;
+    dsv4_layout.compressor.head_dim = 8;
+    dsv4_layout.indexer_compressor.head_dim = 4;
+    dsv4_layout.indexer_compressor.overlap = true;
+    dsv4_layout.indexer_compressor.cache_quant_mode = 2;
+    work.dsv4 = std::make_unique<tyloi::cuda::deepseek_v4::State>(work.dsv4_model);
+    auto& dsv4 = *work.dsv4;
+    auto& block = dsv4.layers[0];
+    block.local_cache = values({1, 128, 8}, tyloi::kFloat16, 1.0f);
+    const auto initialize_pool = [&](tyloi::cuda::deepseek_v4::PoolState& pool,
+            int64_t head_dim, bool overlap, float offset) {
         pool.ratio = 4;
         pool.head_dim = head_dim;
         pool.overlap = overlap;
         pool.cache_quant_mode = overlap ? 2 : 0;
         pool.capacity = 16;
-        const int64_t state_width = overlap ? 2 * head_dim : head_dim;
-        pool.state_kv = values(
-            {1, pool.ratio, state_width}, tyloi::kFloat32, offset);
-        pool.state_gate = values(
-            {1, pool.ratio, state_width}, tyloi::kFloat32, offset + 100.0f);
+        const auto width = overlap ? 2 * head_dim : head_dim;
+        pool.state_kv = values({1, 4, width}, tyloi::kFloat32, offset);
+        pool.state_gate = values({1, 4, width}, tyloi::kFloat32, offset + 100.0f);
         if (overlap) {
-            pool.previous_kv = values(
-                {1, pool.ratio, head_dim}, tyloi::kFloat32, offset + 200.0f);
-            pool.previous_gate = values(
-                {1, pool.ratio, head_dim}, tyloi::kFloat32, offset + 300.0f);
+            pool.previous_kv = values({1, 4, head_dim}, tyloi::kFloat32, offset + 200.0f);
+            pool.previous_gate = values({1, 4, head_dim}, tyloi::kFloat32, offset + 300.0f);
         }
-        pool.pool = values(
-            {1, pool.capacity, head_dim}, tyloi::kFloat16, offset + 400.0f);
+        pool.pool = values({1, 16, head_dim}, tyloi::kFloat16, offset + 400.0f);
     };
-    initialize_dsv4_pool(
-        dsv4_block->compressor, 8, false, 10.0f);
-    initialize_dsv4_pool(
-        dsv4_block->indexer_compressor, 4, true, 20.0f);
-    dsv4_model.blocks.push_back(std::move(dsv4));
-    dsv4_model.cache_pos = 10;
+    initialize_pool(block.compressor, 8, false, 10.0f);
+    initialize_pool(block.indexer_compressor, 4, true, 20.0f);
+    dsv4.advance(10);
     std::vector<int64_t> tokens(10);
     std::iota(tokens.begin(), tokens.end(), 0);
-    const TextSessionState dsv4_state =
-        dsv4_model.capture_text_session_state(tokens);
-    dsv4_block->local_cache.zero_();
-    dsv4_block->compressor.state_kv.zero_();
-    dsv4_block->compressor.state_gate.zero_();
-    dsv4_block->compressor.pool.zero_();
-    dsv4_block->indexer_compressor.state_kv.zero_();
-    dsv4_block->indexer_compressor.state_gate.zero_();
-    dsv4_block->indexer_compressor.previous_kv.zero_();
-    dsv4_block->indexer_compressor.previous_gate.zero_();
-    dsv4_block->indexer_compressor.pool.zero_();
-    dsv4_model.cache_pos = 0;
-    dsv4_model.restore_text_session_state(dsv4_state);
-    const auto & saved_dsv4 = std::get<
-        std::vector<tyloi::models::deepseek_v4::BlockSnapshot>>(dsv4_state.payload).at(0);
-    require_equal(
-        tyloi::cuda::equal(dsv4_block->local_cache, saved_dsv4.local_cache),
+    work.dsv4_saved = dsv4.capture_text_session_state(tokens);
+    for (auto& tensor : dsv4.storage()) tensor.dense().zero_();
+    dsv4.cache_pos = 0;
+    dsv4.restore_text_session_state(work.dsv4_saved);
+    const auto& saved_dsv4 = std::get<std::vector<tyloi::models::deepseek_v4::BlockSnapshot>>(
+        work.dsv4_saved.payload).at(0);
+    require_equal(same(block.local_cache, saved_dsv4.local_cache),
         "DeepSeek V4 local session cache restore failed");
-    const auto check_dsv4_pool = [&](const Dsv4PoolState & restored,
-                                     const tyloi::models::deepseek_v4::PoolSnapshot & saved) {
-        require_equal(
-            tyloi::cuda::equal(restored.state_kv, saved.state_kv) &&
-            tyloi::cuda::equal(restored.state_gate, saved.state_gate),
+    const auto check_pool = [&](const tyloi::cuda::deepseek_v4::PoolState& restored,
+            const tyloi::models::deepseek_v4::PoolSnapshot& saved) {
+        require_equal(same(restored.state_kv, saved.state_kv) && same(restored.state_gate, saved.state_gate),
             "DeepSeek V4 compressor recurrent state restore failed");
-        if (saved.overlap) {
-            require_equal(
-                tyloi::cuda::equal(restored.previous_kv, saved.previous_kv) &&
-                tyloi::cuda::equal(restored.previous_gate, saved.previous_gate),
+        if (saved.overlap)
+            require_equal(same(restored.previous_kv, saved.previous_kv) && same(restored.previous_gate, saved.previous_gate),
                 "DeepSeek V4 overlap compressor state restore failed");
-        }
-        require_equal(
-            restored.capacity == saved.capacity &&
-            tyloi::cuda::equal(
-                restored.pool.narrow(1, 0, saved.pool.size(1)),
-                saved.pool),
+        require_equal(restored.capacity == saved.capacity &&
+            same(restored.pool.dense().narrow(1, 0, saved.pool.size(1)), saved.pool),
             "DeepSeek V4 compressed pool restore failed");
     };
-    check_dsv4_pool(
-        dsv4_block->compressor, saved_dsv4.compressor);
-    check_dsv4_pool(
-        dsv4_block->indexer_compressor,
-        saved_dsv4.indexer_compressor);
-    require_equal(
-        dsv4_model.cache_pos == 10 && dsv4_state.bytes > 0,
+    check_pool(block.compressor, saved_dsv4.compressor);
+    check_pool(block.indexer_compressor, saved_dsv4.indexer_compressor);
+    require_equal(dsv4.position() == 10 && work.dsv4_saved.bytes > 0,
         "DeepSeek V4 session position restore failed");
 
-    tyloi::cuda::GlmDsaCausalLm glm_model;
-    auto glm_shared = std::make_shared<GlmDsaSharedState>();
-    std::vector<GlmDsaBlock *> glm_blocks;
-    for (int index = 0; index < 2; ++index) {
-        auto glm = std::make_unique<GlmDsaBlock>();
-        glm->cuda_device = 0;
-        glm->full_indexer = index == 0;
-        glm->shared_state = glm_shared;
-        glm->kv_cache = values(
-            {1, 1, 16, 6}, tyloi::kFloat16,
-            1000.0f + index * 100.0f);
-        if (glm->full_indexer) {
-            glm->index_cache = values(
-                {1, 16, 4}, tyloi::kFloat16, 2000.0f);
-        }
-        glm_blocks.push_back(glm.get());
-        glm_model.blocks.push_back(std::move(glm));
+    work.glm_model.layers.resize(2);
+    for (std::size_t index = 0; index < 2; ++index) {
+        auto& layout = work.glm_model.layers[index];
+        layout.device = device.index;
+        layout.full_indexer = index == 0;
+        layout.config.max_position_embeddings = 16;
+        layout.config.index_head_dim = 4;
     }
-    glm_model.cache_pos = 10;
-    const TextSessionState glm_state =
-        glm_model.capture_text_session_state(tokens);
-    for (auto * glm : glm_blocks) {
-        glm->kv_cache.zero_();
-        if (glm->index_cache.defined()) glm->index_cache.zero_();
+    work.glm = std::make_unique<tyloi::cuda::glm_dsa::State>(work.glm_model);
+    auto& glm = *work.glm;
+    for (std::size_t index = 0; index < 2; ++index) {
+        auto& layer = glm.layers[index];
+        layer.kv_cache = values({1, 1, 16, 6}, tyloi::kFloat16, 1000.0f + index * 100.0f);
+        if (index == 0) layer.index_cache = values({1, 16, 4}, tyloi::kFloat16, 2000.0f);
     }
-    glm_shared->topk_indices = tyloi::cuda::ones(
-        {1, 1, 1}, cuda_float.dtype(tyloi::kInt32));
-    glm_model.cache_pos = 0;
-    glm_model.restore_text_session_state(glm_state);
-    const auto& saved_glm = std::get<
-        std::vector<tyloi::models::glm_dsa::BlockSnapshot>>(glm_state.payload);
-    for (size_t index = 0; index < glm_blocks.size(); ++index) {
-        const auto & saved = saved_glm.at(index);
-        require_equal(
-            glm_blocks[index]->kv_cache.size(2) == saved.kv_capacity &&
-            tyloi::cuda::equal(
-                glm_blocks[index]->kv_cache.narrow(
-                    2, 0, saved.kv_cache.size(2)),
-                saved.kv_cache),
+    glm.advance(10);
+    work.glm_saved = glm.capture_text_session_state(tokens);
+    for (auto& layer : glm.layers) {
+        layer.kv_cache.zero_();
+        if (layer.index_cache.defined()) layer.index_cache.zero_();
+    }
+    glm.selections.at(device.index).topk_indices = tyloi::cuda::ones({1, 1, 1}, cuda_float.dtype(tyloi::kInt32));
+    glm.cache_pos = 0;
+    glm.restore_text_session_state(work.glm_saved);
+    const auto& saved_glm = std::get<std::vector<tyloi::models::glm_dsa::BlockSnapshot>>(work.glm_saved.payload);
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto& saved = saved_glm[index];
+        const auto& restored = glm.layers[index];
+        require_equal(restored.kv_cache.size(2) == saved.kv_capacity &&
+            same(restored.kv_cache.narrow(2, 0, saved.kv_cache.size(2)), saved.kv_cache),
             "GLM DSA MLA session cache restore failed");
-        if (saved.full_indexer) {
-            require_equal(
-                glm_blocks[index]->index_cache.size(1) ==
-                    saved.index_capacity &&
-                tyloi::cuda::equal(
-                    glm_blocks[index]->index_cache.narrow(
-                        1, 0, saved.index_cache.size(1)),
-                    saved.index_cache),
+        if (saved.full_indexer)
+            require_equal(restored.index_cache.size(1) == saved.index_capacity &&
+                same(restored.index_cache.narrow(1, 0, saved.index_cache.size(1)), saved.index_cache),
                 "GLM DSA index session cache restore failed");
-        }
     }
-    require_equal(
-        glm_model.cache_pos == 10 && glm_state.bytes > 0 &&
-        !glm_shared->topk_indices.defined(),
-        "GLM DSA session metadata restore failed");
-
+    require_equal(glm.position() == 10 && work.glm_saved.bytes > 0 &&
+        !glm.selections.at(device.index).topk_indices.defined(), "GLM DSA session metadata restore failed");
+    program.drain();
     std::cout << "text_session_state_check dsv4=1 glm_dsa=1\n";
     return 0;
 }

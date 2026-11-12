@@ -3,6 +3,7 @@ add_library(mfq-cuda-diagnostics STATIC
     ${PROJECT_SOURCE_DIR}/diagnostics/backend_checks.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/linear_checks.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/operator_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/experts.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/moe_checks.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/runtime_checks.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/session_checks.cpp

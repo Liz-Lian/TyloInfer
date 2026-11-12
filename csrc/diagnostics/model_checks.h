@@ -1,5 +1,6 @@
 #pragma once
 
+#include "diagnostics/experts.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -24,12 +25,16 @@ int run_q8_embedding_check(tyloi::cuda::Program& program, const std::string& nam
 int run_dsv4_output_a_check(tyloi::cuda::Program& program, const std::string& name, int batch, int repetitions);
 /** Compare Gemma GeGLU activation and output paths. */
 int run_gemma_geglu_check(tyloi::cuda::Program& program, int layer, int repetitions);
-int run_expert_parallel_moe_check(CudaExecutionContext& execution, const std::string& model_path, const std::string& tensor_name, int tokens, int routes);
-int run_mfe_tensor_check(CudaExecutionContext& execution, const std::string& model_path, const std::string& tensor_name, int tokens, int routes, int repetitions, int split_width, bool routed_input, bool benchmark_only);
 int run_moe_check(CudaExecutionContext& execution, const std::string& model_path, const std::string& config_path, int layer, const std::vector<std::int64_t>& token_sizes, int repetitions);
-int run_attention_decode_check(int length, int repetitions, int dimension, bool sliding, int window);
-int run_gemma4_swa_check(int repetitions);
-int run_glm_dsa_check(int repetitions);
-int run_dsv4_hc_check(int repetitions);
-int run_dsv4_attention_check(int repetitions);
-int run_text_session_state_check();
+/** Compare native full or sliding-window decode attention. */
+int run_attention_decode_check(tyloi::cuda::Program& program, int length, int repetitions, int dimension, bool sliding, int window);
+/** Check native Gemma sliding-window and full attention paths. */
+int run_gemma4_swa_check(tyloi::cuda::Program& program, int repetitions);
+/** Check native GLM DSA attention and routing paths. */
+int run_glm_dsa_check(tyloi::cuda::Program& program, int repetitions);
+/** Compare DeepSeek V4 hyper-connection operations. */
+int run_dsv4_hc_check(tyloi::cuda::Program& program, int repetitions);
+/** Check DeepSeek V4 attention, compression and routing paths. */
+int run_dsv4_attention_check(tyloi::cuda::Program& program, int repetitions);
+/** Exercise exact synthetic snapshot restoration through the production request states. */
+int run_text_session_state_check(tyloi::cuda::Program& program);

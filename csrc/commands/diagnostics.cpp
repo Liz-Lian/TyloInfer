@@ -258,23 +258,28 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (check_backend_bf16_add) return run_backend_bf16_add_check(*program, 4096, 10000);
             return run_backend_argmax_check(*program, 248320, 2000);
         }
-        enum class Tool { legacy, linear_cpu, linear, tp, group, q8, gdn, conv, geglu, output_a, minicpmo };
+        enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu,
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
         else if (!check_tp_linear.empty()) selected = Tool::tp;
-        else if (!check_ep_moe.empty()) selected = Tool::legacy;
+        else if (!check_ep_moe.empty()) selected = Tool::ep;
         else if (!check_linear_group.empty()) selected = Tool::group;
         else if (!check_q8_embedding.empty()) selected = Tool::q8;
         else if (!check_gdn_input.empty()) selected = Tool::gdn;
         else if (!check_linear_conv_input.empty()) selected = Tool::conv;
         else if (check_gemma_geglu_layer >= 0) selected = Tool::geglu;
-        else if (check_mfq_container || check_runtime_assets || check_moe_layer >= 0 ||
-                 !check_mfe_tensor.empty()) selected = Tool::legacy;
+        else if (check_mfq_container || check_runtime_assets || check_moe_layer >= 0) selected = Tool::legacy;
+        else if (!check_mfe_tensor.empty()) selected = Tool::mfe;
         else if (!check_dsv4_output_a.empty()) selected = Tool::output_a;
-        else if (check_attention_decode > 0 || check_gemma4_swa || check_glm_dsa ||
-                 check_dsv4_attention || check_dsv4_hc || check_deepseek_v41 ||
-                 check_text_session_state) selected = Tool::legacy;
+        else if (check_attention_decode > 0) selected = Tool::attention;
+        else if (check_gemma4_swa) selected = Tool::swa;
+        else if (check_glm_dsa) selected = Tool::glm;
+        else if (check_dsv4_attention) selected = Tool::dsv4_attention;
+        else if (check_dsv4_hc) selected = Tool::hc;
+        else if (check_deepseek_v41) selected = Tool::legacy;
+        else if (check_text_session_state) selected = Tool::session;
         else if (minicpmo_eval_batch) selected = Tool::minicpmo;
 
         if (selected != Tool::legacy) {
@@ -284,6 +289,14 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::minicpmo && options.context_size <= 0) options.context_size = 8192;
             auto program = tyloi::cuda::Program::open(std::move(options));
             auto scope = program->executor().enter(program->config().layer_placement.primary_device());
+            if (selected == Tool::attention) return run_attention_decode_check(*program,
+                check_attention_decode, check_attention_reps, check_attention_head_dim,
+                check_attention_swa_decode, check_attention_window);
+            if (selected == Tool::swa) return run_gemma4_swa_check(*program, check_attention_reps);
+            if (selected == Tool::glm) return run_glm_dsa_check(*program, check_attention_reps);
+            if (selected == Tool::dsv4_attention) return run_dsv4_attention_check(*program, check_attention_reps);
+            if (selected == Tool::hc) return run_dsv4_hc_check(*program, check_attention_reps);
+            if (selected == Tool::session) return run_text_session_state_check(*program);
             if (selected == Tool::linear_cpu || selected == Tool::linear) {
                 if (model_path.empty()) throw std::runtime_error(selected == Tool::linear_cpu
                     ? "--check-linear-cpu requires --model" : "--check-linear requires --model");
@@ -301,6 +314,24 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                     : check_tp_axis_arg == "input" ? TensorParallelAxis::Input
                     : throw std::runtime_error("--check-tp-axis must be output or input");
                 return run_tensor_parallel_linear_check(*program, check_tp_linear, axis, check_tp_m);
+            }
+            if (selected == Tool::ep) {
+                if (model_path.empty()) throw std::runtime_error("--check-ep-moe requires --model");
+                return run_expert_parallel_moe_check(*program, check_ep_moe, check_ep_moe_tokens, check_ep_moe_routes);
+            }
+            if (selected == Tool::mfe) {
+                if (model_path.empty()) throw std::runtime_error("--check-mfe-tensor requires --model");
+                KlMmqScope mmq(parse_kl_mmq_mode(kl_mmq_arg), program->executor().mmq());
+                const auto names = parse_tensor_names(check_mfe_tensor);
+                if (moe_gpu_cache_gb > 0 && names.size() != 1)
+                    throw std::runtime_error("cached --check-mfe-tensor accepts one tensor per invocation");
+                for (const auto& name : names) {
+                    const int result = run_mfe_tensor_check(*program, name, check_mfe_tokens,
+                        check_mfe_routes, check_mfe_reps, check_mfe_split_width,
+                        check_mfe_routed_input, check_mfe_benchmark_only);
+                    if (result != 0) return result;
+                }
+                return 0;
             }
             if (selected == Tool::group) {
                 if (model_path.empty()) throw std::runtime_error("--check-linear-group requires --model");
@@ -379,16 +410,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             std::cout<<runtime_comparison_name()<<"_setup\n";
             print_moe_expert_cache_stats(execution.weights.moe,std::cout);
         }
-        if (!check_ep_moe.empty()) {
-            if (model_path.empty()) {
-                throw std::runtime_error(
-                    "--check-ep-moe requires --model");
-            }
-            return run_expert_parallel_moe_check(
-                execution, model_path, check_ep_moe,
-                check_ep_moe_tokens,
-                check_ep_moe_routes);
-        }
         if (check_mfq_container) {
             if (model_path.empty()) {
                 throw std::runtime_error(
@@ -462,53 +483,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             return run_moe_check(
                 execution, model_path, config_path, check_moe_layer, parse_ids(check_moe_tokens), check_moe_reps);
         }
-        if (!check_mfe_tensor.empty()) {
-            if (model_path.empty()) {
-                throw std::runtime_error("--check-mfe-tensor requires --model");
-            }
-            KlMmqScope check_kl_mmq_scope(
-                parse_kl_mmq_mode(kl_mmq_arg), execution.kl_mmq);
-            const auto tensor_names =
-                parse_tensor_names(check_mfe_tensor);
-            if (execution.weights.moe &&
-                    tensor_names.size() != 1) {
-                throw std::runtime_error(
-                    "cached --check-mfe-tensor accepts one tensor "
-                    "per invocation");
-            }
-            for (const auto & tensor_name : tensor_names) {
-                const int result = run_mfe_tensor_check(
-                    execution, model_path, tensor_name, check_mfe_tokens,
-                    check_mfe_routes, check_mfe_reps,
-                    check_mfe_split_width, check_mfe_routed_input,
-                    check_mfe_benchmark_only);
-                if (result != 0) return result;
-            }
-            return 0;
-        }
-        if (check_attention_decode > 0) {
-            return run_attention_decode_check(
-                check_attention_decode, check_attention_reps,
-                check_attention_head_dim, check_attention_swa_decode,
-                check_attention_window);
-        }
-        if (check_gemma4_swa) {
-            return run_gemma4_swa_check(check_attention_reps);
-        }
-        if (check_glm_dsa) {
-            return run_glm_dsa_check(check_attention_reps);
-        }
-        if (check_dsv4_attention) {
-            return run_dsv4_attention_check(check_attention_reps);
-        }
-        if (check_dsv4_hc) {
-            return run_dsv4_hc_check(check_attention_reps);
-        }
         if (check_deepseek_v41) {
             return tyloi::cuda::deepseek_v41_runtime::run_self_check();
-        }
-        if (check_text_session_state) {
-            return run_text_session_state_check();
         }
         if (model_path.empty()) {
             std::cerr << "missing model or execution mode (see --help)\n";

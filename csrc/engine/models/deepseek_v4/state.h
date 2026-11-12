@@ -13,7 +13,7 @@ struct PoolState {
     bool overlap = false;
     ::tyloi::Tensor state_kv, state_gate, previous_kv, previous_gate, pool;
     /** Allocate or reuse fixed compressor storage and clear its committed contents. */
-    void reset(int64_t batch, int64_t max_positions);
+    void reset(int64_t batch, int64_t max_positions, int device);
 };
 
 struct LayerState { ::tyloi::Tensor local_cache; PoolState compressor, indexer_compressor; };
