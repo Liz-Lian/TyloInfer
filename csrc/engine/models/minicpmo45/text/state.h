@@ -29,6 +29,8 @@ public:
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Check request ownership against the supplied model. */
     bool belongs_to(const Model& model) const noexcept { return model_ == &model; }
+    /** Reuse a completed prefix without copying or replacing its KV backing. */
+    void rewind(std::int64_t position) override;
     /** Plan KV allocation for the requested batch and token span. */
     std::vector<std::pair<tyloi::Device,std::size_t>> growth(std::int64_t batch, std::int64_t tokens,
         const tyloi::models::ForwardOptions& options, std::int64_t confirmed = 0) const override;

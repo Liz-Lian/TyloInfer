@@ -7,6 +7,7 @@
 #ifdef TYLOINFER_NATIVE_CUDA
 #include "engine/models/causal_model.h"
 #include "engine/models/load.h"
+#include "engine/models/media.h"
 #endif
 #include "engine/models/metadata.h"
 #include "engine/models/source.h"
@@ -21,7 +22,7 @@ using Config = tyloi::models::minicpmo45::Config;
 
 struct Model
 #ifdef TYLOINFER_NATIVE_CUDA
-    : tyloi::models::CausalModel
+    : tyloi::models::CausalModel, tyloi::models::Media
 #endif
 {
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -63,6 +64,14 @@ struct Model
     tyloi::engine::Metrics metrics() const override;
     /** Create request-owned state for this model. */
     std::unique_ptr<tyloi::models::State> make_state() const override;
+    /** Borrow available media and speech capabilities. */
+    const tyloi::models::Media* media() const noexcept override;
+    const tyloi::models::Speech* speech() const noexcept override;
+    /** Encode media for the supplied explicit tensor inputs. */
+    std::unique_ptr<tyloi::models::Media::Request> encode(tyloi::models::MediaInput) const override;
+    /** Encode image or audio batches without prompt assembly. */
+    std::unique_ptr<tyloi::models::Media::Request> images(Tensor, Tensor, Tensor) const override;
+    std::unique_ptr<tyloi::models::Media::Request> audios(Tensor, Tensor) const override;
     /** Create a duplex session borrowing this model and request. */
     std::unique_ptr<tyloi::models::Duplex> duplex(tyloi::models::State&) const override;
     /** Prepare supported multimodal inputs for this request. */

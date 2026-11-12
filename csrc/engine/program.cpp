@@ -34,6 +34,13 @@ struct Assembly {
     models::LoadOptions policy;
 };
 
+/** Apply the owner's placement and cache policy to every tool and model loader. */
+weights::Loader loader(CudaLoadConfig& config, weights::Cache& weights, const ModelSource& source) {
+    return weights.loader(source, config.weights,
+        {config.layer_placement.primary_device(), false, config.drop_file_cache,
+         config.tensor_parallel, moe_parallel_config(config)});
+}
+
 /** Resolve the shared definition, weight loader, and native model policy. */
 Assembly assembly(const CudaLoadOptions& options, CudaLoadConfig& config,
         Executor& executor, weights::Cache& weights, const ModelSource& source,
@@ -42,10 +49,8 @@ Assembly assembly(const CudaLoadOptions& options, CudaLoadConfig& config,
     definition = configure_yarn(config.yarn, config.yarn_context_extension,
         std::move(definition), models::graph(source).backbone, options.context_size);
     if (!config.dsv4_cpu_offload_layers.empty()) config.drop_file_cache = true;
-    auto loader = weights.loader(source, config.weights,
-        {config.layer_placement.primary_device(), false, config.drop_file_cache,
-         config.tensor_parallel, moe_parallel_config(config)});
-    return {std::move(definition), std::move(loader),
+    auto weights_loader = loader(config, weights, source);
+    return {std::move(definition), std::move(weights_loader),
         models::LoadOptions{.context = options.context_size, .gpu_layers = config.n_gpu_layers,
             .expert_parallel = config.expert_parallel.enabled(), .yarn = config.yarn,
             .cpu_offload_layers = config.dsv4_cpu_offload_layers,
@@ -101,7 +106,7 @@ struct Program::Impl {
     /** Open the source only for a model-loading operation, after execution setup. */
     void open_source() {
         if (options.model_path.empty()) throw std::logic_error("program has no model source");
-        source = open_model_source(options.model_path);
+        if (!source) source = open_model_source(options.model_path);
     }
 
     /** Drain before destroying execution-dependent resources, including on partial setup. */
@@ -218,6 +223,12 @@ void Program::load_groups(std::int64_t context) {
 
 Executor& Program::executor() { if (!impl_->executor) throw std::logic_error("program closed"); return *impl_->executor; }
 ::tyloi::weights::Cache& Program::weights() { if (!impl_->weights) throw std::logic_error("program closed"); return *impl_->weights; }
+::tyloi::weights::Loader Program::loader() {
+    auto& p = *impl_;
+    if (!p.executor || !p.weights) throw std::logic_error("program closed");
+    p.open_source();
+    return ::tyloi::cuda::loader(p.config, *p.weights, *p.source);
+}
 CudaLoadConfig& Program::config() { return impl_->config; }
 models::CausalModel& Program::model() { if (!impl_->model) throw std::logic_error("model not loaded"); return *impl_->model; }
 models::State& Program::state() { if (!impl_->state) throw std::logic_error("state not loaded"); return *impl_->state; }

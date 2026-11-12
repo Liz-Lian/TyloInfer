@@ -152,11 +152,14 @@ void check_device(const ::tyloi::TensorImpl& weight, const ::tyloi::DenseTensor&
         return tyloi::cuda::tq::embedding(*tq, token_ids);
     if (const auto* nvq = weight.representation<tyloi::NvqTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NVQ embedding weight is not enabled");
+#if TYLOINFER_ENABLE_MFQ_COMPAT
         check_device(*nvq, token_ids);
         return nvq_embedding(*nvq, token_ids);
+#endif
     }
     if (const auto* nint = weight.representation<tyloi::NintTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NINT embedding weight is not enabled");
+#if TYLOINFER_ENABLE_MFQ_COMPAT
         check_device(*nint, token_ids);
         if (nint->q8_zero)
             return nint8_zero_embedding_lookup_cuda(
@@ -165,6 +168,7 @@ void check_device(const ::tyloi::TensorImpl& weight, const ::tyloi::DenseTensor&
             nint->q_packed, nint->row_q_bits, nint->row_q_bit_offsets,
             nint->sub_scale, nint->sub_min, nint->neuron_scale, nint->neuron_min,
             token_ids, nint->neuron_len, nint->gs);
+#endif
     }
     if (const auto* mx4 = weight.representation<tyloi::Mxfp4Tensor>()) {
         check_device(*mx4, token_ids);
@@ -212,15 +216,19 @@ bool tensor_parallel_output_projections_compatible(
     }
     if (const auto* nint = weight.representation<tyloi::NintTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NINT linear weight is not enabled");
+#if TYLOINFER_ENABLE_MFQ_COMPAT
         return nint->q8_zero
             ? nint8_zero_dequant_cuda(nint->q_packed, nint->q8_zero_scale, nint->neuron_len)
             : nint_decode_cuda(nint->q_packed, nint->row_q_bits, nint->row_q_bit_offsets,
                                nint->sub_scale, nint->sub_min, nint->neuron_scale,
                                nint->neuron_min, nint->neuron_len, nint->gs);
+#endif
     }
     if (const auto* nvq = weight.representation<tyloi::NvqTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "NVQ linear weight is not enabled");
+#if TYLOINFER_ENABLE_MFQ_COMPAT
         return nvq_dequant(*nvq);
+#endif
     }
     if (const auto* mx4 = weight.representation<tyloi::Mxfp4Tensor>())
         return mxfp4_dequant_cuda(mx4->values, mx4->scales);
@@ -236,7 +244,9 @@ bool tensor_parallel_output_projections_compatible(
 #endif
     if (const auto* sq8 = weight.representation<tyloi::Fp8SqTensor>()) {
         TYLOINFER_RUNTIME_CHECK(tyloi::mfq_compat_enabled, "FP8-SQ linear weight is not enabled");
+#if TYLOINFER_ENABLE_MFQ_COMPAT
         return dequant_fp8_sq(*sq8, false);
+#endif
     }
     if (const auto* mx8 = weight.representation<tyloi::Mxfp8Tensor>())
         return mxfp8_cpu_reference(*mx8);

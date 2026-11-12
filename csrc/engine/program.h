@@ -7,7 +7,7 @@
 namespace tyloi {
 class ModelSource;
 namespace models { class CausalModel; class State; class Layers; class Groups; }
-namespace weights { class Cache; }
+namespace weights { class Cache; struct Loader; }
 }
 
 namespace tyloi::cuda {
@@ -35,6 +35,8 @@ public:
     Executor& executor();
     /** Borrow the weight cache while this owner remains alive. */
     weights::Cache& weights();
+    /** Open the configured source lazily and return a loader borrowing this owner. */
+    weights::Loader loader();
     /** Borrow the resolved execution configuration. */
     CudaLoadConfig& config();
     /** Borrow the loaded complete model. */

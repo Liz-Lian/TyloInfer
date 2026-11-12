@@ -258,6 +258,88 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (check_backend_bf16_add) return run_backend_bf16_add_check(*program, 4096, 10000);
             return run_backend_argmax_check(*program, 248320, 2000);
         }
+        enum class Tool { legacy, linear_cpu, linear, tp, group, q8, gdn, conv, geglu, output_a, minicpmo };
+        Tool selected = Tool::legacy;
+        if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
+        else if (!check_linear.empty()) selected = Tool::linear;
+        else if (!check_tp_linear.empty()) selected = Tool::tp;
+        else if (!check_ep_moe.empty()) selected = Tool::legacy;
+        else if (!check_linear_group.empty()) selected = Tool::group;
+        else if (!check_q8_embedding.empty()) selected = Tool::q8;
+        else if (!check_gdn_input.empty()) selected = Tool::gdn;
+        else if (!check_linear_conv_input.empty()) selected = Tool::conv;
+        else if (check_gemma_geglu_layer >= 0) selected = Tool::geglu;
+        else if (check_mfq_container || check_runtime_assets || check_moe_layer >= 0 ||
+                 !check_mfe_tensor.empty()) selected = Tool::legacy;
+        else if (!check_dsv4_output_a.empty()) selected = Tool::output_a;
+        else if (check_attention_decode > 0 || check_gemma4_swa || check_glm_dsa ||
+                 check_dsv4_attention || check_dsv4_hc || check_deepseek_v41 ||
+                 check_text_session_state) selected = Tool::legacy;
+        else if (minicpmo_eval_batch) selected = Tool::minicpmo;
+
+        if (selected != Tool::legacy) {
+            if (runtime_comparison_modes() || comparison_phase_timings)
+                throw std::runtime_error("runtime comparison dispatch harness is currently unavailable");
+            auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
+            if (selected == Tool::minicpmo && options.context_size <= 0) options.context_size = 8192;
+            auto program = tyloi::cuda::Program::open(std::move(options));
+            auto scope = program->executor().enter(program->config().layer_placement.primary_device());
+            if (selected == Tool::linear_cpu || selected == Tool::linear) {
+                if (model_path.empty()) throw std::runtime_error(selected == Tool::linear_cpu
+                    ? "--check-linear-cpu requires --model" : "--check-linear requires --model");
+                auto gate = InputGateMode::None;
+                if (check_linear_gate == "sigmoid") gate = InputGateMode::Sigmoid;
+                else if (check_linear_gate == "silu") gate = InputGateMode::Silu;
+                else if (!check_linear_gate.empty()) throw std::runtime_error("--check-linear-gate must be sigmoid or silu");
+                return selected == Tool::linear_cpu
+                    ? run_cpu_linear_check(*program, check_linear_cpu, check_linear_m, gate, check_linear_reps)
+                    : run_linear_check(*program, check_linear, check_linear_m, gate, check_linear_reps);
+            }
+            if (selected == Tool::tp) {
+                if (model_path.empty()) throw std::runtime_error("--check-tp-linear requires --model");
+                const TensorParallelAxis axis = check_tp_axis_arg == "output" ? TensorParallelAxis::Output
+                    : check_tp_axis_arg == "input" ? TensorParallelAxis::Input
+                    : throw std::runtime_error("--check-tp-axis must be output or input");
+                return run_tensor_parallel_linear_check(*program, check_tp_linear, axis, check_tp_m);
+            }
+            if (selected == Tool::group) {
+                if (model_path.empty()) throw std::runtime_error("--check-linear-group requires --model");
+                return run_linear_group_check(*program, check_linear_group, check_linear_m, check_linear_reps);
+            }
+            if (selected == Tool::q8) {
+                if (model_path.empty()) throw std::runtime_error("--check-q8-embedding requires --model");
+                return run_q8_embedding_check(*program, check_q8_embedding);
+            }
+            if (selected == Tool::gdn) {
+                if (check_gdn_output.empty() || check_gdn_state.empty())
+                    throw std::runtime_error("--check-gdn-input requires --check-gdn-output and --check-gdn-state");
+                return run_gdn_operator_check(*program, check_gdn_input, check_gdn_output, check_gdn_state,
+                    check_gdn_tokens, check_gdn_q_heads, check_gdn_v_heads, check_gdn_head_dim);
+            }
+            if (selected == Tool::conv) {
+                if (check_linear_conv_output.empty())
+                    throw std::runtime_error("--check-linear-conv-input requires --check-linear-conv-output");
+                return run_linear_conv_operator_check(*program, check_linear_conv_input, check_linear_conv_output,
+                    check_linear_conv_tokens, check_linear_conv_q_heads, check_linear_conv_v_heads,
+                    check_linear_conv_key_dim, check_linear_conv_value_dim, check_linear_conv_kernel, 1.0e-6);
+            }
+            if (selected == Tool::geglu) {
+                if (model_path.empty()) throw std::runtime_error("--check-gemma-geglu-layer requires --model");
+                return run_gemma_geglu_check(*program, check_gemma_geglu_layer, check_gemma_geglu_reps);
+            }
+            if (selected == Tool::output_a) {
+                if (model_path.empty()) throw std::runtime_error("--check-dsv4-output-a requires --model");
+                return run_dsv4_output_a_check(*program, check_dsv4_output_a,
+                    check_dsv4_output_a_batch, check_dsv4_output_a_reps);
+            }
+            if (model_path.empty()) throw std::runtime_error("--minicpmo-eval-batch requires --model");
+            if (!ids_arg.empty() || !ids_file.empty())
+                throw std::runtime_error("MiniCPM-o eval mode cannot be combined with composite, duplex, token, transport, KL, or prefill modes");
+            if (minicpmo_eval_vision_batch_size <= 0)
+                throw std::runtime_error("--minicpmo-eval-vision-batch-size must be positive");
+            return tyloi::cuda::minicpmo45::run_eval_batch(
+                *program, context_size <= 0 ? 8192 : context_size, minicpmo_eval_vision_batch_size);
+        }
         auto tq = std::make_shared<TqExec>();
         std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
         tyloi::cuda::RoutedCache weights;
@@ -292,81 +374,10 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             execution.config.cache.adapt=false;
             std::cout<<std::unitbuf;
         }
-        if (!check_backend_bf16_add && !check_backend_argmax &&
-                check_linear_cpu.empty() && check_linear.empty() && check_tp_linear.empty() &&
-                check_ep_moe.empty() && check_linear_group.empty() && check_q8_embedding.empty() &&
-                (!check_gdn_input.empty() || !check_linear_conv_input.empty())) {
-            auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
-            auto program = tyloi::cuda::Program::open(std::move(options), !runtime_comparison_modes());
-            auto scope = program->executor().enter(program->config().layer_placement.primary_device());
-            if (runtime_comparison_modes()) {
-                std::cout << runtime_comparison_name() << "_setup\n";
-                program->weights().report(std::cout);
-            }
-            if (!check_gdn_input.empty() && (check_gdn_output.empty() || check_gdn_state.empty())) {
-                throw std::runtime_error(
-                    "--check-gdn-input requires --check-gdn-output and --check-gdn-state");
-            }
-            if (check_gdn_input.empty() && check_linear_conv_output.empty()) {
-                throw std::runtime_error(
-                    "--check-linear-conv-input requires --check-linear-conv-output");
-            }
-            if (!check_gdn_input.empty()) {
-                return run_gdn_operator_check(*program,
-                    check_gdn_input, check_gdn_output, check_gdn_state,
-                    check_gdn_tokens, check_gdn_q_heads, check_gdn_v_heads, check_gdn_head_dim);
-            }
-            return run_linear_conv_operator_check(*program,
-                check_linear_conv_input, check_linear_conv_output,
-                check_linear_conv_tokens, check_linear_conv_q_heads, check_linear_conv_v_heads,
-                check_linear_conv_key_dim, check_linear_conv_value_dim, check_linear_conv_kernel, 1.0e-6);
-        }
         setup_cuda_load(*this, execution);
         if(runtime_comparison_modes()) {
             std::cout<<runtime_comparison_name()<<"_setup\n";
             print_moe_expert_cache_stats(execution.weights.moe,std::cout);
-        }
-        if (!check_linear_cpu.empty()) {
-            if (model_path.empty()) {
-                throw std::runtime_error("--check-linear-cpu requires --model");
-            }
-            auto gate_mode = InputGateMode::None;
-            if (check_linear_gate == "sigmoid") gate_mode = InputGateMode::Sigmoid;
-            else if (check_linear_gate == "silu") gate_mode = InputGateMode::Silu;
-            else if (!check_linear_gate.empty()) {
-                throw std::runtime_error("--check-linear-gate must be sigmoid or silu");
-            }
-            return run_cpu_linear_check(
-                execution, model_path, check_linear_cpu, check_linear_m,
-                gate_mode, check_linear_reps);
-        }
-        if (!check_linear.empty()) {
-            if (model_path.empty()) throw std::runtime_error("--check-linear requires --model");
-            auto gate_mode = InputGateMode::None;
-            if (check_linear_gate == "sigmoid") gate_mode = InputGateMode::Sigmoid;
-            else if (check_linear_gate == "silu") gate_mode = InputGateMode::Silu;
-            else if (!check_linear_gate.empty()) {
-                throw std::runtime_error("--check-linear-gate must be sigmoid or silu");
-            }
-            return run_linear_check(
-                execution, model_path, check_linear, check_linear_m, gate_mode,
-                check_linear_reps);
-        }
-        if (!check_tp_linear.empty()) {
-            if (model_path.empty()) {
-                throw std::runtime_error(
-                    "--check-tp-linear requires --model");
-            }
-            const TensorParallelAxis axis =
-                check_tp_axis_arg == "output"
-                ? TensorParallelAxis::Output
-                : check_tp_axis_arg == "input"
-                ? TensorParallelAxis::Input
-                : throw std::runtime_error(
-                    "--check-tp-axis must be output or input");
-            return run_tensor_parallel_linear_check(
-                execution, model_path, check_tp_linear,
-                axis, check_tp_m);
         }
         if (!check_ep_moe.empty()) {
             if (model_path.empty()) {
@@ -377,29 +388,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 execution, model_path, check_ep_moe,
                 check_ep_moe_tokens,
                 check_ep_moe_routes);
-        }
-        if (!check_linear_group.empty()) {
-            if (model_path.empty()) {
-                throw std::runtime_error("--check-linear-group requires --model");
-            }
-            return run_linear_group_check(
-                execution, model_path, check_linear_group, check_linear_m,
-                check_linear_reps);
-        }
-        if (!check_q8_embedding.empty()) {
-            if (model_path.empty()) {
-                throw std::runtime_error("--check-q8-embedding requires --model");
-            }
-            return run_q8_embedding_check(
-                execution, model_path, check_q8_embedding);
-        }
-        if (check_gemma_geglu_layer >= 0) {
-            if (model_path.empty()) {
-                throw std::runtime_error("--check-gemma-geglu-layer requires --model");
-            }
-            return run_gemma_geglu_check(
-                execution, model_path, check_gemma_geglu_layer,
-                check_gemma_geglu_reps);
         }
         if (check_mfq_container) {
             if (model_path.empty()) {
@@ -498,14 +486,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             }
             return 0;
         }
-        if (!check_dsv4_output_a.empty()) {
-            if (model_path.empty()) {
-                throw std::runtime_error("--check-dsv4-output-a requires --model");
-            }
-            return run_dsv4_output_a_check(
-                execution, model_path, check_dsv4_output_a,
-                check_dsv4_output_a_batch, check_dsv4_output_a_reps);
-        }
         if (check_attention_decode > 0) {
             return run_attention_decode_check(
                 check_attention_decode, check_attention_reps,
@@ -529,24 +509,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         }
         if (check_text_session_state) {
             return run_text_session_state_check();
-        }
-        if (minicpmo_eval_batch) {
-            if (model_path.empty()) {
-                throw std::runtime_error(
-                    "--minicpmo-eval-batch requires --model");
-            }
-            if (!ids_arg.empty() || !ids_file.empty()) {
-                throw std::runtime_error(
-                    "MiniCPM-o eval mode cannot be combined with "
-                    "composite, duplex, token, transport, KL, or prefill modes");
-            }
-            if (minicpmo_eval_vision_batch_size <= 0) {
-                throw std::runtime_error(
-                    "--minicpmo-eval-vision-batch-size must be positive");
-            }
-            return tyloi::cuda::minicpmo45::run_eval_batch(
-                execution, model_path, config_path, context_size,
-                minicpmo_eval_vision_batch_size);
         }
         if (model_path.empty()) {
             std::cerr << "missing model or execution mode (see --help)\n";

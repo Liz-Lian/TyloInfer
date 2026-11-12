@@ -19,11 +19,11 @@
 
 #include <array>
 
-using ::tyloi::indexing::Slice;
-
 struct MiniCPMO45TtsSamplingOps {
+    using Slice = ::tyloi::indexing::Slice;
     using DenseTensor = ::tyloi::DenseTensor;
     std::mt19937 *evaluator_rng = nullptr;
+    int device = 0;
     static DenseTensor temperature(DenseTensor scores, double value) { return scores / value; }
     static DenseTensor penalties(DenseTensor scores, std::span<const DenseTensor> history, double penalty) {
         auto counts = ::tyloi::cuda::zeros_like(scores);
@@ -46,7 +46,7 @@ struct MiniCPMO45TtsSamplingOps {
             minimum_keep, *evaluator_rng);
         return ::tyloi::cuda::tensor(std::vector<int64_t>{token},
                                           ::tyloi::TensorOptions()
-                                              .device(::tyloi::kCUDA)
+                                              .device(::tyloi::Device(::tyloi::kCUDA, device))
                                               .dtype(::tyloi::kInt64));
     }
     static DenseTensor top_k(DenseTensor scores, int64_t count) {
@@ -82,6 +82,8 @@ struct MiniCPMO45TtsSamplingOps {
 };
 
 namespace tyloi::cuda::minicpmo45 {
+
+using ::tyloi::indexing::Slice;
 
 struct Tts {
     struct Layer {
@@ -267,7 +269,7 @@ struct Tts {
         auto suffix_ids = ::tyloi::cuda::tensor(
             std::vector<int64_t>{151692, 151687},
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64)
-                .device(::tyloi::kCUDA)).reshape({1, 2});
+                .device(::tyloi::Device(::tyloi::kCUDA, device))).reshape({1, 2});
         auto suffix = minicpmo45_embedding(
             text_embedding, suffix_ids, text.scalar_type());
         return ::tyloi::cuda::cat({merged, suffix}, 1).contiguous();
@@ -308,7 +310,7 @@ struct Tts {
         auto bos_ids = ::tyloi::cuda::tensor(
             std::vector<int64_t>{audio_bos_token},
             ::tyloi::TensorOptions().dtype(::tyloi::kInt64)
-                .device(::tyloi::kCUDA)).reshape({1, 1});
+                .device(::tyloi::Device(::tyloi::kCUDA, device))).reshape({1, 1});
         auto bos = minicpmo45_embedding(
             text_embedding, bos_ids, ::tyloi::kBFloat16);
         return condition.defined()
@@ -341,12 +343,12 @@ struct Tts {
         if (state.position == 0) state.reset(batch);
         auto positions = ::tyloi::cuda::arange(
             state.position, state.position + tokens,
-            ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64));
+            ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, device)).dtype(::tyloi::kInt64));
         MfqOptional<::tyloi::DenseTensor> sequence_length = mfq_nullopt;
         if (state.position > 0) {
             sequence_length = ::tyloi::cuda::full(
                 {batch}, state.position + tokens,
-                ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64));
+                ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, device)).dtype(::tyloi::kInt64));
         }
         auto hidden = input_embeddings.to(::tyloi::kBFloat16).contiguous();
         input_embeddings = {};
@@ -494,56 +496,107 @@ struct Tts {
         } else {
             codes = ::tyloi::cuda::empty(
                 {1, 0, 1},
-                ::tyloi::TensorOptions().device(::tyloi::kCUDA)
+                ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, device))
                     .dtype(::tyloi::kInt64));
         }
         return {codes, finished};
     }
 
+    /** Retain the state and sampling history for bounded official generation steps. */
+    struct OfficialGeneration {
+        const Tts& model;
+        State& state;
+#ifdef TYLOINFER_NATIVE_CUDA
+        tyloi::models::ForwardOptions mode;
+#else
+        Executor& executor;
+        Executor::Mode mode;
+#endif
+        tyloi::models::minicpmo45::TtsSampling config;
+        int64_t steps;
+        ::tyloi::DenseTensor current;
+        std::vector<::tyloi::DenseTensor> generated;
+        std::vector<::tyloi::DenseTensor>* logits_trace;
+        MiniCPMO45TtsSamplingOps sampling_ops;
+        bool done = false, hit_eos = false;
+
+        OfficialGeneration(const Tts& model_, State& state_,
+#ifdef TYLOINFER_NATIVE_CUDA
+            const tyloi::models::ForwardOptions& mode_,
+#else
+            Executor& executor_, const Executor::Mode& mode_,
+#endif
+            ::tyloi::DenseTensor condition, int64_t steps_,
+            tyloi::models::minicpmo45::TtsSampling config_,
+            std::vector<::tyloi::DenseTensor>* trace, std::mt19937* rng)
+            : model(model_), state(state_),
 #ifndef TYLOINFER_NATIVE_CUDA
+              executor(executor_),
+#endif
+              mode(mode_), config(config_), steps(steps_), current(std::move(condition)),
+              logits_trace(trace), sampling_ops{rng, model_.device} {
+            MfqCudaGuard guard(model.device);
+            config.validate(steps, 6562);
+            if (current.dim() != 3 || current.size(0) != 1)
+                throw std::runtime_error("official MiniCPM-o TTS generation requires batch size one");
+            state.reset(1);
+            generated.reserve(static_cast<size_t>(steps));
+        }
+
+        /** Generate one token and retain all request state for the next step. */
+        bool next() {
+            if (done) return false;
+            MfqCudaGuard guard(model.device);
+            auto hidden = model.hidden_forward(state,
+#ifndef TYLOINFER_NATIVE_CUDA
+                executor,
+#endif
+                mode, current);
+            auto scores = model.logits(hidden.index({Slice(), -1, Slice()})).to(::tyloi::kFloat32);
+            if (logits_trace) logits_trace->push_back(scores.clone());
+            auto token = tyloi::models::minicpmo45::sample_tts(sampling_ops, std::move(scores), config,
+                std::span<const ::tyloi::DenseTensor>(generated), static_cast<int64_t>(generated.size()),
+                sampling_ops.evaluator_rng != nullptr);
+            generated.push_back(token);
+            hit_eos = token.eq(config.eos_token).all().item<bool>();
+            done = hit_eos || static_cast<int64_t>(generated.size()) == steps;
+            if (!done) current = minicpmo45_embedding(model.code_embedding, token.unsqueeze(1));
+            return true;
+        }
+
+        /** Return sampled codes after generation has completed. */
+        ::tyloi::DenseTensor codes() const {
+            if (!done) throw std::logic_error("speech generation is incomplete");
+            MfqCudaGuard guard(model.device);
+            auto sampled = ::tyloi::cuda::stack(generated, 1);
+            return sampled.narrow(1, 0, static_cast<int64_t>(generated.size()) - (hit_eos ? 1 : 0))
+                .unsqueeze(-1).contiguous();
+        }
+    };
+
     ::tyloi::DenseTensor generate_official(
-        State& state, Executor& executor, const Executor::Mode& mode,
+        State& state,
+#ifdef TYLOINFER_NATIVE_CUDA
+        const tyloi::models::ForwardOptions& mode,
+#else
+        Executor& executor, const Executor::Mode& mode,
+#endif
         ::tyloi::DenseTensor condition_embeddings, int64_t steps, int64_t eos_token = 6561,
         int64_t minimum_steps = 50, double temperature = 0.8, double top_p = 0.85,
         int64_t top_k = 25, double repetition_penalty = 1.05,
         std::vector<::tyloi::DenseTensor> *logits_trace = nullptr, double min_p = 0.0,
         std::mt19937 *evaluator_rng = nullptr, int64_t evaluator_min_keep = 0) const {
-        MfqCudaGuard guard(device);
         const tyloi::models::minicpmo45::TtsSampling config{eos_token,          minimum_steps, top_k,
                                                           evaluator_min_keep, temperature,   top_p,
                                                           repetition_penalty, min_p};
-        config.validate(steps, 6562);
-        if (condition_embeddings.dim() != 3 || condition_embeddings.size(0) != 1)
-            throw std::runtime_error("official MiniCPM-o TTS generation requires batch size one");
-        state.reset(1);
-        using DenseTensor = ::tyloi::DenseTensor;
-        std::vector<DenseTensor> generated;
-        generated.reserve(static_cast<size_t>(steps));
-        auto current = condition_embeddings;
-        MiniCPMO45TtsSamplingOps sampling_ops{evaluator_rng};
-        const auto result = tyloi::engine::generate_tokens(
-            steps,
-            [&](int64_t step) {
-                auto hidden = hidden_forward(state, executor, mode, current);
-                auto raw_step_logits =
-                    logits(hidden.index({Slice(), -1, Slice()})).to(::tyloi::kFloat32);
-                if (logits_trace)
-                    logits_trace->push_back(raw_step_logits.clone());
-                return tyloi::models::minicpmo45::sample_tts(
-                    sampling_ops, std::move(raw_step_logits), config,
-                    std::span<const DenseTensor>(generated), step, evaluator_rng != nullptr);
-            },
-            [&](const DenseTensor &token, int64_t) { generated.push_back(token); },
-            [&](const DenseTensor &token) { return token.eq(eos_token).all().item<bool>(); },
-            [&](const DenseTensor &token) {
-                current = minicpmo45_embedding(code_embedding, token.unsqueeze(1));
-            });
-        auto sampled = ::tyloi::cuda::stack(generated, 1);
-        return sampled.narrow(1, 0, result.tokens - (result.hit_eos ? 1 : 0))
-            .unsqueeze(-1)
-            .contiguous();
-    }
+        OfficialGeneration generation(*this, state,
+#ifndef TYLOINFER_NATIVE_CUDA
+            executor,
 #endif
+            mode, std::move(condition_embeddings), steps, config, logits_trace, evaluator_rng);
+        while (generation.next()) {}
+        return generation.codes();
+    }
 };
 
 } // namespace tyloi::cuda::minicpmo45

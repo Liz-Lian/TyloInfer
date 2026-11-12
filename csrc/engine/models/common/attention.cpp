@@ -171,7 +171,7 @@ std::array<::tyloi::Tensor, 2> FullAttention::forward(
     cache.visible_value = kv.second;
     auto result = tyloi::ops::attention(
         tyloi::ops::AttentionInput{q, k, v, pos, write_positions,
-            step.sequence_lengths, {}, cache_pos,
+            step.sequence_lengths, step.attention_mask, cache_pos,
             step.planned_kv_length, step.decode_attention_parts}, cache,
         tyloi::ops::AttentionConfig{official_bf16, sliding, attention_window, attention_scale});
     auto a = result.value;

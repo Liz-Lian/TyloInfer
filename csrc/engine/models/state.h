@@ -72,6 +72,10 @@ public:
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;
+    /** Reuse an already computed attention prefix after its consumers have drained. */
+    virtual void rewind(std::int64_t) {
+        throw std::logic_error("attention prefix rewind is unsupported by this model");
+    }
     /** Commit a completed speculative verification pass. */
     virtual void commit_speculative() { throw std::logic_error("speculative state is unsupported by this model"); }
     /** Roll back a speculative pass while retaining the accepted suffix. */

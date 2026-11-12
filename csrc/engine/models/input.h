@@ -62,6 +62,8 @@ struct Input {
     bool host_raw = false;
     /** Optional known host token IDs for model-owned decode prefetch and graph uploads. */
     Tensor host_ids;
+    /** Optional MiniCPM key-validity mask [batch, visible tokens or more], with nonzero entries visible. */
+    Tensor attention_mask;
 };
 
 struct ForwardOptions {

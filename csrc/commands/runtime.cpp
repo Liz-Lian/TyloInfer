@@ -6,6 +6,9 @@
 #include "engine/engine.h"
 #include "engine/load.h"
 #include "minicpmo45.h"
+#ifdef TYLOINFER_NATIVE_CUDA
+#include "engine/program.h"
+#endif
 #include "engine/models/source.h"
 #include "transport.h"
 
@@ -253,6 +256,12 @@ int execute_runtime(RuntimeCommandOptions options) {
                 options.input_prefix.empty()) {
             return run_transport_runtime(options);
         }
+#ifdef TYLOINFER_NATIVE_CUDA
+        auto program = tyloi::cuda::Program::open(options);
+        return !options.duplex_input_prefix.empty()
+            ? tyloi::cuda::minicpmo45::run_duplex(*program, options)
+            : tyloi::cuda::minicpmo45::run_composite(*program, options);
+#else
         std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
         tyloi::cuda::RoutedCache weights;
         std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
@@ -264,6 +273,7 @@ int execute_runtime(RuntimeCommandOptions options) {
         return !options.duplex_input_prefix.empty()
             ? tyloi::cuda::minicpmo45::run_duplex(execution, options, options)
             : tyloi::cuda::minicpmo45::run_composite(execution, options, options);
+#endif
     });
 }
 

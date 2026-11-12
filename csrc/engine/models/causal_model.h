@@ -18,6 +18,9 @@ struct MfqMultimodalInput;
 
 namespace tyloi::models {
 
+class Media;
+class Speech;
+
 /** Own shared model weights while requests exclusively own the State passed to each call. */
 class CausalModel {
 public:
@@ -30,6 +33,10 @@ public:
     virtual tyloi::engine::Metrics metrics() const = 0;
     /** Borrow assembled predictor weights; each request owns its mutable predictor State. */
     virtual Mtp* mtp() const noexcept { return nullptr; }
+    /** Borrow optional media encoding capabilities for this model's lifetime. */
+    virtual const Media* media() const noexcept { return nullptr; }
+    /** Borrow optional speech capabilities for this model's lifetime. */
+    virtual const Speech* speech() const noexcept { return nullptr; }
     /** Create request state that must be retired before this model is replaced or destroyed. */
     virtual std::unique_ptr<State> make_state() const = 0;
     /** Report startup graph phases using disposable request state and weight access policy. */

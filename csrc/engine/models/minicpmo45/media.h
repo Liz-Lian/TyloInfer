@@ -2,7 +2,7 @@
 
 #include "engine/generation/sequence.h"
 #include "engine/ops.h"
-#include "engine/models/common/causal_forward.h"
+#include "engine/models/common/check.h"
 #include <algorithm>
 #include <array>
 #include <cmath>

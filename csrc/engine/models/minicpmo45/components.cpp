@@ -40,6 +40,8 @@ MiniCPMO45Runtime MiniCPMO45Runtime::load(
 
 namespace tyloi::cuda::minicpmo45 {
 
+using ::tyloi::indexing::Slice;
+
 #ifndef TYLOINFER_NATIVE_CUDA
 std::unique_ptr<Components> load_components(text::Model& model, text::State& state,
         Executor& executor, const tyloi::weights::Loader& weights,
@@ -356,9 +358,30 @@ std::unique_ptr<Components> Components::load(const tyloi::weights::Loader& weigh
     return std::unique_ptr<Components>(new Components(std::make_unique<State>(weights, primary)));
 }
 
-tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
-        const text::Model& language, const std::vector<int64_t>& prompt,
-        const MfqMultimodalInput& media) const {
+std::unique_ptr<tyloi::models::Media::Request> Components::encode(
+        const text::Model& language, tyloi::models::MediaInput source) const {
+    return media_request(language, std::move(source), MediaMode::prompt);
+}
+
+std::unique_ptr<tyloi::models::Media::Request> Components::images(
+        const text::Model& language, Tensor pixels, Tensor mask, Tensor sizes) const {
+    tyloi::models::MediaInput input;
+    input.pixels = std::move(pixels);
+    input.patch_mask = std::move(mask);
+    input.target_sizes = std::move(sizes);
+    return media_request(language, std::move(input), MediaMode::images);
+}
+
+std::unique_ptr<tyloi::models::Media::Request> Components::audios(
+        const text::Model& language, Tensor features, Tensor lengths) const {
+    tyloi::models::MediaInput input;
+    input.audio_features = std::move(features);
+    input.audio_lengths = std::move(lengths);
+    return media_request(language, std::move(input), MediaMode::audios);
+}
+
+std::unique_ptr<tyloi::models::Media::Request> Components::media_request(
+        const text::Model& language, tyloi::models::MediaInput source, MediaMode mode) const {
     struct EncodeOps {
         using DenseTensor = tyloi::Tensor;
         const text::Model& language;
@@ -394,6 +417,73 @@ tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
                     .to(output.scalar_type()));
         }
     };
+    struct Request final : tyloi::models::Media::Request {
+        tyloi::models::MediaInput source;
+        EncodeOps ops;
+        MediaMode mode;
+        tyloi::models::minicpmo45::MultimodalInputs<Tensor> input;
+        tyloi::StepSequence<tyloi::models::minicpmo45::MultimodalResult<Tensor>> encoding;
+        tyloi::StepSequence<Tensor> modality;
+        tyloi::models::MediaResult result;
+        bool started = false, finished = false, failed = false;
+        Request(const text::Model& model, const State& weights, tyloi::models::MediaInput value, MediaMode kind)
+            : source(std::move(value)), ops(model, weights), mode(kind),
+              input{source.ids, source.pixels, source.patch_mask, source.target_sizes,
+                  source.audio_features, source.audio_lengths,
+                  source.image_bounds ? minicpmo45_parse_bounds(source.image_bounds.dense(), "image")
+                                      : std::vector<tyloi::models::minicpmo45::MediaBound>{},
+                  source.audio_bounds ? minicpmo45_parse_bounds(source.audio_bounds.dense(), "audio")
+                                      : std::vector<tyloi::models::minicpmo45::MediaBound>{}},
+              encoding(mode == MediaMode::prompt ? tyloi::models::minicpmo45::encode(ops, input)
+                                                  : tyloi::StepSequence<tyloi::models::minicpmo45::MultimodalResult<Tensor>>{}) {}
+        tyloi::StepResult<tyloi::models::MediaResult> next() override {
+            if (failed) throw std::logic_error("media request already failed");
+            if (finished) return {};
+            try { return advance(); }
+            catch (...) { failed = true; throw; }
+        }
+        tyloi::StepResult<tyloi::models::MediaResult> advance() {
+            if (mode != MediaMode::prompt) {
+                tyloi::ops::FfnScope scope(tyloi::ops::FfnScope::Role::independent);
+                if (!started) {
+                    started = true;
+                    if (mode == MediaMode::images)
+                        modality = ops.vision(source.pixels, source.patch_mask, source.target_sizes);
+                    else {
+                        ops.reset_audio();
+                        modality = ops.audio(source.audio_features, source.audio_lengths);
+                    }
+                }
+                auto step = modality.next();
+                if (!step) throw std::logic_error("media encoding completed without a result");
+                if (step.layer || step.graph || step.workspace)
+                    throw std::logic_error("media encoding produced an unsupported event");
+                if (!step.value) return {step.state, {}};
+                if (mode == MediaMode::images) {
+                    result.vision_states = std::move(*step.value);
+                    result.image_embeddings = ops.resample(result.vision_states, source.target_sizes);
+                } else result.audio_embeddings = std::move(*step.value);
+                finished = true;
+                return {step.state, result};
+            }
+            tyloi::StepResult<tyloi::models::minicpmo45::MultimodalResult<Tensor>> step;
+            { tyloi::ops::FfnScope scope(tyloi::ops::FfnScope::Role::independent); step = encoding.next(); }
+            if (!step) { finished = true; return {}; }
+            if (step.layer || step.graph || step.workspace)
+                throw std::logic_error("media encoding produced an unsupported event");
+            if (!step.value) return {step.state, {}};
+            auto& value = *step.value;
+            result = {std::move(value.vision_states), std::move(value.image_embeddings),
+                std::move(value.audio_embeddings), std::move(value.input_embeddings)};
+            return {step.state, result};
+        }
+    };
+    return std::make_unique<Request>(language, *state_, std::move(source), mode);
+}
+
+tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
+        const text::Model& language, const std::vector<int64_t>& prompt,
+        const MfqMultimodalInput& media) const {
     const auto cpu_i64 = TensorOptions().dtype(kInt64).device(kCPU);
     const auto cuda_i64 = TensorOptions().dtype(kInt64).device(Device(kCUDA, state_->primary));
     auto ids = tyloi::cuda::tensor(prompt, cuda_i64).reshape({1, -1}).contiguous();
@@ -416,16 +506,12 @@ tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
             std::vector<int64_t>{static_cast<int64_t>(media.audio_bounds.size() / 4), 4}, cpu_i64).clone();
     }
     co_yield tyloi::StepState::advanced;
-    EncodeOps ops(language, *state_);
-    tyloi::models::minicpmo45::MultimodalInputs<Tensor> input{ids, pixels, mask, sizes, features, lengths,
-        minicpmo45_parse_bounds(image_bounds, "image"), minicpmo45_parse_bounds(audio_bounds, "audio")};
-    auto encoding = tyloi::models::minicpmo45::encode(ops, input);
-    tyloi::models::minicpmo45::MultimodalResult<Tensor> result;
+    auto encoding = encode(language, {ids, pixels, mask, sizes, image_bounds,
+        features, lengths, audio_bounds});
+    tyloi::models::MediaResult result;
     for (;;) {
-        tyloi::StepResult<tyloi::models::minicpmo45::MultimodalResult<Tensor>> step;
-        { tyloi::ops::FfnScope scope(tyloi::ops::FfnScope::Role::independent); step = encoding.next(); }
+        auto step = encoding->next();
         if (!step) break;
-        if (step.layer || step.graph || step.workspace) throw std::logic_error("media encoding produced an unsupported event");
         if (step.value) result = std::move(*step.value);
         else co_yield step.state;
     }
@@ -436,12 +522,65 @@ tyloi::StepSequence<tyloi::models::Prepared> Components::prepare(
     co_yield std::move(prepared);
 }
 
+tyloi::Tensor Components::condition(const tyloi::Tensor& ids, const tyloi::Tensor& hidden) const {
+    return tyloi::Tensor(state_->tts.condition(ids.dense(), hidden.dense()));
+}
+
+std::unique_ptr<tyloi::models::Speech::Request> Components::generate(
+        tyloi::Tensor condition, tyloi::models::SpeechOptions options, bool capture_logits,
+        std::mt19937* evaluator_rng) const {
+    struct Request final : tyloi::models::Speech::Request {
+        const State& weights;
+        Tts::State state;
+        bool finished = false, failed = false;
+        tyloi::models::SpeechOptions options;
+        bool capture;
+        std::mt19937* rng;
+        std::vector<DenseTensor> trace;
+        tyloi::models::SpeechResult result;
+        std::unique_ptr<Tts::OfficialGeneration> generation;
+        Request(const State& value, tyloi::Tensor input, tyloi::models::SpeechOptions config,
+                bool capture_logits, std::mt19937* evaluator_rng)
+            : weights(value), state(value.tts), options(config), capture(capture_logits), rng(evaluator_rng) {
+            result.condition = std::move(input);
+        }
+        tyloi::StepResult<tyloi::models::SpeechResult> next() override {
+            if (failed) throw std::logic_error("speech request already failed");
+            if (finished) return {};
+            try {
+                if (!generation) {
+                    tyloi::models::ForwardOptions mode;
+                    mode.primary = weights.primary;
+                    tyloi::models::minicpmo45::TtsSampling sampling{options.eos_token,
+                        options.minimum_steps, options.top_k, options.minimum_keep, options.temperature, options.top_p,
+                        options.repetition_penalty, options.min_p};
+                    generation = std::make_unique<Tts::OfficialGeneration>(weights.tts, state, mode,
+                        result.condition.dense(), options.steps, sampling, capture ? &trace : nullptr, rng);
+                }
+                generation->next();
+                if (!generation->done) return {tyloi::StepState::advanced, {}};
+                result.codes = tyloi::Tensor(generation->codes());
+                if (!trace.empty()) result.logits = tyloi::Tensor(tyloi::cuda::stack(trace, 1));
+                finished = true;
+                return {tyloi::StepState::advanced, result};
+            } catch (...) {
+                failed = true;
+                throw;
+            }
+        }
+    };
+    return std::make_unique<Request>(*state_, std::move(condition), options, capture_logits, evaluator_rng);
+}
+
 std::unique_ptr<tyloi::models::Duplex> Components::duplex(const text::Model& model, text::State& language_state) const {
     struct Session final : tyloi::models::Duplex {
         const State& weights;
         const text::Model& model;
         text::State& language;
         std::unique_ptr<MiniCPMO45DuplexSession> session;
+        DenseTensor system_prefix, system_suffix, reference_audio;
+        StepInput retained_input;
+        StepOutput retained_output;
         Session(const State& value, const text::Model& language_model, text::State& state)
             : weights(value), model(language_model), language(state) {}
         static void validate(const MfqDuplexSessionParams& p, int64_t vocab) {
@@ -452,9 +591,7 @@ std::unique_ptr<tyloi::models::Duplex> Components::duplex(const text::Model& mod
                 !std::isfinite(p.length_penalty) || p.length_penalty <= 0 || !std::isfinite(p.tts_temperature) || p.tts_temperature <= 0 ||
                 !std::isfinite(p.tts_repetition_penalty) || p.tts_repetition_penalty <= 0)
                 throw std::invalid_argument("MiniCPM-o duplex sampling configuration is invalid");
-            if (p.special_ids.back() < 0 || p.special_ids.back() >= 152064 ||
-                std::any_of(p.special_ids.begin(), p.special_ids.end()-1, [vocab](int64_t id) { return id < 0 || id >= vocab; }) ||
-                std::any_of(p.forbidden_ids.begin(), p.forbidden_ids.end(), [vocab](int64_t id) { return id < 0 || id >= vocab; }))
+            if (std::any_of(p.special_ids.begin(), p.special_ids.end(), [](int64_t id) { return id < 0; }))
                 throw std::invalid_argument("MiniCPM-o duplex token ID is out of range");
             if ((p.reference_audio_frames == 0) != p.reference_audio_features.empty() || p.reference_audio_frames < 0 ||
                 (!p.reference_audio_features.empty() && (p.reference_audio_frames < 3 ||
@@ -556,26 +693,46 @@ std::unique_ptr<tyloi::models::Duplex> Components::duplex(const text::Model& mod
             const auto ids = [](const std::vector<int64_t>& values) {
                 return values.empty() ? DenseTensor{} : tyloi::cuda::tensor(values, TensorOptions().dtype(kInt64));
             };
-            DenseTensor features;
-            if (!p.reference_audio_features.empty()) features=tyloi::cuda::tensor(p.reference_audio_features,
+            system_prefix = ids(p.system_prefix);
+            system_suffix = ids(p.system_suffix);
+            reference_audio = {};
+            if (!p.reference_audio_features.empty()) reference_audio=tyloi::cuda::tensor(p.reference_audio_features,
                 TensorOptions().dtype(kFloat32)).reshape({1,80,p.reference_audio_frames});
-            session->prepare(ids(p.system_prefix), features, ids(p.system_suffix));
+            session->prepare(system_prefix, reference_audio, system_suffix);
         }
         MfqDuplexStepResult step(const MfqDuplexStepInput& input, const tyloi::models::ForwardOptions& options) override {
             validate(input);
+            StepInput request;
+            request.audio_prefix_extra_frames = input.audio_prefix_extra_frames;
+            request.audio_suffix_extra_frames = input.audio_suffix_extra_frames;
+            request.max_new_speak_tokens = input.max_new_speak_tokens;
+            request.force_listen = input.force_listen;
+            request.force_speak = input.force_speak;
+            if (input.audio_frames > 0) request.audio_features=tyloi::Tensor(tyloi::cuda::tensor(input.audio_features,
+                TensorOptions().dtype(kFloat32)).reshape({1,80,input.audio_frames}));
+            if (!input.text_tokens.empty()) request.text_ids=tyloi::Tensor(tyloi::cuda::tensor(input.text_tokens,
+                TensorOptions().dtype(kInt64)).reshape({1,static_cast<int64_t>(input.text_tokens.size())}));
+            return step(std::move(request), options).result;
+        }
+        StepOutput step(StepInput input, const tyloi::models::ForwardOptions& options) override {
             if (!session) throw std::runtime_error("MiniCPM-o duplex session is not prepared");
+            retained_input = std::move(input);
+            retained_output = {};
             tyloi::ops::FfnScope scope(tyloi::ops::FfnScope::Role::independent);
             MfqCudaGuard guard(weights.primary);
             session->options=options;
-            DenseTensor features, ids;
-            if (input.audio_frames > 0) features=tyloi::cuda::tensor(input.audio_features,
-                TensorOptions().dtype(kFloat32)).reshape({1,80,input.audio_frames});
-            if (!input.text_tokens.empty()) ids=tyloi::cuda::tensor(input.text_tokens,
-                TensorOptions().dtype(kInt64)).reshape({1,static_cast<int64_t>(input.text_tokens.size())});
+            const auto dense = [](const Tensor& value) { return value ? value.dense() : DenseTensor{}; };
             const auto started=std::chrono::steady_clock::now();
-            auto result=session->run_step({}, {}, {}, {}, features, input.audio_prefix_extra_frames,
-                input.audio_suffix_extra_frames, ids, input.max_new_speak_tokens, input.force_listen, input.force_speak);
-            MfqDuplexStepResult response;
+            auto result=session->run_step(dense(retained_input.pixels), dense(retained_input.patch_mask),
+                dense(retained_input.target_sizes), dense(retained_input.image_slice_counts),
+                dense(retained_input.audio_features), retained_input.audio_prefix_extra_frames,
+                retained_input.audio_suffix_extra_frames, dense(retained_input.text_ids),
+                retained_input.max_new_speak_tokens, retained_input.force_listen, retained_input.force_speak);
+            retained_output.decision_logits = Tensor(result.decision_logits);
+            retained_output.audio_embeddings = Tensor(result.audio_embeddings);
+            retained_output.generated_ids = Tensor(result.generated_ids);
+            retained_output.tts_codes = Tensor(result.tts_codes);
+            auto& response = retained_output.result;
             auto generated=result.generated_ids.to(kCPU,kInt64).contiguous().reshape({-1});
             const auto* generated_data=generated.data_ptr<int64_t>();
             response.generated_tokens.assign(generated_data,generated_data+generated.numel());
@@ -587,7 +744,14 @@ std::unique_ptr<tyloi::models::Duplex> Components::duplex(const text::Model& mod
             response.language_cache_position=language.cache_pos; response.audio_cache_position=session->audio_state.length();
             response.tts_cache_position=session->tts_state.position;
             response.inference_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
-            return response;
+            return retained_output;
+        }
+        void reset(const tyloi::models::ForwardOptions& options) override {
+            if (!session) throw std::runtime_error("MiniCPM-o duplex session is not prepared");
+            tyloi::ops::FfnScope scope(tyloi::ops::FfnScope::Role::independent);
+            MfqCudaGuard guard(weights.primary);
+            session->options = options;
+            session->prepare(system_prefix, reference_audio, system_suffix);
         }
         void stop() override { session.reset(); }
     };

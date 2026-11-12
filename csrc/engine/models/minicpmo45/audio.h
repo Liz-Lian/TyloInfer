@@ -507,17 +507,17 @@ struct MiniCPMO45AudioEncoder {
                 // Preserve the official graph: its padding comparison uses the raw
                 // Whisper feature lengths against the post-convolution sequence.
                 auto length_tensor =
-                    raw_lengths.to(::tyloi::kCUDA, ::tyloi::kInt64)
+                    raw_lengths.to(hidden.device(), ::tyloi::kInt64)
                         .contiguous();
                 auto key_positions = ::tyloi::cuda::arange(
                     past + tokens, ::tyloi::TensorOptions()
-                                       .device(::tyloi::kCUDA)
+                                       .device(hidden.device())
                                        .dtype(::tyloi::kInt64));
                 auto valid_keys = key_positions.unsqueeze(0) < (length_tensor + past).unsqueeze(1);
                 auto query_positions =
                     ::tyloi::cuda::arange(past, past + tokens,
                                                ::tyloi::TensorOptions()
-                                                   .device(::tyloi::kCUDA)
+                                                   .device(hidden.device())
                                                    .dtype(::tyloi::kInt64));
                 // Official MiniCPM-o 4.5 uses audio_chunk_length=1.0. Whisper emits
                 // 50 encoder frames per second, and every query can see its current
@@ -531,7 +531,7 @@ struct MiniCPMO45AudioEncoder {
                 auto attention_mask =
                     ::tyloi::cuda::zeros({features.size(0), 1, tokens, past + tokens},
                                               ::tyloi::TensorOptions()
-                                                  .device(::tyloi::kCUDA)
+                                                  .device(hidden.device())
                                                   .dtype(::tyloi::kFloat32))
                         .masked_fill(visible.logical_not().unsqueeze(1),
                                      -std::numeric_limits<float>::infinity());

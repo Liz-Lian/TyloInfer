@@ -5,7 +5,7 @@
 #include "engine/models/common/mlp.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
-#include "engine/models/common/causal_forward.h"
+#include "engine/models/common/check.h"
 #include "engine/models/session/state.h"
 #include "engine/models/source/model_graph.h"
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -175,6 +175,14 @@ void State::preallocate() {
             l.quantization);
     }
 }
+#ifdef TYLOINFER_NATIVE_CUDA
+void State::rewind(std::int64_t position) {
+    if (position < 0 || position > cache_pos)
+        throw std::invalid_argument("MiniCPM-o prefix rewind is outside the committed cache");
+    cache_pos = position;
+}
+#endif
+
 void State::reset(int64_t next_batch) {
     cache_pos = decode_position_delta = 0;
     batch = next_batch;
@@ -381,6 +389,7 @@ Tensor forward(const Model& model,State& state,tyloi::models::Input input,const 
         hidden=local(hidden);
         AttentionStep step{local(positions),{},local(physical),state.cache_pos,input.kv_length,input.attention_parts};
         if (input.lengths) step.sequence_lengths=local(input.lengths);
+        if (input.attention_mask) step.attention_mask=local(input.attention_mask);
         auto& cache=state.layers[i];
         const auto capacity=attention.sliding ? attention.attention_window : (options.kv_capacity>0 ?
             std::max(state.cache_pos+T,options.kv_capacity) : attention.max_position_embeddings);
@@ -602,6 +611,20 @@ tyloi::engine::Metrics Model::metrics() const {
         {"vision_supported",double(state.vision_supported)},{"vision_available",double(state.vision_available)}};
 }
 std::unique_ptr<tyloi::models::State> Model::make_state() const { return std::make_unique<State>(*this); }
+const tyloi::models::Media* Model::media() const noexcept { return components ? this : nullptr; }
+const tyloi::models::Speech* Model::speech() const noexcept { return components.get(); }
+std::unique_ptr<tyloi::models::Media::Request> Model::encode(tyloi::models::MediaInput input) const {
+    if (!components) throw std::invalid_argument("model has no multimodal component");
+    return components->encode(*this, std::move(input));
+}
+std::unique_ptr<tyloi::models::Media::Request> Model::images(Tensor pixels, Tensor mask, Tensor sizes) const {
+    if (!components) throw std::invalid_argument("model has no multimodal component");
+    return components->images(*this, std::move(pixels), std::move(mask), std::move(sizes));
+}
+std::unique_ptr<tyloi::models::Media::Request> Model::audios(Tensor features, Tensor lengths) const {
+    if (!components) throw std::invalid_argument("model has no multimodal component");
+    return components->audios(*this, std::move(features), std::move(lengths));
+}
 std::unique_ptr<tyloi::models::Duplex> Model::duplex(tyloi::models::State& value) const {
     auto* state = dynamic_cast<State*>(&value);
     if (!state || !state->belongs_to(*this)) throw std::invalid_argument("MiniCPM state belongs to another model");

@@ -29,7 +29,7 @@ inline constexpr const char *MINICPMO45_RESAMPLER_POS_EMBED_ASSET =
 inline ::tyloi::DenseTensor
 minicpmo45_embedding(const ::tyloi::Tensor &embedding, ::tyloi::DenseTensor ids,
                      ::tyloi::ScalarType output_dtype = ::tyloi::kBFloat16) {
-    ids = ids.contiguous().to(::tyloi::kCUDA, ::tyloi::kInt64);
+    ids = ids.contiguous().to(embedding.device(), ::tyloi::kInt64);
 #ifdef TYLOINFER_NATIVE_CUDA
     return tyloi::ops::contiguous(tyloi::ops::cast(tyloi::ops::embedding(ids, embedding), output_dtype)).dense();
 #else
@@ -280,7 +280,7 @@ struct MiniCPMO45VisionEncoder {
                         std::vector<int64_t>{embedded.size(0), embedded.size(1)},
                         ::tyloi::TensorOptions().dtype(::tyloi::kInt64))
                         .clone()
-                        .to(::tyloi::kCUDA);
+                        .to(embedded.device());
 #ifdef TYLOINFER_NATIVE_CUDA
                 const auto& position_value = position_embedding.dense();
 #else
@@ -292,7 +292,7 @@ struct MiniCPMO45VisionEncoder {
 
                 if (!all_patches_active) {
                     auto invalid =
-                        patch_mask.to(::tyloi::kCUDA, ::tyloi::kBool)
+                        patch_mask.to(embedded.device(), ::tyloi::kBool)
                             .logical_not()
                             .unsqueeze(1)
                             .unsqueeze(2);
@@ -403,7 +403,7 @@ struct MiniCPMO45Resampler {
                     position_blob.data() + position_offset, std::vector<int64_t>{70, 70, 4096},
                     ::tyloi::TensorOptions().dtype(::tyloi::kBFloat16))
                     .clone()
-                    .to(::tyloi::kCUDA)
+                    .to(::tyloi::Device(::tyloi::kCUDA, weights.placement.device))
                     .contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA
             result.position_embedding = std::make_shared<::tyloi::DenseTensor>(std::move(position));
@@ -531,7 +531,7 @@ struct MiniCPMO45Resampler {
                 key_padding.data(), std::vector<int64_t>{batch, length},
                 ::tyloi::TensorOptions().dtype(::tyloi::kUInt8))
                 .clone()
-                .to(::tyloi::kCUDA, ::tyloi::kBool);
+                .to(input.device(), ::tyloi::kBool);
         const auto dtype = input.scalar_type();
         auto project = [&](::tyloi::DenseTensor value, int64_t offset) {
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -590,7 +590,7 @@ struct MiniCPMO45Resampler {
             [&](DenseTensor q, DenseTensor k, DenseTensor v) {
                 auto mask = ::tyloi::cuda::zeros({batch, 1, 1, length},
                                                       ::tyloi::TensorOptions()
-                                                          .device(::tyloi::kCUDA)
+                                                          .device(q.device())
                                                           .dtype(dtype))
                                 .masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2),
                                              -std::numeric_limits<float>::infinity())
