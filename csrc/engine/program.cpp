@@ -9,6 +9,8 @@
 #include "engine/budget.h"
 #include "engine/config.h"
 #include "engine/generation/decode.h"
+#include "engine/generation/batch.h"
+#include "engine/generation/batch_ops.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/generation/prefill.h"
 #include "engine/generation/run.h"
@@ -364,6 +366,39 @@ void Program::configure(engine::Config config) {
         (void)change.apply();
     }
     p.run_ready = true;
+}
+
+Program::BatchLease::BatchLease(Program& owner) : owner_(owner) {}
+
+Program::BatchLease::~BatchLease() noexcept {
+    try { owner_.drain(); }
+    catch (const std::exception& error) { std::cerr << "batch_cleanup error=" << error.what() << '\n'; }
+    catch (...) { std::cerr << "batch_cleanup error=unknown\n"; }
+    std::unique_ptr<tyloi::Executor::Scope> scope;
+    try { scope = owner_.executor().enter(owner_.config().layer_placement.primary_device()); }
+    catch (const std::exception& error) { std::cerr << "batch_cleanup error=" << error.what() << '\n'; }
+    catch (...) { std::cerr << "batch_cleanup error=unknown\n"; }
+    batch_.reset();
+    owner_.impl_->running = false;
+}
+
+engine::Batch& Program::BatchLease::batch() {
+    if (!batch_) throw std::logic_error("batch is not available");
+    return *batch_;
+}
+
+std::unique_ptr<Program::BatchLease> Program::make_batch() {
+    auto& p = *impl_;
+    if (p.running) throw std::logic_error("program request is already running");
+    if (!p.run_ready) configure(engine::resolve_config());
+    auto lease = std::unique_ptr<BatchLease>(new BatchLease(*this));
+    p.running = true;
+    auto scope = p.executor->enter(p.config.layer_placement.primary_device());
+    p.graph->invalidate();
+    p.state->release_graphs();
+    lease->batch_ = engine::make_batch(*p.model, p.state.get(), *p.executor,
+        *p.weights, *p.budget, p.run_config);
+    return lease;
 }
 
 models::Prefill Program::prefill(models::Input input, std::int64_t compute, engine::InferenceOutput& output) {

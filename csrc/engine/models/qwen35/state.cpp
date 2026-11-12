@@ -337,6 +337,20 @@ bool State::supports_text_session_state() const {
     return text_session_state_kind() != TextSessionStateKind::Unsupported;
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA
+std::optional<tyloi::engine::Metrics> State::metrics() const {
+    tyloi::engine::Metrics result;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        if (const auto* linear = std::get_if<LinearState>(&layers[index])) {
+            const auto prefix = "linear." + std::to_string(index) + ".";
+            result.emplace_back(prefix + "ffn_batches", linear->speculative_ffn_batches);
+            result.emplace_back(prefix + "projection_batches", linear->speculative_projection_batches);
+        }
+    }
+    return result;
+}
+#endif
+
 bool State::supports_paged_text_session_state() const {
     if (!full_layout(*this)) return false;
     return std::all_of(layout_.begin(), layout_.end(), [](const Layout& layer) {

@@ -14,7 +14,8 @@ add_library(mfq-cuda-diagnostics STATIC
     ${PROJECT_SOURCE_DIR}/diagnostics/mtp_bench.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/mtp.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/prefill.cpp
-    ${PROJECT_SOURCE_DIR}/diagnostics/runtime_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/qwen_mtp.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/batch.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/session_checks.cpp
 )
 mfq_configure_cuda_engine_target(mfq-cuda-diagnostics)

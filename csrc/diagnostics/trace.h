@@ -14,3 +14,5 @@ int run_block_trace_compare(tyloi::cuda::Program& test,
 /** Dump block and terminal traces for the selected token range. */
 int run_block_trace_dump(tyloi::cuda::Program& program, const std::string& output_dir,
     tyloi::Tensor ids, std::int64_t token_start, std::int64_t token_count);
+/** Compare the original DeepSeek V4 fused HC operators or whole-model observations. */
+int run_hc_compare(tyloi::cuda::Program& program, tyloi::Tensor ids, bool operators);

@@ -5,12 +5,16 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/models/causal_model.h"
+#include "engine/models/deepseek_v4/forward.h"
+#include "engine/models/source.h"
+#include "engine/weights/loader.h"
 
 #include <algorithm>
 #include <cmath>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -30,7 +34,7 @@ void drain_pair(tyloi::cuda::Program& first, tyloi::cuda::Program& second) {
 struct Work {
     tyloi::cuda::Program& program;
     tyloi::cuda::Program* peer = nullptr;
-    tyloi::Tensor ids, hidden, logits;
+    tyloi::Tensor ids, hidden, logits, raw_logits;
     tyloi::models::Input::Trace trace;
     ~Work() noexcept {
         try {
@@ -43,7 +47,7 @@ struct Work {
 };
 
 /** Run a fresh request and retain each model-provided observation. */
-void forward(Work& work, const tyloi::Tensor& ids) {
+void forward(Work& work, const tyloi::Tensor& ids, bool trace = true) {
     auto& executor = work.program.executor();
     const auto primary = work.program.config().layer_placement.primary_device();
     auto scope = executor.enter(primary);
@@ -51,7 +55,8 @@ void forward(Work& work, const tyloi::Tensor& ids) {
     work.program.state().reset(work.ids.size(0));
     tyloi::models::Input input;
     input.ids = work.ids;
-    input.trace = &work.trace;
+    input.trace = trace ? &work.trace : nullptr;
+    input.advance = true;
     const auto mode = executor.forward_mode(primary);
     work.hidden = work.program.model().forward(std::move(input), work.program.state(),
         {mode.kv_capacity, mode.trace, mode.trace_layer, primary});
@@ -64,6 +69,15 @@ void project(Work& work, const tyloi::Tensor& hidden, bool capped) {
     auto scope = executor.enter(work.program.config().layer_placement.primary_device());
     work.logits = work.program.model().logits(hidden, capped);
     work.program.drain();
+}
+
+/** Finish each comparison pass in F32 before another pass can reuse model storage. */
+void logits_f32(Work& work) {
+    auto scope = work.program.executor().enter(work.program.config().layer_placement.primary_device());
+    work.raw_logits = std::move(work.logits);
+    work.logits = work.raw_logits.dense().to(tyloi::kFloat32);
+    work.program.drain();
+    work.raw_logits = {};
 }
 
 /** Slice a token-major observation exactly as the original dump did. */
@@ -193,6 +207,72 @@ int run_block_trace_dump(tyloi::cuda::Program& program, const std::string& outpu
     write_stage(root, metadata, "logits", work.logits.dense());
     metadata.flush();
     if (!metadata) throw std::runtime_error("failed to write block trace metadata");
+    program.drain();
+    return 0;
+}
+
+int run_hc_compare(tyloi::cuda::Program& program, tyloi::Tensor ids, bool operators) {
+    if (!ids || ids.dim() != 2 || ids.scalar_type() != tyloi::kInt64)
+        throw std::invalid_argument("HC comparison IDs must be int64 [batch,tokens]");
+    const auto loader = program.loader();
+    const auto* source = dynamic_cast<const tyloi::ModelSource*>(&loader.source);
+    if (!source || tyloi::models::graph(*source).backbone != "deepseek_v4")
+        throw std::invalid_argument("HC comparison requires a DeepSeek V4 model");
+    struct Mode {
+        bool fused = g_dsv4_fused_hc, compare = g_dsv4_compare_hc_ops;
+        ~Mode() { g_dsv4_fused_hc = fused; g_dsv4_compare_hc_ops = compare; }
+    } mode;
+    Work reference{program}, candidate{program}, repeat{program};
+    g_dsv4_compare_hc_ops = operators;
+    g_dsv4_fused_hc = false;
+    forward(reference, ids, !operators);
+    project(reference, reference.hidden, operators);
+    if (operators) return 0;
+    logits_f32(reference);
+    g_dsv4_fused_hc = true;
+    forward(candidate, ids);
+    project(candidate, candidate.hidden, false);
+    logits_f32(candidate);
+    g_dsv4_fused_hc = false;
+    forward(repeat, ids);
+    project(repeat, repeat.hidden, false);
+    logits_f32(repeat);
+    g_dsv4_fused_hc = true;
+    auto scope = program.executor().enter(program.config().layer_placement.primary_device());
+    if (reference.trace.size() != candidate.trace.size() || reference.trace.size() != repeat.trace.size())
+        throw std::runtime_error("DeepSeek V4 HC trace stage count mismatch");
+    for (std::size_t index = 0; index < reference.trace.size(); ++index) {
+        const auto ref = reference.trace[index].dense().reshape({-1});
+        const auto got = candidate.trace[index].dense().reshape({-1});
+        const auto again = repeat.trace[index].dense().reshape({-1});
+        const auto ref64 = ref.to(tyloi::kFloat64);
+        const auto got64 = got.to(tyloi::kFloat64);
+        const auto delta = got64 - ref64;
+        const double denominator = std::max(ref64.norm().item<double>(), 1.0e-30);
+        std::cout << std::scientific << std::setprecision(9)
+                  << "dsv4_hc_model_trace stage=" << stage_name(index)
+                  << " differing=" << got.ne(ref).sum().item<std::int64_t>()
+                  << " rel_l2=" << delta.norm().item<double>() / denominator
+                  << " mean_abs=" << delta.abs().mean().item<double>()
+                  << " max_abs=" << delta.abs().max().item<double>()
+                  << " repeat_differing=" << again.ne(ref).sum().item<std::int64_t>() << '\n';
+    }
+    const auto ref = reference.logits.dense().to(tyloi::kFloat32);
+    const auto got = candidate.logits.dense().to(tyloi::kFloat32);
+    const auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
+    const auto got_logp = tyloi::cuda::log_softmax(got, -1);
+    const double forward_kl = (got_logp.exp() * (got_logp - ref_logp)).sum(-1).mean().item<double>();
+    const double reverse_kl = (ref_logp.exp() * (ref_logp - got_logp)).sum(-1).mean().item<double>();
+    const auto delta = got.to(tyloi::kFloat64) - ref.to(tyloi::kFloat64);
+    std::cout << std::scientific << std::setprecision(9)
+              << "dsv4_hc_model_logits mean_kld_candidate_reference=" << forward_kl
+              << " mean_kld_reference_candidate=" << reverse_kl
+              << " relative_l2=" << delta.norm().item<double>() /
+                    std::max(ref.to(tyloi::kFloat64).norm().item<double>(), 1.0e-30)
+              << " mean_abs=" << delta.abs().mean().item<double>()
+              << " max_abs=" << delta.abs().max().item<double>()
+              << " same_top=" << got.argmax(-1).eq(ref.argmax(-1)).to(tyloi::kFloat32).mean().item<double>()
+              << " repeat_logits_equal=" << (repeat.logits.dense().to(tyloi::kFloat32).equal(ref) ? 1 : 0) << '\n';
     program.drain();
     return 0;
 }

@@ -848,6 +848,7 @@ public:
         return {{"continuous_batching_compactions",0.0},{"continuous_batching_packed_metadata_batches",double(metadata_batches_)},
             {"continuous_batching_stable_slot_releases",double(releases_)},{"continuous_batching_cuda_graph_captures",double(captures_)},
             {"continuous_batching_cuda_graph_replays",double(replays_)},{"continuous_batching_moe",double(moe_)},
+            {"continuous_batching_cuda_graph_eligible",double(config_.graph && config_.greedy && !cached_ && slots_.size()>=2 && mfq_cuda_graph_capture_supported())},
             {"continuous_batching_moe_cached_row_serial",double(cached_)},{"continuous_batching_paged_kv",double(bool(paged_))},
             {"paged_kv_page_size",double(p.page_size)},{"paged_kv_live_pages",double(p.live_pages)},
             {"paged_kv_peak_live_pages",double(p.peak_live_pages)},{"paged_kv_capacity_pages",double(p.capacity_pages)},

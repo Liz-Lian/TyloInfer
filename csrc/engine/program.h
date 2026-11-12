@@ -11,7 +11,7 @@ namespace tyloi {
 class ModelSource;
 namespace models { class CausalModel; class State; class Layers; class Groups; class Ffn; struct Info; struct Input; struct Prefill; }
 namespace weights { class Cache; struct Loader; }
-namespace engine { struct Config; class InferenceOutput; }
+namespace engine { struct Config; class InferenceOutput; class Batch; }
 }
 
 namespace tyloi::cuda {
@@ -19,6 +19,20 @@ namespace tyloi::cuda {
 /** Own native execution resources and one independently loaded model or layer view. */
 class Program final {
 public:
+    /** Own one exclusive numerical batch; requests and sequences must retire first. */
+    class BatchLease final {
+    public:
+        ~BatchLease() noexcept;
+        BatchLease(const BatchLease&) = delete;
+        BatchLease& operator=(const BatchLease&) = delete;
+        /** Borrow the real numerical batch while the lease remains alive. */
+        engine::Batch& batch();
+    private:
+        friend class Program;
+        explicit BatchLease(Program& owner);
+        Program& owner_;
+        std::unique_ptr<engine::Batch> batch_;
+    };
     /** Observe the real request policy and executor-owned graph counters. */
     struct Stats {
         engine::mtp::GenerationStats request;
@@ -62,6 +76,8 @@ public:
     models::Ffn& ffn();
     /** Configure a quiescent loaded model, replacing its request graph and session owners. */
     void configure(engine::Config config);
+    /** Create an exclusive numerical batch; this program must outlive the lease. */
+    std::unique_ptr<BatchLease> make_batch();
     /** Run one controlled prefill; the caller retains its inputs and result until draining. */
     models::Prefill prefill(models::Input input, std::int64_t compute, engine::InferenceOutput& output);
     /** Run one exclusive request in the caller's scope; its owners outlive the sequence and drain after it. */

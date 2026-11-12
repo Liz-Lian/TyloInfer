@@ -88,6 +88,10 @@ public:
     std::vector<std::pair<tyloi::Device, std::size_t>> reset_growth(std::int64_t batch) const override;
     /** Replay the accepted part of a pending verification window. */
     void rollback_speculative(std::int64_t accepted) override;
+    /** Report the actual verification transaction state. */
+    bool speculating() const override { return speculative_start >= 0; }
+    /** Return the per-layer recurrent verification batch counters. */
+    std::optional<tyloi::engine::Metrics> metrics() const override;
     /** Report that replay retains the accepted verification prefix. */
     bool retains_partial_prefix(std::int64_t) const noexcept override { return true; }
     /** Validate and retain a snapshot for independent staged restoration. */
