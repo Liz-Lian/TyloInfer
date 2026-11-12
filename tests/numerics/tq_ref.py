@@ -191,7 +191,7 @@ def _prefill(root, device):
                 'tokens': tokens,
                 'actual_dtype': _NAMES[label],
                 'workspace_bytes': 128 << 10,
-                'native_checks': ['guard_42', 'graph_replay'],
+                'native_checks': ['guard_42', {'kind': 'graph_replay', 'observation': 'replay'}],
             },
             'test_float_prefill_exact_source_precision_and_bounded_workspace',
         )
@@ -200,6 +200,9 @@ def _prefill(root, device):
         _input(w, 'bias', torch.linspace(-0.01, 0.01, rows, device=device))
         _output(
             w, 'output', (tokens, rows), _rms(0.004 if label == 'bf16' else 3e-5), _NAMES[label]
+        )
+        _output(
+            w, 'replay', (tokens, rows), _rms(0.004 if label == 'bf16' else 3e-5), _NAMES[label]
         )
         case = w.finish()
         reference(case, case.root / 'reference', device)
@@ -312,7 +315,7 @@ def _ffn(root, device):
                 'width': width,
                 'hidden': hidden,
                 'actual_dtype': _NAMES[label],
-                'native_checks': ['graph_replay', 'stream_reuse'],
+                'native_checks': [{'kind': 'graph_replay', 'observation': 'replay'}, 'stream_reuse'],
             },
             'test_ffn_graph',
         )
@@ -325,6 +328,7 @@ def _ffn(root, device):
         _input(w, 'x', _random((width,), dtype, device, 0.2), _NAMES[label])
         _output(w, 'workspace', (hidden,), _rms(0.01), _NAMES[label])
         _output(w, 'output', (output,), _rms(0.015), _NAMES[label])
+        _output(w, 'replay', (output,), _rms(0.015), _NAMES[label])
         case = w.finish()
         reference(case, case.root / 'reference', device)
         results.append(case.root / 'case.json')
@@ -424,7 +428,8 @@ def _calculate(case, device):
         weights = _weight(case, 'weight', width, device).reshape(groups, rows // groups, width)
         x = _tensor(case, 'x', device, dtype).float()
         output = torch.einsum('tgk,grk->tgr', x, weights).reshape(tokens, rows)
-        return {'output': output + _tensor(case, 'bias', device)}
+        output = output + _tensor(case, 'bias', device)
+        return {'output': output, 'replay': output}
     if op in ('tq_q8', 'tq_q8_parallel'):
         groups, tokens, joined = config['groups'], config['tokens'], config['joined']
         rows = sum(config['projection_rows'])
@@ -451,9 +456,11 @@ def _calculate(case, device):
         gate = (_weight(case, 'gate', width, device) @ x).to(dtype).float()
         up = (_weight(case, 'up', width, device) @ x).to(dtype).float()
         hidden = (up * functional.silu(gate)).to(dtype)
+        output = _weight(case, 'down', config['hidden'], device) @ hidden.float()
         return {
             'workspace': hidden.float(),
-            'output': _weight(case, 'down', config['hidden'], device) @ hidden.float(),
+            'output': output,
+            'replay': output,
         }
     if op == 'tq_embedding':
         outputs = {}

@@ -18,6 +18,13 @@ add_executable(mfq-diagnostics
 )
 target_link_libraries(mfq-diagnostics PRIVATE mfq-cuda-diagnostics mfq-cuda-eval)
 
+add_executable(mfq-numerics
+    ${PROJECT_SOURCE_DIR}/apps/numerics_main.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/case.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/numerics/tq.cpp
+)
+target_link_libraries(mfq-numerics PRIVATE mfq-cuda-engine CUDA::cudart CUDA::cublas)
+
 add_executable(mfq-eval
     ${PROJECT_SOURCE_DIR}/apps/eval_main.cpp
     ${PROJECT_SOURCE_DIR}/commands/eval.cpp
@@ -43,7 +50,7 @@ if(TARGET mfq-cuda-torch-engine)
     )
 endif()
 
-foreach(target mfq-runtime mfq-diagnostics mfq-eval mfq-runtime-torch)
+foreach(target mfq-runtime mfq-diagnostics mfq-numerics mfq-eval mfq-runtime-torch)
     if(TARGET ${target})
         mfq_configure_cuda_engine_target(${target})
         target_compile_definitions(${target} PRIVATE NOMINMAX)
