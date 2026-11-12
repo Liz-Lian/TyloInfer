@@ -9,7 +9,7 @@
 
 namespace tyloi {
 class ModelSource;
-namespace models { class CausalModel; class State; class Layers; class Groups; class Ffn; struct Info; }
+namespace models { class CausalModel; class State; class Layers; class Groups; class Ffn; struct Info; struct Input; struct Prefill; }
 namespace weights { class Cache; struct Loader; }
 namespace engine { struct Config; class InferenceOutput; }
 }
@@ -62,6 +62,8 @@ public:
     models::Ffn& ffn();
     /** Configure a quiescent loaded model, replacing its request graph and session owners. */
     void configure(engine::Config config);
+    /** Run one controlled prefill; the caller retains its inputs and result until draining. */
+    models::Prefill prefill(models::Input input, std::int64_t compute, engine::InferenceOutput& output);
     /** Run one exclusive request in the caller's scope; its owners outlive the sequence and drain after it. */
     StepSequence<engine::EventData> generate(engine::InferenceRequest& request,
         engine::InferenceOutput& output, bool predictor = true, std::string id = "check");

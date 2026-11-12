@@ -20,6 +20,7 @@
 #include "diagnostics/vision.h"
 #include "diagnostics/mtp_bench.h"
 #include "diagnostics/mtp.h"
+#include "diagnostics/prefill.h"
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
 #include "diagnostics/runtime_checks.h"
@@ -333,7 +334,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             return run_backend_argmax_check(*program, 248320, 2000);
         }
         enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
-            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, mtp_bench, trace };
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, mtp_bench, prefill, trace };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
@@ -365,6 +366,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (check_flash_next_mtp) selected = Tool::flash_mtp;
         else if (check_qwen35_mtp) selected = Tool::legacy;
         else if (!bench_qwen35_mtp.empty()) selected = Tool::mtp_bench;
+        else if (!prefill_sweep_arg.empty()) selected = Tool::prefill;
         else if (!check_continuous_batching && !check_qwen4_decode_hidden && !check_flash_next &&
                  !check_nemotron_h && !check_nemotron_h_vision && !check_nemotron_h_mtp &&
                  !check_flash_next_mtp && !check_qwen35_mtp && bench_qwen35_mtp.empty() &&
@@ -375,13 +377,14 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (runtime_comparison_modes() || comparison_phase_timings)
                 throw std::runtime_error("runtime comparison dispatch harness is currently unavailable");
             auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
+            std::vector<int64_t> prefill_sizes;
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
-                    selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::mtp_bench) {
+                    selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::mtp_bench || selected == Tool::prefill) {
                 if (model_path.empty()) {
                     std::cerr << "missing model or execution mode (see --help)\n";
                     return 2;
                 }
-                (void)prepare_model();
+                prefill_sizes = prepare_model();
                 options.context_size = context_size;
             }
             std::vector<int64_t> trace_ids;
@@ -405,8 +408,13 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::hc) return run_dsv4_hc_check(*program, check_attention_reps);
             if (selected == Tool::session) return run_text_session_state_check(*program);
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
-                    selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::mtp_bench) {
+                    selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::mtp_bench || selected == Tool::prefill) {
                 program->load(needs_parts());
+                if (selected == Tool::prefill) {
+                    const auto status = run_prefill_sweep(*program, prefill_sizes, prefill_sweep_reps, profile);
+                    program->weights().report(std::cout);
+                    return status;
+                }
                 if (selected == Tool::nemo_mtp) return run_nemotron_h_mtp_check(*program);
                 if (selected == Tool::flash_mtp) return run_flash_next_mtp_check(*program);
                 if (selected == Tool::mtp_bench) return run_qwen35_mtp_bench(*program,
@@ -564,7 +572,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             std::cerr << "missing model or execution mode (see --help)\n";
             return 2;
         }
-        const auto prefill_sweep_sizes = prepare_model();
+        (void)prepare_model();
         execution.profiler.enabled = false;
         tyloi::cuda::NoGradGuard no_grad;
         return tyloi::cuda::with_model<>(execution, *this,
@@ -613,22 +621,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             }
             throw std::runtime_error(
                 "--check-qwen35-mtp requires Qwen3.5");
-        }
-        if (!prefill_sweep_sizes.empty()) {
-            execution.profiler.enabled=profile;
-            const int status = [&] {
-                if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
-                    return run_prefill_sweep(model, state, executor.get(), model.metadata,
-                        prefill_sweep_sizes, prefill_sweep_reps, execution);
-                else
-                    return run_prefill_sweep(model, state, executor.get(), model.metadata,
-                        prefill_sweep_sizes, prefill_sweep_reps, execution);
-            }();
-            if (execution.weights.moe) {
-                print_moe_expert_cache_stats(
-                    execution.weights.moe, std::cout);
-            }
-            return status;
         }
         if(!router_lookahead_audit.empty()) {
             TYLOINFER_RUNTIME_CHECK(!compare_ffn_transfer_phases && !profile && gen>1 && !decode_inputs.empty(),

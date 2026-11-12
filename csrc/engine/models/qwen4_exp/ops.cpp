@@ -3543,7 +3543,9 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
         state.finish_forward(prepared_full,1,tokens);
         state.cache_pos=cache_start+tokens;
 #ifdef TYLOINFER_NATIVE_CUDA
-        co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete, 0, 0, std::move(final_output), {}};
+        tyloi::models::Prefill complete{tyloi::models::Prefill::Phase::complete, 0, 0, std::move(final_output), {}};
+        complete.mode = tyloi::models::Prefill::Mode::layered;
+        co_yield std::move(complete);
         co_return;
 #else
         return result;
@@ -3590,8 +3592,10 @@ tyloi::StepSequence<tyloi::models::Prefill> qwen4_exp::Model::prefill(
     state.cache_pos=cache_start+tokens;
 #ifdef TYLOINFER_NATIVE_CUDA
     if(raw_hidden)*raw_hidden=raw_output;
-    co_yield tyloi::models::Prefill{tyloi::models::Prefill::Phase::complete, 0, 0,
+    tyloi::models::Prefill complete{tyloi::models::Prefill::Phase::complete, 0, 0,
         std::move(final_output), std::move(raw_output)};
+    complete.mode = tyloi::models::Prefill::Mode::layered;
+    co_yield std::move(complete);
 #else
     if(raw_hidden)*raw_hidden=hidden;
     return finalized;

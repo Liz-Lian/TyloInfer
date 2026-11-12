@@ -10,6 +10,7 @@
 #include "engine/config.h"
 #include "engine/generation/decode.h"
 #include "engine/generation/prefill_budget.h"
+#include "engine/generation/prefill.h"
 #include "engine/generation/run.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/models/causal_model.h"
@@ -363,6 +364,28 @@ void Program::configure(engine::Config config) {
         (void)change.apply();
     }
     p.run_ready = true;
+}
+
+models::Prefill Program::prefill(models::Input input, std::int64_t compute, engine::InferenceOutput& output) {
+    auto& p = *impl_;
+    if (p.running) throw std::logic_error("program request is already running");
+    if (!p.run_ready) configure(engine::resolve_config());
+    if (compute <= 0) throw std::invalid_argument("prefill compute chunk must be positive");
+    p.running = true;
+    models::Prefill result;
+    try {
+        result = engine::prefill(*p.model, *p.state, *p.executor, *p.weights,
+            *p.budget, p.forward, input, compute, output);
+        p.running = false;
+        return result;
+    } catch (...) {
+        auto failure = std::current_exception();
+        try { drain(); }
+        catch (const std::exception& error) { std::cerr << "prefill_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "prefill_cleanup error=unknown\n"; }
+        p.running = false;
+        std::rethrow_exception(failure);
+    }
 }
 
 StepSequence<engine::EventData> Program::generate(engine::InferenceRequest& request,

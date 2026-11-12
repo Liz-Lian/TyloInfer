@@ -95,6 +95,7 @@ struct Decoded {
 /** Model-owned prefill phase boundaries and final owning outputs. */
 struct Prefill {
     enum class Phase { encode, decode, computed, complete, progress };
+    enum class Mode { ordinary, layered };
     /** Describe a layerwise diagnostic boundary without observing execution resources. */
     struct Progress {
         Device device;
@@ -113,6 +114,8 @@ struct Prefill {
     double elapsed_ms = -1;
     /** Present only for a progress event; the driver owns synchronization and observation. */
     std::optional<Progress> progress;
+    /** Identify the model path that actually produced a completed result. */
+    Mode mode = Mode::ordinary;
 };
 
 struct Prepared {
