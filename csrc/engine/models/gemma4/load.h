@@ -25,7 +25,11 @@ void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
 void load(Model&, const tyloi::weights::Loader&, LayerPlacementConfig&, int gpu_layers = -1,
           bool expert_parallel = false, bool load_layers = true, bool load_input_output = true);
 /** Load the weights and configuration of one Gemma4 layer. */
+void load_layer(Layer&, const tyloi::weights::Loader&, const tyloi::models::gemma4::Config&,
+                int index, const std::string& type);
+#ifndef TYLOINFER_NATIVE_CUDA
 Layer load_layer(const tyloi::weights::Loader&, const tyloi::models::gemma4::Config&,
                  int index, const std::string& type);
+#endif
 
 } // namespace tyloi::cuda::gemma4

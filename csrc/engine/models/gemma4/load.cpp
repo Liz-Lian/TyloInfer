@@ -76,14 +76,21 @@ struct LayerLoader {
     }
 };
 
-Layer load_layer(const tyloi::weights::Loader& weights, const Config &config,
+void load_layer(Layer& result, const tyloi::weights::Loader& weights, const Config &config,
                  int layer, const std::string &type) {
-    Layer result;
     result.device = weights.placement.device;
     LayerLoader loader{weights};
     tyloi::models::gemma4::load_layer(result.attention, result, loader, config, layer, type);
+}
+
+#ifndef TYLOINFER_NATIVE_CUDA
+Layer load_layer(const tyloi::weights::Loader& weights, const Config& config,
+                 int layer, const std::string& type) {
+    Layer result;
+    load_layer(result, weights, config, layer, type);
     return result;
 }
+#endif
 
 void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           int gpu_layers, bool expert_parallel, bool load_layers, bool load_input_output) {
@@ -117,7 +124,8 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
                 const int device = placement.device_for_layer(index);
                 const auto& type = config.layer_types.at(static_cast<std::size_t>(index));
                 std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
-                model.layers.push_back(load_layer(weights.for_layer(device, false), config, index, type));
+                auto& layer = model.layers.emplace_back();
+                load_layer(layer, weights.for_layer(device, false), config, index, type);
             }
         }
     } else {

@@ -146,8 +146,8 @@ set_target_properties(mfq-cuda-engine PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-# The CLI tools carry legacy code that still targets the pre-Tensor-unification
-# APIs; keep them out of library and test builds until they are ported.
+# Native CLI tools use the public model and execution interfaces. Opt in to
+# frontend targets independently of library-only builds.
 option(TYLOINFER_BUILD_CLI_TOOLS
     "Build the native CLI tools (mfq-runtime, mfq-diagnostics, mfq-eval)" OFF)
 if(TYLOINFER_BUILD_CLI_TOOLS)

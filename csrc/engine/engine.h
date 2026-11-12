@@ -51,19 +51,20 @@ struct EngineStatus {
 class Engine {
 public:
 #ifdef TYLOINFER_NATIVE_CUDA
-    Engine(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        Config config, std::shared_ptr<const ModelSource> source,
-        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
-        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
-        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
-        std::unique_ptr<tyloi::Executor::Graph> graph);
-    // Retire active requests before replacing dependencies; the Scheduler remains attached.
-    void rebind(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        Config config, std::shared_ptr<const ModelSource> source,
-        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
-        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
-        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
-        std::unique_ptr<tyloi::Executor::Graph> graph);
+    /** Construct before consuming caller-owned resources, then bind and start execution. */
+    static std::unique_ptr<Engine> create(std::unique_ptr<models::CausalModel>& model,
+        std::unique_ptr<tyloi::Executor>& executor, Config& config,
+        std::shared_ptr<const ModelSource>& source, std::shared_ptr<weights::Memory>& memory,
+        std::unique_ptr<weights::Cache>& weights, std::unique_ptr<models::State>& model_state,
+        std::unique_ptr<state::Sessions>& sessions, std::unique_ptr<TextProcessor>& text,
+        models::ForwardOptions forward, std::unique_ptr<tyloi::Executor::Graph>& graph);
+    /** Replace quiescent execution, consuming caller owners after host preparation; keep the Scheduler attached. */
+    void rebind(std::unique_ptr<models::CausalModel>& model, std::unique_ptr<tyloi::Executor>& executor,
+        Config& config, std::shared_ptr<const ModelSource>& source,
+        std::shared_ptr<weights::Memory>& memory, std::unique_ptr<weights::Cache>& weights,
+        std::unique_ptr<models::State>& model_state, std::unique_ptr<state::Sessions>& sessions,
+        std::unique_ptr<TextProcessor>& text, models::ForwardOptions forward,
+        std::unique_ptr<tyloi::Executor::Graph>& graph);
 #endif
     // Start one consumer before enable_reload(); next_reload() delivers posted work before shutdown.
     // Complete reply only after binding and its execution scopes have exited.

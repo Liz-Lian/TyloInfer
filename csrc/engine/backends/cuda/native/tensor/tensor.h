@@ -70,6 +70,7 @@ DenseTensor reduce_cuda(
     bool keep_dimension,
     int operation);
 void fill_cuda(DenseTensor& destination, double value);
+/** Complete host transfers by default; asynchronous callers retain host storage until the stream finishes. */
 void copy_cuda(DenseTensor& destination, const DenseTensor& source, bool non_blocking = false);
 std::uint16_t encode_float16(float value);
 std::uint16_t encode_bfloat16(float value);

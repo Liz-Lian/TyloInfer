@@ -117,7 +117,8 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
     std::shared_ptr<KvOffloadStore> offload;
     CudaLoadConfig load;
     tyloi::engine::Config config;
-    std::unique_ptr<Executor> root;
+    std::unique_ptr<tyloi::Executor> executor;
+    Executor* root = nullptr;
     std::unique_ptr<models::CausalModel> model;
     std::unique_ptr<models::State> state;
     std::unique_ptr<tyloi::state::Sessions> sessions;
@@ -129,7 +130,9 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         if (!options.context_size) options.context_size = 32768;
         auto [execution_config, numeric_options] = load_cuda_execution_config();
         load = std::move(execution_config);
-        root = std::make_unique<Executor>(std::move(numeric_options), 0);
+        auto prepared = std::make_unique<Executor>(std::move(numeric_options), 0);
+        root = prepared.get();
+        executor = std::move(prepared);
         {
             auto outer_scope = root->enter(load.layer_placement.primary_device());
             internal::setup_cuda_load(options, load, *root, *weights, kv, offload);
@@ -175,17 +178,13 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
         config.resident_budget_bytes = ::tyloi::cuda::options::resident_budget_bytes();
         models::ForwardOptions forward{mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
         if (target) {
-            target->rebind(std::move(model), std::move(root), std::move(config), std::move(source),
-                std::move(ledger), std::move(weights), std::move(state), std::move(sessions),
-                std::move(text), forward, std::move(graph));
+            target->rebind(model, executor, config, source, ledger, weights, state, sessions, text, forward, graph);
             return {};
         }
-        return std::make_unique<engine::Engine>(std::move(model), std::move(root), std::move(config),
-            std::move(source), std::move(ledger), std::move(weights), std::move(state),
-            std::move(sessions), std::move(text), forward, std::move(graph));
+        return engine::Engine::create(model, executor, config, source, ledger, weights, state, sessions, text, forward, graph);
     } catch (...) {
         const auto failure = std::current_exception();
-        if (root) {
+        if (executor) {
             try { if (weights) drain_cuda(*root, *weights, offload.get(), load.layer_placement, load.tensor_parallel, load.expert_parallel); }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
             catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
@@ -205,7 +204,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             root->configure_kv({}, {});
             offload.reset(); kv.reset(); weights.reset();
             scope.reset();
-            root.reset();
+            executor.reset();
         }
         std::rethrow_exception(failure);
     }

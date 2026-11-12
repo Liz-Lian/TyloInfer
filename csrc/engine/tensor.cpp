@@ -529,9 +529,9 @@ DenseTensor DenseTensor::to(Device target_device) const {
     return dense_result(ops::copy(*this, target_device));
 }
 
-DenseTensor& DenseTensor::copy_(const DenseTensor& source, bool) {
+DenseTensor& DenseTensor::copy_(const DenseTensor& source, bool non_blocking) {
     Tensor self{*this};
-    ops::copy_into(self, source);
+    ops::copy_into(self, source, non_blocking);
     return *this;
 }
 

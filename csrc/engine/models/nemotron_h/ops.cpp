@@ -732,11 +732,10 @@ void validate_components(const tyloi::ModelGraph& graph) {
             "implementation under the predictor tensor root");
 }
 
-Layer load_layer(const ::tyloi::weights::Loader& weights,
+void load_layer(Layer& result, const ::tyloi::weights::Loader& weights,
                  const Config& config, int layer, const std::string& type,
                  std::string_view tensor_root) {
     MfqCudaGuard guard(weights.placement.device);
-    Layer result;
     result.device = weights.placement.device;
     LayerLoader loader{{weights}};
     switch (Config::mixer_kind(type)) {
@@ -763,6 +762,13 @@ Layer load_layer(const ::tyloi::weights::Loader& weights,
             break;
         }
     }
+}
+
+Layer load_layer(const ::tyloi::weights::Loader& weights,
+                 const Config& config, int layer, const std::string& type,
+                 std::string_view tensor_root) {
+    Layer result;
+    load_layer(result, weights, config, layer, type, tensor_root);
     return result;
 }
 
@@ -826,8 +832,8 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
                 MfqCudaGuard layer_guard(device);
                 const auto& type = model.metadata.layer_types.at(static_cast<std::size_t>(index));
                 std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
-                model.layers.push_back(load_layer(weights.for_layer(device, false),
-                                                  config, index, type));
+                auto& layer = model.layers.emplace_back();
+                load_layer(layer, weights.for_layer(device, false), config, index, type);
             }
         }
     } else {

@@ -19,5 +19,6 @@ Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definitio
 void load(Model&, const ::tyloi::weights::Loader&, LayerPlacementConfig&,
           int gpu_layers = -1, bool load_layers = true,
           bool load_input_output = true);
-Layer load_layer(const ::tyloi::weights::Loader&, const tyloi::models::glm5_next::Config&, int index);
+/** Populate an already owned layer using the selected placement. */
+void load_layer(Layer&, const ::tyloi::weights::Loader&, const tyloi::models::glm5_next::Config&, int index);
 } // namespace tyloi::cuda::glm5_next

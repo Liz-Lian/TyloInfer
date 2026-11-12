@@ -301,10 +301,11 @@ void copy_into(DenseTensor& destination, const DenseTensor& source, bool non_blo
     if (!destination.defined() || !source.defined()) {
         throw std::invalid_argument("copy_ requires defined tensors");
     }
-    if (non_blocking && (!destination.is_cpu() || !destination.options().pinned() ||
-        !source.is_cuda() || !destination.is_contiguous() || !source.is_contiguous() ||
-        destination.scalar_type() != source.scalar_type() || destination.numel() != source.numel())) {
-        throw std::invalid_argument("non-blocking copy requires contiguous CUDA source and pinned CPU destination with equal dtype and size");
+    if (non_blocking && destination.is_cuda() != source.is_cuda()) {
+        const auto& host = destination.is_cpu() ? destination : source;
+        if (!host.options().pinned() || !destination.is_contiguous() || !source.is_contiguous() ||
+            destination.scalar_type() != source.scalar_type() || destination.numel() != source.numel())
+            throw std::invalid_argument("non-blocking host/device copy requires pinned host storage and contiguous tensors with equal dtype and size");
     }
     if (destination.is_cpu() && source.is_cpu()) {
         copy_contiguous_cpu(destination, source);

@@ -55,16 +55,16 @@ void Engine::reset_states(std::int64_t batch) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-Engine::Engine(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        Config config, std::shared_ptr<const ModelSource> source,
-        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
-        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
-        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
-        std::unique_ptr<tyloi::Executor::Graph> graph) {
-    rebind(std::move(model), std::move(executor), std::move(config), std::move(source),
-        std::move(memory), std::move(weights), std::move(model_state), std::move(sessions),
-        std::move(text), std::move(forward), std::move(graph));
-    start();
+std::unique_ptr<Engine> Engine::create(std::unique_ptr<models::CausalModel>& model,
+        std::unique_ptr<tyloi::Executor>& executor, Config& config,
+        std::shared_ptr<const ModelSource>& source, std::shared_ptr<weights::Memory>& memory,
+        std::unique_ptr<weights::Cache>& weights, std::unique_ptr<models::State>& model_state,
+        std::unique_ptr<state::Sessions>& sessions, std::unique_ptr<TextProcessor>& text,
+        models::ForwardOptions forward, std::unique_ptr<tyloi::Executor::Graph>& graph) {
+    auto engine = std::unique_ptr<Engine>(new Engine());
+    engine->rebind(model, executor, config, source, memory, weights, model_state, sessions, text, forward, graph);
+    engine->start();
+    return engine;
 }
 
 // Wiring that needs this Engine: caches, budget, expert space, reservations.
@@ -120,12 +120,16 @@ void Engine::install(std::unique_ptr<tyloi::Executor::Graph> graph) {
     }
 }
 
-void Engine::rebind(std::unique_ptr<models::CausalModel> model, std::unique_ptr<tyloi::Executor> executor,
-        Config config, std::shared_ptr<const ModelSource> source,
-        std::shared_ptr<weights::Memory> memory, std::unique_ptr<weights::Cache> weights,
-        std::unique_ptr<models::State> model_state, std::unique_ptr<state::Sessions> sessions,
-        std::unique_ptr<TextProcessor> text, models::ForwardOptions forward,
-        std::unique_ptr<tyloi::Executor::Graph> graph) {
+void Engine::rebind(std::unique_ptr<models::CausalModel>& model, std::unique_ptr<tyloi::Executor>& executor,
+        Config& config, std::shared_ptr<const ModelSource>& source,
+        std::shared_ptr<weights::Memory>& memory, std::unique_ptr<weights::Cache>& weights,
+        std::unique_ptr<models::State>& model_state, std::unique_ptr<state::Sessions>& sessions,
+        std::unique_ptr<TextProcessor>& text, models::ForwardOptions forward,
+        std::unique_ptr<tyloi::Executor::Graph>& graph) {
+    // Resource handoff must not throw before install() can drain the new owners.
+    static_assert(std::is_nothrow_move_assignable_v<Config>);
+    static_assert(std::is_nothrow_move_assignable_v<mtp::State>);
+    mtp::State policy;
     std::exception_ptr failure;
     if (executor_) {
         try { unload_model(); }
@@ -141,7 +145,7 @@ void Engine::rebind(std::unique_ptr<models::CausalModel> model, std::unique_ptr<
     cache_ = std::move(sessions);
     text_ = std::move(text);
     forward_options_ = std::move(forward);
-    mtp_state_ = {};
+    mtp_state_ = std::move(policy);
     if (failure) {
         try {
             auto scope = executor_->enter();

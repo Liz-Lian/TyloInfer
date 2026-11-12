@@ -473,7 +473,7 @@ void copy_cuda(DenseTensor& destination, const DenseTensor& source, bool non_blo
             destination.nbytes(),
             copy_kind(destination, source),
             stream.stream()));
-        if (destination.is_cpu() && source.is_cuda() && !non_blocking) {
+        if (!non_blocking && (destination.is_cpu() || source.is_cpu())) {
             TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
         }
         return;

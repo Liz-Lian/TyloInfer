@@ -90,12 +90,17 @@ Scheduler::Scheduler(Engine& engine, Limits limits)
         throw std::invalid_argument("outbox requires at least 4 events and 4096 bytes");
     std::promise<void> ready;
     auto initialized = ready.get_future();
-    worker_ = std::thread([this, &ready] {
-        refresh_snapshot(true, false, true);
+    worker_ = std::thread([this, ready=std::move(ready)]() mutable {
+        try { refresh_snapshot(true, false, true); }
+        catch (...) { ready.set_exception(std::current_exception()); return; }
         ready.set_value();
         loop();
     });
-    initialized.get();
+    try { initialized.get(); }
+    catch (...) {
+        if (worker_.joinable()) worker_.join();
+        throw;
+    }
 }
 Scheduler::~Scheduler() { shutdown(); }
 void Scheduler::shutdown() {

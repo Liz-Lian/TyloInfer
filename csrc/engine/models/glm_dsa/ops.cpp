@@ -293,14 +293,12 @@ DenseTensor normalize_ids(Collectives& collectives, int primary, DenseTensor ids
 
 } // namespace
 
-Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config, int index,
+void load_layer(Layer& layer, const ::tyloi::weights::Loader& weights, const Config& config, int index,
                  const std::string& type) {
     MfqCudaGuard guard(weights.placement.device);
-    Layer layer;
     layer.device = weights.placement.device;
     TransformerWeightLoader loader{weights};
     tyloi::models::glm_dsa::load_layer_weights(layer, loader, config, index, type);
-    return layer;
 }
 
 Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
@@ -375,7 +373,8 @@ void load(Model& model, const ::tyloi::weights::Loader& weights, LayerPlacementC
                 MfqCudaGuard layer_guard(device);
                 const auto& type = model.metadata.layer_types.at(static_cast<size_t>(index));
                 std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
-                model.layers.push_back(load_layer(weights.for_layer(device, false), c, index, type));
+                auto& layer = model.layers.emplace_back();
+                load_layer(layer, weights.for_layer(device, false), c, index, type);
             }
         }
     } else {

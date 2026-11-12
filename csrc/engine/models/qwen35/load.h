@@ -48,9 +48,15 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
            const LoadOptions& options);
 #endif
 
+/** Populate an already owned layer in the original weight-loading order. */
+void load_layer(Layer&, const ::tyloi::weights::Loader&, const Config&,
+                int index, const std::string& type, bool mirror_scalars = true,
+                std::string_view tensor_root = "model");
+#ifndef TYLOINFER_NATIVE_CUDA
 Layer load_layer(const ::tyloi::weights::Loader&, const Config&,
                  int index, const std::string& type, bool mirror_scalars = true,
                  std::string_view tensor_root = "model");
+#endif
 
 std::optional<Predictor> load_predictor(
     TransformerWeightLoader&, const Config&, tyloi::state::KvQuantization);

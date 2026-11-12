@@ -17,5 +17,6 @@ Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definitio
 void load(Model&, const ::tyloi::weights::Loader&, LayerPlacementConfig&, int gpu_layers = -1,
           bool load_layers = true, bool load_input_output = true,
           const tyloi::ops::YarnScaling& yarn = {});
-Layer load_layer(const ::tyloi::weights::Loader&, const Config&, int index, const std::string& type);
+/** Populate an already owned layer using the selected placement. */
+void load_layer(Layer&, const ::tyloi::weights::Loader&, const Config&, int index, const std::string& type);
 } // namespace tyloi::cuda::glm_dsa

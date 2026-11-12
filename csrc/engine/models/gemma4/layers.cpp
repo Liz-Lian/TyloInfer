@@ -64,7 +64,7 @@ public:
         mode_ = Mode::loading;
         model_.layers.reserve(static_cast<std::size_t>(info().layers));
         for (int index = 0; index < info().layers; ++index)
-            model_.layers.push_back(read_layer(index));
+            read_layer(model_.layers.emplace_back(), index);
         mode_ = Mode::resident;
     }
 
@@ -72,7 +72,7 @@ public:
         require_empty();
         check_index(index);
         mode_ = Mode::loading;
-        streamed_.emplace(read_layer(index));
+        read_layer(streamed_.emplace(), index);
         streamed_index_ = index;
         mode_ = Mode::streamed;
     }
@@ -163,9 +163,9 @@ private:
     void check_index(int index) const {
         if (index < 0 || index >= info().layers) throw std::out_of_range("Gemma4 layer index outside model");
     }
-    Layer read_layer(int index) const {
+    void read_layer(Layer& layer, int index) const {
         const int device = placement_.device_for_layer(index);
-        return gemma4::load_layer(weights_.for_layer(device, false), model_.config, index,
+        gemma4::load_layer(layer, weights_.for_layer(device, false), model_.config, index,
                                   model_.config.layer_types.at(static_cast<std::size_t>(index)));
     }
     const Layer& selected(int index) const {

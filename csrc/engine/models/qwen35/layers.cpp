@@ -164,8 +164,9 @@ private:
         const int device = placement_.device_for_layer(index);
         const bool cpu = index < model_->cpu_layers;
         auto placed = weights_.for_layer(device, cpu);
-        layers_[index].emplace(qwen35::load_layer(placed, model_->config, index,
-            model_->config.layer_types.at(static_cast<std::size_t>(index)), mirror_scalars_));
+        auto& layer = layers_[index].emplace();
+        qwen35::load_layer(layer, placed, model_->config, index,
+            model_->config.layer_types.at(static_cast<std::size_t>(index)), mirror_scalars_);
     }
 
     std::unique_ptr<Model> model_;

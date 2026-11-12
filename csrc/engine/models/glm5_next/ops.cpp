@@ -122,14 +122,12 @@ static DenseTensor execute(const Layer& layer, LayerState& activity,
     return mfq_glm5_next::mhc_post(branch, hidden, ffn_mix[0], ffn_mix[1]);
 }
 
-Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config, int index) {
+void load_layer(Layer& layer, const ::tyloi::weights::Loader& weights, const Config& config, int index) {
     MfqCudaGuard guard(weights.placement.device);
-    Layer layer;
     layer.device = weights.placement.device;
     LayerLoader loader{weights};
     loader.role = "glm5_next";
     tyloi::models::glm5_next::load_layer_weights(layer, loader, config, index);
-    return layer;
 }
 
 Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
@@ -171,9 +169,10 @@ void load(Model& model, const ::tyloi::weights::Loader& weights,
                                  : model.embed;
         if (load_layers) {
             model.layers.reserve(static_cast<size_t>(model.config.layers));
-            for (int index = 0; index < model.config.layers; ++index)
-                model.layers.push_back(load_layer(weights.for_layer(placement.device_for_layer(index), false),
-                                                  model.config, index));
+            for (int index = 0; index < model.config.layers; ++index) {
+                auto& layer = model.layers.emplace_back();
+                load_layer(layer, weights.for_layer(placement.device_for_layer(index), false), model.config, index);
+            }
         }
     } else {
         if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");

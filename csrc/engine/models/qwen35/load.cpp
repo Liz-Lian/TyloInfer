@@ -212,7 +212,7 @@ struct LayerLoader : TransformerWeightLoader {
 
 } // namespace
 
-Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
+void load_layer(Layer& result, const ::tyloi::weights::Loader& weights, const Config& config,
                  int index, const std::string& type, bool mirror_scalars,
                  std::string_view tensor_root) {
     if (index < 0 || index >= config.num_hidden_layers)
@@ -221,12 +221,11 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
         config.layer_types[static_cast<std::size_t>(index)] != type)
         throw std::invalid_argument("Qwen layer type disagrees with model config");
     MfqCudaGuard scope(weights.placement.device);
-    Layer result;
     result.device = weights.placement.device;
     result.cpu = weights.placement.cpu;
     LayerLoader loader{{weights}, mirror_scalars};
     if (Config::attention_kind(type) == Config::AttentionKind::full) {
-        Full full;
+        auto& full = result.weights.emplace<Full>();
         full.attention.kv_quantization = cuda_kv_quantization();
         tyloi::models::load_attention_mixer(
             full.attention, loader, config, index,
@@ -243,9 +242,8 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
                                      std::to_string(index) + ".mlp.norm.weight");
 #endif
         full.ffn = tyloi::models::qwen35::load_ffn<LayerLoader::Ffn>(loader, config, index, tensor_root);
-        result.weights = std::move(full);
     } else {
-        Linear linear;
+        auto& linear = result.weights.emplace<Linear>();
 #ifdef TYLOINFER_NATIVE_CUDA
         auto& geometry = linear.geometry;
         geometry.key_heads = config.linear_num_key_heads;
@@ -286,10 +284,18 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
         loader.load_linear_attention(linear.attention, config, index, tensor_root);
 #endif
         linear.ffn = tyloi::models::qwen35::load_ffn<LayerLoader::Ffn>(loader, config, index, tensor_root);
-        result.weights = std::move(linear);
     }
+}
+
+#ifndef TYLOINFER_NATIVE_CUDA
+Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
+                 int index, const std::string& type, bool mirror_scalars,
+                 std::string_view tensor_root) {
+    Layer result;
+    load_layer(result, weights, config, index, type, mirror_scalars, tensor_root);
     return result;
 }
+#endif
 
 #ifdef TYLOINFER_NATIVE_CUDA
 static void load_impl(Model& model, std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
@@ -414,9 +420,9 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
                 std::cerr << "loading layer " << index << ' '
                           << config.layer_types.at(static_cast<std::size_t>(index)) << ' '
                           << (cpu ? "CPU" : "CUDA") << std::endl;
-                model.layers.push_back(load_layer(
-                    weights.for_layer(device, cpu), config, index,
-                    config.layer_types.at(static_cast<std::size_t>(index)), options.mirror_scalars));
+                auto& layer = model.layers.emplace_back();
+                load_layer(layer, weights.for_layer(device, cpu), config, index,
+                    config.layer_types.at(static_cast<std::size_t>(index)), options.mirror_scalars);
             }
         }
     } else {

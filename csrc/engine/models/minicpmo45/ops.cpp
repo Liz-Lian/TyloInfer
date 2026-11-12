@@ -68,11 +68,10 @@ Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view de
     return model;
 }
 
-Layer load_layer(const tyloi::weights::Loader& weights, const Config& config, int index,
+void load_layer(Layer& layer, const tyloi::weights::Loader& weights, const Config& config, int index,
                  const std::string& type) {
     if (type != "full_attention")
         throw std::runtime_error("unsupported MiniCPM layer type: " + type);
-    Layer layer;
     layer.device = weights.placement.device;
     layer.cpu = weights.placement.cpu;
     layer.attention.official_bf16 = true;
@@ -86,7 +85,6 @@ Layer load_layer(const tyloi::weights::Loader& weights, const Config& config, in
     layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
 #endif
     layer.ffn = tyloi::models::load_dense_ffn<tyloi::models::Mlp>(loader, config, prefix + "mlp.");
-    return layer;
 }
 
 void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
@@ -139,7 +137,8 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
                 MfqCudaGuard layer_guard(device);
                 const auto& type = model.metadata.layer_types.at(index);
                 std::cerr << "loading layer " << index << ' ' << type << ' ' << (cpu ? "CPU" : "CUDA") << std::endl;
-                model.layers.push_back(load_layer(weights.for_layer(device, cpu), config, index, type));
+                auto& layer = model.layers.emplace_back();
+                load_layer(layer, weights.for_layer(device, cpu), config, index, type);
             }
         }
     } else {
