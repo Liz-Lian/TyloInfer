@@ -52,7 +52,8 @@ struct NintRowStage::Impl {
     uint64_t future_ns=0,pack_ns=0,copy_api_ns=0;
     std::vector<int64_t> shape;
     tyloi::cuda::HostBuffer host;
-    ::tyloi::DenseTensor packet,packed,descriptors,inverse,flat,shaped;
+    ::tyloi::DenseTensor packet,packed,descriptors,inverse,flat;
+    ::tyloi::Tensor shaped;
     Impl(uint64_t identity,int64_t n,int w,std::size_t capacity,
         std::vector<int64_t> dimensions,const ::tyloi::Device& device,bool use_mapped)
         :owner(identity),rows(n),width(w),payload_bytes(capacity),host_bytes(capacity+n*32),
