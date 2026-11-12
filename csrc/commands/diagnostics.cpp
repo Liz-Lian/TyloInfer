@@ -5,12 +5,16 @@
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/models/glm5_next/mtp.h"
 #include "engine/weights/loader.h"
+#include "engine/weights/cache.h"
 #include "cli.h"
 #include "diagnostics/token_generation.h"
 #include "engine/models/assemble.h"
 #include "engine/models/prepare.h"
 #include "diagnostics/backend_checks.h"
 #include "diagnostics/model_checks.h"
+#include "diagnostics/operator_checks.h"
+#include "engine/program.h"
+#include "engine/backends/cuda/executor/config.h"
 #include "diagnostics/runtime_checks.h"
 #include "diagnostics/flash_next_mtp.h"
 #include "minicpmo45.h"
@@ -248,6 +252,12 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
             return run_cuda_engine_isolation_check(std::move(options));
         }
+        if (check_backend_bf16_add || check_backend_argmax) {
+            auto program = tyloi::cuda::Program::bare();
+            auto scope = program->executor().enter(program->config().layer_placement.primary_device());
+            if (check_backend_bf16_add) return run_backend_bf16_add_check(*program, 4096, 10000);
+            return run_backend_argmax_check(*program, 248320, 2000);
+        }
         auto tq = std::make_shared<TqExec>();
         std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
         tyloi::cuda::RoutedCache weights;
@@ -256,8 +266,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         CudaExecutionContext execution(contexts, weights, kv, offload, tq);
         CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         // Operator-only checks do not require loading a model.
-        if (check_backend_bf16_add) return run_backend_bf16_add_check(4096, 10000);
-        if (check_backend_argmax) return run_backend_argmax_check(248320, 2000);
         TYLOINFER_RUNTIME_CHECK(!comparison_phase_timings || runtime_comparison_modes(),
             "comparison phase timings require a runtime comparison");
         if(runtime_comparison_modes()) {
@@ -283,6 +291,35 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 "fixed GPU comparison requires TYLOINFER_MOE_RAM_PCIE_FRACTION=1");
             execution.config.cache.adapt=false;
             std::cout<<std::unitbuf;
+        }
+        if (!check_backend_bf16_add && !check_backend_argmax &&
+                check_linear_cpu.empty() && check_linear.empty() && check_tp_linear.empty() &&
+                check_ep_moe.empty() && check_linear_group.empty() && check_q8_embedding.empty() &&
+                (!check_gdn_input.empty() || !check_linear_conv_input.empty())) {
+            auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
+            auto program = tyloi::cuda::Program::open(std::move(options), !runtime_comparison_modes());
+            auto scope = program->executor().enter(program->config().layer_placement.primary_device());
+            if (runtime_comparison_modes()) {
+                std::cout << runtime_comparison_name() << "_setup\n";
+                program->weights().report(std::cout);
+            }
+            if (!check_gdn_input.empty() && (check_gdn_output.empty() || check_gdn_state.empty())) {
+                throw std::runtime_error(
+                    "--check-gdn-input requires --check-gdn-output and --check-gdn-state");
+            }
+            if (check_gdn_input.empty() && check_linear_conv_output.empty()) {
+                throw std::runtime_error(
+                    "--check-linear-conv-input requires --check-linear-conv-output");
+            }
+            if (!check_gdn_input.empty()) {
+                return run_gdn_operator_check(*program,
+                    check_gdn_input, check_gdn_output, check_gdn_state,
+                    check_gdn_tokens, check_gdn_q_heads, check_gdn_v_heads, check_gdn_head_dim);
+            }
+            return run_linear_conv_operator_check(*program,
+                check_linear_conv_input, check_linear_conv_output,
+                check_linear_conv_tokens, check_linear_conv_q_heads, check_linear_conv_v_heads,
+                check_linear_conv_key_dim, check_linear_conv_value_dim, check_linear_conv_kernel, 1.0e-6);
         }
         setup_cuda_load(*this, execution);
         if(runtime_comparison_modes()) {
@@ -355,28 +392,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             }
             return run_q8_embedding_check(
                 execution, model_path, check_q8_embedding);
-        }
-        if (!check_gdn_input.empty()) {
-            if (check_gdn_output.empty() || check_gdn_state.empty()) {
-                throw std::runtime_error(
-                    "--check-gdn-input requires --check-gdn-output and --check-gdn-state");
-            }
-            return run_gdn_operator_check(
-                check_gdn_input, check_gdn_output, check_gdn_state,
-                check_gdn_tokens, check_gdn_q_heads,
-                check_gdn_v_heads, check_gdn_head_dim);
-        }
-        if (!check_linear_conv_input.empty()) {
-            if (check_linear_conv_output.empty()) {
-                throw std::runtime_error(
-                    "--check-linear-conv-input requires --check-linear-conv-output");
-            }
-            return run_linear_conv_operator_check(
-                check_linear_conv_input, check_linear_conv_output,
-                check_linear_conv_tokens, check_linear_conv_q_heads,
-                check_linear_conv_v_heads, check_linear_conv_key_dim,
-                check_linear_conv_value_dim, check_linear_conv_kernel,
-                1.0e-6);
         }
         if (check_gemma_geglu_layer >= 0) {
             if (model_path.empty()) {
