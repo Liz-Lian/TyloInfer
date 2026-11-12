@@ -97,11 +97,12 @@ void load_weights(Model& model, const tyloi::weights::Loader& tensors,
 } // namespace
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<tyloi::models::CausalModel> load(
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
         std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
         const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         const tyloi::models::LoadOptions& options) {
-    auto model = std::make_unique<Model>();
+    owner = std::make_unique<Model>();
+    auto* model = static_cast<Model*>(owner.get());
     read(*model, std::move(source), definition, options.context);
     if (weights.placement.tensor.enabled() || placement.enabled() || options.gpu_layers >= 0)
         throw std::runtime_error("DeepSeek-V4.1 native CUDA currently supports single-device dense "
@@ -115,7 +116,6 @@ std::unique_ptr<tyloi::models::CausalModel> load(
     model->needs_host_tokens = options.host_tokens;
     load_weights(*model, weights, placement, options.engram_cache_rows, true);
     model->predictor = load_components(*model, weights, true);
-    return model;
 }
 #else
 void load(Model& model, CudaExecutionContext& execution, int64_t context_size,

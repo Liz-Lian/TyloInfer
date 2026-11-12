@@ -30,10 +30,16 @@ public:
 
 class QwenLayers final : public tyloi::models::Layers {
 public:
-    QwenLayers(std::unique_ptr<Model> model, const tyloi::weights::Loader& weights,
+    QwenLayers(const tyloi::weights::Loader& weights,
                LayerPlacementConfig& placement, bool mirror_scalars)
-        : model_(std::move(model)), weights_(weights), placement_(placement),
-          mirror_scalars_(mirror_scalars), layers_(model_->config.num_hidden_layers) {}
+        : model_(std::make_unique<Model>()), weights_(weights), placement_(placement),
+          mirror_scalars_(mirror_scalars) {}
+
+    void initialize(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+                    const tyloi::models::LoadOptions& options) {
+        load_deferred(*model_, std::move(source), definition, weights_, placement_, options);
+        layers_.resize(model_->config.num_hidden_layers);
+    }
 
     /** Describe the source model's fixed dimensions. */
     Info info() const noexcept override {
@@ -173,12 +179,12 @@ private:
 
 } // namespace
 
-std::unique_ptr<tyloi::models::Layers> load_layers(
+void load_layers(std::unique_ptr<tyloi::models::Layers>& owner,
     std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
     const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
     const tyloi::models::LoadOptions& options) {
-    auto model = load_deferred(std::move(source), definition, weights, placement, options);
-    return std::make_unique<QwenLayers>(std::move(model), weights, placement, options.mirror_scalars);
+    owner = std::make_unique<QwenLayers>(weights, placement, options.mirror_scalars);
+    static_cast<QwenLayers*>(owner.get())->initialize(std::move(source), definition, options);
 }
 
 } // namespace tyloi::cuda::qwen35

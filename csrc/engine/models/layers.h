@@ -64,8 +64,8 @@ public:
     virtual Tensor head(const Tensor& hidden, std::int64_t first, std::int64_t count) const = 0;
 };
 
-/** Assemble supported layer-wise computation; the source, cache and placement outlive the result. */
-std::unique_ptr<Layers> load_layers(std::shared_ptr<const ModelSource> source,
+/** Publish layer-wise computation before initialization; drain on failure before releasing the owner. */
+void load_layers(std::unique_ptr<Layers>& owner, std::shared_ptr<const ModelSource> source,
     std::string_view definition, const weights::Loader& weights,
     LayerPlacementConfig& placement, const LoadOptions& options);
 

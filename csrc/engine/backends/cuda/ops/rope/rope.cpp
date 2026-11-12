@@ -402,6 +402,14 @@ RotaryEmbedding::RotaryEmbedding(int64_t dimension, int64_t maximum, double base
         "MRoPE sections disagree with rotary width");
 }
 
+bool RotaryEmbedding::fused() const {
+#ifdef TYLOINFER_NATIVE_CUDA
+    if (const auto* executor = Executor::active())
+        return executor->mode().compute.rotary.value_or(fused_) && !yarn_.enabled();
+#endif
+    return fused_;
+}
+
 RotaryEmbedding::Prepared RotaryEmbedding::prepare_parameters(const DenseTensor& value) const {
     const auto pairs = dimension_ / 2;
     std::lock_guard lock(prepared_mutex_);
@@ -433,7 +441,7 @@ RotaryEmbedding::Prepared RotaryEmbedding::prepare_parameters(const DenseTensor&
 
 bool RotaryEmbedding::pool_normalized_into(const DenseTensor& index,const DenseTensor& weight,const DenseTensor& positions,
         const DenseTensor& cache_positions,const DenseTensor& output,int64_t pool,int64_t maximum,double eps) const {
-    if(!fused_ || index.dim()!=3 || index.size(0)!=1 || index.size(2)>256 || index.size(2)<dimension_ ||
+    if(!fused() || index.dim()!=3 || index.size(0)!=1 || index.size(2)>256 || index.size(2)<dimension_ ||
         cache_positions.numel()>32 || (index.scalar_type()!=::tyloi::kFloat16 && index.scalar_type()!=::tyloi::kFloat32) ||
         (positions.scalar_type()!=::tyloi::kInt32 && positions.scalar_type()!=::tyloi::kInt64))return false;
     const auto prepared=prepare_parameters(index);
@@ -445,7 +453,7 @@ bool RotaryEmbedding::pool_normalized_into(const DenseTensor& index,const DenseT
 DenseTensor RotaryEmbedding::forward_normalized(const DenseTensor& value, const DenseTensor& weight,
         const DenseTensor& positions, double eps, const DenseTensor& key_cache,
         const DenseTensor& cache_positions, const DenseTensor& projected_value, const DenseTensor& value_cache) const {
-    TYLOINFER_RUNTIME_CHECK(fused_ && value.is_cuda() && value.dim() == 4 &&
+    TYLOINFER_RUNTIME_CHECK(fused() && value.is_cuda() && value.dim() == 4 &&
         value.size(-1) >= dimension_, "normalized rotary requires fused [B,T,H,D] input");
     const auto prepared = prepare_parameters(value);
     auto active_positions = positions.scalar_type() == ::tyloi::kInt32 || positions.scalar_type() == ::tyloi::kInt64
@@ -459,7 +467,7 @@ std::vector<DenseTensor> RotaryEmbedding::forward_normalized_grouped(
         const std::vector<DenseTensor>& values,const std::vector<DenseTensor>& weights,
         const DenseTensor& positions,double eps,int cache_entry,const DenseTensor& key_cache,
         const DenseTensor& cache_positions,const DenseTensor& projected_value,const DenseTensor& value_cache) const {
-    TYLOINFER_RUNTIME_CHECK(fused_ && !values.empty() && values.size()<=3 && weights.size()==values.size(),
+    TYLOINFER_RUNTIME_CHECK(fused() && !values.empty() && values.size()<=3 && weights.size()==values.size(),
         "normalized rotary requires a fused input/weight group");
     std::vector<DenseTensor> active_weights;active_weights.reserve(weights.size());
     for(size_t i=0;i<values.size();++i) {
@@ -486,7 +494,7 @@ std::vector<DenseTensor> RotaryEmbedding::forward_normalized_grouped(
     TYLOINFER_RUNTIME_CHECK(axes > 0 && (batches == 1 || batches == b),
                       "RoPE position batch mismatch");
     auto input = value.scalar_type() == ::tyloi::kFloat32 ? value : value.to(::tyloi::kFloat16);
-    if(fused_) {
+    if(fused()) {
         const auto prepared = prepare_parameters(value);
         return rotary_embedding_cached_cuda(input.contiguous(),positions.to(::tyloi::kInt32).contiguous(),
             prepared.frequencies,prepared.axes,maximum_);

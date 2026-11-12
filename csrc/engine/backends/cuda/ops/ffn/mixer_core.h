@@ -81,7 +81,7 @@ ResidualCore::Projection ResidualCore::projection(::tyloi::Tensor weight, Part p
     if (dynamic_cast<const tyloi::encoding::TqTensor*>(payload) != nullptr)
         return result;
     if (dynamic_cast<const DenseTensor*>(payload) != nullptr) {
-        const auto& options = Executor::current().options().residual;
+        const auto& options = Executor::current().residual_options();
         const auto& dense = payload_as<DenseTensor>(result.weight);
         result.right = dense.transpose(-1,-2);
         result.promoted = options.prepared_dense ? result.right.to(::tyloi::kFloat32) : DenseTensor{};
@@ -115,7 +115,7 @@ ResidualCore::Projection ResidualCore::projection(::tyloi::Tensor weight, Part p
 
 ResidualCore::DenseTensor ResidualCore::Projection::forward(const DenseTensor& input) const {
     auto& executor = Executor::current();
-    const auto& options = executor.options().residual;
+    const auto& options = executor.residual_options();
     if (weight.representation<tyloi::encoding::TqTensor>()) {
         return executor.profiler().measure("tq.residual", [&] {
             return executor.projector(Executor::current_ffn()).run(weight,
@@ -144,7 +144,7 @@ ResidualCore::DenseTensor ResidualCore::Projection::mix(
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (const auto* nint = weight.representation<tyloi::NintTensor>()) {
         auto& executor = Executor::current();
-        const auto& options = executor.options().residual;
+        const auto& options = executor.residual_options();
         return executor.profiler().measure("nint.float_projection_mix", [&] {
             return nint_float_projection_mix_cuda(*nint, input, normalized, streams,
                 options.native_input, options.fixed_group, options.compact_mix);
@@ -163,7 +163,7 @@ ResidualCore::DenseTensor ResidualCore::Projection::activate(
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (const auto* nint = weight.representation<tyloi::NintTensor>()) {
         auto& executor = Executor::current();
-        const auto& options = executor.options().residual;
+        const auto& options = executor.residual_options();
         return executor.profiler().measure("nint.float_projection_activation", [&] {
             return nint_float_projection_activation_cuda(*nint, input, streams, injection, true,
                 options.native_input, options.fixed_group);
@@ -217,7 +217,7 @@ ResidualCore::Result ResidualCore::bounded_pre(const DenseTensor& input,int64_t 
 }
 bool ResidualCore::can_fuse(const DenseTensor& input)const {
     if(!initialized_)return false;
-    const auto& options=Executor::current().options().residual;
+    const auto& options=Executor::current().residual_options();
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto* down_nint = down.weight
         ? down.weight.representation<tyloi::NintTensor>() : nullptr;
@@ -303,7 +303,7 @@ ResidualCore::Result ResidualCore::pre_after(const DenseTensor& input,
         (gate.scalar_type()==::tyloi::kFloat16 || gate.scalar_type()==::tyloi::kFloat32))
         return fused(input,residual,gate,true,role);
     TYLOINFER_RUNTIME_CHECK(initialized_,"gated-residual operator is not initialized");
-    const auto& options=Executor::current().options().residual;
+    const auto& options=Executor::current().residual_options();
     if(!options.fused_projections || !options.fused_post_norm) {
         return prepare(post(input,residual,gate),{},role);
     }
@@ -318,7 +318,7 @@ ResidualCore::Result ResidualCore::prepare(
     TYLOINFER_RUNTIME_CHECK(input.dim() >= 1 && hidden > 0 && streams > 0 &&
         input.size(-1) / streams == hidden && input.size(-1) % streams == 0 && initialized_ && down && up,
         "gated-residual projection input dimensions disagree");
-    const auto& options=Executor::current().options().residual;
+    const auto& options=Executor::current().residual_options();
     if(!prepared_norm.defined())mark(role,"begin");
     auto normalized = prepared_norm.defined()?prepared_norm:
         mfq_qwen4_exp::grouped_rms_norm(input, payload_as<DenseTensor>(norm), hidden, eps);

@@ -1,14 +1,9 @@
 #include "run.h"
-#include "engine/models/common/load.h"
 #include "engine/models/source/model_config.h"
 #include "env.h"
-#include "engine/models/qwen4_exp/predictor.h"
-#include "engine/models/glm5_next/mtp.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/cache.h"
 #include "cli.h"
-#include "diagnostics/token_generation.h"
-#include "engine/models/assemble.h"
 #include "engine/models/prepare.h"
 #include "diagnostics/backend_checks.h"
 #include "diagnostics/model_checks.h"
@@ -27,15 +22,13 @@
 #include "diagnostics/qwen_decode.h"
 #include "diagnostics/qwen_variants.h"
 #include "diagnostics/compare.h"
+#include "diagnostics/policy.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/source.h"
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
+#include "engine/backends/cuda/ops/projection/mmq.h"
 #include "minicpmo45.h"
-#include "engine/backends/cuda/native/scope.h"
-#include "engine/backends/cuda/executor/execution.h"
-#include "engine/backends/cuda/executor/tq.h"
-#include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"
 
@@ -46,6 +39,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -187,44 +181,32 @@ struct DiagnosticsCommandOptions : CudaLoadOptions, TokenInputOptions {
                int(compare_rotary_fusion) + int(compare_attention_grouping) + int(compare_mhc_fusion) + int(compare_mhc_shared_norm) + int(compare_mhc_dense_fusion) + int(compare_mhc_packed_groups) + int(compare_mhc_fixed_formats) + int(compare_mhc_async_normalized) + int(compare_gdn_fixed_geometry) + int(compare_gdn_inplace_state) + int(compare_qsa_fusion) + int(compare_mfe_parallel_gu) + int(compare_mfe_gpu_bundle) + int(compare_mfe_default_math) + int(compare_mfe_e8_narrow) + int(compare_mfe_shared_first) + int(compare_mfe_early_gu) + int(compare_cpu_transfer_budget) + int(compare_cpu_background_calibration) +
                int(compare_router_topk) + int(compare_route_poll) + int(compare_window_flush) + int(compare_early_no_cpu_ready) + int(compare_gpu_only_cpu_wait) + int(compare_fixed_gpu_timing) + int(compare_window_input_views) + int(compare_route_spin) + int(compare_moe_plan_reuse) + int(compare_shared_gate_fusion) + int(compare_graph_optimizations) + int(compare_host_pin) + int(compare_resident_overlap) + int(compare_dma_graph_batch) + int(compare_ram_field_packing) + int(compare_warp_multi_sum);
     }
-    const char* runtime_comparison_name() const {
-        if (compare_route_poll) return "route_poll_comparison";
-        if (compare_window_flush) return "window_flush_comparison";
-        if (compare_early_no_cpu_ready) return "early_no_cpu_ready_comparison";
-        if (compare_gpu_only_cpu_wait) return "gpu_only_cpu_wait_comparison";
-        if (compare_fixed_gpu_timing) return "fixed_gpu_timing_comparison";
-        if (compare_window_input_views) return "window_input_views_comparison";
-        if (compare_route_spin) return "route_spin_comparison";
-        if (compare_moe_plan_reuse) return "moe_plan_reuse_comparison";
-        if (compare_mfe_default_math) return "mfe_default_math_comparison";
-        if (compare_mfe_e8_narrow) return "mfe_e8_narrow_comparison";
-        if (compare_shared_gate_fusion) return "shared_gate_fusion_comparison";
-        if (compare_graph_optimizations) return "graph_optimizations_comparison";
-        if (compare_host_pin) return "host_pin_comparison";
-        if (compare_resident_overlap) return "resident_overlap_comparison";
-        if (compare_dma_graph_batch) return "dma_graph_batch_comparison";
-        if (compare_ram_field_packing) return "ram_field_packing_comparison";
-        if (compare_warp_multi_sum) return "warp_multi_sum_comparison";
-        if (compare_router_topk) return "router_topk_comparison";
-        if (compare_mhc_fusion) return "mhc_fusion_comparison";
-        if (compare_mhc_shared_norm) return "mhc_shared_norm_comparison";
-        if (compare_mhc_dense_fusion) return "mhc_dense_fusion_comparison";
-        if (compare_mhc_packed_groups) return "mhc_packed_groups_comparison";
-        if (compare_mhc_fixed_formats) return "mhc_fixed_formats_comparison";
-        if (compare_mhc_async_normalized) return "mhc_async_normalized_comparison";
-        if (compare_gdn_fixed_geometry) return "gdn_fixed_geometry_comparison";
-        if (compare_gdn_inplace_state) return "gdn_inplace_state_comparison";
-        if (compare_qsa_fusion) return "qsa_fusion_comparison";
-        if (compare_mfe_parallel_gu) return "mfe_parallel_gu_comparison";
-        if (compare_mfe_gpu_bundle) return "mfe_gpu_bundle_comparison";
-        if (compare_mfe_shared_first) return "mfe_shared_first_comparison";
-        if (compare_mfe_early_gu) return "mfe_early_gate_up_comparison";
-        if (compare_cpu_background_calibration) return "cpu_background_calibration_comparison";
-        if (compare_cpu_transfer_budget) return "cpu_transfer_budget_comparison";
-        if (compare_attention_grouping) return "attention_grouping_comparison";
-        if (compare_rotary_fusion) return "rotary_fusion_comparison";
-        if (compare_router_lookahead) return "router_lookahead_comparison";
-        return "ffn_transfer_comparison";
+    /** Resolve only comparisons backed by current production computation. */
+    std::optional<diagnostics::Policy> selected_policy() const {
+        using Policy = diagnostics::Policy;
+        static constexpr std::pair<bool DiagnosticsCommandOptions::*, Policy> flags[] = {
+            {&DiagnosticsCommandOptions::compare_route_poll, Policy::route_poll},
+            {&DiagnosticsCommandOptions::compare_window_flush, Policy::window_flush},
+            {&DiagnosticsCommandOptions::compare_window_input_views, Policy::window_input_views},
+            {&DiagnosticsCommandOptions::compare_route_spin, Policy::route_spin},
+            {&DiagnosticsCommandOptions::compare_host_pin, Policy::host_pin},
+            {&DiagnosticsCommandOptions::compare_shared_gate_fusion, Policy::shared_gate_fusion},
+            {&DiagnosticsCommandOptions::compare_router_topk, Policy::router_topk},
+            {&DiagnosticsCommandOptions::compare_warp_multi_sum, Policy::warp_multi_sum},
+            {&DiagnosticsCommandOptions::compare_mhc_shared_norm, Policy::mhc_shared_norm},
+            {&DiagnosticsCommandOptions::compare_mhc_dense_fusion, Policy::mhc_dense_fusion},
+            {&DiagnosticsCommandOptions::compare_mhc_packed_groups, Policy::mhc_packed_groups},
+            {&DiagnosticsCommandOptions::compare_mhc_fixed_formats, Policy::mhc_fixed_formats},
+            {&DiagnosticsCommandOptions::compare_mhc_async_normalized, Policy::mhc_async_normalized},
+            {&DiagnosticsCommandOptions::compare_gdn_fixed_geometry, Policy::gdn_fixed_geometry},
+            {&DiagnosticsCommandOptions::compare_gdn_inplace_state, Policy::gdn_inplace_state},
+            {&DiagnosticsCommandOptions::compare_qsa_fusion, Policy::qsa_fusion},
+            {&DiagnosticsCommandOptions::compare_rotary_fusion, Policy::rotary_fusion},
+            {&DiagnosticsCommandOptions::compare_attention_grouping, Policy::attention_grouping},
+            {&DiagnosticsCommandOptions::compare_mhc_fusion, Policy::mhc_fusion},
+        };
+        for (const auto& [flag, policy] : flags) if (this->*flag) return policy;
+        return std::nullopt;
     }
 };
 
@@ -235,27 +217,6 @@ using namespace tyloi::cuda::internal;
 using namespace tyloi::cuda::diagnostics;
 
 namespace {
-class ScopedDiagnosticEnvironment {
-    std::string name_;
-    std::string previous_;
-    bool present_;
-public:
-    explicit ScopedDiagnosticEnvironment(const char* name) : name_(name) {
-        const char* previous = tyloi::cuda::env_lookup(name);
-        present_ = previous != nullptr;
-        if (previous) previous_ = previous;
-    }
-    void set(const char* value) {
-        tyloi::cuda::env_set(name_.c_str(), value);
-    }
-    ~ScopedDiagnosticEnvironment() noexcept {
-        try {
-            if (present_) tyloi::cuda::env_set(name_.c_str(), previous_.c_str());
-            else tyloi::cuda::env_clear(name_.c_str());
-        } catch (...) {} // Restoration previously ignored OS errors.
-    }
-};
-
 struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
     explicit DiagnosticsCommand(tyloi::cuda::DiagnosticsCommandOptions options)
         : tyloi::cuda::DiagnosticsCommandOptions(std::move(options)) {}
@@ -340,9 +301,9 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (check_backend_bf16_add) return run_backend_bf16_add_check(*program, 4096, 10000);
             return run_backend_argmax_check(*program, 248320, 2000);
         }
-        enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
-            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, qwen_mtp, qwen_decode, qwen_variants, batch, mtp_bench, prefill, hc_compare, trace, compare, tokens };
-        Tool selected = Tool::legacy;
+        enum class Tool { linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, dsv41, policy, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, qwen_mtp, qwen_decode, qwen_variants, batch, mtp_bench, prefill, hc_compare, trace, compare, tokens };
+        Tool selected = Tool::tokens;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
         else if (!check_tp_linear.empty()) selected = Tool::tp;
@@ -362,7 +323,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (check_glm_dsa) selected = Tool::glm;
         else if (check_dsv4_attention) selected = Tool::dsv4_attention;
         else if (check_dsv4_hc) selected = Tool::hc;
-        else if (check_deepseek_v41) selected = Tool::legacy;
+        else if (check_deepseek_v41) selected = Tool::dsv41;
         else if (check_text_session_state) selected = Tool::session;
         else if (minicpmo_eval_batch) selected = Tool::minicpmo;
         else if (check_continuous_batching) selected = Tool::batch;
@@ -384,22 +345,33 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                  !check_flash_next_mtp && !check_qwen35_mtp && bench_qwen35_mtp.empty() &&
                  prefill_sweep_arg.empty() && !compare_dsv4_hc_ops && !compare_dsv4_hc_model &&
                  (!block_trace_reference.empty() || !block_trace_output.empty())) selected = Tool::trace;
+        else if (runtime_comparison_modes()) selected = Tool::policy;
         else if (compare_decode_splitk || compare_mma_decode || compare_nvq_vec4 ||
                  prefill_repeat > 0 || compare_mma_attention) selected = Tool::compare;
         else if (!runtime_comparison_modes() && !comparison_phase_timings && router_lookahead_audit.empty() &&
                  !compare_decode_splitk && !compare_mma_decode && !compare_nvq_vec4 &&
                  prefill_repeat <= 0 && !compare_mma_attention) selected = Tool::tokens;
 
-        if (selected != Tool::legacy) {
-            if (runtime_comparison_modes() || comparison_phase_timings)
-                throw std::runtime_error("runtime comparison dispatch harness is currently unavailable");
+        {
+            if (comparison_phase_timings && !runtime_comparison_modes())
+                throw std::runtime_error("comparison phase timings require a runtime comparison");
+            if (runtime_comparison_modes() && selected != Tool::policy)
+                throw std::runtime_error("runtime comparison cannot combine execution modes");
+            if (!router_lookahead_audit.empty())
+                throw std::runtime_error("router lookahead audit has no current CUDA producer");
+            const auto policy = selected_policy();
+            if (selected == Tool::policy) {
+                if (runtime_comparison_modes() != 1 || profile)
+                    throw std::runtime_error("runtime comparison requires one policy and profiling disabled");
+                if (!policy) throw std::runtime_error("the selected runtime comparison uses retired CUDA scheduling policies");
+            }
             auto options = static_cast<const tyloi::cuda::CudaLoadOptions&>(*this);
             std::vector<int64_t> prefill_sizes;
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
                     selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::qwen_mtp ||
                     selected == Tool::batch || selected == Tool::mtp_bench || selected == Tool::prefill ||
                     selected == Tool::qwen_decode || selected == Tool::qwen_variants ||
-                    selected == Tool::hc_compare || selected == Tool::tokens || selected == Tool::compare) {
+                    selected == Tool::hc_compare || selected == Tool::tokens || selected == Tool::compare || selected == Tool::policy) {
                 if (model_path.empty()) {
                     std::cerr << "missing model or execution mode (see --help)\n";
                     return 2;
@@ -409,9 +381,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             }
             std::vector<int64_t> trace_ids;
             if (selected == Tool::trace || selected == Tool::hc_compare || selected == Tool::tokens ||
-                    selected == Tool::compare || selected == Tool::qwen_variants || (selected == Tool::qwen_decode && profile)) {
-                if (!router_lookahead_audit.empty())
-                    throw std::runtime_error("router lookahead audit dispatch harness is currently unavailable");
+                    selected == Tool::compare || selected == Tool::policy || selected == Tool::qwen_variants || (selected == Tool::qwen_decode && profile)) {
                 if (context_size < 0) throw std::runtime_error("--ctx-size must be positive");
                 trace_ids = ids_file.empty() ? parse_ids(ids_arg) : load_ids_file(ids_file);
                 if (selected == Tool::trace && options.context_size == 0)
@@ -421,16 +391,27 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 return run_continuous_batching_check(std::move(options), check_continuous_batching_requests);
             if (selected == Tool::minicpmo && options.context_size <= 0) options.context_size = 8192;
             const auto loaded_context = options.context_size;
-            auto program = tyloi::cuda::Program::open(std::move(options));
+            auto program = tyloi::cuda::Program::open(std::move(options), selected != Tool::policy);
             auto scope = program->executor().enter(program->config().layer_placement.primary_device());
-            if (selected == Tool::tokens || selected == Tool::compare) {
+            if (selected == Tool::tokens || selected == Tool::compare || selected == Tool::policy) {
                 program->executor().profiler().enabled = false;
                 auto loader = program->loader();
+                if (selected == Tool::policy) {
+                    std::cout << std::unitbuf << policy_name(*policy) << "_setup\n";
+                    program->weights().report(std::cout);
+                }
                 const auto started = std::chrono::steady_clock::now();
                 program->load(needs_parts());
                 const auto loaded = std::chrono::steady_clock::now();
                 auto ids = tyloi::ops::unsqueeze(tyloi::ops::tensor(trace_ids,
                     program->executor().device()), 0);
+                if (selected == Tool::policy) {
+                    PolicyOptions run{*policy};
+                    run.rounds = comparison_rounds; run.warmup = warmup_prefill; run.gen = gen;
+                    run.phase_timings = comparison_phase_timings; run.forced = decode_inputs;
+                    run.load_start = started; run.load_end = loaded;
+                    return run_policy(*program, std::move(ids), run);
+                }
                 if (selected == Tool::compare) {
                     tyloi::cuda::diagnostics::warmup_prefill(*program, ids, profile, warmup_prefill);
                     program->executor().profiler().enabled = profile;
@@ -455,8 +436,9 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                         std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
                 }
                 return generate_diagnostic_tokens(*program, std::move(ids), gen, profile,
-                    started, loaded, decode_inputs, stops, false, warmup_prefill);
+                    started, loaded, decode_inputs, stops, false, TokenOptions{.warmup=warmup_prefill});
             }
+            if (selected == Tool::dsv41) return tyloi::cuda::deepseek_v41_runtime::run_self_check();
             if (selected == Tool::attention) return run_attention_decode_check(*program,
                 check_attention_decode, check_attention_reps, check_attention_head_dim,
                 check_attention_swa_decode, check_attention_window);
@@ -591,253 +573,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             return tyloi::cuda::minicpmo45::run_eval_batch(
                 *program, context_size <= 0 ? 8192 : context_size, minicpmo_eval_vision_batch_size);
         }
-        auto tq = std::make_shared<TqExec>();
-        std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
-        tyloi::cuda::RoutedCache weights;
-        std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
-        tyloi::cuda::ContextSet contexts;
-        CudaExecutionContext execution(contexts, weights, kv, offload, tq);
-        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
-        // Operator-only checks do not require loading a model.
-        TYLOINFER_RUNTIME_CHECK(!comparison_phase_timings || runtime_comparison_modes(),
-            "comparison phase timings require a runtime comparison");
-        if(runtime_comparison_modes()) {
-            TYLOINFER_RUNTIME_CHECK(::tyloi::cuda::options::transfer_cache() &&
-                !::tyloi::cuda::options::mapped_copy(),
-                "runtime comparison requires TYLOINFER_MOE_TRANSFER_CACHE=1 and TYLOINFER_MOE_MAPPED_COPY=0");
-            const bool free_gpu_comparison=decode_inputs.empty() &&
-                (compare_route_spin || compare_moe_plan_reuse || compare_shared_gate_fusion || compare_graph_optimizations || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_gdn_fixed_geometry || compare_gdn_inplace_state || compare_qsa_fusion) &&
-                execution.config.cache.ram_fraction && *execution.config.cache.ram_fraction==1.0;
-            TYLOINFER_RUNTIME_CHECK(gen>1 && (!decode_inputs.empty() || free_gpu_comparison) && !profile &&
-                runtime_comparison_modes() == 1 && router_lookahead_audit.empty() &&
-                !execution.config.cache.mapped && execution.config.weights.preload &&
-                execution.config.moe_ffn.two_stage && moe_gpu_cache_gb>0,
-                "runtime comparison requires fixed inputs or an eligible GPU-only free-decode comparison, complete preload, two-stage FFN and profiling disabled");
-            TYLOINFER_RUNTIME_CHECK(!compare_attention_grouping ||
-                execution.config.weights.grouped,
-                "attention-grouping comparison requires grouped NINT enabled");
-            TYLOINFER_RUNTIME_CHECK(!compare_mhc_fusion || (execution.config.residual.fused_projections &&
-                execution.config.residual.native_input),
-                "residual fusion comparison requires native packed projections");
-            TYLOINFER_RUNTIME_CHECK(!(compare_gpu_only_cpu_wait || compare_fixed_gpu_timing || compare_graph_optimizations) || (execution.config.cache.ram_fraction &&
-                *execution.config.cache.ram_fraction==1.0),
-                "fixed GPU comparison requires TYLOINFER_MOE_RAM_PCIE_FRACTION=1");
-            execution.config.cache.adapt=false;
-            std::cout<<std::unitbuf;
-        }
-        setup_cuda_load(*this, execution);
-        if(runtime_comparison_modes()) {
-            std::cout<<runtime_comparison_name()<<"_setup\n";
-            print_moe_expert_cache_stats(execution.weights.moe,std::cout);
-        }
-        if (check_deepseek_v41) {
-            return tyloi::cuda::deepseek_v41_runtime::run_self_check();
-        }
-        if (model_path.empty()) {
-            std::cerr << "missing model or execution mode (see --help)\n";
-            return 2;
-        }
-        (void)prepare_model();
-        execution.profiler.enabled = false;
-        tyloi::cuda::NoGradGuard no_grad;
-        return tyloi::cuda::with_model<>(execution, *this,
-            needs_parts(),
-            [&](auto& owner, auto& owned_state, auto& executor, auto& parts, auto t0, auto t1, auto&) -> int {
-        auto& model = *owner;
-        auto& state = *owned_state;
-        using Model = std::remove_cvref_t<decltype(model)>;
-        if(!router_lookahead_audit.empty()) {
-            TYLOINFER_RUNTIME_CHECK(!compare_ffn_transfer_phases && !profile && gen>1 && !decode_inputs.empty(),
-                "router lookahead audit requires fixed single-token decode inputs and profiling disabled");
-            if constexpr (std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
-                qwen4_begin_router_lookahead_audit(model,gen-1);
-            else throw std::runtime_error("router lookahead audit requires Qwen4 Flash-Next");
-        }
-        auto ids_vec = ids_file.empty() ? parse_ids(ids_arg) : load_ids_file(ids_file);
-        auto ids = tyloi::cuda::tensor(ids_vec, tyloi::TensorOptions().dtype(tyloi::kInt64).device(tyloi::kCUDA)).unsqueeze(0);
-        if(runtime_comparison_modes()) {
-            if constexpr (!std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
-                throw std::runtime_error("runtime comparison requires Qwen4 Flash-Next");
-            const char* comparison_name = runtime_comparison_name();
-            std::cout<<comparison_name<<"_model_load_sec="
-                <<std::chrono::duration<double>(t1-t0).count()<<"\n";
-            const int rounds=warmup_prefill<0?1:warmup_prefill;
-            const bool compare_dense_mhc=execution.config.residual.dense_injection;
-            ScopedDiagnosticEnvironment topk_cache("TYLOINFER_MOE_TOPK_CACHE");
-            ScopedDiagnosticEnvironment shared_norm("TYLOINFER_GR_SHARE_NORM");
-            ScopedDiagnosticEnvironment dense_fusion("TYLOINFER_GR_DENSE_FUSION");
-            ScopedDiagnosticEnvironment gr_groups("TYLOINFER_GR_FIXED_GROUPS");
-            ScopedDiagnosticEnvironment gr_threads("TYLOINFER_GR_UP_THREADS");
-            ScopedDiagnosticEnvironment gr_formats("TYLOINFER_GR_FIXED_FORMATS");
-            ScopedDiagnosticEnvironment gr_async("TYLOINFER_GR_ASYNC_NORMALIZED");
-            ScopedDiagnosticEnvironment gdn_geometry("TYLOINFER_GDN_FIXED_GEOMETRY");
-            ScopedDiagnosticEnvironment gdn_inplace("TYLOINFER_GDN_INPLACE_STATE");
-            ScopedDiagnosticEnvironment qsa_selection("TYLOINFER_QSA_SELECT_FUSED");
-            ScopedDiagnosticEnvironment qsa_gate("TYLOINFER_QSA_SPARSE_GATE_FUSED");
-            ScopedDiagnosticEnvironment qsa_reduce("TYLOINFER_QSA_PARALLEL_REDUCE");
-            ScopedDiagnosticEnvironment qsa_query("TYLOINFER_QSA_SPARSE_QUERY_FUSED");
-            ScopedDiagnosticEnvironment parallel_gu("TYLOINFER_MFE_PARALLEL_GU");
-            ScopedDiagnosticEnvironment gpu_bundle("TYLOINFER_MFE_GPU_BUNDLE");
-            ScopedDiagnosticEnvironment default_math("TYLOINFER_MFE_DEFAULT_MATH");
-            ScopedDiagnosticEnvironment e8_narrow("TYLOINFER_MFE_E8_NARROW");
-            ScopedDiagnosticEnvironment shared_first("TYLOINFER_MFE_SHARED_FIRST");
-            ScopedDiagnosticEnvironment early_gu("TYLOINFER_MFE_EARLY_GU");
-            ScopedDiagnosticEnvironment cpu_background("TYLOINFER_MOE_CPU_BACKGROUND_CALIBRATION");
-            ScopedDiagnosticEnvironment route_poll("TYLOINFER_MOE_ROUTE_POLL_US");
-            ScopedDiagnosticEnvironment window_flush("TYLOINFER_MOE_SINGLE_WINDOW_FLUSH");
-            ScopedDiagnosticEnvironment early_no_cpu_ready("TYLOINFER_MOE_EARLY_NO_CPU_READY");
-            ScopedDiagnosticEnvironment gpu_only_cpu_wait("TYLOINFER_MOE_SKIP_GPU_ONLY_CPU_WAIT");
-            ScopedDiagnosticEnvironment fixed_gpu_timing("TYLOINFER_MOE_SKIP_FIXED_GPU_TIMING");
-            ScopedDiagnosticEnvironment window_input_views("TYLOINFER_MFE_WINDOW_INPUT_VIEWS");
-            ScopedDiagnosticEnvironment route_spin("TYLOINFER_MOE_ROUTE_SPIN");
-            ScopedDiagnosticEnvironment plan_reuse("TYLOINFER_MOE_PLAN_REUSE");
-            ScopedDiagnosticEnvironment shared_gate_fusion("TYLOINFER_SHARED_GATE_FUSED");
-            ScopedDiagnosticEnvironment layer_timings("TYLOINFER_TRACE_LAYER_TIMINGS");
-            ScopedDiagnosticEnvironment mhc_timings("TYLOINFER_TRACE_MHC_TIMINGS");
-            ScopedDiagnosticEnvironment host_pin("TYLOINFER_MOE_DECODE_HOST_PIN");
-            ScopedDiagnosticEnvironment resident_overlap("TYLOINFER_MFE_RESIDENT_PLAN_OVERLAP");
-            ScopedDiagnosticEnvironment dma_graph_batch("TYLOINFER_MOE_DMA_GRAPH_BATCH");
-            ScopedDiagnosticEnvironment ram_field_packing("TYLOINFER_MOE_RAM_FIELD_PACKING");
-            ScopedDiagnosticEnvironment warp_multi_sum("TYLOINFER_CUDA_WARP_MULTI_SUM");
-            TYLOINFER_RUNTIME_CHECK(!(compare_mfe_e8_narrow || compare_mfe_default_math || compare_mfe_parallel_gu || compare_mfe_gpu_bundle || compare_mfe_shared_first || compare_mfe_early_gu) || execution.config.moe_ffn.two_stage,
-                "MFE parallel Gate/Up comparison requires two-stage FFN");
-            TYLOINFER_RUNTIME_CHECK(!compare_mhc_shared_norm || execution.config.residual.two_stage,
-                "MHC norm comparison requires fused residual projection");
-            TYLOINFER_RUNTIME_CHECK(!compare_mhc_dense_fusion || (execution.config.residual.two_stage && execution.config.residual.dense_injection),
-                "MHC dense fusion comparison requires fused residual BF16 injection");
-            TYLOINFER_RUNTIME_CHECK(!(compare_mhc_packed_groups || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_graph_optimizations) || execution.config.residual.two_stage,
-                "MHC packed group comparison requires fused residual projection");
-            TYLOINFER_RUNTIME_CHECK(!(compare_gdn_fixed_geometry || compare_gdn_inplace_state) ||
-                (execution.config.gdn_fused_core && execution.config.gdn_fused_preparation &&
-                 execution.config.gdn_fused_output && execution.config.gdn_transposed_state),
-                "GDN comparison requires the complete fused transposed core");
-            const int performance_passes=3*comparison_rounds;
-            for(int pass=0;pass<performance_passes+(comparison_phase_timings?3:0);++pass) {
-                const bool phased=pass%3==1;
-                const bool phase_timings=comparison_phase_timings && pass>=performance_passes;
-                if(comparison_phase_timings) {
-                    layer_timings.set(phase_timings?"2":"0");mhc_timings.set("0");
-                }
-                if (compare_route_poll) route_poll.set(phased ? "0" : "2000");
-                if (compare_window_flush) window_flush.set(phased ? "1" : "0");
-                if (compare_early_no_cpu_ready) early_no_cpu_ready.set(phased ? "1" : "0");
-                if (compare_gpu_only_cpu_wait) gpu_only_cpu_wait.set(phased ? "1" : "0");
-                if (compare_fixed_gpu_timing) fixed_gpu_timing.set(phased ? "1" : "0");
-                if (compare_window_input_views) window_input_views.set(phased ? "1" : "0");
-                if (compare_route_spin) route_spin.set(phased ? "1" : "0");
-                if (compare_moe_plan_reuse) plan_reuse.set(phased ? "1" : "0");
-                if (compare_mfe_default_math) default_math.set(phased ? "1" : "0");
-                if (compare_mfe_e8_narrow) e8_narrow.set(phased ? "1" : "0");
-                if (compare_shared_gate_fusion) shared_gate_fusion.set(phased ? "1" : "0");
-                if (compare_graph_optimizations) {
-                    window_flush.set(phased ? "1" : "0");
-                    early_no_cpu_ready.set(phased ? "1" : "0");
-                    gpu_only_cpu_wait.set(phased ? "1" : "0");
-                    window_input_views.set(phased ? "1" : "0");
-                    route_spin.set(phased ? "1" : "0");
-                    shared_gate_fusion.set(phased ? "1" : "0");
-                    gr_groups.set(phased ? "1" : "0");
-                    gr_threads.set(phased ? "512" : "256");
-                }
-                if (compare_host_pin) host_pin.set(phased ? "1" : "0");
-                if (compare_resident_overlap) resident_overlap.set(phased ? "1" : "0");
-                if (compare_dma_graph_batch) dma_graph_batch.set(phased ? "1" : "0");
-                if (compare_ram_field_packing) ram_field_packing.set(phased ? "1" : "0");
-                if (compare_warp_multi_sum) warp_multi_sum.set(phased ? "1" : "0");
-                if (compare_cpu_background_calibration) cpu_background.set(phased ? "1" : "0");
-                if (compare_router_topk) topk_cache.set(phased ? "1" : "0");
-                if (compare_mhc_shared_norm) shared_norm.set(phased ? "1" : "0");
-                if (compare_mhc_dense_fusion) {shared_norm.set("1");dense_fusion.set(phased ? "1" : "0");}
-                if (compare_mhc_packed_groups) {
-                    gr_groups.set(phased?"1":"0");gr_threads.set(phased?"512":"256");
-                }
-                if (compare_mhc_fixed_formats)gr_formats.set(phased?"1":"0");
-                if (compare_mhc_async_normalized)gr_async.set(phased?"1":"0");
-                if (compare_gdn_fixed_geometry)gdn_geometry.set(phased?"1":"0");
-                if (compare_gdn_inplace_state)gdn_inplace.set(phased?"1":"0");
-                if (compare_qsa_fusion) {
-                    qsa_selection.set(phased?"1":"0");qsa_gate.set(phased?"1":"0");
-                    qsa_reduce.set(phased?"1":"0");
-                    qsa_query.set(phased?"1":"0");
-                }
-                if (compare_mfe_parallel_gu) parallel_gu.set(phased ? "1" : "0");
-                if (compare_mfe_gpu_bundle) {
-                    parallel_gu.set("1");gpu_bundle.set(phased ? "1" : "0");
-                }
-                if (compare_mfe_shared_first) {
-                    parallel_gu.set("1");gpu_bundle.set("1");shared_first.set(phased ? "1" : "0");
-                }
-                if (compare_mfe_early_gu) {
-                    parallel_gu.set("1");gpu_bundle.set("1");early_gu.set(phased ? "1" : "0");
-                }
-                // reset destroys the decoder graphs before each branch is captured.
-                state.reset(1);cudaStreamSynchronize(::tyloi::cuda::current_stream());
-                if(compare_ffn_transfer_phases)execution.config.moe_ffn.transfer_phases=phased;
-                if(compare_mhc_fusion) {
-                    execution.config.residual.two_stage=phased;
-                    execution.config.residual.dense_injection=phased && compare_dense_mhc;
-                }
-                if constexpr (std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>) {
-                    if(compare_router_lookahead)model.router_lookahead=phased;
-                    if(compare_rotary_fusion)qwen4_set_rotary_fusion(model,phased);
-                    if(compare_attention_grouping) {
-                        qwen4_set_rotary_fusion(model,true);
-                        qwen4_set_attention_grouping(model,phased);
-                    }
-                    if(compare_mhc_fusion) {
-                        qwen4_set_rotary_fusion(model,true);
-                        qwen4_set_attention_grouping(model,true);
-                    }
-                }
-                if(compare_cpu_background_calibration)
-                    prepare_moe_cpu_calibration_comparison(execution.weights.moe,pass>0);
-                else if(compare_cpu_transfer_budget)
-                    prepare_moe_cpu_budget_comparison(execution.weights.moe,pass>0,phased);
-                else prepare_moe_pipeline_comparison(execution.weights.moe,pass>0);
-                std::cout<<comparison_name<<"_pass="<<pass<<" phase="<<phased<<" begin=1";
-                if(comparison_phase_timings)std::cout<<" mfe_phase_timings="<<phase_timings;
-                std::cout<<'\n';
-                const auto warm_start=std::chrono::steady_clock::now();
-                for(int round=0;round<rounds;++round) {
-                    diagnostic_reset(model, state, 1);
-                    (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
-                    cudaStreamSynchronize(::tyloi::cuda::current_stream());
-                }
-                state.reset(1);cudaStreamSynchronize(::tyloi::cuda::current_stream());execution.profiler.reset();
-                std::cout<<"warmup_prefill_rounds="<<rounds<<"\n"
-                    <<"warmup_prefill_tokens="<<rounds*ids_vec.size()<<"\n"
-                    <<"warmup_prefill_sec="<<std::chrono::duration<double>(
-                        std::chrono::steady_clock::now()-warm_start).count()<<"\n";
-                const auto pass_start=std::chrono::steady_clock::now();
-                const int status=generate_diagnostic_tokens(execution,model,state,executor.get(),ids,gen,false,
-                    pass_start,pass_start,decode_inputs);
-                if(status)return status;
-                const auto records=finish_moe_pipeline_comparison(execution.weights.moe);
-                if(compare_moe_plan_reuse || compare_mfe_e8_narrow || compare_mfe_default_math || compare_cpu_transfer_budget || compare_cpu_background_calibration || compare_mfe_shared_first || compare_mhc_dense_fusion || compare_mhc_packed_groups || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_gdn_fixed_geometry || compare_gdn_inplace_state || compare_qsa_fusion || compare_mfe_early_gu)
-                    print_moe_expert_cache_stats(execution.weights.moe,std::cout);
-                std::cout<<comparison_name<<"_pass="<<pass<<" phase="<<phased
-                    <<" end=1 dispatch_records="<<records<<"\n";
-            }
-            return 0;
-        }
-        std::unordered_set<int64_t> stop_ids;
-        if (!ignore_eos && tokenizer_model.empty() && decode_inputs.empty()) {
-            const auto* source = diagnostic_source(model);
-            if (!source) throw std::runtime_error("diagnostics model source is unavailable");
-            stop_ids = tyloi::models::stop_token_ids(
-                tyloi::models::config_json(*source, config_path),
-                diagnostic_vocab_size(model));
-            if (stop_ids.empty()) std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
-        }
-        const auto status=generate_diagnostic_tokens(
-            execution, model, state, executor.get(), ids, gen, profile, t0, t1,
-            decode_inputs,stop_ids,!router_lookahead_audit.empty());
-        if(!status && !router_lookahead_audit.empty()) {
-            if constexpr (std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
-                qwen4_finish_router_lookahead_audit(model,router_lookahead_audit);
-        }
-        return status;
-            });
     }); }
 };
 

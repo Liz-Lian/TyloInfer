@@ -2,7 +2,7 @@
 
 find_package(Threads REQUIRED)
 
-function(mfq_add_transport target)
+function(mfq_add_transport target engine_target)
     set(source_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
     add_library(${target} STATIC
         ${source_dir}/include/transport.h
@@ -18,7 +18,7 @@ function(mfq_add_transport target)
         ${PROJECT_SOURCE_DIR}
     )
     target_link_libraries(${target}
-        PUBLIC mfq-engine
+        PUBLIC ${engine_target}
         PRIVATE mfq-http mfq-json Threads::Threads
     )
     target_compile_definitions(${target} PRIVATE NOMINMAX)
@@ -32,8 +32,5 @@ function(mfq_add_transport target)
     endif()
 endfunction()
 
-mfq_add_transport(mfq-transport)
+mfq_add_transport(mfq-transport mfq-engine)
 add_library(mfq::transport ALIAS mfq-transport)
-if(TYLOINFER_BUILD_CUDA_ENGINE)
-    target_compile_definitions(mfq-transport PUBLIC TYLOINFER_NATIVE_CUDA=1)
-endif()

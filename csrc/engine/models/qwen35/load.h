@@ -33,11 +33,11 @@ struct LoadOptions {
 
 #ifdef TYLOINFER_NATIVE_CUDA
 /** Load Qwen weights using an already resolved model definition and YaRN policy. */
-std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
            const tyloi::models::LoadOptions& options);
 /** Assemble shared model metadata and normalization without loading layers or full tables. */
-std::unique_ptr<Model> load_deferred(std::shared_ptr<const tyloi::ModelSource> source,
+void load_deferred(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
            std::string_view definition, const ::tyloi::weights::Loader& weights,
            LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options);
 #else

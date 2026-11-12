@@ -46,8 +46,9 @@ struct LoadOptions {
 /** Report whether this backbone is assembled through the public causal model factory. */
 bool supports(std::string_view backbone);
 
-/** Load a supported causal model from its source, weights and placement. */
-std::unique_ptr<CausalModel> load(
+/** Publish a supported model before loading weights; the caller must drain before releasing it on failure. */
+void load(
+    std::unique_ptr<CausalModel>& owner,
     std::shared_ptr<const ModelSource> source,
     std::string_view definition,
     const weights::Loader& weights,

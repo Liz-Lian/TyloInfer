@@ -377,11 +377,12 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<tyloi::models::CausalModel> load(
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
         std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
         const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         const tyloi::models::LoadOptions& options) {
-    auto model = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    owner = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    auto* model = static_cast<Model*>(owner.get());
     validate_offload(model->config, options.cpu_offload_layers);
     auto& executor = Executor::current();
     std::int64_t host_bytes = 0;
@@ -390,7 +391,6 @@ std::unique_ptr<tyloi::models::CausalModel> load(
     if (model->plan.vision != ::tyloi::models::Vision::none ||
         model->plan.predictor != ::tyloi::models::Predictor::none)
         throw std::runtime_error("CUDA component adapter is unsupported for this model");
-    return model;
 }
 #endif
 

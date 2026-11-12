@@ -69,7 +69,7 @@ public:
                                        const ::tyloi::DenseTensor& positions) const;
     // Switch only after execution and captured graphs using this module finish.
     void set_fused(bool enabled) { fused_ = enabled && !yarn_.enabled(); }
-    bool fused() const { return fused_; }
+    bool fused() const;
     bool pool_normalized_into(const ::tyloi::DenseTensor& index,
         const ::tyloi::DenseTensor& weight,const ::tyloi::DenseTensor& positions,
         const ::tyloi::DenseTensor& cache_positions,const ::tyloi::DenseTensor& output,

@@ -174,7 +174,6 @@ if(TYLOINFER_BUILD_CLI_TOOLS)
             endif()
         endif()
         find_package(Torch REQUIRED)
-        mfq_add_transport(mfq-transport-torch)
         add_library(mfq-cuda-torch-engine STATIC
             ${PROJECT_SOURCE_DIR}/engine/scheduler/scheduler.cpp
             ${PROJECT_SOURCE_DIR}/engine/models/qwen35/batch_ops.cpp
@@ -207,6 +206,10 @@ if(TYLOINFER_BUILD_CLI_TOOLS)
             CUDA_STANDARD 20
             CUDA_STANDARD_REQUIRED ON
         )
+        mfq_add_transport(mfq-transport-torch mfq-cuda-torch-engine)
+    endif()
+    if(TARGET mfq-transport)
+        mfq_add_transport(mfq-transport-cuda mfq-cuda-engine)
     endif()
     include(${PROJECT_SOURCE_DIR}/diagnostics/cuda.cmake)
     include(${PROJECT_SOURCE_DIR}/eval/cuda.cmake)

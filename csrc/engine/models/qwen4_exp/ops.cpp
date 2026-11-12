@@ -2998,7 +2998,8 @@ tyloi::models::PrefillPlan qwen4_exp::Model::prefill_plan(const tyloi::models::S
     auto span=std::min<int64_t>(options.compute,8192);
     if(options.compute>8 && options.reused==0 && (options.stable==0 || options.stable==static_cast<std::size_t>(options.tokens)) &&
        !options.transformed && layer_prefill(*this,*request,options,options.tokens)) span=options.tokens;
-    return {span,!options.transformed && layer_prefill(*this,*request,options,std::min<int64_t>(options.tokens,8192))};
+    return {span,!options.transformed && layer_prefill(*this,*request,options,std::min<int64_t>(options.tokens,8192)),
+        !options.transformed && layer_prefill(*this,*request,options,options.tokens)};
 }
 #else
 std::int64_t prefill_span(const qwen4_exp::Model& model, const qwen4_exp::State& state, std::size_t tokens,
@@ -3815,16 +3816,16 @@ void Model::load_config(std::string_view payload) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<tyloi::models::CausalModel> load(std::shared_ptr<const tyloi::ModelSource> source,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source,
         std::string_view definition, const tyloi::weights::Loader& weights,
         LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options) {
     if (!options.cpu_offload_layers.empty())
         throw std::invalid_argument("Qwen4 does not support --cpu-offload-layers");
-    auto model=std::make_unique<Model>();
+    owner = std::make_unique<Model>();
+    auto* model = static_cast<Model*>(owner.get());
     read(*model,std::move(source),definition,options.context);
     load(*model,weights,placement,options);
     model->components=std::make_unique<Components>(load_components(*model,weights,true,definition,options.yarn));
-    return model;
 }
 #endif
 

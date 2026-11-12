@@ -18,6 +18,7 @@ add_library(mfq-cuda-diagnostics STATIC
     ${PROJECT_SOURCE_DIR}/diagnostics/batch.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/tokens.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/compare.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/policy.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/qwen_decode.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/qwen_variants.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/session_checks.cpp

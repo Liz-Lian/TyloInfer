@@ -34,6 +34,8 @@ struct PrefillPlan {
     std::int64_t span = 0;
     /** Admit compute tiles using reclaimable expert workspace. */
     bool workspace = false;
+    /** Whether the complete input can use model-owned layer-major prefill. */
+    bool layered = false;
 };
 
 struct Input {

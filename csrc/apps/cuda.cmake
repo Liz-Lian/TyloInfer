@@ -1,4 +1,4 @@
-if(TARGET mfq-transport)
+if(TARGET mfq-transport-cuda)
     add_executable(mfq-runtime
         ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
         ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
@@ -7,7 +7,7 @@ if(TARGET mfq-transport)
         ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     )
     target_link_libraries(mfq-runtime PRIVATE
-        mfq-cuda-engine mfq-cuda-reference mfq-cuda-eval mfq-transport)
+        mfq-cuda-engine mfq-cuda-reference mfq-cuda-eval mfq-transport-cuda)
 endif()
 
 add_executable(mfq-diagnostics

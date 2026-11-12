@@ -140,10 +140,11 @@ Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& value,
     if (input.suffix || input.host_raw) throw std::invalid_argument("unsupported MiniCPM TTS input mode");
     return minicpmo45::forward(*this, *state, std::move(input), options);
 }
-std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
         const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         const tyloi::models::LoadOptions& options) {
-    auto result = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    owner = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    auto* result = static_cast<Model*>(owner.get());
     if (options.expert_parallel) throw std::runtime_error("--expert-parallel requires a model with routed experts");
     placement.prepare(result->config.num_hidden_layers);
     result->primary_device = placement.primary_device();
@@ -151,7 +152,6 @@ std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, st
     if (result->cpu_layers > 0 && (weights.placement.tensor.enabled() || placement.enabled()))
         throw std::runtime_error("--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
     load(*result, weights, placement, result->cpu_layers, options.yarn);
-    return result;
 }
 #endif
 

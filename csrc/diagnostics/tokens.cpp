@@ -5,6 +5,7 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/generation/decode.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/load.h"
 #include "engine/models/source.h"
@@ -103,18 +104,55 @@ Tensor next_token(Owner& work, Tensor hidden, models::Backbone backbone) {
     return work.keep(ops::sample_greedy(work.keep(ops::reshape(ops::contiguous(logits),{logits.size(0),-1}))));
 }
 
-/** Run an eager forward using the original uncapped greedy projection. */
-Tensor eager(Step& work,Tensor ids,models::Backbone backbone) {
+/** Follow the family's prefill and model-owned decode dispatch before eager fallback. */
+Tensor eager(Step& work,Tensor ids,models::Backbone backbone,bool production_required = false) {
     auto& p=work.program;
     auto mode=p.executor().forward_mode(p.config().layer_placement.primary_device());
     models::Input input; input.ids=work.keep(std::move(ids)); input.advance=true;
+    const models::ForwardOptions forward{mode.kv_capacity,mode.trace,mode.trace_layer,mode.primary};
+    if(backbone==models::Backbone::qwen4_exp && p.state().position()>0) {
+        models::DecodeOptions decode;
+        decode.projection=models::DecodeOptions::Projection::greedy;
+        decode.routed=p.weights().decode()==weights::Cache::Decode::routed;
+        if(auto result=engine::decode(p.model(),p.state(),p.executor(),p.weights(),forward,input,decode)) {
+            if(!result->ids)throw std::runtime_error("model decode returned no token IDs");
+            auto token=work.keep(std::move(result->ids));
+            return token.device()==p.executor().device() ? token : work.keep(ops::copy(token,p.executor().device()));
+        }
+    }
+    if(backbone==models::Backbone::qwen4_exp && p.state().position()==0 &&
+       input.ids.size(1)>128 && input.ids.size(1)<=16384) {
+        const auto count=input.ids.size(1);
+        const auto cache_mode=p.weights().prefill_mode(count,false);
+        const models::PrefillOptions plan{count,1024,0,0,false,
+            cache_mode==weights::Cache::Prefill::retained,
+            p.weights().decode()==weights::Cache::Decode::routed,
+            p.weights().transfer()==weights::Cache::Transfer::coordinated,
+            p.weights().split_prefill(count)};
+        if(!p.model().prefill_plan(p.state(),plan).layered) {
+            if(production_required)
+                throw std::invalid_argument("router audit requires production prefill; enable TYLOINFER_MOE_PIPELINE and TYLOINFER_MOE_PREFILL_LAYER");
+            auto hidden=work.keep(p.model().forward(std::move(input),p.state(),forward));
+            return next_token(work,hidden,backbone);
+        }
+        engine::InferenceRequest request;
+        engine::InferenceOutput output(request,nullptr,"diagnostic-prefill");
+        auto result=p.prefill(input,1024,output);
+        auto hidden=work.keep(result.hidden); if(result.raw)work.keep(result.raw);
+        if(production_required && result.mode!=models::Prefill::Mode::layered)
+            throw std::invalid_argument("router audit requires production prefill; enable TYLOINFER_MOE_PIPELINE and TYLOINFER_MOE_PREFILL_LAYER");
+        if(production_required)std::cout<<"diagnostic_prefill path=production_layer_major tokens="<<input.ids.size(1)<<std::endl;
+        return next_token(work,hidden,backbone);
+    }
+    if(production_required && backbone==models::Backbone::qwen4_exp && input.ids.size(1)>128)
+        throw std::invalid_argument("router audit requires production prefill; enable TYLOINFER_MOE_PIPELINE and TYLOINFER_MOE_PREFILL_LAYER");
     auto hidden=work.keep(p.model().forward(std::move(input),p.state(),
-        {mode.kv_capacity,mode.trace,mode.trace_layer,mode.primary}));
+        forward));
     return next_token(work,hidden,backbone);
 }
 }
 
-void warmup_prefill(Program& program,const Tensor& ids,bool profile,int rounds) {
+void warmup_prefill(Program& program,const Tensor& ids,bool profile,int rounds,bool final_sync) {
     auto scope=program.executor().enter(program.config().layer_placement.primary_device());
     auto loader=program.loader();
     const auto* source=dynamic_cast<const ModelSource*>(&loader.source);
@@ -131,14 +169,14 @@ void warmup_prefill(Program& program,const Tensor& ids,bool profile,int rounds) 
         (void)eager(step,ids,backbone);
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream()));
     }
-    if(rounds) { program.state().reset(1); profiler.reset(); }
+    if(rounds || final_sync) { program.state().reset(1); if(final_sync) TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream())); profiler.reset(); }
     std::cout<<"warmup_prefill_rounds="<<rounds<<"\nwarmup_prefill_tokens="<<rounds*ids.size(1)
         <<"\nwarmup_prefill_sec="<<std::chrono::duration<double>(Clock::now()-start).count()<<'\n';
 }
 
 int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     Clock::time_point t0,Clock::time_point t1,const std::vector<std::int64_t>& forced,
-    const std::unordered_set<std::int64_t>& stops,bool production_prefill,int warmup) {
+    const std::unordered_set<std::int64_t>& stops,bool production_prefill,TokenOptions options) {
     if(gen<0)throw std::invalid_argument("diagnostic generation count must be nonnegative");
     if(!forced.empty() && (gen<=1 || forced.size()!=std::size_t(gen-1)))
         throw std::invalid_argument("diagnostic decode input count differs from gen-1");
@@ -155,7 +193,7 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     Tensor forced_input;
     auto& profiler=program.executor().profiler();
     struct Restore { CudaProfiler& p; bool enabled,graph; ~Restore(){p.enabled=enabled;p.graph_events=graph;} } restore{profiler,profiler.enabled,profiler.graph_events};
-    warmup_prefill(program,ids,profile,warmup);
+    if(!options.already_warmed)warmup_prefill(program,ids,profile,options.warmup);
     if(!forced.empty())forced_input=work.keep(ops::tensor(forced,program.executor().device()));
     std::cout<<"decode_input_mode="<<(forced_input?"forced":"generated")<<"\n";
     profiler.enabled=profile;
@@ -163,17 +201,7 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     Tensor next;
     {
     Step step{program};
-    if(production_prefill && plan.backbone==models::Backbone::qwen4_exp && ids.size(1)>128) {
-        engine::InferenceRequest request;
-        engine::InferenceOutput output(request,nullptr,"diagnostic-prefill");
-        models::Input input; input.ids=ids; input.advance=true;
-        auto result=program.prefill(input,1024,output);
-        auto hidden=step.keep(result.hidden); if(result.raw)step.keep(result.raw);
-        if(result.mode!=models::Prefill::Mode::layered)
-            throw std::invalid_argument("router audit requires production prefill; enable TYLOINFER_MOE_PIPELINE and TYLOINFER_MOE_PREFILL_LAYER");
-        std::cout<<"diagnostic_prefill path=production_layer_major tokens="<<ids.size(1)<<std::endl;
-        next=next_token(step,hidden,plan.backbone);
-    } else next=eager(step,ids,plan.backbone);
+    next=eager(step,ids,plan.backbone,production_prefill);
     }
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(current_stream()));
     const auto t2=Clock::now();

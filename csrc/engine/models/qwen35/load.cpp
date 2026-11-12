@@ -292,7 +292,7 @@ Layer load_layer(const ::tyloi::weights::Loader& weights, const Config& config,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-static std::unique_ptr<Model> load_impl(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+static void load_impl(Model& model, std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
            const tyloi::models::LoadOptions& policy, bool deferred) {
     const LoadOptions options{.context_size = policy.context, .gpu_layers = policy.gpu_layers,
@@ -307,10 +307,7 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
            const LoadOptions& options) {
 #endif
     tyloi::cuda::validate_model_source(*source);
-#ifdef TYLOINFER_NATIVE_CUDA
-    auto result = std::make_unique<Model>();
-    auto& model = *result;
-#else
+#ifndef TYLOINFER_NATIVE_CUDA
     Model model;
 #endif
     model.source = std::move(source);
@@ -437,23 +434,25 @@ Model load(std::shared_ptr<const tyloi::ModelSource> source,
     model.transposed = policy.transposed;
     if (!deferred) model.components = std::make_unique<Components>(Components::load(model, weights, placement,
         cpu_layers, policy.optional_components, !policy.cpu_offload_layers.empty(), policy.transfer_auto));
-    return result;
+    return;
 #else
     return model;
 #endif
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
+           std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            const ::tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
            const tyloi::models::LoadOptions& options) {
-    return load_impl(std::move(source), definition, weights, placement, options, false);
+    owner = std::make_unique<Model>();
+    load_impl(*static_cast<Model*>(owner.get()), std::move(source), definition, weights, placement, options, false);
 }
 
-std::unique_ptr<Model> load_deferred(std::shared_ptr<const tyloi::ModelSource> source,
+void load_deferred(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
            std::string_view definition, const ::tyloi::weights::Loader& weights,
            LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options) {
-    return load_impl(std::move(source), definition, weights, placement, options, true);
+    load_impl(model, std::move(source), definition, weights, placement, options, true);
 }
 #endif
 

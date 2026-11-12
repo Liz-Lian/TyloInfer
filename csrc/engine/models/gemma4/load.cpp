@@ -126,11 +126,12 @@ void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementCon
     }
 }
 
-std::unique_ptr<tyloi::models::CausalModel> load(
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
         std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
         std::int64_t context, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         int gpu_layers, bool expert_parallel) {
-    auto model = std::make_unique<Model>(read(std::move(source), definition, context));
+    owner = std::make_unique<Model>(read(std::move(source), definition, context));
+    auto* model = static_cast<Model*>(owner.get());
     load(*model, weights, placement, gpu_layers, expert_parallel);
     if (const auto* vision = model->graph.component("vision"); vision != nullptr &&
         vision->tensor_root == "vision" && vision->implementation == "radio" &&
@@ -138,7 +139,6 @@ std::unique_ptr<tyloi::models::CausalModel> load(
         vision->position_policy.empty()) {
         throw std::runtime_error("CUDA component adapter is unsupported for this model");
     }
-    return model;
 }
 
 } // namespace tyloi::cuda::gemma4

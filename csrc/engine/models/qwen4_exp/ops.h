@@ -304,7 +304,7 @@ void read(Model& model, std::shared_ptr<const tyloi::ModelSource> source,
 void load(Model& model, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
           const tyloi::models::LoadOptions& options, bool load_layers = true);
 /** Assemble a configured model and its optional components from the supplied source. */
-std::unique_ptr<tyloi::models::CausalModel> load(std::shared_ptr<const tyloi::ModelSource> source,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source,
     std::string_view definition, const tyloi::weights::Loader& weights,
     LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options);
 #else

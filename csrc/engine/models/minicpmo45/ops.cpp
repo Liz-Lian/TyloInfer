@@ -653,10 +653,11 @@ Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& value,
     if (input.suffix || input.host_raw) throw std::invalid_argument("unsupported MiniCPM input mode");
     return text::forward(*this, *state, std::move(input), options);
 }
-std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
         const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         const tyloi::models::LoadOptions& options) {
-    auto result = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    owner = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    auto* result = static_cast<Model*>(owner.get());
     load(*result, weights, placement, options.gpu_layers, options.expert_parallel, true, true, options.yarn);
     result->primary_device = placement.primary_device();
     result->cpu_layers = options.gpu_layers < 0 ? 0 : static_cast<int>(std::max<int64_t>(result->config.num_hidden_layers-options.gpu_layers,0));
@@ -665,7 +666,6 @@ std::unique_ptr<Model> load(std::shared_ptr<const tyloi::ModelSource> source, st
             throw std::runtime_error("unsupported MiniCPM-o CUDA vision adapter");
         result->components = Components::load(weights, result->primary_device);
     }
-    return result;
 }
 #endif
 

@@ -8,7 +8,7 @@ namespace tyloi::models { struct LoadOptions; }
 namespace tyloi::cuda::glm_dsa {
 #ifdef TYLOINFER_NATIVE_CUDA
 /** Assemble a GLM-DSA causal model with the selected placement and loading policy. */
-std::unique_ptr<tyloi::models::CausalModel> load(
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
     std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
     const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
     const tyloi::models::LoadOptions& options);

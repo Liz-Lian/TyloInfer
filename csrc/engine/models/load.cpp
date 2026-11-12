@@ -182,39 +182,41 @@ bool supports(std::string_view implementation) {
     }
 }
 
-std::unique_ptr<CausalModel> load(
+void load(
+    std::unique_ptr<CausalModel>& owner,
     std::shared_ptr<const ModelSource> source,
     std::string_view definition,
     const weights::Loader& weights,
     LayerPlacementConfig& placement,
     const LoadOptions& options) {
+    if (owner) throw std::invalid_argument("model owner must be empty");
     const auto model_graph = graph(*source);
     switch (backbone(model_graph.backbone)) {
     case Backbone::gemma4:
         if (!options.cpu_offload_layers.empty())
             throw std::invalid_argument("Gemma4 does not support --cpu-offload-layers");
         return ::tyloi::cuda::gemma4::load(
-            std::move(source), definition, options.context, weights, placement,
+            owner, std::move(source), definition, options.context, weights, placement,
             options.gpu_layers, options.expert_parallel);
 #ifdef TYLOINFER_NATIVE_CUDA
     case Backbone::glm_dsa:
-        return ::tyloi::cuda::glm_dsa::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::glm_dsa::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::deepseek_v4:
-        return ::tyloi::cuda::deepseek_v4::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::deepseek_v4::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::glm5_next:
-        return ::tyloi::cuda::glm5_next::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::glm5_next::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::nemotron_h:
-        return ::tyloi::cuda::nemotron_h::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::nemotron_h::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::deepseek_v41:
-        return ::tyloi::cuda::deepseek_v41::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::deepseek_v41::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::qwen4_exp:
-        return ::tyloi::cuda::qwen4_exp::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::qwen4_exp::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::generic_qwen:
-        return ::tyloi::cuda::qwen35::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::qwen35::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::minicpmo45:
-        return ::tyloi::cuda::minicpmo45::text::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::minicpmo45::text::load(owner, std::move(source), definition, weights, placement, options);
     case Backbone::minicpmo_tts:
-        return ::tyloi::cuda::minicpmo45::load(std::move(source), definition, weights, placement, options);
+        return ::tyloi::cuda::minicpmo45::load(owner, std::move(source), definition, weights, placement, options);
 #endif
     default:
         break;

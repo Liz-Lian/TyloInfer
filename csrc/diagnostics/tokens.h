@@ -8,12 +8,15 @@
 
 namespace tyloi::cuda { class Program; }
 namespace tyloi::cuda::diagnostics {
+/** Select prefill warmup ownership for diagnostic token generation. */
+struct TokenOptions { int warmup = -1; bool already_warmed = false; };
 /** Run and report the original prefill warmups with profiling disabled. */
-void warmup_prefill(Program& program, const Tensor& ids, bool profile, int rounds = -1);
+void warmup_prefill(Program& program, const Tensor& ids, bool profile, int rounds = -1,
+    bool final_sync = false);
 /** Generate the diagnostic token sequence while preserving its timing boundaries. */
 int generate_diagnostic_tokens(Program& program, Tensor ids, int gen, bool profile,
     std::chrono::steady_clock::time_point t0, std::chrono::steady_clock::time_point t1,
     const std::vector<std::int64_t>& forced = {},
     const std::unordered_set<std::int64_t>& stops = {}, bool production_prefill = false,
-    int warmup = -1);
+    TokenOptions options = {});
 }

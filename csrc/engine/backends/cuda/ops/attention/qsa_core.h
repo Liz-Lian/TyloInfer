@@ -5,6 +5,7 @@
 #include "engine/backends/cuda/ops/attention/sequence.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/resident_allocations.h"
@@ -92,7 +93,7 @@ class QsaCore {
     }
     std::vector<DenseTensor> project_inputs(const DenseTensor& x) const {
         std::vector<DenseTensor> projected;
-        const bool grouped=grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection);
+        const bool grouped=tyloi::cuda::Executor::current().mode().compute.attention_grouped.value_or(grouped_projection_) && ::tyloi::ops::grouped(w_->input_projection);
         if(grouped)
             { auto values=::tyloi::ops::project_group(x,w_->input_projection,1); for(const auto& value:values)projected.push_back(value.dense()); }
         else
@@ -949,7 +950,7 @@ class QsaCore {
                        std::vector<DenseTensor> projections={}) {
         const auto b=hidden.size(0),t=hidden.size(1);
         if(projections.empty()) {
-            if(grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection))
+            if(tyloi::cuda::Executor::current().mode().compute.attention_grouped.value_or(grouped_projection_) && ::tyloi::ops::grouped(w_->input_projection))
                 projections=project_inputs(hidden);
             else projections={project_query(hidden),
                 ::tyloi::ops::project(hidden,w_->input_projection[1]).dense(),

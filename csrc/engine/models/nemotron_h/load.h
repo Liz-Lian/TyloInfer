@@ -14,7 +14,7 @@ namespace tyloi::cuda::nemotron_h {
 
 #ifdef TYLOINFER_NATIVE_CUDA
 /** Load native model weights and optional components through the public factory. */
-std::unique_ptr<tyloi::models::CausalModel> load(std::shared_ptr<const tyloi::ModelSource>,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource>,
     std::string_view definition, const tyloi::weights::Loader&, LayerPlacementConfig&,
     const tyloi::models::LoadOptions&);
 #endif

@@ -16,7 +16,7 @@ struct Model;
 struct Layer;
 
 /** Assemble a Gemma4 causal model from its source, weights and placement. */
-std::unique_ptr<tyloi::models::CausalModel> load(
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
     std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
     std::int64_t context, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
     int gpu_layers = -1, bool expert_parallel = false);

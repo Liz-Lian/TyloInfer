@@ -131,11 +131,11 @@ void configure_model_kv(Executor& executor, std::shared_ptr<KvMemoryManager>& kv
     executor.configure_kv(kv, offload);
 }
 
-std::unique_ptr<models::CausalModel> load_model(const CudaLoadOptions& options,
+void load_model(std::unique_ptr<models::CausalModel>& owner, const CudaLoadOptions& options,
         CudaLoadConfig& config, Executor& executor, weights::Cache& weights,
         const std::shared_ptr<const ModelSource>& source, bool components) {
     auto input = assembly(options, config, executor, weights, *source, components);
-    return models::load(source, input.definition, input.loader, config.layer_placement, input.policy);
+    models::load(owner, source, input.definition, input.loader, config.layer_placement, input.policy);
 }
 } // namespace internal
 
@@ -239,7 +239,7 @@ void Program::load(bool components) {
     {
         auto scope = p.executor->enter(p.config.layer_placement.primary_device());
         ::tyloi::weights::LoadScope memory(*p.ledger);
-        p.model = internal::load_model(p.options, p.config, *p.executor, *p.weights, p.source, components);
+        internal::load_model(p.model, p.options, p.config, *p.executor, *p.weights, p.source, components);
         if (p.offload && !p.model->info().streamed_kv)
             throw std::invalid_argument("CUDA streamed KV requires a QSA model");
         p.state = p.model->make_state();
@@ -263,7 +263,7 @@ void Program::load_layers() {
         ::tyloi::weights::LoadScope memory(*p.ledger);
         if (p.offload) throw std::invalid_argument("layer-wise execution does not support streamed KV");
         auto input = assembly(p.options, p.config, *p.executor, *p.weights, *p.source, false);
-        p.layers = models::load_layers(p.source, input.definition, input.loader,
+        models::load_layers(p.layers, p.source, input.definition, input.loader,
             p.config.layer_placement, input.policy);
         finish_load(p.kv.get(), *p.weights, p.config.report_cuda_memory);
     }

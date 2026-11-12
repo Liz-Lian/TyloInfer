@@ -31,6 +31,16 @@ struct KvMemoryAllocation;
 class DecodeWindow;
 class Graph;
 
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Optional scoped overrides for native model computation choices. */
+struct ComputePolicy {
+    std::optional<bool> rotary;
+    std::optional<bool> attention_grouped;
+    std::optional<bool> residual_two_stage;
+    std::optional<bool> residual_dense_injection;
+};
+#endif
+
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA
     : public tyloi::Executor
@@ -113,6 +123,9 @@ public:
         bool groupwise_output = true;
         /** Optional diagnostic kernel policy inherited by executor forks. */
         std::optional<AttentionKernels> attention_kernels;
+#ifdef TYLOINFER_NATIVE_CUDA
+        ComputePolicy compute;
+#endif
     };
 
     struct Options {
@@ -166,6 +179,15 @@ public:
     const Options& options() const noexcept { return options_; }
     Mode& mode() noexcept { return mode_; }
     const Mode& mode() const noexcept { return mode_; }
+#ifdef TYLOINFER_NATIVE_CUDA
+    /** Return residual settings with the current scoped overrides applied. */
+    ResidualOptions residual_options() const {
+        auto result = options_.residual;
+        if (mode_.compute.residual_two_stage) result.two_stage = *mode_.compute.residual_two_stage;
+        if (mode_.compute.residual_dense_injection) result.dense_injection = *mode_.compute.residual_dense_injection;
+        return result;
+    }
+#endif
     Mode forward_mode(int primary) const;
     const AttentionOptions& attention_options() const noexcept { return options_.attention; }
     /** Return the active attention kernel policy, including any scoped override. */
@@ -186,6 +208,7 @@ private:
 #ifdef TYLOINFER_NATIVE_CUDA
     friend class ::tyloi::weights::Cache;
     friend class DecodeWindow;
+    friend class RotaryEmbedding;
     static Executor* active() noexcept;
     friend class KvMemoryManager;
     friend std::shared_ptr<KvMemoryAllocation> allocate_kv(int64_t, int64_t, int64_t, int64_t,
@@ -229,6 +252,28 @@ private:
 };
 
 #ifdef TYLOINFER_NATIVE_CUDA
+/** Restore computation choices after a quiescent scoped diagnostic operation. */
+class PolicyScope {
+public:
+    PolicyScope(Executor& executor, ComputePolicy policy)
+        : executor_(executor), previous_(executor.mode().compute) {
+        if (&Executor::current() != &executor)
+            throw std::logic_error("compute policy requires the active executor");
+        auto selected = previous_;
+        if (policy.rotary) selected.rotary = policy.rotary;
+        if (policy.attention_grouped) selected.attention_grouped = policy.attention_grouped;
+        if (policy.residual_two_stage) selected.residual_two_stage = policy.residual_two_stage;
+        if (policy.residual_dense_injection) selected.residual_dense_injection = policy.residual_dense_injection;
+        executor_.mode().compute = std::move(selected);
+    }
+    ~PolicyScope() { executor_.mode().compute = std::move(previous_); }
+    PolicyScope(const PolicyScope&) = delete;
+    PolicyScope& operator=(const PolicyScope&) = delete;
+private:
+    Executor& executor_;
+    ComputePolicy previous_;
+};
+
 /** Temporarily override only attention kernel choices on the active executor. */
 class AttentionScope {
 public:

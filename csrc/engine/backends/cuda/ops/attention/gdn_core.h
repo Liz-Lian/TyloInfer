@@ -3,6 +3,7 @@
 #include "engine/ops/gdn.h"
 #include "engine/ops.h"
 #include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/native/resident_allocations.h"
 #include "engine/backends/cuda/native/matmul_rows.h"
@@ -177,7 +178,7 @@ class GdnCore {
                          std::vector<DenseTensor>& checkpoint_conv,std::vector<DenseTensor>& checkpoint_state) {
         if(!confirmed)return forward_chunk(request, x,true);
         const auto batch=::tyloi::cuda::options::gdn_batch_projection();
-        const bool grouped=grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection) && x.size(1)<=8 && (!batch || *batch);
+        const bool grouped=tyloi::cuda::Executor::current().mode().compute.attention_grouped.value_or(grouped_projection_) && ::tyloi::ops::grouped(w_->input_projection) && x.size(1)<=8 && (!batch || *batch);
         // Only recurrence is split at the confirmation boundary. Both parts
         // share the input projections and one output projection.
         std::vector<DenseTensor> projected;if(grouped)projected=project_inputs(x);
@@ -256,7 +257,7 @@ class GdnCore {
         }
         const auto batch=::tyloi::cuda::options::gdn_batch_projection();
         const bool grouped=cache && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8 &&
-            grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection) && (!batch || *batch);
+            tyloi::cuda::Executor::current().mode().compute.attention_grouped.value_or(grouped_projection_) && ::tyloi::ops::grouped(w_->input_projection) && (!batch || *batch);
         std::vector<DenseTensor> projected;
         if(grouped)projected=project_inputs(x);
         const auto run_window = [&](int64_t start, int64_t count) {
@@ -363,7 +364,7 @@ class GdnCore {
                 const auto project = [&] {
                 DenseTensor projected;
                 if(!projections.empty())projected=projections[0];
-                else if(grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection)) {
+                else if(tyloi::cuda::Executor::current().mode().compute.attention_grouped.value_or(grouped_projection_) && ::tyloi::ops::grouped(w_->input_projection)) {
                     projections=project_inputs(x);
                     TYLOINFER_RUNTIME_CHECK(projections.size()==4,"GDN input projection count mismatch");
                     projected=projections[0];
@@ -602,7 +603,7 @@ inline DenseTensor GdnCore::project_qkv(const DenseTensor& source) const {
 }
 
 inline std::vector<DenseTensor> GdnCore::project_inputs(const DenseTensor& source) const {
-    if(!(grouped_projection_ && ::tyloi::ops::grouped(w_->input_projection)))
+    if(!(tyloi::cuda::Executor::current().mode().compute.attention_grouped.value_or(grouped_projection_) && ::tyloi::ops::grouped(w_->input_projection)))
         return {project_qkv(source),
             project_weight(w_->input_projection[w_->qkv_count],source),
             project_weight(w_->input_projection[w_->qkv_count+1],source),

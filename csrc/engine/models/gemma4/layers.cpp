@@ -42,11 +42,14 @@ public:
 class GemmaLayers final : public tyloi::models::Layers {
 public:
     GemmaLayers(Model model, const tyloi::weights::Loader& weights,
-                LayerPlacementConfig& placement, const tyloi::models::LoadOptions& options)
+                LayerPlacementConfig& placement)
         : model_(std::move(model)), weights_(weights), placement_(placement),
           primary_(placement.primary_device()) {
         if (weights.placement.device != primary_)
             throw std::invalid_argument("Gemma4 weight and layer primary devices differ");
+    }
+
+    void initialize(const tyloi::models::LoadOptions& options) {
         gemma4::load(model_, weights_, placement_, options.gpu_layers,
                      options.expert_parallel, false, false);
     }
@@ -184,7 +187,7 @@ private:
 
 } // namespace
 
-std::unique_ptr<tyloi::models::Layers> load_layers(
+void load_layers(std::unique_ptr<tyloi::models::Layers>& owner,
     std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
     const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
     const tyloi::models::LoadOptions& options) {
@@ -193,8 +196,9 @@ std::unique_ptr<tyloi::models::Layers> load_layers(
     if (!options.cpu_offload_layers.empty())
         throw std::invalid_argument("Gemma4 layer reference does not support CPU offload");
     check_definition(definition);
-    return std::make_unique<GemmaLayers>(read(std::move(source), definition, options.context),
-                                         weights, placement, options);
+    owner = std::make_unique<GemmaLayers>(read(std::move(source), definition, options.context),
+                                           weights, placement);
+    static_cast<GemmaLayers*>(owner.get())->initialize(options);
 }
 
 } // namespace tyloi::cuda::gemma4

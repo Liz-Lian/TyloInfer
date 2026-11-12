@@ -1,6 +1,8 @@
 #include "engine/backends/cuda/native/env.h"
+#ifndef TYLOINFER_NATIVE_CUDA
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
+#endif
 #include "cli.h"
 #include "run.h"
 #include "engine/engine.h"

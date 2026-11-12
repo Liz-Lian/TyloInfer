@@ -13,7 +13,7 @@ namespace tyloi::cuda::deepseek_v4 {
 void load_ffn(tyloi::cuda::Ffn&, const tyloi::weights::Loader&, const Config&, int, bool);
 #ifdef TYLOINFER_NATIVE_CUDA
 /** Assemble a supported DeepSeek V4 causal model using the active execution scope. */
-std::unique_ptr<tyloi::models::CausalModel> load(
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
     std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
     const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
     const tyloi::models::LoadOptions& options);

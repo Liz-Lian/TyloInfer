@@ -10,7 +10,7 @@ namespace tyloi::models { struct LoadOptions; }
 namespace tyloi::cuda::glm5_next {
 #ifdef TYLOINFER_NATIVE_CUDA
 /** Assemble a GLM5-Next causal model and its supported predictor. */
-std::unique_ptr<tyloi::models::CausalModel> load(
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner,
     std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
     const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
     const tyloi::models::LoadOptions& options);

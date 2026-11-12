@@ -106,7 +106,7 @@ void configure_generation(engine::Config&, const CudaLoadConfig&, Executor&,
 void configure_model_kv(Executor&, std::shared_ptr<KvMemoryManager>&,
     std::shared_ptr<KvOffloadStore>&);
 /** Assemble a native model with the shared loader and policy. */
-std::unique_ptr<models::CausalModel> load_model(
+void load_model(std::unique_ptr<models::CausalModel>& owner,
     const CudaLoadOptions&, CudaLoadConfig&, Executor&, weights::Cache&,
     const std::shared_ptr<const ModelSource>&, bool components);
 }

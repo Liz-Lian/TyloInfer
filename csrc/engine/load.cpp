@@ -149,7 +149,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, en
             internal::configure_model_kv(*root, kv, offload);
             {
                 auto scope = root->enter(load.layer_placement.primary_device());
-                model = internal::load_model(options, load, *root, *weights, source, true);
+                internal::load_model(model, options, load, *root, *weights, source, true);
                 if (offload && !model->info().streamed_kv)
                     throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 state = model->make_state();

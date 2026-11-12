@@ -101,15 +101,15 @@ Components load_components(Model& model, const tyloi::weights::Loader& weights,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA
-std::unique_ptr<tyloi::models::CausalModel> load(std::shared_ptr<const tyloi::ModelSource> source,
+void load(std::unique_ptr<tyloi::models::CausalModel>& owner, std::shared_ptr<const tyloi::ModelSource> source,
         std::string_view definition, const tyloi::weights::Loader& weights, LayerPlacementConfig& placement,
         const tyloi::models::LoadOptions& options) {
     if (!options.cpu_offload_layers.empty())
         throw std::invalid_argument("Nemotron-H does not support --cpu-offload-layers");
-    auto model = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    owner = std::make_unique<Model>(read(std::move(source), definition, options.context));
+    auto* model = static_cast<Model*>(owner.get());
     load(*model, weights, placement, options.gpu_layers, options.expert_parallel);
     model->parts = std::make_unique<Components>(load_components(*model, weights, true));
-    return model;
 }
 #endif
 
