@@ -27,21 +27,13 @@
 
 #include "async_copy.cuh"
 #include "glu.cuh"
-#include "backend.h"
-#include "mfq_cuda_nint_route_hint.h"
-#ifndef TYLOINFER_NATIVE_CUDA
-#include "packed_backward.cuh"
-#endif
+
 #include "packed_nint.cuh"
 #include "nint_route_group.cuh"
 #include "nint_short_decode.h"
+#include "nint_raw.h"
 #include "kernel_dispatch_trace.h"
 
-
-#define TYLOINFER_CUBLAS_CHECK(expression) \
-    TYLOINFER_RUNTIME_CHECK( \
-        (expression) == CUBLAS_STATUS_SUCCESS, \
-        "cuBLAS call failed: ", #expression)
 
 
 namespace {
@@ -49,13 +41,8 @@ namespace {
 
 using namespace tyloi::cuda::packed_nint;
 
-thread_local NintInputQuantizationScope* prepared_input_scope=nullptr;
-struct NintGroupQuantizeArgs {
-    struct Group {int8_t *codes,*interleaved;float* scale;int* sum;int gs,groups,begin,columns;} group[4]{};
-    const void* input=nullptr;
-    int count=0,rows=0,width=0;
-    bool fp32=false;
-};
+
+using NintGroupQuantizeArgs = tyloi::cuda::nint_raw::GroupQuantize;
 
 __global__ void nint8_one_quantize_reconstruct_kernel(
         const __half * __restrict__ input,
@@ -322,8 +309,8 @@ __global__ void __launch_bounds__(32) nint_group_quantize_kernel(NintGroupQuanti
     if(lane==0)g.sum[size_t(row)*g.groups+group]=sum;
 }
 
-constexpr int kNintPrefillTileN = 64;
-constexpr int kNintPrefillTileK = 64;
+constexpr int kNintPrefillTileN = tyloi::cuda::nint_raw::prefill_tile_n;
+constexpr int kNintPrefillTileK = tyloi::cuda::nint_raw::prefill_tile_k;
 constexpr int kNintPrefillStrideK = 72;
 constexpr int kNintPrefillWarps = 8;
 
@@ -1686,126 +1673,7 @@ __global__ void __launch_bounds__(128) nint_matmul_aligned_q8_kernel(
 }
 
 
-#ifndef TYLOINFER_NATIVE_CUDA
-// One metadata-driven packed input-gradient kernel covers every NINT q/k
-// allocation.  Each warp owns four adjacent input columns and reduces over
-// output neurons; q is read from row metadata and k is already represented by
-// the baked subgroup metadata.
-__global__ void __launch_bounds__(128) nint_backward_input_kernel(
-        const uint8_t * __restrict__ bitstream,
-        const uint8_t * __restrict__ row_q_bits,
-        const int64_t * __restrict__ row_q_bit_offsets,
-        const uint8_t * __restrict__ subgroup_scale,
-        const uint8_t * __restrict__ subgroup_minimum,
-        const float * __restrict__ neuron_scale,
-        const float * __restrict__ neuron_minimum,
-        const __half * __restrict__ output_gradient,
-        __half * __restrict__ input_gradient,
-        int activation_rows,
-        int output_rows,
-        int groups,
-        int width,
-        int group_size) {
-    constexpr int warps_per_block = 4;
-    constexpr int columns_per_warp = 4;
-    constexpr int rows_per_tile = 4;
-    const int lane = static_cast<int>(threadIdx.x);
-    const int warp = static_cast<int>(threadIdx.y);
-    const int chunks_per_group = (group_size + columns_per_warp - 1) /
-        columns_per_warp;
-    const int chunk_index = static_cast<int>(blockIdx.x) * warps_per_block +
-        warp;
-    const int group = chunk_index / chunks_per_group;
-    const int group_element =
-        (chunk_index - group * chunks_per_group) * columns_per_warp;
-    const int column_base = group * group_size + group_element;
-    const int first_activation_row =
-        static_cast<int>(blockIdx.y) * rows_per_tile;
-    if (group >= groups || column_base >= width ||
-            first_activation_row >= activation_rows) {
-        return;
-    }
 
-    float accumulators[rows_per_tile][columns_per_warp] = {};
-    for (int output_row = lane; output_row < output_rows; output_row += 32) {
-        const int bits = static_cast<int>(row_q_bits[output_row]);
-        const uint64_t row_bit_offset = static_cast<uint64_t>(
-            row_q_bit_offsets[output_row]);
-        const size_t metadata_index =
-            static_cast<size_t>(output_row) * groups + group;
-        const float scale = neuron_scale[output_row] *
-            static_cast<float>(subgroup_scale[metadata_index]);
-        const float minimum = neuron_minimum[output_row] *
-            static_cast<float>(subgroup_minimum[metadata_index]);
-        const int valid_columns = min(
-            columns_per_warp,
-            min(group_size - group_element, width - column_base));
-        uint32_t packed_codes = 0;
-        if (valid_columns == columns_per_warp) {
-            packed_codes = static_cast<uint32_t>(
-                unpack_nint_codes4(
-                    bitstream,
-                    row_bit_offset +
-                        static_cast<uint64_t>(column_base) * bits,
-                    bits));
-        } else {
-#pragma unroll
-            for (int component = 0; component < columns_per_warp; ++component) {
-                if (component < valid_columns) {
-                    packed_codes |= static_cast<uint32_t>(unpack_nint_code(
-                        bitstream,
-                        row_bit_offset,
-                        column_base + component,
-                        bits)) << (8 * component);
-                }
-            }
-        }
-        float weights[columns_per_warp];
-#pragma unroll
-        for (int component = 0; component < columns_per_warp; ++component) {
-            const int code = (packed_codes >> (8 * component)) & 255;
-            weights[component] = scale * static_cast<float>(code) - minimum;
-        }
-#pragma unroll
-        for (int local_row = 0; local_row < rows_per_tile; ++local_row) {
-            const int activation_row = first_activation_row + local_row;
-            const float gradient = activation_row < activation_rows
-                ? __half2float(output_gradient[
-                      static_cast<size_t>(activation_row) * output_rows +
-                      output_row])
-                : 0.0f;
-#pragma unroll
-            for (int component = 0; component < columns_per_warp; ++component) {
-                accumulators[local_row][component] = fmaf(
-                    gradient,
-                    weights[component],
-                    accumulators[local_row][component]);
-            }
-        }
-    }
-
-#pragma unroll
-    for (int local_row = 0; local_row < rows_per_tile; ++local_row) {
-#pragma unroll
-        for (int component = 0; component < columns_per_warp; ++component) {
-            float total = accumulators[local_row][component];
-#pragma unroll
-            for (int offset = 16; offset > 0; offset >>= 1) {
-                total += __shfl_down_sync(0xffffffffu, total, offset);
-            }
-            const int activation_row = first_activation_row + local_row;
-            const int column = column_base + component;
-            if (lane == 0 && activation_row < activation_rows &&
-                    component < group_size - group_element && column < width) {
-                input_gradient[
-                    static_cast<size_t>(activation_row) * width + column] =
-                    __float2half_rn(total);
-            }
-        }
-    }
-}
-
-#endif
 
 
 template <typename Output>
@@ -1880,103 +1748,217 @@ __global__ void __launch_bounds__(128) nint8_zero_matmul_kernel(
 }
 
 
-void validate_nint8_zero(
-        const ::tyloi::DenseTensor & quantized,
-        const ::tyloi::DenseTensor & scale) {
-    TYLOINFER_RUNTIME_CHECK(
-        quantized.is_cuda() && quantized.is_contiguous() &&
-        quantized.scalar_type() == ::tyloi::kUInt8 &&
-        quantized.dim() == 3 && quantized.size(2) == 32,
-        "NINT8-0 q must be contiguous CUDA uint8 [N,G,32]");
-    TYLOINFER_RUNTIME_CHECK(
-        scale.is_cuda() && scale.is_contiguous() &&
-        scale.scalar_type() == ::tyloi::kFloat16 &&
-        scale.dim() == 2 && scale.size(0) == quantized.size(0) &&
-        scale.size(1) == quantized.size(1),
-        "NINT8-0 scale must be contiguous CUDA fp16 [N,G]");
-    TYLOINFER_RUNTIME_CHECK(
-        quantized.device() == scale.device(),
-        "NINT8-0 tensors must share one CUDA device");
-}
 
 
-::tyloi::DenseTensor cublas_gemm_nt_f32_output(
-        const ::tyloi::DenseTensor & input,
-        const ::tyloi::DenseTensor & weight) {
-    const int rows = static_cast<int>(input.size(0));
-    const int width = static_cast<int>(input.size(1));
-    const int outputs = static_cast<int>(weight.size(0));
-    auto result = ::tyloi::cuda::empty(
-        {rows, outputs},
-        input.options().dtype(::tyloi::kFloat32));
-    cublasHandle_t handle = mfq_current_cublas_handle();
-    TYLOINFER_CUBLAS_CHECK(cublasSetStream(handle, mfq_current_cuda_stream()));
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    TYLOINFER_CUBLAS_CHECK(cublasGemmEx(
-        handle,
-        CUBLAS_OP_T,
-        CUBLAS_OP_N,
-        outputs,
-        rows,
-        width,
-        &alpha,
-        weight.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        width,
-        input.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        width,
-        &beta,
-        result.data_ptr<float>(),
-        CUDA_R_32F,
-        outputs,
-        CUBLAS_COMPUTE_32F,
-        CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-    return result;
-}
+
+
 
 
 }  // namespace
 
-NintInputQuantizationScope::NintInputQuantizationScope(
-        ::tyloi::DenseTensor source,const std::vector<int>& sizes):input(std::move(source)) {
-    if(sizes.empty())return;
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.dim()==2 &&
-        input.size(0)>=1 && input.size(0)<=6 && input.size(1)>0 && input.size(1)<=INT_MAX-64 &&
-        (input.scalar_type()==::tyloi::kFloat16 || input.scalar_type()==::tyloi::kFloat32) &&
-        sizes.size()<=4,"invalid shared NINT quantization input");
-    const MfqCudaGuard guard(input.device());
-    NintGroupQuantizeArgs args;
-    args.input=input.data_ptr();args.rows=int(input.size(0));args.width=int(input.size(1));
-    args.fp32=input.scalar_type()==::tyloi::kFloat32;
-    const auto* exact=tyloi::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");
-    const int columns=args.rows<=2?2:args.rows<=4?4:(exact && exact[0]=='0')?8:args.rows;
-    int total=0;
-    for(int gs:sizes) {
-        TYLOINFER_RUNTIME_CHECK(gs==24 || gs==28 || gs==48,"unsupported shared NINT group size");
-        const int ng=(args.width+gs-1)/gs;
-        NintPreparedGroupInput prepared;prepared.gs=gs;
-        prepared.codes=::tyloi::cuda::empty({args.rows,ng*gs},input.options().dtype(::tyloi::kInt8));
-        prepared.scale=::tyloi::cuda::empty({args.rows,ng},input.options().dtype(::tyloi::kFloat32));
-        prepared.sum=::tyloi::cuda::empty({args.rows,ng},input.options().dtype(::tyloi::kInt32));
-        if(gs==28 && args.rows>=2)
-            prepared.interleaved=::tyloi::cuda::empty({ng,7,columns,4},input.options().dtype(::tyloi::kInt8));
-        args.group[args.count++]={prepared.codes.data_ptr<int8_t>(),
-            prepared.interleaved.defined()?prepared.interleaved.data_ptr<int8_t>():nullptr,
-            prepared.scale.data_ptr<float>(),prepared.sum.data_ptr<int32_t>(),gs,ng,total,columns};
-        total+=ng;groups.push_back(std::move(prepared));
-    }
-    nint_group_quantize_kernel<<<dim3(total,args.rows),32,0,mfq_current_cuda_stream()>>>(args);
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+void tyloi::cuda::nint_raw::group_quantize(
+        const GroupQuantize & args, int total, cudaStream_t stream) {
+    nint_group_quantize_kernel<<<dim3(total,args.rows),32,0,stream>>>(args);
+}
+
+void tyloi::cuda::nint_raw::quantize(const Quantize & a, cudaStream_t stream) {
+    const auto launch = [&](auto cached_sum, auto columns) {
+        nint_quantize_activation_kernel<decltype(cached_sum)::value,decltype(columns)::value><<<
+            dim3(a.rows,a.groups),a.group_size<=32?32:64,0,stream>>>(
+                a.input,a.gate,a.codes,a.scale,a.rows,a.width,a.padded_width,
+                a.groups,a.group_size,a.activation_mode,a.input_float,a.gate_float,
+                a.sums,a.interleaved);
+    };
+    const auto select_columns = [&](auto cached_sum) {
+        if (!a.interleave) launch(cached_sum,std::integral_constant<int,0>{});
+        else if(a.columns==2) launch(cached_sum,std::integral_constant<int,2>{});
+        else if(a.columns==4) launch(cached_sum,std::integral_constant<int,4>{});
+        else if(a.columns==5) launch(cached_sum,std::integral_constant<int,5>{});
+        else if(a.columns==6) launch(cached_sum,std::integral_constant<int,6>{});
+        else launch(cached_sum,std::integral_constant<int,8>{});
+    };
+    if(a.cached_sums) select_columns(std::true_type{});
+    else select_columns(std::false_type{});
+}
+
+void tyloi::cuda::nint_raw::trace_group_quantize(
+        const GroupQuantize & args, cudaStream_t stream) {
     if(tyloi::cuda::dispatch_trace::enabled())tyloi::cuda::dispatch_trace::record(
-        mfq_current_cuda_stream(),"nint_group_quantize",reinterpret_cast<const void*>(nint_group_quantize_kernel),
+        stream,"nint_group_quantize",reinterpret_cast<const void*>(nint_group_quantize_kernel),
         "M="+std::to_string(args.rows)+" width="+std::to_string(args.width)+" formats="+std::to_string(args.count));
-    previous=prepared_input_scope;prepared_input_scope=this;
 }
-NintInputQuantizationScope::~NintInputQuantizationScope() {
-    if(!groups.empty())prepared_input_scope=previous;
+
+void tyloi::cuda::nint_raw::zero_decode(
+        const std::uint8_t * quantized, const void * scale, void * output,
+        int rows, int groups, std::int64_t width, bool output_float, cudaStream_t stream) {
+    constexpr int threads = 256;
+    const size_t total = static_cast<size_t>(rows) * width;
+    const int blocks = static_cast<int>(std::min<size_t>(
+        (total + threads - 1) / threads, 65535));
+    if (output_float) {
+        nint8_zero_decode_rows_kernel<float><<<blocks, threads, 0, stream>>>(
+            reinterpret_cast<const int8_t *>(quantized),
+            static_cast<const __half *>(scale), static_cast<float *>(output),
+            rows, groups, static_cast<int>(width));
+    } else {
+        nint8_zero_decode_rows_kernel<__half><<<blocks, threads, 0, stream>>>(
+            reinterpret_cast<const int8_t *>(quantized),
+            static_cast<const __half *>(scale), static_cast<__half *>(output),
+            rows, groups, static_cast<int>(width));
+    }
 }
+
+void tyloi::cuda::nint_raw::zero_gemv(
+        const std::uint8_t *quantized, const void *scale, const void *input,
+        std::int8_t *workspace, float *input_scale, void *output,
+        int rows, int outputs, int groups, int width, bool input_float,
+        cudaStream_t stream) {
+    const int padded_width = groups * 32;
+    nint_quantize_activation_kernel<false><<<dim3(rows, groups), 32, 0, stream>>>(
+        input, nullptr, workspace, input_scale, rows, width, padded_width,
+        groups, 32, 0, input_float, false);
+    nint8_zero_matmul_kernel<<<dim3((outputs + 3) / 4, rows), dim3(32, 4), 0, stream>>>(
+        reinterpret_cast<const int8_t *>(quantized), static_cast<const __half *>(scale),
+        workspace, input_scale, static_cast<__half *>(output), rows, outputs,
+        groups, padded_width);
+}
+
+void tyloi::cuda::nint_raw::one_quantize(const void *input,
+        std::int8_t *quantized, void *scale, void *sum, void *reconstructed,
+        int rows, int width, int groups, cudaStream_t stream) {
+    nint8_one_quantize_reconstruct_kernel<<<rows * groups, 32, 0, stream>>>(
+        static_cast<const __half *>(input), quantized, static_cast<__half *>(scale),
+        static_cast<__half *>(sum), static_cast<__half *>(reconstructed), rows, width, groups);
+}
+
+tyloi::cuda::nint_raw::GemmStatus tyloi::cuda::nint_raw::gemm_nt(
+        cublasHandle_t handle, cudaStream_t stream, const void *input,
+        const void *weight, void *output, int rows, int outputs, int width,
+        bool float_accum, bool float_output) {
+    const auto status = cublasSetStream(handle, stream);
+    if (status != CUBLAS_STATUS_SUCCESS) return {status, status};
+    const __half half_alpha = __float2half(1.0f), half_beta = __float2half(0.0f);
+    const float float_alpha = 1.0f, float_beta = 0.0f;
+    const void *alpha = float_accum ? static_cast<const void *>(&float_alpha) : &half_alpha;
+    const void *beta = float_accum ? static_cast<const void *>(&float_beta) : &half_beta;
+    const auto result = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        outputs, rows, width, alpha, weight, CUDA_R_16F, width,
+        input, CUDA_R_16F, width, beta, output,
+        float_output ? CUDA_R_32F : CUDA_R_16F, outputs,
+        float_accum ? CUBLAS_COMPUTE_32F : CUBLAS_COMPUTE_16F,
+        CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    return {status, result};
+}
+
+void tyloi::cuda::nint_raw::decode(const Decode & a, cudaStream_t stream) {
+    constexpr int threads = 256;
+    const size_t total = static_cast<size_t>(a.rows) * a.width;
+    const int blocks = static_cast<int>(std::min<size_t>(
+        (total + threads - 1) / threads, 65535));
+    if (!a.output_float && (a.group_size == 24 || a.group_size == 28) &&
+            a.width % 4 == 0 &&
+            (reinterpret_cast<std::uintptr_t>(a.bitstream) & 3u) == 0 &&
+            !a.dense_reference) {
+        const auto launch = [&](auto gs) {
+            nint_decode_vec4_kernel<decltype(gs)::value><<<
+                dim3((a.width / 4 + 127) / 128, std::min(a.rows, 65535)),
+                128, 0, stream>>>(
+                a.bitstream, a.row_q_bits, a.row_q_bit_offsets,
+                a.subgroup_scale, a.subgroup_minimum, a.neuron_scale,
+                a.neuron_minimum, static_cast<__half *>(a.output), a.rows,
+                a.groups, int(a.width), a.bytes);
+        };
+        if (a.group_size == 24) launch(std::integral_constant<int, 24>{});
+        else launch(std::integral_constant<int, 28>{});
+        return;
+    }
+    if (a.output_float) {
+        nint_decode_rows_kernel<float><<<blocks, threads, 0, stream>>>(
+            a.bitstream, a.row_q_bits, a.row_q_bit_offsets, a.subgroup_scale,
+            a.subgroup_minimum, a.neuron_scale, a.neuron_minimum,
+            static_cast<float *>(a.output), a.rows, a.groups, a.group_size,
+            static_cast<int>(a.width));
+    } else {
+        nint_decode_rows_kernel<__half><<<blocks, threads, 0, stream>>>(
+            a.bitstream, a.row_q_bits, a.row_q_bit_offsets, a.subgroup_scale,
+            a.subgroup_minimum, a.neuron_scale, a.neuron_minimum,
+            static_cast<__half *>(a.output), a.rows, a.groups, a.group_size,
+            static_cast<int>(a.width));
+    }
+}
+
+__global__ void nint_online_reduce_kernel(const float* partial,__half* output,int elements,int splits) {
+    for(int index=int(blockIdx.x)*blockDim.x+threadIdx.x;index<elements;index+=blockDim.x*gridDim.x) {
+        float sum=0;
+        for(int split=0;split<splits;++split)sum+=partial[size_t(split)*elements+index];
+        output[index]=__float2half_rn(sum);
+    }
+}
+
+void tyloi::cuda::nint_raw::online(const Decode & a, const void *input,
+        void *output, float *partial, int rows, int split, cudaStream_t stream) {
+    const int output_tiles=(a.rows+kNintPrefillTileN-1)/kNintPrefillTileN;
+    const auto launch=[&](auto row_tile) {
+        nint_matmul_tiled_prefill_kernel<decltype(row_tile)::value,true,false,true><<<
+            dim3(output_tiles,split),dim3(32,kNintPrefillWarps),0,stream>>>(
+                a.bitstream,a.row_q_bits,a.row_q_bit_offsets,a.subgroup_scale,
+                a.subgroup_minimum,a.neuron_scale,a.neuron_minimum,
+                static_cast<const __half*>(input),static_cast<__half*>(output),
+                nullptr,nullptr,nullptr,nullptr,nullptr,
+                1,1,a.rows,a.groups,a.group_size,int(a.width),0,0,0,true,rows,split,partial);
+    };
+    if(rows<=16)launch(std::integral_constant<int,16>{});
+    else launch(std::integral_constant<int,32>{});
+    if(split>1)nint_online_reduce_kernel<<<(rows*a.rows+255)/256,256,0,stream>>>(
+        partial,static_cast<__half*>(output),rows*a.rows,split);
+}
+
+void tyloi::cuda::nint_raw::q8(const Q8 & a, cudaStream_t stream) {
+    const auto & w=a.weight;
+    if(a.grouped) {
+        const auto launch_short=[&](auto rows) {
+            if(a.q8_decode>=2) {
+                const NintWholeArgs args{w.bitstream,w.row_q_bits,w.subgroup_scale,
+                    w.subgroup_minimum,w.row_q_bit_offsets,w.neuron_scale,w.neuron_minimum,
+                    a.input,a.input_scale,static_cast<__half*>(a.output),w.bytes,
+                    w.rows,w.groups,a.rows,false,a.sums};
+                nint_launch_grouped_q8(args,stream);
+            } else {
+                nint_matmul_aligned_q8_kernel<decltype(rows)::value,48><<<
+                    (w.rows+3)/4,dim3(32,4),0,stream>>>(
+                    w.bitstream,w.row_q_bit_offsets,w.subgroup_scale,w.subgroup_minimum,
+                    w.neuron_scale,w.neuron_minimum,a.input,a.input_scale,
+                    static_cast<__half*>(a.output),a.rows,w.rows,w.groups,a.padded_width,48);
+            }
+        };
+        switch(a.rows) {
+        case 1:launch_short(std::integral_constant<int,1>{});break;
+        case 2:launch_short(std::integral_constant<int,2>{});break;
+        case 3:launch_short(std::integral_constant<int,3>{});break;
+        case 4:launch_short(std::integral_constant<int,4>{});break;
+        case 5:launch_short(std::integral_constant<int,5>{});break;
+        case 6:launch_short(std::integral_constant<int,6>{});break;
+        default:launch_short(std::integral_constant<int,8>{});break;
+        }
+    } else if(a.rows==1 && a.ordered) {
+        nint_q8_ordered_kernel<<<w.rows,dim3(32,4),0,stream>>>(
+            w.bitstream,w.row_q_bit_offsets,w.subgroup_scale,w.subgroup_minimum,
+            w.neuron_scale,w.neuron_minimum,a.input,a.input_scale,
+            static_cast<__half*>(a.output),w.rows,w.groups);
+    } else if(a.rows==1) {
+        nint_matmul_aligned_q8_kernel<1><<<dim3((w.rows+3)/4),dim3(32,4),0,stream>>>(
+            w.bitstream,w.row_q_bit_offsets,w.subgroup_scale,w.subgroup_minimum,
+            w.neuron_scale,w.neuron_minimum,a.input,a.input_scale,
+            static_cast<__half*>(a.output),a.rows,w.rows,w.groups,a.padded_width,w.group_size);
+    } else {
+        nint_matmul_aligned_q8_kernel<8><<<dim3((w.rows+3)/4),dim3(32,4),0,stream>>>(
+            w.bitstream,w.row_q_bit_offsets,w.subgroup_scale,w.subgroup_minimum,
+            w.neuron_scale,w.neuron_minimum,a.input,a.input_scale,
+            static_cast<__half*>(a.output),a.rows,w.rows,w.groups,a.padded_width,w.group_size);
+    }
+}
+
+
 
 bool nint_late_scale_enabled(int64_t input_width,int bits,int /*device*/) {
     if(const auto* setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_LATE_SCALE"))return setting[0]!='0';
@@ -1984,144 +1966,83 @@ bool nint_late_scale_enabled(int64_t input_width,int bits,int /*device*/) {
     return true;
 }
 
-static void nint_moe_grouped_matmul_dispatch_cuda(
-        ::tyloi::DenseTensor pointers,::tyloi::DenseTensor params,
-        ::tyloi::DenseTensor expert_pool,::tyloi::DenseTensor expert_local,
-        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
-        int64_t input_width,bool routed_input,int group_hint,int bits_hint) {
-    TYLOINFER_RUNTIME_CHECK(pointers.is_cuda() && pointers.is_contiguous() && pointers.scalar_type()==::tyloi::kInt64 &&
-        pointers.dim()==2 && pointers.size(1)==9 && pointers.size(0)>0 &&
-        params.is_cuda() && params.is_contiguous() && params.scalar_type()==::tyloi::kInt32 &&
-        params.dim()==2 && params.size(0)==pointers.size(0) && params.size(1)==3,
-        "mixed NINT pointer/geometry table disagrees");
-    TYLOINFER_RUNTIME_CHECK(ids.is_cuda() && ids.is_contiguous() && ids.scalar_type()==::tyloi::kInt32 && ids.dim()==2 &&
-        ids.size(0)>0 && ids.size(0)<=8 && ids.size(1)>0 && ids.numel()<=65535 && input_width>0 &&
-        expert_pool.is_cuda() && expert_pool.is_contiguous() && expert_pool.scalar_type()==::tyloi::kInt32 &&
-        expert_pool.dim()==1 && expert_pool.numel()>0 && expert_pool.numel()<=4096 &&
-        expert_local.is_cuda() && expert_local.is_contiguous() && expert_local.scalar_type()==::tyloi::kInt32 &&
-        expert_local.sizes()==expert_pool.sizes() && output.is_cuda() && output.is_contiguous() &&
-        output.scalar_type()==::tyloi::kFloat16 && output.dim()==3 && output.size(0)==ids.size(0) &&
-        output.size(1)==ids.size(1) && output.size(2)>0 && output.size(2)<=INT_MAX &&
-        pointers.device()==output.device() && params.device()==output.device() && ids.device()==output.device() &&
-        expert_pool.device()==output.device() && expert_local.device()==output.device(),
-        "mixed NINT route/output geometry or device disagrees");
-    MfqCudaGuard guard(output.device());
+void tyloi::cuda::nint_raw::mixed(const Mixed & a, cudaStream_t stream) {
     const auto launch=[&](auto lanes,auto blocks) {
-    nint_mixed_routes_kernel<decltype(lanes)::value,decltype(blocks)::value><<<dim3(unsigned((output.size(2)+7)/8),unsigned(ids.numel())),dim3(32,4),0,
-        mfq_current_cuda_stream()>>>(pointers.data_ptr<int64_t>(),params.data_ptr<int32_t>(),
-        expert_pool.data_ptr<int32_t>(),expert_local.data_ptr<int32_t>(),ids.data_ptr<int32_t>(),
-        reinterpret_cast<__half*>(output.data_ptr()),int(ids.numel()),int(ids.size(1)),int(expert_pool.numel()),
-        int(output.size(2)),routed_input,tyloi::cuda::warp_multi_sum::enabled());
+    nint_mixed_routes_kernel<decltype(lanes)::value,decltype(blocks)::value><<<dim3(unsigned((a.outputs+7)/8),unsigned(a.pairs)),dim3(32,4),0,
+        stream>>>(a.pointers,a.params,
+        a.expert_pool,a.expert_local,a.ids,
+        static_cast<__half*>(a.output),int(a.pairs),int(a.routes),int(a.experts),
+        int(a.outputs),a.routed_input,a.multi_sum);
     };
-    const char* grouped=tyloi::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
-    const char* lanes=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_LANES");
-    const char* blocks=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_BLOCKS");
-    const char* rows=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_ROWS");
-    const char* hint=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_HINT");
+    const char* grouped=a.grouped;
+    const char* lanes=a.lanes;
+    const char* blocks=a.blocks;
+    const char* rows=a.rows;
+    const char* hint=a.hint;
     if((!grouped || grouped[0]!='0') && (!hint || hint[0]!='0') &&
-            (group_hint==24 || group_hint==28) && bits_hint>=4 && bits_hint<=6) {
+            (a.group_hint==24 || a.group_hint==28) && a.bits_hint>=4 && a.bits_hint<=6) {
         const auto hinted_warps=[&](auto gs,auto bits,auto warps) {
             constexpr int rows_per_block=decltype(warps)::value==4?4:8;
             const auto launch_scale=[&](auto late) {
             nint_mixed_routes_hinted_kernel<decltype(gs)::value,decltype(bits)::value,decltype(warps)::value,false,decltype(late)::value>
-                <<<dim3(unsigned((output.size(2)+rows_per_block-1)/rows_per_block),unsigned(ids.numel())),dim3(32,4),0,mfq_current_cuda_stream()>>>(
-                    pointers.data_ptr<int64_t>(),params.data_ptr<int32_t>(),expert_pool.data_ptr<int32_t>(),
-                    expert_local.data_ptr<int32_t>(),ids.data_ptr<int32_t>(),reinterpret_cast<__half*>(output.data_ptr()),
-                    int(ids.numel()),int(ids.size(1)),int(expert_pool.numel()),int(output.size(2)),routed_input,{},tyloi::cuda::warp_multi_sum::enabled());
+                <<<dim3(unsigned((a.outputs+rows_per_block-1)/rows_per_block),unsigned(a.pairs)),dim3(32,4),0,stream>>>(
+                    a.pointers,a.params,a.expert_pool,
+                    a.expert_local,a.ids,static_cast<__half*>(a.output),
+                    int(a.pairs),int(a.routes),int(a.experts),int(a.outputs),a.routed_input,{},a.multi_sum);
             };
-            if(nint_late_scale_enabled(input_width,bits_hint,output.get_device()))
+            if(a.late_scale)
                 launch_scale(std::true_type{});
             else launch_scale(std::false_type{});
         };
         const auto hinted=[&](auto gs,auto bits) {
-            const char* warps=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_WARPS");
+            const char* warps=a.warps;
             if(warps && std::atoi(warps)==4)hinted_warps(gs,bits,std::integral_constant<int,4>{});
             else hinted_warps(gs,bits,std::integral_constant<int,1>{});
         };
         const auto select_bits=[&](auto gs) {
-            if(bits_hint==4)hinted(gs,std::integral_constant<int,4>{});
-            else if(bits_hint==5)hinted(gs,std::integral_constant<int,5>{});
+            if(a.bits_hint==4)hinted(gs,std::integral_constant<int,4>{});
+            else if(a.bits_hint==5)hinted(gs,std::integral_constant<int,5>{});
             else hinted(gs,std::integral_constant<int,6>{});
         };
-        if(group_hint==24)select_bits(std::integral_constant<int,24>{});
+        if(a.group_hint==24)select_bits(std::integral_constant<int,24>{});
         else select_bits(std::integral_constant<int,28>{});
     }
     else if(rows && std::atoi(rows)==1 && (!grouped || grouped[0]!='0')) {
-        nint_mixed_routes_kernel<32,1,1><<<dim3(unsigned((output.size(2)+3)/4),unsigned(ids.numel())),dim3(32,4),0,
-            mfq_current_cuda_stream()>>>(pointers.data_ptr<int64_t>(),params.data_ptr<int32_t>(),
-            expert_pool.data_ptr<int32_t>(),expert_local.data_ptr<int32_t>(),ids.data_ptr<int32_t>(),
-            reinterpret_cast<__half*>(output.data_ptr()),int(ids.numel()),int(ids.size(1)),int(expert_pool.numel()),
-            int(output.size(2)),routed_input,tyloi::cuda::warp_multi_sum::enabled());
+        nint_mixed_routes_kernel<32,1,1><<<dim3(unsigned((a.outputs+3)/4),unsigned(a.pairs)),dim3(32,4),0,
+            stream>>>(a.pointers,a.params,
+            a.expert_pool,a.expert_local,a.ids,
+            static_cast<__half*>(a.output),int(a.pairs),int(a.routes),int(a.experts),
+            int(a.outputs),a.routed_input,a.multi_sum);
     }
     else if(grouped && grouped[0]=='0')launch(std::integral_constant<int,0>{},std::integral_constant<int,1>{});
     else if(lanes && std::atoi(lanes)==16)launch(std::integral_constant<int,16>{},std::integral_constant<int,1>{});
     // Short reductions gain from more resident warps. Long reductions keep
     // more registers for independent packed loads and instruction overlap.
-    else if((blocks && std::atoi(blocks)==8) || (!blocks && input_width<=768 && output.size(2)>=1024))
+    else if((blocks && std::atoi(blocks)==8) || (!blocks && a.input_width<=768 && a.outputs>=1024))
         launch(std::integral_constant<int,32>{},std::integral_constant<int,8>{});
     else launch(std::integral_constant<int,32>{},std::integral_constant<int,1>{});
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+
 }
 
-void nint_moe_grouped_matmul_hetero_cuda(
-        ::tyloi::DenseTensor pointers,::tyloi::DenseTensor params,
-        ::tyloi::DenseTensor expert_pool,::tyloi::DenseTensor expert_local,
-        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
-        int64_t input_width,bool routed_input) {
-    nint_moe_grouped_matmul_dispatch_cuda(pointers,params,expert_pool,expert_local,
-        ids,output,input_width,routed_input,0,0);
-}
 
-void nint_moe_grouped_matmul_hinted_cuda(
-        ::tyloi::DenseTensor pointers,::tyloi::DenseTensor params,
-        ::tyloi::DenseTensor expert_pool,::tyloi::DenseTensor expert_local,
-        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
-        int64_t input_width,bool routed_input,int group_hint,int bits_hint) {
-    nint_moe_grouped_matmul_dispatch_cuda(pointers,params,expert_pool,expert_local,
-        ids,output,input_width,routed_input,group_hint,bits_hint);
-}
 
-bool tyloi::cuda::try_nint_decode(
-        NintSingleRouteWeight weight,::tyloi::DenseTensor row_metadata,::tyloi::DenseTensor expert_local,
-        ::tyloi::DenseTensor ids,::tyloi::DenseTensor output,
-        bool routed_input,int bits_hint,bool metadata_ready) {
-    const char* setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_DIRECT_POOL");
-    const char* grouped=tyloi::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
-    const char* hint=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_HINT");
-    const char* warps=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_WARPS");
-    if((setting && setting[0]=='0') || (grouped && grouped[0]=='0') || (hint && hint[0]=='0') ||
-            (warps && std::atoi(warps)==4) || bits_hint<4 || bits_hint>6 ||
-            (weight.geometry[1]!=24 && weight.geometry[1]!=28))return false;
-    TYLOINFER_RUNTIME_CHECK(expert_local.is_cuda() && expert_local.is_contiguous() && expert_local.scalar_type()==::tyloi::kInt32 &&
-        expert_local.dim()==1 && expert_local.numel()>0 && expert_local.numel()<=4096 &&
-        ids.is_cuda() && ids.is_contiguous() && ids.scalar_type()==::tyloi::kInt32 && ids.dim()==2 &&
-        ids.size(0)>0 && ids.size(0)<=8 && ids.size(1)>0 && ids.numel()<=65535 &&
-        output.is_cuda() && output.is_contiguous() && output.scalar_type()==::tyloi::kFloat16 && output.dim()==3 &&
-        output.size(0)==ids.size(0) && output.size(1)==ids.size(1) && output.size(2)>0 && output.size(2)<=INT_MAX &&
-        output.device()==ids.device() && output.device()==expert_local.device() &&
-        weight.local_experts>0 && weight.geometry[0]>0 && weight.geometry[2]>0,
-        "single-pool NINT routed tensors disagree");
-    MfqCudaGuard guard(output.device());
-    const auto launch=[&](auto gs,auto bits) {
+void tyloi::cuda::nint_raw::single(NintSingleRouteWeight weight,
+        const std::int32_t *expert_local, const std::int32_t *ids, void *output,
+        int pairs, int routes, int experts, int outputs, bool routed_input,
+        int bits_hint, bool packed_metadata, bool multi_sum, bool late_scale,
+        cudaStream_t stream) {    const auto launch=[&](auto gs,auto bits) {
         const auto launch_scale=[&](auto late) {
         const auto launch_metadata=[&](auto packed) {
         nint_mixed_routes_hinted_kernel<decltype(gs)::value,decltype(bits)::value,1,true,decltype(late)::value,decltype(packed)::value>
-            <<<dim3(unsigned((output.size(2)+7)/8),unsigned(ids.numel())),dim3(32,4),0,mfq_current_cuda_stream()>>>(
-                nullptr,nullptr,nullptr,expert_local.data_ptr<int32_t>(),ids.data_ptr<int32_t>(),
-                reinterpret_cast<__half*>(output.data_ptr()),int(ids.numel()),int(ids.size(1)),
-                int(expert_local.numel()),int(output.size(2)),routed_input,weight,tyloi::cuda::warp_multi_sum::enabled());
+            <<<dim3(unsigned((outputs+7)/8),unsigned(pairs)),dim3(32,4),0,stream>>>(
+                nullptr,nullptr,nullptr,expert_local,ids,
+                static_cast<__half*>(output),int(pairs),int(routes),
+                int(experts),int(outputs),routed_input,weight,multi_sum);
         };
-        const char* metadata=tyloi::cuda::env_lookup("TYLOINFER_NINT_ROUTE_METADATA");
-        const auto metadata_ptr=row_metadata.defined()?reinterpret_cast<int64_t>(row_metadata.data_ptr()):0;
-        weight.row_metadata=0;
-        if(metadata_ptr && (metadata_ready || (metadata && metadata[0]!='0'))) {
-            TYLOINFER_RUNTIME_CHECK(row_metadata.is_cuda() && row_metadata.device()==output.device(),
-                "NINT route metadata device disagrees with output");
-            weight.row_metadata=metadata_ptr;
-            launch_metadata(std::true_type{});
-        } else launch_metadata(std::false_type{});
+        if(packed_metadata) launch_metadata(std::true_type{});
+        else launch_metadata(std::false_type{});
         };
-        if(nint_late_scale_enabled(int64_t(weight.geometry[0])*weight.geometry[1],bits_hint,output.get_device()))
+        if(late_scale)
             launch_scale(std::true_type{});
         else launch_scale(std::false_type{});
     };
@@ -2132,45 +2053,27 @@ bool tyloi::cuda::try_nint_decode(
     };
     if(weight.geometry[1]==24)select_bits(std::integral_constant<int,24>{});
     else select_bits(std::integral_constant<int,28>{});
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return true;
+
+
 }
 
 
-void launch_nint_matmul_routed_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale,
-        ::tyloi::DenseTensor input,
-        ::tyloi::DenseTensor route_ids,
-        ::tyloi::DenseTensor expert_local,
-        bool route_map_ready,
-        ::tyloi::DenseTensor ids_dst,
-        ::tyloi::DenseTensor expert_bounds,
-        ::tyloi::DenseTensor tile_bounds,
-        ::tyloi::DenseTensor tile_experts,
-        ::tyloi::DenseTensor output,
-        int tokens,
-        int routes,
-        int experts,
-        int output_rows,
-        int groups,
-        int padded_width,
-        int input_width,
-        int group_size,
-        int q_expert_stride,
-        int route_tile_m,
-        int pool_phase,
-        bool masked_experts,
-        int epilogue_mode,
-        bool routed_input,
-        cudaStream_t stream) {
+void tyloi::cuda::nint_raw::routed(const Routed & a, cudaStream_t stream) {
+    const auto tokens = a.tokens;
+    const auto routes = a.routes;
+    const auto experts = a.experts;
+    const auto output_rows = a.output_rows;
+    const auto groups = a.groups;
+    const auto padded_width = a.padded_width;
+    const auto input_width = a.input_width;
+    const auto group_size = a.group_size;
+    const auto q_expert_stride = a.q_expert_stride;
+    const auto route_tile_m = a.route_tile_m;
+    const auto pool_phase = a.pool_phase;
+    const auto epilogue_mode = a.epilogue_mode;
+    const auto route_map_ready = a.route_map_ready;
+    const auto masked_experts = a.masked_experts;
+    const auto routed_input = a.routed_input;
     constexpr int warps_per_block = 4;
     constexpr int rows_per_warp = 2;
     const int rows_per_task = epilogue_mode == 0 ? rows_per_warp : 1;
@@ -2210,20 +2113,20 @@ void launch_nint_matmul_routed_cuda(
 #define TYLOINFER_LAUNCH_NINT_TILED_PREFILL(TILE_M, FUSED_GLU) \
         nint_matmul_tiled_prefill_kernel<TILE_M, true, FUSED_GLU><<< \
             blocks, dim3(32, kNintPrefillWarps), 0, stream>>>( \
-                bitstream.data_ptr<uint8_t>(), \
-                row_q_bits.data_ptr<uint8_t>(), \
-                row_q_bit_offsets.data_ptr<int64_t>(), \
-                subgroup_scale.data_ptr<uint8_t>(), \
-                subgroup_minimum.data_ptr<uint8_t>(), \
-                neuron_scale.data_ptr<float>(), \
-                neuron_minimum.data_ptr<float>(), \
-                reinterpret_cast<const __half *>(input.data_ptr<mfq_half>()), \
-                reinterpret_cast<__half *>(output.data_ptr<mfq_half>()), \
-                expert_local.data_ptr<int32_t>(), \
-                ids_dst.data_ptr<int32_t>(), \
-                expert_bounds.data_ptr<int32_t>(), \
-                tile_bounds.data_ptr<int32_t>(), \
-                tile_experts.data_ptr<int32_t>(), \
+                a.bitstream, \
+                a.row_q_bits, \
+                a.row_q_bit_offsets, \
+                a.subgroup_scale, \
+                a.subgroup_minimum, \
+                a.neuron_scale, \
+                a.neuron_minimum, \
+                static_cast<const __half *>(a.input), \
+                static_cast<__half *>(a.output), \
+                a.expert_local, \
+                a.ids_dst, \
+                a.expert_bounds, \
+                a.tile_bounds, \
+                a.tile_experts, \
                 routes, experts, output_rows, groups, group_size, \
                 input_width, q_expert_stride, pool_phase, epilogue_mode, \
                 routed_input, 0, 1, nullptr)
@@ -2245,12 +2148,9 @@ void launch_nint_matmul_routed_cuda(
             TYLOINFER_LAUNCH_NINT_TILED_PREFILL(64, true);
         }
 #undef TYLOINFER_LAUNCH_NINT_TILED_PREFILL
-        TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+
         return;
     }
-    TYLOINFER_RUNTIME_CHECK(
-        route_tile_m == 8,
-        "NINT routed tile must be 8, 16, 32, 64, or 128");
     const int token_blocks =
         (tokens + warps_per_block - 1) / warps_per_block;
     const int64_t maximum_tasks =
@@ -2264,592 +2164,61 @@ void launch_nint_matmul_routed_cuda(
     nint_matmul_kernel<false><<<
         grid,
         dim3(32, warps_per_block), 0, stream>>>(
-            bitstream.data_ptr<uint8_t>(),
-            row_q_bits.data_ptr<uint8_t>(),
-            row_q_bit_offsets.data_ptr<int64_t>(),
-            subgroup_scale.data_ptr<uint8_t>(),
-            subgroup_minimum.data_ptr<uint8_t>(),
-            neuron_scale.data_ptr<float>(),
-            neuron_minimum.data_ptr<float>(),
-            quantized_input.data_ptr<int8_t>(),
-            input_scale.data_ptr<float>(),
-            reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
+            a.bitstream,
+            a.row_q_bits,
+            a.row_q_bit_offsets,
+            a.subgroup_scale,
+            a.subgroup_minimum,
+            a.neuron_scale,
+            a.neuron_minimum,
+            a.quantized_input,
+            a.input_scale,
+            static_cast<__half *>(a.output),
             tokens,
             output_rows,
             groups,
             padded_width,
             group_size,
-            route_ids.data_ptr<int32_t>(),
-            expert_local.data_ptr<int32_t>(),
-            use_compact ? ids_dst.data_ptr<int32_t>() : nullptr,
-            use_compact ? expert_bounds.data_ptr<int32_t>() : nullptr,
-            use_compact ? tile_bounds.data_ptr<int32_t>() : nullptr,
-            use_compact ? tile_experts.data_ptr<int32_t>() : nullptr,
+            a.route_ids,
+            a.expert_local,
+            use_compact ? a.ids_dst : nullptr,
+            use_compact ? a.expert_bounds : nullptr,
+            use_compact ? a.tile_bounds : nullptr,
+            use_compact ? a.tile_experts : nullptr,
             routes,
             experts,
             q_expert_stride,
             pool_phase,
             epilogue_mode,
             routed_input);
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+
 }
 
 
-std::vector<::tyloi::DenseTensor> nint8_one_quantize_reconstruct_cuda(
-        ::tyloi::DenseTensor input) {
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.is_contiguous() &&
-        input.scalar_type() == ::tyloi::kFloat16 &&
-        input.dim() == 2,
-        "NINT8-1 input must be contiguous CUDA fp16 rank-2");
-    const int rows = static_cast<int>(input.size(0));
-    const int width = static_cast<int>(input.size(1));
-    TYLOINFER_RUNTIME_CHECK(rows > 0 && width > 0, "NINT8-1 input must be non-empty");
-    const int groups = (width + 31) / 32;
-    auto quantized = ::tyloi::cuda::empty(
-        {rows, groups, 32},
-        input.options().dtype(::tyloi::kInt8));
-    auto scale = ::tyloi::cuda::empty({rows, groups}, input.options());
-    auto sum = ::tyloi::cuda::empty({rows, groups}, input.options());
-    auto reconstructed = ::tyloi::cuda::empty_like(input);
-    nint8_one_quantize_reconstruct_kernel<<<
-        rows * groups, 32, 0, mfq_current_cuda_stream()>>>(
-            reinterpret_cast<const __half *>(input.data_ptr<mfq_half>()),
-            quantized.data_ptr<int8_t>(),
-            reinterpret_cast<__half *>(scale.data_ptr<mfq_half>()),
-            reinterpret_cast<__half *>(sum.data_ptr<mfq_half>()),
-            reinterpret_cast<__half *>(reconstructed.data_ptr<mfq_half>()),
-            rows,
-            width,
-            groups);
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return {quantized, scale, sum, reconstructed};
-}
 
 
-::tyloi::DenseTensor nint_cublas_gemm_nt_f16acc_cuda(
-        ::tyloi::DenseTensor input,
-        ::tyloi::DenseTensor weight) {
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.is_contiguous() &&
-        input.scalar_type() == ::tyloi::kFloat16 &&
-        input.dim() == 2,
-        "GEMM input must be contiguous CUDA fp16 rank-2");
-    TYLOINFER_RUNTIME_CHECK(
-        weight.is_cuda() && weight.is_contiguous() &&
-        weight.scalar_type() == ::tyloi::kFloat16 &&
-        weight.dim() == 2 && weight.size(1) == input.size(1),
-        "GEMM weight must be contiguous CUDA fp16 [N,K]");
-    TYLOINFER_RUNTIME_CHECK(
-        input.device() == weight.device(),
-        "GEMM tensors must share one CUDA device");
-    const int rows = static_cast<int>(input.size(0));
-    const int width = static_cast<int>(input.size(1));
-    const int outputs = static_cast<int>(weight.size(0));
-    auto result = ::tyloi::cuda::empty({rows, outputs}, input.options());
-    cublasHandle_t handle = mfq_current_cublas_handle();
-    TYLOINFER_CUBLAS_CHECK(cublasSetStream(handle, mfq_current_cuda_stream()));
-    const __half alpha = __float2half(1.0f);
-    const __half beta = __float2half(0.0f);
-    TYLOINFER_CUBLAS_CHECK(cublasGemmEx(
-        handle,
-        CUBLAS_OP_T,
-        CUBLAS_OP_N,
-        outputs,
-        rows,
-        width,
-        &alpha,
-        weight.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        width,
-        input.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        width,
-        &beta,
-        result.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        outputs,
-        CUBLAS_COMPUTE_16F,
-        CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-    return result;
-}
 
 
-::tyloi::DenseTensor nint_cublas_gemm_nt_f32acc_cuda(
-        ::tyloi::DenseTensor input,
-        ::tyloi::DenseTensor weight) {
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.is_contiguous() &&
-        input.scalar_type() == ::tyloi::kFloat16 &&
-        input.dim() == 2,
-        "GEMM input must be contiguous CUDA fp16 rank-2");
-    TYLOINFER_RUNTIME_CHECK(
-        weight.is_cuda() && weight.is_contiguous() &&
-        weight.scalar_type() == ::tyloi::kFloat16 &&
-        weight.dim() == 2 && weight.size(1) == input.size(1),
-        "GEMM weight must be contiguous CUDA fp16 [N,K]");
-    TYLOINFER_RUNTIME_CHECK(
-        input.device() == weight.device(),
-        "GEMM tensors must share one CUDA device");
-    const int rows = static_cast<int>(input.size(0));
-    const int width = static_cast<int>(input.size(1));
-    const int outputs = static_cast<int>(weight.size(0));
-    auto result = ::tyloi::cuda::empty({rows, outputs}, input.options());
-    cublasHandle_t handle = mfq_current_cublas_handle();
-    TYLOINFER_CUBLAS_CHECK(cublasSetStream(handle, mfq_current_cuda_stream()));
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    TYLOINFER_CUBLAS_CHECK(cublasGemmEx(
-        handle,
-        CUBLAS_OP_T,
-        CUBLAS_OP_N,
-        outputs,
-        rows,
-        width,
-        &alpha,
-        weight.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        width,
-        input.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        width,
-        &beta,
-        result.data_ptr<mfq_half>(),
-        CUDA_R_16F,
-        outputs,
-        CUBLAS_COMPUTE_32F,
-        CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-    return result;
-}
 
 
-template <typename Output>
-static ::tyloi::DenseTensor nint_decode_impl(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        int64_t width,
-        int64_t group_size) {
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.is_cuda() && bitstream.is_contiguous() &&
-        bitstream.scalar_type() == ::tyloi::kUInt8 &&
-        bitstream.dim() == 1,
-        "NINT bitstream must be contiguous CUDA uint8 rank-1");
-    TYLOINFER_RUNTIME_CHECK(
-        row_q_bits.is_cuda() && row_q_bits.is_contiguous() &&
-        row_q_bits.scalar_type() == ::tyloi::kUInt8 &&
-        row_q_bits.dim() == 1,
-        "NINT q metadata must be contiguous CUDA uint8 rank-1");
-    TYLOINFER_RUNTIME_CHECK(
-        row_q_bit_offsets.is_cuda() && row_q_bit_offsets.is_contiguous() &&
-        row_q_bit_offsets.scalar_type() == ::tyloi::kInt64 &&
-        row_q_bit_offsets.dim() == 1,
-        "NINT row offsets must be contiguous CUDA int64 rank-1");
-    TYLOINFER_RUNTIME_CHECK(
-        subgroup_scale.is_cuda() && subgroup_scale.is_contiguous() &&
-        subgroup_scale.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_scale.dim() == 2 && subgroup_minimum.is_cuda() &&
-        subgroup_minimum.is_contiguous() &&
-        subgroup_minimum.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_minimum.sizes() == subgroup_scale.sizes(),
-        "NINT subgroup metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        neuron_scale.is_cuda() && neuron_scale.is_contiguous() &&
-        neuron_scale.scalar_type() == ::tyloi::kFloat32 &&
-        neuron_minimum.is_cuda() && neuron_minimum.is_contiguous() &&
-        neuron_minimum.scalar_type() == ::tyloi::kFloat32,
-        "NINT neuron metadata is invalid");
-    const int rows = static_cast<int>(subgroup_scale.size(0));
-    const int groups = static_cast<int>(subgroup_scale.size(1));
-    TYLOINFER_RUNTIME_CHECK(
-        rows > 0 && groups > 0 && group_size >= 4 && group_size <= 64 &&
-        width > 0 && width <= static_cast<int64_t>(groups) * group_size,
-        "NINT decode dimensions are invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        row_q_bits.numel() == rows && row_q_bit_offsets.numel() == rows &&
-        neuron_scale.numel() == rows && neuron_minimum.numel() == rows,
-        "NINT row metadata shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.device() == row_q_bits.device() &&
-        bitstream.device() == row_q_bit_offsets.device() &&
-        bitstream.device() == subgroup_scale.device() &&
-        bitstream.device() == subgroup_minimum.device() &&
-        bitstream.device() == neuron_scale.device() &&
-        bitstream.device() == neuron_minimum.device(),
-        "NINT tensors must share one CUDA device");
-    auto output = ::tyloi::cuda::empty(
-        {rows, width},
-        neuron_scale.options().dtype(
-            std::is_same_v<Output, __half>
-                ? ::tyloi::kFloat16
-                : ::tyloi::kFloat32));
-    constexpr int threads = 256;
-    const size_t total = static_cast<size_t>(rows) * width;
-    const int blocks = static_cast<int>(std::min<size_t>(
-        (total + threads - 1) / threads, 65535));
-    if constexpr (std::is_same_v<Output, __half>) {
-        if ((group_size == 24 || group_size == 28) && width % 4 == 0 &&
-                (reinterpret_cast<std::uintptr_t>(bitstream.data_ptr()) & 3u) == 0 &&
-                tyloi::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE") == nullptr) {
-            const auto launch = [&](auto gs) {
-                nint_decode_vec4_kernel<decltype(gs)::value><<<
-                    dim3((width / 4 + 127) / 128, std::min(rows, 65535)), 128, 0, mfq_current_cuda_stream()>>>(
-                    bitstream.data_ptr<uint8_t>(), row_q_bits.data_ptr<uint8_t>(), row_q_bit_offsets.data_ptr<int64_t>(),
-                    subgroup_scale.data_ptr<uint8_t>(), subgroup_minimum.data_ptr<uint8_t>(),
-                    neuron_scale.data_ptr<float>(), neuron_minimum.data_ptr<float>(),
-                    reinterpret_cast<half*>(output.template data_ptr<mfq_half>()), rows, groups, int(width), uint64_t(bitstream.numel()));
-            };
-            if (group_size == 24) launch(std::integral_constant<int, 24>{});
-            else launch(std::integral_constant<int, 28>{});
-            TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-            return output;
-        }
-    }
-    const auto output_data = [&]() {
-        if constexpr (std::is_same_v<Output, __half>) {
-            return reinterpret_cast<__half *>(output.template data_ptr<mfq_half>());
-        } else {
-            return output.template data_ptr<float>();
-        }
-    }();
-    nint_decode_rows_kernel<Output><<<
-        blocks, threads, 0, mfq_current_cuda_stream()>>>(
-            bitstream.data_ptr<uint8_t>(),
-            row_q_bits.data_ptr<uint8_t>(),
-            row_q_bit_offsets.data_ptr<int64_t>(),
-            subgroup_scale.data_ptr<uint8_t>(),
-            subgroup_minimum.data_ptr<uint8_t>(),
-            neuron_scale.data_ptr<float>(),
-            neuron_minimum.data_ptr<float>(),
-            output_data,
-            rows,
-            groups,
-            static_cast<int>(group_size),
-            static_cast<int>(width));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
-}
 
 
-::tyloi::DenseTensor nint_decode_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        int64_t width,
-        int64_t group_size) {
-    return nint_decode_impl<__half>(
-        std::move(bitstream), std::move(row_q_bits),
-        std::move(row_q_bit_offsets), std::move(subgroup_scale),
-        std::move(subgroup_minimum), std::move(neuron_scale),
-        std::move(neuron_minimum), width, group_size);
-}
-
-
-::tyloi::DenseTensor nint_decode_f32_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        int64_t width,
-        int64_t group_size) {
-    return nint_decode_impl<float>(
-        std::move(bitstream), std::move(row_q_bits),
-        std::move(row_q_bit_offsets), std::move(subgroup_scale),
-        std::move(subgroup_minimum), std::move(neuron_scale),
-        std::move(neuron_minimum), width, group_size);
-}
-
-
-static ::tyloi::DenseTensor nint_matmul_ws_impl(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor input,
-        const ::tyloi::DenseTensor * gate,
-        int64_t activation_mode,
-        int64_t group_size,
-        ::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale,
-        bool aligned_q8 = false,int uniform_bits = 0) {
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.is_contiguous() &&
-        (input.scalar_type() == ::tyloi::kFloat16 ||
-         input.scalar_type() == ::tyloi::kFloat32) &&
-        input.dim() == 2,
-        "NINT input must be contiguous CUDA fp16/fp32 rank-2");
-    if (gate != nullptr) {
-        TYLOINFER_RUNTIME_CHECK(
-            activation_mode == 1 || activation_mode == 2,
-            "NINT input gate mode must be sigmoid or SiLU");
-        TYLOINFER_RUNTIME_CHECK(
-            gate->is_cuda() && gate->is_contiguous() &&
-            (gate->scalar_type() == ::tyloi::kFloat16 ||
-             gate->scalar_type() == ::tyloi::kFloat32) &&
-            gate->dim() == 2 && gate->sizes() == input.sizes(),
-            "NINT gate must be contiguous CUDA fp16/fp32 and match input shape");
-    } else {
-        TYLOINFER_RUNTIME_CHECK(
-            activation_mode == 0,
-            "NINT activation mode requires a gate tensor");
-    }
-    TYLOINFER_RUNTIME_CHECK(
-        subgroup_scale.is_cuda() && subgroup_scale.is_contiguous() &&
-        subgroup_scale.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_scale.dim() == 2 && subgroup_minimum.is_cuda() &&
-        subgroup_minimum.is_contiguous() &&
-        subgroup_minimum.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_minimum.sizes() == subgroup_scale.sizes(),
-        "NINT subgroup metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.is_cuda() && bitstream.is_contiguous() &&
-        bitstream.scalar_type() == ::tyloi::kUInt8 &&
-        bitstream.dim() == 1 && row_q_bits.is_cuda() &&
-        row_q_bits.is_contiguous() &&
-        row_q_bits.scalar_type() == ::tyloi::kUInt8 &&
-        row_q_bits.dim() == 1 && row_q_bit_offsets.is_cuda() &&
-        row_q_bit_offsets.is_contiguous() &&
-        row_q_bit_offsets.scalar_type() == ::tyloi::kInt64 &&
-        row_q_bit_offsets.dim() == 1,
-        "NINT bitstream or q metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        neuron_scale.is_cuda() && neuron_scale.is_contiguous() &&
-        neuron_scale.scalar_type() == ::tyloi::kFloat32 &&
-        neuron_minimum.is_cuda() && neuron_minimum.is_contiguous() &&
-        neuron_minimum.scalar_type() == ::tyloi::kFloat32,
-        "NINT neuron metadata is invalid");
-    const int output_rows = static_cast<int>(subgroup_scale.size(0));
-    const int groups = static_cast<int>(subgroup_scale.size(1));
-    const int activation_rows = static_cast<int>(input.size(0));
-    const int real_width = static_cast<int>(input.size(1));
-    const int padded_width = groups * static_cast<int>(group_size);
-    TYLOINFER_RUNTIME_CHECK(
-        activation_rows >= 1 && activation_rows <= 8,
-        "NINT packed matmul supports M in [1,8]");
-    TYLOINFER_RUNTIME_CHECK(
-        group_size >= 4 && group_size <= 64 && real_width <= padded_width,
-        "NINT packed matmul dimensions are invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        row_q_bits.numel() == output_rows &&
-        row_q_bit_offsets.numel() == output_rows &&
-        neuron_scale.numel() == output_rows &&
-        neuron_minimum.numel() == output_rows,
-        "NINT row metadata shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(
-        quantized_input.is_cuda() && quantized_input.is_contiguous() &&
-        quantized_input.scalar_type() == ::tyloi::kInt8 &&
-        quantized_input.dim() == 2 &&
-        quantized_input.size(0) >= activation_rows &&
-        quantized_input.size(1) >= padded_width && input_scale.is_cuda() &&
-        input_scale.is_contiguous() &&
-        input_scale.scalar_type() == ::tyloi::kFloat32 &&
-        input_scale.dim() == 2 && input_scale.size(0) >= activation_rows &&
-        input_scale.size(1) >= groups,
-        "NINT activation workspace is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.device() == input.device() &&
-        row_q_bits.device() == input.device() &&
-        row_q_bit_offsets.device() == input.device() &&
-        subgroup_scale.device() == input.device() &&
-        subgroup_minimum.device() == input.device() &&
-        neuron_scale.device() == input.device() &&
-        neuron_minimum.device() == input.device() &&
-        quantized_input.device() == input.device() &&
-        input_scale.device() == input.device() &&
-        (gate == nullptr || gate->device() == input.device()),
-        "NINT tensors and workspace must share one CUDA device");
-    auto output = ::tyloi::cuda::empty(
-        {activation_rows, output_rows}, input.options().dtype(::tyloi::kFloat16));
-    const cudaStream_t stream = mfq_current_cuda_stream();
-    const int quantize_threads = group_size <= 32 ? 32 : 64;
-    const char* dense_group_setting = tyloi::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
-    const char* whole_setting_for_sum = tyloi::cuda::env_lookup("TYLOINFER_NINT_WHOLE_GROUP");
-    const char* batch_setting_for_sum = tyloi::cuda::env_lookup("TYLOINFER_NINT_BATCH_WHOLE_GROUP");
-    const char* sum_setting = tyloi::cuda::env_lookup("TYLOINFER_NINT_ACTIVATION_SUM");
-    const auto* interleaved_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_INTERLEAVED");
-    const bool interleaved_default=activation_rows>=3 && activation_rows<=6;
-    const bool interleaved_requested=interleaved_setting?interleaved_setting[0]=='1':interleaved_default;
-    const auto* float_whole_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_FLOAT_WHOLE_GROUP");
-    const bool whole_input=input.scalar_type()==::tyloi::kFloat16 ||
-        (input.scalar_type()==::tyloi::kFloat32 && (!float_whole_setting || float_whole_setting[0]!='0'));
-    const bool sum_default=nint_default_activation_sum(int(group_size),groups,activation_rows,uniform_bits,interleaved_requested);
-    const char* q8_decode_option=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE");
-    const int q8_decode=q8_decode_option?std::atoi(q8_decode_option):2;
-    const bool grouped_router=output_rows==512 && groups==54;
-    const bool grouped_q8=aligned_q8 && group_size==48 && q8_decode>0 &&
-        (reinterpret_cast<uintptr_t>(bitstream.data_ptr())&3u)==0 &&
-        (activation_rows>1 || output_rows>2048 || q8_decode==3 || grouped_router);
-    const auto* q8_sum_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_SUM");
-    // Large vocabulary projections amortize this once-per-activation sum.
-    // Tiny router/alpha/beta matrices keep their existing launch costs.
-    const bool head_sum_default=output_rows>=65536 && groups==54 && activation_rows<=6;
-    const bool q8_sums=grouped_q8 && q8_decode>=2 &&
-        (q8_sum_setting?q8_sum_setting[0]=='1':head_sum_default);
-    const bool cached_packed_sums = (sum_setting?sum_setting[0]=='1':sum_default) && !aligned_q8 &&
-        (group_size==24 || group_size==28) && groups>32 &&
-        whole_input &&
-        (reinterpret_cast<uintptr_t>(bitstream.data_ptr())&3u)==0 &&
-        (!dense_group_setting || dense_group_setting[0]!='0') &&
-        (!whole_setting_for_sum || whole_setting_for_sum[0]!='0') &&
-        (activation_rows==1 || !batch_setting_for_sum || batch_setting_for_sum[0]!='0') &&
-        tyloi::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE")==nullptr;
-    const bool cached_sums=cached_packed_sums || q8_sums;
-    const auto* fixed_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_FIXED_BITS");
-    const bool interleaved=interleaved_requested &&
-        uniform_bits==5 && group_size==28 && groups>32 && groups<=96 &&
-        activation_rows>=2 && activation_rows<=6 && !aligned_q8 &&
-        whole_input &&
-        (reinterpret_cast<uintptr_t>(bitstream.data_ptr())&3u)==0 &&
-        (!dense_group_setting || dense_group_setting[0]!='0') &&
-        (!whole_setting_for_sum || whole_setting_for_sum[0]!='0') &&
-        (!batch_setting_for_sum || batch_setting_for_sum[0]!='0') &&
-        (!fixed_setting || fixed_setting[0]!='0') &&
-        tyloi::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE")==nullptr;
-    const auto* exact_batch=tyloi::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");
-    const int interleaved_columns=activation_rows<=2?2:activation_rows<=4?4:
-        (exact_batch && exact_batch[0]=='0')?8:activation_rows;
-    const NintPreparedGroupInput* prepared=nullptr;
-    if(!gate)for(auto* scope=prepared_input_scope;scope && !prepared;scope=scope->previous) {
-        if(scope->input.data_ptr()!=input.data_ptr() || scope->input.sizes()!=input.sizes() ||
-                scope->input.scalar_type()!=input.scalar_type() || scope->input.device()!=input.device())continue;
-        for(const auto& group:scope->groups)if(group.gs==group_size &&
-                group.scale.size(1)==groups && (!interleaved || group.interleaved.defined())) {
-            prepared=&group;break;
-        }
-    }
-    if(prepared){quantized_input=prepared->codes;input_scale=prepared->scale;}
-    ::tyloi::DenseTensor interleaved_activation;
-    if(interleaved)interleaved_activation=prepared?prepared->interleaved: ::tyloi::cuda::empty(
-        {groups,7,interleaved_columns,4},input.options().dtype(::tyloi::kInt8));
-    ::tyloi::DenseTensor activation_sums;
-    if(cached_sums)activation_sums=prepared?prepared->sum: ::tyloi::cuda::empty(
-        {activation_rows,groups},input.options().dtype(::tyloi::kInt32));
-    const auto quantize = [&](auto cached_sum) {
-    const auto quantize_columns = [&](auto columns) {
-    nint_quantize_activation_kernel<decltype(cached_sum)::value,decltype(columns)::value><<<
-        dim3(activation_rows, groups), quantize_threads, 0, stream>>>(
-            input.data_ptr(),
-            gate == nullptr
-                ? nullptr
-                : gate->data_ptr(),
-            quantized_input.data_ptr<int8_t>(),
-            input_scale.data_ptr<float>(),
-            activation_rows,
-            real_width,
-            padded_width,
-            groups,
-            static_cast<int>(group_size),
-            static_cast<int>(activation_mode),
-            input.scalar_type() == ::tyloi::kFloat32,
-            gate != nullptr && gate->scalar_type() == ::tyloi::kFloat32,
-            activation_sums.defined()?activation_sums.data_ptr<int32_t>():nullptr,
-            interleaved_activation.defined()?interleaved_activation.data_ptr<int8_t>():nullptr);
-    };
-    if(interleaved) {
-        if(interleaved_columns==2)quantize_columns(std::integral_constant<int,2>{});
-        else if(interleaved_columns==4)quantize_columns(std::integral_constant<int,4>{});
-        else if(interleaved_columns==5)quantize_columns(std::integral_constant<int,5>{});
-        else if(interleaved_columns==6)quantize_columns(std::integral_constant<int,6>{});
-        else quantize_columns(std::integral_constant<int,8>{});
-    }else quantize_columns(std::integral_constant<int,0>{});
-    };
-    if(!prepared) {
-        if(cached_sums)quantize(std::true_type{});else quantize(std::false_type{});
-    }
+int tyloi::cuda::nint_raw::project(const Projection & a, cudaStream_t stream) {
+    const auto & w=a.q8.weight;
+    const auto aligned_q8=a.aligned_q8, whole_input=a.whole_input, cached_sums=a.cached_sums;
+    const auto dense_group_setting=a.dense_group_setting, fixed_setting=a.fixed_setting;
+    const int group_size=w.group_size, groups=w.groups, output_rows=w.rows;
+    const int activation_rows=a.q8.rows, padded_width=a.q8.padded_width;
+    const int real_width=a.real_width, uniform_bits=a.uniform_bits;
     if (aligned_q8 && group_size % 4 == 0 &&
-        (reinterpret_cast<uintptr_t>(bitstream.data_ptr<uint8_t>()) & 3u) == 0) {
-        // The real 512-expert, 2560-wide router benefits from one affine per
-        // complete group at M=1 as well. Retain the ordered path for tiny
-        // projections such as GDN alpha/beta, which need more resident warps.
-        if(grouped_q8) {
-            const auto launch_short=[&](auto rows) {
-                if(q8_decode>=2) {
-                    const NintWholeArgs args{bitstream.data_ptr<uint8_t>(),row_q_bits.data_ptr<uint8_t>(),
-                        subgroup_scale.data_ptr<uint8_t>(),subgroup_minimum.data_ptr<uint8_t>(),row_q_bit_offsets.data_ptr<int64_t>(),
-                        neuron_scale.data_ptr<float>(),neuron_minimum.data_ptr<float>(),quantized_input.data_ptr<int8_t>(),
-                        input_scale.data_ptr<float>(),reinterpret_cast<__half*>(output.data_ptr<mfq_half>()),
-                        uint64_t(bitstream.numel()),output_rows,groups,activation_rows,false,
-                        activation_sums.defined()?activation_sums.data_ptr<int32_t>():nullptr};
-                    nint_launch_grouped_q8(args,stream);
-                } else {
-                    nint_matmul_aligned_q8_kernel<decltype(rows)::value,48><<<
-                        (output_rows+3)/4,dim3(32,4),0,stream>>>(
-                        bitstream.data_ptr<uint8_t>(),row_q_bit_offsets.data_ptr<int64_t>(),
-                        subgroup_scale.data_ptr<uint8_t>(),subgroup_minimum.data_ptr<uint8_t>(),
-                        neuron_scale.data_ptr<float>(),neuron_minimum.data_ptr<float>(),
-                        quantized_input.data_ptr<int8_t>(),input_scale.data_ptr<float>(),
-                        reinterpret_cast<__half*>(output.data_ptr<mfq_half>()),
-                        activation_rows,output_rows,groups,padded_width,48);
-                }
-            };
-            switch(activation_rows) {
-            case 1:launch_short(std::integral_constant<int,1>{});break;
-            case 2:launch_short(std::integral_constant<int,2>{});break;
-            case 3:launch_short(std::integral_constant<int,3>{});break;
-            case 4:launch_short(std::integral_constant<int,4>{});break;
-            case 5:launch_short(std::integral_constant<int,5>{});break;
-            case 6:launch_short(std::integral_constant<int,6>{});break;
-            default:launch_short(std::integral_constant<int,8>{});break;
-            }
-        } else {
-        // Specialize only the proven one-row input, independent of device.
-        if (activation_rows == 1) {
-        const char* ordered = tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_ORDERED");
-        if (group_size == 48 && groups <= 64 && output_rows <= 2048 &&
-                (!ordered || ordered[0] != '0')) {
-            nint_q8_ordered_kernel<<<output_rows, dim3(32, 4), 0, stream>>>(
-                bitstream.data_ptr<uint8_t>(), row_q_bit_offsets.data_ptr<int64_t>(),
-                subgroup_scale.data_ptr<uint8_t>(), subgroup_minimum.data_ptr<uint8_t>(),
-                neuron_scale.data_ptr<float>(), neuron_minimum.data_ptr<float>(),
-                quantized_input.data_ptr<int8_t>(), input_scale.data_ptr<float>(),
-                reinterpret_cast<__half*>(output.data_ptr<mfq_half>()), output_rows, groups);
-        } else {
-        nint_matmul_aligned_q8_kernel<1><<<
-            dim3((output_rows + 3) / 4), dim3(32, 4), 0, stream>>>(
-                bitstream.data_ptr<uint8_t>(),
-                row_q_bit_offsets.data_ptr<int64_t>(),
-                subgroup_scale.data_ptr<uint8_t>(),
-                subgroup_minimum.data_ptr<uint8_t>(),
-                neuron_scale.data_ptr<float>(),
-                neuron_minimum.data_ptr<float>(),
-                quantized_input.data_ptr<int8_t>(),
-                input_scale.data_ptr<float>(),
-                reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
-                activation_rows, output_rows, groups, padded_width,
-                static_cast<int>(group_size));
+        (reinterpret_cast<uintptr_t>(w.bitstream) & 3u) == 0) {
+        auto args=a.q8;
+        if(!args.grouped && activation_rows==1) {
+            const char* ordered=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_ORDERED");
+            args.ordered=group_size==48 && groups<=64 && output_rows<=2048 && (!ordered || ordered[0]!='0');
         }
-        } else {
-        nint_matmul_aligned_q8_kernel<8><<<
-            dim3((output_rows + 3) / 4), dim3(32, 4), 0, stream>>>(
-                bitstream.data_ptr<uint8_t>(),
-                row_q_bit_offsets.data_ptr<int64_t>(),
-                subgroup_scale.data_ptr<uint8_t>(),
-                subgroup_minimum.data_ptr<uint8_t>(),
-                neuron_scale.data_ptr<float>(),
-                neuron_minimum.data_ptr<float>(),
-                quantized_input.data_ptr<int8_t>(),
-                input_scale.data_ptr<float>(),
-                reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
-                activation_rows, output_rows, groups, padded_width,
-                static_cast<int>(group_size));
-        }
-        }
-    } else if ((group_size == 24 || group_size == 28) &&
-            (reinterpret_cast<std::uintptr_t>(bitstream.data_ptr()) & 3u) == 0 &&
+        q8(args,stream);    } else if ((group_size == 24 || group_size == 28) &&
+            (reinterpret_cast<std::uintptr_t>(w.bitstream) & 3u) == 0 &&
             (!dense_group_setting || dense_group_setting[0] != '0') &&
             tyloi::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE") == nullptr) {
         const char* whole_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_WHOLE_GROUP");
@@ -2863,11 +2232,11 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
                 (!whole_setting || whole_setting[0]!='0')) {
             const auto* group_load_option=tyloi::cuda::env_lookup("TYLOINFER_NINT_GROUP_LOAD");
             const bool group_load=group_load_option && group_load_option[0]=='1';
-            const NintWholeArgs args{bitstream.data_ptr<uint8_t>(),row_q_bits.data_ptr<uint8_t>(),
-                subgroup_scale.data_ptr<uint8_t>(),subgroup_minimum.data_ptr<uint8_t>(),
-                row_q_bit_offsets.data_ptr<int64_t>(),neuron_scale.data_ptr<float>(),neuron_minimum.data_ptr<float>(),
-                quantized_input.data_ptr<int8_t>(),input_scale.data_ptr<float>(),
-                reinterpret_cast<__half*>(output.data_ptr<mfq_half>()),uint64_t(bitstream.numel()),output_rows,groups,activation_rows,group_load,activation_sums.defined()?activation_sums.data_ptr<int32_t>():nullptr,interleaved_activation.defined()?reinterpret_cast<const int*>(interleaved_activation.data_ptr<int8_t>()):nullptr};
+            const NintWholeArgs args{w.bitstream,w.row_q_bits,
+                w.subgroup_scale,w.subgroup_minimum,
+                w.row_q_bit_offsets,w.neuron_scale,w.neuron_minimum,
+                a.q8.input,a.q8.input_scale,
+                static_cast<__half*>(a.q8.output),uint64_t(w.bytes),output_rows,groups,activation_rows,group_load,a.q8.sums,reinterpret_cast<const int*>(a.interleaved)};
             const auto launch_whole=[&](auto gs,auto rows) {
                 // Preserve the original group-to-lane map and four-term XOR
                 // tree. A projection with at most 96 groups has no work for
@@ -2889,7 +2258,7 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
                     if(tracing)tyloi::cuda::dispatch_trace::record(stream,"nint_whole_warp_rows",
                         reinterpret_cast<const void*>(nint_whole_warp_rows_kernel<decltype(gs)::value,decltype(rows)::value,CachedSum>),details);
                 }else if(groups<=96 && staged && staged[0]=='1' &&
-                    (reinterpret_cast<uintptr_t>(bitstream.data_ptr())&15u)==0) {
+                    (reinterpret_cast<uintptr_t>(w.bitstream)&15u)==0) {
                     nint_whole_group_kernel<decltype(gs)::value,decltype(rows)::value,3,true,CachedSum><<<output_rows,dim3(32,3),0,stream>>>(args);
                     if(tracing)tyloi::cuda::dispatch_trace::record(stream,"nint_packed_stage",
                         reinterpret_cast<const void*>(nint_whole_group_kernel<decltype(gs)::value,decltype(rows)::value,3,true,CachedSum>),details);
@@ -2923,12 +2292,12 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
             constexpr int rows_per_block = 4 / decltype(warps)::value;
             nint_matmul_dense_kernel<decltype(gs)::value, decltype(rows)::value, decltype(warps)::value><<<
                 (output_rows + rows_per_block - 1) / rows_per_block, dim3(32, 4), 0, stream>>>(
-                bitstream.data_ptr<uint8_t>(), row_q_bits.data_ptr<uint8_t>(),
-                row_q_bit_offsets.data_ptr<int64_t>(), subgroup_scale.data_ptr<uint8_t>(),
-                subgroup_minimum.data_ptr<uint8_t>(), neuron_scale.data_ptr<float>(),
-                neuron_minimum.data_ptr<float>(), quantized_input.data_ptr<int8_t>(),
-                input_scale.data_ptr<float>(), reinterpret_cast<half*>(output.data_ptr<mfq_half>()),
-                activation_rows, output_rows, groups, uint64_t(bitstream.numel()));
+                w.bitstream, w.row_q_bits,
+                w.row_q_bit_offsets, w.subgroup_scale,
+                w.subgroup_minimum, w.neuron_scale,
+                w.neuron_minimum, a.q8.input,
+                a.q8.input_scale, static_cast<__half*>(a.q8.output),
+                activation_rows, output_rows, groups, uint64_t(w.bytes));
         };
         const auto select_warps = [&](auto gs, auto rows) {
             if (groups <= 32) launch_dense(gs, rows, std::integral_constant<int, 1>{});
@@ -2948,16 +2317,16 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
     const auto launch_rows=[&](auto rows) {
     nint_matmul_kernel<decltype(single)::value,decltype(grouped)::value,decltype(rows)::value><<<
         dim3((output_rows + 3) / 4), dim3(32, 4), 0, stream>>>(
-            bitstream.data_ptr<uint8_t>(),
-            row_q_bits.data_ptr<uint8_t>(),
-            row_q_bit_offsets.data_ptr<int64_t>(),
-            subgroup_scale.data_ptr<uint8_t>(),
-            subgroup_minimum.data_ptr<uint8_t>(),
-            neuron_scale.data_ptr<float>(),
-            neuron_minimum.data_ptr<float>(),
-            quantized_input.data_ptr<int8_t>(),
-            input_scale.data_ptr<float>(),
-            reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
+            w.bitstream,
+            w.row_q_bits,
+            w.row_q_bit_offsets,
+            w.subgroup_scale,
+            w.subgroup_minimum,
+            w.neuron_scale,
+            w.neuron_minimum,
+            a.q8.input,
+            a.q8.input_scale,
+            static_cast<__half *>(a.q8.output),
             activation_rows,
             output_rows,
             groups,
@@ -2974,7 +2343,7 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
             0,
             0,
             0,
-            false,static_cast<uint64_t>(bitstream.numel()));
+            false,static_cast<uint64_t>(w.bytes));
     };
     const auto* exact=tyloi::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");
     if constexpr(!decltype(single)::value) {
@@ -2992,7 +2361,7 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
     };
     const auto* single=tyloi::cuda::env_lookup("TYLOINFER_NINT_SINGLE_ROW");
     if (activation_rows == 1 && single && std::strcmp(single, "1") == 0 &&
-            (reinterpret_cast<std::uintptr_t>(bitstream.data_ptr()) & 3u) == 0) {
+            (reinterpret_cast<std::uintptr_t>(w.bitstream) & 3u) == 0) {
         const size_t activation_bytes =
             (static_cast<size_t>(padded_width) + 3u) & ~size_t(3u);
         const size_t shared_bytes = activation_bytes +
@@ -3004,14 +2373,10 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
             thread_local int cached_device = -1;
             thread_local int shared_limit = 0;
             thread_local int processor_count = 0;
-            const int device = input.get_device();
+            const int device = a.device;
             if (cached_device != device) {
-                TYLOINFER_RUNTIME_CHECK(cudaDeviceGetAttribute(&shared_limit,
-                    cudaDevAttrMaxSharedMemoryPerBlock, device) == cudaSuccess,
-                    "NINT shared activation device query failed");
-                TYLOINFER_RUNTIME_CHECK(cudaDeviceGetAttribute(&processor_count,
-                    cudaDevAttrMultiProcessorCount, device) == cudaSuccess && processor_count > 0,
-                    "NINT processor count query failed");
+                if(cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlock, device) != cudaSuccess) return 1;
+                if(cudaDeviceGetAttribute(&processor_count, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || processor_count <= 0) return 2;
                 cached_device = device;
             }
             const int rows_per_processor = (output_rows - 1) / processor_count + 1;
@@ -3029,15 +2394,15 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
             nint_matmul_activation_cache_kernel<decltype(grouped)::value><<<
                 dim3((output_rows + cache_warps - 1) / cache_warps),
                 dim3(32, cache_warps), shared_bytes, stream>>>(
-                    bitstream.data_ptr<uint8_t>(), row_q_bits.data_ptr<uint8_t>(),
-                    row_q_bit_offsets.data_ptr<int64_t>(),
-                    subgroup_scale.data_ptr<uint8_t>(),
-                    subgroup_minimum.data_ptr<uint8_t>(),
-                    neuron_scale.data_ptr<float>(), neuron_minimum.data_ptr<float>(),
-                    quantized_input.data_ptr<int8_t>(), input_scale.data_ptr<float>(),
-                    reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
+                    w.bitstream, w.row_q_bits,
+                    w.row_q_bit_offsets,
+                    w.subgroup_scale,
+                    w.subgroup_minimum,
+                    w.neuron_scale, w.neuron_minimum,
+                    a.q8.input, a.q8.input_scale,
+                    static_cast<__half *>(a.q8.output),
                     padded_width, groups, static_cast<int>(group_size), output_rows,
-                    static_cast<uint64_t>(bitstream.numel()));
+                    static_cast<uint64_t>(w.bytes));
             };
             if(use_group)launch_cache(std::true_type{});
             else launch_cache(std::false_type{});
@@ -3049,484 +2414,6 @@ static ::tyloi::DenseTensor nint_matmul_ws_impl(
         launch(std::false_type{},std::false_type{});
     }
     }
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
+
+    return 0;
 }
-
-
-::tyloi::DenseTensor nint_matmul_fixed_bits_ws_cuda(
-        ::tyloi::DenseTensor bitstream,::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,::tyloi::DenseTensor input,
-        int64_t group_size,::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale,int uniform_bits) {
-    return nint_matmul_ws_impl(bitstream,row_q_bits,row_q_bit_offsets,subgroup_scale,
-        subgroup_minimum,neuron_scale,neuron_minimum,input,nullptr,0,group_size,
-        quantized_input,input_scale,false,uniform_bits);
-}
-
-::tyloi::DenseTensor nint_matmul_ws_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor input,
-        int64_t group_size,
-        ::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale) {
-    return nint_matmul_ws_impl(
-        bitstream, row_q_bits, row_q_bit_offsets,
-        subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
-        input, nullptr, 0, group_size, quantized_input, input_scale);
-}
-
-
-::tyloi::DenseTensor nint_matmul_q8_ws_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor input,
-        int64_t group_size,
-        ::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale) {
-    return nint_matmul_ws_impl(
-        bitstream, row_q_bits, row_q_bit_offsets,
-        subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
-        input, nullptr, 0, group_size, quantized_input, input_scale, true);
-}
-
-
-__global__ void nint_online_reduce_kernel(const float* partial,__half* output,int elements,int splits) {
-    for(int index=int(blockIdx.x)*blockDim.x+threadIdx.x;index<elements;index+=blockDim.x*gridDim.x) {
-        float sum=0;
-        for(int split=0;split<splits;++split)sum+=partial[size_t(split)*elements+index];
-        output[index]=__float2half_rn(sum);
-    }
-}
-
-::tyloi::DenseTensor nint_matmul_online_f16_cuda(
-        ::tyloi::DenseTensor bitstream,::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,::tyloi::DenseTensor input,int64_t group_size) {
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.dim()==2 &&
-        input.scalar_type()==::tyloi::kFloat16 && input.size(0)>8 && input.size(0)<=32,
-        "NINT online projection requires contiguous CUDA FP16 input with 9..32 rows");
-    for(const auto* tensor:{&bitstream,&row_q_bits,&row_q_bit_offsets,&subgroup_scale,
-            &subgroup_minimum,&neuron_scale,&neuron_minimum}) {
-        TYLOINFER_RUNTIME_CHECK(tensor->is_cuda() && tensor->is_contiguous() && tensor->device()==input.device(),
-            "NINT online projection tensors must share the input CUDA device");
-    }
-    TYLOINFER_RUNTIME_CHECK(bitstream.scalar_type()==::tyloi::kUInt8 && bitstream.dim()==1 &&
-        row_q_bits.scalar_type()==::tyloi::kUInt8 && row_q_bits.dim()==1 &&
-        row_q_bit_offsets.scalar_type()==::tyloi::kInt64 && row_q_bit_offsets.dim()==1 &&
-        subgroup_scale.scalar_type()==::tyloi::kUInt8 && subgroup_scale.dim()==2 &&
-        subgroup_minimum.scalar_type()==::tyloi::kUInt8 && subgroup_minimum.sizes()==subgroup_scale.sizes() &&
-        neuron_scale.scalar_type()==::tyloi::kFloat32 && neuron_minimum.scalar_type()==::tyloi::kFloat32,
-        "NINT online projection metadata types are invalid");
-    const int rows=int(input.size(0)),outputs=int(subgroup_scale.size(0)),groups=int(subgroup_scale.size(1));
-    TYLOINFER_RUNTIME_CHECK(outputs>0 && groups>0 && group_size>=4 && group_size<=64 &&
-        input.size(1)>0 && input.size(1)<=int64_t(groups)*group_size && row_q_bits.numel()==outputs &&
-        row_q_bit_offsets.numel()==outputs && neuron_scale.numel()==outputs && neuron_minimum.numel()==outputs,
-        "NINT online projection metadata dimensions are invalid");
-    auto output=::tyloi::cuda::empty({rows,outputs},input.options());
-    const int output_tiles=(outputs+kNintPrefillTileN-1)/kNintPrefillTileN;
-    int split=1;
-    static thread_local int cached_device=-1,processors=1;
-    if(cached_device!=input.get_device()) {
-        TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&processors,cudaDevAttrMultiProcessorCount,input.get_device()));
-        cached_device=input.get_device();
-    }
-    while(split<8 && output_tiles*split<processors*2 && input.size(1)>=int64_t(split*2)*kNintPrefillTileK)split*=2;
-    auto partial=split>1 ? ::tyloi::cuda::empty({split,rows,outputs},input.options().dtype(::tyloi::kFloat32))
-        : ::tyloi::DenseTensor();
-    const auto launch=[&](auto row_tile) {
-        nint_matmul_tiled_prefill_kernel<decltype(row_tile)::value,true,false,true><<<
-            dim3(output_tiles,split),dim3(32,kNintPrefillWarps),0,mfq_current_cuda_stream()>>>(
-                bitstream.data_ptr<uint8_t>(),row_q_bits.data_ptr<uint8_t>(),row_q_bit_offsets.data_ptr<int64_t>(),
-                subgroup_scale.data_ptr<uint8_t>(),subgroup_minimum.data_ptr<uint8_t>(),
-                neuron_scale.data_ptr<float>(),neuron_minimum.data_ptr<float>(),
-                reinterpret_cast<const __half*>(input.data_ptr<mfq_half>()),reinterpret_cast<__half*>(output.data_ptr<mfq_half>()),
-                nullptr,nullptr,nullptr,nullptr,nullptr,
-                1,1,outputs,groups,int(group_size),int(input.size(1)),0,0,0,true,rows,split,
-                split>1 ? partial.data_ptr<float>() : nullptr);
-    };
-    if(rows<=16)launch(std::integral_constant<int,16>{});
-    else launch(std::integral_constant<int,32>{});
-    if(split>1)nint_online_reduce_kernel<<<(rows*outputs+255)/256,256,0,mfq_current_cuda_stream()>>>(
-        partial.data_ptr<float>(),reinterpret_cast<__half*>(output.data_ptr<mfq_half>()),rows*outputs,split);
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
-}
-
-::tyloi::DenseTensor nint_matmul_input_mul_fixed_bits_ws_cuda(
-        ::tyloi::DenseTensor bitstream,::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,::tyloi::DenseTensor input,
-        ::tyloi::DenseTensor gate,int64_t activation_mode,int64_t group_size,
-        ::tyloi::DenseTensor quantized_input,::tyloi::DenseTensor input_scale,int uniform_bits) {
-    return nint_matmul_ws_impl(bitstream,row_q_bits,row_q_bit_offsets,subgroup_scale,
-        subgroup_minimum,neuron_scale,neuron_minimum,input,&gate,activation_mode,
-        group_size,quantized_input,input_scale,false,uniform_bits);
-}
-
-::tyloi::DenseTensor nint_matmul_input_mul_ws_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor input,
-        ::tyloi::DenseTensor gate,
-        int64_t activation_mode,
-        int64_t group_size,
-        ::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale) {
-    return nint_matmul_ws_impl(
-        bitstream, row_q_bits, row_q_bit_offsets,
-        subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
-        input, &gate, activation_mode, group_size,
-        quantized_input, input_scale);
-}
-
-
-::tyloi::DenseTensor nint_matmul_input_mul_q8_ws_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor input,
-        ::tyloi::DenseTensor gate,
-        int64_t activation_mode,
-        int64_t group_size,
-        ::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale) {
-    return nint_matmul_ws_impl(
-        bitstream, row_q_bits, row_q_bit_offsets,
-        subgroup_scale, subgroup_minimum, neuron_scale, neuron_minimum,
-        input, &gate, activation_mode, group_size,
-        quantized_input, input_scale, true);
-}
-
-
-#ifndef TYLOINFER_NATIVE_CUDA
-::tyloi::DenseTensor nint_backward_input_cuda(
-        ::tyloi::DenseTensor bitstream,
-        ::tyloi::DenseTensor row_q_bits,
-        ::tyloi::DenseTensor row_q_bit_offsets,
-        ::tyloi::DenseTensor subgroup_scale,
-        ::tyloi::DenseTensor subgroup_minimum,
-        ::tyloi::DenseTensor neuron_scale,
-        ::tyloi::DenseTensor neuron_minimum,
-        ::tyloi::DenseTensor output_gradient,
-        int64_t width,
-        int64_t group_size) {
-    TYLOINFER_RUNTIME_CHECK(
-        output_gradient.is_cuda() && output_gradient.is_contiguous() &&
-        output_gradient.scalar_type() == ::tyloi::kFloat16 &&
-        output_gradient.dim() == 2,
-        "NINT output gradient must be contiguous CUDA fp16 rank-2");
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.is_cuda() && bitstream.is_contiguous() &&
-        bitstream.scalar_type() == ::tyloi::kUInt8 &&
-        bitstream.dim() == 1 && row_q_bits.is_cuda() &&
-        row_q_bits.is_contiguous() &&
-        row_q_bits.scalar_type() == ::tyloi::kUInt8 &&
-        row_q_bits.dim() == 1 && row_q_bit_offsets.is_cuda() &&
-        row_q_bit_offsets.is_contiguous() &&
-        row_q_bit_offsets.scalar_type() == ::tyloi::kInt64 &&
-        row_q_bit_offsets.dim() == 1,
-        "NINT bitstream or q metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        subgroup_scale.is_cuda() && subgroup_scale.is_contiguous() &&
-        subgroup_scale.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_scale.dim() == 2 && subgroup_minimum.is_cuda() &&
-        subgroup_minimum.is_contiguous() &&
-        subgroup_minimum.scalar_type() == ::tyloi::kUInt8 &&
-        subgroup_minimum.sizes() == subgroup_scale.sizes(),
-        "NINT subgroup metadata is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        neuron_scale.is_cuda() && neuron_scale.is_contiguous() &&
-        neuron_scale.scalar_type() == ::tyloi::kFloat32 &&
-        neuron_minimum.is_cuda() && neuron_minimum.is_contiguous() &&
-        neuron_minimum.scalar_type() == ::tyloi::kFloat32,
-        "NINT neuron metadata is invalid");
-    const int output_rows = static_cast<int>(subgroup_scale.size(0));
-    const int groups = static_cast<int>(subgroup_scale.size(1));
-    const int activation_rows = static_cast<int>(output_gradient.size(0));
-    TYLOINFER_RUNTIME_CHECK(
-        activation_rows >= 1 && activation_rows <= 8 &&
-        output_gradient.size(1) == output_rows && group_size >= 4 &&
-        group_size <= 64 && width > 0 &&
-        width <= static_cast<int64_t>(groups) * group_size,
-        "NINT packed backward dimensions are invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        row_q_bits.numel() == output_rows &&
-        row_q_bit_offsets.numel() == output_rows &&
-        neuron_scale.numel() == output_rows &&
-        neuron_minimum.numel() == output_rows,
-        "NINT backward row metadata shape mismatch");
-    TYLOINFER_RUNTIME_CHECK(
-        bitstream.device() == output_gradient.device() &&
-        row_q_bits.device() == output_gradient.device() &&
-        row_q_bit_offsets.device() == output_gradient.device() &&
-        subgroup_scale.device() == output_gradient.device() &&
-        subgroup_minimum.device() == output_gradient.device() &&
-        neuron_scale.device() == output_gradient.device() &&
-        neuron_minimum.device() == output_gradient.device(),
-        "NINT backward tensors must share one CUDA device");
-    auto result = ::tyloi::cuda::empty(
-        {activation_rows, width}, output_gradient.options());
-    constexpr int warps_per_block = 4;
-    constexpr int rows_per_tile = 4;
-    const int chunks_per_group =
-        (static_cast<int>(group_size) + 3) / 4;
-    const int total_chunks = groups * chunks_per_group;
-    nint_backward_input_kernel<<<
-        dim3(
-            (total_chunks + warps_per_block - 1) / warps_per_block,
-            (activation_rows + rows_per_tile - 1) / rows_per_tile),
-        dim3(32, warps_per_block),
-        0,
-        mfq_current_cuda_stream()>>>(
-            bitstream.data_ptr<uint8_t>(),
-            row_q_bits.data_ptr<uint8_t>(),
-            row_q_bit_offsets.data_ptr<int64_t>(),
-            subgroup_scale.data_ptr<uint8_t>(),
-            subgroup_minimum.data_ptr<uint8_t>(),
-            neuron_scale.data_ptr<float>(),
-            neuron_minimum.data_ptr<float>(),
-            reinterpret_cast<const __half *>(
-                output_gradient.data_ptr<mfq_half>()),
-            reinterpret_cast<__half *>(result.data_ptr<mfq_half>()),
-            activation_rows,
-            output_rows,
-            groups,
-            static_cast<int>(width),
-            static_cast<int>(group_size));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return result;
-}
-
-#endif
-
-
-template <typename Output>
-static ::tyloi::DenseTensor nint8_zero_dequant_impl(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        int64_t width) {
-    validate_nint8_zero(quantized, scale);
-    TYLOINFER_RUNTIME_CHECK(
-        width > 0 && width <= quantized.size(1) * 32,
-        "NINT8-0 width is invalid");
-    const int rows = static_cast<int>(quantized.size(0));
-    const int groups = static_cast<int>(quantized.size(1));
-    auto output = ::tyloi::cuda::empty(
-        {rows, width},
-        quantized.options().dtype(
-            std::is_same_v<Output, __half>
-                ? ::tyloi::kFloat16
-                : ::tyloi::kFloat32));
-    constexpr int threads = 256;
-    const size_t total = static_cast<size_t>(rows) * width;
-    const int blocks = static_cast<int>(std::min<size_t>(
-        (total + threads - 1) / threads, 65535));
-    const auto output_data = [&]() {
-        if constexpr (std::is_same_v<Output, __half>) {
-            return reinterpret_cast<__half *>(output.template data_ptr<mfq_half>());
-        } else {
-            return output.template data_ptr<float>();
-        }
-    }();
-    nint8_zero_decode_rows_kernel<Output><<<
-        blocks, threads, 0, mfq_current_cuda_stream()>>>(
-            reinterpret_cast<const int8_t *>(
-                quantized.data_ptr<uint8_t>()),
-            reinterpret_cast<const __half *>(scale.data_ptr<mfq_half>()),
-            output_data,
-            rows,
-            groups,
-            static_cast<int>(width));
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
-}
-
-
-::tyloi::DenseTensor nint8_zero_dequant_cuda(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        int64_t width) {
-    return nint8_zero_dequant_impl<__half>(
-        std::move(quantized), std::move(scale), width);
-}
-
-
-::tyloi::DenseTensor nint8_zero_dequant_f32_cuda(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        int64_t width) {
-    return nint8_zero_dequant_impl<float>(
-        std::move(quantized), std::move(scale), width);
-}
-
-
-::tyloi::DenseTensor nint8_zero_gemv_ws_cuda(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        ::tyloi::DenseTensor input,
-        ::tyloi::DenseTensor quantized_input,
-        ::tyloi::DenseTensor input_scale) {
-    validate_nint8_zero(quantized, scale);
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.is_contiguous() &&
-        (input.scalar_type() == ::tyloi::kFloat16 ||
-         input.scalar_type() == ::tyloi::kFloat32) &&
-        input.dim() == 2,
-        "NINT8-0 input must be contiguous CUDA fp16/fp32 rank-2");
-    const int activation_rows = static_cast<int>(input.size(0));
-    const int output_rows = static_cast<int>(quantized.size(0));
-    const int groups = static_cast<int>(quantized.size(1));
-    const int real_width = static_cast<int>(input.size(1));
-    const int padded_width = groups * 32;
-    TYLOINFER_RUNTIME_CHECK(
-        activation_rows >= 1 && activation_rows <= 8 &&
-        real_width <= padded_width,
-        "NINT8-0 packed matmul expects M in [1,8] and K <= packed K");
-    TYLOINFER_RUNTIME_CHECK(
-        quantized_input.is_cuda() && quantized_input.is_contiguous() &&
-        quantized_input.scalar_type() == ::tyloi::kInt8 &&
-        quantized_input.dim() == 2 &&
-        quantized_input.size(0) >= activation_rows &&
-        quantized_input.size(1) >= padded_width && input_scale.is_cuda() &&
-        input_scale.is_contiguous() &&
-        input_scale.scalar_type() == ::tyloi::kFloat32 &&
-        input_scale.dim() == 2 && input_scale.size(0) >= activation_rows &&
-        input_scale.size(1) >= groups,
-        "NINT8-0 activation workspace is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        quantized.device() == input.device() && scale.device() == input.device() &&
-        quantized_input.device() == input.device() &&
-        input_scale.device() == input.device(),
-        "NINT8-0 tensors and workspace must share one CUDA device");
-    auto output = ::tyloi::cuda::empty(
-        {activation_rows, output_rows}, input.options().dtype(::tyloi::kFloat16));
-    const cudaStream_t stream = mfq_current_cuda_stream();
-    nint_quantize_activation_kernel<false><<<
-        dim3(activation_rows, groups), 32, 0, stream>>>(
-            input.data_ptr(),
-            nullptr,
-            quantized_input.data_ptr<int8_t>(),
-            input_scale.data_ptr<float>(),
-            activation_rows,
-            real_width,
-            padded_width,
-            groups,
-            32,
-            0,
-            input.scalar_type() == ::tyloi::kFloat32,
-            false);
-    nint8_zero_matmul_kernel<<<
-        dim3((output_rows + 3) / 4, activation_rows),
-        dim3(32, 4),
-        0,
-        stream>>>(
-            reinterpret_cast<const int8_t *>(
-                quantized.data_ptr<uint8_t>()),
-            reinterpret_cast<const __half *>(scale.data_ptr<mfq_half>()),
-            quantized_input.data_ptr<int8_t>(),
-            input_scale.data_ptr<float>(),
-            reinterpret_cast<__half *>(output.data_ptr<mfq_half>()),
-            activation_rows,
-            output_rows,
-            groups,
-            padded_width);
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return output;
-}
-
-
-::tyloi::DenseTensor nint8_zero_mmq_f16_packed_cuda(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        ::tyloi::DenseTensor input,
-        int64_t width) {
-    validate_nint8_zero(quantized, scale);
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.is_contiguous() &&
-        input.scalar_type() == ::tyloi::kFloat16 &&
-        input.dim() == 2 && input.size(1) == width,
-        "NINT8-0 GEMM input geometry is invalid");
-    auto weight = nint8_zero_dequant_cuda(quantized, scale, width);
-    return nint_cublas_gemm_nt_f16acc_cuda(input, weight);
-}
-
-
-::tyloi::DenseTensor nint8_zero_mmq_f32_packed_cuda(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        ::tyloi::DenseTensor input,
-        int64_t width) {
-    validate_nint8_zero(quantized, scale);
-    TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.is_contiguous() &&
-        input.scalar_type() == ::tyloi::kFloat16 &&
-        input.dim() == 2 && input.size(1) == width,
-        "NINT8-0 FP32 GEMM input geometry is invalid");
-    auto weight = nint8_zero_dequant_cuda(quantized, scale, width);
-    return cublas_gemm_nt_f32_output(input, weight);
-}
-
-
-#ifndef TYLOINFER_NATIVE_CUDA
-::tyloi::DenseTensor nint8_zero_backward_input_cuda(
-        ::tyloi::DenseTensor quantized,
-        ::tyloi::DenseTensor scale,
-        ::tyloi::DenseTensor output_gradient,
-        int64_t width) {
-    validate_nint8_zero(quantized, scale);
-    TYLOINFER_RUNTIME_CHECK(
-        output_gradient.is_cuda() && output_gradient.is_contiguous() &&
-        output_gradient.dim() == 2 &&
-        output_gradient.size(1) == quantized.size(0),
-        "NINT8-0 output-gradient geometry is invalid");
-    TYLOINFER_RUNTIME_CHECK(
-        output_gradient.scalar_type() == ::tyloi::kFloat16 ||
-        output_gradient.scalar_type() == ::tyloi::kBFloat16 ||
-        output_gradient.scalar_type() == ::tyloi::kFloat32,
-        "NINT8-0 output gradient must be fp16, bf16, or fp32");
-    TYLOINFER_RUNTIME_CHECK(
-        width > 0 && width <= quantized.size(1) * 32 &&
-        quantized.device() == output_gradient.device(),
-        "NINT8-0 backward dimensions or device are invalid");
-    const int rows = static_cast<int>(output_gradient.size(0));
-    const int outputs = static_cast<int>(quantized.size(0));
-    auto weight = nint8_zero_dequant_cuda(quantized, scale, width);
-    auto result = ::tyloi::cuda::empty(
-        {rows, width}, output_gradient.options());
-    mfq_packed_backward::launch_dense_half_weight(
-        output_gradient,
-        weight,
-        result,
-        rows,
-        outputs,
-        static_cast<int>(width),
-        mfq_current_cuda_stream());
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
-    return result;
-}
-#endif

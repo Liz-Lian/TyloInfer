@@ -80,6 +80,8 @@ _SOURCES = [
     os.path.join(_DIR, "moe.cpp"),
     os.path.join(_DIR, "mx_matmul.cpp"),
     os.path.join(_DIR, "mx_backward.cu"),
+    os.path.join(_DIR, "nint_matmul.cpp"),
+    os.path.join(_DIR, "nint_backward.cu"),
     os.path.join(_DIR, "nepq.cpp"),
     os.path.join(_DIR, "nepq_residual.cpp"),
     os.path.join(_DIR, "nepq_residual_backward.cu"),

@@ -1,5 +1,6 @@
 #pragma once
 #include "backend.h"
+#include "nint_raw.h"
 #include <vector>
 
 // A serial group of projections can quantize its common input for all GS
@@ -16,15 +17,6 @@ struct NintInputQuantizationScope {
     ~NintInputQuantizationScope();
     NintInputQuantizationScope(const NintInputQuantizationScope&)=delete;
     NintInputQuantizationScope& operator=(const NintInputQuantizationScope&)=delete;
-};
-
-// Internal view of a validated, fixed-capacity expert pool. The pointer and
-// geometry values share the lifetime of the captured pool/workspace tensors.
-struct NintSingleRouteWeight {
-    int64_t pointers[9]{};
-    int32_t geometry[3]{};
-    int32_t local_experts=0;
-    int64_t row_metadata=0;
 };
 
 bool nint_late_scale_enabled(int64_t input_width,int bits,int device);

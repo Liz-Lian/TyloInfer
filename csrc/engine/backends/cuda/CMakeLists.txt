@@ -153,6 +153,7 @@ add_library(mfq-cuda-native-kernels STATIC
 add_library(mfq::cuda-native-kernels ALIAS mfq-cuda-native-kernels)
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     target_sources(mfq-cuda-native-kernels PRIVATE
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nint_wrappers.cpp
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nepq_residual_wrappers.cpp
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/fp8_sq_wrappers.cpp
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mxfp4_sq_wrappers.cpp
