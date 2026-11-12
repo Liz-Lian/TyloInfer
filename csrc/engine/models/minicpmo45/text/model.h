@@ -85,6 +85,8 @@ struct Model
     Tensor softcap(const Tensor&) const override;
     /** Project normalized hidden states to logits. */
     Tensor logits(const Tensor&, bool capped = true) const override;
+    /** Project hidden states without the text adapter's BF16 output conversion. */
+    Tensor project(const Tensor&) const override;
     /** Run a request step with explicit input and numerical policy. */
     Tensor forward(tyloi::models::Input, tyloi::models::State&,
                    const tyloi::models::ForwardOptions& = {}) const override;

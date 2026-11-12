@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -17,6 +18,15 @@ namespace tyloi::models {
 
 struct ForwardOptions;
 struct Mtp;
+
+/** One measured phase of a model-owned decode graph. */
+struct DecodeProfile {
+    std::int64_t tokens = 0, confirmed = 0;
+    int layer = 0;
+    std::string from, to;
+    std::uint64_t samples = 0;
+    std::int64_t total_ns = 0;
+};
 
 /** Own validated restore payloads and staged storage until device consumers have drained. */
 class Restore {
@@ -73,6 +83,8 @@ public:
     virtual void release_graphs() {}
     /** Return optional request cache and graph telemetry without accessing runtime resources. */
     virtual std::optional<tyloi::engine::Metrics> metrics() const { return std::nullopt; }
+    /** Return measured graph phases, or no phases when unsupported. */
+    virtual std::vector<DecodeProfile> decode_profile() const { return {}; }
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;
@@ -84,6 +96,8 @@ public:
     virtual void commit_speculative() { throw std::logic_error("speculative state is unsupported by this model"); }
     /** Report whether a speculative transaction is currently open. */
     virtual bool speculating() const { throw std::logic_error("speculative state observation is unsupported by this model"); }
+    /** Return the confirmed prefix of the active speculative transaction. */
+    virtual std::optional<std::int64_t> confirmed_prefix() const { return std::nullopt; }
     /** Roll back a speculative pass while retaining the accepted suffix. */
     virtual void rollback_speculative(std::int64_t) {
         throw std::logic_error("speculative rollback is unsupported by this model");

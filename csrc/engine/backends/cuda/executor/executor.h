@@ -10,6 +10,8 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -109,6 +111,8 @@ public:
         int primary = 0;
         bool gemma4_fused_norms = true;
         bool groupwise_output = true;
+        /** Optional diagnostic kernel policy inherited by executor forks. */
+        std::optional<AttentionKernels> attention_kernels;
     };
 
     struct Options {
@@ -164,6 +168,10 @@ public:
     const Mode& mode() const noexcept { return mode_; }
     Mode forward_mode(int primary) const;
     const AttentionOptions& attention_options() const noexcept { return options_.attention; }
+    /** Return the active attention kernel policy, including any scoped override. */
+    const AttentionKernels& attention_kernels() const noexcept {
+        return mode_.attention_kernels ? *mode_.attention_kernels : options_.attention.kernels;
+    }
     bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
 #ifdef TYLOINFER_NATIVE_CUDA
@@ -219,5 +227,24 @@ private:
 #endif
     std::map<int, MlaScratch> mla_scratch_;
 };
+
+#ifdef TYLOINFER_NATIVE_CUDA
+/** Temporarily override only attention kernel choices on the active executor. */
+class AttentionScope {
+public:
+    AttentionScope(Executor& executor, AttentionKernels kernels)
+        : executor_(executor), previous_(executor.mode().attention_kernels) {
+        if (&Executor::current() != &executor)
+            throw std::logic_error("attention policy requires the active executor");
+        executor_.mode().attention_kernels = std::move(kernels);
+    }
+    ~AttentionScope() { executor_.mode().attention_kernels = std::move(previous_); }
+    AttentionScope(const AttentionScope&) = delete;
+    AttentionScope& operator=(const AttentionScope&) = delete;
+private:
+    Executor& executor_;
+    std::optional<AttentionKernels> previous_;
+};
+#endif
 
 } // namespace tyloi::cuda

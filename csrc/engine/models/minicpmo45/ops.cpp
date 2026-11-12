@@ -353,7 +353,7 @@ Tensor normalize(const Model& model,const Tensor& hidden,int64_t batch,int64_t t
     });
 }
 Tensor logits(const Model& model,const Tensor& hidden,bool) {
-    auto result=::tyloi::ops::measure("model.lm_head",hidden.device(),[&] {return ::tyloi::ops::project(hidden,model.lm_head);});
+    auto result=model.project(hidden);
     return ::tyloi::ops::contiguous(::tyloi::ops::cast(result,kBFloat16));
 }
 Tensor forward(const Model& model,State& state,tyloi::models::Input input,const tyloi::models::ForwardOptions& options) {
@@ -643,6 +643,9 @@ Tensor Model::normalize(const Tensor& hidden, std::int64_t batch, std::int64_t t
 }
 Tensor Model::softcap(const Tensor& value) const { return ::tyloi::ops::softcap(value, metadata.final_logit_softcapping); }
 Tensor Model::logits(const Tensor& hidden, bool capped) const { return text::logits(*this, hidden, capped); }
+Tensor Model::project(const Tensor& hidden) const {
+    return ::tyloi::ops::measure("model.lm_head",hidden.device(),[&] {return ::tyloi::ops::project(hidden,lm_head);});
+}
 Tensor Model::forward(tyloi::models::Input input, tyloi::models::State& value,
                       const tyloi::models::ForwardOptions& options) const {
     auto* state = dynamic_cast<State*>(&value);

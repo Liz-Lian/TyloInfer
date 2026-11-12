@@ -1694,7 +1694,8 @@ tyloi::StepSequence<tyloi::models::Decoded> qwen4_exp::Model::decode(
         if(layers[i]->qsa)graph_row.layers.emplace_back(layers[i]->qsa.get(),state->layers[i]->qsa.get());
     tyloi::ops::Qsa::Graph graph_policy({std::move(graph_row)},false);
     if (!info().decode_graph || !options.routed || !graph_policy.eligible() || state->speculative_start>=0) co_return;
-    const bool hidden=options.projection==tyloi::models::DecodeOptions::Projection::hidden;
+    const bool hidden_only=options.projection==tyloi::models::DecodeOptions::Projection::hidden_only;
+    const bool hidden=options.projection==tyloi::models::DecodeOptions::Projection::hidden || hidden_only;
     if (hidden) {
         if(state->cache_pos==0 && (!state->graph_registry || !state->graph_registry->reusable())) co_return;
     } else if(state->cache_pos==0 || input.confirmed!=0) co_return;
@@ -1713,13 +1714,13 @@ tyloi::StepSequence<tyloi::models::Decoded> qwen4_exp::Model::decode(
     if(!state->graph_registry) state->graph_registry=std::make_unique<Qwen4DecodeGraph>(*this,*state);
     tyloi::models::Decoded result;
     ::tyloi::DenseTensor raw, logits;
-    const int kind=hidden?4:(options.projection==tyloi::models::DecodeOptions::Projection::greedy?2:1);
+    const int kind=hidden?(hidden_only?3:4):(options.projection==tyloi::models::DecodeOptions::Projection::greedy?2:1);
     const auto* compact_option=hidden ? tyloi::cuda::env_lookup("TYLOINFER_MTP_CONDITIONAL_TOPK") : nullptr;
     const bool compact=options.compact || (compact_option && compact_option[0]=='0');
     auto job=state->graph_registry->run(*this,device_ids(std::move(ids)),kind,
         input.raw_hidden ? &raw : nullptr, static_cast<int>(input.confirmed),&result.initialized,
-        input.host_ids ? input.host_ids.dense() : ::tyloi::DenseTensor{}, hidden ? &logits : nullptr,
-        kind==1 ? nullptr : &result.tokens, compact);
+        input.host_ids ? input.host_ids.dense() : ::tyloi::DenseTensor{}, hidden && !hidden_only ? &logits : nullptr,
+        kind==1 || hidden_only ? nullptr : &result.tokens, compact);
     tyloi::Tensor output;
     while(auto step=job.next()) {
         if(step.layer)throw std::logic_error("unexpected decode layer event");
@@ -1934,6 +1935,9 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
     for(const auto& [address,size]:allocations) { bytes+=size; devices[address.first]+=size; }
     std::vector<std::pair<std::string,double>> result{{"kv_cache_bytes",double(bytes)},
         {"kv_cache_contexts",state.cache_pos>0?double(state.batch):0.0}};
+#ifdef TYLOINFER_NATIVE_CUDA
+    result.emplace_back("decode_graph_count", state.graph_registry ? 1.0 : 0.0);
+#endif
     for(const auto& [device,size]:devices)result.emplace_back("gpu_"+std::to_string(device)+"_live_kv_bytes",double(size));
 #ifdef TYLOINFER_NATIVE_CUDA
     auto profile=qwen4_decode_graph_profile_metrics(model,state);
@@ -1941,6 +1945,17 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
 #endif
     return result;
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA
+std::vector<tyloi::models::DecodeProfile> qwen4_exp::State::decode_profile() const {
+    std::vector<tyloi::models::DecodeProfile> result;
+    if (graph_registry) for (const auto& [key, cell] : graph_registry->cells)
+        for (const auto& phase : cell->window.gpu_phases()) if (phase.samples)
+            result.push_back({std::get<0>(key), std::get<2>(key), phase.layer,
+                phase.from, phase.to, phase.samples, phase.total_ns});
+    return result;
+}
+#endif
 
 Model::Model() = default;
 Model::~Model() = default;

@@ -115,6 +115,7 @@ add_library(mfq-cuda-engine STATIC
 add_library(mfq::cuda-engine ALIAS mfq-cuda-engine)
 target_sources(mfq-cuda-engine PRIVATE
     ${PROJECT_SOURCE_DIR}/engine/generation/batch_ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/generation/batch_driver.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/prefill.cpp
     ${PROJECT_SOURCE_DIR}/engine/generation/mtp/generation.cpp)
 mfq_configure_cuda_engine_target(mfq-cuda-engine)

@@ -80,6 +80,8 @@ public:
     void release_graphs() override;
     /** Report request-owned cache and graph telemetry. */
     std::optional<tyloi::engine::Metrics> metrics() const override;
+    /** Return the measured phases of this request's decode graphs. */
+    std::vector<tyloi::models::DecodeProfile> decode_profile() const override;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA
     /** Plan per-device cache and checkpoint allocations for a forward window. */
@@ -94,6 +96,8 @@ public:
     std::int64_t position() const noexcept override { return cache_pos; }
     /** Report whether a speculative transaction is open. */
     bool speculating() const override { return speculative_start >= 0; }
+    /** Observe the confirmed prefix without exposing the transaction journal. */
+    std::optional<std::int64_t> confirmed_prefix() const override { return speculative_confirmed; }
     /** Report whether the active speculative prefix remains available. */
     bool retains_partial_prefix(std::int64_t accepted) const noexcept override {
         return speculative_prefix_retention && accepted >= 0;

@@ -9,6 +9,7 @@
 #include "engine/budget.h"
 #include "engine/config.h"
 #include "engine/generation/decode.h"
+#include "engine/generation/batch_driver.h"
 #include "engine/generation/batch.h"
 #include "engine/generation/batch_ops.h"
 #include "engine/generation/prefill_budget.h"
@@ -158,6 +159,7 @@ struct Program::Impl {
     std::unique_ptr<tyloi::state::Sessions> sessions;
     std::optional<engine::Decode> graph;
     std::optional<engine::Budget> budget;
+    std::unique_ptr<engine::BatchDriver> batch_driver;
     engine::mtp::State mtp_policy;
     bool attempted = false;
     bool run_attempted = false, run_ready = false, running = false;
@@ -179,6 +181,7 @@ struct Program::Impl {
         try { scope = executor->enter(config.layer_placement.primary_device()); }
         catch (const std::exception& error) { std::cerr << "program_cleanup error=" << error.what() << '\n'; }
         catch (...) { std::cerr << "program_cleanup error=unknown\n"; }
+        batch_driver.reset();
         budget.reset();
         graph.reset();
         sessions.reset();
@@ -399,6 +402,36 @@ std::unique_ptr<Program::BatchLease> Program::make_batch() {
     lease->batch_ = engine::make_batch(*p.model, p.state.get(), *p.executor,
         *p.weights, *p.budget, p.run_config);
     return lease;
+}
+
+engine::BatchDriver& Program::begin_batch(models::BatchConfig config) {
+    auto& p=*impl_;
+    if(p.running)throw std::logic_error("program request is already running");
+    if(!p.run_ready)configure(engine::resolve_config());
+    drain();
+    p.running=true;
+    try {
+        auto scope=p.executor->enter(p.config.layer_placement.primary_device());
+        p.graph->invalidate();
+        p.state->release_graphs();
+        p.batch_driver=std::make_unique<engine::BatchDriver>(
+            p.model->batch(config,p.state.get()),*p.executor,*p.weights,*p.budget);
+        p.batch_driver->initialize();
+        return *p.batch_driver;
+    } catch(...) {
+        auto failure=std::current_exception();
+        try { drain(); } catch(...) {}
+        p.batch_driver.reset(); p.running=false;
+        std::rethrow_exception(failure);
+    }
+}
+
+void Program::end_batch() {
+    auto& p=*impl_;
+    if(!p.running || !p.batch_driver)throw std::logic_error("numerical batch is not active");
+    drain();
+    auto scope=p.executor->enter(p.config.layer_placement.primary_device());
+    p.batch_driver->close(); p.batch_driver.reset(); p.running=false;
 }
 
 models::Prefill Program::prefill(models::Input input, std::int64_t compute, engine::InferenceOutput& output) {

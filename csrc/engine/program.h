@@ -9,9 +9,9 @@
 
 namespace tyloi {
 class ModelSource;
-namespace models { class CausalModel; class State; class Layers; class Groups; class Ffn; struct Info; struct Input; struct Prefill; }
+namespace models { class CausalModel; class State; class Layers; class Groups; class Ffn; struct Info; struct Input; struct Prefill; struct BatchConfig; }
 namespace weights { class Cache; struct Loader; }
-namespace engine { struct Config; class InferenceOutput; class Batch; }
+namespace engine { struct Config; class InferenceOutput; class Batch; class BatchDriver; }
 }
 
 namespace tyloi::cuda {
@@ -78,6 +78,10 @@ public:
     void configure(engine::Config config);
     /** Create an exclusive numerical batch; this program must outlive the lease. */
     std::unique_ptr<BatchLease> make_batch();
+    /** Begin an exclusive numerical batch owned by this program until end_batch. */
+    engine::BatchDriver& begin_batch(models::BatchConfig config);
+    /** Drain and retire the active numerical batch and its request states. */
+    void end_batch();
     /** Run one controlled prefill; the caller retains its inputs and result until draining. */
     models::Prefill prefill(models::Input input, std::int64_t compute, engine::InferenceOutput& output);
     /** Run one exclusive request in the caller's scope; its owners outlive the sequence and drain after it. */

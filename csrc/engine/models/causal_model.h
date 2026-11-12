@@ -58,6 +58,8 @@ public:
     virtual Tensor softcap(const Tensor& logits) const = 0;
     /** Project borrowed hidden states to an owning logits handle. */
     virtual Tensor logits(const Tensor& hidden, bool capped = true) const = 0;
+    /** Return the uncapped head projection before any model-specific output conversion. */
+    virtual Tensor project(const Tensor& hidden) const { return logits(hidden, false); }
     /** Run a model step in the owner's execution scope; reject unsupported speculative suffixes. */
     virtual Tensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
     /** Plan logical prefill work and workspace admission from prompt and access policy. */

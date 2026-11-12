@@ -75,7 +75,7 @@ struct ForwardOptions {
 
 /** Select the projection required from a model-owned decode operation. */
 struct DecodeOptions {
-    enum class Projection { hidden, logits, greedy };
+    enum class Projection { hidden, logits, greedy, hidden_only };
     Projection projection = Projection::hidden;
     /** Allow a reusable compact top-k projection for stochastic verification. */
     bool compact = false;

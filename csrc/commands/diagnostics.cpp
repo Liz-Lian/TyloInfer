@@ -24,11 +24,13 @@
 #include "diagnostics/qwen_mtp.h"
 #include "diagnostics/batch.h"
 #include "diagnostics/tokens.h"
+#include "diagnostics/qwen_decode.h"
+#include "diagnostics/qwen_variants.h"
+#include "diagnostics/compare.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/source.h"
 #include "engine/program.h"
 #include "engine/backends/cuda/executor/config.h"
-#include "diagnostics/runtime_checks.h"
 #include "minicpmo45.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
@@ -339,7 +341,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             return run_backend_argmax_check(*program, 248320, 2000);
         }
         enum class Tool { legacy, linear_cpu, linear, tp, ep, group, q8, gdn, conv, geglu, container, assets, moe,
-            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, qwen_mtp, batch, mtp_bench, prefill, hc_compare, trace, tokens };
+            mfe, output_a, attention, swa, glm, dsv4_attention, hc, session, minicpmo, flash, nemo, vision, nemo_mtp, flash_mtp, qwen_mtp, qwen_decode, qwen_variants, batch, mtp_bench, prefill, hc_compare, trace, compare, tokens };
         Tool selected = Tool::legacy;
         if (!check_linear_cpu.empty()) selected = Tool::linear_cpu;
         else if (!check_linear.empty()) selected = Tool::linear;
@@ -364,7 +366,10 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         else if (check_text_session_state) selected = Tool::session;
         else if (minicpmo_eval_batch) selected = Tool::minicpmo;
         else if (check_continuous_batching) selected = Tool::batch;
-        else if (check_qwen4_decode_hidden) selected = Tool::legacy;
+        else if (check_qwen4_decode_hidden) {
+            const auto* variants = tyloi::cuda::env_lookup("TYLOINFER_MTP_GENERATION_VARIANTS");
+            selected = profile && variants && variants[0] == '1' ? Tool::qwen_variants : Tool::qwen_decode;
+        }
         else if (check_flash_next) selected = Tool::flash;
         else if (check_nemotron_h) selected = Tool::nemo;
         else if (check_nemotron_h_vision) selected = Tool::vision;
@@ -379,6 +384,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                  !check_flash_next_mtp && !check_qwen35_mtp && bench_qwen35_mtp.empty() &&
                  prefill_sweep_arg.empty() && !compare_dsv4_hc_ops && !compare_dsv4_hc_model &&
                  (!block_trace_reference.empty() || !block_trace_output.empty())) selected = Tool::trace;
+        else if (compare_decode_splitk || compare_mma_decode || compare_nvq_vec4 ||
+                 prefill_repeat > 0 || compare_mma_attention) selected = Tool::compare;
         else if (!runtime_comparison_modes() && !comparison_phase_timings && router_lookahead_audit.empty() &&
                  !compare_decode_splitk && !compare_mma_decode && !compare_nvq_vec4 &&
                  prefill_repeat <= 0 && !compare_mma_attention) selected = Tool::tokens;
@@ -391,7 +398,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
                     selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::qwen_mtp ||
                     selected == Tool::batch || selected == Tool::mtp_bench || selected == Tool::prefill ||
-                    selected == Tool::hc_compare || selected == Tool::tokens) {
+                    selected == Tool::qwen_decode || selected == Tool::qwen_variants ||
+                    selected == Tool::hc_compare || selected == Tool::tokens || selected == Tool::compare) {
                 if (model_path.empty()) {
                     std::cerr << "missing model or execution mode (see --help)\n";
                     return 2;
@@ -400,7 +408,8 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 options.context_size = context_size;
             }
             std::vector<int64_t> trace_ids;
-            if (selected == Tool::trace || selected == Tool::hc_compare || selected == Tool::tokens) {
+            if (selected == Tool::trace || selected == Tool::hc_compare || selected == Tool::tokens ||
+                    selected == Tool::compare || selected == Tool::qwen_variants || (selected == Tool::qwen_decode && profile)) {
                 if (!router_lookahead_audit.empty())
                     throw std::runtime_error("router lookahead audit dispatch harness is currently unavailable");
                 if (context_size < 0) throw std::runtime_error("--ctx-size must be positive");
@@ -414,7 +423,7 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             const auto loaded_context = options.context_size;
             auto program = tyloi::cuda::Program::open(std::move(options));
             auto scope = program->executor().enter(program->config().layer_placement.primary_device());
-            if (selected == Tool::tokens) {
+            if (selected == Tool::tokens || selected == Tool::compare) {
                 program->executor().profiler().enabled = false;
                 auto loader = program->loader();
                 const auto started = std::chrono::steady_clock::now();
@@ -422,6 +431,20 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 const auto loaded = std::chrono::steady_clock::now();
                 auto ids = tyloi::ops::unsqueeze(tyloi::ops::tensor(trace_ids,
                     program->executor().device()), 0);
+                if (selected == Tool::compare) {
+                    tyloi::cuda::diagnostics::warmup_prefill(*program, ids, profile, warmup_prefill);
+                    program->executor().profiler().enabled = profile;
+                    if (compare_decode_splitk) return tyloi::cuda::diagnostics::compare_decode_splitk(*program, std::move(ids));
+                    if (compare_mma_decode) return tyloi::cuda::diagnostics::compare_mma_decode(*program,
+                        std::move(ids), compare_mma_decode_steps, compare_mma_decode_planned_len);
+                    if (compare_nvq_vec4)
+                        throw std::runtime_error("NVQ vec4 comparison has no live kernel selector");
+                    if (prefill_repeat > 0) {
+                        const auto* trace = tyloi::cuda::env_lookup("TYLOINFER_CHECK_PREFILL_REPEAT_TRACE");
+                        return repeat_prefill(*program, std::move(ids), prefill_repeat, trace && std::atoi(trace) != 0);
+                    }
+                    return tyloi::cuda::diagnostics::compare_mma_attention(*program, std::move(ids));
+                }
                 std::unordered_set<int64_t> stops;
                 if (!ignore_eos && tokenizer_model.empty() && decode_inputs.empty()) {
                     const auto* source = dynamic_cast<const tyloi::ModelSource*>(&loader.source);
@@ -444,8 +467,11 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
             if (selected == Tool::session) return run_text_session_state_check(*program);
             if (selected == Tool::flash || selected == Tool::nemo || selected == Tool::vision ||
                     selected == Tool::nemo_mtp || selected == Tool::flash_mtp || selected == Tool::qwen_mtp ||
-                    selected == Tool::mtp_bench || selected == Tool::prefill) {
+                    selected == Tool::qwen_decode || selected == Tool::qwen_variants || selected == Tool::mtp_bench || selected == Tool::prefill) {
                 program->load(needs_parts());
+                if (selected == Tool::qwen_variants) return run_qwen4_generation_variants(*program, trace_ids);
+                if (selected == Tool::qwen_decode) return profile
+                    ? run_qwen4_mtp_profile(*program, trace_ids) : run_qwen4_decode_hidden_check(*program);
                 if (selected == Tool::prefill) {
                     const auto status = run_prefill_sweep(*program, prefill_sizes, prefill_sweep_reps, profile);
                     program->weights().report(std::cout);
@@ -620,21 +646,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
         auto& model = *owner;
         auto& state = *owned_state;
         using Model = std::remove_cvref_t<decltype(model)>;
-        if (check_qwen4_decode_hidden) {
-            if constexpr(std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>) {
-                const auto* variants=tyloi::cuda::env_lookup("TYLOINFER_MTP_GENERATION_VARIANTS");
-                if(profile && variants && variants[0]=='1') {
-                    auto* predictor = tyloi::cuda::component_predictor(parts);
-                    TYLOINFER_RUNTIME_CHECK(predictor,"MTP variants require a loaded predictor");
-                    return run_qwen4_mtp_generation_variants(model,*predictor,
-                        ids_file.empty()?parse_ids(ids_arg):load_ids_file(ids_file));
-                }
-            }
-            if constexpr(std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
-                return profile?run_qwen4_mtp_profile(model,ids_file.empty()?parse_ids(ids_arg):load_ids_file(ids_file))
-                    :run_qwen4_decode_hidden_check(model);
-            throw std::runtime_error("hidden graph diagnostic requires Qwen4CausalLm");
-        }
         if(!router_lookahead_audit.empty()) {
             TYLOINFER_RUNTIME_CHECK(!compare_ffn_transfer_phases && !profile && gen>1 && !decode_inputs.empty(),
                 "router lookahead audit requires fixed single-token decode inputs and profiling disabled");
@@ -807,261 +818,6 @@ struct DiagnosticsCommand : tyloi::cuda::DiagnosticsCommandOptions {
                 std::cout<<comparison_name<<"_pass="<<pass<<" phase="<<phased
                     <<" end=1 dispatch_records="<<records<<"\n";
             }
-            return 0;
-        }
-        const int warmup_rounds = warmup_prefill < 0 ? (profile ? 1 : 0) : warmup_prefill;
-        const auto warmup_start = std::chrono::steady_clock::now();
-        for (int round = 0; round < warmup_rounds; ++round) {
-            state.reset(1);
-            (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
-            cudaStreamSynchronize(::tyloi::cuda::current_stream());
-        }
-        if (warmup_rounds) {
-            state.reset(1);
-            execution.profiler.reset();
-        }
-        std::cout << "warmup_prefill_rounds=" << warmup_rounds << "\n"
-                  << "warmup_prefill_tokens=" << warmup_rounds * ids_vec.size() << "\n"
-                  << "warmup_prefill_sec="
-                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - warmup_start).count()
-                  << "\n";
-        if (profile) {
-            execution.profiler.enabled = true;
-        }
-        if (compare_decode_splitk) {
-            auto run = [&](bool split) {
-                execution.config.tasks.attention.kernels.split_k = split;
-                state.reset(1);
-                (void)diagnostic_hidden(model, state, executor.get(), execution, ids);
-                const int64_t decode_len = state.cache_pos + 1;
-                auto seq_len = tyloi::cuda::tensor({decode_len}, tyloi::TensorOptions().dtype(tyloi::kInt64).device(tyloi::kCUDA));
-                auto decode_id = ids.index({Slice(), -1}).reshape({1, 1});
-                auto hidden = diagnostic_hidden(model, state, executor.get(), execution,
-                                                decode_id, mfq_nullopt, seq_len);
-                auto last = diagnostic_last_hidden(std::move(hidden));
-                auto logits = diagnostic_logits(model, executor.get(), execution,
-                                                std::move(last), false).to(tyloi::kFloat32);
-                cudaStreamSynchronize(::tyloi::cuda::current_stream());
-                return logits;
-            };
-            auto ref = run(false);
-            auto test = run(true);
-            auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
-            auto test_logp = tyloi::cuda::log_softmax(test, -1);
-            auto kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1);
-            auto diff = (ref - test).abs();
-            std::cout << "decode_splitk_compare_kl=" << kl.template item<float>() << "\n";
-            std::cout << "decode_splitk_compare_rel=" << ((test - ref).norm() / ref.norm()).template item<float>() << "\n";
-            std::cout << "decode_splitk_compare_mean_abs=" << diff.mean().template item<float>() << "\n";
-            std::cout << "decode_splitk_compare_max_abs=" << diff.max().template item<float>() << "\n";
-            std::cout << "decode_splitk_compare_same_top="
-                      << (ref.argmax(-1).eq(test.argmax(-1)).template item<bool>() ? 1 : 0) << "\n";
-            return 0;
-        }
-        if (compare_mma_decode) {
-            if (compare_mma_decode_steps < 1) {
-                throw std::runtime_error("--compare-mma-decode-steps must be positive");
-            }
-            auto cuda_i64 = tyloi::TensorOptions().dtype(tyloi::kInt64).device(tyloi::kCUDA);
-            std::vector<tyloi::DenseTensor> reference_logits;
-            std::vector<int64_t> teacher_tokens;
-            reference_logits.reserve(compare_mma_decode_steps);
-            teacher_tokens.reserve(compare_mma_decode_steps);
-            execution.config.tasks.attention.kernels.mma_decode = false;
-            state.reset(1);
-            auto input = diagnostic_next_token(model, state, executor.get(), execution, ids)
-                .reshape({1, 1});
-            const int64_t initial_teacher_token = input.template item<int64_t>();
-            for (int step = 0; step < compare_mma_decode_steps; ++step) {
-                const int64_t decode_len = state.cache_pos + 1;
-                auto seq_len = tyloi::cuda::tensor({decode_len}, cuda_i64);
-                auto hidden = diagnostic_hidden(model, state, executor.get(), execution,
-                                                input, mfq_nullopt, seq_len);
-                auto last = diagnostic_last_hidden(std::move(hidden));
-                auto logits = diagnostic_logits(model, executor.get(), execution,
-                                                std::move(last), false).to(tyloi::kFloat32);
-                reference_logits.push_back(logits.clone());
-                const int64_t next = logits.argmax(-1).template item<int64_t>();
-                teacher_tokens.push_back(next);
-                input = tyloi::cuda::tensor({next}, cuda_i64).reshape({1, 1});
-            }
-            execution.config.tasks.attention.kernels.mma_decode = true;
-            const int64_t planned_kv_length =
-                compare_mma_decode_planned_len > 0
-                ? compare_mma_decode_planned_len
-                : ids.size(1) + compare_mma_decode_steps;
-            if (planned_kv_length > diagnostic_max_position_embeddings(model)) {
-                throw std::runtime_error("decode comparison planned length exceeds context capacity");
-            }
-            state.reset(1);
-            (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
-            input = tyloi::cuda::tensor({initial_teacher_token}, cuda_i64).reshape({1, 1});
-            double kl_sum = 0.0;
-            double kl_max = 0.0;
-            double abs_sum = 0.0;
-            double delta_sq_sum = 0.0;
-            double reference_sq_sum = 0.0;
-            double max_abs = 0.0;
-            int same_top = 0;
-            int first_top_difference = -1;
-            int64_t values = 0;
-            for (int step = 0; step < compare_mma_decode_steps; ++step) {
-                const int64_t decode_len = state.cache_pos + 1;
-                auto seq_len = tyloi::cuda::tensor({decode_len}, cuda_i64);
-                auto hidden = diagnostic_hidden(
-                    model, state, executor.get(), execution, input,
-                    mfq_nullopt, seq_len, nullptr, mfq_nullopt, nullptr, 0,
-                    planned_kv_length, 0);
-                auto last = diagnostic_last_hidden(std::move(hidden));
-                auto test = diagnostic_logits(model, executor.get(), execution,
-                                              std::move(last), false).to(tyloi::kFloat32);
-                const auto & ref = reference_logits[(size_t)step];
-                auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
-                auto test_logp = tyloi::cuda::log_softmax(test, -1);
-                const double kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1).template item<double>();
-                auto delta = test - ref;
-                kl_sum += kl;
-                kl_max = std::max(kl_max, kl);
-                abs_sum += delta.abs().sum().template item<double>();
-                delta_sq_sum += delta.square().sum().template item<double>();
-                reference_sq_sum += ref.square().sum().template item<double>();
-                max_abs = std::max(max_abs, delta.abs().max().template item<double>());
-                values += delta.numel();
-                const bool top_equal = test.argmax(-1).eq(ref.argmax(-1)).template item<bool>();
-                same_top += top_equal ? 1 : 0;
-                if (!top_equal && first_top_difference < 0) first_top_difference = step;
-                input = tyloi::cuda::tensor({teacher_tokens[(size_t)step]}, cuda_i64).reshape({1, 1});
-            }
-            cudaStreamSynchronize(::tyloi::cuda::current_stream());
-            std::cout << std::setprecision(10)
-                      << "mma_decode_compare_steps=" << compare_mma_decode_steps << "\n"
-                      << "mma_decode_compare_mean_kl=" << kl_sum / compare_mma_decode_steps << "\n"
-                      << "mma_decode_compare_max_kl=" << kl_max << "\n"
-                      << "mma_decode_compare_rel=" << std::sqrt(delta_sq_sum / reference_sq_sum) << "\n"
-                      << "mma_decode_compare_mean_abs=" << abs_sum / values << "\n"
-                      << "mma_decode_compare_max_abs=" << max_abs << "\n"
-                      << "mma_decode_compare_same_top=" << same_top << "\n"
-                      << "mma_decode_compare_first_top_difference=" << first_top_difference << "\n";
-            return 0;
-        }
-        if (compare_nvq_vec4) {
-            auto run = [&](bool) {
-                state.reset(1);
-                auto logits = diagnostic_last_logits(
-                    model, state, executor.get(), execution, ids)
-                    .to(tyloi::kFloat32);
-                cudaStreamSynchronize(::tyloi::cuda::current_stream());
-                return logits;
-            };
-            auto ref = run(false);
-            auto repeat = run(false);
-            auto test = run(true);
-            auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
-            auto repeat_logp = tyloi::cuda::log_softmax(repeat, -1);
-            auto test_logp = tyloi::cuda::log_softmax(test, -1);
-            auto repeat_kl = (ref_logp.exp() * (ref_logp - repeat_logp)).sum(-1);
-            auto kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1);
-            auto diff = (ref - test).abs();
-            auto repeat_diff = (ref - repeat).abs();
-            std::cout << "nvq_vec4_repeat_kl=" << repeat_kl.template item<float>() << "\n";
-            std::cout << "nvq_vec4_repeat_max_abs=" << repeat_diff.max().template item<float>() << "\n";
-            std::cout << "nvq_vec4_compare_kl=" << kl.template item<float>() << "\n";
-            std::cout << "nvq_vec4_compare_rel="
-                      << ((test - ref).norm() / ref.norm()).template item<float>() << "\n";
-            std::cout << "nvq_vec4_compare_mean_abs=" << diff.mean().template item<float>() << "\n";
-            std::cout << "nvq_vec4_compare_max_abs=" << diff.max().template item<float>() << "\n";
-            std::cout << "nvq_vec4_compare_same_top="
-                      << (ref.argmax(-1).eq(test.argmax(-1)).template item<bool>() ? 1 : 0) << "\n";
-            return 0;
-        }
-        if (prefill_repeat > 0) {
-            const char * trace_env = tyloi::cuda::env_lookup("TYLOINFER_CHECK_PREFILL_REPEAT_TRACE");
-            const bool trace_repeat = trace_env != nullptr && std::atoi(trace_env) != 0;
-            std::vector<tyloi::DenseTensor> reference_trace;
-            std::vector<std::pair<std::string, tyloi::DenseTensor>> reference_gemma_trace;
-            for (int i = 0; i < prefill_repeat; ++i) {
-                state.reset(1);
-                auto run_t0 = std::chrono::steady_clock::now();
-                std::vector<tyloi::DenseTensor> trace;
-                std::vector<std::pair<std::string, tyloi::DenseTensor>> gemma_trace;
-                tyloi::DenseTensor logits;
-                if (trace_repeat) {
-                    execution.gemma_trace_layer = 0;
-                    execution.gemma_stage_trace = &gemma_trace;
-                    auto hidden = diagnostic_hidden(
-                        model, state, executor.get(), execution, ids,
-                        mfq_nullopt, mfq_nullopt, &trace);
-                    execution.gemma_stage_trace = nullptr;
-                    execution.gemma_trace_layer = -1;
-                    auto last = diagnostic_last_hidden(
-                        std::move(hidden));
-                    logits = diagnostic_logits(
-                        model, executor.get(), execution, std::move(last), false);
-                } else {
-                    logits = diagnostic_last_logits(
-                        model, state, executor.get(), execution, ids);
-                }
-                cudaStreamSynchronize(::tyloi::cuda::current_stream());
-                auto run_t1 = std::chrono::steady_clock::now();
-                std::cout << "prefill_repeat=" << (i + 1)
-                          << " sec=" << std::chrono::duration<double>(run_t1 - run_t0).count()
-                          << " top=" << logits.argmax(-1).template item<int64_t>() << "\n";
-                if (trace_repeat) {
-                    if (reference_trace.empty()) {
-                        reference_trace = std::move(trace);
-                        reference_gemma_trace = std::move(gemma_trace);
-                    } else {
-                        for (size_t stage = 0; stage < gemma_trace.size(); ++stage) {
-                            auto diff = (gemma_trace[stage].second -
-                                         reference_gemma_trace[stage].second).abs();
-                            const float max_abs = diff.max().template item<float>();
-                            if (max_abs != 0.0f) {
-                                std::cout << "prefill_repeat_first_gemma_stage="
-                                          << gemma_trace[stage].first
-                                          << " max_abs=" << max_abs
-                                          << " mean_abs=" << diff.mean().template item<float>() << "\n";
-                                break;
-                            }
-                        }
-                        for (size_t stage = 0; stage < trace.size(); ++stage) {
-                            auto diff = (trace[stage] - reference_trace[stage]).abs();
-                            const float max_abs = diff.max().template item<float>();
-                            if (max_abs != 0.0f) {
-                                std::cout << "prefill_repeat_first_difference=" << stage
-                                          << " layer=" << static_cast<int64_t>(stage) - 1
-                                          << " max_abs=" << max_abs
-                                          << " mean_abs=" << diff.mean().template item<float>() << "\n";
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            return 0;
-        }
-        if (compare_mma_attention) {
-            execution.config.tasks.attention.kernels.mma_prefill = false;
-            execution.config.tasks.attention.kernels.bf16_flash128 = false;
-            auto ref = diagnostic_last_logits(
-                model, state, executor.get(), execution, ids)
-                .to(tyloi::kFloat32);
-            cudaStreamSynchronize(::tyloi::cuda::current_stream());
-            state.reset(1);
-            execution.config.tasks.attention.kernels.mma_prefill = true;
-            execution.config.tasks.attention.kernels.bf16_flash128 = true;
-            auto test = diagnostic_last_logits(
-                model, state, executor.get(), execution, ids)
-                .to(tyloi::kFloat32);
-            cudaStreamSynchronize(::tyloi::cuda::current_stream());
-            auto ref_logp = tyloi::cuda::log_softmax(ref, -1);
-            auto test_logp = tyloi::cuda::log_softmax(test, -1);
-            auto kl = (ref_logp.exp() * (ref_logp - test_logp)).sum(-1);
-            auto diff = (ref - test).abs();
-            auto same_top = ref.argmax(-1).eq(test.argmax(-1));
-            std::cout << "attention_compare_kl=" << kl.template item<float>() << "\n";
-            std::cout << "attention_compare_max_logit_abs=" << diff.max().template item<float>() << "\n";
-            std::cout << "attention_compare_mean_logit_abs=" << diff.mean().template item<float>() << "\n";
-            std::cout << "attention_compare_same_top=" << (same_top.template item<bool>() ? 1 : 0) << "\n";
             return 0;
         }
         std::unordered_set<int64_t> stop_ids;

@@ -6,6 +6,7 @@
 #include "engine/config.h"
 #include "engine/executor.h"
 #include "engine/generation/batch.h"
+#include "engine/generation/batch_driver.h"
 #include "engine/generation/decode.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/generation/sampling.h"
@@ -327,80 +328,13 @@ public:
 
 private:
     void reserve(const models::BatchGrowth& values, std::size_t margin, bool primary=false) {
-        models::BatchGrowth growth;
-        merge_growth(growth,values);
-        if (primary && std::none_of(growth.begin(),growth.end(),[&](const auto& item) { return item.first==executor_.device(); }))
-            growth.emplace_back(executor_.device(),0);
-        for (const auto& [device,bytes] : growth)
-            if (bytes || (primary && device==executor_.device()))
-                budget_.reserve_kv(device,prefill_budget_add(bytes,margin));
+        reserve_batch(budget_,executor_,values,margin,primary);
     }
     std::vector<Tensor> run_prefill(std::vector<models::BatchState*> states, std::vector<Tensor> ids) {
-        auto work=executor_.work();
-        StepSequence<std::vector<Tensor>> job;
-        std::optional<std::vector<Tensor>> result;
-        try {
-            job=batch_->prefill(std::move(states),std::move(ids));
-            for (;;) {
-                StepResult<std::vector<Tensor>> step;
-                { auto scope=work->enter(); step=job.next(); }
-                if (step.workspace || step.graph ||
-                    (step.state==StepState::complete && (step.value || step.layer)) ||
-                    (step.layer && step.value))
-                    throw std::logic_error("invalid batch prefill event");
-                if (!step) break;
-                if (step.state!=StepState::advanced || result)
-                    throw std::logic_error("invalid batch prefill event");
-                if (step.layer) work->step(*step.layer);
-                else if (step.value) result=std::move(*step.value);
-            }
-            if (!result) throw std::runtime_error("batch prefill ended without a result");
-            work->finish();
-            job={};
-            return std::move(*result);
-        } catch (...) {
-            const auto failure=std::current_exception();
-            try { weights_.drain(); } catch (...) {}
-            try { executor_.drain(); } catch (...) {}
-            job={};
-            std::rethrow_exception(failure);
-        }
+        return tyloi::engine::prefill_batch(*batch_,executor_,weights_,std::move(states),std::move(ids));
     }
-    std::unique_ptr<models::Batch::Plan> plan_graph(
-            const std::vector<models::BatchRow>& rows, bool greedy) {
-        Capture capture(executor_,weights_);
-        std::unique_ptr<models::Batch::Plan> plan;
-        StepSequence<std::unique_ptr<models::Batch::Plan>> job;
-        bool observed=false;
-        try {
-            job=batch_->plan(rows,greedy);
-            for (;;) {
-                auto step=job.next();
-                if (step.layer || step.workspace || (step.graph && step.value) ||
-                    (step.state==StepState::complete && (step.graph || step.value)))
-                    throw std::logic_error("invalid batch graph plan event");
-                if (!step) break;
-                if (step.state!=StepState::advanced)
-                    throw std::logic_error("invalid batch graph plan event");
-                observed=true;
-                if (step.graph) {
-                    if (plan) throw std::logic_error("batch graph plan continued after its result");
-                    capture.step(*step.graph);
-                } else if (step.value) {
-                    if (plan || !*step.value) throw std::logic_error("invalid batch graph plan result");
-                    plan=std::move(*step.value);
-                } else if (plan) throw std::logic_error("batch graph plan continued after its result");
-            }
-            if (observed && !plan) throw std::logic_error("batch graph plan ended without a result");
-            capture.finish();
-            job={};
-            return plan;
-        } catch (...) {
-            const auto failure=std::current_exception();
-            try { capture.drain(); } catch (...) {}
-            job={};
-            std::rethrow_exception(failure);
-        }
+    std::unique_ptr<models::Batch::Plan> plan_graph(const std::vector<models::BatchRow>& rows, bool greedy) {
+        return plan_batch(*batch_,executor_,weights_,rows,greedy);
     }
     void initialize(const std::shared_ptr<Request>& request, PrefillChunk chunk) {
         if (!request->state) {

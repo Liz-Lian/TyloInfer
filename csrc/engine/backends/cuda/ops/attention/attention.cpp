@@ -187,7 +187,7 @@ tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& inp
         public_kv.pages_per_chunk, public_kv.heads};
     auto& executor = Executor::current();
     const AttentionConfig config{public_config.bf16, public_config.sliding, public_config.window,
-                                 public_config.scale, executor.attention_options().kernels};
+                                 public_config.scale, executor.attention_kernels()};
     auto& profiler = executor.profiler();
     auto& scratch = executor.attention_scratch(request.query.device(),
         {request.query.size(1), request.key.size(1), request.query.size(3),

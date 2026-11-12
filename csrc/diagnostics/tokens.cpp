@@ -153,10 +153,10 @@ int generate_diagnostic_tokens(Program& program,Tensor ids,int gen,bool profile,
     Work work{program};
     ids=work.keep(std::move(ids));
     Tensor forced_input;
-    if(!forced.empty())forced_input=work.keep(ops::tensor(forced,program.executor().device()));
     auto& profiler=program.executor().profiler();
     struct Restore { CudaProfiler& p; bool enabled,graph; ~Restore(){p.enabled=enabled;p.graph_events=graph;} } restore{profiler,profiler.enabled,profiler.graph_events};
     warmup_prefill(program,ids,profile,warmup);
+    if(!forced.empty())forced_input=work.keep(ops::tensor(forced,program.executor().device()));
     std::cout<<"decode_input_mode="<<(forced_input?"forced":"generated")<<"\n";
     profiler.enabled=profile;
     report_source(*source,"prefill_begin"); profiler.reset();
